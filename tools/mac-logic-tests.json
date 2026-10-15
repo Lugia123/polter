@@ -41,6 +41,7 @@
       "macos/Sources/Features/ControlRoom/PaneFrameView.swift",
       "macos/Sources/Features/ControlRoom/PaneStackStrip.swift",
       "macos/Sources/Features/ControlRoom/PaneStackStripView.swift",
+      "macos/Sources/Features/ControlRoom/PaneStackRules.swift",
       "macos/Sources/Features/ControlRoom/TerminalPresence.swift",
       "macos/Sources/Features/Splits/SplitTree.swift",
       "macos/Sources/Features/Splits/SurfaceDragGrip.swift",
@@ -53,7 +54,7 @@
       "macos/Sources/Features/Terminal/TabAccessory.swift",
       {
         "path": "macos/Sources/Features/Splits/PoltergeistLayoutShape.swift",
-        "until": "extension SplitTree<Ghostty.SurfaceView>.Node {",
+        "until": "extension SplitTree<Ghostty.SurfaceView> {",
         "why": "the parser and the shape are taken; what follows the marker reads a real terminal's surface handle"
       },
       {
@@ -117,6 +118,7 @@
       "macos/Tests/ControlRoom/PaneFrameBarFitTests.swift",
       "macos/Tests/ControlRoom/PaneFrameTests.swift",
       "macos/Tests/ControlRoom/PaneStackStripTests.swift",
+      "macos/Tests/ControlRoom/PaneStackRulesTests.swift",
       "macos/Tests/ControlRoom/TerminalPresenceTests.swift",
       "macos/Tests/Projects/ProjectAutosaveTests.swift",
       "macos/Tests/Projects/ProjectDocumentTests.swift",
@@ -125,11 +127,13 @@
       "macos/Tests/Projects/ProjectLinkTests.swift",
       "macos/Tests/Projects/ProjectPageRulesTests.swift",
       "macos/Tests/Projects/ProjectPagesTests.swift",
+      "macos/Tests/Projects/ProjectStackTests.swift",
       "macos/Tests/Projects/SharedProjectFilesTests.swift",
       "macos/Tests/Splits/PoltergeistLayoutShapeTests.swift",
       "macos/Tests/Splits/SplitTreeTests.swift",
       "macos/Tests/Splits/SplitStackTests.swift",
       "macos/Tests/Splits/StoredBytesTests.swift",
+      "macos/Tests/Splits/StoredStackTests.swift",
       "macos/Tests/Splits/SurfaceDragGripTests.swift",
       "macos/Tests/Splits/TabStripDropTests.swift",
       "macos/Tests/Settings/LogManagementRulesTests.swift",

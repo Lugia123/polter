@@ -148,12 +148,18 @@ pub const ACTION_CONTROL_ROOM_CHANGED: u32 = 78;
 /// here: the control room is not built on this host, so the arm in
 /// `cb_action` answers that and the palette hides the row.
 pub const ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM: u32 = 79;
-
 /// `Action.Key.control_room_alert`, appended after
 /// `toggle_poltergeist_control_room` (task 1505; the design's section 9).
 /// ⚠️ **Appended, like every one before it.** The payload is one pointer to
 /// a [`ControlRoomAlert`]; the arm in `cb_action` raises the tray balloon.
 pub const ACTION_CONTROL_ROOM_ALERT: u32 = 80;
+/// `Binding.zig`'s `pane_stack`, appended after `control_room_alert`.
+/// Several terminals in one pane, one in front. Not built on this host --
+/// the split tree here has no stacks -- so the arm in `cb_action` answers
+/// that and the palette hides the rows. (Its branch was written while it
+/// was 80; the two branches met in a merge with the same number and no
+/// conflict, which is why the order is said here.)
+pub const ACTION_PANE_STACK: u32 = 81;
 
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //

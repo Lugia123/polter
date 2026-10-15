@@ -369,6 +369,13 @@ struct Unavailable {
 // `HostGap` at the same time.
 const UNAVAILABLE: &[Unavailable] = &[
     Unavailable {
+        key: "pane_stack",
+        blocked_on: "pane_stack",
+        why: "Several terminals in one pane, one in front (`Binding.zig`, `pane_stack`). macOS \
+              has it; this host's split tree holds one terminal to a pane, so there is nothing \
+              for any of the six rows to do yet (task 1493).",
+    },
+    Unavailable {
         key: "show_gtk_inspector",
         blocked_on: "show_gtk_inspector",
         why: "GTK's own debugger. `Binding.zig` says of it: \"Has no effect on macOS.\" \

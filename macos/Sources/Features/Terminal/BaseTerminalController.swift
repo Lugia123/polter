@@ -486,8 +486,36 @@ class BaseTerminalController: NSWindowController,
         _ view: Ghostty.SurfaceView,
         withConfirmation: Bool = true
     ) {
-        guard let node = surfaceTree.root?.node(view: view) else { return }
+        guard let node = surfaceTree.root?.node(view: view) else {
+            // Not what any pane shows, and still one of this tab's: it is
+            // stacked behind another. A node knows only the view its pane
+            // shows, so this one is taken out by itself.
+            if surfaceTree.stack(of: view) != nil {
+                closeStackedBehind(view, withConfirmation: withConfirmation)
+            }
+            return
+        }
         closeSurface(node, withConfirmation: withConfirmation)
+    }
+
+    /// Close a terminal that is stacked behind the one its pane shows.
+    private func closeStackedBehind(_ view: Ghostty.SurfaceView, withConfirmation: Bool) {
+        let remove = { [weak self] in
+            guard let self, self.surfaceTree.stack(of: view) != nil else { return }
+            ClosedTabs.shared.remember(directory: view.pwd)
+            guard let newTree = try? self.surfaceTree.removing(member: view) else { return }
+            // Nothing the person could see has changed, so the keyboard
+            // stays where it is.
+            self.replaceSurfaceTree(newTree, moveFocusTo: self.focusedSurface, undoAction: "Close Terminal")
+        }
+        guard withConfirmation else {
+            remove()
+            return
+        }
+        confirmClose(
+            messageText: String(localized: "Close Terminal?", comment: "关闭确认框"),
+            informativeText: String(localized: "The terminal still has a running process. If you close the terminal the process will be killed.", comment: "关闭确认框")
+        ) { remove() }
     }
 
     /// Close a surface node (which may contain splits), requesting confirmation if necessary.
@@ -553,17 +581,21 @@ class BaseTerminalController: NSWindowController,
             ClosedTabs.shared.remember(directory: surface.pwd)
         }
 
+        let remaining = surfaceTree.removing(node)
+
         // Move focus if the closed surface was focused and we have a next target
         let nextFocus: Ghostty.SurfaceView? = if going.contains(
             where: { $0 == focusedSurface }
         ) {
-            findNextFocusTargetAfterClosing(node: node)
+            // A pane that held a stack is still there, showing the next of
+            // its terminals: that one takes the keyboard, not a neighbour.
+            stackSuccessor(of: node, in: remaining) ?? findNextFocusTargetAfterClosing(node: node)
         } else {
             nil
         }
 
         replaceSurfaceTree(
-            surfaceTree.removing(node),
+            remaining,
             // When a non-focused surface is removed and this window stays as the key window,
             // we should refocus the `focusedSurface` to make sure the window's firstResponder remains as it is.
             //
@@ -572,6 +604,16 @@ class BaseTerminalController: NSWindowController,
             moveFocusTo: nextFocus ?? focusedSurface,
             undoAction: "Close Terminal"
         )
+    }
+
+    /// The terminal that takes the place of the one `node` showed, when
+    /// `node` is a pane that held a stack; nil for any other node.
+    private func stackSuccessor(
+        of node: SplitTree<Ghostty.SurfaceView>.Node,
+        in remaining: SplitTree<Ghostty.SurfaceView>
+    ) -> Ghostty.SurfaceView? {
+        guard case .leaf(let view) = node, let stack = surfaceTree.stack(of: view) else { return nil }
+        return stack.members.first { $0 !== view && remaining.isShown($0) }
     }
 
     func replaceSurfaceTree(
@@ -694,9 +736,11 @@ class BaseTerminalController: NSWindowController,
 
     @objc private func ghosttyDidCloseSurface(_ notification: Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
-        guard let node = surfaceTree.root?.node(view: target) else { return }
+        // By the terminal, not by the pane: one stacked behind another is in
+        // no node, and asking for its node here left it open, its process
+        // gone and nobody able to press the key its screen asks for.
         closeSurface(
-            node,
+            target,
             withConfirmation: (notification.userInfo?["process_alive"] as? Bool) ?? false)
     }
 
@@ -1434,11 +1478,21 @@ class BaseTerminalController: NSWindowController,
     private func syncSurfaceTreeOcclusionState() {
         let visible = self.window?.occlusionState.contains(.visible) ?? false
         for view in surfaceTree {
-            // Lent to the control room: it is seen there, not here.
-            if ControlRoomLender.shared.isLent(view) { continue }
-            if let surface = view.surface, view.isWindowVisible != visible {
-                ghostty_surface_set_occlusion(surface, visible)
-                view.isWindowVisible = visible
+            // One rule for the two ways of being in this tab and not in
+            // front of the person here (`TerminalPresence`): lent to the
+            // control room, which says for it; and stacked behind another,
+            // which is said to be out of sight whatever the window is.
+            let seen: Bool
+            switch TerminalPresence.ownTabReports(
+                shown: surfaceTree.isShown(view),
+                lent: ControlRoomLender.shared.isLent(view)) {
+            case .nothing: continue
+            case .asShown: seen = visible
+            case .hidden: seen = false
+            }
+            if let surface = view.surface, view.isWindowVisible != seen {
+                ghostty_surface_set_occlusion(surface, seen)
+                view.isWindowVisible = seen
             }
         }
     }
@@ -1654,6 +1708,9 @@ extension BaseTerminalController: NSMenuItemValidation {
             return focusedSurface?.searchState != nil
 
         default:
+            // The Stack submenu: each verb only where it has something
+            // to do (`PaneStackRules.offers`).
+            if let verb = Self.stackVerb(of: item.action) { return offers(stack: verb) }
             return true
         }
     }

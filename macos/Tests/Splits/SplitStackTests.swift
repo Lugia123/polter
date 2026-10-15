@@ -194,9 +194,8 @@ struct SplitStackTests {
         let before = try encoder.encode(plain)
 
         let stacked = try plain.stacking(two, onto: one)
-        // With a stack there is no form to store it in yet: refused, not
-        // written without the one behind.
-        #expect(throws: EncodingError.self) { try encoder.encode(stacked) }
+        // With a stack it is another form (version 2, `StoredStackTests`).
+        #expect(try encoder.encode(stacked) != before)
 
         let apart = try stacked.removing(member: two)
         #expect(apart.stacks.isEmpty)

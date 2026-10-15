@@ -422,8 +422,35 @@ private enum CodingKeys: String, CodingKey {
     case version
     case root
     case zoomed
+    case stacks
 
+    /// What a tree with no stack is written as: exactly what it was before
+    /// there were stacks, byte for byte (`StoredBytesTests`).
     static let currentVersion: Int = 1
+
+    /// What a tree with a stack is written as: version 1's keys and a
+    /// `stacks` list. A build from before stacks refuses it ("Unsupported SplitTree
+    /// version") and does not restore that window -- which is the point:
+    /// reading it as version 1 would bring back each pane's shown terminal
+    /// and none of the ones behind it, without a word.
+    static let stackedVersion: Int = 2
+}
+
+extension SplitTree {
+    /// One stack as it is stored: which pane, by its path from the root,
+    /// and the terminals of it that are **not** in the tree's nodes, in
+    /// their order with the shown one taken out. `shown` is where the
+    /// shown one goes back in.
+    ///
+    /// The shown terminal is not written twice, here and in its leaf:
+    /// decoding a view makes one (for a terminal, a new surface and a new
+    /// process), so a second copy would come back as a second terminal
+    /// with nobody showing it.
+    private struct StoredStack: Codable {
+        let pane: Path
+        let shown: Int
+        let behind: [ViewType]
+    }
 }
 
 extension SplitTree: Codable {
@@ -432,7 +459,7 @@ extension SplitTree: Codable {
 
         // Check version
         let version = try container.decode(Int.self, forKey: .version)
-        guard version == CodingKeys.currentVersion else {
+        guard version == CodingKeys.currentVersion || version == CodingKeys.stackedVersion else {
             throw DecodingError.dataCorrupted(
                 DecodingError.Context(
                     codingPath: decoder.codingPath,
@@ -442,37 +469,52 @@ extension SplitTree: Codable {
         }
 
         // Decode root
-        self.root = try container.decodeIfPresent(Node.self, forKey: .root)
+        let root = try container.decodeIfPresent(Node.self, forKey: .root)
+        self.root = root
 
         // Zoomed is encoded as its path. Get the path and then find it.
         if let zoomedPath = try container.decodeIfPresent(Path.self, forKey: .zoomed),
-           let root = self.root {
+           let root {
             self.zoomed = root.node(at: zoomedPath)
         } else {
             self.zoomed = nil
         }
 
         // Version 1 has no stacks: every pane it stores holds one terminal.
-        self.stacks = []
+        guard version == CodingKeys.stackedVersion else {
+            self.stacks = []
+            return
+        }
+
+        // **Strict**: a stack that names no pane, a pane twice, or a place
+        // for the shown terminal that is not in its list is a file that was
+        // not written by `encode`, and a window put back from it would be
+        // missing terminals or showing the wrong one.
+        let stored = try container.decode([StoredStack].self, forKey: .stacks)
+        var stacks: [Stack] = []
+        for entry in stored {
+            guard let root, case .leaf(let front) = root.node(at: entry.pane),
+                  !entry.behind.isEmpty, (0...entry.behind.count).contains(entry.shown),
+                  !stacks.contains(where: { $0.shown == front.id }) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .stacks, in: container,
+                    debugDescription: "a stored stack does not fit the tree it is stored with")
+            }
+            var members = entry.behind
+            members.insert(front, at: entry.shown)
+            stacks.append(Stack(shown: front.id, members: members))
+        }
+        self.stacks = stacks
     }
 
     func encode(to encoder: Encoder) throws {
-        // **Refused, not written without them.** The stored form has
-        // nowhere to put a stack yet (12.6.2, step 2), and version 1 written
-        // from a tree that has one would store the terminal each pane is
-        // showing and silently leave out the rest -- which then come back
-        // as nothing. Nothing can make a stack before there is a form to
-        // store it in; this is what says so if something does.
-        guard stacks.isEmpty else {
-            throw EncodingError.invalidValue(stacks, EncodingError.Context(
-                codingPath: encoder.codingPath,
-                debugDescription: "a SplitTree with stacked terminals cannot be stored in version 1"))
-        }
-
         var container = encoder.container(keyedBy: CodingKeys.self)
 
-        // Encode version
-        try container.encode(CodingKeys.currentVersion, forKey: .version)
+        // Encode version. With no stack it is version 1 and nothing is
+        // written that version 1 did not write.
+        try container.encode(
+            stacks.isEmpty ? CodingKeys.currentVersion : CodingKeys.stackedVersion,
+            forKey: .version)
 
         // Encode root
         try container.encodeIfPresent(root, forKey: .root)
@@ -482,6 +524,33 @@ extension SplitTree: Codable {
         if let zoomed, let path = root?.path(to: zoomed) {
             try container.encode(path, forKey: .zoomed)
         }
+
+        guard !stacks.isEmpty else { return }
+
+        // In the order of the panes, not of `stacks` (which is the order
+        // they were made in): the same tree is the same bytes.
+        var stored: [StoredStack] = []
+        for front in shownLeaves() {
+            guard let stack = stack(of: front) else { continue }
+            guard stack.shown == front.id,
+                  let shown = stack.members.firstIndex(where: { $0 === front }),
+                  let path = root?.path(to: .leaf(view: front)) else {
+                throw EncodingError.invalidValue(stacks, EncodingError.Context(
+                    codingPath: encoder.codingPath,
+                    debugDescription: "a stack's shown terminal is not the one its pane shows"))
+            }
+            var behind = stack.members
+            behind.remove(at: shown)
+            stored.append(StoredStack(pane: path, shown: shown, behind: behind))
+        }
+        // A stack whose pane is not in the tree would not be written, and
+        // its terminals would not come back.
+        guard stored.count == stacks.count else {
+            throw EncodingError.invalidValue(stacks, EncodingError.Context(
+                codingPath: encoder.codingPath,
+                debugDescription: "\(stacks.count - stored.count) stack(s) have no pane in the tree"))
+        }
+        try container.encode(stored, forKey: .stacks)
     }
 }
 

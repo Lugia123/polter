@@ -677,6 +677,23 @@ pub const Action = union(enum) {
     /// Focus on either the previous window or the next one ('previous', 'next')
     goto_window: GotoWindow,
 
+    /// Stack terminals in one pane: several terminals share the place of
+    /// one, one of them in front, with a strip of tabs over the pane to
+    /// reach the others.
+    ///
+    ///   * `new`: open a new terminal in the focused pane, in front of the
+    ///     one that was there.
+    ///   * `next`, `previous`: bring the next or the previous terminal of
+    ///     the focused pane's stack to the front.
+    ///   * `out`: take the focused terminal out of its stack, into a pane
+    ///     of its own beside it.
+    ///   * `onto_next`, `onto_previous`: put the focused terminal onto the
+    ///     stack of the next or the previous pane, so that two panes
+    ///     become one.
+    ///
+    /// Only on macOS so far; elsewhere this does nothing.
+    pane_stack: PaneStack,
+
     /// Zoom in or out of the current split.
     ///
     /// When a split is zoomed into, it will take up the entire space in
@@ -1273,6 +1290,15 @@ pub const Action = union(enum) {
         pub const default: SplitDirection = .auto;
     };
 
+    pub const PaneStack = enum {
+        new,
+        next,
+        previous,
+        out,
+        onto_next,
+        onto_previous,
+    };
+
     pub const SplitFocusDirection = enum {
         previous,
         next,
@@ -1670,6 +1696,7 @@ pub const Action = union(enum) {
             .new_split,
             .goto_split,
             .goto_window,
+            .pane_stack,
             .toggle_split_zoom,
             .toggle_readonly,
             .poltergeist_supervisor,

@@ -285,7 +285,7 @@ final class ProjectStore {
         // starts an empty terminal -- which is today's behavior.
         let tabs: [ProjectPages.Live] = live.compactMap { page in
             guard let node = page.tree.root else { return nil }
-            let root = ProjectNode.capturing(node, scrollback: { view in
+            let root = ProjectNode.capturing(node, in: page.tree, scrollback: { view in
                 // Every pane gets a number, autosave included: a number is
                 // now what keeps a pane's scrollback journaled, and a pane
                 // opened after the tab joined the project that waited for
@@ -427,7 +427,7 @@ final class ProjectStore {
         let location = ProjectScrollback.Location(
             directory: ProjectScrollback.directory(forProjectFile: entry.url),
             key: bindingKey(name: entry.name))
-        return SplitTree(root: tab.root.materializing(app, scrollback: location), zoomed: nil)
+        return tab.root.materializing(app, scrollback: location)
     }
 
     /// Put `name`'s previous generation back, keeping the current one as

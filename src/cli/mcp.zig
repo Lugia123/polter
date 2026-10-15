@@ -1043,11 +1043,19 @@ const tools = [_]Tool{
             "just made -- so splitting repeatedly gives you a chain, not the shape you wanted. " ++
             "`id` names any pane of the tab. `layout` is a tree: a cell is " ++
             "{\"pane\":\"0x…\"} for a terminal already in that tab, {\"new\":{\"cwd\":\"…\"}} " ++
-            "for one to make, or {\"split\":\"h\"|\"v\",\"ratio\":0.5,\"left\":cell,\"right\":cell}. " ++
+            "for one to make, {\"split\":\"h\"|\"v\",\"ratio\":0.5,\"left\":cell,\"right\":cell}, " ++
+            "or {\"stack\":[cell,cell,…],\"shown\":0} -- **one pane holding several terminals**, " ++
+            "one of them in front and the rest behind it under a strip of tabs: where a row of " ++
+            "workers goes when there is no room to give each a pane. A stack's members are " ++
+            "`pane` or `new` cells only, two or more; `shown` is which is in front, counting from " ++
+            "0, the first when left out. A terminal behind another keeps running and still " ++
+            "raises its hand in the tab strip. ⚠️ Stacks are macOS only so far: elsewhere a " ++
+            "`stack` cell is refused and nothing moves. " ++
             "`ratio` is the fraction given to `left` and must be between 0 and 1; it is refused " ++
             "rather than rounded, because a layout you did not ask for reported as success is " ++
             "worse than a refusal. **The reply gives the resulting shape with every cell's terminal " ++
-            "id**, including the ones that were just made -- the same ids you can hand " ++
+            "id**, including the ones that were just made and the ones stacked behind another " ++
+            "(a pane that holds a stack comes back as a `stack` cell) -- the same ids you can hand " ++
             "straight to terminal_read and terminal_send, which is how you learn them. " ++
             "⚠️ Every pane already in the tab must appear in the layout: rearranging never " ++
             "closes a terminal. Leave one out and the whole call is refused and nothing moves; " ++

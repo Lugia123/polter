@@ -823,6 +823,9 @@ pub const Application = extern struct {
             .control_room_changed,
             .toggle_poltergeist_control_room,
             .control_room_alert,
+            // No stacks here yet: the binding does nothing rather than
+            // something else (a split, say) the person did not ask for.
+            .pane_stack,
 
             // Poltergeist's own UI is macOS-only so far, and the tab mark
             // is part of it. GTK keeps its tabs unmarked rather than

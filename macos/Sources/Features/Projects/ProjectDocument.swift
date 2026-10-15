@@ -755,6 +755,91 @@ enum ProjectListing {
     }
 }
 
+// MARK: - Panes and stacks (a split tree <-> a project's tree)
+
+extension ProjectNode {
+    /// A split tree as a project's tree, each terminal made into a leaf by
+    /// `leaf`. **A pane holding a stack is written as the stack**, every
+    /// member in its order and the one it shows marked: the node alone
+    /// knows only the shown one, and a project made of it would open with
+    /// every terminal behind gone.
+    ///
+    /// Without a terminal, so that what decides which terminals go into
+    /// the file is tested (`ProjectStackTests`);
+    /// `capturing(_:in:scrollback:who:)` below is the same for live
+    /// terminals.
+    static func capturing<V>(
+        _ node: SplitTree<V>.Node,
+        in tree: SplitTree<V>,
+        leaf: (V) -> ProjectNode
+    ) -> ProjectNode {
+        switch node {
+        case .leaf(let view):
+            guard let stack = tree.stack(of: view),
+                  let shown = stack.members.firstIndex(where: { $0 === view }),
+                  let node = stacked(shown: shown, members: stack.members.map(leaf)) else {
+                return leaf(view)
+            }
+            return node
+
+        case .split(let split):
+            return .split(
+                direction: Direction(split.direction),
+                ratio: split.ratio,
+                left: capturing(split.left, in: tree, leaf: leaf),
+                right: capturing(split.right, in: tree, leaf: leaf))
+        }
+    }
+
+    /// This tree as a split tree, each leaf made into a terminal by `make`
+    /// -- a stack's members too, in their order, the one it showed shown.
+    func building<V>(_ make: (ProjectNode) -> V) -> SplitTree<V> {
+        var stacks: [SplitTree<V>.Stack] = []
+        let root = building(make, stacks: &stacks)
+        return SplitTree(root: root, zoomed: nil, stacks: stacks)
+    }
+
+    private func building<V>(_ make: (ProjectNode) -> V, stacks: inout [SplitTree<V>.Stack]) -> SplitTree<V>.Node {
+        switch self {
+        case .leaf:
+            return .leaf(view: make(self))
+
+        case .stack(let shown, let members):
+            // The reader hands back no other stack; one made in code that
+            // breaks the rule opens what it can show rather than nothing.
+            guard members.count > 1, members.indices.contains(shown) else {
+                return .leaf(view: make(members.first ?? self))
+            }
+            let views = members.map(make)
+            stacks.append(.init(shown: views[shown].id, members: views))
+            return .leaf(view: views[shown])
+
+        case .split(let direction, let ratio, let left, let right):
+            return .split(.init(
+                direction: direction.splitTreeDirection(),
+                ratio: ratio,
+                left: left.building(make, stacks: &stacks),
+                right: right.building(make, stacks: &stacks)))
+        }
+    }
+}
+
+extension ProjectNode.Direction {
+    init<V>(_ direction: SplitTree<V>.Direction) {
+        switch direction {
+        case .horizontal: self = .horizontal
+        case .vertical: self = .vertical
+        }
+    }
+
+    func splitTreeDirection<V>() -> SplitTree<V>.Direction {
+        switch self {
+        case .horizontal: return .horizontal
+        case .vertical: return .vertical
+        }
+    }
+}
+
 // MARK: - Capture (live surfaces -> data)
 
 extension ProjectNode {
@@ -778,43 +863,25 @@ extension ProjectNode {
     /// pane and whether the project's supervisor opened it. **Neither has a
     /// default**: a caller that left `who` out would be writing down an
     /// answer it never gave.
+    ///
+    /// `tree` is the tree `node` is in: a pane's stack is kept there, not
+    /// in the node, and every terminal of it is captured
+    /// (`capturing(_:in:leaf:)`).
     static func capturing(
         _ node: SplitTree<Ghostty.SurfaceView>.Node,
+        in tree: SplitTree<Ghostty.SurfaceView>,
         scrollback: (Ghostty.SurfaceView) -> String,
         who: (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool)
     ) -> ProjectNode {
-        switch node {
-        case .leaf(let view):
+        capturing(node, in: tree) { view in
+            let who = who(view)
             return .leaf(
                 cwd: view.pwd ?? "",
                 title: view.title,
                 history: view.historyFilename ?? "",
                 scrollback: scrollback(view),
-                bySupervisor: who(view).bySupervisor,
-                agent: who(view).agent)
-
-        case .split(let split):
-            return .split(
-                direction: Direction(split.direction),
-                ratio: split.ratio,
-                left: capturing(split.left, scrollback: scrollback, who: who),
-                right: capturing(split.right, scrollback: scrollback, who: who))
-        }
-    }
-}
-
-private extension ProjectNode.Direction {
-    init(_ direction: SplitTree<Ghostty.SurfaceView>.Direction) {
-        switch direction {
-        case .horizontal: self = .horizontal
-        case .vertical: self = .vertical
-        }
-    }
-
-    var splitTreeDirection: SplitTree<Ghostty.SurfaceView>.Direction {
-        switch self {
-        case .horizontal: return .horizontal
-        case .vertical: return .vertical
+                bySupervisor: who.bySupervisor,
+                agent: who.agent)
         }
     }
 }
@@ -827,7 +894,8 @@ extension ProjectNode {
     /// `cwd` no longer exists; `Exec.zig` already falls back rather than
     /// failing, see `if (std.Io.Dir.cwd().access(...))` in
     /// `src/termio/Exec.zig`). The result is ready to hand to
-    /// `TerminalController(withSurfaceTree:)`.
+    /// `TerminalController(withSurfaceTree:)`, every terminal of a stack
+    /// included and the one it showed in front (`building`).
     ///
     /// `scrollback` is where this project's snapshots live (see
     /// `ProjectScrollback.directory`) and the project they belong to; nil
@@ -835,17 +903,12 @@ extension ProjectNode {
     func materializing(
         _ app: ghostty_app_t,
         scrollback project: ProjectScrollback.Location? = nil
-    ) -> SplitTree<Ghostty.SurfaceView>.Node {
-        switch self {
-        // ⚠️ **Only the member in front is brought back, for now.** Putting
-        // a stack back as one pane with every member in it, the one at
-        // `shown` in front, is the work of whoever wires the split tree's
-        // stacks to this (#1493); until then a project with a stack opens
-        // with that pane's front terminal only, and the first save after
-        // would write it without the others.
-        case .stack(let shown, let members):
-            return members[min(max(shown, 0), members.count - 1)].materializing(app, scrollback: project)
+    ) -> SplitTree<Ghostty.SurfaceView> {
+        building { $0.surface(app, scrollback: project) }
+    }
 
+    private func surface(_ app: ghostty_app_t, scrollback project: ProjectScrollback.Location?) -> Ghostty.SurfaceView {
+        switch self {
         // Who was in the pane is not acted on here: a restored pane is a
         // terminal in the right place, and starting an agent in it is a
         // decision for whoever opens the project.
@@ -879,14 +942,10 @@ extension ProjectNode {
             if let project, !scrollback.isEmpty {
                 view.journalScrollback(.init(project: project.key, filename: scrollback), in: project.directory)
             }
-            return .leaf(view: view)
+            return view
 
-        case .split(let direction, let ratio, let left, let right):
-            return .split(.init(
-                direction: direction.splitTreeDirection,
-                ratio: ratio,
-                left: left.materializing(app, scrollback: project),
-                right: right.materializing(app, scrollback: project)))
+        case .split, .stack:
+            preconditionFailure("building makes a terminal of a leaf and nothing else")
         }
     }
 }

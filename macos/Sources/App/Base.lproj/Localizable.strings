@@ -786,9 +786,18 @@
 /* 分屏框：worker 那一格的标题带上，名字后面说明身份的字 */
 "Worker" = "Worker";
 
-/* 分屏框：层叠标签条（control-room.md 12.6.2）。还没有接线 */
+/* 分屏框：层叠标签条（control-room.md 12.6.2） */
 "More tabs" = "More tabs";
 "Add a terminal to this pane" = "Add a terminal to this pane";
+
+/* 窗口菜单 › 层叠：一格里叠放多个终端（control-room.md 12.6.2） */
+"New Terminal in This Pane" = "New Terminal in This Pane";
+"Next Stacked Terminal" = "Next Stacked Terminal";
+"Previous Stacked Terminal" = "Previous Stacked Terminal";
+"Move Terminal Out of Stack" = "Move Terminal Out of Stack";
+"Stack onto Next Pane" = "Stack onto Next Pane";
+"Stack onto Previous Pane" = "Stack onto Previous Pane";
+"Stack" = "Stack";
 
 /* 多标签页的项目（#1491）：存为项目的框、菜单、关页询问、记号、设置 */
 "This page" = "This page";

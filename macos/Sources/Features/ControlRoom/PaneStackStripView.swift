@@ -183,10 +183,14 @@ struct PaneStackStripView: View {
         .accessibilityAddTraits(current ? [.isButton, .isSelected] : .isButton)
     }
 
-    /// `more`: the dots, and beside them the glyph of the most pressing
-    /// terminal behind them -- the core's choice of which
-    /// (`PaneStackStripLayout.behindMore`). The glyph's place is kept when
-    /// there is none.
+    /// `more`: the dots with how many tabs they stand for, and beside
+    /// them the glyph of the most pressing terminal behind them -- the
+    /// core's choice of which (`PaneStackStripLayout.behindMore`). The
+    /// glyph's place is kept when there is none.
+    ///
+    /// The count is 暂定 (task 1493; the other candidate is the dots
+    /// alone, `stack_tab.more_button`'s `alt`): one terminal behind the
+    /// dots and nine are not the same thing to be told.
     private func more(_ layout: Layout) -> some View {
         let label = String(localized: "More tabs", comment: "分屏框：层叠标签条上排不下的标签收在这个按钮后面")
         let behind = layout.behindMore(urgent: stack.urgent).map { stack.members[$0] }
@@ -194,10 +198,13 @@ struct PaneStackStripView: View {
             actions.more(layout.hidden)
         } label: {
             HStack(spacing: CGFloat(Look.StackTab.moreGlyphGap)) {
-                Image(systemName: "ellipsis")
+                Text(PaneStackStripLayout.moreLabel(hidden: layout.hidden.count))
                     .font(.system(size: CGFloat(Look.Font.body)))
+                    .monospacedDigit()
                     .foregroundStyle(otherInk)
-                    .frame(width: CGFloat(Look.Side.glyph))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(width: CGFloat(Look.StackTab.moreButton - 2 * 6 - Look.StackTab.moreGlyphGap - Look.Side.glyph))
                 Color.clear
                     .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
                     .overlay {
@@ -232,9 +239,10 @@ struct PaneStackStripView: View {
         HStack(spacing: CGFloat(Look.Side.statusWordGap)) {
             // Held is not a status and has no colour of its own: drawn as
             // the frame's own title draws it (`PaneFrameTitleBar.status`).
-            if let status = title.shown.status {
+            switch PaneStackStatusGlyph(title.shown) {
+            case .status(let status):
                 ControlRoomGlyph(shown: status, still: still)
-            } else {
+            case .held:
                 PaneHeldGlyph()
                     .fill(otherInk)
                     .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))

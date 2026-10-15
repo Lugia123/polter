@@ -146,6 +146,7 @@ pub fn selfSafeTag(tag: std.meta.Tag(inputpkg.Binding.Action)) bool {
         // The splits, which are the point of all this.
         .new_split,
         .goto_split,
+        .pane_stack,
         .toggle_split_zoom,
         .resize_split,
         .equalize_splits,

@@ -288,7 +288,10 @@ class QuickTerminalController: BaseTerminalController {
         withConfirmation: Bool = true
     ) {
         // If this isn't the root then we're dealing with a split closure.
-        if surfaceTree.root != node {
+        // Nor is it when the root is a pane holding a stack: the next of its
+        // terminals takes the place of the one that goes. Emptying the tree
+        // below would leave the others running with no pane.
+        if surfaceTree.root != node || !surfaceTree.removing(node).isEmpty {
             super.closeSurface(node, withConfirmation: withConfirmation)
             return
         }

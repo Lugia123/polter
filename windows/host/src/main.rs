@@ -4421,6 +4421,16 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             true
         }
 
+        // Stacking terminals in one pane (`Binding.zig`, `pane_stack`). macOS
+        // has it; this host's split tree holds one terminal to a pane, and
+        // doing something else instead (a split, say) would be an answer to
+        // a question nobody asked.
+        // owed: 1493 -- stacks are macOS only so far; nothing is stacked, switched or taken out here.
+        ffi::ACTION_PANE_STACK => {
+            alogf!(origin, "[action] pane_stack: not built on this host; nothing done");
+            false
+        }
+
         // owed: 286 -- reviewed and deferred; there is no transparency to toggle.
         ffi::ACTION_TOGGLE_BACKGROUND_OPACITY => {
             alogf!(
