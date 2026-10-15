@@ -228,9 +228,10 @@ pub fn repaint(frame: HWND) {
     }
 }
 
-fn dark() -> bool {
-    // The system's own setting, as the control room reads it.
-    crate::shot::appearance() == "dark"
+/// Light or dark for the frames in `frame`: its terminal's background, as
+/// the strip and the control room (`termcolor::chrome`, task 1550).
+fn dark(frame: HWND) -> bool {
+    crate::termcolor::chrome(frame).dark
 }
 
 fn colorref(c: look::Rgba) -> COLORREF {
@@ -241,7 +242,10 @@ fn colorref(c: look::Rgba) -> COLORREF {
 /// frames; none when it has not. A divider paints itself this colour, so
 /// that the gap it lies in is one colour across.
 pub fn ground_color(frame: HWND) -> Option<COLORREF> {
-    tabs::window(frame).is_some_and(|w| w.pane_frames.ground).then(|| colorref(look::theme(dark()).window_base))
+    // The window's lock is let go before `dark`, which takes it again to
+    // find the pane in front (`termcolor::ground`).
+    let ground = tabs::window(frame).is_some_and(|w| w.pane_frames.ground);
+    ground.then(|| colorref(look::theme(dark(frame)).window_base))
 }
 
 /// Paint the content area `below` the strip, into `hdc`: the ground and
@@ -260,7 +264,7 @@ pub fn paint(frame: HWND, hdc: HDC, below: RECT) -> bool {
     if w <= 0 || h <= 0 {
         return true;
     }
-    let theme = look::theme(dark());
+    let theme = look::theme(dark(frame));
     // The terminal's own `background`, as the dividers read it; the
     // design's when it cannot be read.
     let well = match crate::divider::terminal_background() {

@@ -53,12 +53,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
-use windows::core::{s, w, BOOL, HRESULT, PCWSTR};
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, COLORREF, ERROR_CLASS_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -533,7 +533,9 @@ pub fn list_rows(ed: &Editor, cat: &Catalog, skills: &SkillCatalog, clis: &CliSn
             out.push(ListRow {
                 entry: Entry::Skill(k.name.clone()),
                 title: k.name.clone(),
-                subtitle: k.summary.lines().next().unwrap_or("").to_string(),
+                // Its name and the mark, nothing under them: the macOS row
+                // (task 1550). The description is on its page.
+                subtitle: String::new(),
                 builtin: true,
                 dot: shipped::dot(open && ed.is_dirty(), Some(k.official.state)),
                 selected: open,
@@ -617,7 +619,8 @@ impl Kind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
     /// The control's identity across refreshes, and what its notifications
-    /// are mapped back to. Empty for painted text.
+    /// are mapped back to. Empty for painted text, except the words a locked
+    /// field shows in its box's place, which keep the box's key (`locked`).
     pub key: String,
     pub kind: Kind,
     pub width: Width,
@@ -878,13 +881,24 @@ fn notice_rows(v: &View) -> Vec<Row> {
     out
 }
 
-/// A field shown and locked: the box, read-only, and the lock after it.
+/// A field that may be locked: a box when it can be changed, and when it
+/// cannot, **its words and the lock after them** -- not a grey box, which
+/// reads as a box that is broken (task 1550, the macOS row). The words keep
+/// the box's key, so whatever looks for the field still finds it; only
+/// controls are made into windows (`Kind::is_control`).
 fn locked(key: &str, value: &str, mono: bool, editable: bool) -> Vec<Cell> {
-    let mut cells = vec![ctl(key, edit(value, String::new(), mono), Width::Fill, editable)];
-    if !editable {
-        cells.push(Cell { key: String::new(), kind: Kind::Lock, width: Width::Fixed(LOCK_W), enabled: true });
+    if editable {
+        return vec![ctl(key, edit(value, String::new(), mono), Width::Fill, true)];
     }
-    cells
+    vec![
+        Cell {
+            key: key.into(),
+            kind: Kind::Text { text: value.into(), tone: Tone::Text, font: if mono { Font::Mono } else { Font::Normal }, right: false, lines: 0 },
+            width: Width::Fill,
+            enabled: true,
+        },
+        Cell { key: String::new(), kind: Kind::Lock, width: Width::Fixed(LOCK_W), enabled: true },
+    ]
 }
 
 /// The room the lock takes, kept on a row with no lock so the boxes above
@@ -952,15 +966,11 @@ fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
         }
         out.push(key_row);
     }
-    let mut summary = vec![ctl(
-        "summary",
-        edit(&d.display_summary(), tr("What this role is for, for whoever picks it"), false),
-        Width::Fill,
-        e.summary,
-    )];
-    if !e.summary {
-        summary.push(Cell { key: String::new(), kind: Kind::Lock, width: Width::Fixed(LOCK_W), enabled: true });
-    }
+    let summary = if e.summary {
+        vec![ctl("summary", edit(&d.display_summary(), tr("What this role is for, for whoever picks it"), false), Width::Fill, true)]
+    } else {
+        locked("summary", &d.display_summary(), false, false)
+    };
     out.push(field_with(tr("Description"), summary));
 
     out.push(heading(tr("Instructions")));
@@ -1652,11 +1662,8 @@ pub struct Frame {
     /// + ⧉ −, at the left end of the bottom band.
     pub list_buttons: [RECT; 3],
     pub error: Option<RECT>,
-    /// The official strip over an official role or skill (`official::strip`):
-    /// the band, the words at its left when there is room for them, and
-    /// "Restore Factory Settings…" at its right.
-    pub strip: Option<RECT>,
-    pub strip_words: Option<RECT>,
+    /// "Restore Factory Settings…" over an official role or skill: in the
+    /// bottom band, beside Launch, as on macOS (`official::footer`).
     pub restore: Option<RECT>,
     pub tabs: Option<[RECT; 3]>,
     pub pane: RECT,
@@ -1666,7 +1673,7 @@ pub struct Frame {
     /// and the body above it does not grow into it.
     pub band: RECT,
     pub status: RECT,
-    /// Launch, Revert, Save, left to right.
+    /// Launch, Discard Changes, Save, left to right.
     pub footer_buttons: [RECT; 3],
     /// Where a list row's text starts: the list's left line plus `PAD`,
     /// the + button's x and the breadcrumb's (§2.3a).
@@ -1686,9 +1693,11 @@ pub struct FrameInputs {
     /// The measured height of the library-error text, when there is one.
     /// Measured because the core's message is any length.
     pub error_h: Option<i32>,
-    /// An official role or skill is on screen: the measured width of the
-    /// Restore button's text, which is what the strip gives way around.
-    pub strip_text_w: Option<i32>,
+    /// The band's buttons' words, measured: Launch, Discard Changes, Save,
+    /// Restore Factory Settings… -- each button is as wide as its words.
+    pub footer_text_w: [i32; 4],
+    /// An official role or skill is on screen: Restore is in the band.
+    pub official: bool,
     /// A role is on screen: the tab bar. Not for a skill, which is one page.
     pub tabs: bool,
 }
@@ -1707,12 +1716,8 @@ pub fn frame_layout(w: i32, h: i32, dpi: i32, fi: FrameInputs) -> Frame {
         y = r.bottom;
         r
     });
-    let official = fi.strip_text_w.map(|tw| {
-        let st = shipped::strip(left, w, y, dpi, tw);
-        y = st.strip.bottom;
-        st
-    });
     let has_draft = fi.tabs;
+    let foot = shipped::footer(&g, dpi, fi.footer_text_w, has_draft, fi.official);
     let tabs = has_draft.then(|| {
         let tw = (w - left - 2 * s(PAD)).min(s(TABS_MAX_W)).max(s(90));
         let x0 = left + ((w - left) - tw) / 2;
@@ -1729,15 +1734,13 @@ pub fn frame_layout(w: i32, h: i32, dpi: i32, fi: FrameInputs) -> Frame {
         list_divider: rect(list_divider),
         list_buttons: list_buttons.map(rect),
         error,
-        strip: official.map(|o| rect(o.strip)),
-        strip_words: official.and_then(|o| o.words.map(rect)),
-        restore: official.map(|o| rect(o.restore)),
+        restore: foot.restore.map(rect),
         tabs,
         pane,
         bottom_rule: rect(g.bottom_rule),
         band: rect(g.band),
-        status: rect(g.status),
-        footer_buttons: g.actions.map(rect),
+        status: rect(foot.status),
+        footer_buttons: foot.actions.map(rect),
         text_left: g.text_left,
     }
 }
@@ -2269,6 +2272,7 @@ pub fn theme_changed() {
         return;
     }
     drop_controls();
+    theme::system().dress_scrollbars(HWND(PANE.load(Ordering::Acquire)));
     refresh();
     theme::repaint_all(win);
 }
@@ -2395,16 +2399,12 @@ fn dialog_owner() -> HWND {
     unsafe { GetAncestor(main_hwnd(), GA_ROOT) }
 }
 
-fn make_font(dpi: i32, px: i32, weight: i32, face: PCWSTR) -> HFONT {
-    crate::uifont::make(dpi, px, weight, face)
-}
-
 fn make_fonts(dpi: i32) {
     for (slot, f) in [
-        (&FONT, make_font(dpi, 14, FW_NORMAL.0 as i32, w!("Segoe UI"))),
-        (&FONT_BOLD, make_font(dpi, 14, FW_SEMIBOLD.0 as i32, w!("Segoe UI"))),
-        (&FONT_SMALL, make_font(dpi, 12, FW_NORMAL.0 as i32, w!("Segoe UI"))),
-        (&FONT_MONO, make_font(dpi, 13, FW_NORMAL.0 as i32, w!("Consolas"))),
+        (&FONT, crate::uifont::ui(dpi, polter_settings_shell::type_size::BODY, FW_NORMAL.0 as i32)),
+        (&FONT_BOLD, crate::uifont::ui(dpi, polter_settings_shell::type_size::HEADING, FW_SEMIBOLD.0 as i32)),
+        (&FONT_SMALL, crate::uifont::ui(dpi, polter_settings_shell::type_size::SMALL, FW_NORMAL.0 as i32)),
+        (&FONT_MONO, crate::uifont::mono(dpi)),
     ] {
         let old = slot.swap(f.0, Ordering::AcqRel);
         if !old.is_null() {
@@ -2515,9 +2515,7 @@ fn create(host: HWND) -> bool {
             }
         };
         PANE.store(pane.0, Ordering::Release);
-        if theme::custom_drawing() {
-            let _ = SetWindowTheme(pane, w!("DarkMode_Explorer"), PCWSTR::null());
-        }
+        theme::system().dress_scrollbars(pane);
 
         let mk = |id: u16, label: String, seg: bool| -> HWND {
             let h = CreateWindowExW(
@@ -2552,7 +2550,7 @@ fn create(host: HWND) -> bool {
             list_buttons: [mk(ID_NEW, "+".into(), false), mk(ID_DUP, "\u{29c9}".into(), false), mk(ID_DEL, "\u{2212}".into(), false)],
             tabs: [mk(ID_TAB0, String::new(), true), mk(ID_TAB0 + 1, String::new(), true), mk(ID_TAB0 + 2, String::new(), true)],
             restore: mk(ID_RESTORE, tr("Restore Factory Settings…"), false),
-            footer: [mk(ID_LAUNCH, tr("Launch"), false), mk(ID_REVERT, tr("Revert"), false), mk(ID_SAVE, tr("Save"), false)],
+            footer: [mk(ID_LAUNCH, tr("Launch"), false), mk(ID_REVERT, tr("Discard Changes"), false), mk(ID_SAVE, tr("Save"), false)],
         };
         FIXED.with(|f| f.set(Some(fixed)));
         // process-wide: the role library window, one per process
@@ -2752,7 +2750,8 @@ fn frame_inputs(hdc: HDC, width: i32, dpi: i32) -> FrameInputs {
     let measure = measure_with(hdc);
     FrameInputs {
         error_h: error.map(|e| measure(&error_banner_text(&e), width - dpi * (LIST_W + PAD * 2) / 96, Font::Normal, false).1),
-        strip_text_w: official.then(|| measure(&tr("Restore Factory Settings…"), width, Font::Normal, true).0),
+        footer_text_w: [tr("Launch"), tr("Discard Changes"), tr("Save"), tr("Restore Factory Settings…")].map(|t| measure(&t, width, Font::Normal, true).0),
+        official,
         tabs,
     }
 }
@@ -3019,7 +3018,7 @@ fn make_control(pane: HWND, tag: Tag) -> Option<Live> {
             let _ = SetPropW(h, PROP_SEG, Some(HANDLE(1 as *mut c_void)));
         }
         if matches!(tag, Tag::Edit { multi: true, .. }) && custom {
-            let _ = SetWindowTheme(h, w!("DarkMode_Explorer"), PCWSTR::null());
+            theme::system().dress_scrollbars(h);
         }
         // **As much as the box can hold.** An edit control takes 32 767
         // characters typed unless told otherwise, and the supervising
@@ -3168,94 +3167,29 @@ enum Answer {
     Cancel,
 }
 
-type TaskDialogIndirectFn =
-    unsafe extern "system" fn(*const TASKDIALOGCONFIG, *mut i32, *mut i32, *mut BOOL) -> HRESULT;
-
-/// `TaskDialogIndirect`, found at run time.
-///
-/// **Not imported**: it exists only in comctl32 version 6, and a static
-/// import of it is resolved when the program loads -- so a build without the
-/// manifest that selects version 6 would not merely lack this dialog, it
-/// would not start. `polter-cli` is built from the same `main.rs`. Looked up
-/// instead, and when it is not there, [`ask`] falls back to a message box.
-fn task_dialog_indirect() -> Option<TaskDialogIndirectFn> {
-    unsafe {
-        let m = LoadLibraryW(w!("comctl32.dll")).ok()?;
-        let p = GetProcAddress(m, s!("TaskDialogIndirect"))?;
-        Some(std::mem::transmute::<unsafe extern "system" fn() -> isize, TaskDialogIndirectFn>(p))
-    }
+/// `warning`: the question deletes or restores something, and wears the
+/// warning sign, as the macOS alert's `.warning` (task 1550). The keyboard
+/// goes back to the control that had it (#896 W35) -- the question box does
+/// that for every caller.
+fn ask(owner: HWND, main: &str, body: &str, first: &str, second: Option<&str>, warning: bool) -> Answer {
+    ask_modal(owner, main, body, first, second, warning)
 }
 
-/// Ask a question with two named answers and Cancel. **Named buttons**, as
-/// the macOS alert has -- "Save / Don't Save / Cancel" is answerable at a
-/// glance, "Yes / No / Cancel" needs the question read twice.
-fn ask(owner: HWND, main: &str, body: &str, first: &str, second: Option<&str>) -> Answer {
-    // ⚠️ **Read before the dialog**, which takes the keyboard; when it closes
-    // Windows gives it to the dialog's owner -- the whole settings window --
-    // and the next ↓ moved the sidebar, not the list that had asked (#896
-    // W35). So it goes back to the control that had it.
-    let before = unsafe { GetFocus() };
-    let a = ask_modal(owner, main, body, first, second);
-    let usable = !before.0.is_null() && unsafe { IsWindow(Some(before)) }.as_bool();
-    let to = HWND(polter_settings_shell::focus_after_question(before.0 as isize, usable, owner.0 as isize) as *mut c_void);
-    if !to.0.is_null() {
-        let _ = unsafe { SetFocus(Some(to)) };
+fn ask_modal(owner: HWND, main: &str, body: &str, first: &str, second: Option<&str>, warning: bool) -> Answer {
+    // The settings window's one question box (`projects_ui::ask_with_default`,
+    // task 1550): one title and one look for every question in the window.
+    // Cancel is the last button, which Escape and the cross answer.
+    let mut buttons = vec![first.to_string()];
+    if let Some(s) = second {
+        buttons.push(s.to_string());
     }
-    a
-}
-
-fn ask_modal(owner: HWND, main: &str, body: &str, first: &str, second: Option<&str>) -> Answer {
-    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(Some(0)).collect() };
-    let (m, b, f1, f2, cancel, title) =
-        (wide(main), wide(body), wide(first), wide(second.unwrap_or("")), wide(&tr("Cancel")), wide(&tr("Polter Settings")));
-    // process-wide: a modal question from the role library window, one per
-    // process. Said before the dialog, because until it is answered this
-    // thread is inside it and nothing else is logged.
-    crate::plogf!("[roles-ui] asking: {main}");
-    if let Some(tdi) = task_dialog_indirect() {
-        let mut buttons = vec![TASKDIALOG_BUTTON { nButtonID: 100, pszButtonText: PCWSTR(f1.as_ptr()) }];
-        if second.is_some() {
-            buttons.push(TASKDIALOG_BUTTON { nButtonID: 101, pszButtonText: PCWSTR(f2.as_ptr()) });
-        }
-        buttons.push(TASKDIALOG_BUTTON { nButtonID: IDCANCEL.0, pszButtonText: PCWSTR(cancel.as_ptr()) });
-        let cfg = TASKDIALOGCONFIG {
-            cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
-            hwndParent: owner,
-            dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
-            pszWindowTitle: PCWSTR(title.as_ptr()),
-            pszMainInstruction: PCWSTR(m.as_ptr()),
-            pszContent: PCWSTR(b.as_ptr()),
-            cButtons: buttons.len() as u32,
-            pButtons: buttons.as_ptr(),
-            nDefaultButton: 100,
-            ..Default::default()
-        };
-        let mut pressed = 0i32;
-        let hr = unsafe { tdi(&cfg, &mut pressed, std::ptr::null_mut(), std::ptr::null_mut()) };
-        if hr.is_ok() {
-            let a = match pressed {
-                100 => Answer::First,
-                101 => Answer::Second,
-                _ => Answer::Cancel,
-            };
-            // process-wide: as above
-            crate::plogf!("[roles-ui] answered {a:?}");
-            return a;
-        }
-        // process-wide: as above
-        crate::plogf!("[roles-ui] TaskDialogIndirect failed ({hr:?}); asking with a message box");
-    }
-    let text = wide(&format!("{main}\n\n{body}"));
-    let style = if second.is_some() { MB_YESNOCANCEL | MB_ICONWARNING } else { MB_OKCANCEL | MB_ICONWARNING };
-    let r = unsafe { MessageBoxW(Some(owner), PCWSTR(text.as_ptr()), PCWSTR(title.as_ptr()), style) };
-    let a = match r {
-        IDYES | IDOK => Answer::First,
-        IDNO => Answer::Second,
+    buttons.push(tr("Cancel"));
+    let pressed = crate::projects_ui::ask_with_default(owner, "[roles-ui]", main, body, &buttons, 0, warning);
+    match pressed {
+        Some(0) => Answer::First,
+        Some(1) if second.is_some() => Answer::Second,
         _ => Answer::Cancel,
-    };
-    // process-wide: as above
-    crate::plogf!("[roles-ui] answered {a:?} (message box)");
-    a
+    }
 }
 
 // ---------------------------------------------------------- doing things
@@ -3272,7 +3206,7 @@ fn confirm_leaving() -> bool {
         &tr("Save changes to this role?"),
         &tr("Your changes will be lost if you don't save them."),
         &tr("Save"),
-        Some(&tr("Don't Save")),
+        Some(&tr("Don't Save")), false,
     ) {
         Answer::First => save(),
         Answer::Second => true,
@@ -3289,7 +3223,7 @@ pub fn ask_to_save() -> polter_settings_shell::Answer {
         &tr("Save changes to this role?"),
         &tr("Your changes will be lost if you don't save them."),
         &tr("Save"),
-        Some(&tr("Don't Save")),
+        Some(&tr("Don't Save")), false,
     ) {
         Answer::First => polter_settings_shell::Answer::Save,
         Answer::Second => polter_settings_shell::Answer::DontSave,
@@ -3302,7 +3236,7 @@ pub fn ask_to_save() -> polter_settings_shell::Answer {
 /// "Save changes to this plugin?". `owner` is the settings window: the
 /// role library's own window may never have been made.
 pub fn ask_to_save_this(owner: HWND, question: &str) -> polter_settings_shell::Answer {
-    match ask(owner, question, &tr("Your changes will be lost if you don't save them."), &tr("Save"), Some(&tr("Don't Save"))) {
+    match ask(owner, question, &tr("Your changes will be lost if you don't save them."), &tr("Save"), Some(&tr("Don't Save")), false) {
         Answer::First => polter_settings_shell::Answer::Save,
         Answer::Second => polter_settings_shell::Answer::DontSave,
         Answer::Cancel => polter_settings_shell::Answer::Cancel,
@@ -3480,7 +3414,7 @@ fn restore() {
         &tr("Restore \"{}\" to factory settings?").replace("{}", &name),
         &tr("Your changes to it are removed, along with anything typed here and not saved. This can't be undone."),
         &tr("Restore"),
-        None,
+        None, true,
     );
     if first != Answer::First {
         return;
@@ -3498,8 +3432,7 @@ fn restore() {
                     &tr("The file that holds your changes can't be read."),
                     &tr("Restoring will put every official role and skill back to factory settings, not only this one. The file of your changes and your own copies of official skills are kept where they were, renamed, so nothing in them is lost."),
                     &tr("Restore All"),
-                    None,
-                );
+                    None, true);
                 if all != Answer::First {
                     return;
                 }
@@ -3613,7 +3546,7 @@ fn delete() {
         &tr("Delete the role \"{}\"?").replace("{}", &role.name),
         &tr("Terminals wearing it are taken out of it. Agents already running keep running."),
         &tr("Delete"),
-        None,
+        None, true,
     );
     if answer != Answer::First {
         return;
@@ -3903,21 +3836,13 @@ fn draw_dot(hdc: HDC, cx: i32, cy: i32, r: i32, colour: u32) {
 fn paint_main(win: HWND) {
     // Everything this paints is read out first; nothing below borrows.
     let no_match = filter_state().no_match_row;
-    let (list, empty, error, strip_words, has_page, list_top, ed) = ST.with(|c| {
+    let (list, empty, error, has_page, list_top, ed) = ST.with(|c| {
         let s = c.borrow();
         let ed = &s.model.ed;
-        let words = official_on_screen(ed, &s.skills).map(|(skill, o)| {
-            let (what, how) = shipped::strip_words(skill, o.map(|o| o.state));
-            match how {
-                Some(h) => format!("{} · {}", tr(what), tr(h)),
-                None => tr(what),
-            }
-        });
         (
             shown_rows(&s),
             list_empty_note(ed, &s.cat),
             s.cat.error.clone(),
-            words,
             ed.draft.is_some() || ed.skill.is_some(),
             s.list_top,
             ed.clone(),
@@ -3957,7 +3882,7 @@ fn paint_main(win: HWND) {
                 continue;
             }
             let (fg, dim) = if row.selected {
-                fill(hdc, &RECT { left: s(6), right: r.right - s(6), ..r }, theme::sel());
+                theme::fill_round(hdc, &RECT { left: s(6), right: r.right - s(6), ..r }, s(polter_settings_shell::grid::SECTION_ROW_RADIUS), theme::sel());
                 (theme::sel_text(), theme::sel_text())
             } else {
                 (theme::text(), theme::dim())
@@ -3975,7 +3900,13 @@ fn paint_main(win: HWND) {
             // and the dot -- the macOS `OfficialMark.gap` (task 1514).
             let marks = if row.builtin { badge_w + s(MARK_GAP) } else { 0 } + (s(MARK_GAP) + s(6)) * i32::from(row.dot);
             let (tw, _) = measure(&row.title, right - x - marks, Font::Normal, true);
-            let title = RECT { left: x, top: r.top + s(4), right: x + tw, bottom: r.top + s(24) };
+            // A row with nothing under its name has the name in its middle.
+            let title = if row.subtitle.is_empty() {
+                let mid = (r.top + r.bottom) / 2;
+                RECT { left: x, top: mid - s(10), right: x + tw, bottom: mid + s(10) }
+            } else {
+                RECT { left: x, top: r.top + s(4), right: x + tw, bottom: r.top + s(24) }
+            };
             draw_text(hdc, &row.title, &title, Font::Normal, fg, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             let mut mx = title.right + s(MARK_GAP);
             if row.builtin {
@@ -4007,15 +3938,6 @@ fn paint_main(win: HWND) {
         if let (Some(r), Some(e)) = (frame.error, error.as_ref()) {
             let inner = RECT { left: r.left + s(PAD), top: r.top + s(8), right: r.right - s(PAD), bottom: r.bottom - s(8) };
             draw_text(hdc, &error_banner_text(e), &inner, Font::Normal, theme::warn(), DT_LEFT | DT_WORDBREAK);
-            fill(hdc, &RECT { top: r.bottom - 1, ..r }, theme::border());
-        }
-        if let Some(r) = frame.strip {
-            fill(hdc, &r, theme::panel());
-            // The words give way to the button (`official::strip`): one
-            // line, cut, and none at all when there is no room left.
-            if let (Some(t), Some(words)) = (frame.strip_words, strip_words.as_ref()) {
-                draw_text(hdc, words, &t, Font::Normal, theme::dim(), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-            }
             fill(hdc, &RECT { top: r.bottom - 1, ..r }, theme::border());
         }
         // The bottom band is always there (settings.md §2.3a), with its text
@@ -4150,6 +4072,21 @@ unsafe fn draw_button(cd: &NMCUSTOMDRAW) {
         }
 
         let selected = seg == 2;
+        // The button Return presses wears the accent, as on both systems
+        // (task 1550); greyed, it is a button like the others.
+        let accent = (kind == BS_DEFPUSHBUTTON && !disabled && seg == 0).then(|| theme::system().default_button()).flatten();
+        if let Some((face, text)) = accent {
+            fill(hdc, &rc, face);
+            if focus {
+                frame_rect(hdc, &RECT { left: rc.left + 3, top: rc.top + 3, right: rc.right - 3, bottom: rc.bottom - 3 }, text);
+            }
+            if down {
+                rc.top += 1;
+                rc.left += 1;
+            }
+            draw_text(hdc, &label, &rc, Font::Normal, text, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            return;
+        }
         let face = if selected {
             theme::sel()
         } else if disabled {
@@ -5191,36 +5128,32 @@ mod tests {
     fn the_frame_fits_at_the_smallest_size_and_nothing_overlaps() {
         for dpi in [96, 120, 144, 192] {
             let (w, h) = (MIN_W * dpi / 96, MIN_H * dpi / 96);
-            // The longest English button text, about 170 DIP.
-            let fi = FrameInputs { error_h: Some(40), strip_text_w: Some(170 * dpi / 96), tabs: true };
+            // The English words, the widest, at about 13 px.
+            let fi = FrameInputs { error_h: Some(40), footer_text_w: [45, 100, 30, 160].map(|v| v * dpi / 96), official: true, tabs: true };
             let f = frame_layout(w, h, dpi, fi);
             let tabs = f.tabs.unwrap();
-            let strip = f.strip.unwrap();
             let restore = f.restore.unwrap();
-            assert!(f.error.unwrap().bottom <= strip.top);
-            assert!(strip.bottom <= tabs[0].top);
-            assert!(restore.top >= strip.top && restore.bottom <= strip.bottom && restore.right <= w);
-            assert!(restore.left >= f.pane.left, "the button stays in the editor column at {dpi}");
-            if let Some(words) = f.strip_words {
-                assert!(words.right <= restore.left, "the words give way at {dpi}");
-            }
+            assert!(f.error.unwrap().bottom <= tabs[0].top);
+            assert!(restore.top >= f.band.top && restore.bottom <= f.band.bottom, "Restore is in the band at {dpi}");
+            assert!(restore.right <= f.footer_buttons[0].left && restore.left >= f.status.right);
             assert!(tabs[0].bottom <= f.pane.top);
             assert!(f.pane.bottom <= f.bottom_rule.top && f.bottom_rule.bottom <= f.band.top);
             assert!(f.pane.bottom - f.pane.top > 100 * dpi / 96, "a pane with room to edit in at {dpi}");
             let [launch, revert, save] = f.footer_buttons;
             assert!(launch.right <= revert.left && revert.right <= save.left && save.right <= w);
-            assert!(f.status.right <= launch.left && f.status.left < f.status.right);
+            assert!(f.status.right <= restore.left);
             assert!(f.list_buttons[2].right <= f.status.left);
             assert!(tabs[0].right <= tabs[1].left && tabs[2].right <= w);
         }
-        // No role open: no tabs and no strip, but the bottom band is still
+        // No role open: no tabs and no Restore, but the bottom band is still
         // there and the pane stops at its rule (settings.md §2.3a).
         let f = frame_layout(W0, H0, 96, FrameInputs::default());
-        assert!(f.tabs.is_none() && f.strip.is_none() && f.restore.is_none());
-        // An official skill: the strip and no tabs; the pane starts under it.
-        let f = frame_layout(W0, H0, 96, FrameInputs { strip_text_w: Some(100), ..FrameInputs::default() });
-        assert!(f.tabs.is_none());
-        assert_eq!(f.pane.top, f.strip.unwrap().bottom);
+        assert!(f.tabs.is_none() && f.restore.is_none());
+        // An official skill: Restore in the band and no tabs; the pane
+        // starts at the top, with no strip over it any more.
+        let f = frame_layout(W0, H0, 96, FrameInputs { official: true, ..FrameInputs::default() });
+        assert!(f.tabs.is_none() && f.restore.is_some());
+        assert_eq!(f.pane.top, 0);
         assert_eq!(f.pane.bottom, f.bottom_rule.top);
         assert_eq!(f.band.bottom, H0);
     }
@@ -5236,7 +5169,7 @@ mod tests {
             let l = polter_settings_shell::layout(ww, wh, dpi);
             let (w, h) = (l.content.width(), l.content.height());
             for has_draft in [true, false] {
-                let fi = FrameInputs { error_h: Some(40), strip_text_w: has_draft.then_some(100), tabs: has_draft };
+                let fi = FrameInputs { error_h: Some(40), footer_text_w: [40, 90, 30, 100], official: has_draft, tabs: has_draft };
                 let f = frame_layout(w, h, dpi, fi);
                 assert_eq!(l.content.top + f.bottom_rule.top, l.bottom_rule.top, "at {dpi}");
                 assert_eq!(l.content.top + f.list_divider.top, l.top_rule.bottom, "at {dpi}");
@@ -5376,7 +5309,7 @@ mod tests {
         );
         assert!(rows[3].builtin && rows[3].dot, "changed from factory settings");
         assert!(rows[4].builtin && !rows[4].dot);
-        assert_eq!(rows[3].subtitle, "What supervising is for", "the first line of its description");
+        assert_eq!(rows[3].subtitle, "", "a skill's row is its name and the mark, as on macOS");
         assert!(!rows[1].dot, "a pristine official role has no dot");
         // A search that leaves no skill takes the heading with it.
         let kept: Vec<Entry> = filtered_rows(rows.clone(), "mine").into_iter().map(|r| r.entry).collect();
@@ -5506,6 +5439,9 @@ mod tests {
         let laid = place(&page(&ed, &c, &k), 560, 96, &fake_measure);
         let at = |key: &str| laid.cells.iter().find(|p| p.key == key).unwrap().rect;
         let (name, key, summary) = (at("name"), at("key"), at("summary"));
+        // Locked: the words, not a box (task 1550).
+        let kind = |key: &str| laid.cells.iter().find(|p| p.key == key).unwrap().kind.clone();
+        assert!(matches!(kind("name"), Kind::Text { .. }) && matches!(kind("summary"), Kind::Text { .. }));
         assert_eq!(name.right, key.right);
         assert_eq!(key.right, summary.right);
         let locks: Vec<&Placed> = laid.cells.iter().filter(|p| p.kind == Kind::Lock).collect();

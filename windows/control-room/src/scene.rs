@@ -30,7 +30,8 @@ pub mod msg {
     pub const UNREADABLE: &str = n_("The control room's data could not be read ({}).");
     /// No snapshot has been worked out yet.
     pub const NOT_YET: &str = n_("Nothing has been worked out yet.");
-    pub const NO_SELECTION: &str = n_("Select a group on the left.");
+    /// The macOS words (`ControlRoomLending.swift`), task 1550.
+    pub const NO_SELECTION: &str = n_("Select a group to see its supervisor.");
     pub const NO_SUPERVISOR: &str = n_("This group has no supervisor.");
     pub const IN_ITS_OWN_TAB: &str = n_("Showing in the supervisor's tab");
     /// The second line when the terminal is in another window: the whole

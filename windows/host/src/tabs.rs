@@ -5968,6 +5968,8 @@ fn set_active(frame: HWND, idx: usize) {
     if let Some((id, pane)) = now {
         crate::uia::active_tab_changed(frame, id, pane);
     }
+    // Another tab in front may be another background (task 1550).
+    crate::shell::recolor(frame);
 }
 
 pub fn active_index(frame: HWND) -> usize {
@@ -7657,6 +7659,8 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                     wlogf!(owner, "[focus] pane {} taking focus", id);
                     (api().surface_set_focus)(s, true);
                     wlogf!(owner, "[focus] pane {} took focus", id);
+                    // The pane in front is what the window's colours follow.
+                    crate::shell::recolor(owner);
                 }
                 LRESULT(0)
             }

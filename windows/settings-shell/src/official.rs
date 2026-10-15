@@ -207,62 +207,56 @@ pub fn standing_note(official: bool) -> &'static str {
     }
 }
 
-/// The left half of the official strip: what this is, and where it stands.
-pub fn strip_words(skill: bool, state: Option<State>) -> (&'static str, Option<&'static str>) {
-    let what = if skill { n_("Official skill") } else { n_("Official role") };
-    let how = match state {
-        None | Some(State::Pristine) => None,
-        Some(State::Modified) => Some(n_("Changed")),
-        Some(State::ModifiedStale) => Some(n_("Changed · The official version has changed")),
-        Some(State::Unknown) => Some(n_("Your changes weren't read, so the factory settings are in use.")),
-    };
-    (what, how)
-}
-
 use crate::{n_, Rect};
 
-/// The official strip: the band across the top of the editor column over an
-/// official role or skill, with "Restore Factory Settings…" at its right.
+/// The roles section's bottom band: Launch, Discard Changes and Save at its
+/// right, and over an official role or skill "Restore Factory Settings…"
+/// beside them (task 1550: **where the macOS side has it**; it had been in a
+/// strip of its own over the editor, the one placement here that differed).
 ///
-/// **The one placement that differs from the macOS side**, which has the
-/// button in the bottom band. Here the band at the window's narrowest leaves
-/// the status text 187 DIP between the list's buttons and Launch, and the
-/// English button alone is about that wide -- the status line, which is
-/// where every refusal is said, would have had nowhere to go. The strip was
-/// already there over every official role.
+/// **Each button is as wide as its words** plus `PAD` on each side, and
+/// never under [`ACTION_MIN`] -- the macOS buttons fit their words. With
+/// the fixed widths the band had, the English Restore button did not fit
+/// beside Launch at the window's narrowest; fitted, it does, and the status
+/// line gets what is left between the list's buttons and the leftmost one
+/// shown.
 ///
-/// **The rule when narrow**: the button is as wide as its text plus `PAD` on
-/// each side, never under `ACTION_W[1]`, never squeezed; it keeps its right
-/// edge on the column's padding. The words get what is left -- one line,
-/// cut with an ellipsis -- and nothing when nothing is left. They lose
-/// nothing by it: the state is said in full in the notice rows under it.
-///
-/// `left`/`right`: the editor column's edges; `top`: where the strip starts;
-/// `text_w`: the button's text, measured, in pixels.
+/// `text_w`: the words of Launch, Discard Changes, Save and Restore
+/// Factory Settings…, measured, in pixels. `launch`: whether Launch is
+/// shown (not for a skill); `restore`: whether Restore is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Strip {
-    pub strip: Rect,
-    pub words: Option<Rect>,
-    pub restore: Rect,
+pub struct Footer {
+    /// Launch, Discard Changes, Save, left to right. Launch's place is kept
+    /// when it is hidden, and nothing is put there.
+    pub actions: [Rect; 3],
+    pub restore: Option<Rect>,
+    pub status: Rect,
 }
 
-pub const STRIP_H: i32 = 44;
+/// The narrowest a band button is drawn.
+pub const ACTION_MIN: i32 = 80;
 
-pub fn strip(left: i32, right: i32, top: i32, dpi: i32, text_w: i32) -> Strip {
-    use crate::grid::{ACTION_W, CONTROL_H, PAD};
+pub fn footer(g: &crate::SectionGrid, dpi: i32, text_w: [i32; 4], launch: bool, restore: bool) -> Footer {
+    use crate::grid::{BUTTONS_GAP, PAD};
     let s = |v| crate::scale(v, dpi);
-    let strip = Rect::new(left, top, right, top + s(STRIP_H));
-    let bw = (text_w + 2 * s(PAD)).max(s(ACTION_W[1]));
-    let b_right = right - s(PAD);
-    let b_top = top + (s(STRIP_H) - s(CONTROL_H)) / 2;
-    // Never further left than the column's own padding: a button wider than
-    // the column is cut on the right by the window, not pushed over the list.
-    let b_left = (b_right - bw).max(left + s(PAD));
-    let restore = Rect::new(b_left, b_top, b_right, b_top + s(CONTROL_H));
-    let words_left = left + s(PAD);
-    let words_right = b_left - s(PAD);
-    let words = (words_right > words_left).then(|| Rect::new(words_left, top, words_right, strip.bottom));
-    Strip { strip, words, restore }
+    let top = g.actions[2].top;
+    let bottom = g.actions[2].bottom;
+    let width = |tw: i32| (tw + 2 * s(PAD)).max(s(ACTION_MIN));
+    let mut right = g.band.right - s(PAD);
+    let mut place = |tw: i32| {
+        let r = Rect::new(right - width(tw), top, right, bottom);
+        right = r.left - s(BUTTONS_GAP);
+        r
+    };
+    let save = place(text_w[2]);
+    let discard = place(text_w[1]);
+    // Launch's place, whether or not it is shown; Restore goes left of the
+    // leftmost button shown.
+    let launch_r = if launch { place(text_w[0]) } else { Rect::new(discard.left, top, discard.left, bottom) };
+    let restore_r = restore.then(|| place(text_w[3]));
+    let leftmost = restore_r.map_or(if launch { launch_r.left } else { discard.left }, |r| r.left);
+    let status = Rect::new(g.status.left, g.band.top, (leftmost - s(PAD)).max(g.status.left), g.band.bottom);
+    Footer { actions: [launch_r, discard, save], restore: restore_r, status }
 }
 
 /// One row of the list column: the roles, then the official skills under a
@@ -369,38 +363,51 @@ mod tests {
         assert!(stale_sections(&[]).is_empty());
     }
 
-    /// The section's width at the settings window's smallest and at its
-    /// first size, at three DPIs: the button is whole, inside the strip,
-    /// right-aligned on the padding, and the words never reach it.
+    /// At the window's smallest and at its first size, at three DPIs, with
+    /// the English words (the widest): every button whole and as wide as
+    /// its words, right to left on the band's padding, none over the list's
+    /// buttons, and the status line between.
     #[test]
-    fn the_restore_button_is_never_squeezed_and_the_words_give_way() {
-        let (min_w, _) = crate::content_size(crate::MIN_W, crate::MIN_H);
-        let (first_w, _) = crate::content_size(crate::FIRST_W, crate::FIRST_H);
+    fn the_band_holds_restore_beside_launch_at_the_narrowest() {
+        let (min_w, min_h) = crate::content_size(crate::MIN_W, crate::MIN_H);
+        let (first_w, first_h) = crate::content_size(crate::FIRST_W, crate::FIRST_H);
         for dpi in [96, 144, 192] {
             let s = |v| crate::scale(v, dpi);
-            for w in [min_w, first_w] {
-                let (left, right) = (s(crate::grid::LIST) + 1, s(w));
-                // The longest the English button is: about 170 DIP of text.
-                for text in [s(60), s(170)] {
-                    let st = strip(left, right, 0, dpi, text);
-                    assert_eq!(st.strip.height(), s(STRIP_H));
-                    assert_eq!(st.restore.right, right - s(crate::grid::PAD), "dpi {dpi} w {w}");
-                    assert_eq!(st.restore.width(), (text + 2 * s(crate::grid::PAD)).max(s(crate::grid::ACTION_W[1])));
-                    assert!(st.restore.left >= left + s(crate::grid::PAD));
-                    assert!(st.restore.top >= st.strip.top && st.restore.bottom <= st.strip.bottom);
-                    if let Some(words) = st.words {
-                        assert!(words.right <= st.restore.left - s(crate::grid::PAD), "dpi {dpi} w {w}");
-                        assert_eq!(words.left, left + s(crate::grid::PAD));
-                    }
+            // Launch, Discard Changes, Save, Restore Factory Settings… at 13
+            // px Segoe UI, about.
+            let text = [s(45), s(100), s(30), s(160)];
+            for (w, h) in [(s(min_w), s(min_h)), (s(first_w), s(first_h))] {
+                let g = crate::section_grid(w, h, dpi, true);
+                let f = footer(&g, dpi, text, true, true);
+                let r = f.restore.unwrap();
+                let [launch, discard, save] = f.actions;
+                assert_eq!(save.right, w - s(crate::grid::PAD), "dpi {dpi} w {w}");
+                for (b, t) in [(launch, text[0]), (discard, text[1]), (save, text[2]), (r, text[3])] {
+                    assert!(b.width() >= t + 2 * s(crate::grid::PAD) && b.width() >= s(ACTION_MIN));
+                    assert_eq!((b.top, b.bottom), (save.top, save.bottom));
                 }
+                let gap = s(crate::grid::BUTTONS_GAP);
+                assert_eq!((r.right + gap, launch.right + gap, discard.right + gap), (launch.left, discard.left, save.left));
+                let list_end = g.list_buttons.unwrap()[2].right;
+                assert!(r.left >= list_end + s(crate::grid::PAD), "Restore reaches the list's buttons at dpi {dpi} w {w}");
+                assert!(f.status.left >= list_end && f.status.right <= r.left);
             }
         }
     }
 
+    /// A skill has no Launch: Restore stands where it would have been, and
+    /// a role of one's own has no Restore.
     #[test]
-    fn a_short_button_is_the_bands_button_width() {
-        let st = strip(261, 1000, 0, 96, 10);
-        assert_eq!(st.restore.width(), crate::grid::ACTION_W[1]);
+    fn restore_goes_beside_the_leftmost_button_shown() {
+        let g = crate::section_grid(1000, 700, 96, true);
+        let text = [40, 100, 30, 120];
+        let skill = footer(&g, 96, text, false, true);
+        assert_eq!(skill.restore.unwrap().right + crate::grid::BUTTONS_GAP, skill.actions[1].left);
+        let own = footer(&g, 96, text, true, false);
+        assert!(own.restore.is_none());
+        assert_eq!(own.status.right, own.actions[0].left - crate::grid::PAD);
+        // A short word is the narrowest button, not narrower.
+        assert_eq!(own.actions[2].width(), ACTION_MIN);
     }
 
     #[test]
@@ -429,12 +436,5 @@ mod tests {
         assert!(dot(false, Some(State::Unknown)));
         assert!(!dot(false, Some(State::Pristine)));
         assert!(!dot(false, None));
-    }
-
-    #[test]
-    fn the_strip_says_what_it_is_and_where_it_stands() {
-        assert_eq!(strip_words(false, Some(State::Pristine)), ("Official role", None));
-        assert_eq!(strip_words(true, Some(State::Modified)), ("Official skill", Some("Changed")));
-        assert_eq!(strip_words(false, None).1, None);
     }
 }

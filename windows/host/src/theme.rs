@@ -25,9 +25,11 @@
 
 use std::cell::RefCell;
 
-use windows::Win32::Foundation::{COLORREF, HWND};
+use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM};
+use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, GetSysColor, SetBkColor, SetTextColor, COLOR_BTNFACE,
+    CreateSolidBrush, GetSysColor, SetBkColor, SetTextColor, COLOR_BTNFACE,
     COLOR_BTNSHADOW, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
     COLOR_HOTLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT, HBRUSH, HDC,
 };
@@ -72,170 +74,228 @@ fn sys(i: windows::Win32::Graphics::Gdi::SYS_COLOR_INDEX) -> u32 {
     unsafe { GetSysColor(i) }
 }
 
-/// The ground a window paints behind everything else.
-pub fn bg() -> u32 {
-    if high_contrast() {
-        sys(COLOR_BTNFACE)
+// ------------------------------------------------------------ which table
+//
+// **Two kinds of window, two rules** (task 1550, the macOS rules):
+//
+// * the settings and project windows have no terminal in them and follow
+//   **the system's** light or dark, as the macOS settings window does with
+//   its system colours -- [`system`], and every bare function below;
+// * what is drawn over or around a terminal -- the command palette, the
+//   search bar, the title box -- follows **that terminal's background**, as
+//   everything in a macOS terminal window does -- [`for_frame`].
+//
+// Both are asked at the moment of painting, like everything else here.
+
+/// Is the system's app mode light (`AppsUseLightTheme`)? **Read every time**:
+/// switching it sends `WM_SETTINGCHANGE` with `ImmersiveColorSet`, and a value
+/// kept from before that message is the stale half of a half-switched window.
+pub fn system_light() -> bool {
+    polter_settings_shell::palette::system_light(read_dword(
+        w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+        w!("AppsUseLightTheme"),
+    ))
+}
+
+fn read_dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
+    let mut value = 0u32;
+    let mut len = std::mem::size_of::<u32>() as u32;
+    let read = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, key, name, RRF_RT_REG_DWORD, None, Some(&mut value as *mut u32 as *mut _), Some(&mut len))
+    };
+    read.is_ok().then_some(value)
+}
+
+/// The system accent's eight shades (`AccentPalette`), or nothing when the
+/// system does not have them -- Windows before 10 1809, or a policy that
+/// removed the key -- in which case the links take the macOS link colour.
+fn accent_palette() -> Vec<u8> {
+    let mut buf = [0u8; 32];
+    let mut len = buf.len() as u32;
+    let read = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Accent"),
+            w!("AccentPalette"),
+            RRF_RT_REG_BINARY,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut len),
+        )
+    };
+    if read.is_ok() {
+        buf[..(len as usize).min(32)].to_vec()
     } else {
-        0x0020_1f1d
+        Vec::new()
     }
 }
 
-/// An inset area: a list column, a results pane.
-pub fn panel() -> u32 {
-    if high_contrast() {
-        sys(COLOR_WINDOW)
-    } else {
-        0x0028_2725
+/// One table: light or dark, with high contrast still deciding first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Set {
+    pub light: bool,
+}
+
+/// The settings and project windows' table: the system's.
+pub fn system() -> Set {
+    Set { light: system_light() }
+}
+
+/// The table for what is drawn over the terminal in `frame`: its
+/// background's (`polter_control_room::chrome`).
+pub fn for_frame(frame: HWND) -> Set {
+    Set { light: !crate::termcolor::chrome(frame).dark }
+}
+
+/// The table for a box over a terminal -- the command palette, the search
+/// bar, the title box -- found from the box itself: its owner, or the window
+/// it is a child of, is the terminal window it floats over.
+pub fn for_window(hwnd: HWND) -> Set {
+    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOTOWNER};
+    for_frame(unsafe { GetAncestor(hwnd, GA_ROOTOWNER) })
+}
+
+macro_rules! colours {
+    ($($(#[$doc:meta])* $name:ident: $sys:ident;)*) => {
+        impl Set {
+            $(
+                $(#[$doc])*
+                pub fn $name(&self) -> u32 {
+                    if high_contrast() {
+                        sys($sys)
+                    } else {
+                        polter_settings_shell::palette::of(self.light).$name
+                    }
+                }
+            )*
+        }
+        $(
+            $(#[$doc])*
+            #[allow(dead_code)]
+            pub fn $name() -> u32 {
+                system().$name()
+            }
+        )*
+    };
+}
+
+colours! {
+    /// The ground a window paints behind everything else.
+    bg: COLOR_BTNFACE;
+    /// An inset area: a list column, a results pane.
+    panel: COLOR_WINDOW;
+    /// A box that floats over the terminal: the title box, and anything else
+    /// that has no border to separate it from what is behind it. **Lighter
+    /// than `bg` in the dark on purpose**: a floating box the same colour as
+    /// a near-black terminal is a box nobody can see the edge of.
+    float_bg: COLOR_BTNFACE;
+    /// A text field's interior.
+    field_bg: COLOR_WINDOW;
+    text: COLOR_WINDOWTEXT;
+    /// Secondary text: a help line, a summary, a row that is switched off.
+    dim: COLOR_GRAYTEXT;
+    /// The selected row **and the text on it**, taken as a pair: a highlight
+    /// with unrelated text over it is unreadable exactly on the themes nobody
+    /// tested.
+    sel: COLOR_HIGHLIGHT;
+    sel_text: COLOR_HIGHLIGHTTEXT;
+    /// A button at rest, and the three states it moves through.
+    btn_face: COLOR_BTNFACE;
+    btn_hot: COLOR_BTNFACE;
+    btn_down: COLOR_BTNFACE;
+    btn_text: COLOR_BTNTEXT;
+    /// The line around a control.
+    border: COLOR_BTNSHADOW;
+    /// The focus rectangle's colour, which is further from the ground than
+    /// the border on purpose: focus has to be findable by someone who is
+    /// tabbing, and a border-coloured focus ring is not.
+    focus: COLOR_WINDOWTEXT;
+    /// **The one colour with no system source.** Nothing in the system
+    /// palette means "this is a complaint"; under high contrast it gives way
+    /// to plain window text, and the sentence itself still says what it is.
+    warn: COLOR_WINDOWTEXT;
+}
+
+impl Set {
+    /// Text that goes somewhere when clicked: a link under a row, a search
+    /// result's breadcrumb, a link-styled button. **The system's accent**,
+    /// in the shade that reads on this table's ground; the macOS link colour
+    /// when the accent cannot be read.
+    pub fn link(&self) -> u32 {
+        if high_contrast() {
+            return sys(COLOR_HOTLIGHT);
+        }
+        polter_settings_shell::palette::accent_link(&accent_palette(), self.light)
+            .unwrap_or(polter_settings_shell::palette::of(self.light).link)
+    }
+
+    /// A default button: the accent behind, and the text that reads on it.
+    /// `None` under high contrast, where a default button is the system's.
+    pub fn default_button(&self) -> Option<(u32, u32)> {
+        (!high_contrast()).then(|| polter_settings_shell::palette::accent_button(self.link(), self.light))
+    }
+
+    /// Answer a `WM_CTLCOLOR*` from this table. See [`ctl_color`].
+    pub fn ctl_color(&self, hdc: HDC) -> Option<HBRUSH> {
+        if high_contrast() {
+            return None;
+        }
+        field_brush(hdc, self.text(), self.field_bg())
+    }
+
+    /// The scroll bars of a list or a multi-line box, in this table's light
+    /// or dark (`DarkMode_Explorer` or `Explorer`, the only two the system
+    /// has). Nothing under high contrast, where they are the system's.
+    pub fn dress_scrollbars(&self, h: HWND) {
+        use windows::Win32::UI::Controls::SetWindowTheme;
+        if high_contrast() || h.0.is_null() {
+            return;
+        }
+        let name = if self.light { w!("Explorer") } else { w!("DarkMode_Explorer") };
+        let _ = unsafe { SetWindowTheme(h, name, PCWSTR::null()) };
+    }
+
+    /// Tell the window manager whether to draw this window's caption dark.
+    /// The settings and project windows have the system's caption, and a
+    /// light page under a dark caption is the half-and-half this module is
+    /// against.
+    pub fn dress_caption(&self, win: HWND) {
+        use windows::core::BOOL;
+        use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
+        let dark: BOOL = (!self.light && !high_contrast()).into();
+        // DWMWA_USE_IMMERSIVE_DARK_MODE, as `shell.rs` names it.
+        let _ = unsafe { DwmSetWindowAttribute(win, DWMWINDOWATTRIBUTE(20), &dark as *const BOOL as *const _, std::mem::size_of::<BOOL>() as u32) };
     }
 }
 
-/// A box that floats over the terminal: the title box, and anything else that
-/// has no border to separate it from what is behind it. **Lighter than `bg`
-/// on purpose**: a floating box the same colour as a near-black terminal is a
-/// box nobody can see the edge of.
-pub fn float_bg() -> u32 {
-    if high_contrast() {
-        sys(COLOR_BTNFACE)
-    } else {
-        0x0040_3f3d
-    }
-}
-
-/// A text field's interior, which is deeper than the ground so it reads as a
-/// place to type rather than a patch of background.
-pub fn field_bg() -> u32 {
-    if high_contrast() {
-        sys(COLOR_WINDOW)
-    } else {
-        0x0017_1615
-    }
-}
-
-pub fn text() -> u32 {
-    if high_contrast() {
-        sys(COLOR_WINDOWTEXT)
-    } else {
-        0x00ff_ffff
-    }
-}
-
-/// Secondary text: a help line, a summary, a row that is switched off.
-pub fn dim() -> u32 {
-    if high_contrast() {
-        sys(COLOR_GRAYTEXT)
-    } else {
-        0x00a0_a0a0
-    }
-}
-
-/// The selected row **and the text on it**, taken as a pair: a highlight with
-/// unrelated text over it is unreadable exactly on the themes nobody tested.
-pub fn sel() -> u32 {
-    if high_contrast() {
-        sys(COLOR_HIGHLIGHT)
-    } else {
-        0x0040_3f3d
-    }
-}
-
-pub fn sel_text() -> u32 {
-    if high_contrast() {
-        sys(COLOR_HIGHLIGHTTEXT)
-    } else {
-        0x00ff_ffff
-    }
-}
-
-/// A button at rest, and the three states it moves through.
-pub fn btn_face() -> u32 {
-    if high_contrast() {
-        sys(COLOR_BTNFACE)
-    } else {
-        0x0032_3130
-    }
-}
-
-pub fn btn_hot() -> u32 {
-    if high_contrast() {
-        sys(COLOR_BTNFACE)
-    } else {
-        0x0043_4241
-    }
-}
-
-pub fn btn_down() -> u32 {
-    if high_contrast() {
-        sys(COLOR_BTNFACE)
-    } else {
-        0x0026_2524
-    }
-}
-
-pub fn btn_text() -> u32 {
-    if high_contrast() {
-        sys(COLOR_BTNTEXT)
-    } else {
-        0x00ff_ffff
-    }
-}
-
-/// The line around a control. Also the focus rectangle's colour, which is
-/// brighter than the border on purpose: focus has to be findable by someone
-/// who is tabbing, and a border-coloured focus ring is not.
-pub fn border() -> u32 {
-    if high_contrast() {
-        sys(COLOR_BTNSHADOW)
-    } else {
-        0x0054_5352
-    }
-}
-
-pub fn focus() -> u32 {
-    if high_contrast() {
-        sys(COLOR_WINDOWTEXT)
-    } else {
-        0x0090_8f8e
-    }
-}
-
-/// Text that goes somewhere when clicked: a link under a row, a search
-/// result's breadcrumb, a link-styled button. The macOS side draws these
-/// with the system's link colour (`.buttonStyle(.link)`), and this is that
-/// colour as it is on a dark ground (`#419CFF`) -- **not `focus()`**, which
-/// is a grey for rings and was borrowed for these until task 1100: a grey
-/// sentence under a grey help line does not read as something to click.
+/// See [`Set::link`].
 pub fn link() -> u32 {
-    if high_contrast() {
-        sys(COLOR_HOTLIGHT)
-    } else {
-        0x00ff_9c41
-    }
+    system().link()
 }
 
-/// **The one colour with no system source.** Nothing in the system palette
-/// means "this is a complaint": window, button, text, grey text and highlight
-/// are places, not meanings. Borrowing one would give the next reader a name
-/// that lies. Under high contrast it gives way to plain window text, because
-/// there a fixed red is the thing that stops being readable, and the sentence
-/// itself still says what it is.
-pub fn warn() -> u32 {
-    if high_contrast() {
-        sys(COLOR_WINDOWTEXT)
-    } else {
-        0x0040_40e0
+/// Is this `WM_SETTINGCHANGE` the system switching light and dark (or its
+/// accent)? Those arrive with the string `ImmersiveColorSet`, and **they are
+/// the only notice there is**: no `WM_THEMECHANGED` is sent for them.
+pub fn is_colour_change(lparam: LPARAM) -> bool {
+    if lparam.0 == 0 {
+        return false;
     }
+    let s = unsafe { PCWSTR(lparam.0 as *const u16).to_string() };
+    s.map(|s| s == "ImmersiveColorSet").unwrap_or(false)
 }
 
 thread_local! {
-    /// The brush handed back to `WM_CTLCOLOR*`, and the colour it was made for.
+    /// The brushes handed back to `WM_CTLCOLOR*`, one per colour.
     ///
     /// **The system keeps this handle after the message returns**, so it cannot
     /// be a brush created and deleted inside the handler -- that is a use of a
     /// freed object, and it shows up as a control painted in whatever memory
-    /// held next, not as a crash. One brush is kept and rebuilt only when the
-    /// colour it stands for changes, which is what a theme switch does.
-    static FIELD_BRUSH: RefCell<(u32, isize)> = const { RefCell::new((0xffff_ffff, 0)) };
+    /// held next, not as a crash. **And none is ever deleted**: with a light
+    /// settings window and a dark command palette open together, one brush
+    /// rebuilt per colour change would be deleted under whichever window
+    /// asked first. There are only as many as there are field colours in the
+    /// two tables and the high-contrast one, so the list stays a handful.
+    static FIELD_BRUSHES: RefCell<Vec<(u32, isize)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Answer a `WM_CTLCOLOREDIT` / `WM_CTLCOLORSTATIC` / `WM_CTLCOLORLISTBOX`.
@@ -243,25 +303,47 @@ thread_local! {
 /// Returns the brush to hand back, or `None` under high contrast, where the
 /// caller must let `DefWindowProc` answer and the system's own colours stand.
 pub fn ctl_color(hdc: HDC) -> Option<HBRUSH> {
+    system().ctl_color(hdc)
+}
+
+/// Answer a `WM_CTLCOLORSTATIC` for a read-only box that is words on the
+/// page rather than a field -- About's values: text on the window's ground.
+pub fn on_ground(hdc: HDC) -> Option<HBRUSH> {
     if high_contrast() {
         return None;
     }
-    let colour = field_bg();
+    field_brush(hdc, text(), bg())
+}
+
+fn field_brush(hdc: HDC, text: u32, colour: u32) -> Option<HBRUSH> {
     unsafe {
-        SetTextColor(hdc, COLORREF(text()));
+        SetTextColor(hdc, COLORREF(text));
         SetBkColor(hdc, COLORREF(colour));
     }
-    Some(FIELD_BRUSH.with(|c| {
-        let mut cur = c.borrow_mut();
-        if cur.0 != colour || cur.1 == 0 {
-            if cur.1 != 0 {
-                let _ = unsafe { DeleteObject(HBRUSH(cur.1 as *mut _).into()) };
-            }
-            let b = unsafe { CreateSolidBrush(COLORREF(colour)) };
-            *cur = (colour, b.0 as isize);
+    Some(FIELD_BRUSHES.with(|c| {
+        let mut all = c.borrow_mut();
+        if let Some((_, b)) = all.iter().find(|(c, _)| *c == colour) {
+            return HBRUSH(*b as *mut _);
         }
-        HBRUSH(cur.1 as *mut _)
+        let b = unsafe { CreateSolidBrush(COLORREF(colour)) };
+        all.push((colour, b.0 as isize));
+        b
     }))
+}
+
+/// A selected row's highlight: `r` filled with round corners, `radius`
+/// pixels -- the macOS `SettingsRow`'s 6, scaled (task 1550).
+pub fn fill_round(hdc: HDC, r: &windows::Win32::Foundation::RECT, radius: i32, colour: u32) {
+    unsafe {
+        let b = CreateSolidBrush(COLORREF(colour));
+        let old_brush = windows::Win32::Graphics::Gdi::SelectObject(hdc, b.into());
+        let old_pen = windows::Win32::Graphics::Gdi::SelectObject(hdc, windows::Win32::Graphics::Gdi::GetStockObject(windows::Win32::Graphics::Gdi::NULL_PEN));
+        // One past the right and bottom, as GDI's rectangles stop short.
+        let _ = windows::Win32::Graphics::Gdi::RoundRect(hdc, r.left, r.top, r.right + 1, r.bottom + 1, radius * 2, radius * 2);
+        windows::Win32::Graphics::Gdi::SelectObject(hdc, old_pen);
+        windows::Win32::Graphics::Gdi::SelectObject(hdc, old_brush);
+        let _ = windows::Win32::Graphics::Gdi::DeleteObject(b.into());
+    }
 }
 
 /// Repaint a window and its controls after the theme changed.

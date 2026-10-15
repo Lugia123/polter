@@ -42,13 +42,11 @@ use crate::tabs;
 
 // --------------------------------------------------------------- palette
 
-/// The caption's own colours. Deliberately the same greys the strip already
-/// uses: the caption is not a separate surface any more, it is the strip.
-const CAPTION_BG: u32 = 0x00201f1d;
-const BTN_HOVER: u32 = 0x00403f3d;
+/// The caption's own colours are the strip's: the caption is not a separate
+/// surface any more, it is the strip, and both follow the terminal's
+/// background (`termcolor::chrome`, task 1550). Only the close button's red
+/// is the same in the light and the dark.
 const BTN_CLOSE_HOVER: u32 = 0x002d2dc4; // BGR: a red that reads as "close"
-const GLYPH: u32 = 0x00d0d0d0;
-const GLYPH_DIM: u32 = 0x00808080;
 
 /// Width of one caption button, unscaled. Windows uses 46x32 for its own;
 /// matching it is what makes the corner feel native rather than approximate.
@@ -127,17 +125,7 @@ fn set_attr<T>(hwnd: HWND, attr: u32, value: &T) -> bool {
 /// cost more than the pixel is worth.
 pub fn init_frame(hwnd: HWND) {
     let build = build_number();
-    let dark = BOOL(1);
-    let ok_dark = set_attr(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark);
-
-    let (ok_caption, ok_border) = if is_win11() {
-        (
-            set_attr(hwnd, DWMWA_CAPTION_COLOR, &COLORREF(CAPTION_BG)),
-            set_attr(hwnd, DWMWA_BORDER_COLOR, &COLORREF(CAPTION_BG)),
-        )
-    } else {
-        (false, false)
-    };
+    let (ok_dark, ok_caption, ok_border) = dress(hwnd);
 
     // One pixel of frame extended into the client area. Without this DWM
     // stops drawing the drop shadow and the window looks flat and detached;
@@ -182,6 +170,79 @@ pub fn init_frame(hwnd: HWND) {
         ok_extend,
         ok_framechanged
     );
+}
+
+/// Tell DWM what the window's own frame is: dark or not, and on Windows 11
+/// the caption's and the one-pixel border's colour -- the strip's ground, so
+/// the frame and the strip are one surface. Under high contrast the frame is
+/// left to the system. Returns whether each of the three took.
+fn dress(hwnd: HWND) -> (bool, bool, bool) {
+    let c = crate::termcolor::chrome(hwnd);
+    let hc = crate::theme::high_contrast();
+    let dark = BOOL((c.dark && !hc) as i32);
+    let ok_dark = set_attr(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark);
+    if !is_win11() || hc {
+        return (ok_dark, false, false);
+    }
+    let ground = COLORREF(polter_control_room::chrome::bgr(c.ground));
+    (ok_dark, set_attr(hwnd, DWMWA_CAPTION_COLOR, &ground), set_attr(hwnd, DWMWA_BORDER_COLOR, &ground))
+}
+
+/// The terminal's background in `frame` may have changed -- an OSC 11, a
+/// different tab or pane in front: when what the window follows is not what
+/// it was last dressed in, dress the frame again and paint everything in it
+/// again, the control room and the pane frames included, which are children
+/// and would otherwise keep the old colours. **Nothing when it is the same**:
+/// this is asked on every focus change, and repainting a window full of
+/// terminals for a click that changed no colour is a flicker for nothing.
+pub fn recolor(frame: HWND) {
+    if frame.0.is_null() {
+        return;
+    }
+    let now = crate::termcolor::chrome(frame);
+    let was = DRESSED.with(|m| m.borrow().iter().find(|(h, _)| *h == frame.0 as isize).map(|(_, c)| *c));
+    if was != Some(now) {
+        recolor_now(frame);
+    }
+}
+
+/// [`recolor`] whatever the window was dressed in: for what changes the
+/// colours without changing the background -- high contrast switched on or
+/// off -- and for a reloaded config, which may have changed both.
+pub fn recolor_now(frame: HWND) {
+    if frame.0.is_null() {
+        return;
+    }
+    let now = crate::termcolor::chrome(frame);
+    let was = DRESSED.with(|m| {
+        let mut m = m.borrow_mut();
+        let was = m.iter().find(|(h, _)| *h == frame.0 as isize).map(|(_, c)| *c);
+        m.retain(|(h, _)| *h != frame.0 as isize && unsafe { IsWindow(Some(HWND(*h as *mut _))) }.as_bool());
+        m.push((frame.0 as isize, now));
+        was
+    });
+    dress(frame);
+    unsafe {
+        let _ = RedrawWindow(Some(frame), None, None, RDW_INVALIDATE | RDW_ALLCHILDREN);
+    }
+    if was.map(|c| c.dark) != Some(now.dark) {
+        // Said when light and dark trade places, not on every OSC 11: a
+        // prompt that sets its background on every line would otherwise
+        // fill the log.
+        crate::wlogf!(frame, "[shell] the window follows its terminal: {} (ground #{:02x}{:02x}{:02x})", if now.dark { "dark" } else { "light" }, now.ground.r, now.ground.g, now.ground.b);
+    }
+}
+
+/// Every window, after a reload or a system colour change.
+pub fn recolor_all() {
+    for f in crate::winid::all() {
+        recolor_now(f);
+    }
+}
+
+thread_local! {
+    /// What each frame was last dressed in, for [`recolor`].
+    static DRESSED: std::cell::RefCell<Vec<(isize, polter_control_room::chrome::Chrome)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 // ------------------------------------------------------------ non-client
@@ -417,13 +478,15 @@ pub fn paint_buttons(hdc: HDC, hwnd: HWND, active: bool) {
     let scale = tabs::scale_of(hwnd);
     let b = buttons(hwnd);
     let hover = HOVER.load(std::sync::atomic::Ordering::Relaxed);
-    let glyph = if active { GLYPH } else { GLYPH_DIM };
+    let chrome = crate::termcolor::chrome(hwnd);
+    let colours = chrome.buttons();
+    let glyph = polter_control_room::chrome::bgr(if active { colours.glyph } else { colours.glyph_dim });
     let stroke = (1.0 * scale).max(1.0) as i32;
     let maximized = is_maximized(hwnd);
 
     for (i, r) in b.iter().enumerate() {
         if hover == i as i32 {
-            fill(hdc, r, if i == 0 { BTN_CLOSE_HOVER } else { BTN_HOVER });
+            fill(hdc, r, if i == 0 { BTN_CLOSE_HOVER } else { polter_control_room::chrome::bgr(colours.hover) });
         }
         let cx = (r.left + r.right) / 2;
         let cy = (r.top + r.bottom) / 2;

@@ -637,7 +637,7 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             // making it dark. Under high contrast `ctl_color` answers `None`,
             // this falls through, and the system's colours stand.
             WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
-                match crate::theme::ctl_color(windows::Win32::Graphics::Gdi::HDC(
+                match crate::theme::for_window(hwnd).ctl_color(windows::Win32::Graphics::Gdi::HDC(
                     wp.0 as *mut std::ffi::c_void,
                 )) {
                     Some(b) => LRESULT(b.0 as isize),
@@ -660,11 +660,11 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 if !hdc.is_invalid() {
                     let mut rc = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rc);
-                    let b = CreateSolidBrush(COLORREF(theme::float_bg()));
+                    let b = CreateSolidBrush(COLORREF(theme::for_window(hwnd).float_bg()));
                     FillRect(hdc, &rc, b);
                     let _ = DeleteObject(b.into());
                     SetBkMode(hdc, TRANSPARENT);
-                    SetTextColor(hdc, COLORREF(theme::text()));
+                    SetTextColor(hdc, COLORREF(theme::for_window(hwnd).text()));
                     // The label's band is the one above the field, which is
                     // placed in scaled pixels (`s(44)` in `open`); so is this.
                     let dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd).max(96) as i32;
@@ -680,7 +680,7 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         let _ = GetWindowRect(HWND(edit as *mut std::ffi::c_void), &mut er);
                         let mut pts = [POINT { x: er.left, y: er.bottom }];
                         let _ = MapWindowPoints(None, Some(hwnd), &mut pts);
-                        SetTextColor(hdc, COLORREF(theme::dim()));
+                        SetTextColor(hdc, COLORREF(theme::for_window(hwnd).dim()));
                         let mut wide: Vec<u16> = note.encode_utf16().collect();
                         let mut r = RECT { left: pts[0].x, top: pts[0].y + s(4), right: rc.right - s(PAD), bottom: pts[0].y + s(4 + 24) };
                         DrawTextW(hdc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);

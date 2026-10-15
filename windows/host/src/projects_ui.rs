@@ -540,9 +540,14 @@ fn refresh() {
 
 // ================================================================ asking
 
-/// `TaskDialogIndirect`, looked up rather than imported, for the reason
-/// `roles_ui::task_dialog_indirect` gives: a static import of a comctl32 v6
-/// entry point stops the program starting where v6 is not selected.
+/// `TaskDialogIndirect`, found at run time.
+///
+/// **Not imported**: it exists only in comctl32 version 6, and a static
+/// import of it is resolved when the program loads -- so a build without the
+/// manifest that selects version 6 would not merely lack this dialog, it
+/// would not start. `polter-cli` is built from the same `main.rs`. Looked up
+/// instead, and when it is not there, [`ask_with_default`] falls back to a
+/// message box.
 type TaskDialogIndirectFn = unsafe extern "system" fn(*const TASKDIALOGCONFIG, *mut i32, *mut i32, *mut BOOL) -> HRESULT;
 
 fn task_dialog_indirect() -> Option<TaskDialogIndirectFn> {
@@ -558,13 +563,19 @@ fn task_dialog_indirect() -> Option<TaskDialogIndirectFn> {
 /// index pressed, `None` when the dialog could not be shown or went away.
 /// Owned by `owner`; the keyboard goes back to whoever had it (#896 W35).
 pub(crate) fn ask(owner: HWND, tag: &str, main: &str, body: &str, buttons: &[String]) -> Option<usize> {
-    ask_with_default(owner, tag, main, body, buttons, 0)
+    ask_with_default(owner, tag, main, body, buttons, 0, false)
 }
 
 /// `ask`, with the button Return presses named: Log Management's "Clear…"
 /// makes the last one -- the one that does nothing -- the default, because
-/// what the first one does cannot be undone (task 1511).
-pub(crate) fn ask_with_default(owner: HWND, tag: &str, main: &str, body: &str, buttons: &[String], default: usize) -> Option<usize> {
+/// what the first one does cannot be undone (task 1511). `warning` puts the
+/// warning sign on it, as the macOS alerts that delete, overwrite, restore
+/// or clear have `.warning` (task 1550).
+///
+/// **The one question box the settings and project windows have** (task
+/// 1550): the role library's asks through it too, so every one has the same
+/// title, "Polter", where there had been two and a third kind of box.
+pub(crate) fn ask_with_default(owner: HWND, tag: &str, main: &str, body: &str, buttons: &[String], default: usize, warning: bool) -> Option<usize> {
     let before = unsafe { GetFocus() };
     let (m, b, title) = (wide(main), wide(body), wide(&tr("Polter")));
     let labels: Vec<Vec<u16>> = buttons.iter().map(|l| wide(l)).collect();
@@ -587,6 +598,7 @@ pub(crate) fn ask_with_default(owner: HWND, tag: &str, main: &str, body: &str, b
             cButtons: specs.len() as u32,
             pButtons: specs.as_ptr(),
             nDefaultButton: 100 + default.min(buttons.len().saturating_sub(1)) as i32,
+            Anonymous1: TASKDIALOGCONFIG_0 { pszMainIcon: if warning { TD_WARNING_ICON } else { PCWSTR::null() } },
             ..Default::default()
         };
         let mut id = 0i32;
@@ -604,7 +616,8 @@ pub(crate) fn ask_with_default(owner: HWND, tag: &str, main: &str, body: &str, b
         // Two answers at most in a message box: the first, or nothing.
         let text = wide(&format!("{main}\n\n{body}"));
         let second = if default > 0 { MB_DEFBUTTON2 } else { MESSAGEBOX_STYLE(0) };
-        let r = unsafe { MessageBoxW(Some(owner), PCWSTR(text.as_ptr()), PCWSTR(title.as_ptr()), MB_OKCANCEL | MB_ICONWARNING | second) };
+        let icon = if warning { MB_ICONWARNING } else { MESSAGEBOX_STYLE(0) };
+        let r = unsafe { MessageBoxW(Some(owner), PCWSTR(text.as_ptr()), PCWSTR(title.as_ptr()), MB_OKCANCEL | icon | second) };
         pressed = Some(if r == IDOK { 0 } else { buttons.len() - 1 });
     }
     crate::plogf!("{tag} answered {:?}", pressed.and_then(|i| buttons.get(i)));
@@ -658,12 +671,16 @@ pub(crate) fn confirm_save_as_overwrite(owner: HWND, name: &str, existing: Optio
         .replacen("{}", name, 1)
         .replacen("{}", &panes, 1)
         .replacen("{}", &saved, 1);
-    ask(owner, "[prompt]", &tr("Overwrite Project?"), &body, &[tr("Overwrite"), tr("Cancel")]) == Some(0)
+    ask_with_default(owner, "[prompt]", &tr("Overwrite Project?"), &body, &[tr("Overwrite"), tr("Cancel")], 0, true) == Some(0)
 }
 
 /// "Do it / Cancel", true for the first.
-fn confirm(main: &str, body: &str, verb: &str) -> bool {
-    ask(owner(), "[projects-ui]", main, body, &[verb.to_string(), tr("Cancel")]) == Some(0)
+/// A question whose first answer changes something: the warning sign, and
+/// Return on the verb -- or, with `return_cancels`, on Cancel, for what
+/// cannot be taken back by the same window's Undo alone (task 1550: deleting
+/// a project).
+fn confirm(main: &str, body: &str, verb: &str, return_cancels: bool) -> bool {
+    ask_with_default(owner(), "[projects-ui]", main, body, &[verb.to_string(), tr("Cancel")], usize::from(return_cancels), true) == Some(0)
 }
 
 fn say(text: String, failed: bool) {
@@ -848,9 +865,10 @@ fn duplicate_selected() {
 fn delete_selected() {
     let Some((dir, item)) = dir_and_selected() else { return };
     if !confirm(
-        &tr("Delete “{}”?").replacen("{}", &item.name, 1),
-        &tr("You can undo this until the settings window closes."),
+        &tr("Delete Project?"),
+        &tr("“{}” moves to the Recycle Bin. You can undo this until you close this window.").replacen("{}", &item.name, 1),
         &tr("Delete"),
+        true,
     ) {
         return;
     }
@@ -910,6 +928,7 @@ fn restore_previous() {
         &tr("Restore the previous version of “{}”?").replacen("{}", &item.name, 1),
         &tr("The current version becomes the previous one, so you can switch back."),
         &tr("Restore"),
+        false,
     ) {
         return;
     }
@@ -939,6 +958,7 @@ fn overwrite_selected() {
         &tr("“{}” replaces what the project holds. The version it replaces is kept and can be restored.")
             .replacen("{}", &title, 1),
         &tr("Overwrite"),
+        false,
     ) {
         return;
     }
@@ -1084,14 +1104,14 @@ fn on_click(x: i32, y: i32) {
 // ================================================================ drawing
 
 pub(crate) fn make_font(dpi: i32, px: i32, weight: i32) -> HFONT {
-    crate::uifont::make(dpi, px, weight, w!("Segoe UI"))
+    crate::uifont::ui(dpi, px, weight)
 }
 
 fn make_fonts(dpi: i32) {
     for (slot, f) in [
-        (&FONT, make_font(dpi, 14, FW_NORMAL.0 as i32)),
-        (&FONT_BOLD, make_font(dpi, 14, FW_SEMIBOLD.0 as i32)),
-        (&FONT_SMALL, make_font(dpi, 12, FW_NORMAL.0 as i32)),
+        (&FONT, make_font(dpi, polter_settings_shell::type_size::BODY, FW_NORMAL.0 as i32)),
+        (&FONT_BOLD, make_font(dpi, polter_settings_shell::type_size::HEADING, FW_SEMIBOLD.0 as i32)),
+        (&FONT_SMALL, make_font(dpi, polter_settings_shell::type_size::SMALL, FW_NORMAL.0 as i32)),
     ] {
         let old = slot.swap(f.0, Ordering::AcqRel);
         if !old.is_null() {
@@ -1204,7 +1224,7 @@ fn paint(win: HWND) {
             }
             let r = RECT { left: list.left, top, right: list.right, bottom: top + ll.row_h };
             let (fg, dim) = if *on {
-                fill(hdc, &RECT { left: r.left + sc(6), right: r.right - sc(6), ..r }, theme::sel());
+                theme::fill_round(hdc, &RECT { left: r.left + sc(6), right: r.right - sc(6), ..r }, sc(polter_settings_shell::grid::SECTION_ROW_RADIUS), theme::sel());
                 (theme::sel_text(), theme::sel_text())
             } else {
                 (theme::text(), theme::dim())
@@ -1395,7 +1415,9 @@ fn create(host: HWND) -> bool {
             actions: [
                 mk(ID_REVEAL, w!("BUTTON"), &tr("Show in Explorer"), button),
                 mk(ID_OVERWRITE, w!("BUTTON"), &tr("Overwrite with Current Tab"), button),
-                mk(ID_OPEN, w!("BUTTON"), &tr("Open"), button),
+                // The default button, as on macOS: Return in the list opens
+                // (`list_proc`), and the button says so (task 1550).
+                mk(ID_OPEN, w!("BUTTON"), &tr("Open"), WINDOW_STYLE(BS_DEFPUSHBUTTON as u32)),
             ],
         };
         CTL.with(|x| x.set(Some(c)));

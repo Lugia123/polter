@@ -34,12 +34,11 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use polter_settings_shell::picker::{self, Mode};
 use polter_settings_shell::projects as pj;
 use polter_settings_shell::Rect as SRect;
-use windows::core::{w, BOOL, PCWSTR};
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Controls::{
-    SetWindowTheme, CDDS_PREPAINT, CDIS_DISABLED, CDIS_FOCUS, CDIS_HOT, CDIS_SELECTED, CDRF_SKIPDEFAULT, DRAWITEMSTRUCT, NMCUSTOMDRAW,
+    CDDS_PREPAINT, CDIS_DISABLED, CDIS_FOCUS, CDIS_HOT, CDIS_SELECTED, CDRF_SKIPDEFAULT, DRAWITEMSTRUCT, NMCUSTOMDRAW,
     NM_CUSTOMDRAW, ODS_SELECTED,
 };
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
@@ -378,11 +377,8 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
             wlogf!(frame, "[project] CreateWindowExW failed; {} window not shown", purpose.title());
             return;
         };
-        if theme::custom_drawing() {
-            // The dark title bar, as `shell.rs` asks for the frame's.
-            let on: BOOL = true.into();
-            let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(20), &on as *const BOOL as *const c_void, std::mem::size_of::<BOOL>() as u32);
-        }
+        // The system's light or dark, as the settings window (task 1550).
+        theme::system().dress_caption(hwnd);
 
         let child = |class: PCWSTR, text: &str, style: u32, r: SRect, id: usize| -> HWND {
             let t = wide(text);
@@ -419,11 +415,10 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
         // they were made, and the list is above Cancel on screen.
         let list_style = (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32 | WS_VSCROLL.0 | WS_TABSTOP.0;
         let list = child(w!("LISTBOX"), "", list_style, l.list, ID_LIST);
-        if theme::custom_drawing() && !list.0.is_null() {
-            // The list's scrollbar in the dark theme, as the role library's
-            // lists have it; without this it is the system's light one.
-            let _ = SetWindowTheme(list, w!("DarkMode_Explorer"), PCWSTR::null());
-        }
+        // The list's scrollbar in the window's light or dark, as the role
+        // library's lists have it. Set when the window opens: a switch while
+        // it is open leaves the old one until it is opened again.
+        theme::system().dress_scrollbars(list);
         let cancel = child(w!("BUTTON"), &tr("Cancel"), BS_PUSHBUTTON as u32 | WS_TABSTOP.0, l.cancel, ID_CANCEL);
         if field.0.is_null() || list.0.is_null() || cancel.0.is_null() {
             let _ = DestroyWindow(hwnd);
@@ -431,8 +426,8 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
             return;
         }
 
-        let font = crate::projects_ui::make_font(dpi, 14, FW_NORMAL.0 as i32);
-        let font_small = crate::projects_ui::make_font(dpi, 12, FW_NORMAL.0 as i32);
+        let font = crate::projects_ui::make_font(dpi, polter_settings_shell::type_size::BODY, FW_NORMAL.0 as i32);
+        let font_small = crate::projects_ui::make_font(dpi, polter_settings_shell::type_size::SMALL, FW_NORMAL.0 as i32);
         for h in [field, save, cancel, list] {
             if !h.0.is_null() {
                 SendMessageW(h, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
@@ -832,8 +827,15 @@ unsafe extern "system" fn picker_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 LRESULT(1)
             }
             WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                theme::system().dress_caption(hwnd);
                 theme::repaint_all(hwnd);
                 LRESULT(0)
+            }
+            // Light and dark switching: see `settings_win.rs`.
+            WM_SETTINGCHANGE if theme::is_colour_change(lp) => {
+                theme::system().dress_caption(hwnd);
+                theme::repaint_all(hwnd);
+                DefWindowProcW(hwnd, msg, wp, lp)
             }
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
@@ -984,6 +986,22 @@ fn draw_button(cd: &NMCUSTOMDRAW, font: HFONT) {
     let (hot, down, disabled, focus) = (has(CDIS_HOT), has(CDIS_SELECTED), has(CDIS_DISABLED), has(CDIS_FOCUS));
     let label = field_text(cd.hdr.hwndFrom);
     let mut rc = cd.rc;
+    // The default button in the accent, as the settings window's (task 1550).
+    let style = unsafe { GetWindowLongPtrW(cd.hdr.hwndFrom, GWL_STYLE) } as u32;
+    if style & BS_TYPEMASK as u32 == BS_DEFPUSHBUTTON as u32 && !disabled {
+        if let Some((face, text)) = theme::system().default_button() {
+            fill(cd.hdc, &rc, face);
+            if focus {
+                frame_rect(cd.hdc, &RECT { left: rc.left + 3, top: rc.top + 3, right: rc.right - 3, bottom: rc.bottom - 3 }, text);
+            }
+            if down {
+                rc.top += 1;
+                rc.left += 1;
+            }
+            draw_text(cd.hdc, &label, &rc, font, text, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            return;
+        }
+    }
     let face = if disabled {
         theme::btn_face()
     } else if down {
@@ -1051,7 +1069,7 @@ fn draw_row(d: &DRAWITEMSTRUCT) {
     // highlighted row on that ground could not be told from the others.
     fill(d.hDC, &r, theme::panel());
     let (fg, dim) = if on {
-        fill(d.hDC, &RECT { left: r.left + s(6), right: r.right - s(6), ..r }, theme::sel());
+        theme::fill_round(d.hDC, &RECT { left: r.left + s(6), right: r.right - s(6), ..r }, s(polter_settings_shell::grid::SECTION_ROW_RADIUS), theme::sel());
         (theme::sel_text(), theme::sel_text())
     } else {
         (theme::text(), theme::dim())

@@ -47,6 +47,8 @@ const ID_REVERT: u16 = 102;
 const ID_SAVE: u16 = 103;
 const ID_SHOW_LOG: u16 = 104;
 const ID_SHOW_FOLDER: u16 = 105;
+/// Read the log again (task 1550, the macOS page's Refresh).
+const ID_REFRESH_LOG: u16 = 106;
 const ID_LOG: u16 = 106;
 const ID_PARAM_BASE: u16 = 2000;
 
@@ -91,6 +93,7 @@ struct Fixed {
     revert: HWND,
     save: HWND,
     show_log: HWND,
+    refresh_log: HWND,
     show_folder: HWND,
     log: HWND,
 }
@@ -358,15 +361,11 @@ pub fn closed() {
 
 // ============================================================ the window
 
-fn make_font(dpi: i32, px: i32, weight: i32, face: PCWSTR) -> HFONT {
-    crate::uifont::make(dpi, px, weight, face)
-}
-
 fn make_fonts(dpi: i32) {
     for (slot, f) in [
-        (&FONT, make_font(dpi, 14, FW_NORMAL.0 as i32, w!("Segoe UI"))),
-        (&FONT_BOLD, make_font(dpi, 15, FW_SEMIBOLD.0 as i32, w!("Segoe UI"))),
-        (&FONT_MONO, make_font(dpi, 12, FW_NORMAL.0 as i32, w!("Consolas"))),
+        (&FONT, crate::uifont::ui(dpi, polter_settings_shell::type_size::BODY, FW_NORMAL.0 as i32)),
+        (&FONT_BOLD, crate::uifont::ui(dpi, polter_settings_shell::type_size::HEADING, FW_SEMIBOLD.0 as i32)),
+        (&FONT_MONO, crate::uifont::mono(dpi)),
     ] {
         let old = slot.swap(f.0, Ordering::AcqRel);
         if !old.is_null() {
@@ -486,6 +485,7 @@ fn create(host: HWND) -> bool {
             revert: button(ID_REVERT, BS_PUSHBUTTON as u32),
             save: button(ID_SAVE, BS_PUSHBUTTON as u32),
             show_log: button(ID_SHOW_LOG, BS_PUSHBUTTON as u32),
+            refresh_log: button(ID_REFRESH_LOG, BS_PUSHBUTTON as u32),
             show_folder: button(ID_SHOW_FOLDER, BS_PUSHBUTTON as u32),
             log: CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
@@ -524,6 +524,7 @@ fn label_fixed(f: Fixed) {
         (f.revert, tr("Revert")),
         (f.save, tr("Save")),
         (f.show_log, tr("Show Log")),
+        (f.refresh_log, tr("Refresh")),
         (f.show_folder, tr("Show Plugin Folder")),
     ] {
         set_font(h, font);
@@ -896,6 +897,7 @@ fn changed() {
     sw(f.switch, has && rules::switch_enabled(on, missing.len()));
     sw(f.test, has);
     sw(f.show_log, has);
+    sw(f.refresh_log, has);
     sw(f.show_folder, has);
     sw(f.save, dirty);
     sw(f.revert, dirty);
@@ -929,8 +931,9 @@ fn relayout() {
         place(f.test, g.actions[0], true);
         place(f.revert, g.actions[1], true);
         place(f.save, g.actions[2], true);
-        place(f.show_log, d.log_buttons[0], has);
-        place(f.show_folder, d.log_buttons[1], has);
+        place(f.refresh_log, d.log_buttons[0], has);
+        place(f.show_log, d.log_buttons[1], has);
+        place(f.show_folder, d.log_buttons[2], has);
         place(f.log, d.log, has);
     }
     let form = form_hwnd();
@@ -988,8 +991,18 @@ fn form_rows(dpi: i32) -> (Vec<rules::FormRow>, i32, Vec<(String, String, bool)>
         .collect();
     let texts = p.params.iter().map(|x| (x.title.clone(), x.help.clone(), x.required)).collect();
     let (rows, h) = rules::form_labeled(width, dpi, &rows);
+    // Under the fields, said once: a value may be a reference (task 1550,
+    // the macOS form's line), part of the form's height so it scrolls with
+    // it.
+    let h = if rows.is_empty() { h } else { h + measure(&tr(REFERENCE_NOTE), control_w, f, 0) + shell::scale(grid::ROW_GAP, dpi) };
     (rows, h, texts)
 }
+
+/// What a plugin's value may be instead of the secret itself, said beside
+/// the fields it applies to rather than in documentation nobody has open
+/// while typing a password (the macOS `PluginSettingsView`'s words, less
+/// `keychain:`, which has no resolver on Windows -- `secret.zig`).
+const REFERENCE_NOTE: &str = crate::i18n::n_("A value may be a reference instead of the thing itself: env:NAME, file:/path, or cmd:… for a password manager. It is resolved at the moment the plugin is called, and never stored here.");
 
 fn layout_form(dpi: i32) {
     let form = form_hwnd();
@@ -1082,7 +1095,7 @@ fn write_log() {
             t.push_str("\r\n\r\n");
         }
         match &s.log {
-            Ok(lines) if lines.is_empty() => t.push_str(&tr("The log is empty.")),
+            Ok(lines) if lines.is_empty() => t.push_str(&tr("Nothing written yet.")),
             Ok(lines) => t.push_str(&lines.join("\r\n")),
             Err(why) => t.push_str(&tr("No log yet: {}").replace("{}", why)),
         }
@@ -1369,7 +1382,7 @@ fn paint(win: HWND) {
     fill(hdc, &RECT { left: d.tabs.left, top: d.tabs.bottom, right: d.tabs.right, bottom: d.tabs.bottom + 1 }, theme::border());
 
     if tab == Tab::Settings && p.params.is_empty() {
-        draw_text(hdc, &tr("This plugin has no settings."), &to_rect(d.body), f, theme::dim(), DT_LEFT | DT_WORDBREAK);
+        draw_text(hdc, &tr("This plugin has nothing to configure."), &to_rect(d.body), f, theme::dim(), DT_LEFT | DT_WORDBREAK);
     }
     if tab == Tab::Page {
         // What the page tab says when the page itself cannot be shown
@@ -1436,6 +1449,12 @@ fn paint_form(win: HWND) {
             draw_text(hdc, help, &hr, f, theme::dim(), DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL);
         }
     }
+    if let Some(last) = rows.last() {
+        let top = last.help.map_or(last.control.bottom, |h| h.bottom).max(last.label.bottom) + shell::scale(grid::ROW_GAP, dpi) - scroll;
+        let note = tr(REFERENCE_NOTE);
+        let nr = RECT { left: last.control.left, top, right: last.control.right, bottom: top + measure(&note, last.control.width(), f, 0) };
+        draw_text(hdc, &note, &nr, f, theme::dim(), DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
+    }
     if theme::custom_drawing() {
         for ((_, control), r) in fields.iter().zip(rows.iter()) {
             if matches!(control, Control::Text) {
@@ -1468,6 +1487,7 @@ unsafe extern "system" fn section_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     ID_REVERT => revert_now(),
                     ID_TEST => run_test(),
                     ID_SHOW_LOG => show_log(),
+                    ID_REFRESH_LOG => reload_log(current().map(|(k, _)| k).as_deref()),
                     ID_SHOW_FOLDER => show_folder(),
                     ID_SWITCH => changed(),
                     _ => {}

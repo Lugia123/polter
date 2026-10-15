@@ -44,6 +44,22 @@ impl Dot {
         }
     }
 
+    /// The glyph's colour, as the macOS sidebar has it (`PluginDot.color`):
+    /// the system's green, orange, yellow and red, in their light or dark
+    /// shade, as `COLORREF`s. `None` is the secondary text colour, which is
+    /// the host's table's (`dim`).
+    pub fn colour(self, light: bool) -> Option<u32> {
+        let (l, d) = match self {
+            Dot::Off => return None,
+            Dot::On => (0x28CD41, 0x32D74B),
+            Dot::Changed => (0xFF9500, 0xFF9F0A),
+            Dot::Missing => (0xFFCC00, 0xFFD60A),
+            Dot::Error => (0xFF3B30, 0xFF453A),
+        };
+        let c: u32 = if light { l } else { d };
+        Some((c & 0xff) << 16 | (c & 0xff00) | (c >> 16 & 0xff))
+    }
+
     /// The word beside the dot, as an English msgid (settings.md §5.1's
     /// table: 已开 / 缺配置 / 已关 / 出错 / 改了未重启).
     pub fn msgid(self) -> &'static str {
@@ -176,15 +192,16 @@ pub struct Sidebar {
 pub fn sidebar(l: &Layout, dpi: i32, plugins: usize) -> Sidebar {
     let s = |v| scale(v, dpi);
     let row_h = s(SECTION_ROW_H);
+    let pitch = crate::section_pitch(dpi);
     let mut sections = l.rows;
-    let first_plugin = l.rows[2].bottom;
+    let first_plugin = l.rows[2].top + pitch;
     let plugin_rows: Vec<Rect> = (0..plugins as i32)
         .map(|i| {
-            let t = first_plugin + i * row_h;
+            let t = first_plugin + i * pitch;
             Rect::new(l.rows[2].left, t, l.rows[2].right, t + row_h)
         })
         .collect();
-    let shift = plugins as i32 * row_h;
+    let shift = plugins as i32 * pitch;
     sections[3] = Rect::new(l.rows[3].left, l.rows[3].top + shift, l.rows[3].right, l.rows[3].bottom + shift);
     Sidebar { sections, plugins: plugin_rows, plugin_text_left: l.sidebar_text_left + s(PAD) }
 }
@@ -314,18 +331,20 @@ pub struct Detail {
     pub tabs: Rect,
     /// The selected tab's body: the form (scrolls) or the page.
     pub body: Rect,
-    /// The log's heading row, with Show Log and Show Plugin Folder on its
-    /// right.
+    /// The log's heading row, with Refresh, Show Log and Show Plugin Folder
+    /// on its right (Refresh as on macOS, task 1550).
     pub log_head: Rect,
-    pub log_buttons: [Rect; 2],
+    pub log_buttons: [Rect; 3],
     pub log: Rect,
     /// Left edges: the editor's margin and the form's control column.
     pub left: i32,
     pub control_left: i32,
 }
 
-/// Width of one of the log's two buttons.
+/// Width of Show Log and Show Plugin Folder.
 pub const LOG_BUTTON_W: i32 = 144;
+/// Width of Refresh, the shorter word.
+pub const LOG_REFRESH_W: i32 = 96;
 /// Width of one tab in the tab row.
 pub const TAB_W: i32 = 112;
 
@@ -376,8 +395,9 @@ pub fn detail(editor: Rect, dpi: i32, input: DetailInput) -> Detail {
     let log_head = Rect::new(left, log.top - s(ROW_GAP) - s(CONTROL_H), right, log.top - s(ROW_GAP));
     let b1 = Rect::new(right - s(LOG_BUTTON_W), log_head.top, right, log_head.bottom);
     let b0 = Rect::new(b1.left - s(BUTTONS_GAP) - s(LOG_BUTTON_W), log_head.top, b1.left - s(BUTTONS_GAP), log_head.bottom);
+    let refresh = Rect::new(b0.left - s(BUTTONS_GAP) - s(LOG_REFRESH_W), log_head.top, b0.left - s(BUTTONS_GAP), log_head.bottom);
     let body = Rect::new(left, y, right, (log_head.top - s(GROUP_GAP)).max(y));
-    Detail { banner, head, switch, switch_note, tabs, body, log_head, log_buttons: [b0, b1], log, left, control_left }
+    Detail { banner, head, switch, switch_note, tabs, body, log_head, log_buttons: [refresh, b0, b1], log, left, control_left }
 }
 
 /// One tab's box in the tab row, `index` from the left.
@@ -425,6 +445,16 @@ pub fn form(body_w: i32, dpi: i32, helps: &[i32]) -> (Vec<FormRow>, i32) {
 /// (task 990: "给每一行签名的…"), and the row is as tall as the taller of the
 /// label and the control with its help. `rows` is `(label_h, help_h)`.
 pub fn form_labeled(body_w: i32, dpi: i32, rows: &[(i32, i32)]) -> (Vec<FormRow>, i32) {
+    form_spaced(body_w, dpi, rows, ROW_GAP)
+}
+
+/// Between one row of the General form and the next: the macOS form's
+/// `groupGap - rowGap` (`ConfigFormView`), 16 -- twice the plugin form's,
+/// which has a help line under fewer of its rows (task 1550).
+pub const GENERAL_ROW_GAP: i32 = GROUP_GAP - ROW_GAP;
+
+/// [`form_labeled`] with `gap` (in DIP) between one row and the next.
+pub fn form_spaced(body_w: i32, dpi: i32, rows: &[(i32, i32)], gap: i32) -> (Vec<FormRow>, i32) {
     let s = |v| scale(v, dpi);
     let label_left = 0;
     let control_left = s(LABEL_W) + s(LABEL_GAP);
@@ -441,7 +471,7 @@ pub fn form_labeled(body_w: i32, dpi: i32, rows: &[(i32, i32)]) -> (Vec<FormRow>
             r
         });
         out.push(FormRow { label, control, help });
-        y = bottom.max(label.bottom) + s(ROW_GAP);
+        y = bottom.max(label.bottom) + s(gap);
     }
     (out, y)
 }
@@ -741,14 +771,30 @@ mod tests {
         assert!(switch_enabled(true, 2));
     }
 
+    /// On is green and Off is the secondary text, as on macOS; a dot in
+    /// colour is never the same in the light and the dark.
+    #[test]
+    fn a_dot_is_coloured_as_the_macos_one() {
+        assert_eq!(Dot::Off.colour(true), None);
+        assert_eq!(Dot::On.colour(true), Some(0x0041_cd28));
+        for d in Dot::ALL.into_iter().filter(|d| *d != Dot::Off) {
+            assert_ne!(d.colour(true), d.colour(false), "{d:?}");
+        }
+    }
+
     #[test]
     fn plugin_rows_sit_between_plugins_and_general() {
         let dpi = 96;
         let l = crate::layout(1164, 761, dpi);
         let sb = sidebar(&l, dpi, 3);
         assert_eq!(sb.plugins.len(), 3);
-        assert_eq!(sb.plugins[0].top, l.rows[2].bottom);
-        assert_eq!(sb.sections[3].top, sb.plugins[2].bottom);
+        // One rhythm down the sidebar: every row 28 high, 30 apart, as on
+        // macOS -- the gap under Plugins and over General included.
+        let gap = scale(SECTION_ROW_GAP, dpi);
+        assert_eq!(sb.plugins[0].top, l.rows[2].bottom + gap);
+        assert_eq!(sb.sections[3].top, sb.plugins[2].bottom + gap);
+        let tops: Vec<i32> = [&sb.sections[..3], &sb.plugins[..], &sb.sections[3..]].concat().iter().map(|r| r.top).collect();
+        assert!(tops.windows(2).all(|w| w[1] - w[0] == 30), "{tops:?}");
         // The first three sections do not move.
         assert_eq!(&sb.sections[..3], &l.rows[..3]);
         // Same box as the section rows: the highlight's left and right.

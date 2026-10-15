@@ -201,7 +201,9 @@ pub fn reload() {
         let button = make_button(base + PART_BUTTON, &label);
         rows.push(RowCtl { days, mb, button });
     }
-    let ok = if usage.waiting_bytes.is_some() { make_button(ID_OK, &tr("OK")) } else { HWND(std::ptr::null_mut()) };
+    // The default button, as the macOS notice's OK: Return presses it
+    // (task 1550).
+    let ok = if usage.waiting_bytes.is_some() { make_button_styled(ID_OK, &tr("OK"), BS_DEFPUSHBUTTON) } else { HWND(std::ptr::null_mut()) };
     ST.with(|c| {
         let s = &mut *c.borrow_mut();
         s.rows = rows;
@@ -311,13 +313,19 @@ fn make_field(id: u16) -> HWND {
 }
 
 fn make_button(id: u16, label: &str) -> HWND {
+    make_button_styled(id, label, BS_PUSHBUTTON)
+}
+
+/// `style` is `BS_DEFPUSHBUTTON` for the one Return presses, which is
+/// drawn in the accent (`roles_ui::draw_button`).
+fn make_button_styled(id: u16, label: &str, style: i32) -> HWND {
     let text = wide(label);
     let h = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("BUTTON"),
             PCWSTR(text.as_ptr()),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(style as u32),
             0,
             0,
             10,
@@ -614,7 +622,7 @@ fn commit(row: usize, part: u16) {
     }
     let r = crate::general_ui::set(&key, Some(&value));
     if r.ok {
-        crate::general_ui::say_status(tr("Saved to the config file."), false);
+        crate::general_ui::say_status(r.saved_line().unwrap_or_default(), false);
     } else {
         crate::general_ui::say_status(r.message.unwrap_or(r.code), true);
     }
@@ -638,7 +646,7 @@ fn clear(row: usize) {
     let body: Vec<String> = c.lines.iter().map(|l| rules::fill(&tr(l), &size, k.files)).collect();
     let owner = unsafe { GetAncestor(page(), GA_ROOT) };
     let buttons = [tr(c.button), tr("Cancel")];
-    let pressed = crate::projects_ui::ask_with_default(owner, "[logs-ui]", &title, &body.join("\n\n"), &buttons, 1);
+    let pressed = crate::projects_ui::ask_with_default(owner, "[logs-ui]", &title, &body.join("\n\n"), &buttons, 1, true);
     if pressed != Some(0) {
         return;
     }
@@ -726,6 +734,11 @@ unsafe extern "system" fn page_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             return r;
         }
         match msg {
+            // Return is the notice's OK while it is showing, as on macOS.
+            WM_KEYDOWN if wp.0 as u16 == VK_RETURN.0 && ST.with(|c| !c.borrow().ok.0.is_null()) => {
+                agree();
+                LRESULT(0)
+            }
             WM_COMMAND => {
                 let id = (wp.0 & 0xFFFF) as u16;
                 let code = ((wp.0 >> 16) & 0xFFFF) as u32;
