@@ -6994,6 +6994,7 @@ fn dispatchOne(
                 ),
 
                 error.UserPresent => hostFailure("UserPresent", key_arrived),
+                error.Composing => hostFailure("UserPresent", composing_typed),
                 error.DraftInLine => hostFailure("DraftInLine", draft_in_line),
                 error.NotSubmitted => hostFailure("NotSubmitted", not_submitted),
 
@@ -7308,6 +7309,7 @@ fn dispatchOne(
                 // two different sentences for the one fact would be the
                 // next one.
                 error.UserPresent => hostFailure("UserPresent", key_arrived),
+                error.Composing => hostFailure("UserPresent", composing_typed),
                 error.DraftInLine => hostFailure("DraftInLine", draft_in_line),
                 error.NotSubmitted => hostFailure("NotSubmitted", not_submitted),
 
@@ -7353,6 +7355,11 @@ fn dispatchOne(
                     "that terminal's process has already exited, so there is nothing " ++
                         "there to press a key at. Read it to see what happened.",
                 ),
+
+                // An input method is composing there (task 1590). Only this,
+                // not the key clock: ctrl+c is how a stuck worker is
+                // rescued, and a key pressed a moment ago does not stop it.
+                error.Composing => hostFailure("UserPresent", composing_typed),
 
                 else => hostFailure(
                     "KeyFailed",
@@ -7516,6 +7523,7 @@ fn dispatchOne(
                         "that terminal's process has already exited, so there is no " ++
                             "prompt there to answer. Read it to see what happened.",
                     ),
+                    error.Composing => hostFailure("UserPresent", composing_typed),
                     // **Stops where it got to, and says so.** Half a walk
                     // leaves the highlight somewhere the caller did not ask
                     // for, and reporting success would have it believe an
@@ -7539,6 +7547,7 @@ fn dispatchOne(
                     "that terminal's process has already exited, so there is no prompt " ++
                         "there to answer.",
                 ),
+                error.Composing => hostFailure("UserPresent", composing_typed),
                 else => hostFailure(
                     "KeyFailed",
                     "the terminal would not take the return, so nothing was answered.",
@@ -8136,6 +8145,11 @@ fn dispatchOne(
                     error.UserPresent => hostFailure(
                         "UserPresent",
                         key_arrived ++ " Nothing was said, so nothing was assigned: " ++
+                            "the panel is unchanged.",
+                    ),
+                    error.Composing => hostFailure(
+                        "UserPresent",
+                        composing_typed ++ " Nothing was said, so nothing was assigned: " ++
                             "the panel is unchanged.",
                     ),
 
@@ -8780,6 +8794,7 @@ fn mentionFailure(err: anyerror) struct { code: []const u8, message: []const u8 
             .message = "that terminal's process has exited; there is nothing in it to read this.",
         },
         error.UserPresent => .{ .code = "UserPresent", .message = key_arrived },
+        error.Composing => .{ .code = "UserPresent", .message = composing_typed },
         error.DraftInLine => .{ .code = "DraftInLine", .message = draft_in_line },
         else => .{ .code = "SendFailed", .message = "could not type into that terminal." },
     };
@@ -8884,6 +8899,17 @@ const moved_while_keyed =
     "the screen under whatever is being typed there. This says a key arrived " ++
     "and nothing more -- not who sent it, and not that anyone is there. " ++
     "**It clears on its own.** Try again in a moment.";
+
+/// What `Composing` measured, for text or a key (task 1590): an input
+/// method is composing in that terminal. Code `UserPresent` -- it is a
+/// person at the keyboard, the fact the code already names -- and its own
+/// sentence, because unlike the key clock it does not clear in ten seconds.
+const composing_typed =
+    "an input method is composing in that terminal -- a word is in its " ++
+    "candidate box and has not reached the line yet -- so nothing was typed: " ++
+    "it would land in the middle of that word. This clears when the " ++
+    "composition is committed or cancelled (or after five minutes with no " ++
+    "change to it); try again after that.";
 
 /// The other half (task 1578): an input method is composing in that
 /// terminal. **Not "clears on its own" in ten seconds** -- it clears when the
@@ -9054,6 +9080,10 @@ fn taskFailure(err: anyerror) wire.Response {
         error.UserPresent => hostFailure(
             "NotTold",
             key_arrived ++ " It was not told, and the task is still open.",
+        ),
+        error.Composing => hostFailure(
+            "NotTold",
+            composing_typed ++ " It was not told, and the task is still open.",
         ),
         // Same outcome for the panel, different fact about the terminal --
         // and this one does not clear by waiting, so "ask again in a
@@ -16224,4 +16254,31 @@ test "tidying: beside goes to the host, and does not go with in or place" {
         try testing.expectEqualStrings("BadParams", res.failed.code);
         try testing.expect(f.role_launched == null);
     }
+}
+
+test "tidying: text and keys are refused while an input method composes, and say so (task 1590)" {
+    // Windows, 42 s after the last key, a composition open: `terminal_send`
+    // came back ok and typed into a half-made word (#1585). The host's
+    // `Composing` is the same judgement a move is refused by.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var sending: FakeHost = .{ .send_error = error.Composing };
+    const sent = try dispatch(alloc, &b, sending.host(), term(boss), .{ .terminal_send = .{
+        .id = worker,
+        .text = "hello",
+    } });
+    try testing.expectEqualStrings("UserPresent", sent.failed.code);
+    try testing.expect(std.mem.startsWith(u8, sent.failed.message, "an input method is composing"));
+
+    var keying: FakeHost = .{ .key_error = error.Composing };
+    const keyed = try dispatch(alloc, &b, keying.host(), term(boss), .{ .terminal_key = .{
+        .id = worker,
+        .key = "ctrl+c",
+    } });
+    try testing.expectEqualStrings("UserPresent", keyed.failed.code);
+    try testing.expect(std.mem.startsWith(u8, keyed.failed.message, "an input method is composing"));
 }
