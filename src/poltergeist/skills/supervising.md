@@ -724,6 +724,36 @@ Stacks are macOS only so far. On Windows and Linux a `stack` cell is
 refused with nothing moved, and `pane_stack` does nothing: give each worker
 a pane or a tab there.
 
+### Tidying terminals: move them, never close and reopen
+
+**Every tidying tool moves a terminal; none of them restarts one.** The
+terminal keeps its process, its scrollback and its agent's session. Closing a
+terminal to open a tidier one in its place ends all three, and the person
+loses the thread of the work — so do not tidy that way, whatever the layout
+looks like.
+
+- **Opening a worker where you want it**: `role_launch` with `beside` set to
+  a terminal of the tab it should join. It becomes a new pane there, placed
+  by the same rule `auto` uses, and **never a new tab** — if no pane can be
+  made there you get `NoRoomBeside` and nothing is opened. This is the
+  answer to workers spilling into stray tabs.
+- **Gathering terminals that are spread out**: `terminal_layout`. A `pane`
+  cell may name a terminal in any tab or window, and naming it moves it into
+  the shape. Every pane already in the destination tab still has to be in
+  the layout. A tab left empty is closed, and so is a window left with no
+  tab. To make a fresh tab or window for the shape, give `into`
+  (`{"new_tab_beside":"0x…"}` or `{"new_window":true}`) instead of `id`. The
+  reply's `moved` says where each terminal came from and where it went.
+- **Reordering tabs**: `terminal_tab_move` with `index`, and `window` to send
+  the tab to another window. `terminal_list` gives every terminal's
+  `tab_index` and `tab_title`.
+
+All of them are all-or-nothing: one terminal that may not be moved refuses
+the whole call and nothing moves. `Shielded` is the person's no; `Lent` is a
+terminal shown in the control room right now; `UserPresent` is a key that
+reached one of them — the destination tab's own panes included — in the last
+ten seconds, and clears on its own (your own terminal is never asked).
+
 ### Building a shape by hand, and the one thing that makes it hard
 
 ⚠️ **`terminal_action` never tells you what it made.** A `new_split` answers

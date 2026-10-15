@@ -160,6 +160,11 @@ pub const ACTION_CONTROL_ROOM_ALERT: u32 = 80;
 /// was 80; the two branches met in a merge with the same number and no
 /// conflict, which is why the order is said here.)
 pub const ACTION_PANE_STACK: u32 = 81;
+/// `Action.Key.polter_tab_move`, appended after `pane_stack` (task 1571):
+/// move a whole tab within its strip or into another window's. ⚠️
+/// **Appended, like every one before it.** The payload is
+/// `ghostty_action_polter_tab_move_s`; see `Action::as_polter_tab_move`.
+pub const ACTION_POLTER_TAB_MOVE: u32 = 82;
 
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
@@ -293,6 +298,17 @@ pub const ACTION_SHOW_ON_SCREEN_KEYBOARD: u32 = 61;
 pub const SECURE_INPUT_ON: i32 = 0;
 pub const SECURE_INPUT_OFF: i32 = 1;
 pub const SECURE_INPUT_TOGGLE: i32 = 2;
+
+/// `ghostty_action_polter_tab_info_s` (task 1571): where a tab stands in its
+/// strip and what it is called, in the caller's buffer. `index` arrives as
+/// `u32::MAX`, "nobody said", and stays that way unless this host writes it.
+#[repr(C)]
+pub struct TabInfo {
+    pub index: u32,
+    pub title: *mut u8,
+    pub cap: usize,
+    pub len: usize,
+}
 
 /// `ghostty_action_poltergeist_mark_s`. The prefix is the core's rendered
 /// glyphs; `role`, `shielded` and `held` are the meaning, which is what a menu
@@ -846,10 +862,25 @@ impl Action {
     /// tab; }` (task 581/650). Both pointer-sized and 8-aligned, so `window`
     /// is at offset 0 and `tab` at offset 8 -- no padding between two
     /// pointers of the same size.
-    pub fn as_poltergeist_grouping(&self) -> (*mut u64, *mut u64) {
+    ///
+    /// The third pointer, at offset 16, is `info`
+    /// (`ghostty_action_polter_tab_info_s*`, task 1571): null unless the
+    /// caller wants the tab's place in its strip and its title.
+    pub fn as_poltergeist_grouping(&self) -> (*mut u64, *mut u64, *mut TabInfo) {
         let window = usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *mut u64;
         let tab = usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) as *mut u64;
-        (window, tab)
+        let info = usize::from_ne_bytes(self.payload[16..24].try_into().unwrap()) as *mut TabInfo;
+        (window, tab, info)
+    }
+
+    /// `ghostty_action_polter_tab_move_s { uint32_t index; uint64_t window;
+    /// out_s* out; }` (task 1571): `index` at 0, then 4 bytes of padding,
+    /// `window` at 8 (a surface handle, 0 for "its own window"), `out` at 16.
+    pub fn as_polter_tab_move(&self) -> (u32, u64, *mut LayoutOut) {
+        let index = u32::from_ne_bytes(self.payload[0..4].try_into().unwrap());
+        let window = u64::from_ne_bytes(self.payload[8..16].try_into().unwrap());
+        let out = usize::from_ne_bytes(self.payload[16..24].try_into().unwrap()) as *mut LayoutOut;
+        (index, window, out)
     }
 
     /// `ghostty_action_reload_config_s { bool soft; }`.

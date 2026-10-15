@@ -434,7 +434,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "terminal_list",
-        .description = "Every terminal Polter knows about, and enough about each to tell them apart: `cwd` and `title` say which terminal this actually is, `role` and `shielded` say whether a call of yours will reach it, `held` says the user is holding it to its work. For a terminal somebody is watching there is also `quiet_ms` and `rounds` -- how long its screen has been unchanged, and how many times that has been reported. And `sampling`, which says whether anything is actually measuring under the watch -- `watching` is only the mark: **`starting`** means asked for and not yet confirmed. It is what every watch reads for the moment after it is made, and a running sampler confirms it within a few seconds even when its answer was lost; **it is not a fault, so do not close or restart a terminal for reading `starting`**. Still `starting` well after that means nothing has confirmed it -- the answer that it failed may itself have been lost -- so look at it with terminal_read before waiting on it any longer. **`running`** means the sampler has confirmed, or has sent something only a running sampler sends. **`failed`** means the terminal said it could not sample -- typically its command never started -- so nothing is measuring it and no quiet notice will come from it: look at it with terminal_read rather than waiting. **`quiet_ms` is absent rather than zero for a terminal nobody is watching**: nothing samples it, and zero would read as busy this instant. `call_silent_ms` is the other clock: how long since that terminal's agent last called a Polter tool. **Absent means it never has** -- a plain shell, an agent that has not started -- which is not the same as a long time. A large `call_silent_ms` with a small `quiet_ms` is a screen that is moving while nothing is being asked of Polter: a retry loop looks like that, and so does a worker waiting on a permission prompt or a long build. It is a reason to terminal_read, not a finding. The sidecar's own background traffic is not counted, and neither is persona_face. `window` and `tab` say **where** it is: two terminals are in the same window when their `window` values are equal, and in the same tab when their `tab` values are. That is the only thing those numbers mean -- they are not handles, nothing can be looked up by them, and they change every restart. Use them instead of guessing from `cwd` and `title` which terminals the user split out of one tab. ⚠️ **Absent means nobody said, not \"they are apart\"**: the interface has to be asked this question and not every one answers it -- on Linux none of them do, so both are absent for every terminal there. Reading absence as separate windows invents an arrangement. `agent` is what the agent CLI in that terminal has said about itself through its hooks, when a role started it with them: `hooks` (`none` -- no hooks; `expected` -- configured and not heard from yet; `live` -- heard from), `state` (`idle`, `in_turn`, `ended`, `failed`, `awaiting_approval`, `awaiting_input`), `since_ms` in that state -- which does not start again when the same state is reported twice -- `state_at_ms` and `event_at_ms` (the moments it entered that state and was last heard from: hand both to terminal_answer_prompt to say which prompt you saw), and `session_id`, `cli`, `detail` (error type, tool name, input kind), `note`, `waiting_on_background` (the turn ended with background work still running) when there are any. It is always there: **`hooks: none` means no hooks**, and then no event is not news: go by the screen. Durations and bookkeeping only -- call terminal_read to see what is on a screen.",
+        .description = "Every terminal Polter knows about, and enough about each to tell them apart: `cwd` and `title` say which terminal this actually is, `role` and `shielded` say whether a call of yours will reach it, `held` says the user is holding it to its work. For a terminal somebody is watching there is also `quiet_ms` and `rounds` -- how long its screen has been unchanged, and how many times that has been reported. And `sampling`, which says whether anything is actually measuring under the watch -- `watching` is only the mark: **`starting`** means asked for and not yet confirmed. It is what every watch reads for the moment after it is made, and a running sampler confirms it within a few seconds even when its answer was lost; **it is not a fault, so do not close or restart a terminal for reading `starting`**. Still `starting` well after that means nothing has confirmed it -- the answer that it failed may itself have been lost -- so look at it with terminal_read before waiting on it any longer. **`running`** means the sampler has confirmed, or has sent something only a running sampler sends. **`failed`** means the terminal said it could not sample -- typically its command never started -- so nothing is measuring it and no quiet notice will come from it: look at it with terminal_read rather than waiting. **`quiet_ms` is absent rather than zero for a terminal nobody is watching**: nothing samples it, and zero would read as busy this instant. `call_silent_ms` is the other clock: how long since that terminal's agent last called a Polter tool. **Absent means it never has** -- a plain shell, an agent that has not started -- which is not the same as a long time. A large `call_silent_ms` with a small `quiet_ms` is a screen that is moving while nothing is being asked of Polter: a retry loop looks like that, and so does a worker waiting on a permission prompt or a long build. It is a reason to terminal_read, not a finding. The sidecar's own background traffic is not counted, and neither is persona_face. `window` and `tab` say **where** it is: two terminals are in the same window when their `window` values are equal, and in the same tab when their `tab` values are. That is the only thing those numbers mean -- they are not handles, nothing can be looked up by them, and they change every restart. Use them instead of guessing from `cwd` and `title` which terminals the user split out of one tab. `tab_index` is where that tab stands in its window's strip, from 0 -- what terminal_tab_move takes -- and `tab_title` is what the strip calls it. ⚠️ **Absent means nobody said, not \"they are apart\"**: the interface has to be asked this question and not every one answers it -- on Linux none of them do, so both are absent for every terminal there. Reading absence as separate windows invents an arrangement. `agent` is what the agent CLI in that terminal has said about itself through its hooks, when a role started it with them: `hooks` (`none` -- no hooks; `expected` -- configured and not heard from yet; `live` -- heard from), `state` (`idle`, `in_turn`, `ended`, `failed`, `awaiting_approval`, `awaiting_input`), `since_ms` in that state -- which does not start again when the same state is reported twice -- `state_at_ms` and `event_at_ms` (the moments it entered that state and was last heard from: hand both to terminal_answer_prompt to say which prompt you saw), and `session_id`, `cli`, `detail` (error type, tool name, input kind), `note`, `waiting_on_background` (the turn ended with background work still running) when there are any. It is always there: **`hooks: none` means no hooks**, and then no event is not news: go by the screen. Durations and bookkeeping only -- call terminal_read to see what is on a screen.",
         .schema =
         \\{"type":"object","properties":{},"additionalProperties":false}
         ,
@@ -943,9 +943,14 @@ const tools = [_]Tool{
             "its ordinary permission mode** unless the role's args say otherwise, so a " ++
             "worker that is to run unattended needs a role that starts it that way. If " ++
             "something is wrong with the role or the CLI, the reason is printed in that " ++
-            "terminal. Supervisor only.",
+            "terminal. **`beside` opens it as a new pane in the tab of the terminal you " ++
+            "name** -- a worker tab you already have, say -- placed there by the same rule " ++
+            "`auto` uses, and **never as a new tab**: where that rule would open one, the " ++
+            "pane goes beside the terminal you named, and if no pane can be made there you " ++
+            "get NoRoomBeside and nothing is opened. Not with `in` or `place`. " ++
+            "Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"key":{"type":"string"},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."}},"required":["key"],"additionalProperties":false}
+        \\{"type":"object","properties":{"key":{"type":"string"},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."},"beside":{"type":"string","description":"The id of a terminal whose tab the new one goes in, as a new pane -- never a new tab. Not with in or place."}},"required":["key"],"additionalProperties":false}
         ,
     },
     .{
@@ -1037,12 +1042,27 @@ const tools = [_]Tool{
     },
     .{
         .name = "terminal_layout",
-        .description = "Rearrange a tab's panes into a shape you give in one call. **Use this " ++
+        .description = "Rearrange a tab's panes into a shape you give in one call -- **and the way " ++
+            "to gather terminals from other tabs and windows**: a `pane` cell may name a " ++
+            "terminal anywhere, and naming it **moves** it here. A move, not a restart: the " ++
+            "same terminal, the same process, its scrollback and its agent's session all " ++
+            "carry on. A tab it leaves empty is closed, and so is a window left with no tab. " ++
+            "**Never tidy by closing a terminal and opening another**: that ends the session " ++
+            "in it. `into` puts the shape somewhere new instead of an existing tab: " ++
+            "{\"new_tab_beside\":\"0x…\"} -- a new tab to the right of that terminal's tab, in " ++
+            "its window -- or {\"new_window\":true}; give `into` or `id`, not both. " ++
+            "The reply's `moved` lists every terminal that changed tab, with `from` and `to` " ++
+            "(`window`, `tab`, `tab_index` -- the values terminal_list gives). Refused, with " ++
+            "nothing moved, when any terminal it names is shielded (Shielded), shown in the " ++
+            "control room (Lent), or had a key reach it in the last ten seconds " ++
+            "(UserPresent; your own terminal is not asked) -- the panes already in the " ++
+            "tab included, since laying them out resizes them. **Use this " ++
             "instead of splitting four times.** Each terminal_action split is a round trip " ++
             "against a layout that is still moving, and none of them tells you which pane it " ++
             "just made -- so splitting repeatedly gives you a chain, not the shape you wanted. " ++
             "`id` names any pane of the tab. `layout` is a tree: a cell is " ++
-            "{\"pane\":\"0x…\"} for a terminal already in that tab, {\"new\":{\"cwd\":\"…\"}} " ++
+            "{\"pane\":\"0x…\"} for a terminal -- in that tab, or anywhere else to move it " ++
+            "here -- {\"new\":{\"cwd\":\"…\"}} " ++
             "for one to make, {\"split\":\"h\"|\"v\",\"ratio\":0.5,\"left\":cell,\"right\":cell}, " ++
             "or {\"stack\":[cell,cell,…],\"shown\":0} -- **one pane holding several terminals**, " ++
             "one of them in front and the rest behind it under a strip of tabs: where a row of " ++
@@ -1050,7 +1070,7 @@ const tools = [_]Tool{
             "`pane` or `new` cells only, two or more; `shown` is which is in front, counting from " ++
             "0, the first when left out. A terminal behind another keeps running and still " ++
             "raises its hand in the tab strip. ⚠️ Stacks are macOS only so far: elsewhere a " ++
-            "`stack` cell is refused and nothing moves. " ++
+            "`stack` cell is refused with NotBuiltYet and nothing moves. " ++
             "`ratio` is the fraction given to `left` and must be between 0 and 1; it is refused " ++
             "rather than rounded, because a layout you did not ask for reported as success is " ++
             "worse than a refusal. **The reply gives the resulting shape with every cell's terminal " ++
@@ -1065,7 +1085,24 @@ const tools = [_]Tool{
             "⚠️ It returns only after that window's queued work has run, so anything queued " ++
             "before it has happened too. Supervisor only. Same reach rule as terminal_read.",
         .schema =
-        \\{"type":"object","properties":{"id":{"type":"string"},"layout":{"type":"object"}},"required":["id","layout"],"additionalProperties":false}
+        \\{"type":"object","properties":{"id":{"type":"string","description":"Any pane of the tab to lay out. Leave out when into is given."},"layout":{"type":"object"},"into":{"type":"object","description":"Where the shape goes instead of an existing tab: {\"new_tab_beside\":\"0x…\"} or {\"new_window\":true}.","properties":{"new_tab_beside":{"type":"string"},"new_window":{"type":"boolean"}},"additionalProperties":false}},"required":["layout"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "terminal_tab_move",
+        .description = "Move a whole tab: to place `index` (from 0) in its window's strip, or -- " ++
+            "with `window`, the id of any terminal in another window -- into that window's " ++
+            "strip at `index`. Past the end is the end. `id` is any terminal in the tab. " ++
+            "**A move, not a restart**: every terminal in the tab keeps its process, its " ++
+            "scrollback and its agent's session; a window left with no tab is closed. " ++
+            "terminal_list's `tab_index` and `tab_title` say where each tab stands now. " ++
+            "The reply's `moved` says where the tab was and where it is. Refused, with " ++
+            "nothing moved, when a terminal is shielded (Shielded), the tab is shown in the " ++
+            "control room (Lent), or a key reached a terminal in it in the last ten seconds " ++
+            "(UserPresent; your own terminal is not asked). Supervisor only. Same reach rule " ++
+            "as terminal_read.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"index":{"type":"integer","minimum":0},"window":{"type":"string","description":"Any terminal in the window the tab goes to. Leave out to stay in this window."}},"required":["id","index"],"additionalProperties":false}
         ,
     },
     .{
@@ -1851,6 +1888,7 @@ test "the tools that decide reach say so in their own description" {
             // -- so the list can never carry it.
             "terminal_answer_prompt",
             "terminal_layout",
+            "terminal_tab_move",
         }) |name| {
             if (!std.mem.eql(u8, t.name, name)) continue;
             seen_reach = true;

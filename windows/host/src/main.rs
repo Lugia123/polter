@@ -4305,7 +4305,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // terminal's), and that case still writes nothing -- zero stays zero,
         // and `terminal_list` reports null rather than a fabricated grouping.
         ffi::ACTION_POLTERGEIST_GROUPING => {
-            let (window_cell, tab_cell) = action.as_poltergeist_grouping();
+            let (window_cell, tab_cell, info_cell) = action.as_poltergeist_grouping();
             if window_cell.is_null() || tab_cell.is_null() {
                 alogf!(origin, "[action] poltergeist_grouping: no result cell; not answered");
                 return false;
@@ -4329,6 +4329,26 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
                     unsafe {
                         window_cell.write(window);
                         tab_cell.write(tab);
+                    }
+                    // The tab's place in its strip and its title, when the
+                    // core asked (task 1571: `terminal_list`'s `tab_index`
+                    // and `tab_title`). Cut on a character, never inside one.
+                    if !info_cell.is_null() {
+                        if let Some((index, title)) = tabs::tab_info_of_surface(s) {
+                            unsafe {
+                                (*info_cell).index = index as u32;
+                                let buf = (*info_cell).title;
+                                let cap = (*info_cell).cap;
+                                if !buf.is_null() && cap > 0 {
+                                    let mut n = title.len().min(cap);
+                                    while n > 0 && !title.is_char_boundary(n) {
+                                        n -= 1;
+                                    }
+                                    std::ptr::copy_nonoverlapping(title.as_ptr(), buf, n);
+                                    (*info_cell).len = n;
+                                }
+                            }
+                        }
                     }
                     if news {
                         alogf!(
@@ -4420,6 +4440,11 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             tabs::post_op(frame, tabs::Op::ToggleControlRoom, "toggle_poltergeist_control_room");
             true
         }
+
+        // A whole tab moved for `terminal_tab_move` (task 1571): within its
+        // strip, or into the strip of another window. A move -- the panes
+        // keep their windows and surfaces (`tabs::move_tab_for_tool`).
+        ffi::ACTION_POLTER_TAB_MOVE => layout::perform_tab_move(&action, target_surface(&target)),
 
         // Stacking terminals in one pane (`Binding.zig`, `pane_stack`). macOS
         // has it; this host's split tree holds one terminal to a pane, and

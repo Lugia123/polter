@@ -14,6 +14,14 @@ const _: () = assert!(std::mem::offset_of!(LayoutOut, buf) == 8, "LayoutOut.buf 
 const _: () = assert!(std::mem::offset_of!(LayoutOut, cap) == 16, "LayoutOut.cap is not at ghostty_action_poltergeist_layout_out_s.cap");
 const _: () = assert!(std::mem::offset_of!(LayoutOut, len) == 24, "LayoutOut.len is not at ghostty_action_poltergeist_layout_out_s.len");
 
+// TabInfo <- ghostty_action_polter_tab_info_s
+const _: () = assert!(std::mem::size_of::<TabInfo>() == 32, "size of TabInfo != sizeof(ghostty_action_polter_tab_info_s)");
+const _: () = assert!(std::mem::align_of::<TabInfo>() == 8, "align of TabInfo != alignof(ghostty_action_polter_tab_info_s)");
+const _: () = assert!(std::mem::offset_of!(TabInfo, index) == 0, "TabInfo.index is not at ghostty_action_polter_tab_info_s.index");
+const _: () = assert!(std::mem::offset_of!(TabInfo, title) == 8, "TabInfo.title is not at ghostty_action_polter_tab_info_s.title");
+const _: () = assert!(std::mem::offset_of!(TabInfo, cap) == 16, "TabInfo.cap is not at ghostty_action_polter_tab_info_s.cap");
+const _: () = assert!(std::mem::offset_of!(TabInfo, len) == 24, "TabInfo.len is not at ghostty_action_polter_tab_info_s.len");
+
 // ScreenshotOut <- ghostty_action_poltergeist_screenshot_out_s
 const _: () = assert!(std::mem::size_of::<ScreenshotOut>() == 40, "size of ScreenshotOut != sizeof(ghostty_action_poltergeist_screenshot_out_s)");
 const _: () = assert!(std::mem::align_of::<ScreenshotOut>() == 8, "align of ScreenshotOut != alignof(ghostty_action_poltergeist_screenshot_out_s)");

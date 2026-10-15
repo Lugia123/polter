@@ -4412,6 +4412,8 @@ pub fn launchPersona(
     /// opening one. The caller named it, which is the say-so a pane the
     /// person opened themselves needs.
     into: ?poltergeistpkg.Bus.Id,
+    /// A terminal whose tab the new one is opened in, as a pane (task 1571).
+    beside: ?poltergeistpkg.Bus.Id,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const choice = try self.resolveLaunch(alloc, key, cli);
     const line = try launchLine(alloc, choice);
@@ -4423,7 +4425,12 @@ pub fn launchPersona(
         return .{ .id = target, .placed = .{ .reused = .asked } };
     }
 
-    const where: poltergeistpkg.rpc.Placement = if (place == .auto) auto: {
+    const anchor: ?*Surface = if (beside) |id|
+        self.findSurfaceByID(id) orelse return error.UnknownTerminal
+    else
+        null;
+
+    const where: poltergeistpkg.rpc.Placement = if (anchor != null) .here else if (place == .auto) auto: {
         const p = self.personas.set.find(choice.key) orelse break :auto .auto;
         break :auto if (p.polter.open == .tab) .tab else .auto;
     } else place;
@@ -4460,7 +4467,7 @@ pub fn launchPersona(
     // A launch whose terminal was refused must not wait for the next
     // terminal anybody opens.
     errdefer self.personas.dropLaunch();
-    var opened = try poltergeistOpenTerminal(self, alloc, cwd, by, where);
+    var opened = try self.openTerminalAt(alloc, cwd, by, where, anchor);
     opened.passed_over = passed_over;
     if (opened.id) |new| {
         // Claimed already when the surface was made inside the call; if not,
@@ -4772,7 +4779,7 @@ pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) any
         try self.startRoleIn(id, id, choice, try launchLine(aa, choice), .person);
         return .started_here;
     }
-    _ = try self.launchPersona(aa, id, key, cli, "", .tab, null);
+    _ = try self.launchPersona(aa, id, key, cli, "", .tab, null, null);
     return .started_in_tab;
 }
 
@@ -4806,9 +4813,10 @@ fn poltergeistPersonaLaunch(
     cwd: []const u8,
     place: poltergeistpkg.rpc.Placement,
     into: ?poltergeistpkg.Bus.Id,
+    beside: ?poltergeistpkg.Bus.Id,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const self: *App = @ptrCast(@alignCast(ctx));
-    return self.launchPersona(alloc, by, key, cli, cwd, place, into);
+    return self.launchPersona(alloc, by, key, cli, cwd, place, into, beside);
 }
 
 /// Take a terminal out of any persona, back to handing out everything.
@@ -4966,6 +4974,8 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .taskCreate = taskCreate,
         .taskEdit = taskEdit,
         .layout = poltergeistLayout,
+        .tabMove = polterTabMove,
+        .userPresent = polterUserPresent,
         .screenshotAllowed = poltergeistScreenshotAllowed,
         .screenshotHost = poltergeistScreenshotHost,
         .screenshotInteractive = poltergeistScreenshotInteractive,
@@ -5575,11 +5585,43 @@ fn poltergeistRead(
 fn poltergeistLayout(
     ctx: *anyopaque,
     alloc: Allocator,
-    id: poltergeistpkg.Bus.Id,
-    spec: []const u8,
+    call: poltergeistpkg.rpc.LayoutCall,
 ) anyerror!poltergeistpkg.rpc.LayoutAnswer {
     const self: *App = @ptrCast(@alignCast(ctx));
-    const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+    const arrange = poltergeistpkg.arrange;
+
+    // **Which surface the action is aimed at**: the pane that says which
+    // tab, or the terminal a new tab goes beside. A shape for a new window
+    // names neither, and is aimed at the first terminal it names -- or any
+    // terminal at all, for one made only of new cells -- because an action
+    // has to be aimed somewhere and the apprt does not lay that one out.
+    const aimed: u64 = if (call.id != 0) call.id else if (call.into.terminal()) |t| t else 0;
+    const named = named: {
+        var list: std.ArrayList(poltergeistpkg.Bus.Id) = .empty;
+        errdefer list.deinit(alloc);
+        var it: arrange.PaneIter = .init(alloc, call.spec);
+        defer it.deinit();
+        while (it.next() catch null) |id| try list.append(alloc, id);
+        break :named try list.toOwnedSlice(alloc);
+    };
+    defer alloc.free(named);
+
+    const surface: *Surface = if (aimed != 0)
+        self.findSurfaceByID(aimed) orelse return error.NoSuchTerminal
+    else if (named.len > 0)
+        self.findSurfaceByID(named[0]) orelse return error.NoSuchTerminal
+    else if (self.surfaces.items.len > 0)
+        self.surfaces.items[0].core()
+    else
+        return error.NoSuchTerminal;
+
+    // **Stacks are macOS only.** Asked here, before the apprt, so a shape
+    // with one is refused with nothing moved -- the Windows host would
+    // otherwise refuse it as a cell it cannot read, which says nothing
+    // about what to do instead.
+    if (comptime builtin.target.os.tag == .windows) {
+        if (arrange.hasStack(alloc, call.spec) catch false) return error.NotBuiltYet;
+    }
 
     // ⚠️ **The two namespaces, and the whole of task 406.** A caller writes
     // the terminal ids it uses everywhere else; the apprt owns the tree and
@@ -5592,7 +5634,7 @@ fn poltergeistLayout(
     // the apprt has never seen a terminal id, and `findSurfaceByID` is the
     // map. Both directions, so the ids in the reply are ones the caller can
     // hand to `terminal_read`.
-    const in_spec = self.layoutIdsToSurfaces(alloc, spec) catch |err| switch (err) {
+    const in_spec = self.layoutIdsToSurfaces(alloc, call.spec) catch |err| switch (err) {
         error.UnknownPane => return .{
             .applied = false,
             .text = try alloc.dupe(u8, "the layout names a terminal that does not exist. " ++
@@ -5607,14 +5649,40 @@ fn poltergeistLayout(
     };
     defer alloc.free(in_spec);
 
-    const spec_z = try alloc.dupeZ(u8, in_spec);
-    defer alloc.free(spec_z);
+    // **The envelope** (task 1571): the shape, and where it goes when that
+    // is not the tab of the surface the action is aimed at. `into`'s
+    // terminal is a surface handle by the time the apprt sees it, as every
+    // `pane` cell is.
+    const envelope = envelope: {
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        errdefer buf.deinit();
+        const w = &buf.writer;
+        try w.writeAll("{\"layout\":");
+        try w.writeAll(in_spec);
+        switch (call.into) {
+            .none => {},
+            .new_window => try w.writeAll(",\"into\":{\"new_window\":true}"),
+            .new_tab_beside => |id| {
+                const beside = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+                try w.print(",\"into\":{{\"new_tab_beside\":\"0x{x}\"}}", .{@intFromPtr(beside.rt_surface)});
+            },
+        }
+        try w.writeAll("}");
+        break :envelope try buf.toOwnedSliceSentinel(0);
+    };
+    defer alloc.free(envelope);
+
+    // Where every named terminal was before, so the reply can say where each
+    // one went (the supervisor, task 1571: two readings, before and after).
+    const before = try alloc.alloc(arrange.Where, named.len);
+    defer alloc.free(before);
+    for (named, before) |id, *w| w.* = self.polterWhere(id);
 
     // The panes there before, so the ones the layout makes can be told apart
     // afterwards and marked as opened by an agent (#989).
-    var before: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
-    defer before.deinit(alloc);
-    for (self.surfaces.items) |v| try before.put(alloc, v.core().id, {});
+    var existed: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
+    defer existed.deinit(alloc);
+    for (self.surfaces.items) |v| try existed.put(alloc, v.core().id, {});
 
     // **The caller's buffer, sized once.** An apprt that needs more room says
     // so in its reason rather than truncating; see the ABI note on `Out`.
@@ -5629,7 +5697,7 @@ fn poltergeistLayout(
     _ = surface.rt_app.performAction(
         .{ .surface = surface },
         .poltergeist_layout,
-        .{ .spec = spec_z, .out = &out },
+        .{ .spec = envelope, .out = &out },
     ) catch |err| {
         log.warn("poltergeist: layout action failed err={}", .{err});
         return error.LayoutFailed;
@@ -5647,9 +5715,13 @@ fn poltergeistLayout(
         // handle, in a sentence that tells the caller to go look at a
         // terminal. Feeding that number to `terminal_read` fails, and the
         // caller has no way to see why.
-        .refused => .{
-            .applied = false,
-            .text = try self.layoutHandlesInText(alloc, said),
+        .refused => refused: {
+            const r = try polterRefusal(alloc, said);
+            break :refused .{
+                .applied = false,
+                .code = r.code,
+                .text = try self.layoutHandlesInText(alloc, r.message),
+            };
         },
         .applied => applied: {
             // ⚠️ Only the panes the runtime made inside the call. An apprt
@@ -5658,14 +5730,162 @@ fn poltergeistLayout(
             // the safe way to be wrong.
             for (self.surfaces.items) |v| {
                 const new = v.core().id;
-                if (!before.contains(new) and !self.isChatSurface(new)) self.markAgentOpened(new, id);
+                if (!existed.contains(new) and !self.isChatSurface(new)) self.markAgentOpened(new, aimed);
             }
+
+            const after = try alloc.alloc(arrange.Where, named.len);
+            defer alloc.free(after);
+            for (named, after) |id, *w| w.* = self.polterWhere(id);
+            const moved = try arrange.moves(alloc, named, before, after);
+            defer alloc.free(moved);
+
+            const reply = try self.layoutSurfacesToIds(alloc, said);
+            defer alloc.free(reply);
             break :applied .{
                 .applied = true,
-                .text = try self.layoutSurfacesToIds(alloc, said),
+                .text = try arrange.withMoves(alloc, reply, moved),
             };
         },
     };
+}
+
+/// A refusal from the apprt, split into its code and its sentence. The apprt
+/// writes a bare sentence for `Refused` and `{"code","message"}` for any
+/// other code -- `Lent`, which only it can know (task 1571). The sentence is
+/// still in the apprt's numbering: the caller translates it.
+fn polterRefusal(alloc: Allocator, said: []const u8) !struct { code: []const u8, message: []const u8 } {
+    if (std.json.parseFromSlice(struct { code: []const u8, message: []const u8 }, alloc, said, .{})) |parsed| {
+        defer parsed.deinit();
+        return .{
+            .code = try alloc.dupe(u8, parsed.value.code),
+            .message = try alloc.dupe(u8, parsed.value.message),
+        };
+    } else |_| {}
+    return .{ .code = "Refused", .message = said };
+}
+
+/// Where a terminal is: its window, its tab, and the tab's place in the
+/// strip, as the apprt answers. Every field null when it does not.
+fn polterWhere(self: *App, id: poltergeistpkg.Bus.Id) poltergeistpkg.arrange.Where {
+    const surface = self.findSurfaceByID(id) orelse return .{};
+    const g = polterGrouping(surface, null);
+    return .{ .window = g.window, .tab = g.tab, .tab_index = g.tab_index };
+}
+
+/// The answer to `poltergeist_grouping`, with the tab's place and -- when
+/// `title` is a buffer -- its title. Zero and `TabInfo.unknown` become null:
+/// "nobody said", never "nowhere".
+fn polterGrouping(surface: *Surface, title: ?[]u8) struct {
+    window: ?u64,
+    tab: ?u64,
+    tab_index: ?u32,
+    tab_title: ?[]const u8,
+} {
+    var window: u64 = 0;
+    var tab: u64 = 0;
+    var info: apprt.action.PoltergeistGrouping.TabInfo = .{};
+    if (title) |t| {
+        info.title = t.ptr;
+        info.cap = t.len;
+    }
+    _ = surface.rt_app.performAction(
+        .{ .surface = surface },
+        .poltergeist_grouping,
+        .{ .window = &window, .tab = &tab, .info = &info },
+    ) catch {};
+    const index: ?u32 = if (info.index == apprt.action.PoltergeistGrouping.TabInfo.unknown) null else info.index;
+    return .{
+        .window = if (window == 0) null else window,
+        .tab = if (tab == 0) null else tab,
+        .tab_index = index,
+        // A title is only believed with a place: an apprt that does not
+        // fill the cell writes neither.
+        .tab_title = if (title) |t| (if (index != null) utf8Prefix(t[0..@min(info.len, t.len)]) else null) else null,
+    };
+}
+
+/// The longest prefix of `s` that is whole UTF-8: a title cut to fit the
+/// buffer can end inside a character, and the writer would refuse it.
+fn utf8Prefix(s: []const u8) []const u8 {
+    var end = s.len;
+    while (end > 0 and !std.unicode.utf8ValidateSlice(s[0..end])) end -= 1;
+    return s[0..end];
+}
+
+/// Move a tab for `terminal_tab_move` (task 1571).
+fn polterTabMove(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+    index: u32,
+    window: poltergeistpkg.Bus.Id,
+) anyerror!poltergeistpkg.rpc.LayoutAnswer {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+    const handle: u64 = if (window != 0) h: {
+        const w = self.findSurfaceByID(window) orelse return error.NoSuchTerminal;
+        break :h @intFromPtr(w.rt_surface);
+    } else 0;
+
+    const before = self.polterWhere(id);
+
+    const buf = try alloc.alloc(u8, 4 * 1024);
+    defer alloc.free(buf);
+    var out: apprt.action.PoltergeistLayout.Out = .{ .buf = buf.ptr, .cap = buf.len };
+    _ = surface.rt_app.performAction(
+        .{ .surface = surface },
+        .polter_tab_move,
+        .{ .index = index, .window = handle, .out = &out },
+    ) catch |err| {
+        log.warn("polter: tab move action failed err={}", .{err});
+        return error.TabMoveFailed;
+    };
+
+    const said = buf[0..@min(out.len, buf.len)];
+    return switch (out.result) {
+        .unsupported => error.LayoutUnsupported,
+        .refused => refused: {
+            const r = try polterRefusal(alloc, said);
+            break :refused .{
+                .applied = false,
+                .code = r.code,
+                .text = try self.layoutHandlesInText(alloc, r.message),
+            };
+        },
+        .applied => applied: {
+            // The reply is the core's, from the two readings, so it reads
+            // the same on every platform -- the apprt's text is not used.
+            const after = self.polterWhere(id);
+            const list = [_]poltergeistpkg.arrange.Move{.{ .id = id, .from = before, .to = after }};
+            break :applied .{
+                .applied = true,
+                .text = try poltergeistpkg.arrange.withMoves(alloc, "{}", &list),
+            };
+        },
+    };
+}
+
+/// For `UserPresent` on a move (task 1571): a terminal a key reached within
+/// the quiet window -- `id`, or with `whole_tab` any terminal in its tab.
+/// The clock is the one `terminal_send` is refused by (`Surface.mayType`).
+fn polterUserPresent(
+    ctx: *anyopaque,
+    id: poltergeistpkg.Bus.Id,
+    whole_tab: bool,
+    except: poltergeistpkg.Bus.Id,
+) ?poltergeistpkg.Bus.Id {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return null;
+    if (id != except and surface.keyedRecently()) return id;
+    if (!whole_tab) return null;
+    const tab = poltergeistTabOf(surface) orelse return null;
+    for (self.surfaces.items) |v| {
+        const other = v.core();
+        if (other == surface or other.id == except) continue;
+        if (poltergeistTabOf(other) != tab) continue;
+        if (other.keyedRecently()) return other.id;
+    }
+    return null;
 }
 
 /// Rewrite a layout's `pane` cells from terminal ids to surface handles.
@@ -6924,8 +7144,10 @@ test "a count the queue has not reached yet is not placed on" {
 /// tab and the reason -- the reason travels to the caller in the reply
 /// (issue #17), not only to the log.
 const WorkerSpot = union(enum) {
-    split: struct { target: *Surface, direction: apprt.action.SplitDirection },
+    split: Split,
     tab: poltergeistpkg.rpc.TabWhy,
+
+    const Split = struct { target: *Surface, direction: apprt.action.SplitDirection };
 };
 
 /// Add `id` to the end of `by`'s workers. See `poltergeist_workers`.
@@ -7060,7 +7282,24 @@ fn poltergeistOpenTerminal(
     place: poltergeistpkg.rpc.Placement,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const self: *App = @ptrCast(@alignCast(ctx));
-    const surface = self.findSurfaceByID(by) orelse return error.UnknownTerminal;
+    return self.openTerminalAt(alloc, cwd, by, place, null);
+}
+
+/// `poltergeistOpenTerminal`, with the tab it goes in named by `beside`
+/// rather than by the caller (task 1571). With `beside`, the terminal is a
+/// pane in that tab or nothing: **never a tab**, because a tab is the
+/// overflow the parameter exists to prevent -- the budget's answer is still
+/// asked, and where it would have opened a tab the pane goes beside
+/// `beside` itself.
+fn openTerminalAt(
+    self: *App,
+    alloc: Allocator,
+    cwd: []const u8,
+    by: poltergeistpkg.Bus.Id,
+    place: poltergeistpkg.rpc.Placement,
+    beside: ?*Surface,
+) anyerror!poltergeistpkg.rpc.Opened {
+    const surface = beside orelse self.findSurfaceByID(by) orelse return error.UnknownTerminal;
 
     // A place that has a name and is not built: refused, and said, rather
     // than read as `auto` -- a caller that asked for a stack and got a
@@ -7124,9 +7363,17 @@ fn poltergeistOpenTerminal(
         // ask. So it never reaches the budget at all.
         if (place == .tab) break :placed .{ .tab = .asked };
 
-        const where = switch (try self.poltergeistPlaceWorker(alloc, rt_app, surface, by)) {
+        const where = placed_where: switch (try self.poltergeistPlaceWorker(alloc, rt_app, surface, by)) {
             .split => |w| w,
             .tab => |why| {
+                if (beside) |b| {
+                    log.info(
+                        "polter: `beside` was asked for and the budget said a tab ({t}); " ++
+                            "splitting the terminal it names instead",
+                        .{why},
+                    );
+                    break :placed_where WorkerSpot.Split{ .target = b, .direction = .right };
+                }
                 // **`here` was asked for and did not happen, and that is worth a
                 // second line.** For `auto` a tab is one of the normal answers;
                 // for `here` it is the caller not getting what it named, and the
@@ -7155,7 +7402,10 @@ fn poltergeistOpenTerminal(
                 .working_directory = dir_z,
                 .result = &result,
             },
-        ) catch break :placed .{ .tab = .split_failed };
+        ) catch {
+            if (beside != null) return error.NoRoomBeside;
+            break :placed .{ .tab = .split_failed };
+        };
 
         if (result == .will_split) {
             // **Attributed now if its terminal is already here, remembered as
@@ -7176,6 +7426,9 @@ fn poltergeistOpenTerminal(
         }
 
         if (result != .will_split) {
+            // `beside` is a pane or nothing: the fallback below is the tab
+            // it exists to prevent.
+            if (beside != null) return error.NoRoomBeside;
             // ⚠️ **A live path, not a defensive one.** GTK cannot start a
             // split in a named directory, so it refuses rather than opening
             // one in the wrong place; every worker opened on Linux comes
@@ -7273,20 +7526,20 @@ fn poltergeistOpenTerminals(
         // no apprt writes zero -- and zero becomes null rather than a group
         // of its own. A terminal nobody grouped must not be reported as
         // being somewhere.
-        var window: u64 = 0;
-        var tab: u64 = 0;
-        _ = surface.rt_app.performAction(
-            .{ .surface = surface },
-            .poltergeist_grouping,
-            .{ .window = &window, .tab = &tab },
-        ) catch {};
+        //
+        // The tab's place and title come with it (task 1571). The title is
+        // copied out of the buffer: the strings in a `Place` outlive this.
+        var title_buf: [512]u8 = undefined;
+        const g = polterGrouping(surface, &title_buf);
 
         try out.append(alloc, .{
             .id = poltergeistpkg.Bus.idOf(surface),
             .cwd = footing.cwd,
             .title = footing.title,
-            .window = if (window == 0) null else window,
-            .tab = if (tab == 0) null else tab,
+            .window = g.window,
+            .tab = g.tab,
+            .tab_index = g.tab_index,
+            .tab_title = if (g.tab_title) |t| try alloc.dupe(u8, t) else null,
         });
     }
 

@@ -695,6 +695,8 @@ extension Ghostty {
 
             case GHOSTTY_ACTION_POLTERGEIST_GROUPING:
                 return poltergeistGrouping(target: target, v: action.action.poltergeist_grouping)
+            case GHOSTTY_ACTION_POLTER_TAB_MOVE:
+                return polterTabMove(target: target, v: action.action.polter_tab_move)
 
             case GHOSTTY_ACTION_POLTERGEIST_LAYOUT:
                 return poltergeistLayout(app, target: target, v: action.action.poltergeist_layout)
@@ -1493,15 +1495,12 @@ extension Ghostty {
             case GHOSTTY_TARGET_SURFACE:
                 guard let surface = target.target.surface else { return false }
                 guard let surfaceView = self.surfaceView(from: surface) else { return false }
-                guard let controller = NSApp.windows
-                    .compactMap({ $0.windowController as? TerminalController })
-                    .first(where: { $0.surfaceTree.contains(surfaceView) })
-                else {
-                    // A surface with no TerminalController -- the quick
-                    // terminal, say -- has no tabs to lay out. `out` is
-                    // already `unsupported`, the value the core
-                    // initialised it to, so leaving it alone here is the
-                    // honest answer.
+                // A surface in no terminal tab -- the quick terminal, say --
+                // has no tabs to lay out and no window to lay one out from.
+                // `out` is already `unsupported`, the value the core
+                // initialised it to, so leaving it alone here is the honest
+                // answer.
+                guard TerminalController.all.contains(where: { $0.surfaceTree.contains(surfaceView) }) else {
                     return false
                 }
 
@@ -1510,7 +1509,7 @@ extension Ghostty {
                     return true
                 }
 
-                switch controller.applyToolLayout(specText) {
+                switch TerminalController.applyToolLayout(specText, aimed: surfaceView) {
                 case .refused(let why):
                     write(GHOSTTY_ACTION_POLTERGEIST_LAYOUT_REFUSED, why)
                 case .applied(let json):
@@ -2585,7 +2584,16 @@ extension Ghostty {
             guard target.tag == GHOSTTY_TARGET_SURFACE,
                   let surface = target.target.surface,
                   let surfaceView = self.surfaceView(from: surface),
-                  let window = surfaceView.homeWindow,
+                  // **The tab whose tree holds it, not the window the view
+                  // hangs in** (task 1571). The two differ twice: a terminal
+                  // stacked behind another hangs in no window at all, and one
+                  // a layout has just moved still hangs in its old window
+                  // until the next drawing pass -- so the "after" reading of
+                  // a move came back as "before", and `moved` said nothing
+                  // had. The view's own window is the answer only when no
+                  // tab claims it.
+                  let window = TerminalController.all.first(where: { $0.surfaceTree.contains(surfaceView) })?.window
+                      ?? surfaceView.homeWindow,
                   // Same gate as `poltergeistTabPanes`: only a terminal
                   // window has a tab and panes to talk about.
                   window.windowController is BaseTerminalController
@@ -2594,6 +2602,63 @@ extension Ghostty {
             let group: AnyObject = window.tabGroup ?? window
             tabCell.pointee = UInt64(UInt(bitPattern: ObjectIdentifier(window)))
             windowCell.pointee = UInt64(UInt(bitPattern: ObjectIdentifier(group)))
+
+            // Where the tab stands in its strip and what the strip calls it
+            // (task 1571), when the core asked. A window in no group is a
+            // strip of one.
+            if let info = v.info {
+                let strip = window.tabGroup?.windows ?? [window]
+                if let index = strip.firstIndex(where: { $0 === window }) {
+                    info.pointee.index = UInt32(index)
+                }
+                if let buf = info.pointee.title, info.pointee.cap > 0 {
+                    // Cut on a character, never inside one.
+                    var bytes = Array(window.title.utf8)
+                    if bytes.count > info.pointee.cap {
+                        var cut = info.pointee.cap
+                        while cut > 0 && (bytes[cut] & 0xC0) == 0x80 { cut -= 1 }
+                        bytes = Array(bytes[0..<cut])
+                    }
+                    buf.withMemoryRebound(to: UInt8.self, capacity: bytes.count) { dst in
+                        for (i, b) in bytes.enumerated() { dst[i] = b }
+                    }
+                    info.pointee.len = bytes.count
+                }
+            }
+            return true
+        }
+
+        /// Move the target's whole tab (`polter_tab_move`, task 1571). See
+        /// `TerminalController.polterMoveTab`; this is the C ABI glue.
+        private static func polterTabMove(
+            target: ghostty_target_s,
+            v: ghostty_action_polter_tab_move_s) -> Bool {
+            guard let out = v.out else { return false }
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface),
+                  let controller = TerminalController.all.first(where: { $0.surfaceTree.contains(surfaceView) })
+            else { return false }
+
+            let into: TerminalController? = v.window == 0 ? nil : TerminalController.all.first { c in
+                c.surfaceTree.contains { PoltergeistLayoutCell.surfaceHandle(for: $0).map(UInt64.init) == v.window }
+            }
+            let answer: (applied: Bool, text: String)
+            if v.window != 0 && into == nil {
+                answer = (false, "the terminal named as the window is not in a terminal tab")
+            } else {
+                answer = controller.polterMoveTab(to: Int(v.index), into: into)
+            }
+
+            out.pointee.result = answer.applied ? GHOSTTY_ACTION_POLTERGEIST_LAYOUT_APPLIED : GHOSTTY_ACTION_POLTERGEIST_LAYOUT_REFUSED
+            let bytes = Array(answer.text.utf8)
+            let n = min(bytes.count, out.pointee.cap)
+            out.pointee.len = n
+            if n > 0, let buf = out.pointee.buf {
+                buf.withMemoryRebound(to: UInt8.self, capacity: n) { dst in
+                    for i in 0..<n { dst[i] = bytes[i] }
+                }
+            }
             return true
         }
 

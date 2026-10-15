@@ -342,6 +342,14 @@ pub enum Op {
     /// it this landed on `win.active`, so opening a tab between the call and
     /// the op moved the layout to the new one -- task 407.
     ApplyLayout(crate::layout::Shape, Option<PaneId>, crate::layout::Outcome),
+    /// A tool's layout (task 1571): `ApplyLayout` that may also name panes in
+    /// other tabs and windows, and **moves** them -- or puts the shape in a
+    /// new tab or window (`layout::Where`). Kept apart from `ApplyLayout`,
+    /// which a saved project also queues, so that path is unchanged.
+    ArrangeLayout(crate::layout::Shape, Option<PaneId>, crate::layout::Where, crate::layout::Outcome),
+    /// `terminal_tab_move` (task 1571): the tab holding surface `.0` to
+    /// place `.1`, in the window of surface `.2` (0: its own).
+    MoveTabForTool(usize, usize, usize, crate::layout::Outcome),
     /// A second top-level window, with a tab in it.
     ///
     /// **Queued for the same reason `NewTab` is**, and it is the stronger
@@ -485,6 +493,8 @@ impl Op {
         match self {
             Op::NewTab(_) => "NewTab",
             Op::ApplyLayout(..) => "ApplyLayout",
+            Op::ArrangeLayout(..) => "ArrangeLayout",
+            Op::MoveTabForTool(..) => "MoveTabForTool",
             Op::NewWindow => "NewWindow",
             Op::GotoTab(_) => "GotoTab",
             Op::ActivateTab(_) => "ActivateTab",
@@ -3107,6 +3117,383 @@ fn apply_layout(
     });
     wlogf!(frame, "[layout] applied; {} pane(s) made", ids.len());
     Ok(reply.to_string())
+}
+
+/// Where one terminal a tool layout names is now (task 1571).
+#[derive(Clone, Copy)]
+struct Found {
+    frame: isize,
+    tab: TabId,
+    pane: PaneId,
+}
+
+/// Put a tool's shape in place, **moving** any terminal it names from
+/// another tab or window (task 1571; the macOS host's
+/// `TerminalController.applyToolLayout`).
+///
+/// **A move, never a rebuild.** Each pane keeps its window and its surface --
+/// `take_pane` out of its tab, `rehome_pane` into the destination frame --
+/// for the reason `move_tab_to_new_window` gives: a terminal rebuilt would be
+/// a close and a reopen, and the session in it would be gone. A tab a move
+/// leaves empty is retired; a window left with no tab closes.
+///
+/// **All or nothing.** Every named terminal is found, and every refusal
+/// asked, before anything is made or moved: a terminal that is not open, one
+/// named twice, one shown in the control room (`Lent`), a pane of the
+/// destination tab the shape leaves out.
+///
+/// A shape that names nothing outside the tab it replaces, with no `into`,
+/// is the old call and goes to `apply_layout` unchanged.
+fn arrange_layout(
+    frame: HWND,
+    app: App,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    shape: &crate::layout::Shape,
+    at: Option<PaneId>,
+    into: crate::layout::Where,
+) -> Result<String, String> {
+    use crate::layout::Where;
+
+    let mut named = Vec::new();
+    crate::layout::existing(shape, &mut named);
+
+    // Where everything is, from one reading.
+    let reading: Result<(Vec<Found>, Option<(isize, TabId, Vec<PaneId>)>, Option<(isize, usize)>), String> =
+        with_windows(|ws| {
+            let find = |key: usize| -> Option<(Found, bool)> {
+                ws.iter().find_map(|w| {
+                    w.tabs.iter().find_map(|t| {
+                        t.panes().iter().find(|p| p.surface == key).map(|p| {
+                            let lent = w.shown_on_loan().is_some_and(|l| l.pane == p.id);
+                            (Found { frame: w.frame, tab: t.id, pane: p.id }, lent)
+                        })
+                    })
+                })
+            };
+            let mut found: Vec<Found> = Vec::with_capacity(named.len());
+            for key in &named {
+                let Some((f, lent)) = find(*key) else {
+                    return Err(format!(
+                        "0x{key:x} is not a terminal this host has open. Every cell must name a \
+                         terminal terminal_list gives you, or ask for a new one with {{\"new\": …}}."
+                    ));
+                };
+                if found.iter().any(|g| g.pane == f.pane) {
+                    return Err("the layout names a terminal twice".into());
+                }
+                // ⚠️ **Asked of every terminal named, the destination's own
+                // included**: the person is looking at it in the control room.
+                if lent {
+                    return Err(crate::layout::coded(
+                        "Lent",
+                        &format!(
+                            "terminal 0x{key:x} is being shown in the control room, and nothing was \
+                             moved. It goes back to its own pane when the person looks at something \
+                             else there; try again then."
+                        ),
+                    ));
+                }
+                found.push(f);
+            }
+            let dest = match into {
+                Where::Here => {
+                    let w = ws.iter().find(|w| w.frame == frame.0 as isize).ok_or("that window is gone")?;
+                    let t = w.tabs.get(acting_tab(w, at)).ok_or("that window has no tab to lay out")?;
+                    if t.terminal().is_none() {
+                        return Err("the tab in front is the control room, which has no panes to lay out".into());
+                    }
+                    Some((w.frame, t.id, t.panes().iter().map(|p| p.id).collect()))
+                }
+                Where::NewTabBeside(_) | Where::NewWindow => None,
+            };
+            let beside = match into {
+                Where::NewTabBeside(key) => {
+                    let (f, _) = find(key).ok_or_else(|| format!("0x{key:x} is not a terminal in a tab"))?;
+                    let w = ws.iter().find(|w| w.frame == f.frame).ok_or("that window is gone")?;
+                    let i = w.tabs.iter().position(|t| t.id == f.tab).ok_or("that tab is gone")?;
+                    Some((f.frame, i + 1))
+                }
+                Where::Here | Where::NewWindow => None,
+            };
+            Ok((found, dest, beside))
+        });
+    let (found, dest, beside) = reading?;
+
+    if let Some((_, _, members)) = &dest {
+        // ⚠️ Rearranging is not a way to close a terminal; see `apply_layout`.
+        if let Some(left_out) = members.iter().find(|m| !found.iter().any(|f| f.pane == **m)) {
+            let key = with_windows(|ws| {
+                ws.iter().flat_map(|w| w.tabs.iter()).flat_map(|t| t.panes().iter()).find(|p| p.id == *left_out).map(|p| p.surface)
+            })
+            .unwrap_or(0);
+            return Err(format!(
+                "the layout leaves out terminal 0x{key:x}, which is in this tab. Rearranging never \
+                 closes a terminal: close it first with close_surface, then send the layout you \
+                 want for what is left."
+            ));
+        }
+        // Nothing comes from elsewhere: the old call, by the old path.
+        if found.iter().all(|f| members.contains(&f.pane)) {
+            return apply_layout(frame, app, hinst, shape, at);
+        }
+    }
+
+    // The window the shape goes into: an existing one, or one made now --
+    // after every check, so a refusal never leaves an empty window behind.
+    let (dest_frame, made_window) = match (into, &dest, beside) {
+        (Where::Here, Some((f, _, _)), _) => (HWND(*f as *mut c_void), false),
+        (Where::NewTabBeside(_), _, Some((f, _))) => (HWND(f as *mut c_void), false),
+        (Where::NewWindow, _, _) => match crate::create_frame_secondary(hinst) {
+            Some(f) => (f, true),
+            None => return Err("no window could be made for the layout; nothing was moved".into()),
+        },
+        _ => return Err("the layout has nowhere to go".into()),
+    };
+    let fail = |why: String| -> Result<String, String> {
+        if made_window {
+            crate::winid::close_window_now(dest_frame);
+        }
+        Err(why)
+    };
+
+    // Ids first, then the tree, then the windows, as `apply_layout` does.
+    let mut wanted = Vec::new();
+    crate::layout::fresh(shape, &mut wanted);
+    let ids: Vec<PaneId> = wanted.iter().map(|_| take_id()).collect();
+    let mut it = ids.clone().into_iter();
+    let pane_of = |k: usize| named.iter().position(|n| *n == k).map(|i| found[i].pane);
+    let tree = Tree::with_root(crate::layout::to_node(shape, &mut it, &pane_of));
+
+    let Some(bounds) = content_bounds(dest_frame, strip_h(scale_of(dest_frame))) else {
+        return fail("that window has no content area to lay out".into());
+    };
+    let placed = tree.layout(bounds);
+    let mut made: Vec<Pane> = Vec::new();
+    for (id, cell) in ids.iter().zip(wanted.iter()) {
+        let Some((_, Placement::Visible(r))) = placed.iter().find(|(p, _)| p == id).cloned() else {
+            for p in made.drain(..) {
+                free_pane(p.id, p.hwnd, p.surface);
+            }
+            return fail(format!("pane {id} has no place in that layout"));
+        };
+        let spec = NewTab { cwd: cell.cwd.clone(), history: cell.history.clone(), ..NewTab::default() };
+        match create_pane(dest_frame, app, hinst, *id, r, spec) {
+            Some(p) => made.push(p),
+            None => {
+                for p in made.drain(..) {
+                    free_pane(p.id, p.hwnd, p.surface);
+                }
+                return fail("a pane could not be created; nothing was moved".into());
+            }
+        }
+    }
+    let fresh_pairs: Vec<(PaneId, usize)> = made.iter().map(|p| (p.id, p.surface)).collect();
+
+    // **Everything moves under one lock**, after every pane is checked to be
+    // where it was read: there is no instant with a pane in two tabs or none.
+    let new_tab = TabId(take_id());
+    let may_authorise = may_authorise_until_marked();
+    let dest_tab_id = dest.as_ref().map(|(_, t, _)| *t);
+    // Handed back on a refusal, so the panes made for this shape are freed
+    // rather than left as windows nothing refers to.
+    let mut unplaced = Some(made);
+    let moved: Result<(Vec<(isize, isize, usize, Option<TabId>)>, usize), &'static str> = with_windows_mut(|ws| {
+        for f in &found {
+            let ok = ws.iter().any(|w| w.frame == f.frame && w.tabs.iter().any(|t| t.id == f.tab && t.pane(f.pane).is_some()));
+            if !ok {
+                return Err("a terminal moved while the layout was being built");
+            }
+        }
+        let di = ws.iter().position(|w| w.frame == dest_frame.0 as isize).ok_or("the window went while the layout was being built")?;
+        // The destination tab, checked before anything is taken: past this
+        // point nothing refuses, so nothing is left half moved.
+        let dest_at = match dest_tab_id {
+            Some(t) => {
+                let i = ws[di].tabs.iter().position(|x| x.id == t).ok_or("that tab went while the layout was being built")?;
+                ws[di].tabs[i].terminal().ok_or("that tab is not a terminal's")?;
+                Some(i)
+            }
+            None => None,
+        };
+        let made = unplaced.take().unwrap_or_default();
+        let mut taken: Vec<Pane> = Vec::new();
+        let mut gone: Vec<(isize, isize, usize, Option<TabId>)> = Vec::new();
+        for f in &found {
+            if Some(f.tab) == dest_tab_id {
+                continue;
+            }
+            let si = ws.iter().position(|w| w.frame == f.frame).ok_or("its window is gone")?;
+            let (p, emptied) = take_pane(ws, si, f.pane, false)?;
+            gone.push((f.frame, p.hwnd, p.surface, emptied));
+            taken.push(p);
+        }
+        let first = tree.panes().first().copied().unwrap_or(0);
+        let at_index = match (into, dest_at) {
+            (_, Some(i)) => {
+                let Some(term) = ws[di].tabs[i].terminal_mut() else { unreachable!("checked above") };
+                term.panes.extend(taken);
+                term.panes.extend(made);
+                term.tree = tree.clone();
+                i
+            }
+            (into, None) => {
+                let title = taken.first().and_then(|p| p.title.clone()).unwrap_or_default();
+                let cwd = taken.first().and_then(|p| p.cwd.clone());
+                let mut panes = taken;
+                panes.extend(made);
+                let i = match (into, beside) {
+                    (Where::NewTabBeside(_), Some((_, i))) => i.min(ws[di].tabs.len()),
+                    _ => ws[di].tabs.len(),
+                };
+                ws[di].tabs.insert(
+                    i,
+                    Tab {
+                        id: new_tab,
+                        body: Body::Terminal(Terminal { tree: tree.clone(), panes, focused: first }),
+                        title,
+                        color: 0,
+                        role: 0,
+                        shielded: false,
+                        held: false,
+                        may_authorise,
+                        worker_mentions: false,
+                        persona: None,
+                        cwd,
+                        title_override: None,
+                    },
+                );
+                i
+            }
+        };
+        ws[di].active = at_index;
+        Ok((gone, at_index))
+    });
+    let (gone, at_index) = match moved {
+        Ok(m) => m,
+        Err(why) => {
+            // Refused before anything was taken: the panes made for the shape
+            // are still ours (`unplaced`), and are freed.
+            for p in unplaced.take().unwrap_or_default() {
+                free_pane(p.id, p.hwnd, p.surface);
+            }
+            return fail(why.into());
+        }
+    };
+
+    // Outside the lock: windows are re-parented, emptied tabs retired, and a
+    // window left with no tab closed.
+    let mut sources: Vec<isize> = Vec::new();
+    for (src, hwnd, surface, emptied) in &gone {
+        let src_frame = HWND(*src as *mut c_void);
+        if src_frame != dest_frame {
+            rehome_pane(src_frame, dest_frame, *hwnd, *surface);
+        }
+        if let Some(tab) = emptied {
+            retire_emptied_tab(src_frame, *tab);
+        }
+        if !sources.contains(src) {
+            sources.push(*src);
+        }
+    }
+    for src in &sources {
+        let src_frame = HWND(*src as *mut c_void);
+        forget_a_loan_that_went(src_frame);
+        if src_frame == dest_frame {
+            continue;
+        }
+        // absence: means it was not reached -- the window it left still has a tab, and stays.
+        if count(src_frame) == 0 {
+            wlogf!(src_frame, "[layout] its last pane left; closing the window");
+            crate::winid::close_window_now(src_frame);
+        } else {
+            set_active(src_frame, active_index(src_frame));
+            crate::uia::tabs_changed(src_frame);
+        }
+    }
+    crate::project_session::note(polter_projects::autosave::Change::Pages);
+    layout(dest_frame);
+    set_active(dest_frame, at_index);
+    crate::uia::tabs_changed(dest_frame);
+    focus_active(dest_frame);
+    crate::control_room::request_sync();
+
+    // The reply in the caller's namespace, as `apply_layout`'s is.
+    let surface_of = |p: PaneId| -> Option<usize> {
+        named
+            .iter()
+            .zip(found.iter())
+            .find(|(_, f)| f.pane == p)
+            .map(|(k, _)| *k)
+            .or_else(|| fresh_pairs.iter().find(|(id, _)| *id == p).map(|(_, s)| *s))
+    };
+    let reply = serde_json::json!({
+        "layout": crate::layout::describe(tree.root().unwrap(), &surface_of)
+    });
+    wlogf!(
+        dest_frame,
+        "[layout] arranged; {} terminal(s) moved in, {} pane(s) made",
+        gone.len(),
+        ids.len()
+    );
+    Ok(reply.to_string())
+}
+
+/// `terminal_tab_move` (task 1571): the tab holding `surface` to `index` in
+/// its strip, or in the strip of `window`'s window (0: its own). Answers the
+/// reply's text, or the refusal -- `{"code","message"}` for `Lent`.
+///
+/// A move: `move_tab_to` / `move_tab_to_window` keep every pane's window and
+/// surface, and a window left with no tab closes.
+// window-free: keyed by surface, which is unique in the process -- this turns
+// such a key into the window and tab it names
+fn move_tab_for_tool(surface: usize, index: usize, window: usize) -> Result<String, String> {
+    let read = with_windows(|ws| {
+        let at = |key: usize| {
+            ws.iter().find_map(|w| {
+                w.tabs.iter().find(|t| t.panes().iter().any(|p| p.surface == key)).map(|t| {
+                    let lent = w.shown_on_loan().and_then(|l| t.pane(l.pane).map(|p| p.surface));
+                    (w.frame, t.id, lent)
+                })
+            })
+        };
+        (at(surface), if window == 0 { None } else { at(window) })
+    });
+    let (Some((src, id, lent)), dst) = read else {
+        return Err("that terminal is not in a tab this host has open".into());
+    };
+    if let Some(key) = lent {
+        return Err(crate::layout::coded(
+            "Lent",
+            &format!("terminal 0x{key:x} in that tab is being shown in the control room, and nothing was moved."),
+        ));
+    }
+    let src_frame = HWND(src as *mut c_void);
+    let dst_frame = match (window, dst) {
+        (0, _) => src_frame,
+        (_, Some((f, _, _))) => HWND(f as *mut c_void),
+        (_, None) => return Err("the terminal named as the window is not in a tab this host has open".into()),
+    };
+    if dst_frame == src_frame {
+        move_tab_to(src_frame, id, index);
+    } else if !move_tab_to_window(src_frame, id, dst_frame, index) {
+        return Err("that window would not take the tab; nothing was moved".into());
+    }
+    Ok("{}".into())
+}
+
+/// Where the tab holding `surface` stands in its strip, and its title (task
+/// 1571: `terminal_list`'s `tab_index` and `tab_title`).
+// window-free: keyed by surface, which is unique in the process
+pub fn tab_info_of_surface(surface: Surface) -> Option<(usize, String)> {
+    let key = surface as usize;
+    with_windows(|ws| {
+        ws.iter().find_map(|w| {
+            w.tabs
+                .iter()
+                .position(|t| t.panes().iter().any(|p| p.surface == key))
+                .map(|i| (i, w.tabs[i].title.clone()))
+        })
+    })
 }
 
 /// Drain this window's queue so a caller can read what an op wrote.
@@ -7125,6 +7512,18 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
             }
             Op::ApplyLayout(shape, at, outcome) => {
                 let answer = apply_layout(frame, app, hinst, &shape, at);
+                if let Ok(mut cell) = outcome.lock() {
+                    *cell = Some(answer);
+                }
+            }
+            Op::ArrangeLayout(shape, at, into, outcome) => {
+                let answer = arrange_layout(frame, app, hinst, &shape, at, into);
+                if let Ok(mut cell) = outcome.lock() {
+                    *cell = Some(answer);
+                }
+            }
+            Op::MoveTabForTool(surface, index, window, outcome) => {
+                let answer = move_tab_for_tool(surface, index, window);
                 if let Ok(mut cell) = outcome.lock() {
                     *cell = Some(answer);
                 }

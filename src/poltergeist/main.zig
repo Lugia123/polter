@@ -21,6 +21,7 @@ pub const ControlWake = @import("ControlWake.zig");
 pub const ShellSteps = @import("ShellSteps.zig");
 pub const Attention = @import("Attention.zig");
 pub const actions = @import("actions.zig");
+pub const arrange = @import("arrange.zig");
 pub const keys = @import("keys.zig");
 pub const draft = @import("draft.zig");
 pub const prompts = @import("prompts.zig");
@@ -86,6 +87,7 @@ test {
     _ = @import("server_test.zig");
     _ = Attention;
     _ = actions;
+    _ = arrange;
     _ = keys;
     _ = draft;
     _ = prompts;

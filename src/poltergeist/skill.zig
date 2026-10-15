@@ -431,6 +431,11 @@ test "the supervising skill names the tools it tells you to use" {
         // trying to spell Ctrl-C into a text field.
         "terminal_key",
         "terminal_keys",
+
+        // Task 1571: tidying is moving, and the skill is where a supervisor
+        // learns that the tools for it exist before reaching for a close.
+        "terminal_layout",
+        "terminal_tab_move",
     }) |tool| {
         if (std.mem.indexOf(u8, supervising, tool) == null) {
             std.debug.print("\nsupervising never mentions {s}\n", .{tool});

@@ -4651,6 +4651,14 @@ test "a role picked from the menu is not refused for the keys that opened the ta
     try mayType(.agent, false, null, false);
 }
 
+/// Whether a key reached this surface within the quiet window -- the
+/// `UserPresent` clock alone, without the draft and the child, for a call
+/// that moves or resizes a terminal rather than typing into it (task 1571).
+pub fn keyedRecently(self: *const Surface) bool {
+    const last = self.last_key_time orelse return false;
+    return last.durationTo(.now(global.io(), .boot)).toMilliseconds() < notice_quiet_keyboard_ms;
+}
+
 pub fn mayTypeAs(self: *Surface, who: Typist) !void {
     // The judgement is `mayType`'s, so that what the test pins is what runs;
     // this only measures the clock and says why in the log. The three

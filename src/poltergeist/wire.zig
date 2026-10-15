@@ -299,6 +299,8 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 // A terminal that is already open, by its id; left out, one
                 // is opened where `place` says.
                 .in = try optionalIdParam(params, "in"),
+                // A terminal whose tab the new one is opened in (task 1571).
+                .beside = try optionalIdParam(params, "beside"),
             },
         },
 
@@ -316,15 +318,26 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         // as text rather than modelled here: the tree belongs to the apprt,
         // and a structure re-declared at this layer would be a second model
         // of something this side does not own.
-        .terminal_layout => .{ .terminal_layout = .{
-            .id = try requireId(params),
-            .layout = blk: {
-                const o = params orelse return error.BadParams;
-                const v = o.get("layout") orelse return error.BadParams;
-                var buf: std.Io.Writer.Allocating = .init(aa);
-                std.json.Stringify.value(v, .{}, &buf.writer) catch return error.BadParams;
-                break :blk buf.written();
+        .terminal_layout => .{
+            .terminal_layout = .{
+                // Optional only when `into` says where the shape goes; see
+                // `layoutInto`.
+                .id = (try optionalIdParam(params, "id")) orelse 0,
+                .into = try layoutInto(params),
+                .layout = blk: {
+                    const o = params orelse return error.BadParams;
+                    const v = o.get("layout") orelse return error.BadParams;
+                    var buf: std.Io.Writer.Allocating = .init(aa);
+                    std.json.Stringify.value(v, .{}, &buf.writer) catch return error.BadParams;
+                    break :blk buf.written();
+                },
             },
+        },
+
+        .terminal_tab_move => .{ .terminal_tab_move = .{
+            .id = try requireId(params),
+            .index = std.math.cast(u32, try requireU64(params, "index")) orelse return error.BadParams,
+            .window = (try optionalIdParam(params, "window")) orelse 0,
         } },
 
         .terminal_answer_prompt => .{
@@ -498,6 +511,44 @@ fn requireIdNamed(params: ?std.json.ObjectMap, key: []const u8) ParseError!Bus.I
 
         else => error.BadParams,
     };
+}
+
+/// `into`, for `terminal_layout` (task 1571): `{"new_tab_beside":"0x…"}` or
+/// `{"new_window":true}`, exactly one of them. Anything else is refused --
+/// a key spelled wrong read as "no into" would lay the shape out over the
+/// tab `id` names, which is the one thing the caller was trying not to do.
+///
+/// **And `id` is required without it**: with neither there is no tab to lay
+/// out and nowhere new to put one.
+fn layoutInto(params: ?std.json.ObjectMap) ParseError!rpc.LayoutInto {
+    const p = params orelse return error.BadParams;
+    const v = p.get("into") orelse {
+        if (p.get("id") == null) return error.BadParams;
+        return .none;
+    };
+    if (v == .null) {
+        if (p.get("id") == null) return error.BadParams;
+        return .none;
+    }
+    // Both is refused rather than one of them winning: a caller who named a
+    // tab and a new place for the shape meant one of them, and which one is
+    // a guess.
+    if (p.get("id") != null) return error.BadParams;
+    const o = switch (v) {
+        .object => |o| o,
+        else => return error.BadParams,
+    };
+    if (o.count() != 1) return error.BadParams;
+    if (o.get("new_window")) |w| {
+        if (w != .bool or !w.bool) return error.BadParams;
+        return .new_window;
+    }
+    if (o.get("new_tab_beside") != null) {
+        const id = try requireIdNamed(o, "new_tab_beside");
+        if (id == 0) return error.BadParams;
+        return .{ .new_tab_beside = id };
+    }
+    return error.BadParams;
 }
 
 /// A terminal id that may be left out: absent or `null` is none, and one
@@ -909,6 +960,12 @@ pub const TerminalInfo = struct {
     /// "separate windows" would be inventing an arrangement.
     window: ?u64 = null,
     tab: ?u64 = null,
+
+    /// Where that tab stands in its window's strip, from 0, and what the
+    /// strip calls it (task 1571) -- what `terminal_tab_move` takes and what
+    /// the person sees. Null, and left out, when the apprt did not say.
+    tab_index: ?u32 = null,
+    tab_title: ?[]const u8 = null,
 
     /// What the agent CLI in it has said through its hooks. See `Bus.Agent`.
     ///
@@ -1838,6 +1895,14 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
         try s.objectField("tab");
         try s.write(t);
     }
+    if (info.tab_index) |i| {
+        try s.objectField("tab_index");
+        try s.write(i);
+    }
+    if (info.tab_title) |t| {
+        try s.objectField("tab_title");
+        try s.write(t);
+    }
 
     try s.objectField("agent");
     try writeAgent(s, info.agent);
@@ -2336,6 +2401,23 @@ test "grouping reaches the wire, not just the in-memory Response (task 650)" {
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"tab\""));
     try testing.expect(std.mem.indexOf(u8, out, "\"window\":1") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"tab\":3") != null);
+}
+
+test "a tab's place and title reach the wire, and are left out when nobody said (task 1571)" {
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    const list = [_]TerminalInfo{
+        .{ .id = 0x11, .agent = .none, .window = 1, .tab = 3, .tab_index = 2, .tab_title = "build" },
+        .{ .id = 0x22, .agent = .none, .window = 1, .tab = 4 },
+    };
+    try writeResponse(&w, .{ .terminals = &list });
+    const out = w.buffered();
+
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"tab_index\""));
+    try testing.expect(std.mem.indexOf(u8, out, "\"tab_index\":2") != null);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"tab_title\""));
+    try testing.expect(std.mem.indexOf(u8, out, "\"tab_title\":\"build\"") != null);
 }
 
 test "group_history parses its cursor and its limit" {
@@ -2943,4 +3025,80 @@ test "Projects: group_project reads one of two words and guesses at no other" {
         \\{"method":"group_project","params":{"action":"use"}}
         ,
     }) |bad| try testing.expectError(error.BadParams, parse(bad));
+}
+
+test "tidying: terminal_layout takes id, or into, and not both and not neither" {
+    {
+        var p = try parse(
+            \\{"method":"terminal_layout","params":{"id":"0x2a","layout":{"pane":"0x2a"}}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(@as(Bus.Id, 0x2a), p.value.terminal_layout.id);
+        try testing.expect(p.value.terminal_layout.into == .none);
+    }
+    {
+        var p = try parse(
+            \\{"method":"terminal_layout","params":{"into":{"new_tab_beside":"0x2a"},"layout":{"pane":"0x2b"}}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(@as(Bus.Id, 0), p.value.terminal_layout.id);
+        try testing.expectEqual(@as(?Bus.Id, 0x2a), p.value.terminal_layout.into.terminal());
+    }
+    {
+        var p = try parse(
+            \\{"method":"terminal_layout","params":{"into":{"new_window":true},"layout":{"new":null}}}
+        );
+        defer p.deinit();
+        try testing.expect(p.value.terminal_layout.into == .new_window);
+    }
+    // Neither: no tab to lay out and nowhere new to put one.
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"terminal_layout","params":{"layout":{"pane":"0x2a"}}}
+    ));
+    // Both: which one was meant is a guess.
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"terminal_layout","params":{"id":"0x2a","into":{"new_window":true},"layout":{"pane":"0x2a"}}}
+    ));
+    // A key spelled wrong is not "no into".
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"terminal_layout","params":{"into":{"new_tab":"0x2a"},"layout":{"pane":"0x2a"}}}
+    ));
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"terminal_layout","params":{"into":{"new_window":false},"layout":{"pane":"0x2a"}}}
+    ));
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"terminal_layout","params":{"into":{"new_window":true,"new_tab_beside":"0x2a"},"layout":{"pane":"0x2a"}}}
+    ));
+}
+
+test "tidying: terminal_tab_move and role_launch's beside are read" {
+    {
+        var p = try parse(
+            \\{"method":"terminal_tab_move","params":{"id":"0x2a","index":3,"window":"0x2b"}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(@as(Bus.Id, 0x2a), p.value.terminal_tab_move.id);
+        try testing.expectEqual(@as(u32, 3), p.value.terminal_tab_move.index);
+        try testing.expectEqual(@as(Bus.Id, 0x2b), p.value.terminal_tab_move.window);
+    }
+    {
+        var p = try parse(
+            \\{"method":"terminal_tab_move","params":{"id":"0x2a","index":0}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(@as(Bus.Id, 0), p.value.terminal_tab_move.window);
+    }
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"terminal_tab_move","params":{"id":"0x2a"}}
+    ));
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"terminal_tab_move","params":{"id":"0x2a","index":-1}}
+    ));
+    {
+        var p = try parse(
+            \\{"method":"role_launch","params":{"key":"hand","beside":"0x2a"}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(@as(?Bus.Id, 0x2a), p.value.role_launch.beside);
+    }
 }

@@ -19,6 +19,7 @@ const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
 const Tasks = @import("Tasks.zig");
+const arrange = @import("arrange.zig");
 const RecordTools = @import("RecordTools.zig");
 const screenshot = @import("screenshot.zig");
 pub const actions = @import("actions.zig");
@@ -333,7 +334,16 @@ pub const Method = enum {
     /// layout that is still moving, and none of them can say which pane it
     /// just made -- `new_split` answers before its work runs. Four splits
     /// therefore produced a chain rather than a shape.
+    ///
+    /// **And the way terminals are gathered from other tabs and windows**
+    /// (task 1571): a `pane` cell may name a terminal anywhere, and naming
+    /// it moves it here -- the same surface, the same process. Tidying by
+    /// closing and reopening would cut every session it holds.
     terminal_layout,
+
+    /// Move a whole tab to another position in its window's strip, or into
+    /// another window's (task 1571). A move, never a close and a reopen.
+    terminal_tab_move,
 
     /// Stop being a supervisor.
     ///
@@ -623,6 +633,10 @@ pub const Request = union(Method) {
         /// target, so the reach rules of anything that types into a
         /// terminal apply to it (`target`).
         in: ?Bus.Id = null,
+        /// A terminal whose tab the new one is opened in, as a new pane
+        /// there -- never a new tab (task 1571). Named, so the reach rules
+        /// are asked of it like any other terminal a call names.
+        beside: ?Bus.Id = null,
     },
     terminal_action: struct { id: Bus.Id, action: []const u8 },
     terminal_actions,
@@ -648,7 +662,16 @@ pub const Request = union(Method) {
     },
 
     /// `layout` is the shape, already re-serialised to JSON by `wire`.
-    terminal_layout: struct { id: Bus.Id, layout: []const u8 },
+    ///
+    /// `id` names a pane of the tab being laid out; it may be left out when
+    /// `into` says where the shape goes instead (task 1571). Zero is "left
+    /// out": no terminal has id zero.
+    terminal_layout: struct { id: Bus.Id = 0, layout: []const u8, into: LayoutInto = .none },
+
+    /// `index` counts from 0 in the strip the tab ends up in; past the end is
+    /// the end. `window` names a terminal whose window the tab goes to; zero
+    /// is the window it is in.
+    terminal_tab_move: struct { id: Bus.Id, index: u32, window: Bus.Id = 0 },
 
     stand_down,
     become_supervisor,
@@ -981,6 +1004,7 @@ pub fn callableByPlugin(method: Method) bool {
         // machine rather than a party minding the work. Widening is easy;
         // narrowing after somebody has built on the wider rule is not.
         .terminal_layout,
+        .terminal_tab_move,
 
         // **Closed to plugins.** The role library was opened to the
         // supervisor because the user said so of the supervisor; nothing
@@ -1218,6 +1242,7 @@ pub fn requiresSupervisor(method: Method) bool {
         // Rearranging a window is a supervisor's: it changes what the person
         // is looking at, and the case it exists for is placing workers.
         .terminal_layout,
+        .terminal_tab_move,
 
         // **Answering somebody else's permission prompt is a supervisor's,
         // on top of the user's switch.** Two conditions rather than one:
@@ -1504,6 +1529,7 @@ pub fn targetsTerminal(method: Method) bool {
 
         // Names any pane of the tab being rearranged.
         .terminal_layout,
+        .terminal_tab_move,
 
         // Names the terminal whose prompt is being answered, and is
         // checked for existence like the rest -- an answer typed at a
@@ -1606,6 +1632,12 @@ pub fn target(req: Request) ?Bus.Id {
         // that terminal is the target, shield, marks and all. With none
         // named it opens its own, and reaches nobody.
         .role_launch => |v| v.in,
+
+        // The pane that says which tab, or the terminal whose tab the new
+        // one goes beside; neither when the shape goes into a new window.
+        // Every pane the layout names is asked about as well, in
+        // `authorizeNamed`.
+        .terminal_layout => |v| if (v.id != 0) v.id else v.into.terminal(),
 
         inline .group_add, .group_remove, .task_assign => |v| v.id,
         inline else => |v| v.id,
@@ -1777,6 +1809,7 @@ pub fn selfPermitted(req: Request) bool {
         // rearranged the caller's own tab. The test "a terminal may lay out
         // the tab it is in" is what holds this side now.
         .terminal_layout,
+        .terminal_tab_move,
         => true,
 
         // Decided per action, exhaustively, in `actions.selfSafeTag`.
@@ -1889,6 +1922,7 @@ pub fn promptReach(method: Method) enum {
 
         // Rearranges windows; it cannot put a keystroke into one.
         .terminal_layout,
+        .terminal_tab_move,
 
         .agent_event,
         .terminal_turn,
@@ -2077,43 +2111,7 @@ pub fn authorize(bus: *const Bus, caller: Bus.Caller, req: Request) Error!void {
         // in with no check at all and could reach past `set_watch`'s
         // supervisor gate and lift a `held` the user had set. Every door
         // reopens every question.
-        if (bus.isShielded(id)) return error.Shielded;
-
-        // **Reach is decided by the target, not by the relationship.**
-        //
-        // A supervisor may reach any Polter terminal. Anyone else may
-        // reach a terminal that carries no mark -- one the bus has never
-        // heard of, or one it knows and has filed as `none`.
-        //
-        // The reasoning is the user's and it is worth writing down,
-        // because it inverts what this used to do. An unmarked terminal is
-        // one the program knows nothing about: it cannot tell whether an
-        // agent is running in there or a person is reading their mail, and
-        // it is not going to guess. So it does not take a position. What
-        // it *can* see is a mark, and a mark means somebody arranged
-        // something -- this terminal is supervising, or somebody is
-        // watching it -- and rearranging another party's arrangement is
-        // not a stranger's to do.
-        //
-        // Note what is *not* being expressed: there is no notion of peers
-        // here. One watched terminal cannot touch another watched
-        // terminal, and the reason is not that they are equals. It is that
-        // the other one is marked.
-        //
-        // And note what this gives up. Two supervisors can now interrupt
-        // and restart each other, which the old ownership rule made
-        // impossible and which is exactly the case the user wanted: a
-        // plugin that only reloads on restart needs somebody able to stop
-        // the other terminal and start it again.
-        if (!supervisor) {
-            switch (bus.roleOf(id)) {
-                .supervisor, .watched => return error.Supervised,
-
-                // Unmarked, or unknown to the bus, which `roleOf` reports
-                // as the same thing because it is the same thing: no marks.
-                .none => {},
-            }
-        }
+        try authorizeReach(bus, id, supervisor);
 
         // Deliberately no existence check here any more. It used to refuse
         // an id the bus had never registered, which under the old rule was
@@ -2128,6 +2126,10 @@ pub fn authorize(bus: *const Bus, caller: Bus.Caller, req: Request) Error!void {
         // this way and needed a special case to say so; now everything
         // does and the special case is gone.
     }
+
+    // **Every other terminal the call names**, asked the same questions.
+    // See `authorizeReach` for the hole this closed.
+    try authorizeNamed(bus, req, supervisor);
 
     // **The user's switch, asked of the target.** Two calls arrive here,
     // and the second is the one that makes the first worth anything.
@@ -2198,6 +2200,80 @@ pub fn authorize(bus: *const Bus, caller: Bus.Caller, req: Request) Error!void {
         if (bus.get(req.clock_out.id)) |e| {
             if (e.held) return error.TerminalHeld;
         }
+    }
+}
+
+/// The shield and the reach rule, asked of one terminal a call names.
+///
+/// Its own function since task 1571, because a call can name more than one:
+/// a layout names every pane it moves, a tab move names the window it goes
+/// to. **Every one of them is asked the same questions as the target** --
+/// before 1571 only the target was, so a shielded pane in the same tab as
+/// an unshielded one could be rearranged by naming the unshielded one.
+fn authorizeReach(bus: *const Bus, id: Bus.Id, supervisor: bool) Error!void {
+    if (bus.isShielded(id)) return error.Shielded;
+
+    // **Reach is decided by the target, not by the relationship.**
+    //
+    // A supervisor may reach any Polter terminal. Anyone else may
+    // reach a terminal that carries no mark -- one the bus has never
+    // heard of, or one it knows and has filed as `none`.
+    //
+    // The reasoning is the user's and it is worth writing down,
+    // because it inverts what this used to do. An unmarked terminal is
+    // one the program knows nothing about: it cannot tell whether an
+    // agent is running in there or a person is reading their mail, and
+    // it is not going to guess. So it does not take a position. What
+    // it *can* see is a mark, and a mark means somebody arranged
+    // something -- this terminal is supervising, or somebody is
+    // watching it -- and rearranging another party's arrangement is
+    // not a stranger's to do.
+    //
+    // Note what is *not* being expressed: there is no notion of peers
+    // here. One watched terminal cannot touch another watched
+    // terminal, and the reason is not that they are equals. It is that
+    // the other one is marked.
+    //
+    // And note what this gives up. Two supervisors can now interrupt
+    // and restart each other, which the old ownership rule made
+    // impossible and which is exactly the case the user wanted: a
+    // plugin that only reloads on restart needs somebody able to stop
+    // the other terminal and start it again.
+    if (!supervisor) {
+        switch (bus.roleOf(id)) {
+            .supervisor, .watched => return error.Supervised,
+
+            // Unmarked, or unknown to the bus, which `roleOf` reports
+            // as the same thing because it is the same thing: no marks.
+            .none => {},
+        }
+    }
+}
+
+/// The terminals a request names besides its target, each put through
+/// `authorizeReach`. **All of them before any of them acts**: authorize
+/// runs before dispatch, so one refusal here means nothing moved.
+fn authorizeNamed(bus: *const Bus, req: Request, supervisor: bool) Error!void {
+    switch (req) {
+        .terminal_layout => |p| {
+            if (p.into.terminal()) |id| try authorizeReach(bus, id, supervisor);
+
+            var buf: [arrange.scan_buffer_len]u8 = undefined;
+            var fba: std.heap.FixedBufferAllocator = .init(&buf);
+            var it: arrange.PaneIter = .init(fba.allocator(), p.layout);
+            defer it.deinit();
+            // ⚠️ **A layout this cannot read is refused, not waved through.**
+            // `wire` re-serialised it, so it is JSON; what is left is a shape
+            // nested past `arrange.max_depth` or a `pane` that is not a
+            // number -- and passing either would be passing terminals that
+            // were never asked about.
+            while (it.next() catch return error.NotPermitted) |id| {
+                try authorizeReach(bus, id, supervisor);
+            }
+        },
+        .terminal_tab_move => |p| if (p.window != 0) try authorizeReach(bus, p.window, supervisor),
+        .role_launch => |p| if (p.beside) |id| try authorizeReach(bus, id, supervisor),
+        else => {},
     }
 }
 
@@ -2503,6 +2579,7 @@ test "only what changes the arrangement needs the supervisor" {
 
             // Rearranging a window is arranging, not operating.
             .terminal_layout,
+            .terminal_tab_move,
 
             // Another terminal's capabilities: a supervisor's question
             // (`requiresSupervisor` says why).
@@ -4805,6 +4882,18 @@ pub const TaskOwner = struct {
     open: bool,
 };
 
+/// Where a `terminal_layout` puts its shape. See `arrange.Into`.
+pub const LayoutInto = arrange.Into;
+
+/// What a host is handed for a `terminal_layout`.
+pub const LayoutCall = struct {
+    /// A pane of the tab to lay out; zero when `into` says where instead.
+    id: Bus.Id,
+    into: LayoutInto,
+    /// The shape, as JSON, in terminal ids.
+    spec: []const u8,
+};
+
 /// What an apprt said about a layout it was asked for.
 ///
 /// **Two outcomes and not an error union**, because "refused" carries a
@@ -4813,6 +4902,10 @@ pub const TaskOwner = struct {
 /// guessing at a shape it wrote itself.
 pub const LayoutAnswer = struct {
     applied: bool,
+    /// The refusal's code. `Refused` unless the apprt named another --
+    /// `Lent` for a terminal the control room is showing, which only the
+    /// apprt knows (task 1571).
+    code: []const u8 = "Refused",
     /// The resulting layout as JSON when it applied; the reason when it did
     /// not.
     text: []const u8,
@@ -5052,6 +5145,10 @@ pub const Place = struct {
     /// only equality means anything, and null means nobody said.
     window: ?u64 = null,
     tab: ?u64 = null,
+    /// The tab's place in its strip and its title (task 1571); null when
+    /// the apprt did not say.
+    tab_index: ?u32 = null,
+    tab_title: ?[]const u8 = null,
 };
 
 pub const Host = struct {
@@ -5226,6 +5323,9 @@ pub const Host = struct {
             /// A terminal that is already open, to start the role in
             /// instead of opening one; null to open one where `place` says.
             into: ?Bus.Id,
+            /// A terminal whose tab the new one is opened in, as a pane --
+            /// never a tab (task 1571). Null for `place` to decide.
+            beside: ?Bus.Id,
         ) anyerror!Opened,
 
         /// Open a terminal in `by`'s window, starting in `cwd`.
@@ -5700,9 +5800,27 @@ pub const Host = struct {
         layout: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
-            id: Bus.Id,
-            spec: []const u8,
+            call: LayoutCall,
         ) anyerror!LayoutAnswer,
+
+        /// Move the tab `id` is in to `index` in its strip, or in the strip
+        /// of `window`'s window when that is not zero (task 1571). The
+        /// answer's text is the reply on success and the reason otherwise.
+        tabMove: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+            index: u32,
+            window: Bus.Id,
+        ) anyerror!LayoutAnswer,
+
+        /// A terminal a key reached within the quiet window `UserPresent`
+        /// is measured against: `id` itself, or with `whole_tab` any
+        /// terminal in its tab. Null when none did, and when `id` names
+        /// nothing -- the call that follows says that. `except` is never
+        /// answered: the caller's own terminal, which the person has
+        /// usually just typed to.
+        userPresent: *const fn (ctx: *anyopaque, id: Bus.Id, whole_tab: bool, except: Bus.Id) ?Bus.Id,
 
         /// Change a task's title, its kind, or both. `null` leaves one alone.
         taskEdit: *const fn (
@@ -5868,8 +5986,9 @@ pub const Host = struct {
         cwd: []const u8,
         place: Placement,
         into: ?Bus.Id,
+        beside: ?Bus.Id,
     ) anyerror!Opened {
-        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place, into);
+        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place, into, beside);
     }
 
     fn quietMs(self: Host, id: Bus.Id) u64 {
@@ -6122,10 +6241,23 @@ pub const Host = struct {
     fn layout(
         self: Host,
         alloc: std.mem.Allocator,
-        id: Bus.Id,
-        spec: []const u8,
+        call: LayoutCall,
     ) anyerror!LayoutAnswer {
-        return self.vtable.layout(self.ctx, alloc, id, spec);
+        return self.vtable.layout(self.ctx, alloc, call);
+    }
+
+    fn tabMove(
+        self: Host,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+        index: u32,
+        window: Bus.Id,
+    ) anyerror!LayoutAnswer {
+        return self.vtable.tabMove(self.ctx, alloc, id, index, window);
+    }
+
+    fn userPresent(self: Host, id: Bus.Id, whole_tab: bool, except: Bus.Id) ?Bus.Id {
+        return self.vtable.userPresent(self.ctx, id, whole_tab, except);
     }
 
     fn taskEdit(
@@ -6391,6 +6523,7 @@ pub fn isAgentCall(method: Method) bool {
         .terminal_keys,
         .terminal_answer_prompt,
         .terminal_layout,
+        .terminal_tab_move,
         .stand_down,
         .become_supervisor,
         .task_create,
@@ -6587,6 +6720,8 @@ fn dispatchOne(
                     // arrangement the core invented.
                     info.window = place.window;
                     info.tab = place.tab;
+                    info.tab_index = place.tab_index;
+                    info.tab_title = place.tab_title;
                     try list.append(alloc, info);
                 }
             } else |err| {
@@ -6934,7 +7069,14 @@ fn dispatchOne(
         },
 
         .role_launch => |p| {
-            const opened = host.personaLaunch(alloc, caller, p.key, p.cli, p.cwd, p.place, p.in) catch |err| return switch (err) {
+            // `beside` says where, so a second answer to that is refused
+            // rather than one of them quietly winning.
+            if (p.beside != null and (p.in != null or p.place != .auto)) return hostFailure(
+                "BadParams",
+                "`beside` opens the role's terminal as a new pane in that terminal's tab; " ++
+                    "it does not go with `in` (a terminal already open) or with `place`.",
+            );
+            const opened = host.personaLaunch(alloc, caller, p.key, p.cli, p.cwd, p.place, p.in, p.beside) catch |err| return switch (err) {
                 // Starting it in a terminal that is already open (`in`).
                 error.UnknownTerminal => hostFailure(
                     "UnknownTerminal",
@@ -6963,6 +7105,12 @@ fn dispatchOne(
                         "or open a new terminal there with `place`.",
                 ),
                 error.NotBuiltYet => notBuiltYet(),
+                // `beside`, and the tab it names would not take another pane.
+                error.NoRoomBeside => hostFailure(
+                    "NoRoomBeside",
+                    "a pane could not be made in that terminal's tab, and `beside` never " ++
+                        "falls back to a new tab; nothing was opened.",
+                ),
                 error.NoSuchPersona => hostFailure(
                     "NoSuchRole",
                     "there is no role with that key. role_list has them.",
@@ -7181,7 +7329,24 @@ fn dispatchOne(
         => return screenshotCall(alloc, bus, host, caller, req),
 
         .terminal_layout => |p| {
-            const answer = host.layout(alloc, p.id, p.layout) catch |err| return switch (err) {
+            // **Nobody at the keyboard of anything this moves or resizes**
+            // (task 1571), asked of every terminal the call names before any
+            // of it happens. The destination tab's own panes are all named --
+            // a layout has to name every one of them -- so they are asked
+            // too: a pane that changes size under somebody typing interrupts
+            // them as surely as one that moves.
+            const keyed = layoutKeyed(host, caller, p) catch
+                return hostFailure("Refused", "the layout's `pane` cells could not be read");
+            if (keyed) |id| return hostFailure(
+                "UserPresent",
+                try std.fmt.allocPrint(alloc, "0x{x}: " ++ moved_while_keyed, .{id}),
+            );
+
+            const answer = host.layout(alloc, .{
+                .id = p.id,
+                .into = p.into,
+                .spec = p.layout,
+            }) catch |err| return switch (err) {
                 error.NoSuchTerminal,
                 error.UnknownTerminal,
                 => failure(error.UnknownTerminal),
@@ -7197,6 +7362,14 @@ fn dispatchOne(
                         "which is what this call exists for.",
                 ),
 
+                // A stack where stacks are not built. Refused before the apprt
+                // is asked, so nothing moved.
+                error.NotBuiltYet => hostFailure(
+                    "NotBuiltYet",
+                    "this platform has no stacks yet, and the layout holds a `stack` " ++
+                        "cell; nothing was moved. Give each terminal a pane of its own.",
+                ),
+
                 else => hostFailure(
                     "LayoutFailed",
                     "the layout could not be given to that window",
@@ -7208,10 +7381,35 @@ fn dispatchOne(
             // honoured -- the caller wrote the shape and needs to know which
             // part of it was the problem.
             if (!answer.applied) return .{ .failed = .{
-                .code = "Refused",
+                .code = answer.code,
                 .message = answer.text,
             } };
 
+            return .{ .text = answer.text };
+        },
+
+        .terminal_tab_move => |p| {
+            // Every terminal in the tab is resized by a move to another
+            // window, and its strip is redrawn under it in this one.
+            if (host.userPresent(p.id, true, caller)) |id| return hostFailure(
+                "UserPresent",
+                try std.fmt.allocPrint(alloc, "0x{x}: " ++ moved_while_keyed, .{id}),
+            );
+
+            const answer = host.tabMove(alloc, p.id, p.index, p.window) catch |err| return switch (err) {
+                error.NoSuchTerminal,
+                error.UnknownTerminal,
+                => failure(error.UnknownTerminal),
+                error.LayoutUnsupported => hostFailure(
+                    "Unsupported",
+                    "this platform does not move tabs for a tool, and nothing was changed.",
+                ),
+                else => hostFailure("TabMoveFailed", "the tab could not be moved"),
+            };
+            if (!answer.applied) return .{ .failed = .{
+                .code = answer.code,
+                .message = answer.text,
+            } };
             return .{ .text = answer.text };
         },
 
@@ -8633,6 +8831,49 @@ fn chatFailure(err: anyerror) wire.Response {
 /// there is a judgement, and it belongs to whoever is reading -- the same
 /// division the rest of this program keeps: it measures how long a
 /// terminal has been still and never says it is stuck.
+/// What `UserPresent` measured, said for a move rather than for typing.
+/// The measurement is `key_arrived`'s, and so is the caution about reading
+/// it as a person.
+const moved_while_keyed =
+    "a key reached that terminal within the last ten seconds, so nothing was " ++
+    "moved: moving it, or resizing it by laying out the tab it is in, changes " ++
+    "the screen under whatever is being typed there. This says a key arrived " ++
+    "and nothing more -- not who sent it, and not that anyone is there. " ++
+    "**It clears on its own.** Try again in a moment.";
+
+/// The first terminal a layout names, or the pane it names as its tab, that
+/// a key reached within the quiet window -- null when there is none.
+///
+/// ⚠️ **The caller's own terminal is never asked.** A supervisor laying out
+/// its own tab has usually just been typed to by the person -- that is how
+/// it was told to tidy up -- and refusing it for that would refuse the
+/// request that asked for it.
+fn layoutKeyed(
+    host: Host,
+    caller: Bus.Id,
+    p: @FieldType(Request, "terminal_layout"),
+) error{BadLayout}!?Bus.Id {
+    const ask = struct {
+        fn one(h: Host, c: Bus.Id, id: Bus.Id) ?Bus.Id {
+            if (id == 0 or c == id) return null;
+            return h.userPresent(id, false, c);
+        }
+    };
+    if (ask.one(host, caller, p.id)) |id| return id;
+    if (p.into.terminal()) |t| if (ask.one(host, caller, t)) |id| return id;
+
+    var buf: [arrange.scan_buffer_len]u8 = undefined;
+    var fba: std.heap.FixedBufferAllocator = .init(&buf);
+    var it: arrange.PaneIter = .init(fba.allocator(), p.layout);
+    defer it.deinit();
+    // `authorize` read this same text through the same walk and let it
+    // through, so a failure here is not expected; it is a refusal anyway.
+    while (it.next() catch return error.BadLayout) |pane| {
+        if (ask.one(host, caller, pane)) |id| return id;
+    }
+    return null;
+}
+
 const key_arrived =
     "a key reached that terminal within the last ten seconds, so nothing was " ++
     "typed into it: text arriving mid-sentence lands inside whatever is " ++
@@ -9066,6 +9307,16 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
 
+    /// What `layout` was last handed, how often, and how it answers.
+    laid_out: ?LayoutCall = null,
+    layout_calls: usize = 0,
+    layout_error: ?anyerror = null,
+    layout_refusal: ?struct { code: []const u8, text: []const u8 } = null,
+    /// What `tabMove` was last handed.
+    tab_moved: ?struct { id: Bus.Id, index: u32, window: Bus.Id } = null,
+    /// The terminals a key reached a moment ago, for `userPresent`.
+    keyed_terminals: []const Bus.Id = &.{},
+
     /// What `groupProject` was last asked, and what it refuses with.
     project_said: ?struct { id: Bus.Id, group: []const u8, use: bool } = null,
     project_refusal: ?anyerror = null,
@@ -9100,6 +9351,7 @@ const FakeHost = struct {
         cwd: []const u8,
         place: Placement,
         into: ?Bus.Id = null,
+        beside: ?Bus.Id = null,
     } = null,
     clis_refreshed: bool = false,
     role_tab_late: bool = false,
@@ -9422,6 +9674,8 @@ const FakeHost = struct {
             .taskCreate = taskCreate,
             .taskEdit = taskEdit,
             .layout = layout,
+            .tabMove = tabMove,
+            .userPresent = userPresent,
             .screenshotAllowed = screenshotAllowedFake,
             .screenshotHost = screenshotHostFake,
             .screenshotInteractive = screenshotInteractiveFake,
@@ -9499,14 +9753,36 @@ const FakeHost = struct {
     fn layout(
         ctx: *anyopaque,
         alloc: std.mem.Allocator,
-        id: Bus.Id,
-        spec: []const u8,
+        call: LayoutCall,
     ) anyerror!LayoutAnswer {
-        _ = ctx;
-        _ = id;
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.layout_calls += 1;
+        self.laid_out = call;
+        if (self.layout_error) |e| return e;
+        if (self.layout_refusal) |r| return .{ .applied = false, .code = r.code, .text = r.text };
         // Stands in for an apprt that does rearrange panes, and answers with
         // what it was handed so a test can see the shape arrived intact.
-        return .{ .applied = true, .text = try alloc.dupe(u8, spec) };
+        return .{ .applied = true, .text = try alloc.dupe(u8, call.spec) };
+    }
+
+    fn tabMove(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+        index: u32,
+        window: Bus.Id,
+    ) anyerror!LayoutAnswer {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.tab_moved = .{ .id = id, .index = index, .window = window };
+        return .{ .applied = true, .text = try alloc.dupe(u8, "{\"tab_index\":0}") };
+    }
+
+    fn userPresent(ctx: *anyopaque, id: Bus.Id, whole_tab: bool, except: Bus.Id) ?Bus.Id {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        _ = whole_tab;
+        if (id == except) return null;
+        for (self.keyed_terminals) |k| if (k == id) return id;
+        return null;
     }
 
     fn taskEdit(
@@ -10032,10 +10308,12 @@ const FakeHost = struct {
         cwd: []const u8,
         place: Placement,
         into: ?Bus.Id,
+        beside: ?Bus.Id,
     ) anyerror!Opened {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.role_error) |e| return e;
-        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into };
+        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into, .beside = beside };
+        if (beside != null) return .{ .id = null, .placed = .split };
         if (into) |there| return .{ .id = there, .placed = .{ .reused = .asked } };
         if (place == .stack) return error.NotBuiltYet;
         // What the app's placement would answer: `tab` is a tab, `here` a
@@ -15644,5 +15922,200 @@ test "Projects: group_project is a supervisor's, reaches the host as said, and a
         try testing.expect(!std.mem.eql(u8, no.failed.message, "the group's project was not changed"));
         for (seen[0..i]) |before| try testing.expect(!std.mem.eql(u8, before, no.failed.message));
         seen[i] = no.failed.message;
+    }
+}
+
+// -- tidying by moving (task 1571) ------------------------------------------
+
+test "tidying: a shielded pane named in a layout is refused, not just a shielded id" {
+    // The hole the supervisor named: `authorize` asked the shield of `id`
+    // alone, so a shielded terminal in the same tab as an unshielded one
+    // was rearranged by naming the unshielded one. Now every `pane` cell is
+    // asked, and the whole call is refused before anything moves.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.register(other);
+    try b.setShielded(other, true, .user);
+
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{ .terminal_layout = .{
+        .id = worker,
+        .layout = "{\"split\":\"h\",\"left\":{\"pane\":\"0x2222\"},\"right\":{\"pane\":\"0x3333\"}}",
+    } }));
+    // Nested inside a stack, and written as a decimal: the same terminal.
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{ .terminal_layout = .{
+        .id = worker,
+        .layout = "{\"stack\":[{\"pane\":\"0x2222\"},{\"pane\":\"13107\"}]}",
+    } }));
+    // And the same layout without it goes through.
+    try authorize(&b, term(boss), .{ .terminal_layout = .{
+        .id = worker,
+        .layout = "{\"split\":\"h\",\"left\":{\"pane\":\"0x2222\"},\"right\":{\"new\":null}}",
+    } });
+}
+
+test "tidying: every other terminal a move names is asked about too" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.register(other);
+    try b.setShielded(other, true, .user);
+
+    // The terminal a new tab goes beside.
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{ .terminal_layout = .{
+        .layout = "{\"pane\":\"0x2222\"}",
+        .into = .{ .new_tab_beside = other },
+    } }));
+    // The window a tab is moved to.
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{ .terminal_tab_move = .{
+        .id = worker,
+        .index = 0,
+        .window = other,
+    } }));
+    // The tab a role is opened beside.
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{ .role_launch = .{
+        .key = "hand",
+        .beside = other,
+    } }));
+    // A new window names nobody but its panes.
+    try authorize(&b, term(boss), .{ .terminal_layout = .{
+        .layout = "{\"pane\":\"0x2222\"}",
+        .into = .new_window,
+    } });
+}
+
+test "tidying: moving is a supervisor's, like laying out" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try testing.expectError(error.NotPermitted, authorize(&b, term(worker), .{ .terminal_tab_move = .{
+        .id = worker,
+        .index = 1,
+    } }));
+    try testing.expectError(error.NotPermitted, authorize(&b, term(worker), .{ .terminal_layout = .{
+        .layout = "{\"new\":null}",
+        .into = .new_window,
+    } }));
+}
+
+test "tidying: a key at any terminal a layout names refuses all of it" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // A pane already in the destination tab counts: laying it out resizes it.
+    var fake: FakeHost = .{ .keyed_terminals = &.{other} };
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_layout = .{
+        .id = worker,
+        .layout = "{\"split\":\"h\",\"left\":{\"pane\":\"0x2222\"},\"right\":{\"pane\":\"0x3333\"}}",
+    } });
+    try testing.expectEqualStrings("UserPresent", res.failed.code);
+    try testing.expect(std.mem.startsWith(u8, res.failed.message, "0x3333: "));
+    // All or nothing: the apprt was never asked.
+    try testing.expectEqual(@as(usize, 0), fake.layout_calls);
+
+    // The caller's own terminal is not asked: the person has usually just
+    // typed to it, and that is how it was told to tidy up.
+    var own: FakeHost = .{ .keyed_terminals = &.{boss} };
+    const ok = try dispatch(alloc, &b, own.host(), term(boss), .{ .terminal_layout = .{
+        .id = boss,
+        .layout = "{\"split\":\"h\",\"left\":{\"pane\":\"0x1111\"},\"right\":{\"pane\":\"0x2222\"}}",
+    } });
+    try testing.expect(ok == .text);
+    try testing.expectEqual(@as(usize, 1), own.layout_calls);
+}
+
+test "tidying: the host is handed where the shape goes" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+    _ = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .terminal_layout = .{
+        .layout = "{\"pane\":\"0x2222\"}",
+        .into = .{ .new_tab_beside = worker },
+    } });
+    try testing.expectEqual(@as(Bus.Id, 0), fake.laid_out.?.id);
+    try testing.expectEqual(@as(?Bus.Id, worker), fake.laid_out.?.into.terminal());
+}
+
+test "tidying: a refusal keeps the code the apprt gave it" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var lent: FakeHost = .{ .layout_refusal = .{ .code = "Lent", .text = "0x2222 is shown in the control room" } };
+    const a = try dispatch(alloc, &b, lent.host(), term(boss), .{ .terminal_layout = .{
+        .id = worker,
+        .layout = "{\"pane\":\"0x2222\"}",
+    } });
+    try testing.expectEqualStrings("Lent", a.failed.code);
+
+    // A plain refusal is still `Refused`.
+    var plain: FakeHost = .{ .layout_refusal = .{ .code = "Refused", .text = "the layout names a terminal twice" } };
+    const c = try dispatch(alloc, &b, plain.host(), term(boss), .{ .terminal_layout = .{
+        .id = worker,
+        .layout = "{\"pane\":\"0x2222\"}",
+    } });
+    try testing.expectEqualStrings("Refused", c.failed.code);
+
+    // A stack where stacks are not built.
+    var nostack: FakeHost = .{ .layout_error = error.NotBuiltYet };
+    const d = try dispatch(alloc, &b, nostack.host(), term(boss), .{ .terminal_layout = .{
+        .id = worker,
+        .layout = "{\"stack\":[{\"pane\":\"0x2222\"},{\"new\":null}]}",
+    } });
+    try testing.expectEqualStrings("NotBuiltYet", d.failed.code);
+}
+
+test "tidying: a tab move reaches the host, and a key in that tab refuses it" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fake: FakeHost = .{};
+    const ok = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_tab_move = .{
+        .id = worker,
+        .index = 2,
+        .window = other,
+    } });
+    try testing.expect(ok == .text);
+    try testing.expectEqual(@as(u32, 2), fake.tab_moved.?.index);
+    try testing.expectEqual(other, fake.tab_moved.?.window);
+
+    var keyed: FakeHost = .{ .keyed_terminals = &.{worker} };
+    const no = try dispatch(alloc, &b, keyed.host(), term(boss), .{ .terminal_tab_move = .{
+        .id = worker,
+        .index = 0,
+    } });
+    try testing.expectEqualStrings("UserPresent", no.failed.code);
+    try testing.expect(keyed.tab_moved == null);
+}
+
+test "tidying: beside goes to the host, and does not go with in or place" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fake: FakeHost = .{};
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{
+        .key = "hand",
+        .beside = worker,
+    } });
+    try testing.expectEqual(@as(?Bus.Id, worker), fake.role_launched.?.beside);
+
+    for ([_]@FieldType(Request, "role_launch"){
+        .{ .key = "hand", .beside = worker, .in = other },
+        .{ .key = "hand", .beside = worker, .place = .tab },
+    }) |p| {
+        var f: FakeHost = .{};
+        const res = try dispatch(alloc, &b, f.host(), term(boss), .{ .role_launch = p });
+        try testing.expectEqualStrings("BadParams", res.failed.code);
+        try testing.expect(f.role_launched == null);
     }
 }

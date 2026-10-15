@@ -480,6 +480,11 @@ pub const Action = union(Key) {
     /// that has no stacks answers that it did nothing.
     pane_stack: PaneStack,
 
+    /// Move the tab holding the target surface to another place in its
+    /// window's strip, or into another window's (task 1571). A move: every
+    /// terminal in the tab keeps its surface and its process.
+    polter_tab_move: PolterTabMove,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -569,6 +574,7 @@ pub const Action = union(Key) {
         toggle_poltergeist_control_room,
         control_room_alert,
         pane_stack,
+        polter_tab_move,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -2415,6 +2421,62 @@ pub const PoltergeistGrouping = extern struct {
     /// shares a `window` key. Collapsing them would lose exactly the
     /// distinction this action exists for.
     tab: *u64,
+
+    /// Where that tab stands in its strip and what it is called, when the
+    /// caller asks (task 1571: `terminal_list`'s `tab_index`/`tab_title`).
+    /// Null when it does not. An apprt that does not fill it leaves `index`
+    /// at `TabInfo.unknown`, which reads as "nobody said".
+    info: ?*TabInfo = null,
+
+    /// Sync with: ghostty_action_polter_tab_info_s
+    pub const TabInfo = extern struct {
+        /// From 0, in the order the strip shows them.
+        index: u32 = unknown,
+        /// The caller's buffer for the tab's title, as UTF-8; `len` is what
+        /// the apprt wrote, at most `cap`.
+        title: ?[*]u8 = null,
+        cap: usize = 0,
+        len: usize = 0,
+
+        pub const unknown = std.math.maxInt(u32);
+    };
+};
+
+/// Move a tab, as a whole, within its strip or into another window's
+/// (task 1571).
+///
+/// **A move, and the apprt has to keep it one.** Every terminal in the tab
+/// keeps its surface, its process and its scrollback; a tab rebuilt in the
+/// other window would be a close and a reopen, which is what tidying by tool
+/// is forbidden to do (the user, 2026-10-15).
+///
+/// Sync with: ghostty_action_polter_tab_move_s
+pub const PolterTabMove = extern struct {
+    test "the tab move and tab info cells are laid out the way ghostty.h says" {
+        // Written out: the Windows host reads both by hand, from these
+        // numbers (`ffi.rs`'s `as_polter_tab_move` and `TabInfo`).
+        const testing = std.testing;
+        try testing.expectEqual(@as(usize, 0), @offsetOf(PolterTabMove, "index"));
+        try testing.expectEqual(@as(usize, 8), @offsetOf(PolterTabMove, "window"));
+        try testing.expectEqual(@as(usize, 16), @offsetOf(PolterTabMove, "out"));
+        const Info = PoltergeistGrouping.TabInfo;
+        try testing.expectEqual(@as(usize, 0), @offsetOf(Info, "index"));
+        try testing.expectEqual(@as(usize, 8), @offsetOf(Info, "title"));
+        try testing.expectEqual(@as(usize, 16), @offsetOf(Info, "cap"));
+        try testing.expectEqual(@as(usize, 24), @offsetOf(Info, "len"));
+        try testing.expectEqual(@as(usize, 16), @offsetOf(PoltergeistGrouping, "info"));
+    }
+
+    /// Where it goes, from 0, in the strip it ends up in. Past the end is
+    /// the end.
+    index: u32,
+    /// A surface handle in the window it goes to -- the same number every
+    /// action target carries -- or 0 for the window it is in.
+    window: u64,
+    /// The answer, in the caller's buffer, as for `PoltergeistLayout`:
+    /// `applied` with `{"tab_index":n}`, or `refused` with the reason --
+    /// which may be `{"code","message"}` when the code is not `Refused`.
+    out: *PoltergeistLayout.Out,
 };
 
 pub const PoltergeistClose = extern struct {

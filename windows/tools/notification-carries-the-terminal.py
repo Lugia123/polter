@@ -151,7 +151,9 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 balloon goes to the control room at the group the core puts
 #                 the raising terminal in, or to that terminal's own tab and
 #                 pane -- neither of which a window alone can say.
-MIN_CARRYING_ARMS = 25
+#  26 (task 1571): ACTION_POLTER_TAB_MOVE joined. It names the terminal
+#                 whose tab moves, and only that surface says which tab.
+MIN_CARRYING_ARMS = 26
 
 # The notifications that carry no address **today**, by `TAG -> module::fn`.
 #

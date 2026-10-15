@@ -1230,6 +1230,18 @@ typedef struct {
   ghostty_action_poltergeist_layout_out_s* out;
 } ghostty_action_poltergeist_layout_s;
 
+// apprt.action.PolterTabMove
+//
+// Move the target's tab to `index` in its strip, or in the strip of the
+// window holding the surface whose handle is `window` (0: its own). A move:
+// every terminal keeps its surface. The answer goes in `out` as for a
+// layout; a refusal whose code is not "Refused" is {"code","message"}.
+typedef struct {
+  uint32_t index;
+  uint64_t window;
+  ghostty_action_poltergeist_layout_out_s* out;
+} ghostty_action_polter_tab_move_s;
+
 // apprt.action.ControlRoomChanged
 //
 // The control room's snapshot changed: fetch it with
@@ -1354,9 +1366,23 @@ typedef struct {
 // window and some tab, so no truthful answer is ever zero. GTK does not
 // implement this, so on Linux both stay zero and the tool reports null --
 // which must keep meaning "nobody said", never "they are not together".
+// apprt.action.PoltergeistGrouping.TabInfo
+//
+// Where the tab stands in its strip (from 0) and its title, into the
+// caller's buffer. `index` starts at UINT32_MAX, "nobody said"; an apprt
+// that does not fill this leaves it there.
+typedef struct {
+  uint32_t index;
+  char* title;
+  size_t cap;
+  size_t len;
+} ghostty_action_polter_tab_info_s;
+
 typedef struct {
   uint64_t* window;
   uint64_t* tab;
+  // Null unless the caller asks for the tab's place and title.
+  ghostty_action_polter_tab_info_s* info;
 } ghostty_action_poltergeist_grouping_s;
 
 // apprt.Action.Key
@@ -1443,6 +1469,7 @@ typedef enum {
   GHOSTTY_ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM,
   GHOSTTY_ACTION_CONTROL_ROOM_ALERT,
   GHOSTTY_ACTION_PANE_STACK,
+  GHOSTTY_ACTION_POLTER_TAB_MOVE,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1497,6 +1524,7 @@ typedef union {
   ghostty_action_control_room_changed_s control_room_changed;
   ghostty_action_control_room_alert_s control_room_alert;
   ghostty_action_pane_stack_e pane_stack;
+  ghostty_action_polter_tab_move_s polter_tab_move;
 } ghostty_action_u;
 
 typedef struct {

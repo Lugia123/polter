@@ -826,6 +826,9 @@ pub const Application = extern struct {
             // No stacks here yet: the binding does nothing rather than
             // something else (a split, say) the person did not ask for.
             .pane_stack,
+            // Tidying by tool is macOS and Windows so far; the tool says
+            // `Unsupported` here, from the out cell nobody wrote.
+            .polter_tab_move,
 
             // Poltergeist's own UI is macOS-only so far, and the tab mark
             // is part of it. GTK keeps its tabs unmarked rather than

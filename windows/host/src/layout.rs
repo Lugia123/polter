@@ -276,6 +276,91 @@ pub fn describe(node: &Node, key_of: &dyn Fn(PaneId) -> Option<SurfaceKey>) -> s
     }
 }
 
+/// Where a tool's shape goes (task 1571), read from the core's envelope.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Where {
+    /// The tab of the pane the action was aimed at.
+    Here,
+    /// A new tab right of the tab holding this surface, in its window.
+    NewTabBeside(SurfaceKey),
+    /// A new window.
+    NewWindow,
+}
+
+/// The core's envelope for a tool layout: `{"layout": cell, "into": …}`
+/// (`App.poltergeistLayout`, task 1571). The cell is read by `parse`, so a
+/// tool shape still cannot carry a snapshot path.
+pub fn parse_envelope(v: &serde_json::Value) -> Result<(Shape, Where), String> {
+    let obj = v.as_object().ok_or_else(|| "the layout did not arrive in its envelope".to_string())?;
+    let cell = obj.get("layout").ok_or_else(|| "the layout did not arrive in its envelope".to_string())?;
+    let shape = parse(cell)?;
+    let bad = || "\"into\" must be {\"new_tab_beside\":…} or {\"new_window\":true}".to_string();
+    let into = match obj.get("into") {
+        None | Some(serde_json::Value::Null) => Where::Here,
+        Some(serde_json::Value::Object(o)) if o.len() == 1 => {
+            if o.get("new_window") == Some(&serde_json::Value::Bool(true)) {
+                Where::NewWindow
+            } else if let Some(s) = o.get("new_tab_beside").and_then(|v| v.as_str()) {
+                Where::NewTabBeside(parse_key(s)?)
+            } else {
+                return Err(bad());
+            }
+        }
+        Some(_) => return Err(bad()),
+    };
+    Ok((shape, into))
+}
+
+/// A refusal whose code is not `Refused`, in the form the core reads it
+/// (`App.polterRefusal`): `{"code","message"}`.
+pub fn coded(code: &str, message: &str) -> String {
+    serde_json::json!({ "code": code, "message": message }).to_string()
+}
+
+/// Perform `polter_tab_move` (task 1571): queued and drained like a layout,
+/// for the same reason -- it moves windows, which is the window thread's.
+pub fn perform_tab_move(action: &Action, target: Option<Surface>) -> bool {
+    let (index, window, out) = action.as_polter_tab_move();
+    let write = |code: i32, text: &str| {
+        if out.is_null() {
+            return;
+        }
+        unsafe {
+            (*out).result = code;
+            if !(*out).buf.is_null() && (*out).cap > 0 {
+                let n = text.len().min((*out).cap);
+                std::ptr::copy_nonoverlapping(text.as_ptr(), (*out).buf, n);
+                (*out).len = n;
+            }
+        }
+    };
+    let Some(surface) = target else {
+        write(REFUSED, "the tab move named no terminal");
+        return false;
+    };
+    let Some(frame) = tabs::frame_of_surface(surface) else {
+        write(REFUSED, "that terminal is not in a window this host is tracking");
+        return false;
+    };
+    let outcome: Outcome = Arc::new(Mutex::new(None));
+    tabs::post_op(
+        frame,
+        tabs::Op::MoveTabForTool(surface as usize, index as usize, window as usize, outcome.clone()),
+        "tab move action",
+    );
+    tabs::drain_for_layout(frame);
+    let answer = outcome.lock().ok().and_then(|mut o| o.take());
+    match answer {
+        Some(Ok(json)) => write(APPLIED, &json),
+        Some(Err(why)) => write(REFUSED, &why),
+        None => {
+            write(REFUSED, "the tab move was queued and did not run; the window may have closed");
+            wlogf!(frame, "[tab-move] queued op produced no answer");
+        }
+    }
+    true
+}
+
 /// Perform `poltergeist_layout`.
 pub fn perform(action: &Action, target: Option<Surface>) -> bool {
     let (spec, out) = action.as_poltergeist_layout();
@@ -310,7 +395,7 @@ pub fn perform(action: &Action, target: Option<Surface>) -> bool {
             return true;
         }
     };
-    let shape = match parse(&parsed) {
+    let (shape, into) = match parse_envelope(&parsed) {
         Ok(s) => s,
         Err(why) => {
             write(REFUSED, &why);
@@ -326,7 +411,7 @@ pub fn perform(action: &Action, target: Option<Surface>) -> bool {
     let at = tabs::pane_id_of_surface(surface);
     tabs::post_op(
         frame,
-        tabs::Op::ApplyLayout(shape, at, outcome.clone()),
+        tabs::Op::ArrangeLayout(shape, at, into, outcome.clone()),
         "layout action",
     );
 
@@ -368,6 +453,23 @@ mod tests {
             "right": { "new": { "cwd": "/a", "scrollback": "C:\\x\\0.snap" } } });
         let err = parse(&v).err().expect("the tool path must refuse it");
         assert!(err.contains("scrollback"), "{err}");
+    }
+
+    /// The envelope says where the shape goes, and a key spelled wrong is
+    /// refused rather than read as "here" -- which would lay the shape out
+    /// over the tab the caller was trying to leave alone (task 1571).
+    #[test]
+    fn the_envelope_says_where_the_shape_goes() {
+        let here = serde_json::json!({ "layout": { "pane": "0x10" } });
+        assert_eq!(parse_envelope(&here).unwrap().1, Where::Here);
+        let win = serde_json::json!({ "layout": { "pane": "0x10" }, "into": { "new_window": true } });
+        assert_eq!(parse_envelope(&win).unwrap().1, Where::NewWindow);
+        let tab = serde_json::json!({ "layout": { "pane": "0x10" }, "into": { "new_tab_beside": "0x2a" } });
+        assert_eq!(parse_envelope(&tab).unwrap().1, Where::NewTabBeside(0x2a));
+        let typo = serde_json::json!({ "layout": { "pane": "0x10" }, "into": { "new_tab": "0x2a" } });
+        assert!(parse_envelope(&typo).is_err());
+        let bare = serde_json::json!({ "pane": "0x10" });
+        assert!(parse_envelope(&bare).is_err());
     }
 
     /// And a project's shape carries it, at any depth -- the source has to
