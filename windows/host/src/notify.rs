@@ -43,7 +43,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{LoadIconMetric, LIM_LARGE, LIM_SMALL};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_LARGE_ICON, NIIF_USER,
-    NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
+    NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_BALLOONHIDE, NIN_BALLOONTIMEOUT, NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -65,6 +65,20 @@ static TOAST_CLICKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 const ICON_ID: u32 = 1;
 
 static WORKER: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// A balloon is on screen, as far as this process knows.
+static BALLOON_UP: AtomicBool = AtomicBool::new(false);
+/// The worker's timer that takes a balloon down.
+const TIMER_BALLOON: usize = 0xBA11;
+/// How long a balloon stays before Polter takes it down itself.
+///
+/// **Polter's own clock, because the shell keeps none** (#1579 T5). The
+/// balloon's `uTimeout` has been ignored since Windows Vista, and on the
+/// test machine a balloon stayed in the corner from 23:01 until Polter quit
+/// at 23:24 -- over every screenshot taken in between. Ten seconds is what
+/// `uTimeout` asked for; a toast that went to the notification centre would
+/// have left the screen about as soon.
+const BALLOON_DOWN_AFTER_MS: u32 = 10_000;
 /// Has `NIM_ADD` succeeded? The icon is added on first use, not at startup.
 static ICON_ADDED: AtomicBool = AtomicBool::new(false);
 /// The frame the last notification came from, for the balloon's click.
@@ -308,6 +322,11 @@ fn show(p: Pending) {
     // was taken.
     let launch = Launch { group: p.group.clone(), terminal: p.terminal, frame: p.frame };
     let route = crate::toast::show(&p.title, p.subtitle.as_deref(), &p.body, &launch);
+    // A balloon still up from before is replaced by this one, or is older
+    // than whatever went another way just now.
+    if !matches!(route, Route::Balloon(_)) {
+        take_balloon_down("a newer notification");
+    }
     match route {
         Route::Toast => {
             let frame = HWND(p.frame as *mut std::ffi::c_void);
@@ -365,6 +384,13 @@ fn show(p: Pending) {
     put(&mut d.szInfo, &balloon_text(&p.title, p.subtitle.as_deref(), &p.body));
 
     let ok = unsafe { Shell_NotifyIconW(NIM_MODIFY, &d) }.as_bool();
+    if ok {
+        BALLOON_UP.store(true, Ordering::Release);
+        // Replaces any timer of the balloon before: the clock starts again.
+        unsafe {
+            let _ = SetTimer(Some(hwnd), TIMER_BALLOON, BALLOON_DOWN_AFTER_MS, None);
+        }
+    }
     let frame = HWND(p.frame as *mut std::ffi::c_void);
     if p.frame != 0 {
         wlogf!(frame, "[notify] shown {:?} -> {ok}", p.title);
@@ -372,6 +398,34 @@ fn show(p: Pending) {
         // process-wide: the notification named no window
         plogf!("[notify] shown {:?} -> {ok} (no window)", p.title);
     }
+}
+
+/// Take the balloon down, if one is up, and say why.
+///
+/// **By removing the icon** (`NIM_DELETE`), the one way the documentation
+/// gives that does not depend on the shell honouring a timeout -- which it
+/// did not. The icon only exists for notifications and is added back by the
+/// next one (`ensure_icon`).
+fn take_balloon_down(why: &str) {
+    if !BALLOON_UP.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let hwnd = HWND(WORKER.load(Ordering::Acquire));
+    if hwnd.0.is_null() {
+        return;
+    }
+    unsafe {
+        let _ = KillTimer(Some(hwnd), TIMER_BALLOON);
+    }
+    let gone = ICON_ADDED.swap(false, Ordering::AcqRel) && unsafe { Shell_NotifyIconW(NIM_DELETE, &base(hwnd)) }.as_bool();
+    // process-wide: one balloon for the process
+    plogf!("[notify] balloon taken down ({why}); icon removed -> {gone}");
+}
+
+/// A terminal window came to the front: the person is back, and a balloon
+/// still up is old news (#1579 T5). Main thread, from `WM_ACTIVATE`.
+pub fn on_window_activated() {
+    take_balloon_down("a window came to the front");
 }
 
 /// Flash the taskbar button of the window a notification came from, until
@@ -419,12 +473,27 @@ extern "system" fn worker_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         }
         // The shell packs the event into the low word of `lParam`.
         WM_TRAY_CALLBACK => {
-            if (lp.0 as u32 & 0xFFFF) == NIN_BALLOONUSERCLICK {
+            let event = lp.0 as u32 & 0xFFFF;
+            if event == NIN_BALLOONUSERCLICK {
                 let group = LAST_GROUP.lock().ok().and_then(|g| g.clone());
                 let terminal = LAST_TERMINAL.load(Ordering::Acquire);
                 let f = LAST_FRAME.load(Ordering::Acquire);
                 go(polter_control_room::alert::click_of(group.as_deref(), terminal, f), f, "balloon");
+                take_balloon_down("clicked");
+            } else if event == NIN_BALLOONTIMEOUT || event == NIN_BALLOONHIDE {
+                // The shell took it down itself: nothing left for the timer.
+                if BALLOON_UP.swap(false, Ordering::AcqRel) {
+                    unsafe {
+                        let _ = KillTimer(Some(hwnd), TIMER_BALLOON);
+                    }
+                    // process-wide: one balloon for the process
+                    plogf!("[notify] the shell took the balloon down itself (event {event:#x})");
+                }
             }
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == TIMER_BALLOON => {
+            take_balloon_down("timed out");
             LRESULT(0)
         }
         // A toast's click, carried here from the system's thread: each toast

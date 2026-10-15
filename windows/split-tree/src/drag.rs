@@ -303,6 +303,21 @@ pub fn dots(w: f64, h: f64, scale: f64) -> [(f64, f64, f64); 3] {
     [(x0, y, d), (x0 + d + gap, y, d), (x0 + 2.0 * (d + gap), y, d)]
 }
 
+/// The pixels one dot of [`dots`] covers: `(left, top, right, bottom)`,
+/// right and bottom exclusive, `round(d)` across and never under 2.
+///
+/// **Its own rounding, not each edge rounded** (#1579 V8). Rounding left
+/// and right separately turned a 2.5px dot at 100% into a 2x2 box
+/// (33.75..36.25 -> 34..36), and Windows' `Ellipse` with no pen leaves out
+/// the right column and the bottom row of its box, so what was drawn was
+/// one pixel. The host still adds that column and row back for its brush
+/// (`panedrag.rs`); this is the box the dot is meant to fill.
+pub fn dot_box(x: f64, y: f64, d: f64) -> (i32, i32, i32, i32) {
+    let side = (d.round() as i32).max(2);
+    let (l, t) = (x.round() as i32, y.round() as i32);
+    (l, t, l + side, t + side)
+}
+
 // ------------------------------------------------------------ the ending
 
 /// What is under the pointer while a pane is dragged.
@@ -618,6 +633,20 @@ mod tests {
             let right = w - (d[2].0 + d[2].2);
             assert!((left - right).abs() < 1e-9, "{scale}");
             assert!(d.iter().all(|(x, y, s)| *x >= 0.0 && *y >= 0.0 && x + s <= w && y + s <= h), "{scale}");
+        }
+    }
+
+    #[test]
+    fn a_dot_is_two_and_a_half_points_across_at_every_scale() {
+        // #1579 V8: at 100% each dot was drawn one pixel across.
+        for (scale, side) in [(1.0, 3), (1.25, 3), (1.5, 4), (2.0, 5)] {
+            let (w, h) = (80.0 * scale, 12.0 * scale);
+            let boxes: Vec<_> = dots(w, h, scale).iter().map(|(x, y, d)| dot_box(*x, *y, *d)).collect();
+            for (l, t, r, b) in &boxes {
+                assert_eq!((r - l, b - t), (side, side), "scale {scale}");
+                assert!(*l >= 0 && *t >= 0 && *r as f64 <= w && *b as f64 <= h, "scale {scale}");
+            }
+            assert!(boxes.windows(2).all(|p| p[0].2 < p[1].0), "the dots stay apart at {scale}");
         }
     }
 

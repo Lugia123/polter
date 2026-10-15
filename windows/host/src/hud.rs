@@ -556,10 +556,12 @@ pub fn on_scrollbar(surface: usize, total: u64, offset: u64, len: u64) -> bool {
         return false;
     }
     match SCROLL.lock() {
-        Ok(mut v) => match v.iter_mut().find(|(s, ..)| *s == surface) {
-            Some(e) => *e = (surface, total, offset, len),
-            None => v.push((surface, total, offset, len)),
-        },
+        // **Latest report last**: `on_panes_moved` goes back to the most
+        // recent one on screen when the bar's own pane is not (#1579 V3).
+        Ok(mut v) => {
+            v.retain(|(s, ..)| *s != surface);
+            v.push((surface, total, offset, len));
+        }
         Err(_) => return false,
     }
     let w = HWND_SCROLL.load(Ordering::Acquire);
@@ -620,8 +622,19 @@ fn pane_shown(surface: usize) -> bool {
 /// and tab switch.
 pub fn on_panes_moved() {
     let scroll = HWND_SCROLL.load(Ordering::Acquire);
-    if !scroll.is_null() && SCROLL_SHOWN_FOR.load(Ordering::Acquire) != 0 {
-        let _ = unsafe { PostMessageW(Some(HWND(scroll)), WM_HUD_SYNC, WPARAM(0), LPARAM(0)) };
+    if !scroll.is_null() {
+        // Which terminal, by `hud::scrollbar_for`: the one it is for while
+        // that pane is on screen, else the latest report from one that is
+        // (#1579 V3). Read out of the list first; `pane_shown` takes the tab
+        // model's lock and is not called under this one.
+        let reports: Vec<(usize, bool)> = SCROLL.lock().map(|v| v.iter().map(|(s, t, _, l)| (*s, t > l)).collect()).unwrap_or_default();
+        let reported: Vec<(usize, bool, bool)> = reports.into_iter().map(|(s, scrolls)| (s, pane_shown(s), scrolls)).collect();
+        let shown_for = Some(SCROLL_SHOWN_FOR.load(Ordering::Acquire)).filter(|s| *s != 0);
+        // `WPARAM(0)` with none: re-evaluate, which hides it.
+        let to = polter_control_room::hud::scrollbar_for(shown_for, &reported).unwrap_or(0);
+        if to != 0 || shown_for.is_some() {
+            let _ = unsafe { PostMessageW(Some(HWND(scroll)), WM_HUD_SYNC, WPARAM(to), LPARAM(0)) };
+        }
     }
     let link = HWND_LINK.load(Ordering::Acquire);
     if !link.is_null() && HOVER.lock().is_ok_and(|h| h.is_some()) {

@@ -903,7 +903,11 @@ extern "system" fn layer_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                         let b = CreateSolidBrush(color);
                         let old = SelectObject(hdc, b.into());
                         let pen = SelectObject(hdc, GetStockObject(NULL_PEN));
-                        let _ = Ellipse(hdc, x.round() as i32, y.round() as i32, (x + d).round() as i32, (y + d).round() as i32);
+                        // With no pen, `Ellipse` leaves out the right column
+                        // and the bottom row of the box it is given; one more
+                        // of each is what makes the dot `dot_box` across.
+                        let (l, t, r, bt) = drag::dot_box(x, y, d);
+                        let _ = Ellipse(hdc, l, t, r + 1, bt + 1);
                         SelectObject(hdc, pen);
                         SelectObject(hdc, old);
                         let _ = DeleteObject(b.into());
