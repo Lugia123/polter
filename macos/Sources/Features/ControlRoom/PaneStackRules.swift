@@ -52,10 +52,14 @@ enum PaneStackRules {
             // Never nil at this place: an ordinary terminal that is not
             // alone has a name.
             let frame = PaneFrame.drawn(terminal: member.terminal, ownName: member.ownName, at: place, in: terminals)
+            // The pair the frame's title draws, from the same values
+            // (task 1582): a held terminal says held here as it does there.
+            let title = frame?.title
             return PaneStack.Member(
-                name: frame?.title.name ?? member.ownName,
-                shown: listed?.shown ?? .none,
-                wears: frame?.wears ?? .plain)
+                name: title?.name ?? member.ownName,
+                shown: title?.shown ?? listed.map { .init($0.shown) } ?? .none,
+                wears: frame?.wears ?? .plain,
+                role: title?.roleWord(in: frame?.wears ?? .plain))
         }
         let urgent: [Int] = pulses.compactMap { waiting in
             members.firstIndex { $0.terminal == waiting }

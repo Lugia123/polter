@@ -5,10 +5,7 @@ import Foundation
 /// rest: where each tab is and how wide (`control-room.md`, 12.6.2, "the
 /// look"; the design's `06-panes` and `07-tab-corners`).
 ///
-/// **Nothing is wired to this yet.** No pane holds more than one terminal:
-/// the split tree has no stacks (12.6.2, steps 1 to 3). This is the
-/// arithmetic of the strip and `PaneStackStripView` is its drawing, so that
-/// what a stack will look like can be seen and ruled on before it exists.
+/// The arithmetic of the strip; `PaneStackStripView` is its drawing.
 ///
 /// Nothing in this file touches a view.
 struct PaneStack: Equatable {
@@ -16,12 +13,18 @@ struct PaneStack: Equatable {
     struct Member: Equatable {
         /// The terminal's name, as its frame's title would say it.
         var name: String
-        /// The glyph the core gives that terminal.
-        var shown: ControlRoomList.Shown
+        /// The glyph its frame's title draws at the right end: a status or
+        /// `held` -- the same pair (task 1582: a tab says what the pane's
+        /// title would, from the same values).
+        var shown: ControlRoomSnapshot.Terminal.Bar.Shown
         /// Which frame it wears when it is the one in front: the core's
         /// word for that terminal. The frame round a stack is the frame of
         /// whichever member is showing.
         var wears: PaneFrame.Kind
+        /// The word after the name that says what it is, as the title
+        /// writes it (`PaneFrame.Title.roleWord`); nil for an ordinary
+        /// terminal.
+        var role: String?
     }
 
     /// How an ordinary terminal's stack is drawn. **The design draws
@@ -49,9 +52,10 @@ struct PaneStack: Equatable {
     /// and among equals the one that has waited longest). The core's
     /// order, handed in -- nothing here ranks one glyph over another.
     ///
-    /// What it is for: when some tabs are behind `more`, the first of
-    /// these that is among them is the glyph `more` carries, so that a
-    /// terminal waiting behind the dots is not waiting unseen.
+    /// What it is for: when tabs are scrolled out of sight, the first of
+    /// these that is among them is the glyph that end of the strip carries
+    /// (`PaneStackStripLayout.beyond`), so that a terminal waiting off the
+    /// edge is not waiting unseen.
     var urgent: [Int] = []
     /// The least a tab is cut to; nil for the table's. Only for pictures
     /// of the other candidate, like `plainStyle`.
@@ -95,24 +99,25 @@ enum PaneStackStatusGlyph: Equatable {
 ///     so the long names give way first and the short ones are left whole --
 ///     down to `min_width` and no further. **The current tab is not cut**:
 ///     its name is the one being read.
-///  3. When they do not fit at that either, the ones there is no room for
-///     go behind a `more` button at the right end of the tabs. The current
-///     tab is never one of them: its place is kept before any other is
-///     given one. The tabs that stay then share the room there is by
-///     rule 2.
+///  3. When they do not fit at that either, **they scroll sideways** (task
+///     1582): every tab keeps its least width and the room for them is a
+///     window onto the row. They used to go behind a `more` menu, which hid
+///     who was there.
 ///  4. The status at the right end gives way before the current tab does:
 ///     where the two cannot both be had, the status is not drawn. And a
 ///     current tab that does not fit even alone is cut to what there is.
 ///
 /// A tab's width is its body. The current tab's two feet reach an arc's
 /// radius further out on each side; the first tab's inset is what leaves
-/// room for the left one.
+/// room for the left one. Mirrors `windows/control-room/src/stackstrip.rs`,
+/// held to the same answers by `tools/control-room-hosts-agree.py`.
 struct PaneStackStripLayout: Equatable {
     typealias Look = ControlRoomLook
 
     struct Tab: Equatable {
         /// Which member this is: an index into the stack's `members`.
         var member: Int
+        /// Where it stands among the others, the tabs not scrolled.
         var x: CGFloat
         var width: CGFloat
         var current: Bool
@@ -123,43 +128,81 @@ struct PaneStackStripLayout: Equatable {
         var squeezed: Bool
     }
 
-    /// The tabs that are drawn, in order.
+    /// Every tab, in order.
     var tabs: [Tab]
-    /// The members behind `more`, in order. Empty when every tab is drawn.
-    var hidden: [Int]
-    /// Where the `more` button starts; nil when there is none.
-    var moreX: CGFloat?
-    /// Where the plus starts.
+    /// How wide the room for the tabs is: the window onto them.
+    var viewport: CGFloat
+    /// How wide the tabs are together.
+    var content: CGFloat
+    /// Where the plus starts: after the tabs, or after the room for them
+    /// when they scroll.
     var addX: CGFloat
     /// Where the status at the right end may start, and where it ends; nil
     /// when there is no room for it or nothing to say.
     var status: ClosedRange<CGFloat>?
 
-    /// The member whose glyph `more` carries: the first of `urgent` -- the
-    /// core's order, most pressing first -- that is behind it. Nil when
-    /// nothing is behind `more`, or nothing behind it has a glyph. A walk
-    /// down a list and a test of membership: which is more pressing was
-    /// settled when the list was ordered.
-    func behindMore(urgent: [Int]) -> Int? {
-        urgent.first { hidden.contains($0) }
+    /// Whether the tabs are wider than the room for them.
+    var scrolls: Bool { content > viewport }
+
+    /// The furthest the tabs scroll.
+    var maxOffset: CGFloat { max(0, content - viewport) }
+
+    /// How far to scroll the tabs, from `offset`, so that `member`'s tab is
+    /// wholly in view: the least move that does it, none when it already
+    /// is. What keeps the tab in front in sight, as the window's own tabs
+    /// keep theirs.
+    func revealing(_ member: Int, from offset: CGFloat) -> CGFloat {
+        let offset = min(max(offset, 0), maxOffset)
+        guard let tab = tabs.first(where: { $0.member == member }) else { return offset }
+        let start = tab.x - CGFloat(Look.StackTab.inset)
+        let end = start + tab.width
+        let to: CGFloat
+        if start < offset {
+            to = start
+        } else if end > offset + viewport {
+            to = end - viewport
+        } else {
+            to = offset
+        }
+        return min(max(to, 0), maxOffset)
     }
 
-    /// What `more` says: the dots and how many tabs are behind them. More
-    /// than ninety-nine is said as that -- the button has room for two
-    /// digits, and past that the number is not what anybody is counting.
-    static func moreLabel(hidden: Int) -> String {
-        "…" + (hidden > 99 ? "99+" : String(max(hidden, 0)))
+    /// The members waiting out of sight, scrolled at `offset`: on each side,
+    /// the first of `urgent` -- the core's order, most pressing first --
+    /// whose tab is not wholly in view that way. What the strip draws at
+    /// that end so that a terminal waiting off the edge is not waiting
+    /// unseen (what `more` used to carry). Nil on a side with none.
+    func beyond(urgent: [Int], offset: CGFloat) -> (left: Int?, right: Int?) {
+        let offset = min(max(offset, 0), maxOffset)
+        let inset = CGFloat(Look.StackTab.inset)
+        func side(_ test: (Tab) -> Bool) -> Int? {
+            urgent.first { member in tabs.first { $0.member == member }.map(test) ?? false }
+        }
+        return (
+            left: side { $0.x - inset < offset },
+            right: side { $0.x - inset + $0.width > offset + viewport })
+    }
+
+    /// Where a tab let go at `x` along the row of tabs -- 0 at the first
+    /// tab's left, the tabs not scrolled -- goes: the place among the tabs
+    /// whose middle it is past. 0 is before the first, `tabs.count` after
+    /// the last (task 1582).
+    func insertion(atRowX x: CGFloat) -> Int {
+        let inset = CGFloat(Look.StackTab.inset)
+        return tabs.filter { $0.x - inset + $0.width / 2 < x }.count
     }
 
     /// How wide a tab's name wants it with no font to measure by: so many
     /// cells of `nominal_cell_width`, a wide character two, between the
-    /// tab's paddings, and room for its glyph when it has one.
+    /// tab's paddings, room for its glyph when it has one, and the close
+    /// button's place, which every tab keeps (task 1582).
     static func nominalWidth(name: String, glyph: Bool) -> CGFloat {
         var cells = 0
         for scalar in name.unicodeScalars {
             cells += scalar.value >= 0x2E80 ? 2 : 1
         }
         var w = 2 * Look.StackTab.paddingX + Double(cells) * Look.StackTab.nominalCellWidth
+            + Look.StackTab.closeGap + Look.StackTab.closeButton
         if glyph { w += Look.StackTab.gap + Look.Side.glyph }
         return CGFloat(w)
     }
@@ -176,28 +219,22 @@ struct PaneStackStripLayout: Equatable {
          minWidth: CGFloat = CGFloat(Look.StackTab.minWidth)) {
         let t = Look.StackTab.self
         let leading = CGFloat(t.inset)
-        let add = CGFloat(t.addButton)
-        let more = CGFloat(t.moreButton)
         let front = wants.indices.contains(current) ? current : 0
 
         // What is left for the tabs once the inset, the plus, the trailing
-        // space and whatever else is asked for are taken out.
-        func room(status: CGFloat, more: Bool) -> CGFloat {
-            var r = width - leading - add - CGFloat(t.trailing)
+        // space and the status are taken out.
+        func room(status: CGFloat) -> CGFloat {
+            var r = width - leading - CGFloat(t.addButton) - CGFloat(t.trailing)
             if status > 0 { r -= CGFloat(t.statusGap) + status }
-            if more { r -= CGFloat(t.moreButton) }
             return r
         }
 
         // The status gives way before the current tab does.
         let frontWants = wants.isEmpty ? 0 : wants[front]
-        let said = status > 0 && room(status: status, more: false) >= frontWants ? status : 0
-        let fits = room(status: said, more: false)
+        let said = status > 0 && room(status: status) >= frontWants ? status : 0
+        let fits = max(0, room(status: said))
 
         var widths = wants
-        var shown = Array(wants.indices)
-        var hidden: [Int] = []
-
         if wants.reduce(0, +) > fits {
             // The least each may be: the current one whole, the rest at
             // `min_width` or their own width when that is less.
@@ -212,49 +249,26 @@ struct PaneStackStripLayout: Equatable {
                 cut.insert(frontWants, at: front)
                 widths = cut
             } else {
-                // Not even at the least: some go behind `more`.
+                // Not even at the least: every tab at its least, and they
+                // scroll. One too wide even alone is cut to the room there is.
                 widths = least
-                let fitsWithMore = room(status: said, more: true)
-                var taken: [Int] = []
-                var used = least[front]
-                for i in wants.indices where i != front {
-                    if used + least[i] > fitsWithMore { break }
-                    taken.append(i)
-                    used += least[i]
-                }
-                // In the stack's order, the current one where it belongs
-                // among those that stayed.
-                shown = wants.indices.filter { $0 == front || taken.contains($0) }
-                hidden = wants.indices.filter { !shown.contains($0) }
-                // Too wide even alone: it is cut to what there is.
-                widths[front] = max(0, min(least[front], fitsWithMore))
-                // Those that stayed were counted at their least; what room
-                // is left over goes back to them, the widest cut first as
-                // before, so that a strip with tabs behind `more` is not
-                // also a strip of names cut shorter than they need be.
-                let back = Self.capped(taken.map { wants[$0] }, to: fitsWithMore - widths[front], noLessThan: minWidth)
-                for (n, i) in taken.enumerated() { widths[i] = back[n] }
+                widths[front] = min(widths[front], fits)
             }
         }
 
         var x = leading
         var tabs: [Tab] = []
-        for (place, i) in shown.enumerated() {
-            let before = place > 0 ? shown[place - 1] : nil
+        for i in wants.indices {
             tabs.append(Tab(member: i, x: x, width: widths[i], current: i == front,
-                            separatorBefore: before != nil && i != front && before != front,
+                            separatorBefore: i > 0 && i != front && i - 1 != front,
                             squeezed: widths[i] < wants[i]))
             x += widths[i]
         }
+        let content = widths.reduce(0, +)
         self.tabs = tabs
-        self.hidden = hidden
-        if hidden.isEmpty {
-            moreX = nil
-        } else {
-            moreX = x
-            x += more
-        }
-        addX = x
+        self.viewport = fits
+        self.content = content
+        self.addX = leading + min(content, fits)
         let end = width - CGFloat(t.trailing)
         self.status = said > 0 ? (end - said)...end : nil
     }

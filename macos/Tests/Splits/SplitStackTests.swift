@@ -89,6 +89,38 @@ struct SplitStackTests {
         #expect((try only(tree)).shown == f.d.id)
     }
 
+    @Test func stackingAtAPlacePutsItThereInFront() throws {
+        // Task 1582: a tab let go on a stack's strip, between two tabs.
+        let f = try Fixture()
+        var tree = try f.tree.stacking(f.d, onto: f.b)
+        tree = try tree.stacking(f.e, onto: f.b, at: 1)
+        sound(tree)
+        #expect(ids((try only(tree)).members) == ids([f.b, f.e, f.d]))
+        #expect((try only(tree)).shown == f.e.id)
+        // Past the end is the end; onto a pane of one, a stack of two.
+        let two = try f.tree.stacking(f.d, onto: f.a, at: 9)
+        sound(two)
+        #expect(ids((try only(two)).members) == ids([f.a, f.d]))
+        let first = try f.tree.stacking(f.d, onto: f.a, at: 0)
+        #expect(ids((try only(first)).members) == ids([f.d, f.a]))
+    }
+
+    @Test func reorderingMovesOnlyTheTabAndNotWhatThePaneShows() throws {
+        // Task 1582: a tab dragged along its own strip.
+        let f = try Fixture()
+        var tree = try f.tree.stacking(f.d, onto: f.b)
+        tree = try tree.stacking(f.e, onto: f.b)
+        tree = try tree.reordering(f.e, to: 0)
+        sound(tree)
+        #expect(ids((try only(tree)).members) == ids([f.e, f.b, f.d]))
+        #expect((try only(tree)).shown == f.e.id)
+        tree = try tree.reordering(f.b, to: 99)
+        #expect(ids((try only(tree)).members) == ids([f.e, f.d, f.b]))
+        #expect(ids(tree.shownLeaves()) == ids([f.a, f.e, f.c]))
+        // A pane of one has no tabs to reorder.
+        #expect(throws: (any Error).self) { try f.tree.reordering(f.a, to: 0) }
+    }
+
     @Test func stackingOntoATerminalThatIsBehindGoesIntoTheSamePane() throws {
         let f = try Fixture()
         var tree = try f.tree.stacking(f.d, onto: f.b)

@@ -606,6 +606,38 @@ class BaseTerminalController: NSWindowController,
         )
     }
 
+    /// The tree with `view` taken out by itself, and the terminal the
+    /// keyboard goes to if it had it -- for a drag that carries `view`
+    /// somewhere else (task 1582). One terminal of a stack leaves its stack
+    /// (`removing(member:)`) and the pane stays; a pane of one goes. Nil
+    /// when `view` is not here.
+    func polterTakingOut(_ view: Ghostty.SurfaceView) -> (tree: SplitTree<Ghostty.SurfaceView>, focus: Ghostty.SurfaceView?)? {
+        if surfaceTree.stack(of: view) != nil {
+            guard let tree = try? surfaceTree.removing(member: view) else { return nil }
+            let successor = surfaceTree.stack(of: view)?.members.first { $0 !== view && tree.isShown($0) }
+            return (tree, successor)
+        }
+        guard let node = surfaceTree.root?.node(view: view) else { return nil }
+        return (surfaceTree.removing(node), findNextFocusTargetAfterClosing(node: node))
+    }
+
+    /// Let `view` go from this tab: it has been taken into another one, so
+    /// nothing is closed and nothing is remembered as closed. A tab left
+    /// empty is retired with nothing to undo -- undoing it would put the
+    /// terminal back in a second tree while it lives in the new one (the
+    /// reason `applyToolLayout` does the same, task 1571).
+    func polterLetGo(_ view: Ghostty.SurfaceView) {
+        guard let taken = polterTakingOut(view) else { return }
+        if taken.tree.isEmpty {
+            surfaceTree = .init()
+            return
+        }
+        replaceSurfaceTree(
+            taken.tree,
+            moveFocusTo: focusedSurface === view ? taken.focus : nil,
+            undoAction: "Move Split")
+    }
+
     /// The terminal that takes the place of the one `node` showed, when
     /// `node` is a pane that held a stack; nil for any other node.
     private func stackSuccessor(
@@ -904,21 +936,23 @@ class BaseTerminalController: NSWindowController,
 
     @objc private func ghosttySurfaceDragEndedNoTarget(_ notification: Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
-        guard let targetNode = surfaceTree.root?.node(view: target) else { return }
+        guard surfaceTree.contains(target) else { return }
 
         // If our tree isn't split, then we never create a new window, because
-        // it is already a single split.
-        guard surfaceTree.isSplit else { return }
+        // it is already a single split -- unless it is one terminal of a
+        // stack, dragged out by its tab (task 1582).
+        guard surfaceTree.isSplit || surfaceTree.stack(of: target) != nil else { return }
+        guard let taken = polterTakingOut(target) else { return }
 
         // If we are removing our focused surface then we move it. We need to
         // keep track of our old one so undo sends focus back to the right place.
         let oldFocusedSurface = focusedSurface
         if focusedSurface == target {
-            focusedSurface = findNextFocusTargetAfterClosing(node: targetNode)
+            focusedSurface = taken.focus
         }
 
         // Remove the surface from our tree
-        let removedTree = surfaceTree.removing(targetNode)
+        let removedTree = taken.tree
 
         // Create a new tree with the dragged surface and open a new window
         let newTree = SplitTree<Ghostty.SurfaceView>(view: target)
@@ -945,12 +979,14 @@ class BaseTerminalController: NSWindowController,
     /// already refused a pane alone in its tab on its own strip.
     @objc private func ghosttySurfaceDragEndedOnTabStrip(_ notification: Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
-        guard let targetNode = surfaceTree.root?.node(view: target) else { return }
+        guard surfaceTree.contains(target) else { return }
         guard let neighbor = notification.userInfo?[Notification.Name.ghosttySurfaceDragEndedOnTabStripNeighborKey] as? NSWindow,
               let raw = notification.userInfo?[Notification.Name.ghosttySurfaceDragEndedOnTabStripOrderedKey] as? Int,
               let ordered = NSWindow.OrderingMode(rawValue: raw) else { return }
 
-        guard surfaceTree.isSplit else {
+        // The whole tab goes when it is the pane's only terminal; one of a
+        // stack leaves its stack and becomes a tab of its own (task 1582).
+        guard surfaceTree.isSplit || surfaceTree.stack(of: target) != nil else {
             guard let window, window !== neighbor, window.tabbingMode != .disallowed else { return }
             if let group = window.tabGroup, group.windows.count > 1 {
                 group.removeWindow(window)
@@ -962,12 +998,13 @@ class BaseTerminalController: NSWindowController,
             return
         }
 
+        guard let taken = polterTakingOut(target) else { return }
         let oldFocusedSurface = focusedSurface
         if focusedSurface == target {
-            focusedSurface = findNextFocusTargetAfterClosing(node: targetNode)
+            focusedSurface = taken.focus
         }
 
-        let removedTree = surfaceTree.removing(targetNode)
+        let removedTree = taken.tree
         let newTree = SplitTree<Ghostty.SurfaceView>(view: target)
 
         undoManager?.beginUndoGrouping()
@@ -1155,10 +1192,11 @@ class BaseTerminalController: NSWindowController,
         case .right: .right
         }
 
-        // Check if source is in our tree
-        if let sourceNode = surfaceTree.root?.node(view: source) {
+        // Check if source is in our tree -- a pane, or one terminal of a
+        // stack dragged by its tab, behind or in front (task 1582).
+        if surfaceTree.contains(source), let taken = polterTakingOut(source) {
             // Source is in our tree - same window move
-            let treeWithoutSource = surfaceTree.removing(sourceNode)
+            let treeWithoutSource = taken.tree
             let newTree: SplitTree<Ghostty.SurfaceView>
             do {
                 newTree = try treeWithoutSource.inserting(view: source, at: destination, direction: direction)
@@ -1177,18 +1215,16 @@ class BaseTerminalController: NSWindowController,
 
         // Source is not in our tree - search other windows
         var sourceController: BaseTerminalController?
-        var sourceNode: SplitTree<Ghostty.SurfaceView>.Node?
         for window in NSApp.windows {
             guard let controller = window.windowController as? BaseTerminalController else { continue }
             guard controller !== self else { continue }
-            if let node = controller.surfaceTree.root?.node(view: source) {
+            if controller.surfaceTree.contains(source) {
                 sourceController = controller
-                sourceNode = node
                 break
             }
         }
 
-        guard let sourceController, let sourceNode else {
+        guard let sourceController else {
             Ghostty.logger.warning("source surface not found in any window during drop")
             return
         }
@@ -1211,8 +1247,8 @@ class BaseTerminalController: NSWindowController,
             undoManager?.endUndoGrouping()
         }
 
-        // Remove the node from the source.
-        sourceController.removeSurfaceNode(sourceNode)
+        // Take it out of the source: a pane, or one of a stack.
+        sourceController.polterLetGo(source)
 
         // Add in the surface to our tree
         replaceSurfaceTree(

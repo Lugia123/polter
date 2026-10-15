@@ -973,10 +973,7 @@ extension TerminalWindow {
         }
 
         // Close tabs to the right
-        let item = NSMenuItem(title: String(localized: "Close Tabs to the Right", comment: "标签页右键菜单／标题栏"), action: #selector(TerminalController.closeTabsOnTheRight(_:)), keyEquivalent: "")
-        item.identifier = Self.closeTabsOnRightMenuItemIdentifier
-        item.target = targetController
-        item.setImageIfDesired(systemSymbolName: "xmark")
+        let item = Self.polterCloseTabsToTheRightItem(target: targetController)
         if menu.insertItem(item, after: NSSelectorFromString("performCloseOtherTabs:")) == nil,
            menu.insertItem(item, after: NSSelectorFromString("performClose:")) == nil {
             menu.addItem(item)
@@ -990,9 +987,27 @@ extension TerminalWindow {
             }
         }
 
-        appendTabModifierSection(to: menu, target: targetController)
-        appendProjectSection(to: menu, target: targetController)
-        appendAgentSection(to: menu, target: targetController)
+        polterAppendTabSections(to: menu, target: targetController)
+    }
+
+    /// "Close Tabs to the Right", for the tab `target` is.
+    static func polterCloseTabsToTheRightItem(target: TerminalController?) -> NSMenuItem {
+        let item = NSMenuItem(title: String(localized: "Close Tabs to the Right", comment: "标签页右键菜单／标题栏"), action: #selector(TerminalController.closeTabsOnTheRight(_:)), keyEquivalent: "")
+        item.identifier = Self.closeTabsOnRightMenuItemIdentifier
+        item.target = target
+        item.setImageIfDesired(systemSymbolName: "xmark")
+        return item
+    }
+
+    /// Every section this class adds to a tab's menu after the system's own
+    /// items: the tab's title and colour, its project, and what an agent
+    /// may do with its terminal. **The one builder for both menus** -- the
+    /// tab's, and a pane's title and a stack's tab (task 1582,
+    /// `TerminalController.polterPaneMenu`) -- so the two cannot drift.
+    func polterAppendTabSections(to menu: NSMenu, target: TerminalController?) {
+        appendTabModifierSection(to: menu, target: target)
+        appendProjectSection(to: menu, target: target)
+        appendAgentSection(to: menu, target: target)
     }
 
     /// One of the items this class adds to the tab's context menu, as

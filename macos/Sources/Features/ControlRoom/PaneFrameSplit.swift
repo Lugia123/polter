@@ -1,5 +1,6 @@
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The three frames, put round the panes of a terminal tab
 /// (`control-room.md`, 12.6).
@@ -66,6 +67,10 @@ private struct SurfaceInControlRoomKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct PaneHoldsStackKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 private struct PaneFrameTreeKey: EnvironmentKey {
     /// Outside a scope no pane holds a stack.
     static let defaultValue: SplitTree<Ghostty.SurfaceView>? = nil
@@ -97,6 +102,13 @@ extension EnvironmentValues {
     var paneHasTitle: Bool {
         get { self[PaneHasTitleKey.self] }
         set { self[PaneHasTitleKey.self] = newValue }
+    }
+
+    /// Whether the pane this is inside holds a stack. It is picked up by
+    /// its tabs and has no handle (task 1582).
+    var paneHoldsStack: Bool {
+        get { self[PaneHoldsStackKey.self] }
+        set { self[PaneHoldsStackKey.self] = newValue }
     }
 
     /// Whether the terminal this is inside is the one shown on the control
@@ -182,52 +194,106 @@ private struct PaneFramed: ViewModifier {
         }
         let outside = drawn != nil || ground ? PaneFrameSplit.inset : 0
         // The title is where the pane is picked up (task 1508) -- except
-        // over a stack, where that band is the strip and its tabs have to
-        // take the clicks. Such a pane keeps the terminal's own handle.
+        // over a stack, where that band is the strip and the pane is picked
+        // up by its tabs, one terminal at a time (task 1582). Neither keeps
+        // the terminal's own handle.
         let grip = stack == nil ? drawn : nil
+        let focused = lastFocused?.value === surfaceView
+        let lent = lender.lentID == surfaceView.id
         content
             .environment(\.paneHasTitle, grip != nil)
+            .environment(\.paneHoldsStack, stack != nil)
             .modifier(PaneFrameChrome(
                 wears: stack.map(PaneStackRules.wears) ?? drawn?.wears,
                 title: stack.map { PaneStackRules.title($0, framed: drawn?.title) } ?? drawn?.title,
                 caption: nil,
-                focused: lastFocused?.value === surfaceView,
+                focused: focused,
                 well: ghostty.config.backgroundColor,
                 cover: Look.theme(scheme).windowBase.color,
                 outside: outside,
                 stack: stack,
-                stackActions: actions(members: members, names: stack?.members.map(\.name) ?? [])))
-            // A layer over the title band, and nothing round what is framed.
+                stackActions: actions(members: members),
+                closeRoom: grip != nil && !lent))
+            // A layer over the title band, and nothing round what is framed:
+            // what picks the pane up and opens its menu, and its close
+            // button at the right end (task 1582).
             .overlay(alignment: .top) {
                 if let grip {
-                    Ghostty.SurfaceTitleGrip(
-                        surfaceView: surfaceView,
-                        dragHandle: ghostty.config.dragHandle,
-                        lent: lender.lentID == surfaceView.id)
+                    ZStack(alignment: .trailing) {
+                        Ghostty.SurfaceTitleGrip(
+                            surfaceView: surfaceView,
+                            dragHandle: ghostty.config.dragHandle,
+                            lent: lent,
+                            menu: lent ? nil : { [weak surfaceView] in
+                                guard let surfaceView else { return nil }
+                                return (BaseTerminalController.controller(owning: surfaceView) as? TerminalController)?
+                                    .polterPaneMenu(for: surfaceView, inStack: false)
+                            })
+                        if !lent, PolterPaneTabRules.closeShows(hovering: titleHovered, current: focused) {
+                            PolterPaneCloseButton { close(surfaceView) }
+                                .padding(.trailing, PaneFrameChrome.barPadding(for: grip.wears))
+                        }
+                    }
                     .frame(height: PaneFrameChrome.room(for: grip.wears).top)
+                    .onHover { titleHovered = $0 }
                     .padding(outside)
                 }
             }
     }
 
+    /// The pointer is over this pane's title, for its close button.
+    @State private var titleHovered = false
+
+    /// Close one terminal by the path a key would: the core asks first
+    /// when something is running (`close_surface`).
+    private func close(_ view: Ghostty.SurfaceView) {
+        BaseTerminalController.controller(owning: view)?.performAction("close_surface", on: view)
+    }
+
     /// What pressing the strip does: each is the tab's own controller's,
     /// found by the terminal this pane shows.
-    private func actions(
-        members: SplitTree<Ghostty.SurfaceView>.Stack?, names: [String]
-    ) -> PaneStackActions {
+    private func actions(members: SplitTree<Ghostty.SurfaceView>.Stack?) -> PaneStackActions {
         guard let members else { return PaneStackActions() }
         let view = surfaceView
+        let select: (Int) -> Void = { index in
+            guard members.members.indices.contains(index) else { return }
+            BaseTerminalController.controller(owning: view)?.showStackMember(members.members[index])
+        }
+        let dragHandle = ghostty.config.dragHandle
+        let lent = lender.lentID == surfaceView.id
         return PaneStackActions(
-            select: { index in
-                guard members.members.indices.contains(index) else { return }
-                BaseTerminalController.controller(owning: view)?.showStackMember(members.members[index])
-            },
+            select: select,
             add: {
                 BaseTerminalController.controller(owning: view)?.stackNewTerminal(onto: view)
             },
-            more: { hidden in
-                BaseTerminalController.controller(owning: view)?
-                    .presentStackMenu(of: view, members: hidden, names: names)
+            close: { index in
+                guard members.members.indices.contains(index) else { return }
+                close(members.members[index])
+            },
+            grip: { index in
+                guard members.members.indices.contains(index) else { return AnyView(Color.clear) }
+                let member = members.members[index]
+                return AnyView(Ghostty.PolterStackTabGrip(
+                    surfaceView: member,
+                    dragHandle: dragHandle,
+                    lent: lent,
+                    inControlRoom: false,
+                    select: { select(index) },
+                    menu: { [weak member] in
+                        guard let member else { return nil }
+                        return (BaseTerminalController.controller(owning: member) as? TerminalController)?
+                            .polterPaneMenu(for: member, inStack: true)
+                    }))
+            },
+            dropTypes: [.ghosttySurfaceId],
+            drop: { index, provider in
+                _ = provider.loadTransferable(type: Ghostty.SurfaceView.self) { result in
+                    guard case .success(let source) = result else { return }
+                    DispatchQueue.main.async {
+                        BaseTerminalController.controller(owning: view)?.polterDrop(source, onStackOf: view, at: index)
+                    }
+                }
+                return true
             })
     }
 }
@@ -250,5 +316,29 @@ extension View {
     /// On what one leaf of it shows.
     func paneFramed(_ surfaceView: Ghostty.SurfaceView) -> some View {
         modifier(PaneFramed(surfaceView: surfaceView))
+    }
+}
+
+/// The close button at the right end of a pane's title (task 1582): the
+/// window tab's, at the title's size.
+struct PolterPaneCloseButton: View {
+    typealias Look = ControlRoomLook
+
+    let action: () -> Void
+
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let label = String(localized: "Close Terminal", comment: "分屏标题和层叠标签右端的 x；层叠标签右键菜单：关闭这一个终端")
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: CGFloat(Look.Font.body) - 2, weight: .semibold))
+                .foregroundStyle(Look.theme(scheme).terminalDim.color)
+                .frame(width: CGFloat(Look.StackTab.closeButton), height: CGFloat(Look.StackTab.closeButton))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(label)
+        .accessibilityLabel(label)
     }
 }

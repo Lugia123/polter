@@ -16,12 +16,14 @@ extension Ghostty {
         @Environment(\.paneHasTitle) private var paneHasTitle
         /// The control room's right-hand side drags nothing (task 1566).
         @Environment(\.surfaceInControlRoom) private var inControlRoom
+        /// A stacked pane is picked up by its tabs (task 1582).
+        @Environment(\.paneHoldsStack) private var paneHoldsStack
 
         @State private var isHovering: Bool = false
         @State private var isDragging: Bool = false
 
         private var handleVisible: Bool {
-            surfaceView.dragGrip(dragHandle, titled: paneHasTitle, lent: false, controlRoom: inControlRoom) == .handle
+            surfaceView.dragGrip(dragHandle, titled: paneHasTitle, lent: false, controlRoom: inControlRoom, stacked: paneHoldsStack) == .handle
         }
 
         private var ellipsisVisible: Bool {
@@ -98,28 +100,28 @@ extension Ghostty {
         let dragHandle: Ghostty.Config.DragHandle
         /// The terminal is on the control room's right-hand side.
         let lent: Bool
+        /// The title's menu: the window tab's, for this pane (task 1582).
+        var menu: (() -> NSMenu?)?
 
         @State private var isHovering: Bool = false
         @State private var isDragging: Bool = false
 
         var body: some View {
-            // `drag-handle` takes the drag away, never the click (task 1514).
+            // `drag-handle` takes the drag away, never the click (task 1514)
+            // -- nor the menu (task 1582).
             switch surfaceView.titleGrip(dragHandle, lent: lent) {
-            case .drag:
+            case .drag, .click:
                 SurfaceDragSource(
                     surfaceView: surfaceView,
                     isDragging: $isDragging,
                     isHovering: $isHovering,
                     dragThreshold: SurfaceDragGrip.titleDragThreshold,
-                    onClick: focus
+                    onClick: focus,
+                    // Not a hand over a title that will not drag.
+                    canDrag: surfaceView.titleGrip(dragHandle, lent: lent) == .drag,
+                    menu: menu
                 )
                 .contentShape(Rectangle())
-            case .click:
-                // Not `SurfaceDragSource`: its cursor is an open hand, which
-                // says "drag me" over a title that will not drag.
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: focus)
             case .none:
                 EmptyView()
             }
@@ -129,14 +131,51 @@ extension Ghostty {
             surfaceView.window?.makeFirstResponder(surfaceView)
         }
     }
+
+    /// What a stack's tab is picked up, clicked and right-clicked by (task
+    /// 1582): laid behind the tab, the tab's member's own drag source. A
+    /// drag takes that terminal wherever a pane's title would; a click
+    /// brings it to the front.
+    struct PolterStackTabGrip: View {
+        @ObservedObject var surfaceView: SurfaceView
+        let dragHandle: Ghostty.Config.DragHandle
+        let lent: Bool
+        let inControlRoom: Bool
+        let select: () -> Void
+        let menu: () -> NSMenu?
+
+        @State private var isHovering: Bool = false
+        @State private var isDragging: Bool = false
+
+        var body: some View {
+            let grip = SurfaceDragGrip.stackTabGrip(
+                setting: SurfaceView.gripSetting(dragHandle), lent: lent, controlRoom: inControlRoom)
+            switch grip {
+            case .drag, .click:
+                SurfaceDragSource(
+                    surfaceView: surfaceView,
+                    isDragging: $isDragging,
+                    isHovering: $isHovering,
+                    dragThreshold: SurfaceDragGrip.titleDragThreshold,
+                    onClick: select,
+                    canDrag: grip == .drag,
+                    menu: menu
+                )
+                .contentShape(Rectangle())
+            case .none:
+                Color.clear
+            }
+        }
+    }
 }
 
 extension Ghostty.SurfaceView {
     /// `SurfaceDragGrip.place` for this surface as it is now: whether its
     /// tab is split is read off the window.
-    func dragGrip(_ setting: Ghostty.Config.DragHandle, titled: Bool, lent: Bool, controlRoom: Bool) -> SurfaceDragGrip.Place {
+    func dragGrip(_ setting: Ghostty.Config.DragHandle, titled: Bool, lent: Bool, controlRoom: Bool, stacked: Bool = false) -> SurfaceDragGrip.Place {
         SurfaceDragGrip.place(
-            setting: Self.gripSetting(setting), titled: titled, lent: lent, controlRoom: controlRoom, split: gripSplit)
+            setting: Self.gripSetting(setting), titled: titled, lent: lent, controlRoom: controlRoom, split: gripSplit,
+            stacked: stacked)
     }
 
     /// `SurfaceDragGrip.titleGrip` for this surface as it is now.
@@ -150,7 +189,7 @@ extension Ghostty.SurfaceView {
         (window?.windowController as? BaseTerminalController)?.surfaceTree.isSplit ?? false
     }
 
-    private static func gripSetting(_ setting: Ghostty.Config.DragHandle) -> SurfaceDragGrip.Setting {
+    static func gripSetting(_ setting: Ghostty.Config.DragHandle) -> SurfaceDragGrip.Setting {
         switch setting {
         case .always: .always
         case .auto: .auto

@@ -1006,3 +1006,12 @@
 "It is no longer failing. Nothing was sent." = "It is no longer failing. Nothing was sent.";
 "The supervisor has already been told." = "The supervisor has already been told.";
 "No agent is connected in that terminal, so nothing was typed. It is kept in the group." = "No agent is connected in that terminal, so nothing was typed. It is kept in the group.";
+
+/* A pane's title and a stack's tabs: the close button and the menu (task 1582). */
+"Close Terminal" = "Close Terminal";
+"Close Others" = "Close Others";
+"Close to the Right" = "Close to the Right";
+"Close to the Left" = "Close to the Left";
+"Close Tab" = "Close Tab";
+"Close Other Tabs" = "Close Other Tabs";
+"Move Tab to New Window" = "Move Tab to New Window";
