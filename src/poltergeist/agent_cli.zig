@@ -1116,13 +1116,13 @@ fn askHooks(aa: Allocator, io: std.Io, rig: HookRig, cell: HookCell) !?HookAnswe
     };
 }
 
-/// The six hooks, each running `<polter> +hook --cli claude-code <event>` in
+/// The seven hooks, each running `<polter> +hook --cli claude-code <event>` in
 /// exec form: `command` is the executable itself and `args` the rest, so no
 /// shell reads it (#888 -- on Windows without Git Bash that shell is
 /// PowerShell, and the sh-quoted string was a parse error there).
 fn expectAllHooks(settings: std.json.ObjectMap, polter: []const u8) !void {
     const hooks = (settings.get("hooks") orelse return error.TestExpectedHooks).object;
-    for ([_][]const u8{ "SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Notification" }) |event| {
+    for ([_][]const u8{ "SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Notification", "PostToolUse" }) |event| {
         const entries = (hooks.get(event) orelse {
             std.debug.print("no {s} hook\n", .{event});
             return error.TestExpectedHooks;
@@ -1168,7 +1168,7 @@ test "agent_cli hooks: 2.1.144 gets no hooks, and a note that says why" {
     try testing.expect(std.mem.indexOf(u8, a.notes, "Claude Code 2.1.144 is older than 2.1.145") != null);
 }
 
-test "agent_cli hooks: 2.1.145 gets all six in the one --settings, beside the skill switch" {
+test "agent_cli hooks: 2.1.145 gets all seven in the one --settings, beside the skill switch" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();

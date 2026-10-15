@@ -29,6 +29,15 @@ pub const Kind = enum {
     turn_failed,
     awaiting_approval,
     awaiting_input,
+    /// A tool call finished: the agent is working, whatever it was waiting
+    /// on before. Claude Code's `PostToolUse`, which fires after every
+    /// tool call -- and so is the one hook that says a turn went on after
+    /// an approval or an answer; the next one otherwise is that turn's
+    /// `Stop` (task 1561). **Not `turn_started`**: that one says a turn
+    /// began, from any state, and drops what was waiting about the last
+    /// one; this one is said a hundred times inside one turn and moves
+    /// only a terminal that was waiting (`Bus.agentEvent`).
+    turn_resumed,
     /// Not a hook either: `polter +statusline` saying it has just written
     /// the allowance it was handed (`QuotaWatch`). It says nothing about
     /// what the agent is doing and changes nothing the bus keeps -- it is
@@ -77,6 +86,13 @@ pub const Event = struct {
 
     session_id: ?[]const u8,
 
+    /// Which of the session's agents said it, when it was not the main one:
+    /// Claude Code's `agent_id`, present only inside a subagent (task 1561).
+    /// It is what pairs a finished tool call with the approval it ends --
+    /// a subagent's tool finishing says nothing about the main agent's
+    /// prompt, or the other way round.
+    agent_id: ?[]const u8,
+
     /// Where the CLI keeps its own record of this session, when it says:
     /// Claude Code's `transcript_path`. Not read by Polter -- the file is
     /// the CLI's -- only remembered beside the session, so that whoever
@@ -109,6 +125,7 @@ pub const Event = struct {
         .event = .hooks_expected,
         .cli = "",
         .session_id = null,
+        .agent_id = null,
         .transcript_path = null,
         .detail = null,
         .note = null,
@@ -178,6 +195,7 @@ fn claudeCode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error
     ev.cli = "claude-code";
     ev.session_id = try requireString(obj, "session_id");
     ev.transcript_path = try optionalString(obj, "transcript_path");
+    ev.agent_id = try optionalString(obj, "agent_id");
 
     if (std.mem.eql(u8, hook, "SessionStart")) {
         ev.event = .session_started;
@@ -213,6 +231,11 @@ fn claudeCode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error
             ev.text = cutBytes(whole, max_text_bytes);
             ev.text_bytes = whole.len;
         }
+    } else if (std.mem.eql(u8, hook, "PostToolUse")) {
+        // Only the tool's name: its input and its response are the
+        // agent's work, and this signal says only that work goes on.
+        ev.event = .turn_resumed;
+        ev.detail = try requireString(obj, "tool_name");
     } else if (std.mem.eql(u8, hook, "Notification")) {
         const kind = try requireString(obj, "notification_type");
         if (!std.mem.eql(u8, kind, "idle_prompt") and
@@ -504,6 +527,41 @@ test "claude-code Notification is awaiting_input only for the two waiting kinds"
 
     try testing.expectError(error.Ignored, tr("Notification",
         \\{"session_id":"s","hook_event_name":"Notification","message":"m","notification_type":"auth_success"}
+    ));
+}
+
+test "claude-code PostToolUse is turn_resumed naming the tool, and nothing of its work" {
+    setup();
+    defer teardown();
+    const ev = try tr("PostToolUse",
+        \\{"session_id":"s","transcript_path":"/x","cwd":"/w","permission_mode":"default",
+        \\ "hook_event_name":"PostToolUse","tool_name":"Bash",
+        \\ "tool_input":{"command":"zig build test","description":"d"},
+        \\ "tool_response":{"stdout":"ok","stderr":"","interrupted":false},
+        \\ "tool_use_id":"toolu_01","duration_ms":812}
+    );
+    try testing.expectEqual(Kind.turn_resumed, ev.event);
+    try testing.expectEqualStrings("Bash", ev.detail.?);
+    try testing.expect(ev.note == null);
+    try testing.expect(ev.text == null);
+
+    // Inside a subagent both this and the approval say which one.
+    try testing.expect(ev.agent_id == null);
+    const sub = try tr("PostToolUse",
+        \\{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"AskUserQuestion",
+        \\ "agent_id":"a36a9e16d5b37235e","agent_type":"general-purpose","tool_input":{}}
+    );
+    try testing.expectEqualStrings("a36a9e16d5b37235e", sub.agent_id.?);
+    const ask = try tr("PermissionRequest",
+        \\{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion",
+        \\ "agent_id":"a36a9e16d5b37235e","tool_input":{"questions":[]}}
+    );
+    try testing.expectEqualStrings("a36a9e16d5b37235e", ask.agent_id.?);
+    try testing.expectEqualStrings(sub.detail.?, ask.detail.?);
+
+    // No tool name: refused like any event missing what it is about.
+    try testing.expectError(error.MissingField, tr("PostToolUse",
+        \\{"session_id":"s","hook_event_name":"PostToolUse","tool_input":{}}
     ));
 }
 
