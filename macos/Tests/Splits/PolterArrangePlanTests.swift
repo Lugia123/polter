@@ -76,8 +76,10 @@ struct PolterArrangePlanTests {
         if case .success = PolterArrangePlan.decide(named: [9], everywhere: everywhere, destination: nil, handleOf: handle) {
             Issue.record("an unknown terminal was let through")
         }
-        if case .success = PolterArrangePlan.decide(named: [1, 1], everywhere: everywhere, destination: nil, handleOf: handle) {
-            Issue.record("a terminal named twice was let through")
+        switch PolterArrangePlan.decide(named: [1, 1], everywhere: everywhere, destination: nil, handleOf: { _ in "0x1" }) {
+        case .success: Issue.record("a terminal named twice was let through")
+        // Task 1578: the refusal names the terminal, as "leaves out" does.
+        case .failure(let refusal): #expect(refusal.message.contains("names terminal 0x1 twice"))
         }
     }
 

@@ -216,6 +216,17 @@ poltergeist_persona: apprt.action.PoltergeistMark.Persona = .none,
 /// do not update it, or a notice would keep pushing its own deadline back.
 last_key_time: ?std.Io.Timestamp = null,
 
+/// When an input method last changed what it is composing here, while a
+/// composition is open; null when none is (task 1578).
+///
+/// **The keys of a composition never reach `keyCallback`** on Windows --
+/// they stop in the candidate box -- so a person typing pinyin was, to the
+/// clock above, not there, and a supervisor's layout moved the pane out from
+/// under them (#1577). Every update also moves `last_key_time`; this field is
+/// for the case the clock cannot hold: a composition left open while the
+/// person thinks, for longer than the clock's ten seconds. See `presence`.
+composition_updated: ?std.Io.Timestamp = null,
+
 /// Whether this terminal's input line is holding something unsubmitted.
 ///
 /// **The other half of the guard above, and it is a different question.**
@@ -3105,6 +3116,13 @@ fn balancePaddingIfNeeded(self: *Surface) void {
 pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) !void {
     // log.debug("text preeditCallback value={any}", .{preedit_});
 
+    // Somebody is composing here (task 1578). Starting or changing a
+    // composition is a person at this terminal as surely as a key is; ending
+    // one is not stamped -- hosts clear a preedit on their own (a focus
+    // change, a pane closing), and the text a composition commits arrives
+    // through `textFromPerson`, which stamps the clock itself.
+    notePreedit(&self.last_key_time, &self.composition_updated, preedit_, .now(global.io(), .boot));
+
     // Crash metadata in case we crash in here
     crash.sentry.thread_state = self.crashThreadState();
     defer crash.sentry.thread_state = null;
@@ -4654,9 +4672,110 @@ test "a role picked from the menu is not refused for the keys that opened the ta
 /// Whether a key reached this surface within the quiet window -- the
 /// `UserPresent` clock alone, without the draft and the child, for a call
 /// that moves or resizes a terminal rather than typing into it (task 1571).
-pub fn keyedRecently(self: *const Surface) bool {
-    const last = self.last_key_time orelse return false;
-    return last.durationTo(.now(global.io(), .boot)).toMilliseconds() < notice_quiet_keyboard_ms;
+/// Whether somebody is at this terminal, for a call that moves or resizes
+/// it rather than typing into it (task 1571, 1578): a key within the quiet
+/// window, or an input method composing here. See `presence`.
+pub fn presenceForMove(self: *const Surface) Presence {
+    const now: std.Io.Timestamp = .now(global.io(), .boot);
+    const since_key: ?i64 = if (self.last_key_time) |t| t.durationTo(now).toMilliseconds() else null;
+    const since_composition: ?i64 = if (self.composition_updated) |t| t.durationTo(now).toMilliseconds() else null;
+    const answer = presence(since_key, since_composition);
+    if (answer.stale_composition) log.info(
+        "polter: a composition has been open in this terminal for over {d}s with no update; " ++
+            "it is no longer counted as somebody being here (the input method's host may not " ++
+            "have cleared it) -- only the key clock is",
+        .{composition_stale_ms / std.time.ms_per_s},
+    );
+    return answer.present;
+}
+
+/// What a preedit update says about who is here, written into the two
+/// clocks (task 1578). A function of its own so a test can hold it: a
+/// `Surface` cannot be built in one, and the stamping is the half of 1578
+/// the host never sees.
+fn notePreedit(
+    last_key: *?std.Io.Timestamp,
+    composition: *?std.Io.Timestamp,
+    preedit: ?[]const u8,
+    now: std.Io.Timestamp,
+) void {
+    const composing = if (preedit) |t| t.len > 0 else false;
+    if (composing) {
+        last_key.* = now;
+        composition.* = now;
+    } else {
+        composition.* = null;
+    }
+}
+
+test "presence: a composition starting or changing stamps the clock, and ending it closes it" {
+    const testing = std.testing;
+    var last_key: ?std.Io.Timestamp = null;
+    var composition: ?std.Io.Timestamp = null;
+    const t1: std.Io.Timestamp = .{ .nanoseconds = 1_000 };
+    const t2: std.Io.Timestamp = .{ .nanoseconds = 2_000 };
+
+    notePreedit(&last_key, &composition, "ni", t1);
+    try testing.expectEqual(t1, last_key.?);
+    try testing.expectEqual(t1, composition.?);
+
+    notePreedit(&last_key, &composition, "nih", t2);
+    try testing.expectEqual(t2, last_key.?);
+    try testing.expectEqual(t2, composition.?);
+
+    // Ended: the composition is closed and the clock is left where the last
+    // update put it -- a host clearing a preedit is not a person.
+    notePreedit(&last_key, &composition, null, .{ .nanoseconds = 9_000 });
+    try testing.expectEqual(t2, last_key.?);
+    try testing.expect(composition == null);
+    notePreedit(&last_key, &composition, "", .{ .nanoseconds = 9_000 });
+    try testing.expectEqual(t2, last_key.?);
+}
+
+/// Who is at a terminal, as a move sees it.
+pub const Presence = enum {
+    absent,
+    /// A key reached it within `notice_quiet_keyboard_ms`.
+    keyed,
+    /// An input method is composing there.
+    composing,
+};
+
+/// How long an open composition with no update still counts as somebody
+/// being here (task 1578). **A guard, not a model of thinking time**: a host
+/// that never clears a preedit would otherwise make its pane immovable for
+/// good, and past this the key clock alone decides.
+pub const composition_stale_ms = 5 * std.time.ms_per_min;
+
+/// The judgement, without a `Surface`. `since_key_ms` is how long ago a key
+/// (or a composition update) reached the terminal; `since_composition_ms`
+/// how long ago the open composition last changed, null when none is open.
+fn presence(since_key_ms: ?i64, since_composition_ms: ?i64) struct { present: Presence, stale_composition: bool } {
+    var stale = false;
+    if (since_composition_ms) |c| {
+        if (c < composition_stale_ms) return .{ .present = .composing, .stale_composition = false };
+        stale = true;
+    }
+    if (since_key_ms) |k| if (k < notice_quiet_keyboard_ms) return .{ .present = .keyed, .stale_composition = stale };
+    return .{ .present = .absent, .stale_composition = stale };
+}
+
+test "presence: an open composition is somebody here, for five minutes and no longer" {
+    const testing = std.testing;
+    // Composing, long past the key clock: still here.
+    try testing.expectEqual(Presence.composing, presence(60_000, 60_000).present);
+    // Just under the guard.
+    try testing.expectEqual(Presence.composing, presence(null, composition_stale_ms - 1).present);
+    // Past the guard: the key clock alone, and the guard says it fired.
+    const stale = presence(60_000, composition_stale_ms);
+    try testing.expectEqual(Presence.absent, stale.present);
+    try testing.expect(stale.stale_composition);
+    // A recent key still counts when the composition has gone stale.
+    try testing.expectEqual(Presence.keyed, presence(2_000, composition_stale_ms + 1).present);
+    // No composition: the key clock, as before.
+    try testing.expectEqual(Presence.keyed, presence(2_000, null).present);
+    try testing.expectEqual(Presence.absent, presence(notice_quiet_keyboard_ms, null).present);
+    try testing.expectEqual(Presence.absent, presence(null, null).present);
 }
 
 pub fn mayTypeAs(self: *Surface, who: Typist) !void {

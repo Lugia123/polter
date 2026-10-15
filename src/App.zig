@@ -5865,27 +5865,37 @@ fn polterTabMove(
     };
 }
 
-/// For `UserPresent` on a move (task 1571): a terminal a key reached within
-/// the quiet window -- `id`, or with `whole_tab` any terminal in its tab.
-/// The clock is the one `terminal_send` is refused by (`Surface.mayType`).
+/// For `UserPresent` on a move (task 1571): a terminal somebody is at --
+/// `id`, or with `whole_tab` any terminal in its tab. A key within the quiet
+/// window (the clock `terminal_send` is refused by), or an input method
+/// composing there (task 1578); see `Surface.presenceForMove`.
 fn polterUserPresent(
     ctx: *anyopaque,
     id: poltergeistpkg.Bus.Id,
     whole_tab: bool,
     except: poltergeistpkg.Bus.Id,
-) ?poltergeistpkg.Bus.Id {
+) ?poltergeistpkg.rpc.Present {
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return null;
-    if (id != except and surface.keyedRecently()) return id;
+    if (id != except) if (polterPresent(surface)) |p| return p;
     if (!whole_tab) return null;
     const tab = poltergeistTabOf(surface) orelse return null;
     for (self.surfaces.items) |v| {
         const other = v.core();
         if (other == surface or other.id == except) continue;
         if (poltergeistTabOf(other) != tab) continue;
-        if (other.keyedRecently()) return other.id;
+        if (polterPresent(other)) |p| return p;
     }
     return null;
+}
+
+/// `Surface.presenceForMove`, as the tool surface's answer.
+fn polterPresent(surface: *Surface) ?poltergeistpkg.rpc.Present {
+    return switch (surface.presenceForMove()) {
+        .absent => null,
+        .keyed => .{ .id = surface.id },
+        .composing => .{ .id = surface.id, .composing = true },
+    };
 }
 
 /// Rewrite a layout's `pane` cells from terminal ids to surface handles.
