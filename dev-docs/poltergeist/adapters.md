@@ -106,6 +106,20 @@
 | `StopFailure` | `turn_failed` | `error`（rate_limit / overloaded / authentication_failed / …）、`error_details` |
 | `PermissionRequest` | `awaiting_approval` | `tool_name`、一行摘要（shell 工具——`Bash`，Windows 上是 `PowerShell`——取 `command` 前 120 字符） |
 | `Notification` matcher `idle_prompt` / `elicitation_dialog` | `awaiting_input` | `notification_type` |
+| `PostToolUse` | `turn_resumed` | `tool_name`、`agent_id`（子代理里才有） |
+
+**`turn_resumed`（task 1561）**：批准或回答之后 agent 接着干活，原来要等这一轮的 `Stop` 才有下一个事件，
+「等批准」会一直挂着。`PostToolUse` 每次工具调用都发，所以它只在两种状态下起作用：`awaiting_approval`
+且与批准**同一个 agent**（`agent_id` 相同；主线程两边都没有这个字段），或 `awaiting_input` 且不是
+`idle_prompt`（那是一轮结束之后）。其余状态一律不动，连「最后听到的时刻」都不动。
+- **按 agent 配对，不按工具名**：`PermissionRequest` 不带 `tool_use_id`；按工具名配对挡得住子代理的工具，
+  但挡不住「拒绝并附反馈」——那时 Claude Code 不结束这一轮，agent 换个工具接着跑，工具名对不上，
+  就只能等 `Stop`。2.1.300 的产物里，两种 hook 的 `tool_name` 都取自工具对象自己的 `name`；不带反馈的拒绝会
+  `abort` 这一轮，且不发任何 hook（#879），仍靠屏幕兜底。
+- **同步，不设 `async`**：异步的 `PostToolUse(A)` 可能晚于下一个工具的同步 `PermissionRequest` 到达，
+  把刚出现的批准误撤。代价是每次工具调用多起一次 `polter`，实测墙钟约 20ms（几乎全是 app 二进制的启动）；
+  以后可以给 hook 一个不带 AppKit 的小可执行文件。
+- 不复用 `turn_started`：那个从任何状态都进 `in_turn`，并撤掉上一轮还没取走的 notice。
 
 每条 hook 都是 exec form：`{"type":"command","command":"<polter 可执行文件>","args":["+hook","--cli","claude-code","<event>"],"timeout":5}`。
 **不经过 shell**（#888）：shell form 在 Windows 上没装 Git Bash 时交给 PowerShell，

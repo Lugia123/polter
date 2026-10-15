@@ -218,7 +218,7 @@ pub fn writeRequest(w: *std.Io.Writer, ev: AgentEvent.Event) std.Io.Writer.Error
     try s.write(@tagName(ev.event));
     try s.objectField("cli");
     try s.write(ev.cli);
-    inline for (.{ "session_id", "transcript_path", "detail", "note", "text" }) |name| {
+    inline for (.{ "session_id", "agent_id", "transcript_path", "detail", "note", "text" }) |name| {
         if (@field(ev, name)) |v| {
             try s.objectField(name);
             try s.write(v);
@@ -248,6 +248,7 @@ test "the request +hook writes is the one the host parses back" {
     ev.event = .turn_ended;
     ev.cli = "claude-code";
     ev.session_id = "s1";
+    ev.agent_id = "a36a9e16d5b37235e";
     ev.text = "done \"quoted\"\nnext line";
     ev.text_bytes = 999;
     ev.waiting_on_background = true;
@@ -259,6 +260,7 @@ test "the request +hook writes is the one the host parses back" {
     try testing.expectEqual(AgentEvent.Kind.turn_ended, got.event);
     try testing.expectEqualStrings("claude-code", got.cli);
     try testing.expectEqualStrings("s1", got.session_id.?);
+    try testing.expectEqualStrings("a36a9e16d5b37235e", got.agent_id.?);
     try testing.expectEqualStrings(ev.text.?, got.text.?);
     try testing.expectEqual(@as(u64, 999), got.text_bytes);
     try testing.expect(got.waiting_on_background);

@@ -6280,6 +6280,7 @@ pub fn showsAnAgent(req: Request) bool {
             .hooks_expected, .launch_failed => false,
             .session_started,
             .turn_started,
+            .turn_resumed,
             .turn_ended,
             .turn_failed,
             .awaiting_approval,

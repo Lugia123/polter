@@ -331,6 +331,10 @@ pub const Agent = struct {
     expected_said: bool,
 
     session_id: Small(96),
+    /// The subagent the last event came from; empty for the main agent
+    /// (`AgentEvent.Event.agent_id`). What a finished tool call is paired
+    /// with a standing approval by (`resumes`).
+    agent_id: Small(64),
     cli: Small(32),
     detail: Small(64),
     note: Small(160),
@@ -363,6 +367,7 @@ pub const Agent = struct {
         .expected_said = false,
         .last_event_ms = null,
         .session_id = .{},
+        .agent_id = .{},
         .cli = .{},
         .detail = .{},
         .note = .{},
@@ -1685,6 +1690,15 @@ pub fn agentEvent(
     // screen is still the one that was asked about.
     if (ev.event == .allowance_written) return false;
 
+    // **A tool call finished: only a terminal that was waiting moves**
+    // (task 1561). Said after every tool call in a turn, so in any other
+    // state it is not news and touches nothing -- not the clocks, not the
+    // box, not a terminal the bus has never seen.
+    if (ev.event == .turn_resumed) {
+        const e = self.entries.getPtr(id) orelse return false;
+        if (!resumes(e.agent, ev)) return false;
+    }
+
     try self.register(id);
     const e = self.entries.getPtr(id).?;
     const a = &e.agent;
@@ -1710,7 +1724,7 @@ pub fn agentEvent(
         },
         .allowance_written => return false,
         .session_started => .{ .idle, null },
-        .turn_started => .{ .in_turn, null },
+        .turn_started, .turn_resumed => .{ .in_turn, null },
         .turn_ended => .{ .ended, .turn_ended },
         .turn_failed => .{ .failed, .turn_failed },
         .awaiting_approval => .{ .awaiting_approval, .awaiting_approval },
@@ -1729,6 +1743,7 @@ pub fn agentEvent(
     // An agent that speaks is there, whatever was concluded when it went
     // quiet.
     e.left = null;
+    a.agent_id.set(ev.agent_id);
     a.detail.set(ev.detail);
     a.note.set(ev.note);
 
@@ -1750,6 +1765,14 @@ pub fn agentEvent(
     // way `resumed` replaces a quiet report. The `no tool call` clock
     // starts again with it too (`silenceMs`): what was said about the wait
     // before it is not about this turn.
+    // What was waiting has been answered: an `awaiting` line still in the
+    // box would send the supervisor to a prompt that is gone.
+    if (ev.event == .turn_resumed) {
+        if (a.pending) |kind| if (isWaiting(kind)) {
+            a.pending = null;
+            a.handed = 0;
+        };
+    }
     if (ev.event == .turn_started or ev.event == .session_started) {
         a.pending = null;
         a.handed = 0;
@@ -1785,6 +1808,36 @@ fn saysSomethingNew(was: Agent, is: Agent, kind: AgentNotice) bool {
         (was.state == .ended or was.state == .failed) and
         sameText(is.detail.get(), idle_prompt)) return false;
     return true;
+}
+
+/// Whether a finished tool call takes this agent back to work: it was
+/// stopped on an approval and the agent that asked has finished a tool
+/// call since, or on a question asked inside its turn.
+///
+/// **Paired by who asked, not by which tool.** Claude Code's `PostToolUse`
+/// fires for every tool call, a subagent's included, and its
+/// `PermissionRequest` carries no `tool_use_id`; both carry `agent_id`
+/// inside a subagent and neither does on the main thread (measured in the
+/// 2.1.300 binary: both inputs take `tool_name` from the tool's own
+/// `name`, and the common fields describe `agent_id` that way). So a
+/// subagent's `Read` finishing while the main agent waits on `Bash` leaves
+/// the prompt standing. The tool's name would have paired them too, but
+/// not the case that matters next: an approval **declined with feedback**
+/// does not end the turn (only one declined without any does), the agent
+/// goes on with some other tool, and only `Stop` would have moved it. A
+/// question has no tool of its own (an MCP dialog's tool is not named in
+/// it), so any tool call ends it.
+///
+/// **Not an idle prompt.** That is `awaiting_input` too, but it comes after
+/// the turn ended, with nothing left to resume; a tool call heard then (a
+/// subagent's, a late one) does not start a turn -- `turn_started` does.
+fn resumes(a: Agent, ev: AgentEvent.Event) bool {
+    if (a.hooks != .live) return false;
+    return switch (a.state) {
+        .awaiting_approval => sameText(a.agent_id.get(), ev.agent_id),
+        .awaiting_input => !sameText(a.detail.get(), idle_prompt),
+        .idle, .in_turn, .ended, .failed => false,
+    };
 }
 
 /// What Claude Code's adapter writes as the detail of an idle notification
@@ -4667,6 +4720,158 @@ test "hooks: waiting for an answer is urgent too, and a turn that merely ended i
     _ = try b.agentEvent(worker, asks, 3_000);
     const line = b.drainIfDue(boss, 3_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings("[poltergeist] 0x0000000000002222 awaiting input which branch?", line);
+}
+
+fn toolDone(tool: []const u8) AgentEvent.Event {
+    var ev = hookEv(.turn_resumed);
+    ev.detail = tool;
+    return ev;
+}
+
+test "hooks: an approval answered, then the tool finishing, is back in the turn and off the board (task 1561)" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    ask.note = "zig build test";
+    ask.text = "zig build test";
+    ask.text_bytes = 14;
+    _ = try b.agentEvent(worker, ask, 2_000);
+    try testing.expect(b.askOf(worker) != null);
+    try testing.expectEqual(AgentNotice.awaiting_approval, b.agentOf(worker).pending.?);
+
+    // Approved; the command ran and its `PostToolUse` is heard.
+    const boxed = try b.agentEvent(worker, toolDone("Bash"), 900_000);
+    try testing.expect(!boxed);
+    const a = b.agentOf(worker);
+    try testing.expectEqual(AgentState.in_turn, a.state);
+    try testing.expectEqual(@as(u64, 900_000), a.since_ms);
+    // What was to be approved, and the line saying so, are gone with it.
+    try testing.expect(b.askOf(worker) == null);
+    try testing.expect(a.pending == null);
+    try testing.expect(!b.promptStanding(worker, 2_000, 2_000, 900_000));
+
+    // And the next tool call inside the same turn is not a new state.
+    _ = try b.agentEvent(worker, toolDone("Read"), 950_000);
+    try testing.expectEqual(@as(u64, 900_000), b.agentOf(worker).since_ms);
+}
+
+test "hooks: a question answered inside the turn resumes it on the next tool call, whichever tool" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+    var asks = hookEv(.awaiting_input);
+    asks.detail = "elicitation_dialog";
+    asks.text = "which branch?";
+    asks.text_bytes = 13;
+    _ = try b.agentEvent(worker, asks, 2_000);
+    try testing.expectEqual(AgentState.awaiting_input, b.agentOf(worker).state);
+
+    _ = try b.agentEvent(worker, toolDone("mcp__tracker__create_issue"), 60_000);
+    const a = b.agentOf(worker);
+    try testing.expectEqual(AgentState.in_turn, a.state);
+    try testing.expect(a.pending == null);
+    try testing.expect(b.askOf(worker) == null);
+}
+
+test "hooks: a tool call finishing moves nobody who was not waiting" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // Never heard from: not even registered by it.
+    const stranger: Id = 0x7777;
+    try testing.expect(!try b.agentEvent(stranger, toolDone("Read"), 500));
+    try testing.expect(b.get(stranger) == null);
+
+    // Idle (a session, no turn yet), ended, failed, and sitting at the
+    // prompt after a turn (`idle_prompt` is `awaiting_input` too): each
+    // stays exactly as it was, clocks and all.
+    const Case = struct { setup: []const AgentEvent.Kind, detail: ?[]const u8 };
+    const cases = [_]Case{
+        .{ .setup = &.{.session_started}, .detail = null },
+        .{ .setup = &.{ .turn_started, .turn_ended }, .detail = null },
+        .{ .setup = &.{ .turn_started, .turn_failed }, .detail = "rate_limit" },
+        .{ .setup = &.{ .turn_started, .turn_ended, .awaiting_input }, .detail = idle_prompt },
+    };
+    for (cases) |c| {
+        var t = try hookedBus();
+        defer t.deinit();
+        for (c.setup, 0..) |kind, i| {
+            var ev = hookEv(kind);
+            ev.detail = c.detail;
+            _ = try t.agentEvent(worker, ev, 1_000 * (i + 1));
+        }
+        const before = t.agentOf(worker);
+        const pending = t.get(worker).?.agent.pending;
+        try testing.expect(!try t.agentEvent(worker, toolDone("Read"), 500_000));
+        const after = t.agentOf(worker);
+        try testing.expectEqual(before.state, after.state);
+        try testing.expectEqual(before.since_ms, after.since_ms);
+        try testing.expectEqual(before.last_event_ms, after.last_event_ms);
+        try testing.expectEqualStrings(before.detail.get() orelse "", after.detail.get() orelse "");
+        try testing.expectEqual(pending, t.get(worker).?.agent.pending);
+    }
+}
+
+test "hooks: a subagent's tool finishing does not take the main agent's approval off the board" {
+    // `PostToolUse` fires inside subagents too, and one running in the
+    // background goes on while the main agent waits on its prompt.
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    _ = try b.agentEvent(worker, ask, 2_000);
+
+    var sub = toolDone("Bash");
+    sub.agent_id = "a36a9e16d5b37235e";
+    try testing.expect(!try b.agentEvent(worker, sub, 3_000));
+    const a = b.agentOf(worker);
+    try testing.expectEqual(AgentState.awaiting_approval, a.state);
+    try testing.expectEqual(@as(?u64, 2_000), a.last_event_ms);
+    try testing.expect(b.promptStanding(worker, 2_000, 2_000, 3_000));
+
+    // The main agent's own next tool call is what ends it.
+    _ = try b.agentEvent(worker, toolDone("Bash"), 4_000);
+    try testing.expectEqual(AgentState.in_turn, b.agentOf(worker).state);
+}
+
+test "hooks: an approval declined with feedback is over at the agent's next tool call, whichever tool" {
+    // Declined with something typed, Claude Code does not end the turn: it
+    // hands the agent the feedback and the agent goes on -- with another
+    // tool, as often as not. No hook marks the decline itself.
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    ask.note = "rm -rf dist";
+    _ = try b.agentEvent(worker, ask, 2_000);
+
+    _ = try b.agentEvent(worker, toolDone("Edit"), 30_000);
+    try testing.expectEqual(AgentState.in_turn, b.agentOf(worker).state);
+}
+
+test "hooks: a subagent's approval is ended by that subagent's tool call, not the main agent's" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "AskUserQuestion";
+    ask.agent_id = "sub-1";
+    _ = try b.agentEvent(worker, ask, 2_000);
+
+    _ = try b.agentEvent(worker, toolDone("Read"), 3_000);
+    var other = toolDone("AskUserQuestion");
+    other.agent_id = "sub-2";
+    _ = try b.agentEvent(worker, other, 4_000);
+    try testing.expectEqual(AgentState.awaiting_approval, b.agentOf(worker).state);
+
+    var own = toolDone("AskUserQuestion");
+    own.agent_id = "sub-1";
+    _ = try b.agentEvent(worker, own, 5_000);
+    try testing.expectEqual(AgentState.in_turn, b.agentOf(worker).state);
 }
 
 test "hooks: a waiting notice the supervisor's terminal refused is offered again at once, not an interval later" {

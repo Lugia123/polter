@@ -1789,6 +1789,11 @@ fn poltergeistAgentHeard(
         => .only_a_change,
         // Not an agent speaking: the launcher's own two, and a file.
         .hooks_expected, .launch_failed, .allowance_written => return,
+        // Said after every tool call, and about the turn rather than the
+        // session: what this keeps (who, which session) the events above
+        // have already said, and walking the groups on each tool call
+        // would be the cost without the news.
+        .turn_resumed => return,
     });
 }
 
