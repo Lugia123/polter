@@ -8160,14 +8160,24 @@ fn notifyUser(
                 log.warn("poltergeist: could not record what was raised err={}", .{err});
                 break :raised .not_a_terminal;
             };
-            if (!took) break :raised .not_a_terminal;
-            self.controlRoomTouch();
-            break :raised .shown;
+            if (took) self.controlRoomTouch();
+            // A terminal in no group is on a row of its own, and is told
+            // so: "your group" was the answer it got (task 1544).
+            break :raised poltergeistpkg.notify.Raised.of(took, self.inAnyGroup(from));
         },
     };
     const plugins = try self.notifyPlugins(alloc, reason, title, body, id);
     defer alloc.free(plugins);
     return poltergeistpkg.notify.reply(alloc, raised, system, plugins);
+}
+
+/// Whether terminal `id` is a member of any group.
+fn inAnyGroup(self: *const App, id: poltergeistpkg.Bus.Id) bool {
+    var it = self.chat.groups.iterator();
+    while (it.next()) |kv| {
+        if (self.chat.isMember(kv.key_ptr.*, id)) return true;
+    }
+    return false;
 }
 
 /// Raise the operating system's notification from `from`'s window and say

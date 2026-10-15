@@ -312,9 +312,72 @@ pub fn sweep(
     Ok(report)
 }
 
+/// A line said only when what it says has changed (task 1544).
+///
+/// **The question that needed it** is `poltergeist_grouping`: the core asks
+/// which window and tab each terminal is in every time it works the control
+/// room out again, and with a chat tab open -- which asks the core something
+/// twice a second -- that was 8.6 identical lines a second, 4MB an hour, in
+/// a log a person has to read. The question has to keep being asked (the
+/// tab is the host's to know, and nothing tells the core it moved); the
+/// answer only needs saying when it is news.
+///
+/// Keyed by whatever names the subject; the value is the answer. Bounded:
+/// past `cap` subjects it forgets them all and says each once more, which
+/// costs a line per subject rather than memory for every surface there ever
+/// was.
+pub struct Changes<K, V> {
+    last: std::collections::HashMap<K, V>,
+    cap: usize,
+}
+
+impl<K: std::hash::Hash + Eq, V: PartialEq> Changes<K, V> {
+    pub fn new(cap: usize) -> Self {
+        Changes { last: std::collections::HashMap::new(), cap }
+    }
+
+    /// True when `value` is news for `key`: the first answer, or a
+    /// different one from the last. Remembers it either way.
+    pub fn changed(&mut self, key: K, value: V) -> bool {
+        if self.last.get(&key) == Some(&value) {
+            return false;
+        }
+        if self.last.len() >= self.cap && !self.last.contains_key(&key) {
+            self.last.clear();
+        }
+        self.last.insert(key, value);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_is_said_the_first_time_and_when_it_changes_and_not_otherwise() {
+        let mut c: Changes<usize, (u64, u64)> = Changes::new(8);
+        assert!(c.changed(1, (10, 20)), "the first answer is news");
+        for _ in 0..100 {
+            assert!(!c.changed(1, (10, 20)), "the same answer again is not");
+        }
+        assert!(c.changed(1, (10, 21)), "a moved tab is news");
+        assert!(!c.changed(1, (10, 21)));
+        // Another subject has answers of its own.
+        assert!(c.changed(2, (10, 21)));
+        assert!(!c.changed(2, (10, 21)));
+    }
+
+    #[test]
+    fn past_its_cap_it_forgets_and_says_each_once_more() {
+        let mut c: Changes<usize, u8> = Changes::new(2);
+        assert!(c.changed(1, 0));
+        assert!(c.changed(2, 0));
+        assert!(!c.changed(2, 0));
+        assert!(c.changed(3, 0), "a third subject is news");
+        assert!(c.changed(1, 0), "and the ones before it were forgotten");
+        assert!(c.last.len() <= 2);
+    }
 
     const DAY: Duration = Duration::from_secs(24 * 60 * 60);
     const ME: u32 = 4242;
