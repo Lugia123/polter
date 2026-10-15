@@ -4253,6 +4253,7 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !bool {
         // anything drives a delivery, rather than an interval later
         // (`Bus.deliveryRefused`); the rest comes round as it always has.
         error.UserPresent,
+        error.Composing,
         error.DraftInLine,
         => {
             self.app.poltergeist.deliveryRefused(self.id, self.app.chat.peers());
@@ -4323,6 +4324,10 @@ fn noticeRetryDelayMs(err: anyerror, since_key_ms: ?i64) ?u64 {
             const since: u64 = if (since_key_ms) |ms| @intCast(@max(0, ms)) else 0;
             return (notice_quiet_keyboard_ms -| since) + notice_retry_margin_ms;
         },
+        // A composition has no moment it is known to end by (task 1590):
+        // asked again a quiet window on, and again after that, until it is
+        // committed or cancelled or the five-minute guard lets it go.
+        error.Composing => notice_quiet_keyboard_ms + notice_retry_margin_ms,
         else => null,
     };
 }
@@ -4341,6 +4346,7 @@ test "notice delivery: a refused notice sets its own time to come back, and a dr
     // Never a negative wait, and never one that has already passed.
     try testing.expectEqual(@as(?u64, notice_retry_margin_ms), noticeRetryDelayMs(error.UserPresent, 60_000));
     try testing.expectEqual(@as(?u64, notice_quiet_keyboard_ms + notice_retry_margin_ms), noticeRetryDelayMs(error.UserPresent, null));
+    try testing.expectEqual(@as(?u64, notice_quiet_keyboard_ms + notice_retry_margin_ms), noticeRetryDelayMs(error.Composing, 60_000));
     // A draft does not clear by waiting.
     try testing.expectEqual(@as(?u64, null), noticeRetryDelayMs(error.DraftInLine, 2_000));
     try testing.expectEqual(@as(?u64, null), noticeRetryDelayMs(error.ChildExited, 2_000));
@@ -4606,7 +4612,7 @@ pub const Typist = enum { agent, person };
 /// A person is refused only for what is really in the way: the child gone,
 /// or half a line in front of them that the text would be typed into the
 /// middle of. The keyboard clock is for agents.
-fn mayType(who: Typist, child_exited: bool, since_key_ms: ?i64, draft_outstanding: bool) !void {
+fn mayType(who: Typist, child_exited: bool, since_key_ms: ?i64, composing: bool, draft_outstanding: bool) !void {
     // Why each refusal exists (moved here from the one function that used
     // to hold them all):
     // Never interrupt someone who is currently using this terminal. A
@@ -4652,6 +4658,13 @@ fn mayType(who: Typist, child_exited: bool, since_key_ms: ?i64, draft_outstandin
     // sentence said "try again shortly" and no amount of shortly helped.
     if (child_exited) return error.ChildExited;
     if (who == .agent) {
+        // An input method composing here (task 1590): the half-made word is
+        // in the candidate box, not the line, so neither the clock (it can
+        // be long past) nor the draft (nothing has reached the line) sees
+        // it -- and text typed now lands in the middle of it. The same
+        // judgement a move is refused by (`presenceForMove`), five-minute
+        // guard included, so the two cannot disagree about who is here.
+        if (composing) return error.Composing;
         if (since_key_ms) |ms| if (ms < notice_quiet_keyboard_ms) return error.UserPresent;
     }
     if (draft_outstanding) return error.DraftInLine;
@@ -4659,14 +4672,28 @@ fn mayType(who: Typist, child_exited: bool, since_key_ms: ?i64, draft_outstandin
 
 test "a role picked from the menu is not refused for the keys that opened the tab (#1202)" {
     const testing = std.testing;
-    try testing.expectError(error.UserPresent, mayType(.agent, false, 2000, false));
-    try mayType(.person, false, 2000, false);
-    try mayType(.person, false, null, false);
-    try testing.expectError(error.DraftInLine, mayType(.person, false, null, true));
-    try testing.expectError(error.DraftInLine, mayType(.agent, false, null, true));
-    try testing.expectError(error.ChildExited, mayType(.person, true, null, false));
-    try mayType(.agent, false, notice_quiet_keyboard_ms, false);
-    try mayType(.agent, false, null, false);
+    try testing.expectError(error.UserPresent, mayType(.agent, false, 2000, false, false));
+    try mayType(.person, false, 2000, false, false);
+    try mayType(.person, false, null, false, false);
+    try testing.expectError(error.DraftInLine, mayType(.person, false, null, false, true));
+    try testing.expectError(error.DraftInLine, mayType(.agent, false, null, false, true));
+    try testing.expectError(error.ChildExited, mayType(.person, true, null, false, false));
+    try mayType(.agent, false, notice_quiet_keyboard_ms, false, false);
+    try mayType(.agent, false, null, false, false);
+}
+
+test "presence: an agent's text is refused while an input method is composing, however long ago the last key (task 1590)" {
+    const testing = std.testing;
+    // Long past the key clock, nothing in the line: composing is what stops it.
+    try testing.expectError(error.Composing, mayType(.agent, false, 42_000, true, false));
+    try testing.expectError(error.Composing, mayType(.agent, false, null, true, false));
+    // A person's own text is theirs to type into their own composition.
+    try mayType(.person, false, null, true, false);
+    // The same judgement a move uses, five-minute guard and all: a
+    // composition open that long with no change no longer counts.
+    try testing.expect(composingNow(composition_stale_ms - 1));
+    try testing.expect(!composingNow(composition_stale_ms));
+    try testing.expect(!composingNow(null));
 }
 
 /// Whether a key reached this surface within the quiet window -- the
@@ -4732,6 +4759,26 @@ test "presence: a composition starting or changing stamps the clock, and ending 
     try testing.expectEqual(t2, last_key.?);
 }
 
+/// Whether an input method is composing here now, by the judgement a move
+/// uses (`presence`): an open composition, until the five-minute guard. For
+/// text and keys an agent sends (task 1590).
+pub fn polterComposing(self: *const Surface) bool {
+    const now: std.Io.Timestamp = .now(global.io(), .boot);
+    const since_composition: ?i64 = if (self.composition_updated) |t| t.durationTo(now).toMilliseconds() else null;
+    if (presence(null, since_composition).stale_composition) log.info(
+        "polter: a composition has been open in this terminal for over {d}s with no update; " ++
+            "it is no longer counted as somebody being here",
+        .{composition_stale_ms / std.time.ms_per_s},
+    );
+    return composingNow(since_composition);
+}
+
+/// `polterComposing`, without a `Surface`. The key clock does not enter into it:
+/// it is the composition alone, by `presence`'s rule and guard.
+fn composingNow(since_composition_ms: ?i64) bool {
+    return presence(null, since_composition_ms).present == .composing;
+}
+
 /// Who is at a terminal, as a move sees it.
 pub const Presence = enum {
     absent,
@@ -4787,9 +4834,10 @@ pub fn mayTypeAs(self: *Surface, who: Typist) !void {
         last.durationTo(.now(global.io(), .boot)).toMilliseconds()
     else
         null;
-    mayType(who, self.child_exited, since_key_ms, self.draftFor(who)) catch |err| {
+    mayType(who, self.child_exited, since_key_ms, self.polterComposing(), self.draftFor(who)) catch |err| {
         switch (err) {
             error.ChildExited => log.info("poltergeist: text dropped, the child process has exited", .{}),
+            error.Composing => log.info("polter: text deferred, an input method is composing in this terminal", .{}),
             error.UserPresent => log.info(
                 "poltergeist: notice deferred, a key reached this surface in the last {d}ms",
                 .{notice_quiet_keyboard_ms},
@@ -5086,6 +5134,15 @@ pub fn sendPoltergeistKey(
     if (self.child_exited) {
         log.info("poltergeist: key dropped, the child process has exited", .{});
         return error.ChildExited;
+    }
+
+    // Not into a composition (task 1590): the key would land in the middle
+    // of a word the input method is still making. Only this -- not the key
+    // clock -- because ctrl+c is how a stuck worker is rescued, and a key
+    // the person pressed a moment ago is no reason to refuse it.
+    if (self.polterComposing()) {
+        log.info("polter: key deferred, an input method is composing in this terminal", .{});
+        return error.Composing;
     }
 
     const event = poltergeistpkg.keys.event(trigger);

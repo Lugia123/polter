@@ -244,13 +244,16 @@ fn inks(wears: Wears, theme: &Theme) -> (Rgba, Rgba) {
 }
 
 /// The close cross's colour: the title's second ink, and the name's while
-/// the pointer is on the cross.
+/// the pointer is on the cross -- except on an ordinary terminal, whose
+/// name is in the second ink too, so the cross takes the terminal's bold
+/// (task 1590: on a plain frame it did not light at all, #1585 P1). The
+/// step is the other two frames' step, from dim to the brightest ink.
 pub fn close_ink(wears: Wears, theme: &Theme, lit: bool) -> Rgba {
     let (name, second) = inks(wears, theme);
-    if lit {
-        name
-    } else {
-        second
+    match (lit, wears) {
+        (false, _) => second,
+        (true, Wears::Plain) => theme.terminal_bold,
+        (true, _) => name,
     }
 }
 
@@ -711,6 +714,21 @@ mod tests {
             assert_eq!(close_ink(Wears::Supervisor, theme, false), theme.text_secondary);
             assert_eq!(close_ink(Wears::Worker, theme, true), theme.terminal_bold);
             assert_eq!(close_ink(Wears::Worker, theme, false), theme.terminal_dim);
+            assert_eq!(close_ink(Wears::Plain, theme, true), theme.terminal_bold);
+            assert_eq!(close_ink(Wears::Plain, theme, false), theme.terminal_dim);
+        }
+    }
+
+    /// Task 1590: under the pointer the cross is another colour than at
+    /// rest, on every frame and in both themes -- a plain frame's did not
+    /// change at all (#1585 P1).
+    #[test]
+    fn the_close_cross_changes_colour_under_the_pointer_on_every_frame() {
+        for dark in [false, true] {
+            let theme = look::theme(dark);
+            for wears in [Wears::Supervisor, Wears::Worker, Wears::Plain] {
+                assert_ne!(close_ink(wears, theme, true), close_ink(wears, theme, false), "{wears:?} dark={dark}");
+            }
         }
     }
 

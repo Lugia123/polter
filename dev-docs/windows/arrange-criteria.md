@@ -45,6 +45,9 @@
 | ⑮ | 同 ⑭，但候选框一直开着、不碰键盘等 15 秒再调 | 照样拒绝。组字框开着时，超过 10 秒也算在场 |
 | ⑯ | ⑭ 之后选字上屏（或按 Esc 取消），等 11 秒再调 | 成功。这一格是 ⑭ 的对照 |
 
+| ⑰ | 同 ⑭，候选框开着，离最后一个键 40 秒以上时调 `terminal_send` 和 `terminal_key`（`ctrl+c`）对 cntA | 都回 `UserPresent`，消息以 `an input method is composing in that terminal` 开头，什么都没打进去（任务 1590；#1585 时 send 回的是 ok）。选字上屏或 Esc 之后再调就成功 |
+| ⑱ | 普通终端（plain 框）的分屏标题上，指针停在 x 上 | x 变亮：深色主题从 A1A5AB 变成 F3F7FE，浅色从 616467 变成 0D1012；离开后恢复（任务 1590，#1585 P1） |
+
 另有一条保险，真机上不用专门造：组字框开着、但 5 分钟（`Surface.composition_stale_ms`）都没有任何组字更新时，就不再算在场，日志会写 `a composition has been open in this terminal for over 300s with no update`。
 
 ## 要特别留意的

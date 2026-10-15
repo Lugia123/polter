@@ -1129,15 +1129,24 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
 fn controlActKey(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, key: []const u8) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
-    try surface.poltergeistMayType();
-    if (try surface.sendPoltergeistKey(key) != .written) return error.KeyFailed;
+    surface.poltergeistMayType() catch |err| return controlActRefusal(err);
+    const outcome = surface.sendPoltergeistKey(key) catch |err| return controlActRefusal(err);
+    if (outcome != .written) return error.KeyFailed;
+}
+
+/// A refusal on its way to the control room, which reads it by name.
+/// `Composing` (task 1590) goes as `UserPresent`: it is somebody at that
+/// keyboard, and the hosts already say that in the person's language; a
+/// name they do not know would be shown as a failure with no reason.
+fn controlActRefusal(err: anyerror) anyerror {
+    return if (err == error.Composing) error.UserPresent else err;
 }
 
 /// A line typed and submitted, by `terminal_send`'s road and its guards.
 fn controlActText(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, text: []const u8) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
-    try surface.typePoltergeistText(text, true);
+    surface.typePoltergeistText(text, true) catch |err| return controlActRefusal(err);
 }
 
 fn controlActFixCard(ctx: *anyopaque, key: poltergeistpkg.ControlFix.Key) ?poltergeistpkg.ControlFix.Card {
