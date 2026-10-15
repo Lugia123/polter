@@ -59,8 +59,20 @@ thread_local! {
     /// How far each stack's tabs are scrolled, by window and by the stack's
     /// first-made member -- which stays while the place shows another.
     /// With the three things that, changing, bring the tab in front back
-    /// into view: which it is, how many there are, how wide the strip is.
-    static OFFSETS: RefCell<Vec<((isize, PaneId), f64, (usize, usize, i32))>> = const { RefCell::new(Vec::new()) };
+    /// into view even after the wheel -- which it is, how many there are,
+    /// how wide the strip is -- and whether the person scrolled the tabs
+    /// with the wheel since those last changed (task 1599: until they do,
+    /// the tab in front is kept in view on every paint).
+    static OFFSETS: RefCell<Vec<Offset>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Where one stack's tabs are scrolled to, and what decides whether the
+/// next paint brings the tab in front back into view.
+struct Offset {
+    key: (isize, PaneId),
+    offset: f64,
+    changed_by: (usize, usize, i32),
+    wheeled: bool,
 }
 
 /// One strip as it was last painted.
@@ -460,14 +472,16 @@ unsafe fn paint_strip(frame: HWND, mem: HDC, one: &One, stack: &Stacked, wears: 
     let status_w = panestack::status_width(&status, measured[measured.len() - 1]);
 
     let key = (frame.0 as isize, stack.id());
-    let reveal_key = (model.current, model.members.len(), one.rect.w);
-    let was = OFFSETS.with(|o| o.borrow().iter().find(|(k, _, _)| *k == key).map(|(_, v, r)| (*v, *r)));
-    let reveal = was.is_none_or(|(_, r)| r != reveal_key);
-    let geometry = panestack::geometry(wears, one.rect.w as f64 / scale, &wants, model.current, status_w, was.map_or(0.0, |(v, _)| v), reveal);
+    let changed_by = (model.current, model.members.len(), one.rect.w);
+    let was = OFFSETS.with(|o| o.borrow().iter().find(|x| x.key == key).map(|x| (x.offset, x.changed_by, x.wheeled)));
+    let changed = was.is_none_or(|(_, by, _)| by != changed_by);
+    // A change of the three clears the wheel: the tab in front comes back.
+    let wheeled = !changed && was.is_some_and(|(_, _, w)| w);
+    let geometry = panestack::geometry(wears, one.rect.w as f64 / scale, &wants, model.current, status_w, was.map_or(0.0, |(v, _, _)| v), changed, wheeled);
     OFFSETS.with(|o| {
         let mut o = o.borrow_mut();
-        o.retain(|(k, _, _)| *k != key);
-        o.push((key, geometry.offset, reveal_key));
+        o.retain(|x| x.key != key);
+        o.push(Offset { key, offset: geometry.offset, changed_by, wheeled });
     });
 
     let lit = STRIP_HOVER.get().filter(|(f, p, _)| *f == frame.0 as isize && *p == one.pane).map(|(_, _, h)| h);
@@ -685,8 +699,10 @@ pub fn on_wheel(frame: HWND, x: i32, y: i32, delta_x: i32, delta_y: i32) -> bool
     if to != was {
         let key = (frame.0 as isize, id);
         OFFSETS.with(|o| {
-            if let Some(e) = o.borrow_mut().iter_mut().find(|(k, _, _)| *k == key) {
-                e.1 = to;
+            if let Some(e) = o.borrow_mut().iter_mut().find(|x| x.key == key) {
+                e.offset = to;
+                // Left where the person put it until one of the three changes.
+                e.wheeled = true;
             }
         });
         repaint(frame);

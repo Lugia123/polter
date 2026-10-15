@@ -175,6 +175,22 @@ struct PaneStackStripLayout: Equatable {
         return min(max(to, 0), maxOffset)
     }
 
+    /// Where the tabs are scrolled to when the strip is drawn again, from
+    /// `offset`: `changed` is whether the tab in front, the number of tabs
+    /// or the strip's width changed since, `wheeled` whether the person
+    /// scrolled them since the last such change.
+    ///
+    /// **Brought into view unless the person has scrolled since** (task
+    /// 1599). It used to be brought in only when one of the three changed
+    /// -- and a new terminal's name comes after it is made, so the tab
+    /// widened, the tabs' end moved on and the tab in front was left half
+    /// under the fade. Scrolled by the wheel, the tabs stay where they were
+    /// put until one of the three changes, which clears it.
+    func settle(_ member: Int, from offset: CGFloat, changed: Bool, wheeled: Bool) -> CGFloat {
+        if changed || !wheeled { return revealing(member, from: offset) }
+        return min(max(offset, 0), maxOffset)
+    }
+
     /// The members waiting out of sight, scrolled at `offset`: on each side,
     /// the first of `urgent` -- the core's order, most pressing first --
     /// whose tab is not wholly in view that way. What the strip draws at

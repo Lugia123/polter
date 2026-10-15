@@ -90,6 +90,10 @@ struct PaneStackStripView: View {
 
     /// How far the tabs are scrolled, 0 for not at all (task 1582).
     @State private var offset: CGFloat = 0
+    /// The person scrolled the tabs with the wheel since the tab in front,
+    /// the number of tabs or the strip's width last changed (task 1599).
+    @State private var wheeled = false
+
     /// The tab the pointer is over, for its close button.
     @State private var hovered: Int?
     /// Where a terminal being dragged over the strip would go in.
@@ -141,8 +145,16 @@ struct PaneStackStripView: View {
             let tabH = CGFloat(Look.StackTab.height)
             let top = CGFloat(Look.StackTab.stripHeight) - tabH
             let foot = CGFloat(Look.StackTab.reverseArcRadius)
+            // **Where the tabs are drawn, worked out on every render**
+            // (`settle`, task 1599): the tab in front is kept in sight
+            // whenever the tabs change -- a name that comes later widens
+            // one -- unless the person has scrolled them since the tab in
+            // front, the number of tabs or the width last changed. Kept in
+            // `offset` it went stale: a change to a name alone was never
+            // seen (poltertest, #1599).
+            let shown = layout.settle(stack.current, from: offset, changed: false, wheeled: wheeled)
             ZStack(alignment: .topLeading) {
-                row(layout, top: top, tabH: tabH, foot: foot)
+                row(layout, shown: shown, top: top, tabH: tabH, foot: foot)
                     .offset(x: CGFloat(Look.StackTab.inset) - foot)
                 button("plus", label: String(localized: "Add a terminal to this pane", comment: "分屏框：层叠标签条末尾的加号")) {
                     actions.add()
@@ -154,10 +166,11 @@ struct PaneStackStripView: View {
                         .offset(x: status.lowerBound, y: top)
                 }
             }
-            // The tab in front is kept in sight: when it changes, when the
-            // strip changes width, when a tab comes or goes.
-            .onAppear { offset = layout.revealing(stack.current, from: offset) }
+            // One of the three changed: the wheel's place no longer holds,
+            // and the tab in front comes into view -- moved there, so the
+            // move can be animated.
             .onChange(of: Reveal(current: stack.current, count: stack.members.count, width: proxy.size.width)) { _ in
+                wheeled = false
                 let to = layout.revealing(stack.current, from: offset)
                 if to != offset {
                     if still { offset = to } else { withAnimation(.easeOut(duration: 0.2)) { offset = to } }
@@ -183,7 +196,7 @@ struct PaneStackStripView: View {
     /// sideways when the tabs are wider than the window (task 1582); what
     /// is past an edge fades out there, and a terminal waiting past an edge
     /// shows its glyph at that edge.
-    private func row(_ layout: Layout, top: CGFloat, tabH: CGFloat, foot: CGFloat) -> some View {
+    private func row(_ layout: Layout, shown offset: CGFloat, top: CGFloat, tabH: CGFloat, foot: CGFloat) -> some View {
         let shift = foot - offset
         let beyond = layout.beyond(urgent: stack.urgent, offset: offset)
         return ZStack(alignment: .topLeading) {
@@ -229,7 +242,10 @@ struct PaneStackStripView: View {
         }
         .background {
             PolterWheelCatcher { delta in
-                offset = min(max(offset + delta, 0), layout.maxOffset)
+                // From where the tabs are drawn, which `offset` is not while
+                // the tab in front is being kept in sight.
+                self.offset = min(max(offset + delta, 0), layout.maxOffset)
+                wheeled = true
             }
         }
         .onDrop(of: actions.dropTypes, delegate: StripDrop(

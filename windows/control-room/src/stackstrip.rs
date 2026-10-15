@@ -117,6 +117,25 @@ pub fn revealing(layout: &Layout, member: usize, offset: f64) -> f64 {
     to.clamp(0.0, layout.max_offset())
 }
 
+/// Where the tabs are scrolled to when the strip is drawn again, from where
+/// they were (`offset`): `changed` is whether the tab in front, the number
+/// of tabs or the strip's width changed since, `wheeled` whether the person
+/// scrolled them with the wheel since the last such change.
+///
+/// **Brought into view unless the person has scrolled since** (task 1599).
+/// It used to be brought in only when one of the three changed -- and a
+/// new terminal's name comes after it is made, so the tab widened, the
+/// tabs' end moved on and the tab in front was left half under the fade.
+/// Scrolled by the wheel, the tabs stay where they were put until one of
+/// the three changes, which clears it (the caller keeps `wheeled`).
+pub fn settle(layout: &Layout, member: usize, offset: f64, changed: bool, wheeled: bool) -> f64 {
+    if changed || !wheeled {
+        revealing(layout, member, offset)
+    } else {
+        offset.clamp(0.0, layout.max_offset())
+    }
+}
+
 /// How wide a tab's name wants it with no font to measure by: so many cells
 /// of `nominal_cell_width`, a wide character two, between the tab's
 /// paddings, room for its glyph when it has one, and the close button's
@@ -363,6 +382,32 @@ mod tests {
         // A strip that does not scroll does not move.
         let roomy = layout(&[100.0, 60.0, 60.0], 1, 400.0, 0.0);
         assert_eq!(revealing(&roomy, 2, 0.0), 0.0);
+    }
+
+    /// Task 1599: a terminal made in a stack has no name yet; when its name
+    /// comes, its tab widens, the tabs' end moves on, and the tab drawn at
+    /// the old end stood half under the right-hand fade (a real machine,
+    /// #1594 T2). Nothing the strip is keyed on had changed. Until the
+    /// person scrolls, the tab in front is kept in view whatever widens.
+    #[test]
+    fn a_new_tab_whose_name_comes_later_is_still_brought_into_view() {
+        // Eleven at 104 and the new one, nameless, at 60: it is in front.
+        let mut wants = vec![150.0; 11];
+        wants.push(60.0);
+        let before = layout(&wants, 11, 400.0, 0.0);
+        let first = settle(&before, 11, 0.0, true, false);
+        assert_eq!(first, before.max_offset());
+        // Its name comes: 60 becomes 200, and nothing else changed.
+        wants[11] = 200.0;
+        let after = layout(&wants, 11, 400.0, 0.0);
+        let then = settle(&after, 11, first, false, false);
+        let tab = after.tabs.iter().find(|t| t.member == 11).unwrap();
+        let (start, end) = (tab.x - t::INSET - then, tab.x - t::INSET - then + tab.width);
+        assert!(start >= 0.0 && end <= after.viewport, "the tab runs {start}..{end} of a {} window", after.viewport);
+        // Scrolled by the person: left where they put it, until one of the
+        // three changes.
+        assert_eq!(settle(&after, 11, 100.0, false, true), 100.0);
+        assert_eq!(settle(&after, 11, 100.0, true, true), revealing(&after, 11, 100.0));
     }
 
     #[test]
