@@ -149,7 +149,7 @@ const ROWS: &[Row] = &[
         Tick::PgSupervisor,
     ),
     checkable(
-        n_("Toggle Supervision of This Terminal"),
+        n_("Supervise This Terminal"),
         "poltergeist_toggle_watch",
         Tick::PgWatched,
     ),
@@ -624,7 +624,7 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
 /// *why* there is nothing to pick, and dropping it would leave a submenu that
 /// opens onto nothing -- which reads as a broken menu rather than as an
 /// answer. `menu.rs`'s `Enable::No` makes the same argument.
-fn build_roles_menu(owner: HWND, entries: &[crate::personas::Entry]) -> Option<HMENU> {
+pub(crate) fn build_roles_menu(owner: HWND, entries: &[crate::personas::Entry]) -> Option<HMENU> {
     unsafe {
         let menu = match CreatePopupMenu() {
             Ok(m) => m,

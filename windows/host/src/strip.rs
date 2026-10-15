@@ -1934,7 +1934,7 @@ impl TabCmd {
             // The two entries look almost identical; do not merge them.
             TabCmd::Rename => n_("Rename Tab..."),
             TabCmd::Supervisor => n_("Make This Terminal a Supervisor"),
-            TabCmd::Watch => n_("Toggle Supervision of This Terminal"),
+            TabCmd::Watch => n_("Supervise This Terminal"),
             TabCmd::Shield => n_("Keep Agents Out of This Terminal"),
             // The same msgid as `menu.rs` and `ctxmenu.rs`: one switch, one
             // entry in the catalogue.
@@ -2158,6 +2158,16 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
     // The projects the submenu listed, by id offset: what a pick is matched
     // against, so a list that changed meanwhile cannot name another project.
     let mut add_to: Vec<(String, std::path::PathBuf)> = Vec::new();
+    // The terminal the agent rows are about: the pane whose title or stack
+    // tab was right-clicked, else the tab's own.
+    let surface = match pane {
+        Some(p) => tabs::surface_of_tab_pane(frame, target.id, p),
+        None => tabs::surface_of_tab(frame, target.id),
+    };
+    // "Role ▸", the persona submenu (task 1604: the macOS tab menu's
+    // `PersonaMenu`, with the four toggles). Its rows, kept for as long as
+    // the menu is, because a pick is an index into them.
+    let mut role_entries: Vec<crate::personas::Entry> = Vec::new();
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else {
             wlogf!(frame, "[tabmenu] CreatePopupMenu failed");
@@ -2238,6 +2248,15 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
             wide.push(0);
             let _ = AppendMenuW(menu, flags, TAB_ID_BASE + i, PCWSTR(wide.as_ptr()));
             items += 1;
+            if *cmd == TabCmd::Authorise && !surface.is_null() {
+                role_entries = crate::personas::entries(surface);
+                if let Some(child) = crate::ctxmenu::build_roles_menu(frame, &role_entries) {
+                    let mut wide: Vec<u16> = crate::personas::submenu_label(surface).encode_utf16().collect();
+                    wide.push(0);
+                    let _ = AppendMenuW(menu, MF_POPUP | MF_STRING, menu_handle_as_id(child), PCWSTR(wide.as_ptr()));
+                    items += 1;
+                }
+            }
         }
 
         // The tab's project, under everything else: "Add to Project" for a
@@ -2340,6 +2359,16 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
 
     if chosen == 0 {
         wlogf!(frame, "[tabmenu] dismissed without a choice");
+        return;
+    }
+    // **Before every range below**: the role ids sit above all of them.
+    if chosen >= crate::personas::ID_BASE {
+        let Some(entry) = role_entries.get(chosen - crate::personas::ID_BASE) else {
+            wlogf!(frame, "[tabmenu] a role id came back with no entry behind it: {}", chosen);
+            return;
+        };
+        let ok = crate::personas::perform(frame, surface, entry);
+        wlogf!(frame, "[tabmenu] role picked on tab {}: {:?} ok={}", target.index + 1, entry.text, ok);
         return;
     }
     if (PANE_CLOSE_ID + 1..PANE_CLOSE_ID + 1 + Closing::ALL.len()).contains(&chosen) {

@@ -21,6 +21,10 @@ struct CommandOption: Identifiable, Hashable {
     let emphasis: Bool
     /// Sort key for stable ordering when titles are equal.
     let sortKey: ObjectIdentifier?
+    /// Other words the option is found by, ranked below everything shown.
+    /// A command's are its action in English (`actionAlias`), so a person
+    /// whose interface is in Chinese still finds "split" (task 1604).
+    let aliases: [String]
     /// The action to perform when this option is selected.
     let action: () -> Void
 
@@ -34,9 +38,11 @@ struct CommandOption: Identifiable, Hashable {
         badge: String? = nil,
         emphasis: Bool = false,
         sortKey: ObjectIdentifier? = nil,
+        aliases: [String] = [],
         action: @escaping () -> Void
     ) {
         self.title = title
+        self.aliases = aliases
         self.subtitle = subtitle
         self.description = description
         self.symbols = symbols
@@ -473,23 +479,34 @@ extension Collection where Element == CommandOption {
 }
 
 /// A scored match of a command option against a palette query.
+extension CommandOption {
+    /// A command's action as words to search by: `new_split:right` is
+    /// "new split right". The title is translated and the action never is,
+    /// so this is what an English query finds in any language.
+    static func actionAlias(_ action: String) -> String {
+        action.map { $0 == "_" || $0 == ":" ? " " : $0 }.reduce(into: "") { $0.append($1) }
+    }
+}
+
 struct CommandOptionMatch {
     let option: CommandOption
     /// How closely the option's leading color matches a color name in the
     /// query, from 0 (no match) to 1 (exact).
     let colorScore: Double
-    /// Which text field matched, ranked: title (3), subtitle (2),
-    /// description (1), none (0).
+    /// Which text field matched, ranked: title (4), subtitle (3),
+    /// description (2), an alias (1), none (0).
     let textScore: Int
 
     /// Returns nil if the option doesn't match the query at all.
     init?(option: CommandOption, query: String) {
         let colorScore = Self.colorMatchScore(for: option.leadingColor, query: query)
         let textScore: Int = if option.title.matchedIndices(for: query) != nil {
-            3
+            4
         } else if option.subtitle?.matchedIndices(for: query) != nil {
-            2
+            3
         } else if option.description?.matchedIndices(for: query) != nil {
+            2
+        } else if option.aliases.contains(where: { $0.matchedIndices(for: query) != nil }) {
             1
         } else {
             0

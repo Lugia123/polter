@@ -66,7 +66,7 @@ impl Dot {
         match self {
             Dot::Changed => n_("Restart to apply"),
             Dot::Off => n_("Off"),
-            Dot::Missing => n_("Needs setup"),
+            Dot::Missing => n_("Needs settings"),
             Dot::Error => n_("Error"),
             Dot::On => n_("On"),
         }

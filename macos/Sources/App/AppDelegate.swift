@@ -1608,10 +1608,16 @@ extension AppDelegate {
             submenu.addItem(item)
             return (action, item)
         }
-        if let anchor = menuEqualizeSplits, let parent = anchor.menu {
+        // In the Window menu, right after "Resize Split ▸" -- found through
+        // the one outlet there is into that submenu. It used to go after
+        // "Equalize Splits" itself, which put it *inside* "Resize Split"
+        // (task 1604: the Windows menu has it beside, as this comment's
+        // title always said).
+        if let equalize = menuEqualizeSplits, let resize = equalize.menu, let window = resize.supermenu,
+           let resizeItem = window.items.first(where: { $0.submenu === resize }) {
             let holder = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
             holder.submenu = submenu
-            parent.insertItem(holder, at: parent.index(of: anchor) + 1)
+            window.insertItem(holder, at: window.index(of: resizeItem) + 1)
         }
         stackMenu = made
         return made

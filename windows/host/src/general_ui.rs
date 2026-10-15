@@ -28,6 +28,7 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicUsize, Ordering};
 
 use polter_settings_shell::general::{self as rules, Commit, Control, FormRead, Group, Item, Kind, ReadOnlyNote, Source};
+use polter_settings_shell::inline::{self, Run};
 use polter_settings_shell::search as find;
 use polter_settings_shell::{self as shell, grid, Rect};
 use windows::core::{w, PCWSTR};
@@ -971,6 +972,50 @@ fn row_note(it: &Item, error: Option<&str>, expanded: bool) -> (String, bool) {
     row_note_closed(it, error)
 }
 
+/// A row's help line as runs, the way the macOS form writes it (task 1604):
+/// the key in the fixed-width face, then its sentence, then "More…" after
+/// the sentence; and whether it is a complaint, drawn in the warning colour.
+fn help_runs(it: &Item, error: Option<&str>, expanded: bool) -> (Vec<(Run, String)>, bool) {
+    let (note, red) = row_note(it, error, expanded);
+    let mut runs = if !red && !expanded && it.kind == Kind::Key && it.label.is_some() && rules::readonly_note(it).is_none() {
+        // `rules::row_help`'s two halves, kept apart so each has its face.
+        let mut r = vec![(Run::Key, it.key.clone())];
+        if let Some(summary) = &it.summary {
+            r.push((Run::Text, tr(summary)));
+        }
+        r
+    } else {
+        vec![(Run::Text, note)]
+    };
+    if has_link(it, error) {
+        runs.push((Run::Link, link_text(it, expanded)));
+    }
+    (runs, red)
+}
+
+/// [`help_runs`] flowed into `width`: one device context for every word.
+fn help_flow(runs: &[(Run, String)], width: i32, expanded: bool) -> inline::Flow {
+    let h = section();
+    unsafe {
+        let dc = GetDC(Some(h));
+        let old = SelectObject(dc, font().into());
+        let measure = |run: Run, text: &str| -> i32 {
+            let f = if run == Run::Key { mono() } else { font() };
+            SelectObject(dc, f.into());
+            let mut r = RECT::default();
+            let mut w: Vec<u16> = text.encode_utf16().collect();
+            DrawTextW(dc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
+            r.right
+        };
+        // The space "key  sentence" had between its halves.
+        let gap = measure(Run::Text, "  ");
+        let f = inline::flow(runs, width, gap, &measure, if expanded { 0 } else { DOC_LINES as usize });
+        SelectObject(dc, old);
+        ReleaseDC(Some(h), dc);
+        f
+    }
+}
+
 fn row_note_closed(it: &Item, error: Option<&str>) -> (String, bool) {
     if let Some(e) = error {
         return (e.to_string(), true);
@@ -981,10 +1026,10 @@ fn row_note_closed(it: &Item, error: Option<&str>) -> (String, bool) {
     }
     match rules::readonly_note(it) {
         Some(ReadOnlyNote::SetBy { path, line }) => {
-            (tr("Set by {}:{}. Edit it there.").replacen("{}", &path, 1).replacen("{}", &line.to_string(), 1), false)
+            (tr("Set in {}, line {}.").replacen("{}", &path, 1).replacen("{}", &line.to_string(), 1), false)
         }
-        Some(ReadOnlyNote::CommandLine) => (tr("Set on the command line, which has the last word."), false),
-        Some(ReadOnlyNote::InTheFile) => (tr("Edit this one in the config file."), false),
+        Some(ReadOnlyNote::CommandLine) => (tr("Set on the command line; a change here would not take effect."), false),
+        Some(ReadOnlyNote::InTheFile) => (tr("Edited in the config file, not here."), false),
         None => (rules::row_help(it, tr), false),
     }
 }
@@ -1001,15 +1046,15 @@ fn form_rows(width: i32, dpi: i32) -> (Vec<polter_settings_shell::plugins::FormR
 
 /// `form_rows`, and in a search each row's breadcrumb line above it.
 fn form_layout(width: i32, dpi: i32) -> (Vec<polter_settings_shell::plugins::FormRow>, Vec<Rect>, i32) {
-    let (texts, crumbed): (Vec<(String, String, bool, bool)>, bool) = ST.with(|c| {
+    let (texts, crumbed): (Vec<(String, Vec<(Run, String)>, bool)>, bool) = ST.with(|c| {
         let s = c.borrow();
         let texts = s
             .rows
             .iter()
             .map(|r| {
                 let it = item_of(s.form.as_ref(), r);
-                let (note, _) = row_note(&it, r.error.as_deref(), r.expanded);
-                (rules::row_title(&it, tr), note, r.expanded, has_link(&it, r.error.as_deref()))
+                let (runs, _) = help_runs(&it, r.error.as_deref(), r.expanded);
+                (rules::row_title(&it, tr), runs, r.expanded)
             })
             .collect::<Vec<_>>();
         (texts, s.search.is_some())
@@ -1019,11 +1064,12 @@ fn form_layout(width: i32, dpi: i32) -> (Vec<polter_settings_shell::plugins::For
     let label_w = shell::scale(grid::LABEL_W, dpi) - shell::scale(8, dpi);
     let rows: Vec<(i32, i32)> = texts
         .into_iter()
-        .map(|(title, note, expanded, link)| {
-            // Opened, the whole of Ghostty's text; the link gets a line of
-            // its own. A name too long for the label column wraps (task
-            // 990) rather than being cut.
-            let help = measure(&note, control_w, font(), if expanded { 0 } else { DOC_LINES }) + if link { metrics(font()) } else { 0 };
+        .map(|(title, runs, expanded)| {
+            // Opened, the whole of Ghostty's text. The link follows the
+            // sentence on its last line, or takes a line when it does not
+            // fit (task 1604). A name too long for the label column wraps
+            // (task 990) rather than being cut.
+            let help = help_flow(&runs, control_w, expanded).lines as i32 * metrics(font());
             (measure(&title, label_w, font(), LABEL_LINES), help)
         })
         .collect();
@@ -1068,8 +1114,12 @@ fn click_at(win: HWND, x: i32, y: i32) -> bool {
             if !has_link(&it, row.error.as_deref()) {
                 continue;
             }
-            let top = hr.bottom - line;
-            if x >= hr.left && x < hr.right && y >= top && y < top + line {
+            // Where the link was drawn: after the sentence (task 1604).
+            let (runs, _) = help_runs(&it, row.error.as_deref(), row.expanded);
+            let Some((at, lx, lw)) = help_flow(&runs, hr.right - hr.left, row.expanded).link() else { continue };
+            let top = hr.top + at as i32 * line;
+            let left = hr.left + lx;
+            if x >= left && x < left + lw && y >= top && y < top + line {
                 return Some(if it.kind == Kind::Shortcut {
                     Did::Go(shell::Place { section: shell::Section::General, item: Some(Group::Keybinds.key().to_string()) })
                 } else {
@@ -1706,8 +1756,8 @@ fn write(index: usize, key: &str, value: Option<&str>) {
         refresh_values(FormRead::AfterOwnWrite);
     } else {
         let why = match r.code.as_str() {
-            "invalid_value" => r.message.unwrap_or_else(|| tr("That value is not valid for this key.")),
-            "read_only" => tr("This key is set somewhere the form does not write."),
+            "invalid_value" => r.message.unwrap_or_else(|| tr("Not a valid value for this setting.")),
+            "read_only" => tr("This setting is set somewhere the form does not write."),
             "busy" => tr("The config file kept changing while it was being written. Try again."),
             other => tr("Could not write the config file: {}").replace("{}", r.message.as_deref().unwrap_or(other)),
         };
@@ -2254,14 +2304,18 @@ fn paint_form(win: HWND) {
             draw_text(hdc, "\u{2022}", &d, font(), theme::focus(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         }
         if let Some(hr) = r.help {
-            let (note, red) = row_note(it, error.as_deref(), *expanded);
-            let link = has_link(it, error.as_deref());
-            let line = if link { metrics(font()) } else { 0 };
-            let hr = RECT { left: hr.left, top: hr.top - scroll, right: hr.right, bottom: hr.bottom - scroll - line };
-            draw_text(hdc, &note, &hr, font(), if red { theme::warn() } else { theme::dim() }, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL);
-            if link {
-                let lr = RECT { left: hr.left, top: hr.bottom, right: hr.right, bottom: hr.bottom + line };
-                draw_text(hdc, &link_text(it, *expanded), &lr, font(), theme::link(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            let (runs, red) = help_runs(it, error.as_deref(), *expanded);
+            let flow = help_flow(&runs, hr.right - hr.left, *expanded);
+            let line = metrics(font());
+            for p in &flow.pieces {
+                let top = hr.top - scroll + p.line as i32 * line;
+                let pr = RECT { left: hr.left + p.x, top, right: hr.left + p.x + p.w + 1, bottom: top + line };
+                let (f, colour) = match p.run {
+                    Run::Key => (mono(), theme::dim()),
+                    Run::Text => (font(), if red { theme::warn() } else { theme::dim() }),
+                    Run::Link => (font(), theme::link()),
+                };
+                draw_text(hdc, &p.text, &pr, f, colour, DT_LEFT | DT_SINGLELINE | DT_BOTTOM | DT_NOPREFIX);
             }
         }
         if theme::custom_drawing() && !*slider && !matches!(control, Control::Toggle | Control::Choice) {
@@ -2397,7 +2451,7 @@ fn kb_paint(win: HWND) {
     let legend = if rows.is_empty() {
         tr("The shortcuts could not be read from the configuration.")
     } else {
-        tr("This page lists actions; {} in all. Some actions have no shortcut assigned.").replace("{}", &rows.len().to_string())
+        tr("{} actions. Some have no shortcut yet.").replace("{}", &rows.len().to_string())
     };
     draw_text(hdc, &legend, &RECT { left: 0, top: 0, right: rc.right, bottom: s(rules::KB_HEADER) - s(grid::BUTTON_GAP) }, font(), theme::dim(), DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     if top != usize::MAX {

@@ -82,7 +82,17 @@
       "macos/Sources/Features/Projects/ProjectFilename.swift",
       "macos/Sources/Features/Projects/ProjectLink.swift",
       "macos/Sources/Features/Projects/ProjectPageRules.swift",
-      "macos/Sources/Features/Projects/ProjectPages.swift"
+      "macos/Sources/Features/Projects/ProjectPages.swift",
+      "macos/Sources/Features/Command Palette/CommandPalette.swift",
+      "macos/Sources/Helpers/Extensions/NSColor+Extension.swift",
+      {
+        "path": "macos/Sources/Helpers/Extensions/OSColor+Extension.swift",
+        "until": "// MARK: Ghostty Types",
+        "drop": [
+          "import GhosttyKit"
+        ],
+        "why": "the colour arithmetic the command palette ranks by (task 1604); from the marker on it reads a ghostty_config_color_s"
+      }
     ],
     "out": [
       {
@@ -147,7 +157,8 @@
       "macos/Tests/Settings/LogManagementRulesTests.swift",
       "macos/Tests/Roles/OfficialWhyTests.swift",
       "macos/Tests/Splits/TabIntoPaneTests.swift",
-      "macos/Tests/Splits/TerminalSplitDropZoneTests.swift"
+      "macos/Tests/Splits/TerminalSplitDropZoneTests.swift",
+      "macos/Tests/CommandPaletteAliasTests.swift"
     ],
     "out": [
       {

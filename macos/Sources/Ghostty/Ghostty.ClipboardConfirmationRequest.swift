@@ -26,22 +26,24 @@ extension Ghostty {
         /// request. The name is the requesting program's human friendly
         /// name, when the protocol carries one.
         func text(name: String? = nil) -> String {
-            let program = name.map { "\"\($0)\"" } ?? "An application"
+            // Translated (task 1604: the box was English in a Chinese
+            // interface). Without a name, the sentences are the core's own,
+            // word for word, as the Windows box and the GTK one say them
+            // (`clipboard_confirmation_dialog.zig`), so one translation in
+            // `po/` and here says the same thing.
             switch self {
             case .paste:
-                return """
-                Pasting this text to the terminal may be dangerous as it looks like some commands may be executed.
-                """
+                return String(localized: "Pasting this text into the terminal may be dangerous as it looks like some commands may be executed.", comment: "剪贴板确认窗口：多行粘贴")
             case .osc_52_read, .kitty_read:
-                return """
-                \(program) is attempting to read from the clipboard.
-                The current clipboard contents are shown below.
-                """
+                guard let name else {
+                    return String(localized: "An application is attempting to read from the clipboard. The current clipboard contents are shown below.", comment: "剪贴板确认窗口：程序读剪贴板")
+                }
+                return String(format: String(localized: "“%@” is attempting to read from the clipboard. The current clipboard contents are shown below.", comment: "剪贴板确认窗口：程序读剪贴板，%@ 是程序名"), name)
             case .osc_52_write, .kitty_write:
-                return """
-                \(program) is attempting to write to the clipboard.
-                The content to write is shown below.
-                """
+                guard let name else {
+                    return String(localized: "An application is attempting to write to the clipboard. The content to write is shown below.", comment: "剪贴板确认窗口：程序写剪贴板")
+                }
+                return String(format: String(localized: "“%@” is attempting to write to the clipboard. The content to write is shown below.", comment: "剪贴板确认窗口：程序写剪贴板，%@ 是程序名"), name)
             }
         }
 

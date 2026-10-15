@@ -84,6 +84,9 @@ struct LogManagementPage: View {
     /// each time the page is drawn again, and every reading draws it again.
     private let tick = Timer.publish(every: LogManagementModel.refreshSeconds, on: .main, in: .common).autoconnect()
 
+    /// How wide a row is, as the page was last laid out.
+    @State private var rowWidth: CGFloat = .greatestFiniteMagnitude
+
     var body: some View {
         VStack(spacing: 0) {
             if let waiting = logs.usage?.waitingBytes {
@@ -109,8 +112,15 @@ struct LogManagementPage: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .padding(Grid.pad)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // What a row is given, read off the page as laid out: a
+                // row stacks when it is too narrow (task 1604).
+                .background(GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { rowWidth = geometry.size.width }
+                        .onChange(of: geometry.size.width) { rowWidth = $0 }
+                })
+                .padding(Grid.pad)
             }
         }
         .onAppear {
@@ -156,61 +166,67 @@ struct LogManagementPage: View {
             }
             .font(SettingsFont.minimum)
             ForEach(kinds) { kind in
-                LogManagementRow(model: model, logs: logs, kind: kind)
+                LogManagementRow(model: model, logs: logs, kind: kind,
+                                 stacked: LogManagementColumns.stacks(rowWidth: rowWidth))
             }
         }
     }
-}
-
-/// The columns, right to left from the content's right edge
-/// (`log-management-v3/README.md`: the tenth run found the English page's
-/// "days" broken in two at a unit of 28, and "Compact…" has no room in 80).
-enum LogManagementColumns {
-    static let button: CGFloat = 96
-    static let size: CGFloat = 72
-    static let days: CGFloat = 44
-    static let mb: CGFloat = 56
-    static let unit: CGFloat = 36
-    static let gap: CGFloat = 8
-    /// The least a row is; one whose description wraps grows.
-    static let rowHeight: CGFloat = 40
-    /// A description wraps rather than being cut off -- the English ones
-    /// run past their column -- but to no more than this.
-    static let detailLines = 2
-    /// Both fields and their units, which a row with no fields fills with
-    /// one sentence instead.
-    static var rule: CGFloat { days + unit + gap + mb + unit + gap }
 }
 
 private struct LogManagementRow: View {
     @ObservedObject var model: GeneralModel
     @ObservedObject var logs: LogManagementModel
     let kind: StorageUsage.Kind
+    /// Too narrow for the name beside the controls
+    /// (`LogManagementColumns.stacks`): the name and description on top,
+    /// the controls under them.
+    let stacked: Bool
 
     private typealias Columns = LogManagementColumns
 
     var body: some View {
-        HStack(alignment: .center, spacing: Columns.gap) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(LogManagementRules.title(kind.key)).fontWeight(.medium)
-                Text(LogManagementRules.detail(kind.key))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(Columns.detailLines)
-                    .truncationMode(.tail)
-                    .fixedSize(horizontal: false, vertical: true)
+        Group {
+            if stacked {
+                VStack(alignment: .leading, spacing: Columns.stackGap) {
+                    words
+                    HStack(alignment: .center, spacing: Columns.gap) {
+                        Spacer(minLength: 0)
+                        controls
+                    }
+                }
+            } else {
+                HStack(alignment: .center, spacing: Columns.gap) {
+                    words.frame(maxWidth: .infinity, alignment: .leading)
+                    controls
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            rule
-            Text(LogManagementRules.size(kind.bytes))
-                .monospacedDigit()
-                .frame(width: Columns.size, alignment: .trailing)
-            Button(LogManagementRules.action(kind)) {
-                if let said = logs.clear(kind, ghostty: model.ghostty) { model.status = said }
-            }
-            .frame(width: Columns.button, alignment: .trailing)
         }
         .font(SettingsFont.minimum)
         .frame(minHeight: Columns.rowHeight)
+    }
+
+    private var words: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(LogManagementRules.title(kind.key)).fontWeight(.medium)
+            Text(LogManagementRules.detail(kind.key))
+                .foregroundStyle(.secondary)
+                .lineLimit(Columns.detailLines)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The rule, the size and the button, in that order from the left.
+    @ViewBuilder
+    private var controls: some View {
+        rule
+        Text(LogManagementRules.size(kind.bytes))
+            .monospacedDigit()
+            .frame(width: Columns.size, alignment: .trailing)
+        Button(LogManagementRules.action(kind)) {
+            if let said = logs.clear(kind, ghostty: model.ghostty) { model.status = said }
+        }
+        .frame(width: Columns.button, alignment: .trailing)
     }
 
     @ViewBuilder

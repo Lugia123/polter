@@ -91,6 +91,9 @@
 "Downloading Update" = "正在下载更新";
 "Enable automatic updates?" = "开启自动更新？";
 "Execute a command…" = "执行一个命令…";
+"Focus: %@" = "跳到：%@";
+"Cancel or Skip Update" = "取消或跳过更新";
+"Dismiss the current update process" = "放弃这次更新";
 "GitHub limits anonymous requests to 60 per hour; try again later." = "GitHub 限制匿名请求每小时 60 次；请稍后再试。";
 "GitHub returned an unexpected response (%@)." = "GitHub 返回了一个意外的响应（%@）。";
 "GitHub's response could not be read." = "无法读取 GitHub 的响应。";
@@ -108,7 +111,7 @@
 "Read-Only Mode" = "只读模式";
 "Read-only" = "只读";
 "Released:" = "发布时间：";
-"Reload Configuration" = "重新加载配置";
+"Reload Configuration" = "重新载入配置";
 "Reset Split Zoom" = "取消分屏放大";
 "Restart Required" = "需要重新启动";
 "Retry" = "重试";
@@ -163,6 +166,11 @@
 "Warning: Potentially Unsafe Paste" = "警告：这次粘贴可能不安全";
 "Authorize Clipboard Access" = "授权访问剪贴板";
 "Remember this choice for the session" = "本次会话内记住这个选择";
+"Pasting this text into the terminal may be dangerous as it looks like some commands may be executed." = "将以下内容粘贴至终端内将可能执行有害命令。";
+"An application is attempting to read from the clipboard. The current clipboard contents are shown below." = "一个应用正在试图从剪贴板读取内容。剪贴板目前的内容如下：";
+"“%@” is attempting to read from the clipboard. The current clipboard contents are shown below." = "“%@”正在试图从剪贴板读取内容。剪贴板目前的内容如下：";
+"An application is attempting to write to the clipboard. The content to write is shown below." = "一个应用正在试图向剪贴板写入内容。要写入的内容如下：";
+"“%@” is attempting to write to the clipboard. The content to write is shown below." = "“%@”正在试图向剪贴板写入内容。要写入的内容如下：";
 "Cannot Create New Tab" = "无法新建标签页";
 "Tabs aren't supported in the Quick Terminal." = "快捷终端不支持标签页。";
 "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again." = "非原生全屏下不能新建标签页。请先退出全屏再试。";

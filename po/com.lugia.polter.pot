@@ -1108,6 +1108,38 @@ msgstr ""
 msgid "Stack: Onto the Previous Pane"
 msgstr ""
 
+#: windows/host/src/palette.rs
+msgid "No matches"
+msgstr ""
+
+#: windows/host/src/palette.rs
+msgid "Focus: {}"
+msgstr ""
+
+#: src/input/command.zig:547
+msgid "Open a new terminal in the focused pane, in front of the one there."
+msgstr ""
+
+#: src/input/command.zig:552
+msgid "Bring the next terminal of the focused pane's stack to the front."
+msgstr ""
+
+#: src/input/command.zig:557
+msgid "Bring the previous terminal of the focused pane's stack to the front."
+msgstr ""
+
+#: src/input/command.zig:562
+msgid "Take the focused terminal out of its stack, into a pane of its own."
+msgstr ""
+
+#: src/input/command.zig:567
+msgid "Put the focused terminal onto the stack of the next pane."
+msgstr ""
+
+#: src/input/command.zig:572
+msgid "Put the focused terminal onto the stack of the previous pane."
+msgstr ""
+
 #: windows/control-room/src/panestack.rs:26
 msgid "Add a terminal to this pane"
 msgstr ""
@@ -3572,6 +3604,14 @@ msgstr ""
 msgid "Open a terminal window first; the new tab goes beside it."
 msgstr ""
 
+#: windows/host/src/roles_ui.rs
+msgid "Save the role before launching it."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs
+msgid "Pick an agent CLI under Basics to launch this role."
+msgstr ""
+
 #: windows/host/src/roles_ui.rs:455
 msgid "Basics"
 msgstr ""
@@ -4843,4 +4883,128 @@ msgid ""
 "Every page of its project comes back and the supervisor starts in its own "
 "pane. The workers' panes come back as terminals only; who is called back is "
 "the supervisor's to decide."
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Hide Find Bar"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Find Next"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Find Previous"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Select Split Above"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Select Split Below"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Select Split Left"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Select Split Right"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Move Divider Up"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Move Divider Down"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Move Divider Left"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Move Divider Right"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Toggle Full Screen"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Zoom Split"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Select Previous Split"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Select Next Split"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Return To Default Size"
+msgstr ""
+
+#: windows/host/src
+msgid "Not a valid value for this setting."
+msgstr ""
+
+#: windows/host/src
+msgid "This setting is set somewhere the form does not write."
+msgstr ""
+
+#: windows/host/src
+msgid "Set in {}, line {}."
+msgstr ""
+
+#: windows/host/src
+msgid "Set on the command line; a change here would not take effect."
+msgstr ""
+
+#: windows/host/src
+msgid "Edited in the config file, not here."
+msgstr ""
+
+#: windows/host/src
+msgid "{} actions. Some have no shortcut yet."
+msgstr ""
+
+#: windows/host/src
+msgid "Let this plugin run"
+msgstr ""
+
+#: windows/host/src
+msgid "Fill in first: {}"
+msgstr ""
+
+#: windows/host/src
+msgid "This plugin subscribes to nothing, so Polter has nothing to hand it and will not start it."
+msgstr ""
+
+#: windows/host/src
+msgid "Needs settings"
+msgstr ""
+
+#: windows/host/src
+msgid "Saved"
+msgstr ""
+
+#: windows/host/src
+msgid "Current"
+msgstr ""
+
+#: windows/host/src
+msgid "Overwrite with Current Tab…"
+msgstr ""
+
+#: windows/host/src
+msgid "Restore Previous Version?"
+msgstr ""
+
+#: windows/host/src
+msgid "“{}” goes back to its layout before the last change. The current version is kept, so doing this again undoes it."
 msgstr ""

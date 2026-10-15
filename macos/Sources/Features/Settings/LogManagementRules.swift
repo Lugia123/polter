@@ -36,6 +36,51 @@ struct StorageUsage: Decodable, Equatable {
     }
 }
 
+/// The columns, right to left from the content's right edge
+/// (`log-management-v3/README.md`: the tenth run found the English page's
+/// "days" broken in two at a unit of 28, and "Compact…" has no room in 80).
+enum LogManagementColumns {
+    static let button: CGFloat = 96
+    static let size: CGFloat = 72
+    static let days: CGFloat = 44
+    static let mb: CGFloat = 56
+    static let unit: CGFloat = 36
+    static let gap: CGFloat = 8
+    /// The least a row is; one whose description wraps grows.
+    static let rowHeight: CGFloat = 40
+    /// A description wraps rather than being cut off -- the English ones
+    /// run past their column -- but to no more than this.
+    static let detailLines = 2
+    /// Both fields and their units, which a row with no fields fills with
+    /// one sentence instead.
+    static var rule: CGFloat { days + unit + gap + mb + unit + gap }
+
+    /// The least the name and description are given beside the controls.
+    /// Less than this and the row is stacked: the name and description on
+    /// top across the whole width, the controls under them, in the same
+    /// columns from the right edge -- the Windows page's rule
+    /// (`windows/settings-shell/src/logs.rs`, `TEXT_MIN_W`).
+    ///
+    /// Task 1604: at the settings window's least width, 900, a row is 388
+    /// wide and the controls take 372 of it; the name was given the 16 left
+    /// and drawn one character to a line.
+    static let textMin: CGFloat = 200
+    /// In a stacked row, between the description and the controls under it.
+    static let stackGap: CGFloat = 4
+
+    /// What a row's name and description are given beside the controls, in
+    /// a row `rowWidth` wide: everything but the rule, the size, the button
+    /// and the gaps before each.
+    static func textWidth(rowWidth: CGFloat) -> CGFloat {
+        max(0, rowWidth - (days + unit + gap + mb + unit) - size - button - 3 * gap)
+    }
+
+    /// Whether a row `rowWidth` wide is stacked ([`textMin`]).
+    static func stacks(rowWidth: CGFloat) -> Bool {
+        textWidth(rowWidth: rowWidth) < textMin
+    }
+}
+
 enum LogManagementRules {
     /// The two groups of rows, in the core's order within each.
     static func sections(_ usage: StorageUsage) -> (cycle: [StorageUsage.Kind], forever: [StorageUsage.Kind]) {

@@ -29,7 +29,7 @@ msgstr "在 Ghostty 中打开"
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
 #: windows/host/src/main.rs:2590 windows/host/src/main.rs:2596
 msgid "Authorize Clipboard Access"
-msgstr "剪贴板访问授权"
+msgstr "授权访问剪贴板"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:17
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:17
@@ -90,7 +90,7 @@ msgstr "忽略"
 #: windows/host/src/general_ui.rs:657 windows/host/src/general_ui.rs:934
 #: windows/host/src/menu.rs:535
 msgid "Reload Configuration"
-msgstr "重新加载配置"
+msgstr "重新载入配置"
 
 #: src/apprt/gtk/ui/1.2/debug-warning.blp:7
 #: src/apprt/gtk/ui/1.3/debug-warning.blp:6
@@ -128,9 +128,7 @@ msgid ""
 "This terminal is in read-only mode. You can still view, select, and scroll "
 "through the content, but no input events will be sent to the running "
 "application."
-msgstr ""
-"本终端当前处于只读模式。你仍可浏览、选择、并滚动其中内容，但任何用户输入都不"
-"会传给运行中的程序。"
+msgstr "这个终端处于只读模式。你仍然可以查看、选择和滚动内容，但输入不会送给正在运行的程序。"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:107 windows/host/src/ctxmenu.rs:134
 #: windows/host/src/menu.rs:379
@@ -140,7 +138,7 @@ msgstr "只读"
 #: src/apprt/gtk/ui/1.2/surface.blp:311 src/apprt/gtk/ui/1.5/window.blp:203
 #: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:345
 msgid "Copy"
-msgstr "复制"
+msgstr "拷贝"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:208
 #: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:346
@@ -289,7 +287,7 @@ msgstr "退出"
 
 #: src/apprt/gtk/ui/1.5/command-palette.blp:17
 msgid "Execute a command…"
-msgstr "选择要执行的命令…"
+msgstr "执行一个命令…"
 
 #: src/apprt/gtk/class/application.zig:1811
 msgid "The keybind was revoked by the system."
@@ -332,7 +330,7 @@ msgstr "一个应用正在试图从剪贴板读取内容。剪贴板目前的内
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
 #: windows/host/src/main.rs:2602
 msgid "Warning: Potentially Unsafe Paste"
-msgstr "警告：粘贴内容可能不安全"
+msgstr "警告：这次粘贴可能不安全"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
 #: windows/host/src/main.rs:2604
@@ -348,12 +346,12 @@ msgstr "退出 Ghostty 吗？"
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
 #: windows/host/src/tabs.rs:3521
 msgid "Close Tab?"
-msgstr "关闭标签页吗？"
+msgstr "关闭标签页？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
 #: windows/host/src/tabs.rs:3522
 msgid "Close Window?"
-msgstr "关闭窗口吗？"
+msgstr "关闭窗口？"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
 #: windows/host/src/tabs.rs:3523
@@ -363,7 +361,7 @@ msgstr "关闭分屏吗？"
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:193
 #: windows/host/src/tabs.rs:3531
 msgid "All terminal sessions will be terminated."
-msgstr "终端内所有运行中的进程将被终止。"
+msgstr "所有终端会话都会被结束。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
 #: windows/host/src/tabs.rs:3532
@@ -373,7 +371,7 @@ msgstr "标签页内所有运行中的进程将被终止。"
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
 #: windows/host/src/tabs.rs:3533
 msgid "All terminal sessions in this window will be terminated."
-msgstr "窗口内所有运行中的进程将被终止。"
+msgstr "这个窗口里的所有终端会话都会被结束。"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
 #: windows/host/src/tabs.rs:3534
@@ -382,25 +380,25 @@ msgstr "分屏内正在运行中的进程将被终止。"
 
 #: src/apprt/gtk/class/surface.zig:1185
 msgid "Command Finished"
-msgstr "命令已完成"
+msgstr "命令结束了"
 
 #: src/apprt/gtk/class/surface.zig:1186
 #: src/apprt/gtk/class/surface_child_exited.zig:109
 msgid "Command Succeeded"
-msgstr "命令执行成功"
+msgstr "命令成功"
 
 #: src/apprt/gtk/class/surface.zig:1187
 #: src/apprt/gtk/class/surface_child_exited.zig:113
 msgid "Command Failed"
-msgstr "命令执行失败"
+msgstr "命令失败"
 
 #: src/apprt/gtk/class/title_dialog.zig:227 windows/host/src/prompt.rs:67
 msgid "Change Terminal Title"
-msgstr "更改终端标题"
+msgstr "修改终端标题"
 
 #: src/apprt/gtk/class/title_dialog.zig:228 windows/host/src/prompt.rs:68
 msgid "Change Tab Title"
-msgstr "更改标签页标题"
+msgstr "修改标签页标题"
 
 #: src/apprt/gtk/class/title_dialog.zig:229 windows/host/src/prompt.rs:69
 msgid "Change Window Title"
@@ -539,7 +537,7 @@ msgstr "如果可能，移动到上一个匹配项。"
 
 #: src/input/command.zig:225
 msgid "Increase Font Size"
-msgstr "放大字号"
+msgstr "增大字号"
 
 #: src/input/command.zig:226
 msgid "Increase the font size by 1 point."
@@ -547,7 +545,7 @@ msgstr "将字体大小增大 1pt。"
 
 #: src/input/command.zig:231
 msgid "Decrease Font Size"
-msgstr "缩小字号"
+msgstr "减小字号"
 
 #: src/input/command.zig:232
 msgid "Decrease the font size by 1 point."
@@ -555,7 +553,7 @@ msgstr "将字体大小缩小 1pt。"
 
 #: src/input/command.zig:237 windows/host/src/menu.rs:360
 msgid "Reset Font Size"
-msgstr "重置字号"
+msgstr "恢复默认字号"
 
 #: src/input/command.zig:238
 msgid "Reset the font size to the default."
@@ -817,7 +815,7 @@ msgstr "将当前标签页向右移动。"
 
 #: src/input/command.zig:446 windows/host/src/strip.rs:1808
 msgid "Move Tab to New Window"
-msgstr "移到新窗口"
+msgstr "将标签页移到新窗口"
 
 #: src/input/command.zig:447
 msgid "Move the current tab to a new window."
@@ -1006,7 +1004,7 @@ msgstr "转到按谁在等你列出所有群的那个标签页；它关着就先
 
 #: src/input/command.zig:618 windows/host/src/menu.rs:490
 msgid "Equalize Splits"
-msgstr "均分分屏大小"
+msgstr "均分各分屏"
 
 #: src/input/command.zig:619
 msgid "Equalize the size of all splits."
@@ -1120,6 +1118,38 @@ msgstr "层叠：叠到下一格"
 msgid "Stack: Onto the Previous Pane"
 msgstr "层叠：叠到上一格"
 
+#: windows/host/src/palette.rs
+msgid "No matches"
+msgstr "没有匹配项"
+
+#: windows/host/src/palette.rs
+msgid "Focus: {}"
+msgstr "跳到：{}"
+
+#: src/input/command.zig:547
+msgid "Open a new terminal in the focused pane, in front of the one there."
+msgstr "在键盘所在的这一格里新开一个终端，放在原来那个前面。"
+
+#: src/input/command.zig:552
+msgid "Bring the next terminal of the focused pane's stack to the front."
+msgstr "把这一格层叠里的下一个终端拿到前面。"
+
+#: src/input/command.zig:557
+msgid "Bring the previous terminal of the focused pane's stack to the front."
+msgstr "把这一格层叠里的上一个终端拿到前面。"
+
+#: src/input/command.zig:562
+msgid "Take the focused terminal out of its stack, into a pane of its own."
+msgstr "把当前终端从层叠里拿出来，单独占一格。"
+
+#: src/input/command.zig:567
+msgid "Put the focused terminal onto the stack of the next pane."
+msgstr "把当前终端叠到下一格上。"
+
+#: src/input/command.zig:572
+msgid "Put the focused terminal onto the stack of the previous pane."
+msgstr "把当前终端叠到上一格上。"
+
 #: windows/control-room/src/panestack.rs:26
 msgid "Add a terminal to this pane"
 msgstr "在这一格里再开一个终端"
@@ -1160,7 +1190,7 @@ msgstr "关闭当前窗口内除了当前标签页以外的所有标签页。"
 #: src/input/command.zig:684 windows/host/src/strip.rs:1807
 #: windows/host/src/tabs.rs:3525
 msgid "Close Tabs to the Right"
-msgstr "关闭右侧标签页"
+msgstr "关闭右侧的标签页"
 
 #: src/input/command.zig:685 windows/host/src/tabs.rs:3543
 msgid "Close all tabs to the right of the current one."
@@ -2462,7 +2492,7 @@ msgstr "改终端标题…"
 #: windows/host/src/ctxmenu.rs:182 windows/host/src/menu.rs:430
 #: windows/host/src/strip.rs:1819
 msgid "Let a Supervisor Answer Prompts Here"
-msgstr "允许总管替此终端点授权框（含「不再询问」）"
+msgstr "允许总管在此终端替你回答权限询问"
 
 #: windows/host/src/ctxmenu.rs:191 windows/host/src/menu.rs:444
 #: windows/host/src/strip.rs:1820
@@ -2629,7 +2659,7 @@ msgstr "这里列的是「动作」，共 {} 个；有的动作还没有分配�
 
 #: windows/host/src/i18n.rs:360 windows/host/src/plugins_ui.rs:1592
 msgid "Keeps the conversations"
-msgstr "保管终端之间的对话"
+msgstr "保管群聊记录"
 
 #: windows/host/src/keybinds.rs:109
 msgid ""
@@ -2793,7 +2823,7 @@ msgstr "把这一页移出项目"
 
 #: windows/host/src/menu.rs:311 windows/projects/src/page_rules.rs:166
 msgid "Rename Project…"
-msgstr "重命名项目…"
+msgstr "给项目改名…"
 
 #: windows/host/src/menu.rs:312 windows/projects/src/page_rules.rs:165
 msgid "Close Project"
@@ -2833,7 +2863,7 @@ msgstr "缩小"
 
 #: windows/host/src/menu.rs:381
 msgid "Quick Terminal"
-msgstr "快速终端"
+msgstr "快捷终端"
 
 #: windows/host/src/menu.rs:476
 msgid "Plugins…"
@@ -2905,11 +2935,11 @@ msgstr "选择分屏"
 
 #: windows/host/src/menu.rs:510
 msgid "Resize Split"
-msgstr "调整分屏"
+msgstr "调整分屏大小"
 
 #: windows/host/src/menu.rs:514
 msgid "Float on Top"
-msgstr "置顶"
+msgstr "窗口置顶"
 
 #: windows/host/src/menu.rs:521
 msgid "Polter Help"
@@ -2929,7 +2959,7 @@ msgstr "编辑"
 
 #: windows/host/src/menu.rs:542
 msgid "View"
-msgstr "查看"
+msgstr "显示"
 
 #: windows/host/src/menu.rs:558
 msgid "Agents"
@@ -3036,7 +3066,7 @@ msgstr "还原"
 
 #: windows/host/src/plugins_ui.rs:526
 msgid "Show Log"
-msgstr "显示日志"
+msgstr "查看日志"
 
 #: windows/host/src/plugins_ui.rs:527
 msgid "Refresh"
@@ -3132,7 +3162,7 @@ msgstr "找不到内置插件目录：没有设置 POLTER_RESOURCES_DIR。"
 
 #: windows/host/src/plugins_ui.rs:1330
 msgid "Restart Polter to apply"
-msgstr "重启 Polter 后生效"
+msgstr "需重启 Polter 才生效"
 
 #: windows/host/src/plugins_ui.rs:1351 windows/host/src/roles_ui.rs:929
 msgid "Status"
@@ -3185,11 +3215,11 @@ msgstr "日志"
 
 #: windows/host/src/plugins_ui.rs:1593
 msgid "Notifies you"
-msgstr "在终端安静下来时通知你"
+msgstr "通知你"
 
 #: windows/host/src/plugins_ui.rs:1594
 msgid "Sets your agent up to reach Polter"
-msgstr "把你的 agent 配置成能连到 Polter"
+msgstr "让你的 agent 能连上 Polter"
 
 #: windows/host/src/plugins_ui.rs:1601
 msgid ""
@@ -3276,13 +3306,13 @@ msgstr "不保存，直接关闭"
 
 #: windows/host/src/projects_ui.rs:653
 msgid "Save as a Project Before Closing?"
-msgstr "关闭前存成项目吗？"
+msgstr "关闭前要存成项目吗？"
 
 #: windows/host/src/projects_ui.rs:654
 msgid ""
 "The terminal still has a running process. Closing it without saving as a "
 "project will kill it."
-msgstr "终端里还有正在运行的进程。不存成项目就关闭，进程会被结束。"
+msgstr "这个终端还有正在运行的进程。不存成项目就直接关闭会杀死它。"
 
 #: windows/host/src/projects_ui.rs:670
 #, rust-format
@@ -3436,7 +3466,7 @@ msgstr "上次保存"
 
 #: windows/host/src/projects_ui.rs:1299
 msgid "Panes"
-msgstr "面板"
+msgstr "面板数"
 
 #: windows/host/src/projects_ui.rs:1300
 msgid "Directories"
@@ -3501,7 +3531,7 @@ msgstr "打开"
 #: windows/host/src/prompt.rs:366
 msgid ""
 "The project's file, its previous version and its scrollback move with it."
-msgstr "项目文件、上一版和 scrollback 一起改名。"
+msgstr "项目文件、上一版和 scrollback 会一起改名。"
 
 #: windows/host/src/prompt.rs:367
 msgid "Rename Project"
@@ -3622,6 +3652,14 @@ msgstr "有未保存的修改"
 #: windows/host/src/roles_ui.rs:430 windows/host/src/roles_ui.rs:5029
 msgid "Open a terminal window first; the new tab goes beside it."
 msgstr "请先打开一个终端窗口，新标签页会开在它旁边。"
+
+#: windows/host/src/roles_ui.rs
+msgid "Save the role before launching it."
+msgstr "先保存角色再启动。"
+
+#: windows/host/src/roles_ui.rs
+msgid "Pick an agent CLI under Basics to launch this role."
+msgstr "先在「基本信息」里选一个 agent CLI，才能用这个角色启动。"
 
 #: windows/host/src/roles_ui.rs:455
 msgid "Basics"
@@ -4085,11 +4123,11 @@ msgstr "石墨"
 #. The two entries look almost identical; do not merge them.
 #: windows/host/src/strip.rs:1813
 msgid "Rename Tab..."
-msgstr "重命名标签…"
+msgstr "重命名标签页…"
 
 #: windows/host/src/strip.rs:2061
 msgid "Tab Color"
-msgstr "标签颜色"
+msgstr "标签页颜色"
 
 #: windows/host/src/strip.rs:2118
 msgid "Save as New Project…"
@@ -4447,7 +4485,7 @@ msgstr ""
 
 #: windows/settings-shell/src/plugins.rs:67
 msgid "Restart to apply"
-msgstr "改了未重启"
+msgstr "重启后生效"
 
 #: windows/settings-shell/src/plugins.rs:69
 msgid "Needs setup"
@@ -4607,7 +4645,7 @@ msgstr "同一个总管还有 {} 个群也在等你。"
 
 #: windows/control-room/src/lend.rs:378
 msgid "The supervisor's terminal is no longer open."
-msgstr "总管的终端已经关掉了。"
+msgstr "总管的终端已经不在了。"
 
 #: windows/control-room/src/lend.rs:380 windows/control-room/src/list.rs:120
 msgid "Supervisor"
@@ -5072,3 +5110,127 @@ msgstr ""
 #~ "Official role. Changing it and restoring its factory settings can't be "
 #~ "done on Windows yet."
 #~ msgstr "官方角色。修改与恢复出厂设置在 Windows 上还不能做。"
+
+#: windows/host/src/menu.rs
+msgid "Hide Find Bar"
+msgstr "隐藏查找栏"
+
+#: windows/host/src/menu.rs
+msgid "Find Next"
+msgstr "查找下一个"
+
+#: windows/host/src/menu.rs
+msgid "Find Previous"
+msgstr "查找上一个"
+
+#: windows/host/src/menu.rs
+msgid "Select Split Above"
+msgstr "选择上方分屏"
+
+#: windows/host/src/menu.rs
+msgid "Select Split Below"
+msgstr "选择下方分屏"
+
+#: windows/host/src/menu.rs
+msgid "Select Split Left"
+msgstr "选择左侧分屏"
+
+#: windows/host/src/menu.rs
+msgid "Select Split Right"
+msgstr "选择右侧分屏"
+
+#: windows/host/src/menu.rs
+msgid "Move Divider Up"
+msgstr "分隔线上移"
+
+#: windows/host/src/menu.rs
+msgid "Move Divider Down"
+msgstr "分隔线下移"
+
+#: windows/host/src/menu.rs
+msgid "Move Divider Left"
+msgstr "分隔线左移"
+
+#: windows/host/src/menu.rs
+msgid "Move Divider Right"
+msgstr "分隔线右移"
+
+#: windows/host/src/menu.rs
+msgid "Toggle Full Screen"
+msgstr "切换全屏"
+
+#: windows/host/src/menu.rs
+msgid "Zoom Split"
+msgstr "放大分屏"
+
+#: windows/host/src/menu.rs
+msgid "Select Previous Split"
+msgstr "选择上一个分屏"
+
+#: windows/host/src/menu.rs
+msgid "Select Next Split"
+msgstr "选择下一个分屏"
+
+#: windows/host/src/menu.rs
+msgid "Return To Default Size"
+msgstr "恢复默认大小"
+
+#: windows/host/src
+msgid "Not a valid value for this setting."
+msgstr "这不是这一项能接受的值。"
+
+#: windows/host/src
+msgid "This setting is set somewhere the form does not write."
+msgstr "这一项由表单不写的地方设置。"
+
+#: windows/host/src
+msgid "Set in {}, line {}."
+msgstr "由 {} 第 {} 行设置。"
+
+#: windows/host/src
+msgid "Set on the command line; a change here would not take effect."
+msgstr "由命令行设置；在这里改不会生效。"
+
+#: windows/host/src
+msgid "Edited in the config file, not here."
+msgstr "这一项要在配置文件里改，表单不写。"
+
+#: windows/host/src
+msgid "{} actions. Some have no shortcut yet."
+msgstr "{} 个动作。有些还没有快捷键。"
+
+#: windows/host/src
+msgid "Let this plugin run"
+msgstr "让这个插件运行"
+
+#: windows/host/src
+msgid "Fill in first: {}"
+msgstr "先填好：{}"
+
+#: windows/host/src
+msgid "This plugin subscribes to nothing, so Polter has nothing to hand it and will not start it."
+msgstr "这个插件什么都没订阅，Polter 没有东西交给它，也不会启动它。"
+
+#: windows/host/src
+msgid "Needs settings"
+msgstr "缺配置"
+
+#: windows/host/src
+msgid "Saved"
+msgstr "上次保存"
+
+#: windows/host/src
+msgid "Current"
+msgstr "当前"
+
+#: windows/host/src
+msgid "Overwrite with Current Tab…"
+msgstr "用当前标签页覆盖…"
+
+#: windows/host/src
+msgid "Restore Previous Version?"
+msgstr "恢复上一版？"
+
+#: windows/host/src
+msgid "“{}” goes back to its layout before the last change. The current version is kept, so doing this again undoes it."
+msgstr "“{}”将回到上一次改动之前的布局。当前版本会保留下来，再做一次就能撤销。"
