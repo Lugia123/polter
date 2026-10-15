@@ -121,6 +121,48 @@ pub fn title_grip(setting: Setting, s: Situation) -> TitleGrip {
     }
 }
 
+/// Why a window tab cannot go into a pane (task 1558 on macOS, 1583 here):
+/// every terminal of a tab dragged onto a pane becomes one new place beside
+/// it, stacked (`Tree::inserting_tab`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabIntoPane {
+    /// A terminal of the tab is on the control room's right-hand side just
+    /// now (macOS's `lentToControlRoom`).
+    Lent,
+    /// The control room's own tab, which holds no terminal.
+    ControlRoom,
+    /// The pane is the dragged tab's own.
+    OwnTab,
+}
+
+/// What may happen to a tab dragged over a pane: none when it may go in.
+pub fn tab_into_pane_refusal(control_room: bool, has_lent: bool, own_tab: bool) -> Option<TabIntoPane> {
+    if control_room {
+        Some(TabIntoPane::ControlRoom)
+    } else if own_tab {
+        Some(TabIntoPane::OwnTab)
+    } else if has_lent {
+        Some(TabIntoPane::Lent)
+    } else {
+        None
+    }
+}
+
+/// What a stack's tab does (task 1583; macOS's `stackTabGrip`): held and
+/// moved, it drags that terminal -- with `auto` too, in a tab of one place,
+/// since the tab is what a stacked terminal is picked up by; clicked, it
+/// brings it to the front. `never` only clicks; on the control room's side
+/// nothing is dragged.
+pub fn stack_tab_grip(setting: Setting, lent: bool) -> TitleGrip {
+    if lent {
+        return TitleGrip::None;
+    }
+    match setting {
+        Setting::Always | Setting::Auto => TitleGrip::Drag,
+        Setting::Never => TitleGrip::Click,
+    }
+}
+
 /// How far, in points, the pointer has to move held down on a title before
 /// it is a drag and not a click. The handle has none: it does nothing else.
 pub const TITLE_DRAG_THRESHOLD_PT: f64 = 4.0;

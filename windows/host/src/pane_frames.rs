@@ -694,6 +694,29 @@ pub fn on_wheel(frame: HWND, x: i32, y: i32, delta_x: i32, delta_y: i32) -> bool
     true
 }
 
+/// Where a terminal let go at `(x, y)` would go on a stack's strip: the
+/// place, the insertion among its tabs, and the caret to show there, in the
+/// frame window's pixels. None off every strip, and over its plus.
+pub fn strip_drop_at(frame: HWND, x: i32, y: i32) -> Option<(PaneId, usize, RECT)> {
+    STRIPS.with(|all| {
+        all.borrow().iter().filter(|s| s.frame == frame.0 as isize).find_map(|s| {
+            let at = ((x - s.rect.x) as f64 / s.scale, (y - s.rect.y) as f64 / s.scale);
+            match panestack::hit(&s.geometry, at) {
+                Hit::Outside | Hit::Add => None,
+                Hit::Tab(_) | Hit::Close(_) | Hit::Strip => {
+                    let index = s.geometry.insertion(at.0);
+                    let cx = s.rect.x + (s.geometry.caret_x(index) * s.scale).round() as i32;
+                    let row = s.geometry.row();
+                    let top = s.rect.y + ((row.y + row.h - polter_control_room::look::stack_tab::HEIGHT + 4.0) * s.scale).round() as i32;
+                    let bottom = s.rect.y + ((row.y + row.h - 4.0) * s.scale).round() as i32;
+                    let w = (2.0 * s.scale).round().max(2.0) as i32;
+                    Some((s.place, index, RECT { left: cx - w / 2, top, right: cx - w / 2 + w, bottom }))
+                }
+            }
+        })
+    })
+}
+
 /// A press on a stack's strip (task 1583). **True when it was a strip's**,
 /// and then this has taken it: a tab is brought to the front, the plus
 /// makes a new terminal in the place. A close button is the caller's,

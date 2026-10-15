@@ -32,7 +32,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use polter_split_tree::{Axis, Node, PaneId, Split};
+use polter_split_tree::{Axis, Node, PaneId, Split, Stack, Tree};
 
 use crate::ffi::{Action, Surface};
 use crate::{tabs, wlogf};
@@ -87,6 +87,11 @@ pub enum Shape {
         left: Box<Shape>,
         right: Box<Shape>,
     },
+    /// Several terminals in one place, one in front (task 1583; macOS's
+    /// `PoltergeistLayoutShape.stack`): `{"stack":[cell,…],"shown":n}`.
+    /// Every member is an `Existing` or a `New` -- never a split or another
+    /// stack -- there are two or more, and `shown` is one of them.
+    Stack { members: Vec<Shape>, shown: usize },
 }
 
 /// Parse the JSON a caller sent.
@@ -148,13 +153,41 @@ fn parse_from(v: &serde_json::Value, source: Source) -> Result<Shape, String> {
         return Ok(Shape::New { cwd, history, scrollback });
     }
 
+    // The macOS host's words, refusal for refusal (`PoltergeistLayoutShape`).
+    if let Some(listed) = obj.get("stack") {
+        let listed = listed.as_array().ok_or_else(|| "\"stack\" must be a list of cells".to_string())?;
+        // One is not a stack and none is nothing at all.
+        if listed.len() < 2 {
+            return Err("a stack holds two terminals or more; for one, write the cell itself".to_string());
+        }
+        let members = listed.iter().map(|m| parse_from(m, source)).collect::<Result<Vec<_>, _>>()?;
+        if members.iter().any(|m| matches!(m, Shape::Split { .. } | Shape::Stack { .. })) {
+            return Err(
+                "a stack's members are terminals: each must be {\"pane\":…} or {\"new\":…}, not a split or another stack".to_string()
+            );
+        }
+        let shown = match obj.get("shown") {
+            None => 0,
+            Some(v) => {
+                let n = v
+                    .as_u64()
+                    .ok_or_else(|| "\"shown\" must be a whole number: which member is in front, counting from 0".to_string())?;
+                if n as usize >= members.len() {
+                    return Err(format!("\"shown\" is {n}, and the stack has members 0 to {}", members.len() - 1));
+                }
+                n as usize
+            }
+        };
+        return Ok(Shape::Stack { members, shown });
+    }
+
     let axis = match obj.get("split").and_then(|s| s.as_str()) {
         Some("h") => Axis::Horizontal,
         Some("v") => Axis::Vertical,
         Some(other) => return Err(format!("\"split\" must be \"h\" or \"v\", not {other:?}")),
         None => {
             return Err(
-                "a cell must be {\"pane\":…}, {\"new\":…} or {\"split\":\"h\"|\"v\",…}".to_string()
+                "a cell must be {\"pane\":…}, {\"new\":…}, {\"split\":\"h\"|\"v\",…} or {\"stack\":[…]}".to_string()
             )
         }
     };
@@ -202,6 +235,7 @@ pub fn existing(shape: &Shape, out: &mut Vec<SurfaceKey>) {
             existing(left, out);
             existing(right, out);
         }
+        Shape::Stack { members, .. } => members.iter().for_each(|m| existing(m, out)),
     }
 }
 
@@ -222,15 +256,30 @@ pub fn fresh<'a>(shape: &'a Shape, out: &mut Vec<Fresh<'a>>) {
             fresh(left, out);
             fresh(right, out);
         }
+        Shape::Stack { members, .. } => members.iter().for_each(|m| fresh(m, out)),
     }
 }
 
-/// Turn the shape into a tree, taking one id from `made` per `new` cell and
-/// resolving each named surface to the pane it is.
-pub fn to_node(
+/// Turn the shape into a tree, taking one id from `made` per `new` cell (in
+/// `fresh`'s order) and resolving each named surface to the pane it is. A
+/// stack cell is a leaf showing its `shown` member and a row of the tree's
+/// stacks. **Refused when the tree refuses the stacks** -- a terminal in
+/// two places, which the caller's checks already stop.
+pub fn to_tree(
     shape: &Shape,
     made: &mut std::vec::IntoIter<PaneId>,
     pane_of: &dyn Fn(SurfaceKey) -> Option<PaneId>,
+) -> Result<Tree, String> {
+    let mut stacks = Vec::new();
+    let root = to_node(shape, made, pane_of, &mut stacks);
+    Tree::with_root_and_stacks(root, stacks).map_err(|e| format!("the layout's stacks do not fit its shape ({e:?})"))
+}
+
+fn to_node(
+    shape: &Shape,
+    made: &mut std::vec::IntoIter<PaneId>,
+    pane_of: &dyn Fn(SurfaceKey) -> Option<PaneId>,
+    stacks: &mut Vec<Stack>,
 ) -> Node {
     match shape {
         // Checked before this runs; a surface with no pane here would have
@@ -240,9 +289,22 @@ pub fn to_node(
         Shape::Split { axis, ratio, left, right } => Node::Split(Box::new(Split {
             axis: *axis,
             ratio: *ratio,
-            left: to_node(left, made, pane_of),
-            right: to_node(right, made, pane_of),
+            left: to_node(left, made, pane_of, stacks),
+            right: to_node(right, made, pane_of, stacks),
         })),
+        Shape::Stack { members, shown } => {
+            let ids: Vec<PaneId> = members
+                .iter()
+                .map(|m| match to_node(m, made, pane_of, stacks) {
+                    Node::Leaf(id) => id,
+                    // Refused when it was read: a member is a terminal.
+                    Node::Split(_) => 0,
+                })
+                .collect();
+            let front = ids.get(*shown).copied().unwrap_or(0);
+            stacks.push(Stack { shown: front, members: ids });
+            Node::Leaf(front)
+        }
     }
 }
 
@@ -258,20 +320,42 @@ pub fn to_node(
 // a parameter wearing it made this pure walk, and every other `describe` by
 // the same bare name (`project::describe` inside a `with_windows` closure),
 // read as taking the lock while it was held.
-pub fn describe(node: &Node, key_of: &dyn Fn(PaneId) -> Option<SurfaceKey>) -> serde_json::Value {
+///
+/// A place holding a stack is said as the stack, every member of it in the
+/// order of its tabs and which is in front (task 1583; macOS's
+/// `describingForLayoutReply`): a terminal behind another is never missing
+/// from what the caller is told is there.
+pub fn describe(tree: &Tree, key_of: &dyn Fn(PaneId) -> Option<SurfaceKey>) -> serde_json::Value {
+    match tree.root() {
+        Some(root) => describe_node(tree, root, key_of),
+        None => serde_json::Value::Null,
+    }
+}
+
+fn describe_pane(id: PaneId, key_of: &dyn Fn(PaneId) -> Option<SurfaceKey>) -> serde_json::Value {
+    match key_of(id) {
+        Some(k) => serde_json::json!({ "pane": format!("0x{k:x}") }),
+        // A pane in the tree with no surface is a bug this side, and
+        // saying so beats handing back a number from the wrong
+        // namespace.
+        None => serde_json::json!({ "pane": null }),
+    }
+}
+
+fn describe_node(tree: &Tree, node: &Node, key_of: &dyn Fn(PaneId) -> Option<SurfaceKey>) -> serde_json::Value {
     match node {
-        Node::Leaf(id) => match key_of(*id) {
-            Some(k) => serde_json::json!({ "pane": format!("0x{k:x}") }),
-            // A pane in the tree with no surface is a bug this side, and
-            // saying so beats handing back a number from the wrong
-            // namespace.
-            None => serde_json::json!({ "pane": null }),
+        Node::Leaf(id) => match tree.stack_of(*id) {
+            Some(s) => serde_json::json!({
+                "stack": s.members.iter().map(|m| describe_pane(*m, key_of)).collect::<Vec<_>>(),
+                "shown": s.members.iter().position(|m| *m == s.shown).unwrap_or(0),
+            }),
+            None => describe_pane(*id, key_of),
         },
         Node::Split(s) => serde_json::json!({
             "split": match s.axis { Axis::Horizontal => "h", Axis::Vertical => "v" },
             "ratio": s.ratio,
-            "left": describe(&s.left, key_of),
-            "right": describe(&s.right, key_of),
+            "left": describe_node(tree, &s.left, key_of),
+            "right": describe_node(tree, &s.right, key_of),
         }),
     }
 }
@@ -442,6 +526,44 @@ pub fn perform(action: &Action, target: Option<Surface>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 1583: a stack cell is read the way the macOS host reads it,
+    /// built into one place of the tree, and said back as a stack.
+    #[test]
+    fn a_stack_cell_is_one_place_holding_its_members_and_comes_back_as_one() {
+        let v = serde_json::json!({ "split": "h",
+            "left": { "pane": "0x10" },
+            "right": { "stack": [ { "pane": "0x20" }, { "new": null }, { "pane": "0x30" } ], "shown": 1 } });
+        let shape = parse(&v).expect("a stack cell reads");
+        let mut named = Vec::new();
+        existing(&shape, &mut named);
+        assert_eq!(named, [0x10, 0x20, 0x30]);
+        let mut wanted = Vec::new();
+        fresh(&shape, &mut wanted);
+        assert_eq!(wanted.len(), 1);
+        // 0x10 -> pane 1, 0x20 -> 2, 0x30 -> 3; the new one is 9.
+        let pane_of = |k: SurfaceKey| match k { 0x10 => Some(1), 0x20 => Some(2), 0x30 => Some(3), _ => None };
+        let mut made = vec![9].into_iter();
+        let tree = to_tree(&shape, &mut made, &pane_of).expect("the tree takes it");
+        assert_eq!(tree.shown_panes(), [1, 9]);
+        assert_eq!(tree.members(), [1, 2, 9, 3]);
+        let key_of = |p: PaneId| match p { 1 => Some(0x10), 2 => Some(0x20), 3 => Some(0x30), 9 => Some(0x90), _ => None };
+        let back = describe(&tree, &key_of);
+        assert_eq!(back["right"], serde_json::json!({ "stack": [ { "pane": "0x20" }, { "pane": "0x90" }, { "pane": "0x30" } ], "shown": 1 }));
+        assert_eq!(back["left"], serde_json::json!({ "pane": "0x10" }));
+    }
+
+    #[test]
+    fn a_stack_cell_is_refused_in_the_macos_hosts_words() {
+        let refused = |v: serde_json::Value| parse(&v).err().expect("refused");
+        assert_eq!(refused(serde_json::json!({ "stack": [ { "pane": "0x1" } ] })), "a stack holds two terminals or more; for one, write the cell itself");
+        assert!(refused(serde_json::json!({ "stack": [ { "pane": "0x1" }, { "split": "h", "left": { "new": null }, "right": { "new": null } } ] })).starts_with("a stack's members are terminals"));
+        assert_eq!(refused(serde_json::json!({ "stack": [ { "pane": "0x1" }, { "new": null } ], "shown": 2 })), "\"shown\" is 2, and the stack has members 0 to 1");
+        assert!(refused(serde_json::json!({ "stack": [ { "pane": "0x1" }, { "new": null } ], "shown": true })).starts_with("\"shown\" must be a whole number"));
+        assert_eq!(refused(serde_json::json!({ "stack": "no" })), "\"stack\" must be a list of cells");
+        // Left out, the first is in front.
+        assert!(matches!(parse(&serde_json::json!({ "stack": [ { "pane": "0x1" }, { "new": null } ] })), Ok(Shape::Stack { shown: 0, .. })));
+    }
 
     /// **The tool cannot name a snapshot.** The core deletes a snapshot it
     /// cannot decode, so a `"scrollback"` accepted here would let any agent

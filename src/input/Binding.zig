@@ -691,7 +691,7 @@ pub const Action = union(enum) {
     ///     stack of the next or the previous pane, so that two panes
     ///     become one.
     ///
-    /// Only on macOS so far; elsewhere this does nothing.
+    /// On macOS and Windows; elsewhere this does nothing.
     pane_stack: PaneStack,
 
     /// Zoom in or out of the current split.

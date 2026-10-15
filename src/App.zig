@@ -5615,13 +5615,9 @@ fn poltergeistLayout(
     else
         return error.NoSuchTerminal;
 
-    // **Stacks are macOS only.** Asked here, before the apprt, so a shape
-    // with one is refused with nothing moved -- the Windows host would
-    // otherwise refuse it as a cell it cannot read, which says nothing
-    // about what to do instead.
-    if (comptime builtin.target.os.tag == .windows) {
-        if (arrange.hasStack(alloc, call.spec) catch false) return error.NotBuiltYet;
-    }
+    // A `stack` cell goes through as it is: the macOS host and, from task
+    // 1583, the Windows host read it. (Windows refused it here with
+    // NotBuiltYet until then.)
 
     // ⚠️ **The two namespaces, and the whole of task 406.** A caller writes
     // the terminal ids it uses everywhere else; the apprt owns the tree and

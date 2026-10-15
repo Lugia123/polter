@@ -158,6 +158,14 @@ pub fn scroll(delta_x: i32, delta_y: i32, line: f64) -> f64 {
     -(d as f64 / 120.0) * line
 }
 
+/// Where a tab dragged along its own strip ends up, from where it was and
+/// the insertion it was let go at -- which counts the tab itself, while
+/// where it ends up does not. None when it would not move.
+pub fn reorder_to(from: usize, index: usize) -> Option<usize> {
+    let to = if index > from { index - 1 } else { index };
+    (to != from).then_some(to)
+}
+
 /// The line one wheel notch scrolls, in points.
 pub const WHEEL_LINE: f64 = 16.0;
 
@@ -218,6 +226,22 @@ pub fn geometry(wears: Wears, w: f64, wants: &[f64], current: usize, status: f64
 }
 
 impl Geometry {
+    /// Where among the tabs a terminal let go at `x` (points from the
+    /// frame's left) goes in: how many tabs have their middle left of it,
+    /// scrolled (macOS's `insertion(atRowX:)`, task 1582).
+    pub fn insertion(&self, x: f64) -> usize {
+        self.layout.tabs.iter().filter(|tab| self.strip.x + tab.x - self.offset + tab.width / 2.0 < x).count()
+    }
+
+    /// Where the caret for an insertion at `index` stands: the left edge of
+    /// the tab that will follow it, or the end of the last.
+    pub fn caret_x(&self, index: usize) -> f64 {
+        match self.layout.tabs.get(index) {
+            Some(tab) => self.strip.x + tab.x - self.offset,
+            None => self.strip.x + t::INSET + self.layout.content - self.offset,
+        }
+    }
+
     /// Scrolled by `by` points, kept to what the tabs can scroll.
     pub fn scrolled(&self, by: f64) -> f64 {
         (self.offset + by).clamp(0.0, self.layout.max_offset())
@@ -587,6 +611,36 @@ mod tests {
         assert_eq!(scroll(0, -240, WHEEL_LINE), 32.0);
         // A sideways wheel as it is, when it is the larger.
         assert_eq!(scroll(-120, 60, WHEEL_LINE), 16.0);
+    }
+
+    // ---- dropping onto a strip
+
+    #[test]
+    fn where_a_terminal_let_go_on_the_strip_goes_in() {
+        // Three at 100 from 20: middles at 70, 170, 270.
+        let geo = g(&[100.0; 3], 0, 500.0, 0.0);
+        assert_eq!(geo.insertion(30.0), 0);
+        assert_eq!(geo.insertion(71.0), 1);
+        assert_eq!(geo.insertion(171.0), 2);
+        assert_eq!(geo.insertion(400.0), 3);
+        assert_eq!(geo.caret_x(1), 120.0);
+        assert_eq!(geo.caret_x(3), 320.0);
+        // Scrolled: the middles move with the tabs.
+        let far = g(&[150.0; 8], 6, 400.0, 0.0);
+        let t6 = far.tab_rect(6).unwrap();
+        assert_eq!(far.insertion(t6.x + 1.0), 6);
+        assert_eq!(far.insertion(t6.x + t6.w / 2.0 + 1.0), 7);
+        assert_eq!(far.caret_x(6), t6.x);
+    }
+
+    #[test]
+    fn along_its_own_strip_a_tab_lands_where_it_was_let_go() {
+        // a b c d: b let go before d (insertion 3) ends up third.
+        assert_eq!(reorder_to(1, 3), Some(2));
+        assert_eq!(reorder_to(3, 0), Some(0));
+        // Let go either side of itself: it does not move.
+        assert_eq!(reorder_to(1, 1), None);
+        assert_eq!(reorder_to(1, 2), None);
     }
 
     // ---- geometry

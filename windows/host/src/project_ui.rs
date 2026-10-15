@@ -82,7 +82,7 @@ pub(crate) fn tab_tree(frame: HWND, id: TabId) -> Option<(SavedNode, Vec<LeafPan
         // A project is a terminal tab's split tree. The control room has
         // none, and saving it is not offered; asked anyway, there is
         // nothing to save.
-        let node = tab.terminal()?.tree.root()?;
+        let tree = &tab.terminal()?.tree;
         let meta: std::collections::HashMap<polter_split_tree::PaneId, (SavedLeaf, LeafPane)> = tab
             .panes()
             .iter()
@@ -110,12 +110,12 @@ pub(crate) fn tab_tree(frame: HWND, id: TabId) -> Option<(SavedNode, Vec<LeafPan
             })
             .collect();
         let order = std::cell::RefCell::new(Vec::new());
-        let root = project::describe(node, &|id| {
+        let root = project::describe(tree, &|id| {
             let (leaf, pane) =
                 meta.get(&id).cloned().unwrap_or_else(|| (SavedLeaf::plain("", Agent::Unknown), LeafPane::default()));
             order.borrow_mut().push(pane);
             leaf
-        });
+        })?;
         Some((root, order.into_inner()))
     })
 }
@@ -496,8 +496,21 @@ pub fn shape_for_page_seeded(root: &SavedNode, seed_surface: usize, snaps: &std:
 
 fn seed_leftmost(node: &SavedNode, seed_surface: usize, snaps: &std::path::Path) -> serde_json::Value {
     match node {
-        // A stack is one pane here: see `project::to_layout_shape`.
-        SavedNode::Leaf(_) | SavedNode::Stack { .. } => serde_json::json!({ "pane": format!("0x{seed_surface:x}") }),
+        SavedNode::Leaf(_) => serde_json::json!({ "pane": format!("0x{seed_surface:x}") }),
+        // The tab was made with the member in front (`leftmost_leaf`): it
+        // stands at its own place among the tabs, and the others are made
+        // (task 1583).
+        SavedNode::Stack { shown, members } => {
+            let at = (*shown).min(members.len().saturating_sub(1));
+            serde_json::json!({
+                "stack": members.iter().enumerate().map(|(i, m)| if i == at {
+                    serde_json::json!({ "pane": format!("0x{seed_surface:x}") })
+                } else {
+                    project::to_layout_shape(&SavedNode::Leaf(m.clone()), snaps)
+                }).collect::<Vec<_>>(),
+                "shown": at,
+            })
+        }
         SavedNode::Split { axis, ratio, left, right } => serde_json::json!({
             "split": match axis { polter_split_tree::Axis::Horizontal => "h", polter_split_tree::Axis::Vertical => "v" },
             "ratio": ratio,
@@ -642,6 +655,27 @@ pub fn open_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 1583: a page whose first place holds a stack opens with the tab's
+    /// first terminal -- the member that was in front -- at its own place
+    /// among the stack's tabs, and the others made.
+    #[test]
+    fn a_page_that_starts_with_a_stack_is_seeded_with_the_member_in_front() {
+        let stack = SavedNode::Stack {
+            shown: 1,
+            members: vec![SavedLeaf::plain("/a", Agent::Unknown), SavedLeaf::plain("/b", Agent::Unknown), SavedLeaf::plain("/c", Agent::Unknown)],
+        };
+        assert_eq!(leftmost_leaf(&stack).cwd, "/b");
+        let shape = shape_for_page_seeded(&stack, 0x77, std::path::Path::new("/p/x.scrollback"));
+        assert_eq!(shape["shown"], 1);
+        assert_eq!(shape["stack"][0]["new"]["cwd"], "/a");
+        assert_eq!(shape["stack"][1]["pane"], "0x77");
+        assert_eq!(shape["stack"][2]["new"]["cwd"], "/c");
+        let parsed = crate::layout::parse_project(&shape).expect("the layout reads it");
+        let mut named = Vec::new();
+        crate::layout::existing(&parsed, &mut named);
+        assert_eq!(named, [0x77]);
+    }
     use crate::project::{Snapshot, Tab, Window};
 
     fn sample_snapshot() -> Snapshot {
@@ -719,7 +753,7 @@ mod tests {
             })),
         }));
 
-        let saved = project::describe(&live, &|id| SavedLeaf::plain(&format!("/pane/{id}"), Agent::Unknown));
+        let saved = project::describe(&polter_split_tree::Tree::with_root(live), &|id| SavedLeaf::plain(&format!("/pane/{id}"), Agent::Unknown)).unwrap();
 
         let shape = project::to_layout_shape(&saved, std::path::Path::new("/p/x.scrollback"));
 
@@ -769,7 +803,7 @@ mod tests {
             })),
         }));
 
-        let saved = project::describe(&live, &|id| SavedLeaf::plain(cwd_of(id), Agent::Unknown));
+        let saved = project::describe(&polter_split_tree::Tree::with_root(live), &|id| SavedLeaf::plain(cwd_of(id), Agent::Unknown)).unwrap();
         let snapshot = Snapshot {
             name: "three panes three dirs".to_string(),
             saved_at: 42,
