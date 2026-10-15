@@ -289,9 +289,10 @@ fn accelerator(vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<&'static str>
         // The core's split-right default is `ctrl+shift+o`, not `d`.
         (true, true, VK_D) => Some("new_split:right"),
         (true, true, VK_Z) => Some("toggle_split_zoom"),
-        // The core binds `equalize_splits` to `super+ctrl+=`, which is the
-        // macOS branch; there is no Windows default.
-        (true, true, VK_OEM_PLUS) => Some("equalize_splits"),
+        // **`ctrl+shift+=` -> `equalize_splits` was here, and moved into the
+        // core** (task 1551): `Config.zig` binds it on Windows now, so the
+        // menu can name it -- this table cannot reach a menu -- and the row
+        // would have been dead the moment it did (`keys.md` §7.8).
 
 
 

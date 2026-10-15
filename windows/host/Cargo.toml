@@ -63,6 +63,12 @@ path = "src/main.rs"
 [dependencies.windows]
 version = "0.62"
 features = [
+    # The toast a notification is (`toast.rs`, task 1551): WinRT's
+    # `ToastNotificationManager`, the XML document it is built from, and
+    # `TypedEventHandler` for its click.
+    "Data_Xml_Dom",
+    "Foundation",
+    "UI_Notifications",
     "Win32_Foundation",
     # `GetUserPreferredUILanguages` and `ResolveLocaleName`, for the plugin
     # settings page: a plugin carries its own translations and this is how the

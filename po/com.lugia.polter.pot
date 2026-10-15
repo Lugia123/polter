@@ -4598,3 +4598,23 @@ msgid ""
 "pane. The workers' panes come back as terminals only; who is called back is "
 "the supervisor's to decide."
 msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Use Selection for Find"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Jump to Selection"
+msgstr ""
+
+#: windows/host/src/menu.rs
+msgid "Quit Polter"
+msgstr ""
+
+#: windows/host/src/tabs.rs
+msgid "Quit Polter?"
+msgstr ""
+
+#: windows/host/src/strip.rs
+msgid "Save as New Project…"
+msgstr ""

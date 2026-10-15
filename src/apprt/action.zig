@@ -1559,11 +1559,16 @@ pub const Action = union(Key) {
             // could not contain its answer.
             try std.testing.expect(bound(found, true, "escape", false, false));
 
-            // And the discrimination in the other direction: `equalize_splits`
-            // is bound `super+ctrl+=`, a macOS-only chord, which is exactly
-            // why `ctrl+shift+=` survives in the host table. A parser that
-            // read `super` chords as shipping here would delete that row.
-            try std.testing.expect(!bound(found, false, "=", true, true));
+            // And the discrimination in the other direction. `ctrl+super+[`
+            // is `goto_split:previous` everywhere but Windows -- a chord with
+            // `super` in it, which does not ship here. A parser that read
+            // `super` chords as shipping would find `ctrl+[` bound. (This
+            // anchor was `ctrl+shift+=` until task 1551 gave that chord to
+            // the core on Windows; it is asserted bound just below.)
+            try std.testing.expect(!bound(found, false, "[", true, false));
+            // `equalize_splits` moved from the host table into the core
+            // (task 1551), on the chord the host row had.
+            try std.testing.expect(bound(found, false, "=", true, true));
 
             // A parse that produced nothing would satisfy every "not bound"
             // assertion below. The one number that says work happened.

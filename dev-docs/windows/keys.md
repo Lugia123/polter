@@ -447,7 +447,7 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 | `Ctrl+C` | `copy_to_clipboard` | 核·win | **本 fork 新增**，performable——**没选区时照常中断**，见 3.3(e) |
 | `Ctrl+V` | `paste_from_clipboard` | 核·win | **本 fork 新增**，performable——**剪贴板有文字时 `C-v` 再也进不了 pty**，见 3.3(e) |
 | `Ctrl+Insert` | `copy_to_clipboard` | 核·非mac | |
-| `Shift+Insert` | **`paste_from_selection`** | 核·非mac | ⚠️ 见 3.3(b) |
+| `Shift+Insert` | `paste_from_clipboard` | 核·非mac | Windows 上不再绑 `paste_from_selection`（没有选区剪贴板），见 3.3(b) |
 | `Ctrl+Shift+A` | `select_all` | 核·非mac | |
 | `Ctrl+Shift+X` | `close_surface`（关闭分屏） | 核·非mac | **本 fork 新增**，见 3.3(b) |
 | `Ctrl+Shift+K` | `clear_screen`（清屏） | 核·非mac | **本 fork 新增** |
@@ -499,9 +499,10 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 | `Ctrl+Shift+O` | `new_split:right` | 核·非mac | 注意是 O 不是 D |
 | `Ctrl+Shift+E` | `new_split:down` | 核·非mac | |
 | `Ctrl+Shift+Enter` | `toggle_split_zoom` | 核·共通 | |
-| `Ctrl+Alt+↑↓←→` | `goto_split:up/down/left/right` | 核·非mac | performable |
-| `Ctrl+Win+[` / `Ctrl+Win+]` | `goto_split:previous/next` | 核·非mac | performable，要按 Win 键 |
-| `Ctrl+Shift+Win+↑↓←→` | `resize_split ±10` | 核·非mac | performable，要按 Win 键 |
+| `Ctrl+Alt+↑↓←→` | `goto_split:up/down/left/right` | 核·win | **任务 1551 起不再 performable**（菜单显示得出）；只有一个分屏时按了什么也不做，不再落进终端 |
+| `Ctrl+Shift+[` / `Ctrl+Shift+]` | `goto_split:previous/next` | 核·win | 任务 1551：从 `Ctrl+Win+[ ]` 搬离 Win 键（mac `⌘[ ]` 按「⌘X↔Ctrl+Shift+X」）|
+| `Ctrl+Shift+Alt+↑↓←→` | `resize_split ±10` | 核·win | 任务 1551：从 `Ctrl+Shift+Win+方向` 搬离 Win 键；方向键不出字符，AltGr 的顾虑够不到 |
+| `Ctrl+Shift+=` | `equalize_splits` | 核·win | 任务 1551：从宿主表搬进核心，菜单显示得出（7.8）|
 
 **滚动 / 选择 / 提示符**
 
@@ -522,7 +523,7 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 | `Ctrl+Shift+I` | `inspector:toggle` | 核·非mac |
 | `Ctrl+Shift+J` | `write_screen_file:paste` | 核·共通 |
 | `Ctrl+Shift+Alt+J` | `write_screen_file:open` | 核·共通 |
-| `Ctrl+Shift+Win+J` | `write_screen_file:copy` | 核·共通 |
+| ~~`Ctrl+Shift+Win+J`~~ | `write_screen_file:copy` | **Windows 不绑**（任务 1551：Win 键是系统的；`J` 的另外两个组合已被 paste/open 占了）；命令面板里有，`keybind=` 可自绑 |
 | `Ctrl+Shift+0` | `screenshot`（截图） | 核·win ＋ 宿主·热键 |
 
 > **`Ctrl+Shift+0` 是这张表里唯一的全局键，它不走第二节那四步。** 核心把它绑成
@@ -546,7 +547,7 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 > （每进程前 200 行）。`mods` 是按 `GetKeyState` 读的、也就是做决定用的那一份；`async_ctrl` 是
 > `GetAsyncKeyState` 的读数，只为对照——两者不一致正是 #1085 D1 的成因（见 `shot.rs::key_mods`）。
 
-### 3.2 宿主处理（`keys.rs::accelerator()`，只剩四行）
+### 3.2 宿主处理（`keys.rs::accelerator()`，只剩三行）
 
 **只有核心不认的和弦才留在这里。** 每一行都在触发时打日志：
 
@@ -559,7 +560,7 @@ swallowed=… tsf_ate=…`**。`seen` 是那个零的意义所在：**没有它�
 | `Ctrl+Shift+M` | `toggle_maximize` | 宿主 | Windows 无默认绑定 |
 | `Ctrl+Shift+D` | `new_split:right` | 宿主 | 核心的分屏默认是 `Ctrl+Shift+O` |
 | `Ctrl+Shift+Z` | `toggle_split_zoom` | 宿主 | 核心的 undo/redo 绑定在 mac 分支 |
-| `Ctrl+Shift+=` | `equalize_splits` | 宿主 | 核心绑的是 `Super+Ctrl+=`，mac 分支 |
+| ~~`Ctrl+Shift+=`~~ | `equalize_splits` | — | **任务 1551 搬进核心**（3.1 分屏表），这一行删了 |
 
 关于这四行的三条脾气：
 
@@ -819,6 +820,11 @@ F11 编码成 `CSI 23~`，核心永远消费，那一行一次都没跑过，而
 **这是第三类，和 3.3 / 3.6 都不同。** 3.3 是「按下去做了别的事」，3.6 是「压根没有
 键盘入口」。这一类的键**完全正常**，缺的只是菜单右边那行提示——而缺提示的后果是
 **一个能用的功能看起来不存在**，没有人会去按一个自己不知道存在的键。
+
+> **任务 1551 之后**：这 12 条里的 11 条（`goto_split` ×6、`resize_split` ×4、
+> `equalize_splits`）在 Windows 上改成非 performable 的核心绑定，第 12 条
+> （`paste_from_clipboard`）随 `Shift+Insert` 不再被 `paste_from_selection` 覆盖而回来。
+> 下面的读数是改动之前的，**没有在改动后的真机上重量过**。
 
 #### 读数
 
@@ -1637,6 +1643,12 @@ mac `Cmd+Shift+D` = `new_split:down`；非 mac 的 `new_split:down` 是 `Ctrl+Sh
 
 ### 7.5 Windows 上要按 Win 键的和弦——七条，这一节最该有人看
 
+> **任务 1551 起，Windows 的默认绑定里一条 Win 键和弦都没有了**（Linux 照旧）：
+> `goto_split:previous/next` → `Ctrl+Shift+[ ]`，`resize_split` → `Ctrl+Shift+Alt+方向`，
+> `write_screen_file:copy` 在 Windows 不绑。Windows 测试 exe 上
+> `Keybinds: windows binds bare ctrl+c and ctrl+v` 会遍历全表断言没有 `super`。
+> 下面是改动之前的记录，7.7 第 1–3 条随之作废。
+
 非 mac 分支里有 **7 个和弦用到 `super`**，而在 Windows 上 `super` 就是 **Win 键**：
 
 | 和弦 | 动作 |
@@ -1743,7 +1755,11 @@ mac `Cmd+Shift+D` = `new_split:down`；非 mac 的 `new_split:down` 是 `Ctrl+Sh
 
 ### 7.8 宿主加速键表的交叉检查
 
-`keys.rs::accelerator()` 那四行（`Ctrl+Shift+M/D/Z/=`）与核心默认集**今天不冲突**。
+`keys.rs::accelerator()` 那三行（`Ctrl+Shift+M/D/Z`）与核心默认集**今天不冲突**。
+
+> **任务 1551：下面这枚哑弹已拆。** `equalize_splits` 在 Windows 上由核心绑
+> `Ctrl+Shift+=`，宿主那一行同时删掉；`src/apprt/action.zig` 的
+> `the Windows host's accelerator table` 改为断言核心绑了这个和弦。
 
 **但 `equalize_splits` 是一枚已经排好队的哑弹**：核心在非 mac 上没有绑定它，
 宿主用 `Ctrl+Shift+=` 顶着。**核心哪天补上这个绑定，宿主那一行就会静默变成死代码**

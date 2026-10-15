@@ -159,6 +159,7 @@ mod shellopen;
 mod strip;
 mod tabs;
 mod taskbar;
+mod toast;
 mod termcolor;
 mod theme;
 mod uifont;
@@ -637,6 +638,16 @@ pub const WM_ASK_CLOSE_PANE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_A
 /// running processes in them without asking, in all three modes. `+ 17` is
 /// used by nothing else in this host.
 pub const WM_ASK_CLOSE_TAB: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 17;
+
+/// The core's `quit` (the ☰ menu's «退出», `ctrl+shift+q`, the palette),
+/// carried to a window's thread to be decided there: one question if
+/// anything anywhere is running, then every window (task 1551).
+///
+/// ⚠️ **Same reason as `WM_ASK_CLOSE_PANE`.** `quit` arrives app-targeted,
+/// and the arm that used to take it shared `close_window`'s, which needs a
+/// window -- so it answered "names no window; nothing closed" every time and
+/// the chord did nothing. `+ 23` is used by nothing else in this host.
+pub const WM_ASK_QUIT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 23;
 
 /// A fixed-size line builder that never allocates.
 ///
@@ -3796,7 +3807,27 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // stand-in would close **the first** window every time, whichever one
         // the person was looking at -- and a single-window test passes either
         // way, which is exactly what the old comment predicted about itself.
-        ACTION_CLOSE_WINDOW | ACTION_QUIT => {
+        // **App-targeted, so it is not `close_window`'s arm any more** -- see
+        // `WM_ASK_QUIT`. The window it is posted to only hosts the question;
+        // what goes is every window.
+        ACTION_QUIT => {
+            // carries no terminal: `quit` is about every window; this only
+            // picks one to hold the question when the action named none
+            let frame = origin.or_else(|| winid::all().into_iter().next());
+            match frame {
+                Some(frame) => unsafe {
+                    alogf!(Some(frame), "[action] quit (target tag={}) -> asking on this window", target.tag);
+                    windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(frame), WM_ASK_QUIT, WPARAM(0), LPARAM(0))
+                        .is_ok()
+                },
+                None => {
+                    // process-wide: there is no window at all, which is the fact
+                    plogf!("[action] quit with no window open; nothing to close");
+                    false
+                }
+            }
+        }
+        ACTION_CLOSE_WINDOW => {
             let owner = if target.tag == ffi::TARGET_SURFACE {
                 tabs::frame_of_surface(target.surface)
             } else {
@@ -4578,6 +4609,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             m if m == WM_ASK_CLOSE_TAB => {
                 // Same place, same reason: see `WM_ASK_CLOSE_TAB`.
                 tabs::close_tab_mode_asking(hwnd, wp.0 as u32 as i32);
+                LRESULT(0)
+            }
+            m if m == WM_ASK_QUIT => {
+                // Same place, same reason: see `WM_ASK_QUIT`.
+                tabs::quit_asking(hwnd);
                 LRESULT(0)
             }
 
@@ -7130,6 +7166,11 @@ fn main() {
         plogf!("[cli] the core did not recognise it; not opening a window");
         die();
     }
+
+    // **Before any window exists**: the taskbar takes a process's identity
+    // from its first window, and a toast needs that identity registered
+    // (`toast.rs`, task 1551).
+    toast::register();
 
     // **Files, command line, the files those name, `finalize` -- in one call
     // that `reload.rs` makes too.** The command line is the part this host

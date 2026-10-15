@@ -1530,9 +1530,11 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "inspector:toggle", menuItem: self.menuTerminalInspector)
         syncMenuShortcut(config, action: "toggle_command_palette", menuItem: self.menuCommandPalette)
 
-        // None of these five ship with a default binding, so ordinarily the
-        // menu shows no shortcut at all -- which is the point of them being
-        // in the menu. If somebody does bind one, it shows up here.
+        // Supervisor, watch and shield ship with `⌃⌘S`, `⌃⌘Y` and `⌃⌘B`
+        // and chat with `⌃⌘L` -- the letters Windows has on Ctrl+Shift
+        // (task 1551; `Config.zig` says why not `⌘⇧`). The control room and
+        // the authorise switch have no default, so their rows show a
+        // shortcut only when somebody binds one.
         syncMenuShortcut(config, action: "poltergeist_toggle_chat", menuItem: self.menuPoltergeistChat)
         syncMenuShortcut(config, action: "poltergeist_toggle_control_room", menuItem: self.menuPoltergeistControlRoom)
         syncMenuShortcut(config, action: "poltergeist_supervisor", menuItem: self.menuPoltergeistSupervisor)

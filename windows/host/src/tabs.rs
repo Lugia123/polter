@@ -3489,6 +3489,8 @@ fn window_confirm_flags(frame: HWND) -> Vec<bool> {
 /// in the language it was written in.
 #[derive(Clone, Copy)]
 enum Subject {
+    /// Every window: the core's `quit` (task 1551).
+    App,
     Tab,
     Window,
     Pane,
@@ -3510,6 +3512,9 @@ impl Subject {
     /// the other two platforms, not this file's type names.
     fn title(self) -> &'static str {
         match self {
+            // Not gtk's "Quit Ghostty?": this is Polter, and macOS asks
+            // "Quit Polter?" (`Localizable.strings`).
+            Subject::App => n_("Quit Polter?"),
             Subject::Tab => n_("Close Tab?"),
             Subject::Window => n_("Close Window?"),
             Subject::Pane => n_("Close Split?"),
@@ -3520,6 +3525,7 @@ impl Subject {
 
     fn body(self) -> &'static str {
         match self {
+            Subject::App => n_("All terminal sessions will be terminated."),
             Subject::Tab => n_("All terminal sessions in this tab will be terminated."),
             Subject::Window => n_("All terminal sessions in this window will be terminated."),
             Subject::Pane => n_("The currently running process in this split will be terminated."),
@@ -3540,6 +3546,7 @@ impl Subject {
     /// somebody else's machine has to be able to type the word.
     fn log_key(self) -> &'static str {
         match self {
+            Subject::App => "app",
             Subject::Tab => "tab",
             Subject::Window => "window",
             Subject::Pane => "pane",
@@ -3644,6 +3651,28 @@ fn offer_save_before_close(frame: HWND, id: TabId, whole_window: bool) -> bool {
             false
         }
     }
+}
+
+/// The core's `quit`: every window, **after asking once** if anything in any
+/// of them is running -- macOS asks "Quit Polter?" the same way
+/// (task 1551). Then the settings window too, if it is open, so the process
+/// really ends: closing the last terminal leaves it standing by design
+/// (#896 D3), and "quit" is not "close the terminals".
+///
+/// ⚠️ **On the window's own thread, outside the op drain** -- the same rule
+/// as `ask`; `WM_ASK_QUIT` is how it gets here.
+pub fn quit_asking(frame: HWND) -> bool {
+    let frames = crate::winid::all();
+    let busy = frames.iter().any(|f| dialogs_for(&window_confirm_flags(*f)) == 1);
+    // not-gated: the condition is the event -- one dialog was shown and the
+    // person said no. Silence here is a quit that did not happen.
+    if busy && !ask(frame, Subject::App) {
+        wlogf!(frame, "[close] quit declined; every window kept");
+        return false;
+    }
+    let closed = crate::winnav::close_all();
+    crate::settings_win::close_for_quit();
+    closed
 }
 
 /// Close every tab in a window **after asking once**, however many panes it
@@ -5550,6 +5579,35 @@ pub fn tab_of_surface(surface: Surface) -> Option<(HWND, TabId)> {
                 .find(|t| t.panes().iter().any(|p| p.surface == key))
                 .map(|t| (HWND(w.frame as *mut c_void), t.id))
         })
+    })
+}
+
+/// Whether this surface's pane has the keyboard of the window in front --
+/// the person is in that terminal now. A notification it raises is then
+/// not shown, as on macOS (task 1551). Asked of the foreground thread
+/// (`GetGUIThreadInfo(0)`), so it answers the same from any thread.
+// window-free: keyed by surface, which is unique in the process
+pub fn surface_has_keyboard(surface: usize) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GUITHREADINFO};
+    let pane = with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes().iter())
+            .find(|p| p.surface == surface)
+            .map(|p| p.hwnd)
+    });
+    let Some(pane) = pane.filter(|h| *h != 0) else { return false };
+    let mut gui = GUITHREADINFO { cbSize: std::mem::size_of::<GUITHREADINFO>() as u32, ..Default::default() };
+    unsafe { GetGUIThreadInfo(0, &mut gui) }.is_ok() && gui.hwndFocus.0 as isize == pane
+}
+
+/// Whether the tab this surface is in holds more than one pane -- whether
+/// «Close Split» means a split (task 1551). `false` for a surface in no tab.
+// window-free: keyed by surface, which is unique in the process
+pub fn surface_is_split(surface: Surface) -> bool {
+    let key = surface as usize;
+    with_windows(|ws| {
+        ws.iter().any(|w| w.tabs.iter().any(|t| t.panes().len() > 1 && t.panes().iter().any(|p| p.surface == key)))
     })
 }
 
@@ -7657,6 +7715,8 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                     wlogf!(owner, "[focus] pane {} taking focus", id);
                     (api().surface_set_focus)(s, true);
                     wlogf!(owner, "[focus] pane {} took focus", id);
+                    // Its toasts leave the notification centre, as macOS's do.
+                    crate::toast::withdraw((api().surface_poltergeist_id)(s));
                 }
                 LRESULT(0)
             }

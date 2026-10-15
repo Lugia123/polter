@@ -4678,6 +4678,26 @@ msgstr ""
 "项目的各页都还原，总管在它那一格启动；worker 的格子只还原终端，叫谁回来由总管"
 "决定。"
 
+#: windows/host/src/menu.rs
+msgid "Use Selection for Find"
+msgstr "用选中内容查找"
+
+#: windows/host/src/menu.rs
+msgid "Jump to Selection"
+msgstr "跳转到选中处"
+
+#: windows/host/src/menu.rs
+msgid "Quit Polter"
+msgstr "退出 Polter"
+
+#: windows/host/src/tabs.rs
+msgid "Quit Polter?"
+msgstr "退出 Polter？"
+
+#: windows/host/src/strip.rs
+msgid "Save as New Project…"
+msgstr "存为新项目…"
+
 #~ msgid "Polter Supervisor"
 #~ msgstr "Polter 总管"
 

@@ -501,6 +501,19 @@ Rust 里的具体后果：**任何 `RefCell` 借用都不能跨过 `OnLockGrante
 - **单实例互斥体名**（如果将来做单实例）
 - **注册表键**（如果将来写配置或做文件关联）
 
+**AppUserModelID 与它留下的注册表键（任务 1551 起）。** 宿主每次启动、在开出任何
+窗口之前，把 `Lugia.Polter` 设成进程的 AppUserModelID，并写
+`HKCU\Software\Classes\AppUserModelId\Lugia.Polter`（`DisplayName`、`IconUri`），
+通知才能以 toast 进通知中心（`windows/host/src/toast.rs`）。三件事随之而来：
+
+- **卸载就是删目录，而这个键会留下。** 只有一个名字和一张图片的路径，无害；
+  要清干净就手删 `HKCU\Software\Classes\AppUserModelId\Lugia.Polter`，
+  以及 `%LOCALAPPDATA%\polter\polter-toast.png`。
+- **升级后任务栏上可能出现新旧两个 Polter 图标**：之前固定的那个没有这个身份。
+  把旧的取消固定、重新固定新的即可。
+- **Polter 退出后，点通知中心里它的旧通知不会拉起它**（mac 会）。要做得建 COM
+  激活器，这次没做，记在 issue #70。
+
 ### 为什么现在就要定
 
 Windows 宿主是从一个几百行的原型长起来的。**原型里的名字会被复制到它长出的

@@ -513,7 +513,34 @@ pub fn pre_translate(msg: &MSG) -> bool {
             let _ = unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)) };
             true
         }
+        Some(shell::WindowKey::Save) => {
+            save_current();
+            true
+        }
         None => false,
+    }
+}
+
+/// Ctrl+S: what the section's own Save button does (task 1551). A section
+/// with nothing unsaved -- or with no Save button at all -- is told so in the
+/// log and nothing else happens; a failure is already on the page, as it is
+/// for the button.
+fn save_current() {
+    let section = ST.with(|c| c.borrow().section);
+    let done = match section {
+        Some(s) if !section_dirty(s) => "nothing unsaved",
+        Some(Section::Roles) => shell_save(&mut RolesSection),
+        Some(Section::Plugins) => shell_save(&mut PluginsSection),
+        Some(Section::Projects | Section::General) | None => "this section has no Save",
+    };
+    // process-wide: the one settings window
+    crate::plogf!("[settings] Ctrl+S on {section:?}: {done}");
+}
+
+fn shell_save(s: &mut dyn Unsaved) -> &'static str {
+    match s.save() {
+        Ok(()) => "saved",
+        Err(_) => "refused; the reason is on the page",
     }
 }
 
@@ -633,6 +660,17 @@ fn rect_path() -> Option<PathBuf> {
 
 fn load_saved() -> Option<shell::Saved> {
     shell::parse_saved(&std::fs::read_to_string(rect_path()?).ok()?)
+}
+
+/// Close the settings window as its own close button would -- asking about
+/// anything unsaved -- because the person asked to quit (task 1551). With
+/// the terminals already gone, its closing is what ends the process.
+pub fn close_for_quit() {
+    if is_open() {
+        // process-wide: the one settings window
+        crate::plogf!("[settings] quitting: closing the settings window too");
+        let _ = unsafe { PostMessageW(Some(win()), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+    }
 }
 
 /// Whether the settings window is open -- the one fact the process's "is

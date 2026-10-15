@@ -40,6 +40,9 @@ struct ControlRoomListView: View {
     /// Which cards are wholly on screen, each time that changes
     /// (`ControlRoomListLayout.inSight`).
     var onInSight: ([String]) -> Void = { _ in }
+    /// Return while the list has the keyboard: the selected group's
+    /// supervisor (task 1551).
+    var onEnter: () -> Void = {}
     /// Whether the chip is the system's glass while it slides, which bends
     /// what is under its edge. The table's to say; a still picture turns
     /// it off, because the system's glass cannot be drawn off screen.
@@ -66,12 +69,14 @@ struct ControlRoomListView: View {
     init(list: ControlRoomList, selection: Binding<String?>, onNewGroup: @escaping (String) -> String? = { _ in nil },
          onRetentionAgree: @escaping () -> Void = {},
          onInSight: @escaping ([String]) -> Void = { _ in },
+         onEnter: @escaping () -> Void = {},
          refraction: Bool = Look.Selection.refractionShown, still: Bool = false, midSlide: CGSize? = nil) {
         self.list = list
         self._selection = selection
         self.onNewGroup = onNewGroup
         self.onRetentionAgree = onRetentionAgree
         self.onInSight = onInSight
+        self.onEnter = onEnter
         self.refraction = refraction
         self.still = still
         self.away = midSlide ?? .zero
@@ -146,6 +151,13 @@ struct ControlRoomListView: View {
             case .down: select(ControlRoomList.move(selection, by: 1, in: list.rows))
             default: break
             }
+        }
+        // Only while the list itself has the keyboard: Return in the new
+        // group's name field is that field's.
+        .backport.onKeyPress(.return) { _ in
+            guard listHasKeyboard, selection != nil else { return .ignored }
+            onEnter()
+            return .handled
         }
         .onChange(of: selection) { _ in takeOff() }
     }

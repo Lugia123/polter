@@ -123,6 +123,11 @@ const ROWS: &[Row] = &[
     item(n_("Split Left"), "new_split:left"),
     item(n_("Split Down"), "new_split:down"),
     item(n_("Split Up"), "new_split:up"),
+    // macOS has it here, under the four splits (task 1551), and greys it
+    // in a tab of one pane -- see `greyed`. Sent at the clicked surface like
+    // every row, which is the one place "nearly always the focused pane" is
+    // not good enough: it closes something.
+    item(n_("Close Split"), "close_surface"),
     SEP,
     item(n_("Reset Terminal"), "reset"),
     item(n_("Terminal Inspector"), "inspector:toggle"),
@@ -432,6 +437,16 @@ fn build_scoped(
         .collect()
 }
 
+/// Whether a row is drawn greyed. **Only «Close Split», and only outside a
+/// split**: a tab of one pane is not split, and closing its pane closes the
+/// tab -- «Close Tab» is a few rows up and does that on purpose, so a row
+/// named after the split that quietly did the other thing would be worse
+/// than a greyed one. macOS greys it for the same reason
+/// (`SurfaceView_AppKit.swift`, `closeSplitIsOffered`).
+fn greyed(action: &str, in_split: bool) -> bool {
+    action == "close_surface" && !in_split
+}
+
 /// Show the menu at a screen position.
 ///
 /// **Runs on the thread that owns the window**, because `TrackPopupMenu` runs
@@ -445,6 +460,7 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
     // clicked, and this is the same question one window down.
     let surface = crate::tabs::surface_of(surface_hwnd);
     let mark = mark_of(surface);
+    let in_split = crate::tabs::surface_is_split(surface);
     let items = build_scoped(
         &|a| crate::keys::shortcut_for(a),
         &|t| tick_state(surface, mark, t),
@@ -496,6 +512,9 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
             let mut flags = MF_STRING;
             if it.checked {
                 flags |= MF_CHECKED;
+            }
+            if ROWS[it.index].action.is_some_and(|a| greyed(a, in_split)) {
+                flags |= MF_GRAYED;
             }
             let wide: Vec<u16> = it.text.encode_utf16().chain(Some(0)).collect();
             let _ = AppendMenuW(menu, flags, ID_BASE + it.index, PCWSTR(wide.as_ptr()));
@@ -728,6 +747,7 @@ mod tests {
             "new_split:left",
             "new_split:down",
             "new_split:up",
+            "close_surface",
             "reset",
             "inspector:toggle",
             "toggle_readonly",
@@ -739,6 +759,17 @@ mod tests {
             "poltergeist_toggle_authorise",
         ] {
             assert!(have.contains(&a), "the macOS menu has {a} and this one does not");
+        }
+    }
+
+    /// «Close Split» greys outside a split and nothing else ever does: a
+    /// greyed «Copy» would be a menu deciding for the core what it can do.
+    #[test]
+    fn only_close_split_greys_and_only_outside_a_split() {
+        assert!(greyed("close_surface", false));
+        assert!(!greyed("close_surface", true));
+        for r in ROWS.iter().filter_map(|r| r.action).filter(|a| *a != "close_surface") {
+            assert!(!greyed(r, false), "{r} greys");
         }
     }
 

@@ -167,6 +167,13 @@ KNOWN = {
     "src/build/bundle_id.zig":
         "the single definition of the bundle id both sides of the build read",
     "src/apprt/gtk/build/info.zig": "GTK application id, same identity as the bundle id",
+    # The Windows AppUserModelID (task 1551): the identity toasts are shown
+    # under, the Windows counterpart of the bundle id. Written once as a
+    # constant; the doc names the registry key it leaves, because a person
+    # removing Polter has to type that path.
+    "windows/control-room/src/toast.rs": "the Windows AppUserModelID, same identity as the bundle id",
+    "dev-docs/windows/development.md":
+        "the registry key the Windows AppUserModelID leaves, as a person deleting it types it",
     # The mac driving channel's documentation. Every hit is the bundle id, and
     # it is there as a value the reader has to type: the row to switch on is
     # found by it, and the `sqlite3 … where client='com.lugia.polter'` query

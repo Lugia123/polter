@@ -12,8 +12,15 @@
 //! that ID on it. Polter is a directory somebody unzipped; on a machine
 //! without that shortcut the toast API returns success and nothing appears,
 //! which is the worst of the three possible outcomes. `Shell_NotifyIconW` with
-//! `NIF_INFO` needs nothing installed, and on Windows 10 and 11 the shell
-//! renders it as a toast anyway -- the same panel, the same history.
+//! `NIF_INFO` needs nothing installed.
+//!
+//! ⚠️ **What it does not get is the notification centre.** This note used to
+//! say the shell renders a balloon "as a toast anyway -- the same panel, the
+//! same history". The machine says otherwise (task 1537,
+//! `verify-win-1537/shots/notify-02-not-in-action-center.jpg`): the balloon
+//! goes after about five seconds and is not in the history afterwards. macOS
+//! keeps its notifications there, which is why moving to the toast API is
+//! task 1551's.
 //!
 //! **What that costs, said plainly:** a notification area icon appears while
 //! Polter is running. It is added on the first notification rather than at
@@ -33,12 +40,14 @@ use std::sync::Mutex;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::{LoadIconMetric, LIM_SMALL};
+use windows::Win32::UI::Controls::{LoadIconMetric, LIM_LARGE, LIM_SMALL};
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_LARGE_ICON, NIIF_USER,
+    NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
+
+use polter_control_room::toast::{Launch, Route};
 
 use crate::{plogf, wlogf};
 
@@ -47,6 +56,11 @@ use crate::{plogf, wlogf};
 const WM_NOTIFY_SYNC: u32 = WM_APP + 12;
 /// The message the shell sends us about the icon.
 const WM_TRAY_CALLBACK: u32 = WM_APP + 13;
+/// A toast was clicked; what it carried is in `TOAST_CLICKS`. Its own
+/// number on this window.
+const WM_TOAST_CLICK: u32 = WM_APP + 24;
+/// The `launch` arguments of toasts clicked and not yet acted on.
+static TOAST_CLICKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// The icon's id within this window. Any value; it only has to be stable.
 const ICON_ID: u32 = 1;
 
@@ -65,6 +79,13 @@ static LAST_TERMINAL: AtomicU64 = AtomicU64::new(0);
 
 struct Pending {
     frame: isize,
+    /// The surface that raised it, as a key; 0 for a balloon none raised.
+    /// Read when it is shown: one whose terminal has the keyboard then is
+    /// not shown at all (`tabs::surface_has_keyboard`).
+    surface: usize,
+    /// The terminal's title, under the balloon's own title -- macOS's
+    /// `subtitle` (`SurfaceView_AppKit.swift`, `showUserNotification`).
+    subtitle: Option<String>,
     /// The terminal that raised it (`ghostty_surface_poltergeist_id`); 0
     /// for a balloon no terminal raised.
     terminal: u64,
@@ -113,6 +134,10 @@ pub fn on_notification(
 ) -> bool {
     let terminal = surface.map(|s| unsafe { (crate::api().surface_poltergeist_id)(s) }).unwrap_or(0);
     let group = group_of(terminal);
+    let subtitle = surface
+        .and_then(crate::tabs::pane_id_of_surface)
+        .and_then(crate::tabs::title_of_pane)
+        .filter(|t| !t.trim().is_empty());
     let title = title.unwrap_or_default();
     let body = body.unwrap_or_default();
     if title.trim().is_empty() && body.trim().is_empty() {
@@ -137,7 +162,15 @@ pub fn on_notification(
     // the ability to raise anything when clicked.
     let f = frame.map(|h| h.0 as isize).unwrap_or(0);
     match QUEUE.lock() {
-        Ok(mut q) => q.push(Pending { frame: f, terminal, title: title.clone(), body, group: group.clone() }),
+        Ok(mut q) => q.push(Pending {
+            frame: f,
+            surface: surface.map_or(0, |s| s as usize),
+            subtitle,
+            terminal,
+            title: title.clone(),
+            body,
+            group: group.clone(),
+        }),
         Err(_) => return false,
     }
     let posted =
@@ -237,7 +270,9 @@ pub fn on_control_room_alert(kind: i32, group: String, more: u32, who: String, t
         return false;
     }
     match QUEUE.lock() {
-        Ok(mut q) => q.push(Pending { frame: 0, terminal: 0, title, body, group: Some(group.clone()) }),
+        // No surface: whether the person is looking was the core's to decide
+        // before it sent this (`ControlNotify.zig`), as on macOS.
+        Ok(mut q) => q.push(Pending { frame: 0, surface: 0, subtitle: None, terminal: 0, title, body, group: Some(group.clone()) }),
         Err(_) => return false,
     }
     let posted = unsafe { PostMessageW(Some(HWND(hwnd)), WM_NOTIFY_SYNC, WPARAM(0), LPARAM(0)) }.is_ok();
@@ -246,8 +281,46 @@ pub fn on_control_room_alert(kind: i32, group: String, more: u32, who: String, t
     posted
 }
 
+/// What the balloon says under its title: the terminal's name, then the
+/// body. **Never empty**: a balloon with an empty `szInfo` is not shown at
+/// all, and a title with no body is a perfectly ordinary notification to
+/// send -- the title stands in for itself then.
+fn balloon_text(title: &str, subtitle: Option<&str>, body: &str) -> String {
+    let body = if body.trim().is_empty() { title } else { body };
+    match subtitle {
+        Some(s) if !s.trim().is_empty() => format!("{s}\n{body}"),
+        _ => body.to_string(),
+    }
+}
+
 fn show(p: Pending) {
     let hwnd = HWND(WORKER.load(Ordering::Acquire));
+    // **Not while the person is in that terminal** -- macOS asks the same
+    // of the window and the view (`Ghostty.App.swift`,
+    // `shouldPresentNotification`). Asked now, as it would be shown.
+    if p.surface != 0 && crate::tabs::surface_has_keyboard(p.surface) {
+        let frame = HWND(p.frame as *mut std::ffi::c_void);
+        wlogf!(frame, "[notify] not shown {:?}: its terminal has the keyboard", p.title);
+        return;
+    }
+    // **A toast first, into the notification centre as on macOS** (task
+    // 1551); the balloon below is the way back, and the log says why it
+    // was taken.
+    let launch = Launch { group: p.group.clone(), terminal: p.terminal, frame: p.frame };
+    match crate::toast::show(&p.title, p.subtitle.as_deref(), &p.body, &launch) {
+        Route::Toast => {
+            let frame = HWND(p.frame as *mut std::ffi::c_void);
+            if p.frame != 0 {
+                wlogf!(frame, "[notify] shown as a toast {:?}", p.title);
+            } else {
+                // process-wide: the notification named no window
+                plogf!("[notify] shown as a toast {:?} (no window)", p.title);
+            }
+            return;
+        }
+        // process-wide: why the process's notifier was not used
+        Route::Balloon(why) => plogf!("[notify] a balloon instead of a toast: {}", why.says()),
+    }
     if hwnd.0.is_null() || !ensure_icon(hwnd) {
         return;
     }
@@ -260,12 +333,19 @@ fn show(p: Pending) {
     let mut d = base(hwnd);
     d.uFlags = NIF_INFO;
     d.Anonymous.uTimeout = 10_000;
-    d.dwInfoFlags = NIIF_INFO;
+    // **Polter's icon in the balloon**, as macOS shows the app's: the
+    // system's blue "i" otherwise (task 1551). `NIIF_USER` takes
+    // `hBalloonIcon`; the stock one stays the fallback.
+    let hinst = unsafe { GetModuleHandleW(None) }.ok().map(HINSTANCE::from);
+    match unsafe { LoadIconMetric(hinst, PCWSTR(1 as _), LIM_LARGE) } {
+        Ok(icon) => {
+            d.hBalloonIcon = icon;
+            d.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON;
+        }
+        Err(_) => d.dwInfoFlags = NIIF_INFO,
+    }
     put(&mut d.szInfoTitle, &p.title);
-    // **The body must not be empty**: a balloon with an empty `szInfo` is not
-    // shown at all, and a title with no body is a perfectly ordinary
-    // notification to send. The title stands in for itself in that case.
-    put(&mut d.szInfo, if p.body.trim().is_empty() { &p.title } else { &p.body });
+    put(&mut d.szInfo, &balloon_text(&p.title, p.subtitle.as_deref(), &p.body));
 
     let ok = unsafe { Shell_NotifyIconW(NIM_MODIFY, &d) }.as_bool();
     let frame = HWND(p.frame as *mut std::ffi::c_void);
@@ -292,29 +372,23 @@ extern "system" fn worker_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         // The shell packs the event into the low word of `lParam`.
         WM_TRAY_CALLBACK => {
             if (lp.0 as u32 & 0xFFFF) == NIN_BALLOONUSERCLICK {
-                use polter_control_room::alert::{click_of, Click};
                 let group = LAST_GROUP.lock().ok().and_then(|g| g.clone());
                 let terminal = LAST_TERMINAL.load(Ordering::Acquire);
                 let f = LAST_FRAME.load(Ordering::Acquire);
-                match click_of(group.as_deref(), terminal, f) {
-                    // Anything with a group: to the control room, at it.
-                    Click::ControlRoom(group) => {
-                        crate::control_room::go_to(&group);
-                        // process-wide: the control room is one per process
-                        plogf!("[notify] balloon clicked; going to the control room at {group:?}");
-                    }
-                    // A terminal in no group: its tab and its pane.
-                    Click::Terminal(id) => {
-                        let key = polter_control_room::rules::key(id);
-                        if crate::tabs::go_to_terminal(&key) {
-                            // process-wide: keyed by a terminal's id, which is unique in the process
-                            plogf!("[notify] balloon clicked; went to terminal {key}");
-                        } else if f != 0 {
-                            raise(HWND(f as *mut std::ffi::c_void), "its terminal is gone; window raised");
-                        }
-                    }
-                    Click::Window(f) => raise(HWND(f as *mut std::ffi::c_void), "window raised"),
-                    Click::Nothing => {}
+                go(polter_control_room::alert::click_of(group.as_deref(), terminal, f), f, "balloon");
+            }
+            LRESULT(0)
+        }
+        // A toast's click, carried here from the system's thread: each toast
+        // says where it goes itself, so a click on an old one in the
+        // notification centre goes where *it* was about.
+        WM_TOAST_CLICK => {
+            let clicks: Vec<String> = TOAST_CLICKS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+            for args in clicks {
+                match Launch::decode(&args) {
+                    Some(l) => go(l.click(), l.frame, "toast"),
+                    // process-wide: a click on a toast this host did not write
+                    None => plogf!("[notify] toast clicked with arguments this host did not write: {args:?}"),
                 }
             }
             LRESULT(0)
@@ -327,6 +401,44 @@ extern "system" fn worker_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+    }
+}
+
+/// Where a click on a notification goes -- a balloon's or a toast's, by the
+/// one rule (`alert::click_of`, task 1538).
+fn go(click: polter_control_room::alert::Click, f: isize, via: &str) {
+    use polter_control_room::alert::Click;
+    match click {
+        // Anything with a group: to the control room, at it.
+        Click::ControlRoom(group) => {
+            crate::control_room::go_to(&group);
+            // process-wide: the control room is one per process
+            plogf!("[notify] {via} clicked; going to the control room at {group:?}");
+        }
+        // A terminal in no group: its tab and its pane.
+        Click::Terminal(id) => {
+            let key = polter_control_room::rules::key(id);
+            if crate::tabs::go_to_terminal(&key) {
+                // process-wide: keyed by a terminal's id, which is unique in the process
+                plogf!("[notify] {via} clicked; went to terminal {key}");
+            } else if f != 0 {
+                raise(HWND(f as *mut std::ffi::c_void), "its terminal is gone; window raised");
+            }
+        }
+        Click::Window(f) => raise(HWND(f as *mut std::ffi::c_void), "window raised"),
+        Click::Nothing => {}
+    }
+}
+
+/// A toast was clicked: what it carried, from whatever thread the system
+/// raised `Activated` on, to the worker's.
+pub fn on_toast_click(arguments: String) {
+    if let Ok(mut q) = TOAST_CLICKS.lock() {
+        q.push(arguments);
+    }
+    let hwnd = WORKER.load(Ordering::Acquire);
+    if !hwnd.is_null() {
+        let _ = unsafe { PostMessageW(Some(HWND(hwnd)), WM_TOAST_CLICK, WPARAM(0), LPARAM(0)) };
     }
 }
 
@@ -403,5 +515,17 @@ mod tests {
         let mut buf = [0xFFFFu16; 8];
         put(&mut buf, "");
         assert_eq!(buf[0], 0);
+    }
+
+    /// The terminal's name goes first, as macOS's subtitle sits between the
+    /// title and the body, and the text is never empty (task 1551).
+    #[test]
+    fn the_balloon_names_its_terminal_and_is_never_empty() {
+        assert_eq!(balloon_text("Done", Some("build"), "make finished"), "build\nmake finished");
+        assert_eq!(balloon_text("Done", None, "make finished"), "make finished");
+        assert_eq!(balloon_text("Done", Some("  "), "make finished"), "make finished");
+        // No body: the title stands in, under the name.
+        assert_eq!(balloon_text("Done", Some("build"), ""), "build\nDone");
+        assert_eq!(balloon_text("Done", None, " "), "Done");
     }
 }

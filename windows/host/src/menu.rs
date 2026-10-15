@@ -332,6 +332,13 @@ const FIND_ROWS: &[Row] = &[
     act_state(n_("Previous"), "navigate_search:previous", "needs an open search"),
     sep(),
     act_state(n_("Hide the Find Bar"), "end_search", "reports performed only if a search was open"),
+    sep(),
+    // macOS's last two Find rows (`MainMenu.xib`, `TDN-42-Bu7` and
+    // `1rN-4k-Dz3`), task 1551. Both are the core's and both decline with
+    // nothing selected: `search_selection` hands the selection to
+    // `start_search` as the needle, which opens this host's find bar on it.
+    act_state(n_("Use Selection for Find"), "search_selection", "needs a selection: Surface.zig returns false when there is none"),
+    act_state(n_("Jump to Selection"), "scroll_to_selection", "needs a selection: Surface.zig returns false when there is none"),
 ];
 
 const EDIT_ROWS: &[Row] = &[
@@ -372,6 +379,10 @@ const VIEW_ROWS: &[Row] = &[
     toggle(n_("Read-only"), "toggle_readonly", Flag::ReadOnly, Ready::Always),
     sep(),
     act(n_("Quick Terminal"), "toggle_quick_terminal"),
+    // Where macOS has it, under Quick Terminal (`MainMenu.xib`,
+    // `sHt-Sc-0R1`), task 1551. The core's action, so the row carries the
+    // global chord and arrives at `ACTION_SCREENSHOT` like the keybind does.
+    act(n_("Screenshot"), "screenshot"),
     sep(),
     // **Implemented (task 648).** This used to be greyed: the only inspector
     // renderer libghostty published was `ghostty_inspector_metal_*`, inside
@@ -580,6 +591,14 @@ const ROOT: &[Row] = &[
     // name. This row opens the one place they are all visible.
     act(n_("Keyboard Shortcuts…"), "__polter_keybinds"),
     act(n_("About Polter"), "__polter_about"),
+    sep(),
+    // macOS's application menu ends in it (`4sb-4s-VLi`), task 1551. A host
+    // row rather than the core's `quit`, because a row runs its core action
+    // on the terminal in front and with the control room in front there is
+    // none -- quitting must not depend on which tab is showing. It ends in
+    // the same place the core's `quit` does (`WM_ASK_QUIT`), and shows the
+    // core's chord: see `shortcut_source`.
+    act(n_("Quit Polter"), "__polter_quit"),
 ];
 
 /// The seven groups, for the log line and for the tests. Kept next to `ROOT`
@@ -626,6 +645,13 @@ fn run_host(frame: HWND, action: &str) -> bool {
             crate::settings_win::request(Route::to(Section::Roles, None), frame);
             true
         }
+        // Every window, after one question if anything is running -- on the
+        // window's thread, outside this menu's own handling, as the core's
+        // `quit` is (`WM_ASK_QUIT`).
+        "__polter_quit" => unsafe {
+            windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(frame), crate::WM_ASK_QUIT, WPARAM(0), LPARAM(0))
+                .is_ok()
+        },
         // The settings window, where it was last (settings.md §3.2).
         "__polter_settings" => {
             crate::settings_win::request(Route::none(), frame);
@@ -716,6 +742,7 @@ const HOST_ACTIONS: &[&str] = &[
     "__polter_take_out_of_project",
     "__polter_rename_project",
     "__polter_close_project",
+    "__polter_quit",
 ];
 
 // ------------------------------------------------------- the core's actions
@@ -919,6 +946,7 @@ fn asks_the_core(action: &str) -> bool {
 fn shortcut_source(action: &str) -> &str {
     match action {
         "__polter_settings" => "open_config",
+        "__polter_quit" => "quit",
         a => a,
     }
 }
@@ -1495,7 +1523,9 @@ pub fn show_root_menu(frame: HWND, button: RECT) {
 /// `binding_action` performs the action, so by the time it reaches these three
 /// the window is on its way out and nothing after them would be logged. They
 /// go last so that everything else is already on record.
-const ENDS_THE_SESSION: &[&str] = &["close_surface", "close_tab:this", "close_window"];
+/// `__polter_quit` is posted rather than performed, so it lands after the
+/// rest whatever its place -- it is here so the count says what it does.
+const ENDS_THE_SESSION: &[&str] = &["close_surface", "close_tab:this", "close_window", "__polter_quit"];
 
 /// Rows the self-test must not drive, because performing them is a claim
 /// about **who** did it.
@@ -1844,15 +1874,18 @@ mod tests {
     /// row, and that is the part worth pinning: the tail is where the
     /// app-level rows live, not a place things land by accident.
     #[test]
-    fn the_root_has_seven_groups_and_four_tail_items() {
+    fn the_root_has_seven_groups_and_five_tail_items() {
         let groups = ROOT.iter().filter(|r| r.sub.is_some()).count();
         assert_eq!(groups, GROUP_COUNT);
         let tail: Vec<_> = ROOT.iter().filter(|r| r.action.is_some()).collect();
-        assert_eq!(tail.len(), 4);
+        assert_eq!(tail.len(), 5);
         assert_eq!(tail[0].action, Some("__polter_settings"));
         // Directly under it, by task 561. If the language row moves back into
         // the Agents group, this is the line that says so.
         assert_eq!(tail[1].action, Some("__polter_language"));
+        // Last, as macOS's application menu ends in it (task 1551).
+        assert_eq!(tail[4].action, Some("__polter_quit"));
+        assert_eq!(shortcut_source("__polter_quit"), "quit");
     }
 
     /// Ids must not reach into `ctxmenu.rs`'s range, or into Windows'.
@@ -1972,6 +2005,8 @@ mod tests {
             "end_search",
             "navigate_search:next",
             "navigate_search:previous",
+            "scroll_to_selection",
+            "search_selection",
         ];
         needs_state.sort_unstable();
         assert_eq!(

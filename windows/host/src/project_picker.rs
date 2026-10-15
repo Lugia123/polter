@@ -207,6 +207,28 @@ pub fn open_add_to(frame: HWND, tab: TabId) {
     open(frame, frame, Purpose::AddTo { tab });
 }
 
+/// The saved projects as the picker would list them: name and file, for a
+/// tab menu's «Add to Project ▸» (task 1551).
+pub fn project_names(frame: HWND) -> Vec<(String, PathBuf)> {
+    read_items(frame).into_iter().map(|i| (i.name, i.path)).collect()
+}
+
+/// Put `tab` into the project at `path`, as picking that row in the picker
+/// does -- and said the same way when it cannot be.
+pub fn add_tab_to(frame: HWND, tab: TabId, name: &str, path: &std::path::Path) -> bool {
+    match crate::project_session::add_tab(path, tab) {
+        Ok(()) => {
+            wlogf!(frame, "[project] tab {:?} added to {:?}", tab, name);
+            true
+        }
+        Err(e) => {
+            wlogf!(frame, "[project] adding tab {:?} to {:?} failed: {}", tab, name, e);
+            tell(frame, polter_projects::page_rules::ADD_TO_PROJECT, &e, MB_ICONWARNING);
+            false
+        }
+    }
+}
+
 /// Which tabs of `frame` a save asked from `tab` takes besides it, or
 /// `None` for no save at all (`page_rules::save_as_rows`, the macOS sheet's
 /// rule): a tab that is a page of a project already cannot be saved into
@@ -638,14 +660,7 @@ fn load(item: Item) {
 /// Tab `tab` becomes one more page of the project picked.
 fn add(item: Item, tab: TabId) {
     let Some(h) = dismiss() else { return };
-    let frame = h.frame;
-    match crate::project_session::add_tab(&item.path, tab) {
-        Ok(()) => wlogf!(frame, "[project] tab {:?} added to {:?}", tab, item.name),
-        Err(e) => {
-            wlogf!(frame, "[project] adding tab {:?} to {:?} failed: {}", tab, item.name, e);
-            tell(frame, polter_projects::page_rules::ADD_TO_PROJECT, &e, MB_ICONWARNING);
-        }
-    }
+    add_tab_to(h.frame, tab, &item.name, &item.path);
 }
 
 /// Save `tab` under `typed` -- a new name, or a project's, which overwrites

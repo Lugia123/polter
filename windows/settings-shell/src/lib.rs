@@ -699,14 +699,27 @@ pub fn hidden_item(sentence: &str, name: &str) -> String {
 pub enum WindowKey {
     /// Ctrl+W: close, through the unsaved-changes question (§2.3).
     Close,
+    /// Ctrl+S: save the section on screen, as its Save button does -- macOS
+    /// gives its settings pages ⌘S (task 1551). Only the role library had
+    /// it here, and only while the keyboard was in one of its boxes.
+    Save,
 }
 
-/// `vk` going down with these modifiers held. **Only Ctrl+W**: Escape closes
-/// nothing (§2.3 -- long text and input methods use it), and the arrows,
-/// Tab, Return and every letter belong to whichever control has the keyboard.
+/// `vk` going down with these modifiers held. **Only Ctrl+W and Ctrl+S**:
+/// Escape closes nothing (§2.3 -- long text and input methods use it), and
+/// the arrows, Tab, Return and every other letter belong to whichever
+/// control has the keyboard. Neither with Shift or Alt: Ctrl+Alt is AltGr.
 pub fn window_key(vk: u32, ctrl: bool, shift: bool, alt: bool) -> Option<WindowKey> {
     const VK_W: u32 = 0x57;
-    (vk == VK_W && ctrl && !shift && !alt).then_some(WindowKey::Close)
+    const VK_S: u32 = 0x53;
+    if !ctrl || shift || alt {
+        return None;
+    }
+    match vk {
+        VK_W => Some(WindowKey::Close),
+        VK_S => Some(WindowKey::Save),
+        _ => None,
+    }
 }
 
 /// Whether a message is a key going down that `window_key` should be asked
@@ -935,6 +948,14 @@ mod tests {
     fn unknown_section_is_refused_not_opened_as_last() {
         assert_eq!(Route::parse("role"), None);
         assert_eq!(Route::parse("Roles"), None);
+    }
+
+    #[test]
+    fn ctrl_s_is_the_windows_own_save() {
+        assert_eq!(window_key(0x53, true, false, false), Some(WindowKey::Save));
+        assert_eq!(window_key(0x53, false, false, false), None);
+        assert_eq!(window_key(0x53, true, true, false), None);
+        assert_eq!(window_key(0x53, true, false, true), None);
     }
 
     #[test]
