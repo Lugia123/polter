@@ -2254,9 +2254,25 @@ fn authorizeReach(bus: *const Bus, id: Bus.Id, supervisor: bool) Error!void {
 /// `authorizeReach`. **All of them before any of them acts**: authorize
 /// runs before dispatch, so one refusal here means nothing moved.
 fn authorizeNamed(bus: *const Bus, req: Request, supervisor: bool) Error!void {
+    const Reach = struct {
+        bus: *const Bus,
+        supervisor: bool,
+        fn visit(self: @This(), id: Bus.Id) Error!void {
+            try authorizeReach(self.bus, id, self.supervisor);
+        }
+    };
+    try eachNamed(req, Reach{ .bus = bus, .supervisor = supervisor }, Reach.visit);
+}
+
+/// Every terminal a request names besides its target, handed to `visit` in
+/// the order the request names them. **One list for both questions** --
+/// whether each may be reached (`authorizeNamed`) and which one a refusal is
+/// about (`refusedTerminal`) -- so the sentence can never name a terminal
+/// other than the one that was refused.
+fn eachNamed(req: Request, ctx: anytype, comptime visit: fn (@TypeOf(ctx), Bus.Id) Error!void) Error!void {
     switch (req) {
         .terminal_layout => |p| {
-            if (p.into.terminal()) |id| try authorizeReach(bus, id, supervisor);
+            if (p.into.terminal()) |id| try visit(ctx, id);
 
             var buf: [arrange.scan_buffer_len]u8 = undefined;
             var fba: std.heap.FixedBufferAllocator = .init(&buf);
@@ -2267,14 +2283,30 @@ fn authorizeNamed(bus: *const Bus, req: Request, supervisor: bool) Error!void {
             // nested past `arrange.max_depth` or a `pane` that is not a
             // number -- and passing either would be passing terminals that
             // were never asked about.
-            while (it.next() catch return error.NotPermitted) |id| {
-                try authorizeReach(bus, id, supervisor);
-            }
+            while (it.next() catch return error.NotPermitted) |id| try visit(ctx, id);
         },
-        .terminal_tab_move => |p| if (p.window != 0) try authorizeReach(bus, p.window, supervisor),
-        .role_launch => |p| if (p.beside) |id| try authorizeReach(bus, id, supervisor),
+        .terminal_tab_move => |p| if (p.window != 0) try visit(ctx, p.window),
+        .role_launch => |p| if (p.beside) |id| try visit(ctx, id),
         else => {},
     }
+}
+
+/// The terminal a `Shielded` refusal is about: the target, or the first
+/// other terminal the request names that is shielded (task 1578). Null when
+/// none is -- which `authorize` returning `Shielded` should make impossible,
+/// and then the sentence goes out without a name rather than with a wrong one.
+fn shieldedTerminal(bus: *const Bus, req: Request) ?Bus.Id {
+    if (target(req)) |id| if (bus.isShielded(id)) return id;
+    const Find = struct {
+        bus: *const Bus,
+        found: *?Bus.Id,
+        fn visit(self: @This(), id: Bus.Id) Error!void {
+            if (self.found.* == null and self.bus.isShielded(id)) self.found.* = id;
+        }
+    };
+    var found: ?Bus.Id = null;
+    eachNamed(req, Find{ .bus = bus, .found = &found }, Find.visit) catch {};
+    return found;
 }
 
 /// Whether a plugin caller declared `method` in its manifest.
@@ -4885,6 +4917,15 @@ pub const TaskOwner = struct {
 /// Where a `terminal_layout` puts its shape. See `arrange.Into`.
 pub const LayoutInto = arrange.Into;
 
+/// A terminal somebody is at, as `Host.userPresent` answers (task 1578):
+/// which one, and whether it was a key or an input method composing there.
+/// The two get different sentences because only one of them clears by
+/// itself in ten seconds.
+pub const Present = struct {
+    id: Bus.Id,
+    composing: bool = false,
+};
+
 /// What a host is handed for a `terminal_layout`.
 pub const LayoutCall = struct {
     /// A pane of the tab to lay out; zero when `into` says where instead.
@@ -5820,7 +5861,7 @@ pub const Host = struct {
         /// nothing -- the call that follows says that. `except` is never
         /// answered: the caller's own terminal, which the person has
         /// usually just typed to.
-        userPresent: *const fn (ctx: *anyopaque, id: Bus.Id, whole_tab: bool, except: Bus.Id) ?Bus.Id,
+        userPresent: *const fn (ctx: *anyopaque, id: Bus.Id, whole_tab: bool, except: Bus.Id) ?Present,
 
         /// Change a task's title, its kind, or both. `null` leaves one alone.
         taskEdit: *const fn (
@@ -6256,7 +6297,7 @@ pub const Host = struct {
         return self.vtable.tabMove(self.ctx, alloc, id, index, window);
     }
 
-    fn userPresent(self: Host, id: Bus.Id, whole_tab: bool, except: Bus.Id) ?Bus.Id {
+    fn userPresent(self: Host, id: Bus.Id, whole_tab: bool, except: Bus.Id) ?Present {
         return self.vtable.userPresent(self.ctx, id, whole_tab, except);
     }
 
@@ -6606,7 +6647,16 @@ fn dispatchOne(
     req: Request,
 ) std.mem.Allocator.Error!wire.Response {
     arrived(bus, host, who, req);
-    authorize(bus, who, req) catch |err| return failure(err);
+    authorize(bus, who, req) catch |err| {
+        // **Which terminal**, when a call names more than one (task 1578):
+        // a layout that names six and is refused for one of them was a
+        // sentence the caller could not act on.
+        if (err == error.Shielded) if (shieldedTerminal(bus, req)) |id| return .{ .failed = .{
+            .code = @errorName(err),
+            .message = try std.fmt.allocPrint(alloc, "0x{x}: {s}", .{ id, errorMessage(err) }),
+        } };
+        return failure(err);
+    };
 
     // Everything below this line that names a terminal has already been
     // refused for a plugin: `callableByPlugin` is exhaustive over `Method`
@@ -7337,10 +7387,7 @@ fn dispatchOne(
             // them as surely as one that moves.
             const keyed = layoutKeyed(host, caller, p) catch
                 return hostFailure("Refused", "the layout's `pane` cells could not be read");
-            if (keyed) |id| return hostFailure(
-                "UserPresent",
-                try std.fmt.allocPrint(alloc, "0x{x}: " ++ moved_while_keyed, .{id}),
-            );
+            if (keyed) |at| return hostFailure("UserPresent", try presentSays(alloc, at));
 
             const answer = host.layout(alloc, .{
                 .id = p.id,
@@ -7391,10 +7438,7 @@ fn dispatchOne(
         .terminal_tab_move => |p| {
             // Every terminal in the tab is resized by a move to another
             // window, and its strip is redrawn under it in this one.
-            if (host.userPresent(p.id, true, caller)) |id| return hostFailure(
-                "UserPresent",
-                try std.fmt.allocPrint(alloc, "0x{x}: " ++ moved_while_keyed, .{id}),
-            );
+            if (host.userPresent(p.id, true, caller)) |at| return hostFailure("UserPresent", try presentSays(alloc, at));
 
             const answer = host.tabMove(alloc, p.id, p.index, p.window) catch |err| return switch (err) {
                 error.NoSuchTerminal,
@@ -8841,6 +8885,24 @@ const moved_while_keyed =
     "and nothing more -- not who sent it, and not that anyone is there. " ++
     "**It clears on its own.** Try again in a moment.";
 
+/// The other half (task 1578): an input method is composing in that
+/// terminal. **Not "clears on its own" in ten seconds** -- it clears when the
+/// composition is committed or cancelled, or after
+/// `Surface.composition_stale_ms` with no change to it.
+const moved_while_composing =
+    "an input method is composing in that terminal -- text is in its candidate " ++
+    "box and has not reached the terminal yet -- so nothing was moved. This " ++
+    "clears when the composition is committed or cancelled (or after five " ++
+    "minutes with no change to it); try again after that.";
+
+/// The refusal sentence for a terminal somebody is at, naming it.
+fn presentSays(alloc: std.mem.Allocator, who: Present) ![]const u8 {
+    return std.fmt.allocPrint(alloc, "0x{x}: {s}", .{
+        who.id,
+        if (who.composing) moved_while_composing else moved_while_keyed,
+    });
+}
+
 /// The first terminal a layout names, or the pane it names as its tab, that
 /// a key reached within the quiet window -- null when there is none.
 ///
@@ -8852,15 +8914,15 @@ fn layoutKeyed(
     host: Host,
     caller: Bus.Id,
     p: @FieldType(Request, "terminal_layout"),
-) error{BadLayout}!?Bus.Id {
+) error{BadLayout}!?Present {
     const ask = struct {
-        fn one(h: Host, c: Bus.Id, id: Bus.Id) ?Bus.Id {
+        fn one(h: Host, c: Bus.Id, id: Bus.Id) ?Present {
             if (id == 0 or c == id) return null;
             return h.userPresent(id, false, c);
         }
     };
-    if (ask.one(host, caller, p.id)) |id| return id;
-    if (p.into.terminal()) |t| if (ask.one(host, caller, t)) |id| return id;
+    if (ask.one(host, caller, p.id)) |who| return who;
+    if (p.into.terminal()) |t| if (ask.one(host, caller, t)) |who| return who;
 
     var buf: [arrange.scan_buffer_len]u8 = undefined;
     var fba: std.heap.FixedBufferAllocator = .init(&buf);
@@ -8869,7 +8931,7 @@ fn layoutKeyed(
     // `authorize` read this same text through the same walk and let it
     // through, so a failure here is not expected; it is a refusal anyway.
     while (it.next() catch return error.BadLayout) |pane| {
-        if (ask.one(host, caller, pane)) |id| return id;
+        if (ask.one(host, caller, pane)) |who| return who;
     }
     return null;
 }
@@ -9316,6 +9378,8 @@ const FakeHost = struct {
     tab_moved: ?struct { id: Bus.Id, index: u32, window: Bus.Id } = null,
     /// The terminals a key reached a moment ago, for `userPresent`.
     keyed_terminals: []const Bus.Id = &.{},
+    /// The terminals an input method is composing in, for `userPresent`.
+    composing_terminals: []const Bus.Id = &.{},
 
     /// What `groupProject` was last asked, and what it refuses with.
     project_said: ?struct { id: Bus.Id, group: []const u8, use: bool } = null,
@@ -9777,11 +9841,12 @@ const FakeHost = struct {
         return .{ .applied = true, .text = try alloc.dupe(u8, "{\"tab_index\":0}") };
     }
 
-    fn userPresent(ctx: *anyopaque, id: Bus.Id, whole_tab: bool, except: Bus.Id) ?Bus.Id {
+    fn userPresent(ctx: *anyopaque, id: Bus.Id, whole_tab: bool, except: Bus.Id) ?Present {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         _ = whole_tab;
         if (id == except) return null;
-        for (self.keyed_terminals) |k| if (k == id) return id;
+        for (self.keyed_terminals) |k| if (k == id) return .{ .id = id };
+        for (self.composing_terminals) |k| if (k == id) return .{ .id = id, .composing = true };
         return null;
     }
 
@@ -15953,6 +16018,30 @@ test "tidying: a shielded pane named in a layout is refused, not just a shielded
     } });
 }
 
+test "tidying: a Shielded refusal names the terminal it is about" {
+    // Task 1578: the layout below names two terminals and only the second
+    // is shielded; the sentence has to say which.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.register(other);
+    try b.setShielded(other, true, .user);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .terminal_layout = .{
+        .id = worker,
+        .layout = "{\"split\":\"h\",\"left\":{\"pane\":\"0x2222\"},\"right\":{\"pane\":\"0x3333\"}}",
+    } });
+    try testing.expectEqualStrings("Shielded", res.failed.code);
+    try testing.expect(std.mem.startsWith(u8, res.failed.message, "0x3333: "));
+
+    // The target itself, on any tool that names one.
+    const read = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .terminal_read = .{ .id = other } });
+    try testing.expectEqualStrings("Shielded", read.failed.code);
+    try testing.expect(std.mem.startsWith(u8, read.failed.message, "0x3333: "));
+}
+
 test "tidying: every other terminal a move names is asked about too" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -16022,6 +16111,23 @@ test "tidying: a key at any terminal a layout names refuses all of it" {
     } });
     try testing.expect(ok == .text);
     try testing.expectEqual(@as(usize, 1), own.layout_calls);
+}
+
+test "tidying: an input method composing counts as somebody there, and says so" {
+    // Task 1578: pinyin in the candidate box never reaches the terminal as a
+    // key, and the pane was moved out from under the person typing it.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .composing_terminals = &.{other} };
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .terminal_layout = .{
+        .layout = "{\"pane\":\"0x3333\"}",
+        .into = .new_window,
+    } });
+    try testing.expectEqualStrings("UserPresent", res.failed.code);
+    try testing.expect(std.mem.startsWith(u8, res.failed.message, "0x3333: an input method is composing"));
+    try testing.expectEqual(@as(usize, 0), fake.layout_calls);
 }
 
 test "tidying: the host is handed where the shape goes" {

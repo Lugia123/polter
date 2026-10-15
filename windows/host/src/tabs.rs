@@ -3023,7 +3023,9 @@ fn apply_layout(
         }
     }
     if named_panes.len() != current.len() {
-        return Err("the layout names a terminal twice".into());
+        // Which one, as "leaves out" says which (task 1578).
+        let twice_key = named.iter().enumerate().find(|(i, k)| named[..*i].contains(k)).map(|(_, k)| *k).unwrap_or(0);
+        return Err(twice(twice_key));
     }
 
     // Ids first, then the tree, then the windows -- so the rectangles the
@@ -3119,6 +3121,13 @@ fn apply_layout(
     Ok(reply.to_string())
 }
 
+/// The refusal for a layout that names one terminal in two cells, naming it
+/// (task 1578) -- by its surface handle, which the core turns into the
+/// terminal id the caller wrote.
+fn twice(key: usize) -> String {
+    format!("the layout names terminal 0x{key:x} twice. Each terminal goes in one cell.")
+}
+
 /// Where one terminal a tool layout names is now (task 1571).
 #[derive(Clone, Copy)]
 struct Found {
@@ -3179,7 +3188,7 @@ fn arrange_layout(
                     ));
                 };
                 if found.iter().any(|g| g.pane == f.pane) {
-                    return Err("the layout names a terminal twice".into());
+                    return Err(twice(*key));
                 }
                 // ⚠️ **Asked of every terminal named, the destination's own
                 // included**: the person is looking at it in the control room.

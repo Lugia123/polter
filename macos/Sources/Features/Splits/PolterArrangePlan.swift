@@ -71,7 +71,10 @@ enum PolterArrangePlan {
                         "a new one with {\"new\": …}."))
             }
             guard byHandle[handle] == nil else {
-                return .failure(.init(code: "Refused", message: "the layout names a terminal twice"))
+                return .failure(.init(
+                    code: "Refused",
+                    message: "the layout names terminal \(handleOf(placed.view)) twice. Each terminal " +
+                        "goes in one cell; a stack holds several, each once."))
             }
             byHandle[handle] = placed.view
 

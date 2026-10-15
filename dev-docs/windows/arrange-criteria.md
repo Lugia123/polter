@@ -35,6 +35,18 @@
 | ⑩ | 打开总控台，点一个群，让它的总管终端「借给」总控台，然后对这个总管终端调 layout 或 tab_move | 回 `Lent`，什么都没动 |
 | ⑪ | 一个 layout 写了某个终端两次，或者漏写目标标签里原有的某一格 | 回 `Refused`，原因写清楚是哪一格；什么都没动，也没有多出空窗口 |
 
+## 任务 1578 补的格子（#1577 真机测出的两点）
+
+| # | 调用 | 应当看到 |
+|---|---|---|
+| ⑫ | 同 ⑨，被屏蔽的 cntA 只出现在某个格子里 | 回 `Shielded`，**消息以 cntA 的 id 开头**（`0x…: the user has put…`）；`terminal_read` 一个被屏蔽的终端也同样以它的 id 开头 |
+| ⑬ | layout 里把 cntA 写两次 | 回 `Refused`，消息是 `the layout names terminal 0x… twice`，里面的 id 就是 cntA 在 terminal_list 里的 id |
+| ⑭ | 在 cntA 里切到中文输入法打 `nihao`，**候选框开着先不选字**，然后调一个会移动 cntA 的 layout | 回 `UserPresent`，消息是 `0x…: an input method is composing in that terminal…`，什么都没动 |
+| ⑮ | 同 ⑭，但候选框一直开着、不碰键盘等 15 秒再调 | 照样拒绝。组字框开着时，超过 10 秒也算在场 |
+| ⑯ | ⑭ 之后选字上屏（或按 Esc 取消），等 11 秒再调 | 成功。这一格是 ⑭ 的对照 |
+
+另有一条保险，真机上不用专门造：组字框开着、但 5 分钟（`Surface.composition_stale_ms`）都没有任何组字更新时，就不再算在场，日志会写 `a composition has been open in this terminal for over 300s with no update`。
+
 ## 要特别留意的
 
 - **③ 和 ⑪ 不能留下空窗口。** 新窗口要等所有检查都过了才会创建；一旦被拒，它必须被关掉。
