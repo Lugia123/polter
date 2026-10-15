@@ -480,16 +480,11 @@ mod tests {
     /// anywhere fails. This reads the catalogue's template.
     #[test]
     fn every_word_shown_is_a_msgid_in_the_cores_catalogue() {
-        // The template is named after the bundle id; found by its extension
-        // so the name is not written here.
-        let po = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../po");
-        let pot = std::fs::read_dir(&po)
-            .unwrap_or_else(|e| panic!("cannot list {}: {e}", po.display()))
-            .filter_map(|d| d.ok().map(|d| d.path()))
-            .find(|p| p.extension().is_some_and(|x| x == "pot"))
-            .unwrap_or_else(|| panic!("no .pot in {}", po.display()));
-        let catalogue =
-            std::fs::read_to_string(&pot).unwrap_or_else(|e| panic!("cannot read {}: {e}", pot.display()));
+        // The template is named after the bundle id; `build.rs` finds it by
+        // its extension so the name is not written here, and it is embedded
+        // so the test binary needs no source tree beside it.
+        let pot = env!("POLTER_CORE_POT");
+        let catalogue = include_str!(env!("POLTER_CORE_POT"));
         // **Read as gettext writes it, not as one line a msgid.** The
         // template is rewritten by `zig build update-translations`, which
         // folds a long msgid over several lines (`msgid ""` and then one
@@ -512,11 +507,11 @@ mod tests {
                 open = false;
             }
         }
-        assert!(msgids.len() >= 500, "only {} msgids were read from {}", msgids.len(), pot.display());
+        assert!(msgids.len() >= 500, "only {} msgids were read from {}", msgids.len(), pot);
         let all = words();
         assert!(all.len() >= 35, "only {} words were collected", all.len());
         for word in all {
-            assert!(msgids.iter().any(|m| m == word), "{word:?} is not a msgid in {}", pot.display());
+            assert!(msgids.iter().any(|m| m == word), "{word:?} is not a msgid in {}", pot);
         }
     }
 
