@@ -1068,6 +1068,58 @@ msgstr "重新加载配置"
 msgid "Reload the config file."
 msgstr "重新加载配置文件。"
 
+#: windows/host/src/menu.rs:546
+msgid "Stack"
+msgstr "层叠"
+
+#: windows/host/src/menu.rs:146
+msgid "New Terminal in This Pane"
+msgstr "在这一格里新开终端"
+
+#: windows/host/src/menu.rs:147
+msgid "Next Stacked Terminal"
+msgstr "这一叠的下一个"
+
+#: windows/host/src/menu.rs:148
+msgid "Previous Stacked Terminal"
+msgstr "这一叠的上一个"
+
+#: windows/host/src/menu.rs:149
+msgid "Move Terminal Out of Stack"
+msgstr "从这一叠里拿出来"
+
+#: windows/host/src/menu.rs:150
+msgid "Stack onto Next Pane"
+msgstr "叠到下一格"
+
+#: windows/host/src/menu.rs:151
+msgid "Stack onto Previous Pane"
+msgstr "叠到上一格"
+
+#: src/input/command.zig:546
+msgid "Stack: New Terminal in This Pane"
+msgstr "层叠：在这一格里新开终端"
+
+#: src/input/command.zig:551
+msgid "Stack: Next Terminal"
+msgstr "层叠：下一个终端"
+
+#: src/input/command.zig:556
+msgid "Stack: Previous Terminal"
+msgstr "层叠：上一个终端"
+
+#: src/input/command.zig:561
+msgid "Stack: Move Terminal Out"
+msgstr "层叠：把终端拿出来"
+
+#: src/input/command.zig:566
+msgid "Stack: Onto the Next Pane"
+msgstr "层叠：叠到下一格"
+
+#: src/input/command.zig:571
+msgid "Stack: Onto the Previous Pane"
+msgstr "层叠：叠到上一格"
+
 #: src/input/command.zig:667
 msgid "Close Terminal"
 msgstr "关闭终端"

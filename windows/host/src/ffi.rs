@@ -1600,6 +1600,11 @@ pub struct Api {
     pub surface_set_size: unsafe extern "C" fn(Surface, u32, u32),
     pub surface_set_content_scale: unsafe extern "C" fn(Surface, f64, f64),
     pub surface_set_focus: unsafe extern "C" fn(Surface, bool),
+    /// `ghostty_surface_set_occlusion(surface, visible)`: whether the
+    /// terminal can be seen. Bound for one caller (task 1583): a terminal
+    /// stacked behind another is told it cannot, and told again when it
+    /// comes to the front -- macOS's `TerminalPresence.ownTabReports`.
+    pub surface_set_occlusion: unsafe extern "C" fn(Surface, bool),
     pub surface_free: unsafe extern "C" fn(Surface),
     /// `ghostty_surface_capture_scrollback(surface, path)`: queue a write of
     /// this pane's scrollback snapshot to `path` (absolute, UTF-8; the core

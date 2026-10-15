@@ -391,11 +391,20 @@ impl Tree {
     ///
     /// Refused when the two are the same pane or either is not here; the
     /// tree is not changed then.
+    ///
+    /// Either may be stacked behind another (task 1583): `pane` leaves its
+    /// stack -- the next tab takes its place if it was shown -- and `onto`
+    /// names its place, whichever of the place's terminals it is.
     pub fn moving(&self, pane: PaneId, onto: PaneId, dir: NewSplit) -> Result<Tree, crate::Error> {
-        if pane == onto || !self.contains(pane) || !self.contains(onto) {
+        let Some(place) = self.shown_for(onto) else { return Err(crate::Error::PaneNotFound) };
+        if pane == place || !self.contains(pane) {
             return Err(crate::Error::PaneNotFound);
         }
-        self.remove(pane).insert(pane, onto, dir)
+        let without = self.remove(pane);
+        // Taking `pane` out may have put another of its stack in front of
+        // the place it was dropped on.
+        let place = without.shown_for(onto).ok_or(crate::Error::PaneNotFound)?;
+        without.insert(pane, place, dir)
     }
 }
 

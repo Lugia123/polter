@@ -1881,6 +1881,17 @@ unsafe fn text_width(dc: HDC, font: HFONT, text: &str) -> i32 {
     }
 }
 
+/// How wide each of `words` is in points, in the font its style names at
+/// `scale`: what a stack's strip measures its tabs by (task 1583,
+/// `pane_frames`), with the fonts the scene painter draws them in.
+pub(crate) unsafe fn measure_words(dc: HDC, scale: f64, words: &[(&str, Style)]) -> Vec<f64> {
+    let mut fonts = Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() };
+    words
+        .iter()
+        .map(|(text, style)| unsafe { text_width(dc, fonts.get(style), text) } as f64 / scale.max(0.1))
+        .collect()
+}
+
 unsafe fn part_width(dc: HDC, at: Px, part: &Part, fonts: &mut Fonts) -> i32 {
     match &part.piece {
         Piece::Words { text, style } => unsafe { text_width(dc, fonts.get(style), text) },

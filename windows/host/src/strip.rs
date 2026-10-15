@@ -1050,6 +1050,16 @@ pub fn capture_lost(frame: HWND) {
 
 /// Wheel over the strip scrolls it, when there is anything to scroll.
 pub fn on_wheel(frame: HWND, delta: i16) {
+    // Over a stack's strip the wheel scrolls its tabs, not the window's
+    // (task 1583).
+    let mut at = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut at);
+        let _ = ScreenToClient(frame, &mut at);
+    }
+    if crate::pane_frames::on_wheel(frame, at.x, at.y, 0, delta as i32) {
+        return;
+    }
     // One notch moves about a tab and a half: enough to feel responsive,
     // little enough to stop where you meant to.
     let step = (TAB_MIN_W as f64 * tabs::scale_of(frame) * 1.5) as i32;
@@ -2079,7 +2089,12 @@ fn ordinal(frame: HWND, id: TabId) -> String {
 /// `pane`: opened on that pane's title (task 1583). The menu then starts
 /// with the pane's own «Close Terminal», a separator, and the tab's rows
 /// below -- the macOS host's order (task 1582).
-fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<PaneId>) {
+///
+/// `stack`: opened on a stack's tab -- its members in tab order and which
+/// one -- and then «Close Others», «Close to the Right» and «Close to the
+/// Left» follow «Close Terminal», greyed where there is none to close.
+fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<PaneId>, stack: Option<(Vec<PaneId>, usize)>) {
+    use polter_control_room::panestack::{closing, Closing};
     let mark = tabs::tab_mark(frame, target.id);
     let (role, shielded) = (mark.role, mark.shielded);
     let colour = tabs::tab_color(frame, target.id);
@@ -2113,8 +2128,18 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
             let mut wide: Vec<u16> = tr(CLOSE_TERMINAL).encode_utf16().collect();
             wide.push(0);
             let _ = AppendMenuW(menu, MF_STRING, PANE_CLOSE_ID, PCWSTR(wide.as_ptr()));
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             items += 1;
+            if let Some((members, at)) = &stack {
+                for (k, which) in Closing::ALL.iter().enumerate() {
+                    let none = closing(*which, *at, members.len()).is_empty();
+                    let mut wide: Vec<u16> = tr(which.label()).encode_utf16().collect();
+                    wide.push(0);
+                    let flags = if none { MF_STRING | MF_GRAYED } else { MF_STRING };
+                    let _ = AppendMenuW(menu, flags, PANE_CLOSE_ID + 1 + k, PCWSTR(wide.as_ptr()));
+                    items += 1;
+                }
+            }
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         }
         // The control room's tab gets the rows that act on a tab and
         // nothing else: no separators, no colour.
@@ -2259,6 +2284,17 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
 
     if chosen == 0 {
         wlogf!(frame, "[tabmenu] dismissed without a choice");
+        return;
+    }
+    if (PANE_CLOSE_ID + 1..PANE_CLOSE_ID + 1 + Closing::ALL.len()).contains(&chosen) {
+        let which = Closing::ALL[chosen - PANE_CLOSE_ID - 1];
+        let Some((members, at)) = &stack else {
+            wlogf!(frame, "[tabmenu] {:?} chosen on a menu that named no stack; nothing", which);
+            return;
+        };
+        let going: Vec<PaneId> = closing(which, *at, members.len()).into_iter().filter_map(|i| members.get(i).copied()).collect();
+        let ok = tabs::close_members_asking(frame, &going);
+        wlogf!(frame, "[tabmenu] {:?} on stack tab {} -> {:?} closed={}", which, at, going, ok as u8);
         return;
     }
     if chosen == PANE_CLOSE_ID {
@@ -2547,6 +2583,34 @@ fn run_strip_host_action(frame: HWND, name: &str) -> bool {
 /// A right button released over the strip's **client** part: the tabs, their
 /// close crosses, the `+`, the chevron, the `≡`.
 pub fn on_right_click(frame: HWND, x: i32, y: i32) {
+    // **A stack's tab: its terminal's menu** (task 1583). One behind is
+    // brought to the front first and takes the keyboard -- the rows that
+    // act on "this terminal" act on the focused one, and a terminal behind
+    // cannot have focus (macOS does the same).
+    if let Some((place, members, hit)) = crate::pane_frames::strip_at(frame, x, y) {
+        use polter_control_room::panestack::Hit;
+        let (Hit::Tab(i) | Hit::Close(i)) = hit else {
+            wlogf!(frame, "[stack] right-click on place {}'s strip off its tabs: nothing", place);
+            return;
+        };
+        let Some(member) = members.get(i).copied() else { return };
+        tabs::show_member(frame, member);
+        if let Some(h) = tabs::pane_hwnd(frame, member) {
+            tabs::focus_pane_at(h);
+        }
+        let target = tabs::window(frame).and_then(|w| {
+            let index = w.tabs.iter().position(|t| t.panes().iter().any(|p| p.id == member))?;
+            Some(MenuTarget { index, id: w.tabs[index].id, n: w.tabs.len() })
+        });
+        match target {
+            Some(target) => {
+                wlogf!(frame, "[stack] right-click on tab {} of place {} (pane {}): the menu of tab {}", i, place, member, target.index + 1);
+                show_tab_menu(frame, target, x, y, Some(member), Some((members, i)));
+            }
+            None => wlogf!(frame, "[stack] right-click on pane {}'s tab: no tab holds it", member),
+        }
+        return;
+    }
     // **A pane's title: the tab menu, for that pane** (task 1583). The
     // pane takes the keyboard first -- the one thing the right-click
     // changes -- so the rows that act on the tab's terminal act on this
@@ -2567,14 +2631,14 @@ pub fn on_right_click(frame: HWND, x: i32, y: i32) {
         match target {
             Some(target) => {
                 wlogf!(frame, "[panes] right-click on pane {}'s title: the menu of tab {}", pane, target.index + 1);
-                show_tab_menu(frame, target, x, y, Some(pane));
+                show_tab_menu(frame, target, x, y, Some(pane), None);
             }
             None => wlogf!(frame, "[panes] right-click on pane {}'s title: no tab holds it", pane),
         }
         return;
     }
     if let Some(target) = tab_menu_target(frame, x, y) {
-        show_tab_menu(frame, target, x, y, None);
+        show_tab_menu(frame, target, x, y, None, None);
         return;
     }
     let g = slots(frame);

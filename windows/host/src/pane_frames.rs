@@ -25,14 +25,16 @@
 //! **Main thread only**: the snapshot is a `thread_local` there
 //! (`control_room_source`), and so is every window call.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
 use polter_control_room::look;
-use polter_control_room::pane::{self, Drawn, Place, Px};
+use polter_control_room::pane::{self, Drawn, Place, Px, Title};
+use polter_control_room::panestack::{self, Geometry, Hit};
+use polter_control_room::snapshot::BarShown;
 use polter_control_room::rules;
 use polter_split_tree::{PaneId, Rect as TreeRect};
 
@@ -46,6 +48,51 @@ thread_local! {
     /// is on the close cross. None when it is over no title. What shows the
     /// cross on a pane without the keyboard, and lights it.
     static HOVER: Cell<Option<(isize, PaneId, bool)>> = const { Cell::new(None) };
+    /// What the pointer is over on a stack's strip: the window, the place
+    /// (its shown pane), and what it is (task 1583).
+    static STRIP_HOVER: Cell<Option<(isize, PaneId, Hit)>> = const { Cell::new(None) };
+    /// Every strip as it was last painted, for what a point on it is
+    /// without measuring words again: the window, the frame's rectangle in
+    /// its pixels, the members in the order of their tabs, the scale, and
+    /// where it all was.
+    static STRIPS: RefCell<Vec<Strip>> = const { RefCell::new(Vec::new()) };
+    /// How far each stack's tabs are scrolled, by window and by the stack's
+    /// first-made member -- which stays while the place shows another.
+    /// With the three things that, changing, bring the tab in front back
+    /// into view: which it is, how many there are, how wide the strip is.
+    static OFFSETS: RefCell<Vec<((isize, PaneId), f64, (usize, usize, i32))>> = const { RefCell::new(Vec::new()) };
+}
+
+/// One strip as it was last painted.
+#[derive(Clone)]
+pub struct Strip {
+    frame: isize,
+    /// The place: the pane its frame shows.
+    place: PaneId,
+    rect: Px,
+    members: Vec<PaneId>,
+    scale: f64,
+    geometry: Geometry,
+}
+
+/// The terminals of a place that holds a stack, as the last layout left it.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Stacked {
+    /// In the order of the tabs.
+    pub members: Vec<PaneId>,
+    /// Which of them is in front.
+    pub current: usize,
+    /// Each one's terminal, as the snapshot spells one.
+    pub keys: Vec<Option<String>>,
+    /// What each one's own pane calls it.
+    pub names: Vec<String>,
+}
+
+impl Stacked {
+    /// The key a stack's scroll is kept under: its first-made member.
+    fn id(&self) -> PaneId {
+        self.members.iter().copied().min().unwrap_or(0)
+    }
 }
 
 /// One pane showing in the tab in front, as the last layout left it.
@@ -63,6 +110,9 @@ pub struct One {
     /// Where its frame is, in the frame window's pixels. The cell the tree
     /// gave it when nothing in the tab is framed.
     pub rect: Px,
+    /// The terminals stacked in this place, when there is more than one:
+    /// its title is then a strip of tabs (task 1583).
+    pub stack: Option<Stacked>,
 }
 
 /// What a window's content area holds besides its panes.
@@ -124,21 +174,35 @@ impl Asked {
         self.keys.iter().find(|(id, _)| *id == pane).map(|(_, k)| k.as_str())
     }
 
+    /// The terminals of a place, with their keys, from what the layout
+    /// knows: `members` in tab order with each one's own name, `shown` the
+    /// one in front.
+    pub fn stacked(&self, members: Vec<(PaneId, String)>, shown: PaneId) -> Stacked {
+        let current = members.iter().position(|(id, _)| *id == shown).unwrap_or(0);
+        Stacked {
+            keys: members.iter().map(|(id, _)| self.key(*id).map(str::to_string)).collect(),
+            names: members.iter().map(|(_, n)| n.clone()).collect(),
+            members: members.into_iter().map(|(id, _)| id).collect(),
+            current,
+        }
+    }
+
     /// The frames of a tab whose showing panes are `visible` -- each with
-    /// the rectangle the tree gave it and the name its pane has -- and, for
-    /// each pane, where its window goes. Called by `tabs::layout` with the
-    /// window's state locked; it touches no window.
-    pub fn work_out(&self, visible: &[(PaneId, TreeRect, String)], bounds: TreeRect, scale: f64) -> (Frames, Vec<(PaneId, TreeRect)>) {
+    /// the rectangle the tree gave it, the name its pane has, and its
+    /// stack when it holds one -- and, for each pane, where its window goes.
+    /// Called by `tabs::layout` with the window's state locked; it touches
+    /// no window.
+    pub fn work_out(&self, visible: &[(PaneId, TreeRect, String, Option<Stacked>)], bounds: TreeRect, scale: f64) -> (Frames, Vec<(PaneId, TreeRect)>) {
         // The quick terminal is a window of its own with one surface and no
         // tabs (`quick.rs`); it never comes through here.
         let place = Place { enabled: self.enabled, quick_terminal: false, alone: visible.len() == 1 };
-        let drawn = wears(visible.iter().map(|(id, _, name)| (self.key(*id), name.as_str())), place);
+        let drawn = wears(visible.iter().map(|(id, _, name, stack)| (self.key(*id), name.as_str(), stack.as_ref())), place);
         let ground = pane::ground_shows(&drawn);
         let px = |r: &TreeRect| Px { x: r.x as i32, y: r.y as i32, w: r.w as i32, h: r.h as i32 };
         let area = px(&bounds);
         let mut panes = Vec::new();
         let mut windows = Vec::new();
-        for ((id, cell, name), drawn) in visible.iter().zip(drawn) {
+        for ((id, cell, name, stack), drawn) in visible.iter().zip(drawn) {
             let cell_px = px(cell);
             let (rect, window) = match (&drawn, ground) {
                 (Some(d), true) => {
@@ -150,22 +214,42 @@ impl Asked {
                 (Some(_), false) | (None, _) => (cell_px, *cell),
             };
             windows.push((*id, window));
-            panes.push(One { pane: *id, key: self.key(*id).map(str::to_string), own_name: name.clone(), drawn, rect });
+            panes.push(One { pane: *id, key: self.key(*id).map(str::to_string), own_name: name.clone(), drawn, rect, stack: stack.clone() });
         }
         (Frames { place: Some(place), ground, panes }, windows)
     }
 }
 
 /// What each of some panes wears at `place`, from the snapshot as it is.
-fn wears<'a>(panes: impl Iterator<Item = (Option<&'a str>, &'a str)>, place: Place) -> Vec<Option<Drawn>> {
+///
+/// **A place holding a stack is always framed** -- alone in its tab, and
+/// with the setting off: a stack with no strip is terminals nobody can
+/// reach (macOS's `PaneStackRules.Choices`). It wears the frame of the one
+/// in front, and its title says nothing: the strip stands where it would.
+fn wears<'a>(panes: impl Iterator<Item = (Option<&'a str>, &'a str, Option<&'a Stacked>)>, place: Place) -> Vec<Option<Drawn>> {
     source::with(|data| {
         let terminals = match data {
             Data::Ready(r) => Some(r.snapshot.terminals.as_slice()),
             Data::NotYet => None,
             Data::Unreadable(_) => None,
         };
-        panes.map(|(key, name)| pane::drawn(key, name, place, terminals)).collect()
+        panes
+            .map(|(key, name, stack)| match stack {
+                Some(s) => {
+                    let model = model(s, terminals, &[]);
+                    Some(Drawn { wears: panestack::wears(&model), title: Title { name: String::new(), shown: BarShown::None, word: String::new() } })
+                }
+                None => pane::drawn(key, name, place, terminals),
+            })
+            .collect()
     })
+}
+
+/// What a stack's strip says, from the snapshot's terminals and the core's
+/// order of who is waiting.
+fn model(s: &Stacked, terminals: Option<&[polter_control_room::snapshot::Terminal]>, pulses: &[&str]) -> panestack::PaneStack {
+    let members: Vec<(Option<&str>, &str)> = s.keys.iter().zip(&s.names).map(|(k, n)| (k.as_deref(), n.as_str())).collect();
+    panestack::stack(&members, s.current, terminals, pulses)
 }
 
 /// What a change of the snapshot or of the setting asks of one window.
@@ -184,12 +268,14 @@ fn stale(frame: HWND, on: bool) -> Stale {
     if place.enabled != on {
         return Stale::Layout;
     }
-    let now = wears(win.pane_frames.panes.iter().map(|p| (p.key.as_deref(), p.own_name.as_str())), place);
+    let now = wears(win.pane_frames.panes.iter().map(|p| (p.key.as_deref(), p.own_name.as_str(), p.stack.as_ref())), place);
     let moved = win.pane_frames.panes.iter().zip(&now).any(|(p, d)| p.drawn.as_ref().map(|d| d.wears) != d.as_ref().map(|d| d.wears));
     if moved {
         return Stale::Layout;
     }
-    let said = win.pane_frames.panes.iter().zip(&now).any(|(p, d)| p.drawn != *d);
+    // A strip says what its members' titles would, and it is worked out
+    // when it is painted: any stack is painted again.
+    let said = win.pane_frames.panes.iter().zip(&now).any(|(p, d)| p.drawn != *d || p.stack.is_some());
     if !said {
         return Stale::Nothing;
     }
@@ -295,8 +381,16 @@ pub fn paint(frame: HWND, hdc: HDC, below: RECT) -> bool {
         let _ = DeleteObject(brush.into());
         let alone = frames.place.is_none_or(|p| p.alone);
         let hover = HOVER.get().filter(|(f, _, _)| *f == frame.0 as isize);
+        let mut strips = Vec::new();
         for one in &frames.panes {
             let Some(drawn) = &one.drawn else { continue };
+            if let Some(stack) = &one.stack {
+                let view = pane::View { theme, scale, focused: focused == Some(one.pane), well, close: false };
+                let items = pane::build(one.rect, drawn, &view, &translate);
+                crate::control_room::paint_scene(mem, scale, one.rect.x - below.left, one.rect.y - below.top, &items);
+                strips.push(paint_strip(frame, mem, one, stack, drawn.wears, theme, well, scale, below));
+                continue;
+            }
             let hovered = hover.is_some_and(|(_, p, _)| p == one.pane);
             let close = pane::close_shows(alone, focused == Some(one.pane), hovered);
             let view = pane::View { theme, scale, focused: focused == Some(one.pane), well, close };
@@ -309,12 +403,165 @@ pub fn paint(frame: HWND, hdc: HDC, below: RECT) -> bool {
                 crate::strip::draw_cross(mem, at, colorref(pane::close_ink(drawn.wears, theme, lit)), scale);
             }
         }
+        STRIPS.with(|all| {
+            let mut all = all.borrow_mut();
+            all.retain(|s| s.frame != frame.0 as isize);
+            all.extend(strips);
+        });
         let _ = BitBlt(hdc, below.left, below.top, w, h, Some(mem), 0, 0, SRCCOPY);
         SelectObject(mem, old);
         let _ = DeleteObject(bmp.into());
         let _ = DeleteDC(mem);
     }
     true
+}
+
+/// A rectangle in points from a frame's corner, in the pixels of a
+/// device context whose origin is `(ox, oy)` from it -- rounded the way the
+/// scene painter rounds, so what is placed and what is painted meet.
+fn px_rect(ox: i32, oy: i32, scale: f64, r: polter_control_room::layout::Rect) -> RECT {
+    let p = |v: f64| (v * scale).round() as i32;
+    RECT { left: ox + p(r.x), top: oy + p(r.y), right: ox + p(r.x + r.w), bottom: oy + p(r.y + r.h) }
+}
+
+/// Paint one stack's strip over its frame's top, and say where it all was
+/// (task 1583). The strip is `panestack`'s; this measures the words, keeps
+/// the scroll, and draws what a scene has no item for: the close buttons,
+/// the plus and the fades at the ends.
+#[allow(clippy::too_many_arguments)]
+unsafe fn paint_strip(frame: HWND, mem: HDC, one: &One, stack: &Stacked, wears: pane::Wears, theme: &look::Theme, well: look::Rgba, scale: f64, below: RECT) -> Strip {
+    use polter_control_room::look::{font, stack_tab as t};
+    use polter_control_room::scene::{Face, Style};
+    let (model, status) = source::with(|data| {
+        let (terminals, pulses) = match data {
+            Data::Ready(r) => (Some(r.snapshot.terminals.as_slice()), r.snapshot.pulses.iter().map(|p| p.terminal.as_str()).collect::<Vec<_>>()),
+            Data::NotYet | Data::Unreadable(_) => (None, Vec::new()),
+        };
+        let model = model(stack, terminals, &pulses);
+        // The status at the right end is what the title of the one in front
+        // would say there.
+        let place = Place { enabled: true, quick_terminal: false, alone: false };
+        let shown_key = stack.keys.get(stack.current).and_then(|k| k.as_deref());
+        let shown_name = stack.names.get(stack.current).map(String::as_str).unwrap_or("");
+        let status = pane::drawn(shown_key, shown_name, place, terminals).map(|d| d.title).unwrap_or_else(|| panestack::status_title(&model, ""));
+        (model, status)
+    });
+    let mono = |weight| Style { size: font::BODY, weight, face: Face::Mono, color: theme.text };
+    let ui = |weight| Style { size: font::BODY, weight, face: Face::Ui, color: theme.text };
+    let roles: Vec<Option<String>> = model.members.iter().map(|m| m.role.map(tr)).collect();
+    let mut words: Vec<(&str, polter_control_room::scene::Style)> = Vec::new();
+    for (m, role) in model.members.iter().zip(&roles) {
+        words.push((m.name.as_str(), mono(font::WEIGHT_EMPHASIS)));
+        words.push((role.as_deref().unwrap_or(""), ui(font::WEIGHT_BODY)));
+    }
+    words.push((status.word.as_str(), ui(font::WEIGHT_EMPHASIS)));
+    let measured = unsafe { crate::control_room::measure_words(mem, scale, &words) };
+    let wants: Vec<f64> = roles.iter().enumerate().map(|(i, role)| panestack::wanted(measured[2 * i], role.as_ref().map(|_| measured[2 * i + 1]))).collect();
+    let status_w = panestack::status_width(&status, measured[measured.len() - 1]);
+
+    let key = (frame.0 as isize, stack.id());
+    let reveal_key = (model.current, model.members.len(), one.rect.w);
+    let was = OFFSETS.with(|o| o.borrow().iter().find(|(k, _, _)| *k == key).map(|(_, v, r)| (*v, *r)));
+    let reveal = was.is_none_or(|(_, r)| r != reveal_key);
+    let geometry = panestack::geometry(wears, one.rect.w as f64 / scale, &wants, model.current, status_w, was.map_or(0.0, |(v, _)| v), reveal);
+    OFFSETS.with(|o| {
+        let mut o = o.borrow_mut();
+        o.retain(|(k, _, _)| *k != key);
+        o.push((key, geometry.offset, reveal_key));
+    });
+
+    let lit = STRIP_HOVER.get().filter(|(f, p, _)| *f == frame.0 as isize && *p == one.pane).map(|(_, _, h)| h);
+    let hovered = match lit {
+        Some(Hit::Tab(i) | Hit::Close(i)) => Some(i),
+        _ => None,
+    };
+    let view = panestack::View { theme, scale, well, hovered };
+    let translate = |s: &str| tr(s);
+    let drawn = panestack::build(&geometry, &model, wears, &status, &view, &translate);
+    let (ox, oy) = (one.rect.x - below.left, one.rect.y - below.top);
+    let row = px_rect(ox, oy, scale, geometry.row());
+    unsafe {
+        let saved = SaveDC(mem);
+        let _ = IntersectClipRect(mem, row.left, row.top, row.right, row.bottom);
+        crate::control_room::paint_scene(mem, scale, ox, oy, &drawn.row);
+        // What is past an edge fades out there.
+        let (left, right) = geometry.fades();
+        let fade = ((t::REVERSE_ARC_RADIUS + t::SCROLL_FADE) * scale).round() as i32;
+        if left {
+            fade_out(mem, RECT { right: row.left + fade, ..row }, colorref(drawn.band), true);
+        }
+        if right {
+            fade_out(mem, RECT { left: row.right - fade, ..row }, colorref(drawn.band), false);
+        }
+        let _ = RestoreDC(mem, saved);
+        crate::control_room::paint_scene(mem, scale, ox, oy, &drawn.fixed);
+        let (current_ink, _) = panestack::inks(wears, theme);
+        for (m, r) in &drawn.closes {
+            let on = lit == Some(Hit::Close(*m));
+            crate::strip::draw_cross(mem, px_rect(ox, oy, scale, *r), colorref(if on { current_ink } else { drawn.ink }), scale);
+        }
+        draw_plus(mem, px_rect(ox, oy, scale, drawn.add), colorref(if lit == Some(Hit::Add) { current_ink } else { drawn.ink }), scale);
+    }
+    Strip { frame: frame.0 as isize, place: one.pane, rect: one.rect, members: stack.members.clone(), scale, geometry }
+}
+
+/// The plus: two strokes through the middle of `r`, a font's body across.
+unsafe fn draw_plus(dc: HDC, r: RECT, color: COLORREF, scale: f64) {
+    unsafe {
+        let pen = CreatePen(PS_SOLID, (1.0 * scale).max(1.0) as i32, color);
+        let old = SelectObject(dc, pen.into());
+        let half = (5.0 * scale).round() as i32;
+        let (cx, cy) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+        let _ = MoveToEx(dc, cx - half, cy, None);
+        let _ = LineTo(dc, cx + half + 1, cy);
+        let _ = MoveToEx(dc, cx, cy - half, None);
+        let _ = LineTo(dc, cx, cy + half + 1);
+        SelectObject(dc, old);
+        let _ = DeleteObject(pen.into());
+    }
+}
+
+/// `color` over `r`, solid at one end and gone at the other: solid at the
+/// left when `solid_left`. One row of premultiplied pixels, stretched.
+unsafe fn fade_out(dc: HDC, r: RECT, color: COLORREF, solid_left: bool) {
+    let w = (r.right - r.left).max(1);
+    let h = (r.bottom - r.top).max(1);
+    unsafe {
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: 1,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let Ok(bmp) = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) else { return };
+        if bits.is_null() {
+            let _ = DeleteObject(bmp.into());
+            return;
+        }
+        let px = std::slice::from_raw_parts_mut(bits as *mut u32, w as usize);
+        let (r8, g8, b8) = (color.0 & 0xff, (color.0 >> 8) & 0xff, (color.0 >> 16) & 0xff);
+        for (i, p) in px.iter_mut().enumerate() {
+            let along = (i as f64 + 0.5) / w as f64;
+            let a = if solid_left { 1.0 - along } else { along };
+            let a8 = (a * 255.0).round() as u32;
+            let pre = |c: u32| (c * a8 + 127) / 255;
+            *p = (a8 << 24) | (pre(r8) << 16) | (pre(g8) << 8) | pre(b8);
+        }
+        let src = CreateCompatibleDC(Some(dc));
+        let old = SelectObject(src, bmp.into());
+        let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+        let _ = AlphaBlend(dc, r.left, r.top, w, h, src, 0, 0, w, 1, blend);
+        SelectObject(src, old);
+        let _ = DeleteDC(src);
+        let _ = DeleteObject(bmp.into());
+    }
 }
 
 /// The pane whose title is under `(x, y)`, in the frame window's pixels;
@@ -338,6 +585,10 @@ pub fn title_at(frame: HWND, x: i32, y: i32) -> Option<PaneId> {
 /// pixels (task 1583). Only where a cross can show: a framed pane of a
 /// split tab. The pointer being there is the hover that shows it.
 pub fn close_at(frame: HWND, x: i32, y: i32) -> Option<PaneId> {
+    // A stack's tab's close button closes that member (task 1583).
+    if let Some((_, members, Hit::Close(i))) = strip_at(frame, x, y) {
+        return members.get(i).copied();
+    }
     let win = tabs::window(frame)?;
     if !win.pane_frames.ground || win.pane_frames.place.is_none_or(|p| p.alone) {
         return None;
@@ -345,6 +596,10 @@ pub fn close_at(frame: HWND, x: i32, y: i32) -> Option<PaneId> {
     let scale = win.scale.max(0.1);
     win.pane_frames.panes.iter().find_map(|one| {
         let drawn = one.drawn.as_ref()?;
+        // A stack's title is its strip, which has its own (`strip_at`).
+        if one.stack.is_some() {
+            return None;
+        }
         let c = pane::close_px(one.rect, drawn.wears, scale);
         let inside = x >= c.x && x < c.right() && y >= c.y && y < c.bottom();
         inside.then_some(one.pane)
@@ -365,21 +620,96 @@ pub fn close(frame: HWND, pane: PaneId, via: &str) {
     wlogf!(frame, "[panes] {via} on pane {pane} -> close_surface ok={}", ok as u8);
 }
 
+/// What is under `(x, y)` on a stack's strip, in the frame window's
+/// pixels, as the strip was last painted: the place, its members in tab
+/// order, and what the point is. None off every strip.
+pub fn strip_at(frame: HWND, x: i32, y: i32) -> Option<(PaneId, Vec<PaneId>, Hit)> {
+    STRIPS.with(|all| {
+        all.borrow().iter().filter(|s| s.frame == frame.0 as isize).find_map(|s| {
+            let at = ((x - s.rect.x) as f64 / s.scale, (y - s.rect.y) as f64 / s.scale);
+            match panestack::hit(&s.geometry, at) {
+                Hit::Outside => None,
+                h => Some((s.place, s.members.clone(), h)),
+            }
+        })
+    })
+}
+
 /// The pointer moved over the frame window's client area: which title it
-/// is over, and whether on the cross. Repaints only when that changed.
+/// is over, and whether on the cross; which part of a stack's strip.
+/// Repaints only when that changed.
 pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
-    let now = title_at(frame, x, y).map(|pane| (frame.0 as isize, pane, close_at(frame, x, y) == Some(pane)));
-    if HOVER.replace(now) != now {
+    let strip = strip_at(frame, x, y).map(|(place, _, hit)| (frame.0 as isize, place, hit));
+    let title = if strip.is_some() { None } else { title_at(frame, x, y).map(|pane| (frame.0 as isize, pane, close_at(frame, x, y) == Some(pane))) };
+    let a = HOVER.replace(title) != title;
+    let b = STRIP_HOVER.replace(strip) != strip;
+    if a || b {
         repaint(frame);
     }
 }
 
-/// The pointer left the frame window: no title is under it.
+/// The pointer left the frame window: no title or strip is under it.
 pub fn on_mouse_leave(frame: HWND) {
-    if HOVER.get().is_some_and(|(f, _, _)| f == frame.0 as isize) {
+    let mine = |f: isize| f == frame.0 as isize;
+    let a = HOVER.get().is_some_and(|(f, _, _)| mine(f));
+    let b = STRIP_HOVER.get().is_some_and(|(f, _, _)| mine(f));
+    if a {
         HOVER.set(None);
+    }
+    if b {
+        STRIP_HOVER.set(None);
+    }
+    if a || b {
         repaint(frame);
     }
+}
+
+/// A wheel over a stack's strip that has more tabs than room: they scroll
+/// sideways, up and down turned sideways (`panestack::scroll`). **True when
+/// it was a strip's**, and then the window's own tabs are not scrolled.
+pub fn on_wheel(frame: HWND, x: i32, y: i32, delta_x: i32, delta_y: i32) -> bool {
+    let found = STRIPS.with(|all| {
+        all.borrow().iter().find(|s| {
+            s.frame == frame.0 as isize && {
+                let at = ((x - s.rect.x) as f64 / s.scale, (y - s.rect.y) as f64 / s.scale);
+                panestack::hit(&s.geometry, at) != Hit::Outside
+            }
+        }).map(|s| (s.members.iter().copied().min().unwrap_or(0), s.geometry.scrolled(panestack::scroll(delta_x, delta_y, panestack::WHEEL_LINE)), s.geometry.offset))
+    });
+    let Some((id, to, was)) = found else { return false };
+    if to != was {
+        let key = (frame.0 as isize, id);
+        OFFSETS.with(|o| {
+            if let Some(e) = o.borrow_mut().iter_mut().find(|(k, _, _)| *k == key) {
+                e.1 = to;
+            }
+        });
+        repaint(frame);
+    }
+    true
+}
+
+/// A press on a stack's strip (task 1583). **True when it was a strip's**,
+/// and then this has taken it: a tab is brought to the front, the plus
+/// makes a new terminal in the place. A close button is the caller's,
+/// acted on at release like the title's (`close_at`).
+pub fn strip_press(frame: HWND, x: i32, y: i32) -> bool {
+    let Some((place, members, hit)) = strip_at(frame, x, y) else { return false };
+    match hit {
+        Hit::Tab(i) => match members.get(i) {
+            Some(m) => {
+                let ok = tabs::show_member(frame, *m);
+                wlogf!(frame, "[stack] tab {} of place {} pressed -> pane {} shown={}", i, place, m, ok as u8);
+            }
+            None => wlogf!(frame, "[stack] tab {} of place {} pressed: no such member", i, place),
+        },
+        Hit::Add => {
+            wlogf!(frame, "[stack] plus on place {} pressed", place);
+            tabs::post_op(frame, tabs::Op::PaneStack(polter_split_tree::stack::Verb::New, Some(place)), "stack plus");
+        }
+        Hit::Close(_) | Hit::Strip | Hit::Outside => {}
+    }
+    true
 }
 
 /// Where each pane showing in the tab in front is, frame and all, in the

@@ -110,6 +110,11 @@ pub struct Pane {
     /// runs (`journal::start`), so a pane cannot be given a name that
     /// nothing writes to after the save.
     pub scrollback: Option<crate::journal::Journaled>,
+    /// Whether the core was last told this terminal cannot be seen because
+    /// it is stacked behind another (`ghostty_surface_set_occlusion`, task
+    /// 1583). Set and cleared by `layout` only, so it is told once per
+    /// change and not on every layout.
+    pub behind_said: bool,
 }
 
 /// A tab's identity. **Never an index, and never reused.**
@@ -410,6 +415,9 @@ pub enum Op {
     /// -- an agent's, through the core -- rather than by a key
     /// (`lend::may_split`).
     NewSplit(i32, Option<String>, Option<PaneId>, bool),
+    /// One of the stack's verbs (`pane_stack`, task 1583), on the place the
+    /// pane it names is in (`None`: the focused one).
+    PaneStack(polter_split_tree::stack::Verb, Option<PaneId>),
     /// `ghostty_action_goto_split_e`.
     /// The direction, and **which pane to move from** (`None` means the
     /// focused one, which is what a keybinding means).
@@ -507,6 +515,7 @@ impl Op {
             Op::CopyTitleToClipboard => "CopyTitleToClipboard",
             Op::PresentTerminal => "PresentTerminal",
             Op::NewSplit(..) => "NewSplit",
+            Op::PaneStack(..) => "PaneStack",
             Op::GotoSplit(..) => "GotoSplit",
             Op::ResizeSplit(..) => "ResizeSplit",
             Op::EqualizeSplits => "EqualizeSplits",
@@ -2116,6 +2125,10 @@ pub fn layout(frame: HWND) {
     // Which terminal each pane is, and whether panes wear frames at all:
     // asked of the core before the lock is taken, not under it.
     let asked = crate::pane_frames::Asked::ask(frame);
+    // The terminals whose being stacked behind another changed, for the
+    // core: `(pane, surface, visible)`. Worked out under the lock, said
+    // after it.
+    let mut occlusion: Vec<(PaneId, usize, bool)> = Vec::new();
     // Pure work under the lock, Windows calls after it: `SetWindowPos` sends
     // WM_SIZE back into this thread, which takes the same lock.
     #[allow(clippy::type_complexity)]
@@ -2204,12 +2217,18 @@ pub fn layout(frame: HWND) {
             // window goes inside the cell the tree gave it is
             // `polter_control_room::pane`, and with nothing framed that is
             // the cell itself.
-            let showing: Vec<(PaneId, TreeRect, String)> = laid
+            let own = |id: PaneId| term.panes.iter().find(|p| p.id == id).and_then(|p| p.title.clone()).unwrap_or_else(|| tab.title.clone());
+            // A place holding a stack hands its frame every terminal in it,
+            // in the order of the tabs (task 1583).
+            let showing: Vec<(PaneId, TreeRect, String, Option<crate::pane_frames::Stacked>)> = laid
                 .iter()
                 .filter_map(|(id, at)| {
                     let cell = at.rect()?;
-                    let own = term.panes.iter().find(|p| p.id == *id).and_then(|p| p.title.clone());
-                    Some((*id, cell, own.unwrap_or_else(|| tab.title.clone())))
+                    let stack = term
+                        .tree
+                        .stack_of(*id)
+                        .map(|s| asked.stacked(s.members.iter().map(|m| (*m, own(*m))).collect(), s.shown));
+                    Some((*id, cell, own(*id), stack))
                 })
                 .collect();
             let (worked_out, windows) = asked.work_out(&showing, bounds, win.scale.max(0.1));
@@ -2285,6 +2304,26 @@ pub fn layout(frame: HWND) {
             }
             out
         };
+        // **A terminal stacked behind another cannot be seen, and the core
+        // is told so** (task 1583; macOS's `ownTabReports`): every tab of the
+        // window, not only the one in front, since a stack changes in a tab
+        // behind too (an agent's layout, a close). Only the change is said.
+        // The one the control room is showing is not this tab's to report.
+        let lent = win.shown_on_loan().map(|l| l.pane);
+        for tab in win.tabs.iter_mut() {
+            let Some(term) = tab.terminal_mut() else { continue };
+            let tree = term.tree.clone();
+            for p in term.panes.iter_mut() {
+                if Some(p.id) == lent {
+                    continue;
+                }
+                let behind = tree.contains(p.id) && !tree.is_shown(p.id);
+                if behind != p.behind_said {
+                    p.behind_said = behind;
+                    occlusion.push((p.id, p.surface, !behind));
+                }
+            }
+        }
         let shape_changed = win.last_layout.as_deref() != Some(shape.as_str());
         win.last_layout = Some(shape);
         win.pane_frames = frames;
@@ -2297,6 +2336,12 @@ pub fn layout(frame: HWND) {
             "[layout] BUG pane {} is in tabs.panes but not in the tree; hidden, not destroyed",
             id
         );
+    }
+    for (id, surface, visible) in occlusion {
+        if surface != 0 {
+            unsafe { (api().surface_set_occlusion)(surface as Surface, visible) };
+        }
+        wlogf!(frame, "[stack] pane {} {}; told the core visible={}", id, if visible { "came to the front" } else { "is stacked behind" }, visible);
     }
 
     // **Every window call here is logged with its pane and its result.**
@@ -2769,6 +2814,8 @@ fn create_pane(
         cwd: pending_cwd,
         title: None,
         history: pending_history,
+        // A new terminal is shown, which is what the core assumes.
+        behind_said: false,
         // A pane made from a saved project keeps the snapshot it was made
         // from, so saving it again writes to the same file -- and journals
         // to it from now on: a pane just restored has no journal, and the
@@ -3381,7 +3428,7 @@ fn arrange_layout(
             gone.push((f.frame, p.hwnd, p.surface, emptied));
             taken.push(p);
         }
-        let first = tree.panes().first().copied().unwrap_or(0);
+        let first = tree.shown_panes().first().copied().unwrap_or(0);
         let at_index = match (into, dest_at) {
             (_, Some(i)) => {
                 let Some(term) = ws[di].tabs[i].terminal_mut() else { unreachable!("checked above") };
@@ -3720,6 +3767,153 @@ fn split_pane(
     true
 }
 
+/// Whether the stack's `verb` has anything to do on the place `at` is in
+/// (the focused one when none): `polter_split_tree::stack::offers`, asked
+/// of this window's tab as it is now. False for the control room's tab and
+/// for the terminal the control room is showing, which this window does not
+/// lay out.
+pub fn pane_stack_offers(frame: HWND, verb: polter_split_tree::stack::Verb, at: Option<PaneId>) -> bool {
+    let Some(win) = window(frame) else { return false };
+    let Some(term) = win.tabs.get(acting_tab(&win, at)).and_then(|t| t.terminal()) else { return false };
+    let pane = acting_pane(term, at);
+    if win.shown_on_loan().is_some_and(|l| l.pane == pane) {
+        return false;
+    }
+    let stacked = term.tree.stack_of(pane).is_some();
+    polter_split_tree::stack::offers(verb, stacked, term.tree.shown_panes().len(), false)
+}
+
+/// Carry out one of the stack's verbs (task 1583; macOS's
+/// `perform(stack:at:)`). **False means nothing changed**, and the line
+/// above it says why.
+fn pane_stack(
+    frame: HWND,
+    app: App,
+    hinst: windows::Win32::Foundation::HINSTANCE,
+    verb: polter_split_tree::stack::Verb,
+    at: Option<PaneId>,
+) -> bool {
+    use polter_split_tree::stack::Verb;
+    if !pane_stack_offers(frame, verb, at) {
+        wlogf!(frame, "[stack] {:?} refused: nothing to do on that place now", verb);
+        return false;
+    }
+    let (bounds, tab_idx, pane, focused, tree, cwd) = {
+        let Some(win) = window(frame) else { return false };
+        let Some(bounds) = content_bounds(frame, strip_h(win.scale)) else {
+            wlogf!(frame, "[stack] {:?} refused: that window has no content area", verb);
+            return false;
+        };
+        let idx = acting_tab(&win, at);
+        let Some(term) = win.tabs.get(idx).and_then(|t| t.terminal()) else { return false };
+        let pane = acting_pane(term, at);
+        let cwd = term.panes.iter().find(|p| p.id == pane).and_then(|p| p.cwd.clone());
+        (bounds, idx, pane, term.focused, term.tree.clone(), cwd)
+    };
+    // The new tree, the new pane when the verb makes one, and where the
+    // keyboard goes.
+    let (new_tree, made, focus) = match verb {
+        Verb::New => {
+            let id = take_id();
+            let new_tree = match tree.stacking(id, pane) {
+                Ok(t) => t,
+                Err(e) => {
+                    wlogf!(frame, "[stack] new on pane {} refused: {:?}", pane, e);
+                    return false;
+                }
+            };
+            let Some((_, Placement::Visible(r))) = new_tree.layout(bounds).into_iter().find(|(p, _)| *p == id) else {
+                wlogf!(frame, "[stack] new: the new pane is not in the layout; refusing to create it");
+                return false;
+            };
+            // Where the terminal it joins is standing, as a split's does.
+            let spec = NewTab { cwd: cwd.clone(), ..NewTab::default() };
+            let Some(made) = create_pane(frame, app, hinst, id, r, spec) else {
+                wlogf!(frame, "[stack] new: the new pane could not be created");
+                return false;
+            };
+            (new_tree, Some(made), id)
+        }
+        Verb::Next | Verb::Previous => {
+            let step = if verb == Verb::Next { 1 } else { -1 };
+            let Some(to) = tree.stack_neighbour(pane, step) else { return false };
+            let Ok(t) = tree.showing(to) else { return false };
+            // The one coming forward takes the keyboard when the one going
+            // behind had it (`TerminalPresence.focus`).
+            let focus = if tree.shown_for(pane) == Some(focused) { to } else { focused };
+            (t, None, focus)
+        }
+        Verb::Out => match tree.unstacking(pane, NewSplit::Right) {
+            Ok(t) => (t, None, pane),
+            Err(e) => {
+                wlogf!(frame, "[stack] out on pane {} refused: {:?}", pane, e);
+                return false;
+            }
+        },
+        Verb::OntoNext | Verb::OntoPrevious => {
+            let f = if verb == Verb::OntoNext { Focus::Next } else { Focus::Previous };
+            let Some(shown) = tree.shown_for(pane) else { return false };
+            let Some(target) = tree.focus_target(f, shown).filter(|t| *t != shown) else { return false };
+            match tree.stacking_onto(pane, target) {
+                Ok(t) => (t, None, pane),
+                Err(e) => {
+                    wlogf!(frame, "[stack] {:?} on pane {} refused: {:?}", verb, pane, e);
+                    return false;
+                }
+            }
+        }
+    };
+    {
+        let Some(mut win) = window(frame) else { return false };
+        let Some(term) = win.tabs.get_mut(tab_idx).and_then(|t| t.terminal_mut()) else {
+            wlogf!(frame, "[stack] {:?}: tab {} went away; nothing changed", verb, tab_idx);
+            return false;
+        };
+        term.tree = new_tree;
+        if let Some(p) = made {
+            term.panes.push(p);
+        }
+        term.focused = focus;
+    }
+    layout(frame);
+    focus_active(frame);
+    let said = window(frame)
+        .and_then(|w| w.tabs.get(tab_idx).and_then(|t| t.terminal()).and_then(|t| t.tree.stack_of(focus).map(|s| (s.members.clone(), s.shown))));
+    wlogf!(frame, "[stack] {:?} on pane {} -> keyboard on {}; its place: {:?}", verb, pane, focus, said);
+    true
+}
+
+/// Bring `pane`, stacked behind another, to the front of its place: a
+/// click on its tab (task 1583). The keyboard goes with it when the one it
+/// covers had it.
+pub fn show_member(frame: HWND, pane: PaneId) -> bool {
+    let done = {
+        let Some(mut win) = window(frame) else { return false };
+        let Some(term) = win.tabs.iter_mut().filter_map(|t| t.terminal_mut()).find(|t| t.tree.contains(pane)) else {
+            return false;
+        };
+        let was = term.tree.shown_for(pane);
+        match term.tree.showing(pane) {
+            Ok(t) => {
+                term.tree = t;
+                if was == Some(term.focused) {
+                    term.focused = pane;
+                }
+                true
+            }
+            Err(e) => {
+                drop(win);
+                wlogf!(frame, "[stack] show pane {} refused: {:?}", pane, e);
+                return false;
+            }
+        }
+    };
+    layout(frame);
+    focus_active(frame);
+    wlogf!(frame, "[stack] pane {} brought to the front", pane);
+    done
+}
+
 /// Close one pane. The tab goes with it when it was the last one.
 ///
 /// **`false` means the pane is still there**, and the line above the return
@@ -3760,11 +3954,10 @@ fn close_pane(frame: HWND, id: PaneId) -> bool {
             return false;
         };
         let pane = tab.panes.remove(pos);
+        let before = tab.tree.clone();
         tab.tree = tab.tree.remove(id);
         if tab.focused == id {
-            // Focus whatever leaf the tree still has; tree order is as good a
-            // choice as any and is at least deterministic.
-            tab.focused = tab.tree.panes().first().copied().unwrap_or(0);
+            tab.focused = successor(&before, &tab.tree, id);
         }
         let empty = tab.panes.is_empty();
         (pane.hwnd, pane.surface, empty, idx)
@@ -4221,6 +4414,27 @@ pub fn close_tab_mode_asking(frame: HWND, mode: i32) {
         }
         None => wlogf!(frame, "[close] close_tab mode={} with no tab in front; nothing to close", mode),
     }
+}
+
+/// Close several terminals of one stack after asking **once**, if any of
+/// them has something running (task 1583; macOS's `polterCloseStacked`):
+/// a tab's «Close Others», «Close to the Right», «Close to the Left».
+/// False when the person said no and nothing was closed.
+pub fn close_members_asking(frame: HWND, members: &[PaneId]) -> bool {
+    let surfaces: Vec<usize> = {
+        let Some(win) = window(frame) else { return false };
+        win.tabs.iter().flat_map(|t| t.panes().iter()).filter(|p| members.contains(&p.id)).map(|p| p.surface).collect()
+    };
+    let busy = surfaces.iter().any(|s| surface_needs_confirm(*s));
+    if busy && !ask(frame, Subject::Pane) {
+        wlogf!(frame, "[close] stacked {:?} kept", members);
+        return false;
+    }
+    for id in members {
+        post_op(frame, Op::ClosePane(*id), "stack close");
+    }
+    wlogf!(frame, "[close] stacked {:?} closing (asked={})", members, busy);
+    true
 }
 
 /// Close one pane **after asking**, for the path where the core already
@@ -5081,7 +5295,7 @@ mod pane_metadata_tests {
     use super::*;
 
     fn test_pane(id: u64, surface: usize) -> Pane {
-        Pane { id, hwnd: 0, surface, shielded: false, cwd: None, title: None, history: None, scrollback: None }
+        Pane { id, hwnd: 0, surface, shielded: false, cwd: None, title: None, history: None, scrollback: None, behind_said: false }
     }
 
     /// The test machine, 94bf0b56a: two panes side by side, the right one
@@ -5410,9 +5624,27 @@ struct PaneMoved {
     emptied: Option<TabId>,
 }
 
+/// Where the keyboard goes when `gone`, which had it, leaves `before`
+/// (now `after`): the terminal that takes its place when it was the shown
+/// one of a stack (Swift's `stackSuccessor`), otherwise the first pane in
+/// tree order -- as good a choice as any, and at least deterministic.
+pub fn successor(before: &Tree, after: &Tree, gone: PaneId) -> PaneId {
+    let stacked = before.stack_of(gone).map(|s| s.members.clone()).unwrap_or_default();
+    stacked
+        .into_iter()
+        .filter(|m| *m != gone)
+        .find_map(|m| after.shown_for(m))
+        .or_else(|| after.shown_panes().first().copied())
+        .unwrap_or(0)
+}
+
 /// Take `pane` out of whichever tab of `ws[si]` has it. **Refused, with the
 /// model untouched, when `must_stay_split` and its tab is not split** -- a
 /// pane alone in its tab does not leave for a window of its own.
+///
+/// ⚠️ A pane stacked behind another is taken out of its stack and nothing
+/// on screen moves; the shown one of a stack is followed in its place by the
+/// next of the stack (`Tree::remove`, task 1583).
 fn take_pane(ws: &mut [WindowState], si: usize, pane: PaneId, must_stay_split: bool) -> Result<(Pane, Option<TabId>), &'static str> {
     let st = ws[si].tabs.iter().position(|t| t.pane(pane).is_some()).ok_or("no tab in that window has it")?;
     let tab_id = ws[si].tabs[st].id;
@@ -5422,9 +5654,10 @@ fn take_pane(ws: &mut [WindowState], si: usize, pane: PaneId, must_stay_split: b
     }
     let pos = term.panes.iter().position(|p| p.id == pane).ok_or("its tab does not list it")?;
     let p = term.panes.remove(pos);
+    let before = term.tree.clone();
     term.tree = term.tree.remove(pane);
     if term.focused == pane {
-        term.focused = term.tree.panes().first().copied().unwrap_or(0);
+        term.focused = successor(&before, &term.tree, pane);
     }
     Ok((p, term.panes.is_empty().then_some(tab_id)))
 }
@@ -7596,6 +7829,10 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // draw; see `split_pane`.
                 let ok = split_pane(frame, app, hinst, d, cwd, at, asked_by_core);
                 wlogf!(frame, "[ops] NewSplit finished: split={}", ok as u8);
+            }
+            Op::PaneStack(verb, at) => {
+                let ok = pane_stack(frame, app, hinst, verb, at);
+                wlogf!(frame, "[ops] PaneStack {:?} finished: done={}", verb, ok as u8);
             }
             Op::GotoSplit(v, at) => {
                 if front_has_no_splits(frame, "goto_split") {

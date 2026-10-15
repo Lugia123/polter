@@ -1056,6 +1056,58 @@ msgstr ""
 msgid "Reload the config file."
 msgstr ""
 
+#: windows/host/src/menu.rs:546
+msgid "Stack"
+msgstr ""
+
+#: windows/host/src/menu.rs:146
+msgid "New Terminal in This Pane"
+msgstr ""
+
+#: windows/host/src/menu.rs:147
+msgid "Next Stacked Terminal"
+msgstr ""
+
+#: windows/host/src/menu.rs:148
+msgid "Previous Stacked Terminal"
+msgstr ""
+
+#: windows/host/src/menu.rs:149
+msgid "Move Terminal Out of Stack"
+msgstr ""
+
+#: windows/host/src/menu.rs:150
+msgid "Stack onto Next Pane"
+msgstr ""
+
+#: windows/host/src/menu.rs:151
+msgid "Stack onto Previous Pane"
+msgstr ""
+
+#: src/input/command.zig:546
+msgid "Stack: New Terminal in This Pane"
+msgstr ""
+
+#: src/input/command.zig:551
+msgid "Stack: Next Terminal"
+msgstr ""
+
+#: src/input/command.zig:556
+msgid "Stack: Previous Terminal"
+msgstr ""
+
+#: src/input/command.zig:561
+msgid "Stack: Move Terminal Out"
+msgstr ""
+
+#: src/input/command.zig:566
+msgid "Stack: Onto the Next Pane"
+msgstr ""
+
+#: src/input/command.zig:571
+msgid "Stack: Onto the Previous Pane"
+msgstr ""
+
 #: src/input/command.zig:667
 msgid "Close Terminal"
 msgstr ""
