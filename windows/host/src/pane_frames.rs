@@ -25,6 +25,8 @@
 //! **Main thread only**: the snapshot is a `thread_local` there
 //! (`control_room_source`), and so is every window call.
 
+use std::cell::Cell;
+
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
@@ -38,6 +40,13 @@ use crate::control_room_source::{self as source, Data};
 use crate::ffi::Surface;
 use crate::i18n::tr;
 use crate::{tabs, wlogf};
+
+thread_local! {
+    /// The title the pointer is over: its window, its pane, and whether it
+    /// is on the close cross. None when it is over no title. What shows the
+    /// cross on a pane without the keyboard, and lights it.
+    static HOVER: Cell<Option<(isize, PaneId, bool)>> = const { Cell::new(None) };
+}
 
 /// One pane showing in the tab in front, as the last layout left it.
 #[derive(Clone, PartialEq, Debug)]
@@ -284,11 +293,21 @@ pub fn paint(frame: HWND, hdc: HDC, below: RECT) -> bool {
         let brush = CreateSolidBrush(colorref(theme.window_base));
         FillRect(mem, &all, brush);
         let _ = DeleteObject(brush.into());
+        let alone = frames.place.is_none_or(|p| p.alone);
+        let hover = HOVER.get().filter(|(f, _, _)| *f == frame.0 as isize);
         for one in &frames.panes {
             let Some(drawn) = &one.drawn else { continue };
-            let view = pane::View { theme, scale, focused: focused == Some(one.pane), well };
+            let hovered = hover.is_some_and(|(_, p, _)| p == one.pane);
+            let close = pane::close_shows(alone, focused == Some(one.pane), hovered);
+            let view = pane::View { theme, scale, focused: focused == Some(one.pane), well, close };
             let items = pane::build(one.rect, drawn, &view, &translate);
             crate::control_room::paint_scene(mem, scale, one.rect.x - below.left, one.rect.y - below.top, &items);
+            if close {
+                let c = pane::close_px(one.rect, drawn.wears, scale);
+                let lit = hover.is_some_and(|(_, p, on)| p == one.pane && on);
+                let at = RECT { left: c.x - below.left, top: c.y - below.top, right: c.right() - below.left, bottom: c.bottom() - below.top };
+                crate::strip::draw_cross(mem, at, colorref(pane::close_ink(drawn.wears, theme, lit)), scale);
+            }
         }
         let _ = BitBlt(hdc, below.left, below.top, w, h, Some(mem), 0, 0, SRCCOPY);
         SelectObject(mem, old);
@@ -313,6 +332,54 @@ pub fn title_at(frame: HWND, x: i32, y: i32) -> Option<PaneId> {
         let inside = x >= one.rect.x && x < one.rect.right() && y >= one.rect.y && y < well.y;
         inside.then_some(one.pane)
     })
+}
+
+/// The pane whose close cross is under `(x, y)`, in the frame window's
+/// pixels (task 1583). Only where a cross can show: a framed pane of a
+/// split tab. The pointer being there is the hover that shows it.
+pub fn close_at(frame: HWND, x: i32, y: i32) -> Option<PaneId> {
+    let win = tabs::window(frame)?;
+    if !win.pane_frames.ground || win.pane_frames.place.is_none_or(|p| p.alone) {
+        return None;
+    }
+    let scale = win.scale.max(0.1);
+    win.pane_frames.panes.iter().find_map(|one| {
+        let drawn = one.drawn.as_ref()?;
+        let c = pane::close_px(one.rect, drawn.wears, scale);
+        let inside = x >= c.x && x < c.right() && y >= c.y && y < c.bottom();
+        inside.then_some(one.pane)
+    })
+}
+
+/// Close one pane, as its title's cross or its «Close Terminal» row asks
+/// (`via`, for the log): the core's `close_surface` on that pane's
+/// terminal -- the keyboard's path, so a running program is asked about by
+/// the same rule (`tabs::close_pane_asking` is where the answer arrives).
+pub fn close(frame: HWND, pane: PaneId, via: &str) {
+    let surface = tabs::pane_hwnd(frame, pane).map(tabs::surface_of).unwrap_or(std::ptr::null_mut());
+    if surface.is_null() {
+        wlogf!(frame, "[panes] {via} on pane {pane}: it has no terminal; nothing");
+        return;
+    }
+    let ok = crate::binding_on(surface, "close_surface");
+    wlogf!(frame, "[panes] {via} on pane {pane} -> close_surface ok={}", ok as u8);
+}
+
+/// The pointer moved over the frame window's client area: which title it
+/// is over, and whether on the cross. Repaints only when that changed.
+pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
+    let now = title_at(frame, x, y).map(|pane| (frame.0 as isize, pane, close_at(frame, x, y) == Some(pane)));
+    if HOVER.replace(now) != now {
+        repaint(frame);
+    }
+}
+
+/// The pointer left the frame window: no title is under it.
+pub fn on_mouse_leave(frame: HWND) {
+    if HOVER.get().is_some_and(|(f, _, _)| f == frame.0 as isize) {
+        HOVER.set(None);
+        repaint(frame);
+    }
 }
 
 /// Where each pane showing in the tab in front is, frame and all, in the

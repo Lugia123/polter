@@ -26,7 +26,7 @@
 //! inside. Nothing has a shadow: a scene has no item for one.
 
 use crate::layout::Rect;
-use crate::look::{font, pane, radius, side, space, Rgba, Theme};
+use crate::look::{font, pane, radius, side, space, window_tab, Rgba, Theme};
 use crate::scene::{self, Face, Item, Part, Piece, Side, Style};
 use crate::snapshot::{BarShown, Shown, Terminal};
 
@@ -198,6 +198,60 @@ pub struct View<'a> {
     /// the frame is an ordinary terminal's, and what shows for the moment
     /// before the terminal's window is over its place.
     pub well: Rgba,
+    /// The title keeps room at its right end for the close cross
+    /// ([`close_shows`]); the host draws the cross there ([`close_px`]).
+    pub close: bool,
+}
+
+// ----------------------------------------------------------------- close
+
+/// Whether a pane's title shows its close cross (task 1583; the macOS
+/// host's rule in task 1582). **Only in a tab that is split**: a pane alone
+/// in its tab closes with the tab, whose own cross is on the strip. Then
+/// while the pointer is over the title, and always on the pane with the
+/// keyboard -- the strip's tabs show theirs the same way.
+pub fn close_shows(alone: bool, focused: bool, hovered: bool) -> bool {
+    !alone && (focused || hovered)
+}
+
+/// How far the title's words keep from the frame's left and right edges,
+/// in points.
+fn title_inset_x(wears: Wears) -> f64 {
+    match wears {
+        Wears::Supervisor => pane::SUPERVISOR_BORDER + pane::SUPERVISOR_BAR_PADDING_X,
+        Wears::Worker => pane::BAR_PADDING_X,
+        Wears::Plain => pane::PLAIN_TITLE_INSET_X,
+    }
+}
+
+/// Where the close cross's box is, in the frame window's pixels: a square
+/// the size of a window tab's, at the right end of the title, right of the
+/// state, centred in the title's height. `frame` as [`frame_px`] gave it.
+pub fn close_px(frame: Px, wears: Wears, scale: f64) -> Px {
+    let side = len_px(window_tab::CLOSE, scale);
+    let band = well_px(frame, wears, scale).y - frame.y;
+    let right = frame.right() - len_px(title_inset_x(wears), scale);
+    Px { x: right - side, y: frame.y + (band - side) / 2, w: side, h: side }
+}
+
+/// The colours a title is written in: the name's, and everything else's.
+fn inks(wears: Wears, theme: &Theme) -> (Rgba, Rgba) {
+    match wears {
+        Wears::Supervisor => (theme.text, theme.text_secondary),
+        Wears::Worker => (theme.terminal_bold, theme.terminal_dim),
+        Wears::Plain => (theme.terminal_dim, theme.terminal_dim),
+    }
+}
+
+/// The close cross's colour: the title's second ink, and the name's while
+/// the pointer is on the cross.
+pub fn close_ink(wears: Wears, theme: &Theme, lit: bool) -> Rgba {
+    let (name, second) = inks(wears, theme);
+    if lit {
+        name
+    } else {
+        second
+    }
 }
 
 /// The frame of one pane, in points from the frame's own top left; `frame`
@@ -214,7 +268,8 @@ pub fn build(frame: Px, drawn: &Drawn, view: &View, tr: &dyn Fn(&str) -> String)
     let well = Rect { x: pt(at.x), y: pt(at.y), w: pt(at.w), h: pt(at.h) };
 
     let mut items = Vec::new();
-    let (bar, name_ink, second_ink, name_weight, trouble_ink) = match drawn.wears {
+    let (name_ink, second_ink) = inks(drawn.wears, theme);
+    let (mut bar, name_weight, trouble_ink) = match drawn.wears {
         Wears::Supervisor => {
             // A thick border whose top edge is the title bar; the edge
             // darkens (lightens, in the dark) while the terminal in it has
@@ -222,11 +277,9 @@ pub fn build(frame: Px, drawn: &Drawn, view: &View, tr: &dyn Fn(&str) -> String)
             let bezel = scene::over(theme.window_base, theme.supervisor_bezel, 1.0);
             let edge = if view.focused { theme.supervisor_edge_focused } else { theme.supervisor_edge };
             items.push(Item::Round { rect: whole, radius: radius::SUPERVISOR_OUTER, color: bezel, edge: Some(scene::over(bezel, edge, 1.0)) });
-            let x = pane::SUPERVISOR_BORDER + pane::SUPERVISOR_BAR_PADDING_X;
+            let x = title_inset_x(Wears::Supervisor);
             (
                 Rect { x, y: 0.0, w: (w - 2.0 * x).max(0.0), h: pane::BAR_HEIGHT },
-                theme.text,
-                theme.text_secondary,
                 font::WEIGHT_EMPHASIS,
                 theme.problem_text_on_supervisor_bar,
             )
@@ -236,10 +289,9 @@ pub fn build(frame: Px, drawn: &Drawn, view: &View, tr: &dyn Fn(&str) -> String)
             // it and the terminal's ground laid over the rest.
             let edge = scene::over(theme.worker_band, theme.worker_edge, scene::hairline(scale).1);
             items.push(Item::Round { rect: whole, radius: radius::WORKER, color: theme.worker_band, edge: Some(edge) });
+            let x = title_inset_x(Wears::Worker);
             (
-                Rect { x: pane::BAR_PADDING_X, y: 0.0, w: (w - 2.0 * pane::BAR_PADDING_X).max(0.0), h: pane::BAR_HEIGHT },
-                theme.terminal_bold,
-                theme.terminal_dim,
+                Rect { x, y: 0.0, w: (w - 2.0 * x).max(0.0), h: pane::BAR_HEIGHT },
                 font::WEIGHT_EMPHASIS,
                 theme.problem_text_on_worker_band,
             )
@@ -247,15 +299,9 @@ pub fn build(frame: Px, drawn: &Drawn, view: &View, tr: &dyn Fn(&str) -> String)
         Wears::Plain => {
             // No line and no band: the terminal's ground, all of it.
             items.push(Item::Round { rect: whole, radius: radius::PLAIN, color: view.well, edge: None });
+            let x = title_inset_x(Wears::Plain);
             (
-                Rect {
-                    x: pane::PLAIN_TITLE_INSET_X,
-                    y: 0.0,
-                    w: (w - 2.0 * pane::PLAIN_TITLE_INSET_X).max(0.0),
-                    h: pane::PLAIN_TITLE_BAND_HEIGHT,
-                },
-                theme.terminal_dim,
-                theme.terminal_dim,
+                Rect { x, y: 0.0, w: (w - 2.0 * x).max(0.0), h: pane::PLAIN_TITLE_BAND_HEIGHT },
                 font::WEIGHT_BODY,
                 theme.problem_text_on_terminal,
             )
@@ -263,6 +309,11 @@ pub fn build(frame: Px, drawn: &Drawn, view: &View, tr: &dyn Fn(&str) -> String)
     };
     // The terminal's ground, for the moment before its window is there.
     items.push(Item::Fill { rect: well, color: view.well });
+    // The close cross's room, and a gap before it, come off the line's
+    // right end: the state stays left of the cross (`close_px`).
+    if view.close {
+        bar.w = (bar.w - window_tab::CLOSE - pane::BAR_GAP).max(0.0);
+    }
 
     // The name and what it is on the left; its state on the right. Words
     // that are not there are not put in the line at all.
@@ -566,7 +617,7 @@ mod tests {
     }
 
     fn view(dark: bool, scale: f64, focused: bool) -> View<'static> {
-        View { theme: look::theme(dark), scale, focused, well: Rgba { r: 1, g: 2, b: 3, a: 1.0 } }
+        View { theme: look::theme(dark), scale, focused, well: Rgba { r: 1, g: 2, b: 3, a: 1.0 }, close: false }
     }
 
     fn a(wears: Wears, name: &str, shown: Shown, word: &str) -> Drawn {
@@ -591,6 +642,75 @@ mod tests {
         match &items[0] {
             Item::Round { rect, radius, color, edge } => (*rect, *radius, *color, *edge),
             other => panic!("a frame starts with its shape, not {other:?}"),
+        }
+    }
+
+    // ---- the close cross (task 1583)
+
+    /// Never alone in its tab; otherwise under the pointer or with the
+    /// keyboard, as a window tab's.
+    #[test]
+    fn the_close_cross_shows_on_a_split_tabs_pane_under_the_pointer_or_with_the_keyboard() {
+        assert!(!close_shows(false, false, false));
+        assert!(close_shows(false, true, false));
+        assert!(close_shows(false, false, true));
+        assert!(close_shows(false, true, true));
+        for (focused, hovered) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert!(!close_shows(true, focused, hovered), "alone, focused={focused} hovered={hovered}");
+        }
+    }
+
+    /// The cross sits in the title, at its right end, inside the frame, and
+    /// clear of the line the state is written in when room is kept for it.
+    #[test]
+    fn the_close_cross_is_at_the_titles_right_end_and_the_state_keeps_clear_of_it() {
+        let longest = |items: &[Item]| {
+            items
+                .iter()
+                .find_map(|i| match i {
+                    Item::Line { rect, .. } => Some(*rect),
+                    _ => None,
+                })
+                .expect("a title line")
+        };
+        for scale in SCALES {
+            for wears in Wears::ALL {
+                let f = Px { x: 40, y: 90, w: 703, h: 511 };
+                let c = close_px(f, wears, scale);
+                let well = well_px(f, wears, scale);
+                // In the title band, and inside the frame.
+                assert!(c.y >= f.y && c.bottom() <= well.y, "{wears:?} at {scale}: {c:?} title to {}", well.y);
+                assert!(c.x > f.x && c.right() <= f.right(), "{wears:?} at {scale}: {c:?}");
+                // At the right end: what is left of the frame past it is the
+                // title's own inset.
+                assert_eq!(f.right() - c.right(), len_px(title_inset_x(wears), scale), "{wears:?} at {scale}");
+                // Centred up and down, to a pixel.
+                assert!(((c.y - f.y) - (well.y - c.bottom())).abs() <= 1, "{wears:?} at {scale}: {c:?}");
+
+                let d = a(wears, "a-name", Shown::NeedsYou, "等批准");
+                let mut v = view(false, scale, false);
+                let open = longest(&build(f, &d, &v, &same));
+                v.close = true;
+                let kept = longest(&build(f, &d, &v, &same));
+                // The line ends left of the cross, with a gap.
+                let end = f.x + ((kept.x + kept.w) * scale).round() as i32;
+                assert!(end + len_px(pane::BAR_GAP, scale) - 1 <= c.x, "{wears:?} at {scale}: line ends {end}, cross at {}", c.x);
+                // And without the cross it would have run over it.
+                let open_end = f.x + ((open.x + open.w) * scale).round() as i32;
+                assert!(open_end > c.x, "{wears:?} at {scale}");
+            }
+        }
+    }
+
+    /// Lit, the cross is in the name's ink; at rest in the second ink.
+    #[test]
+    fn the_close_cross_lights_in_the_names_ink() {
+        for dark in [false, true] {
+            let theme = look::theme(dark);
+            assert_eq!(close_ink(Wears::Supervisor, theme, true), theme.text);
+            assert_eq!(close_ink(Wears::Supervisor, theme, false), theme.text_secondary);
+            assert_eq!(close_ink(Wears::Worker, theme, true), theme.terminal_bold);
+            assert_eq!(close_ink(Wears::Worker, theme, false), theme.terminal_dim);
         }
     }
 

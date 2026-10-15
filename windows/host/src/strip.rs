@@ -34,6 +34,7 @@ use crate::{logf, plogf, wlogf};
 use crate::i18n::{n_, tr};
 use crate::menu::{draw_menu_button, show_root_menu};
 use crate::tabs::{self, TabId};
+use polter_split_tree::PaneId;
 use polter_control_room::layout::Rect as ChipRect;
 use polter_control_room::look::{self, Rgba};
 use polter_control_room::rules::{self, Kind};
@@ -204,6 +205,56 @@ pub fn menu_w(scale: f64) -> i32 {
 
 pub fn strip_h(scale: f64) -> i32 {
     ((STRIP_H as f64) * scale).round() as i32
+}
+
+/// A close cross in `c`, two strokes drawn rather than a font character so
+/// it lines up at any DPI: the strip's tabs, and a pane's title
+/// (`pane_frames`, task 1583).
+pub fn draw_cross(hdc: HDC, c: RECT, color: COLORREF, scale: f64) {
+    unsafe {
+        let pen = CreatePen(PS_SOLID, (1.0 * scale).max(1.0) as i32, color);
+        let old_pen = SelectObject(hdc, pen.into());
+        let pad = (4.0 * scale) as i32;
+        // **Two off-by-ones meet here, and one of them used to cancel
+        // the other -- which is why only half of this was visibly
+        // wrong.**
+        //
+        //  1. `c.right` and `c.bottom` are a `RECT`'s *exclusive*
+        //     edges. The last pixel is at `right - 1`, `bottom - 1`,
+        //     so `c.right - pad` names a column one to the right of
+        //     the symmetric partner of `c.left + pad`.
+        //  2. `LineTo` does not paint its endpoint.
+        //
+        // Vertically the two cancel: both strokes end at the bottom,
+        // so both drop their last row, which is exactly the row (1)
+        // had wrongly included. **The cross was centred vertically at
+        // every scale** -- checked, and it is why a criterion that
+        // measured only the centre would have found nothing.
+        //
+        // Horizontally they do not. The `\` stroke ends on the right
+        // and drops its rightmost column, cancelling (1); the `/`
+        // stroke ends on the *left* and drops its leftmost column,
+        // which compounds it. **So the `/` sat one column to the right
+        // of the `\`, at every DPI scale**, and the glyph read as a
+        // sheared cross rather than an X -- at 1.5x the two strokes
+        // do not even meet in one pixel, they run side by side through
+        // the middle.
+        //
+        // The fix is to name the *last painted pixel* and then aim one
+        // step past it, in the direction of travel, so `LineTo`'s
+        // exclusive end lands on the step beyond rather than inside
+        // the glyph.
+        let x0 = c.left + pad;
+        let y0 = c.top + pad;
+        let x1 = c.right - 1 - pad;
+        let y1 = c.bottom - 1 - pad;
+        let _ = MoveToEx(hdc, x0, y0, None);
+        let _ = LineTo(hdc, x1 + 1, y1 + 1);
+        let _ = MoveToEx(hdc, x1, y0, None);
+        let _ = LineTo(hdc, x0 - 1, y1 + 1);
+        SelectObject(hdc, old_pen);
+        let _ = DeleteObject(pen.into());
+    }
 }
 
 /// One tab's geometry: the whole tab, and its close button.
@@ -767,6 +818,10 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
     unsafe {
         let _ = TrackMouseEvent(&mut tme);
     }
+    // The same pointer over a pane's title, below the strip: whether it
+    // shows that pane's close cross (task 1583). The strip and the titles
+    // share the frame window's one `WM_MOUSEMOVE` and one leave.
+    crate::pane_frames::on_mouse_move(frame, x, y);
 
     let h = hit(&g, x, y);
     let now = cursor();
@@ -1114,6 +1169,7 @@ fn scroll_into_view(frame: HWND, id: TabId) {
 }
 
 pub fn on_mouse_leave(frame: HWND) {
+    crate::pane_frames::on_mouse_leave(frame);
     with_ui(frame, |u| u.hover = Hit::None);
     repaint(frame);
 }
@@ -1483,53 +1539,7 @@ pub fn paint(frame: HWND) {
             // character, so it lines up at any DPI.
             if slot.close.right > slot.close.left {
                 let lit = matches!(hover, Hit::Close(h) if h == slot.id);
-                let pen = CreatePen(
-                    PS_SOLID,
-                    (1.0 * scale).max(1.0) as i32,
-                    COLORREF(gdi(if lit { buttons.text_hot } else { buttons.glyph_dim })),
-                );
-                let old_pen = SelectObject(mem, pen.into());
-                let pad = (4.0 * scale) as i32;
-                let c = slot.close;
-                // **Two off-by-ones meet here, and one of them used to cancel
-                // the other -- which is why only half of this was visibly
-                // wrong.**
-                //
-                //  1. `c.right` and `c.bottom` are a `RECT`'s *exclusive*
-                //     edges. The last pixel is at `right - 1`, `bottom - 1`,
-                //     so `c.right - pad` names a column one to the right of
-                //     the symmetric partner of `c.left + pad`.
-                //  2. `LineTo` does not paint its endpoint.
-                //
-                // Vertically the two cancel: both strokes end at the bottom,
-                // so both drop their last row, which is exactly the row (1)
-                // had wrongly included. **The cross was centred vertically at
-                // every scale** -- checked, and it is why a criterion that
-                // measured only the centre would have found nothing.
-                //
-                // Horizontally they do not. The `\` stroke ends on the right
-                // and drops its rightmost column, cancelling (1); the `/`
-                // stroke ends on the *left* and drops its leftmost column,
-                // which compounds it. **So the `/` sat one column to the right
-                // of the `\`, at every DPI scale**, and the glyph read as a
-                // sheared cross rather than an X -- at 1.5x the two strokes
-                // do not even meet in one pixel, they run side by side through
-                // the middle.
-                //
-                // The fix is to name the *last painted pixel* and then aim one
-                // step past it, in the direction of travel, so `LineTo`'s
-                // exclusive end lands on the step beyond rather than inside
-                // the glyph.
-                let x0 = c.left + pad;
-                let y0 = c.top + pad;
-                let x1 = c.right - 1 - pad;
-                let y1 = c.bottom - 1 - pad;
-                let _ = MoveToEx(mem, x0, y0, None);
-                let _ = LineTo(mem, x1 + 1, y1 + 1);
-                let _ = MoveToEx(mem, x1, y0, None);
-                let _ = LineTo(mem, x0 - 1, y1 + 1);
-                SelectObject(mem, old_pen);
-                let _ = DeleteObject(pen.into());
+                draw_cross(mem, slot.close, COLORREF(gdi(if lit { buttons.text_hot } else { buttons.glyph_dim })), scale);
             }
         };
 
@@ -2027,6 +2037,12 @@ const _: () = {
     assert!(found, "TAB_MENU lost the worker-mentions row");
 };
 
+/// A pane title's own first row (task 1583): the macOS host's msgid
+/// (task 1582), and the one the command palette already has.
+const CLOSE_TERMINAL: &str = n_("Close Terminal");
+/// Its command id, clear of every range below.
+const PANE_CLOSE_ID: usize = 0x5500;
+
 /// Command ids. Well clear of anything Windows sends, and clear of
 /// `ctxmenu.rs`'s `0x4000` block so a stray id cannot be read by both.
 const TAB_ID_BASE: usize = 0x5000;
@@ -2059,7 +2075,11 @@ fn ordinal(frame: HWND, id: TabId) -> String {
 }
 
 /// The tab right-click menu, on the tab that was right-clicked.
-fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
+///
+/// `pane`: opened on that pane's title (task 1583). The menu then starts
+/// with the pane's own «Close Terminal», a separator, and the tab's rows
+/// below -- the macOS host's order (task 1582).
+fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<PaneId>) {
     let mark = tabs::tab_mark(frame, target.id);
     let (role, shielded) = (mark.role, mark.shielded);
     let colour = tabs::tab_color(frame, target.id);
@@ -2089,6 +2109,13 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
         }
 
         let mut items = 0usize;
+        if pane.is_some() {
+            let mut wide: Vec<u16> = tr(CLOSE_TERMINAL).encode_utf16().collect();
+            wide.push(0);
+            let _ = AppendMenuW(menu, MF_STRING, PANE_CLOSE_ID, PCWSTR(wide.as_ptr()));
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            items += 1;
+        }
         // The control room's tab gets the rows that act on a tab and
         // nothing else: no separators, no colour.
         let room = match tabs::kind_of(frame, target.id) {
@@ -2232,6 +2259,13 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32) {
 
     if chosen == 0 {
         wlogf!(frame, "[tabmenu] dismissed without a choice");
+        return;
+    }
+    if chosen == PANE_CLOSE_ID {
+        match pane {
+            Some(pane) => crate::pane_frames::close(frame, pane, "«Close Terminal» on its title's menu"),
+            None => wlogf!(frame, "[tabmenu] «Close Terminal» chosen on a menu that named no pane; nothing"),
+        }
         return;
     }
     if (TAB_COLOR_BASE..TAB_COLOR_BASE + TAB_COLORS.len()).contains(&chosen) {
@@ -2513,8 +2547,34 @@ fn run_strip_host_action(frame: HWND, name: &str) -> bool {
 /// A right button released over the strip's **client** part: the tabs, their
 /// close crosses, the `+`, the chevron, the `≡`.
 pub fn on_right_click(frame: HWND, x: i32, y: i32) {
+    // **A pane's title: the tab menu, for that pane** (task 1583). The
+    // pane takes the keyboard first -- the one thing the right-click
+    // changes -- so the rows that act on the tab's terminal act on this
+    // one, as they would after clicking into it. Before this, a right-click
+    // there fell through to the blank strip's menu below.
+    if let Some(pane) = crate::pane_frames::title_at(frame, x, y) {
+        match tabs::pane_hwnd(frame, pane) {
+            Some(h) => tabs::focus_pane_at(h),
+            None => {
+                wlogf!(frame, "[panes] right-click on pane {}'s title: it is gone", pane);
+                return;
+            }
+        }
+        let target = tabs::window(frame).and_then(|w| {
+            let index = w.tabs.iter().position(|t| t.panes().iter().any(|p| p.id == pane))?;
+            Some(MenuTarget { index, id: w.tabs[index].id, n: w.tabs.len() })
+        });
+        match target {
+            Some(target) => {
+                wlogf!(frame, "[panes] right-click on pane {}'s title: the menu of tab {}", pane, target.index + 1);
+                show_tab_menu(frame, target, x, y, Some(pane));
+            }
+            None => wlogf!(frame, "[panes] right-click on pane {}'s title: no tab holds it", pane),
+        }
+        return;
+    }
     if let Some(target) = tab_menu_target(frame, x, y) {
-        show_tab_menu(frame, target, x, y);
+        show_tab_menu(frame, target, x, y, None);
         return;
     }
     let g = slots(frame);

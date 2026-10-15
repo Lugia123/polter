@@ -68,6 +68,9 @@ enum Gesture {
         /// Letting go without a drag gives it the keyboard (a title). The
         /// handle does nothing else, as on macOS.
         clicks: bool,
+        /// Down on its title's close cross: letting go on the same cross
+        /// closes it, anywhere else nothing (task 1583).
+        closes: bool,
     },
     Dragging(Drag),
 }
@@ -204,6 +207,15 @@ fn to_screen(owner: HWND, r: Rect) -> RECT {
 /// when it was on a pane's title**, and then this has taken it.
 pub fn title_press(frame: HWND, x: i32, y: i32) -> bool {
     let Some(pane) = crate::pane_frames::title_at(frame, x, y) else { return false };
+    // The close cross is a button, not a grip: it neither drags nor gives
+    // the pane the keyboard, and acts on release, as the strip's does.
+    if crate::pane_frames::close_at(frame, x, y) == Some(pane) {
+        GESTURE.with(|g| *g.borrow_mut() = Gesture::Pressed { frame: frame.0 as isize, pane, at: cursor(), threshold: 0.0, drags: false, clicks: false, closes: true });
+        unsafe {
+            SetCapture(frame);
+        }
+        return true;
+    }
     let Some((s, scale)) = situation(frame, pane) else { return false };
     match drag::title_grip(setting(), s) {
         // A lent pane's placeholder: its terminal is in the control room.
@@ -235,7 +247,7 @@ pub fn handle_press(pane_hwnd: HWND, x: i32, y: i32) -> bool {
 
 fn press(frame: HWND, pane: PaneId, threshold: f64, drags: bool, clicks: bool) {
     let at = cursor();
-    GESTURE.with(|g| *g.borrow_mut() = Gesture::Pressed { frame: frame.0 as isize, pane, at, threshold, drags, clicks });
+    GESTURE.with(|g| *g.borrow_mut() = Gesture::Pressed { frame: frame.0 as isize, pane, at, threshold, drags, clicks, closes: false });
     unsafe {
         SetCapture(frame);
     }
@@ -425,11 +437,23 @@ pub fn on_up() -> bool {
     let was = GESTURE.with(|g| std::mem::replace(&mut *g.borrow_mut(), Gesture::Idle));
     match was {
         Gesture::Idle => false,
-        Gesture::Pressed { frame, pane, clicks, .. } => {
+        Gesture::Pressed { frame, pane, clicks, closes, .. } => {
             unsafe {
                 let _ = ReleaseCapture();
             }
             let frame = HWND(frame as *mut core::ffi::c_void);
+            if closes {
+                let mut at = cursor();
+                unsafe {
+                    let _ = ScreenToClient(frame, &mut at);
+                }
+                if crate::pane_frames::close_at(frame, at.x, at.y) == Some(pane) {
+                    crate::pane_frames::close(frame, pane, "close cross");
+                } else {
+                    wlogf!(frame, "[panes] close cross on pane {} let go elsewhere; nothing", pane);
+                }
+                return true;
+            }
             if clicks {
                 // The click gives the pane the keyboard -- the same call a
                 // click inside the terminal makes.
@@ -534,6 +558,10 @@ pub fn title_cursor(frame: HWND) -> bool {
         let _ = ScreenToClient(frame, &mut at);
     }
     let Some(pane) = crate::pane_frames::title_at(frame, at.x, at.y) else { return false };
+    // Over the close cross the pointer stays an arrow: it is a button.
+    if crate::pane_frames::close_at(frame, at.x, at.y) == Some(pane) {
+        return false;
+    }
     let Some((s, _)) = situation(frame, pane) else { return false };
     if drag::title_grip(setting(), s) != TitleGrip::Drag {
         return false;
