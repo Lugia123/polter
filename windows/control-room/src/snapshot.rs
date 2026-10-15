@@ -39,6 +39,42 @@ impl Shown {
     }
 }
 
+/// The "Fix" button on a card that reads "Failed" (task 1560,
+/// `ControlFix.zig`): not there, there, or pressed and greyed until the card
+/// changes. Which is the core's to say; a host draws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fix {
+    None,
+    Offered,
+    Sent,
+}
+
+impl Fix {
+    pub const ALL: [Fix; 3] = [Fix::None, Fix::Offered, Fix::Sent];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Fix::None => "none",
+            Fix::Offered => "offered",
+            Fix::Sent => "sent",
+        }
+    }
+
+    pub(crate) fn parse(s: &str) -> Option<Fix> {
+        Fix::ALL.into_iter().find(|v| v.name() == s)
+    }
+}
+
+/// A row's `fix`: none where a core from before task 1560 wrote none, and
+/// a word this build does not know is an error, never a missing button.
+pub(crate) fn fix_of(v: &Value, path: &str) -> Res<Fix> {
+    if v.get("fix").is_none() {
+        return Ok(Fix::None);
+    }
+    let word = text(v, path, "fix")?;
+    Fix::parse(&word).ok_or(DecodeError::UnknownValue(format!("{path}.fix={word}")))
+}
+
 /// Who is waiting, as the core says it. A host turns this into words and
 /// never works it out from `steward` and `terminal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,6 +444,8 @@ pub struct Group {
     /// None in a snapshot from before the core said it; then nothing is
     /// offered.
     pub supervisor: Option<SupervisorStart>,
+    /// The "Fix" button (`Fix`).
+    pub fix: Fix,
 }
 
 /// Which of the three frames a terminal's pane wears in its own tab, as the
@@ -877,6 +915,7 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         since_ms: int(attention, &at, "since_ms")?,
         event_ms: opt_int(attention, &at, "event_ms")?,
         supervisor,
+        fix: fix_of(v, path)?,
     })
 }
 

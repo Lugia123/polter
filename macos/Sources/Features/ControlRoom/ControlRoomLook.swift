@@ -160,6 +160,10 @@ enum ControlRoomLook {
         /// One line of what a row waits on.
         /// Source: design v18, direction A: src/v18.css and CHANGES.md.
         static let askLineHeight: Double = 20.0
+        /// The line under a card that reads Failed, holding its Fix button (task 1560) and, when the last press was refused, why: a regular-size push button at the menu's font, which does not fit in `ask_line_height`.
+        /// TENTATIVE (other candidate: 24). Not in the design. 28 is the room the retention notice's OK takes; 24 would fit a small button, whose font is under the menu's.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let fixLineHeight: Double = 28.0
         /// How many lines what a row waits on may wrap to. A sentence takes up to this many and ends in an ellipsis. A command of this many steps or fewer gives every step a line first, and what is left over to the steps that need a second.
         /// TENTATIVE (other candidate: 4). The design's direction B drew four. The user chose A, which draws three.
         /// Source: design v18, direction A: src/v18.css and CHANGES.md.
@@ -714,6 +718,7 @@ enum ControlRoomLook {
     /// Each is one value in the data; ruling on it is one edit there.
     static let tentative: [String] = [
         "window_tab.working_glyph_shown",
+        "side.fix_line_height",
         "side.ask_max_lines",
         "side.ask_max_steps",
         "stack_tab.inset",

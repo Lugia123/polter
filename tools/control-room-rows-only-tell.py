@@ -26,6 +26,15 @@ sources:
   3. The names the buttons went by, anywhere: `ControlRoomRowActs`,
      `ControlRoomActButtons`, `approvable`.
 
+**"Fix" is not an answer, and is allowed** (task 1560). On a card that reads
+"Failed" there is a button that has the core type a paragraph into the
+card's *supervisor* -- who failed, with what, when -- and leaves the
+supervisor to decide: go on, retry, say "done", or close it. It approves,
+refuses and replies to nothing on the person's behalf, which is what this
+gate is about. On macOS it is its own view (`ControlRoomFixLine.swift`) so
+the list still has its one button; on Windows it is `Act::Fix` /
+`Act::FixTerminal`, which this does not refuse.
+
 **NOT CHECKED.**
 
   * A way of answering that goes round these names -- a JSON request built

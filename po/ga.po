@@ -3671,6 +3671,28 @@ msgstr ""
 msgid "Polter could not find its own program to start the role with."
 msgstr ""
 
+#: windows/control-room/src/scene.rs:50
+msgid "Fix"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:51
+msgid "Supervisor notified"
+msgstr ""
+
+#: windows/control-room/src/act.rs:255
+msgid "It is no longer failing. Nothing was sent."
+msgstr ""
+
+#: windows/control-room/src/act.rs:256
+msgid "The supervisor has already been told."
+msgstr ""
+
+#: windows/control-room/src/act.rs:257
+msgid ""
+"No agent is connected in that terminal, so nothing was typed. It is kept in "
+"the group."
+msgstr ""
+
 #: windows/control-room/src/lend.rs:327
 msgid "The supervisor's terminal is no longer open."
 msgstr ""
