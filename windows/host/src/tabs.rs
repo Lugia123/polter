@@ -110,6 +110,11 @@ pub struct Pane {
     /// runs (`journal::start`), so a pane cannot be given a name that
     /// nothing writes to after the save.
     pub scrollback: Option<crate::journal::Journaled>,
+    /// The snapshot this pane was restored from, **not journaled yet**: a
+    /// pane made from a project holds it here until the page it is on has
+    /// been built whole (`begin_journals`), and a page taken back writes
+    /// nothing (task 1609; `journal::Held`).
+    pub held: Option<crate::journal::Held>,
     /// Whether the core was last told this terminal cannot be seen because
     /// it is stacked behind another (`ghostty_surface_set_occlusion`, task
     /// 1583). Set and cleared by `layout` only, so it is told once per
@@ -2819,13 +2824,15 @@ fn create_pane(
         behind_said: false,
         // A pane made from a saved project keeps the snapshot it was made
         // from, so saving it again writes to the same file -- and journals
-        // to it from now on: a pane just restored has no journal, and the
-        // first write rewrites the file from the restored state.
-        scrollback: spec
+        // to it, **once its page has been built** (`begin_journals`, task
+        // 1609): the first write rewrites the file from the restored state,
+        // and a page refused half-built must leave the file as it was.
+        scrollback: None,
+        held: spec
             .scrollback
             .as_deref()
             .and_then(crate::project::Slot::from_restore_path)
-            .map(|slot| crate::journal::start(id, s as usize, slot)),
+            .map(|slot| crate::journal::hold(id, s as usize, slot)),
     })
 }
 
@@ -5335,7 +5342,7 @@ mod pane_metadata_tests {
     use super::*;
 
     fn test_pane(id: u64, surface: usize) -> Pane {
-        Pane { id, hwnd: 0, surface, shielded: false, cwd: None, title: None, history: None, scrollback: None, behind_said: false }
+        Pane { id, hwnd: 0, surface, shielded: false, cwd: None, title: None, history: None, scrollback: None, held: None, behind_said: false }
     }
 
     /// The test machine, 94bf0b56a: two panes side by side, the right one
@@ -6029,38 +6036,65 @@ fn settle_after_move(src: HWND, dst: HWND, emptied: Option<TabId>) {
 /// was closed by anybody, so it is not remembered for reopening, and the
 /// window is left to the caller, which knows whether it made that too.
 pub fn retract_tab(frame: HWND, id: TabId) {
-    let (doomed, snaps): (Vec<(PaneId, isize, usize)>, Vec<std::path::PathBuf>) = {
+    // What its panes held of a project's snapshots: written to by none of
+    // them, since nothing is journaled before the page is built (task 1609)
+    // -- counted, so the log says the files were left alone, and a pane
+    // that was journaled after all says so.
+    let (doomed, held, journaled): (Vec<(PaneId, isize, usize)>, usize, usize) = {
         let Some(mut win) = window(frame) else { return };
         let Some(at) = win.tabs.iter().position(|t| t.id == id) else { return };
         let front = win.tabs.get(win.active).map(|t| t.id);
         let tab = win.tabs.remove(at);
         win.active = front.and_then(|f| win.tabs.iter().position(|t| t.id == f)).unwrap_or(at.min(win.tabs.len().saturating_sub(1)));
-        let mut snaps: Vec<std::path::PathBuf> = Vec::new();
-        for p in tab.panes() {
-            if let Some(j) = &p.scrollback {
-                if !snaps.contains(&j.slot().dir) {
-                    snaps.push(j.slot().dir.clone());
-                }
-            }
-        }
-        (tab.panes().iter().map(|p| (p.id, p.hwnd, p.surface)).collect(), snaps)
+        (
+            tab.panes().iter().map(|p| (p.id, p.hwnd, p.surface)).collect(),
+            tab.panes().iter().filter(|p| p.held.is_some()).count(),
+            tab.panes().iter().filter(|p| p.scrollback.is_some()).count(),
+        )
     };
     for (pane, hwnd, surface) in &doomed {
         free_pane(*pane, *hwnd, *surface);
     }
-    wlogf!(frame, "[tab] {:?} taken back: {} pane(s) freed, {} tab(s) left", id, doomed.len(), count(frame));
-    // **After the surfaces are freed**, which is the core's last write to
-    // them: the snapshot directory their journals made goes too, when
-    // nothing was left in it (task 1600 ⑤).
-    for dir in &snaps {
-        if crate::project::remove_if_empty(dir) {
-            wlogf!(frame, "[tab] {:?} taken back: removed the empty snapshot directory {:?}", id, dir);
-        }
-    }
+    wlogf!(
+        frame,
+        "[tab] {:?} taken back: {} pane(s) freed, {} tab(s) left; {} snapshot(s) it was restored from left as they were, {} journaled",
+        id,
+        doomed.len(),
+        count(frame),
+        held,
+        journaled
+    );
     if count(frame) > 0 {
         set_active(frame, active_index(frame));
     }
     crate::uia::tabs_changed(frame);
+}
+
+/// The page tab `id` of `frame` holds has been built whole: every pane in it
+/// made from a project's snapshot is journaled there from now on
+/// (`journal::begin`, task 1609). Answers how many.
+///
+/// ⚠️ **The core is asked outside the window lock** (`journal::start`): the
+/// held slots are taken out under it, asked for with it dropped, and put
+/// back on the panes that are still there.
+pub fn begin_journals(frame: HWND, id: TabId) -> usize {
+    let held: Vec<crate::journal::Held> = {
+        let Some(mut win) = window(frame) else { return 0 };
+        let Some(tab) = win.tabs.iter_mut().find(|t| t.id == id) else { return 0 };
+        tab.panes_mut().iter_mut().filter_map(|p| p.held.take()).collect()
+    };
+    let begun: Vec<(PaneId, crate::journal::Journaled)> = held.into_iter().map(|h| (h.pane(), crate::journal::begin(h))).collect();
+    let n = begun.len();
+    if let Some(mut win) = window(frame) {
+        if let Some(tab) = win.tabs.iter_mut().find(|t| t.id == id) {
+            for (pane, j) in begun {
+                if let Some(p) = tab.panes_mut().iter_mut().find(|p| p.id == pane) {
+                    p.scrollback = Some(j);
+                }
+            }
+        }
+    }
+    n
 }
 
 /// Take away a tab that a move left with no pane. **Not `destroy_tab_at`**:

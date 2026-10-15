@@ -727,11 +727,25 @@ fn still_up(h: Handles) -> bool {
     handles().is_some_and(|now| now.hwnd == h.hwnd)
 }
 
+///
+/// **In front, over the window that asked** (task 1609): a project that
+/// fails to open may have made a window of its own and closed it again, and
+/// the foreground went elsewhere with it -- on a real machine (#1605) "The
+/// project could not be opened" came up behind other windows twice. The
+/// window that asked is brought forward, and the box is made the foreground
+/// window (`tell_style`).
 fn tell(frame: HWND, title: &str, text: &str, icon: MESSAGEBOX_STYLE) {
     let (title, body) = (wide(&tr(title)), wide(text));
     unsafe {
-        MessageBoxW(Some(frame), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | icon);
+        let _ = SetForegroundWindow(frame);
+        MessageBoxW(Some(frame), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), tell_style(icon));
     }
+}
+
+/// The style of every box `tell` raises: one button, the icon, and the
+/// foreground.
+fn tell_style(icon: MESSAGEBOX_STYLE) -> MESSAGEBOX_STYLE {
+    MB_OK | icon | MB_SETFOREGROUND
 }
 
 // ================================================================== window
@@ -1141,5 +1155,19 @@ fn paint(hwnd: HWND) {
             fill(hdc, &rect(l.rule_bottom), theme::border());
         }
         let _ = EndPaint(hwnd, &ps);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task 1609: "The project could not be opened" came up behind other
+    /// windows (#1605). Every box `tell` raises asks to be the foreground.
+    #[test]
+    fn a_box_this_picker_raises_comes_to_the_front() {
+        let style = tell_style(MB_ICONINFORMATION);
+        assert_eq!(style.0 & MB_SETFOREGROUND.0, MB_SETFOREGROUND.0, "{style:?}");
+        assert_eq!(style.0 & MB_ICONINFORMATION.0, MB_ICONINFORMATION.0);
     }
 }
