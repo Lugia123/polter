@@ -4212,7 +4212,17 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !bool {
     // person. `Server.agentPresent` takes its own lock, so asking from the
     // app thread is what the queuing side already does. Not counted as
     // delivered, the same as a notice that was printed from the start.
-    if (!self.app.agentPresent(self.id)) {
+    //
+    // Logged either way (#1534): which answer this got, at which moment, is
+    // the one thing a notice landing in a shell cannot be read back from.
+    const agent_here = self.app.agentPresent(self.id);
+    log.info("poltergeist: notice at typing id={x} agent_present={} -> {s} text=\"{s}\"", .{
+        self.id,
+        agent_here,
+        if (agent_here) "typing" else "printed instead",
+        text[0..@min(text.len, 60)],
+    });
+    if (!agent_here) {
         try self.showPoltergeistAlert(text);
         return false;
     }
@@ -4254,9 +4264,13 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !bool {
         // Said in the log where it happened; the line is marked as a draft,
         // so nothing more is typed onto it.
         error.NotSubmitted,
-        => return false,
+        => {
+            log.info("poltergeist: notice id={x} not typed err={t}", .{ self.id, err });
+            return false;
+        },
         else => return err,
     };
+    log.info("poltergeist: notice id={x} typed and submitted", .{self.id});
     return true;
 }
 

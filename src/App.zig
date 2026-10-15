@@ -2303,7 +2303,13 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
         const line = self.poltergeist.drainIfDue(to, now_ms, &buf, self.chat.peers()) orelse continue;
         buf[line.len] = 0;
 
-        const msg: apprt.surface.Message = if (self.agentPresent(to))
+        const agent_here = self.agentPresent(to);
+        log.info("poltergeist: hand-over queued id={x} agent_present={} -> {s}", .{
+            to,
+            agent_here,
+            if (agent_here) "to type" else "to print",
+        });
+        const msg: apprt.surface.Message = if (agent_here)
             .{ .poltergeist_handover = buf }
         else
             .{ .poltergeist_alert = buf };
@@ -8835,7 +8841,15 @@ fn noticeFor(
     id: poltergeistpkg.Bus.Id,
     buf: [255:0]u8,
 ) apprt.surface.Message {
-    return if (self.agentPresent(id))
+    const agent_here = self.agentPresent(id);
+    // The first of the two answers a notice gets; the second is asked when
+    // it is typed (`Surface.typePoltergeistNotice`). Both logged (#1534).
+    log.info("poltergeist: notice queued id={x} agent_present={} -> {s}", .{
+        id,
+        agent_here,
+        if (agent_here) "to type" else "to print",
+    });
+    return if (agent_here)
         .{ .poltergeist_notice = buf }
     else
         .{ .poltergeist_alert = buf };

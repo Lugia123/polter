@@ -793,6 +793,15 @@ fn connectionMain(self: *Server, index: usize) void {
         // lock shutdown uses. After this nobody else can find the
         // descriptor, so nobody can act on one this thread has closed.
         self.slots_mutex.lockUncancelable(self.io);
+        // The moment `agentPresent` stops counting it (#1534): set against
+        // the moment the agent was seen to exit, this is how long a bare
+        // shell was still answered as an agent.
+        if (self.slots[index].caller) |c| switch (c) {
+            .terminal => |tid| log.info("poltergeist: connection slot={d} for terminal={x} closed, listens={}", .{
+                index, tid, self.slots[index].listens,
+            }),
+            .plugin => {},
+        };
         self.slots[index].stream = null;
         // Same moment, same lock: the connection is over, so it no longer
         // speaks for anybody.
@@ -819,6 +828,12 @@ fn connectionMain(self: *Server, index: usize) void {
         defer self.slots_mutex.unlock(self.io);
         self.slots[index].caller = caller;
         self.slots[index].listens = shook.kind.listens();
+    }
+    switch (caller) {
+        .terminal => |tid| log.info("poltergeist: connection slot={d} for terminal={x} kind={t}", .{
+            index, tid, shook.kind,
+        }),
+        .plugin => {},
     }
 
     while (self.running.load(.acquire)) {
