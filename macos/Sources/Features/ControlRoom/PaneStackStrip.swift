@@ -151,16 +151,24 @@ struct PaneStackStripLayout: Equatable {
     /// wholly in view: the least move that does it, none when it already
     /// is. What keeps the tab in front in sight, as the window's own tabs
     /// keep theirs.
+    ///
+    /// **In view is clear of the fades** (task 1594): an end with more tabs
+    /// past it fades out over `scrollFade` of the window, and a tab brought
+    /// only to the window's edge stood under it. So the tab is brought
+    /// `scrollFade` inside the edge it comes in at; at the very start and
+    /// end there is no fade, and the clamp leaves the first and the last
+    /// tab at the edge.
     func revealing(_ member: Int, from offset: CGFloat) -> CGFloat {
         let offset = min(max(offset, 0), maxOffset)
         guard let tab = tabs.first(where: { $0.member == member }) else { return offset }
+        let fade = CGFloat(Look.StackTab.scrollFade)
         let start = tab.x - CGFloat(Look.StackTab.inset)
         let end = start + tab.width
         let to: CGFloat
-        if start < offset {
-            to = start
-        } else if end > offset + viewport {
-            to = end - viewport
+        if start < offset + fade {
+            to = start - fade
+        } else if end > offset + viewport - fade {
+            to = end - viewport + fade
         } else {
             to = offset
         }

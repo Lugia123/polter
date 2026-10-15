@@ -1108,6 +1108,22 @@ msgstr ""
 msgid "Stack: Onto the Previous Pane"
 msgstr ""
 
+#: windows/control-room/src/panestack.rs:26
+msgid "Add a terminal to this pane"
+msgstr ""
+
+#: windows/control-room/src/panestack.rs:29
+msgid "Close Others"
+msgstr ""
+
+#: windows/control-room/src/panestack.rs:30
+msgid "Close to the Right"
+msgstr ""
+
+#: windows/control-room/src/panestack.rs:31
+msgid "Close to the Left"
+msgstr ""
+
 #: src/input/command.zig:667
 msgid "Close Terminal"
 msgstr ""

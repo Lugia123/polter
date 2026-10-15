@@ -1784,3 +1784,87 @@ fn every_refusal_is_said_in_chinese() {
     // `Other` keeps its place for the name, or the name would vanish.
     assert!(catalogue[Refusal::Other.message()].contains("{}"));
 }
+
+/// Task 1594: **every string this crate marks for translation has a Chinese
+/// one.** A stack tab's «Close Others», «Close to the Right» and «Close to
+/// the Left» reached a Chinese window in English: they are marked `n_` here,
+/// in `panestack.rs`, and the host's own catalogue check
+/// (`every_msgid_this_host_shows_has_a_translation`) walks `host/src` only,
+/// so nothing anywhere read them. This reads every source file of this
+/// crate, so a string added tomorrow is checked tomorrow.
+#[test]
+fn every_string_this_crate_marks_is_said_in_chinese() {
+    const PO: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../po/zh_CN.po"));
+    // Said the same in every language, so a msgstr equal to its msgid is
+    // right for these and nothing else.
+    const NAMES: &[&str] = &["Polter"];
+
+    let mut catalogue = std::collections::HashMap::new();
+    let (mut id, mut s, mut into) = (String::new(), String::new(), 0u8);
+    for line in PO.lines().chain(std::iter::once("")) {
+        let quoted = |l: &str| l.strip_prefix('"').and_then(|r| r.strip_suffix('"')).map(|r| r.replace("\\\"", "\""));
+        if let Some(r) = line.strip_prefix("msgid ") {
+            (id, s, into) = (quoted(r).unwrap_or_default(), String::new(), 1);
+        } else if let Some(r) = line.strip_prefix("msgstr ") {
+            (s, into) = (quoted(r).unwrap_or_default(), 2);
+        } else if let Some(q) = quoted(line) {
+            match into {
+                1 => id.push_str(&q),
+                2 => s.push_str(&q),
+                _ => {}
+            }
+        } else {
+            if into == 2 && !id.is_empty() {
+                catalogue.insert(std::mem::take(&mut id), std::mem::take(&mut s));
+            }
+            into = 0;
+        }
+    }
+
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+    let mut marked: Vec<(String, usize, String)> = Vec::new();
+    for entry in std::fs::read_dir(dir).expect("this crate's sources") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        // This file's own sample below is not a string the crate shows.
+        if file == "fixture_tests.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let mut rest = line;
+            while let Some(at) = rest.find("n_(\"") {
+                // `n_(` itself, not the end of a longer name.
+                let before = rest[..at].chars().last();
+                let after = &rest[at + 4..];
+                let Some(end) = after.find("\")") else { break };
+                if !before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                    marked.push((file.clone(), n + 1, after[..end].replace("\\\"", "\"")));
+                }
+                rest = &after[end..];
+            }
+        }
+    }
+    // The floor under the scan: these are known to be marked here.
+    for known in ["Close Others", "Close to the Right", "Close to the Left", "Worker"] {
+        assert!(marked.iter().any(|(_, _, m)| m == known), "the scan no longer finds {known:?}");
+    }
+    // And the floor under the parse: a long, wrapped entry.
+    assert!(catalogue.get("This role isn't set up for any agent CLI yet. Pick one in the role library.").is_some_and(|t| !t.is_empty()));
+
+    let missing: Vec<String> = marked
+        .iter()
+        .filter(|(_, _, m)| match catalogue.get(m) {
+            None => true,
+            Some(t) => t.is_empty() || (t == m && !NAMES.contains(&m.as_str())),
+        })
+        .map(|(f, n, m)| format!("{f}:{n}: {m:?}"))
+        .collect();
+    assert!(missing.is_empty(), "{} string(s) would show in English on a Chinese machine:\n{}", missing.len(), missing.join("\n"));
+}

@@ -127,11 +127,12 @@ struct PaneStackStripTests {
     @Test func theTabInFrontIsScrolledIntoViewByTheLeastMove() {
         let l = Layout(wants: Array(repeating: 150, count: 8), current: 6, width: 400, status: 0)
         // Tab 6 runs from 624 to 774 of the row; the window is 340 wide.
-        #expect(l.revealing(6, from: 0) == 434)
-        // Already in view: no move.
+        // Its end comes to 16 (the fade) inside the window's right edge.
+        #expect(l.revealing(6, from: 0) == 450)
+        // Already in view, clear of both fades: no move.
         #expect(l.revealing(6, from: 500) == 500)
-        // To its left: its start comes to the window's left edge.
-        #expect(l.revealing(1, from: 500) == 104)
+        // To its left: its start comes to 16 inside the window's left edge.
+        #expect(l.revealing(1, from: 500) == 88)
         // Never past either end.
         #expect(l.revealing(7, from: 0) == 538)
         #expect(l.revealing(0, from: 900) == 0)
