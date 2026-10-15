@@ -925,8 +925,8 @@ fn undo_delete() {
 fn restore_previous() {
     let Some((_, item)) = dir_and_selected() else { return };
     if !confirm(
-        &tr("Restore the previous version of “{}”?").replacen("{}", &item.name, 1),
-        &tr("The current version becomes the previous one, so you can switch back."),
+        &tr("Restore Previous Version?"),
+        &tr("“{}” goes back to its layout before the last change. The current version is kept, so doing this again undoes it.").replacen("{}", &item.name, 1),
         &tr("Restore"),
         false,
     ) {
@@ -1295,7 +1295,7 @@ fn paint_detail(hdc: HDC, d: &Detail, e: &pj::EditorLayout, dpi: i32, offset: i6
     let dirs = pj::distinct_dirs(leaves.iter().map(|l| l.cwd.as_str()));
     let panes = leaves.len();
     let lines: [(String, String, bool); pj::DETAIL_LINES] = [
-        (tr("Last saved"), pj::format_time(d.snap.saved_at, offset), false),
+        (tr("Saved"), pj::format_time(d.snap.saved_at, offset), false),
         (tr("Panes"), size_text(panes), false),
         (tr("Directories"), if dirs.is_empty() { tr("None recorded") } else { dirs.join("; ") }, dirs.is_empty()),
         // The project file keeps no role, on either host.
@@ -1318,7 +1318,7 @@ fn paint_detail(hdc: HDC, d: &Detail, e: &pj::EditorLayout, dpi: i32, offset: i6
     let count = |s: &Snapshot| s.pane_count();
     let versions = pj::versions(Some((d.snap.saved_at, count(&d.snap))), d.prev.as_ref().map(|p| (p.saved_at, count(p))));
     for (i, v) in versions.iter().enumerate().take(2) {
-        let who = if v.current { tr("Current version") } else { tr("Previous version") };
+        let who = if v.current { tr("Current") } else { tr("Previous version") };
         let t = format!("{who} \u{b7} {} \u{b7} {}", pj::format_time(v.saved_at, offset), size_text(v.panes));
         let mut r = rect(e.history[i]);
         if !v.current {
@@ -1414,7 +1414,7 @@ fn create(host: HWND) -> bool {
             undo: mk(ID_UNDO, w!("BUTTON"), &tr("Undo"), button),
             actions: [
                 mk(ID_REVEAL, w!("BUTTON"), &tr("Show in Explorer"), button),
-                mk(ID_OVERWRITE, w!("BUTTON"), &tr("Overwrite with Current Tab"), button),
+                mk(ID_OVERWRITE, w!("BUTTON"), &tr("Overwrite with Current Tab…"), button),
                 // The default button, as on macOS: Return in the list opens
                 // (`list_proc`), and the button says so (task 1550).
                 mk(ID_OPEN, w!("BUTTON"), &tr("Open"), WINDOW_STYLE(BS_DEFPUSHBUTTON as u32)),

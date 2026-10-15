@@ -45,6 +45,7 @@ use windows::core::{s, w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+use windows::Win32::UI::Controls::EM_SETCUEBANNER;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -95,7 +96,7 @@ fn publish(st: &Model) {
             st.filtered
                 .iter()
                 .filter_map(|&i| st.commands.get(i))
-                .map(|c| (c.title.clone(), c.action.clone())),
+                .map(|c| (c.title.clone(), c.go_to.clone().map(|k| format!("go to {k}")).unwrap_or_else(|| c.action.clone()))),
         );
     }
     SNAPSHOT_SEL.store(if st.visible { st.selected } else { usize::MAX }, Ordering::Release);
@@ -218,7 +219,10 @@ pub fn invoke_row(i: usize) -> bool {
 }
 
 /// Unscaled metrics. Everything is multiplied by the window's DPI at paint.
-const ROW_H: i32 = 26;
+/// Two lines, as the macOS palette's rows: the title, and the description
+/// under it (task 1604; it was one line, the description squeezed into the
+/// right half beside the title).
+const ROW_H: i32 = 42;
 const EDIT_H: i32 = 30;
 
 /// The filter box's control id, which is the whole of how it gets an
@@ -251,7 +255,8 @@ const EDIT_H: i32 = 30;
 /// and unique among this window's children, of which there is one.
 const IDC_PALETTE_FILTER: usize = 0x50;
 const PAD: i32 = 8;
-const MAX_ROWS: i32 = 12;
+/// About as tall as it was with twelve one-line rows.
+const MAX_ROWS: i32 = 8;
 const WIDTH: i32 = 560;
 
 use crate::theme;
@@ -269,8 +274,40 @@ struct Command {
     /// Lowercased title, kept so filtering does not re-allocate per keystroke.
     haystack: String,
     /// Extra lowercased words from `synonyms.txt`, matched separately so a
-    /// synonym can win on its own without polluting the title's own score.
+    /// synonym can win on its own without polluting the title's own score --
+    /// and the action itself as words ([`action_alias`]), so an English
+    /// query finds a command whose title is translated (task 1604).
     aliases: Vec<String>,
+    /// A "Focus: …" row: the key of the terminal to go to, and no action to
+    /// run. Made afresh each time the palette opens ([`jump_commands`]).
+    go_to: Option<String>,
+}
+
+/// A command's action as words to search by: `new_split:right` is
+/// "new split right". **The title is translated and the action never is**,
+/// so in a Chinese interface "split" found nothing until the action was a
+/// thing to match (task 1604; the macOS palette's `actionAlias`, same rule).
+fn action_alias(action: &str) -> String {
+    action.chars().map(|c| if c == '_' || c == ':' { ' ' } else { c }).collect::<String>().to_lowercase()
+}
+
+/// One row per terminal there is to go to, as the macOS palette's
+/// `jumpOptions`: "Focus: <its title>", its directory under it.
+fn jump_commands() -> Vec<Command> {
+    crate::tabs::terminals_to_go_to()
+        .into_iter()
+        .map(|(key, title, cwd)| {
+            let shown = crate::i18n::tr("Focus: {}").replace("{}", &title);
+            Command {
+                action: String::new(),
+                haystack: shown.to_lowercase(),
+                aliases: vec!["focus".to_string()],
+                title: shown,
+                description: cwd.unwrap_or_default(),
+                go_to: Some(key),
+            }
+        })
+        .collect()
 }
 
 /// Extra words that reach a command, on top of its own title.
@@ -608,13 +645,15 @@ fn load_commands(config: Config) -> Vec<Command> {
             continue;
         }
         let haystack = title.to_lowercase();
-        let aliases = synonyms_for(&title);
+        let mut aliases = synonyms_for(&title);
+        aliases.push(action_alias(&action));
         out.push(Command {
             action,
             title,
             description: unsafe { cstr(c.description) },
             haystack,
             aliases,
+            go_to: None,
         });
     }
     // **Both numbers, because one of them is the claim.** "loaded 75" on its
@@ -858,6 +897,10 @@ pub fn init(hinst: windows::Win32::Foundation::HINSTANCE, config: Config) {
             w!("Segoe UI"),
         );
         SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        // What the empty box says, as the macOS palette's field does
+        // (task 1604). The system draws it; nothing here paints over it.
+        let cue: Vec<u16> = crate::i18n::tr("Execute a command…").encode_utf16().chain(Some(0)).collect();
+        SendMessageW(edit, EM_SETCUEBANNER, Some(WPARAM(1)), Some(LPARAM(cue.as_ptr() as isize)));
 
         // Take Up/Down/Enter/Esc before the edit control sees them: it would
         // beep on Enter and ignore the arrows, and there is no other way to
@@ -956,8 +999,13 @@ fn show(asked: Option<HWND>) {
         if !crate::overlay::belongs_to(had, me) {
             PREV_FOCUS.set(had);
         }
+        // The terminals there are to go to, read before the borrow: it asks
+        // the window list and the core.
+        let jumps = jump_commands();
         STATE.with(|c| {
             if let Some(st) = c.borrow_mut().as_mut() {
+                st.commands.retain(|c| c.go_to.is_none());
+                st.commands.extend(jumps);
                 st.visible = true;
                 refilter(st, "");
             }
@@ -1057,6 +1105,19 @@ fn run_index(i: usize) {
         let idx = *st.filtered.get(i)?;
         Some(st.commands[idx].action.clone())
     });
+    let go_to = STATE.with(|c| {
+        let b = c.borrow();
+        let st = b.as_ref()?;
+        let idx = *st.filtered.get(i)?;
+        st.commands[idx].go_to.clone()
+    });
+    if let Some(key) = go_to {
+        hide();
+        let ok = crate::tabs::go_to_terminal(&key);
+        // process-wide: keyed by a terminal's id, which is unique in the process
+        plogf!("[palette] uia invoke row {i} -> go to terminal {key}: {ok}");
+        return;
+    }
     match action {
         Some(a) => {
             hide();
@@ -1077,13 +1138,21 @@ fn run_index(i: usize) {
 }
 
 fn run_selected() {
-    let action = STATE.with(|c| {
-        let b = c.borrow();
-        let st = b.as_ref()?;
-        let idx = *st.filtered.get(st.selected)?;
-        Some(st.commands[idx].action.clone())
-    });
+    let (action, go_to) = STATE
+        .with(|c| {
+            let b = c.borrow();
+            let st = b.as_ref()?;
+            let idx = *st.filtered.get(st.selected)?;
+            Some((st.commands[idx].action.clone(), st.commands[idx].go_to.clone()))
+        })
+        .unzip();
     hide();
+    if let Some(key) = go_to.flatten() {
+        let ok = crate::tabs::go_to_terminal(&key);
+        // process-wide: keyed by a terminal's id, which is unique in the process
+        plogf!("[palette] go to terminal {key}: {ok}");
+        return;
+    }
     if let Some(a) = action {
         let ok = crate::binding(&a);
         logf!("[palette] run {:?} -> binding_action = {}", a, ok);
@@ -1308,7 +1377,7 @@ fn paint(hwnd: HWND) {
 
             if st.filtered.is_empty() {
                 SetTextColor(hdc, COLORREF(theme::for_window(hwnd).dim()));
-                let mut wide: Vec<u16> = "no matching command".encode_utf16().collect();
+                let mut wide: Vec<u16> = crate::i18n::tr("No matches").encode_utf16().collect();
                 let mut tr = RECT {
                     left: sc(PAD * 2),
                     top: sc(EDIT_H + PAD),
@@ -1339,13 +1408,30 @@ fn paint(hwnd: HWND) {
                     let _ = DeleteObject(sel.into());
                 }
 
+                // The key bound to it, right now, at the right end, as the
+                // macOS palette shows its symbols (task 1604). Asked on every
+                // paint for the rows on screen, not kept: `keys::shortcut_for`
+                // says why a kept one goes stale.
+                let keys = if cmd.action.is_empty() { None } else { crate::keys::shortcut_for(&cmd.action) };
+                let mut keys_left = rc.right - sc(PAD * 2);
+                if let Some(k) = &keys {
+                    let mut kw: Vec<u16> = k.encode_utf16().collect();
+                    let mut measure = RECT { left: 0, top: 0, right: rc.right, bottom: sc(ROW_H) };
+                    DrawTextW(hdc, &mut kw, &mut measure, DT_SINGLELINE | DT_CALCRECT);
+                    keys_left = rc.right - sc(PAD * 2) - (measure.right - measure.left);
+                    SetTextColor(hdc, COLORREF(theme::for_window(hwnd).dim()));
+                    let mut kr = RECT { left: keys_left, top: y, right: rc.right - sc(PAD * 2), bottom: y + sc(ROW_H) };
+                    DrawTextW(hdc, &mut kw, &mut kr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+                    keys_left -= sc(PAD * 2);
+                }
+
                 SetTextColor(hdc, COLORREF(theme::for_window(hwnd).text()));
                 let mut wide: Vec<u16> = cmd.title.encode_utf16().collect();
                 let mut tr = RECT {
                     left: sc(PAD * 2),
-                    top: y + sc(4),
-                    right: rc.right / 2,
-                    bottom: y + sc(ROW_H),
+                    top: y + sc(3),
+                    right: keys_left,
+                    bottom: y + sc(21),
                 };
                 DrawTextW(
                     hdc,
@@ -1358,16 +1444,16 @@ fn paint(hwnd: HWND) {
                     SetTextColor(hdc, COLORREF(theme::for_window(hwnd).dim()));
                     let mut dw: Vec<u16> = cmd.description.encode_utf16().collect();
                     let mut dr = RECT {
-                        left: rc.right / 2,
-                        top: y + sc(4),
-                        right: rc.right - sc(PAD * 2),
-                        bottom: y + sc(ROW_H),
+                        left: sc(PAD * 2),
+                        top: y + sc(21),
+                        right: keys_left,
+                        bottom: y + sc(ROW_H - 2),
                     };
                     DrawTextW(
                         hdc,
                         &mut dw,
                         &mut dr,
-                        DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS,
+                        DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS,
                     );
                 }
             }
@@ -1467,7 +1553,7 @@ mod row_geometry_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::score;
+    use super::{action_alias, score};
 
     #[test]
     fn empty_needle_matches_everything() {
@@ -1525,5 +1611,18 @@ mod tests {
         let short = score("new tab", "new").unwrap();
         let long = score("new tab in a very long command name here", "new").unwrap();
         assert!(short > long);
+    }
+    /// Task 1604: in a Chinese interface every title is translated, and
+    /// "split" found nothing. The action, as words, is one of the aliases.
+    #[test]
+    fn an_action_is_words_to_search_by() {
+        assert_eq!(action_alias("new_split:right"), "new split right");
+        assert_eq!(action_alias("toggle_fullscreen"), "toggle fullscreen");
+    }
+
+    #[test]
+    fn an_english_query_finds_a_translated_command_by_its_action() {
+        assert_eq!(score("向右分屏", "split"), None);
+        assert!(score(&action_alias("new_split:right"), "split").is_some());
     }
 }

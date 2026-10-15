@@ -410,10 +410,12 @@ pub fn buttons(ed: &Editor, cat: &Catalog, skills: &SkillCatalog, can_launch: bo
     }
 }
 
-/// The sentence the footer shows when nothing more urgent is there. On the
-/// macOS side this is the launch button's tooltip; here it is visible,
-/// because a greyed button with no reason next to it is a button that looks
-/// broken.
+/// The sentence the footer shows when nothing more urgent is there: why
+/// Launch is grey, else that there are unsaved changes. **The macOS footer's
+/// order** (`RoleLibraryView.launchBlockedReason`, task 1604): no terminal
+/// window, then unsaved changes ("save it first", the reason Launch is
+/// grey), then no CLI. It said only "Unsaved changes" before, which is not a
+/// reason, and never said a role with no CLI cannot be launched.
 pub fn footer_note(ed: &Editor, can_launch: bool) -> Option<(String, bool)> {
     if let Some(s) = &ed.status {
         return Some((s.clone(), true));
@@ -421,13 +423,22 @@ pub fn footer_note(ed: &Editor, can_launch: bool) -> Option<(String, bool)> {
     if ed.draft.is_none() && ed.skill.is_none() {
         return None;
     }
+    // An official skill is not launched; the reason Launch is grey is not
+    // this page's to give, and its footer says only that it is changed.
+    if ed.skill.is_none() {
+        if !can_launch {
+            return Some((tr("Open a terminal window first; the new tab goes beside it."), false));
+        }
+        if ed.is_dirty() {
+            return Some((tr("Save the role before launching it."), false));
+        }
+        if ed.draft.as_ref().is_some_and(|d| d.clis.is_empty()) {
+            return Some((tr("Pick an agent CLI under Basics to launch this role."), false));
+        }
+        return None;
+    }
     if ed.is_dirty() {
         return Some((tr("Unsaved changes"), false));
-    }
-    // An official skill is not launched; the reason Launch is grey is not
-    // this page's to give.
-    if !can_launch && ed.skill.is_none() {
-        return Some((tr("Open a terminal window first; the new tab goes beside it."), false));
     }
     None
 }
@@ -4087,7 +4098,14 @@ unsafe fn draw_button(cd: &NMCUSTOMDRAW) {
             draw_text(hdc, &label, &rc, Font::Normal, text, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             return;
         }
-        let face = if selected {
+        // The page tab that is showing wears the accent, as the macOS
+        // segmented control's selected segment does (task 1604; it was the
+        // list's grey selection). Under high contrast there is no accent
+        // and it keeps the system's selection colours.
+        let seg_accent = (selected && !disabled).then(|| theme::system().default_button()).flatten();
+        let face = if let Some((face, _)) = seg_accent {
+            face
+        } else if selected {
             theme::sel()
         } else if disabled {
             theme::btn_face()
@@ -4107,7 +4125,13 @@ unsafe fn draw_button(cd: &NMCUSTOMDRAW) {
             rc.top += 1;
             rc.left += 1;
         }
-        let fg = if selected { theme::sel_text() } else { fg };
+        let fg = if let Some((_, text)) = seg_accent {
+            text
+        } else if selected {
+            theme::sel_text()
+        } else {
+            fg
+        };
         draw_text(hdc, &label, &rc, Font::Normal, fg, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     }
 }
@@ -5032,13 +5056,23 @@ mod tests {
     fn the_footer_says_why_launching_is_not_offered() {
         let mut c = cat(&["r"]);
         let mut ed = editing(&mut c);
-        assert_eq!(footer_note(&ed, true), None);
+        let pick = tr("Pick an agent CLI under Basics to launch this role.");
+        let clean = footer_note(&ed, true);
+        if ed.draft.as_ref().unwrap().clis.is_empty() {
+            assert_eq!(clean.map(|x| x.0), Some(pick.clone()));
+        } else {
+            assert_eq!(clean, None);
+        }
         let (no_terminal, is_error) = footer_note(&ed, false).unwrap();
         assert!(!is_error);
         assert_eq!(no_terminal, tr("Open a terminal window first; the new tab goes beside it."));
-        // An unsaved change is the nearer reason, and an error beats both.
+        // The macOS order (task 1604): no terminal first, then "save it
+        // first", then no CLI; an error beats them all.
         ed.draft.as_mut().unwrap().name = "x".into();
-        assert_eq!(footer_note(&ed, false).unwrap().0, tr("Unsaved changes"));
+        assert_eq!(footer_note(&ed, false).unwrap().0, tr("Open a terminal window first; the new tab goes beside it."));
+        assert_eq!(footer_note(&ed, true).unwrap().0, tr("Save the role before launching it."));
+        ed.draft.as_mut().unwrap().clis.clear();
+        assert_eq!(footer_note(&ed, true).unwrap().0, tr("Save the role before launching it."));
         ed.status = Some("refused".into());
         assert_eq!(footer_note(&ed, false).unwrap(), ("refused".to_string(), true));
         // With no role open there is nothing to say.

@@ -25,6 +25,7 @@ pub mod general;
 pub mod logs;
 pub mod plugins;
 pub mod handback;
+pub mod inline;
 pub mod official;
 pub mod palette;
 pub mod picker;

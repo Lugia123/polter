@@ -120,4 +120,17 @@ struct LogManagementRulesTests {
         #expect(!LogManagementAlert.isEscape(keyCode: 53, flags: [.option]))
         #expect(!LogManagementAlert.isEscape(keyCode: 36, flags: []))
     }
+
+    /// Task 1604: at the settings window's least width, 900, a row is 388
+    /// wide and the controls take 372 of it. The name was given 16 and drawn
+    /// a character to a line; now the row stacks, as the Windows page does
+    /// (`logs.rs`, `TEXT_MIN_W` 200), and both hosts stack at the same width.
+    @Test func aRowTooNarrowForItsNameIsStackedAtTheWindowsWidth() {
+        #expect(LogManagementColumns.textWidth(rowWidth: 388) == 16)
+        #expect(LogManagementColumns.stacks(rowWidth: 388))
+        #expect(LogManagementColumns.stacks(rowWidth: 571))
+        #expect(!LogManagementColumns.stacks(rowWidth: 572))
+        // 1180, the window's first size: beside, as before.
+        #expect(!LogManagementColumns.stacks(rowWidth: 668))
+    }
 }

@@ -330,21 +330,27 @@ const FILE_ROWS: &[Row] = &[
 /// **`Load Project…` is why this group exists (task 839).** Saving had a
 /// dialog and no row that opened it; loading had neither. Without these two
 /// rows no Windows user could reach a saved project, and nothing that restores
-/// one had ever run outside a unit test. `Manage Projects…` is macOS's third
-/// row, and opens the settings window's projects section (settings.md §3.2,
-/// §6.3).
+/// one had ever run outside a unit test. `Manage Projects…` opens the
+/// settings window's projects section (settings.md §3.2, §6.3).
+///
+/// In the macOS Project menu's order (task 1604): save and load, then what
+/// is done to the page in front, then "Manage Projects…" on its own, last.
+/// The macOS menu's first row, the greyed "This page is in no project" /
+/// "…in project X", is not here: a row whose words change is not a row
+/// this table can hold yet.
 const PROJECT_ROWS: &[Row] = &[
     act(n_("Save as Project…"), "__polter_save_project"),
     act(n_("Load Project…"), "__polter_load_project"),
-    act(n_("Manage Projects…"), "__polter_manage_projects"),
     sep(),
     // What is done to the page in front (`polter_projects::page_rules`):
     // each is lit only when it fits -- "Add" for a tab that is a page of no
     // project, the other three for one that is.
     act(n_("Add to Project…"), "__polter_add_to_project"),
-    act(n_("Take This Page Out of the Project"), "__polter_take_out_of_project"),
     act(n_("Rename Project…"), "__polter_rename_project"),
+    act(n_("Take This Page Out of the Project"), "__polter_take_out_of_project"),
     act(n_("Close Project"), "__polter_close_project"),
+    sep(),
+    act(n_("Manage Projects…"), "__polter_manage_projects"),
 ];
 
 /// The page act a row is, when it is one.
@@ -363,10 +369,10 @@ const FIND_ROWS: &[Row] = &[
     act(n_("Find…"), "start_search"),
     // `s4.md` §3.2 called these `next_search_result` / `previous_search_result`;
     // the core has no such actions. It publishes one action with a direction.
-    act_state(n_("Next"), "navigate_search:next", "needs an open search"),
-    act_state(n_("Previous"), "navigate_search:previous", "needs an open search"),
+    act_state(n_("Find Next"), "navigate_search:next", "needs an open search"),
+    act_state(n_("Find Previous"), "navigate_search:previous", "needs an open search"),
     sep(),
-    act_state(n_("Hide the Find Bar"), "end_search", "reports performed only if a search was open"),
+    act_state(n_("Hide Find Bar"), "end_search", "reports performed only if a search was open"),
     sep(),
     // macOS's last two Find rows (`MainMenu.xib`, `TDN-42-Bu7` and
     // `1rN-4k-Dz3`), task 1551. Both are the core's and both decline with
@@ -393,8 +399,8 @@ const EDIT_ROWS: &[Row] = &[
 
 const VIEW_ROWS: &[Row] = &[
     act(n_("Reset Font Size"), "reset_font_size"),
-    act(n_("Zoom In"), "increase_font_size:1"),
-    act(n_("Zoom Out"), "decrease_font_size:1"),
+    act(n_("Increase Font Size"), "increase_font_size:1"),
+    act(n_("Decrease Font Size"), "decrease_font_size:1"),
     sep(),
     act(n_("Command Palette"), "toggle_command_palette"),
     // **Two rows, because the core has two actions and they do different
@@ -408,10 +414,10 @@ const VIEW_ROWS: &[Row] = &[
     // overlay. "Rename Tab..." with three dots is a DIFFERENT action
     // (rename_tab) that edits the tab strip in place. The two entries look
     // almost identical; do not merge them.
-    act(n_("Rename Tab…"), "prompt_tab_title"),
-    act(n_("Rename Terminal…"), "prompt_surface_title"),
+    act(n_("Change Tab Title..."), "prompt_tab_title"),
+    act(n_("Change Terminal Title..."), "prompt_surface_title"),
     // §3.2 called this `toggle_surface_read_only`; the core's name is shorter.
-    toggle(n_("Read-only"), "toggle_readonly", Flag::ReadOnly, Ready::Always),
+    toggle(n_("Terminal Read-only"), "toggle_readonly", Flag::ReadOnly, Ready::Always),
     sep(),
     act(n_("Quick Terminal"), "toggle_quick_terminal"),
     // Where macOS has it, under Quick Terminal (`MainMenu.xib`,
@@ -446,7 +452,7 @@ const AGENTS_ROWS: &[Row] = &[
     act(n_("Terminal Conversations"), "poltergeist_toggle_chat"),
     sep(),
     toggle(n_("Make This Terminal a Supervisor"), "poltergeist_supervisor", Flag::Supervisor, Ready::Always),
-    toggle(n_("Toggle Supervision of This Terminal"), "poltergeist_toggle_watch", Flag::Watched, Ready::Always),
+    toggle(n_("Supervise This Terminal"), "poltergeist_toggle_watch", Flag::Watched, Ready::Always),
     toggle(n_("Keep Agents Out of This Terminal"), "poltergeist_toggle_shielded", Flag::Shielded, Ready::Always),
     // **What this opens, in the label, because the menu is where it is
     // granted.** Off for every terminal until this is ticked. With it on a
@@ -467,6 +473,9 @@ const AGENTS_ROWS: &[Row] = &[
         Flag::MayAuthorise,
         Ready::Always,
     ),
+    // "Role ▸" here, with the four toggles and before the mentions row: the
+    // macOS Agents menu's order (task 1604).
+    personas_row(),
     // **A supervisor's own setting, and the only row here that is not about
     // the terminal it is opened on.** With it off -- the default -- a worker
     // naming another worker in the group has that mention rewritten to this
@@ -505,29 +514,28 @@ const AGENTS_ROWS: &[Row] = &[
     // returned before performing the action. The hold was toggled, the core
     // logged it, and no apprt was ever told.
     toggle(n_("Hold This Terminal to Its Work"), "poltergeist_toggle_held", Flag::Held, Ready::Always),
-    personas_row(),
     sep(),
-    // Host rows: the core knows nothing about either page.
+    // A host row: the core knows nothing about the page.
     act(n_("Plugins…"), "__polter_plugin_page"),
-    // The role library window (`roles_ui.rs`), as on macOS. Beta is part of
-    // the msgid, not appended in code: see `f63c185dd`.
-    act(n_("Role Library..."), "__polter_role_library"),
+    // No "Role Library..." row of its own any more: it is the last row of
+    // "Role ▸" (`personas::entries`), as on macOS, where the menu had it
+    // twice (task 1604).
 ];
 
 const GOTO_SPLIT_ROWS: &[Row] = &[
-    act(n_("Up"), "goto_split:up"),
-    act(n_("Down"), "goto_split:down"),
-    act(n_("Left"), "goto_split:left"),
-    act(n_("Right"), "goto_split:right"),
+    act(n_("Select Split Above"), "goto_split:up"),
+    act(n_("Select Split Below"), "goto_split:down"),
+    act(n_("Select Split Left"), "goto_split:left"),
+    act(n_("Select Split Right"), "goto_split:right"),
 ];
 
 const RESIZE_SPLIT_ROWS: &[Row] = &[
     act(n_("Equalize Splits"), "equalize_splits"),
     sep(),
-    act(n_("Grow Up"), "resize_split:up,10"),
-    act(n_("Grow Down"), "resize_split:down,10"),
-    act(n_("Grow Left"), "resize_split:left,10"),
-    act(n_("Grow Right"), "resize_split:right,10"),
+    act(n_("Move Divider Up"), "resize_split:up,10"),
+    act(n_("Move Divider Down"), "resize_split:down,10"),
+    act(n_("Move Divider Left"), "resize_split:left,10"),
+    act(n_("Move Divider Right"), "resize_split:right,10"),
 ];
 
 const WINDOW_ROWS: &[Row] = &[
@@ -536,16 +544,16 @@ const WINDOW_ROWS: &[Row] = &[
     act(n_("Minimize"), "__polter_minimize"),
     act(n_("Maximize"), "toggle_maximize"),
     sep(),
-    act(n_("Full Screen"), "toggle_fullscreen"),
+    act(n_("Toggle Full Screen"), "toggle_fullscreen"),
     sep(),
-    act(n_("Split Zoom"), "toggle_split_zoom"),
-    act(n_("Previous Split"), "goto_split:previous"),
-    act(n_("Next Split"), "goto_split:next"),
+    act(n_("Zoom Split"), "toggle_split_zoom"),
+    act(n_("Select Previous Split"), "goto_split:previous"),
+    act(n_("Select Next Split"), "goto_split:next"),
     sub(n_("Select Split"), GOTO_SPLIT_ROWS),
     sub(n_("Resize Split"), RESIZE_SPLIT_ROWS),
     sub(n_("Stack"), STACK_ROWS),
     sep(),
-    act(n_("Reset Window Size"), "reset_window_size"),
+    act(n_("Return To Default Size"), "reset_window_size"),
     sep(),
     toggle(n_("Float on Top"), "toggle_window_float_on_top", Flag::FloatOnTop, Ready::Always),
 ];
@@ -2090,8 +2098,9 @@ mod tests {
         let find = |label: &str| {
             rows.iter().find(|r| r.label == label).and_then(|r| r.action).unwrap_or("")
         };
-        assert_eq!(find("Rename Tab…"), "prompt_tab_title");
-        assert_eq!(find("Rename Terminal…"), "prompt_surface_title");
+        // The macOS menu's words (task 1604).
+        assert_eq!(find("Change Tab Title..."), "prompt_tab_title");
+        assert_eq!(find("Change Terminal Title..."), "prompt_surface_title");
     }
 
     /// Exactly one row's greying depends on the moment rather than on

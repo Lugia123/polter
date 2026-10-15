@@ -43,8 +43,10 @@ impl Group {
         Group::Windows,
         Group::Polter,
         Group::Logs,
-        Group::Screenshot,
+        // The macOS order (`GeneralGroup`): All Options, then Screenshot
+        // (task 1604; this side had them the other way round).
         Group::All,
+        Group::Screenshot,
         Group::Keybinds,
         Group::Advanced,
         Group::About,
@@ -841,7 +843,8 @@ mod tests {
     #[test]
     fn group_keys_are_the_macos_raw_values() {
         let keys: Vec<_> = Group::ALL.iter().map(|g| g.key()).collect();
-        assert_eq!(keys, ["appearance", "font", "terminal", "windows", "polter", "logs", "screenshot", "all", "keybinds", "advanced", "about"]);
+        // In the macOS order: `GeneralGroup`'s cases, as they are listed.
+        assert_eq!(keys, ["appearance", "font", "terminal", "windows", "polter", "logs", "all", "screenshot", "keybinds", "advanced", "about"]);
         for g in Group::ALL {
             assert_eq!(Group::from_key(g.key()), Some(g));
         }

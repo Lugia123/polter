@@ -114,8 +114,8 @@ struct TerminalCommandPaletteView: View {
 
         if updateViewModel.state.isCancellable {
             options.append(CommandOption(
-                title: "Cancel or Skip Update",
-                description: "Dismiss the current update process"
+                title: String(localized: "Cancel or Skip Update", comment: "命令面板：取消或跳过这次更新"),
+                description: String(localized: "Dismiss the current update process", comment: "命令面板：取消或跳过更新的说明")
             ) {
                 updateViewModel.state.cancel()
             })
@@ -134,7 +134,8 @@ struct TerminalCommandPaletteView: View {
                 return CommandOption(
                     title: c.title,
                     description: c.description,
-                    symbols: symbols
+                    symbols: symbols,
+                    aliases: [CommandOption.actionAlias(c.action)]
                 ) {
                     onAction(c.action)
                 }
@@ -167,11 +168,12 @@ struct TerminalCommandPaletteView: View {
                 }
 
                 return CommandOption(
-                    title: "Focus: \(displayTitle)",
+                    title: String(format: String(localized: "Focus: %@", comment: "命令面板：跳到某个终端，%@ 是它的标题"), displayTitle),
                     subtitle: subtitle,
                     leadingIcon: "rectangle.on.rectangle",
                     leadingColor: displayColor?.displayColor.map { Color($0) },
-                    sortKey: ObjectIdentifier(surface)
+                    sortKey: ObjectIdentifier(surface),
+                    aliases: ["focus"]
                 ) {
                     NotificationCenter.default.post(
                         name: Ghostty.Notification.ghosttyPresentTerminal,

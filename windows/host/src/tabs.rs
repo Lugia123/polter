@@ -6560,6 +6560,32 @@ pub fn go_to_terminal(key: &str) -> bool {
     true
 }
 
+/// Every terminal [`go_to_terminal`] can go to, in the order of the windows
+/// and their strips: its key, its own title (the tab's when it never
+/// reported one) and its directory. What the command palette lists as
+/// "Focus: …" (task 1604, as the macOS palette's `jumpOptions`).
+// window-free: a scan over every window
+pub fn terminals_to_go_to() -> Vec<(String, String, Option<String>)> {
+    // The surfaces first, then the question to the core with the lock gone,
+    // as `go_to_terminal` does.
+    let panes: Vec<(usize, String, Option<String>)> = with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .filter(|t| t.terminal().is_some())
+            .flat_map(|t| {
+                t.panes()
+                    .iter()
+                    .map(move |p| (p.surface, p.title.clone().unwrap_or_else(|| t.title.clone()), p.cwd.clone()))
+            })
+            .collect()
+    });
+    panes
+        .into_iter()
+        .filter(|(s, _, _)| *s != 0)
+        .map(|(s, title, cwd)| (rules::key(unsafe { (api().surface_poltergeist_id)(s as Surface) }), title, cwd))
+        .collect()
+}
+
 /// Which tab this is, and how many panes it holds.
 ///
 /// # Why the tab is a parameter

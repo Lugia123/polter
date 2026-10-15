@@ -519,7 +519,7 @@ fn create(host: HWND) -> bool {
 fn label_fixed(f: Fixed) {
     let font = font();
     for (h, label) in [
-        (f.switch, tr("Enabled")),
+        (f.switch, tr("Let this plugin run")),
         (f.test, tr("Test")),
         (f.revert, tr("Revert")),
         (f.save, tr("Save")),
@@ -1351,7 +1351,7 @@ fn paint(win: HWND) {
     draw_text(hdc, &tr("Status"), &label, f, theme::dim(), DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
     let missing = rules::missing_required(&params_of(&p), &values);
     let note = if !missing.is_empty() {
-        tr("Still empty and required: {}").replace("{}", &missing.join(", "))
+        tr("Fill in first: {}").replace("{}", &missing.join(", "))
     } else {
         format!("{} {}", dot.glyph(), dot_word(dot))
     };
@@ -1598,7 +1598,7 @@ const EVENT_PHRASES: &[(&str, &str)] = &[
 /// one, wire names where it has not.
 fn subscription_line(events: &[String]) -> String {
     if events.is_empty() {
-        return tr("Subscribes to nothing, so Polter has nothing to hand it and will not start it.");
+        return tr("This plugin subscribes to nothing, so Polter has nothing to hand it and will not start it.");
     }
     let mut said: Vec<String> = Vec::new();
     for (wire, phrase) in EVENT_PHRASES {
