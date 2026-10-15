@@ -720,9 +720,9 @@ changes — you read it and send to it by id exactly as before; you do not
 have to bring it to the front first. Bring it to the front when the *person*
 needs to look at it.
 
-Stacks are macOS only so far. On Windows and Linux a `stack` cell is
-refused with nothing moved, and `pane_stack` does nothing: give each worker
-a pane or a tab there.
+Stacks are on macOS and Windows. On Linux a `stack` cell is refused with
+nothing moved, and `pane_stack` does nothing: give each worker a pane or a
+tab there.
 
 ### Tidying terminals: move them, never close and reopen
 

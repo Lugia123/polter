@@ -425,17 +425,14 @@ pub struct Listing {
 /// different wire formats; see that function's doc comment.
 pub fn to_layout_shape(node: &SavedNode, snaps: &Path) -> serde_json::Value {
     match node {
-        // ⚠️ **Only the member in front is brought back.** This host has no
-        // pane that holds several terminals, so a stack opens as the one
-        // terminal that was showing and the others are not opened -- and a
-        // save after that writes the project without them. Nothing on
-        // Windows writes a stack and project files do not travel between
-        // machines, so no file this host meets has one today; when stacks
-        // come to this host, this arm is where they have to be built.
-        SavedNode::Stack { shown, members } => match members.get(*shown).or(members.first()) {
-            Some(leaf) => to_layout_shape(&SavedNode::Leaf(leaf.clone()), snaps),
-            None => serde_json::json!({ "new": null }),
-        },
+        // **Every member, as a `stack` cell** (task 1583): the layout
+        // pipeline makes each one and the place shows `shown`. Until then
+        // only the member in front was opened, and a save afterwards wrote
+        // the project without the others.
+        SavedNode::Stack { shown, members } => serde_json::json!({
+            "stack": members.iter().map(|m| to_layout_shape(&SavedNode::Leaf(m.clone()), snaps)).collect::<Vec<_>>(),
+            "shown": (*shown).min(members.len().saturating_sub(1)),
+        }),
         SavedNode::Leaf(leaf) => {
             let scrollback = scrollback_path(snaps, leaf);
             if leaf.cwd.is_empty() && leaf.history.is_empty() && scrollback.is_none() {
@@ -480,14 +477,29 @@ pub fn scrollback_path(snaps: &Path, leaf: &SavedLeaf) -> Option<String> {
 /// metadata, turned into the tree this module saves. Mirrors `layout.rs`'s
 /// `describe`, which does the same walk to turn a live tree into
 /// `poltergeist_layout`'s reply JSON.
-pub fn describe(node: &Node, meta_of: &dyn Fn(PaneId) -> SavedLeaf) -> SavedNode {
+///
+/// **The whole tree, not a node**: a place holding a stack is saved as a
+/// `stack` node, every member in the order of its tabs (task 1583) --
+/// `meta_of` is asked of each in that order, which is the order
+/// `leaves`/`leaves_mut` walk them back. `None` for an empty tree.
+pub fn describe(tree: &polter_split_tree::Tree, meta_of: &dyn Fn(PaneId) -> SavedLeaf) -> Option<SavedNode> {
+    Some(describe_node(tree, tree.root()?, meta_of))
+}
+
+fn describe_node(tree: &polter_split_tree::Tree, node: &Node, meta_of: &dyn Fn(PaneId) -> SavedLeaf) -> SavedNode {
     match node {
-        Node::Leaf(id) => SavedNode::Leaf(meta_of(*id)),
+        Node::Leaf(id) => match tree.stack_of(*id) {
+            Some(s) => SavedNode::Stack {
+                shown: s.members.iter().position(|m| *m == s.shown).unwrap_or(0),
+                members: s.members.iter().map(|m| meta_of(*m)).collect(),
+            },
+            None => SavedNode::Leaf(meta_of(*id)),
+        },
         Node::Split(s) => SavedNode::Split {
             axis: s.axis,
             ratio: s.ratio,
-            left: Box::new(describe(&s.left, meta_of)),
-            right: Box::new(describe(&s.right, meta_of)),
+            left: Box::new(describe_node(tree, &s.left, meta_of)),
+            right: Box::new(describe_node(tree, &s.right, meta_of)),
         },
     }
 }
@@ -962,6 +974,50 @@ mod tests {
         assert_eq!(shape["right"]["new"]["cwd"], "/work/repo/tests");
     }
 
+    /// Task 1583: a place holding a stack is saved as a stack -- every
+    /// member, in tab order, which is in front -- survives the file, and
+    /// opens as one place holding all of them again. Until then only the
+    /// member in front was opened, and the next save lost the rest.
+    #[test]
+    fn a_stack_is_saved_whole_and_opens_whole() {
+        use polter_split_tree::{NewSplit, Tree};
+
+        // 1 | (2 behind 3, 3 in front)
+        let live = Tree::with_pane(1).insert(2, 1, NewSplit::Right).unwrap().stacking(3, 2).unwrap();
+        let saved = describe(&live, &|id: PaneId| SavedLeaf::plain(&format!("/pane/{id}"), Agent::Unknown)).unwrap();
+        let SavedNode::Split { right, .. } = &saved else { panic!("expected a split: {saved:?}") };
+        assert_eq!(
+            **right,
+            SavedNode::Stack { shown: 1, members: vec![SavedLeaf::plain("/pane/2", Agent::Unknown), SavedLeaf::plain("/pane/3", Agent::Unknown)] }
+        );
+        // The order `meta_of` was asked in is the order the leaves walk.
+        let cwds: Vec<String> = leaves(&saved).iter().map(|l| l.cwd.clone()).collect();
+        assert_eq!(cwds, ["/pane/1", "/pane/2", "/pane/3"]);
+
+        // Through the file and back.
+        let snapshot = Snapshot {
+            name: "stacked".to_string(),
+            saved_at: 1,
+            group: None,
+            windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root: saved.clone() }] }],
+            next_scrollback: None,
+        };
+        let bytes = emit(&snapshot).expect("a stack is written");
+        let back = parse_snapshot(bytes.as_bytes()).expect("and read");
+        assert_eq!(back.windows[0].tabs[0].root, saved);
+
+        // Opened: one place holding both, the one that was in front in front.
+        let shape = to_layout_shape(&saved, Path::new("/p/x.scrollback"));
+        assert_eq!(shape["right"]["shown"], 1);
+        assert_eq!(shape["right"]["stack"][0]["new"]["cwd"], "/pane/2");
+        assert_eq!(shape["right"]["stack"][1]["new"]["cwd"], "/pane/3");
+        let parsed = crate::layout::parse_project(&shape).expect("the layout reads it");
+        let mut made = vec![11, 12, 13].into_iter();
+        let tree = crate::layout::to_tree(&parsed, &mut made, &|_| None).expect("and builds it");
+        assert_eq!(tree.shown_panes(), [11, 13]);
+        assert_eq!(tree.members(), [11, 12, 13]);
+    }
+
     #[test]
     fn describe_walks_a_live_tree_into_a_saved_one() {
         use polter_split_tree::Split;
@@ -973,7 +1029,7 @@ mod tests {
             right: Node::Leaf(2),
         }));
 
-        let saved = describe(&live, &|id: PaneId| SavedLeaf::plain(&format!("/pane/{id}"), Agent::Unknown));
+        let saved = describe(&polter_split_tree::Tree::with_root(live), &|id: PaneId| SavedLeaf::plain(&format!("/pane/{id}"), Agent::Unknown)).unwrap();
 
         match saved {
             SavedNode::Split { axis, left, right, .. } => {

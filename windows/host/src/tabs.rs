@@ -3128,8 +3128,7 @@ fn apply_layout(
     let ids: Vec<PaneId> = wanted.iter().map(|_| take_id()).collect();
     let mut it = ids.clone().into_iter();
     let by_surface = |k: usize| current.iter().find(|(_, s)| *s == k).map(|(id, _)| *id);
-    let node = crate::layout::to_node(shape, &mut it, &by_surface);
-    let tree = Tree::with_root(node);
+    let tree = crate::layout::to_tree(shape, &mut it, &by_surface)?;
 
     let placed = tree.layout(bounds);
     let mut made: Vec<Pane> = Vec::new();
@@ -3207,7 +3206,7 @@ fn apply_layout(
             .or_else(|| fresh_pairs.iter().find(|(id, _)| *id == p).map(|(_, s)| *s))
     };
     let reply = serde_json::json!({
-        "layout": crate::layout::describe(tree.root().unwrap(), &surface_of)
+        "layout": crate::layout::describe(&tree, &surface_of)
     });
     wlogf!(frame, "[layout] applied; {} pane(s) made", ids.len());
     Ok(reply.to_string())
@@ -3363,7 +3362,10 @@ fn arrange_layout(
     let ids: Vec<PaneId> = wanted.iter().map(|_| take_id()).collect();
     let mut it = ids.clone().into_iter();
     let pane_of = |k: usize| named.iter().position(|n| *n == k).map(|i| found[i].pane);
-    let tree = Tree::with_root(crate::layout::to_node(shape, &mut it, &pane_of));
+    let tree = match crate::layout::to_tree(shape, &mut it, &pane_of) {
+        Ok(t) => t,
+        Err(why) => return fail(why),
+    };
 
     let Some(bounds) = content_bounds(dest_frame, strip_h(scale_of(dest_frame))) else {
         return fail("that window has no content area to lay out".into());
@@ -3528,7 +3530,7 @@ fn arrange_layout(
             .or_else(|| fresh_pairs.iter().find(|(id, _)| *id == p).map(|(_, s)| *s))
     };
     let reply = serde_json::json!({
-        "layout": crate::layout::describe(tree.root().unwrap(), &surface_of)
+        "layout": crate::layout::describe(&tree, &surface_of)
     });
     wlogf!(
         dest_frame,
@@ -5649,7 +5651,9 @@ fn take_pane(ws: &mut [WindowState], si: usize, pane: PaneId, must_stay_split: b
     let st = ws[si].tabs.iter().position(|t| t.pane(pane).is_some()).ok_or("no tab in that window has it")?;
     let tab_id = ws[si].tabs[st].id;
     let term = ws[si].tabs[st].terminal_mut().ok_or("its tab is not a terminal's")?;
-    if must_stay_split && !term.tree.is_split() {
+    // Alone is one terminal in the tab: a place of one stack is not split
+    // and holds several (task 1583).
+    if must_stay_split && term.tree.len() < 2 {
         return Err("it is alone in its tab");
     }
     let pos = term.panes.iter().position(|p| p.id == pane).ok_or("its tab does not list it")?;
@@ -5724,6 +5728,187 @@ pub fn move_pane(src: HWND, pane: PaneId, dst: HWND, onto: PaneId, dir: NewSplit
     true
 }
 
+/// Put `pane` into the stack of the place `place` shows, at tab `index`, in
+/// front: a terminal let go on a stack's strip (task 1583; macOS's
+/// `polterDrop(_:onStackOf:at:)`). One of that same stack is moved along it
+/// (`index` counts the tab itself; `panestack::reorder_to`); one from
+/// elsewhere -- this tab, another tab, another window -- joins there and
+/// leaves where it was the way a dragged pane always has. A place of one
+/// becomes a stack of two. Answers whether anything changed.
+pub fn stack_member_into(src: HWND, pane: PaneId, dst: HWND, place: PaneId, index: usize) -> bool {
+    let moved: Result<Option<PaneMoved>, &'static str> = with_windows_mut(|ws| {
+        let si = ws.iter().position(|w| w.frame == src.0 as isize).ok_or("its window is gone")?;
+        let di = ws.iter().position(|w| w.frame == dst.0 as isize).ok_or("the window it was let go over is gone")?;
+        let st = ws[si].tabs.iter().position(|t| t.pane(pane).is_some()).ok_or("no tab in its window has it")?;
+        let dt = ws[di].tabs.iter().position(|t| t.pane(place).is_some()).ok_or("the place it was let go on is gone")?;
+        let dst_tab = ws[di].tabs[dt].id;
+        if si == di && st == dt {
+            let term = ws[si].tabs[st].terminal_mut().ok_or("its tab is not a terminal's")?;
+            let same = term.tree.stack_of(place).is_some_and(|s| s.members.contains(&pane));
+            if same {
+                let from = term.tree.stack_of(place).and_then(|s| s.members.iter().position(|m| *m == pane)).unwrap_or(0);
+                let Some(to) = polter_control_room::panestack::reorder_to(from, index) else { return Err("let go where it already is") };
+                term.tree = term.tree.reordering(pane, to).map_err(|_| "the tree refused the move")?;
+                return Ok(None);
+            }
+            if place == pane {
+                return Err("let go on its own place");
+            }
+            let without = term.tree.removing_member(pane).map_err(|_| "the tree refused to let it go")?;
+            // Taking it out may have changed what the place shows.
+            let target = without.shown_for(place).ok_or("the place went with it")?;
+            term.tree = without.stacking_at(pane, target, index).map_err(|_| "the tree refused the stack")?;
+            term.focused = pane;
+            ws[si].active = st;
+            return Ok(None);
+        }
+        // Into the other tree first: if that refuses, nothing has moved.
+        let into = ws[di].tabs[dt].terminal().ok_or("the tab it was let go on is not a terminal's")?.tree.stacking_at(pane, place, index).map_err(|_| "the target tree refused it")?;
+        let (p, emptied) = take_pane(ws, si, pane, false)?;
+        let (hwnd, surface) = (p.hwnd, p.surface);
+        let dt = ws[di].tabs.iter().position(|t| t.id == dst_tab).ok_or("the tab it was let go on is gone")?;
+        let Some(term) = ws[di].tabs[dt].terminal_mut() else { return Err("the tab it was let go on is not a terminal's") };
+        term.tree = into;
+        term.panes.push(p);
+        term.focused = pane;
+        ws[di].active = dt;
+        Ok(Some(PaneMoved { hwnd, surface, emptied }))
+    });
+    let moved = match moved {
+        Ok(m) => m,
+        Err(why) => {
+            wlogf!(src, "[drag] pane {} not stacked onto place {} at {}: {}", pane, place, index, why);
+            return false;
+        }
+    };
+    let Some(m) = moved else {
+        wlogf!(src, "[drag] pane {} stacked onto place {} at tab {} in its tab", pane, place, index);
+        crate::project_session::note(polter_projects::autosave::Change::Layout);
+        layout(src);
+        focus_active(src);
+        crate::uia::tabs_changed(src);
+        return true;
+    };
+    if src != dst {
+        rehome_pane(src, dst, m.hwnd, m.surface);
+    }
+    wlogf!(src, "[drag] pane {} stacked onto place {} at tab {} in {}", pane, place, index, crate::winid::tag(dst));
+    settle_after_move(src, dst, m.emptied);
+    true
+}
+
+/// Whether the tab `id` of `src` may go into the pane `onto` of `dst`, and
+/// why not: `polter_split_tree::drag::tab_into_pane_refusal`, asked of the
+/// windows as they are now. None for a pane or tab that has gone too.
+pub fn tab_into_pane_refusal(src: HWND, id: TabId, dst: HWND, onto: PaneId) -> Result<(), &'static str> {
+    use polter_split_tree::drag::{tab_into_pane_refusal as rule, TabIntoPane};
+    let (room, lent, own) = {
+        let Some(win) = window(src) else { return Err("its window is gone") };
+        let Some(tab) = win.tabs.iter().find(|t| t.id == id) else { return Err("it is not in its window any more") };
+        let room = match tab.kind() {
+            Kind::ControlRoom => true,
+            Kind::Terminal => false,
+        };
+        let lent = win.shown_on_loan().is_some_and(|l| tab.pane(l.pane).is_some());
+        (room, lent, tab.pane(onto).is_some())
+    };
+    let gone = window(dst).is_none_or(|w| !w.tabs.iter().any(|t| t.pane(onto).is_some()));
+    if gone {
+        return Err("the pane it is over is gone");
+    }
+    match rule(room, lent, own) {
+        None => Ok(()),
+        Some(TabIntoPane::ControlRoom) => Err("it is the control room's tab, which holds no terminal"),
+        Some(TabIntoPane::Lent) => Err("a terminal of it is on the control room's side"),
+        Some(TabIntoPane::OwnTab) => Err("the pane is its own"),
+    }
+}
+
+/// Every terminal of the window tab `id` made one new place beside the pane
+/// `onto`, on the side `dir` says, stacked and showing the one the tab had
+/// the keyboard on (task 1583; macOS's `giveTerminals(to:beside:zone:)`,
+/// task 1558). The tab's splits are not kept. The tab goes; a window left
+/// with no tab closes. Answers whether it went in.
+pub fn tab_into_pane(src: HWND, id: TabId, dst: HWND, onto: PaneId, dir: NewSplit) -> bool {
+    if let Err(why) = tab_into_pane_refusal(src, id, dst, onto) {
+        wlogf!(src, "[drag] tab {:?} not put into pane {}: {}", id, onto, why);
+        return false;
+    }
+    let moved: Result<(Vec<isize>, Vec<usize>, PaneId), &'static str> = with_windows_mut(|ws| {
+        let si = ws.iter().position(|w| w.frame == src.0 as isize).ok_or("its window is gone")?;
+        let di = ws.iter().position(|w| w.frame == dst.0 as isize).ok_or("the window it was let go over is gone")?;
+        let at = ws[si].tabs.iter().position(|t| t.id == id).ok_or("it is not in its window any more")?;
+        let dt = ws[di].tabs.iter().position(|t| t.pane(onto).is_some()).ok_or("the pane it was let go on is gone")?;
+        let dst_tab = ws[di].tabs[dt].id;
+        let (from_tree, shown) = {
+            let term = ws[si].tabs[at].terminal().ok_or("it holds no terminal")?;
+            let shown = term.tree.shown_for(term.focused).or_else(|| term.tree.shown_panes().first().copied()).ok_or("it has no terminal")?;
+            (term.tree.clone(), shown)
+        };
+        // Into the other tree first: if that refuses, nothing has moved.
+        let into = ws[di].tabs[dt].terminal().ok_or("the tab it was let go on is not a terminal's")?.tree.inserting_tab(&from_tree, shown, onto, dir).map_err(|_| "the target tree refused it")?;
+        let front = ws[si].tabs.get(ws[si].active).map(|t| t.id);
+        let tab = ws[si].tabs.remove(at);
+        ws[si].active = front.and_then(|f| ws[si].tabs.iter().position(|t| t.id == f)).unwrap_or(at.min(ws[si].tabs.len().saturating_sub(1)));
+        let term = match tab.body {
+            Body::Terminal(t) => t,
+            // Refused above (`tab_into_pane_refusal`); the tab is gone from
+            // its window by now, so this would lose it.
+            Body::ControlRoom(_) => return Err("it holds no terminal"),
+        };
+        let hwnds: Vec<isize> = term.panes.iter().map(|p| p.hwnd).collect();
+        let surfaces: Vec<usize> = term.panes.iter().map(|p| p.surface).collect();
+        let dt = ws[di].tabs.iter().position(|t| t.id == dst_tab).ok_or("the tab it was let go on is gone")?;
+        let Some(dterm) = ws[di].tabs[dt].terminal_mut() else { return Err("the tab it was let go on is not a terminal's") };
+        dterm.tree = into;
+        dterm.panes.extend(term.panes);
+        dterm.focused = shown;
+        ws[di].active = dt;
+        Ok((hwnds, surfaces, shown))
+    });
+    let (hwnds, surfaces, shown) = match moved {
+        Ok(m) => m,
+        Err(why) => {
+            wlogf!(src, "[drag] tab {:?} not put into pane {}: {}", id, onto, why);
+            return false;
+        }
+    };
+    if src != dst {
+        for h in &hwnds {
+            if let Err(e) = unsafe { SetParent(HWND(*h as *mut c_void), Some(dst)) } {
+                wlogf!(dst, "[drag] SetParent failed for {:?}: {e:?}", h);
+            }
+        }
+        let (from, to) = (scale_of(src), scale_of(dst));
+        if from != to {
+            for s in &surfaces {
+                unsafe { (api().surface_set_content_scale)(*s as Surface, to, to) };
+            }
+        }
+    }
+    crate::project_session::tab_left(id);
+    wlogf!(src, "[drag] tab {:?} put into pane {} {:?} in {}: {} terminal(s), showing {}", id, onto, dir, crate::winid::tag(dst), hwnds.len(), shown);
+    crate::project_session::note(polter_projects::autosave::Change::Pages);
+    if src != dst {
+        // absence: means it was not reached -- the window it left still has a tab, and stays.
+        if count(src) == 0 {
+            wlogf!(src, "[drag] its only tab left; closing the window");
+            crate::winid::close_window_now(src);
+        } else {
+            set_active(src, active_index(src));
+            crate::uia::tabs_changed(src);
+        }
+    }
+    set_active(dst, active_index(dst));
+    crate::uia::tabs_changed(dst);
+    unsafe {
+        let _ = SetForegroundWindow(dst);
+    }
+    focus_active(dst);
+    crate::control_room::request_sync();
+    true
+}
+
 /// Give a pane's window to another frame, and tell its surface the scale
 /// there.
 fn rehome_pane(src: HWND, dst: HWND, hwnd: isize, surface: usize) {
@@ -5787,7 +5972,7 @@ fn retire_emptied_tab(frame: HWND, id: TabId) {
 /// (`ghosttySurfaceDragEndedNoTarget`). **Only from a tab that is split**;
 /// a pane alone in its tab already has one.
 pub fn pane_to_new_window(src: HWND, pane: PaneId, at: windows::Win32::Foundation::POINT, hinst: windows::Win32::Foundation::HINSTANCE) -> bool {
-    let split = window(src).is_some_and(|w| w.tabs.iter().any(|t| t.pane(pane).is_some() && t.terminal().is_some_and(|x| x.tree.is_split())));
+    let split = window(src).is_some_and(|w| w.tabs.iter().any(|t| t.pane(pane).is_some() && t.terminal().is_some_and(|x| x.tree.len() > 1)));
     if !split {
         wlogf!(src, "[drag] pane {} not given a window: it is alone in its tab", pane);
         return false;
@@ -5845,7 +6030,7 @@ pub fn pane_to_new_window(src: HWND, pane: PaneId, at: windows::Win32::Foundatio
 /// there would (`TabStripDrop` on macOS refuses only its own strip, and the
 /// rule says so before this is reached). A window left with no tab closes.
 pub fn pane_to_new_tab(src: HWND, pane: PaneId, dst: HWND, index: usize) -> bool {
-    let alone = window(src).and_then(|w| w.tabs.iter().find(|t| t.pane(pane).is_some()).map(|t| (t.id, t.terminal().is_some_and(|x| !x.tree.is_split()))));
+    let alone = window(src).and_then(|w| w.tabs.iter().find(|t| t.pane(pane).is_some()).map(|t| (t.id, t.terminal().is_some_and(|x| x.tree.len() < 2))));
     match alone {
         None => {
             wlogf!(src, "[drag] pane {} not made a tab: no tab in its window has it", pane);

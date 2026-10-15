@@ -1069,8 +1069,7 @@ const tools = [_]Tool{
             "workers goes when there is no room to give each a pane. A stack's members are " ++
             "`pane` or `new` cells only, two or more; `shown` is which is in front, counting from " ++
             "0, the first when left out. A terminal behind another keeps running and still " ++
-            "raises its hand in the tab strip. ⚠️ Stacks are macOS only so far: elsewhere a " ++
-            "`stack` cell is refused with NotBuiltYet and nothing moves. " ++
+            "raises its hand in the tab strip. Stacks are on macOS and Windows. " ++
             "`ratio` is the fraction given to `left` and must be between 0 and 1; it is refused " ++
             "rather than rounded, because a layout you did not ask for reported as success is " ++
             "worse than a refusal. **The reply gives the resulting shape with every cell's terminal " ++

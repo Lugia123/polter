@@ -447,3 +447,23 @@ fn stacking_onto_another_place_takes_it_out_of_its_own() {
     // Onto its own place: refused.
     assert_eq!(fixture().stacking(D, B).unwrap().stacking_onto(B, D), Err(Error::AlreadyPresent));
 }
+
+#[test]
+fn a_stacks_tab_drags_with_auto_even_in_a_tab_of_one_place() {
+    use crate::drag::{stack_tab_grip, Setting, TitleGrip};
+    assert_eq!(stack_tab_grip(Setting::Auto, false), TitleGrip::Drag);
+    assert_eq!(stack_tab_grip(Setting::Always, false), TitleGrip::Drag);
+    assert_eq!(stack_tab_grip(Setting::Never, false), TitleGrip::Click);
+    for s in [Setting::Auto, Setting::Always, Setting::Never] {
+        assert_eq!(stack_tab_grip(s, true), TitleGrip::None, "{s:?}");
+    }
+}
+
+#[test]
+fn a_tab_goes_into_a_pane_unless_it_is_the_control_rooms_its_own_or_lent() {
+    use crate::drag::{tab_into_pane_refusal as r, TabIntoPane};
+    assert_eq!(r(false, false, false), None);
+    assert_eq!(r(true, false, false), Some(TabIntoPane::ControlRoom));
+    assert_eq!(r(false, true, false), Some(TabIntoPane::Lent));
+    assert_eq!(r(false, false, true), Some(TabIntoPane::OwnTab));
+}

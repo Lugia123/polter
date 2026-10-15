@@ -844,6 +844,26 @@ pub fn on_mouse_move(frame: HWND, x: i32, y: i32) {
         log_state(frame, &format!("drag start {:?}", dragging_id));
     }
 
+    // **Over a pane** -- below a strip, in this window or another -- the
+    // tab is shown going into it, beside that pane (task 1583).
+    if let Some(id) = dragging_id {
+        match pane_into_at(frame, id, now) {
+            Some((dst, _, _, rc)) => {
+                let was = with_ui(frame, |u| match &mut u.drag {
+                    Drag::Dragging { over, .. } => over.take(),
+                    _ => None,
+                });
+                if let Some((f, _)) = was {
+                    set_marker(HWND(f as *mut std::ffi::c_void), None);
+                }
+                crate::panedrag::show_zone(dst, rc);
+                repaint(frame);
+                return;
+            }
+            None => crate::panedrag::hide_zone(),
+        }
+    }
+
     // Over another window of ours, the tab is shown going into that
     // window's strip; over its own, it reorders as it always has.
     let elsewhere = dragging_id.and_then(|_| other_window_at(frame, now));
@@ -969,14 +989,49 @@ fn set_marker(frame: HWND, index: Option<usize>) {
     }
 }
 
-/// The tab dragged out of `frame` was let go: where it goes follows
-/// `polter_split_tree::drag::tab_ending`.
+/// The pane a tab dragged out of `frame` would go into at `pt`: its window,
+/// the pane, the side, and the half of it to light, on the screen. None
+/// over a strip, outside our windows, and where it is refused
+/// (`tabs::tab_into_pane_refusal`) -- said in the log once, when let go.
+fn pane_into_at(frame: HWND, id: TabId, pt: POINT) -> Option<(HWND, PaneId, polter_split_tree::NewSplit, RECT)> {
+    use polter_split_tree::drag::Zone;
+    let dst = frame_at(pt)?;
+    let mut at = pt;
+    unsafe {
+        let _ = ScreenToClient(dst, &mut at);
+    }
+    if at.y < strip_h(tabs::scale_of(dst)) {
+        return None;
+    }
+    let p = (at.x as f64, at.y as f64);
+    let (pane, r) = crate::pane_frames::showing(dst).into_iter().find_map(|(pane, px)| {
+        let r = polter_split_tree::Rect::new(px.x as f64, px.y as f64, px.w as f64, px.h as f64);
+        polter_split_tree::drag::contains(&r, p).then_some((pane, r))
+    })?;
+    tabs::tab_into_pane_refusal(frame, id, dst, pane).ok()?;
+    let zone = Zone::at(r, p);
+    let h = zone.highlight(r);
+    let mut tl = POINT { x: h.x.round() as i32, y: h.y.round() as i32 };
+    unsafe {
+        let _ = ClientToScreen(dst, &mut tl);
+    }
+    Some((dst, pane, zone.direction(), RECT { left: tl.x, top: tl.y, right: tl.x + h.w.round() as i32, bottom: tl.y + h.h.round() as i32 }))
+}
+
+/// The tab dragged out of `frame` was let go: into the pane under it
+/// (task 1583), or where `polter_split_tree::drag::tab_ending` says.
 fn let_go(frame: HWND, id: TabId, over: Option<(isize, usize)>) {
     use polter_split_tree::drag::{tab_ending, TabEnding, TabOver};
+    crate::panedrag::hide_zone();
     if let Some((f, _)) = over {
         set_marker(HWND(f as *mut std::ffi::c_void), None);
     }
     let pt = cursor();
+    if let Some((dst, pane, dir, _)) = pane_into_at(frame, id, pt) {
+        tabs::tab_into_pane(frame, id, dst, pane, dir);
+        repaint(frame);
+        return;
+    }
     let at = match over {
         Some((f, index)) => TabOver::Other { window: f, index },
         None if over_own_window(frame, pt) => TabOver::Home,
@@ -1025,6 +1080,7 @@ pub fn cancel_drag(why: &str) -> bool {
         })
     });
     let Some((k, dragged)) = found else { return false };
+    crate::panedrag::hide_zone();
     let frame = HWND(k as *mut std::ffi::c_void);
     unsafe {
         let _ = ReleaseCapture();

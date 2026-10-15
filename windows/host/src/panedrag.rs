@@ -71,6 +71,9 @@ enum Gesture {
         /// Down on its title's close cross: letting go on the same cross
         /// closes it, anywhere else nothing (task 1583).
         closes: bool,
+        /// Down on a stack's tab: letting go without a drag brings that
+        /// terminal to the front before it is given the keyboard.
+        shows: bool,
     },
     Dragging(Drag),
 }
@@ -171,7 +174,9 @@ fn dots_color() -> COLORREF {
 fn situation(frame: HWND, pane: PaneId) -> Option<(Situation, f64)> {
     let win = tabs::window(frame)?;
     let tab = win.tabs.iter().find(|t| t.panes().iter().any(|p| p.id == pane))?;
-    let split = tab.terminal().is_some_and(|t| t.tree.is_split());
+    // More than one terminal in the tab: a place of one stack is not split
+    // and is not alone either (task 1583).
+    let split = tab.terminal().is_some_and(|t| t.tree.len() > 1);
     let lent = win.shown_on_loan().is_some_and(|l| l.pane == pane);
     let titled = win.pane_frames.ground && win.pane_frames.panes.iter().any(|p| p.pane == pane && p.drawn.is_some());
     Some((Situation { titled, lent, split }, win.scale.max(0.1)))
@@ -211,13 +216,25 @@ pub fn title_press(frame: HWND, x: i32, y: i32) -> bool {
     // buttons below, everything else there.
     let on_strip = crate::pane_frames::strip_at(frame, x, y).is_some();
     if on_strip && crate::pane_frames::close_at(frame, x, y).is_none() {
+        // A tab is picked up by, and clicked, like a title (macOS's
+        // `stackTabGrip`); the plus and the rest of the strip are buttons.
+        if let Some((place, members, polter_control_room::panestack::Hit::Tab(i))) = crate::pane_frames::strip_at(frame, x, y) {
+            let Some(member) = members.get(i).copied() else { return true };
+            let Some((s, scale)) = situation(frame, place) else { return true };
+            match drag::stack_tab_grip(setting(), s.lent) {
+                TitleGrip::None => wlogf!(frame, "[drag] press on a tab of place {}: it is lent to the control room, so nothing", place),
+                TitleGrip::Drag => press(frame, member, drag::px(drag::TITLE_DRAG_THRESHOLD_PT, scale), true, true, true),
+                TitleGrip::Click => press(frame, member, 0.0, false, true, true),
+            }
+            return true;
+        }
         return crate::pane_frames::strip_press(frame, x, y);
     }
     // The close cross is a button, not a grip: it neither drags nor gives
     // the pane the keyboard, and acts on release, as the strip's does.
     let closing = crate::pane_frames::close_at(frame, x, y).filter(|c| *c == pane || on_strip);
     if let Some(pane) = closing {
-        GESTURE.with(|g| *g.borrow_mut() = Gesture::Pressed { frame: frame.0 as isize, pane, at: cursor(), threshold: 0.0, drags: false, clicks: false, closes: true });
+        GESTURE.with(|g| *g.borrow_mut() = Gesture::Pressed { frame: frame.0 as isize, pane, at: cursor(), threshold: 0.0, drags: false, clicks: false, closes: true, shows: false });
         unsafe {
             SetCapture(frame);
         }
@@ -229,8 +246,8 @@ pub fn title_press(frame: HWND, x: i32, y: i32) -> bool {
         TitleGrip::None => {
             wlogf!(frame, "[drag] press on pane {}'s title: it is lent to the control room, so nothing", pane);
         }
-        TitleGrip::Drag => press(frame, pane, drag::px(drag::TITLE_DRAG_THRESHOLD_PT, scale), true, true),
-        TitleGrip::Click => press(frame, pane, 0.0, false, true),
+        TitleGrip::Drag => press(frame, pane, drag::px(drag::TITLE_DRAG_THRESHOLD_PT, scale), true, true, false),
+        TitleGrip::Click => press(frame, pane, 0.0, false, true, false),
     }
     true
 }
@@ -248,13 +265,13 @@ pub fn handle_press(pane_hwnd: HWND, x: i32, y: i32) -> bool {
         return false;
     }
     // The handle has no threshold: it does nothing but drag.
-    press(frame, pane, 0.0, true, false);
+    press(frame, pane, 0.0, true, false, false);
     true
 }
 
-fn press(frame: HWND, pane: PaneId, threshold: f64, drags: bool, clicks: bool) {
+fn press(frame: HWND, pane: PaneId, threshold: f64, drags: bool, clicks: bool, shows: bool) {
     let at = cursor();
-    GESTURE.with(|g| *g.borrow_mut() = Gesture::Pressed { frame: frame.0 as isize, pane, at, threshold, drags, clicks, closes: false });
+    GESTURE.with(|g| *g.borrow_mut() = Gesture::Pressed { frame: frame.0 as isize, pane, at, threshold, drags, clicks, closes: false, shows });
     unsafe {
         SetCapture(frame);
     }
@@ -330,6 +347,10 @@ struct Target {
     /// A tab of a frame's strip that is not the one in front, under the
     /// middle of which the pointer is (`StripTarget::BringForward`).
     tab: Option<(HWND, TabId)>,
+    /// A stack's strip under the pointer (task 1583): its frame, its place,
+    /// and where among its tabs the terminal would go in. Letting go there
+    /// stacks it; `over` is `Window` then, so the rules end nothing else.
+    stack: Option<(HWND, PaneId, usize)>,
 }
 
 thread_local! {
@@ -358,7 +379,7 @@ fn hint(frame: Option<HWND>, gap: Option<usize>, dwell: Option<(TabId, f64)>) {
 /// its tab had other panes: a pane alone in its tab is offered no gap in
 /// its own strip (`strip_target`'s `alone`).
 fn target_at(pt: POINT, dragged: PaneId, home: isize, from_split: bool) -> Target {
-    let nothing = |over| Target { over, frame: None, lit: None, tab: None };
+    let nothing = |over| Target { over, frame: None, lit: None, tab: None, stack: None };
     let hit = unsafe { WindowFromPoint(pt) };
     if hit.0.is_null() {
         return nothing(Over::Outside);
@@ -385,7 +406,11 @@ fn target_at(pt: POINT, dragged: PaneId, home: isize, from_split: bool) -> Targe
             StripTarget::BringForward(i) => (Over::Window, ids.get(i).map(|t| (root, *t))),
             StripTarget::Nothing => (Over::Window, None),
         };
-        return Target { over, frame: Some(root), lit: None, tab };
+        return Target { over, frame: Some(root), lit: None, tab, stack: None };
+    }
+    if let Some((place, index, caret)) = crate::pane_frames::strip_drop_at(root, at.x, at.y) {
+        let lit = Some(to_screen(root, Rect::new(caret.left as f64, caret.top as f64, (caret.right - caret.left) as f64, (caret.bottom - caret.top) as f64)));
+        return Target { over: Over::Window, frame: Some(root), lit, tab: None, stack: Some((root, place, index)) };
     }
     let p = (at.x as f64, at.y as f64);
     for (pane, px) in crate::pane_frames::showing(root) {
@@ -396,9 +421,9 @@ fn target_at(pt: POINT, dragged: PaneId, home: isize, from_split: bool) -> Targe
         let zone = drag::Zone::at(r, p);
         let over = Over::Pane { pane, zone, own: pane == dragged };
         let lit = drag::lit(over).map(|(_, z)| to_screen(root, z.highlight(r)));
-        return Target { over, frame: Some(root), lit, tab: None };
+        return Target { over, frame: Some(root), lit, tab: None, stack: None };
     }
-    Target { over: Over::Window, frame: Some(root), lit: None, tab: None }
+    Target { over: Over::Window, frame: Some(root), lit: None, tab: None, stack: None }
 }
 
 fn track(pt: POINT) {
@@ -426,7 +451,8 @@ fn track(pt: POINT) {
     };
     hint(t.frame, gap, waiting.map(|((_, id), p)| (TabId(id), p)));
     match (t.frame, t.lit) {
-        (Some(owner), Some(rc)) => show(Kind::Zone, owner, 0, rc, accent().0, (drag::HIGHLIGHT_OPACITY * 255.0).round() as u8),
+        // Over a strip the light is a caret between two tabs, solid.
+        (Some(owner), Some(rc)) => show(Kind::Zone, owner, 0, rc, accent().0, if t.stack.is_some() { 255 } else { (drag::HIGHLIGHT_OPACITY * 255.0).round() as u8 }),
         _ => hide_kind(Kind::Zone),
     }
     unsafe {
@@ -444,7 +470,7 @@ pub fn on_up() -> bool {
     let was = GESTURE.with(|g| std::mem::replace(&mut *g.borrow_mut(), Gesture::Idle));
     match was {
         Gesture::Idle => false,
-        Gesture::Pressed { frame, pane, clicks, closes, .. } => {
+        Gesture::Pressed { frame, pane, clicks, closes, shows, .. } => {
             unsafe {
                 let _ = ReleaseCapture();
             }
@@ -459,6 +485,16 @@ pub fn on_up() -> bool {
                 } else {
                     wlogf!(frame, "[panes] close cross on pane {} let go elsewhere; nothing", pane);
                 }
+                return true;
+            }
+            if shows {
+                // A stack's tab, clicked: that terminal to the front, with
+                // the keyboard (`tabs::show_member` gives it).
+                let ok = tabs::show_member(frame, pane);
+                if let Some(h) = tabs::pane_hwnd(frame, pane) {
+                    tabs::focus_pane_at(h);
+                }
+                wlogf!(frame, "[stack] tab of pane {} clicked -> shown={}", pane, ok as u8);
                 return true;
             }
             if clicks {
@@ -493,6 +529,10 @@ fn finish(d: Drag, cancelled: Option<&str>) {
     if let Some(why) = cancelled {
         wlogf!(frame, "[drag] pane {} put back: {}", d.pane, why);
         sync(frame);
+        return;
+    }
+    if let Some((dst, place, index)) = t.stack {
+        tabs::stack_member_into(frame, d.pane, dst, place, index);
         return;
     }
     match (ending, t.frame) {
@@ -733,6 +773,18 @@ fn apply(kind: Kind, frame: HWND, want: &[(PaneId, RECT, u8)], color: u32) {
 
 /// Show one layer of `kind` for `pane` over `owner` at `rc`, making it the
 /// first time.
+/// Light `rc` (on the screen) over `owner` as the drop zone: a window tab
+/// dragged over a pane (`strip.rs`, task 1583) shows where it would go the
+/// way a dragged pane does.
+pub fn show_zone(owner: HWND, rc: RECT) {
+    show(Kind::Zone, owner, 0, rc, accent().0, (drag::HIGHLIGHT_OPACITY * 255.0).round() as u8);
+}
+
+/// Take the drop zone away.
+pub fn hide_zone() {
+    hide_kind(Kind::Zone);
+}
+
 fn show(kind: Kind, owner: HWND, pane: PaneId, rc: RECT, color: u32, alpha: u8) {
     let key = owner.0 as isize;
     // The zone is one window for the whole process: there is one drag.
