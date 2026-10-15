@@ -59,7 +59,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TABS = ROOT / "windows" / "host" / "src" / "tabs.rs"
-FUNCTION = "fn focus_pane_at("
+# The click's body. `focus_pane_at` is a one-line wrapper over it since
+# task 1611, which added how the pane was reached (clicked, or gone to); the
+# commit and the lookup this watches moved into it unchanged.
+FUNCTION = "fn focus_pane_reached("
 
 # `<anything>.active = <ident>;` -- the commit.
 COMMIT = re.compile(r"\.\s*active\s*=\s*([A-Za-z_]\w*)\s*;")
@@ -137,7 +140,7 @@ def check(src: str) -> list:
     at = code.find(FUNCTION)
     if at < 0:
         return [
-            "tabs.rs: `focus_pane_at` is gone. This checker was watching one "
+            "tabs.rs: `focus_pane_reached` is gone. This checker was watching one "
             "function and no longer has it; that is not a pass."
         ]
     body = body_of(code, at)
@@ -145,7 +148,7 @@ def check(src: str) -> list:
     commits = list(COMMIT.finditer(body))
     if not commits:
         return [
-            "tabs.rs: `focus_pane_at` no longer assigns to `active`. If the "
+            "tabs.rs: `focus_pane_reached` no longer assigns to `active`. If the "
             "commit moved somewhere else this entry protects nothing -- say so "
             "here rather than leaving it quiet."
         ]
@@ -158,7 +161,7 @@ def check(src: str) -> list:
         ]
         if not confirmed_at:
             problems.append(
-                f"tabs.rs: `focus_pane_at` sets `active = {ident}` and never "
+                f"tabs.rs: `focus_pane_reached` sets `active = {ident}` and never "
                 f"looks `{ident}` up in `tabs`. The window would then point at "
                 f"an index nothing has confirmed exists, and `layout` hides "
                 f"every tab whose position differs from it."
@@ -166,7 +169,7 @@ def check(src: str) -> list:
             continue
         if min(confirmed_at) > m.start():
             problems.append(
-                f"tabs.rs: `focus_pane_at` sets `active = {ident}` before it "
+                f"tabs.rs: `focus_pane_reached` sets `active = {ident}` before it "
                 f"confirms `{ident}` names a tab. ⚠️ Order, not spelling: once "
                 f"that field is written the window is already pointing at a tab "
                 f"that may not be there, and every later line -- including one "
@@ -178,7 +181,7 @@ def check(src: str) -> list:
 
 CANARIES = [
     ("confirmed first", 0, """
-pub fn focus_pane_at(hwnd: HWND) {
+fn focus_pane_reached(hwnd: HWND, reach: Reach) {
     let was = (win.active, win.tabs.get(win.active).map(|t| t.focused));
     let Some(tab) = win.tabs.get_mut(tab_idx) else { break 'commit None; };
     tab.focused = id;
@@ -187,7 +190,7 @@ pub fn focus_pane_at(hwnd: HWND) {
 """),
     # The original defect.
     ("committed first, with an if let and no else", 1, """
-pub fn focus_pane_at(hwnd: HWND) {
+fn focus_pane_reached(hwnd: HWND, reach: Reach) {
     let was = (win.active, win.tabs.get(win.active).map(|t| t.focused));
     win.active = tab_idx;
     if let Some(tab) = win.tabs.get_mut(tab_idx) { tab.focused = id; }
@@ -195,7 +198,7 @@ pub fn focus_pane_at(hwnd: HWND) {
 """),
     # ⚠️ The rule this file exists to *not* be: an `else` does not repair it.
     ("committed first, with an else that speaks", 1, """
-pub fn focus_pane_at(hwnd: HWND) {
+fn focus_pane_reached(hwnd: HWND, reach: Reach) {
     win.active = tab_idx;
     if let Some(tab) = win.tabs.get_mut(tab_idx) {
         tab.focused = id;
@@ -206,7 +209,7 @@ pub fn focus_pane_at(hwnd: HWND) {
 """),
     # ⭐ The negative control: every name changes, nothing else does.
     ("renamed throughout", 0, """
-pub fn focus_pane_at(hwnd: HWND) {
+fn focus_pane_reached(hwnd: HWND, reach: Reach) {
     let Some(tab) = win.tabs.get_mut(wanted) else { break 'commit None; };
     tab.focused = id;
     win.active = wanted;
@@ -214,7 +217,7 @@ pub fn focus_pane_at(hwnd: HWND) {
 """),
     # Written with `match` instead, and correctly. No `else` anywhere.
     ("match, confirmed first", 0, """
-pub fn focus_pane_at(hwnd: HWND) {
+fn focus_pane_reached(hwnd: HWND, reach: Reach) {
     match win.tabs.get_mut(tab_idx) {
         Some(tab) => { tab.focused = id; }
         None => return,
@@ -223,14 +226,14 @@ pub fn focus_pane_at(hwnd: HWND) {
 }
 """),
     ("committed without ever confirming", 1, """
-pub fn focus_pane_at(hwnd: HWND) {
+fn focus_pane_reached(hwnd: HWND, reach: Reach) {
     win.active = tab_idx;
     focus_active(frame);
 }
 """),
     # The prose above the real code spells the broken order out verbatim.
     ("the broken order quoted in a comment", 0, """
-pub fn focus_pane_at(hwnd: HWND) {
+fn focus_pane_reached(hwnd: HWND, reach: Reach) {
     // This used to write `win.active = tab_idx` first and only then look the
     // tab up with `win.tabs.get_mut(tab_idx)`, which is the wrong order.
     let Some(tab) = win.tabs.get_mut(tab_idx) else { break 'commit None; };

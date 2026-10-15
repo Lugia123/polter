@@ -285,6 +285,28 @@ pub fn keyboard_in_terminal(on_loan: bool, person_clicked_the_terminal: bool) ->
     on_loan && person_clicked_the_terminal
 }
 
+/// How a terminal is being given the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// The person clicked in it.
+    Clicked,
+    /// It was gone to: Return on the control room's list ("go to its
+    /// supervisor"), the palette's "Focus: …", a notification.
+    GoneTo,
+}
+
+/// Whether giving a terminal the keyboard leaves the control room in front:
+/// `on_loan` is whether it is the one shown there.
+///
+/// **A click in it stays; going to it goes to its tab** (task 1611; macOS's
+/// `goToSupervisor`, which gives a lent supervisor back and hands it the
+/// keyboard in its own tab). Gone to while on loan, it used to stay in the
+/// control room with the keyboard, and a member lent from behind its stack
+/// was never brought to its front (#1610 K8).
+pub fn stays_in_the_room(on_loan: bool, reach: Reach) -> bool {
+    on_loan && reach == Reach::Clicked
+}
+
 /// What becomes of a request to close a pane (the core's `close_surface`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseOf {
@@ -605,5 +627,14 @@ mod tests {
         assert!(may_split(true, true));
         assert!(may_split(false, false));
         assert!(may_split(false, true));
+    }
+
+    /// Task 1611.
+    #[test]
+    fn a_terminal_gone_to_from_the_control_room_goes_to_its_tab() {
+        assert!(stays_in_the_room(true, Reach::Clicked), "a click in the lent terminal stays in the control room");
+        assert!(!stays_in_the_room(true, Reach::GoneTo), "going to the lent supervisor kept it in the control room");
+        assert!(!stays_in_the_room(false, Reach::Clicked));
+        assert!(!stays_in_the_room(false, Reach::GoneTo));
     }
 }

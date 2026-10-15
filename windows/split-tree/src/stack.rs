@@ -159,6 +159,19 @@ impl Tree {
         self.swapping(stack.shown, pane, stacks)
     }
 
+    /// Whether the core is to take `pane` as out of sight for being stacked
+    /// behind another: `lent` is whether the control room is showing it
+    /// right now.
+    ///
+    /// **Lent wins, wherever it sits in its stack** (task 1611; macOS's
+    /// `TerminalPresence.ownTabReports`): the control room is showing it, so
+    /// "behind" would be a lie about a terminal the person is looking at --
+    /// and on a real machine (#1610 K8) the core, told it could not be seen,
+    /// never drew it there. Given back, it is behind again.
+    pub fn behind_for_core(&self, pane: PaneId, lent: bool) -> bool {
+        !lent && self.contains(pane) && !self.is_shown(pane)
+    }
+
     /// The tree to give `pane` the keyboard in (task 1610): with it brought
     /// to the front when it is stacked behind another, so the keyboard never
     /// goes into a terminal nobody can see. None when it is already where it

@@ -1323,7 +1323,11 @@ test "menu labels reach the palette" {
         .{ .path = "windows/host/src/menu.rs", .what = "the main menu", .paired_match = false, .min_rows = 40, .no_command = 8 },
         .{ .path = "windows/host/src/ctxmenu.rs", .what = "the terminal's right-click menu", .paired_match = false, .min_rows = 15, .no_command = 3 },
         .{ .path = "windows/host/src/strip.rs", .what = "the blank strip's menu", .paired_match = false, .min_rows = 3, .no_command = 1 },
-        .{ .path = "windows/host/src/strip.rs", .what = "the tab's right-click menu", .paired_match = true, .min_rows = 8, .no_command = 2 },
+        // Three: `rename_tab` (the host's rename box), and the two
+        // supervision rows with no palette command -- `poltergeist_toggle_authorise`
+        // came to this menu in 8df958dbd, while this test was red on an earlier
+        // row and never got here to be told (task 1611).
+        .{ .path = "windows/host/src/strip.rs", .what = "the tab's right-click menu", .paired_match = true, .min_rows = 8, .no_command = 3 },
     };
 
     for (sources) |source| {
