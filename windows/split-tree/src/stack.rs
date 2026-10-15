@@ -159,6 +159,17 @@ impl Tree {
         self.swapping(stack.shown, pane, stacks)
     }
 
+    /// The tree to give `pane` the keyboard in (task 1610): with it brought
+    /// to the front when it is stacked behind another, so the keyboard never
+    /// goes into a terminal nobody can see. None when it is already where it
+    /// can be seen, or not in this tree -- nothing to change.
+    pub fn revealing(&self, pane: PaneId) -> Option<Tree> {
+        if self.is_shown(pane) {
+            return None;
+        }
+        self.showing(pane).ok()
+    }
+
     /// Take `pane` out of the tree by itself, wherever in its place it is.
     ///
     /// The one a place shows is followed by the next tab of its stack (the

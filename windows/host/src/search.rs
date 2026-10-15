@@ -514,7 +514,12 @@ pub fn keep_over_its_terminal(frame: HWND) {
         return;
     }
     let pane = pane_for(Some(owner));
-    if pane.0.is_null() || unsafe { GetAncestor(pane, GA_ROOT) } != frame {
+    if pane.0.is_null() {
+        // its terminal was closed -- the member in front of a stack, a pane
+        post(WM_SEARCH_TABCHECK);
+        return;
+    }
+    if unsafe { GetAncestor(pane, GA_ROOT) } != frame {
         return;
     }
     if !unsafe { IsWindowVisible(pane) }.as_bool() {
@@ -717,11 +722,26 @@ extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             WM_SEARCH_TABCHECK => {
                 let owner = OPEN_FOR.load(Ordering::Acquire);
                 let vis = STATE.with(|c| c.borrow().as_ref().map(|s| s.visible).unwrap_or(false));
-                if vis && owner != 0 && crate::tabs::surface_showing(owner) != Some(true) {
-                    // process-wide: the bar's terminal is the one it names;
-                    // it is no longer on screen in any window
-                    plogf!("[search] the bar's terminal {:#x} is no longer on screen; ending its search", owner);
-                    end_from_host();
+                if vis && owner != 0 {
+                    // Another stack member or a zoom covers it too, not only
+                    // another tab (task 1610; `hud::find_owner`).
+                    use polter_control_room::hud::{find_owner, FindOwner};
+                    match find_owner(crate::tabs::find_owner_at(owner)) {
+                        FindOwner::Showing => {}
+                        FindOwner::Covered => {
+                            // process-wide: the bar's terminal is the one it
+                            // names; it is no longer on screen in any window
+                            plogf!("[search] the bar's terminal {:#x} is no longer on screen; ending its search", owner);
+                            end_from_host();
+                        }
+                        FindOwner::Gone => {
+                            // process-wide: that terminal is in no window. Its
+                            // surface goes with its search, so the core is not
+                            // told: `end_search` would reach a freed surface.
+                            plogf!("[search] the bar's terminal {:#x} was closed; the bar is taken down", owner);
+                            hide();
+                        }
+                    }
                 }
                 LRESULT(0)
             }

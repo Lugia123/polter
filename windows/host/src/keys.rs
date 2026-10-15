@@ -769,6 +769,9 @@ pub fn shortcut_for(action: &str) -> Option<String> {
         return None;
     }
 
+    if let Some(chord) = host_primary(action) {
+        return Some(chord.to_string());
+    }
     let f = config_trigger_fn()?;
     let cfg = crate::config_handle();
     if cfg.is_null() {
@@ -778,9 +781,38 @@ pub fn shortcut_for(action: &str) -> Option<String> {
     format_trigger(t)
 }
 
+/// **Actions bound twice, whose primary key is the host's** (task 1610):
+/// `new_split:right` is `Ctrl+Shift+O` in the core and `Ctrl+Shift+D` in
+/// `accelerator` above, and D is the one mac-win-parity DECISIONS 4 keeps,
+/// as macOS's ⌘D. The core answers with its own, so every row that names
+/// the key -- menus, the right-click menu, the palette -- showed O.
+///
+/// The key each row names is the one `accelerator` answers to: a test
+/// holds the two together.
+const HOST_PRIMARY: &[(&str, VIRTUAL_KEY, &str)] = &[("new_split:right", VK_D, "Ctrl+Shift+D")];
+
+/// The key to show for `action` when the host's own chord is its primary.
+fn host_primary(action: &str) -> Option<&'static str> {
+    HOST_PRIMARY.iter().find(|(a, _, _)| *a == action).map(|(_, _, chord)| *chord)
+}
+
 #[cfg(test)]
 mod shortcut_tests {
     use super::*;
+
+    /// An action with a key of the host's and one of the core's shows the
+    /// host's when DECISIONS 4 names it the primary; every other action
+    /// shows what the core says (task 1610).
+    #[test]
+    fn split_right_shows_ctrl_shift_d_and_the_rest_keep_the_cores_key() {
+        assert_eq!(host_primary("new_split:right"), Some("Ctrl+Shift+D"));
+        assert_eq!(host_primary("new_split:down"), None);
+        assert_eq!(host_primary("toggle_split_zoom"), None);
+        for (action, vk, chord) in HOST_PRIMARY {
+            assert_eq!(accelerator(*vk, true, true), Some(*action), "{chord} is not the host's key for {action}");
+            assert!(chord.starts_with("Ctrl+Shift+"), "{chord}");
+        }
+    }
 
     /// The concept lives in one place. **`menu.rs` used to carry its own copy
     /// of this prefix**, with a comment pointing at this file as the

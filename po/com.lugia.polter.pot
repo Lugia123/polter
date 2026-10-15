@@ -836,6 +836,10 @@ msgstr ""
 msgid "Prompt for a new title for the current tab."
 msgstr ""
 
+#: src/input/command.zig:471
+msgid "Prompt for a new title for the current window."
+msgstr ""
+
 #: src/input/command.zig:478
 msgid "Split the terminal to the left."
 msgstr ""

@@ -102,6 +102,44 @@ pub fn find_escape(needle_empty: bool) -> FindEscape {
     }
 }
 
+/// Where the find bar's terminal is, as the window it is in sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindOwnerAt {
+    /// Its tab is the one in front of its window.
+    pub tab_in_front: bool,
+    /// The control room is showing it on loan, in front whatever the tab.
+    pub lent: bool,
+    /// It is the member its stack shows (a pane in no stack is shown).
+    pub shown_in_its_stack: bool,
+    /// Another pane of its tab is zoomed over it.
+    pub zoomed_over: bool,
+}
+
+/// What becomes of the find bar when its terminal may have left the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindOwner {
+    /// On screen: the bar stays over it.
+    Showing,
+    /// Still there but not seen -- another tab, another stack member, a zoom:
+    /// its search is ended, as a tab switch does (#1016).
+    Covered,
+    /// Closed: the bar is taken down and the core is not told, since the
+    /// surface it would tell is gone with its search.
+    Gone,
+}
+
+/// The rule for the bar's terminal leaving the screen (task 1610). On macOS
+/// the bar is inside its terminal's view and leaves with it; on Windows it is
+/// a window of its own, so this is asked whenever the panes move.
+pub fn find_owner(at: Option<FindOwnerAt>) -> FindOwner {
+    let Some(at) = at else { return FindOwner::Gone };
+    if at.lent || (at.tab_in_front && at.shown_in_its_stack && !at.zoomed_over) {
+        FindOwner::Showing
+    } else {
+        FindOwner::Covered
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +205,29 @@ mod tests {
     fn esc_closes_an_empty_bar_and_otherwise_goes_back_to_the_terminal() {
         assert_eq!(find_escape(true), FindEscape::Close);
         assert_eq!(find_escape(false), FindEscape::BackToTerminal);
+    }
+
+    #[test]
+    fn a_bar_whose_terminal_is_stacked_behind_another_ends_its_search() {
+        let front = FindOwnerAt { tab_in_front: true, lent: false, shown_in_its_stack: true, zoomed_over: false };
+        assert_eq!(find_owner(Some(front)), FindOwner::Showing);
+        let behind = FindOwnerAt { shown_in_its_stack: false, ..front };
+        assert_eq!(find_owner(Some(behind)), FindOwner::Covered);
+    }
+
+    #[test]
+    fn a_bar_follows_its_terminal_off_the_tab_under_a_zoom_and_out_on_loan() {
+        let front = FindOwnerAt { tab_in_front: true, lent: false, shown_in_its_stack: true, zoomed_over: false };
+        let other_tab = FindOwnerAt { tab_in_front: false, ..front };
+        assert_eq!(find_owner(Some(other_tab)), FindOwner::Covered);
+        let zoomed = FindOwnerAt { zoomed_over: true, ..front };
+        assert_eq!(find_owner(Some(zoomed)), FindOwner::Covered);
+        let lent = FindOwnerAt { lent: true, ..other_tab };
+        assert_eq!(find_owner(Some(lent)), FindOwner::Showing);
+    }
+
+    #[test]
+    fn a_bar_whose_terminal_was_closed_is_taken_down_without_the_core() {
+        assert_eq!(find_owner(None), FindOwner::Gone);
     }
 }

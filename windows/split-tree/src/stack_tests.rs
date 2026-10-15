@@ -133,6 +133,23 @@ fn showing_brings_one_from_behind_to_the_front_without_reordering_the_tabs() {
     assert_eq!(tree.showing(B).unwrap(), tree);
 }
 
+/// Windows only, no macOS counterpart: the host's every way of giving a
+/// terminal the keyboard asks this first (task 1610).
+#[test]
+fn a_terminal_given_the_keyboard_from_behind_its_stack_is_brought_to_the_front() {
+    let tree = fixture().stacking(D, B).unwrap();
+    assert!(!tree.is_shown(B));
+    let after = tree.revealing(B).expect("B is behind D, so it has to come to the front");
+    sound(&after);
+    assert!(after.is_shown(B));
+    assert_eq!(after.shown_panes(), [A, B, C]);
+    // Already seen, alone in its place, or not there: nothing to change.
+    assert_eq!(after.revealing(B), None);
+    assert_eq!(tree.revealing(D), None);
+    assert_eq!(tree.revealing(A), None);
+    assert_eq!(tree.revealing(E), None);
+}
+
 #[test]
 fn showing_refuses_a_place_of_one_and_a_terminal_that_is_not_there() {
     assert_eq!(fixture().showing(A), Err(Error::NotStacked));
