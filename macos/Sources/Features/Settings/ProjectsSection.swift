@@ -529,9 +529,12 @@ private struct ProjectDetail: View {
         var title: String
     }
 
+    /// One to a pane: a pane holding a stack is labelled with the
+    /// terminal it shows, the way it is drawn.
     static func leaves(_ node: ProjectNode) -> [Leaf] {
         switch node {
         case .leaf(let cwd, let title, _, _, _): [Leaf(cwd: cwd, title: title)]
+        case .stack: node.shownLeaf.map(leaves) ?? [Leaf(cwd: "", title: "")]
         case .split(_, _, let left, let right): leaves(left) + leaves(right)
         }
     }
@@ -541,7 +544,7 @@ private struct ProjectDetail: View {
         var next = 0
         func walk(_ node: ProjectNode) -> ProjectsRules.Pane {
             switch node {
-            case .leaf:
+            case .leaf, .stack:
                 defer { next += 1 }
                 return .leaf(next)
             case .split(let direction, let ratio, let left, let right):

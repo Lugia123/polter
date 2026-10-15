@@ -313,6 +313,8 @@ extension ProjectNode {
         case .split(_, _, let left, let right):
             left.collectKnown(into: &known)
             right.collectKnown(into: &known)
+        case .stack(_, let members):
+            for member in members { member.collectKnown(into: &known) }
         }
     }
 
@@ -344,6 +346,8 @@ extension ProjectNode {
             return .split(
                 direction: direction, ratio: ratio,
                 left: left.keepingWhatTheFileKnew(known), right: right.keepingWhatTheFileKnew(known))
+        case .stack(let shown, let members):
+            return .stack(shown: shown, members: members.map { $0.keepingWhatTheFileKnew(known) })
         }
     }
 }

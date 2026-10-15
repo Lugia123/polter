@@ -1996,6 +1996,32 @@ worker 是标题带，普通终端没有带——普通终端的一叠设计稿�
   显示的那一个、把后面的不出声地丢掉），整个窗口重开以后不回来。存成项目同理，只会存下每格显示的那一个。这是第 4 步，
   **在它做完之前层叠不该到用户手里**。
 
+**存盘做了，并在真 app 里走了一遍（任务 #1559，2026-10-15，mac）**
+
+- **窗口恢复**：`SplitTree` 有一叠才写版本 2，多一个键 `stacks`：每项是 `pane`（那一格的路径，写法同 `zoomed`）、
+  `behind`（这一格除显示的那个以外的成员，按标签顺序）、`shown`（显示的那个插回去的位置）。**显示的那个不写第二遍**：
+  解码一个视图就是造一个终端，写两遍会多出一个没有格子的终端。没有叠照旧写版本 1，字节不变；版本 1 照旧读得出。
+  读是严格的：路径不是一格、`behind` 为空、`shown` 越界、一格两项，都整个拒读。旧版本读到版本 2 抛错、不恢复那个窗口
+  ——这一条没有在真机上用旧版本读过。字节夹具在 `macos/Tests/Splits/StoredStackTests.swift`，手写。
+- **项目文件**：与方案不同，**有叠时写 format 3**，没有叠照旧写 format 2、字节不变。节点
+  `{"kind":"stack","shown":I,"members":[LEAF,…]}`，成员只能是叶子、至少两个。理由：只加一种 `kind` 的话，旧版本读到
+  它报的是「文件坏了」；加一个格式号，旧版本（与今天的 Windows，`FORMAT_VERSION` 还是 2）报的是「较新的版本写的」，
+  说的是实话。format 2 文件里出现 `stack` 是 `Corrupt`。共用夹具 `test/project-format/stacked.json`，`index.txt` 新的一类
+  `stacked`：核心与 mac 读写回同样的字节，Windows 必须当作太新拒读。自动保存的「覆盖旧格式先留 `.prev`」改成和
+  **这次要写的格式**比，不和最新格式比（不然每个 format 2 文件都会被当成旧格式）。快照名清单、看门的「布局变了」
+  （一格里多一个或少一个终端算，换显示哪个不算）、两个总管降级、重名快照，都把叠在后面的算进去。
+- **真机（poltertest，`stack-finish-v1/`）**：开叠、上一个/下一个、拿出到旁边、`terminal_layout` 写一叠并读回、
+  退出再启动（顺序与显示哪个都对）、另存为项目（format 3、四个快照都在）、关闭再加载项目——都对。
+- **真机上发现并修了两处关闭**：① 核心通知「进程退出、关掉它」走的是 `root?.node(view:)`，叠在后面的找不到，于是
+  什么都不做，那个终端停在「Process exited」上，没人能按它要的那个键（`terminal_send` 也被 `ChildExited` 拒绝）；
+  改成按终端关（`closeSurface(view)`）。② 标签页只有一格、那一格是一叠时，关掉显示的那个会把**整个标签页或窗口**
+  关掉，后面的终端一起没了；`TerminalController` 与 `QuickTerminalController` 判「关的是根」时，改成先看拿掉以后树
+  空不空。两处都是控制器里的，逻辑测试的小包编不进，判据是真机上修前修后两个包各一格读数。
+- **没做 / 没验**：快照的 `behind`、`terminal_list` 的 `cell`/`shown`（叠在后面的终端在 `terminal_list` 里没有
+  `window`/`tab`）；Windows 读写 format 3；旧版本读新存盘；GTK。Debug 包恢复项目快照时的一次崩溃
+  （`PageList integrity check failed`，在 `Termio.resize`）与层叠无关：从没进过层叠的格子的快照单独也能触发，现场在
+  `stack-finish-v1/raw/t59-crash-evidence/`。
+
 **键位动作与工具（S6）**
 
 - 核心 `Binding.Action` 加三个：在这一格里新开一个（叠上去）、这一叠的上一个 / 下一个 / 第 N 个、把当前这个拿出去

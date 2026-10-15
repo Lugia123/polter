@@ -251,7 +251,7 @@ struct ProjectAutosaveTests {
         #expect(ProjectFileWriter.plan(writing: same, over: old, keeping: .onLayoutChange) == .written(rotated: true))
         #expect(try ProjectFileWriter.write(same, to: url, keeping: .onLayoutChange) == .written(rotated: true))
         #expect(try Data(contentsOf: prev) == old)
-        #expect(try ProjectFile.format(of: Data(contentsOf: url)) == ProjectFile.formatVersion)
+        #expect(try ProjectFile.format(of: Data(contentsOf: url)) == ProjectFile.plainFormatVersion)
 
         // Now in this format: the same save again writes nothing, as before.
         #expect(try ProjectFileWriter.write(same.with(name: "p", savedAt: 10), to: url, keeping: .onLayoutChange) == .unchanged)
@@ -285,7 +285,7 @@ struct ProjectAutosaveTests {
         #expect(plan(project([[leaf("/first"), leaf("/second")]])) == .written(rotated: true))
 
         // A project from a later format is somebody's project: kept.
-        let later = Data(#"{"format":3,"name":"p","saved_at":1,"windows":[]}"#.utf8)
+        let later = Data(#"{"format":4,"name":"p","saved_at":1,"windows":[]}"#.utf8)
         #expect(ProjectFileWriter.plan(writing: was, over: later, keeping: .onLayoutChange) == .written(rotated: true))
     }
 

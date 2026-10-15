@@ -109,11 +109,13 @@
       "macos/Tests/Projects/ProjectFilenameTableTests.swift",
       "macos/Tests/Projects/ProjectPageRulesTests.swift",
       "macos/Tests/Projects/ProjectPagesTests.swift",
+      "macos/Tests/Projects/ProjectStackTests.swift",
       "macos/Tests/Projects/SharedProjectFilesTests.swift",
       "macos/Tests/Splits/PoltergeistLayoutShapeTests.swift",
       "macos/Tests/Splits/SplitTreeTests.swift",
       "macos/Tests/Splits/SplitStackTests.swift",
       "macos/Tests/Splits/StoredBytesTests.swift",
+      "macos/Tests/Splits/StoredStackTests.swift",
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift"
     ],
     "out": [

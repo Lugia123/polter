@@ -63,15 +63,18 @@ enum ProjectFileWriter {
     /// overwritten -- it is somebody's project, and this can't tell whose
     /// layout it was. A file from a later format is one of those.
     ///
-    /// **So is a file of an older format, whatever is being written over
+    /// **So is a file of an older format than the one being written over
     /// it** -- even when nothing but the time would change, which otherwise
     /// writes nothing and would leave the file in the old format for good.
-    /// This write turns it into the current one, which the build that wrote
-    /// it cannot read; the copy in `.prev` is that build's way back.
+    /// This write turns it into the newer one, which the build that wrote
+    /// it cannot read; the copy in `.prev` is that build's way back. Older
+    /// than *this* file, not than the latest format: a project with no
+    /// stack is still written as format 2, which every build since windows
+    /// reads, and one that gains a stack becomes format 3 (`ProjectFile.format`).
     static func plan(writing file: ProjectFile, over existing: Data?, keeping: Keeping) -> Outcome {
         guard let existing else { return .written(rotated: false) }
         guard let old = try? ProjectFile.decode(from: existing) else { return .written(rotated: true) }
-        if let format = try? ProjectFile.format(of: existing), format < ProjectFile.formatVersion {
+        if let format = try? ProjectFile.format(of: existing), format < file.format {
             return .written(rotated: true)
         }
         if old.name == file.name && old.group == file.group && old.windows == file.windows
@@ -147,12 +150,17 @@ extension ProjectNode {
     /// not ratios, cwds, titles, or anything captured per pane.
     indirect enum Layout: Equatable {
         case pane
+        /// A pane holding this many terminals. A terminal put into a pane
+        /// or taken out of one is a terminal added or removed; which of
+        /// them the pane shows is not part of the layout.
+        case stack(Int)
         case split(Direction, Layout, Layout)
     }
 
     var layout: Layout {
         switch self {
         case .leaf: return .pane
+        case .stack(_, let members): return .stack(members.count)
         case .split(let direction, _, let left, let right):
             return .split(direction, left.layout, right.layout)
         }

@@ -731,9 +731,11 @@ class BaseTerminalController: NSWindowController,
 
     @objc private func ghosttyDidCloseSurface(_ notification: Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
-        guard let node = surfaceTree.root?.node(view: target) else { return }
+        // By the terminal, not by the pane: one stacked behind another is in
+        // no node, and asking for its node here left it open, its process
+        // gone and nobody able to press the key its screen asks for.
         closeSurface(
-            node,
+            target,
             withConfirmation: (notification.userInfo?["process_alive"] as? Bool) ?? false)
     }
 

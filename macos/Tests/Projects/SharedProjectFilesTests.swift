@@ -15,7 +15,7 @@ import Foundation
 /// `index.txt` says what each is: `same` (read and written, it is the same
 /// bytes), `from` (`<stem>.in.json` read and written is the bytes of
 /// `<stem>.json`), `refused` (`<stem>.in.json` is from a later format and
-/// must not be read).
+/// must not be read), `stacked` (a format 3 `same`: a pane holds a stack).
 enum SharedProjectFiles {
     /// Where the files live, found from this file's own path -- the tests
     /// only ever run from a checkout.
@@ -50,7 +50,9 @@ enum SharedProjectFiles {
             let (kind, stem) = (parts[0], parts[1])
             reading.rows += 1
             switch kind {
-            case "same":
+            // `stacked` is format 3, which this build has: read and written
+            // back, the same bytes, exactly as `same`.
+            case "same", "stacked":
                 reading.named += 1
                 let want = try bytes("\(stem).json")
                 let got = try ProjectFile.decode(from: want).encoded()
@@ -168,10 +170,10 @@ struct SharedProjectFilesTests {
         // It has everything a format 1 file has. Read as one, it is a
         // project of one pane, and the next save writes that over whatever
         // it was.
-        let later = Data(#"{"format":3,"name":"later","saved_at":1,"root":{"kind":"leaf","cwd":"/a"}}"#.utf8)
-        #expect(throws: ProjectFileError.tooNew(found: 3)) { try ProjectFile.decode(from: later) }
-        #expect(throws: ProjectFileError.tooNew(found: 3)) { try ProjectFile.format(of: later) }
-        #expect("\(ProjectFileError.tooNew(found: 3))".contains("format 3"))
+        let later = Data(#"{"format":4,"name":"later","saved_at":1,"root":{"kind":"leaf","cwd":"/a"}}"#.utf8)
+        #expect(throws: ProjectFileError.tooNew(found: 4)) { try ProjectFile.decode(from: later) }
+        #expect(throws: ProjectFileError.tooNew(found: 4)) { try ProjectFile.format(of: later) }
+        #expect("\(ProjectFileError.tooNew(found: 4))".contains("format 4"))
 
         // A `format` that is not a version at all is a damaged file -- and
         // not a too-new one.

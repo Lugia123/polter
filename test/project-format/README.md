@@ -23,6 +23,10 @@ have to write the same bytes**, not merely files the others can read.
   1 file, or a file a read puts right. Read and written, it is the bytes of
   `<stem>.json`.
 - `refused` -- `<stem>.in.json` is from a later format and must not be read.
+- `stacked` -- `<stem>.json` is a format 3 file: a pane in it holds a stack
+  of terminals. A build that has stacks (`src/Project.zig`, macOS) reads it
+  and writes it back as the same bytes; one that does not (Windows, today)
+  must refuse it as too new.
 
 ## Who makes them
 

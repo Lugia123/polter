@@ -28,7 +28,9 @@ fn shared_dir() -> std::path::PathBuf {
 /// `index.txt` says what each is: `same` (read and written, it is the same
 /// bytes), `from` (`<stem>.in.json` read and written is the bytes of
 /// `<stem>.json`), `refused` (`<stem>.in.json` is from a later format and
-/// must not be read). Nothing in this crate makes any of them, so a writer
+/// must not be read), `stacked` (`<stem>.json` is format 3, which a build
+/// with stacks reads and writes back the same, and this one refuses as too
+/// new). Nothing in this crate makes any of them, so a writer
 /// here that drops a field, orders two keys the other way or prints a number
 /// its own way is a red line that shows both byte strings -- not a file that
 /// went out and came back the same.
@@ -61,6 +63,20 @@ fn every_shared_file_is_read_and_written_back_as_the_same_bytes() {
                 // What it was written as reads, and stays as it is.
                 let again = emit(&parse_snapshot(&want).unwrap_or_else(|e| panic!("{stem}.json: {e:?}"))).unwrap();
                 assert_eq!(again, String::from_utf8(want).unwrap(), "{stem}.json did not come back as it went in");
+            }
+            // A pane holding a stack: format 3, which this build does not
+            // read yet (`FORMAT_VERSION`), and refuses whole -- the Windows
+            // host has no stacks to put the terminals behind into, and
+            // reading only the one each pane shows would lose the rest and
+            // save that over the file.
+            "stacked" => {
+                named += 1;
+                let input = read(format!("{stem}.json"));
+                assert!(
+                    matches!(parse_snapshot(&input), Err(ReadError::TooNew { found: 3 })),
+                    "{stem}.json must be refused as too new (format 3), and read as {:?}",
+                    parse_snapshot(&input)
+                );
             }
             "refused" => {
                 named += 1;

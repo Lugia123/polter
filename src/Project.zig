@@ -42,8 +42,8 @@
 //! It is read as a project of one window with one tab, the window's frame
 //! not recorded and every pane's occupant not known. It is never written.
 //!
-//! **Format 2** is what is written, always, in this order and with no
-//! space anywhere:
+//! **Format 2** is what is written for a project in which no pane holds a
+//! stack, in this order and with no space anywhere:
 //!
 //!     {"format":2,"name":S,"saved_at":I,"root":{"kind":"moved-to-windows"},
 //!      "group":S,"next_scrollback":I,"windows":[WINDOW,...]}
@@ -51,10 +51,20 @@
 //!              "width":N,"height":N},"front":I,"tabs":[{"root":NODE},...]}
 //!     NODE    {"kind":"split","direction":"horizontal"|"vertical","ratio":N,
 //!              "left":NODE,"right":NODE}
-//!           | {"kind":"leaf","cwd":S,"title":S,"history":S,"scrollback":S,
+//!           | LEAF
+//!           | {"kind":"stack","shown":I,"members":[LEAF,LEAF,...]}
+//!     LEAF    {"kind":"leaf","cwd":S,"title":S,"history":S,"scrollback":S,
 //!              "agent":AGENT}
 //!     AGENT   {"kind":"unknown"} | {"kind":"none"}
 //!           | {"kind":"agent","role":S,"cli":S,"session":S,"supervisor":B}
+//!
+//! **Format 3** is format 2 with one more kind of node, `stack`: a pane
+//! holding more than one terminal (control-room.md, 12.6.2). `members` are
+//! its terminals in the order of their tabs, two or more, and `shown` the
+//! index of the one it shows. It is written only when some pane holds a
+//! stack -- a project with none is format 2, byte for byte -- so that a
+//! build from before stacks, which reads up to format 2, refuses it as too
+//! new instead of reading it. A `stack` in a format 2 file is `Corrupt`.
 //!
 //! `group`, `next_scrollback` and `frame` are left out when there is none;
 //! so is any string of a leaf or an agent that is empty. Everything else is
@@ -78,10 +88,11 @@
 //!
 //! **What a read puts right, and says nothing more about.** A `scrollback`
 //! that is not a name this format writes reads as none. So does one an
-//! earlier pane of the file already has (windows in order, tabs in order,
-//! left before right): two panes writing one snapshot is the thing the
-//! numbering exists to prevent. And a project has at most one supervisor:
-//! **a file in which two or more panes say they are it reads with none of
+//! earlier terminal of the file already has (windows in order, tabs in
+//! order, left before right, a stack's members in order): two terminals
+//! writing one snapshot is the thing the numbering exists to prevent. And a
+//! project has at most one supervisor: **a file in which two or more
+//! terminals say they are it -- in front or behind -- reads with none of
 //! them being it** -- which of them it was cannot be told from the file, and
 //! whoever opens a project starts its supervisor without asking.
 const Project = @This();
@@ -209,10 +220,33 @@ pub const Split = struct {
     right: *const Node,
 };
 
-/// One node in the layout tree: either a pane or a split of two more nodes.
+/// A pane that holds more than one terminal, one of them shown and the
+/// others behind it (control-room.md, 12.6.2). Only in a format 3 file.
+pub const Stack = struct {
+    /// The index, in `members`, of the terminal the pane shows.
+    shown: usize,
+
+    /// Every terminal of the pane, in the order of its tabs, the shown one
+    /// among them. Always more than one: a pane of one terminal is a
+    /// `leaf`, never a stack of one.
+    members: []const Leaf,
+};
+
+/// One node in the layout tree: a pane, a pane holding a stack of
+/// terminals, or a split of two more nodes.
 pub const Node = union(enum) {
     leaf: Leaf,
     split: Split,
+    stack: Stack,
+
+    /// Whether any pane under this node holds a stack.
+    pub fn hasStack(self: Node) bool {
+        return switch (self) {
+            .leaf => false,
+            .stack => true,
+            .split => |split| split.left.hasStack() or split.right.hasStack(),
+        };
+    }
 };
 
 /// One tab: a tree of panes.
@@ -472,8 +506,25 @@ fn replaced(c: u8) bool {
     };
 }
 
-/// The format this build writes, and the latest it reads.
-pub const format_version: u32 = 2;
+/// The latest format this build reads, and what it writes for a project
+/// in which some pane holds a stack.
+pub const format_version: u32 = 3;
+
+/// What this build writes for a project in which no pane holds a stack:
+/// the same bytes as before there were stacks, which every build since
+/// windows reads. Only a project that needs format 3 is written as it, so
+/// that a build from before stacks refuses it as too new -- rather than
+/// reading it as corrupt, or reading the shown terminal of each pane and
+/// saving that over the rest.
+pub const plain_format_version: u32 = 2;
+
+/// The format `snapshot` is written as.
+pub fn formatOf(snapshot: Snapshot) u32 {
+    for (snapshot.windows) |window| for (window.tabs) |tab| {
+        if (tab.root.hasStack()) return format_version;
+    };
+    return plain_format_version;
+}
 
 /// Write the snapshot, replacing whatever project of this name was there.
 ///
@@ -518,14 +569,15 @@ pub const EmitError = std.Io.Writer.Error || error{
     NotFinite,
 };
 
-/// The bytes of `snapshot` as a format 2 file. **Written by hand rather than
+/// The bytes of `snapshot` as a format 2 file, or a format 3 one when a
+/// pane holds a stack (`formatOf`). **Written by hand rather than
 /// through `std.json`**, because the three implementations have to write the
 /// same bytes and three JSON libraries do not: they order keys differently,
 /// one escapes `/`, and each prints a double its own way. The rules are in
 /// the module comment; every one of them is in this function and the four
 /// below it.
 pub fn emit(w: *std.Io.Writer, snapshot: Snapshot) EmitError!void {
-    try w.print("{{\"format\":{d},\"name\":", .{format_version});
+    try w.print("{{\"format\":{d},\"name\":", .{formatOf(snapshot)});
     try emitString(w, snapshot.name);
     try w.print(",\"saved_at\":{d}", .{snapshot.saved_at});
     try w.writeAll(",\"root\":{\"kind\":\"" ++ moved_kind ++ "\"}");
@@ -569,25 +621,14 @@ const moved_kind = "moved-to-windows";
 
 fn emitNode(w: *std.Io.Writer, node: Node) EmitError!void {
     switch (node) {
-        .leaf => |leaf| {
-            try w.writeAll("{\"kind\":\"leaf\"");
-            try emitField(w, "cwd", leaf.cwd);
-            try emitField(w, "title", leaf.title);
-            try emitField(w, "history", leaf.history);
-            try emitField(w, "scrollback", leaf.scrollback);
-            try w.writeAll(",\"agent\":{\"kind\":\"");
-            try w.writeAll(@tagName(leaf.agent));
-            try w.writeByte('"');
-            switch (leaf.agent) {
-                .unknown, .none => {},
-                .agent => |who| {
-                    try emitField(w, "role", who.role);
-                    try emitField(w, "cli", who.cli);
-                    try emitField(w, "session", who.session);
-                    try w.writeAll(if (who.supervisor) ",\"supervisor\":true" else ",\"supervisor\":false");
-                },
+        .leaf => |leaf| try emitLeaf(w, leaf),
+        .stack => |stack| {
+            try w.print("{{\"kind\":\"stack\",\"shown\":{d},\"members\":[", .{stack.shown});
+            for (stack.members, 0..) |leaf, i| {
+                if (i > 0) try w.writeByte(',');
+                try emitLeaf(w, leaf);
             }
-            try w.writeAll("}}");
+            try w.writeAll("]}");
         },
         .split => |split| {
             try w.writeAll("{\"kind\":\"split\",\"direction\":\"");
@@ -601,6 +642,27 @@ fn emitNode(w: *std.Io.Writer, node: Node) EmitError!void {
             try w.writeByte('}');
         },
     }
+}
+
+fn emitLeaf(w: *std.Io.Writer, leaf: Leaf) EmitError!void {
+    try w.writeAll("{\"kind\":\"leaf\"");
+    try emitField(w, "cwd", leaf.cwd);
+    try emitField(w, "title", leaf.title);
+    try emitField(w, "history", leaf.history);
+    try emitField(w, "scrollback", leaf.scrollback);
+    try w.writeAll(",\"agent\":{\"kind\":\"");
+    try w.writeAll(@tagName(leaf.agent));
+    try w.writeByte('"');
+    switch (leaf.agent) {
+        .unknown, .none => {},
+        .agent => |who| {
+            try emitField(w, "role", who.role);
+            try emitField(w, "cli", who.cli);
+            try emitField(w, "session", who.session);
+            try w.writeAll(if (who.supervisor) ",\"supervisor\":true" else ",\"supervisor\":false");
+        },
+    }
+    try w.writeAll("}}");
 }
 
 /// `,"key":"value"`, or nothing when the value is empty.
@@ -649,8 +711,8 @@ pub fn read(arena: Allocator, io: std.Io, dir: []const u8, name: []const u8) Rea
 const Fixups = struct {
     /// Every snapshot name a pane read so far has.
     scrollback: std.StringHashMapUnmanaged(void) = .empty,
-    /// Every pane that says it is the supervisor.
-    supervisors: std.ArrayListUnmanaged(*Node) = .empty,
+    /// Every terminal that says it is the supervisor.
+    supervisors: std.ArrayListUnmanaged(*Leaf) = .empty,
 };
 
 /// The same, for bytes already in hand.
@@ -726,7 +788,7 @@ pub fn parse(arena: Allocator, bytes: []const u8) ReadError!Snapshot {
             "project '{s}' has {d} panes that each say they are the supervisor; read as having none",
             .{ name, fixups.supervisors.items.len },
         );
-        for (fixups.supervisors.items) |node| node.leaf.agent.agent.supervisor = false;
+        for (fixups.supervisors.items) |leaf| leaf.agent.agent.supervisor = false;
     }
 
     return .{
@@ -818,29 +880,40 @@ fn parseNode(arena: Allocator, value: std.json.Value, format: u32, fixups: *Fixu
     const node = try arena.create(Node);
 
     if (std.mem.eql(u8, kind, "leaf")) {
-        // Invalid is absent, not corrupt: one bad field should not cost
-        // the whole project, and an absent snapshot is an empty pane. A
-        // name an earlier pane has is absent for the same reason.
-        const scrollback: []const u8 = scrollback: {
-            const name = optionalStr(obj.get("scrollback")) orelse break :scrollback "";
-            if (!isScrollbackName(name)) break :scrollback "";
-            const seen = try fixups.scrollback.getOrPut(arena, name);
-            break :scrollback if (seen.found_existing) "" else name;
+        node.* = .{ .leaf = try parseLeaf(arena, obj, format, fixups) };
+        try noteSupervisor(arena, &node.leaf, fixups);
+        return node;
+    }
+
+    // Only in format 3, and only of leaves: a stack in an earlier format is
+    // a file no build wrote, and a stack of anything but terminals is not
+    // a thing this format can say.
+    if (std.mem.eql(u8, kind, "stack") and format >= 3) {
+        const shown: usize = switch (obj.get("shown") orelse return error.Corrupt) {
+            .integer => |n| std.math.cast(usize, n) orelse return error.Corrupt,
+            else => return error.Corrupt,
         };
-        node.* = .{
-            .leaf = .{
-                .cwd = optionalStr(obj.get("cwd")) orelse "",
-                .title = optionalStr(obj.get("title")) orelse "",
-                .history = optionalStr(obj.get("history")) orelse "",
-                .scrollback = scrollback,
-                // A format 1 file never said, whatever keys it has.
-                .agent = if (format == 1) .unknown else try parseAgent(obj.get("agent") orelse return error.Corrupt),
-            },
+        const items = switch (obj.get("members") orelse return error.Corrupt) {
+            .array => |a| a.items,
+            else => return error.Corrupt,
         };
-        switch (node.leaf.agent) {
-            .agent => |who| if (who.supervisor) try fixups.supervisors.append(arena, node),
-            .unknown, .none => {},
+        if (items.len < 2 or shown >= items.len) return error.Corrupt;
+
+        const members = try arena.alloc(Leaf, items.len);
+        for (items, members) |item, *member| {
+            const member_obj = switch (item) {
+                .object => |o| o,
+                else => return error.Corrupt,
+            };
+            const member_kind = switch (member_obj.get("kind") orelse return error.Corrupt) {
+                .string => |s| s,
+                else => return error.Corrupt,
+            };
+            if (!std.mem.eql(u8, member_kind, "leaf")) return error.Corrupt;
+            member.* = try parseLeaf(arena, member_obj, format, fixups);
+            try noteSupervisor(arena, member, fixups);
         }
+        node.* = .{ .stack = .{ .shown = shown, .members = members } };
         return node;
     }
 
@@ -870,6 +943,33 @@ fn parseNode(arena: Allocator, value: std.json.Value, format: u32, fixups: *Fixu
     }
 
     return error.Corrupt;
+}
+
+fn parseLeaf(arena: Allocator, obj: std.json.ObjectMap, format: u32, fixups: *Fixups) ReadError!Leaf {
+    // Invalid is absent, not corrupt: one bad field should not cost
+    // the whole project, and an absent snapshot is an empty pane. A
+    // name an earlier pane has is absent for the same reason.
+    const scrollback: []const u8 = scrollback: {
+        const name = optionalStr(obj.get("scrollback")) orelse break :scrollback "";
+        if (!isScrollbackName(name)) break :scrollback "";
+        const seen = try fixups.scrollback.getOrPut(arena, name);
+        break :scrollback if (seen.found_existing) "" else name;
+    };
+    return .{
+        .cwd = optionalStr(obj.get("cwd")) orelse "",
+        .title = optionalStr(obj.get("title")) orelse "",
+        .history = optionalStr(obj.get("history")) orelse "",
+        .scrollback = scrollback,
+        // A format 1 file never said, whatever keys it has.
+        .agent = if (format == 1) .unknown else try parseAgent(obj.get("agent") orelse return error.Corrupt),
+    };
+}
+
+fn noteSupervisor(arena: Allocator, leaf: *Leaf, fixups: *Fixups) Allocator.Error!void {
+    switch (leaf.agent) {
+        .agent => |who| if (who.supervisor) try fixups.supervisors.append(arena, leaf),
+        .unknown, .none => {},
+    }
 }
 
 /// Strict where the rest of a leaf is not: these keys are new with format
@@ -1022,23 +1122,36 @@ fn oneTab(arena: Allocator, name: []const u8, saved_at: i64, root: ?*const Node,
     return .{ .name = name, .saved_at = saved_at, .group = null, .windows = windows, .next_scrollback = next_scrollback };
 }
 
+fn expectLeavesEqual(a: Leaf, b: Leaf) !void {
+    try testing.expectEqualStrings(a.cwd, b.cwd);
+    try testing.expectEqualStrings(a.title, b.title);
+    try testing.expectEqualStrings(a.history, b.history);
+    try testing.expectEqualStrings(a.scrollback, b.scrollback);
+    try testing.expectEqualDeep(a.agent, b.agent);
+}
+
 fn expectNodesEqual(a: Node, b: Node) !void {
     switch (a) {
         .leaf => |al| {
             const bl = switch (b) {
                 .leaf => |v| v,
-                .split => return error.TestExpectedEqual,
+                .split, .stack => return error.TestExpectedEqual,
             };
-            try testing.expectEqualStrings(al.cwd, bl.cwd);
-            try testing.expectEqualStrings(al.title, bl.title);
-            try testing.expectEqualStrings(al.history, bl.history);
-            try testing.expectEqualStrings(al.scrollback, bl.scrollback);
-            try testing.expectEqualDeep(al.agent, bl.agent);
+            try expectLeavesEqual(al, bl);
+        },
+        .stack => |ak| {
+            const bk = switch (b) {
+                .stack => |v| v,
+                .leaf, .split => return error.TestExpectedEqual,
+            };
+            try testing.expectEqual(ak.shown, bk.shown);
+            try testing.expectEqual(ak.members.len, bk.members.len);
+            for (ak.members, bk.members) |al, bl| try expectLeavesEqual(al, bl);
         },
         .split => |as| {
             const bs = switch (b) {
                 .split => |v| v,
-                .leaf => return error.TestExpectedEqual,
+                .leaf, .stack => return error.TestExpectedEqual,
             };
             try testing.expectEqual(as.direction, bs.direction);
             try testing.expectEqual(as.ratio, bs.ratio);
@@ -1550,6 +1663,80 @@ test "a format 1 file reads as one window with one tab, and nobody knows who was
     try testing.expect(blank.firstTab() == null);
 }
 
+test "a stack is read only from format 3, only of terminals, and never of one" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const a = "{\"kind\":\"leaf\",\"cwd\":\"/a\",\"agent\":{\"kind\":\"none\"}}";
+    const b = "{\"kind\":\"leaf\",\"cwd\":\"/b\",\"agent\":{\"kind\":\"none\"}}";
+    const Case = struct { format: u8, root: []const u8 };
+    const file = struct {
+        fn of(arena_alloc: Allocator, c: Case) ![]const u8 {
+            return std.fmt.allocPrint(
+                arena_alloc,
+                "{{\"format\":{d},\"name\":\"n\",\"saved_at\":1,\"root\":{{\"kind\":\"moved-to-windows\"}},\"windows\":[{{\"front\":0,\"tabs\":[{{\"root\":{s}}}]}}]}}",
+                .{ c.format, c.root },
+            );
+        }
+    };
+
+    // The control: this one is read, as what it says.
+    const fits = try parse(alloc, try file.of(alloc, .{ .format = 3, .root = "{\"kind\":\"stack\",\"shown\":1,\"members\":[" ++ a ++ "," ++ b ++ "]}" }));
+    const stack = fits.windows[0].tabs[0].root.stack;
+    try testing.expectEqual(@as(usize, 1), stack.shown);
+    try testing.expectEqual(@as(usize, 2), stack.members.len);
+    try testing.expectEqualStrings("/a", stack.members[0].cwd);
+    try testing.expectEqualStrings("/b", stack.members[1].cwd);
+
+    for ([_]Case{
+        // In a format 2 file: no build wrote that.
+        .{ .format = 2, .root = "{\"kind\":\"stack\",\"shown\":0,\"members\":[" ++ a ++ "," ++ b ++ "]}" },
+        // A stack of one is a leaf, and a stack of none is nothing.
+        .{ .format = 3, .root = "{\"kind\":\"stack\",\"shown\":0,\"members\":[" ++ a ++ "]}" },
+        .{ .format = 3, .root = "{\"kind\":\"stack\",\"shown\":0,\"members\":[]}" },
+        // The shown one is not among them.
+        .{ .format = 3, .root = "{\"kind\":\"stack\",\"shown\":2,\"members\":[" ++ a ++ "," ++ b ++ "]}" },
+        .{ .format = 3, .root = "{\"kind\":\"stack\",\"shown\":-1,\"members\":[" ++ a ++ "," ++ b ++ "]}" },
+        .{ .format = 3, .root = "{\"kind\":\"stack\",\"members\":[" ++ a ++ "," ++ b ++ "]}" },
+        // A member that is not a terminal.
+        .{ .format = 3, .root = "{\"kind\":\"stack\",\"shown\":0,\"members\":[" ++ a ++ ",{\"kind\":\"split\",\"direction\":\"horizontal\",\"ratio\":0.5,\"left\":" ++ a ++ ",\"right\":" ++ b ++ "}]}" },
+        .{ .format = 3, .root = "{\"kind\":\"stack\",\"shown\":0,\"members\":[" ++ a ++ ",{\"kind\":\"stack\",\"shown\":0,\"members\":[" ++ a ++ "," ++ b ++ "]}]}" },
+    }) |c| {
+        testing.expectError(error.Corrupt, parse(alloc, try file.of(alloc, c))) catch |err| {
+            std.debug.print("read, and should not have been: {s}\n", .{c.root});
+            return err;
+        };
+    }
+}
+
+test "only a project with a stack in it is written as format 3" {
+    // Every file `same` names is format 2, and the one with stacks is 3.
+    for (Shared.all) |f| switch (f.kind) {
+        .same, .from => try testing.expectEqual(plain_format_version, formatOf(f.value)),
+        .stacked => try testing.expectEqual(@as(u32, 3), formatOf(f.value)),
+        .refused => {},
+    };
+    // So a build from before stacks, which reads up to format 2, refuses
+    // it as too new rather than reading every pane's shown terminal.
+    try testing.expect(plain_format_version < format_version);
+}
+
+test "a supervisor behind in a stack counts as one of two, and neither is it" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sup = "\"agent\":{\"kind\":\"agent\",\"role\":\"r\",\"supervisor\":true}";
+    const got = try parse(alloc, "{\"format\":3,\"name\":\"n\",\"saved_at\":1,\"root\":{\"kind\":\"moved-to-windows\"},\"windows\":[{\"front\":0,\"tabs\":[{\"root\":" ++
+        "{\"kind\":\"split\",\"direction\":\"horizontal\",\"ratio\":0.5,\"left\":{\"kind\":\"leaf\"," ++ sup ++ "}," ++
+        "\"right\":{\"kind\":\"stack\",\"shown\":0,\"members\":[{\"kind\":\"leaf\",\"agent\":{\"kind\":\"none\"}},{\"kind\":\"leaf\"," ++ sup ++ "}]}}" ++
+        "}]}]}");
+    const split = got.windows[0].tabs[0].root.split;
+    try testing.expect(!split.left.leaf.agent.agent.supervisor);
+    try testing.expect(!split.right.stack.members[1].agent.agent.supervisor);
+}
+
 test "a file from a later format is refused as too new, and is never read as format 1" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -1558,7 +1745,7 @@ test "a file from a later format is refused as too new, and is never read as for
     // It has everything a format 1 file has. Read as one, it is a project
     // of one pane, and the next save writes that over whatever it was.
     try testing.expectError(error.TooNew, parse(alloc,
-        \\{"format":3,"name":"later","saved_at":1,"root":{"kind":"leaf","cwd":"/a"}}
+        \\{"format":4,"name":"later","saved_at":1,"root":{"kind":"leaf","cwd":"/a"}}
     ));
     try testing.expectError(error.TooNew, parse(alloc, "{\"format\":9000,\"name\":\"n\",\"saved_at\":1,\"windows\":[]}"));
 
@@ -1626,10 +1813,14 @@ test "a ratio that is not a finite number cannot be written" {
 //
 // `test/project-format/` is the judge between the three implementations of
 // this format. Every file in it is listed in `index.txt` there, and is one
-// of three kinds:
+// of four kinds:
 //
 //   same     `<stem>.json` is a format 2 file. Read and written back, it
 //            is the same bytes.
+//   stacked  `<stem>.json` is a format 3 file: a pane in it holds a stack.
+//            Read and written back by a build that has stacks, it is the
+//            same bytes; one that does not (Windows, today) must refuse it
+//            as too new.
 //   from     `<stem>.in.json` is something else that has to be read -- a
 //            format 1 file, or a file a read puts right. Read and written,
 //            it is the bytes of `<stem>.json`.
@@ -1654,7 +1845,7 @@ test "a ratio that is not a finite number cannot be written" {
 const shared_dir = "test/project-format";
 
 const Shared = struct {
-    const Kind = enum { same, from, refused };
+    const Kind = enum { same, stacked, from, refused };
 
     kind: Kind,
     stem: []const u8,
@@ -1663,6 +1854,10 @@ const Shared = struct {
 
     fn leaf(comptime cwd: []const u8, comptime scrollback: []const u8, comptime agent: Agent) *const Node {
         return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = scrollback, .agent = agent } };
+    }
+
+    fn stack(comptime shown: usize, comptime members: []const Leaf) *const Node {
+        return &.{ .stack = .{ .shown = shown, .members = members } };
     }
 
     fn split(comptime direction: Direction, comptime ratio: f64, comptime left: *const Node, comptime right: *const Node) *const Node {
@@ -1837,6 +2032,26 @@ const Shared = struct {
                 } },
                 .{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(.vertical, 0.5, leaf("/d", "", .none), leaf("/e", "2.snap", .none)) }} },
             },
+        } },
+        // Panes that hold stacks: format 3. The shown one is in the middle
+        // of one and first of the other, the supervisor is behind, and the
+        // members are as unlike each other as a pane can be.
+        .{ .kind = .stacked, .stem = "stacked", .value = .{
+            .name = "stacked",
+            .saved_at = 1757000007,
+            .group = "g",
+            .next_scrollback = 3,
+            .windows = &.{.{ .frame = null, .front = 1, .tabs = &.{
+                .{ .root = split(.horizontal, 0.5, stack(1, &.{
+                    .{ .cwd = "/behind", .title = "behind", .history = "b.history", .scrollback = "0.snap", .agent = supervisor },
+                    .{ .cwd = "/shown", .title = "shown", .history = "", .scrollback = "1.snap", .agent = worker(false) },
+                    .{ .cwd = "", .title = "", .history = "", .scrollback = "", .agent = .unknown },
+                }), leaf("/alone", "", .none)) },
+                .{ .root = stack(0, &.{
+                    .{ .cwd = "/front", .title = "", .history = "", .scrollback = "2.snap", .agent = .none },
+                    .{ .cwd = "/back", .title = "", .history = "", .scrollback = "", .agent = .none },
+                }) },
+            } }},
         } },
         .{ .kind = .refused, .stem = "too_new", .value = undefined },
     };

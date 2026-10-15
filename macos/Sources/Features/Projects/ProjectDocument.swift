@@ -33,8 +33,22 @@ import GhosttyKit
 /// is the only way to bytes: `ProjectFile` is not `Encodable`, so nothing
 /// can hand it to a `JSONEncoder`, whose bytes are not the format's.
 struct ProjectFile: Equatable {
-    /// The format this build writes, and the latest it reads.
-    static let formatVersion = 2
+    /// The latest format this build reads, and what it writes for a
+    /// project in which some pane holds a stack.
+    static let formatVersion = 3
+
+    /// What it writes for a project in which no pane holds a stack: the
+    /// same bytes as before there were stacks (`Project.zig`,
+    /// `plain_format_version`).
+    static let plainFormatVersion = 2
+
+    /// The format this project is written as: 3 only when a pane of it
+    /// holds a stack, so that a build from before stacks refuses it as too
+    /// new rather than reading each pane's shown terminal and saving that
+    /// over the rest.
+    var format: Int {
+        tabs.contains(where: \.hasStack) ? Self.formatVersion : Self.plainFormatVersion
+    }
 
     let name: String
 
@@ -186,6 +200,11 @@ indirect enum ProjectNode: Equatable {
     /// the reader drops anything else.
     case leaf(cwd: String, title: String, history: String, scrollback: String, agent: ProjectAgent)
     case split(direction: Direction, ratio: Double, left: ProjectNode, right: ProjectNode)
+    /// A pane holding more than one terminal (format 3): `members` in the
+    /// order of their tabs, **every one a `.leaf`** and more than one of
+    /// them, and `shown` the index of the one the pane shows. The reader
+    /// hands back nothing else, and `encoded()` refuses anything else.
+    case stack(shown: Int, members: [ProjectNode])
 
     /// Mirrors `Project.Direction` in `src/Project.zig`, which mirrors
     /// `SplitTree.Direction` in `SplitTree.swift`: `horizontal` means the
@@ -198,17 +217,40 @@ indirect enum ProjectNode: Equatable {
         case vertical
     }
 
+    /// How many panes: a stack is one pane, however many terminals it
+    /// holds.
     var leafCount: Int {
         switch self {
-        case .leaf: return 1
+        case .leaf, .stack: return 1
         case .split(_, _, let left, let right): return left.leafCount + right.leafCount
         }
     }
 
+    /// Every terminal's snapshot, the ones behind in a stack included: a
+    /// name left out here is one a save prunes.
     var scrollbackFilenames: [String] {
         switch self {
         case .leaf(_, _, _, let scrollback, _): return scrollback.isEmpty ? [] : [scrollback]
         case .split(_, _, let left, let right): return left.scrollbackFilenames + right.scrollbackFilenames
+        case .stack(_, let members): return members.flatMap(\.scrollbackFilenames)
+        }
+    }
+
+    var hasStack: Bool {
+        switch self {
+        case .leaf: return false
+        case .stack: return true
+        case .split(_, _, let left, let right): return left.hasStack || right.hasStack
+        }
+    }
+
+    /// The terminal a pane shows: itself for a leaf, the `shown` member of
+    /// a stack. Nil for a split, and for a stack that breaks its own rule.
+    var shownLeaf: ProjectNode? {
+        switch self {
+        case .leaf: return self
+        case .split: return nil
+        case .stack(let shown, let members): return members.indices.contains(shown) ? members[shown] : nil
         }
     }
 }
@@ -225,6 +267,9 @@ enum ProjectFileError: LocalizedError, Equatable, CustomStringConvertible {
     /// A ratio or a frame holds a value that is not a finite number, which
     /// the file has no way to say.
     case notFinite
+    /// A stack of fewer than two terminals, one whose `shown` is not among
+    /// them, or one with something other than a terminal in it.
+    case notAStack
 
     var description: String {
         switch self {
@@ -232,6 +277,8 @@ enum ProjectFileError: LocalizedError, Equatable, CustomStringConvertible {
             return "the project file is format \(found), and this build reads up to format \(ProjectFile.formatVersion): a later version of Polter wrote it"
         case .notFinite:
             return "a split's ratio or a window's frame is not a finite number"
+        case .notAStack:
+            return "a stack has to hold two or more terminals, one of them shown, and nothing else"
         }
     }
 
@@ -245,13 +292,13 @@ enum ProjectFileError: LocalizedError, Equatable, CustomStringConvertible {
 // MARK: - Writing
 
 extension ProjectFile {
-    /// The bytes of this project as a format 2 file -- `emit` in
-    /// `Project.zig`. **Written by hand rather than through `JSONEncoder`**:
+    /// The bytes of this project as a format 2 file, or a format 3 one when
+    /// a pane holds a stack (`format`) -- `emit` in `Project.zig`. **Written by hand rather than through `JSONEncoder`**:
     /// the three implementations have to write the same bytes, and
     /// `JSONEncoder` orders keys its own way, escapes `/`, and prints a
     /// double as Foundation pleases.
     func encoded() throws -> Data {
-        var out = "{\"format\":\(Self.formatVersion),\"name\":"
+        var out = "{\"format\":\(format),\"name\":"
         ProjectFileWriting.string(name, into: &out)
         out += ",\"saved_at\":\(savedAt)"
         out += ",\"root\":{\"kind\":\"moved-to-windows\"}"
@@ -309,6 +356,18 @@ enum ProjectFileWriting {
                 out += supervisor ? ",\"supervisor\":true" : ",\"supervisor\":false"
             }
             out += "}}"
+
+        case .stack(let shown, let members):
+            guard members.count > 1, members.indices.contains(shown),
+                  members.allSatisfy({ if case .leaf = $0 { true } else { false } }) else {
+                throw ProjectFileError.notAStack
+            }
+            out += "{\"kind\":\"stack\",\"shown\":\(shown),\"members\":["
+            for (i, member) in members.enumerated() {
+                if i > 0 { out += "," }
+                try Self.node(member, into: &out)
+            }
+            out += "]}"
 
         case .split(let direction, let ratio, let left, let right):
             out += "{\"kind\":\"split\",\"direction\":\"\(direction.rawValue)\",\"ratio\":"
@@ -440,6 +499,7 @@ extension ProjectNode {
         switch self {
         case .leaf(_, _, _, _, let agent): return agent.isSupervisor ? 1 : 0
         case .split(_, _, let left, let right): return left.supervisorCount + right.supervisorCount
+        case .stack(_, let members): return members.reduce(0) { $0 + $1.supervisorCount }
         }
     }
 
@@ -456,6 +516,11 @@ extension ProjectNode {
         case .split(let direction, let ratio, let left, let right):
             let first = left.puttingRight(seen: &seen, demoting: demoting)
             return .split(direction: direction, ratio: ratio, left: first, right: right.puttingRight(seen: &seen, demoting: demoting))
+
+        case .stack(let shown, let members):
+            var kept: [ProjectNode] = []
+            for member in members { kept.append(member.puttingRight(seen: &seen, demoting: demoting)) }
+            return .stack(shown: shown, members: kept)
         }
     }
 }
@@ -575,7 +640,7 @@ enum ProjectFileReading {
         let node: ProjectNode
 
         private enum CodingKeys: String, CodingKey {
-            case kind, cwd, title, history, scrollback, agent, direction, ratio, left, right
+            case kind, cwd, title, history, scrollback, agent, direction, ratio, left, right, shown, members
         }
 
         private enum AgentKeys: String, CodingKey { case kind, role, cli, session, supervisor }
@@ -612,6 +677,19 @@ enum ProjectFileReading {
                     ratio: try container.decode(Double.self, forKey: .ratio),
                     left: try container.decode(Node.self, forKey: .left).node,
                     right: try container.decode(Node.self, forKey: .right).node)
+
+            // Only in format 3, and only of terminals, two or more: the same
+            // as `Project.zig`'s `parseNode`.
+            case "stack" where format >= 3:
+                let shown = try container.decode(Int.self, forKey: .shown)
+                let members = try container.decode([Node].self, forKey: .members).map(\.node)
+                guard members.count > 1, members.indices.contains(shown),
+                      members.allSatisfy({ if case .leaf = $0 { true } else { false } }) else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .members, in: container,
+                        debugDescription: "a stack holds two or more terminals, one of them shown, and nothing else")
+                }
+                node = .stack(shown: shown, members: members)
 
             default:
                 throw DecodingError.dataCorruptedError(
@@ -669,6 +747,89 @@ enum ProjectListing {
     }
 }
 
+// MARK: - Panes and stacks (a split tree <-> a project's tree)
+
+extension ProjectNode {
+    /// A split tree as a project's tree, each terminal made into a leaf by
+    /// `leaf`. **A pane holding a stack is written as the stack**, every
+    /// member in its order and the one it shows marked: the node alone
+    /// knows only the shown one, and a project made of it would open with
+    /// every terminal behind gone.
+    ///
+    /// Without a terminal, so that what decides which terminals go into
+    /// the file is tested (`ProjectStackTests`); `capturing(_:in:scrollback:agent:)`
+    /// below is the same for live terminals.
+    static func capturing<V>(
+        _ node: SplitTree<V>.Node,
+        in tree: SplitTree<V>,
+        leaf: (V) -> ProjectNode
+    ) -> ProjectNode {
+        switch node {
+        case .leaf(let view):
+            guard let stack = tree.stack(of: view),
+                  let shown = stack.members.firstIndex(where: { $0 === view }) else {
+                return leaf(view)
+            }
+            return .stack(shown: shown, members: stack.members.map(leaf))
+
+        case .split(let split):
+            return .split(
+                direction: Direction(split.direction),
+                ratio: split.ratio,
+                left: capturing(split.left, in: tree, leaf: leaf),
+                right: capturing(split.right, in: tree, leaf: leaf))
+        }
+    }
+
+    /// This tree as a split tree, each leaf made into a terminal by `make`
+    /// -- a stack's members too, in their order, the one it showed shown.
+    func building<V>(_ make: (ProjectNode) -> V) -> SplitTree<V> {
+        var stacks: [SplitTree<V>.Stack] = []
+        let root = building(make, stacks: &stacks)
+        return SplitTree(root: root, zoomed: nil, stacks: stacks)
+    }
+
+    private func building<V>(_ make: (ProjectNode) -> V, stacks: inout [SplitTree<V>.Stack]) -> SplitTree<V>.Node {
+        switch self {
+        case .leaf:
+            return .leaf(view: make(self))
+
+        case .stack(let shown, let members):
+            // The reader hands back no other stack; one made in code that
+            // breaks the rule opens what it can show rather than nothing.
+            guard members.count > 1, members.indices.contains(shown) else {
+                return .leaf(view: make(members.first ?? self))
+            }
+            let views = members.map(make)
+            stacks.append(.init(shown: views[shown].id, members: views))
+            return .leaf(view: views[shown])
+
+        case .split(let direction, let ratio, let left, let right):
+            return .split(.init(
+                direction: direction.splitTreeDirection(),
+                ratio: ratio,
+                left: left.building(make, stacks: &stacks),
+                right: right.building(make, stacks: &stacks)))
+        }
+    }
+}
+
+extension ProjectNode.Direction {
+    init<V>(_ direction: SplitTree<V>.Direction) {
+        switch direction {
+        case .horizontal: self = .horizontal
+        case .vertical: self = .vertical
+        }
+    }
+
+    func splitTreeDirection<V>() -> SplitTree<V>.Direction {
+        switch self {
+        case .horizontal: return .horizontal
+        case .vertical: return .vertical
+        }
+    }
+}
+
 // MARK: - Capture (live surfaces -> data)
 
 extension ProjectNode {
@@ -691,42 +852,22 @@ extension ProjectNode {
     /// `agent` is asked once per leaf too, and says who is working in that
     /// pane. **Neither has a default**: a caller that left `agent` out would
     /// be writing down an answer it never gave.
+    ///
+    /// `tree` is the tree `node` is in: a pane's stack is kept there, not
+    /// in the node, and every terminal of it is captured (`capturing(_:in:leaf:)`).
     static func capturing(
         _ node: SplitTree<Ghostty.SurfaceView>.Node,
+        in tree: SplitTree<Ghostty.SurfaceView>,
         scrollback: (Ghostty.SurfaceView) -> String,
         agent: (Ghostty.SurfaceView) -> ProjectAgent
     ) -> ProjectNode {
-        switch node {
-        case .leaf(let view):
-            return .leaf(
+        capturing(node, in: tree) { view in
+            .leaf(
                 cwd: view.pwd ?? "",
                 title: view.title,
                 history: view.historyFilename ?? "",
                 scrollback: scrollback(view),
                 agent: agent(view))
-
-        case .split(let split):
-            return .split(
-                direction: Direction(split.direction),
-                ratio: split.ratio,
-                left: capturing(split.left, scrollback: scrollback, agent: agent),
-                right: capturing(split.right, scrollback: scrollback, agent: agent))
-        }
-    }
-}
-
-private extension ProjectNode.Direction {
-    init(_ direction: SplitTree<Ghostty.SurfaceView>.Direction) {
-        switch direction {
-        case .horizontal: self = .horizontal
-        case .vertical: self = .vertical
-        }
-    }
-
-    var splitTreeDirection: SplitTree<Ghostty.SurfaceView>.Direction {
-        switch self {
-        case .horizontal: return .horizontal
-        case .vertical: return .vertical
         }
     }
 }
@@ -739,7 +880,8 @@ extension ProjectNode {
     /// `cwd` no longer exists; `Exec.zig` already falls back rather than
     /// failing, see `if (std.Io.Dir.cwd().access(...))` in
     /// `src/termio/Exec.zig`). The result is ready to hand to
-    /// `TerminalController(withSurfaceTree:)`.
+    /// `TerminalController(withSurfaceTree:)`, every terminal of a stack
+    /// included (`building`).
     ///
     /// `scrollback` is where this project's snapshots live (see
     /// `ProjectScrollback.directory`) and the project they belong to; nil
@@ -747,7 +889,11 @@ extension ProjectNode {
     func materializing(
         _ app: ghostty_app_t,
         scrollback project: ProjectScrollback.Location? = nil
-    ) -> SplitTree<Ghostty.SurfaceView>.Node {
+    ) -> SplitTree<Ghostty.SurfaceView> {
+        building { $0.surface(app, scrollback: project) }
+    }
+
+    private func surface(_ app: ghostty_app_t, scrollback project: ProjectScrollback.Location?) -> Ghostty.SurfaceView {
         switch self {
         // Who was in the pane is not acted on here: a restored pane is a
         // terminal in the right place, and starting an agent in it is a
@@ -782,14 +928,10 @@ extension ProjectNode {
             if let project, !scrollback.isEmpty {
                 view.journalScrollback(.init(project: project.key, filename: scrollback), in: project.directory)
             }
-            return .leaf(view: view)
+            return view
 
-        case .split(let direction, let ratio, let left, let right):
-            return .split(.init(
-                direction: direction.splitTreeDirection,
-                ratio: ratio,
-                left: left.materializing(app, scrollback: project),
-                right: right.materializing(app, scrollback: project)))
+        case .split, .stack:
+            preconditionFailure("building makes a terminal of a leaf and nothing else")
         }
     }
 }
