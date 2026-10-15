@@ -777,6 +777,12 @@ pub fn forget(frame: HWND) {
     LAYERS.with(|l| l.borrow_mut().retain(|x| x.owner != key));
 }
 
+/// What a layer window is for, from the list that made it.
+fn kind_of(hwnd: HWND) -> Option<Kind> {
+    let key = hwnd.0 as isize;
+    LAYERS.with(|l| l.borrow().iter().find(|x| x.hwnd == key).map(|x| x.kind))
+}
+
 /// The colour a handle's window is cleared to, which the colour key makes
 /// see-through: the dots are all that shows.
 const KEY: u32 = 0x00ff00ff;
@@ -824,7 +830,6 @@ fn create(owner: HWND, kind: Kind) -> Option<HWND> {
     match made {
         Ok(h) => {
             unsafe {
-                SetWindowLongPtrW(h, GWLP_ID, kind as isize);
                 // Straight above its frame, not at the top of the screen: a
                 // new window starts at the top, and a frame that is behind
                 // another program's window would get a veil over that
@@ -855,7 +860,12 @@ extern "system" fn layer_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 let mut rc = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rc);
                 let color = COLORREF(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as u32);
-                let handle = GetWindowLongPtrW(hwnd, GWLP_ID) == Kind::Handle as isize;
+                // **Asked of the list, not of `GWLP_ID`** (#1552). The kind
+                // used to be stored in the window's id, and these are
+                // top-level popups, which have no id -- that slot is a menu
+                // handle there. The handle never read back as one, and it
+                // was painted as a solid 80x12 bar where macOS has three dots.
+                let handle = kind_of(hwnd) == Some(Kind::Handle);
                 if handle {
                     let back = CreateSolidBrush(COLORREF(KEY));
                     FillRect(hdc, &rc, back);

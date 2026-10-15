@@ -112,9 +112,54 @@ pub fn from_bgr(c: u32) -> Rgba {
     rgb((c & 0xff) as u8, (c >> 8 & 0xff) as u8, (c >> 16 & 0xff) as u8)
 }
 
+/// How far the client area is pulled in from the window rect on every side.
+///
+/// A maximised window overhangs the screen by its resize border, and with
+/// the system caption gone the frame takes that back itself (`overhang`).
+/// **Fullscreen is not maximised, even when it began as maximised** (#1552):
+/// the window keeps its maximised state underneath, and taking the overhang
+/// back there left 8px of desktop and taskbar showing down the left and the
+/// bottom of a 1440x900 screen -- a client area of 1424x884 in a window
+/// rect of the whole monitor.
+pub fn client_inset(maximized: bool, fullscreen: bool, overhang: i32) -> i32 {
+    if fullscreen || !maximized {
+        0
+    } else {
+        overhang
+    }
+}
+
+/// Which caption button of window `me` is lit, given the one the pointer was
+/// last over: `(window, button)`.
+///
+/// **Keyed by the window** (#1552). The hover was one value for the whole
+/// process; a second window closed from its own lit close button never got
+/// the message that the pointer had left, and the first window went on
+/// painting its close button red.
+pub fn lit_button(hover: Option<(isize, usize)>, me: isize) -> Option<usize> {
+    hover.filter(|(w, _)| *w == me).map(|(_, b)| b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fullscreen_takes_the_whole_window_even_from_maximised() {
+        assert_eq!(client_inset(true, true, 8), 0, "maximised, then fullscreen");
+        assert_eq!(client_inset(false, true, 8), 0);
+        assert_eq!(client_inset(true, false, 8), 8, "maximised still takes its overhang back");
+        assert_eq!(client_inset(false, false, 8), 0);
+    }
+
+    #[test]
+    fn a_windows_close_button_is_lit_only_by_its_own_hover() {
+        let (w1, w2) = (0x100, 0x200);
+        // The pointer was on w2's close button when w2 went.
+        assert_eq!(lit_button(Some((w2, 0)), w1), None);
+        assert_eq!(lit_button(Some((w2, 0)), w2), Some(0));
+        assert_eq!(lit_button(None, w1), None);
+    }
 
     /// The one rule the person asked to have a test: **a background that
     /// cannot be read is dark**, and the strip keeps the colour it had.

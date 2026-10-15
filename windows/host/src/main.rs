@@ -651,6 +651,15 @@ pub const WM_ASK_CLOSE_TAB: u32 = windows::Win32::UI::WindowsAndMessaging::WM_AP
 /// the chord did nothing. `+ 23` is used by nothing else in this host.
 pub const WM_ASK_QUIT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 23;
 
+/// The config changed: what is drawn over this window's panes from it -- the
+/// veils, the handles' dots, the dividers -- is drawn again now (#1552).
+///
+/// Posted rather than done in `reload::on_config_change`, because that runs
+/// inside the core's `config_change`, and the layers it would redraw live in
+/// the main thread's `thread_local`s. `+ 71` is used by nothing else in this
+/// host.
+pub const WM_CONFIG_REDRAW: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 71;
+
 /// A fixed-size line builder that never allocates.
 ///
 /// Exists only for the alarm path below. Anything that reaches for the heap is
@@ -4649,6 +4658,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 None => DefWindowProcW(hwnd, msg, wp, lp),
             },
 
+            m if m == WM_CONFIG_REDRAW => {
+                crate::panedrag::sync(hwnd);
+                crate::divider::repaint(hwnd);
+                LRESULT(0)
+            }
+
             // --- the custom frame. See shell.rs for why each one is here. ---
             WM_NCCALCSIZE => match shell::nc_calc_size(hwnd, wp, lp) {
                 Some(r) => r,
@@ -4673,6 +4688,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // The caption's colours differ when the window is not the active
             // one, and nothing else would ask us to repaint for that.
             WM_ACTIVATE => {
+                // A lit caption button is the pointer's business; coming to
+                // or leaving the front, it is asked again (#1552).
+                shell::forget_hover(hwnd);
                 // Which window is in front decides whether the control room
                 // is in the person's sight (task 1505).
                 crate::control_room::presence_may_have_changed();

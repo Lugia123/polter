@@ -1447,10 +1447,17 @@ fn relayout() {
         let about = group == Group::About && !searching;
         let at = about_layout(&about_area(&g, dpi), dpi);
         for (i, (h, (_, v))) in f.about.iter().zip(about_values()).enumerate() {
-            if about {
-                set_text(*h, &v);
-            }
             let r = at.rows[i].1;
+            if about {
+                // Cut with the mark when the box is too narrow, and the
+                // whole value under the pointer (#1552).
+                let margins = unsafe { SendMessageW(*h, EM_GETMARGINS, None, None) }.0 as u32;
+                let room = (r.right - r.left) - (margins & 0xFFFF) as i32 - (margins >> 16) as i32;
+                // Never an empty string to `DrawTextW` (`text_width`).
+                let shown = rules::elide_end(&v, |t| t.is_empty() || text_width(t, mono()) <= room);
+                set_text(*h, &shown);
+                about_tip(*h, (shown != v).then_some(v.as_str()));
+            }
             place(*h, Rect::new(r.left, r.top, r.right, r.bottom), about);
         }
     }
@@ -2112,6 +2119,44 @@ fn about_click(x: i32, y: i32) -> bool {
         return false;
     };
     crate::shellopen::detached(None, "about", url.to_string())
+}
+
+/// The tooltip that shows an About value whole when its box shows it cut.
+fn about_tip(value: HWND, whole: Option<&str>) {
+    thread_local! {
+        static TIP: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+    }
+    let parent = unsafe { GetParent(value) }.unwrap_or_default();
+    let mut tip = HWND(TIP.with(|t| t.get()) as *mut c_void);
+    if tip.0.is_null() || !unsafe { IsWindow(Some(tip)) }.as_bool() {
+        if whole.is_none() {
+            return;
+        }
+        tip = unsafe {
+            CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, PCWSTR::null(), WS_POPUP | WINDOW_STYLE(TTS_ALWAYSTIP | TTS_NOPREFIX), 0, 0, 0, 0, Some(parent), None, Some(hinst()), None)
+        }
+        .unwrap_or_default();
+        if tip.0.is_null() {
+            return;
+        }
+        TIP.with(|t| t.set(tip.0 as isize));
+    }
+    let mut text = whole.map(wide).unwrap_or_else(|| vec![0]);
+    let mut ti = TTTOOLINFOW {
+        cbSize: std::mem::size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_IDISHWND | TTF_SUBCLASS,
+        hwnd: parent,
+        uId: value.0 as usize,
+        lpszText: windows::core::PWSTR(text.as_mut_ptr()),
+        ..Default::default()
+    };
+    unsafe {
+        // Taken away and put back, so the text is the one just worked out.
+        SendMessageW(tip, TTM_DELTOOLW, None, Some(LPARAM(&mut ti as *mut _ as isize)));
+        if whole.is_some() {
+            SendMessageW(tip, TTM_ADDTOOLW, None, Some(LPARAM(&mut ti as *mut _ as isize)));
+        }
+    }
 }
 
 /// Version from the core (`ghostty_info`), build as the build mode and this
