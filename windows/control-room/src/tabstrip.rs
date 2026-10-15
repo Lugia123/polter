@@ -13,7 +13,7 @@
 //! never two at half strength.
 
 use crate::layout::Rect;
-use crate::look::{radius, window_tab, Rgba, Theme};
+use crate::look::{radius, stack_tab, window_tab, Rgba, Theme};
 use crate::scene::over;
 
 const WHITE: Rgba = Rgba { r: 255, g: 255, b: 255, a: 1.0 };
@@ -71,6 +71,43 @@ pub fn chip_edge(ground: Rgba, theme: &Theme, lift: f64) -> Rgba {
 /// What is under the pointer and not selected.
 pub fn hover_color(ground: Rgba, theme: &Theme) -> Rgba {
     over(track_color(ground, theme), theme.window_tab_hover, 1.0)
+}
+
+/// Which gaps between tabs get a line, out of `count` tabs: gap `g` is the
+/// one between tab `g` and tab `g + 1`, so there is none before the first
+/// or after the last. The Mac's rule: a line only between two plain tabs,
+/// and none on either side of the selected tab, the one under the pointer
+/// (on its body or its close cross) or the one in the hand.
+///
+/// **By index, not by where the chip is.** The chip is narrower than its
+/// slot, so a test of "is this line under the chip" let the selected tab
+/// keep both its lines (task 1562). While the chip slides to a newly
+/// selected tab, `selected` is the one it is going to.
+pub fn separator_gaps(count: usize, selected: Option<usize>, hover: Option<usize>, dragged: Option<usize>) -> Vec<usize> {
+    let marked = |i: usize| [selected, hover, dragged].contains(&Some(i));
+    (0..count.saturating_sub(1)).filter(|&g| !marked(g) && !marked(g + 1)).collect()
+}
+
+/// The short line in gap `g`: one pixel wide at `x` (the left tab's right
+/// edge), in the middle of the strip.
+pub fn separator(x: f64, strip_h: f64, scale: f64) -> Rect {
+    let h = px(stack_tab::SEPARATOR_HEIGHT, scale).min(strip_h);
+    Rect { x: x.round(), y: ((strip_h - h) / 2.0).floor(), w: 1.0, h }
+}
+
+/// How much darker the line is than the track under it, in levels of each
+/// channel. Read off the Mac: on macOS 26 the system's line between two
+/// plain tabs is (34,37,44) on a bar of (38,41,48) -- 4 levels darker, dark
+/// theme (verify-cr-11/b1-real-drag-two-tabs.png, x 466-467, y 172-188).
+/// The old `theme.line` here was white at 15%, about 35 levels *brighter*,
+/// which is what made it read as a leftover from square tabs. The light
+/// theme takes the same step; no light reading off the Mac backs it yet.
+pub const SEPARATOR_STEP: u8 = 4;
+
+pub fn separator_color(ground: Rgba, theme: &Theme) -> Rgba {
+    let t = track_color(ground, theme);
+    let step = |c: u8| c.saturating_sub(SEPARATOR_STEP);
+    Rgba { r: step(t.r), g: step(t.g), b: step(t.b), a: 1.0 }
 }
 
 /// A tab that is being dragged: brighter than the chip, so that it reads
@@ -154,6 +191,8 @@ mod tests {
             }
             let t = track(44.0, 900.0, strip_h, scale);
             assert!(whole(t), "track {t:?} at {scale}");
+            let s = separator(263.0, strip_h, scale);
+            assert!(whole(s) && s.w == 1.0 && s.y > t.y && s.y + s.h < t.y + t.h, "separator {s:?} at {scale}");
         }
     }
 
@@ -240,6 +279,48 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_line_only_between_two_plain_tabs() {
+        let gaps = separator_gaps;
+        // Nothing marked: every gap, none before the first or after the last.
+        assert_eq!(gaps(5, None, None, None), vec![0, 1, 2, 3]);
+        assert_eq!(gaps(1, None, None, None), Vec::<usize>::new());
+        assert_eq!(gaps(0, Some(0), None, None), Vec::<usize>::new());
+        // Each of the three, first, middle, last: both its sides go.
+        for one in 0..3 {
+            let mark = |i: usize| {
+                let mut m = [None, None, None];
+                m[one] = Some(i);
+                gaps(5, m[0], m[1], m[2])
+            };
+            assert_eq!(mark(0), vec![1, 2, 3], "kind {one} first");
+            assert_eq!(mark(2), vec![0, 3], "kind {one} middle");
+            assert_eq!(mark(4), vec![0, 1, 2], "kind {one} last");
+        }
+        // Overlapping: selected and hovered the same tab, dragged elsewhere.
+        assert_eq!(gaps(6, Some(2), Some(2), None), vec![0, 3, 4]);
+        assert_eq!(gaps(6, Some(1), Some(2), None), vec![3, 4]);
+        assert_eq!(gaps(6, Some(0), Some(5), Some(3)), vec![1]);
+        assert_eq!(gaps(3, Some(0), Some(1), Some(2)), Vec::<usize>::new());
+        // An index past the end marks nothing.
+        assert_eq!(gaps(3, Some(7), None, None), vec![0, 1]);
+    }
+
+    #[test]
+    fn the_line_is_a_few_levels_off_the_track_the_way_the_macs_is() {
+        for dark in [true, false] {
+            let theme = look::theme(dark);
+            let ground = if dark { GROUND } else { theme.window_base };
+            let (track, line) = (track_color(ground, theme), separator_color(ground, theme));
+            for (t, l) in [(track.r, line.r), (track.g, line.g), (track.b, line.b)] {
+                let d = l as i32 - t as i32;
+                assert!((4..=6).contains(&d.abs()), "dark={dark}: {d} levels");
+                assert!(d < 0, "dark={dark}: darker than the track, as on the Mac");
+            }
+            assert_eq!(line.a, 1.0);
         }
     }
 }
