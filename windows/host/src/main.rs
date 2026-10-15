@@ -5846,9 +5846,20 @@ fn log_is_shared() -> bool {
 ///
 /// Answered once: every writer of every per-pid file asks, and the answer
 /// must not move between the log and its stdio sidecar.
+///
+/// **A test binary writes into a directory of its own** (task 1540): the
+/// first run of the host's tests on the test machine left
+/// `polter-host-<pid>.log` files in the person's real
+/// `%LOCALAPPDATA%\polter\logs`, beside the logs of the Polter they were
+/// using.
+/// `POLTER_HOST_LOG` does not cover it -- a record written before a test sets
+/// it, and the stdio sidecar, both resolve through here.
 fn log_dir() -> &'static std::path::Path {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
+        #[cfg(test)]
+        let state = Some(test_log_dir());
+        #[cfg(not(test))]
         let state = polter_hostlog::log_dir(
             std::env::var_os("XDG_STATE_HOME").as_deref(),
             std::env::var_os("LOCALAPPDATA").as_deref(),
@@ -5861,6 +5872,12 @@ fn log_dir() -> &'static std::path::Path {
         }
         temp
     })
+}
+
+/// Where a test binary's logs go instead: `%TEMP%\polter-host-tests\logs`.
+#[cfg(test)]
+fn test_log_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("polter-host-tests").join("logs")
 }
 
 /// Whether process `pid` is still running, for the log sweep.
@@ -6085,6 +6102,31 @@ mod log_ownership_tests {
             "a guest must fall back to the per-pid name, not to some third \
              thing: {}",
             guest.display()
+        );
+    }
+
+    /// Task 1540: the host's tests wrote their logs into the person's own
+    /// `%LOCALAPPDATA%\polter\logs`. `%TEMP%` is itself under
+    /// `%LOCALAPPDATA%` on Windows, so the line held is "not under its
+    /// `polter`", not "not under it at all".
+    #[test]
+    fn a_test_binary_never_logs_into_the_persons_own_log_directory() {
+        let unpinned = log_path_given(true, None);
+        if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+            let theirs = std::path::Path::new(&local).join("polter");
+            assert!(
+                !unpinned.starts_with(&theirs),
+                "a test's log resolved into the person's own {}: {}",
+                theirs.display(),
+                unpinned.display()
+            );
+        }
+        // The floor: without it, a machine with no LOCALAPPDATA would pass
+        // the line above by having nothing to compare against.
+        assert!(
+            unpinned.starts_with(test_log_dir()) || unpinned.starts_with(std::env::temp_dir()),
+            "a test's log went somewhere other than the temporary directory: {}",
+            unpinned.display()
         );
     }
 }

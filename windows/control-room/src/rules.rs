@@ -374,12 +374,18 @@ mod tests {
         // fails when any of it sends one of those acts or reads the core's
         // word for "this can be approved" -- which is how such a button
         // would come back.
-        let host = concat!(env!("CARGO_MANIFEST_DIR"), "/../host/src/");
-        let mut sources = vec![("scene.rs".to_string(), include_str!("scene.rs").to_string())];
-        for name in ["control_room.rs", "control_room_keys.rs", "control_room_source.rs", "uia.rs"] {
-            let text = std::fs::read_to_string(format!("{host}{name}")).unwrap_or_else(|e| panic!("cannot read the host's {name}: {e}"));
-            sources.push((name.to_string(), text));
-        }
+        // Embedded at compile time, not read at run time: a test binary built
+        // on the Mac and run on the Windows machine has no source tree beside it.
+        let sources: Vec<(String, String)> = [
+            ("scene.rs", include_str!("scene.rs")),
+            ("control_room.rs", include_str!("../../host/src/control_room.rs")),
+            ("control_room_keys.rs", include_str!("../../host/src/control_room_keys.rs")),
+            ("control_room_source.rs", include_str!("../../host/src/control_room_source.rs")),
+            ("uia.rs", include_str!("../../host/src/uia.rs")),
+        ]
+        .into_iter()
+        .map(|(name, text)| (name.to_string(), text.to_string()))
+        .collect();
         // The reading has a floor: these files are large, and one that came
         // back empty would have nothing in it to object to.
         assert!(sources.iter().all(|(_, text)| text.len() > 2000), "a source that should be read was nearly empty");
