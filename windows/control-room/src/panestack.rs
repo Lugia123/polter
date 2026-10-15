@@ -363,14 +363,17 @@ fn glyph(shown: BarShown, ink: Rgba, theme: &Theme) -> Option<Piece> {
     }
 }
 
-/// What a strip draws, in three layers the host paints in order: `row`
-/// clipped to [`Geometry::row`], then `fixed` over it; then the close
-/// buttons, the plus and the fades, which are lines a scene has no item
-/// for and the host draws itself.
+/// What a strip draws, **in the order it is painted** (task 1583: the
+/// band was once painted after the tabs and covered every one of them on
+/// a real machine): `under` -- what the tabs stand on -- then `row`, the
+/// tabs, clipped to [`Geometry::row`], then `over`, the status and the
+/// glyphs at the edges; then the close buttons, the plus and the fades,
+/// which are lines a scene has no item for and the host draws itself.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Drawn {
+    pub under: Vec<Item>,
     pub row: Vec<Item>,
-    pub fixed: Vec<Item>,
+    pub over: Vec<Item>,
     /// The close buttons that show, each with whether the pointer is on it.
     pub closes: Vec<(usize, Rect)>,
     /// Where the plus is.
@@ -386,14 +389,15 @@ pub fn build(g: &Geometry, stack: &PaneStack, wears: Wears, title: &Title, view:
     let theme = view.theme;
     let band = band(wears, theme);
     let (current_ink, other_ink) = inks(wears, theme);
+    let mut under = Vec::new();
     let mut row = Vec::new();
-    let mut fixed = Vec::new();
+    let mut over = Vec::new();
 
     // An ordinary terminal has no band of its own: the strip brings one,
     // round at the top like the frame and square where the terminal begins
     // (the terminal's own window covers the rest of the round shape).
     if wears == Wears::Plain {
-        fixed.push(Item::Round {
+        under.push(Item::Round {
             rect: Rect { x: g.strip.x, y: g.strip.y, w: g.strip.w, h: g.strip.h + radius::PLAIN },
             radius: radius::PLAIN,
             color: band,
@@ -474,7 +478,7 @@ pub fn build(g: &Geometry, stack: &PaneStack, wears: Wears, title: &Title, view:
     ] {
         let Some(m) = member.and_then(|i| stack.members.get(i)) else { continue };
         if let Some(piece) = glyph(m.shown, other_ink, theme) {
-            fixed.push(Item::Line { rect: Rect { x, y: top, w: side::GLYPH, h: t::HEIGHT }, parts: vec![Part { piece, side: Side::Lead, gap: 0.0 }] });
+            over.push(Item::Line { rect: Rect { x, y: top, w: side::GLYPH, h: t::HEIGHT }, parts: vec![Part { piece, side: Side::Lead, gap: 0.0 }] });
         }
     }
 
@@ -495,7 +499,7 @@ pub fn build(g: &Geometry, stack: &PaneStack, wears: Wears, title: &Title, view:
             });
         }
         if !parts.is_empty() {
-            fixed.push(Item::Line { rect: Rect { x: g.strip.x + from, y: top, w: to - from, h: t::HEIGHT }, parts });
+            over.push(Item::Line { rect: Rect { x: g.strip.x + from, y: top, w: to - from, h: t::HEIGHT }, parts });
         }
     }
 
@@ -506,7 +510,7 @@ pub fn build(g: &Geometry, stack: &PaneStack, wears: Wears, title: &Title, view:
         .filter(|tab| close_shows(view.hovered == Some(tab.member), tab.current))
         .filter_map(|tab| g.close_rect(tab.member).map(|r| (tab.member, r)))
         .collect();
-    Drawn { row, fixed, closes, add: g.add_rect(), ink: other_ink, band }
+    Drawn { under, row, over, closes, add: g.add_rect(), ink: other_ink, band }
 }
 
 #[cfg(test)]
@@ -725,8 +729,55 @@ mod tests {
         s.urgent = vec![0];
         let geo = g(&[150.0; 8], 6, 400.0, 0.0);
         let d = build(&geo, &s, Wears::Worker, &status_title(&s, ""), &view(look::theme(false), None), &|x| x.to_string());
-        let edge = d.fixed.iter().any(|i| matches!(i, Item::Line { rect, parts } if rect.x == geo.row().x + t::REVERSE_ARC_RADIUS && matches!(parts[0].piece, Piece::Glyph { shown: Shown::NeedsYou, .. })));
-        assert!(edge, "{:?}", d.fixed);
+        let edge = d.over.iter().any(|i| matches!(i, Item::Line { rect, parts } if rect.x == geo.row().x + t::REVERSE_ARC_RADIUS && matches!(parts[0].piece, Piece::Glyph { shown: Shown::NeedsYou, .. })));
+        assert!(edge, "{:?}", d.over);
+    }
+
+    fn rect_of(i: &Item) -> Option<Rect> {
+        match i {
+            Item::Fill { rect, .. } | Item::Round { rect, .. } | Item::Text { rect, .. } | Item::Line { rect, .. } | Item::Block { rect, .. } => Some(*rect),
+        }
+    }
+
+    fn overlaps(a: &Rect, b: &Rect) -> bool {
+        a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+    }
+
+    /// Task 1583, the first real machine: only the close buttons and the
+    /// plus were on the strip. **What is painted after the tabs must not
+    /// cover them**, and the window they are clipped to must be a window.
+    #[test]
+    fn nothing_painted_after_the_tabs_covers_them_and_their_clip_is_not_empty() {
+        let theme = look::theme(true);
+        for wears in [Wears::Plain, Wears::Worker, Wears::Supervisor] {
+            for (wants, current, w) in [(vec![100.0, 100.0], 1, 400.0), (vec![150.0; 8], 6, 400.0), (vec![120.0], 0, 300.0)] {
+                let mut s = named(&vec!["n"; wants.len()]);
+                s.current = current;
+                for m in &mut s.members {
+                    m.wears = wears;
+                }
+                let geo = geometry(wears, w, &wants, current, 0.0, 0.0, true);
+                let d = build(&geo, &s, wears, &status_title(&s, ""), &view(theme, None), &|x| x.to_string());
+                let clip = geo.row();
+                assert!(clip.w > 0.0 && clip.h > 0.0, "{wears:?} {wants:?}: the clip is empty: {clip:?}");
+                // The tab in front is wholly inside the clip, and every tab
+                // is at least partly, or scrolled wholly out of it.
+                let front = geo.tab_rect(current).unwrap();
+                assert!(front.x >= clip.x && front.x + front.w <= clip.x + clip.w, "{wears:?}: {front:?} outside {clip:?}");
+                assert!(front.y >= clip.y && front.y + front.h <= clip.y + clip.h, "{wears:?}: {front:?} outside {clip:?}");
+                // Nothing over the tabs is a shape that would hide them.
+                for i in &d.over {
+                    assert!(matches!(i, Item::Line { .. }), "{wears:?}: {i:?} is painted over the tabs");
+                }
+                // And what is under them is under every tab's place.
+                for i in &d.under {
+                    let r = rect_of(i).unwrap();
+                    assert!(overlaps(&r, &front), "{wears:?}: {r:?} is not under the tabs");
+                }
+                // The tabs themselves are in `row`: the front tab's ground.
+                assert!(d.row.iter().any(|i| matches!(i, Item::Round { rect, .. } if *rect == front)), "{wears:?}");
+            }
+        }
     }
 
     #[test]
@@ -738,8 +789,12 @@ mod tests {
         let geo = geometry(Wears::Plain, 400.0, &[100.0, 100.0], 1, 0.0, 0.0, true);
         let theme = look::theme(false);
         let d = build(&geo, &s, Wears::Plain, &status_title(&s, ""), &view(theme, None), &|x| x.to_string());
-        assert!(matches!(d.fixed.first(), Some(Item::Round { color, .. }) if *color == theme.worker_band));
+        // Under the tabs: painted first, so they stand on it.
+        assert!(matches!(d.under.first(), Some(Item::Round { color, .. }) if *color == theme.worker_band));
+        // Above them, the band's colour is only in the circles that cut the
+        // feet of the tab in front -- never a shape the size of the strip.
+        assert!(!d.over.iter().chain(&d.row).any(|i| matches!(i, Item::Round { color, rect, .. } if *color == theme.worker_band && rect.w > 2.0 * t::REVERSE_ARC_RADIUS)));
         let w = build(&geo, &s, Wears::Worker, &status_title(&s, ""), &view(theme, None), &|x| x.to_string());
-        assert!(!w.fixed.iter().any(|i| matches!(i, Item::Round { .. })));
+        assert!(w.under.is_empty());
     }
 }

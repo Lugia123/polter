@@ -480,7 +480,12 @@ unsafe fn paint_strip(frame: HWND, mem: HDC, one: &One, stack: &Stacked, wears: 
     let drawn = panestack::build(&geometry, &model, wears, &status, &view, &translate);
     let (ox, oy) = (one.rect.x - below.left, one.rect.y - below.top);
     let row = px_rect(ox, oy, scale, geometry.row());
+    // **In `Drawn`'s order**: what the tabs stand on first, then the tabs,
+    // then what goes over them. The band was once painted last and covered
+    // every tab, leaving only the close buttons and the plus (task 1583,
+    // the first real machine).
     unsafe {
+        crate::control_room::paint_scene(mem, scale, ox, oy, &drawn.under);
         let saved = SaveDC(mem);
         let _ = IntersectClipRect(mem, row.left, row.top, row.right, row.bottom);
         crate::control_room::paint_scene(mem, scale, ox, oy, &drawn.row);
@@ -494,7 +499,7 @@ unsafe fn paint_strip(frame: HWND, mem: HDC, one: &One, stack: &Stacked, wears: 
             fade_out(mem, RECT { left: row.right - fade, ..row }, colorref(drawn.band), false);
         }
         let _ = RestoreDC(mem, saved);
-        crate::control_room::paint_scene(mem, scale, ox, oy, &drawn.fixed);
+        crate::control_room::paint_scene(mem, scale, ox, oy, &drawn.over);
         let (current_ink, _) = panestack::inks(wears, theme);
         for (m, r) in &drawn.closes {
             let on = lit == Some(Hit::Close(*m));
