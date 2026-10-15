@@ -660,6 +660,18 @@ pub const WM_ASK_QUIT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 2
 /// host.
 pub const WM_CONFIG_REDRAW: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 71;
 
+/// `polter-control-room-at-launch`; on when it cannot be read, its default.
+fn control_room_at_launch() -> bool {
+    let cfg = config_handle();
+    if cfg.is_null() {
+        return true;
+    }
+    let mut on = true;
+    let key = "polter-control-room-at-launch";
+    let read = unsafe { (api().config_get)(cfg, &mut on as *mut bool as *mut c_void, key.as_ptr(), key.len()) };
+    !read || on
+}
+
 /// A fixed-size line builder that never allocates.
 ///
 /// Exists only for the alarm path below. Anything that reaches for the heap is
@@ -7498,6 +7510,21 @@ fn main() {
     } else {
         // process-wide: TSF is one per thread -- one manager, one document, one context for the whole process; this line reports a step of that single setup
         plogf!("[ime] TSF init FAILED -- terminal still works, IME does not");
+    }
+
+    // ---- the control room at launch (task 1581) ----
+    //
+    // This host restores no tabs (`session.rs` brings back the window's
+    // place, not what was in it), so a launch here has always restored no
+    // terminal and no control room, and the window above is the one window
+    // `initial-window` asks for. The tab just made is the empty terminal;
+    // the control room goes in front of it through the menu's own path.
+    let at_launch = polter_control_room::rules::at_launch(control_room_at_launch(), 0, false, true);
+    wlogf!(hwnd, "[launch] control room at launch: {:?}", at_launch);
+    match at_launch {
+        polter_control_room::rules::AtLaunch::OwnWindow => tabs::post_op(hwnd, tabs::Op::ToggleControlRoom, "launch"),
+        // Neither arises here: see above.
+        polter_control_room::rules::AtLaunch::FirstTabBehind | polter_control_room::rules::AtLaunch::Nothing => {}
     }
 
     // The self-test drives the same entry point the accelerators do, so a

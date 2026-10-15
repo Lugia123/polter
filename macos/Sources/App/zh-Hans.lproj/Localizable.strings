@@ -548,6 +548,8 @@
 "Lets the shell report its directory and prompt to Polter." = "让 shell 报告当前目录和提示符位置，Polter 才能跟踪它们。";
 "Restore Windows" = "恢复窗口";
 "Reopen windows, tabs and splits where they were." = "重新打开时恢复窗口、标签页和分屏。";
+"Open the Control Room at Launch" = "启动时打开总控台";
+"Open the control room when Polter starts." = "Polter 启动时打开总控台。";
 "New Windows Inherit Directory" = "新窗口沿用目录";
 "New windows start in the focused window's directory." = "新窗口从当前窗口的目录开始。";
 "Quit After Last Window Closes" = "关闭最后一个窗口后退出";

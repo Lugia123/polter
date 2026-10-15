@@ -532,6 +532,8 @@
 "Lets the shell report its directory and prompt to Polter." = "Lets the shell report its directory and prompt to Polter.";
 "Restore Windows" = "Restore Windows";
 "Reopen windows, tabs and splits where they were." = "Reopen windows, tabs and splits where they were.";
+"Open the Control Room at Launch" = "Open the Control Room at Launch";
+"Open the control room when Polter starts." = "Open the control room when Polter starts.";
 "New Windows Inherit Directory" = "New Windows Inherit Directory";
 "New windows start in the focused window's directory." = "New windows start in the focused window's directory.";
 "Quit After Last Window Closes" = "Quit After Last Window Closes";

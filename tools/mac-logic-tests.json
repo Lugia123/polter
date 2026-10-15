@@ -101,6 +101,7 @@
   "tests": {
     "in": [
       "macos/Tests/ControlRoom/ControlRoomAlertTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomAtLaunchTests.swift",
       "macos/Tests/ControlRoom/ControlRoomElsewhereTests.swift",
       "macos/Tests/ControlRoom/ControlRoomFeedTests.swift",
       "macos/Tests/ControlRoom/ControlRoomFixTests.swift",

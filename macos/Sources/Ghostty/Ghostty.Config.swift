@@ -551,6 +551,15 @@ extension Ghostty {
         }
 
         /// Whether the panes of a split wear their frames (`poltergeist-pane-frames`).
+        /// `polter-control-room-at-launch` (task 1581).
+        var polterControlRoomAtLaunch: Bool {
+            guard let config = self.config else { return true }
+            var v = true
+            let key = "polter-control-room-at-launch"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
+
         var poltergeistPaneFrames: Bool {
             guard let config = self.config else { return true }
             var v = true

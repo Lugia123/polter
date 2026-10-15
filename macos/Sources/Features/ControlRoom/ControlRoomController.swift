@@ -409,25 +409,67 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             shared?.select()
 
         case .openAsFirstTab:
-            let controller = ControlRoomController(ghostty)
-            shared = controller
-            guard let window = controller.window, let parent else { return }
-            let first = parent.tabGroup?.windows.first ?? parent
-            // Tabs join by identifier; a window whose delegate is another
-            // class does not get the terminals' identifier by default.
-            window.tabbingIdentifier = first.tabbingIdentifier
-            if first.addTabbedWindowSafely(window, ordered: .below) {
-                first.tabGroup?.selectedWindow = window
+            guard let parent else {
+                shared = ControlRoomController(ghostty)
+                return
             }
-            controller.showWindowSafely(nil)
-            controller.bringOnScreen()
-            relabel()
+            openAsFirstTab(ghostty, of: parent, inFront: true)
 
         case .openInOwnWindow:
             let controller = ControlRoomController(ghostty)
             shared = controller
             controller.showWindowSafely(nil)
             controller.bringOnScreen()
+        }
+    }
+
+    /// Open it as the first tab of `parent`'s group. `inFront: false` puts
+    /// it there behind the tab that is selected, which keeps the keyboard
+    /// (task 1581, at launch); otherwise it is selected and brought forward,
+    /// as the menu item does.
+    private static func openAsFirstTab(_ ghostty: Ghostty.App, of parent: NSWindow, inFront: Bool) {
+        let controller = ControlRoomController(ghostty)
+        shared = controller
+        guard let window = controller.window else { return }
+        let first = parent.tabGroup?.windows.first ?? parent
+        let selected = first.tabGroup?.selectedWindow ?? parent
+        // Tabs join by identifier; a window whose delegate is another
+        // class does not get the terminals' identifier by default.
+        window.tabbingIdentifier = first.tabbingIdentifier
+        let added = first.addTabbedWindowSafely(window, ordered: .below)
+        if !inFront {
+            if added { first.tabGroup?.selectedWindow = selected }
+            relabel()
+            return
+        }
+        if added { first.tabGroup?.selectedWindow = window }
+        controller.showWindowSafely(nil)
+        controller.bringOnScreen()
+        relabel()
+    }
+
+    /// What the application does about the control room as it starts
+    /// (`ControlRoomRules.atLaunch`, task 1581), through the same opening as
+    /// the menu item. `front` is the terminal window in front: the one the
+    /// launch just opened for `.ownWindow`, a restored one for
+    /// `.firstTabBehind`.
+    static func atLaunch(_ ghostty: Ghostty.App, _ plan: ControlRoomRules.AtLaunch, front: NSWindow?) {
+        guard shared == nil else { return }
+        switch plan {
+        case .nothing:
+            return
+        case .ownWindow:
+            guard let front, front.tabbingMode != .disallowed else {
+                // No tabs in this style: the menu item's own answer.
+                show(ghostty)
+                return
+            }
+            openAsFirstTab(ghostty, of: front, inFront: true)
+        case .firstTabBehind:
+            // A window of its own would come in front of what the person
+            // left there; without tabs, it waits for the menu item.
+            guard let front, front.tabbingMode != .disallowed else { return }
+            openAsFirstTab(ghostty, of: front, inFront: false)
         }
     }
 

@@ -1962,6 +1962,14 @@ msgid "Always"
 msgstr ""
 
 #: src/config/form.zig:169
+msgid "Open the Control Room at Launch"
+msgstr ""
+
+#: src/config/form.zig:169
+msgid "Open the control room when Polter starts."
+msgstr ""
+
+#: src/config/form.zig:169
 msgid "New Windows Inherit Directory"
 msgstr ""
 
