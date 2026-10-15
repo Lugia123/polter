@@ -4385,6 +4385,64 @@ msgstr "出错"
 msgid "On"
 msgstr "已开"
 
+#: windows/control-room/src/act.rs:229
+msgid ""
+"That could not be sent. This is a fault in Polter, not something you did."
+msgstr "这条没能发出去。这是 Polter 的问题，不是你做错了什么。"
+
+#: windows/control-room/src/act.rs:230
+msgid "That group is no longer there."
+msgstr "那个群已经不在了。"
+
+#: windows/control-room/src/act.rs:231
+msgid "That time has already passed."
+msgstr "那个时间已经过了。"
+
+#: windows/control-room/src/act.rs:232
+msgid "That terminal is no longer there."
+msgstr "那个终端已经不在了。"
+
+#: windows/control-room/src/act.rs:233
+msgid ""
+"The prompt has changed since this was drawn. Nothing was sent; look again."
+msgstr "提示在这一条画出来以后已经换了，什么都没有发出去；请再看一眼。"
+
+#: windows/control-room/src/act.rs:234
+msgid "It is not waiting to be told anything right now."
+msgstr "它现在没有在等回话。"
+
+#: windows/control-room/src/act.rs:235
+msgid "It has moved on since this was drawn. Nothing was sent; look again."
+msgstr "它的状态在这一条画出来以后已经变了，什么都没有发出去；请再看一眼。"
+
+#: windows/control-room/src/act.rs:236
+msgid "There is nothing to send."
+msgstr "没有可发的内容。"
+
+#: windows/control-room/src/act.rs:237
+msgid ""
+"Somebody typed in that terminal a moment ago. Nothing was sent; try again "
+"shortly."
+msgstr "那个终端刚刚有人打过字，什么都没有发出去；请稍后再试。"
+
+#: windows/control-room/src/act.rs:238
+msgid ""
+"That terminal has unsent text in its input line. Nothing was sent; go to the "
+"terminal."
+msgstr "那个终端的输入行里还有没提交的字，什么都没有发出去；请到那个终端去。"
+
+#: windows/control-room/src/act.rs:239
+msgid "The program in that terminal has ended."
+msgstr "那个终端里的程序已经结束了。"
+
+#: windows/control-room/src/act.rs:240
+msgid "The key did not reach the program. Go to the terminal."
+msgstr "按键没有送到程序。请到那个终端去。"
+
+#: windows/control-room/src/act.rs:258
+msgid "It was not done ({})."
+msgstr "没有执行（{}）。"
+
 #: windows/control-room/src/act.rs:203
 msgid "A group's name is lowercase letters, digits and dashes, 48 at most."
 msgstr "群名只能用小写字母、数字和短横线，最长 48 个。"

@@ -43,7 +43,7 @@ pub enum Setting {
 }
 
 impl Setting {
-    /// `None` for a number the system has not documented: not "enabled".
+    /// `None` for a number the system has not documented ([`Read::Undocumented`]).
     pub fn from_i32(v: i32) -> Option<Setting> {
         Some(match v {
             0 => Setting::Enabled,
@@ -56,16 +56,56 @@ impl Setting {
     }
 }
 
+/// What the notifier answered when asked whether toasts are allowed.
+///
+/// **Three answers, and only one of them is "no"** (task 1575). "It would
+/// not say" and "it said a number this build does not know" used to be
+/// read as "toasts are off", and that cost every new user their first
+/// notification: Windows has no setting for an identity until it has shown
+/// something under it, so the first ask cannot be answered, and only a
+/// toast would have made it answerable. Not knowing is now not knowing --
+/// the toast is sent, and the log says it was sent without an answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Read {
+    /// No notifier, or `Setting` returned an error.
+    Unreadable,
+    /// A number `NotificationSetting` does not document.
+    Undocumented(i32),
+    /// One of the documented answers.
+    Said(Setting),
+}
+
+impl Read {
+    /// `None` is a notifier that did not answer.
+    pub fn of(v: Option<i32>) -> Read {
+        match v {
+            None => Read::Unreadable,
+            Some(n) => Setting::from_i32(n).map_or(Read::Undocumented(n), Read::Said),
+        }
+    }
+
+    /// What the log adds to a toast sent without a "yes". `None` when
+    /// there was one.
+    pub fn sent_anyway(self) -> Option<String> {
+        match self {
+            Read::Said(_) => None,
+            Read::Unreadable => Some("the notifier did not say whether toasts are allowed; sent anyway".into()),
+            Read::Undocumented(n) => Some(format!("the notifier said {n}, which is not a documented setting; sent anyway")),
+        }
+    }
+}
+
 /// Why a notification went to the notification-area balloon instead.
+/// **Never the person's choice**: when they turned Polter's notifications
+/// off it is [`Route::Held`], not a balloon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Why {
     /// The identity could not be registered at start, so a toast would be
     /// accepted and never appear.
     NotRegistered,
-    /// The notifier could not say whether toasts are allowed.
-    SettingUnreadable,
-    /// The person, a policy or the system turned Polter's toasts off.
-    TurnedOff(Setting),
+    /// No notifier could be made for the identity, so there is nothing to
+    /// show a toast with.
+    NoNotifier,
     /// `Show` returned an error.
     ShowFailed,
 }
@@ -75,16 +115,22 @@ impl Why {
     pub fn says(self) -> &'static str {
         match self {
             Why::NotRegistered => "the identity is not registered",
-            Why::SettingUnreadable => "the notifier did not say whether toasts are allowed",
-            Why::TurnedOff(Setting::DisabledForApplication) => "Polter's notifications are turned off in Settings",
-            Why::TurnedOff(Setting::DisabledForUser) => "notifications are turned off for this user",
-            Why::TurnedOff(Setting::DisabledByGroupPolicy) => "a group policy turns notifications off",
-            Why::TurnedOff(Setting::DisabledByManifest) => "the system turned them off for this identity",
-            // Not reachable through `before_show`; said anyway rather than
-            // made a panic.
-            Why::TurnedOff(Setting::Enabled) => "turned off while enabled (a contradiction)",
+            Why::NoNotifier => "no notifier could be made for the identity",
             Why::ShowFailed => "Show returned an error",
         }
+    }
+}
+
+/// Why a turned-off notification was held. Not translated, as [`Why::says`].
+pub fn held_says(off: Setting) -> &'static str {
+    match off {
+        Setting::DisabledForApplication => "Polter's notifications are turned off in Settings",
+        Setting::DisabledForUser => "notifications are turned off for this user",
+        Setting::DisabledByGroupPolicy => "a group policy turns notifications off",
+        Setting::DisabledByManifest => "the system turned them off for this identity",
+        // Not reachable through `before_show`; said anyway rather than made
+        // a panic.
+        Setting::Enabled => "held while enabled (a contradiction)",
     }
 }
 
@@ -93,20 +139,41 @@ impl Why {
 pub enum Route {
     Toast,
     Balloon(Why),
+    /// The person, a policy or the system turned Polter's notifications
+    /// off: **nothing pops up**, and the taskbar button flashes instead.
+    ///
+    /// Not the balloon, which is what this used to be. On the test machine
+    /// (#1552, W7) the balloon taken then was logged `shown -> true` and
+    /// appeared nowhere, on the screen or in the notification centre. ⚠️
+    /// **Why is an inference, not measured**: since Windows 10 the shell
+    /// shows a notification-area balloon as a toast, under the process's
+    /// AppUserModelID when it has set one -- and the host sets [`AUMID`] --
+    /// so the balloon is Polter's too and is turned off with it. The
+    /// test-machine readings for W7 and for notifications turned off for the
+    /// whole user are what would confirm it.
+    Held(Setting),
 }
 
-/// Before showing: a toast only with the identity registered and toasts
-/// allowed. **Anything else is the balloon**, which needs nothing installed
-/// -- a notification that silently goes nowhere is the one outcome this
-/// exists to rule out.
-pub fn before_show(registered: bool, setting: Option<Setting>) -> Route {
-    if !registered {
-        return Route::Balloon(Why::NotRegistered);
+impl Route {
+    /// Whether the taskbar button flashes as well. **Whenever no toast
+    /// went**: held, nothing else is seen; on the balloon, the same
+    /// inference says it may be swallowed too (a registered process
+    /// identity with no registry key behind it, say), so the flash is the
+    /// floor under it.
+    pub fn flashes(self) -> bool {
+        !matches!(self, Route::Toast)
     }
-    match setting {
-        None => Route::Balloon(Why::SettingUnreadable),
-        Some(Setting::Enabled) => Route::Toast,
-        Some(off) => Route::Balloon(Why::TurnedOff(off)),
+}
+
+/// Before showing. **Turned off is the only "no"**, and it wins over
+/// everything: the person's choice holds even when the identity could not
+/// be registered. Otherwise a toast unless the identity is not registered
+/// -- an unanswered or unknown setting is not a "no" (see [`Read`]).
+pub fn before_show(registered: bool, read: Read) -> Route {
+    match read {
+        Read::Said(off) if off != Setting::Enabled => Route::Held(off),
+        _ if !registered => Route::Balloon(Why::NotRegistered),
+        Read::Said(_) | Read::Unreadable | Read::Undocumented(_) => Route::Toast,
     }
 }
 
@@ -268,22 +335,56 @@ pub fn png_in_ico(ico: &[u8]) -> Option<&[u8]> {
 mod tests {
     use super::*;
 
-    /// **The three ways back to the balloon, and the one way to a toast.**
+    const OFF: [Setting; 4] = [
+        Setting::DisabledForApplication,
+        Setting::DisabledForUser,
+        Setting::DisabledByGroupPolicy,
+        Setting::DisabledByManifest,
+    ];
+
+    /// Task 1575: **not knowing is not "no"**. A new user's first
+    /// notification was a balloon because the setting could not be read yet.
     #[test]
-    fn a_toast_only_when_registered_and_allowed() {
-        assert_eq!(before_show(true, Some(Setting::Enabled)), Route::Toast);
-        assert_eq!(before_show(false, Some(Setting::Enabled)), Route::Balloon(Why::NotRegistered));
-        assert_eq!(before_show(true, None), Route::Balloon(Why::SettingUnreadable));
-        for off in [
-            Setting::DisabledForApplication,
-            Setting::DisabledForUser,
-            Setting::DisabledByGroupPolicy,
-            Setting::DisabledByManifest,
-        ] {
-            assert_eq!(before_show(true, Some(off)), Route::Balloon(Why::TurnedOff(off)), "{off:?}");
+    fn an_unanswered_setting_is_a_toast() {
+        assert_eq!(before_show(true, Read::Unreadable), Route::Toast);
+        assert_eq!(before_show(true, Read::Undocumented(5)), Route::Toast);
+        assert_eq!(before_show(true, Read::Said(Setting::Enabled)), Route::Toast);
+        // And the log says it went without a "yes".
+        assert!(Read::Unreadable.sent_anyway().is_some_and(|s| s.contains("did not say")));
+        assert!(Read::Undocumented(5).sent_anyway().is_some_and(|s| s.contains("said 5")));
+        assert_eq!(Read::Said(Setting::Enabled).sent_anyway(), None);
+    }
+
+    /// Task 1575: **turned off is held, never the balloon** -- the balloon
+    /// was swallowed with it on the test machine -- and it wins over an
+    /// identity that is not registered.
+    #[test]
+    fn turned_off_is_held_and_nothing_pops_up() {
+        for off in OFF {
+            assert_eq!(before_show(true, Read::Said(off)), Route::Held(off), "{off:?}");
+            assert_eq!(before_show(false, Read::Said(off)), Route::Held(off), "{off:?}");
+            assert!(!held_says(off).contains("contradiction"), "{off:?}");
         }
-        // Not registered wins over everything: no toast can appear then.
-        assert_eq!(before_show(false, None), Route::Balloon(Why::NotRegistered));
+    }
+
+    /// Not registered is the one way to the balloon before showing,
+    /// whatever was or was not answered short of "off".
+    #[test]
+    fn not_registered_is_the_balloon() {
+        for read in [Read::Unreadable, Read::Undocumented(9), Read::Said(Setting::Enabled)] {
+            assert_eq!(before_show(false, read), Route::Balloon(Why::NotRegistered), "{read:?}");
+        }
+    }
+
+    /// The taskbar flashes whenever no toast went: held, or on the balloon
+    /// as the floor under it.
+    #[test]
+    fn the_taskbar_flashes_unless_a_toast_went() {
+        assert!(!Route::Toast.flashes());
+        assert!(Route::Held(Setting::DisabledForUser).flashes());
+        for why in [Why::NotRegistered, Why::NoNotifier, Why::ShowFailed] {
+            assert!(Route::Balloon(why).flashes(), "{why:?}");
+        }
     }
 
     #[test]
@@ -297,9 +398,13 @@ mod tests {
         assert_eq!(Setting::from_i32(0), Some(Setting::Enabled));
         assert_eq!(Setting::from_i32(1), Some(Setting::DisabledForApplication));
         assert_eq!(Setting::from_i32(4), Some(Setting::DisabledByManifest));
-        // An undocumented number is not "enabled".
+        // An undocumented number is none of them -- and is its own answer,
+        // not "unreadable".
         assert_eq!(Setting::from_i32(5), None);
         assert_eq!(Setting::from_i32(-1), None);
+        assert_eq!(Read::of(Some(5)), Read::Undocumented(5));
+        assert_eq!(Read::of(Some(1)), Read::Said(Setting::DisabledForApplication));
+        assert_eq!(Read::of(None), Read::Unreadable);
     }
 
     #[test]

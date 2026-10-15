@@ -5,8 +5,10 @@
 //!
 //! **The balloon stays, as the way back.** `notify.rs` asks here first and
 //! shows its balloon whenever this answers `Route::Balloon`: the identity was
-//! not registered, toasts are turned off, or `Show` failed. Each of those
-//! says why in the log.
+//! not registered, no notifier could be made, or `Show` failed. **Turned off
+//! is not one of them** (task 1575): that answers `Route::Held`, nothing pops
+//! up, and the taskbar button flashes -- as it also does under every balloon.
+//! Each says why in the log.
 //!
 //! ⚠️ **Two limits, said here because they are not visible from the code
 //! that sends:**
@@ -29,7 +31,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use polter_control_room::toast::{self as rules, Launch, Route, Setting, AUMID, GROUP};
+use polter_control_room::toast::{self as rules, Launch, Read, Route, AUMID, GROUP};
 use windows::core::{IInspectable, Interface, HSTRING, PCWSTR};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Foundation::TypedEventHandler;
@@ -117,17 +119,23 @@ pub fn register() {
     plogf!("[toast] identity {AUMID}: registry={key} process={process} logo={logo:?}");
 }
 
-/// Show one notification as a toast, or say why it must be the balloon.
+/// Show one notification as a toast, or say why it must be the balloon or
+/// held.
 /// The window's thread only (`notify.rs`'s worker).
 pub fn show(title: &str, subtitle: Option<&str>, body: &str, launch: &Launch) -> Route {
     let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID)).ok();
-    let setting = notifier.as_ref().and_then(|n| n.Setting().ok()).and_then(|s| Setting::from_i32(s.0));
-    if let Route::Balloon(why) = rules::before_show(REGISTERED.load(Ordering::Acquire), setting) {
-        return Route::Balloon(why);
+    let read = Read::of(notifier.as_ref().and_then(|n| n.Setting().ok()).map(|s| s.0));
+    let route = rules::before_show(REGISTERED.load(Ordering::Acquire), read);
+    if route != Route::Toast {
+        return route;
     }
     let Some(notifier) = notifier else {
-        return Route::Balloon(rules::Why::SettingUnreadable);
+        return Route::Balloon(rules::Why::NoNotifier);
     };
+    if let Some(note) = read.sent_anyway() {
+        // process-wide: the notifier is the process's
+        plogf!("[toast] {note}");
+    }
     let logo = LOGO.get().cloned().flatten();
     let xml = rules::xml(title, subtitle, body, logo.as_deref(), &launch.encode());
     let terminal = launch.terminal;
