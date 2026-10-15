@@ -3130,13 +3130,15 @@ fn apply_layout(
     let by_surface = |k: usize| current.iter().find(|(_, s)| *s == k).map(|(id, _)| *id);
     let tree = crate::layout::to_tree(shape, &mut it, &by_surface)?;
 
-    let placed = tree.layout(bounds);
     let mut made: Vec<Pane> = Vec::new();
     // Kept so the reply can name the new panes by surface: after `made` is
     // drained into the tab, the pairs are gone from here.
     let mut fresh_pairs: Vec<(PaneId, usize)> = Vec::new();
     for (id, cell) in ids.iter().zip(wanted.iter()) {
-        let Some((_, Placement::Visible(r))) = placed.iter().find(|(p, _)| p == id).cloned() else {
+        // **Where its place is, on screen or not** (task 1597): a member of
+        // a stack that is not in front is `Hidden` in the layout, and was
+        // refused here. `layout` hides it once the tree is installed.
+        let Some(r) = tree.rect_to_make(*id, bounds) else {
             // Undo: a pane already made for this shape must not be left
             // behind, because nothing would ever refer to it again.
             for p in made.drain(..) {
@@ -3370,10 +3372,10 @@ fn arrange_layout(
     let Some(bounds) = content_bounds(dest_frame, strip_h(scale_of(dest_frame))) else {
         return fail("that window has no content area to lay out".into());
     };
-    let placed = tree.layout(bounds);
     let mut made: Vec<Pane> = Vec::new();
     for (id, cell) in ids.iter().zip(wanted.iter()) {
-        let Some((_, Placement::Visible(r))) = placed.iter().find(|(p, _)| p == id).cloned() else {
+        // Where its place is, on screen or not (task 1597; see `apply_layout`).
+        let Some(r) = tree.rect_to_make(*id, bounds) else {
             for p in made.drain(..) {
                 free_pane(p.id, p.hwnd, p.surface);
             }
@@ -5947,6 +5949,30 @@ fn settle_after_move(src: HWND, dst: HWND, emptied: Option<TabId>) {
     }
     focus_active(dst);
     crate::control_room::request_sync();
+}
+
+/// Take back a tab that was made for something that then failed -- a
+/// project's page whose layout was refused (task 1597): its panes are freed
+/// and it goes, **as if it had never been made**. Not `close_tab`: nothing
+/// was closed by anybody, so it is not remembered for reopening, and the
+/// window is left to the caller, which knows whether it made that too.
+pub fn retract_tab(frame: HWND, id: TabId) {
+    let doomed: Vec<(PaneId, isize, usize)> = {
+        let Some(mut win) = window(frame) else { return };
+        let Some(at) = win.tabs.iter().position(|t| t.id == id) else { return };
+        let front = win.tabs.get(win.active).map(|t| t.id);
+        let tab = win.tabs.remove(at);
+        win.active = front.and_then(|f| win.tabs.iter().position(|t| t.id == f)).unwrap_or(at.min(win.tabs.len().saturating_sub(1)));
+        tab.panes().iter().map(|p| (p.id, p.hwnd, p.surface)).collect()
+    };
+    for (pane, hwnd, surface) in &doomed {
+        free_pane(*pane, *hwnd, *surface);
+    }
+    wlogf!(frame, "[tab] {:?} taken back: {} pane(s) freed, {} tab(s) left", id, doomed.len(), count(frame));
+    if count(frame) > 0 {
+        set_active(frame, active_index(frame));
+    }
+    crate::uia::tabs_changed(frame);
 }
 
 /// Take away a tab that a move left with no pane. **Not `destroy_tab_at`**:
