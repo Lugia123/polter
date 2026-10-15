@@ -147,7 +147,11 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 nicety: without it the layout would land on whichever window
 #                 happened to be in front, and the caller would be told the
 #                 shape it asked for had been applied.
-MIN_CARRYING_ARMS = 24
+#  25 (task 1538): ACTION_DESKTOP_NOTIFICATION joined. A click on the
+#                 balloon goes to the control room at the group the core puts
+#                 the raising terminal in, or to that terminal's own tab and
+#                 pane -- neither of which a window alone can say.
+MIN_CARRYING_ARMS = 25
 
 # The notifications that carry no address **today**, by `TAG -> module::fn`.
 #

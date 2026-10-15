@@ -136,9 +136,47 @@ impl Reporter {
     }
 }
 
+/// Where a click on a notification-area balloon goes (task 1538). The
+/// macOS host's half is `NotificationClick.swift`, the same order.
+///
+/// **Anything with a group goes to the control room**, opened if it is not,
+/// with that group selected: the control room's own call, and a terminal's
+/// own notification when the core said, as it was raised, that the terminal
+/// is in a group (`ghostty_app_notification_group`). A terminal in no group
+/// is gone to: its tab, its pane. A balloon that names no terminal -- the
+/// update check, the screenshot shortcut -- raises the window it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Click {
+    ControlRoom(String),
+    Terminal(u64),
+    Window(isize),
+    Nothing,
+}
+
+pub fn click_of(group: Option<&str>, terminal: u64, frame: isize) -> Click {
+    match group {
+        Some(g) if !g.is_empty() => Click::ControlRoom(g.to_string()),
+        _ if terminal != 0 => Click::Terminal(terminal),
+        _ if frame != 0 => Click::Window(frame),
+        _ => Click::Nothing,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_group_goes_to_the_control_room_and_only_no_group_goes_to_the_terminal() {
+        assert_eq!(click_of(Some("api"), 0xb1, 0x10), Click::ControlRoom("api".into()));
+        // The control room's own call names no terminal.
+        assert_eq!(click_of(Some("api"), 0, 0), Click::ControlRoom("api".into()));
+        assert_eq!(click_of(None, 0xb1, 0x10), Click::Terminal(0xb1));
+        // The core's "no group" is zero bytes; an empty name is no group too.
+        assert_eq!(click_of(Some(""), 0xb1, 0x10), Click::Terminal(0xb1));
+        assert_eq!(click_of(None, 0, 0x10), Click::Window(0x10));
+        assert_eq!(click_of(None, 0, 0), Click::Nothing);
+    }
     use crate::layout::Rect;
 
     fn id(s: &str) -> String {

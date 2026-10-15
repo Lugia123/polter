@@ -535,7 +535,7 @@ fn register_hotkey(control: HWND) {
 /// translated text -- it is a key, not a word.
 fn notify_hotkey_failure(combo: &str) {
     let body = format!("{}\n{combo}", tr(toolbar::HOTKEY_TAKEN));
-    let shown = crate::notify::on_notification(None, Some(tr(toolbar::HOTKEY_FAILED)), Some(body));
+    let shown = crate::notify::on_notification(None, None, Some(tr(toolbar::HOTKEY_FAILED)), Some(body));
     // process-wide: the hotkey is registered once for the process
     plogf!("[shot] hotkey failure notice for {combo}: shown={shown}");
 }

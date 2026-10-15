@@ -2103,6 +2103,22 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// The group a click on a notification raised from terminal `id` (a
+    /// `ghostty_surface_poltergeist_id`) opens the control room at: the
+    /// group it supervises, else the first it is in, in the control room's
+    /// order (`ControlRoom.groupToShow`, task 1538). Same buffer rule as
+    /// `ghostty_surface_persona_face`. **Zero means it is in no group**, and
+    /// the click goes to its own tab and pane. Asked when the notification
+    /// is raised, not when it is clicked: it is about who it was then.
+    export fn ghostty_app_notification_group(
+        app: *App,
+        id: u64,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        return copyJsonOut(app.core_app.notificationGroup(id) orelse "", buf, cap);
+    }
+
     /// The host's word on its control room, for the notifications
     /// (`ControlNotify.Sight`): `{"in_front":bool,"cards":["group",…]}`.
     /// False with the error's name when it could not be read; the last

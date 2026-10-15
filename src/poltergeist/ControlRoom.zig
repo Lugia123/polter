@@ -364,6 +364,9 @@ recomputes: u64,
 /// snapshot's order. Lives in `notify_arena`; replaced on every working-out
 /// and left alone when a timer finds nothing to work out.
 notify_rows: []const ControlNotify.Row,
+/// The same rows, in what a click on a notification needs of them
+/// (`groupToShow`). Lives beside them, in `notify_arena`.
+route_rows: []const RouteRow,
 notify_arena: std.heap.ArenaAllocator,
 
 pub fn init(alloc: Allocator) ControlRoom {
@@ -377,6 +380,7 @@ pub fn init(alloc: Allocator) ControlRoom {
         .wake_ms = null,
         .recomputes = 0,
         .notify_rows = &.{},
+        .route_rows = &.{},
         .notify_arena = .init(alloc),
     };
 }
@@ -422,6 +426,7 @@ pub fn refresh(self: *ControlRoom, in: Input, cause: Cause) Allocator.Error!Outc
 
     _ = self.notify_arena.reset(.retain_capacity);
     self.notify_rows = try notifyRows(self.notify_arena.allocator(), built.snapshot.groups);
+    self.route_rows = try routeRows(self.notify_arena.allocator(), built.snapshot.groups);
 
     const stable = try writeAlloc(self.alloc, try stripped(arena.allocator(), built.snapshot), .{});
     if (std.mem.eql(u8, stable, self.stable)) {
@@ -497,6 +502,46 @@ pub fn notifyRows(arena: Allocator, groups: []const GroupRow) Allocator.Error![]
         };
     }
     return out;
+}
+
+/// A group's row in what a click on a notification needs of it: who
+/// supervises it and who is in it (task 1538).
+pub const RouteRow = struct {
+    group: []const u8,
+    steward: ?Id,
+    members: []const Id,
+};
+
+pub fn routeRows(arena: Allocator, groups: []const GroupRow) Allocator.Error![]const RouteRow {
+    const out = try arena.alloc(RouteRow, groups.len);
+    for (groups, out) |g, *r| {
+        const members = try arena.alloc(Id, g.members.len);
+        for (g.members, members) |m, *id| id.* = m.id.id;
+        r.* = .{
+            .group = try arena.dupe(u8, g.name),
+            .steward = if (g.steward) |h| h.id else null,
+            .members = members,
+        };
+    }
+    return out;
+}
+
+/// Which group a click on a notification from terminal `id` opens the
+/// control room at (task 1538); null when it belongs to none, and the click
+/// goes to the terminal's own tab and pane instead.
+///
+/// **The group it supervises first**, then the first it is in, in the
+/// control room's own order: a supervisor that is also a member somewhere
+/// else is called to the group it minds, and two hosts that walk the same
+/// rows land on the same one.
+pub fn groupToShow(rows: []const RouteRow, id: Id) ?[]const u8 {
+    for (rows) |r| {
+        if (r.steward == id) return r.group;
+    }
+    for (rows) |r| {
+        if (std.mem.indexOfScalar(Id, r.members, id) != null) return r.group;
+    }
+    return null;
 }
 
 // -- what goes in -----------------------------------------------------------
@@ -2735,6 +2780,54 @@ test "ControlRoom notifyRows: a worker's prompt over a supervisor that also wait
     const own = r.own orelse return error.TestUnexpectedResult;
     try testing.expectEqual(Attention.Kind.needs_answer, own.kind);
     try testing.expectEqual(@as(?Id, 0xa1), own.terminal);
+}
+
+test "ControlRoom groupToShow: a supervisor goes to the group it minds, a worker to its group, anyone else to no group" {
+    // `web` comes first, and the supervisor of `api` is a member there too:
+    // the group it minds still wins, in either order.
+    const web: RouteRow = .{ .group = "web", .steward = 0xc1, .members = &.{ 0xc1, 0xa1, 0xd1 } };
+    const api: RouteRow = .{ .group = "api", .steward = 0xa1, .members = &.{ 0xa1, 0xb1 } };
+    const unminded: RouteRow = .{ .group = "loose", .steward = null, .members = &.{0xf1} };
+    for ([_][]const RouteRow{ &.{ web, api, unminded }, &.{ unminded, api, web } }) |rows| {
+        const a1 = groupToShow(rows, 0xa1);
+        try testing.expectEqualStrings("api", a1 orelse return error.TestUnexpectedResult);
+        const b1 = groupToShow(rows, 0xb1);
+        try testing.expectEqualStrings("api", b1 orelse return error.TestUnexpectedResult);
+        const d1 = groupToShow(rows, 0xd1);
+        try testing.expectEqualStrings("web", d1 orelse return error.TestUnexpectedResult);
+        // A group nobody supervises is still the control room's row.
+        const f1 = groupToShow(rows, 0xf1);
+        try testing.expectEqualStrings("loose", f1 orelse return error.TestUnexpectedResult);
+        const lone = groupToShow(rows, 0xe1);
+        try testing.expect(lone == null);
+    }
+    // In two groups and supervising neither: the first, in the room's order.
+    const twice = groupToShow(&.{ web, .{ .group = "ops", .steward = 0xc2, .members = &.{ 0xc2, 0xd1 } } }, 0xd1);
+    try testing.expectEqualStrings("web", twice orelse return error.TestUnexpectedResult);
+    try testing.expect(groupToShow(&.{}, 0xa1) == null);
+}
+
+test "ControlRoom routeRows: what the snapshot says of its groups is what a click is routed by" {
+    var w: World = .init();
+    defer w.deinit();
+    try w.steward(0xa1, "api", 0x21, "api");
+    try w.worker(0xb1, "api worker", 0x21, 0xa1, "api");
+    try w.terminal(0xe1, "a shell", 0x22);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const s = (try build(arena.allocator(), w.input(min))).snapshot;
+    const rows = try routeRows(arena.allocator(), s.groups);
+    try testing.expectEqual(s.groups.len, rows.len);
+    const r = for (rows) |r| {
+        if (std.mem.eql(u8, r.group, "api")) break r;
+    } else return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(?Id, 0xa1), r.steward);
+    try testing.expect(std.mem.indexOfScalar(Id, r.members, 0xb1) != null);
+    const b1 = groupToShow(rows, 0xb1);
+    try testing.expectEqualStrings("api", b1 orelse return error.TestUnexpectedResult);
+    const a1 = groupToShow(rows, 0xa1);
+    try testing.expectEqualStrings("api", a1 orelse return error.TestUnexpectedResult);
+    try testing.expect(groupToShow(rows, 0xe1) == null);
 }
 
 test "ControlRoom snapshot: a raise standing behind a worker's prompt is still withdrawn by looking" {

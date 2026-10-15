@@ -2107,6 +2107,10 @@ extension Ghostty {
             title: String,
             body: String,
             requireFocus: Bool = true) {
+            // Asked here, on the main thread, as it is raised: the core is
+            // asked from its own thread only, and the settings callback
+            // below is not on it (task 1538).
+            let group = notificationGroup(of: surfaceView)
             let center = UNUserNotificationCenter.current()
             center.requestAuthorization(options: [.alert, .sound]) { _, error in
                 if let error = error {
@@ -2119,9 +2123,27 @@ extension Ghostty {
                 surfaceView.showUserNotification(
                     title: title,
                     body: body,
-                    requireFocus: requireFocus
+                    requireFocus: requireFocus,
+                    group: group
                 )
             }
+        }
+
+        /// The group a click on a notification from this terminal opens the
+        /// control room at, as the core says now; nil when it is in none
+        /// (`ghostty_app_notification_group`, task 1538).
+        private static func notificationGroup(of surfaceView: SurfaceView) -> String? {
+            guard let surface = surfaceView.surface, let app = ghostty_surface_app(surface) else { return nil }
+            let id = ghostty_surface_poltergeist_id(surface)
+            // The persona buffer rule; zero bytes is no group.
+            let size = ghostty_app_notification_group(app, id, nil, 0)
+            guard size > 0 else { return nil }
+            var buf = [CChar](repeating: 0, count: Int(size) + 1)
+            let written = buf.withUnsafeMutableBufferPointer {
+                ghostty_app_notification_group(app, id, $0.baseAddress, UInt($0.count))
+            }
+            guard written > 0, written <= size else { return nil }
+            return String(bytes: buf.prefix(Int(written)).map { UInt8(bitPattern: $0) }, encoding: .utf8)
         }
 
         /// The control room calling the person (task 1505): a system
@@ -3133,18 +3155,23 @@ extension Ghostty {
         /// Handle a received user notification. This is called when a user notification is clicked or dismissed by the user
         func handleUserNotification(response: UNNotificationResponse) {
             let userInfo = response.notification.request.content.userInfo
-            if let group = userInfo[ControlRoomAlert.groupKey] as? String {
+            // A terminal's own notification is remembered by its terminal
+            // until clicked or dismissed, wherever the click goes.
+            let surface = (userInfo["surface"] as? String).flatMap(UUID.init(uuidString:))
+                .flatMap { delegate?.findSurface(forUUID: $0) }
+            if case .controlRoom(let group) = NotificationClick.of(userInfo) {
                 switch response.actionIdentifier {
                 case UNNotificationDefaultActionIdentifier, Ghostty.userNotificationActionShow:
+                    surface?.handleUserNotification(notification: response.notification, focus: false)
                     ControlRoomController.show(self, selecting: group)
+                case UNNotificationDismissActionIdentifier:
+                    surface?.handleUserNotification(notification: response.notification, focus: false)
                 default:
                     break
                 }
                 return
             }
-            guard let uuidString = userInfo["surface"] as? String,
-                  let uuid = UUID(uuidString: uuidString),
-                  let surface = delegate?.findSurface(forUUID: uuid) else { return }
+            guard let surface else { return }
 
             switch response.actionIdentifier {
             case UNNotificationDefaultActionIdentifier, Ghostty.userNotificationActionShow:

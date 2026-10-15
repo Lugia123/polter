@@ -3849,9 +3849,14 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
 
         // OSC 9 / OSC 777: something wants to be noticed while the person is
         // looking elsewhere.
+        //
+        // Which terminal raised it and the group the core puts it in are
+        // asked now, on this thread, as it is raised: a click on it goes to
+        // the control room at that group, or to the terminal when it has
+        // none (task 1538).
         ffi::ACTION_DESKTOP_NOTIFICATION => {
             let (title, body) = action.as_desktop_notification();
-            notify::on_notification(origin, title, body)
+            notify::on_notification(origin, target_surface(&target), title, body)
         }
 
         // OSC 9;4: a bar on this window's taskbar button.
@@ -5427,6 +5432,7 @@ fn load_api() -> Option<Api> {
             app_control_snapshot: sym!(internal, "ghostty_app_control_snapshot"),
             app_control_act: sym!(internal, "ghostty_app_control_act"),
             app_control_presence: sym!(internal, "ghostty_app_control_presence"),
+            app_notification_group: sym!(internal, "ghostty_app_notification_group"),
             app_key: sym!(internal, "ghostty_app_key"),
             surface_persona_launch: sym!(internal, "ghostty_surface_persona_launch"),
             app_plugin_list: sym!(internal, "ghostty_app_plugin_list"),

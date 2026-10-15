@@ -1790,6 +1790,11 @@ pub struct Api {
     /// (`polter_control_room::alert::Presence`). False with the error's
     /// name when it could not be read.
     pub app_control_presence: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
+    /// `ghostty_app_notification_group(app, id, buf, cap)`: the group a
+    /// click on a notification raised from terminal `id` opens the control
+    /// room at, by the persona buffer rule. Zero bytes: it is in no group.
+    /// App thread only; asked as the notification is raised (task 1538).
+    pub app_notification_group: unsafe extern "C" fn(App, u64, *mut u8, usize) -> usize,
     /// `ghostty_app_control_snapshot(app, buf, cap)`: the control room's
     /// snapshot as JSON, by the persona buffer rule. Zero bytes means none
     /// has been worked out yet. App thread only; asked for when

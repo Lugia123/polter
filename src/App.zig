@@ -1840,6 +1840,14 @@ pub fn controlSnapshotJson(self: *const App) []const u8 {
     return self.control_room.json;
 }
 
+/// The group a click on a notification from terminal `id` opens the
+/// control room at, by the snapshot last worked out
+/// (`ControlRoom.groupToShow`); null when it is in none. Borrowed until the
+/// next `tick`.
+pub fn notificationGroup(self: *const App, id: poltergeistpkg.Bus.Id) ?[]const u8 {
+    return poltergeistpkg.ControlRoom.groupToShow(self.control_room.route_rows, id);
+}
+
 /// What the configuration says about how the bus behaves, over `base`.
 /// Every setting the bus reads is named here, so that the place they are
 /// applied cannot apply three of them and forget the fourth.

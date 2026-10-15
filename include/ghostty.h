@@ -1637,6 +1637,12 @@ GHOSTTY_API bool ghostty_app_control_act(ghostty_app_t, const char*, uintptr_t, 
 // in sight. False, with the error's name in `err`, when it could not be read;
 // the last one then stands. App thread only.
 GHOSTTY_API bool ghostty_app_control_presence(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+// The group a click on a notification raised from a terminal (its
+// ghostty_surface_poltergeist_id) opens the control room at: the group it
+// supervises, else the first it is in, in the control room's order. Buffer
+// rule as above. Zero: it is in no group, and the click goes to its own tab
+// and pane. Ask when the notification is raised. App thread only.
+GHOSTTY_API uintptr_t ghostty_app_notification_group(ghostty_app_t, uint64_t, char*, uintptr_t);
 
 // The role library and the agent CLIs a role can start. Buffers follow the
 // persona rule above: the real length back, one NUL after it when it fits.

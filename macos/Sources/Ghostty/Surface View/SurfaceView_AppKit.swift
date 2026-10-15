@@ -2012,17 +2012,16 @@ extension Ghostty {
         }
 
         /// Show a user notification and associate it with this surface
-        func showUserNotification(title: String, body: String, requireFocus: Bool = true) {
+        func showUserNotification(title: String, body: String, requireFocus: Bool = true, group: String?) {
             let content = UNMutableNotificationContent()
             content.title = title
             content.subtitle = self.title
             content.body = body
             content.sound = UNNotificationSound.default
             content.categoryIdentifier = Ghostty.userNotificationCategory
-            content.userInfo = [
-                "surface": self.id.uuidString,
-                "requireFocus": requireFocus,
-            ]
+            // The group, when the core put this terminal in one: a click
+            // then goes to the control room, not here (task 1538).
+            content.userInfo = NotificationClick.userInfo(surface: self.id, requireFocus: requireFocus, group: group)
 
             let uuid = UUID().uuidString
             let request = UNNotificationRequest(

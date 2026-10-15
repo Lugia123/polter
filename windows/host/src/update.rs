@@ -118,6 +118,7 @@ pub fn check(origin: Option<HWND>) -> bool {
         );
         notify::on_notification(
             origin,
+            None,
             Some("Can't Check for Updates".to_string()),
             Some(
                 "This build's own version could not be determined (it was not built from a \
@@ -187,6 +188,7 @@ fn report(origin: Option<HWND>, outcome: Outcome) {
             );
             notify::on_notification(
                 origin,
+                None,
                 Some("Update Available".to_string()),
                 Some(format!("Polter {version} is available: {html_url}")),
             );

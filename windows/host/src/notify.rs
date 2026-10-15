@@ -27,7 +27,7 @@
 //! a notification that raises the wrong one is worse than one that raises
 //! nothing.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use windows::core::{w, PCWSTR};
@@ -59,12 +59,19 @@ static LAST_FRAME: AtomicIsize = AtomicIsize::new(0);
 /// clicking goes to the control room with that group selected, not to a
 /// window. `None` for a terminal's own notification.
 static LAST_GROUP: Mutex<Option<String>> = Mutex::new(None);
+/// The terminal the last balloon came from, when a terminal raised it; 0
+/// otherwise. A click goes to its tab and pane when it is in no group.
+static LAST_TERMINAL: AtomicU64 = AtomicU64::new(0);
 
 struct Pending {
     frame: isize,
+    /// The terminal that raised it (`ghostty_surface_poltergeist_id`); 0
+    /// for a balloon no terminal raised.
+    terminal: u64,
     title: String,
     body: String,
-    /// The control room's group, for a balloon the control room raised.
+    /// The group a click goes to: the control room's, for its own call, or
+    /// the one the core put the raising terminal in (task 1538).
     group: Option<String>,
 }
 
@@ -93,7 +100,19 @@ fn put(dst: &mut [u16], s: &str) {
 /// missing; a notification with neither is not shown, because an empty toast
 /// is indistinguishable from a bug and there is no way for a reader to tell
 /// which they got.
-pub fn on_notification(frame: Option<HWND>, title: Option<String>, body: Option<String>) -> bool {
+///
+/// `surface` is the terminal that raised it, `None` for a balloon no
+/// terminal raised. Which terminal that is and the group the core puts it in
+/// are asked here, as it is raised, and decide where a click goes
+/// (`alert::click_of`, task 1538).
+pub fn on_notification(
+    frame: Option<HWND>,
+    surface: Option<crate::ffi::Surface>,
+    title: Option<String>,
+    body: Option<String>,
+) -> bool {
+    let terminal = surface.map(|s| unsafe { (crate::api().surface_poltergeist_id)(s) }).unwrap_or(0);
+    let group = group_of(terminal);
     let title = title.unwrap_or_default();
     let body = body.unwrap_or_default();
     if title.trim().is_empty() && body.trim().is_empty() {
@@ -118,17 +137,44 @@ pub fn on_notification(frame: Option<HWND>, title: Option<String>, body: Option<
     // the ability to raise anything when clicked.
     let f = frame.map(|h| h.0 as isize).unwrap_or(0);
     match QUEUE.lock() {
-        Ok(mut q) => q.push(Pending { frame: f, title: title.clone(), body, group: None }),
+        Ok(mut q) => q.push(Pending { frame: f, terminal, title: title.clone(), body, group: group.clone() }),
         Err(_) => return false,
     }
     let posted =
         unsafe { PostMessageW(Some(HWND(hwnd)), WM_NOTIFY_SYNC, WPARAM(0), LPARAM(0)) }.is_ok();
     match frame {
-        Some(fr) => wlogf!(fr, "[notify] queued {title:?} posted={posted}"),
+        Some(fr) => wlogf!(fr, "[notify] queued {title:?} terminal=0x{terminal:016x} group={group:?} posted={posted}"),
         // process-wide: the notification named no surface
-        None => plogf!("[notify] queued {title:?} posted={posted} (no window)"),
+        None => plogf!("[notify] queued {title:?} terminal=0x{terminal:016x} group={group:?} posted={posted} (no window)"),
     }
     posted
+}
+
+/// The group the core puts terminal `terminal` in for a click on its
+/// notification (`ghostty_app_notification_group`, task 1538); `None` when
+/// it is in none, when no terminal raised it, and when the core could not
+/// be asked. App thread only: asked as the notification is raised.
+fn group_of(terminal: u64) -> Option<String> {
+    if terminal == 0 {
+        return None;
+    }
+    let app = crate::app_opt();
+    if app.is_null() {
+        return None;
+    }
+    let api = crate::api();
+    // The persona buffer rule: the real length back, one NUL after it when
+    // it fits. Zero bytes means no group.
+    let need = unsafe { (api.app_notification_group)(app, terminal, std::ptr::null_mut(), 0) };
+    if need == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; need + 1];
+    let wrote = unsafe { (api.app_notification_group)(app, terminal, buf.as_mut_ptr(), buf.len()) };
+    if wrote == 0 || wrote > need {
+        return None;
+    }
+    String::from_utf8(buf[..wrote].to_vec()).ok()
 }
 
 /// The template every call shares: the window, the id, and the icon.
@@ -191,7 +237,7 @@ pub fn on_control_room_alert(kind: i32, group: String, more: u32, who: String, t
         return false;
     }
     match QUEUE.lock() {
-        Ok(mut q) => q.push(Pending { frame: 0, title, body, group: Some(group.clone()) }),
+        Ok(mut q) => q.push(Pending { frame: 0, terminal: 0, title, body, group: Some(group.clone()) }),
         Err(_) => return false,
     }
     let posted = unsafe { PostMessageW(Some(HWND(hwnd)), WM_NOTIFY_SYNC, WPARAM(0), LPARAM(0)) }.is_ok();
@@ -206,6 +252,7 @@ fn show(p: Pending) {
         return;
     }
     LAST_FRAME.store(p.frame, Ordering::Release);
+    LAST_TERMINAL.store(p.terminal, Ordering::Release);
     if let Ok(mut g) = LAST_GROUP.lock() {
         *g = p.group.clone();
     }
@@ -245,25 +292,29 @@ extern "system" fn worker_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         // The shell packs the event into the low word of `lParam`.
         WM_TRAY_CALLBACK => {
             if (lp.0 as u32 & 0xFFFF) == NIN_BALLOONUSERCLICK {
-                // The control room's own: to the control room, at its group.
+                use polter_control_room::alert::{click_of, Click};
                 let group = LAST_GROUP.lock().ok().and_then(|g| g.clone());
-                if let Some(group) = group {
-                    crate::control_room::go_to(&group);
-                    // process-wide: the control room is one per process
-                    plogf!("[notify] control room balloon clicked; going to {group:?}");
-                    return LRESULT(0);
-                }
+                let terminal = LAST_TERMINAL.load(Ordering::Acquire);
                 let f = LAST_FRAME.load(Ordering::Acquire);
-                if f != 0 {
-                    let frame = HWND(f as *mut std::ffi::c_void);
-                    // **Restore before raising.** A minimised window that is
-                    // only brought forward stays minimised, and the click
-                    // then looks like it did nothing.
-                    unsafe {
-                        let _ = ShowWindow(frame, SW_RESTORE);
-                        let _ = SetForegroundWindow(frame);
+                match click_of(group.as_deref(), terminal, f) {
+                    // Anything with a group: to the control room, at it.
+                    Click::ControlRoom(group) => {
+                        crate::control_room::go_to(&group);
+                        // process-wide: the control room is one per process
+                        plogf!("[notify] balloon clicked; going to the control room at {group:?}");
                     }
-                    wlogf!(frame, "[notify] balloon clicked; window raised");
+                    // A terminal in no group: its tab and its pane.
+                    Click::Terminal(id) => {
+                        let key = polter_control_room::rules::key(id);
+                        if crate::tabs::go_to_terminal(&key) {
+                            // process-wide: keyed by a terminal's id, which is unique in the process
+                            plogf!("[notify] balloon clicked; went to terminal {key}");
+                        } else if f != 0 {
+                            raise(HWND(f as *mut std::ffi::c_void), "its terminal is gone; window raised");
+                        }
+                    }
+                    Click::Window(f) => raise(HWND(f as *mut std::ffi::c_void), "window raised"),
+                    Click::Nothing => {}
                 }
             }
             LRESULT(0)
@@ -277,6 +328,17 @@ extern "system" fn worker_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
+}
+
+/// Bring a balloon's window forward. **Restore before raising**: a
+/// minimised window that is only brought forward stays minimised, and the
+/// click then looks like it did nothing.
+fn raise(frame: HWND, said: &str) {
+    unsafe {
+        let _ = ShowWindow(frame, SW_RESTORE);
+        let _ = SetForegroundWindow(frame);
+    }
+    wlogf!(frame, "[notify] balloon clicked; {said}");
 }
 
 /// Stand up the worker window. The icon itself waits for a first
