@@ -119,9 +119,10 @@ pub(crate) fn lone(v: &Value, path: &str) -> Result<Lone, DecodeError> {
 mod tests {
     use super::*;
 
+    /// Embedded at compile time, not read at run time: a test binary built
+    /// on the Mac and run on the Windows machine has no source tree beside it.
     fn fixture() -> String {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/poltergeist/testdata/control_snapshot.json");
-        std::fs::read_to_string(path).expect("the core's fixture is in the tree")
+        include_str!("../../../src/poltergeist/testdata/control_snapshot.json").to_string()
     }
 
     #[test]

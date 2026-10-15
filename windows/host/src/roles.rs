@@ -1206,10 +1206,10 @@ mod tests {
             r#"{"loaded":true,"personas":[{"key":"w","name":"W","builtin":true,
                  "official":{"state":"unknown","reason":"english","reason_code":"role_no_value","reason_detail":"instructions"}}],
                 "shadowed":[{"key":"polter-worker","name":"Mine"},{"key":"k"},{"name":"no key"}],
-                "overrides_error":"Could not read C:\x: denied","overrides_error_code":"overrides_unreadable",
-                "overrides_error_detail":"C:\x: denied"}"#,
+                "overrides_error":"the core's own words","overrides_error_code":"overrides_unreadable",
+                "overrides_error_detail":"C:\\x: denied"}"#,
         )
-        .unwrap();
+        .expect("the fixture is JSON");
         assert_eq!(c.role("w").unwrap().official.as_ref().unwrap().reason.as_deref(), Some("\"instructions\" has no value."));
         assert_eq!(c.overrides_error.as_deref(), Some("Could not read C:\\x: denied"));
         assert_eq!(c.shadowed, vec![("polter-worker".into(), "Mine".into()), ("k".into(), "k".into())]);

@@ -1000,7 +1000,7 @@ msgstr "总控台"
 msgid ""
 "Go to the tab that lists every group by who is waiting for you, opening it "
 "if it is closed."
-msgstr ""
+msgstr "转到按谁在等你列出所有群的那个标签页；它关着就先打开。"
 
 #: src/input/command.zig:618 windows/host/src/menu.rs:479
 msgid "Equalize Splits"
@@ -1410,19 +1410,19 @@ msgstr "没有匹配的设置。"
 
 #: src/cli/chat.zig:672
 msgid "all"
-msgstr ""
+msgstr "全部"
 
 #: src/cli/chat.zig:673
 msgid "open"
-msgstr ""
+msgstr "未关闭"
 
 #: src/cli/chat.zig:674
 msgid "blocked"
-msgstr ""
+msgstr "受阻"
 
 #: src/cli/chat.zig:675
 msgid "closed"
-msgstr ""
+msgstr "已关闭"
 
 #: src/cli/chat.zig:1881
 msgid "Take the group \"{0}\" off this list?"
@@ -1470,11 +1470,11 @@ msgstr "  这个群还没有任务。"
 
 #: src/cli/chat.zig:2283 src/cli/chat.zig:2288
 msgid "filter"
-msgstr ""
+msgstr "筛选"
 
 #: src/cli/chat.zig:2300
 msgid "Nothing matches this filter. Press f to change it."
-msgstr ""
+msgstr "没有符合这个筛选的任务。按 f 换一个。"
 
 #: src/cli/chat.zig:2392
 msgid "No groups. There will be numbers here once a supervisor makes one."
@@ -2388,7 +2388,7 @@ msgstr "深色"
 
 #: windows/host/src/general_ui.rs:1502
 msgid "The screenshot folder could not be worked out."
-msgstr ""
+msgstr "确定不了截图文件夹在哪里。"
 
 #: windows/host/src/general_ui.rs:1510 windows/host/src/logs_ui.rs:677
 #: windows/host/src/projects_ui.rs:1010

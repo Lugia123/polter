@@ -18,10 +18,9 @@ fn one_tab(name: &str, root: SavedNode) -> Snapshot {
 // The shared files
 // ---------------------------------------------------------------------------
 
-/// `test/project-format/`, from this file's own place in the tree.
-fn shared_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/project-format")
-}
+/// Every file in `test/project-format/`, by name, as the build found it
+/// (`build.rs`): embedded, so the test binary needs no source tree beside it.
+const SHARED: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/project_format_files.rs"));
 
 /// **The files `src/Project.zig` makes, read here and written back.**
 ///
@@ -37,9 +36,10 @@ fn shared_dir() -> std::path::PathBuf {
 /// own mistake back is green.
 #[test]
 fn every_shared_file_is_read_and_written_back_as_the_same_bytes() {
-    let dir = shared_dir();
-    let index = std::fs::read_to_string(dir.join("index.txt")).expect("test/project-format/index.txt");
-    let read = |name: String| std::fs::read(dir.join(&name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let read = |name: String| -> Vec<u8> {
+        SHARED.iter().find(|(n, _)| *n == name).map(|(_, b)| b.to_vec()).unwrap_or_else(|| panic!("{name}: not in test/project-format"))
+    };
+    let index = String::from_utf8(read("index.txt".to_string())).expect("test/project-format/index.txt");
 
     let (mut rows, mut named) = (0, 0);
     for line in index.lines().filter(|l| !l.is_empty()) {
@@ -78,7 +78,7 @@ fn every_shared_file_is_read_and_written_back_as_the_same_bytes() {
     // A reader that found nothing passed every row it found.
     assert!(rows >= 11, "index.txt has {rows} rows; there were 11 when this was written");
     // And no file here that the index does not name.
-    let on_disk = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".json")).count();
+    let on_disk = SHARED.iter().filter(|(n, _)| n.ends_with(".json")).count();
     assert_eq!(on_disk, named, "test/project-format has a .json file index.txt does not name, or names one that is not there");
 }
 
