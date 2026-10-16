@@ -90,9 +90,10 @@ struct PaneFrameChrome: ViewModifier {
     /// empty, and what is framed is the same view either way.
     var stack: PaneStack?
     var stackActions = PaneStackActions()
-    /// Room at the title's right end for the pane's close button, which
-    /// the split view lays over it (task 1582). Off in the control room.
-    var closeRoom = false
+    /// The pane's close button is showing over the title's left end, which
+    /// the split view lays there (task 1642): the title is cut away under
+    /// its disc. Never in the control room.
+    var closeHole = false
 
     @Environment(\.colorScheme) private var scheme
 
@@ -242,11 +243,10 @@ struct PaneFrameChrome: ViewModifier {
                     PaneFrameBar(wears: wears, title: stack == nil ? title : nil, caption: stack == nil ? caption : nil)
                         .frame(height: Self.room(for: wears).top)
                         .padding(.horizontal, padding)
-                        // The close button's place, kept whether or not it
-                        // shows, so the status does not move under the
-                        // pointer (task 1582).
-                        .padding(.trailing, closeRoom && stack == nil
-                            ? CGFloat(Look.StackTab.closeGap) + CGFloat(Look.StackTab.closeButton) : 0)
+                        // Over the name's start while it shows, and taking
+                        // no place of its own (task 1642): the name is cut
+                        // away under its disc.
+                        .polterCloseHole(closeHole && stack == nil, textLeading: padding)
                     Spacer(minLength: 0)
                 }
                 switch wears {

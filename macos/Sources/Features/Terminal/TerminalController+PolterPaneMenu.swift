@@ -27,7 +27,7 @@ extension TerminalController {
         menu.autoenablesItems = true
 
         menu.addItem(PolterMenuAction.item(
-            String(localized: "Close Terminal", comment: "分屏标题和层叠标签右端的 x；层叠标签右键菜单：关闭这一个终端"),
+            String(localized: "Close Terminal", comment: "分屏标题和层叠标签左端的 x；层叠标签右键菜单：关闭这一个终端"),
             symbol: "xmark") { [weak self, weak view] in
                 guard let self, let view else { return }
                 self.performAction("close_surface", on: view)

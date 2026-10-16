@@ -163,6 +163,30 @@ pub fn stack_tab_grip(setting: Setting, lent: bool) -> TitleGrip {
     }
 }
 
+/// The pointer over a pane's title band (task 1634; macOS's
+/// `SurfaceDragGrip.cursorAreas`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TitleCursor {
+    /// The move cursor: this title drags its pane.
+    Move,
+    /// The window's own arrow: a button, or a title that does not drag.
+    Arrow,
+}
+
+/// Which cursor a point on a title gets. **The close cross is a button**,
+/// and so is everything on a stack's strip, whose tabs are clicked: the
+/// arrow there, never the cursor that says the title can be dragged --
+/// which is what the Mac showed on its cross until task 1634.
+pub fn title_cursor(grip: TitleGrip, on_close: bool, on_strip: bool) -> TitleCursor {
+    if on_close || on_strip {
+        return TitleCursor::Arrow;
+    }
+    match grip {
+        TitleGrip::Drag => TitleCursor::Move,
+        TitleGrip::Click | TitleGrip::None => TitleCursor::Arrow,
+    }
+}
+
 /// How far, in points, the pointer has to move held down on a title before
 /// it is a drag and not a click. The handle has none: it does nothing else.
 pub const TITLE_DRAG_THRESHOLD_PT: f64 = 4.0;
@@ -731,6 +755,17 @@ mod tests {
     use super::*;
 
     const LONE: Situation = Situation { titled: false, lent: false, split: false };
+
+    #[test]
+    fn the_close_cross_and_the_strip_keep_the_arrow_over_a_title_that_drags() {
+        // Task 1634: the title says "drag me"; its cross does not.
+        assert_eq!(title_cursor(TitleGrip::Drag, false, false), TitleCursor::Move);
+        assert_eq!(title_cursor(TitleGrip::Drag, true, false), TitleCursor::Arrow);
+        assert_eq!(title_cursor(TitleGrip::Drag, false, true), TitleCursor::Arrow);
+        // A title that only clicks never shows the move cursor.
+        assert_eq!(title_cursor(TitleGrip::Click, false, false), TitleCursor::Arrow);
+        assert_eq!(title_cursor(TitleGrip::None, false, false), TitleCursor::Arrow);
+    }
 
     #[test]
     fn the_veil_is_what_the_opacity_leaves_and_never_hides_a_pane() {

@@ -191,18 +191,38 @@ struct PaneStackStripLayout: Equatable {
         return min(max(offset, 0), maxOffset)
     }
 
+    /// Which end of a tab its close button is at: the left on macOS, as the
+    /// window's own tabs have it there (task 1642), the right on Windows.
+    /// Named at every call, so neither host gets the other's by default.
+    enum CloseEnd {
+        /// `PolterCloseCircle.frame`, the disc's left edge on the name's.
+        case leading
+        /// After the glyph, inside the padding: `close_button` wide.
+        case trailing
+    }
+
     /// Whether the close button of `member`'s tab is whole inside the
-    /// window the tabs are seen through, scrolled to `offset`: it sits at
-    /// the tab's right end inside its padding. Only then is it drawn.
+    /// window the tabs are seen through, scrolled to `offset`, with the
+    /// button at `end`. Only then is it drawn.
     ///
     /// **Never over the plus** (task 1600, #1601 W3 on Windows): scrolled
     /// under the plus, the tab in front had its close button drawn there.
     /// Here the row is clipped a foot past the window and fades out, so it
     /// showed at most a foot of it, faded -- the same rule all the same.
-    func closeSeen(_ member: Int, offset: CGFloat) -> Bool {
+    func closeSeen(_ member: Int, offset: CGFloat, at end: CloseEnd) -> Bool {
         guard let tab = tabs.first(where: { $0.member == member }) else { return false }
-        let button = CGFloat(Look.StackTab.closeButton)
-        let x = tab.x - CGFloat(Look.StackTab.inset) - offset + tab.width - CGFloat(Look.StackTab.paddingX) - button
+        let left = tab.x - CGFloat(Look.StackTab.inset) - offset
+        let x: CGFloat, button: CGFloat
+        switch end {
+        case .leading:
+            let frame = PolterCloseCircle.frame(textLeading: CGFloat(Look.StackTab.paddingX),
+                                                height: CGFloat(Look.StackTab.height))
+            x = left + frame.minX
+            button = frame.width
+        case .trailing:
+            button = CGFloat(Look.StackTab.closeButton)
+            x = left + tab.width - CGFloat(Look.StackTab.paddingX) - button
+        }
         return x >= -0.5 && x + button <= viewport + 0.5
     }
 
@@ -233,15 +253,19 @@ struct PaneStackStripLayout: Equatable {
 
     /// How wide a tab's name wants it with no font to measure by: so many
     /// cells of `nominal_cell_width`, a wide character two, between the
-    /// tab's paddings, room for its glyph when it has one, and the close
-    /// button's place, which every tab keeps (task 1582).
+    /// tab's paddings, and room for its glyph when it has one.
+    ///
+    /// **No place for the close button, unlike Windows** (task 1642): on
+    /// macOS it is at the left end, over the name, only while the pointer
+    /// is on the tab, so a place kept for it at the right end was empty.
+    /// So this is Windows' `nominal_width` less `close_gap + close_button`,
+    /// exactly -- which `tools/control-room-hosts-agree.py` checks.
     static func nominalWidth(name: String, glyph: Bool) -> CGFloat {
         var cells = 0
         for scalar in name.unicodeScalars {
             cells += scalar.value >= 0x2E80 ? 2 : 1
         }
         var w = 2 * Look.StackTab.paddingX + Double(cells) * Look.StackTab.nominalCellWidth
-            + Look.StackTab.closeGap + Look.StackTab.closeButton
         if glyph { w += Look.StackTab.gap + Look.Side.glyph }
         return CGFloat(w)
     }

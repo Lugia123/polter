@@ -633,15 +633,16 @@ pub fn title_cursor(frame: HWND) -> bool {
     }
     let Some(pane) = crate::pane_frames::title_at(frame, at.x, at.y) else { return false };
     // Over the close cross the pointer stays an arrow: it is a button. So
-    // over a stack's strip, whose tabs are clicked (task 1583).
-    if crate::pane_frames::close_at(frame, at.x, at.y) == Some(pane) || crate::pane_frames::strip_at(frame, at.x, at.y).is_some() {
-        return false;
-    }
+    // over a stack's strip, whose tabs are clicked (task 1583). The rule is
+    // `drag::title_cursor` (task 1634), where it is tested.
+    let on_close = crate::pane_frames::close_at(frame, at.x, at.y) == Some(pane);
+    let on_strip = crate::pane_frames::strip_at(frame, at.x, at.y).is_some();
     let Some((s, _)) = situation(frame, pane) else { return false };
-    if drag::title_grip(setting(), s) != TitleGrip::Drag {
-        return false;
+    match drag::title_cursor(drag::title_grip(setting(), s), on_close, on_strip) {
+        // The class cursor, `IDC_ARROW`, by `DefWindowProc`.
+        drag::TitleCursor::Arrow => false,
+        drag::TitleCursor::Move => set_move_cursor(),
     }
-    set_move_cursor()
 }
 
 /// `WM_SETCURSOR` over a terminal: the move cursor over its handle. **True

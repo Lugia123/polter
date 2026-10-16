@@ -249,10 +249,10 @@ enum ControlRoomLook {
         static let separatorHeight: Double = 12.0
         /// Source: design v17, src/style.css.
         static let addButton: Double = 28.0
-        /// Each tab's close button at its right end, after the glyph (task 1582): the window tab's `close`. Its place is kept in every tab whether or not it is showing, so a tab does not change width when the pointer comes over it.
+        /// Windows: each tab's close button at its right end, after the glyph (task 1582): the window tab's `close`. Its place is kept in every tab whether or not it is showing, so a tab does not change width when the pointer comes over it. macOS puts it at the left end, over the name, only while the pointer is on the tab, drawn as the system's own tabs draw theirs (`PolterCloseCircle`, task 1642), and keeps no place for it: a macOS tab is this and `close_gap` narrower, which `tools/control-room-hosts-agree.py` checks.
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
         static let closeButton: Double = 16.0
-        /// Between a tab's glyph and its close button.
+        /// Windows: between a tab's glyph and its close button. Not on macOS (see `close_button`).
         /// Source: not in the design: chosen while building the mac list, to be ruled on.
         static let closeGap: Double = 4.0
         /// How wide the fade is at an end of the tabs when more of them are scrolled out of sight that way (task 1582, in place of the `more` menu).

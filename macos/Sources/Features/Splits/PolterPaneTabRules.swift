@@ -9,10 +9,11 @@ import Foundation
 /// Nothing in here touches a view, so each is tested without the app.
 enum PolterPaneTabRules {
     /// Whether a close button shows: on the pane or tab the pointer is
-    /// over, and always on the one that is focused or in front -- as the
-    /// window's own tabs do.
-    static func closeShows(hovering: Bool, current: Bool) -> Bool {
-        hovering || current
+    /// over, and on no other -- not even the one that is focused or in
+    /// front -- as the window's own tabs do on macOS (task 1642, which
+    /// measured them; until then the current one always showed its button).
+    static func closeShows(hovering: Bool) -> Bool {
+        hovering
     }
 
     /// The three ways of closing the tabs of a stack around one of them.
