@@ -466,6 +466,16 @@ pub const Method = enum {
     screenshot_list,
 };
 
+/// What `set_quiescence_threshold` does to a terminal's `no tool call`
+/// threshold (#62): leave it, give it back to the configuration
+/// (`"no_tool_call_ms": null`), or set it (`0` switches the line off for
+/// this terminal).
+pub const CallsThreshold = union(enum) {
+    keep,
+    configured,
+    ms: u64,
+};
+
 pub const Request = union(Method) {
     me,
     terminal_list,
@@ -498,7 +508,8 @@ pub const Request = union(Method) {
     terminal_send: struct { id: Bus.Id, text: []const u8, submit: bool = true },
     clock_out: struct { id: Bus.Id, reason: []const u8 = "" },
     clock_in: struct { id: Bus.Id },
-    set_quiescence_threshold: struct { id: Bus.Id, ms: u64 },
+    /// Either threshold or both; at least one (#62). See `CallsThreshold`.
+    set_quiescence_threshold: struct { id: Bus.Id, ms: ?u64, no_tool_call_ms: CallsThreshold },
     set_watch: struct { id: Bus.Id, watch: bool },
     skill_read: struct { name: []const u8 },
 
@@ -4169,7 +4180,7 @@ test "target reports the terminal a request acts on" {
     try testing.expectEqual(worker, target(.{ .clock_out = .{ .id = worker } }).?);
     try testing.expectEqual(
         worker,
-        target(.{ .set_quiescence_threshold = .{ .id = worker, .ms = 1000 } }).?,
+        target(.{ .set_quiescence_threshold = .{ .id = worker, .ms = 1000, .no_tool_call_ms = .keep } }).?,
     );
 }
 
@@ -6454,6 +6465,7 @@ pub fn showsAnAgent(req: Request) bool {
             .session_started,
             .turn_started,
             .turn_resumed,
+            .tool_started,
             .turn_ended,
             .turn_failed,
             .awaiting_approval,
@@ -7588,9 +7600,19 @@ fn dispatchOne(
         },
 
         .set_quiescence_threshold => |p| {
-            host.setThreshold(p.id, p.ms) catch
-                return hostFailure("ThresholdFailed", "could not change that threshold");
-            bus.withdrawQuiet(p.id, p.ms, host.nowMs());
+            if (p.ms) |ms| {
+                host.setThreshold(p.id, ms) catch
+                    return hostFailure("ThresholdFailed", "could not change that threshold");
+                bus.withdrawQuiet(p.id, ms, host.nowMs());
+            }
+            // The other clock's, per terminal (#62). Kept on the bus, which
+            // is what raises that line; the screen's threshold lives with
+            // the sampler in the host.
+            switch (p.no_tool_call_ms) {
+                .keep => {},
+                .configured => try bus.setCallsSilentAfter(p.id, null, host.nowMs()),
+                .ms => |ms| try bus.setCallsSilentAfter(p.id, ms, host.nowMs()),
+            }
             return .ok;
         },
 
@@ -8498,7 +8520,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
     // A terminal with no entry is one nobody has put under watch. It gets
     // its identity and nothing else: quiet time is not measured for it, and
     // saying `0` would claim it was busy this instant.
-    const e = bus.get(id) orelse return .{ .id = id, .agent = .none };
+    const e = bus.get(id) orelse return .{ .id = id, .agent = .none, .agent_present = host.agentPresent(id) };
 
     return .{
         .id = id,
@@ -8533,6 +8555,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
             .since_ms = null,
             .state_at_ms = null,
             .event_at_ms = null,
+            .tool_for_ms = null,
         } else .{
             .agent = e.agent,
             .since_ms = host.nowMs() -| e.agent.since_ms,
@@ -8540,7 +8563,12 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
             // hands back to say which prompt it saw.
             .state_at_ms = e.agent.since_ms,
             .event_at_ms = e.agent.eventMs(),
+            .tool_for_ms = if (e.agent.tools != null) host.nowMs() -| e.agent.tool_ms else null,
         },
+
+        // #63: what `agent` cannot say -- that the agent it describes is
+        // still there. See `wire.TerminalInfo.agent_present`.
+        .agent_present = host.agentPresent(id),
     };
 }
 
@@ -10900,7 +10928,7 @@ test "raising the threshold of a terminal already reported quiet stops the repor
 
     fake.now_ms = 200_000;
     const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
-        .set_quiescence_threshold = .{ .id = worker, .ms = 3_600_000 },
+        .set_quiescence_threshold = .{ .id = worker, .ms = 3_600_000, .no_tool_call_ms = .keep },
     });
     try testing.expect(res == .ok);
     try testing.expectEqual(@as(u64, 3_600_000), fake.set_to.?.ms);
@@ -10932,7 +10960,7 @@ test "lowering the threshold below how long a terminal has been quiet keeps its 
     // Quiet 200s by now; the new threshold is one minute.
     fake.now_ms = 200_000;
     const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
-        .set_quiescence_threshold = .{ .id = worker, .ms = 60_000 },
+        .set_quiescence_threshold = .{ .id = worker, .ms = 60_000, .no_tool_call_ms = .keep },
     });
     try testing.expect(res == .ok);
 
@@ -16281,4 +16309,57 @@ test "tidying: text and keys are refused while an input method composes, and say
     } });
     try testing.expectEqualStrings("UserPresent", keyed.failed.code);
     try testing.expect(std.mem.startsWith(u8, keyed.failed.message, "an input method is composing"));
+}
+
+test "#63: terminal_list says whether an agent is connected from each terminal" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.watch(worker, boss);
+    // The worker's hooks last said it was in a turn; it has since exited.
+    var ev: AgentEvent.Event = .none;
+    ev.event = .turn_started;
+    ev.cli = "claude-code";
+    ev.session_id = "s";
+    _ = try b.agentEvent(worker, ev, 0);
+
+    const open = [_]Place{ .{ .id = boss }, .{ .id = worker } };
+    var fake: FakeHost = .{ .open = &open, .agent_absent = &.{worker} };
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .terminal_list);
+    defer testing.allocator.free(res.terminals);
+
+    var seen: usize = 0;
+    for (res.terminals) |info| {
+        if (info.id == worker) {
+            seen += 1;
+            try testing.expect(!info.agent_present);
+            // Everything else still says it is there: that is the bug.
+            try testing.expectEqual(Bus.AgentState.in_turn, info.agent.agent.state);
+        }
+        if (info.id == boss) {
+            seen += 1;
+            try testing.expect(info.agent_present);
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), seen);
+}
+
+test "#62: set_quiescence_threshold sets a terminal's no tool call threshold without touching the quiet one" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.watch(worker, boss);
+    var fake: FakeHost = .{ .open = &.{} };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_quiescence_threshold = .{ .id = worker, .ms = null, .no_tool_call_ms = .{ .ms = 2_700_000 } },
+    });
+    try testing.expect(res == .ok);
+    try testing.expectEqual(@as(?u64, 2_700_000), b.get(worker).?.calls_silent_after_ms);
+    // The screen's threshold was not asked about, so the host was not told.
+    try testing.expect(fake.set_to == null);
+
+    const back = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_quiescence_threshold = .{ .id = worker, .ms = null, .no_tool_call_ms = .configured },
+    });
+    try testing.expect(back == .ok);
+    try testing.expect(b.get(worker).?.calls_silent_after_ms == null);
 }

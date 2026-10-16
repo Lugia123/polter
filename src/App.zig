@@ -1865,6 +1865,9 @@ fn poltergeistAgentHeard(
         // have already said, and walking the groups on each tool call
         // would be the cost without the news.
         .turn_resumed => return,
+        // The other end of the same tool call (task 1625), for the same
+        // reason.
+        .tool_started => return,
     });
 }
 
@@ -2104,6 +2107,8 @@ fn poltergeistReport(
     // Before the hand-over, so anything worked out this pass rides out in
     // the same line rather than waiting a whole interval behind it.
     self.considerGroupNotes(now_ms);
+    // Before `considerCalls`, which asks the same question (#63).
+    self.notePoltergeistAgentsHere();
     _ = self.poltergeist.considerCalls(now_ms);
     _ = self.poltergeist.considerAgents(now_ms);
     self.considerWorkerNudge(from, event);
@@ -2134,6 +2139,7 @@ fn poltergeistHeartbeat(
 ) void {
     const now_ms = self.poltergeistElapsedMs();
     self.poltergeist.noteQuiet(from, quiet_ms, now_ms);
+    self.notePoltergeistAgentsHere();
     _ = self.poltergeist.considerCalls(now_ms);
     _ = self.poltergeist.considerAgents(now_ms);
     self.deliverPoltergeistNotices(now_ms);
@@ -2358,6 +2364,12 @@ fn readGroupRecord(
 /// The supervisor can also read the box itself at any time, which is what
 /// covers the gap after the last report of all.
 fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
+    // Whether each watched terminal still has an agent in it, asked now,
+    // because the lines below are written now (#63). The bus cannot see
+    // connections; an agent that exits leaves everything it knows as it
+    // was, and a bare shell would be reported as a worker standing by.
+    self.notePoltergeistAgentsHere();
+
     // Each supervisor gets its own box, on its own clock. A shared one
     // would hand each of them the other's reports: twice the interruption,
     // and half of it about terminals they cannot read anyway.
@@ -2400,6 +2412,16 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
         self.surfaceMessage(surface, msg) catch |err| {
             log.warn("poltergeist: could not deliver notices err={}", .{err});
         };
+    }
+}
+
+/// Tell the bus, for every watched terminal, whether an agent is connected
+/// from it (`Server.agentPresent`) -- see `Bus.Entry.agent_here`.
+fn notePoltergeistAgentsHere(self: *App) void {
+    var it = self.poltergeist.entries.iterator();
+    while (it.next()) |kv| {
+        if (kv.value_ptr.role != .watched) continue;
+        self.poltergeist.noteAgentHere(kv.key_ptr.*, self.agentPresent(kv.key_ptr.*));
     }
 }
 

@@ -169,10 +169,18 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
 
         .clock_in => .{ .clock_in = .{ .id = try requireId(params) } },
 
-        .set_quiescence_threshold => .{ .set_quiescence_threshold = .{
-            .id = try requireId(params),
-            .ms = try requireU64(params, "ms"),
-        } },
+        .set_quiescence_threshold => sq: {
+            const ms = try optionalMaybeU64(params, "ms");
+            const calls = try callsThreshold(params);
+            // Asking for neither changes nothing, and answering `ok` to it
+            // would say something had (#62).
+            if (ms == null and calls == .keep) return error.BadParams;
+            break :sq .{ .set_quiescence_threshold = .{
+                .id = try requireId(params),
+                .ms = ms,
+                .no_tool_call_ms = calls,
+            } };
+        },
 
         .set_watch => .{
             .set_watch = .{
@@ -733,6 +741,18 @@ fn optionalI64(
 /// same oldest batch forever: not saying `since` means "carry on from where
 /// I am", and saying `since: 0` means "from the beginning of what I may
 /// see". A `u64` with a default cannot hold both.
+/// `no_tool_call_ms`: absent leaves it, `null` gives it back to the
+/// configuration, a whole number sets it (#62).
+fn callsThreshold(params: ?std.json.ObjectMap) ParseError!rpc.CallsThreshold {
+    const p = params orelse return .keep;
+    const v = p.get("no_tool_call_ms") orelse return .keep;
+    return switch (v) {
+        .null => .configured,
+        .integer => |i| if (i < 0) error.BadParams else .{ .ms = @intCast(i) },
+        else => error.BadParams,
+    };
+}
+
 fn optionalMaybeU64(
     params: ?std.json.ObjectMap,
     key: []const u8,
@@ -976,6 +996,18 @@ pub const TerminalInfo = struct {
     /// field looks like. `hooks: "none"` is the answer "known, and there are
     /// none"; a construction site that forgets this field does not compile.
     agent: AgentView,
+
+    /// Whether an agent is connected from this terminal right now
+    /// (`Server.agentPresent`: a live sidecar connection, which a bare shell
+    /// cannot fake). #63: an agent that exits leaves `agent` -- its hooks'
+    /// last state -- and every other field here as they were, so a worker
+    /// that had gone read exactly like one standing by. **No default**, on
+    /// `agent`'s terms: a row that forgot it would say "no agent" about
+    /// every terminal.
+    ///
+    /// ⚠️ False for a moment after an agent starts, before its sidecar has
+    /// connected.
+    agent_present: bool,
 };
 
 /// A terminal's agent state, as `terminal_list` and `terminal_turn` show it.
@@ -989,9 +1021,13 @@ pub const AgentView = struct {
     /// `since_ms` is a length of time. Null with `since_ms`.
     state_at_ms: ?u64,
     event_at_ms: ?u64,
+    /// How long `agent.tools` has been what it is -- something running, or
+    /// nothing -- as `since_ms` is for the state (task 1625). Null when the
+    /// agent does not report its tools.
+    tool_for_ms: ?u64,
 
     /// A terminal whose agent has never said anything through hooks.
-    pub const none: AgentView = .{ .agent = .none, .since_ms = null, .state_at_ms = null, .event_at_ms = null };
+    pub const none: AgentView = .{ .agent = .none, .since_ms = null, .state_at_ms = null, .event_at_ms = null, .tool_for_ms = null };
 };
 
 /// What `terminal_turn` answers.
@@ -1254,7 +1290,7 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.objectField("id");
             try writeId(&s, t.id);
             try s.objectField("agent");
-            try writeAgent(&s, .{ .agent = t.agent, .since_ms = null, .state_at_ms = null, .event_at_ms = null });
+            try writeAgent(&s, .{ .agent = t.agent, .since_ms = null, .state_at_ms = null, .event_at_ms = null, .tool_for_ms = null });
 
             // `null` rather than absent: this tool was asked for exactly
             // this, and "there is none" is its answer.
@@ -1906,6 +1942,8 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
 
     try s.objectField("agent");
     try writeAgent(s, info.agent);
+    try s.objectField("agent_present");
+    try s.write(info.agent_present);
 
     // Only `me` carries it, and then all three are written -- `started_for`
     // as a `null` the reader can see when there is none.
@@ -1968,6 +2006,20 @@ fn writeAgent(s: *std.json.Stringify, view: AgentView) std.Io.Writer.Error!void 
     }
     try s.objectField("waiting_on_background");
     try s.write(a.waiting_on_background);
+    // Absent when the agent does not report its tools, on `quiet_ms`'s
+    // terms: zero is "nothing running", which is an answer (task 1625).
+    if (a.tools) |n| {
+        try s.objectField("tools_running");
+        try s.write(n);
+        if (a.tool.get()) |name| {
+            try s.objectField("tool");
+            try s.write(name);
+        }
+        if (view.tool_for_ms) |ms| {
+            try s.objectField("tool_for_ms");
+            try s.write(ms);
+        }
+    }
     try s.endObject();
 }
 
@@ -2240,6 +2292,7 @@ test "a response carries ids as the same text the host exports" {
     try writeResponse(&w, .{ .me = .{
         .id = 0x2222,
         .agent = .none,
+        .agent_present = false,
         .role = .watched,
         .duty = .on,
         .held = false,
@@ -2273,8 +2326,8 @@ test "a response is one line" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 1, .agent = .none, .role = .supervisor, .duty = .on, .held = false, .quiet_ms = 0, .watching = false, .rounds = 0 },
-        .{ .id = 2, .agent = .none, .role = .watched, .duty = .off, .held = true, .quiet_ms = 90_000, .watching = true, .rounds = 2 },
+        .{ .id = 1, .agent = .none, .agent_present = false, .role = .supervisor, .duty = .on, .held = false, .quiet_ms = 0, .watching = false, .rounds = 0 },
+        .{ .id = 2, .agent = .none, .agent_present = false, .role = .watched, .duty = .off, .held = true, .quiet_ms = 90_000, .watching = true, .rounds = 2 },
     };
     try writeResponse(&w, .{ .terminals = &list });
 
@@ -2292,8 +2345,8 @@ test "a listing says which terminals are out of reach, and which are not" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .shielded = true },
-        .{ .id = 0x22, .agent = .none, .role = .watched, .watching = true },
+        .{ .id = 0x11, .agent = .none, .agent_present = false, .shielded = true },
+        .{ .id = 0x22, .agent = .none, .agent_present = false, .role = .watched, .watching = true },
     };
     try writeResponse(&w, .{ .terminals = &list });
 
@@ -2337,12 +2390,14 @@ test "an unwatched terminal is placed, but not measured" {
         .{
             .id = 0x11,
             .agent = .none,
+            .agent_present = false,
             .cwd = "/work/alpha",
             .title = "◑ colstat",
         },
         .{
             .id = 0x22,
             .agent = .none,
+            .agent_present = false,
             .role = .watched,
             .watching = true,
             .cwd = "/work/beta",
@@ -2370,8 +2425,8 @@ test "a terminal that has never called a tool sends no call_silent_ms, not zero"
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none },
-        .{ .id = 0x22, .agent = .none, .call_silent_ms = 1_320_000 },
+        .{ .id = 0x11, .agent = .none, .agent_present = false },
+        .{ .id = 0x22, .agent = .none, .agent_present = false, .call_silent_ms = 1_320_000 },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -2391,8 +2446,8 @@ test "grouping reaches the wire, not just the in-memory Response (task 650)" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .window = 1, .tab = 3 },
-        .{ .id = 0x22, .agent = .none }, // nobody grouped this one: absent, not zero
+        .{ .id = 0x11, .agent = .none, .agent_present = false, .window = 1, .tab = 3 },
+        .{ .id = 0x22, .agent = .none, .agent_present = false }, // nobody grouped this one: absent, not zero
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -2408,8 +2463,8 @@ test "a tab's place and title reach the wire, and are left out when nobody said 
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .window = 1, .tab = 3, .tab_index = 2, .tab_title = "build" },
-        .{ .id = 0x22, .agent = .none, .window = 1, .tab = 4 },
+        .{ .id = 0x11, .agent = .none, .agent_present = false, .window = 1, .tab = 3, .tab_index = 2, .tab_title = "build" },
+        .{ .id = 0x22, .agent = .none, .agent_present = false, .window = 1, .tab = 4 },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -2956,7 +3011,7 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
 
     // Started for a group: all three, named.
     var w: std.Io.Writer = .fixed(&buf);
-    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .membership = .{
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false, .membership = .{
         .groups = &.{ "web-app", "billing" },
         .supervisor_of = &.{"web-app"},
         .started_for = "web-app",
@@ -2981,7 +3036,7 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
 
     // In nothing and started for nothing: said, as empty lists and a null.
     w = .fixed(&buf);
-    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .membership = .{
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false, .membership = .{
         .groups = &.{},
         .supervisor_of = &.{},
         .started_for = null,
@@ -2995,7 +3050,7 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
 
     // Not `me`, or a host that could not say: none of the three keys.
     w = .fixed(&buf);
-    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none } });
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false } });
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "started_for") == null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "supervisor_of") == null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"groups\"") == null);
@@ -3101,4 +3156,49 @@ test "tidying: terminal_tab_move and role_launch's beside are read" {
         defer p.deinit();
         try testing.expectEqual(@as(?Bus.Id, 0x2a), p.value.role_launch.beside);
     }
+}
+
+test "#62: set_quiescence_threshold takes either threshold, and refuses neither" {
+    {
+        var p = try parse(
+            \\{"method":"set_quiescence_threshold","params":{"id":"0x22","ms":60000}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(@as(?u64, 60_000), p.value.set_quiescence_threshold.ms);
+        try testing.expect(p.value.set_quiescence_threshold.no_tool_call_ms == .keep);
+    }
+    {
+        var p = try parse(
+            \\{"method":"set_quiescence_threshold","params":{"id":"0x22","no_tool_call_ms":2700000}}
+        );
+        defer p.deinit();
+        try testing.expect(p.value.set_quiescence_threshold.ms == null);
+        try testing.expectEqual(@as(u64, 2_700_000), p.value.set_quiescence_threshold.no_tool_call_ms.ms);
+    }
+    {
+        var p = try parse(
+            \\{"method":"set_quiescence_threshold","params":{"id":"0x22","no_tool_call_ms":null}}
+        );
+        defer p.deinit();
+        try testing.expect(p.value.set_quiescence_threshold.no_tool_call_ms == .configured);
+    }
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"set_quiescence_threshold","params":{"id":"0x22"}}
+    ));
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"set_quiescence_threshold","params":{"id":"0x22","no_tool_call_ms":-1}}
+    ));
+}
+
+test "#63: a terminal says whether an agent is connected from it, true or false" {
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const list = [_]TerminalInfo{
+        .{ .id = 0x11, .agent = .none, .agent_present = true },
+        .{ .id = 0x22, .agent = .none, .agent_present = false },
+    };
+    try writeResponse(&w, .{ .terminals = &list });
+    const out = w.buffered();
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"agent_present\":true"));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"agent_present\":false"));
 }

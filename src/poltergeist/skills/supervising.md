@@ -389,7 +389,24 @@ a worker waiting on a permission prompt, or running a forty-minute build,
 also calls nothing. It is a reason to `terminal_read`, never a reason on its
 own to close, restart or interrupt anything. `terminal_list` carries the same
 figure as `call_silent_ms`, absent for a terminal that has never called.
-Threshold `poltergeist-calls-silent-after`, zero to switch off.
+Threshold `poltergeist-calls-silent-after`, zero to switch off; one
+terminal's own with `set_quiescence_threshold(id, no_tool_call_ms=…)`.
+
+The bracket says what is known of why. **Inside a turn, an agent whose hooks
+report its tool calls says whether one is running**:
+
+    0x…2222 no tool call 17m (in turn 20m, Bash running 16m; screen changed 0s ago)
+    0x…4444 no tool call 17m (in turn 20m, no tool running for 16m; screen changed 2s ago)
+
+The first is a command still going — leave it. The second is a turn with
+nothing running in it, which is what stuck looks like; read that one. Plain
+`(in turn 20m; …)` is an agent that does not say.
+
+**`(no agent in it)`** — on this clause or a `quiet` one — means no agent is
+connected from that terminal any more: it exited and the terminal is a bare
+shell. Its `agent` state, `role` and `duty` in `terminal_list` stay as they
+were, so only this and `agent_present: false` there tell it from a worker
+standing by. Do not answer it as one: restart it, or take its work back.
 
 **The agent's own word, when it has hooks.** A worker started from a role
 whose CLI supports it reports on itself, and then the line can say
@@ -519,7 +536,11 @@ For everything else in the box:
 **Reported too eagerly? Raise its threshold** with
 `set_quiescence_threshold(id, ms)`. A twenty-minute build is not stuck, and
 raising its threshold beats learning to ignore it — ignoring one is how you
-come to ignore the next.
+come to ignore the next. The `no tool call` clock is a second threshold on
+the same terminal: a worker you told to stand by needs both raised —
+`set_quiescence_threshold(id, ms, no_tool_call_ms)` — or `ms` alone stops the
+quiet clauses and the other keeps coming. `no_tool_call_ms: 0` switches that
+clause off for the terminal, `null` gives it back to the configuration.
 
 `terminal_list` reports `cwd`, `title`, and for marked terminals the quiet
 time, duty state and round count. An unwatched terminal has **no quiet time at
