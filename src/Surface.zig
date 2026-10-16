@@ -1431,6 +1431,10 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             // We know that our title should end in 0.
             const slice = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(v)), 0);
             log.debug("changing title \"{s}\"", .{slice});
+
+            // What the program says about itself there (task 1656): a CLI
+            // with no hooks may say it is waiting on an approval.
+            self.app.poltergeistTitle(self.id, slice);
             _ = try self.rt_app.performAction(
                 .{ .surface = self },
                 .set_title,

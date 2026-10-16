@@ -334,10 +334,28 @@ pub fn Small(comptime n: usize) type {
     };
 }
 
+/// What put an agent's `state` there.
+///
+/// **Two answers, because "the hooks said so" and "the title says so" are
+/// held to different rules.** A hook event is something that happened, and
+/// `state` stands until the next one; a title is something being shown,
+/// and `state` stands only while it is (task 1656). Rules that ask whether
+/// a state is known at all -- `known` -- take either; rules about what a
+/// hook did or did not fire take only `hooks`.
+pub const SaidBy = enum {
+    /// The agent's own hooks, or nothing: the state a terminal starts in.
+    hooks,
+    /// Its terminal's title matches one its plugin declared
+    /// (`Plugin.TitleSays`). The CLI has no hooks to say it with.
+    title,
+};
+
 /// Everything the bus knows about a terminal's agent from its hooks.
 pub const Agent = struct {
     hooks: Hooks,
     state: AgentState,
+    /// Whether `state` came from the hooks or from the title. See `SaidBy`.
+    said_by: SaidBy,
 
     /// When `state` last changed, on the bus's clock.
     since_ms: u64,
@@ -419,9 +437,17 @@ pub const Agent = struct {
         return self.last_event_ms orelse self.since_ms;
     }
 
+    /// Whether `state` is something this terminal's agent said -- through
+    /// its hooks, or through a title its plugin declared -- rather than
+    /// the default of a terminal nothing has spoken for.
+    pub fn known(self: Agent) bool {
+        return self.hooks == .live or self.said_by == .title;
+    }
+
     pub const none: Agent = .{
         .hooks = .none,
         .state = .idle,
+        .said_by = .hooks,
         .since_ms = 0,
         .expected_ms = 0,
         .expected_said = false,
@@ -1122,7 +1148,7 @@ pub fn noteCall(self: *Bus, id: Id, now_ms: u64) void {
 /// become a bare shell.
 fn silenceExplained(e: Entry) bool {
     if (e.agent_here == false) return false;
-    return e.agent.hooks == .live and stateExplains(e.agent.state);
+    return e.agent.known() and stateExplains(e.agent.state);
 }
 
 /// How long this terminal's calls have been silent, as the `no tool call`
@@ -1458,6 +1484,7 @@ pub fn facts(self: *const Bus, id: Id, now_ms: u64, outside: Attention.Facts.Out
         .id = id,
         .hooks = e.agent.hooks,
         .state = e.agent.state,
+        .said_by = e.agent.said_by,
         .state_since_ms = e.agent.since_ms,
         .expected_ms = e.agent.expected_ms,
         .last_event_ms = e.agent.last_event_ms,
@@ -1910,6 +1937,9 @@ pub fn agentEvent(
     // else: each event either clears the slot or replaces it.
     const before = a.*;
     a.hooks = .live;
+    // A hook outranks a title: whatever the title was saying, this is the
+    // agent's own word, and from here on only its hooks set the state.
+    a.said_by = .hooks;
 
     a.state = state;
     a.last_event_ms = now_ms;
@@ -1978,6 +2008,63 @@ pub fn agentEvent(
     if (e.role != .watched or e.duty == .off) return false;
     if (!saysSomethingNew(before, a.*, kind)) return false;
     a.pending = kind;
+    a.handed = 0;
+    return true;
+}
+
+/// What the terminal's title says now, as its plugin declared it (task
+/// 1656): `waits_for` is the key of the plugin whose `title_says` matched
+/// -- the CLI is waiting on an approval -- or null when none did.
+///
+/// **For a CLI that has no hooks.** Codex's approval box keeps its screen
+/// moving, so no quiet report comes and nothing else would ever say it is
+/// stuck; it says so in its title instead. A terminal whose hooks are live
+/// is left to them: they say more, and two voices for one state would
+/// disagree.
+///
+/// **The state lasts as long as the title.** Entering puts
+/// `awaiting_approval` in place with the title as its note, and the same
+/// line in the box a hook's would; another title that still matches --
+/// Codex alternates `[ ! ]` and `[ . ]` once a second -- is the same wait.
+/// A title that no longer matches ends it, and takes back a line still
+/// waiting to be read, as an answered prompt does.
+///
+/// Answers whether anything went in the box.
+pub fn noteTitle(self: *Bus, id: Id, waits_for: ?[]const u8, title: []const u8, now_ms: u64) Allocator.Error!bool {
+    if (self.entries.getPtr(id)) |e| if (e.agent.hooks == .live) return false;
+
+    const cli = waits_for orelse {
+        const e = self.entries.getPtr(id) orelse return false;
+        const a = &e.agent;
+        if (a.said_by != .title) return false;
+        a.said_by = .hooks;
+        a.state = .idle;
+        a.since_ms = now_ms;
+        a.last_event_ms = now_ms;
+        a.detail.set(null);
+        a.note.set(null);
+        if (a.pending) |kind| if (isWaiting(kind)) {
+            a.pending = null;
+            a.handed = 0;
+        };
+        return false;
+    };
+
+    try self.register(id);
+    const e = self.entries.getPtr(id).?;
+    const a = &e.agent;
+    if (a.said_by == .title and a.state == .awaiting_approval) return false;
+
+    a.said_by = .title;
+    a.state = .awaiting_approval;
+    a.since_ms = now_ms;
+    a.last_event_ms = now_ms;
+    a.detail.set("title");
+    a.note.set(title);
+    if (a.cli.get() == null) a.cli.set(cli);
+
+    if (e.role != .watched or e.duty == .off) return false;
+    a.pending = .awaiting_approval;
     a.handed = 0;
     return true;
 }
@@ -2098,6 +2185,14 @@ fn sameText(a: ?[]const u8, b: ?[]const u8) bool {
 pub fn promptStanding(self: *const Bus, id: Id, since_ms: u64, event_ms: u64, now_ms: u64, screen: ?[]const u8) bool {
     const e = self.entries.get(id) orelse return false;
     const a = e.agent;
+    // **A title's wait stands while the title does** (task 1656), and
+    // `noteTitle` ends it the moment the title changes. The screen is no
+    // help here: Codex keeps redrawing under its box, which is the reason
+    // the title is read at all.
+    if (a.said_by == .title) {
+        return a.state == .awaiting_approval and a.since_ms == since_ms and
+            a.last_event_ms != null and a.last_event_ms.? == event_ms;
+    }
     if (a.hooks != .live or a.state != .awaiting_approval) return false;
     if (a.since_ms != since_ms) return false;
     if (a.last_event_ms == null or a.last_event_ms.? != event_ms) return false;
@@ -2695,7 +2790,7 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
                 const in_turn = e.agent.hooks == .live and e.agent.state == .in_turn;
                 // Still here with the agent in a state that would explain a
                 // still screen: the screen moved after that event.
-                const outlived = e.agent.hooks == .live and stateExplains(e.agent.state);
+                const outlived = e.agent.known() and stateExplains(e.agent.state);
                 const written = switch (kind) {
                     // **No agent in it** (#63): whatever its hooks last
                     // said is about an agent that has gone, and a worker
@@ -2894,6 +2989,9 @@ fn quietExplained(self: *const Bus, id: Id, now_ms: u64) bool {
     // What an agent that has gone last said explains nothing (#63).
     if (e.agent_here == false) return false;
     const a = e.agent;
+    // A title saying it waits explains the stillness for as long as it says
+    // so; it stops saying so the moment the box goes (`noteTitle`).
+    if (a.said_by == .title) return a.state == .awaiting_approval;
     if (a.hooks != .live or !stateExplains(a.state)) return false;
     if (!self.observed(id)) return true;
     // **A turn that ended or failed, or a question being waited on, holds
@@ -3039,7 +3137,12 @@ fn writeAgent(
             // this line knows both without a `terminal_list` in between.
             // Before the note because the note is what gets cut when the
             // line is full.
-            try w.print(
+            // A title names no tool: what it says is that the CLI waits,
+            // and the title itself goes where a hook's note would.
+            if (a.said_by == .title) try w.print(
+                "{s}0x{x:0>16} awaiting approval (title says so) [state_at_ms={d} event_at_ms={d} answer={s}]",
+                .{ sep, id, a.since_ms, a.eventMs(), may.word() },
+            ) else try w.print(
                 "{s}0x{x:0>16} awaiting approval {s} [state_at_ms={d} event_at_ms={d} answer={s}]",
                 .{ sep, id, a.detail.get() orelse "(no tool name)", a.since_ms, a.eventMs(), may.word() },
             );
@@ -6157,4 +6260,108 @@ test "#63: a terminal with no agent in it says so on the quiet and no tool call 
         "[poltergeist] 0x0000000000002222 no tool call 15m (no agent in it)",
         silent,
     );
+}
+
+const codex_wait = "[ ! ] Action Required | t1653-w";
+const codex_blink = "[ . ] Action Required | t1653-w";
+
+test "1656: a title that says it waits puts awaiting approval in the box, said as the title's" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+
+    try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 4_000));
+    const a = b.agentOf(worker);
+    try testing.expectEqual(SaidBy.title, a.said_by);
+    try testing.expectEqual(AgentState.awaiting_approval, a.state);
+    try testing.expectEqual(Hooks.none, a.hooks);
+    try testing.expectEqualStrings("title", a.detail.get().?);
+    try testing.expectEqualStrings("codex", a.cli.get().?);
+    try testing.expect(b.hasFreshWaiting(boss, .none));
+
+    const line = b.drain(boss, 5_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 awaiting approval (title says so) [state_at_ms=4000 event_at_ms=4000 answer=allowed]: " ++ codex_wait,
+        line,
+    );
+}
+
+test "1656: the title blinking is one wait, not one a second" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+
+    try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 4_000));
+    _ = b.drain(boss, 4_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(!try b.noteTitle(worker, "codex", codex_blink, 5_000));
+    try testing.expect(!try b.noteTitle(worker, "codex", codex_wait, 6_000));
+    try testing.expectEqual(@as(u64, 4_000), b.agentOf(worker).since_ms);
+    try testing.expect(b.drain(boss, 6_000, &buf, .none) == null);
+}
+
+test "1656: a title that stops saying it ends the wait, and takes back a line nobody read" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+
+    try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 4_000));
+    try testing.expect(!try b.noteTitle(worker, null, "\u{2827} t1653-w", 7_000));
+    const a = b.agentOf(worker);
+    try testing.expectEqual(AgentState.idle, a.state);
+    try testing.expectEqual(SaidBy.hooks, a.said_by);
+    try testing.expect(a.detail.get() == null);
+    try testing.expect(b.drain(boss, 7_000, &buf, .none) == null);
+
+    // And a new box is a new wait.
+    try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 9_000));
+    try testing.expectEqual(@as(u64, 9_000), b.agentOf(worker).since_ms);
+}
+
+test "1656: live hooks outrank the title, both ways" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // Hooks speaking first: a matching title is not a second voice.
+    _ = try b.agentEvent(worker, hookEv(.session_started), 1_000);
+    try testing.expect(!try b.noteTitle(worker, "codex", codex_wait, 2_000));
+    try testing.expectEqual(AgentState.idle, b.agentOf(worker).state);
+    try testing.expectEqual(SaidBy.hooks, b.agentOf(worker).said_by);
+
+    // The title first, then a hook: the hook's word stands.
+    var c = try hookedBus();
+    defer c.deinit();
+    try testing.expect(try c.noteTitle(worker, "codex", codex_wait, 1_000));
+    _ = try c.agentEvent(worker, hookEv(.turn_started), 2_000);
+    try testing.expectEqual(SaidBy.hooks, c.agentOf(worker).said_by);
+    try testing.expectEqual(AgentState.in_turn, c.agentOf(worker).state);
+    // A title leaving after that changes nothing the hook said.
+    try testing.expect(!try c.noteTitle(worker, null, "zsh", 3_000));
+    try testing.expectEqual(AgentState.in_turn, c.agentOf(worker).state);
+}
+
+test "1656: a title's wait stands for an answer while the title does, whatever the screen does" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 4_000));
+    // The screen keeps moving under Codex's box: reports of it change nothing.
+    _ = b.report(worker, .{ .resumed = .{ .quiet_ms = 0, .silent_ms = 0, .changed_rows = 1, .total_rows = 24 } }, 5_000);
+    try testing.expect(b.promptStanding(worker, 4_000, 4_000, 9_000));
+    try testing.expect(!b.promptStanding(worker, 3_000, 4_000, 9_000));
+
+    _ = try b.noteTitle(worker, null, "zsh", 10_000);
+    try testing.expect(!b.promptStanding(worker, 4_000, 4_000, 11_000));
+}
+
+test "1656: an unwatched terminal's title is noted, and put in nobody's box" {
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try testing.expect(!try b.noteTitle(worker, "codex", codex_wait, 1_000));
+    try testing.expectEqual(AgentState.awaiting_approval, b.agentOf(worker).state);
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, 1_000, &buf, .none) == null);
+    // And a title nobody declared is no reason to keep an entry.
+    try testing.expect(!try b.noteTitle(0x3333, null, "zsh", 1_000));
+    try testing.expect(b.entries.get(0x3333) == null);
 }

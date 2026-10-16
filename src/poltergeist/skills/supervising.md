@@ -428,7 +428,14 @@ whose CLI supports it reports on itself, and then the line can say
     [poltergeist] 0x0000000000002222 turn ended 12s ago: "Fixed #845, full suite …", 0x0000000000004444 failed rate_limit
 
 and `awaiting approval Bash [state_at_ms=… event_at_ms=… answer=allowed]: …`,
-`awaiting input idle_prompt`. Unlike
+`awaiting input idle_prompt`. A CLI with no hooks can say the first of these
+through its terminal title instead, when its plugin declares which titles
+mean it: `awaiting approval (title says so) [state_at_ms=… event_at_ms=…
+answer=allowed]: [ ! ] Action Required | …` is Codex on a permission box. Its
+screen keeps redrawing under the box, so it is never reported `quiet`; this
+line is the only thing that says it is stuck, and it goes as soon as the
+title changes. In `terminal_list` it reads `hooks: none`, `state:
+awaiting_approval`, `detail: title`. Unlike
 everything above these are not arithmetic: the CLI said it. The quote is only
 the start of the answer; `terminal_turn(id)` has the whole of it, up to 16 KB,
 and says when it was cut. The note on `awaiting approval` is likewise the

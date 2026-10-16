@@ -259,6 +259,13 @@ poltergeist_plugin_tested_ms: ?u64 = null,
 poltergeist_plugins: []const poltergeistpkg.Plugin.Manifest = &.{},
 poltergeist_plugin_arena: ?std.heap.ArenaAllocator = null,
 
+/// Every installed plugin that declares what its CLI's title says
+/// (`Plugin.TitleSays`, task 1656) -- **switched on or not**. Reading a
+/// title starts nothing and writes nothing, and the CLI is in use whether
+/// or not its provisioning plugin is: Codex's is off until somebody turns
+/// it on. In `plugin_arena`, with the rest.
+poltergeist_title_says: []const poltergeistpkg.Plugin.Manifest = &.{},
+
 /// Where last night's arrangement is written down. Null until the state
 /// directory is known. Owned.
 poltergeist_session_path: ?[]const u8 = null,
@@ -2512,7 +2519,17 @@ pub fn ensurePlugins(self: *App) void {
     };
     for (found, 0..) |f, i| manifests[i] = f.manifest;
 
+    // The title declarations, from every plugin installed. A second walk
+    // rather than a flag on the first: what runs is the switched-on ones,
+    // and the first walk is that list.
+    var says: std.ArrayListUnmanaged(poltergeistpkg.Plugin.Manifest) = .empty;
+    for (self.scanPlugins(alloc, io, &environ_map, true)) |f| {
+        if (f.manifest.title_says.awaiting_approval.len == 0) continue;
+        says.append(alloc, f.manifest) catch break;
+    }
+
     self.poltergeist_plugins = manifests;
+    self.poltergeist_title_says = says.items;
     self.poltergeist_plugin_arena = arena;
 
     log.info(
@@ -2652,10 +2669,33 @@ pub fn reloadPlugins(self: *App) void {
     // list; the other order would leave this slice pointing into freed
     // memory for whichever notification came next.
     self.poltergeist_plugins = &.{};
+    self.poltergeist_title_says = &.{};
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
     self.poltergeist_plugin_arena = null;
 
     self.ensurePlugins();
+}
+
+/// A terminal's program set its title (task 1656). Asked of every title,
+/// and answered from the plugins' declarations: a CLI with no hooks that
+/// says in its title that it waits on an approval is put in the
+/// supervisor's box the way a hook would put it, and stops being reported
+/// so the moment the title changes.
+///
+/// On the app thread, from `Surface.handleMessage` -- which is also where
+/// the bus is read and written everywhere else.
+pub fn poltergeistTitle(self: *App, id: poltergeistpkg.Bus.Id, title: []const u8) void {
+    self.ensurePlugins();
+    const waits_for = poltergeistpkg.Plugin.titleAwaitsApproval(self.poltergeist_title_says, title);
+    const now_ms = self.poltergeistElapsedMs();
+    const raised = self.poltergeist.noteTitle(id, waits_for, title, now_ms) catch |err| {
+        log.warn("poltergeist: could not note the title of {x} err={}", .{ id, err });
+        return;
+    };
+    if (raised) {
+        log.info("poltergeist: {x} title says it awaits approval ({s})", .{ id, waits_for orelse "" });
+        self.deliverPoltergeistNotices(now_ms);
+    }
 }
 
 /// Where plugins live, nearest first.

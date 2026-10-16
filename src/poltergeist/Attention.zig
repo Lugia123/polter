@@ -93,6 +93,9 @@ pub const What = union(enum) {
 /// Which signal decided the kind.
 pub const Source = enum {
     hook,
+    /// The terminal's title, as its plugin declared (task 1656): a CLI with
+    /// no hooks that says in its title that it is waiting.
+    title,
     /// Hooks were configured and never spoke.
     hook_missing,
     screen,
@@ -165,6 +168,8 @@ pub const Facts = struct {
     id: Id,
     hooks: Bus.Hooks,
     state: Bus.AgentState,
+    /// Whether `state` came from the hooks or from the title.
+    said_by: Bus.SaidBy,
     /// When `state` last changed.
     state_since_ms: u64,
     /// When `hooks` became `expected`.
@@ -202,6 +207,7 @@ pub const Facts = struct {
         .id = 0,
         .hooks = .none,
         .state = .idle,
+        .said_by = .hooks,
         .state_since_ms = 0,
         .expected_ms = 0,
         .last_event_ms = null,
@@ -260,7 +266,7 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
             },
         }
 
-        if (f.hooks == .live and f.process == .running) {
+        if ((f.hooks == .live or f.said_by == .title) and f.process == .running) {
             const kind: Kind, const since: u64 = switch (f.state) {
                 .awaiting_approval => .{ .needs_approval, f.state_since_ms },
                 .awaiting_input => .{ .needs_answer, f.state_since_ms },
@@ -277,7 +283,8 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
                     .{ .done_unseen, f.state_since_ms },
                 .idle => .{ .idle, f.state_since_ms },
             };
-            break :decided .{ .kind = kind, .since_ms = since, .source = .hook, .age_ms = hook_age };
+            const source: Source = if (f.hooks == .live) .hook else .title;
+            break :decided .{ .kind = kind, .since_ms = since, .source = source, .age_ms = hook_age };
         }
 
         if (f.hooks == .expected and f.process == .running and
@@ -392,7 +399,7 @@ pub fn nextChange(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
             .agent_left => break :at stillAt(f, t, now_ms) orelse return null,
             .agent_exited, .gone => return null,
         }
-        if (f.hooks == .live) {
+        if (f.hooks == .live or f.said_by == .title) {
             if (f.state != .in_turn) return null;
             var at = stillAt(f, t, now_ms) orelse return null;
             if (t.calls_silent_ms != 0) if (f.call_silent_ms) |silent| {
@@ -1281,4 +1288,22 @@ test "Attention: a window tab does not draw working" {
     try testing.expectEqual(Top.none, top(&.{working}, .window_tab));
     try testing.expectEqual(Shown.working, top(&.{working}, .elsewhere).shown);
     try testing.expectEqual(Shown.done_unseen, top(&.{ working, done }, .window_tab).shown);
+}
+
+test "1656: a title that says it waits is a card waiting on approval, said to come from the title" {
+    var f: Facts = .none;
+    f.said_by = .title;
+    f.state = .awaiting_approval;
+    f.state_since_ms = 4_000;
+    f.last_event_ms = 4_000;
+    // What Codex's screen does under its box: never still.
+    f.screen = .{ .still_ms = 300 };
+    const s = classify(f, .defaults, 9_000);
+    try testing.expectEqual(Kind.needs_approval, s.kind);
+    try testing.expectEqual(Source.title, s.source);
+    try testing.expectEqual(@as(u64, 4_000), s.since_ms);
+
+    // The same facts with no title behind them are a screen and nothing else.
+    f.said_by = .hooks;
+    try testing.expect(classify(f, .defaults, 9_000).kind != .needs_approval);
 }

@@ -866,6 +866,7 @@ plugins/
 | `params` | JSON Schema，见下 |
 | ~~`kind`~~ | **已废弃。** 写了不会让插件加载失败，会被 warn 一次；决定插件是什么的是 `wants.events` |
 | `agent_cli` | 可选。**这个插件管理一个 agent CLI**：`{"label","bin","adapter","adapter_<os>"?}`。有它，角色库就能列出这个 CLI 装了什么、按角色启动它。`adapter` 是另一个可执行文件，一个问题起一次（`inventory` / `launch`），不是常驻进程。插件的 `key` 就是 CLI 在 `personas.json` 里的 key，所以必须是 `[a-z0-9-]`，不是的话这一段被丢掉并 warn。契约见 [roles.md](roles.md) 第十一节 |
+| `title_says` | 可选。**这个 CLI 在终端标题里说自己在等批准**：`{"awaiting_approval":{"starts_with":["…"]}}`，标题以其中任何一个开头，核心就把那个终端记成 `awaiting_approval`（`detail` 是 `title`，`note` 是标题本身），notices 出 `awaiting approval (title says so)`，总控台卡片按等批准显示；标题一变回去就恢复。只给**没有钩子**的 CLI 用：钩子是 live 的终端，以钩子说的为准。读的是所有装了的插件，**开没开都算**——读标题既不启动也不写任何东西，而 Codex 的插件默认是关的。每个前缀 1–64 个可打印字节，最多 8 个；不合格的跳过并 warn（空前缀会让所有标题都算在等）。目前只有 `codex` 声明了：`[ ! ] Action Required`、`[ . ] Action Required`（任务 1656，0.163 用 `script -r` 实测：它在批准框期间每秒在两者之间切换，而屏幕上那个圆点一直在变色，所以 quiet 永远不来） |
 
 `wants` / `params` 里的一个笔误只让那一部分降级为空，**不会让整个插件消失** ——
 后者对插件作者来说更难发现。方向是安全那一侧：它拿到的比它写的少。

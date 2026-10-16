@@ -7661,8 +7661,14 @@ fn dispatchOne(
 
         .set_quiescence_threshold => |p| {
             if (p.ms) |ms| {
-                host.setThreshold(p.id, ms) catch
-                    return hostFailure("ThresholdFailed", "could not change that threshold");
+                // **A terminal that is not there says so** (task 1656). Every
+                // failure used to come back as `ThresholdFailed`, which reads
+                // like a sampler that refused -- and the case that produced it
+                // was an id that named no terminal.
+                host.setThreshold(p.id, ms) catch |err| return switch (err) {
+                    error.NoSuchTerminal, error.UnknownTerminal => failure(error.UnknownTerminal),
+                    else => hostFailure("ThresholdFailed", "could not change that threshold"),
+                };
                 bus.withdrawQuiet(p.id, ms, host.nowMs());
             }
             // The other clock's, per terminal (#62). Kept on the bus, which
@@ -8520,7 +8526,9 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         // `hooks: "none"` said rather than left out (task 880), the same
         // answer `terminal_turn` gives; no duration, since nothing started
         // one.
-        .agent = if (e.agent.hooks == .none) .{
+        // A title saying it waits (task 1656) has its moments like a hook
+        // does: they are what `terminal_answer_prompt` is handed back.
+        .agent = if (e.agent.hooks == .none and e.agent.said_by != .title) .{
             .agent = e.agent,
             .since_ms = null,
             .state_at_ms = null,
@@ -9714,6 +9722,8 @@ const FakeHost = struct {
     set_to: ?struct { id: Bus.Id, ms: u64 } = null,
     read_count: usize = 0,
     refuse: bool = false,
+    /// `setThreshold` answers as the App does for an id no surface has.
+    no_such_terminal: bool = false,
 
     /// How many members `chatMembers` reports. Configurable because a
     /// group of one and a group of several are different cases for the
@@ -10789,6 +10799,7 @@ const FakeHost = struct {
     fn setThreshold(ctx: *anyopaque, id: Bus.Id, ms: u64) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.Refused;
+        if (self.no_such_terminal) return error.NoSuchTerminal;
         self.set_to = .{ .id = id, .ms = ms };
     }
 };
@@ -11175,6 +11186,33 @@ test "raising the threshold of a terminal already reported quiet stops the repor
     // A minute later the terminal has been quiet 241s, far short of an hour.
     const next = b.drainIfDue(boss, 241_000, &buf, .none);
     try testing.expect(next == null);
+}
+
+test "1656: a threshold for a terminal that is not there says UnknownTerminal" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .no_such_terminal = true };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_quiescence_threshold = .{ .id = worker, .ms = 10_000, .no_tool_call_ms = .keep },
+    });
+    const code = switch (res) {
+        .failed => |f| f.code,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expectEqualStrings("UnknownTerminal", code);
+
+    // Any other failure is still the host's own.
+    fake.no_such_terminal = false;
+    fake.refuse = true;
+    const refused = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_quiescence_threshold = .{ .id = worker, .ms = 10_000, .no_tool_call_ms = .keep },
+    });
+    const other_code = switch (refused) {
+        .failed => |f| f.code,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expectEqualStrings("ThresholdFailed", other_code);
 }
 
 test "lowering the threshold below how long a terminal has been quiet keeps its report (task 873)" {
@@ -15753,6 +15791,27 @@ test "hooks: terminal_list carries the agent state, and leaves it out with no ho
     try wire.writeResponse(&w, after);
     try testing.expect(std.mem.indexOf(u8, w.buffered(),
         \\"agent":{"hooks":"live","state":"awaiting_approval","since_ms":3000,"state_at_ms":1000,"event_at_ms":1000,"session_id":"sess-1","cli":"claude-code","detail":"Bash","note":"zig build test","waiting_on_background":false}
+    ) != null);
+}
+
+test "1656: a title's wait shows in terminal_list as awaiting_approval with detail title, and its moments" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .now_ms = 4_000 };
+
+    _ = try b.noteTitle(worker, "codex", "[ ! ] Action Required | w", 1_000);
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
+    const a = res.me.agent;
+    try testing.expectEqual(Bus.Hooks.none, a.agent.hooks);
+    try testing.expectEqual(Bus.AgentState.awaiting_approval, a.agent.state);
+    // Without the moments the answer guard could not be handed back.
+    try testing.expectEqual(@as(?u64, 1_000), a.state_at_ms);
+
+    var out: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    try wire.writeResponse(&w, res);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(),
+        \\"agent":{"hooks":"none","state":"awaiting_approval","since_ms":3000,"state_at_ms":1000,"event_at_ms":1000,"cli":"codex","detail":"title","note":"[ ! ] Action Required | w","waiting_on_background":false}
     ) != null);
 }
 
