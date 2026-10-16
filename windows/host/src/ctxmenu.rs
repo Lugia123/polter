@@ -137,6 +137,11 @@ const ROWS: &[Row] = &[
     // rename (rename_tab) is a DIFFERENT action with a different label.
     item(n_("Change Tab Title..."), "prompt_tab_title"),
     item(n_("Change Terminal Title..."), "prompt_surface_title"),
+    // This terminal's id, for pasting to an agent (task 1643): macOS puts
+    // it here, after the titles, a section of its own. The host's own
+    // operation, not a core binding (`COPY_ID`).
+    SEP,
+    item(n_("Copy Terminal ID"), COPY_ID),
     SEP,
     checkable(
         n_("Make This Terminal a Supervisor"),
@@ -204,6 +209,11 @@ const ROWS: &[Row] = &[
     item(n_("Close Tab"), "close_tab:this"),
     item(n_("Command Palette"), "toggle_command_palette"),
 ];
+
+/// «Copy Terminal ID»'s action: the host's own, which no core binding has.
+/// The `__polter_` prefix is what says so to the palette's check in
+/// `command.zig` and to `windows/tools/menu-actions-handled.py`.
+const COPY_ID: &str = "__polter_copy_terminal_id";
 
 /// Command ids start here so they cannot collide with anything Windows sends.
 const ID_BASE: usize = 0x4000;
@@ -539,6 +549,10 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
             if ROWS[it.index].action.is_some_and(|a| greyed(a, in_split)) {
                 flags |= MF_GRAYED;
             }
+            // greyed: a terminal the core has no id for has nothing to copy
+            if ROWS[it.index].action == Some(COPY_ID) && !crate::terminal_id::known(crate::terminal_id::id_of(surface)) {
+                flags |= MF_GRAYED;
+            }
             let wide: Vec<u16> = it.text.encode_utf16().chain(Some(0)).collect();
             let _ = AppendMenuW(menu, flags, ID_BASE + it.index, PCWSTR(wide.as_ptr()));
         }
@@ -608,6 +622,15 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
             return;
         };
         let Some(action) = row.action else { return };
+        if action == COPY_ID {
+            let id = crate::terminal_id::id_of(surface);
+            crate::terminal_id::copy(
+                crate::tabs::frame_of_surface(surface).unwrap_or_default(),
+                &crate::terminal_id::text(id),
+                "terminal id from the terminal's menu",
+            );
+            return;
+        }
 
         // **Straight at the surface this menu was opened on.**
         //
@@ -813,6 +836,8 @@ mod tests {
             "-",
             "prompt_tab_title",
             "prompt_surface_title",
+            "-",
+            "__polter_copy_terminal_id",
             "-",
             "poltergeist_supervisor",
             "poltergeist_toggle_watch",

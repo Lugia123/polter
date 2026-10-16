@@ -1164,6 +1164,14 @@ msgstr ""
 msgid "Close Terminal"
 msgstr ""
 
+#: windows/host/src/terminal_id.rs:22
+msgid "Copy Terminal ID"
+msgstr ""
+
+#: windows/host/src/terminal_id.rs:24
+msgid "Copy All"
+msgstr ""
+
 #: src/input/command.zig:668
 msgid "Close the current terminal."
 msgstr ""

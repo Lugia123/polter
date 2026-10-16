@@ -2183,6 +2183,14 @@ const _: () = {
 const CLOSE_TERMINAL: &str = n_("Close Terminal");
 /// Its command id, clear of every range below.
 const PANE_CLOSE_ID: usize = 0x5500;
+/// A pane title's «Copy Terminal ID» (task 1643): clear of «Close
+/// Terminal» and the three stack rows after it.
+const PANE_COPY_ID: usize = 0x5580;
+/// The tab's «Copy Terminal ID»: this id itself for the one row or «Copy
+/// All», and one more per terminal of the submenu. Below the role rows'
+/// `personas::ID_BASE` (0x6000) by `TAB_TERM_ID_MAX`'s margin.
+const TAB_TERM_ID_BASE: usize = 0x5600;
+const TAB_TERM_ID_MAX: usize = 0x100;
 
 /// Command ids. Well clear of anything Windows sends, and clear of
 /// `ctxmenu.rs`'s `0x4000` block so a stray id cannot be read by both.
@@ -2243,6 +2251,20 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
     // `PersonaMenu`, with the four toggles). Its rows, kept for as long as
     // the menu is, because a pick is an index into them.
     let mut role_entries: Vec<crate::personas::Entry> = Vec::new();
+    // The tab's «Copy Terminal ID» (task 1643), as offered: what a pick is
+    // matched against. Only on the tab's own menu -- a pane's has a row of
+    // its own, for that pane, and the tab's would be a second one about it.
+    let term_ids: Option<crate::terminal_id::Offer> = match pane {
+        Some(_) => None,
+        None => {
+            let mut all: Vec<crate::terminal_id::Entry> = tabs::terminals_of_tab(frame, target.id)
+                .into_iter()
+                .map(|(s, title)| crate::terminal_id::Entry { id: crate::terminal_id::id_of(s), title })
+                .collect();
+            all.truncate(TAB_TERM_ID_MAX - 1);
+            crate::terminal_id::offer(all)
+        }
+    };
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else {
             wlogf!(frame, "[tabmenu] CreatePopupMenu failed");
@@ -2279,6 +2301,14 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
                     let _ = AppendMenuW(menu, flags, PANE_CLOSE_ID + 1 + k, PCWSTR(wide.as_ptr()));
                     items += 1;
                 }
+            }
+            // This pane's terminal id, its own section, as macOS has it.
+            if crate::terminal_id::known(crate::terminal_id::id_of(surface)) {
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                let mut wide: Vec<u16> = tr(crate::terminal_id::COPY_TERMINAL_ID).encode_utf16().collect();
+                wide.push(0);
+                let _ = AppendMenuW(menu, MF_STRING, PANE_COPY_ID, PCWSTR(wide.as_ptr()));
+                items += 1;
             }
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         }
@@ -2323,6 +2353,32 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
             wide.push(0);
             let _ = AppendMenuW(menu, flags, TAB_ID_BASE + i, PCWSTR(wide.as_ptr()));
             items += 1;
+            // After «Rename Tab...», where macOS puts it: one terminal is
+            // copied straight, several are a submenu.
+            if *cmd == TabCmd::Rename {
+                use crate::terminal_id::{self as tid, Offer};
+                let title: Vec<u16> = tr(tid::COPY_TERMINAL_ID).encode_utf16().chain(Some(0)).collect();
+                match &term_ids {
+                    None => {}
+                    Some(Offer::Single(_)) => {
+                        let _ = AppendMenuW(menu, MF_STRING, TAB_TERM_ID_BASE, PCWSTR(title.as_ptr()));
+                        items += 1;
+                    }
+                    Some(Offer::Each(entries)) => {
+                        if let Ok(sub) = CreatePopupMenu() {
+                            for (k, e) in entries.iter().enumerate() {
+                                let wide: Vec<u16> = tid::row_label(e).encode_utf16().chain(Some(0)).collect();
+                                let _ = AppendMenuW(sub, MF_STRING, TAB_TERM_ID_BASE + 1 + k, PCWSTR(wide.as_ptr()));
+                            }
+                            let _ = AppendMenuW(sub, MF_SEPARATOR, 0, PCWSTR::null());
+                            let wide: Vec<u16> = tr(tid::COPY_ALL).encode_utf16().chain(Some(0)).collect();
+                            let _ = AppendMenuW(sub, MF_STRING, TAB_TERM_ID_BASE, PCWSTR(wide.as_ptr()));
+                            let _ = AppendMenuW(menu, MF_POPUP, menu_handle_as_id(sub), PCWSTR(title.as_ptr()));
+                            items += 1;
+                        }
+                    }
+                }
+            }
             if *cmd == TabCmd::Authorise && !surface.is_null() {
                 role_entries = crate::personas::entries(surface);
                 if let Some(child) = crate::ctxmenu::build_roles_menu(frame, &role_entries) {
@@ -2455,6 +2511,26 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
         let going: Vec<PaneId> = closing(which, *at, members.len()).into_iter().filter_map(|i| members.get(i).copied()).collect();
         let ok = tabs::close_members_asking(frame, &going);
         wlogf!(frame, "[tabmenu] {:?} on stack tab {} -> {:?} closed={}", which, at, going, ok as u8);
+        return;
+    }
+    if chosen == PANE_COPY_ID {
+        let id = crate::terminal_id::id_of(surface);
+        crate::terminal_id::copy(frame, &crate::terminal_id::text(id), "terminal id from a pane's title");
+        return;
+    }
+    if (TAB_TERM_ID_BASE..TAB_TERM_ID_BASE + TAB_TERM_ID_MAX).contains(&chosen) {
+        use crate::terminal_id::{self as tid, Offer};
+        let k = chosen - TAB_TERM_ID_BASE;
+        let (text, what) = match (&term_ids, k) {
+            (Some(Offer::Single(e)), 0) => (tid::text(e.id), "terminal id from the tab's menu".to_string()),
+            (Some(Offer::Each(all)), 0) => (tid::all_text(all), format!("{} terminal ids from the tab's menu", all.len())),
+            (Some(Offer::Each(all)), k) if k <= all.len() => (tid::text(all[k - 1].id), "terminal id from the tab's submenu".to_string()),
+            _ => {
+                wlogf!(frame, "[termid] id {} came back from a menu that did not offer it; nothing copied", chosen);
+                return;
+            }
+        };
+        tid::copy(frame, &text, &what);
         return;
     }
     if chosen == PANE_CLOSE_ID {

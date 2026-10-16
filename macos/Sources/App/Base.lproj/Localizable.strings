@@ -1025,3 +1025,7 @@
 "Close Tab" = "Close Tab";
 "Close Other Tabs" = "Close Other Tabs";
 "Move Tab to New Window" = "Move Tab to New Window";
+
+/* «Copy Terminal ID» on the terminal, pane title, stack tab and window tab menus (task 1643). */
+"Copy Terminal ID" = "Copy Terminal ID";
+"Copy All" = "Copy All";

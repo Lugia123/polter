@@ -942,6 +942,7 @@ extension TerminalWindow {
     private static let agentPersonaIdentifier = PersonaMenu.itemIdentifier
     private static let agentMentionsIdentifier = MentionMenu.itemIdentifier
 
+    private static let copyTerminalIDIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.copyTerminalID")
     private static let projectSeparatorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSeparator")
     private static let projectSaveAsIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSaveAs")
     private static let projectLoadIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectLoad")
@@ -1004,8 +1005,11 @@ extension TerminalWindow {
     /// may do with its terminal. **The one builder for both menus** -- the
     /// tab's, and a pane's title and a stack's tab (task 1582,
     /// `TerminalController.polterPaneMenu`) -- so the two cannot drift.
-    func polterAppendTabSections(to menu: NSMenu, target: TerminalController?) {
-        appendTabModifierSection(to: menu, target: target)
+    ///
+    /// `copyIDs`: whether the tab's «Copy Terminal ID» is among them. A
+    /// pane's menu has its own, for the pane, and leaves the tab's out.
+    func polterAppendTabSections(to menu: NSMenu, target: TerminalController?, copyIDs: Bool = true) {
+        appendTabModifierSection(to: menu, target: target, copyIDs: copyIDs)
         appendProjectSection(to: menu, target: target)
         appendAgentSection(to: menu, target: target)
     }
@@ -1127,10 +1131,11 @@ extension TerminalWindow {
             target: target))
     }
 
-    private func appendTabModifierSection(to menu: NSMenu, target: TerminalController?) {
+    private func appendTabModifierSection(to menu: NSMenu, target: TerminalController?, copyIDs: Bool) {
         menu.removeItems(withIdentifiers: [
             Self.tabColorSeparatorIdentifier,
             Self.changeTitleMenuItemIdentifier,
+            Self.copyTerminalIDIdentifier,
             Self.tabColorPaletteIdentifier
         ])
 
@@ -1145,6 +1150,13 @@ extension TerminalWindow {
         changeTitleItem.representedObject = target?.window
         changeTitleItem.setImageIfDesired(systemSymbolName: "pencil.line")
         menu.addItem(changeTitleItem)
+
+        // The ids of the tab's terminals, for pasting to an agent (task
+        // 1643): one is copied straight, several are a submenu.
+        if copyIDs, let target, let copy = TerminalIDMenu.tabItem(for: target.surfaceTree.members()) {
+            copy.identifier = Self.copyTerminalIDIdentifier
+            menu.addItem(copy)
+        }
 
         let paletteItem = NSMenuItem()
         paletteItem.identifier = Self.tabColorPaletteIdentifier

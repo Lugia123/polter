@@ -156,6 +156,7 @@ mod search;
 mod shell;
 mod shot;
 mod software_render;
+mod terminal_id;
 mod shot_agent;
 mod shots;
 mod shellopen;
