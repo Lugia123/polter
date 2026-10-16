@@ -9,8 +9,10 @@
 //! +-----------------------------+
 //! | entry: PAGE                 |  oldest completed page
 //! | entry: PAGE                 |
-//! | entry: CHECKPOINT           |  covers every PAGE before it
+//! | entry: FRAGMENT             |  rows above the active area, newest page
+//! | entry: CHECKPOINT           |  covers every PAGE and FRAGMENT before it
 //! | entry: PAGE                 |
+//! | entry: FRAGMENT             |
 //! | entry: CHECKPOINT           |  the one a reader uses: the last whole one
 //! | (torn tail, if a write      |
 //! |  was cut short)             |
@@ -30,7 +32,7 @@
 //! | Offset | Size | Field                                  |
 //! | -----: | ---: | :------------------------------------- |
 //! |      0 |    8 | Magic `POLTJRNL`                       |
-//! |      8 |    2 | Version (`u16`), 1                     |
+//! |      8 |    2 | Version (`u16`), 2 (1 is still read)   |
 //! |     10 |    2 | Reserved, 0                            |
 //! |     12 |    8 | Journal id (`u64`), random per restart |
 //! |     20 |    4 | CRC32C of bytes 0..20                  |
@@ -45,15 +47,33 @@
 //!
 //! * PAGE: the payload is one snapshot PAGE record exactly as
 //!   `snapshot.page.encode` writes it, framing and all.
+//! * FRAGMENT: a PAGE record too, of some rows of the page the active area
+//!   starts in -- history that shares that page with the active area.
 //! * CHECKPOINT: `head` (`u64`), the index of the oldest PAGE still part of
 //!   the scrollback; `end` (`u64`), the number of PAGEs before this
-//!   checkpoint; then a whole v1 snapshot written with
-//!   `max_history_bytes = 0` -- the terminal, its screens and the page the
-//!   active area starts in, and no history.
+//!   checkpoint; `frag_head` and `frag_end` (`u64`), the same for FRAGMENTs,
+//!   which are numbered on their own; then a whole v1 snapshot written with
+//!   `max_history_bytes = 0` and the active page's history left out
+//!   (`screen.Prefix.drop`) -- the terminal, its screens and the active
+//!   area, and no history. Version 1 has no FRAGMENTs and no `frag_*`, and
+//!   its snapshot keeps the whole page the active area starts in.
 //!
 //! **Which pages are "completed".** Those before the page the active area
-//! starts in, the same split the snapshot's HISTORY makes. The rest goes in
-//! each checkpoint.
+//! starts in, the same split the snapshot's HISTORY makes; each is written
+//! once, as a PAGE. The history above the active area in the page it starts
+//! in goes in FRAGMENTs, each holding only the rows that came since the last
+//! one; when the active area moves on, that page is completed and written
+//! whole, and its fragments are dead.
+//!
+//! **Why fragments and not the whole page in each checkpoint (#57).** That
+//! page fills a few lines at a time, and every checkpoint carried all of
+//! it: at five lines a second, 60 KB printed in three minutes wrote 850 KB.
+//! Now a checkpoint carries the active area and nothing else, and a row of
+//! history is written once as a fragment and once more in its PAGE.
+//!
+//! A reader applies the fragments first, newest first -- they are the newest
+//! history -- then the pages, newest first, and stops at the first one that
+//! does not go in.
 //!
 //! **How a page on disk is known to still be right: page serials, not hooks.**
 //! A PageList node gets a new serial whenever it is allocated, reused, or has
@@ -79,11 +99,18 @@ const Crc32c = snapshot.record.Crc32c;
 const log = std.log.scoped(.scrollback);
 
 pub const magic = "POLTJRNL";
-pub const version: u16 = 1;
+/// What this writes. 1 is still read: no FRAGMENTs, and a checkpoint
+/// whose snapshot carries the whole page the active area starts in.
+pub const version: u16 = 2;
 pub const header_len = 24;
 const entry_header_len = 9;
 
-const Kind = enum(u8) { page = 1, checkpoint = 2 };
+const Kind = enum(u8) { page = 1, checkpoint = 2, fragment = 3 };
+
+/// A version 2 checkpoint's fixed fields: `head`, `end`, `frag_head`,
+/// `frag_end`. Version 1 has the first two.
+const checkpoint_prefix_len = 32;
+const checkpoint_prefix_len_v1 = 16;
 
 /// Dead bytes below this are never worth a rewrite.
 const compact_floor: u64 = 1024 * 1024;
@@ -115,6 +142,14 @@ pub const Writer = struct {
     /// was -- so it forces a rewrite.
     resize_count: u64 = 0,
 
+    /// The FRAGMENTs: history rows in the page the active area starts in.
+    frag: Fragments = .{},
+
+    /// When the oldest append not yet flushed to the disk was written, on
+    /// the caller's clock; null when everything written is on the disk.
+    /// See `syncDue`.
+    unsynced_since_ms: ?u64 = null,
+
     const Written = struct { serial: u64, bytes: u64 };
 
     pub fn deinit(self: *Writer, alloc: Allocator) void {
@@ -126,6 +161,24 @@ pub const Writer = struct {
     pub fn invalidate(self: *Writer) void {
         self.end_offset = null;
     }
+};
+
+/// Where the FRAGMENTs stand: which page they are rows of, how many of its
+/// rows they hold, and which of them are live. **Only the newest page's**:
+/// once the active area has moved on, that page is completed and goes in
+/// whole as a PAGE, and its fragments are dead.
+pub const Fragments = struct {
+    /// The serial of the page the live fragments are rows of. A new serial
+    /// -- the page completed, or its rows moved -- makes them all dead.
+    serial: ?u64 = null,
+    /// Rows `0..rows` of that page are in the live fragments.
+    rows: usize = 0,
+    /// FRAGMENTs in the file, live or dead: the index the next one gets.
+    count: usize = 0,
+    /// The first live one. `head..count` are live.
+    head: usize = 0,
+    /// Bytes of the live ones.
+    bytes: u64 = 0,
 };
 
 /// A checkpoint encoded under the terminal's lock, to be written after it
@@ -141,6 +194,7 @@ pub const Prepared = struct {
     live_bytes: u64,
     dead_bytes: u64,
     last_checkpoint_bytes: u64,
+    frag: Fragments,
 
     pub fn deinit(self: *Prepared, alloc: Allocator) void {
         alloc.free(self.bytes);
@@ -180,6 +234,46 @@ pub fn prepare(
         if (try prepareAppend(alloc, w, t, live.items, max_history_bytes)) |p| return p;
     }
     return prepareRestart(alloc, io, t, live.items, max_history_bytes);
+}
+
+/// Bring `frag` up to the terminal: the history rows of the page the active
+/// area starts in that no live fragment holds yet go in one new FRAGMENT.
+/// Returns the bytes of fragments that died.
+///
+/// **Why the same serial is enough to append.** Rows above the active area
+/// are history, and nothing writes into history: what changes it moves rows
+/// (an erase, a scroll that reaches it) and so gives the page a new serial
+/// (`PageList.invalidateNodeLayout`), or is a resize, which rewrites the
+/// whole journal (`Writer.resize_count`). Anything that makes the rows fewer
+/// is taken as a new page too.
+fn prepareFragment(
+    alloc: Allocator,
+    out: *std.Io.Writer,
+    t: *const Terminal,
+    frag: *Fragments,
+) PrepareError!u64 {
+    const screen = t.screens.get(.primary).?;
+    const top = screen.pages.getTopLeft(.active);
+    var died: u64 = 0;
+    if (frag.serial != top.node.serial or top.y < frag.rows) {
+        died = frag.bytes;
+        frag.* = .{ .serial = top.node.serial, .count = frag.count, .head = frag.count };
+    }
+    if (top.y > frag.rows) {
+        var preserved = try top.node.pagePreservingState(screen.alloc);
+        defer preserved.deinit();
+        var record: std.Io.Writer.Allocating = .init(alloc);
+        defer record.deinit();
+        {
+            var records: snapshot.record.Writer = .init(alloc, &record.writer);
+            defer records.deinit();
+            try snapshot.screen.encodeRows(preserved.page(), frag.rows, top.y, .exact, &records);
+        }
+        frag.bytes += writeEntry(out, .fragment, record.written()) catch return error.OutOfMemory;
+        frag.count += 1;
+        frag.rows = top.y;
+    }
+    return died;
 }
 
 const PageNode = terminalpkg.PageList.List.Node;
@@ -249,14 +343,17 @@ fn prepareAppend(
         head += 1;
     }
 
+    var frag = w.frag;
+    dead_bytes += try prepareFragment(alloc, &out.writer, t, &frag);
+
     // More dead than alive, and enough of it to matter: rewrite instead.
-    if (dead_bytes >= live_bytes and dead_bytes >= compact_floor) {
+    if (dead_bytes >= live_bytes + frag.bytes and dead_bytes >= compact_floor) {
         out.deinit();
         written.deinit(alloc);
         return null;
     }
 
-    const checkpoint_bytes = try writeCheckpointEntry(alloc, &out.writer, t, head, written.items.len);
+    const checkpoint_bytes = try writeCheckpointEntry(alloc, &out.writer, t, head, written.items.len, frag);
     return .{
         .mode = .append,
         .bytes = try out.toOwnedSlice(),
@@ -266,6 +363,7 @@ fn prepareAppend(
         .live_bytes = live_bytes,
         .dead_bytes = dead_bytes,
         .last_checkpoint_bytes = checkpoint_bytes,
+        .frag = frag,
     };
 }
 
@@ -321,7 +419,10 @@ fn prepareRestart(
         });
     }
 
-    const checkpoint_bytes = try writeCheckpointEntry(alloc, &out.writer, t, 0, written.items.len);
+    var frag: Fragments = .{};
+    _ = try prepareFragment(alloc, &out.writer, t, &frag);
+
+    const checkpoint_bytes = try writeCheckpointEntry(alloc, &out.writer, t, 0, written.items.len, frag);
     return .{
         .mode = .restart,
         .bytes = try out.toOwnedSlice(),
@@ -331,6 +432,7 @@ fn prepareRestart(
         .live_bytes = live_bytes,
         .dead_bytes = 0,
         .last_checkpoint_bytes = checkpoint_bytes,
+        .frag = frag,
     };
 }
 
@@ -340,6 +442,9 @@ fn prepareRestart(
 ///
 /// `sync` flushes an append to the disk before returning; a rewrite is
 /// always flushed before it replaces the old file (see `writeWhole`).
+/// Returns whether what was written is on the disk -- **what happened, not
+/// what was asked**: a rewrite is, whatever `sync` said. `now_ms` is when, on
+/// the clock `syncDue` is asked on.
 pub fn commit(
     alloc: Allocator,
     io: std.Io,
@@ -347,11 +452,14 @@ pub fn commit(
     path: []const u8,
     p: *Prepared,
     sync: bool,
-) !void {
+    now_ms: u64,
+) !bool {
     errdefer w.invalidate();
+    var synced = false;
     const end: u64 = switch (p.mode) {
         .restart => end: {
             try writeWhole(io, path, p.bytes);
+            synced = true;
             break :end p.bytes.len;
         },
         .append => end: {
@@ -361,10 +469,20 @@ pub fn commit(
             // Somebody else's change to the file means our offsets are wrong.
             if (try file.length(io) < at) return error.JournalChanged;
             try file.writePositionalAll(io, p.bytes, at);
-            if (sync) try file.sync(io);
+            if (sync) {
+                try file.sync(io);
+                synced = true;
+            }
             break :end at + p.bytes.len;
         },
     };
+    // Everything before this write went to the same file and is flushed by
+    // the same flush; a rewrite replaced it with a flushed one.
+    if (synced) {
+        w.unsynced_since_ms = null;
+    } else if (w.unsynced_since_ms == null) {
+        w.unsynced_since_ms = now_ms;
+    }
 
     w.written.deinit(alloc);
     w.written = std.ArrayListUnmanaged(Writer.Written).fromOwnedSlice(p.written);
@@ -374,7 +492,41 @@ pub fn commit(
     w.live_bytes = p.live_bytes;
     w.dead_bytes = p.dead_bytes;
     w.last_checkpoint_bytes = p.last_checkpoint_bytes;
+    w.frag = p.frag;
     w.end_offset = end;
+    return synced;
+}
+
+/// **How long an append may stay off the disk** (#51). Appends are not
+/// flushed one by one: a flush per autosave tick per pane is a stall on the
+/// IO thread every few seconds for every pane. Not flushing them at all left
+/// everything since the last rewrite or close unprotected for as long as the
+/// pane lived -- measured on Windows, 2.49 MB after four minutes, and still
+/// unflushed a further two minutes later because nothing more was written.
+///
+/// So: the first unflushed append starts this clock, and the first autosave
+/// tick after it runs out flushes, whether or not there is anything new to
+/// write. A power cut loses at most this much plus one autosave interval of
+/// appends, and the output since the last tick, which was never written.
+pub const sync_after_ms: u64 = 30 * std.time.ms_per_s;
+
+/// Whether appends have been off the disk for `sync_after_ms` by `now_ms`.
+pub fn syncDue(w: *const Writer, now_ms: u64) bool {
+    const since = w.unsynced_since_ms orelse return false;
+    return now_ms -| since >= sync_after_ms;
+}
+
+/// Flush appends already written, with nothing new to write. A failure
+/// leaves the file unknown, so the next checkpoint rewrites it -- and a
+/// rewrite is flushed.
+pub fn flush(io: std.Io, w: *Writer, path: []const u8) !void {
+    errdefer w.invalidate();
+    if (w.end_offset == null) return;
+    // Opened for writing: Windows will not flush a handle that cannot write.
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_write });
+    defer file.close(io);
+    try file.sync(io);
+    w.unsynced_since_ms = null;
 }
 
 fn writeWhole(io: std.Io, path: []const u8, bytes: []const u8) !void {
@@ -395,8 +547,8 @@ fn writeWhole(io: std.Io, path: []const u8, bytes: []const u8) !void {
     // disk ahead of the data it names leaves, after a power cut, an empty or
     // partial file where a whole one used to be -- the old journal replaced
     // by nothing. Rewrites are rare (a restart or a compaction), so this is
-    // cheap where it is paid; appends are not flushed, and a torn tail is
-    // cut off by its CRC.
+    // cheap where it is paid. Appends are flushed on a clock instead
+    // (`sync_after_ms`), and a torn tail is cut off by its CRC.
     try atomic.file.sync(io);
     try replace(io, &atomic);
 }
@@ -496,17 +648,23 @@ fn writeCheckpointEntry(
     t: *const Terminal,
     head: usize,
     end: usize,
+    frag: Fragments,
 ) PrepareError!u64 {
     var payload: std.Io.Writer.Allocating = .init(alloc);
     defer payload.deinit();
-    var fixed: [16]u8 = undefined;
+    var fixed: [checkpoint_prefix_len]u8 = undefined;
     std.mem.writeInt(u64, fixed[0..8], head, .little);
     std.mem.writeInt(u64, fixed[8..16], end, .little);
+    std.mem.writeInt(u64, fixed[16..24], frag.head, .little);
+    std.mem.writeInt(u64, fixed[24..32], frag.count, .little);
     payload.writer.writeAll(&fixed) catch return error.OutOfMemory;
     snapshot.encode(alloc, &payload.writer, t, .{
         // Never resumed; see `scrollback.capture`.
         .continuation = .ground,
         .max_history_bytes = 0,
+        // In the FRAGMENTs instead: carrying them here is what made every
+        // checkpoint as big as the page the active area is in (#57).
+        .active_page_prefix = .drop,
     }) catch |err| switch (err) {
         error.WriteFailed => return error.OutOfMemory,
         else => |e| return e,
@@ -530,8 +688,8 @@ pub const LoadError = snapshot.DecodeError || Allocator.Error || error{
 pub const Loaded = struct {
     terminal: Terminal,
 
-    /// PAGEs the checkpoint named that were not applied: the first one that
-    /// did not fit and every older one after it.
+    /// PAGEs and FRAGMENTs the checkpoint named that were not applied: the
+    /// first one that did not fit and every older one after it.
     dropped_pages: usize,
 };
 
@@ -540,11 +698,21 @@ pub const Loaded = struct {
 pub fn load(alloc: Allocator, io: std.Io, bytes: []const u8) LoadError!Loaded {
     if (bytes.len < header_len or !isJournal(bytes)) return error.InvalidHeader;
     if (std.mem.readInt(u32, bytes[20..24], .little) != Crc32c.hash(bytes[0..20])) return error.InvalidHeader;
-    if (std.mem.readInt(u16, bytes[8..10], .little) != version) return error.UnsupportedVersion;
+    const file_version = std.mem.readInt(u16, bytes[8..10], .little);
+    if (file_version != 1 and file_version != version) return error.UnsupportedVersion;
+    const prefix_len: usize = if (file_version == 1) checkpoint_prefix_len_v1 else checkpoint_prefix_len;
 
     var pages: std.ArrayListUnmanaged([]const u8) = .empty;
     defer pages.deinit(alloc);
-    var checkpoint: ?struct { head: u64, end: u64, snapshot: []const u8 } = null;
+    var fragments: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer fragments.deinit(alloc);
+    var checkpoint: ?struct {
+        head: u64,
+        end: u64,
+        frag_head: u64,
+        frag_end: u64,
+        snapshot: []const u8,
+    } = null;
 
     var at: usize = header_len;
     while (bytes.len - at >= entry_header_len) {
@@ -561,12 +729,27 @@ pub fn load(alloc: Allocator, io: std.Io, bytes: []const u8) LoadError!Loaded {
 
         switch (std.enums.fromInt(Kind, kind_raw) orelse break) {
             .page => try pages.append(alloc, payload),
+            .fragment => {
+                if (file_version == 1) break;
+                try fragments.append(alloc, payload);
+            },
             .checkpoint => {
-                if (payload.len < 16) break;
+                if (payload.len < prefix_len) break;
                 const head = std.mem.readInt(u64, payload[0..8], .little);
                 const end = std.mem.readInt(u64, payload[8..16], .little);
                 if (end != pages.items.len or head > end) break;
-                checkpoint = .{ .head = head, .end = end, .snapshot = payload[16..] };
+                const frag_head: u64, const frag_end: u64 = if (file_version == 1) .{ 0, 0 } else .{
+                    std.mem.readInt(u64, payload[16..24], .little),
+                    std.mem.readInt(u64, payload[24..32], .little),
+                };
+                if (frag_end != fragments.items.len or frag_head > frag_end) break;
+                checkpoint = .{
+                    .head = head,
+                    .end = end,
+                    .frag_head = frag_head,
+                    .frag_end = frag_end,
+                    .snapshot = payload[prefix_len..],
+                };
             },
         }
     }
@@ -597,21 +780,38 @@ pub fn load(alloc: Allocator, io: std.Io, bytes: []const u8) LoadError!Loaded {
     primary.pages.setMaxBytes(null);
     primary.pages.setMaxLines(null);
 
+    // The fragments are the newest history -- the rows just above the
+    // active area -- so they go in first, newest first like the pages, and
+    // a fragment that does not go in stops everything older.
+    const named = (cp.frag_end - cp.frag_head) + (cp.end - cp.head);
     var applied: usize = 0;
-    var index = cp.end;
-    while (index > cp.head) {
-        index -= 1;
-        const page_bytes = pages.items[@intCast(index)];
-        if (pageColumns(page_bytes) != t.cols) break;
-        var page_source: std.Io.Reader = .fixed(page_bytes);
-        _ = snapshot.history.decodePage(&page_source, alloc, primary) catch break;
-        applied += 1;
+    apply: {
+        var index = cp.frag_end;
+        while (index > cp.frag_head) {
+            index -= 1;
+            if (!applyPage(alloc, primary, t.cols, fragments.items[@intCast(index)])) break :apply;
+            applied += 1;
+        }
+        index = cp.end;
+        while (index > cp.head) {
+            index -= 1;
+            if (!applyPage(alloc, primary, t.cols, pages.items[@intCast(index)])) break :apply;
+            applied += 1;
+        }
     }
 
     return .{
         .terminal = t,
-        .dropped_pages = @intCast(cp.end - cp.head - applied),
+        .dropped_pages = @intCast(named - applied),
     };
+}
+
+/// Prepend one PAGE record to `primary`, or say it was not applied.
+fn applyPage(alloc: Allocator, primary: anytype, cols: u16, page_bytes: []const u8) bool {
+    if (pageColumns(page_bytes) != cols) return false;
+    var page_source: std.Io.Reader = .fixed(page_bytes);
+    _ = snapshot.history.decodePage(&page_source, alloc, primary) catch return false;
+    return true;
 }
 
 /// The column count in a PAGE record's header, or null if it is too short.
@@ -632,6 +832,8 @@ const Harness = struct {
     w: Writer = .{},
     path_buf: [128]u8 = undefined,
     path: []const u8 = "",
+    /// Every byte every tick has written, rewrites included.
+    written_bytes: u64 = 0,
 
     fn create(cols: u16, rows: u16) !*Harness {
         const h = try testing.allocator.create(Harness);
@@ -686,7 +888,8 @@ const Harness = struct {
         var p = try prepare(testing.allocator, testing.io, &h.w, h.t, max);
         defer p.deinit(testing.allocator);
         const mode = p.mode;
-        try commit(testing.allocator, testing.io, &h.w, h.path, &p, false);
+        h.written_bytes += p.bytes.len;
+        _ = try commit(testing.allocator, testing.io, &h.w, h.path, &p, false, 0);
         return switch (mode) {
             .append => .append,
             .restart => .restart,
@@ -883,12 +1086,21 @@ fn testEntries(bytes: []const u8, out: *std.ArrayListUnmanaged(TestEntry)) !void
     }
 }
 
-fn testCheckpoint(out: *std.Io.Writer, head: u64, end: u64, snapshot_bytes: []const u8) !void {
+fn testCheckpoint(
+    out: *std.Io.Writer,
+    head: u64,
+    end: u64,
+    frag_head: u64,
+    frag_end: u64,
+    snapshot_bytes: []const u8,
+) !void {
     var payload: std.Io.Writer.Allocating = .init(testing.allocator);
     defer payload.deinit();
-    var fixed: [16]u8 = undefined;
+    var fixed: [checkpoint_prefix_len]u8 = undefined;
     std.mem.writeInt(u64, fixed[0..8], head, .little);
     std.mem.writeInt(u64, fixed[8..16], end, .little);
+    std.mem.writeInt(u64, fixed[16..24], frag_head, .little);
+    std.mem.writeInt(u64, fixed[24..32], frag_end, .little);
     try payload.writer.writeAll(&fixed);
     try payload.writer.writeAll(snapshot_bytes);
     _ = try writeEntry(out, .checkpoint, payload.written());
@@ -927,16 +1139,21 @@ test "journal: pages of another width end the walk (F-width)" {
         n += 1;
     };
     var snap: []const u8 = "";
+    var frags: u64 = 0;
     for (narrow_entries.items) |e| switch (e.kind) {
         .page => {
             _ = try writeEntry(&mixed.writer, .page, e.payload);
             n += 1;
             narrow_pages += 1;
         },
-        .checkpoint => snap = e.payload[16..],
+        .fragment => {
+            _ = try writeEntry(&mixed.writer, .fragment, e.payload);
+            frags += 1;
+        },
+        .checkpoint => snap = e.payload[checkpoint_prefix_len..],
     };
     try testing.expect(narrow_pages >= 2);
-    try testCheckpoint(&mixed.writer, 0, n, snap);
+    try testCheckpoint(&mixed.writer, 0, n, 0, frags, snap);
 
     var loaded = try load(testing.allocator, testing.io, mixed.written());
     defer loaded.terminal.deinit(testing.allocator);
@@ -981,6 +1198,7 @@ test "journal: a page that will not decode ends the walk (F-gap)" {
             } else _ = try writeEntry(&rebuilt.writer, .page, e.payload);
             i += 1;
         },
+        .fragment => _ = try writeEntry(&rebuilt.writer, .fragment, e.payload),
         .checkpoint => _ = try writeEntry(&rebuilt.writer, .checkpoint, e.payload),
     };
 
@@ -1230,6 +1448,210 @@ test "journal: a journal cut short where a v1 snapshot used to be" {
     defer testing.allocator.free(got);
     try testing.expect(std.mem.indexOf(u8, got, "AFTER-V1") != null);
     try testing.expect(std.mem.indexOf(u8, got, "L1000000") == null);
+}
+
+/// A line of `slowLine`'s, 66 bytes with its CRLF: the shape the Windows
+/// reading in #57 printed.
+fn slowLine(buf: []u8, i: usize) ![]const u8 {
+    return std.fmt.bufPrint(buf, "S{d:0>7} the quick brown fox jumps over the lazy dog, slowly....\r\n", .{i});
+}
+
+/// `ticks` checkpoints with `per_tick` lines before each, every one checked
+/// against the live terminal and, with `appends`, required to be an append.
+/// Returns the bytes printed.
+fn slowOutput(h: *Harness, from: usize, ticks: usize, per_tick: usize, appends: bool) !u64 {
+    var printed: u64 = 0;
+    var buf: [96]u8 = undefined;
+    var line = from;
+    for (0..ticks) |_| {
+        for (0..per_tick) |_| {
+            const l = try slowLine(&buf, line);
+            h.feed(l);
+            printed += l.len;
+            line += 1;
+        }
+        const mode = try h.tick(unlimited);
+        if (appends) try testing.expectEqual(.append, mode);
+        try expectRestoresLive(h);
+    }
+    return printed;
+}
+
+// **Slow output used to cost the whole page every time** (#57): a checkpoint
+// carried the page the active area starts in, so at a few lines a tick each
+// checkpoint was as big as the history that had built up in that page, and
+// 60 KB printed over three minutes wrote 850 KB on Windows. The rows above
+// the active area now go in FRAGMENTs, each written once, and a checkpoint
+// carries the active area. Here: 25 lines every tick, the reading's load,
+// for long enough to fill and complete several pages.
+test "journal: slow output writes each row about once, not a page a tick (#57)" {
+    const h = try Harness.create(80, 24);
+    defer h.destroy();
+    _ = try h.fill(0, 2);
+    _ = try h.tick(unlimited);
+    const before = h.written_bytes;
+
+    // Rewrites allowed and counted: what a compaction writes is part of the
+    // cost being measured.
+    const printed = try slowOutput(h, 0, 120, 25, false);
+    const written = h.written_bytes - before;
+    // Before the fix this load wrote about 14 bytes for every byte printed;
+    // what is left is the active area in every checkpoint and each completed
+    // page written whole once more.
+    errdefer std.debug.print("#57: printed={d} written={d}\n", .{ printed, written });
+    try testing.expect(written < 4 * printed);
+}
+
+test "journal: a line a tick, and things that move rows in between (#57)" {
+    // Fragments are kept by the page's serial; these are the operations
+    // that give the page a new one, or move rows without one, between two
+    // checkpoints of slow output.
+    const h = try Harness.create(80, 24);
+    defer h.destroy();
+    _ = try h.fill(0, 1);
+    _ = try h.tick(unlimited);
+    var line: usize = 0;
+    const between = [_][]const u8{
+        "",
+        "\x1b[5;1H\x1b[2L\x1b[999;1H", // insert lines in the active area
+        "\x1b[3;10r\x1b[10;1H\n\n\x1b[r\x1b[999;1H", // scroll a region
+        "\x1b[5;3HPOKED\x1b[999;1H",
+        "\x1b[H\x1b[2J", // clear: the screen goes into history
+        "\x1b[3J", // erase history, some of it in the active page
+        "\x1b[2;1H\x1b[3M\x1b[999;1H", // delete lines
+    };
+    for (0..3) |_| for (between) |op| {
+        h.feed(op);
+        // Rewritten or appended, whichever the operation calls for; the
+        // content is what has to be right.
+        _ = try h.tick(unlimited);
+        try expectRestoresLive(h);
+        _ = try slowOutput(h, line, 6, 1, true);
+        line += 6;
+    };
+}
+
+test "journal: an append of fragments cut anywhere restores the checkpoint before it (#57)" {
+    const h = try Harness.create(80, 24);
+    defer h.destroy();
+    _ = try h.fill(0, 1);
+    _ = try h.tick(unlimited);
+    _ = try slowOutput(h, 0, 3, 5, true);
+    const at_before = try dump(h.t);
+    defer testing.allocator.free(at_before);
+    const before_len = h.w.end_offset.?;
+    _ = try slowOutput(h, 100, 1, 5, true);
+    const whole = try h.file();
+    defer testing.allocator.free(whole);
+    try testing.expect(whole.len > before_len);
+
+    // The append has a FRAGMENT in it, or this is not testing fragments.
+    var entries: std.ArrayListUnmanaged(TestEntry) = .empty;
+    defer entries.deinit(testing.allocator);
+    try testEntries(whole[0..], &entries);
+    var fragments: usize = 0;
+    for (entries.items) |e| if (e.kind == .fragment) {
+        fragments += 1;
+    };
+    try testing.expect(fragments >= 4);
+
+    var cut = before_len;
+    while (cut < whole.len) : (cut += 1) {
+        errdefer std.debug.print("cut at {d} of {d}\n", .{ cut, whole.len });
+        var loaded = try load(testing.allocator, testing.io, whole[0..cut]);
+        defer loaded.terminal.deinit(testing.allocator);
+        try testing.expectEqual(@as(usize, 0), loaded.dropped_pages);
+        const got = try dump(&loaded.terminal);
+        defer testing.allocator.free(got);
+        try testing.expectEqualStrings(at_before, got);
+    }
+}
+
+test "journal: a version 1 file still restores" {
+    // What the release before FRAGMENTs wrote: header version 1, a 16-byte
+    // checkpoint prefix, and the whole active page in the snapshot.
+    const h = try Harness.create(80, 24);
+    defer h.destroy();
+    _ = try h.fill(0, 3);
+    try h.lines(500_000, 37);
+    var file: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer file.deinit();
+    var head: [header_len]u8 = undefined;
+    {
+        var hw: std.Io.Writer = .fixed(&head);
+        try writeHeader(&hw, 7);
+    }
+    std.mem.writeInt(u16, head[8..10], 1, .little);
+    std.mem.writeInt(u32, head[20..24], Crc32c.hash(head[0..20]), .little);
+    try file.writer.writeAll(&head);
+    const screen = h.t.screens.get(.primary).?;
+    var n: u64 = 0;
+    {
+        const stop = screen.pages.getTopLeft(.active).node;
+        var node = screen.pages.pages.first;
+        while (node) |x| : (node = x.next) {
+            if (x == stop) break;
+            try writePageEntry(testing.allocator, &file.writer, x, screen.alloc);
+            n += 1;
+        }
+    }
+    try testing.expect(n >= 2);
+    var payload: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer payload.deinit();
+    var fixed: [checkpoint_prefix_len_v1]u8 = undefined;
+    std.mem.writeInt(u64, fixed[0..8], 0, .little);
+    std.mem.writeInt(u64, fixed[8..16], n, .little);
+    try payload.writer.writeAll(&fixed);
+    try snapshot.encode(testing.allocator, &payload.writer, h.t, .{ .continuation = .ground, .max_history_bytes = 0 });
+    _ = try writeEntry(&file.writer, .checkpoint, payload.written());
+
+    var loaded = try load(testing.allocator, testing.io, file.written());
+    defer loaded.terminal.deinit(testing.allocator);
+    const want = try dump(h.t);
+    defer testing.allocator.free(want);
+    const got = try dump(&loaded.terminal);
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings(want, got);
+}
+
+test "journal: an append flushed or not, and the clock that says when (#51)" {
+    const h = try Harness.create(80, 24);
+    defer h.destroy();
+    _ = try h.fill(0, 1);
+
+    // A rewrite is on the disk whatever was asked.
+    var p = try prepare(testing.allocator, testing.io, &h.w, h.t, unlimited);
+    try testing.expectEqual(.restart, p.mode);
+    try testing.expect(try commit(testing.allocator, testing.io, &h.w, h.path, &p, false, 1_000));
+    p.deinit(testing.allocator);
+    try testing.expect(h.w.unsynced_since_ms == null);
+
+    // An unflushed append starts the clock; a second one does not move it.
+    try h.lines(0, 3);
+    p = try prepare(testing.allocator, testing.io, &h.w, h.t, unlimited);
+    try testing.expectEqual(.append, p.mode);
+    try testing.expect(!try commit(testing.allocator, testing.io, &h.w, h.path, &p, false, 2_000));
+    p.deinit(testing.allocator);
+    try h.lines(3, 3);
+    p = try prepare(testing.allocator, testing.io, &h.w, h.t, unlimited);
+    try testing.expect(!try commit(testing.allocator, testing.io, &h.w, h.path, &p, false, 9_000));
+    p.deinit(testing.allocator);
+    try testing.expectEqual(@as(?u64, 2_000), h.w.unsynced_since_ms);
+
+    try testing.expect(!syncDue(&h.w, 2_000 + sync_after_ms - 1));
+    try testing.expect(syncDue(&h.w, 2_000 + sync_after_ms));
+
+    // With nothing new to write, the flush on its own.
+    try flush(testing.io, &h.w, h.path);
+    try testing.expect(h.w.unsynced_since_ms == null);
+    try testing.expect(!syncDue(&h.w, std.math.maxInt(u64)));
+
+    // An append asked to flush says so.
+    try h.lines(6, 3);
+    p = try prepare(testing.allocator, testing.io, &h.w, h.t, unlimited);
+    try testing.expect(try commit(testing.allocator, testing.io, &h.w, h.path, &p, true, 50_000));
+    p.deinit(testing.allocator);
+    try testing.expect(h.w.unsynced_since_ms == null);
 }
 
 test "journal: a directory deleted while the file is rewritten is an error, not a crash" {

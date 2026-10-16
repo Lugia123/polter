@@ -515,14 +515,27 @@ pub fn setScrollbackJournal(self: *Termio, path: ?[]const u8) void {
 }
 
 /// Write the journal if anything changed since the last write. `final` also
-/// flushes it to disk: closing and explicit saves pay for that, the timer
-/// does not.
+/// flushes it to disk: closing and explicit saves pay for that. The timer
+/// flushes only once appends have been off the disk for
+/// `scrollback_journal.sync_after_ms` -- and then even with nothing new to
+/// write, which is the case that otherwise never flushes (#51).
 ///
 /// Prepared under the renderer lock, written after it is released.
 pub fn journalScrollback(self: *Termio, final: bool) void {
     const j = if (self.scrollback_journal) |*p| p else return;
-    if (!self.scrollback_dirty.swap(false, .acq_rel)) return;
     const io = global.io();
+    const now_ms = journalClockMs(io);
+    const sync = final or journalpkg.syncDue(&j.writer, now_ms);
+    if (!self.scrollback_dirty.swap(false, .acq_rel)) {
+        if (!sync or j.writer.unsynced_since_ms == null) return;
+        journalpkg.flush(io, &j.writer, j.path) catch |err| {
+            log.warn("scrollback journal flush failed, the next write rewrites the file whole path={s} err={}", .{ j.path, err });
+            self.scrollback_dirty.store(true, .monotonic);
+            return;
+        };
+        log.info("scrollback journal flushed path={s}", .{j.path});
+        return;
+    }
 
     var prepared = prepared: {
         self.renderer_state.mutex.lockUncancelable(io);
@@ -543,7 +556,7 @@ pub fn journalScrollback(self: *Termio, final: bool) void {
     const mode = @tagName(prepared.mode);
     const bytes = prepared.bytes.len;
 
-    journalpkg.commit(self.alloc, io, &j.writer, j.path, &prepared, final) catch |err| {
+    const synced = journalpkg.commit(self.alloc, io, &j.writer, j.path, &prepared, sync, now_ms) catch |err| {
         self.scrollback_dirty.store(true, .monotonic);
         log.warn("scrollback journal write failed, this pane's scrollback is not saved until the next write, which rewrites the file whole path={s} err={}", .{ j.path, err });
         return;
@@ -555,7 +568,18 @@ pub fn journalScrollback(self: *Termio, final: bool) void {
     }
     // Every write says how much it cost, so the interval can be judged by
     // bytes rather than guessed.
-    log.info("scrollback journal wrote bytes={} mode={s} synced={} path={s}", .{ bytes, mode, final, j.path });
+    //
+    // `synced` is what happened -- a rewrite is always flushed -- not what was
+    // asked for: it once printed `final`, and `mode=restart synced=false`
+    // was read as unflushed when it was on the disk (#51).
+    log.info("scrollback journal wrote bytes={} mode={s} synced={} path={s}", .{ bytes, mode, synced, j.path });
+}
+
+/// The journal's flush clock, in milliseconds. `boot` rather than `awake`:
+/// time asleep is time the appends were off the disk too.
+fn journalClockMs(io: std.Io) u64 {
+    const ms = std.Io.Timestamp.now(io, .boot).toMilliseconds();
+    return @intCast(std.math.clamp(ms, 0, std.math.maxInt(i64)));
 }
 
 /// Save this terminal's scrollback to `path` for a project, now and flushed:
@@ -592,7 +616,7 @@ pub fn captureScrollback(self: *Termio, path: []const u8) void {
     };
     defer prepared.deinit(self.alloc);
     const bytes = prepared.bytes.len;
-    journalpkg.commit(self.alloc, io, &writer, path, &prepared, true) catch |err| {
+    _ = journalpkg.commit(self.alloc, io, &writer, path, &prepared, true, journalClockMs(io)) catch |err| {
         log.warn("scrollback snapshot not written, nothing saved for this pane path={s} err={}", .{ path, err });
         return;
     };

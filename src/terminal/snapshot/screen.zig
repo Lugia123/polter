@@ -233,9 +233,25 @@ const PayloadEncodeError = hyperlink.EncodeError || error{
 };
 
 /// Errors possible while encoding a SCREEN and its complete PAGE sequence.
-pub const EncodeError = Allocator.Error || PayloadEncodeError || page.EncodeError || error{
-    /// The active area spans more pages than the SCREEN header can declare.
-    PageCountOverflow,
+pub const EncodeError = Allocator.Error ||
+    PayloadEncodeError ||
+    page.EncodeError ||
+    terminal_page.Page.CloneFromError ||
+    error{
+        /// The active area spans more pages than the SCREEN header can declare.
+        PageCountOverflow,
+    };
+
+/// What of the first page goes with the active area.
+pub const Prefix = enum {
+    /// The whole page, incidental history prefix and all.
+    keep,
+    /// Only the rows from the active area's first row on. The SCREEN is still
+    /// a valid one -- the active area is its final rows either way -- but the
+    /// history above the active area in that page is not in it; whoever asks
+    /// for this has that history from somewhere else (the scrollback
+    /// journal's FRAGMENTs).
+    drop,
 };
 
 /// Encode one SCREEN and its minimal suffix of complete native pages.
@@ -247,6 +263,16 @@ pub fn encode(
     screen: *const TerminalScreen,
     key: TerminalScreenKey,
     destination: *record.Writer,
+) EncodeError!void {
+    return encodePrefix(screen, key, destination, .keep);
+}
+
+/// `encode`, saying what happens to the incidental history prefix.
+pub fn encodePrefix(
+    screen: *const TerminalScreen,
+    key: TerminalScreenKey,
+    destination: *record.Writer,
+    prefix: Prefix,
 ) EncodeError!void {
     // The active top may fall inside this page, leaving an incidental history
     // prefix. Every earlier complete page is history and is omitted.
@@ -276,12 +302,44 @@ pub fn encode(
     // Active pages are resident today, but use the representation-safe access
     // path so a future PageList compression-policy change cannot turn this
     // wire encoder's optimization invariant into undefined behavior.
+    const top_y = screen.pages.getTopLeft(.active).y;
     node = first;
     while (node) |current| : (node = current.next) {
         var preserved = try current.pagePreservingState(screen.alloc);
         defer preserved.deinit();
-        try page.encode(preserved.page(), destination);
+        if (current == first and prefix == .drop and top_y > 0) {
+            try encodeRows(preserved.page(), top_y, preserved.page().size.rows, .same, destination);
+        } else {
+            try page.encode(preserved.page(), destination);
+        }
     }
+}
+
+/// How big a page `encodeRows` writes.
+pub const RowsCapacity = enum {
+    /// The source page's: a page that will be written to again after it is
+    /// restored -- the active area's -- keeps the room it had.
+    same,
+    /// Exactly what the rows need: history, which nothing writes to again.
+    exact,
+};
+
+/// Rows `y_start..y_end` of `source` as one PAGE record of their own.
+pub fn encodeRows(
+    source: *const terminal_page.Page,
+    y_start: usize,
+    y_end: usize,
+    capacity: RowsCapacity,
+    destination: *record.Writer,
+) EncodeError!void {
+    var copy = terminal_page.Page.init(switch (capacity) {
+        .same => source.capacity,
+        .exact => source.exactRowCapacity(y_start, y_end),
+    }) catch return error.OutOfMemory;
+    defer copy.deinit();
+    copy.size.rows = @intCast(y_end - y_start);
+    try copy.cloneFrom(source, y_start, y_end);
+    try page.encode(&copy, destination);
 }
 
 /// Errors possible while restoring a SCREEN and its declared PAGE sequence.
