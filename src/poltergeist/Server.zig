@@ -950,6 +950,13 @@ fn parseAuthSighting(alloc: Allocator, line: []const u8, out: *[max_sighting]u8)
         .integer => |pid| if (pid > 0) w.print("{d}", .{pid}) catch return 0 else w.writeAll("null") catch return 0,
         else => w.writeAll("null") catch return 0,
     }
+    // The sidecar's own pid (task 1667): when it started is what tells two
+    // sessions of one CLI in one directory apart.
+    w.writeAll(",\"self\":") catch return 0;
+    switch (identity.get("self") orelse .null) {
+        .integer => |pid| if (pid > 0) w.print("{d}", .{pid}) catch return 0 else w.writeAll("null") catch return 0,
+        else => w.writeAll("null") catch return 0,
+    }
     w.writeAll(",\"env\":{") catch return 0;
     if (identity.get("env")) |ev| {
         const env = switch (ev) {
@@ -1022,6 +1029,10 @@ fn parseSighting(arena: Allocator, text: []const u8) Allocator.Error!agent_cli.S
         .integer => |p| if (p > 0) @intCast(p) else null,
         else => null,
     };
+    const self_pid: ?u64 = switch (obj.get("self") orelse .null) {
+        .integer => |p| if (p > 0) @intCast(p) else null,
+        else => null,
+    };
     var env: std.ArrayList([2][]const u8) = .empty;
     if (obj.get("env")) |ev| if (ev == .object) {
         var it = ev.object.iterator();
@@ -1029,7 +1040,7 @@ fn parseSighting(arena: Allocator, text: []const u8) Allocator.Error!agent_cli.S
             try env.append(arena, .{ kv.key_ptr.*, kv.value_ptr.string });
         };
     };
-    return .{ .pid = pid, .env = try env.toOwnedSlice(arena) };
+    return .{ .pid = pid, .sidecar = self_pid, .env = try env.toOwnedSlice(arena) };
 }
 
 /// `params.kind` of an `auth` request, read the way `Kind` says: absent,

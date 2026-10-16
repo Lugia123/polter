@@ -326,6 +326,10 @@ pub const AgentNotice = enum {
     awaiting_input,
     /// Hooks were expected and nothing has come.
     hooks_silent,
+    /// `+launch` started nothing (task 1667): the adapter could not be run
+    /// or built no command, or the CLI was not there. Said once, to whoever
+    /// watches the terminal; `detail` has the reason `+launch` gave.
+    launch_failed,
 };
 
 /// A short string held inside the entry, so an `Entry` stays a value that
@@ -708,6 +712,14 @@ pub const Entry = struct {
     /// it. Any supervisor may claim it or let it go (`rpc` `set_watch`),
     /// and `hears` says whose box it is in meanwhile.
     watched_by: ?Id = null,
+
+    /// The supervisor that started a role in this terminal, while what is
+    /// in the box is that the launch failed (`tellLaunchFailed`). It is
+    /// that supervisor's to hear about even when no watch is in force: a
+    /// role whose watch waits for its agent never gets one when the agent
+    /// never comes (task 1667, measured: `role_launch` answered
+    /// `watch: later`, the CLI was not there, and nobody was told).
+    launched_by: ?Id = null,
 
     /// When this supervisor was last handed its box. Only meaningful on a
     /// supervisor's own entry.
@@ -1994,10 +2006,23 @@ pub fn agentEvent(
     // Only an expectation is taken back. An agent that has spoken is
     // there, whatever a launch line typed at it afterwards came to.
     if (ev.event == .launch_failed) {
-        if (self.entries.getPtr(id)) |e| {
-            if (e.agent.hooks == .expected) e.agent = .none;
-        }
-        return false;
+        const e = self.entries.getPtr(id) orelse return false;
+        // An agent that has spoken is there; a launch line typed at it
+        // came to nothing, and that is not news about it.
+        if (e.agent.hooks == .live) return false;
+        if (e.agent.hooks == .expected) e.agent = .none;
+        // **And whoever watches it is told** (task 1667). The line on the
+        // screen said why to whoever looks at the tab; a supervisor that
+        // ran `role_launch` is not looking at it, and used to hear nothing
+        // at all -- measured: a Codex role whose adapter could not be run
+        // left its supervisor's notices empty for a minute and more, with
+        // the terminal back at a shell prompt.
+        if (e.role != .watched or e.duty == .off) return false;
+        e.agent.pending = .launch_failed;
+        e.agent.handed = 0;
+        e.agent.detail.set(ev.detail);
+        e.agent.since_ms = now_ms;
+        return true;
     }
 
     // About a file, not about the agent: nothing here is touched, not even
@@ -2502,6 +2527,30 @@ pub fn slashCommandLine(row: []const u8) bool {
     return std.mem.indexOfScalar(u8, s[1..word_end], '/') == null;
 }
 
+/// `+launch` in `id` started nothing, and `launcher` is who ran the launch
+/// (`PersonaStore.launcherOf`): when that is a supervisor, the failure is
+/// put in the box for it, whether or not a watch is in force (task 1667).
+/// `agentEvent` has already done it for a terminal somebody watches; this
+/// is the launch nobody was watching yet, which is the one its launcher
+/// most needs to hear about.
+///
+/// Answers whether anything went in the box.
+pub fn tellLaunchFailed(self: *Bus, id: Id, launcher: Id, detail: ?[]const u8, now_ms: u64) Allocator.Error!bool {
+    if (launcher == id) return false;
+    const minder = self.entries.get(launcher) orelse return false;
+    if (minder.role != .supervisor) return false;
+    try self.register(id);
+    const e = self.entries.getPtr(id).?;
+    if (e.agent.hooks == .live) return false;
+    if (e.agent.pending == .launch_failed) return false;
+    e.launched_by = launcher;
+    e.agent.pending = .launch_failed;
+    e.agent.handed = 0;
+    e.agent.detail.set(detail);
+    e.agent.since_ms = now_ms;
+    return true;
+}
+
 /// Put a line in the box for every watched terminal whose hooks were
 /// expected `hooks_expected_timeout_ms` ago and have said nothing. Once per
 /// wait: the next launch starts a new one.
@@ -2779,6 +2828,7 @@ pub fn supervisorCount(self: *const Bus) usize {
 /// ways out are both one call -- `set_watch` to claim it, or `group_add`.
 fn hears(to: Id, id: Id, e: *const Entry, alone: bool, peers: Peers) bool {
     if (e.watched_by) |owner| return owner == to;
+    if (e.launched_by) |by| if (e.agent.pending == .launch_failed) return by == to;
     if (alone) return true;
     return peers.share(to, id);
 }
@@ -2803,7 +2853,7 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers)
 fn isWaiting(kind: AgentNotice) bool {
     return switch (kind) {
         .awaiting_approval, .awaiting_input => true,
-        .turn_ended, .turn_failed, .hooks_silent => false,
+        .turn_ended, .turn_failed, .hooks_silent, .launch_failed => false,
     };
 }
 
@@ -3384,6 +3434,10 @@ fn writeAgent(
         .hooks_silent => try w.print(
             "{s}0x{x:0>16} hooks expected {d}s ago and nothing heard (no session_started)",
             .{ sep, id, (now_ms -| (a.expected_ms orelse a.eventMs())) / std.time.ms_per_s },
+        ),
+        .launch_failed => try w.print(
+            "{s}0x{x:0>16} launch failed {d}s ago ({s}); the terminal is at its shell, terminal_read has the reason",
+            .{ sep, id, ago_s, a.detail.get() orelse "failed" },
         ),
     }
 }
@@ -5186,15 +5240,16 @@ fn hookedBus() !Bus {
     return b;
 }
 
-test "hooks: a launcher that says its CLI did not start takes back what it said to expect" {
+test "hooks: a launcher that says its CLI did not start takes back what it said to expect, and says so (task 1667)" {
     var b = try hookedBus();
     defer b.deinit();
 
     // `+launch` said hooks were coming, then could not start the CLI.
     _ = try b.agentEvent(worker, hookEv(.hooks_expected), 0);
     try testing.expectEqual(Hooks.expected, b.agentOf(worker).hooks);
-    const boxed = try b.agentEvent(worker, hookEv(.launch_failed), 500);
-    try testing.expect(!boxed);
+    var failed = hookEv(.launch_failed);
+    failed.detail = "not_found";
+    const boxed = try b.agentEvent(worker, failed, 500);
     const after = b.agentOf(worker).hooks;
     try testing.expectEqual(Hooks.none, after);
 
@@ -5202,9 +5257,20 @@ test "hooks: a launcher that says its CLI did not start takes back what it said 
     // hooks that did not come, because none were promised any more.
     const said = b.considerAgents(10 * hooks_expected_timeout_ms);
     try testing.expect(!said);
+
+    // **What is said is that the launch failed, once, to whoever watches
+    // it** (task 1667). It used to be nothing at all.
+    try testing.expect(boxed);
     var buf: [255]u8 = undefined;
-    const line = b.drain(boss, 10 * hooks_expected_timeout_ms, &buf, .none);
-    try testing.expect(line == null);
+    const line = b.drain(boss, 10 * hooks_expected_timeout_ms, &buf, .none) orelse return error.TestUnexpectedResult;
+    const told = std.mem.indexOf(u8, line, "launch failed") != null;
+    try testing.expect(told);
+    const why = std.mem.indexOf(u8, line, "(not_found)") != null;
+    try testing.expect(why);
+    const no_silence = std.mem.indexOf(u8, line, "hooks expected") == null;
+    try testing.expect(no_silence);
+    const again = b.drain(boss, 11 * hooks_expected_timeout_ms, &buf, .none);
+    try testing.expect(again == null);
 
     // A terminal the bus has never heard of is not given an entry for
     // having failed to start something.
@@ -5216,9 +5282,54 @@ test "hooks: a launcher that says its CLI did not start takes back what it said 
     // And an agent that has spoken is there, whatever a launch line typed
     // at it afterwards came to.
     _ = try b.agentEvent(worker, hookEv(.session_started), 700);
-    _ = try b.agentEvent(worker, hookEv(.launch_failed), 800);
+    const on_live = try b.agentEvent(worker, hookEv(.launch_failed), 800);
     const live = b.agentOf(worker).hooks;
     try testing.expectEqual(Hooks.live, live);
+    try testing.expect(!on_live);
+}
+
+test "hooks: a launch that failed is told to the supervisor that ran it, watched or not (task 1667)" {
+    var b = try hookedBus();
+    defer b.deinit();
+    const second: Id = 0xb0552;
+    try b.addSupervisor(second);
+    // Started by `boss` through `role_launch`; the role's watch waits for an
+    // agent that never comes, so nobody watches it.
+    const fresh: Id = 0xf2e5;
+    var failed = hookEv(.launch_failed);
+    failed.detail = "not_found";
+    const by_watch = try b.agentEvent(fresh, failed, 100);
+    try testing.expect(!by_watch);
+    const told = try b.tellLaunchFailed(fresh, boss, "not_found", 100);
+    try testing.expect(told);
+
+    var buf: [255]u8 = undefined;
+    // The other supervisor does not hear about a launch it did not run.
+    const not_theirs = b.drain(second, 200, &buf, .none);
+    const second_heard = not_theirs != null and std.mem.indexOf(u8, not_theirs.?, "launch failed") != null;
+    try testing.expect(!second_heard);
+    const line = b.drain(boss, 200, &buf, .none) orelse return error.TestUnexpectedResult;
+    const boss_heard = std.mem.indexOf(u8, line, "launch failed") != null;
+    try testing.expect(boss_heard);
+
+    // A later launch that fails is said again once what was said has gone
+    // out; while it is still in the box it is not said twice. A launch the
+    // person ran is not a supervisor's to hear about.
+    const again = try b.tellLaunchFailed(fresh, boss, "not_found", 300);
+    try testing.expect(again);
+    try testing.expect(!(try b.tellLaunchFailed(fresh, boss, "not_found", 301)));
+    const by_person = try b.tellLaunchFailed(0xf2e6, 0x1, "failed", 400);
+    try testing.expect(!by_person);
+}
+
+test "hooks: a launch that failed in a terminal nobody watches is not put in the box (task 1667)" {
+    var b = try hookedBus();
+    defer b.deinit();
+    // Known to the bus, watched by nobody.
+    const loose: Id = 0x10ce;
+    _ = try b.agentEvent(loose, hookEv(.hooks_expected), 0);
+    const boxed = try b.agentEvent(loose, hookEv(.launch_failed), 10);
+    try testing.expect(!boxed);
 }
 
 test "hooks: expected with no session_started for 30s is put in the box" {

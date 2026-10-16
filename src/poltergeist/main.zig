@@ -27,6 +27,7 @@ pub const keys = @import("keys.zig");
 pub const draft = @import("draft.zig");
 pub const prompts = @import("prompts.zig");
 pub const login_path = @import("login_path.zig");
+pub const workdir = @import("workdir.zig");
 pub const ChatLog = @import("ChatLog.zig");
 pub const MentionRetry = @import("MentionRetry.zig");
 pub const fresh_assign = @import("fresh_assign.zig");
@@ -98,6 +99,7 @@ test {
     _ = draft;
     _ = prompts;
     _ = login_path;
+    _ = workdir;
     _ = Resident;
     _ = Bus;
     _ = agent_event;

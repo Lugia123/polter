@@ -25,6 +25,16 @@
   "exec": "provision.sh",
   "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
+  "agent_cli": {
+    "label": "Codex",
+    "bin": "codex",
+    "adapter": "adapter.py",
+    "adapter_windows": "adapter.ps1",
+    "identify_env": [
+      "POLTER_AGENT_CLI",
+      "POLTER_REGISTERED"
+    ]
+  },
   "wants": {
     "events": [
       "provision"
@@ -68,6 +78,16 @@
           "no"
         ],
         "default": "yes"
+      },
+      "manual_out_of_daemon": {
+        "type": "string",
+        "title": "Let Polter recognise a Codex started by hand",
+        "description": "yes sets daemon_auto_start = false under [features] in ~/.codex/config.toml, and nothing else. Signed in to a ChatGPT account, a Codex you start by typing `codex` runs its session in one background app-server shared by all your terminals, and Polter cannot tell which terminal such a session is in, so it turns its tools off there rather than act as another terminal. With yes, a Codex started by hand no longer uses that shared background server, and Polter recognises it like any other. It changes how Codex runs everywhere on this machine, which is why it is off until you turn it on. Left off: start Codex with `codex --no-daemon`, or from a Polter role, which does so. no takes the line back out; a daemon_auto_start you set yourself is never touched.",
+        "enum": [
+          "yes",
+          "no"
+        ],
+        "default": "no"
       }
     }
   }

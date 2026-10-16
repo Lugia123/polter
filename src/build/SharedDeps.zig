@@ -243,6 +243,14 @@ pub fn add(
         .root_source_file = b.path("plugins/claude-code/adapter.py"),
     });
 
+    // And the Codex adapter (task 1667), for the same reason as Claude
+    // Code's: what it prints is executed. The `-c` overrides it writes were
+    // measured against a real codex 0.163; the test beside `agent_cli.zig`
+    // holds the shipped file to them.
+    step.root_module.addAnonymousImport("plugin_codex_adapter_py", .{
+        .root_source_file = b.path("plugins/codex/adapter.py"),
+    });
+
     // And the Codex manifest, for the one thing in it the core acts on:
     // the titles Codex writes while it waits on an approval (task 1656).
     // Those were measured against codex 0.163 with `script -r`, and the

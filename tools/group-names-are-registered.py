@@ -100,6 +100,7 @@ MAP_FIELDS = {
     ("src/poltergeist/Chat.zig", "members"): "keyed by terminal id, inside one group",
     ("src/poltergeist/PersonaStore.zig", "states"): "keyed by terminal id",
     ("src/poltergeist/PersonaStore.zig", "launches"): "keyed by terminal id",
+    ("src/poltergeist/PersonaStore.zig", "launchers"): "keyed by terminal id",
     ("src/poltergeist/PersonaStore.zig", "standings"): "keyed by terminal id",
     ("src/poltergeist/TerminalMeta.zig", "last"): "keyed by terminal id",
 }

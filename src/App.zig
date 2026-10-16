@@ -4684,10 +4684,20 @@ fn resolveLaunch(
     const p = self.personas.set.find(key) orelse return error.NoSuchPersona;
     const chosen: []const u8 = if (cli.len > 0)
         (p.cli(cli) orelse return error.NotSetUpForCli).cli
-    else switch (p.clis.len) {
-        0 => return error.NoCli,
-        1 => p.clis[0].cli,
-        else => return error.ChooseCli,
+    else if (p.clis.len < 2)
+        try p.defaultCli(&.{})
+    else chosen: {
+        // Set up for several: the one this machine has an adapter for
+        // (`Persona.defaultCli`). This reads the plugin directories and
+        // their manifests and starts nothing -- whether an adapter can run
+        // is settled by its file's kind (`Plugin.Manifest.runnable`), not by
+        // a PATH -- so it is fit for this thread.
+        var env = try global.environMap();
+        defer env.deinit();
+        const found = poltergeistpkg.agent_cli.discover(alloc, global.io(), &env);
+        const keys = try alloc.alloc([]const u8, found.len);
+        for (found, keys) |a, *k| k.* = a.key;
+        break :chosen try p.defaultCli(keys);
     };
     return .{ .key = try alloc.dupe(u8, p.key), .cli = try alloc.dupe(u8, chosen) };
 }
@@ -4811,7 +4821,17 @@ fn identifyIfHandStarted(self: *App, bus: *poltergeistpkg.Bus, id: poltergeistpk
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     defer arena.deinit();
     const sighting = srv.sightingOf(arena.allocator(), id) catch return;
-    self.identities.ask(global.io(), id, sighting, null, self.poltergeistElapsedMs());
+    self.identities.ask(global.io(), id, sighting, self.terminalCwd(arena.allocator(), id), self.poltergeistElapsedMs());
+}
+
+/// Where the shell in `id` last said it was, or null. With an agent CLI in
+/// the foreground that is the directory it was started in, which is what an
+/// adapter can match the CLI's own session records against when the process
+/// does not say (task 1667: a Codex whose session runs in its app-server
+/// daemon).
+fn terminalCwd(self: *App, alloc: Allocator, id: poltergeistpkg.Bus.Id) ?[]const u8 {
+    const surface = self.findSurfaceByID(id) orelse return null;
+    return surface.pwd(alloc) catch null;
 }
 
 /// What the control room is told about an agent started by hand in `id`
@@ -4835,7 +4855,12 @@ fn hooklessOf(self: *App, arena: Allocator, id: poltergeistpkg.Bus.Id) poltergei
     // and then, so that "is it still that session" is not an hour old.
     if (v.state == .known) if (self.poltergeist_server) |*srv| {
         const sighting = srv.sightingOf(arena, id) catch poltergeistpkg.agent_cli.Sighting.none;
-        self.identities.refresh(io, id, sighting, null, now_ms, identity_refresh_ms);
+        // An answer with no session in it is asked again soon (task 1674):
+        // the first ask comes before the CLI's first turn, when it has no
+        // record yet, and a take-over within the minute after that turn
+        // used to be offered "a new session" for a Codex that had one.
+        const every = if (v.identified.session == null) identity_unsure_refresh_ms else identity_refresh_ms;
+        self.identities.refresh(io, id, sighting, self.terminalCwd(arena, id), now_ms, every);
     };
     return switch (v.state) {
         .asking => .asking,
@@ -4859,6 +4884,9 @@ fn hooklessOf(self: *App, arena: Allocator, id: poltergeistpkg.Bus.Id) poltergei
 
 /// How often what an adapter said of a hand-started agent is asked again.
 const identity_refresh_ms: u64 = 60 * std.time.ms_per_s;
+
+/// How often an answer that named no session is asked again (task 1674).
+const identity_unsure_refresh_ms: u64 = 5 * std.time.ms_per_s;
 
 /// A take-over under way (task 1635).
 const TakeOverRun = struct {
@@ -4928,6 +4956,12 @@ fn controlActTakeOver(ctx: *anyopaque, group: []const u8) anyerror!void {
     run.cli = try self.alloc.dupe(u8, v.key);
     if (v.identified.session) |sid| run.session = try self.alloc.dupe(u8, sid);
     self.take_over = run;
+    // Asked again now, whatever its age: the answer the settling step reads
+    // is the one taken at the press, not one from up to a minute before.
+    if (self.poltergeist_server) |*srv| {
+        const sighting = srv.sightingOf(aa, id) catch poltergeistpkg.agent_cli.Sighting.none;
+        self.identities.refresh(io, id, sighting, self.terminalCwd(aa, id), now_ms, 0);
+    }
     if (self.take_over_failed) |f| {
         self.alloc.free(f.group);
         self.take_over_failed = null;
@@ -4993,6 +5027,17 @@ fn takeOverStep(self: *App, now_ms: u64) ?u64 {
                 self.takeOverFail(.busy);
                 return null;
             };
+            // The answer asked for at the press, when it has come.
+            const use = TakeOver.sessionToUse(run.session, v.identified.session);
+            if (use) |sid| if (run.session == null or !std.mem.eql(u8, run.session.?, sid)) {
+                const kept = self.alloc.dupe(u8, sid) catch {
+                    self.takeOverFail(.busy);
+                    return null;
+                };
+                if (run.session) |old| self.alloc.free(old);
+                run.session = kept;
+                log.info("control room: take-over: its session is known now", .{});
+            };
             if (!self.agentPresent(run.terminal)) {
                 log.warn("control room: take-over: its agent went away before the quit", .{});
                 self.takeOverFail(.busy);
@@ -5041,7 +5086,9 @@ fn takeOverStep(self: *App, now_ms: u64) ?u64 {
             return now_ms + take_over_poll_ms;
         },
         .quitting => {
-            if (!self.agentPresent(run.terminal) and surface.shellIdle()) {
+            const present = self.agentPresent(run.terminal);
+            if (TakeOver.quitDone(present, surface.shellIdle())) {
+                if (present) log.info("control room: take-over: its shell is back at the prompt and its Polter connection stays; going on", .{});
                 self.takeOverLaunch(aa, now_ms) catch |err| {
                     log.warn("control room: take-over could not start it again err={}", .{err});
                     self.takeOverFail(.cannot_start);
@@ -5115,6 +5162,14 @@ fn poltergeistLaunchFailed(
     const self: *App = @ptrCast(@alignCast(ctx));
     _ = self.personas.dropStanding(id);
     defer self.refreshPoltergeistTabs();
+
+    // Whoever ran the launch hears that it failed, watch or no watch (task
+    // 1667): a role whose watch waits for its agent never gets one when the
+    // agent never comes.
+    if (self.personas.launcherOf(id)) |by| {
+        const told = self.poltergeist.tellLaunchFailed(id, by, @tagName(why), self.poltergeistElapsedMs()) catch false;
+        if (told) log.info("poltergeist: told 0x{x} that the launch in 0x{x} started nothing ({t})", .{ by, id, why });
+    }
 
     const group = self.chat.startingIn(id, self.poltergeistElapsedMs()) orelse return;
     self.chat.failStart(group, poltergeistpkg.Chat.startFailureOf(why));
@@ -8138,19 +8193,11 @@ fn openTerminalAt(
     // quietly ignored. The apprt logs and carries on -- which is right for a
     // config file read at startup and wrong for a request somebody is
     // waiting on an answer to.
+    //
+    // **And one it can be in** (task 1667): a directory that is there but
+    // cannot be entered used to pass, and the shell started in `/` instead.
     var dir_z: [:0]const u8 = "";
-    if (cwd.len > 0) {
-        if (!std.fs.path.isAbsolute(cwd)) return error.NotAbsolute;
-
-        var dir = std.Io.Dir.openDirAbsolute(global.io(), cwd, .{}) catch
-            return error.NoSuchDirectory;
-        defer dir.close(global.io());
-
-        const stat = dir.stat(global.io()) catch return error.NoSuchDirectory;
-        if (stat.kind != .directory) return error.NotADirectory;
-
-        dir_z = try alloc.dupeZ(u8, cwd);
-    }
+    if (cwd.len > 0) dir_z = try poltergeistpkg.workdir.check(alloc, global.io(), cwd);
 
     // **Settle the split asked for last time, now that its terminal exists.**
     //

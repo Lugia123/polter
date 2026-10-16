@@ -653,7 +653,7 @@ agent」（它的 MCP 边车连上了），别的一概不知，总控台原来�
 ```text
 plugin.json  "agent_cli": { …, "identify_env": ["CLAUDECODE","AI_AGENT","CLAUDE_CODE_SESSION_ID"] }
 
-adapter identify '{"version":1,"cwd":…|null,"home":…,"pid":N|null,
+adapter identify '{"version":1,"cwd":…|null,"home":…,"pid":N|null,"sidecar_pid":N|null,
                    "env":{<只有本适配器在 identify_env 里声明的那几个>}}'
 → {"version":1,"me":true|false,"session":"<id>"|null,"session_written_ms":N|null,
    "quit":{"text":"/exit","ready":{"line":["❯"],"none_of":["esc to interrupt",…]}}|null,"notes":[…]}
@@ -669,6 +669,143 @@ adapter identify '{"version":1,"cwd":…|null,"home":…,"pid":N|null,
 - `quit` 是让 CLI 退出要打的字，和**屏幕什么样时打才安全**：倒数几行里有一行去掉空格后**正好是**
   `line` 之一，而且没有哪一行含 `none_of` 的任何一个。没有屏幕规则就没有 `quit`，核心不打字。
 - 在核心的 `Identities.zig` 里、独立线程上问；快照里落在总管的 `supervisor.hookless`。
+
+### 11.3.2 第二个适配器：Codex（任务 #1667）
+
+`plugins/codex/adapter.py`（Windows 上是 `adapter.ps1`，逐项移植，两份由
+`test/codex-adapter/compare.py` 逐字比对）。下面每条都在 codex-cli 0.163.0 上量过：用临时的
+`HOME` 和 `CODEX_HOME`、一把不是 key 的 key（模型调用全是 401，没花额度），再加一个把自己的环境和
+父进程记下来的探针 MCP。怎么量的写在 adapter.py 文件头。
+
+**角色落到 `-c` 上，不写任何文件。** codex 每次启动都会把 `-c key=value`（值按 TOML 解析）叠在
+`config.toml` 上面。下面每一项都有对照，判据是那次会话的 rollout 里模型实际收到了什么：
+
+| 角色要做的事 | 写法 | 量到的效果 |
+| --- | --- | --- |
+| 关一个 skill | `-c 'skills.config=[{path="<…/SKILL.md>",enabled=false}]'` | 模型的 skill 清单里没有它了，别的都在。`name=` 也有效；**用 `path=`**，因为个人 skill 和项目 skill 可能重名，只有个人的那个归角色管 |
+| 关一个 MCP | `-c mcp_servers.<名>.enabled=false` | 那个服务器根本不起 |
+| 角色说明 | `-c 'developer_instructions="…"'` | 换行和引号都原样到达模型。⚠️ 这一次会话里，它会**顶替**用户在 `config.toml` 里写的同名项，launch 会在 note 里说一句；`AGENTS.md` 不受影响 |
+| 模型 | `-m <model>` | — |
+
+- **skill 在哪**：`$CODEX_HOME/skills`、`~/.agents/skills`，以及工作目录下的 `.agents/skills`
+  和 `.codex/skills`，四处都量过。codex 自带的在 `$CODEX_HOME/skills/.system`，source 记为 `codex`。
+- **项目的东西角色不碰**，跟 Claude Code 那条规则一样：`<cwd>` 下的 skill 和 `<cwd>/.codex/config.toml`
+  里的 MCP 都是项目的。
+- **接着会话**：会话 id 就是 rollout 文件名尾部那段 UUID。rollout 在
+  `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<本地时间>-<uuid>.jsonl`，这个 id 也是它首行的
+  `session_meta.session_id`，也是 codex 退出时打印的 `codex resume <id>`。`codex resume` 接受和
+  裸 `codex` 完全一样的选项，所以续会话的命令是 `codex resume <id> <同样的选项>`。
+- **永远带 `--no-daemon`**：codex 不进共用的 app-server 守护进程，会话在它自己的进程里跑。否则 hook 带的是守护进程的
+  环境（多个终端会互相认错，#1668 读出来的）、MCP 子进程会比 TUI 活得久、会话记录也不归 TUI 管。0.163 碰巧只要
+  命令行上有 `-c` 就不进守护进程（`config_exclusion`）；显式写出来，以后哪一版改了这条规则也不会悄悄变。
+  `codex` 和 `codex resume` 都接受它，拿一个不存在的选项做过对照。只有 id 是 UUID 形状
+  （不是 UUID 的，codex 会当成会话名去搜），而且 rollout 真在这台机器上，才会续；否则起新会话，
+  并在 note 里说明原因。理由同 11.3。
+
+**identify 不能照搬 Claude Code 的办法。** codex 给 stdio MCP 子进程的环境只有一张固定的短名单
+（HOME LANG LOGNAME PATH SHELL TERM TMPDIR USER __CF_USER_TEXT_ENCODING），再加上那一项自己的
+`env` 和 `env_vars` 放行的变量。里面**没有任何一样说「我是 codex」，也没有会话号**：二进制里有
+`CODEX_THREAD_ID`，但不交给 MCP。所以：
+
+- **me**：两种情况算是。
+  - provision 写进 polter 那一项 `env` 里的标记 `POLTER_AGENT_CLI=codex`（`identify_env` 声明的就是它
+    和 `POLTER_REGISTERED`）。
+  - 边车的父进程叫 `codex`。量过：父进程就是原生 codex，exec 和 TUI 下都是，不是 app-server 守护进程，
+    也不是 npm 的 node 包装。标记出现之前写的注册项，在 POSIX 上靠这条也认得出来。
+- **session**：先看那个进程开着的 rollout（`lsof`，或者 `/proc`）。
+  - 量过：codex 在自己进程里跑会话时，会一直开着自己的 rollout；TUI 还没跑第一轮时还没有 rollout。真 codex 上
+    只给 pid、不给任何变量，大约 4 秒后（rollout 出现时）答出了那份 rollout 的 id。
+  - **用 ChatGPT 账号登录时，TUI 把会话放在共用的 app-server 守护进程里跑**（任务 #1667，测试账号里量到）：退出
+    时打印「Disconnected from this task. Any running work continues.」，Polter 的 MCP 子进程的父进程是守护进程，
+    `lsof` 在那里找不到 rollout。用 API key 登录时我这边造不出这个模式：自己起了守护进程，TUI 也没去连它。
+  - **父进程是守护进程时，不采用它开着的东西**（`is_daemon`：命令行里有 `app-server`）。守护进程开着的是所有连着它的
+    会话。测试账号里量到过一次：接管就这样续上了另一个终端的对话（第二版的问题）。
+  - 进程那边给不出时，**改按目录读记录，再按开始时刻认**（`by_directory`）：
+    - 在近一天写过的 rollout 里，找首行 `session_meta.cwd` 等于这个终端当前目录的。核心调 identify 时把终端的 pwd
+      一起传过去（`App.terminalCwd`；原来传的是 null）。
+    - 再按开始时刻认：codex 的会话开始时就把 Polter 的 MCP 边车起起来，所以会话的 `session_meta.timestamp`（没有就用
+      UUIDv7 里带的毫秒）和边车的启动时刻应当在 30 秒之内。边车现在会在握手里报上自己的 pid（`identity.self`，经
+      `Sighting.sidecar` 到请求里的 `sidecar_pid`），adapter 用 `ps -o etime=` 算出它的启动时刻。
+    - **恰好一份才答，否则答 null**：0 份（比如手动 `codex resume` 了一个旧会话）或多份（同一时刻在同一目录起了两个），
+      都答 null；接管的问句会说「会开一个新会话」。宁可不续，不能续错。
+    - 没有边车时刻时（Windows 现在就是），只有目录里恰好一份记录才答。
+  - 返回的 `session_written_ms` 还要再过 `TakeOver.sure`：记录停写之后 agent 还在调工具，就不算数。
+  - 没验证的推论：守护进程模式下，MCP 边车是在会话开始时起的。这一点要 C 在测试账号上核：会话开始时刻和边车启动时刻
+    是否在 30 秒内。在我这边的进程内模式里核过：TUI 一启动就建会话、起 MCP 子进程，rollout 文件名的时刻和 TUI 启动
+    时刻相同。
+  - Windows 没有 pid，也没有边车时刻，只能走「目录里恰好一份」这一条。
+- **quit**：`/exit`（#1640 量过，几秒内就退出）。屏幕规则只用真 codex 屏幕上读到过的字样：
+  - 空闲时输入行是 `› Ask Codex to do anything`，另一句占位 `› Ask a follow-up question` 在二进制里
+    紧挨着它；
+  - 回合中多出一行 `• Working (7s • esc to interrupt)`；
+  - MCP 批准框是 `Allow the polter MCP server to run tool …`，下面跟着 `› 1. Allow` 菜单，以及一行
+    `enter to submit | esc to cancel`。
+
+**官方角色配了两个 CLI 以后，「没说用哪个」怎么办。** 两个官方角色都加了 `codex` 段。原来的规则是
+「配了多个 CLI、没指定就回 `ChooseCli`」。照这个规则，点菜单或调 `role_launch {role}` 都会从
+「起 claude」变成被拒，而 codex 插件默认是关的，用户其实没得选。现在 `Persona.defaultCli`（由
+`App.resolveLaunch` 调用）只在本机 `agent_cli.discover` 找得到适配器的那几个里挑：只剩一个就用它；
+都在，或一个都没有，才回 `ChooseCli`。`discover` 只读插件目录和 manifest，不起任何进程。宿主菜单里
+CLI 子菜单的过滤是 #1670。
+
+**接管、孤儿边车、启动失败（任务 #1667，测试账号 c1669-05/08 读出来的三处）**
+
+- **接管等它退出，看的是 shell 是否回到提示符**（`TakeOver.quitDone`），不再同时要求 agent 断开。原因同上：
+  在守护进程里跑的会话，`/exit` 只退出了 TUI，会话和它的 MCP 连接都还在守护进程里。接着用
+  `codex resume <id>` 重启，会连回同一个会话。
+- **`polter +mcp` 跟着父进程走**（`cli/mcp.zig` 的 `watchParent`）：每秒看一次父进程，变了（被 launchd 或 init
+  收养）就退出。原来只认 stdin 的 EOF；而 codex 留下的子进程继承了那个管道的写端，EOF 永远不来。实测：用角色
+  起的 codex `/exit` 之后，边车以 launchd 为父进程留了下来，Polter 一直以为那个终端里还有 agent。
+  - 端到端核过，用构建出来的 polter 起 `+mcp`，让它停在握手里、stdin 一直有人开着：
+    - 启动它的 shell 退出后，新构建 1 秒内跟着退出；
+    - 旧包 app-1669-abx 在同样条件下仍在运行（被 launchd 收养）；
+    - 父进程活着时，新构建一直在。
+  - 只做了 POSIX。Windows 上的进程不会被重新收养，要等父进程的句柄，没做。
+- **`+launch` 起不来，会告诉起它的那位总管**（`Bus.tellLaunchFailed`，`PersonaStore.launcherOf`），不管 watch 有没有
+  生效。第二版只报给「看着它的人」，可角色的 watch 要等 agent 第一次连上才生效（`role_launch` 回 `watch: later`）；
+  CLI 根本没起来时谁都没在看，测试账号里实测就没报。现在：经 `role_launch` 由某位总管起的终端，启动失败只送给那位
+  总管，别的总管收不到；人自己点的启动不算。
+- **目录进不去，就不开**（`workdir.check`，用于 `terminal_open` 和 `role_launch`）：有这个目录、它也是目录，但没有
+  进入的权限时（实测 `rw-r--r--`），原来照样开，shell 退到 `/`，codex 在那里起来，一句话都没有。现在回
+  `CannotEnterDirectory` 并说明原因，什么都不开。判断方法是在打开的目录里再打开一次 `.`：没有搜索权限时它和 `chdir`
+  一样会被拒（macOS 上实测）。总控台的「启动总管」还没用上这个检查：那里的拒绝码要两个宿主都翻译，留作后续。
+- **`+launch` 起不来，会告诉看着这个终端的人**（`Bus` 的 `AgentNotice.launch_failed`）：
+  - 原来 `launch_failed` 只用来撤掉「hooks 要来」，通报框里什么都没有。现在会进一行
+    `launch failed Ns ago (<原因>)`，只报一次；
+  - 没人看着的终端、已经开口说过话的 agent，都不报。
+
+**守护进程下的边车不认领任何终端（任务 #1674）**
+
+- **问题**：用 ChatGPT 账号登录时，手动起的 codex 把会话放在共用的 app-server 守护进程里，守护进程为它跑的
+  每个会话起 MCP 边车，带的是守护进程自己的环境，也就是最先起守护进程的那个终端的 socket、token 和 id。测试账号里
+  量到：第二个终端里手动起的 codex，`me` 答的是第一个终端，`group_create`、`group_post` 都记在第一个终端名下，
+  `become_supervisor` 回 already。
+- **安全层**（`cli/mcp.zig` 的 `parentIsCodexDaemon`、`serveUnclaimed`）：边车发现父进程是 codex 的 app-server
+  守护进程（程序名是 codex，命令行里有 `app-server` 这个词；先读 `/proc`，没有就问 `ps`），就**不用**继承来的
+  身份连 Polter。它自己当一个最小的 MCP 服务：工具清单里只有 `me`，任何调用都回一句话，说明为什么这里没有
+  Polter、该怎么办（`codex --no-daemon`，或从角色启动）。读不出父进程时照常连，绝不凭猜拒绝。Claude Code 不受影响：
+  它的边车的父进程是 `claude`。
+  - 端到端（`test/codex-adapter/daemon-sidecars.py`，用构建出来的 polter 跑）：一个名叫 codex、命令行带
+    `app-server` 的替身，用同一份继承来的身份起两个边车 → 本单的构建 0 个连接，两个边车都回答了 initialize，
+    调 `me` 都回了带原因的错误；对照组的父进程是不带 `app-server` 的 codex → 两个边车都照常连上。旧包
+    app-1669-c 在同样条件下两个边车都用继承来的身份连上了，复现了问题。
+- **体验层**：codex 插件新参数「让手动启动的 Codex 也能被 Polter 认出」（`manual_out_of_daemon`，**默认关**，等
+  用户定）。开时，provision 在 `~/.codex/config.toml` 的 `[features]` 里写一行 `daemon_auto_start = false`（0.163
+  的稳定功能开关），关时撤回，只动这一行：
+  - 写入的那一行带标记注释；如果 `[features]` 表是我们建的，表头也带标记；撤回时只删带标记的行，表里没别的
+    键了才连表头一起删；
+  - 用户自己写过 `daemon_auto_start` 的，原样不动，日志里说一句；
+  - 实测（sh 和 ps1 各一遍，真 codex 0.163）：开后 `codex features list` 读到 false；再跑是 unchanged；关后读回
+    true，文件其余部分逐字节不变；用户已有 `[features]` 表时，那张表和里面的键都在；用户自己设过的不动。
+  - 为此 SDK 加了一个可选的扩展点 `host_settings_apply`（ps1 是 `Set-HostSettings`），在规则块之后调用；别的
+    插件不定义它，就什么都不发生。
+  - **没验证**：`daemon_auto_start = false` 是否真的让 ChatGPT 登录下手动起的 TUI 不去连已经在跑的守护进程。
+    帮助文字说的是「自动启动」；要 C 在测试账号上核。
+
+**hook 归 #1668。** launch 会调同目录 `hooks.py` 里的 `hook_args(polter)`（ps1 那边是 `hooks.ps1`
+里的 `Get-CodexHookArgs`），把它返回的 `-c` 参数原样加进命令行，并回 `"hooks": true,
+"hooks_heard": "first_turn"`。文件不在、抛了异常、返回的不是字符串列表，都按「没有 hook」处理，
+不存在只装一部分的情况。
 
 ## 11.4 角色文件 v2
 
@@ -785,7 +922,8 @@ Windows 测试机上，隔离配置目录 + 一个 PowerShell 写的假 CLI 插�
   63ab92741 一致）。而「已在真机上走通」**当时就不对**：11.8 在真机上用的是一个
   PowerShell 写的假插件，随包发的 claude-code adapter 是 `.py`，Windows 起不了——
   2026-09-23 真机上第一次用它，角色启动开箱即失败。
-- **只有 Claude Code 一个适配器**。codex 等照 11.3 各写一个插件。它在 Windows 上是
+- **两个适配器：Claude Code，以及 Codex（11.3.2，#1667）。** 别的 CLI 照 11.3 各写一个插件。
+  Claude Code 的那个在 Windows 上是
   `adapter.ps1`（manifest 的 `adapter_windows`），是 `adapter.py` 的逐项移植：Windows 上
   `.py` 起不来，Polter 在 Windows 上也不带 Python。两份的输出由
   `test/claude-code-adapter/compare.py` 按同一组夹具逐字比对（允许不同的三处及理由写在

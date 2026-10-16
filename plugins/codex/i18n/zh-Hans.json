@@ -25,6 +25,14 @@
         "yes": "不用问",
         "no": "要问"
       }
+    },
+    "manual_out_of_daemon": {
+      "title": "让手动启动的 Codex 也能被 Polter 认出",
+      "description": "选「开」会在 ~/.codex/config.toml 的 [features] 里写 daemon_auto_start = false，别处一概不动。用 ChatGPT 账号登录时，你手动敲 `codex` 起的会话会跑在一个所有终端共用的后台 app-server 里，Polter 分不出这个会话属于哪个终端，所以宁可在那里关掉自己的工具，也不冒充别的终端。选「开」以后，手动起的 Codex 不再使用这个共用的后台服务，Polter 就能像认别的终端一样认出它。代价是它改的是这台机器上 Codex 的全局行为，所以默认不开。不开时：手动起 Codex 请用 `codex --no-daemon`，或者从 Polter 的角色启动（角色启动本来就带这个选项）。选「关」会把这一行删掉；你自己写的 daemon_auto_start 永远不碰。",
+      "choices": {
+        "yes": "开",
+        "no": "关"
+      }
     }
   }
 }

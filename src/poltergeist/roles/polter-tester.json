@@ -9,6 +9,13 @@
         "except": ["skill:polter-operating-a-terminal"]
       },
       "mcp": { "default": false, "except": [] }
+    },
+    "codex": {
+      "skills": {
+        "default": false,
+        "except": ["skill:polter-operating-a-terminal"]
+      },
+      "mcp": { "default": false, "except": [] }
     }
   },
   "polter": { "watch": true }

@@ -215,6 +215,78 @@ function Get-PolterCliOutput {
     return ($out | Out-String)
 }
 
+# **A host's own CLI can hang, and a provision that waits on it waits for
+# ever** (task 1667; `polter_bounded` in `provision.sh` has the account).
+# `Invoke-PolterBounded` runs it with an empty stdin -- this script's stdin is
+# Polter's feed -- and its output in files, and after `Seconds` stops it **with
+# everything it started** (npm's `codex.cmd` is `node` around the real program;
+# stopping only the first leaves the second running) and throws a
+# `TimeoutException`, which `Invoke-PolterProvision` reads as "did not answer"
+# rather than as "nothing registered". Otherwise it returns the exit code, the
+# output and the error output. Kept in step with `provision.sh`.
+function ConvertTo-PolterArgument {
+    param([string]$S)
+    if ($S.Length -gt 0 -and $S -notmatch '[\s"]') { return $S }
+    $out = New-Object System.Text.StringBuilder
+    [void]$out.Append('"')
+    $backslashes = 0
+    foreach ($c in $S.ToCharArray()) {
+        if ($c -eq '\') { $backslashes++; continue }
+        if ($c -eq '"') {
+            [void]$out.Append('\' * ($backslashes * 2 + 1)).Append('"')
+        } else {
+            [void]$out.Append('\' * $backslashes).Append($c)
+        }
+        $backslashes = 0
+    }
+    [void]$out.Append('\' * ($backslashes * 2)).Append('"')
+    return $out.ToString()
+}
+
+function Invoke-PolterBounded {
+    param([string]$File, [string[]]$Arguments, [int]$Seconds)
+
+    $cmd = Get-Command $File -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('polter-bounded-' + [guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $dir)
+    try {
+        $in = Join-Path $dir 'in'
+        $outFile = Join-Path $dir 'out'
+        $errFile = Join-Path $dir 'err'
+        [System.IO.File]::WriteAllText($in, '')
+        $argLine = (@($Arguments) | ForEach-Object { ConvertTo-PolterArgument $_ }) -join ' '
+        $start = @{
+            FilePath = $cmd.Source
+            PassThru = $true
+            RedirectStandardInput = $in
+            RedirectStandardOutput = $outFile
+            RedirectStandardError = $errFile
+        }
+        if ($argLine) { $start.ArgumentList = $argLine }
+        if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) { $start.NoNewWindow = $true }
+        $p = Start-Process @start
+        # Without this, Windows PowerShell 5.1 never fills in `ExitCode`.
+        $null = $p.Handle
+        if (-not $p.WaitForExit($Seconds * 1000)) {
+            if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+                & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
+            } else {
+                try { $p.Kill($true) } catch { }
+            }
+            try { [void]$p.WaitForExit(5000) } catch { }
+            throw (New-Object System.TimeoutException("``$File $($Arguments -join ' ')`` did not answer within ${Seconds}s and was stopped"))
+        }
+        $p.WaitForExit()
+        return [pscustomobject]@{
+            ExitCode = $p.ExitCode
+            Out = [System.IO.File]::ReadAllText($outFile)
+            Err = [System.IO.File]::ReadAllText($errFile)
+        }
+    } finally {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # --- editing a config file, for the hosts with no `mcp add` -----------------
 #
 # **This is the other kind of host, and it is not the same job wearing a
@@ -412,8 +484,19 @@ function Invoke-PolterProvision {
     # The version marker is what makes "written by a different build" visible,
     # and it is why `Register-HostMcp` is handed the key and the value rather
     # than being trusted to invent one.
+    # A `TimeoutException` is "it did not answer", not "nothing is
+    # registered" (task 1667): the registration is left as it was, the rest is
+    # still done, and the batch says it failed so Polter offers it again.
     $current = ''
-    try { $current = (Get-HostMcpCurrent | Out-String) } catch { $current = '' }
+    $script:PolterMcpUnanswered = $false
+    try {
+        $current = (Get-HostMcpCurrent | Out-String)
+    } catch [System.TimeoutException] {
+        $script:PolterMcpUnanswered = $true
+        Write-PolterLog $_.Exception.Message
+    } catch {
+        $current = ''
+    }
 
     # **Three states, and they were one flag.** `$stale` used to mean all
     # three of these at once: nothing is registered here; *this* build is
@@ -431,40 +514,43 @@ function Invoke-PolterProvision {
     #
     # Kept in step with `provision.sh`, which has the same split and the same
     # reasoning. Two readers of one rule.
-    $registration = 'other'
-    if ([string]::IsNullOrWhiteSpace($current)) {
-        $registration = 'none'
-    } elseif ($current.Contains($exe)) {
-        $registration = 'mine'
-    }
-
     $stale = $false
-    switch ($registration) {
-        'none' { $stale = $true }
-        'mine' {
-            $stale = -not $current.Contains($version)
-            # The version is not all a registration can be missing (#1645).
-            # Kept in step with `provision.sh`.
-            if (-not $stale -and (Get-Command Test-HostMcpComplete -ErrorAction SilentlyContinue) -and
-                -not (Test-HostMcpComplete $current)) {
-                $stale = $true
-            }
+    if (-not $script:PolterMcpUnanswered) {
+        $registration = 'other'
+        if ([string]::IsNullOrWhiteSpace($current)) {
+            $registration = 'none'
+        } elseif ($current.Contains($exe)) {
+            $registration = 'mine'
         }
-        'other' {
-            # Refused, and said twice: once into this log, once to the
-            # person. A refusal nobody is told about is the same silence in
-            # the other direction.
-            #
-            # this deliberately does not ask whether the registered command
-            # still exists: telling a moved install from a live one means
-            # parsing a path out of eight different `mcp get` shapes, and a
-            # half-right parse would take over exactly when it guessed wrong.
-            $script:PolterDeclined = $true
-            Write-PolterLog 'status=declined step=mcp -- another installation is already registered here'
-            Write-PolterLog "registration-kept=$(ConvertTo-PolterOneLine $current)"
-            Write-PolterLog "registration-refused=$exe ($versionKey=$version)"
-            Write-PolterLog "refused-by=$exe version=$version"
-            Write-PolterTell "$($script:PolterHostLabel) is already registered to another Polter installation, so this build left it alone rather than pointing your agents at itself. Its tools will not appear in it. To hand it to this build, remove the existing polter server from $($script:PolterHostLabel) and start Polter again."
+
+        $stale = $false
+        switch ($registration) {
+            'none' { $stale = $true }
+            'mine' {
+                $stale = -not $current.Contains($version)
+                # The version is not all a registration can be missing (#1645).
+                # Kept in step with `provision.sh`.
+                if (-not $stale -and (Get-Command Test-HostMcpComplete -ErrorAction SilentlyContinue) -and
+                    -not (Test-HostMcpComplete $current)) {
+                    $stale = $true
+                }
+            }
+            'other' {
+                # Refused, and said twice: once into this log, once to the
+                # person. A refusal nobody is told about is the same silence in
+                # the other direction.
+                #
+                # this deliberately does not ask whether the registered command
+                # still exists: telling a moved install from a live one means
+                # parsing a path out of eight different `mcp get` shapes, and a
+                # half-right parse would take over exactly when it guessed wrong.
+                $script:PolterDeclined = $true
+                Write-PolterLog 'status=declined step=mcp -- another installation is already registered here'
+                Write-PolterLog "registration-kept=$(ConvertTo-PolterOneLine $current)"
+                Write-PolterLog "registration-refused=$exe ($versionKey=$version)"
+                Write-PolterLog "refused-by=$exe version=$version"
+                Write-PolterTell "$($script:PolterHostLabel) is already registered to another Polter installation, so this build left it alone rather than pointing your agents at itself. Its tools will not appear in it. To hand it to this build, remove the existing polter server from $($script:PolterHostLabel) and start Polter again."
+            }
         }
     }
 
@@ -476,11 +562,14 @@ function Invoke-PolterProvision {
         Write-PolterLog "written-by=$exe version=$version"
         try {
             Register-HostMcp -Version $version -VersionKey $versionKey -Exe $exe -Scope $script:PolterScope
+            $script:PolterWrote = $true
+        } catch [System.TimeoutException] {
+            $script:PolterMcpUnanswered = $true
+            Write-PolterLog $_.Exception.Message
         } catch {
             Write-PolterFailure 'mcp' "could not register the MCP server: $($_.Exception.Message)"
             return $false
         }
-        $script:PolterWrote = $true
     }
 
     # --- the rules block ------------------------------------------------------
@@ -495,9 +584,19 @@ function Invoke-PolterProvision {
         return $false
     }
 
+    # A host's own settings, when it has any (task 1674; `host_settings_apply`
+    # in provision.sh). It sets `$script:PolterWrote` itself.
+    if (Get-Command Set-HostSettings -ErrorAction SilentlyContinue) {
+        try {
+            Set-HostSettings
+        } catch {
+            Write-PolterFailure 'settings' "could not apply its settings: $($_.Exception.Message)"
+            return $false
+        }
+    }
+
     if ($script:PolterWantSkills -ne 'yes') {
-        Write-PolterProvisionDone
-        return $true
+        return (Write-PolterProvisionDone)
     }
 
     $skillsDir = ''
@@ -508,8 +607,7 @@ function Invoke-PolterProvision {
         # the note rather than said here, because a line printed at every
         # launch is a line nobody reads.
         $script:PolterNote = ' skills=unsupported -- MCP only; the tool map in `initialize` and `skill_read` cover it'
-        Write-PolterProvisionDone
-        return $true
+        return (Write-PolterProvisionDone)
     }
 
     # --- the skills -----------------------------------------------------------
@@ -523,8 +621,7 @@ function Invoke-PolterProvision {
     # `/polter-supervising` says where it came from.
     $skills = @(Get-PolterProp $Event 'skills' @())
     if ($skills.Count -eq 0) {
-        Write-PolterProvisionDone
-        return $true
+        return (Write-PolterProvisionDone)
     }
 
     foreach ($skill in $skills) {
@@ -618,8 +715,7 @@ function Invoke-PolterProvision {
         }
     }
 
-    Write-PolterProvisionDone
-    return $true
+    return (Write-PolterProvisionDone)
 }
 
 # The `awk` program from `provision.sh`, line for line.
@@ -707,6 +803,11 @@ function Get-PolterSkillName {
 # "checked, all present" and "never got that far", which is the question the
 # reader has. Keep them.
 function Write-PolterProvisionDone {
+    if ($script:PolterMcpUnanswered) {
+        Write-PolterLog "status=failed step=mcp -- $($script:PolterHostBin) did not answer in time, so the MCP registration was neither read nor written; the rest was done$script:PolterNote"
+        Write-PolterTell "$($script:PolterHostLabel) did not answer in time when Polter went to register itself, so its tools may not appear in it yet. Polter will try again."
+        return $false
+    }
     if ($script:PolterWrote) {
         Write-PolterLog "status=provisioned$script:PolterNote"
     } elseif ($script:PolterDeclined) {
@@ -717,6 +818,7 @@ function Write-PolterProvisionDone {
     } else {
         Write-PolterLog "status=unchanged$script:PolterNote"
     }
+    return $true
 }
 
 # --- the protocol -----------------------------------------------------------

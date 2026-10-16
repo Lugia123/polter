@@ -149,6 +149,35 @@ pub const Persona = struct {
         }
         return null;
     }
+
+    /// The CLI to start this role in when nobody said which: its only one,
+    /// or -- set up for several -- the only one of them this machine has an
+    /// adapter for (`available`, the keys `agent_cli.discover` found).
+    ///
+    /// **Why `available` is asked at all** (task 1667): the official roles
+    /// are set up for Claude Code and Codex both, and the Codex plugin is
+    /// off until the person turns it on. Without this, every launch that
+    /// names no CLI -- a menu click, `role_launch {role}` -- would have
+    /// stopped starting Claude Code and started answering `ChooseCli` on the
+    /// day the second CLI was added, on machines with nothing to choose
+    /// between. When none of them has an adapter here, it is the rule from
+    /// before: several set up is `ChooseCli`.
+    pub fn defaultCli(self: Persona, available: []const []const u8) error{ NoCli, ChooseCli }![]const u8 {
+        switch (self.clis.len) {
+            0 => return error.NoCli,
+            1 => return self.clis[0].cli,
+            else => {},
+        }
+        var found: ?[]const u8 = null;
+        for (self.clis) |c| {
+            for (available) |a| if (std.mem.eql(u8, a, c.cli)) {
+                if (found != null) return error.ChooseCli;
+                found = c.cli;
+                break;
+            };
+        }
+        return found orelse error.ChooseCli;
+    }
 };
 
 /// Where an official role stands against the one this build ships.
@@ -1714,4 +1743,25 @@ test "persona: a supervisor started for a group is told which, and to read it ra
     try testing.expect(std.mem.endsWith(u8, (try launchInstructions(aa, with, "web-app")).?, "\n\nown"));
     const plain: Persona = .{ .key = "a", .name = "a", .instructions = "own" };
     try testing.expectEqualStrings("own", (try launchInstructions(aa, plain, "web-app")).?);
+}
+
+test "persona: a role set up for several CLIs starts in the one this machine has (task 1667)" {
+    const both: Persona = .{ .key = "s", .name = "s", .clis = &.{
+        .{ .cli = "claude-code" },
+        .{ .cli = "codex" },
+    } };
+    // The Codex plugin is off, as it ships: Claude Code, as before codex
+    // was added to the role.
+    const claude_only = try both.defaultCli(&.{ "claude-code", "gemini" });
+    try testing.expectEqualStrings("claude-code", claude_only);
+    const codex_only = try both.defaultCli(&.{"codex"});
+    try testing.expectEqualStrings("codex", codex_only);
+    // Both here is a real choice, and nothing here is the old answer.
+    try testing.expectError(error.ChooseCli, both.defaultCli(&.{ "codex", "claude-code" }));
+    try testing.expectError(error.ChooseCli, both.defaultCli(&.{}));
+    // One set up is that one whatever is here; none is none.
+    const one: Persona = .{ .key = "o", .name = "o", .clis = &.{.{ .cli = "codex" }} };
+    try testing.expectEqualStrings("codex", try one.defaultCli(&.{}));
+    const none: Persona = .{ .key = "n", .name = "n" };
+    try testing.expectError(error.NoCli, none.defaultCli(&.{"codex"}));
 }
