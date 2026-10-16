@@ -5204,7 +5204,6 @@ fn pluginListFor(
     key: []const u8,
     for_person: bool,
 ) anyerror![]const poltergeistpkg.rpc.PluginView {
-
     const io = global.io();
     var environ_map = try global.environMap();
     defer environ_map.deinit();
