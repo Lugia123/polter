@@ -614,6 +614,15 @@ extension Ghostty {
         /// `ProjectNode.materializing` when loading a project.
         var scrollbackRestore: String?
 
+        /// The size, in pixels, the view will be laid out at, when that is
+        /// known before it exists; nil when it is not, and the core then
+        /// starts at its 800x600 placeholder. Passed to
+        /// `ghostty_surface_config_s.width`/`height`, and it matters for a
+        /// `scrollbackRestore`, which is restored at this size (#47). Set by
+        /// `ProjectNode.materializing`; never inherited from another
+        /// surface, whose size says nothing about this one's.
+        var pixelSize: (width: UInt32, height: UInt32)?
+
         /// Wait after the command
         var waitAfterCommand: Bool = false
 
@@ -671,6 +680,12 @@ extension Ghostty {
             config.context = context
 
             config.poltergeist_chat = poltergeistChat
+
+            // Zero, the default, is "not known": the core's placeholder.
+            if let pixelSize {
+                config.width = pixelSize.width
+                config.height = pixelSize.height
+            }
 
             // Use withCString to ensure strings remain valid for the duration of the closure
             return try workingDirectory.withCString { cWorkingDir in
