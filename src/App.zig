@@ -1122,6 +1122,7 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .sendKey = controlActKey,
             .sendText = controlActText,
             .agentPresent = controlActAgentPresent,
+            .readScreen = controlActReadScreen,
             .persist = controlActPersist,
             .createGroup = controlActCreateGroup,
             .stewardOf = controlActStewardOf,
@@ -1140,6 +1141,12 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
         self.poltergeistElapsedMs(),
         @intCast(@max(0, self.poltergeistWallMs())),
     );
+}
+
+/// A terminal's screen for the control room's prompt guard, read the way
+/// terminal_read reads it (task 1655).
+fn controlActReadScreen(ctx: *anyopaque, alloc: Allocator, id: poltergeistpkg.Bus.Id) anyerror![]const u8 {
+    return poltergeistRead(ctx, alloc, id, 0);
 }
 
 /// One key into a terminal for the control room, by the road an agent's
@@ -2158,11 +2165,30 @@ fn poltergeistHeartbeat(
 ) void {
     const now_ms = self.poltergeistElapsedMs();
     self.poltergeist.noteQuiet(from, quiet_ms, now_ms);
+    self.capturePermissionBox(from, now_ms);
     self.notePoltergeistAgentsHere();
     _ = self.poltergeist.considerCalls(now_ms);
     _ = self.poltergeist.considerAgents(now_ms);
     self.deliverPoltergeistNotices(now_ms);
     self.refreshPoltergeistTabs();
+}
+
+/// Capture a permission box whose own rows keep redrawing, once it has
+/// been drawn (task 1655): `Bus.promptStanding` compares the screen with it
+/// when the box is answered, since "the screen has not moved" can never be
+/// true of it. Here because a heartbeat is what arrives while a screen
+/// moves -- a still one needs nothing captured -- and read the way
+/// terminal_read reads, which is how the answer side reads it too.
+fn capturePermissionBox(self: *App, id: poltergeistpkg.Bus.Id, now_ms: u64) void {
+    if (!self.poltergeist.wantsBoxPrint(id, now_ms)) return;
+    const event_ms = self.poltergeist.agentOf(id).eventMs();
+    const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+        log.debug("poltergeist: could not read the box id={x} err={}", .{ id, err });
+        return;
+    };
+    defer self.alloc.free(screen);
+    const kept = self.poltergeist.noteBoxPrint(id, event_ms, screen);
+    log.info("poltergeist: permission box captured id={x} event_ms={d} kept={}", .{ id, event_ms, kept });
 }
 
 /// Remind one worker that printing is not reporting, once, when it stops.

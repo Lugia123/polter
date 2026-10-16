@@ -104,7 +104,7 @@
 | `UserPromptSubmit` | `turn_started` | —（不取 prompt 正文） |
 | `Stop` | `turn_ended` | `last_assistant_message`（截断，见 3.4）、`background_tasks` 非空 → `waiting_on_background` |
 | `StopFailure` | `turn_failed` | `error`（rate_limit / overloaded / authentication_failed / …）、`error_details` |
-| `PermissionRequest` | `awaiting_approval` | `tool_name`、一行摘要（shell 工具——`Bash`，Windows 上是 `PowerShell`——取 `command` 前 120 字符） |
+| `PermissionRequest` | `awaiting_approval` | `tool_name`、一行摘要（shell 工具——`Bash`，Windows 上是 `PowerShell`——取 `command` 前 120 字符）；整条 `tool_input` 的紧凑 JSON（`input`，至多 24 KB，`input_bytes` 记原长；请求超过 `Server.max_request_bytes` 时 `+hook` 先对半砍它、再砍 `text`），供 `terminal_turn` 的 `pending_tool`（task 1651）。只存内存，批完即丢，不脱敏。auto 模式的框里有每秒重画的倒计时行（`will automatically deny this request in`，`AgentEvent.volatileRows`）：框画完后第一次心跳把「去掉这些行的屏幕」记成框体指纹，回答时屏幕虽动、只要倒计时行还在且其余行与指纹一致就算同一个框（task 1655） |
 | `Notification` matcher `idle_prompt` / `elicitation_dialog` | `awaiting_input` | `notification_type` |
 | `PostToolUse` | `turn_resumed` | `tool_name`、`agent_id`（子代理里才有） |
 | `PostToolUseFailure` | `turn_resumed` | `tool_name`（工具失败也是结束，task 1625） |

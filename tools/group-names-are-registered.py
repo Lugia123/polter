@@ -92,6 +92,7 @@ MAP_FIELDS = {
     ("src/poltergeist/Bus.zig", "entries"): "keyed by terminal id",
     ("src/poltergeist/Bus.zig", "turns"): "keyed by terminal id",
     ("src/poltergeist/Bus.zig", "asks"): "keyed by terminal id",
+    ("src/poltergeist/Bus.zig", "pending_tools"): "keyed by terminal id",
     ("src/poltergeist/Bus.zig", "raises"): "keyed by terminal id",
     ("src/poltergeist/Chat.zig", "members"): "keyed by terminal id, inside one group",
     ("src/poltergeist/PersonaStore.zig", "states"): "keyed by terminal id",

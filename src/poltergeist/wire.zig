@@ -648,6 +648,7 @@ fn parseAgentEvent(aa: Allocator, params: ?std.json.ObjectMap) ParseError!AgentE
     const name = try requireString(aa, params, "event");
     const kind = std.meta.stringToEnum(AgentEvent.Kind, name) orelse return error.BadParams;
     const text = try optionalString(aa, params, "text");
+    const input = try optionalString(aa, params, "input");
     return .{
         .event = kind,
         .cli = try requireString(aa, params, "cli"),
@@ -658,6 +659,8 @@ fn parseAgentEvent(aa: Allocator, params: ?std.json.ObjectMap) ParseError!AgentE
         .note = try optionalString(aa, params, "note"),
         .text = if (text) |t| AgentEvent.cutBytes(t, AgentEvent.max_text_bytes) else null,
         .text_bytes = try optionalU64(params, "text_bytes", if (text) |t| t.len else 0),
+        .input = if (input) |t| AgentEvent.cutBytes(t, AgentEvent.max_input_bytes) else null,
+        .input_bytes = try optionalU64(params, "input_bytes", if (input) |t| t.len else 0),
         .waiting_on_background = optionalBool(params, "waiting_on_background", false),
     };
 }
@@ -1041,6 +1044,12 @@ pub const TurnView = struct {
     turn: ?Text,
     /// How long ago that turn ended.
     ago_ms: u64,
+    /// The tool call waiting for approval, every field of it, while the
+    /// terminal waits on one (task 1651). Null otherwise -- and for a CLI
+    /// whose hook does not send the call.
+    pending_tool: ?Bus.PendingTool,
+    /// The bus's clock when this was asked, for `pending_tool`'s age.
+    now_ms: u64,
 
     pub const Text = struct {
         text: []const u8,
@@ -1312,6 +1321,28 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 // reads as the agent having stopped short.
                 try s.objectField("truncated");
                 try s.write(turn.text_bytes > turn.text.len);
+                try s.endObject();
+            } else {
+                try s.write(null);
+            }
+
+            // `null` rather than absent, on `turn`'s terms (task 1651).
+            try s.objectField("pending_tool");
+            if (t.pending_tool) |p| {
+                try s.beginObject();
+                try s.objectField("name");
+                try s.write(p.name);
+                try s.objectField("asked_ms_ago");
+                try s.write(t.now_ms -| p.at_ms);
+                try s.objectField("input");
+                try s.write(p.input);
+                try s.objectField("input_bytes");
+                try s.write(p.input_bytes);
+                // Said, not left to arithmetic, as for `turn`: a cut input
+                // is no longer JSON, and the part that is missing may be
+                // the part that matters.
+                try s.objectField("truncated");
+                try s.write(p.input_bytes > p.input.len);
                 try s.endObject();
             } else {
                 try s.write(null);
@@ -2041,6 +2072,15 @@ fn writeAgent(s: *std.json.Stringify, view: AgentView) std.Io.Writer.Error!void 
             try s.write(v);
         }
     }
+    // A note that stops short says so (task 1651): the start of a command
+    // reads as all of it otherwise. terminal_turn's `pending_tool` has
+    // the rest of an approval.
+    if (a.note.get()) |v| if (a.note_bytes > v.len) {
+        try s.objectField("note_truncated");
+        try s.write(true);
+        try s.objectField("note_bytes");
+        try s.write(a.note_bytes);
+    };
     try s.objectField("waiting_on_background");
     try s.write(a.waiting_on_background);
     // Absent when the agent does not report its tools, on `quiet_ms`'s

@@ -431,7 +431,9 @@ and `awaiting approval Bash [state_at_ms=… event_at_ms=… answer=allowed]: �
 `awaiting input idle_prompt`. Unlike
 everything above these are not arithmetic: the CLI said it. The quote is only
 the start of the answer; `terminal_turn(id)` has the whole of it, up to 16 KB,
-and says when it was cut. While one of these stands, that terminal is not also
+and says when it was cut. The note on `awaiting approval` is likewise the
+start of the command; `terminal_turn(id)`'s `pending_tool` has the whole
+tool call (below). While one of these stands, that terminal is not also
 reported `quiet` — its stillness is already explained — unless the screen
 has moved since: then it is, as `quiet 90s (last event: awaiting approval
 120s ago)`, because the event no longer says why it is still (declining a
@@ -494,8 +496,21 @@ show the person that worker's prompt until a minute has gone by. With the
 other two there is no such minute -- they are shown it at once, because
 nothing you can do would answer it. Then, in this order:
 
-1. **`terminal_read(id)`.** Always, whatever the line said. The note is the
-   start of what is being asked; the screen is all of it, and it is where
+1. **Read the whole call before you judge it: `terminal_turn(id)`.** Its
+   `pending_tool` is the tool call waiting on that box, every field of it,
+   as the worker's own hook sent it: `name`, `input` (the `tool_input` as
+   JSON -- a `Bash` command whole, an `Edit`'s old and new text, a
+   `Write`'s content), `input_bytes`, `truncated`. The note on the line is
+   only its first ~120 characters, and says `… [812 bytes; terminal_turn
+   has all]` when it stops short; the screen is worse -- a long command
+   pushes its own start off the top of the box, and what is left is "This
+   command … could not be checked. Do you want to proceed?". **Never
+   approve from the note or from that half of a box.** `truncated: true`
+   means even this is not all of it (more than 24 KB, or cut to fit the
+   request): the rest cannot be read, so it is not yours by step 2.
+   `pending_tool` is null for a CLI whose hook does not send it -- then
+   the screen is all there is, and a command you cannot see the whole of
+   is not yours either. Then **`terminal_read(id)`**, always: it is where
    you count the options.
 2. **Judge it.** Yours to answer when it is inside the task you gave and you
    would have typed that command yourself. **Not** yours: anything that
@@ -510,7 +525,10 @@ nothing you can do would answer it. Then, in this order:
 3. **`terminal_answer_prompt(id, choice, state_at_ms, event_at_ms)`**, copying
    the two moments straight off the line. With them nothing is pressed unless
    that prompt is the one still there; without them the count is pressed blind
-   into whatever is on screen now. `choice` counts from the highlighted
+   into whatever is on screen now. A box with a countdown in it (Claude Code's
+   `will automatically deny this request in 1:54`) can be answered like any
+   other: the countdown is not counted as the screen moving. `PromptGone` on
+   one means the box itself changed or went -- read again. `choice` counts from the highlighted
    option, starting at 1.
 4. **If you may not, or it did not take** — `answer=off` or `shielded`,
    `AuthoriseOff`, `Shielded`, the worker's own agent refusing an answer that

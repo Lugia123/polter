@@ -6941,16 +6941,27 @@ fn dispatchOne(
         },
 
         .terminal_turn => |p| {
+            // Copied, as the turn's text is below.
+            const pending: ?Bus.PendingTool = if (bus.pendingToolOf(p.id)) |t| .{
+                .name = try alloc.dupe(u8, t.name),
+                .input = try alloc.dupe(u8, t.input),
+                .input_bytes = t.input_bytes,
+                .at_ms = t.at_ms,
+            } else null;
             const turn = bus.turnOf(p.id) orelse return .{ .turn = .{
                 .id = p.id,
                 .agent = bus.agentOf(p.id),
                 .turn = null,
                 .ago_ms = 0,
+                .pending_tool = pending,
+                .now_ms = host.nowMs(),
             } };
             return .{
                 .turn = .{
                     .id = p.id,
                     .agent = bus.agentOf(p.id),
+                    .pending_tool = pending,
+                    .now_ms = host.nowMs(),
                     // Copied: the bus may free it before the reply is written.
                     .turn = .{
                         .text = try alloc.dupe(u8, turn.text),
@@ -7552,9 +7563,16 @@ fn dispatchOne(
             // has been replaced is not one to walk a highlight around in
             // either.
             if (p.state_at_ms != null or p.event_at_ms != null) {
+                // The screen as it is now, for a box whose own rows keep
+                // redrawing (task 1655); read only for one of those.
+                const screen: ?[]const u8 = if (bus.promptNeedsScreen(p.id))
+                    host.readTerminal(alloc, p.id, 0) catch null
+                else
+                    null;
+                defer if (screen) |s| alloc.free(s);
                 // One without the other cannot be the prompt anybody saw.
                 const standing = if (p.state_at_ms) |state_at|
-                    (if (p.event_at_ms) |event_at| bus.promptStanding(p.id, state_at, event_at, host.nowMs()) else false)
+                    (if (p.event_at_ms) |event_at| bus.promptStanding(p.id, state_at, event_at, host.nowMs(), screen) else false)
                 else
                     false;
                 if (!standing) return hostFailure(
@@ -9633,6 +9651,8 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 /// A host that records what it was asked to do and can be told to refuse.
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
+    /// What `readTerminal` answers.
+    screen: []const u8 = "screen contents",
 
     /// What `layout` was last handed, how often, and how it answers.
     laid_out: ?LayoutCall = null,
@@ -10521,7 +10541,7 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.Refused;
         self.read_count += 1;
-        return alloc.dupe(u8, "screen contents");
+        return alloc.dupe(u8, self.screen);
     }
 
     fn send(ctx: *anyopaque, id: Bus.Id, text: []const u8, submit: bool) anyerror!void {
@@ -15813,6 +15833,50 @@ test "hooks: terminal_turn hands back the whole answer and says when it was cut"
     ) != null);
 }
 
+test "hooks: terminal_turn hands a supervisor the whole tool call waiting for approval (task 1651)" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .now_ms = 10_000 };
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // What 0xd4ef was stopped on: the notice and the screen both showed
+    // the first line, and the `rm` was past it.
+    const command = "D=/private/tmp/x/issue-fix; S=$D/scratch; rm -rf \"$S\"";
+    var ev = hookEvent(.awaiting_approval);
+    ev.detail = "Bash";
+    ev.note = command[0..29];
+    ev.text = command;
+    ev.text_bytes = command.len;
+    ev.input = "{\"command\":\"D=/private/tmp/x/issue-fix; S=$D/scratch; rm -rf \\\"$S\\\"\",\"description\":\"clean\"}";
+    ev.input_bytes = 30_000;
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = ev });
+
+    fake.now_ms = 11_000;
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_turn = .{ .id = worker },
+    });
+    // No turn has ended, and the call is there all the same.
+    try testing.expect(res.turn.turn == null);
+    var out: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    try wire.writeResponse(&w, res);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(),
+        \\"pending_tool":{"name":"Bash","asked_ms_ago":1000,"input":"{\"command\":\"D=/private/tmp/x/issue-fix; S=$D/scratch; rm -rf \\\"$S\\\"\",\"description\":\"clean\"}","input_bytes":30000,"truncated":true}
+    ) != null);
+    // The agent's note says it is the start of something longer.
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"note_truncated\":true,\"note_bytes\":53") != null);
+
+    // Answered: the call is gone.
+    var done = hookEvent(.turn_resumed);
+    done.detail = "Bash";
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = done });
+    const after = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_turn = .{ .id = worker },
+    });
+    try testing.expect(after.turn.pending_tool == null);
+}
+
 // -- role_launch into a split (task 874) --------------------------------------
 
 test "role_launch place: absent is auto, and each of the three reaches the host as asked" {
@@ -16314,6 +16378,72 @@ test "ControlRoom answer_prompt: given the prompt it saw, it presses nothing onc
     } });
     try testing.expect(taken == .ok);
     try testing.expectEqualStrings("enter", fake.keyed.?.key);
+}
+
+/// A Claude Code permission box in auto mode, its countdown at `left`.
+fn countdownBox(alloc: std.mem.Allocator, left: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(alloc,
+        \\ Bash command
+        \\   rm -rf dist/
+        \\ ⚠ Claude Code will automatically deny this request in {s}, to avoid blocking progress on an unattended session
+        \\ Do you want to proceed?
+        \\ ❯ 1. Yes
+        \\   2. No
+    , .{left});
+}
+
+test "answer_prompt: a box whose countdown redraws every second can still be answered (task 1655)" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .now_ms = 1_000 };
+    fake.key_outcome = .written;
+    try b.setMayAuthorise(worker, true, .user);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    var ask = hookEvent(.awaiting_approval);
+    ask.detail = "Bash";
+    ask.note = "rm -rf dist/";
+    _ = try dispatch(alloc, &b, fake.host(), term(worker), .{ .agent_event = ask });
+
+    // The box is drawn, and its countdown redraws: the sampler restates a
+    // screen that keeps moving, and the first restatement past the grace
+    // captures the box.
+    b.noteQuiet(worker, 0, 5_000);
+    try testing.expect(b.wantsBoxPrint(worker, 5_000));
+    try testing.expect(b.noteBoxPrint(worker, 1_000, try countdownBox(alloc, "1:54")));
+    b.noteQuiet(worker, 0, 9_000);
+
+    // Nine seconds on, the countdown says 1:50 and the screen moved a
+    // second ago. Before task 1655 this was PromptGone for as long as the
+    // box stood.
+    fake.now_ms = 9_000;
+    fake.screen = try countdownBox(alloc, "1:50");
+    const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{
+        .id = worker,
+        .choice = 2,
+        .state_at_ms = 1_000,
+        .event_at_ms = 1_000,
+    } });
+    try testing.expect(taken == .ok);
+    try testing.expectEqualStrings("enter", fake.keyed.?.key);
+
+    // The box gone -- declined from the keyboard, which says nothing --
+    // and the screen moved on: not pressed into whatever is there.
+    fake.keyed = null;
+    fake.screen = "> \n  ⏵⏵ auto mode on\n";
+    const gone = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{
+        .id = worker,
+        .choice = 2,
+        .state_at_ms = 1_000,
+        .event_at_ms = 1_000,
+    } });
+    try testing.expect(gone == .failed);
+    try testing.expectEqualStrings("PromptGone", gone.failed.code);
+    try testing.expect(fake.keyed == null);
 }
 
 test "ControlRoom answer_prompt: without the prompt it saw, it is what it always was" {

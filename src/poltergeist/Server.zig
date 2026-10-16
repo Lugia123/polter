@@ -35,7 +35,9 @@ const log = std.log.scoped(.poltergeist);
 
 /// Longest request we will read. A request carries an id, a short string
 /// and a couple of numbers; anything larger is a mistake or an attack.
-const max_request_bytes = 64 * 1024;
+/// The line and its newline both count. `pub` for `+hook`, whose approvals
+/// carry a whole tool call and so are the one request that can reach it.
+pub const max_request_bytes = 64 * 1024;
 
 /// The cap when nobody says otherwise, and the bounds a setting is held to.
 ///
