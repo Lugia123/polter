@@ -750,6 +750,35 @@ for from in ids {
         print("move from=\(from ?? "-") step=\(step) to=\(to)")
     }
 }
+// Scrolling the rows (tasks 1654 and 1657): the room they are seen in
+// with the allowance block at the bottom, how tall what scrolls is, which
+// rows are wholly seen and how far the selection scrolls them, at the top,
+// part way and at the end -- in a panel as tall as asked, and in one too
+// short for the rows, so that they do scroll -- then the rule itself on
+// made-up rows.
+for tall in [CGFloat(height), 300] {
+    let room = ControlRoomListLayout(list: list, height: tall)
+    rect("viewport h=\(f(tall))", room.viewport)
+    let maxScroll = max(0, room.contentHeight - room.viewport.height)
+    print("content h=\(f(room.contentHeight)) max=\(f(maxScroll))")
+    for scrolled in [CGFloat(0), min(100, maxScroll), maxScroll] {
+        print("in_sight scrolled=\(f(scrolled)) rows=\(room.inSight(order: list.rows.map(\.id), scrolled: scrolled).joined(separator: ","))")
+        for r in list.rows {
+            print("reveal scrolled=\(f(scrolled)) id=\(r.id) to=\(room.reveal(r.id, scrolled: scrolled).map(f) ?? "-")")
+        }
+    }
+}
+for (vy, vh) in [(CGFloat(40), CGFloat(200)), (0, 50), (10, 0)] {
+    let view = CGRect(x: 0, y: vy, width: 300, height: vh)
+    for (ry, rh) in [(CGFloat(40), CGFloat(28)), (20, 28), (230, 28), (226, 28), (100, 300), (50, 0), (240, 10)] {
+        for scrolled in [CGFloat(0), 30, 200] {
+            let row = CGRect(x: 0, y: ry, width: 300, height: rh)
+            let to = ControlRoomListLayout.reveal(row: row, viewport: view, scrolled: scrolled).map(f) ?? "-"
+            print("reveal-of view=\(f(vy))+\(f(vh)) row=\(f(ry))+\(f(rh)) scrolled=\(f(scrolled)) to=\(to) "
+                + "in_view=\(ControlRoomListLayout.inView(row: row, viewport: view, scrolled: scrolled))")
+        }
+    }
+}
 // The chip's slide: whether it moves, when it starts down, when it is
 // still, and where it is at the same moments on both sides.
 func g(_ v: Double) -> String { String(format: "%.6f", v) }

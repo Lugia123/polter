@@ -133,6 +133,7 @@
       "macos/Tests/ControlRoom/ControlRoomHomecomingTests.swift",
       "macos/Tests/ControlRoom/ControlRoomLendingTests.swift",
       "macos/Tests/ControlRoom/ControlRoomListTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomListScrollTests.swift",
       "macos/Tests/ControlRoom/ControlRoomOpeningTests.swift",
       "macos/Tests/ControlRoom/ControlRoomProjectMenuTests.swift",
       "macos/Tests/ControlRoom/ControlRoomQuotaTests.swift",

@@ -67,6 +67,10 @@ struct ControlRoomListView: View {
     @FocusState private var nameHasKeyboard: Bool
     /// The list itself has the keyboard: the arrow keys walk the rows.
     @FocusState private var listHasKeyboard: Bool
+    /// How far the rows are scrolled up (`ControlRoomListLayout.inSight`).
+    @State private var scrolled: CGFloat = 0
+    /// Moves the rows' scroll view.
+    @State private var scroller = ControlRoomScroller()
 
     /// `midSlide` draws the chip as it is in the air, this far from its
     /// row, and moves nothing: for still pictures of the slide.
@@ -110,24 +114,12 @@ struct ControlRoomListView: View {
                                                    ?? retentionText.map { Self.noteHeight($0) + ControlRoomRetentionNotice.buttonHeight } ?? 0,
                                                needed: ControlRoomAskText.needed)
             ZStack(alignment: .topLeading) {
-                if let chip = layout.chip(for: selection) {
-                    self.chip.place(chip.offsetBy(dx: away.width, dy: away.height))
-                }
                 if naming {
                     nameField.place(layout.header)
                 } else {
                     header.place(layout.header)
                 }
-                ForEach(list.waiting) { row in
-                    waitingRow(row, fit: layout.fits[row.id] ?? .none).place(layout.rows[row.id] ?? .zero)
-                }
-                if layout.quietHeader.height > 0 {
-                    theme.lineFaint.color.place(layout.separator)
-                    quietHeader.place(layout.quietHeader)
-                }
-                ForEach(list.quiet) { row in
-                    quietRow(row).place(layout.rows[row.id] ?? .zero)
-                }
+                rows(layout).place(layout.viewport)
                 if let quota = list.quota {
                     ControlRoomQuotaView(quota: quota, still: still).place(layout.quota)
                 }
@@ -143,8 +135,8 @@ struct ControlRoomListView: View {
                         .offset(x: layout.header.minX, y: layout.header.maxY)
                 }
             }
-            .onAppear { onInSight(layout.inSight(order: list.rows.map(\.id))) }
-            .onChange(of: layout.inSight(order: list.rows.map(\.id))) { onInSight($0) }
+            .onAppear { onInSight(layout.inSight(order: list.rows.map(\.id), scrolled: scrolled)) }
+            .onChange(of: layout.inSight(order: list.rows.map(\.id), scrolled: scrolled)) { onInSight($0) }
         }
         .frame(width: CGFloat(Look.Side.width))
         .background(panel)
@@ -176,6 +168,48 @@ struct ControlRoomListView: View {
             }
         }
         .onChange(of: selection) { _ in takeOff() }
+    }
+
+    /// The chip and the rows, clipped to the room above the allowance block
+    /// and scrolled inside it (task 1654). Each piece stands where the
+    /// layout put it, less the viewport's top; a row is moved there by
+    /// padding rather than an offset, so that its frame is where it is seen.
+    private func rows(_ layout: ControlRoomListLayout) -> some View {
+        let top = layout.viewport.minY
+        func inside(_ rect: CGRect) -> CGRect { rect.offsetBy(dx: 0, dy: -top) }
+        return ScrollView(.vertical) {
+            ZStack(alignment: .topLeading) {
+                if let chip = layout.chip(for: selection) {
+                    self.chip.place(inside(chip).offsetBy(dx: away.width, dy: away.height))
+                }
+                ForEach(list.waiting) { row in
+                    waitingRow(row, fit: layout.fits[row.id] ?? .none)
+                        .stand(inside(layout.rows[row.id] ?? .zero))
+                }
+                if layout.quietHeader.height > 0 {
+                    theme.lineFaint.color.place(inside(layout.separator))
+                    quietHeader.place(inside(layout.quietHeader))
+                }
+                ForEach(list.quiet) { row in
+                    quietRow(row).stand(inside(layout.rows[row.id] ?? .zero))
+                }
+            }
+            .frame(width: layout.viewport.width, height: layout.contentHeight, alignment: .topLeading)
+            .background(ControlRoomScrollReader(scroller: scroller) { scrolled = $0 })
+        }
+        .onAppear { reveal(selection, in: layout) }
+        .onChange(of: selection) { reveal($0, in: layout) }
+    }
+
+    /// Brings a row wholly into sight, by the least scroll that does.
+    ///
+    /// By setting the scroll view's offset to what the layout says, not by
+    /// `ScrollViewReader.scrollTo`: with these rows its `.top` anchor
+    /// scrolled to the top of the list rather than to the row (task 1654,
+    /// measured off screen). Not animated, while the chip is.
+    private func reveal(_ id: String?, in layout: ControlRoomListLayout) {
+        guard let to = layout.reveal(id, scrolled: scrolled) else { return }
+        scroller.scroll(to: to)
     }
 
     /// Whether the window's first responder is somewhere text is typed: a
@@ -666,6 +700,82 @@ private extension View {
     func place(_ rect: CGRect) -> some View {
         frame(width: rect.width, height: rect.height)
             .offset(x: rect.minX, y: rect.minY)
+    }
+
+    /// The same, by padding: the row's frame is then where it is seen.
+    func stand(_ rect: CGRect) -> some View {
+        frame(width: rect.width, height: rect.height)
+            .padding(.leading, rect.minX)
+            .padding(.top, rect.minY)
+    }
+}
+
+/// The rows' scroll view, once it is there, to be scrolled.
+/// A scroll asked for before the scroll view is there -- the list opening
+/// on a row below the bottom -- is made when it arrives.
+final class ControlRoomScroller {
+    fileprivate weak var clip: NSClipView? {
+        didSet { if clip != nil, let waiting { self.waiting = nil; scroll(to: waiting) } }
+    }
+    private var waiting: CGFloat?
+
+    func scroll(to y: CGFloat) {
+        guard let clip, let scrollView = clip.enclosingScrollView else { waiting = y; return }
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+        scrollView.reflectScrolledClipView(clip)
+    }
+}
+
+/// How far the scroll view this sits in is scrolled, from the scroll view
+/// itself, each time it moves. A `GeometryReader` in the scrolled content
+/// was tried first and was not told when the rows scrolled, so what the
+/// selection was brought into sight from was stale (task 1654, measured
+/// off screen: the second row from the bottom scrolled to although in
+/// sight, and the first row never scrolled back to).
+private struct ControlRoomScrollReader: NSViewRepresentable {
+    var scroller: ControlRoomScroller
+    var onScroll: (CGFloat) -> Void
+
+    final class Reader: NSView {
+        var onScroll: (CGFloat) -> Void = { _ in }
+        var scroller: ControlRoomScroller?
+        private var watched: NSClipView?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            watch(enclosingScrollView?.contentView)
+        }
+
+        private func watch(_ clip: NSClipView?) {
+            guard clip !== watched else { return }
+            if let watched { NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: watched) }
+            watched = clip
+            scroller?.clip = clip
+            guard let clip else { return }
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(moved),
+                                                   name: NSView.boundsDidChangeNotification, object: clip)
+            moved()
+        }
+
+        @objc private func moved() {
+            guard let watched else { return }
+            let y = watched.bounds.origin.y
+            DispatchQueue.main.async { [onScroll] in onScroll(y) }
+        }
+    }
+
+    func makeNSView(context: Context) -> Reader {
+        let view = Reader()
+        view.onScroll = onScroll
+        view.scroller = scroller
+        return view
+    }
+
+    func updateNSView(_ view: Reader, context: Context) {
+        view.onScroll = onScroll
+        view.scroller = scroller
+        if let clip = view.enclosingScrollView?.contentView, clip !== scroller.clip { scroller.clip = clip }
     }
 }
 

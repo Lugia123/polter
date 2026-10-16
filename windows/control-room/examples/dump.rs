@@ -751,6 +751,42 @@ fn main() {
         }
     }
 
+    // Scrolling the rows (tasks 1654 and 1657): the room they are seen in
+    // with the allowance block at the bottom -- which this host does not
+    // draw yet, and gives the height it will have -- how tall what scrolls
+    // is, which rows are wholly seen and how far the selection scrolls
+    // them, at the top, part way and at the end; then the rule itself on
+    // made-up rows.
+    // In a panel as tall as asked, and in one too short for the rows, so
+    // that they do scroll.
+    for tall in [height, 300.0] {
+        let room = ListLayout::new(&l, tall).with_quota(snap.quota.as_ref().map_or(0.0, |q| quota::layout(q).height));
+        rect(&format!("viewport h={tall:.3}"), room.viewport);
+        let max = layout::scroll::max(room.content_height, room.viewport);
+        println!("content h={:.3} max={:.3}", room.content_height, max);
+        for scrolled in [0.0, max.min(100.0), max] {
+            let at = room.clone().scrolled_to(scrolled);
+            println!("in_sight scrolled={:.3} rows={}", at.scrolled, polter_control_room::alert::in_sight(&at).join(","));
+            for r in l.rows() {
+                let to = at.reveal(Some(&r.id)).map_or("-".to_string(), |v| format!("{v:.3}"));
+                println!("reveal scrolled={:.3} id={} to={to}", at.scrolled, r.id);
+            }
+        }
+    }
+    for (vy, vh) in [(40.0, 200.0), (0.0, 50.0), (10.0, 0.0)] {
+        let view = Rect { x: 0.0, y: vy, w: 300.0, h: vh };
+        for (ry, rh) in [(40.0, 28.0), (20.0, 28.0), (230.0, 28.0), (226.0, 28.0), (100.0, 300.0), (50.0, 0.0), (240.0, 10.0)] {
+            for scrolled in [0.0, 30.0, 200.0] {
+                let row = Rect { x: 0.0, y: ry, w: 300.0, h: rh };
+                let to = layout::scroll::reveal(row, view, scrolled).map_or("-".to_string(), |v| format!("{v:.3}"));
+                println!(
+                    "reveal-of view={vy:.3}+{vh:.3} row={ry:.3}+{rh:.3} scrolled={scrolled:.3} to={to} in_view={}",
+                    layout::scroll::in_view(row, view, scrolled)
+                );
+            }
+        }
+    }
+
     // The chip's slide: whether it moves, when it starts down, when it is
     // still, and where it is at the same moments on both sides.
     let plan_name = |p: slide::Plan| match p {

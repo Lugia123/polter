@@ -228,6 +228,10 @@ pub enum Item {
     /// width, and when there is more than fits, the last line ends in an
     /// ellipsis. `rect.h` is `lines` times the line height the layout used.
     Block { rect: Rect, text: String, style: Style, lines: usize },
+    /// What follows is drawn only inside `rect`, until the next `Clip`;
+    /// none draws everywhere again. The scrolled rows are drawn this way,
+    /// so that one half out of the viewport is cut at its edge (task 1657).
+    Clip { rect: Option<Rect> },
 }
 
 /// One colour laid over another: `top` at its own alpha times `amount`.
@@ -445,6 +449,16 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
         edge: Some(over(panel, theme.side_panel_edge, hairline(view.scale).1)),
     });
 
+    // When the rows are more than their room holds, they and the chip are
+    // drawn only in it, and scroll there (task 1657): one half out of the
+    // room is cut at its edge, and none is drawn over the header or the
+    // allowance block.
+    let clips = crate::layout::scroll::max(at.content_height, at.viewport) > 0.0;
+    let seen = |r: Rect| !clips || (r.y < at.viewport.y + at.viewport.h && r.y + r.h > at.viewport.y);
+    if clips {
+        out.push(Item::Clip { rect: Some(at.viewport) });
+    }
+
     // The chip goes under everything it lights, and its shadow under it.
     if let Some(chip) = view.chip {
         for (rect, radius, color) in crate::tabstrip::shadow(chip, radius::ROW, panel, theme, view.lift, 1.0) {
@@ -454,6 +468,9 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
         let edge = theme.selection_edge;
         let toward = if edge < 0.0 { BLACK } else { WHITE };
         out.push(Item::Round { rect: chip, radius: radius::ROW, color, edge: Some(over(color, toward, edge.abs())) });
+    }
+    if clips {
+        out.push(Item::Clip { rect: None });
     }
 
     let (hair_h, hair_strength) = hairline(view.scale);
@@ -482,13 +499,18 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
         }
     }
 
+    if clips {
+        out.push(Item::Clip { rect: Some(at.viewport) });
+    }
     for row in &list.waiting {
         if let (Some(rect), Some(fit)) = (at.chip(Some(&row.id)), at.fit(&row.id)) {
-            waiting_row(&mut out, row, rect, fit, view, tr);
+            if seen(rect) {
+                waiting_row(&mut out, row, rect, fit, view, tr);
+            }
         }
     }
 
-    if at.quiet_header.h > 0.0 {
+    if at.quiet_header.h > 0.0 && seen(at.quiet_header) {
         out.push(hair(at.separator, panel));
         out.push(Item::Text {
             rect: inset_x(at.quiet_header, side::HEADER_PADDING_X),
@@ -503,7 +525,12 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
 
     for row in &list.quiet {
         let Some(rect) = at.chip(Some(&row.id)) else { continue };
-        quiet_row(&mut out, row, rect, view);
+        if seen(rect) {
+            quiet_row(&mut out, row, rect, view);
+        }
+    }
+    if clips {
+        out.push(Item::Clip { rect: None });
     }
 
     // The first sweep of old records waiting for the person: in the room
@@ -794,7 +821,7 @@ pub fn all_text(items: &[Item]) -> Vec<&str> {
                     }
                 }
             }
-            Item::Fill { .. } | Item::Round { .. } => {}
+            Item::Fill { .. } | Item::Round { .. } | Item::Clip { .. } => {}
         }
     }
     out
@@ -810,7 +837,7 @@ pub fn moves(items: &[Item]) -> bool {
             Piece::Words { .. } => false,
             Piece::Held { .. } => false,
         }),
-        Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => false,
+        Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => false,
     })
 }
 
@@ -1337,6 +1364,38 @@ mod tests {
         build(list, &at, &view, &same)
     }
 
+    /// Task 1657: rows more than their room holds are drawn only in it --
+    /// a clip round them, in pairs -- and a row scrolled wholly out is not
+    /// drawn at all; a list that fits has no clip.
+    #[test]
+    fn rows_that_do_not_fit_are_clipped_to_their_room_and_scrolled() {
+        let l = list();
+        let fits = ListLayout::new(&l, 900.0);
+        let view = |_: &ListLayout| View { theme: look::theme(false), scale: 1.0, selection: None, lit: Lit::Selection, chip: None, lift: 0.0, pulsing: None, naming: None, fix_refusal: None };
+        let clips = |items: &[Item]| items.iter().filter(|i| matches!(i, Item::Clip { .. })).cloned().collect::<Vec<_>>();
+        assert!(clips(&build(&l, &fits, &view(&fits), &same)).is_empty());
+
+        let short = ListLayout::new(&l, 300.0);
+        let max = crate::layout::scroll::max(short.content_height, short.viewport);
+        assert!(max > 0.0);
+        let at = short.clone().scrolled_to(max);
+        let items = build(&l, &at, &view(&at), &same);
+        let c = clips(&items);
+        assert_eq!(c.len() % 2, 0, "{c:?}");
+        for pair in c.chunks(2) {
+            assert_eq!(pair[0], Item::Clip { rect: Some(at.viewport) });
+            assert_eq!(pair[1], Item::Clip { rect: None });
+        }
+        assert!(!c.is_empty());
+        // The first waiting row is scrolled out: its words are not drawn,
+        // and the last quiet row's are.
+        let words = texts(&items);
+        let first = &l.waiting[0];
+        let last = l.quiet.last().unwrap();
+        assert!(!words.iter().any(|w| w.contains(first.name())), "{words:?}");
+        assert!(words.iter().any(|w| w.contains(last.name())), "{words:?}");
+    }
+
     /// Task 1560: "Fix" on the card that reads "Failed", at the bottom of
     /// its row, where a press is the button's and not the row's.
     #[test]
@@ -1451,7 +1510,7 @@ mod tests {
                         }
                     }
                 }
-                Item::Fill { .. } | Item::Round { .. } => {}
+                Item::Fill { .. } | Item::Round { .. } | Item::Clip { .. } => {}
             }
         }
         out
@@ -1460,6 +1519,7 @@ mod tests {
     fn rect_of(item: &Item) -> Rect {
         match item {
             Item::Fill { rect, .. } | Item::Round { rect, .. } | Item::Text { rect, .. } | Item::Line { rect, .. } | Item::Block { rect, .. } => *rect,
+            Item::Clip { rect } => rect.unwrap_or(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }),
         }
     }
 
@@ -1475,7 +1535,7 @@ mod tests {
                         }
                     }
                 }
-                Item::Fill { .. } | Item::Round { .. } => {}
+                Item::Fill { .. } | Item::Round { .. } | Item::Clip { .. } => {}
             }
         }
         out
@@ -1554,7 +1614,7 @@ mod tests {
                         assert_eq!(color.a, 1.0);
                         assert!(edge.is_none_or(|e| e.a == 1.0));
                     }
-                    Item::Text { .. } | Item::Line { .. } | Item::Block { .. } => {}
+                    Item::Text { .. } | Item::Line { .. } | Item::Block { .. } | Item::Clip { .. } => {}
                 }
             }
         }
@@ -1577,7 +1637,7 @@ mod tests {
                 Piece::Words { .. } => false,
                 Piece::Held { .. } => false,
             }),
-            Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => false,
+            Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => false,
         }
     }
 
@@ -1615,7 +1675,7 @@ mod tests {
                 // where every row's words end.
                 Item::Text { rect, align: Align::Right, .. } => assert_eq!(rect.x + rect.w, right, "{item:?}"),
                 Item::Text { rect, .. } => assert!(rect.x == column || rect.x == words_at, "{item:?}"),
-                Item::Fill { .. } | Item::Round { .. } => {}
+                Item::Fill { .. } | Item::Round { .. } | Item::Clip { .. } => {}
             }
         }
         // One line of words a row; a glyph for every waiting row and for
@@ -1647,7 +1707,7 @@ mod tests {
                 .iter()
                 .filter_map(|i| match i {
                     Item::Block { text, lines, rect, .. } => Some((text, *lines, *rect)),
-                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Line { .. } => None,
+                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Line { .. } | Item::Clip { .. } => None,
                 })
                 .collect();
             // The steps the fit gives lines to, in order, each with its own
@@ -2143,7 +2203,7 @@ mod tests {
                         .iter()
                         .any(|p| matches!(&p.piece, Piece::Words { text, style } if text == row.name() && style.size == font::GROUP_NAME))
                         .then_some(parts),
-                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
+                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => None,
                 })
                 .unwrap_or_else(|| panic!("{} has no first line", row.id));
             assert_eq!(line[0].side, Side::Lead, "{}", row.id);
@@ -2579,7 +2639,7 @@ mod tests {
                     Piece::Words { text, style } if text == "zsh — ~/work" => Some(style.weight),
                     Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } => None,
                 }),
-                Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
+                Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => None,
             })
             .collect();
         assert_eq!(weights, [font::WEIGHT_STRONG]);
@@ -2603,7 +2663,7 @@ mod tests {
                             })
                             .collect(),
                     ),
-                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
+                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => None,
                 })
                 .unwrap()
         };

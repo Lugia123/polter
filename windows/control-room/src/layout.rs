@@ -163,6 +163,68 @@ pub struct ListLayout {
     /// person, under the header, when there is one: the rows start below
     /// it. Two lines of text and an OK (`scene::retention_ok_hit`).
     pub notice: Option<Rect>,
+    /// The allowance block, against the panel's bottom: no height while
+    /// this host does not draw it (`quota.rs`), and `with_quota` gives it
+    /// the height it will have once it does.
+    pub quota: Rect,
+    /// Where the rows are seen: from under the header (and the notice)
+    /// down to the allowance block, or to the panel's bottom when there is
+    /// none. The rows are clipped to it and scroll inside it (task 1657;
+    /// the macOS host's `ControlRoomListLayout.viewport`, task 1654).
+    pub viewport: Rect,
+    /// How tall what scrolls in `viewport` is: from its top to under the
+    /// last row.
+    pub content_height: f64,
+    /// How far the rows are scrolled up, already kept to what they can
+    /// be: every rect in `rows`, `separator` and `quiet_header` is where it
+    /// is seen, that much higher than where it was laid out.
+    pub scrolled: f64,
+}
+
+/// Scrolling the rows in the viewport, as numbers: the same rules as the
+/// macOS host's `ControlRoomListLayout.reveal` and `inSight`, which
+/// `tools/control-room-hosts-agree.py` holds the two to. A row here is
+/// where it was laid out, before any scroll.
+pub mod scroll {
+    use super::Rect;
+
+    /// The furthest the rows scroll: until the last of them is at the
+    /// viewport's bottom.
+    pub fn max(content_height: f64, viewport: Rect) -> f64 {
+        (content_height - viewport.h).max(0.0)
+    }
+
+    /// `scrolled` kept to what the rows can be scrolled.
+    pub fn kept(scrolled: f64, content_height: f64, viewport: Rect) -> f64 {
+        scrolled.clamp(0.0, max(content_height, viewport))
+    }
+
+    /// Whether the whole of `row` is seen with the rows scrolled up by
+    /// `scrolled`. A row with no height never is.
+    pub fn in_view(row: Rect, viewport: Rect, scrolled: f64) -> bool {
+        let (top, bottom) = (viewport.y + scrolled, viewport.y + viewport.h + scrolled);
+        row.h > 0.0 && row.y >= top && row.y + row.h <= bottom
+    }
+
+    /// How far to scroll so that the whole of `row` is seen, from
+    /// `scrolled`: the least scroll that does it, as a selection walked
+    /// with the arrow keys expects -- the row's top to the viewport's top
+    /// when it is above (or taller than the viewport), its bottom to the
+    /// viewport's bottom when it is below. None when it is in sight
+    /// already, or has no height.
+    pub fn reveal(row: Rect, viewport: Rect, scrolled: f64) -> Option<f64> {
+        if row.h <= 0.0 {
+            return None;
+        }
+        let (top, bottom) = (viewport.y + scrolled, viewport.y + viewport.h + scrolled);
+        if row.y < top || row.h > viewport.h {
+            return Some(row.y - viewport.y);
+        }
+        if row.y + row.h > bottom {
+            return Some(row.y + row.h - (viewport.y + viewport.h));
+        }
+        None
+    }
 }
 
 /// How high the notice is: two lines, the OK under them, and the row's
@@ -233,11 +295,70 @@ impl ListLayout {
             y += side::QUIET_ROW_HEIGHT;
         }
 
-        ListLayout { width, height, header, rows, fits, separator, quiet_header, notice }
+        let list_top = notice.map_or(header.y + header.h, |n| n.y + n.h + side::ROW_GAP);
+        let quota = Rect { x: pad, y: height, w: inner, h: 0.0 };
+        let viewport = Rect { x: 0.0, y: list_top, w: width, h: (height - list_top).max(0.0) };
+        let content_height = y + pad - list_top;
+        ListLayout { width, height, header, rows, fits, separator, quiet_header, notice, quota, viewport, content_height, scrolled: 0.0 }
     }
 
-    /// The row under a point of the panel, by its group's name.
+    /// The same with the allowance block `height` high at the panel's
+    /// bottom, and the rows' room ending where it starts. For the day this
+    /// host draws it, and for holding the rule to the macOS host's now.
+    pub fn with_quota(mut self, height: f64) -> ListLayout {
+        let h = height.max(0.0);
+        let pad = space::SIDE_PANEL_PADDING;
+        self.quota = if h > 0.0 {
+            Rect { x: pad, y: self.height - pad - h, w: self.width - 2.0 * pad, h }
+        } else {
+            Rect { x: pad, y: self.height, w: self.width - 2.0 * pad, h: 0.0 }
+        };
+        let bottom = if h > 0.0 { self.quota.y } else { self.height };
+        self.viewport.h = (bottom - self.viewport.y).max(0.0);
+        let scrolled = self.scrolled;
+        self.scrolled_to(scrolled)
+    }
+
+    /// The same with the rows scrolled up by `scrolled`, kept to what they
+    /// can be: every row, the line and the quiet header are moved to where
+    /// they are seen. What draws, what is clicked and what a screen reader
+    /// is told all read the one scrolled layout, so they agree.
+    pub fn scrolled_to(mut self, scrolled: f64) -> ListLayout {
+        let to = scroll::kept(scrolled, self.content_height, self.viewport);
+        let by = to - self.scrolled;
+        if by != 0.0 {
+            for (_, r) in &mut self.rows {
+                r.y -= by;
+            }
+            self.separator.y -= by;
+            self.quiet_header.y -= by;
+            self.scrolled = to;
+        }
+        self
+    }
+
+    /// Where a row was laid out, before any scroll.
+    fn laid_out(&self, id: &str) -> Option<Rect> {
+        self.rows.iter().find(|(name, _)| name == id).map(|(_, r)| Rect { y: r.y + self.scrolled, ..*r })
+    }
+
+    /// How far to scroll so that the whole of row `id` is seen
+    /// (`scroll::reveal`); None when it already is, or is not listed.
+    pub fn reveal(&self, id: Option<&str>) -> Option<f64> {
+        scroll::reveal(self.laid_out(id?)?, self.viewport, self.scrolled)
+    }
+
+    /// Whether the whole of row `id` is seen.
+    pub fn in_view(&self, id: &str) -> bool {
+        self.laid_out(id).is_some_and(|r| scroll::in_view(r, self.viewport, self.scrolled))
+    }
+
+    /// The row under a point of the panel, by its group's name. Only in
+    /// the viewport: a row scrolled under the header is not pressed there.
     pub fn row_at(&self, x: f64, y: f64) -> Option<&str> {
+        if y < self.viewport.y || y >= self.viewport.y + self.viewport.h {
+            return None;
+        }
         self.rows
             .iter()
             .find(|(_, r)| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
@@ -307,5 +428,85 @@ pub mod spring {
             return 0.0;
         }
         (-damping * std::f64::consts::PI / (1.0 - damping * damping).sqrt()).exp()
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    fn r(y: f64, h: f64) -> Rect {
+        Rect { x: 0.0, y, w: 100.0, h }
+    }
+
+    /// Task 1657: the least scroll that shows the whole of a row, the
+    /// macOS host's rule (task 1654).
+    #[test]
+    fn a_row_out_of_sight_is_brought_to_the_nearer_end() {
+        let view = r(40.0, 200.0);
+        // In sight, from its top to its bottom: no scroll.
+        assert_eq!(scroll::reveal(r(40.0, 28.0), view, 0.0), None);
+        assert_eq!(scroll::reveal(r(212.0, 28.0), view, 0.0), None);
+        // Below: its bottom to the viewport's bottom.
+        assert_eq!(scroll::reveal(r(230.0, 28.0), view, 0.0), Some(18.0));
+        // Above: its top to the viewport's top -- not the list's top.
+        assert_eq!(scroll::reveal(r(100.0, 28.0), view, 150.0), Some(60.0));
+        assert_eq!(scroll::reveal(r(40.0, 28.0), view, 150.0), Some(0.0));
+        // Taller than the room: its top.
+        assert_eq!(scroll::reveal(r(100.0, 300.0), view, 0.0), Some(60.0));
+        // Nothing to show.
+        assert_eq!(scroll::reveal(r(100.0, 0.0), view, 0.0), None);
+        assert!(scroll::in_view(r(212.0, 28.0), view, 0.0));
+        assert!(!scroll::in_view(r(213.0, 28.0), view, 0.0));
+        assert!(!scroll::in_view(r(40.0, 28.0), view, 1.0));
+    }
+
+    #[test]
+    fn the_rows_scroll_no_further_than_the_last_one_reaching_the_bottom() {
+        let view = r(40.0, 200.0);
+        assert_eq!(scroll::max(500.0, view), 300.0);
+        assert_eq!(scroll::max(100.0, view), 0.0);
+        assert_eq!(scroll::kept(-5.0, 500.0, view), 0.0);
+        assert_eq!(scroll::kept(900.0, 500.0, view), 300.0);
+    }
+
+    fn long() -> List {
+        const FIXTURE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/poltergeist/testdata/control_snapshot.json"));
+        let mut l = List::from_snapshot(&crate::snapshot::decode(FIXTURE).unwrap());
+        let one = l.quiet[0].clone();
+        l.quiet = (0..30).map(|n| crate::list::Row { id: format!("g{n}"), ..one.clone() }).collect();
+        l
+    }
+
+    /// What is seen moves and what was laid out does not: a scrolled
+    /// layout's rows are higher by the scroll, and a press above the
+    /// viewport -- on the header -- is no row's.
+    #[test]
+    fn a_scrolled_layout_moves_the_rows_and_only_the_viewport_is_pressed() {
+        let l = long();
+        let at = ListLayout::new(&l, 600.0).with_quota(80.0);
+        assert_eq!(at.viewport.y, at.header.y + at.header.h);
+        assert_eq!(at.viewport.y + at.viewport.h, at.quota.y);
+        assert!(at.content_height > at.viewport.h);
+        let last = at.chip(Some("g29")).unwrap();
+        assert!(last.y + last.h > at.quota.y);
+        let to = at.reveal(Some("g29")).unwrap();
+        assert_eq!(to, last.y + last.h - (at.viewport.y + at.viewport.h));
+        let end = at.clone().scrolled_to(to);
+        assert_eq!(end.scrolled, to);
+        assert_eq!(end.chip(Some("g29")).unwrap().y, last.y - to);
+        assert!(end.in_view("g29"));
+        assert_eq!(end.reveal(Some("g29")), None);
+        let first = l.rows().next().unwrap().id.clone();
+        assert!(!end.in_view(&first));
+        assert_eq!(end.reveal(Some(&first)), Some(0.0));
+        // Past the end it stops at the end.
+        assert_eq!(at.clone().scrolled_to(1.0e6).scrolled, scroll::max(at.content_height, at.viewport));
+        // A row scrolled under the header is not pressed there.
+        let under = end.chip(Some(&first)).unwrap();
+        assert!(under.y + under.h <= end.viewport.y);
+        assert_eq!(end.row_at(under.x + 1.0, under.y + under.h - 1.0), None);
+        let seen = end.chip(Some("g29")).unwrap();
+        assert_eq!(end.row_at(seen.x + 1.0, seen.y + 1.0), Some("g29"));
     }
 }

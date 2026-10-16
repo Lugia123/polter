@@ -839,6 +839,7 @@ mod tests {
     fn rect_of(i: &Item) -> Option<Rect> {
         match i {
             Item::Fill { rect, .. } | Item::Round { rect, .. } | Item::Text { rect, .. } | Item::Line { rect, .. } | Item::Block { rect, .. } => Some(*rect),
+            Item::Clip { .. } => None,
         }
     }
 
