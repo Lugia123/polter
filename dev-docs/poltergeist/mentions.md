@@ -56,6 +56,15 @@ agent 退出后终端里是裸 shell，打字加回车会被当命令执行—�
 ⇒ ⚠️ **消息本身照常入群、照常算未读**。直投失败不等于消息没发出——
 这两件事分开，否则又造出一个「发送方看到的成功」。
 
+⇒ **有上限地重投，结局要说出来**（#60）。这两种拒绝被拒后，原样那一行
+会再敲最多 3 次（`MentionRetry.attempts`）：`UserPresent` 每 10.25s 一次，
+`DraftInLine` 每 15s 一次。`DraftInLine` 本身不会自己好，这里只是赌有人
+在一分钟内把那半行发掉或清掉。重投由 `App.retryMentions` 做，唤醒用的是
+通知重试的那个计时器（`noticeRetryIn`）。最后一次也被拒时，往**发帖人自己
+的终端**打一行 `[polter] Your mention of 0x… in "<群>" (message N) was not
+delivered after 3 more tries: <code>. …`；这一行也被拒，就只记 `log.warn`，
+不再追。其余 code 不重投。
+
 ## 四、`Chat.waking` 加一条覆盖
 
 今天：
@@ -147,9 +156,13 @@ waking(name, id, role) = switch (role) {
 **成功**（带 mention 时）：
 
 ```
-{"ok":true,"seq":N,"cut":null|{"given":n,"kept":n},
- "deliveries":[{"id","to","rewritten","delivered","code","message"}, …]}
+{"ok":true,"seq":N,"cut":null|{"given":n,"kept":n},"undelivered":n,
+ "deliveries":[{"id","to","rewritten","delivered","code","message","retry"}, …]}
 ```
+
+`undelivered` 是有 `code` 的行数，为 0 也写（#60）：顶层的 `ok` 只说帖子
+进了群，不读每一行的调用方原来看不出有人没收到。`retry` 是
+`{"attempts":3,"every_ms":…}` 或 null，只有会重投的那两种拒绝才有。
 
 每个不同的 id 恰好一行。`to` 是实际敲进去的终端，可能是 id 本身，也可能
 是改写后的主管；`NotATerminal`（点了用户 `0x0`）/ `Shielded` /

@@ -17,6 +17,7 @@ const std = @import("std");
 const AgentEvent = @import("agent_event.zig");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
+const MentionRetry = @import("MentionRetry.zig");
 const Plugin = @import("Plugin.zig");
 const Tasks = @import("Tasks.zig");
 const arrange = @import("arrange.zig");
@@ -678,7 +679,10 @@ pub const Request = union(Method) {
 
     task_create: struct { group: []const u8, title: []const u8, kind: []const u8 = "" },
     task_edit: struct { task: u64, title: []const u8 = "", kind: []const u8 = "" },
-    task_assign: struct { task: u64, id: Bus.Id },
+    /// `fresh`: clear the worker's context first (#64). Default off: a
+    /// worker reviewing the same change twice needs what it said the
+    /// first time.
+    task_assign: struct { task: u64, id: Bus.Id, fresh: bool = false },
     task_close: struct { task: u64 },
     task_cancel: struct { task: u64 },
     task_progress: struct { task: u64, progress: []const u8 },
@@ -4852,6 +4856,18 @@ pub const MentionRow = struct {
     /// not happen, not a post that did not.
     code: ?[]const u8 = null,
     message: ?[]const u8 = null,
+
+    /// Set when the refusal is one that clears by itself (`UserPresent`,
+    /// `DraftInLine`) and the line will be typed again (#60): how many more
+    /// tries, and how far apart. Null for a row that was delivered or one
+    /// that will not be tried again.
+    retry: ?MentionRetryPlan = null,
+};
+
+/// See `MentionRow.retry` and `MentionRetry`.
+pub const MentionRetryPlan = struct {
+    attempts: u8,
+    every_ms: u64,
 };
 
 /// One group as it appears in a listing.
@@ -4903,6 +4919,10 @@ pub const brief_preview_bytes: usize = 512;
 pub const TaskOwner = struct {
     owner: Bus.Id,
     title: []const u8,
+
+    /// The group whose panel it is on: what a worker whose context was
+    /// just cleared is told to read (#64).
+    group: []const u8 = "",
 
     /// Whether the task is still open.
     ///
@@ -5231,6 +5251,18 @@ pub const Host = struct {
             id: Bus.Id,
             text: []const u8,
             submit: bool,
+        ) anyerror!void,
+
+        /// Hold the request being dispatched -- a `task_assign` with
+        /// `fresh` whose /clear has just been typed into `id` -- until that
+        /// terminal's CLI reports a new session, or ten seconds pass; then
+        /// answer it with `finishFreshAssign` (#64). `before` is the session
+        /// it had. An error means it could not be held.
+        parkAssign: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+            task: u64,
+            before: ?[]const u8,
         ) anyerror!void,
 
         /// Which of Polter's tools this terminal may see, and the version
@@ -5945,6 +5977,10 @@ pub const Host = struct {
 
     fn sendText(self: Host, id: Bus.Id, text: []const u8, submit: bool) anyerror!void {
         return self.vtable.sendText(self.ctx, id, text, submit);
+    }
+
+    fn parkAssign(self: Host, id: Bus.Id, task: u64, before: ?[]const u8) anyerror!void {
+        return self.vtable.parkAssign(self.ctx, id, task, before);
     }
 
     fn agentPresent(self: Host, id: Bus.Id) bool {
@@ -8082,100 +8118,10 @@ fn dispatchOne(
             // the disagreement this is here to close.
             if (!what.open) return taskFailure(error.NotOpen);
 
-            var told: []const u8 = " Nobody is on it now.";
-            if (p.id != 0) {
-                // **Nobody there to take it, so it is not handed over.**
-                // The notice below is typed into that terminal; typed at a
-                // bare shell it is executed rather than read, which is how
-                // this was found -- three terminals answered a task
-                // notification with a parser error on the user's screen.
-                //
-                // Refusing rather than printing-and-succeeding: an owner
-                // pointing at a terminal that will never read it looks
-                // exactly like a working assignment on the panel, and the
-                // supervisor would wait on work nobody has. A failure is at
-                // least seen.
-                if (!host.agentPresent(p.id)) return .{ .failed = .{
-                    .code = "NoAgentThere",
-                    .message = "there is no agent in that terminal (no live " ++
-                        "MCP connection), so nobody can take this task -- " ++
-                        "start an agent CLI there and assign it again. If you " ++
-                        "have only just started one, give it a moment: it " ++
-                        "counts once it has connected.",
-                } };
-
-                // **And how to hand it back.** This is the one moment the
-                // worker is certain to read something about this task, and
-                // reporting is the half of the arrangement that gets
-                // dropped: on the record this was written against, 71
-                // tasks produced 15 `done` reports and one `blocked`. A
-                // worker that finishes writes its account to its own
-                // screen, which nobody is reading -- the supervisor learns
-                // it went quiet and has to go and look. Saying it here
-                // costs a sentence and is the cheapest place there is.
-                const line = try std.fmt.allocPrint(
-                    alloc,
-                    "[polter] Task {d} (\"{s}\") is now yours. " ++
-                        "Your supervisor will send the detail. When you " ++
-                        "finish or get stuck, say so with task_progress " ++
-                        "-- what you print here reaches nobody.",
-                    .{ p.task, what.title },
-                );
-
-                // **Nothing is assigned if this fails.** Answering `ok` for
-                // a message nobody heard is how the supervisor comes to
-                // believe a terminal is working on something it has never
-                // heard of.
-                //
-                // Said in this branch's own words rather than through
-                // `taskFailure`: the reasons a terminal will not take text
-                // are `terminal_send`'s, and `taskFailure`'s `OwnerGone`
-                // sentence is written for a cancellation -- it would tell
-                // the caller the work could not be stopped, and offer
-                // `task_assign` as the way out of a `task_assign` that just
-                // failed.
-                host.sendText(p.id, line, true) catch |err| return switch (err) {
-                    error.NoSuchTerminal, error.ChildExited => hostFailure(
-                        "OwnerGone",
-                        "there is nothing running in that terminal to be told, so the " ++
-                            "task was left as it was. Start something there, or assign " ++
-                            "it to a terminal that is working.",
-                    ),
-
-                    error.UserPresent => hostFailure(
-                        "UserPresent",
-                        key_arrived ++ " Nothing was said, so nothing was assigned: " ++
-                            "the panel is unchanged.",
-                    ),
-                    error.Composing => hostFailure(
-                        "UserPresent",
-                        composing_typed ++ " Nothing was said, so nothing was assigned: " ++
-                            "the panel is unchanged.",
-                    ),
-
-                    error.DraftInLine => hostFailure(
-                        "DraftInLine",
-                        draft_in_line ++ " Nothing was said, so nothing was assigned: " ++
-                            "the panel is unchanged.",
-                    ),
-
-                    else => hostFailure(
-                        "SendFailed",
-                        "could not tell that terminal the task is theirs, so it was not " ++
-                            "assigned. The panel is unchanged.",
-                    ),
-                };
-
-                told = " The terminal was told the task is theirs.";
-            }
-
-            host.taskAssign(p.task, p.id) catch |err| return taskFailure(err);
-
-            return .{ .text = try std.fmt.allocPrint(
-                alloc,
-                "Task {d} assigned.{s}",
-                .{ p.task, told },
-            ) };
+            // **A clear asked for** (#64): checked and typed here, and the
+            // assignment itself waits for the CLI to say it has cleared.
+            if (p.fresh) return freshAssign(alloc, bus, host, p.task, p.id);
+            return assignAndTell(alloc, host, p.task, p.id, what, .none);
         },
 
         .task_close => |p| {
@@ -8660,7 +8606,19 @@ fn postMentioning(
             if (t.err) |err| {
                 const why = mentionFailure(err);
                 row.code = why.code;
-                row.message = try std.fmt.allocPrint(
+                // **Tried again, and the end is told** (#60): the host
+                // queues the same line when the refusal is one that clears.
+                if (MentionRetry.delayMs(err)) |every| {
+                    row.retry = .{ .attempts = MentionRetry.attempts, .every_ms = every };
+                    row.message = try std.fmt.allocPrint(
+                        alloc,
+                        "{s} The message itself is in the group and counted unread. It " ++
+                            "will be typed again up to {d} times, {d}s apart; if the last " ++
+                            "try is refused too, a line saying so is typed into your own " ++
+                            "terminal.",
+                        .{ why.message, MentionRetry.attempts, every / std.time.ms_per_s },
+                    );
+                } else row.message = try std.fmt.allocPrint(
                     alloc,
                     "{s} The message itself is in the group and counted unread; only " ++
                         "the typing did not happen.",
@@ -8769,6 +8727,249 @@ fn planMention(
             "supervisor is not in this group. Nothing was typed; the message, with who " ++
             "it was meant for, is in the group.",
     };
+}
+
+/// Whether a `task_assign` came with a clear first, and what became of it
+/// (#64). `none` is the ordinary assignment.
+pub const Fresh = enum { none, confirmed, unconfirmed };
+
+/// Type the line that tells `id` the task is theirs, then record it --
+/// `task_assign`'s second half, shared by the ordinary assignment and the
+/// one that waited for a clear (`finishFreshAssign`).
+fn assignAndTell(
+    alloc: std.mem.Allocator,
+    host: Host,
+    task: u64,
+    id: Bus.Id,
+    what: TaskOwner,
+    cleared: Fresh,
+) std.mem.Allocator.Error!wire.Response {
+    var told: []const u8 = " Nobody is on it now.";
+    if (id != 0) {
+        // **Nobody there to take it, so it is not handed over.**
+        // The notice below is typed into that terminal; typed at a
+        // bare shell it is executed rather than read, which is how
+        // this was found -- three terminals answered a task
+        // notification with a parser error on the user's screen.
+        //
+        // Refusing rather than printing-and-succeeding: an owner
+        // pointing at a terminal that will never read it looks
+        // exactly like a working assignment on the panel, and the
+        // supervisor would wait on work nobody has. A failure is at
+        // least seen.
+        if (!host.agentPresent(id)) return .{ .failed = .{
+            .code = "NoAgentThere",
+            .message = "there is no agent in that terminal (no live " ++
+                "MCP connection), so nobody can take this task -- " ++
+                "start an agent CLI there and assign it again. If you " ++
+                "have only just started one, give it a moment: it " ++
+                "counts once it has connected.",
+        } };
+
+        // **And how to hand it back.** This is the one moment the
+        // worker is certain to read something about this task, and
+        // reporting is the half of the arrangement that gets
+        // dropped: on the record this was written against, 71
+        // tasks produced 15 `done` reports and one `blocked`. A
+        // worker that finishes writes its account to its own
+        // screen, which nobody is reading -- the supervisor learns
+        // it went quiet and has to go and look. Saying it here
+        // costs a sentence and is the cheapest place there is.
+        //
+        // **After a clear it also says where the work lives** (#64): the
+        // context that knew which group this terminal reports to is the
+        // one that was just thrown away, and the panel still knows.
+        const line = if (cleared == .none) try std.fmt.allocPrint(
+            alloc,
+            "[polter] Task {d} (\"{s}\") is now yours. " ++
+                "Your supervisor will send the detail. When you " ++
+                "finish or get stuck, say so with task_progress " ++
+                "-- what you print here reaches nobody.",
+            .{ task, what.title },
+        ) else try std.fmt.allocPrint(
+            alloc,
+            "[polter] Your context was cleared for a new task. Task {d} " ++
+                "(\"{s}\") is now yours, in group \"{s}\": group_read it before " ++
+                "you start. Your supervisor will send the detail. When you " ++
+                "finish or get stuck, say so with task_progress -- what you " ++
+                "print here reaches nobody.",
+            .{ task, what.title, what.group },
+        );
+
+        // **Nothing is assigned if this fails.** Answering `ok` for
+        // a message nobody heard is how the supervisor comes to
+        // believe a terminal is working on something it has never
+        // heard of.
+        //
+        // Said in this branch's own words rather than through
+        // `taskFailure`: the reasons a terminal will not take text
+        // are `terminal_send`'s, and `taskFailure`'s `OwnerGone`
+        // sentence is written for a cancellation -- it would tell
+        // the caller the work could not be stopped, and offer
+        // `task_assign` as the way out of a `task_assign` that just
+        // failed.
+        host.sendText(id, line, true) catch |err| return switch (err) {
+            error.NoSuchTerminal, error.ChildExited => hostFailure(
+                "OwnerGone",
+                "there is nothing running in that terminal to be told, so the " ++
+                    "task was left as it was. Start something there, or assign " ++
+                    "it to a terminal that is working.",
+            ),
+
+            error.UserPresent => hostFailure(
+                "UserPresent",
+                key_arrived ++ " Nothing was said, so nothing was assigned: " ++
+                    "the panel is unchanged.",
+            ),
+            error.Composing => hostFailure(
+                "UserPresent",
+                composing_typed ++ " Nothing was said, so nothing was assigned: " ++
+                    "the panel is unchanged.",
+            ),
+
+            error.DraftInLine => hostFailure(
+                "DraftInLine",
+                draft_in_line ++ " Nothing was said, so nothing was assigned: " ++
+                    "the panel is unchanged.",
+            ),
+
+            else => hostFailure(
+                "SendFailed",
+                "could not tell that terminal the task is theirs, so it was not " ++
+                    "assigned. The panel is unchanged.",
+            ),
+        };
+
+        told = " The terminal was told the task is theirs.";
+    }
+
+    host.taskAssign(task, id) catch |err| return taskFailure(err);
+
+    return .{ .text = try std.fmt.allocPrint(
+        alloc,
+        "Task {d} assigned.{s}{s}",
+        .{ task, told, switch (cleared) {
+            .none => "",
+            .confirmed => " /clear sent; cleared: confirmed -- the CLI started a new " ++
+                "session before the line was typed.",
+            .unconfirmed => " /clear sent; cleared: unconfirmed -- the CLI said nothing " ++
+                "about a new session within 10s, and the line was typed anyway. Read " ++
+                "that terminal before relying on its context being empty.",
+        } },
+    ) };
+}
+
+/// The CLIs a clear can be asked of, and what clears them (#64). One entry:
+/// it is the one whose clear was looked at, and whose hooks say when it
+/// has happened (`SessionStart` with `source: clear`).
+const fresh_clis = [_]struct { cli: []const u8, command: []const u8 }{
+    .{ .cli = "claude-code", .command = "/clear" },
+};
+
+/// Why `task_assign` with `fresh` will not clear `agent`'s context, or null
+/// when it may. **Pure, so every cell is a test.**
+///
+/// A clear is only typed where it can be seen to land and cannot land in
+/// the middle of anything: hooks that report (or nothing would say it
+/// happened), a CLI whose clear is known, and an agent sitting at its
+/// prompt -- not in a turn, where the line would queue behind the work,
+/// and not at a permission box, where it would answer it.
+pub fn freshRefusal(agent: ?Bus.Agent) ?struct { code: []const u8, message: []const u8 } {
+    const a = agent orelse return .{
+        .code = "FreshUnsupported",
+        .message = "nothing is known about the agent in that terminal, so a clear could " ++
+            "not be confirmed. Nothing was typed and nothing was assigned.",
+    };
+    if (a.hooks != .live) return .{
+        .code = "FreshUnsupported",
+        .message = "the agent in that terminal does not report through hooks, so a clear " ++
+            "could not be confirmed. Nothing was typed and nothing was assigned; assign " ++
+            "without fresh, or start a new worker for the task.",
+    };
+    const cli = a.cli.get() orelse "";
+    for (fresh_clis) |c| {
+        if (std.mem.eql(u8, c.cli, cli)) break;
+    } else return .{
+        .code = "FreshUnsupported",
+        .message = "only claude-code (/clear) can be cleared; that terminal's CLI is " ++
+            "another. Nothing was typed and nothing was assigned; assign without fresh, " ++
+            "or start a new worker for the task.",
+    };
+    return switch (a.state) {
+        .idle, .ended, .failed, .awaiting_input => null,
+        .in_turn => .{
+            .code = "AgentBusy",
+            .message = "that agent is in a turn: a clear typed now would wait behind its " ++
+                "work, or end it. Nothing was typed and nothing was assigned; try again " ++
+                "when its turn has ended.",
+        },
+        .awaiting_approval => .{
+            .code = "AgentBusy",
+            .message = "that agent is waiting on a permission box: a clear typed now " ++
+                "would answer it. Nothing was typed and nothing was assigned.",
+        },
+    };
+}
+
+/// `task_assign` with `fresh` (#64), up to the clear: check, type it, and
+/// have the host hold the request until the CLI says it has cleared
+/// (`finishFreshAssign`). If the host cannot hold it, it is finished now
+/// as unconfirmed rather than left half done.
+fn freshAssign(
+    alloc: std.mem.Allocator,
+    bus: *const Bus,
+    host: Host,
+    task: u64,
+    id: Bus.Id,
+) std.mem.Allocator.Error!wire.Response {
+    if (id == 0) return hostFailure(
+        "FreshNeedsTerminal",
+        "fresh clears the context of the terminal the task goes to, and id 0 is " ++
+            "nobody. Nothing was changed.",
+    );
+    if (!host.agentPresent(id)) return .{ .failed = .{
+        .code = "NoAgentThere",
+        .message = "there is no agent in that terminal (no live MCP connection), so " ++
+            "there is nothing to clear and nobody to take this task.",
+    } };
+    const entry = bus.get(id);
+    if (freshRefusal(if (entry) |e| e.agent else null)) |why| return hostFailure(why.code, why.message);
+
+    // The same refusals as any typing, and nothing assigned after them.
+    host.sendText(id, fresh_clis[0].command, true) catch |err| return switch (err) {
+        error.UserPresent => hostFailure("UserPresent", key_arrived ++
+            " Nothing was cleared and nothing was assigned."),
+        error.Composing => hostFailure("UserPresent", composing_typed ++
+            " Nothing was cleared and nothing was assigned."),
+        error.DraftInLine => hostFailure("DraftInLine", draft_in_line ++
+            " Nothing was cleared and nothing was assigned."),
+        else => hostFailure("SendFailed", "could not type /clear into that terminal. " ++
+            "Nothing was assigned."),
+    };
+
+    const before = if (entry) |e| e.agent.session_id.get() else null;
+    host.parkAssign(id, task, before) catch return finishFreshAssign(alloc, host, task, id, .unconfirmed);
+    // Never read: the request is answered by `finishFreshAssign`.
+    return .ok;
+}
+
+/// The second half of `task_assign` with `fresh`, once the CLI has said it
+/// cleared or the wait for that ran out. The task is looked at again: it
+/// may have been cancelled while the clear went through.
+pub fn finishFreshAssign(
+    alloc: std.mem.Allocator,
+    host: Host,
+    task: u64,
+    id: Bus.Id,
+    cleared: Fresh,
+) std.mem.Allocator.Error!wire.Response {
+    const what = host.taskOwner(task) catch |err| return taskFailure(err);
+    if (!what.open) return hostFailure(
+        "NotOpen",
+        "/clear was sent, but the task was closed or cancelled while it went through, " ++
+            "so it was not assigned.",
+    );
+    return assignAndTell(alloc, host, task, id, what, cleared);
 }
 
 /// Why a mention was not typed, in `terminal_send`'s words -- the refusals
@@ -9481,6 +9682,11 @@ const FakeHost = struct {
     typed_count: usize = 0,
     typed_mem: [8192]u8 = undefined,
     send_errors: []const struct { id: Bus.Id, err: anyerror } = &.{},
+
+    /// `parkAssign` (#64): what it was asked to hold, and an error to
+    /// answer with instead.
+    parked_assign: ?struct { id: Bus.Id, task: u64, before: ?[]const u8 } = null,
+    park_error: ?anyerror = null,
     added: ?struct { group: []const u8, id: Bus.Id, history: History } = null,
     compacted: ?struct { group: []const u8, through: u64, summary: []const u8, by: Bus.Id } = null,
     read_group: ?[]const u8 = null,
@@ -9715,6 +9921,7 @@ const FakeHost = struct {
         return .{ .ctx = self, .vtable = &.{
             .readTerminal = read,
             .sendText = send,
+            .parkAssign = parkAssign,
             .agentPresent = agentPresent,
             .personaFace = personaFace,
             .terminalCapabilities = terminalCapabilities,
@@ -9908,7 +10115,7 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const panel = self.panel orelse return error.NotImplemented;
         const t = panel.get(task) orelse return error.NoSuchTask;
-        return .{ .owner = t.owner, .title = t.title, .open = t.state == .open };
+        return .{ .owner = t.owner, .title = t.title, .open = t.state == .open, .group = t.group };
     }
 
     fn taskCancel(ctx: *anyopaque, task: u64) anyerror!void {
@@ -10288,6 +10495,12 @@ const FakeHost = struct {
         if (self.refuse) return error.Refused;
         if (self.send_error) |err| return err;
         self.sent = .{ .id = id, .text = text, .submit = submit };
+    }
+
+    fn parkAssign(ctx: *anyopaque, id: Bus.Id, task: u64, before: ?[]const u8) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.park_error) |err| return err;
+        self.parked_assign = .{ .id = id, .task = task, .before = before };
     }
 
     fn agentPresent(ctx: *anyopaque, id: Bus.Id) bool {
@@ -13006,6 +13219,170 @@ fn panelFixture(panel: *Tasks) FakeHost {
     } };
 }
 
+// -- task_assign with `fresh` (#64) --------------------------------------
+
+/// A worker whose agent is claude-code, hooks live, at its prompt.
+fn freshAgent(b: *Bus, state: Bus.AgentState, cli: []const u8) void {
+    const e = b.entries.getPtr(worker).?;
+    e.agent.hooks = .live;
+    e.agent.state = state;
+    e.agent.cli.set(cli);
+    e.agent.session_id.set("s-before");
+}
+
+test "fresh: only a claude-code agent at its prompt, with hooks, may be cleared" {
+    var a: Bus.Agent = .none;
+    // Nothing known, or no hooks: nothing would say the clear happened.
+    try testing.expectEqualStrings("FreshUnsupported", freshRefusal(null).?.code);
+    try testing.expectEqualStrings("FreshUnsupported", freshRefusal(a).?.code);
+    a.hooks = .expected;
+    a.cli.set("claude-code");
+    try testing.expectEqualStrings("FreshUnsupported", freshRefusal(a).?.code);
+    a.hooks = .live;
+
+    // A CLI whose clear is not known is told so by name.
+    a.cli.set("codex");
+    const other_cli = freshRefusal(a).?;
+    try testing.expectEqualStrings("FreshUnsupported", other_cli.code);
+    try testing.expect(std.mem.indexOf(u8, other_cli.message, "claude-code") != null);
+    a.cli.set("claude-code");
+
+    // At its prompt: may.
+    for ([_]Bus.AgentState{ .idle, .ended, .failed, .awaiting_input }) |st| {
+        a.state = st;
+        try testing.expect(freshRefusal(a) == null);
+    }
+    // In a turn, or at a permission box: busy.
+    for ([_]Bus.AgentState{ .in_turn, .awaiting_approval }) |st| {
+        a.state = st;
+        try testing.expectEqualStrings("AgentBusy", freshRefusal(a).?.code);
+    }
+}
+
+test "fresh: /clear is typed, the request is held, and nothing is assigned yet" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    freshAgent(&b, .ended, "claude-code");
+
+    const id = try panel.create("build", "take the machine", .bug);
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+        .fresh = true,
+    } });
+
+    // The clear, and only the clear, was typed -- with its return.
+    try testing.expectEqualStrings("/clear", fake.sent.?.text);
+    try testing.expect(fake.sent.?.submit);
+    // Held, with the session it had, for the host to finish.
+    try testing.expectEqual(worker, fake.parked_assign.?.id);
+    try testing.expectEqual(id, fake.parked_assign.?.task);
+    try testing.expectEqualStrings("s-before", fake.parked_assign.?.before.?);
+    // ⭐ And nobody owns it yet: the panel waits for the line.
+    try testing.expectEqual(@as(Bus.Id, 0), panel.get(id).?.owner);
+
+    // Then the CLI says it cleared: the line names the group, and the
+    // reply says the clear was seen.
+    const res = try finishFreshAssign(alloc, fake.host(), id, worker, .confirmed);
+    try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "context was cleared") != null);
+    try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "in group \"build\": group_read it") != null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "/clear sent; cleared: confirmed") != null);
+    try testing.expectEqual(worker, panel.get(id).?.owner);
+}
+
+test "fresh: a clear never confirmed still hands the task over, and says so" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+    const id = try panel.create("build", "t", .bug);
+
+    const res = try finishFreshAssign(arena.allocator(), fake.host(), id, worker, .unconfirmed);
+    try testing.expect(std.mem.indexOf(u8, res.text, "cleared: unconfirmed") != null);
+    try testing.expectEqual(worker, panel.get(id).?.owner);
+}
+
+test "fresh: a host that cannot hold the request finishes it at once, unconfirmed" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+    fake.park_error = error.NothingToHold;
+    freshAgent(&b, .idle, "claude-code");
+    const id = try panel.create("build", "t", .bug);
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+        .fresh = true,
+    } });
+    try testing.expect(std.mem.indexOf(u8, res.text, "cleared: unconfirmed") != null);
+    try testing.expectEqual(worker, panel.get(id).?.owner);
+}
+
+test "fresh: a refused clear assigns nothing and types nothing more" {
+    const Case = struct { state: Bus.AgentState, cli: []const u8, send_err: ?anyerror, code: []const u8 };
+    for ([_]Case{
+        .{ .state = .in_turn, .cli = "claude-code", .send_err = null, .code = "AgentBusy" },
+        .{ .state = .idle, .cli = "codex", .send_err = null, .code = "FreshUnsupported" },
+        .{ .state = .idle, .cli = "claude-code", .send_err = error.DraftInLine, .code = "DraftInLine" },
+        .{ .state = .idle, .cli = "claude-code", .send_err = error.UserPresent, .code = "UserPresent" },
+    }) |c| {
+        var b = try testBus(testing.allocator);
+        defer b.deinit();
+        var panel: Tasks = .init(testing.allocator, .{});
+        defer panel.deinit();
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        var fake = panelFixture(&panel);
+        fake.send_error = c.send_err;
+        freshAgent(&b, c.state, c.cli);
+        const id = try panel.create("build", "t", .bug);
+
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .task_assign = .{
+            .task = id,
+            .id = worker,
+            .fresh = true,
+        } });
+        try testing.expectEqualStrings(c.code, res.failed.code);
+        try testing.expect(fake.sent == null);
+        try testing.expect(fake.parked_assign == null);
+        try testing.expectEqual(@as(Bus.Id, 0), panel.get(id).?.owner);
+    }
+}
+
+test "fresh: absent is the ordinary assignment, with no clear typed" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+    freshAgent(&b, .idle, "claude-code");
+    const id = try panel.create("build", "t", .bug);
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+    } });
+    try testing.expect(std.mem.indexOf(u8, res.text, "/clear") == null);
+    try testing.expect(std.mem.startsWith(u8, fake.sent.?.text, "[polter] Task "));
+    try testing.expect(fake.parked_assign == null);
+}
+
 // **A terminal with no agent in it does not get the work.**
 //
 // The defect: the notice below is typed into the terminal as if a person had
@@ -15045,18 +15422,44 @@ test "mention: a terminal with a draft is not typed into, and the post stands" {
     try testing.expectEqual(@as(usize, 1), fake.post_count);
 
     // Each refusal reported against its own name, in the host's own words,
-    // and not retried or worked round.
+    // and not worked round now.
     const rows = res.posted.deliveries;
     try testing.expectEqualStrings("DraftInLine", rows[0].code.?);
     try testing.expect(std.mem.indexOf(u8, rows[0].message.?, "in the group") != null);
     try testing.expectEqualStrings("UserPresent", rows[1].code.?);
     try testing.expect(rows[2].code == null);
 
+    // **But both will be typed again, and the row says how** (#60): the
+    // two refusals that clear by themselves carry the plan, the delivered
+    // row carries none.
+    try testing.expectEqual(MentionRetryPlan{ .attempts = MentionRetry.attempts, .every_ms = MentionRetry.draft_delay_ms }, rows[0].retry.?);
+    try testing.expectEqual(MentionRetryPlan{ .attempts = MentionRetry.attempts, .every_ms = MentionRetry.user_present_delay_ms }, rows[1].retry.?);
+    try testing.expect(std.mem.indexOf(u8, rows[1].message.?, "typed again up to 3 times") != null);
+    try testing.expect(rows[2].retry == null);
+
     // Nothing was typed into either refusing terminal -- the one with a
     // draft keeps exactly what it had.
     try testing.expect(typedInto(&fake, worker) == null);
     try testing.expect(typedInto(&fake, mention_w2) == null);
     try testing.expect(typedInto(&fake, other) != null);
+}
+
+test "mention: a refusal that will not clear is not promised a retry (#60)" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{
+        .open = &.{},
+        .members = &mention_members,
+        .send_errors = &.{.{ .id = worker, .err = error.ChildExited }},
+    };
+
+    const res = try postNaming(arena.allocator(), &b, &fake, boss, &.{worker});
+    const row = res.posted.deliveries[0];
+    try testing.expectEqualStrings("ChildExited", row.code.?);
+    try testing.expect(row.retry == null);
+    try testing.expect(std.mem.indexOf(u8, row.message.?, "typed again") == null);
 }
 
 test "mention: nobody who was not named is typed into" {

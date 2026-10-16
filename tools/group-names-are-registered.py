@@ -53,6 +53,7 @@ GROUP_NAME_FILES = {
     "src/poltergeist/Feed.zig": "an event in flight to plugins; not stored",
     "src/poltergeist/GroupLog.zig": "group.json inside chat/<group>/ (group_stores.Root.chat)",
     "src/poltergeist/GroupRename.zig": "the rename itself",
+    "src/poltergeist/MentionRetry.zig": "mentions waiting to be typed again, each naming its group (group_stores.Table.mention_retries)",
     "src/poltergeist/StatsLog.zig": "stats/<group>/ and the last-written clock (Root.stats, Table.stats_last)",
     "src/poltergeist/TaskLog.zig": "tasks/<group>/ (group_stores.Root.tasks)",
     "src/poltergeist/Tasks.zig": "the group field of every task (group_stores.Table.task_group_field)",

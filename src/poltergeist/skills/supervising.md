@@ -247,6 +247,20 @@ The order, and step 2 is a note to yourself:
    stuck; it does not say what the work is. **Step 3 is still where the work
    is described**, acceptance test and all.
 
+   **`task_assign(task, id, fresh: true)` clears the worker's context
+   first** — for a worker that has carried a long night and is starting
+   something unrelated. Off by default, and leave it off when the worker
+   needs what it already did (it reviewed this change before, it is fixing
+   what it reported). It types `/clear`, waits up to 10s for the CLI to
+   report a new session, then types the task line, which also tells it the
+   group to `group_read`; the reply says `cleared: confirmed` or `cleared:
+   unconfirmed` (read the screen before trusting the second). Only claude-code
+   with hooks, sitting at its prompt: `AgentBusy` in a turn or at a
+   permission box, `FreshUnsupported` for any other CLI — and then nothing
+   was typed and nothing assigned. Send the instruction (step 3) **after**
+   this, or the clear throws it away. A brand-new worker per task is the
+   other way to a clean context.
+
 **Never hand work over by announcing it.** A hand-over said in the group, or
 written in a reply to somebody else, reaches nobody: the terminal you are
 handing to is watched, and a watched terminal is not woken by a post. It is
@@ -965,7 +979,12 @@ your side. `mention` is an **array of terminal ids** (`["0x2528…"]`), not an
 is refused. Each one named has the post typed in with a return, the way a
 `terminal_send` would, and the reply has a row per id in `deliveries`:
 `delivered: false` with a `code` (`UserPresent`, `DraftInLine`) means that one
-was not typed into — the post is in the group either way. A worker naming
+was not typed into — the post is in the group either way. `undelivered` at the
+top of the reply counts those rows; **read it every time**. A row refused with
+`UserPresent` or `DraftInLine` also has `retry`: the same line is typed again
+up to 3 times (10s apart for `UserPresent`, 15s for `DraftInLine`), and if the
+last try is refused too, a `[polter] Your mention of … was not delivered`
+line is typed into your own terminal. Other codes are not retried. A worker naming
 another worker reaches you instead, rewritten so the record shows who it was
 for; that is by design, and the switch is the user's. The contract is
 `dev-docs/poltergeist/mentions.md`.

@@ -457,6 +457,9 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 // say which terminal it meant would take the task off whoever
                 // had it, and quietly.
                 .id = try requireId(params),
+
+                // Off unless asked: see `rpc.Request.task_assign`.
+                .fresh = optionalBool(params, "fresh", false),
             },
         },
 
@@ -1565,6 +1568,18 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.endObject();
             } else try s.write(null);
 
+            // **Counted where nobody can miss it** (#60). `ok` says the post
+            // is in the group; whether everyone named was typed into is a
+            // different question, and an author that did not read every row
+            // took the first answer for the second. Zero is written too, so
+            // its absence is never what says "all delivered".
+            var undelivered: usize = 0;
+            for (v.deliveries) |row| {
+                if (row.code != null) undelivered += 1;
+            }
+            try s.objectField("undelivered");
+            try s.write(undelivered);
+
             try s.objectField("deliveries");
             try s.beginArray();
             for (v.deliveries) |row| {
@@ -1581,6 +1596,15 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.write(row.code);
                 try s.objectField("message");
                 try s.write(row.message);
+                try s.objectField("retry");
+                if (row.retry) |r| {
+                    try s.beginObject();
+                    try s.objectField("attempts");
+                    try s.write(r.attempts);
+                    try s.objectField("every_ms");
+                    try s.write(r.every_ms);
+                    try s.endObject();
+                } else try s.write(null);
                 try s.endObject();
             }
             try s.endArray();
@@ -2763,6 +2787,19 @@ test "an answer is one line, whatever was put in it" {
     );
 }
 
+test "task_assign: fresh is off unless asked for (#64)" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const plain = try parseRequestLeaky(arena.allocator(),
+        \\{"method":"task_assign","params":{"task":3,"id":"0x2222"}}
+    );
+    try testing.expect(!plain.task_assign.fresh);
+    const fresh = try parseRequestLeaky(arena.allocator(),
+        \\{"method":"task_assign","params":{"task":3,"id":"0x2222","fresh":true}}
+    );
+    try testing.expect(fresh.task_assign.fresh);
+}
+
 test "group_post: mention is ids in either form, and the reply has one row per name" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -2789,12 +2826,13 @@ test "group_post: mention is ids in either form, and the reply has one row per n
         .cut = null,
         .deliveries = &.{
             .{ .id = 0x2222, .to = 0x2222 },
-            .{ .id = 0x3333, .to = 0x1111, .rewritten = true, .code = "DraftInLine", .message = "m" },
+            .{ .id = 0x3333, .to = 0x1111, .rewritten = true, .code = "DraftInLine", .message = "m", .retry = .{ .attempts = 3, .every_ms = 15_000 } },
             .{ .id = 0, .to = null, .code = "NotATerminal", .message = "m" },
         },
     } });
+    // `undelivered` counts every row with a code, retrying or not (#60).
     try testing.expectEqualStrings(
-        \\{"ok":true,"seq":7,"cut":null,"deliveries":[{"id":"0x0000000000002222","to":"0x0000000000002222","rewritten":false,"delivered":true,"code":null,"message":null},{"id":"0x0000000000003333","to":"0x0000000000001111","rewritten":true,"delivered":false,"code":"DraftInLine","message":"m"},{"id":"0x0000000000000000","to":null,"rewritten":false,"delivered":false,"code":"NotATerminal","message":"m"}]}
+        \\{"ok":true,"seq":7,"cut":null,"undelivered":2,"deliveries":[{"id":"0x0000000000002222","to":"0x0000000000002222","rewritten":false,"delivered":true,"code":null,"message":null,"retry":null},{"id":"0x0000000000003333","to":"0x0000000000001111","rewritten":true,"delivered":false,"code":"DraftInLine","message":"m","retry":{"attempts":3,"every_ms":15000}},{"id":"0x0000000000000000","to":null,"rewritten":false,"delivered":false,"code":"NotATerminal","message":"m","retry":null}]}
     ++ "\n",
         w.buffered(),
     );
