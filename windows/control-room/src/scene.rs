@@ -24,6 +24,19 @@ use crate::snapshot::{Fix, Shown};
 /// The English of what the panel says; `build` passes each through the
 /// host's translation. `{}` is where the one argument goes.
 pub mod msg {
+    // What the list draws besides its rows (task 1661).
+    pub const ASKED_REPORT: &str = n_("Asked the supervisor for a progress report");
+    pub const ASKED_CLOSE_IDLE: &str = n_("Asked the supervisor to close idle workers");
+    pub const NOT_DELIVERED: &str = n_("Not delivered: {}");
+    pub const NOT_DELIVERED_RETRIED: &str = n_("Not delivered yet: {}. It will be tried again.");
+    pub const ARCHIVED_HEADER: &str = n_("Archived ({})");
+    /// The month and then the day, as numbers.
+    pub const ARCHIVED_ON: &str = n_("archived {}/{}");
+    // The group's brief, edited in the panel at the right (task 1661).
+    pub const NOTE_TITLE: &str = n_("{}'s brief");
+    pub const NOTE_WHO: &str = n_("The group's supervisor and workers can all read this.");
+    pub const NOTE_COUNT: &str = n_("{} characters");
+    pub const NOTE_COUNT_UNSAVED: &str = n_("{} characters, not saved");
     use crate::n_;
 
     /// The snapshot could not be read. `{}` is what was wrong with it.
@@ -200,6 +213,8 @@ pub enum Piece {
     /// The glyph of a terminal the person is holding (`glyph::held`): not a
     /// status, never moving, and only in a pane's title.
     Held { color: Rgba, size: f64 },
+    /// Pinned or muted, beside a group's name (`glyph::mark`).
+    Mark { mark: crate::glyph::Mark, color: Rgba, size: f64 },
 }
 
 /// One part of a line. A host measures the words; that is the one thing
@@ -281,6 +296,143 @@ fn body(color: Rgba) -> Style {
 
 fn words(text: impl Into<String>, style: Style, side: Side, gap: f64) -> Part {
     Part { piece: Piece::Words { text: text.into(), style }, side, gap }
+}
+
+/// The group's brief, being edited in the panel at the right (task 1661,
+/// design v21 `04-B`, with the user's changes: no cross at the top -- the
+/// button at the bottom closes it -- and the buttons the settings window's).
+/// `rect` is the panel's, in the room's points. What is typed is the host's
+/// own multi-line box, put where `field` says, inset by `field_inset`; the
+/// two buttons are the host's own too, in the band `buttons` leaves at the
+/// bottom, at its right.
+pub struct Note {
+    pub items: Vec<Item>,
+    pub field: Rect,
+    pub buttons: Rect,
+}
+
+/// How far the typed text stands in from the box's edge.
+pub const NOTE_FIELD_INSET: f64 = space::FRAME_TO_CONTENT / 2.0;
+
+/// `chars` is how long the brief is as typed; `dirty` that it differs from
+/// the group's. `band` is how high the host's buttons need the bottom band
+/// to be, in points.
+pub fn build_note(group: &str, rect: Rect, theme: &Theme, scale: f64, chars: usize, dirty: bool, band: f64, tr: &dyn Fn(&str) -> String) -> Note {
+    let panel = panel_color(theme);
+    let pad = space::FRAME_TO_CONTENT;
+    let mut items = vec![Item::Round {
+        rect,
+        radius: radius::SIDE_PANEL,
+        color: panel,
+        edge: Some(over(panel, theme.side_panel_edge, hairline(scale).1)),
+    }];
+    let inner = Rect { x: rect.x + pad, y: rect.y + pad, w: (rect.w - 2.0 * pad).max(0.0), h: (rect.h - 2.0 * pad).max(0.0) };
+    // The title, and who reads it.
+    let title = Rect { h: side::HEADER_HEIGHT, ..inner };
+    items.push(Item::Text {
+        rect: title,
+        text: list::fill(&tr(msg::NOTE_TITLE), group),
+        style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.text) },
+        align: Align::Left,
+    });
+    let who = Rect { y: title.y + title.h, h: side::ASK_LINE_HEIGHT, ..inner };
+    items.push(Item::Text { rect: who, text: tr(msg::NOTE_WHO), style: body(theme.text_secondary), align: Align::Left });
+    // The band at the bottom: how long it is, and the buttons.
+    let band_rect = Rect { x: rect.x, y: (rect.y + rect.h - band).max(who.y + who.h), w: rect.w, h: band.min(rect.h) };
+    let count = Rect { x: inner.x, y: band_rect.y, w: inner.w, h: band_rect.h };
+    let said = list::fill(&tr(if dirty { msg::NOTE_COUNT_UNSAVED } else { msg::NOTE_COUNT }), &chars.to_string());
+    items.push(Item::Text { rect: count, text: said, style: body(theme.text_secondary), align: Align::Left });
+    // The box, between the two.
+    let top = who.y + who.h + side::ROW_GAP;
+    let field = Rect { x: inner.x, y: top, w: inner.w, h: (band_rect.y - top).max(0.0) };
+    items.push(Item::Round { rect: field, radius: radius::ROW, color: theme.window_base, edge: Some(theme.line_faint) });
+    Note { items, field, buttons: Rect { x: inner.x, y: band_rect.y, w: inner.w, h: band_rect.h } }
+}
+
+/// What the line under a row says (task 1661, design v21 `03` and `07`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnderLine {
+    /// Why the name typed for the row was refused, as the person is told
+    /// it; the field above it is underlined in red.
+    Refused(String),
+    /// The supervisor was asked to report, or to close idle workers: the
+    /// sentence was typed into its terminal. Not "done" -- asked.
+    Asked(crate::act::Ask),
+    /// It could not be typed in, and why, in a few words; `retried` when
+    /// the core will try again by itself.
+    NotDelivered { why: String, retried: bool },
+}
+
+/// The lines under rows, the archived section, and the red line under a
+/// name being typed when it was refused -- what the list draws besides its
+/// rows (task 1661). In the viewport, as the rows are. `archived` is the
+/// list's, in its order; `open` whether its section is; `offset_ms` how
+/// far local time is ahead of UTC, for the day each was put away.
+pub fn build_extras(
+    list: &List,
+    at: &ListLayout,
+    view: &View,
+    under: &[(String, UnderLine)],
+    open: bool,
+    offset_ms: i64,
+    tr: &dyn Fn(&str) -> String,
+) -> Vec<Item> {
+    let theme = view.theme;
+    let panel = panel_color(theme);
+    let mut out = vec![Item::Clip { rect: Some(at.viewport) }];
+    for (id, line) in under {
+        let (Some((_, r)), Some(row)) = (at.line_rects.iter().find(|(u, _)| u == id), at.chip(Some(id))) else { continue };
+        let (_, text_x) = glyph_column(row);
+        let rect = Rect { x: text_x, y: r.y, w: (row.x + row.w - side::ROW_PADDING_X - text_x).max(0.0), h: r.h };
+        let (text, color) = match line {
+            UnderLine::Refused(why) => (why.clone(), theme.problem_text_on_row),
+            UnderLine::Asked(ask) => (
+                format!(
+                    "\u{2713} {}",
+                    tr(match ask {
+                        crate::act::Ask::Report => msg::ASKED_REPORT,
+                        crate::act::Ask::CloseIdle => msg::ASKED_CLOSE_IDLE,
+                    })
+                ),
+                theme.text_secondary,
+            ),
+            UnderLine::NotDelivered { why, retried } => (
+                format!("\u{26a0} {}", list::fill(&tr(if *retried { msg::NOT_DELIVERED_RETRIED } else { msg::NOT_DELIVERED }), why)),
+                theme.problem_text_on_row,
+            ),
+        };
+        out.push(Item::Text { rect, text, style: body(color), align: Align::Left });
+        if matches!(line, UnderLine::Refused(_)) {
+            // The field's underline, red: the line just above this one.
+            out.push(fill(Rect { x: text_x, y: r.y - 2.0, w: rect.w, h: 2.0 }, theme.problem_text_on_row));
+        }
+    }
+    if at.archived_header.h > 0.0 {
+        out.push(fill(Rect { h: hairline(view.scale).0, ..at.archived_separator }, over(panel, theme.line_faint, hairline(view.scale).1)));
+        let head = inset_x(at.archived_header, side::HEADER_PADDING_X);
+        let fold = if open { "\u{25be}" } else { "\u{25b8}" };
+        out.push(Item::Text {
+            rect: head,
+            text: format!("{fold} {}", list::fill(&tr(msg::ARCHIVED_HEADER), &list.archived.len().to_string())),
+            style: body(theme.text_secondary),
+            align: Align::Left,
+        });
+        for (name, r) in &at.archived_rows {
+            let Some(a) = list.archived.iter().find(|a| &a.name == name) else { continue };
+            let (_, text_x) = glyph_column(*r);
+            let (_, m, d) = crate::rowmenu::civil((a.archived_ms as i64 + offset_ms).div_euclid(86_400_000));
+            let when = list::fill(&list::fill(&tr(msg::ARCHIVED_ON), &m.to_string()), &d.to_string());
+            out.push(Item::Line {
+                rect: Rect { x: text_x, y: r.y, w: (r.x + r.w - side::ROW_PADDING_X - text_x).max(0.0), h: r.h },
+                parts: vec![
+                    words(name.clone(), Style { size: font::BODY, weight: font::WEIGHT_BODY, face: Face::Mono, color: theme.text_tertiary }, Side::Lead, 0.0),
+                    words(when, body(theme.text_tertiary), Side::Rest, side::ROW_ITEM_GAP),
+                ],
+            });
+        }
+    }
+    out.push(Item::Clip { rect: None });
+    out
 }
 
 /// The colour of a status word. Where the word is not red is the table's
@@ -619,11 +771,30 @@ fn quiet_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View) {
         if said.is_empty() { Side::Rest } else { Side::Lead },
         0.0,
     );
+    let marks = marks(row, theme);
+    // With marks the name is a lead part, so that they stand after it.
+    let name = if marks.is_empty() { name } else { Part { side: Side::Lead, ..name } };
     let mut parts = vec![name];
+    parts.extend(marks);
     if !said.is_empty() {
         parts.push(words(said, body(theme.text_secondary), Side::Rest, side::ROW_ITEM_GAP));
     }
     out.push(Item::Line { rect: Rect { x: text_x, y: rect.y, w: (right - text_x).max(0.0), h: rect.h }, parts });
+}
+
+/// The marks after a group's name (task 1661, design v21 `05`): pinned
+/// first, then muted, the first `ROW_ITEM_GAP` from the name and the second
+/// `MARK_GAP` from the first, each the size of a status glyph, in the
+/// quietest ink a row has. None on a row that is neither.
+fn marks(row: &Row, theme: &Theme) -> Vec<Part> {
+    let mut out = Vec::new();
+    for (on, mark) in [(row.pinned, crate::glyph::Mark::Pinned), (row.muted.is_some(), crate::glyph::Mark::Muted)] {
+        if on {
+            let gap = if out.is_empty() { side::ROW_ITEM_GAP } else { side::MARK_GAP };
+            out.push(Part { piece: Piece::Mark { mark, color: theme.text_tertiary, size: side::GLYPH }, side: Side::Lead, gap });
+        }
+    }
+    out
 }
 
 /// A group that is waiting (control-room.md, 3.2): the glyph in its column;
@@ -669,6 +840,7 @@ fn waiting_row(out: &mut Vec<Item>, row: &Row, rect: Rect, fit: &AskFit, view: &
         Side::Lead,
         0.0,
     )];
+    first.extend(marks(row, theme));
     first.extend(waiter_parts(row, theme, tr));
     first.push(words(row.word.clone(), Style { weight: font::WEIGHT_EMPHASIS, ..body(word_ink) }, Side::Trail, side::ROW_ITEM_GAP));
     out.push(Item::Line { rect: Rect { x: text_x, y: top, w: width, h: side::ROW_LINE1_HEIGHT }, parts: first });
@@ -817,7 +989,7 @@ pub fn all_text(items: &[Item]) -> Vec<&str> {
                     match &part.piece {
                         Piece::Words { text, .. } => out.push(text.as_str()),
                         Piece::Glyph { .. } => {}
-                        Piece::Held { .. } => {}
+                        Piece::Held { .. } | Piece::Mark { .. } => {}
                     }
                 }
             }
@@ -835,7 +1007,7 @@ pub fn moves(items: &[Item]) -> bool {
         Item::Line { parts, .. } => parts.iter().any(|p| match &p.piece {
             Piece::Glyph { shown, pulses, .. } => *pulses || *shown == Shown::Working,
             Piece::Words { .. } => false,
-            Piece::Held { .. } => false,
+            Piece::Held { .. } | Piece::Mark { .. } => false,
         }),
         Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => false,
     })
@@ -1396,6 +1568,120 @@ mod tests {
         assert!(words.iter().any(|w| w.contains(last.name())), "{words:?}");
     }
 
+    /// Task 1661 (design v21 `03`, `06`, `07`): the line under a row says
+    /// what it was given to say where the layout left room for it, a
+    /// refusal and a failure in red; the archived section says how many and,
+    /// open, each one's name and the day it was put away.
+    #[test]
+    fn the_lines_under_rows_and_the_archived_section_are_drawn_where_the_layout_says() {
+        use crate::layout::Extras;
+        let mut l = list();
+        l.archived = vec![crate::snapshot::Archived { name: "old-app".into(), brief: String::new(), archived_ms: 1_792_136_400_000, record_dir: None, delete_cost: None }];
+        let (w, q) = (l.waiting[0].id.clone(), l.quiet[0].id.clone());
+        let extras = Extras { lines_under: vec![w.clone(), q.clone()], archived: vec!["old-app".into()], archived_open: true };
+        let at = ListLayout::measured_with(&l, 900.0, &|t, _| crate::layout::nominal_lines(t), &extras);
+        let theme = look::theme(true);
+        let view = View { theme, scale: 1.0, selection: None, lit: Lit::Selection, chip: None, lift: 0.0, pulsing: None, naming: None, fix_refusal: None };
+        let under = vec![
+            (w.clone(), UnderLine::NotDelivered { why: "x".into(), retried: true }),
+            (q.clone(), UnderLine::Asked(crate::act::Ask::CloseIdle)),
+        ];
+        let items = build_extras(&l, &at, &view, &under, true, 8 * 3_600_000, &same);
+        assert_eq!(items.first(), Some(&Item::Clip { rect: Some(at.viewport) }));
+        assert_eq!(items.last(), Some(&Item::Clip { rect: None }));
+        let text_at = |want: &str| {
+            items.iter().find_map(|i| match i {
+                Item::Text { rect, text, style, .. } if text.contains(want) => Some((*rect, style.color)),
+                _ => None,
+            })
+        };
+        let (r, c) = text_at("Not delivered yet: x").unwrap();
+        assert_eq!(c, theme.problem_text_on_row);
+        assert_eq!(r.y, at.line_rects.iter().find(|(id, _)| *id == w).unwrap().1.y);
+        let (r, c) = text_at("Asked the supervisor to close idle workers").unwrap();
+        assert_eq!(c, theme.text_secondary);
+        assert_eq!(r.y, at.line_rects.iter().find(|(id, _)| *id == q).unwrap().1.y);
+        assert!(text_at("Archived (1)").is_some());
+        assert!(texts(&items).iter().any(|t| t == "archived 10/16"), "{:?}", texts(&items));
+    }
+
+    /// Task 1661 (design v21 `04-B`): the brief's panel says whose brief
+    /// and who reads it, how long it is and whether it is saved; the box
+    /// to type in fills what is between, and the buttons' band is at the
+    /// bottom -- all inside the panel, and no cross anywhere.
+    #[test]
+    fn the_briefs_panel_has_a_box_between_its_title_and_its_buttons() {
+        let rect = Rect { x: 900.0, y: 8.0, w: 420.0, h: 700.0 };
+        let theme = look::theme(true);
+        let n = build_note("web-app", rect, theme, 1.0, 234, true, 52.0, &same);
+        let words = texts(&n.items);
+        assert!(words.contains(&"web-app's brief".to_string()), "{words:?}");
+        assert!(words.contains(&"234 characters, not saved".to_string()), "{words:?}");
+        assert!(!words.iter().any(|w| w == "×" || w == "x"));
+        let saved = build_note("web-app", rect, theme, 1.0, 234, false, 52.0, &same);
+        assert!(texts(&saved.items).contains(&"234 characters".to_string()));
+        assert_eq!(n.buttons.y + n.buttons.h, rect.y + rect.h);
+        assert_eq!(n.buttons.h, 52.0);
+        assert_eq!(n.field.y + n.field.h, n.buttons.y);
+        assert!(n.field.h > 500.0);
+        for i in &n.items {
+            let r = rect_of(i);
+            assert!(r.x >= rect.x && r.x + r.w <= rect.x + rect.w + 1e-9 && r.y >= rect.y && r.y + r.h <= rect.y + rect.h + 1e-9, "{i:?}");
+        }
+    }
+
+    /// Task 1661 (design v21 `05`): pinned and muted are two marks after
+    /// the name, pinned first, `ROW_ITEM_GAP` and then `MARK_GAP` apart,
+    /// the size of a status glyph and in the quietest ink -- on a quiet row
+    /// and on a waiting one alike; a row that is neither has none.
+    #[test]
+    fn pinned_and_muted_are_marks_after_the_name() {
+        use crate::glyph::Mark;
+        let theme = look::theme(true);
+        let marks_after = |items: &[Item], name: &str| -> Option<Vec<(Mark, f64)>> {
+            items.iter().find_map(|i| match i {
+                Item::Line { parts, .. } => {
+                    let at = parts.iter().position(|p| matches!(&p.piece, Piece::Words { text, .. } if text == name))?;
+                    Some(
+                        parts[at + 1..]
+                            .iter()
+                            .filter_map(|p| match &p.piece {
+                                Piece::Mark { mark, color, size } => {
+                                    assert_eq!(*color, theme.text_tertiary);
+                                    assert_eq!(*size, side::GLYPH);
+                                    assert_eq!(p.side, Side::Lead);
+                                    Some((*mark, p.gap))
+                                }
+                                _ => None,
+                            })
+                            .collect(),
+                    )
+                }
+                _ => None,
+            })
+        };
+        let mut l = list();
+        let (quiet, waiting) = (l.quiet[0].id.clone(), l.waiting[0].id.clone());
+        let at = ListLayout::new(&l, 900.0);
+        let view = View { theme, scale: 1.0, selection: None, lit: Lit::Selection, chip: None, lift: 0.0, pulsing: None, naming: None, fix_refusal: None };
+        let plain = build(&l, &at, &view, &same);
+        assert_eq!(marks_after(&plain, &quiet), Some(vec![]));
+        assert_eq!(marks_after(&plain, &waiting), Some(vec![]));
+        for r in l.quiet.iter_mut().chain(l.waiting.iter_mut()) {
+            if r.id == quiet || r.id == waiting {
+                r.pinned = true;
+                r.muted = Some(crate::snapshot::Muted { until_ms: None });
+            }
+        }
+        let both = build(&l, &at, &view, &same);
+        let want = Some(vec![(Mark::Pinned, side::ROW_ITEM_GAP), (Mark::Muted, side::MARK_GAP)]);
+        assert_eq!(marks_after(&both, &quiet), want);
+        assert_eq!(marks_after(&both, &waiting), want);
+        l.quiet[0].pinned = false;
+        let muted_only = build(&l, &at, &view, &same);
+        assert_eq!(marks_after(&muted_only, &quiet), Some(vec![(Mark::Muted, side::ROW_ITEM_GAP)]));
+    }
+
     /// Task 1560: "Fix" on the card that reads "Failed", at the bottom of
     /// its row, where a press is the button's and not the row's.
     #[test]
@@ -1635,7 +1921,7 @@ mod tests {
             Item::Line { parts, .. } => parts.iter().any(|p| match &p.piece {
                 Piece::Glyph { .. } => true,
                 Piece::Words { .. } => false,
-                Piece::Held { .. } => false,
+                Piece::Held { .. } | Piece::Mark { .. } => false,
             }),
             Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => false,
         }
@@ -2637,7 +2923,7 @@ mod tests {
             .filter_map(|i| match i {
                 Item::Line { parts, .. } => parts.iter().find_map(|p| match &p.piece {
                     Piece::Words { text, style } if text == "zsh — ~/work" => Some(style.weight),
-                    Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } => None,
+                    Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } => None,
                 }),
                 Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => None,
             })
@@ -2659,7 +2945,7 @@ mod tests {
                             .iter()
                             .filter_map(|p| match &p.piece {
                                 Piece::Words { text, .. } => Some(text.clone()),
-                                Piece::Glyph { .. } | Piece::Held { .. } => None,
+                                Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } => None,
                             })
                             .collect(),
                     ),

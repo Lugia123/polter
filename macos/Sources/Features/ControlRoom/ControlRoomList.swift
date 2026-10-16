@@ -1098,6 +1098,17 @@ struct ControlRoomListLayout: Equatable {
     /// last row. Every frame in `rows` lies within `viewport.minY` and
     /// `viewport.minY + contentHeight`.
     var contentHeight: CGFloat
+    /// The line under a row (task 1661): why a new name for it was refused,
+    /// or that its supervisor was asked something -- by `Row.id`, for the
+    /// rows that have one. The row is taller by the line; this is where
+    /// the line is in it.
+    var lineRects: [String: CGRect]
+    /// The list's last section (task 1661, design v21 `06`): the groups
+    /// put away. Its line and its header have no height when there are
+    /// none; its rows, by name, only while the person has it open.
+    var archivedSeparator: CGRect
+    var archivedHeader: CGRect
+    var archivedRows: [String: CGRect]
 
     /// How wide what a row waits on is: the row, less its padding and the
     /// column the glyph stands in.
@@ -1123,8 +1134,15 @@ struct ControlRoomListLayout: Equatable {
     /// `noteUnderHeader` is how high whatever is said under the header is
     /// -- why a name made no group -- and the rows start below it: a note
     /// laid over the first row hid the row it was laid over.
+    ///
+    /// `linesUnder` are the rows with a line under them (`lineRects`);
+    /// `archived` the groups put away, in the core's order, and
+    /// `archivedOpen` whether the person opened their section. The Windows
+    /// host's `ListLayout::measured_with` is the same arithmetic, and
+    /// `tools/control-room-hosts-agree.py` holds the two to it.
     init(list: ControlRoomList, height: CGFloat, noteUnderHeader: CGFloat = 0,
-         needed: (String, Bool) -> Int = { text, _ in ControlRoomList.nominalLines(text) }) {
+         needed: (String, Bool) -> Int = { text, _ in ControlRoomList.nominalLines(text) },
+         linesUnder: Set<String> = [], archived: [String] = [], archivedOpen: Bool = false) {
         let pad = CGFloat(Look.Space.sidePanelPadding)
         let width = CGFloat(Look.Side.width)
         let inner = width - 2 * pad
@@ -1138,13 +1156,22 @@ struct ControlRoomListLayout: Equatable {
         y += headerH + max(0, noteUnderHeader)
         let listTop = y
 
+        let lineH = CGFloat(Look.Side.askLineHeight)
         var frames: [String: CGRect] = [:]
         var fitted: [String: ControlRoomAskFit] = [:]
+        var lines: [String: CGRect] = [:]
         for row in list.waiting {
             let fit = ControlRoomAskFit.fit(needed: row.what.drawn.map { needed($0, row.what.isCode) })
-            let rowH = Self.rowHeight(fit: fit, others: row.others, fix: row.fix)
+            let more = linesUnder.contains(row.id) ? lineH : 0
+            let rowH = Self.rowHeight(fit: fit, others: row.others, fix: row.fix) + more
             fitted[row.id] = fit
             frames[row.id] = CGRect(x: pad, y: y, width: inner, height: rowH)
+            if more > 0 {
+                // Under what it waits on, above "Fix" when it has that.
+                let fixH = row.fix == .none ? 0 : CGFloat(Look.Side.fixLineHeight)
+                lines[row.id] = CGRect(x: pad, y: y + rowH - CGFloat(Look.Side.rowPaddingY) - fixH - lineH,
+                                       width: inner, height: lineH)
+            }
             y += rowH + gap
         }
         fits = fitted
@@ -1163,11 +1190,38 @@ struct ControlRoomListLayout: Equatable {
             quietHeader = CGRect(x: pad, y: y, width: inner, height: headerH)
             y += headerH
         }
+        let quietH = CGFloat(Look.Side.quietRowHeight)
         for row in list.quiet {
-            frames[row.id] = CGRect(x: pad, y: y, width: inner, height: CGFloat(Look.Side.quietRowHeight))
-            y += CGFloat(Look.Side.quietRowHeight)
+            let more = linesUnder.contains(row.id) ? lineH : 0
+            frames[row.id] = CGRect(x: pad, y: y, width: inner, height: quietH + more)
+            if more > 0 {
+                lines[row.id] = CGRect(x: pad, y: y + quietH, width: inner, height: lineH)
+            }
+            y += quietH + more
         }
         rows = frames
+        lineRects = lines
+
+        // The groups put away: a line, their header, and while it is open
+        // a quiet row each.
+        var putAway: [String: CGRect] = [:]
+        if archived.isEmpty {
+            archivedSeparator = CGRect(x: pad + padX, y: y, width: inner - 2 * padX, height: 0)
+            archivedHeader = CGRect(x: pad, y: y, width: inner, height: 0)
+        } else {
+            y += CGFloat(Look.Side.separatorSpaceAbove)
+            archivedSeparator = CGRect(x: pad + padX, y: y, width: inner - 2 * padX, height: CGFloat(Look.Line.hairline))
+            y += CGFloat(Look.Line.hairline) + CGFloat(Look.Side.separatorSpaceBelow)
+            archivedHeader = CGRect(x: pad, y: y, width: inner, height: headerH)
+            y += headerH
+            if archivedOpen {
+                for name in archived {
+                    putAway[name] = CGRect(x: pad, y: y, width: inner, height: quietH)
+                    y += quietH
+                }
+            }
+        }
+        archivedRows = putAway
 
         let quotaH = list.quota.map { ControlRoomQuotaLayout(quota: $0).height } ?? 0
         quota = CGRect(x: pad, y: height - pad - quotaH, width: inner, height: quotaH)

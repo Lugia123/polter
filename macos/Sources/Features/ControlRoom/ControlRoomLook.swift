@@ -185,6 +185,18 @@ enum ControlRoomLook {
         /// Between the plus and `new group`.
         /// Source: design v17, src/style.css.
         static let headerItemGap: Double = 4.0
+        /// Between a group's pinned mark and its muted mark, to the right of its name (task 1660). From the name to the first mark is `row_item_gap`; each mark is `glyph` square.
+        /// Source: design v21 (the group row's menu, task 1650), CHANGES.md and src/metrics.json.
+        static let markGap: Double = 2.0
+    }
+
+    /// The group's note, edited in a panel docked at the window's right (tasks 1660, 1661; design v21 `04-B`, the user's choice of 2026-10-16). The supervisor's frame gives up the panel's width and `space.between_frames`.
+    enum GroupNote {
+        /// Source: design v21 (the group row's menu, task 1650), CHANGES.md and src/metrics.json.
+        static let panelWidth: Double = 420.0
+        /// How long the line under a row that says the supervisor was asked (`report progress`, `close idle workers`) stays before it folds away. One that says it was not delivered stays.
+        /// Source: design v21 (the group row's menu, task 1650), CHANGES.md and src/metrics.json.
+        static let feedbackSeconds: Double = 8.0
     }
 
     /// The three frames a split can wear.

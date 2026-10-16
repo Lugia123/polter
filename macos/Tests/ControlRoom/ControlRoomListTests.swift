@@ -608,6 +608,29 @@ struct ControlRoomListTests {
         #expect(layout.reveal("nobody", scrolled: 0) == nil)
     }
 
+    /// Task 1661: a row with a line under it is that line taller and the
+    /// line at its bottom; the groups put away are the last section, their
+    /// rows only while it is open. The Windows host's `extras_tests` hold
+    /// the same, and hosts-agree compares the two.
+    @Test func aLineUnderARowAndTheArchivedSectionTakeTheirRoom() throws {
+        let line = CGFloat(ControlRoomLook.Side.askLineHeight)
+        let first = try #require(list.waiting.first?.id)
+        let plain = ControlRoomListLayout(list: list, height: 824)
+        let with = ControlRoomListLayout(list: list, height: 824, linesUnder: [first])
+        let (a, b) = (try #require(plain.rows[first]), try #require(with.rows[first]))
+        #expect(b.height - a.height == line)
+        let under = try #require(with.lineRects[first])
+        #expect(under.maxY == b.maxY - CGFloat(ControlRoomLook.Side.rowPaddingY))
+        #expect(plain.archivedHeader.height == 0)
+        let shut = ControlRoomListLayout(list: list, height: 824, archived: ["old-app"])
+        #expect(shut.archivedHeader.height == CGFloat(ControlRoomLook.Side.headerHeight))
+        #expect(shut.archivedRows.isEmpty)
+        let open = ControlRoomListLayout(list: list, height: 824, archived: ["old-app"], archivedOpen: true)
+        let row = try #require(open.archivedRows["old-app"])
+        #expect(row.minY == open.archivedHeader.maxY)
+        #expect(open.contentHeight - shut.contentHeight == CGFloat(ControlRoomLook.Side.quietRowHeight))
+    }
+
     @Test func whenTheCoreSaysNobodyWaitsTheGroupsFollowTheOneHeader() {
         var nobody = list
         nobody.quiet = list.rows

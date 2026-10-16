@@ -15,6 +15,7 @@ use polter_control_room::list::{self, List, Row};
 use polter_control_room::pane;
 use polter_control_room::pulse::{self, Scope};
 use polter_control_room::quota;
+use polter_control_room::rowmenu;
 use polter_control_room::look::selection;
 use polter_control_room::slide;
 use polter_control_room::snapshot::{self, Shown};
@@ -819,5 +820,37 @@ fn main() {
                 slide::over(t)
             );
         }
+    }
+
+    // The list's layout with what it depends on besides the list (task
+    // 1661): a line under the first waiting row and the first quiet one,
+    // and two groups put away, their section closed and open.
+    let under_ids: Vec<String> = [l.waiting.first(), l.quiet.first()].into_iter().flatten().map(|r| r.id.clone()).collect();
+    for open in [false, true] {
+        let extras = layout::Extras { lines_under: under_ids.clone(), archived: vec!["old-app".into(), "spike-pdf".into()], archived_open: open };
+        let room = ListLayout::measured_with(&l, height, &|text, _| layout::nominal_lines(text), &extras);
+        println!("extras open={open} content h={:.3}", room.content_height);
+        for r in l.rows() {
+            if let Some(frame) = room.chip(Some(&r.id)) {
+                rect(&format!("extras row:{}", r.id), frame);
+            }
+            if let Some((_, line)) = room.line_rects.iter().find(|(id, _)| *id == r.id) {
+                rect(&format!("extras under:{}", r.id), *line);
+            }
+        }
+        rect("extras archived_separator", room.archived_separator);
+        rect("extras archived_header", room.archived_header);
+        for (name, frame) in &room.archived_rows {
+            rect(&format!("extras archived:{name}"), *frame);
+        }
+    }
+
+    // The menu on a group's row (tasks 1660 and 1661): what it holds in
+    // every state, and what each of its two submenus holds.
+    for state in rowmenu::every_state() {
+        println!("{}", rowmenu::line(state));
+    }
+    for id in ["mute", "project"] {
+        println!("group_submenu {id} items={}", rowmenu::submenu(id).join(" "));
     }
 }

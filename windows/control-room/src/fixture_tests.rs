@@ -1707,6 +1707,14 @@ fn every_refusal_is_said_in_chinese() {
             | Refusal::NothingToFix
             | Refusal::AlreadyNotified
             | Refusal::NoAgent
+            | Refusal::EmptyName
+            | Refusal::NoSupervisor
+            | Refusal::RenameFailed
+            | Refusal::RenameBlocked
+            | Refusal::RenameBusy
+            | Refusal::RenameUnfinished
+            | Refusal::RenameDeferred
+            | Refusal::DeleteFailed
             | Refusal::Other => r,
         }
     }
@@ -1738,11 +1746,19 @@ fn every_refusal_is_said_in_chinese() {
         Refusal::NothingToFix,
         Refusal::AlreadyNotified,
         Refusal::NoAgent,
+        Refusal::EmptyName,
+        Refusal::NoSupervisor,
+        Refusal::RenameFailed,
+        Refusal::RenameBlocked,
+        Refusal::RenameBusy,
+        Refusal::RenameUnfinished,
+        Refusal::RenameDeferred,
+        Refusal::DeleteFailed,
         Refusal::Other,
     ];
     // The list and the match agree on the count: the match alone proves
     // every variant is named, not that every one is in `all`.
-    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 28);
+    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 36);
 
     // msgid and msgstr, with the continuation lines `msgmerge` wraps long
     // ones into joined back up.
@@ -1867,4 +1883,67 @@ fn every_string_this_crate_marks_is_said_in_chinese() {
         .map(|(f, n, m)| format!("{f}:{n}: {m:?}"))
         .collect();
     assert!(missing.is_empty(), "{} string(s) would show in English on a Chinese machine:\n{}", missing.len(), missing.join("\n"));
+}
+
+/// Task 1659's fields, as the core writes them (the fixture is the core's
+/// own): on a group, and the archived groups at the top level; and a
+/// snapshot without them (a core from before) reading as nothing pinned,
+/// muted or put away.
+#[test]
+fn the_menus_fields_are_read_and_their_absence_is_nothing() {
+    let now = snapshot::decode(FIXTURE).unwrap();
+    let g = &now.groups[0];
+    assert!(!g.pinned && g.muted.is_none());
+    assert_eq!(g.delete_cost, Some(snapshot::DeleteCost { members: 2, open_tasks: 0 }));
+    assert_eq!(g.record_dir.as_deref(), Some(format!("/state/chat/{}", g.name).as_str()));
+    assert!(now.archived.is_empty());
+
+    // A core from before task 1659: none of the five keys.
+    let mut old = String::new();
+    let mut skip = 0;
+    for line in FIXTURE.lines() {
+        let t = line.trim_start();
+        if skip > 0 {
+            skip -= 1;
+            continue;
+        }
+        if t.starts_with("\"delete_cost\": {") {
+            skip = 3;
+            continue;
+        }
+        if ["\"pinned\":", "\"muted\":", "\"record_dir\":", "\"archived\":"].iter().any(|k| t.starts_with(k)) {
+            continue;
+        }
+        old.push_str(line);
+        old.push('\n');
+    }
+    assert!(!old.contains("record_dir") && !old.contains("delete_cost"));
+    let before = snapshot::decode(&old).unwrap();
+    assert!(before.groups.iter().all(|g| !g.pinned && g.muted.is_none() && g.delete_cost.is_none() && g.record_dir.is_none()));
+    assert!(before.archived.is_empty());
+
+    // Pinned, muted until a moment, and a group put away.
+    let with = FIXTURE
+        .replacen("\"pinned\": false,\n      \"muted\": null,", "\"pinned\": true,\n      \"muted\": {\"until_ms\": 1792198800000},", 1)
+        .replacen(
+            "\"archived\": [],",
+            "\"archived\": [{\"name\": \"old-app\", \"brief\": \"b\", \"archived_ms\": 5, \"record_dir\": \"/s/old-app\", \"delete_cost\": {\"members\": 0, \"open_tasks\": 1}}],",
+            1,
+        );
+    let s = snapshot::decode(&with).unwrap();
+    let g = &s.groups[0];
+    assert!(g.pinned);
+    assert_eq!(g.muted, Some(snapshot::Muted { until_ms: Some(1_792_198_800_000) }));
+    assert_eq!(s.archived.len(), 1);
+    assert_eq!(s.archived[0].name, "old-app");
+    assert_eq!(s.archived[0].archived_ms, 5);
+    assert_eq!(s.archived[0].delete_cost, Some(snapshot::DeleteCost { members: 0, open_tasks: 1 }));
+    // Muted with no end: until the person turns it on.
+    let forever = FIXTURE.replacen("\"muted\": null,", "\"muted\": {\"until_ms\": null},", 1);
+    assert_eq!(snapshot::decode(&forever).unwrap().groups[0].muted, Some(snapshot::Muted { until_ms: None }));
+    // And the list carries them to the rows.
+    let l = List::from_snapshot(&s);
+    let row = l.row(&g.name).unwrap();
+    assert!(row.pinned && row.muted.is_some() && row.record_dir.is_some());
+    assert_eq!(l.archived.len(), 1);
 }

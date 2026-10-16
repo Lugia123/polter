@@ -1010,7 +1010,7 @@ fn frame_rect(hdc: HDC, r: &RECT, colour: u32) {
 
 /// Save and Cancel, from their custom-draw notification: the plain button
 /// `roles_ui::draw_button` draws, in the same states.
-fn draw_button(cd: &NMCUSTOMDRAW, font: HFONT) {
+pub(crate) fn draw_button(cd: &NMCUSTOMDRAW, font: HFONT) {
     let has = |f| cd.uItemState.contains(f);
     let (hot, down, disabled, focus) = (has(CDIS_HOT), has(CDIS_SELECTED), has(CDIS_DISABLED), has(CDIS_FOCUS));
     let label = field_text(cd.hdr.hwndFrom);

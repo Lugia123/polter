@@ -73,6 +73,8 @@ const CLASS: PCWSTR = w!("PolterControlRoom");
 const TIMER_SLIDE: usize = 1;
 /// The wait before a selected, unseen group counts as seen. One shot.
 const TIMER_SEEN: usize = 2;
+/// Once a second while a line under a row is due to fold away (task 1661).
+const TIMER_UNDER: usize = 3;
 
 /// How many mask pixels a device pixel is drawn from, each way. GDI's
 /// shapes have hard edges; a shape drawn this much larger and averaged down
@@ -320,6 +322,11 @@ fn set_scroll(hwnd: HWND, at: &ListLayout, to: f64) -> bool {
         return false;
     }
     SCROLLED.with(|s| s.set(to));
+    // A name being typed moves with its row -- later, outside the caller's
+    // look at the source (`place_rename` takes its own).
+    if rename_handles().is_some() {
+        let _ = unsafe { PostMessageW(Some(hwnd), WM_ROOM_RENAME, WPARAM(3), LPARAM(0)) };
+    }
     STATE.with(|s| {
         if let Some(sl) = s.borrow_mut().as_mut().and_then(|st| st.slide.as_mut()) {
             sl.from.y -= by;
@@ -489,7 +496,7 @@ fn geometry(hwnd: HWND) -> Geometry {
     unsafe {
         let _ = GetClientRect(hwnd, &mut rc);
     }
-    Geometry { scale, room: Room::new(rc.right as f64 / scale, rc.bottom as f64 / scale) }
+    Geometry { scale, room: Room::new(rc.right as f64 / scale, rc.bottom as f64 / scale).with_note(note_open()) }
 }
 
 /// Light or dark for the control room in `hwnd`'s window: **its terminal's
@@ -1037,7 +1044,6 @@ fn choose_directory(hwnd: HWND, group: &str) {
 /// snapshot; a refusal is kept to be said under the button.
 fn start_supervisor(hwnd: HWND, group: &str) {
     let picks = picks_for(Some(group));
-    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
     // Which session is said only while the choice is on screen
     // (`act::session_sent`); whether it is is the core's word.
     let offered = source::with(|data| match data {
@@ -1045,7 +1051,15 @@ fn start_supervisor(hwnd: HWND, group: &str) {
         Data::NotYet => false,
         Data::Unreadable(_) => false,
     });
-    let session = act::session_sent(offered, picks.session);
+    start_supervisor_as(hwnd, group, act::session_sent(offered, picks.session));
+}
+
+/// Start the group's supervisor on `session`, in the role and directory
+/// picked for it (or the core's): the start button's, and the row menu's
+/// two starts, which say the session themselves (task 1661).
+fn start_supervisor_as(hwnd: HWND, group: &str, session: Option<act::Session>) {
+    let picks = picks_for(Some(group));
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
     let Some(request) = act::encode(&act::Act::StartSupervisor { group, role: picks.role.as_deref(), cwd: picks.cwd.as_deref(), session }) else { return };
     match source::act(&request) {
         Ok(()) => {
@@ -1061,6 +1075,816 @@ fn start_supervisor(hwnd: HWND, group: &str) {
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
+}
+
+// ------------------------------------------------------- the menu on a row
+//
+// What it holds is `rowmenu` (the same rule as the macOS host's, compared by
+// `tools/control-room-hosts-agree.py`); here is the system's menu, and what
+// each item does. **Not all of it can be done yet**: pinning, muting,
+// archiving, deleting, renaming, the group's note, the project, and the two
+// sentences to the supervisor are the later parts of task 1661 (each needs
+// a dialog, a field or a panel); until each is there it is in the menu
+// greyed, in its place.
+
+/// The items this host can do today.
+fn row_item_works(id: &str) -> bool {
+    matches!(
+        id,
+        "jump_to_supervisor"
+            | "start_resume"
+            | "start_new"
+            | "start"
+            | "reveal"
+            | "copy_supervisor_id"
+            | "pin"
+            | "unpin"
+            | "mute_hour"
+            | "mute_tomorrow"
+            | "mute_forever"
+            | "unmute"
+            | "archive"
+            | "delete"
+            | "edit_note"
+            | "report_progress"
+            | "close_idle_workers"
+            | "rename"
+    )
+}
+
+/// The menu on the row under client point `x, y`, if there is one: at the
+/// pointer, for that row -- whichever is selected.
+fn row_menu(hwnd: HWND, x: i32, y: i32) {
+    let g = geometry(hwnd);
+    let (px, py) = (x as f64 / g.scale - g.room.panel.x, y as f64 / g.scale - g.room.panel.y);
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    // An archived group's row: its own three items (task 1661).
+    let put_away = source::with(|data| match data {
+        Data::Ready(r) => list_layout(hwnd, &r.list, g.room.panel.h).archived_at(px, py).and_then(|n| r.list.archived.iter().find(|a| a.name == n).cloned()),
+        Data::NotYet => None,
+        Data::Unreadable(_) => None,
+    });
+    if let Some(a) = put_away {
+        archived_menu(hwnd, x, y, &a);
+        return;
+    }
+    // The row, and the state its menu is made from.
+    let found = source::with(|data| match data {
+        Data::Ready(r) => {
+            let id = list_layout(hwnd, &r.list, g.room.panel.h).row_at(px, py)?.to_string();
+            let row = r.list.row(&id)?;
+            if row.alone.is_some() {
+                // A terminal in no group: there is no group to act on.
+                return Some((id, None));
+            }
+            let state = polter_control_room::rowmenu::State {
+                // An archived group has no row here; its menu is the
+                // archived section's.
+                archived: false,
+                pinned: row.pinned,
+                muted: row.muted.is_some(),
+                // A supervisor that reports no hooks (task 1635) is not
+                // told apart here yet.
+                sup: if row.steward.is_some() { polter_control_room::rowmenu::Sup::Hooked } else { polter_control_room::rowmenu::Sup::None },
+                resumable: scene::offers_session(row.start.as_ref()),
+            };
+            Some((id, Some((state, row.muted))))
+        }
+        Data::NotYet => None,
+        Data::Unreadable(_) => None,
+    });
+    let Some((group, state)) = found else { return };
+    let Some((state, muted)) = state else {
+        wlogf!(frame, "[control-room] row menu: {:?} is a terminal in no group; no menu", group);
+        return;
+    };
+    let entries = polter_control_room::rowmenu::entries(state);
+    // The right-hand column: when a mute would end, and when the one in
+    // force does, by this machine's clock.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let offset = crate::projects_ui::local_offset() * 1000;
+    let when = |id: &str| -> Option<String> {
+        let until = match id {
+            "unmute" => muted.and_then(|m| m.until_ms)?,
+            "mute_hour" | "mute_tomorrow" => act::mute_until(id, now, offset)??,
+            _ => return None,
+        };
+        let (words, at) = polter_control_room::rowmenu::when(until, now, offset);
+        Some(list::fill(&tr(words), &at))
+    };
+    // What each id the menu hands back means: an index into this, plus one.
+    let mut ids: Vec<&'static str> = Vec::new();
+    let chosen = unsafe {
+        let Ok(menu) = CreatePopupMenu() else { return };
+        let label = |id: &str| -> Vec<u16> {
+            let mut words = polter_control_room::rowmenu::label(id).map(tr).unwrap_or_else(|| id.to_string());
+            if let Some(at) = when(id) {
+                words = format!("{words}\t{at}");
+            }
+            words.encode_utf16().chain(std::iter::once(0)).collect()
+        };
+        for entry in &entries {
+            match *entry {
+                polter_control_room::rowmenu::Entry::Separator => {
+                    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                }
+                polter_control_room::rowmenu::Entry::Item { id, submenu: true } => {
+                    let Ok(sub) = CreatePopupMenu() else { continue };
+                    for &child in polter_control_room::rowmenu::submenu(id) {
+                        ids.push(child);
+                        let flags = if row_item_works(child) { MF_STRING } else { MF_STRING | MF_GRAYED };
+                        let _ = AppendMenuW(sub, flags, ids.len(), PCWSTR(label(child).as_ptr()));
+                    }
+                    let flags = if polter_control_room::rowmenu::submenu(id).iter().any(|c| row_item_works(c)) {
+                        MF_POPUP | MF_STRING
+                    } else {
+                        MF_POPUP | MF_STRING | MF_GRAYED
+                    };
+                    let _ = AppendMenuW(menu, flags, sub.0 as usize, PCWSTR(label(id).as_ptr()));
+                }
+                polter_control_room::rowmenu::Entry::Item { id, submenu: false } => {
+                    ids.push(id);
+                    let flags = if row_item_works(id) { MF_STRING } else { MF_STRING | MF_GRAYED };
+                    let _ = AppendMenuW(menu, flags, ids.len(), PCWSTR(label(id).as_ptr()));
+                }
+            }
+        }
+        let mut at = POINT { x, y };
+        let _ = ClientToScreen(hwnd, &mut at);
+        let picked = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, at.x, at.y, None, hwnd, None);
+        // Destroys the submenus with it.
+        let _ = DestroyMenu(menu);
+        picked.0 as usize
+    };
+    let Some(&id) = chosen.checked_sub(1).and_then(|i| ids.get(i)) else {
+        wlogf!(frame, "[control-room] row menu on {:?}: dismissed", group);
+        return;
+    };
+    wlogf!(frame, "[control-room] row menu on {:?}: {}", group, id);
+    row_item(hwnd, &group, id);
+}
+
+/// What a row menu's item does, for group `group`.
+fn row_item(hwnd: HWND, group: &str, id: &str) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let row = source::with(|data| match data {
+        Data::Ready(r) => r.list.row(group).cloned(),
+        Data::NotYet => None,
+        Data::Unreadable(_) => None,
+    });
+    let Some(row) = row else {
+        wlogf!(frame, "[control-room] row menu: {:?} is no longer listed; {} not done", group, id);
+        return;
+    };
+    match id {
+        "jump_to_supervisor" => match row.steward.as_deref() {
+            Some(key) => {
+                let went = crate::tabs::go_to_terminal(key);
+                wlogf!(frame, "[control-room] go to supervisor {} of {:?} -> {}", key, group, went);
+            }
+            None => wlogf!(frame, "[control-room] go to supervisor: {:?} has none", group),
+        },
+        "start_resume" => start_supervisor_as(hwnd, group, Some(act::Session::Last)),
+        "start_new" => start_supervisor_as(hwnd, group, Some(act::Session::New)),
+        "start" => start_supervisor_as(hwnd, group, None),
+        // The group's record, where the core keeps it (task 1659's
+        // `record_dir`).
+        "reveal" => match row.record_dir.clone().filter(|d| !d.is_empty()) {
+            Some(dir) => {
+                if !crate::shellopen::detached(Some(frame), "[control-room] show group folder", dir) {
+                    wlogf!(frame, "[control-room] show in Explorer for {:?}: Explorer could not be started", group);
+                }
+            }
+            None => wlogf!(frame, "[control-room] show in Explorer: the core names no directory for {:?}", group),
+        },
+        "copy_supervisor_id" => match row.steward.as_deref() {
+            Some(key) => {
+                let copied = crate::tabs::copy_to_clipboard(key);
+                wlogf!(frame, "[control-room] copy supervisor id of {:?}: {:?}", group, copied);
+            }
+            None => wlogf!(frame, "[control-room] copy supervisor id: {:?} has none", group),
+        },
+        "pin" => row_act(hwnd, group, &act::Act::Pin { group }),
+        "unpin" => row_act(hwnd, group, &act::Act::Unpin { group }),
+        "unmute" => row_act(hwnd, group, &act::Act::Unmute { group }),
+        "mute_hour" | "mute_tomorrow" | "mute_forever" => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+            if let Some(until_ms) = act::mute_until(id, now, crate::projects_ui::local_offset() * 1000) {
+                row_act(hwnd, group, &act::Act::Mute { group, until_ms });
+            }
+        }
+        // Asked first, in the one question box this host has
+        // (`projects_ui::ask_with_default`): archiving says yes on Return,
+        // deleting says no (`confirm`).
+        "archive" => {
+            let q = polter_control_room::confirm::archive(&row, &|s| tr(s));
+            if ask(frame, &q) {
+                row_act(hwnd, group, &act::Act::Archive { group });
+            }
+        }
+        "delete" => delete_group(hwnd, group, row.delete_cost, row.project_name.as_deref()),
+        "edit_note" => open_note(hwnd, group, &row.brief),
+        "report_progress" => ask_supervisor(hwnd, group, act::Ask::Report),
+        "close_idle_workers" => ask_supervisor(hwnd, group, act::Ask::CloseIdle),
+        "rename" => begin_rename(hwnd, group),
+        _ => wlogf!(frame, "[control-room] row menu: {} is not done on this host yet (task 1661)", id),
+    }
+}
+
+/// Ask `q`; whether its first button was pressed.
+fn ask(frame: HWND, q: &polter_control_room::confirm::Question) -> bool {
+    crate::projects_ui::ask_with_default(frame, "[control-room]", &q.main, &q.body, &q.buttons, q.default, q.warning) == Some(0)
+}
+
+/// "Delete Group…": asked with what the core says it would take, and sent
+/// with those numbers. If they are not what it would take by then (`Stale`:
+/// somebody joined, a task was opened), nothing was deleted, and the
+/// person is asked again with the numbers as they are now -- once.
+fn delete_group(hwnd: HWND, group: &str, cost: Option<polter_control_room::snapshot::DeleteCost>, project: Option<&str>) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let mut cost = cost.unwrap_or(polter_control_room::snapshot::DeleteCost { members: 0, open_tasks: 0 });
+    for _ in 0..2 {
+        let q = polter_control_room::confirm::delete(group, cost, project, &|s| tr(s));
+        if !ask(frame, &q) {
+            wlogf!(frame, "[control-room] delete {:?}: not confirmed", group);
+            return;
+        }
+        let what = act::Act::DeleteGroup { group, members: cost.members, open_tasks: cost.open_tasks };
+        let Some(request) = act::encode(&what) else { return };
+        match source::act(&request) {
+            Ok(()) => {
+                wlogf!(frame, "[control-room] {} taken", request);
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                return;
+            }
+            Err(why) if act::Refusal::parse(&why) == act::Refusal::Stale => {
+                wlogf!(frame, "[control-room] {} refused: Stale; asking again", request);
+                let now = source::with(|data| match data {
+                    Data::Ready(r) => r.list.row(group).map(|row| row.delete_cost),
+                    Data::NotYet => None,
+                    Data::Unreadable(_) => None,
+                });
+                match now {
+                    Some(c) => cost = c.unwrap_or(cost),
+                    None => return,
+                }
+            }
+            Err(why) => {
+                wlogf!(frame, "[control-room] {} refused: {}", request, why);
+                // Off the list but not all of it off the disk: said, since
+                // the dialog said it would all go (task 1659's DeleteFailed).
+                if act::Refusal::parse(&why) == act::Refusal::DeleteFailed {
+                    let _ = crate::projects_ui::ask_with_default(frame, "[control-room]", &refusal_words(&why), "", &[tr("OK")], 0, true);
+                }
+                return;
+            }
+        }
+    }
+}
+
+// ------------------------------------------------- the group's brief, at the right
+//
+// "Edit Group Note…" on a row's menu (task 1661, design v21 `04-B`): a panel
+// at the right of the room, the supervisor's side narrower for it
+// (`Room::with_note`, which `tabs::layout` asks too, so that the terminal
+// shown there moves out of its way). What it says and where its box is is
+// `scene::build_note`; the box and the two buttons are the system's, the
+// buttons drawn as the settings window's (`project_picker::draw_button`).
+// One brief at a time. "Save" sends it; the other button -- "Close" while
+// nothing is changed, "Discard Changes" once something is -- and Escape in
+// the box close it without.
+
+const ID_NOTE_FIELD: u16 = 0x7101;
+const ID_NOTE_SAVE: u16 = 0x7102;
+const ID_NOTE_DISCARD: u16 = 0x7103;
+/// Escape in the brief's box.
+const WM_ROOM_NOTE: u32 = WM_APP + 67;
+
+struct NoteEdit {
+    group: String,
+    /// The brief as the core had it when the panel opened.
+    original: String,
+    field: isize,
+    save: isize,
+    discard: isize,
+    font: isize,
+    brush: isize,
+    old_proc: isize,
+}
+
+thread_local! {
+    static NOTE: RefCell<Option<NoteEdit>> = const { RefCell::new(None) };
+}
+/// Whether a brief is open, for `tabs::layout` -- which asks from inside
+/// its own lock, where `NOTE` is not to be borrowed. One control room per
+/// process, so one bit.
+static NOTE_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// Whether the brief's panel is open in the control room.
+pub fn note_open() -> bool {
+    NOTE_OPEN.load(Ordering::Acquire)
+}
+
+/// The open brief's group, its brief as it was, and its three controls --
+/// copied out, so that nothing that talks to the controls does so with
+/// `NOTE` borrowed (`note_proc` borrows it).
+#[derive(Clone)]
+struct NoteHandles {
+    group: String,
+    original: String,
+    field: isize,
+    save: isize,
+    discard: isize,
+    font: isize,
+}
+
+fn note_handles() -> Option<NoteHandles> {
+    NOTE.with(|n| {
+        n.borrow().as_ref().map(|f| NoteHandles {
+            group: f.group.clone(),
+            original: f.original.clone(),
+            field: f.field,
+            save: f.save,
+            discard: f.discard,
+            font: f.font,
+        })
+    })
+}
+
+fn note_text(field: isize) -> String {
+    let h = HWND(field as *mut c_void);
+    let n = unsafe { GetWindowTextLengthW(h) }.max(0) as usize;
+    let mut buf = vec![0u16; n + 1];
+    let got = unsafe { GetWindowTextW(h, &mut buf) }.max(0) as usize;
+    // The box's lines end in CR LF; the brief's in LF.
+    String::from_utf16_lossy(&buf[..got]).replace("\r\n", "\n")
+}
+
+/// What the panel draws now, and where its controls go; none when no
+/// brief is open.
+fn note_scene(hwnd: HWND, g: &Geometry, theme: &Theme) -> Option<scene::Note> {
+    let r = g.room.note?;
+    let h = note_handles()?;
+    let text = note_text(h.field);
+    let band = (polter_settings_shell::grid::BOTTOM as f64).min(r.h);
+    let _ = hwnd;
+    Some(scene::build_note(&h.group, layout::Rect { x: 0.0, y: 0.0, w: r.w, h: r.h }, theme, g.scale, text.chars().count(), text != h.original, band, &|s| tr(s)))
+}
+
+/// Put the box and the buttons where the scene says, in this window's
+/// pixels; and the left button's words, which say whether anything would
+/// be thrown away.
+fn place_note(hwnd: HWND) {
+    let g = geometry(hwnd);
+    let theme = look::theme(dark(hwnd));
+    let (Some(r), Some(note)) = (g.room.note, note_scene(hwnd, &g, theme)) else { return };
+    let Some(NoteHandles { field, save, discard, original, .. }) = note_handles() else { return };
+    let dirty = note_text(field) != original;
+    let px = |v: f64| (v * g.scale).round() as i32;
+    let (ox, oy) = (px(r.x), px(r.y));
+    let inset = scene::NOTE_FIELD_INSET;
+    let f = note.field;
+    let grid = polter_settings_shell::grid::CONTROL_H as f64;
+    let wide = polter_settings_shell::grid::ACTION_W[2] as f64;
+    let gap = polter_settings_shell::grid::BUTTONS_GAP as f64;
+    let b = note.buttons;
+    let top = b.y + (b.h - grid) / 2.0;
+    unsafe {
+        let _ = MoveWindow(HWND(field as *mut c_void), ox + px(f.x + inset), oy + px(f.y + inset), px((f.w - 2.0 * inset).max(1.0)), px((f.h - 2.0 * inset).max(1.0)), true);
+        let _ = MoveWindow(HWND(save as *mut c_void), ox + px(b.x + b.w - wide), oy + px(top), px(wide), px(grid), true);
+        let _ = MoveWindow(HWND(discard as *mut c_void), ox + px(b.x + b.w - 2.0 * wide - gap), oy + px(top), px(wide), px(grid), true);
+        let words: Vec<u16> = tr(if dirty { "Discard Changes" } else { "Close" }).encode_utf16().chain(std::iter::once(0)).collect();
+        let _ = SetWindowTextW(HWND(discard as *mut c_void), PCWSTR(words.as_ptr()));
+    }
+}
+
+fn open_note(hwnd: HWND, group: &str, brief: &str) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    if let Some(NoteHandles { group: was, field, original, .. }) = note_handles() {
+        let dirty = note_text(field) != original;
+        if was == group || dirty {
+            // Its own again, or another's with changes not saved: the one
+            // open stays, with the keyboard.
+            wlogf!(frame, "[control-room] brief: {:?} stays open (asked for {:?}, changed={})", was, group, dirty);
+            let _ = unsafe { SetFocus(Some(HWND(field as *mut c_void))) };
+            return;
+        }
+        close_note(hwnd);
+    }
+    let g = geometry(hwnd);
+    let dpi = (g.scale * 96.0).round() as i32;
+    unsafe {
+        let hinst: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).map(Into::into).unwrap_or_default();
+        let make = |class: PCWSTR, style: WINDOW_STYLE, id: u16| {
+            CreateWindowExW(WINDOW_EX_STYLE(0), class, PCWSTR::null(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | style, 0, 0, 1, 1, Some(hwnd), Some(HMENU(id as usize as *mut c_void)), Some(hinst), None)
+        };
+        let field = make(w!("EDIT"), WS_VSCROLL | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32), ID_NOTE_FIELD);
+        let save = make(w!("BUTTON"), WINDOW_STYLE(BS_DEFPUSHBUTTON as u32), ID_NOTE_SAVE);
+        let discard = make(w!("BUTTON"), WINDOW_STYLE(BS_PUSHBUTTON as u32), ID_NOTE_DISCARD);
+        let (Ok(field), Ok(save), Ok(discard)) = (field, save, discard) else {
+            wlogf!(frame, "[control-room] brief: its box or buttons could not be made");
+            return;
+        };
+        let font = crate::uifont::make(dpi, look::font::BODY.round() as i32, look::font::WEIGHT_BODY.round() as i32, crate::uifont::ui_face());
+        for h in [field, save, discard] {
+            SendMessageW(h, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        }
+        crate::theme::for_frame(frame).dress_scrollbars(field);
+        let text: Vec<u16> = brief.replace('\n', "\r\n").encode_utf16().chain(std::iter::once(0)).collect();
+        let _ = SetWindowTextW(field, PCWSTR(text.as_ptr()));
+        let saving: Vec<u16> = tr("Save").encode_utf16().chain(std::iter::once(0)).collect();
+        let _ = SetWindowTextW(save, PCWSTR(saving.as_ptr()));
+        let brush = CreateSolidBrush(rgb(look::theme(dark(hwnd)).window_base));
+        let old_proc = GetWindowLongPtrW(field, GWLP_WNDPROC);
+        NOTE.with(|n| {
+            *n.borrow_mut() = Some(NoteEdit {
+                group: group.to_string(),
+                original: brief.to_string(),
+                field: field.0 as isize,
+                save: save.0 as isize,
+                discard: discard.0 as isize,
+                font: font.0 as isize,
+                brush: brush.0 as isize,
+                old_proc,
+            })
+        });
+        let proc_: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT = note_proc;
+        SetWindowLongPtrW(field, GWLP_WNDPROC, proc_ as usize as isize);
+        NOTE_OPEN.store(true, Ordering::Release);
+        place_note(hwnd);
+        // The terminal on the right moves out of the panel's way.
+        crate::tabs::layout(frame);
+        let _ = SetFocus(Some(field));
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+    wlogf!(frame, "[control-room] brief of {:?}: open ({} characters)", group, brief.chars().count());
+}
+
+/// Close the brief's panel, keeping nothing that was not saved.
+fn close_note(hwnd: HWND) {
+    let Some(f) = NOTE.with(|n| n.borrow_mut().take()) else { return };
+    NOTE_OPEN.store(false, Ordering::Release);
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    unsafe {
+        let _ = SetFocus(Some(hwnd));
+        for h in [f.field, f.save, f.discard] {
+            let _ = DestroyWindow(HWND(h as *mut c_void));
+        }
+        let _ = DeleteObject(HFONT(f.font as *mut c_void).into());
+        let _ = DeleteObject(HBRUSH(f.brush as *mut c_void).into());
+        crate::tabs::layout(frame);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+    wlogf!(frame, "[control-room] brief of {:?}: closed", f.group);
+}
+
+/// "Save": the core keeps it, and the panel closes. Refused, it stays open
+/// with what was typed, and says so in the log.
+fn save_note(hwnd: HWND) {
+    let Some(NoteHandles { group, field, .. }) = note_handles() else { return };
+    let text = note_text(field);
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let Some(request) = act::encode(&act::Act::SetBrief { group: &group, brief: &text }) else { return };
+    match source::act(&request) {
+        Ok(()) => {
+            wlogf!(frame, "[control-room] brief of {:?}: saved ({} characters)", group, text.chars().count());
+            close_note(hwnd);
+        }
+        Err(why) => wlogf!(frame, "[control-room] brief of {:?}: saving refused: {}", group, why),
+    }
+}
+
+unsafe extern "system" fn note_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let old = NOTE.with(|n| n.borrow().as_ref().map(|f| f.old_proc));
+    let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+    unsafe {
+        match msg {
+            // Escape is the left button's: close, keeping nothing unsaved.
+            WM_KEYDOWN if wp.0 as u16 == VK_ESCAPE.0 => {
+                let _ = PostMessageW(Some(parent), WM_ROOM_NOTE, WPARAM(0), LPARAM(0));
+                return LRESULT(0);
+            }
+            WM_CHAR if wp.0 == 0x1B => return LRESULT(0),
+            _ => {}
+        }
+        match old {
+            Some(old) => CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(old), hwnd, msg, wp, lp),
+            None => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
+// ------------------------------------------------- the line under a row
+//
+// Why a new name was refused, or that the supervisor was asked something
+// (task 1661, design v21 `03` and `07`): one line under the row, which the
+// layout makes room for (`layout::Extras::lines_under`). "Asked" folds
+// away after `group_note::FEEDBACK_SECONDS`; a failure stays until the
+// next ask, and a refusal until the name is put right or given up.
+
+thread_local! {
+    static UNDER: RefCell<Vec<(String, scene::UnderLine, Option<std::time::Instant>)>> = const { RefCell::new(Vec::new()) };
+    /// The archived section is open. Folded each time the control room is
+    /// made: the design has it "收起" by default.
+    static ARCHIVED_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Put `line` under row `group`, in place of any it had; `fold` after so
+/// long, or never.
+fn say_under(hwnd: HWND, group: &str, line: Option<scene::UnderLine>, fold: Option<std::time::Duration>) {
+    let until = fold.map(|d| std::time::Instant::now() + d);
+    UNDER.with(|u| {
+        let mut u = u.borrow_mut();
+        u.retain(|(id, _, _)| id != group);
+        if let Some(line) = line {
+            u.push((group.to_string(), line, until));
+        }
+    });
+    if until.is_some() {
+        unsafe {
+            SetTimer(Some(hwnd), TIMER_UNDER, 1000, None);
+        }
+    }
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+/// Fold away what is due; whether anything is still waiting to.
+fn prune_under() -> bool {
+    let now = std::time::Instant::now();
+    UNDER.with(|u| {
+        let mut u = u.borrow_mut();
+        u.retain(|(_, _, until)| until.is_none_or(|t| t > now));
+        u.iter().any(|(_, _, until)| until.is_some())
+    })
+}
+
+/// "Ask the Supervisor for a Progress Report" / "… to Close Idle Workers":
+/// the core types its sentence into the supervisor. Said under the row as
+/// asked, never as done.
+fn ask_supervisor(hwnd: HWND, group: &str, ask: act::Ask) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let Some(request) = act::encode(&act::Act::AskSupervisor { group, ask }) else { return };
+    match source::act(&request) {
+        Ok(()) => {
+            wlogf!(frame, "[control-room] {} taken", request);
+            say_under(hwnd, group, Some(scene::UnderLine::Asked(ask)), Some(std::time::Duration::from_secs_f64(look::group_note::FEEDBACK_SECONDS)));
+        }
+        Err(why) => {
+            wlogf!(frame, "[control-room] {} refused: {}", request, why);
+            let (words, retried) = act::not_delivered(&why);
+            say_under(hwnd, group, Some(scene::UnderLine::NotDelivered { why: tr(words), retried }), None);
+        }
+    }
+}
+
+/// The menu on an archived group's row: show its record, take it out of
+/// the archive, or delete it.
+fn archived_menu(hwnd: HWND, x: i32, y: i32, a: &polter_control_room::snapshot::Archived) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let state = polter_control_room::rowmenu::State { archived: true, sup: polter_control_room::rowmenu::Sup::None, resumable: false, pinned: false, muted: false };
+    let mut ids: Vec<&'static str> = Vec::new();
+    let chosen = unsafe {
+        let Ok(menu) = CreatePopupMenu() else { return };
+        for entry in polter_control_room::rowmenu::entries(state) {
+            match entry {
+                polter_control_room::rowmenu::Entry::Separator => {
+                    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                }
+                polter_control_room::rowmenu::Entry::Item { id, .. } => {
+                    ids.push(id);
+                    let words: Vec<u16> = polter_control_room::rowmenu::label(id).map(tr).unwrap_or_else(|| id.to_string()).encode_utf16().chain(std::iter::once(0)).collect();
+                    let _ = AppendMenuW(menu, MF_STRING, ids.len(), PCWSTR(words.as_ptr()));
+                }
+            }
+        }
+        let mut at = POINT { x, y };
+        let _ = ClientToScreen(hwnd, &mut at);
+        let picked = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, at.x, at.y, None, hwnd, None);
+        let _ = DestroyMenu(menu);
+        picked.0 as usize
+    };
+    let Some(&id) = chosen.checked_sub(1).and_then(|i| ids.get(i)) else { return };
+    wlogf!(frame, "[control-room] archived {:?}: {}", a.name, id);
+    match id {
+        "reveal" => match a.record_dir.clone().filter(|d| !d.is_empty()) {
+            Some(dir) => {
+                if !crate::shellopen::detached(Some(frame), "[control-room] show group folder", dir) {
+                    wlogf!(frame, "[control-room] show in Explorer for {:?}: Explorer could not be started", a.name);
+                }
+            }
+            None => wlogf!(frame, "[control-room] show in Explorer: the core names no directory for {:?}", a.name),
+        },
+        "unarchive" => row_act(hwnd, &a.name, &act::Act::Unarchive { group: &a.name }),
+        "delete" => delete_group(hwnd, &a.name, a.delete_cost, None),
+        _ => {}
+    }
+}
+
+// ------------------------------------------------------- renaming a row
+//
+// "Rename Group…" (task 1661, design v21 `03`): the name becomes a field
+// where it is, all of it selected. Return renames; Escape gives up;
+// clicking elsewhere renames too (as Finder does). A name the core refuses
+// is said under the row in red, the field underlined in red, and stays to
+// be put right.
+
+struct RenameField {
+    group: String,
+    edit: isize,
+    font: isize,
+    brush: isize,
+    old_proc: isize,
+}
+
+thread_local! {
+    static RENAME: RefCell<Option<RenameField>> = const { RefCell::new(None) };
+}
+/// Return (1), Escape (0) or the field losing the keyboard (2).
+const WM_ROOM_RENAME: u32 = WM_APP + 68;
+
+fn rename_handles() -> Option<(String, isize)> {
+    RENAME.with(|r| r.borrow().as_ref().map(|f| (f.group.clone(), f.edit)))
+}
+
+/// Where the name being changed is, in this window's pixels: on the row's
+/// first line, from the text column to the row's end.
+fn rename_rect(hwnd: HWND, group: &str) -> Option<RECT> {
+    let g = geometry(hwnd);
+    let row = source::with(|data| match data {
+        Data::Ready(r) => {
+            let lay = list_layout(hwnd, &r.list, g.room.panel.h);
+            let rect = lay.chip(Some(group))?;
+            let waiting = r.list.waiting.iter().any(|w| w.id == group);
+            Some((rect, waiting))
+        }
+        Data::NotYet => None,
+        Data::Unreadable(_) => None,
+    })?;
+    let (rect, waiting) = row;
+    let text_x = rect.x + side::ROW_PADDING_X + side::GLYPH + side::ROW_ITEM_GAP;
+    let (top, h) = if waiting { (rect.y + side::ROW_PADDING_Y, side::ROW_LINE1_HEIGHT) } else { (rect.y, side::QUIET_ROW_HEIGHT) };
+    let line = layout::Rect { x: text_x, y: top, w: (rect.x + rect.w - side::ROW_PADDING_X - text_x).max(1.0), h };
+    Some(panel_origin(&g).rect(line))
+}
+
+fn begin_rename(hwnd: HWND, group: &str) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    if let Some((was, edit)) = rename_handles() {
+        if was == group {
+            let _ = unsafe { SetFocus(Some(HWND(edit as *mut c_void))) };
+            return;
+        }
+        end_rename(hwnd);
+    }
+    let Some(at) = rename_rect(hwnd, group) else { return };
+    let g = geometry(hwnd);
+    let waiting = source::with(|data| match data {
+        Data::Ready(r) => r.list.waiting.iter().any(|w| w.id == group),
+        Data::NotYet => false,
+        Data::Unreadable(_) => false,
+    });
+    unsafe {
+        let hinst: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).map(Into::into).unwrap_or_default();
+        let made = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("EDIT"),
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+            at.left,
+            at.top,
+            (at.right - at.left).max(1),
+            (at.bottom - at.top).max(1),
+            Some(hwnd),
+            None,
+            Some(hinst),
+            None,
+        );
+        let Ok(edit) = made else {
+            wlogf!(frame, "[control-room] rename {:?}: the field could not be made", group);
+            return;
+        };
+        let dpi = (g.scale * 96.0).round() as i32;
+        // The name's own face and size: the field is the name, editable.
+        let size = if waiting { look::font::GROUP_NAME } else { look::font::BODY };
+        let font = crate::uifont::make(dpi, size.round() as i32, look::font::WEIGHT_BODY.round() as i32, crate::uifont::mono_face());
+        SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        SendMessageW(edit, EM_SETLIMITTEXT, Some(WPARAM(64)), Some(LPARAM(0)));
+        let text: Vec<u16> = group.encode_utf16().chain(std::iter::once(0)).collect();
+        let _ = SetWindowTextW(edit, PCWSTR(text.as_ptr()));
+        SendMessageW(edit, windows::Win32::UI::Controls::EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
+        let brush = CreateSolidBrush(rgb(scene::panel_color(look::theme(dark(hwnd)))));
+        let old_proc = GetWindowLongPtrW(edit, GWLP_WNDPROC);
+        RENAME.with(|r| *r.borrow_mut() = Some(RenameField { group: group.to_string(), edit: edit.0 as isize, font: font.0 as isize, brush: brush.0 as isize, old_proc }));
+        let proc_: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT = rename_proc;
+        SetWindowLongPtrW(edit, GWLP_WNDPROC, proc_ as usize as isize);
+        let _ = SetFocus(Some(edit));
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+    wlogf!(frame, "[control-room] rename {:?}: typing", group);
+}
+
+/// Take the field away, and with it any refusal said under the row.
+fn end_rename(hwnd: HWND) {
+    let Some(f) = RENAME.with(|r| r.borrow_mut().take()) else { return };
+    say_under(hwnd, &f.group, None, None);
+    unsafe {
+        let _ = DestroyWindow(HWND(f.edit as *mut c_void));
+        let _ = DeleteObject(HFONT(f.font as *mut c_void).into());
+        let _ = DeleteObject(HBRUSH(f.brush as *mut c_void).into());
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// The field said Return, or lost the keyboard: rename to what it says. The
+/// same name is giving up. Refused, the reason goes under the row and the
+/// field stays (with the keyboard, after Return).
+fn commit_rename(hwnd: HWND, keep_focus: bool) {
+    let Some((group, edit)) = rename_handles() else { return };
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let to = {
+        let h = HWND(edit as *mut c_void);
+        let n = unsafe { GetWindowTextLengthW(h) }.max(0) as usize;
+        let mut buf = vec![0u16; n + 1];
+        let got = unsafe { GetWindowTextW(h, &mut buf) }.max(0) as usize;
+        String::from_utf16_lossy(&buf[..got])
+    };
+    if to == group {
+        end_rename(hwnd);
+        return;
+    }
+    let Some(request) = act::encode(&act::Act::RenameGroup { from: &group, to: &to }) else { return };
+    match source::act(&request) {
+        Ok(()) => {
+            wlogf!(frame, "[control-room] {} taken", request);
+            end_rename(hwnd);
+            // The selection follows the group to its new name.
+            if selection().as_deref() == Some(group.as_str()) {
+                select(hwnd, Some(to));
+            }
+        }
+        Err(why) => {
+            wlogf!(frame, "[control-room] {} refused: {}", request, why);
+            let words = refusal_words(&why);
+            say_under(hwnd, &group, Some(scene::UnderLine::Refused(words)), None);
+            // The row grew a line: the field goes where its name now is.
+            place_rename(hwnd);
+            if keep_focus {
+                let _ = unsafe { SetFocus(Some(HWND(edit as *mut c_void))) };
+            }
+        }
+    }
+}
+
+/// Keep the field on the name: after a scroll, a resize, a line under it.
+fn place_rename(hwnd: HWND) {
+    let Some((group, edit)) = rename_handles() else { return };
+    let Some(at) = rename_rect(hwnd, &group) else {
+        // Its row is gone: renamed elsewhere, deleted, archived.
+        end_rename(hwnd);
+        return;
+    };
+    unsafe {
+        let _ = MoveWindow(HWND(edit as *mut c_void), at.left, at.top, (at.right - at.left).max(1), (at.bottom - at.top).max(1), true);
+    }
+}
+
+unsafe extern "system" fn rename_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let old = RENAME.with(|r| r.borrow().as_ref().map(|f| f.old_proc));
+    let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+    unsafe {
+        match msg {
+            WM_KEYDOWN if wp.0 as u16 == VK_RETURN.0 => {
+                let _ = PostMessageW(Some(parent), WM_ROOM_RENAME, WPARAM(1), LPARAM(0));
+                return LRESULT(0);
+            }
+            WM_KEYDOWN if wp.0 as u16 == VK_ESCAPE.0 => {
+                let _ = PostMessageW(Some(parent), WM_ROOM_RENAME, WPARAM(0), LPARAM(0));
+                return LRESULT(0);
+            }
+            WM_CHAR if wp.0 == 0x0D || wp.0 == 0x1B => return LRESULT(0),
+            WM_KILLFOCUS => {
+                let _ = PostMessageW(Some(parent), WM_ROOM_RENAME, WPARAM(2), LPARAM(0));
+            }
+            _ => {}
+        }
+        match old {
+            Some(old) => CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(old), hwnd, msg, wp, lp),
+            None => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
+/// Send one of the row menu's acts. What it changes arrives in the next
+/// snapshot; a refusal is logged (the only one these have is the group
+/// being gone, which the next list shows).
+fn row_act(hwnd: HWND, group: &str, what: &act::Act) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let Some(request) = act::encode(what) else { return };
+    match source::act(&request) {
+        Ok(()) => wlogf!(frame, "[control-room] {} for {:?} taken", request, group),
+        Err(why) => wlogf!(frame, "[control-room] {} for {:?} refused: {}", request, group, why),
+    }
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
 /// "Fix" on a card that reads "Failed" (task 1560): the core tells the
@@ -1164,7 +1988,74 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             LRESULT(0)
         }
+        // The brief's two buttons, and what is typed in its box.
+        WM_COMMAND => {
+            let (id, code) = ((wp.0 & 0xFFFF) as u16, ((wp.0 >> 16) & 0xFFFF) as u32);
+            match (id, code) {
+                (ID_NOTE_SAVE, BN_CLICKED) => save_note(hwnd),
+                (ID_NOTE_DISCARD, BN_CLICKED) => close_note(hwnd),
+                (ID_NOTE_FIELD, EN_CHANGE) => {
+                    // The count and whether it is saved, and the left
+                    // button's words.
+                    place_note(hwnd);
+                    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                }
+                _ => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+            }
+            LRESULT(0)
+        }
+        WM_ROOM_NOTE => {
+            close_note(hwnd);
+            LRESULT(0)
+        }
+        WM_ROOM_RENAME => {
+            match wp.0 {
+                0 => end_rename(hwnd),
+                1 => commit_rename(hwnd, true),
+                3 => place_rename(hwnd),
+                // Clicking elsewhere renames, as Finder does; refused, the
+                // field stays where it is without the keyboard.
+                _ => commit_rename(hwnd, false),
+            }
+            LRESULT(0)
+        }
+        // The brief's buttons, drawn as the settings window's are.
+        WM_NOTIFY => {
+            let cd = unsafe { &*(lp.0 as *const windows::Win32::UI::Controls::NMCUSTOMDRAW) };
+            let ours = note_handles().map(|f| (f.font, [f.save, f.discard]));
+            if let Some((font, buttons)) = ours {
+                if cd.hdr.code == windows::Win32::UI::Controls::NM_CUSTOMDRAW
+                    && crate::theme::custom_drawing()
+                    && buttons.contains(&(cd.hdr.hwndFrom.0 as isize))
+                    && cd.dwDrawStage == windows::Win32::UI::Controls::CDDS_PREPAINT
+                {
+                    crate::project_picker::draw_button(cd, HFONT(font as *mut c_void));
+                    return LRESULT(windows::Win32::UI::Controls::CDRF_SKIPDEFAULT as isize);
+                }
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
         // The field is drawn on the panel's own colour, in its ink.
+        WM_CTLCOLOREDIT if NOTE.with(|n| n.borrow().as_ref().is_some_and(|f| f.field == lp.0)) => {
+            let theme = look::theme(dark(hwnd));
+            let brush = NOTE.with(|n| n.borrow().as_ref().map(|f| f.brush)).unwrap_or(0);
+            let dc = HDC(wp.0 as *mut c_void);
+            unsafe {
+                SetTextColor(dc, rgb(theme.text));
+                SetBkColor(dc, rgb(theme.window_base));
+            }
+            LRESULT(brush)
+        }
+        WM_CTLCOLOREDIT if RENAME.with(|r| r.borrow().as_ref().is_some_and(|f| f.edit == lp.0)) => {
+            let theme = look::theme(dark(hwnd));
+            let brush = RENAME.with(|r| r.borrow().as_ref().map(|f| f.brush)).unwrap_or(0);
+            let dc = HDC(wp.0 as *mut c_void);
+            unsafe {
+                SetTextColor(dc, rgb(theme.text));
+                SetBkColor(dc, rgb(scene::panel_color(theme)));
+            }
+            LRESULT(brush)
+        }
         WM_CTLCOLOREDIT => {
             let brush = NAMING.with(|n| n.borrow().as_ref().map(|f| f.brush));
             match brush {
@@ -1185,6 +2076,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         WM_SIZE => {
+            place_note(hwnd);
+            place_rename(hwnd);
             let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
             LRESULT(0)
         }
@@ -1215,6 +2108,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     set_scroll(hwnd, &at, at.scrolled + by);
                 }
             });
+            LRESULT(0)
+        }
+        // The menu on a group's row (task 1661). On the up, as the tab
+        // strip's: pressing and sliding off is a way out.
+        WM_RBUTTONUP => {
+            let (x, y) = point(lp);
+            row_menu(hwnd, x, y);
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
@@ -1335,6 +2235,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                 }
                 TIMER_SEEN => seen_due(hwnd),
+                TIMER_UNDER => {
+                    if !prune_under() {
+                        let _ = unsafe { KillTimer(Some(hwnd), TIMER_UNDER) };
+                    }
+                    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                }
                 _ => {}
             }
             LRESULT(0)
@@ -1387,6 +2293,28 @@ const WHEEL_ROWS: f64 = 3.0;
 fn click(hwnd: HWND, x: i32, y: i32) {
     let g = geometry(hwnd);
     let (px, py) = (x as f64 / g.scale, y as f64 / g.scale);
+    // The archived section's header opens and closes it; its rows are not
+    // selected -- their menu is what there is to do with them (task 1661).
+    let archived = source::with(|data| match data {
+        Data::Ready(r) => {
+            let lay = list_layout(hwnd, &r.list, g.room.panel.h);
+            let (ax, ay) = (px - g.room.panel.x, py - g.room.panel.y);
+            Some(lay.on_archived_header(ax, ay) as u8 * 2 + lay.archived_at(ax, ay).is_some() as u8)
+        }
+        Data::NotYet => None,
+        Data::Unreadable(_) => None,
+    });
+    match archived {
+        Some(2) => {
+            let open = !ARCHIVED_OPEN.with(|o| o.get());
+            ARCHIVED_OPEN.with(|o| o.set(open));
+            wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] archived section {}", if open { "opened" } else { "closed" });
+            let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            return;
+        }
+        Some(1) => return,
+        _ => {}
+    }
     // A row of the list.
     let row = source::with(|data| match data {
         Data::Ready(r) => list_layout(hwnd, &r.list, g.room.panel.h)
@@ -1579,6 +2507,17 @@ fn paint(hwnd: HWND) {
         let _ = unsafe { EndPaint(hwnd, &ps) };
         return;
     }
+    // A brief whose group is gone -- renamed, deleted, archived -- closes.
+    let gone = NOTE.with(|n| n.borrow().as_ref().map(|f| f.group.clone())).filter(|group| {
+        source::with(|data| match data {
+            Data::Ready(r) => r.list.row(group).is_none(),
+            Data::NotYet => false,
+            Data::Unreadable(_) => false,
+        })
+    });
+    if gone.is_some() {
+        close_note(hwnd);
+    }
     let g = geometry(hwnd);
     let theme = look::theme(dark(hwnd));
     let selected = selection();
@@ -1682,10 +2621,12 @@ fn paint(hwnd: HWND) {
                 if let Ok(mut rows) = UIA_ROWS.lock() {
                     *rows = spoken;
                 }
-                (
-                    scene::build(list, &lay, &view, &translate),
-                    scene::build_right(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, &translate),
-                )
+                let mut items = scene::build(list, &lay, &view, &translate);
+                // What the list draws besides its rows (task 1661).
+                let under: Vec<(String, scene::UnderLine)> = UNDER.with(|u| u.borrow().iter().map(|(id, line, _)| (id.clone(), line.clone())).collect());
+                let open = ARCHIVED_OPEN.with(|o| o.get());
+                items.extend(scene::build_extras(list, &lay, &view, &under, open, crate::projects_ui::local_offset() * 1000, &translate));
+                (items, scene::build_right(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, &translate))
             }
             Data::NotYet => (
                 scene::build_message(side::WIDTH, g.room.panel.h, theme, g.scale, tr(scene::msg::NOT_YET)),
@@ -1721,6 +2662,11 @@ fn paint(hwnd: HWND) {
             source::wants_ticks();
         }
 
+        // The group's brief, at the right, when it is being edited.
+        if let (Some(r), Some(note)) = (g.room.note, note_scene(hwnd, &g, theme)) {
+            let at = Px { scale: g.scale, ox: (r.x * g.scale).round() as i32, oy: (r.y * g.scale).round() as i32 };
+            paint_items(mem, at, &note.items, &mut fonts, t);
+        }
         // The right side.
         if g.room.right.w > 0.0 {
             let at = Px { scale: g.scale, ox: (g.room.right.x * g.scale).round() as i32, oy: (g.room.right.y * g.scale).round() as i32 };
@@ -1964,10 +2910,20 @@ fn list_layout(hwnd: HWND, list: &List, height: f64) -> ListLayout {
     let (ui, mono) = (fonts.get(&face(false)), fonts.get(&face(true)));
     unsafe {
         let dc = GetDC(Some(hwnd));
-        let lay = ListLayout::measured(list, height, &|text, code| {
-            let font = if code { mono } else { ui };
-            layout::wrap(text, &|s| fit_chars(dc, font, s, width)).len()
-        });
+        let extras = layout::Extras {
+            lines_under: UNDER.with(|u| u.borrow().iter().map(|(id, _, _)| id.clone()).collect()),
+            archived: list.archived.iter().map(|a| a.name.clone()).collect(),
+            archived_open: ARCHIVED_OPEN.with(|o| o.get()),
+        };
+        let lay = ListLayout::measured_with(
+            list,
+            height,
+            &|text, code| {
+                let font = if code { mono } else { ui };
+                layout::wrap(text, &|s| fit_chars(dc, font, s, width)).len()
+            },
+            &extras,
+        );
         ReleaseDC(Some(hwnd), dc);
         lay.scrolled_to(SCROLLED.with(|s| s.get()))
     }
@@ -2004,7 +2960,7 @@ unsafe fn part_width(dc: HDC, at: Px, part: &Part, fonts: &mut Fonts) -> i32 {
     match &part.piece {
         Piece::Words { text, style } => unsafe { text_width(dc, fonts.get(style), text) },
         Piece::Glyph { size, .. } => at.len(*size),
-        Piece::Held { size, .. } => at.len(*size),
+        Piece::Held { size, .. } | Piece::Mark { size, .. } => at.len(*size),
     }
 }
 
@@ -2026,6 +2982,11 @@ unsafe fn paint_piece(dc: HDC, at: Px, piece: &Piece, r: RECT, fonts: &mut Fonts
             let side = at.len(*size);
             let top = r.top + (r.bottom - r.top - side) / 2;
             unsafe { draw_shapes(dc, r.left, top, side, &glyph::held(), *color, 1.0) };
+        }
+        Piece::Mark { mark, color, size } => {
+            let side = at.len(*size);
+            let top = r.top + (r.bottom - r.top - side) / 2;
+            unsafe { draw_shapes(dc, r.left, top, side, &glyph::mark(*mark), *color, 1.0) };
         }
     }
 }

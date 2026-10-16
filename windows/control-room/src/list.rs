@@ -42,6 +42,16 @@ pub struct Row {
     /// The "Fix" button on a card that reads "Failed" (task 1560): the
     /// core's word.
     pub fix: Fix,
+    /// What the menu on the row and its marks need (task 1659), the core's:
+    /// the group's brief, whether it is pinned, muted and until when, what
+    /// deleting it takes, and where its record is. A terminal in no group
+    /// has none of them.
+    pub brief: String,
+    pub pinned: bool,
+    pub muted: Option<crate::snapshot::Muted>,
+    pub delete_cost: Option<crate::snapshot::DeleteCost>,
+    pub record_dir: Option<String>,
+    pub project_name: Option<String>,
 }
 
 /// What the frame's title says of the terminal in it: that terminal's own
@@ -98,6 +108,9 @@ pub struct List {
     /// See `Snapshot::retention_waiting_bytes`: said once, under the
     /// header, with an OK.
     pub retention_waiting_bytes: Option<u64>,
+    /// The groups put away (task 1659), newest first: the list's last
+    /// section, folded unless the person opened it.
+    pub archived: Vec<crate::snapshot::Archived>,
 }
 
 /// The English of what this crate says; a host passes each through its
@@ -209,6 +222,12 @@ impl List {
                 start: g.supervisor.clone(),
                 alone: None,
                 fix: g.fix,
+                brief: g.brief.clone(),
+                pinned: g.pinned,
+                muted: g.muted,
+                delete_cost: g.delete_cost,
+                record_dir: g.record_dir.clone(),
+                project_name: g.project_name.clone(),
                 // Always the supervisor's own terminal, as the core wrote
                 // it. Whether the row is about the supervisor or about one
                 // of its workers is not asked here.
@@ -246,6 +265,12 @@ impl List {
                 alone: Some(Alone { terminal: one.id.clone(), title: one.title.clone(), pane }),
                 fix: one.fix,
                 title: Some(SupervisorTitle { name: one.title.clone(), shown: one.shown, word: one.text.clone() }),
+                brief: String::new(),
+                pinned: false,
+                muted: None,
+                delete_cost: None,
+                record_dir: None,
+                project_name: None,
             };
             if one.needs_me {
                 waiting.push(row);
@@ -264,6 +289,7 @@ impl List {
             supervisor_roles: s.supervisor_roles.clone(),
             choose_supervisor_role: s.choose_supervisor_role,
             retention_waiting_bytes: s.retention_waiting_bytes,
+            archived: s.archived.clone(),
         }
     }
 

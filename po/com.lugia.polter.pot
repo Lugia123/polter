@@ -5089,3 +5089,219 @@ msgstr ""
 #: windows/host/src
 msgid "“{}” goes back to its layout before the last change. The current version is kept, so doing this again undoes it."
 msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:152
+msgid "Go to Supervisor"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:153
+msgid "Let the Control Room Take Over…"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:154
+msgid "Start Supervisor, Going On with the Last Session"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:155
+msgid "Start Supervisor with a New Session"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:157
+msgid "Ask the Supervisor for a Progress Report"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:158
+msgid "Ask the Supervisor to Close Idle Workers"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:160
+msgid "Copy Supervisor's Terminal ID"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:161
+msgid "Pin"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:162
+msgid "Unpin"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:163
+msgid "Mute This Group's Notifications"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:164
+msgid "Unmute"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:165
+msgid "For 1 Hour"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:166
+msgid "Until Tomorrow"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:168
+msgid "Rename Group…"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:169
+msgid "Edit Group Note…"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:173
+msgid "Link to Project…"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:174
+msgid "Archive…"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:175
+msgid "Unarchive"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:176
+msgid "Delete Group…"
+msgstr ""
+
+#: windows/control-room/src/act.rs:320
+msgid "A group's name cannot be empty."
+msgstr ""
+
+#: windows/control-room/src/act.rs:322
+msgid "The group could not be renamed. Nothing was changed."
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:221
+msgid "until {}"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:222
+msgid "until tomorrow {}"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:167
+msgid "Until Turned Back On"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:28
+msgid "Archive {}?"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:32
+msgid "The supervisor is still running. Archiving does not close its terminal or its workers'."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:33
+msgid "Archive"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:35
+msgid "Delete the group {}?"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:39
+msgid "This group still has {} members. Deleting does not close their terminals, but they leave the group."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:40
+msgid "This group still has {} unfinished tasks. They are deleted with it."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:41
+msgid "Its chat, task panel and brief are deleted with it, and cannot be recovered."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:42
+msgid "The project {} stays; it just no longer belongs to any group."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:43
+msgid "If you would rather not delete this much, archive it instead."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:44
+msgid "Delete Group"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:29
+msgid "It goes into “Archived” at the bottom of the list, and you are not notified about it any more. Its chat, tasks, brief and project are all kept; right-click it in “Archived” and choose “Unarchive” to bring it back."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:34
+msgid "This group still has {} members and {} unfinished tasks. Deleting does not close their terminals, but they leave the group, and the unfinished tasks are deleted too."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:28
+msgid "{}'s brief"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:29
+msgid "The group's supervisor and workers can all read this."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:30
+msgid "{} characters"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:31
+msgid "{} characters, not saved"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:28
+msgid "Asked the supervisor for a progress report"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:29
+msgid "Asked the supervisor to close idle workers"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:30
+msgid "Not delivered: {}"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:31
+msgid "Not delivered yet: {}. It will be tried again."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:32
+msgid "Archived ({})"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:34
+msgid "archived {}/{}"
+msgstr ""
+
+#: windows/control-room/src/act.rs:455
+msgid "the supervisor's input line has text in it"
+msgstr ""
+
+#: windows/control-room/src/act.rs:456
+msgid "somebody just typed in the supervisor's terminal"
+msgstr ""
+
+#: windows/control-room/src/act.rs:457
+msgid "no agent is connected in the supervisor's terminal"
+msgstr ""
+
+#: windows/control-room/src/act.rs:341
+msgid "Records of a group by that name are still on disk. Pick another name."
+msgstr ""
+
+#: windows/control-room/src/act.rs:342
+msgid "Another Polter is renaming a group right now. Try again in a few seconds."
+msgstr ""
+
+#: windows/control-room/src/act.rs:343
+msgid "An earlier rename was left unfinished. Restart Polter, then try again."
+msgstr ""
+
+#: windows/control-room/src/act.rs:344
+msgid "The rename could not be finished now; it will be finished the next time Polter starts."
+msgstr ""
+
+#: windows/control-room/src/act.rs:345
+msgid "Deleted from the list, but some of its records could not be deleted."
+msgstr ""
