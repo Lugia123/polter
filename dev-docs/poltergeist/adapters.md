@@ -306,7 +306,7 @@ hook 的沉默有三种来源，其中两种 hook 自己报不出来：
 
 | CLI | 机制 | 建议最低版本 | 回合结束 | API 失败 | 等授权 | 等输入 | hook 形态 |
 |---|---|---|---|---|---|---|---|
-| Codex | hooks（稳定） | 0.124.0 | `Stop` 带答案 | ✗ | `PermissionRequest` | ✗ | command / mcp_tool；**需在 `/hooks` 里批准才运行**，要实测 |
+| Codex | hooks（稳定） | 0.124.0 | `Stop` 带答案 | ✗ | `PermissionRequest` | ✗ | command / mcp_tool；要信任才运行。**已接入，见第九节** |
 | Gemini | hooks | 0.27.0 | `AfterAgent` 带答案 | ✗ | `Notification` 仅观察 | ✗ | 仅 command |
 | Qwen Code | hooks | 0.14.4 | `Stop` 带答案 | `StopFailure` | ✓ | `idle_prompt` | command / http |
 | Copilot CLI | hooks | 1.0.18 | `agentStop` 无答案 | `errorOccurred` | ✓ | ✓ | command / http；直接读 `.claude/settings.json` |
@@ -316,6 +316,60 @@ hook 的沉默有三种来源，其中两种 hook 自己报不出来：
 
 没有跨家的 hook 标准（Agent Plugins 规范 v1 明确把 hook 排除在外），但 Copilot、Gemini、Qwen、Codex
 都在向 Claude Code 的格式靠拢。所以 `+hook` 的翻译表按 `--cli` 分支，其余全部共用。
+
+## 九、Codex（task 1668，codex 0.163.0）
+
+事实取自 openai/codex 的 `rust-v0.163.0` 源码，下面写到的路径都在 `codex-rs/` 下。
+
+**状态来源用 hooks，不用 `notify` 或 rollout。** hooks 是 Stable、默认开（`features/src/lib.rs` 的 `hooks`），事件名和输入字段与 Claude Code 同形
+（`hooks/src/schema.rs`）。`notify` 只报「回合完成」一种；rollout 得另起一个进程跟读文件；标题只能看出等批准（#1656 已做，
+hooks `live` 后就不再看标题）。
+
+| Codex hook | → AgentEvent | 说明 |
+|---|---|---|
+| `SessionStart` | `session_started` | `source`：startup / resume / clear。**第一轮开始时才发**，见下 |
+| `UserPromptSubmit` | `turn_started` | |
+| `Stop` | `turn_ended` | `last_assistant_message`；没有 `background_tasks` |
+| `Interrupt` | `turn_failed`，detail `interrupted` | 回合中途被停（Esc、ctrl+c）。Claude Code 在这种情况下什么都不发 |
+| `PermissionRequest` | `awaiting_approval` | shell 是 `Bash`/`command`；改文件是 `apply_patch`，摘要取补丁里第一行 `*** Update/Add/Delete File:`；MCP 工具的批准框也先过这里（`core/src/tools/approvals.rs`） |
+| `PreToolUse` / `PostToolUse` | `tool_started` / `turn_resumed` | |
+
+没有 `StopFailure`，也没有「等输入」的通知，所以 API 失败和等输入仍要靠屏幕。`SessionEnd` 不接：退出从进程上看得到。
+
+**注入**：adapter 的 launch 把 `plugins/codex/hooks.py`（PowerShell 版是 `hooks.ps1`，两份逐字节一致）给出的 `-c` 参数接到 codex 命令行上：
+每个事件一条 `hooks.<Event>=[{hooks=[{type="command",command="'<polter>' +hook --cli codex <Event>",timeout=3}]}]`。
+codex 在 unix 上用 `$SHELL -lc` 跑 command，在 Windows 上用 `cmd /C`，所以路径分别按 sh 和 cmd 的规矩加引号。
+timeout 取 3，因为 codex 把 `Interrupt` 的超时钳在 3 秒以内，而信任哈希算的是钳过之后的值，各事件取同一个数就不会对不上。
+
+**信任**：用户层和 `-c` 层的 hook 只有在被信任之后才跑；没被信任的不跑，TUI 启动时还会弹出审核框，挡在提示符前面。
+所以同一组 `-c` 里还有一条 `hooks.state={…}`，只给我们这几条写上 `trusted_hash`，不用 `--dangerously-bypass-hook-trust`
+（那会把用户和项目里没审过的 hook 一起放行）。
+- key：`/<session-flags>/config.toml:<event label>:0:0`。key 里有点号，而 `-c` 的键会按点号切开，所以整张表放在 `hooks.state` 的值里。
+- hash：`sha256:` 加上对 `{"event_name":…,"hooks":[规范化的 handler]}` 按键排序、紧凑写法的 JSON 求的 SHA-256（`hooks/src/engine/discovery.rs` 的 `hook_hash`）。
+
+实测（task 1668）：codex 0.163.0 的 `app-server` `hooks/list` 读回 7 条，全是 `trusted`。py 和 ps1 生成的参数都核过，路径里带引号和中文的也核过。
+把 handler 改一个字段，读回是 `modified`；去掉 state，读回是 `untrusted`。
+⚠️ Windows 上 key 的前缀 `C:\<session-flags>\config.toml` 是从源码推出来的（`synthetic_layer_path` 对 `C:\` 取绝对路径），没在 Windows 上量过。
+
+**`hooks_heard: "first_turn"`**：codex 的 `SessionStart` 挂在第一轮开始时才发（`core/src/hook_runtime.rs` 的
+`run_pending_session_start_hooks`），所以一个没人打字的 codex 不管坐多久都不会发任何事件。launch 回复带
+`"hooks_heard":"first_turn"` 时，`+launch` 发出的 `hooks_expected` 带 detail `first_turn`，`Bus` 只记下「在等」，**不起表**；
+等到这个终端里第一次有人敲回车（`Surface.submitsLine` → `Bus.noteLineSubmitted`，不管是人、`terminal_send` 还是送达），
+30 秒才开始算。缺省（`startup`）的行为和以前一样，从 launch 起算。
+
+**带时刻回答批准框**：codex 的批准框下面屏幕一直在动（「•」圆点按颜色闪烁，#1653），所以 `promptStanding`
+原来的两条判据——「事件之后屏幕静止」和「框指纹」（task 1655，靠 `volatileRows`）——对 codex 都不成立，带时刻的
+`terminal_answer_prompt` 一律回 `PromptGone`（c1668-01 实测）。现在 `Bus.Agent.title_waits` 记着「终端标题是不是插件声明的
+等批准标题」（`title_says`，#1656）。hooks `live` 时标题不改 state，但仍然记这一位；state、since、event 三者都对得上，并且这一位为真，
+就算框还在。框被答掉以后标题会离开，换了一个框则 event 不同，这两种情况都不会误判（c1668-02 实测回答成功）。
+
+**不带时刻的 `terminal_answer_prompt` 不再盲按**（task 1668 B2，#79）：agent 自己有话（hooks live 或声明的标题）时照它的话办——在等批准才按，否则 `PromptGone`；
+它没话时看屏幕最底下 16 行有没有它的插件在 `screen_says` 里声明的框（见 [plugins.md](plugins.md)）；没有声明或认不出是哪个 CLI，回 `PromptUnknown`，不发键。
+
+**MCP 连接断了要报**（task 1668 B3，#83）：sidecar 握手时报了它的父进程 pid（`agent_cli.Sighting.pid`，就是 CLI 本身）。
+`Bus.noteAgentHere` 记下连着时的 pid，连接从有变无时记下时刻；5 秒（`link_grace_ms`）内没连回来、而那个 pid 还活着，就往总管的盒子里放一行
+`lost its Polter connection Ns ago while its program (pid N) still runs`，每次断开只报一次；连回来就收回。pid 已经不在 = agent 退出了，不报（屏幕和 quiet 会说）。
+⚠️ Windows 上 sidecar 还不报 pid，所以这条在 Windows 上不会出现。
 
 ## 未决问题
 

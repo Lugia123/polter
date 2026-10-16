@@ -180,6 +180,18 @@ pub const Left = struct {
     };
 };
 
+/// An agent's connection to Polter, gone (`Entry.link_lost`).
+pub const LinkLost = struct {
+    at_ms: u64,
+    /// The program it had come from; null when that was not known.
+    pid: ?u64,
+};
+
+/// How long a connection may be gone before its loss is a fact: the
+/// sidecar of an agent that is starting again, or a CLI that restarts its
+/// server, connects within this.
+pub const link_grace_ms: u64 = 5 * std.time.ms_per_s;
+
 /// Whether a terminal is still expected to be working.
 pub const Duty = enum {
     /// On duty. Quiescence here is worth telling the supervisor about.
@@ -365,9 +377,14 @@ pub const Agent = struct {
     /// moves this and not that, and the age of what is known is read here.
     last_event_ms: ?u64,
 
-    /// When `hooks` became `expected`, for the timeout. **A moment that
-    /// happened, always** -- see `expected_said`.
-    expected_ms: u64,
+    /// When the wait for the hooks began, for the timeout. **A moment that
+    /// happened, always** -- see `expected_said` -- or null while it has
+    /// not begun: a CLI whose first hook comes with its first turn
+    /// (Codex's `SessionStart`, task 1668) says nothing until somebody
+    /// gives it a line, however long it sits at its prompt, so its wait
+    /// starts at the first line submitted in the terminal
+    /// (`noteLineSubmitted`), not at the launch.
+    expected_ms: ?u64,
 
     /// That the hooks did not come has been put in the box for this wait.
     ///
@@ -418,6 +435,15 @@ pub const Agent = struct {
     /// again after any event that changes the state.
     box: ?BoxPrint,
 
+    /// The terminal's title is one its CLI's plugin declares as waiting
+    /// on an approval (`Plugin.TitleSays`), as of the last title it set.
+    /// Kept whoever owns `state`: with hooks live the title does not set
+    /// the state (`noteTitle`), but it is still the CLI saying its box is
+    /// up -- which is what `promptStanding` asks, and what the screen
+    /// cannot answer for a CLI that keeps redrawing under its box (Codex,
+    /// task 1668).
+    title_waits: bool,
+
     pending: ?AgentNotice,
     handed: u8,
 
@@ -449,7 +475,7 @@ pub const Agent = struct {
         .state = .idle,
         .said_by = .hooks,
         .since_ms = 0,
-        .expected_ms = 0,
+        .expected_ms = null,
         .expected_said = false,
         .last_event_ms = null,
         .session_id = .{},
@@ -463,6 +489,7 @@ pub const Agent = struct {
         .tool = .{},
         .tool_ms = 0,
         .box = null,
+        .title_waits = false,
         .pending = null,
         .handed = 0,
         .handed_ms = 0,
@@ -805,6 +832,27 @@ pub const Entry = struct {
     /// true, and when only the second is, that difference is the news.
     silent_pending: bool = false,
     silent_handed: u8 = 0,
+
+    /// The program the agent's connection came from, as its sidecar said
+    /// when it connected (`agent_cli.Sighting.pid`: the sidecar's parent,
+    /// the agent CLI). Null while nobody is connected, and where it is not
+    /// read (Windows, today).
+    agent_pid: ?u64 = null,
+
+    /// The agent's connection to Polter went, and when, and which program
+    /// it had come from (task 1668, #83). A CLI whose MCP server dies does
+    /// not start it again -- Codex 0.163 answers every later tool call with
+    /// `Transport closed` -- so an agent can be left running with no way
+    /// to report anything, which reads to its supervisor like an agent
+    /// that has nothing to say. Null when the connection is there, or its
+    /// loss has been looked at (`considerLinks`).
+    link_lost: ?LinkLost = null,
+
+    /// That loss, said: its own slot, counted like `silent_pending`. A lost
+    /// connection is not a state of the agent's -- it is true alongside
+    /// any of them -- so it does not take `agent.pending`'s place.
+    link_pending: ?LinkLost = null,
+    link_handed: u8 = 0,
 
     /// How many times the supervisor has been told this terminal is quiet
     /// since it last came back to work.
@@ -1218,9 +1266,59 @@ pub fn setCallsSilentAfter(self: *Bus, id: Id, ms: ?u64, now_ms: u64) Allocator.
 /// Record whether an agent is connected from this terminal, as the host
 /// sees it now (#63). The bus cannot see connections; the host asks
 /// `Server.agentPresent` and says what it found. See `Entry.agent_here`.
-pub fn noteAgentHere(self: *Bus, id: Id, here: bool) void {
+pub fn noteAgentHere(self: *Bus, id: Id, here: bool, pid: ?u64, now_ms: u64) void {
     const e = self.entries.getPtr(id) orelse return;
+    const was = e.agent_here;
     e.agent_here = here;
+    if (here) {
+        if (pid) |p| e.agent_pid = p;
+        // Back: whatever was about to be said, or was said and not yet
+        // read, about it being gone is no longer true.
+        e.link_lost = null;
+        e.link_pending = null;
+        e.link_handed = 0;
+        return;
+    }
+    // Gone, this time: from here, whether its program is still running
+    // decides whether that is news (`considerLinks`).
+    if (was == true) e.link_lost = .{ .at_ms = now_ms, .pid = e.agent_pid };
+    e.agent_pid = null;
+    // An agent whose hooks were still awaited has gone (c1669-04: `/exit`
+    // before a first turn): nothing more is due from it, and a wait left
+    // running would report an agent that is not there.
+    if (was == true and e.agent.hooks == .expected) e.agent = .none;
+}
+
+/// Put a line in the box for every watched terminal whose agent's
+/// connection has been gone `link_grace_ms` while the program it came from
+/// is still running (`alive`, asked by the host: the bus does not look at
+/// processes). Once per loss. A program that has gone is an agent that
+/// exited, which the screen and the quiet report already say; a loss with
+/// no program known is not said, because it cannot be told from that.
+///
+/// Answers whether anything new went in.
+pub fn considerLinks(
+    self: *Bus,
+    now_ms: u64,
+    ctx: *anyopaque,
+    alive: *const fn (ctx: *anyopaque, pid: u64) bool,
+) bool {
+    var raised = false;
+    var it = self.entries.iterator();
+    while (it.next()) |kv| {
+        const e = kv.value_ptr;
+        const lost = e.link_lost orelse continue;
+        if (now_ms -| lost.at_ms < link_grace_ms) continue;
+        // Looked at once, whatever comes of it.
+        e.link_lost = null;
+        if (e.role != .watched or e.duty == .off) continue;
+        const pid = lost.pid orelse continue;
+        if (!alive(ctx, pid)) continue;
+        e.link_pending = lost;
+        e.link_handed = 0;
+        raised = true;
+    }
+    return raised;
 }
 
 /// Put a line in the box for every watched terminal whose calls have gone
@@ -1468,6 +1566,8 @@ pub fn noteLeft(self: *Bus, id: Id, why: Left.Why, now_ms: u64) void {
     // by the connection closing a moment later.
     if (e.left) |l| if (l.why == .failed or why == .unknown) return;
     e.left = .{ .why = why, .at_ms = now_ms };
+    // Its program is gone: so is the wait for its hooks (`noteAgentHere`).
+    if (e.agent.hooks == .expected) e.agent = .none;
 }
 
 /// Everything the bus knows that decides what this terminal wants from the
@@ -1576,6 +1676,8 @@ fn release(e: *Entry) void {
     e.silent_handed = 0;
     e.agent.pending = null;
     e.agent.handed = 0;
+    e.link_pending = null;
+    e.link_handed = 0;
 }
 
 /// Hold a terminal to its work, or let it go. The user only -- see
@@ -1917,7 +2019,7 @@ pub fn agentEvent(
             // soon enough if it is.
             a.* = .none;
             a.hooks = .expected;
-            a.expected_ms = now_ms;
+            a.expected_ms = if (AgentEvent.heardAtFirstTurn(ev.detail)) null else now_ms;
             a.since_ms = now_ms;
             e.left = null;
             if (ev.cli.len > 0) a.cli.set(ev.cli);
@@ -2031,7 +2133,10 @@ pub fn agentEvent(
 ///
 /// Answers whether anything went in the box.
 pub fn noteTitle(self: *Bus, id: Id, waits_for: ?[]const u8, title: []const u8, now_ms: u64) Allocator.Error!bool {
-    if (self.entries.getPtr(id)) |e| if (e.agent.hooks == .live) return false;
+    if (self.entries.getPtr(id)) |e| {
+        e.agent.title_waits = waits_for != null;
+        if (e.agent.hooks == .live) return false;
+    }
 
     const cli = waits_for orelse {
         const e = self.entries.getPtr(id) orelse return false;
@@ -2053,6 +2158,7 @@ pub fn noteTitle(self: *Bus, id: Id, waits_for: ?[]const u8, title: []const u8, 
     try self.register(id);
     const e = self.entries.getPtr(id).?;
     const a = &e.agent;
+    a.title_waits = true;
     if (a.said_by == .title and a.state == .awaiting_approval) return false;
 
     a.said_by = .title;
@@ -2197,6 +2303,9 @@ pub fn promptStanding(self: *const Bus, id: Id, since_ms: u64, event_ms: u64, no
     if (a.since_ms != since_ms) return false;
     if (a.last_event_ms == null or a.last_event_ms.? != event_ms) return false;
     if (self.quietExplained(id, now_ms)) return true;
+    // The CLI's own title says its box is up. A box answered and another
+    // asked has another event; a box gone takes the title with it.
+    if (a.title_waits) return true;
     const box = a.box orelse return false;
     if (box.event_ms != event_ms) return false;
     const now = boxPrint(screen orelse return false, AgentEvent.volatileRows(a.cli.get() orelse "")) orelse return false;
@@ -2328,6 +2437,47 @@ pub fn agentOf(self: *const Bus, id: Id) Agent {
     return e.agent;
 }
 
+/// A line was submitted in this terminal -- a return, typed by anybody.
+/// Starts the wait of a terminal whose hooks come with its first turn
+/// (`Agent.expected_ms`); anything else is left as it was, and a second
+/// line does not start the wait again.
+pub fn noteLineSubmitted(self: *Bus, id: Id, now_ms: u64) void {
+    const e = self.entries.getPtr(id) orelse return;
+    const a = &e.agent;
+    if (a.hooks != .expected or a.expected_ms != null) return;
+    a.expected_ms = now_ms;
+}
+
+/// Whether a line submitted in this terminal now would start its wait for
+/// the hooks (`noteLineSubmitted`): what the host asks before it reads the
+/// line to see whether it is a command (`slashCommandLine`), so that no
+/// other return costs a read.
+pub fn waitsForFirstLine(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    return e.agent.hooks == .expected and e.agent.expected_ms == null;
+}
+
+/// Whether the row a return is about to submit is one of the CLI's own
+/// commands -- `/exit`, `/model`, `/clear` -- rather than something said to
+/// it (c1669-04: the return of `/exit` started the wait, and thirty seconds
+/// later a Codex that had already gone was reported as hooks never heard).
+/// A command starts no turn, so no hook is due.
+///
+/// The row is the screen's: a prompt glyph and spaces before the text are
+/// skipped. A word with a second slash in it is a path, said to the agent.
+pub fn slashCommandLine(row: []const u8) bool {
+    var s = std.mem.trimStart(u8, row, " \t");
+    for ([_][]const u8{ "›", "❯", ">", "$", "%", "#" }) |glyph| {
+        if (std.mem.startsWith(u8, s, glyph)) {
+            s = std.mem.trimStart(u8, s[glyph.len..], " \t");
+            break;
+        }
+    }
+    if (s.len < 2 or s[0] != '/' or !std.ascii.isAlphabetic(s[1])) return false;
+    const word_end = std.mem.indexOfAny(u8, s, " \t") orelse s.len;
+    return std.mem.indexOfScalar(u8, s[1..word_end], '/') == null;
+}
+
 /// Put a line in the box for every watched terminal whose hooks were
 /// expected `hooks_expected_timeout_ms` ago and have said nothing. Once per
 /// wait: the next launch starts a new one.
@@ -2340,7 +2490,8 @@ pub fn considerAgents(self: *Bus, now_ms: u64) bool {
         const e = kv.value_ptr;
         const a = &e.agent;
         if (a.hooks != .expected or a.expected_said) continue;
-        if (now_ms -| a.expected_ms < hooks_expected_timeout_ms) continue;
+        const began = a.expected_ms orelse continue;
+        if (now_ms -| began < hooks_expected_timeout_ms) continue;
 
         // Said once. The state is still `expected`, which is the truth, and
         // so is when it began.
@@ -2715,6 +2866,10 @@ pub fn delivered(self: *Bus, to: Id, peers: Peers) void {
             e.agent.pending = null;
             e.agent.handed = 0;
         }
+        if (e.link_pending != null and e.link_handed > 0) {
+            e.link_pending = null;
+            e.link_handed = 0;
+        }
     }
 }
 
@@ -2744,7 +2899,7 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
     var it = self.entries.iterator();
     while (it.next()) |kv| {
         const e = kv.value_ptr;
-        if (e.pending == null and !e.silent_pending and e.agent.pending == null) continue;
+        if (e.pending == null and !e.silent_pending and e.agent.pending == null and e.link_pending == null) continue;
         if (only_waiting and !freshlyWaiting(e)) continue;
 
         // Not this supervisor's terminal. Left in the box for whoever is
@@ -2920,6 +3075,39 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
                 listed += 1;
             }
         }
+
+        // Its connection to Polter is gone while its program runs: see
+        // `considerLinks`.
+        if (!only_waiting) if (e.link_pending) |lost| {
+            total += 1;
+
+            switch (how) {
+                .consume => {
+                    e.link_pending = null;
+                    e.link_handed = 0;
+                },
+                .hand_over => {
+                    e.link_handed +|= 1;
+                    if (e.link_handed >= max_hand_overs) {
+                        e.link_pending = null;
+                        e.link_handed = 0;
+                    }
+                },
+            }
+
+            if (listed < max_listed) {
+                const sep = if (listed == 0) " " else ", ";
+                const mark = w.end;
+                w.print(
+                    "{s}0x{x:0>16} lost its Polter connection {d}s ago while its program (pid {d}) still runs: it cannot call Polter tools until it is restarted",
+                    .{ sep, id, (now_ms -| lost.at_ms) / std.time.ms_per_s, lost.pid orelse 0 },
+                ) catch {
+                    w.end = mark;
+                    break;
+                };
+                listed += 1;
+            }
+        };
     }
 
     // The supervisor's own line, after the terminals and before the count
@@ -3168,7 +3356,7 @@ fn writeAgent(
         ),
         .hooks_silent => try w.print(
             "{s}0x{x:0>16} hooks expected {d}s ago and nothing heard (no session_started)",
-            .{ sep, id, ago_s },
+            .{ sep, id, (now_ms -| (a.expected_ms orelse a.eventMs())) / std.time.ms_per_s },
         ),
     }
 }
@@ -5026,6 +5214,96 @@ test "hooks: expected with no session_started for 30s is put in the box" {
     try testing.expect(!b.considerAgents(10 * hooks_expected_timeout_ms));
 }
 
+test "1668: hooks heard at the first turn wait for a line, then for 30s from it" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    var ev = hookEv(.hooks_expected);
+    ev.cli = "codex";
+    ev.detail = AgentEvent.hooksExpectedDetail(true);
+    _ = try b.agentEvent(worker, ev, 0);
+    try testing.expectEqual(Hooks.expected, b.agentOf(worker).hooks);
+    try testing.expect(b.agentOf(worker).expected_ms == null);
+
+    // Sitting at its prompt with nobody typing is not hooks gone missing,
+    // however long it lasts.
+    try testing.expect(!b.considerAgents(10 * hooks_expected_timeout_ms));
+
+    // The first line starts the wait; a second does not start it again.
+    const typed: u64 = 10 * hooks_expected_timeout_ms;
+    b.noteLineSubmitted(worker, typed);
+    b.noteLineSubmitted(worker, typed + 5_000);
+    try testing.expectEqual(@as(?u64, typed), b.agentOf(worker).expected_ms);
+
+    try testing.expect(!b.considerAgents(typed + hooks_expected_timeout_ms - 1));
+    try testing.expect(b.considerAgents(typed + hooks_expected_timeout_ms));
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, typed + hooks_expected_timeout_ms, &buf, .none) orelse
+        return error.TestExpectedNotice;
+    // Counted from the line, not from the launch five minutes before it.
+    try testing.expect(std.mem.indexOf(u8, line, "0x0000000000002222 hooks expected 30s ago") != null);
+}
+
+test "1668: a command to the CLI is not a line that starts a turn" {
+    try testing.expect(slashCommandLine("› /exit"));
+    try testing.expect(slashCommandLine("  ❯ /clear"));
+    try testing.expect(slashCommandLine("/model gpt-5.6-luna"));
+    try testing.expect(!slashCommandLine("› Call the polter MCP tool named me"));
+    // A path is said to the agent, not to the CLI.
+    try testing.expect(!slashCommandLine("› /Users/me/notes.md summarise this"));
+    try testing.expect(!slashCommandLine(""));
+    try testing.expect(!slashCommandLine("› /"));
+    try testing.expect(!slashCommandLine("› / exit"));
+}
+
+test "1668: the wait for a first turn ends when the agent goes, before or after a line" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var ev = hookEv(.hooks_expected);
+    ev.cli = "codex";
+    ev.detail = AgentEvent.hooksExpectedDetail(true);
+
+    // Its connection came and went: it exited (`/exit`) with nothing said.
+    _ = try b.agentEvent(worker, ev, 0);
+    try testing.expect(b.waitsForFirstLine(worker));
+    b.noteAgentHere(worker, true, 77, 1_000);
+    b.noteLineSubmitted(worker, 2_000);
+    b.noteAgentHere(worker, false, null, 3_000);
+    try testing.expectEqual(Hooks.none, b.agentOf(worker).hooks);
+    try testing.expect(!b.considerAgents(10 * hooks_expected_timeout_ms));
+
+    // Its program ended.
+    _ = try b.agentEvent(worker, ev, 20_000);
+    b.noteLeft(worker, .failed, 21_000);
+    try testing.expectEqual(Hooks.none, b.agentOf(worker).hooks);
+    try testing.expect(!b.waitsForFirstLine(worker));
+
+    // A live agent's connection going says nothing about its hooks.
+    _ = try b.agentEvent(worker, hookEv(.session_started), 30_000);
+    b.noteAgentHere(worker, true, 77, 31_000);
+    b.noteAgentHere(worker, false, null, 32_000);
+    try testing.expectEqual(Hooks.live, b.agentOf(worker).hooks);
+}
+
+test "1668: a line in a terminal whose hooks are heard at startup, or are live, changes nothing" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, hookEv(.hooks_expected), 1_000);
+    b.noteLineSubmitted(worker, 20_000);
+    try testing.expectEqual(@as(?u64, 1_000), b.agentOf(worker).expected_ms);
+
+    _ = try b.agentEvent(worker, hookEv(.session_started), 21_000);
+    const live = b.agentOf(worker);
+    b.noteLineSubmitted(worker, 22_000);
+    try testing.expectEqual(live.expected_ms, b.agentOf(worker).expected_ms);
+    try testing.expectEqual(Hooks.live, b.agentOf(worker).hooks);
+
+    // And a terminal the bus has never heard of is not made one.
+    b.noteLineSubmitted(0x9999, 22_000);
+    try testing.expect(b.get(0x9999) == null);
+}
+
 test "hooks: session_started in time means nothing is ever said about the wait" {
     var b = try hookedBus();
     defer b.deinit();
@@ -5502,6 +5780,98 @@ test "hooks: the tool call waiting for approval is kept whole while it waits, an
     _ = try b.agentEvent(worker, ask, 75);
     b.unregister(worker);
     try testing.expect(b.pendingToolOf(worker) == null);
+}
+
+test "1668: with hooks live, a title that says it waits keeps the box standing while the screen moves" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var ask = hookEv(.awaiting_approval);
+    ask.cli = "codex";
+    ask.detail = "mcp__polter__me";
+    _ = try b.agentEvent(worker, ask, 1_000);
+    // The title says nothing to the state of a hooked agent ...
+    try testing.expect(!try b.noteTitle(worker, "codex", codex_wait, 1_200));
+    try testing.expectEqual(SaidBy.hooks, b.agentOf(worker).said_by);
+    try testing.expectEqualStrings("mcp__polter__me", b.agentOf(worker).detail.get().?);
+
+    // ... but while it says the box is up, the box stands, however much
+    // the screen under it has moved.
+    b.noteQuiet(worker, 0, 14_000);
+    try testing.expect(b.promptStanding(worker, 1_000, 1_000, 14_000, null));
+    // Not another box's moments.
+    try testing.expect(!b.promptStanding(worker, 1_000, 999, 14_000, null));
+
+    // The title leaves: the box went with it.
+    _ = try b.noteTitle(worker, null, "w", 15_000);
+    try testing.expect(!b.promptStanding(worker, 1_000, 1_000, 15_000, null));
+}
+
+test "1668: a title that never said it waits does not keep a moving box standing" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    _ = try b.agentEvent(worker, ask, 1_000);
+    _ = try b.noteTitle(worker, null, "✳ Claude Code", 1_200);
+    b.noteQuiet(worker, 0, 14_000);
+    try testing.expect(!b.promptStanding(worker, 1_000, 1_000, 14_000, null));
+}
+
+fn aliveYes(_: *anyopaque, _: u64) bool {
+    return true;
+}
+fn aliveNo(_: *anyopaque, _: u64) bool {
+    return false;
+}
+var alive_ctx: u8 = 0;
+
+test "1668: a connection gone while its program runs is said once, after the grace" {
+    var b = try hookedBus();
+    defer b.deinit();
+    b.noteAgentHere(worker, true, 77, 1_000);
+    b.noteAgentHere(worker, false, null, 2_000);
+
+    try testing.expect(!b.considerLinks(2_000 + link_grace_ms - 1, &alive_ctx, aliveYes));
+    try testing.expect(b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveYes));
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 2_000 + link_grace_ms, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "0x0000000000002222 lost its Polter connection 5s ago while its program (pid 77) still runs") != null);
+
+    // Once per loss.
+    try testing.expect(!b.considerLinks(10 * link_grace_ms, &alive_ctx, aliveYes));
+}
+
+test "1668: a connection gone with its program, or back in time, or from nobody known, is not news" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // The program went too: an agent that exited.
+    b.noteAgentHere(worker, true, 77, 1_000);
+    b.noteAgentHere(worker, false, null, 2_000);
+    try testing.expect(!b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveNo));
+
+    // Back within the grace: a restart, not a loss.
+    b.noteAgentHere(worker, true, 78, 10_000);
+    b.noteAgentHere(worker, false, null, 11_000);
+    b.noteAgentHere(worker, true, 78, 12_000);
+    try testing.expect(!b.considerLinks(11_000 + link_grace_ms, &alive_ctx, aliveYes));
+
+    // Said, then back before anybody read it: taken back.
+    b.noteAgentHere(worker, false, null, 20_000);
+    try testing.expect(b.considerLinks(20_000 + link_grace_ms, &alive_ctx, aliveYes));
+    b.noteAgentHere(worker, true, 78, 26_000);
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, 26_000, &buf, .none) == null);
+
+    // A first look that finds nobody is not a loss; nor is one from a
+    // program nobody named.
+    var c = try hookedBus();
+    defer c.deinit();
+    c.noteAgentHere(worker, false, null, 1_000);
+    try testing.expect(!c.considerLinks(1_000 + link_grace_ms, &alive_ctx, aliveYes));
+    c.noteAgentHere(worker, true, null, 2_000);
+    c.noteAgentHere(worker, false, null, 3_000);
+    try testing.expect(!c.considerLinks(3_000 + link_grace_ms, &alive_ctx, aliveYes));
 }
 
 test "boxPrint: the same box whatever its countdown says, and nothing without one (task 1655)" {
@@ -6232,14 +6602,14 @@ test "#63: a terminal with no agent in it says so on the quiet and no tool call 
     // Asked, and there: a turn that ended explains a still screen, and
     // nothing is said (task 1503). This is also all that was said about it
     // once it had exited -- the bug.
-    b.noteAgentHere(worker, true);
+    b.noteAgentHere(worker, true, null, 0);
     b.noteQuiet(worker, 0, 90_000);
     _ = b.report(worker, quiet(30_000), 120_000);
     try testing.expect(b.drain(boss, 120_000, &buf, .none) == null);
     try testing.expect(!b.considerCalls(t));
 
     // Gone: its last word explains nothing, and the line says why.
-    b.noteAgentHere(worker, false);
+    b.noteAgentHere(worker, false, null, 0);
     b.noteQuiet(worker, 0, 120_000);
     _ = b.report(worker, quiet(60_000), 180_000);
     const gone = b.drain(boss, 180_000, &buf, .none) orelse return error.TestExpectedNotice;
@@ -6253,7 +6623,7 @@ test "#63: a terminal with no agent in it says so on the quiet and no tool call 
     defer b2.deinit();
     _ = try b2.agentEvent(worker, hookEv(.turn_started), 0);
     b2.noteCall(worker, 0);
-    b2.noteAgentHere(worker, false);
+    b2.noteAgentHere(worker, false, null, 0);
     try testing.expect(b2.considerCalls(t));
     const silent = b2.drain(boss, t, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(

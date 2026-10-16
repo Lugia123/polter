@@ -136,8 +136,19 @@ LOCK_GATE = os.path.join(HERE, "lock-reentry.py")
 # where what is held around them is the server's slot lock and the
 # identities' lock in calls that have returned -- never this one. Not done:
 # nothing here was run under a held lock to see it hang.
-CALLS = 108
-SPLIT = {"lockUncancelable": 54, "unlock": 54}
+#
+# 108 -> 110 (#1668), re-read 2026-10-17 by the same method. The pair is
+# ours: `cursorRowText`, the row under the cursor, read when a return is
+# about to submit a line in a terminal whose agent's hooks wait for its
+# first turn, to tell a command (`/exit`) from a prompt. **Its one caller
+# was enumerated**: `keyCallback`, before anything in it takes this lock --
+# and `keyCallback` itself takes this same lock further down, so every
+# caller of it (the embedded and GTK apprts, `sendPoltergeistKey`, the
+# two in `focusCallback` that synthesise modifier releases) is
+# already one that does not hold it, or it would hang today. Not done:
+# nothing here was run under a held lock to see it hang.
+CALLS = 110
+SPLIT = {"lockUncancelable": 55, "unlock": 55}
 
 # Claim 2. Down is a safety regression; up means somebody found another.
 CAREFUL_SITES = 2

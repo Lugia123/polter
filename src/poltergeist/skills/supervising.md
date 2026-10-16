@@ -435,8 +435,18 @@ answer=allowed]: [ ! ] Action Required | …` is Codex on a permission box. Its
 screen keeps redrawing under the box, so it is never reported `quiet`; this
 line is the only thing that says it is stuck, and it goes as soon as the
 title changes. In `terminal_list` it reads `hooks: none`, `state:
-awaiting_approval`, `detail: title`. Unlike
-everything above these are not arithmetic: the CLI said it. The quote is only
+awaiting_approval`, `detail: title`. Codex started from a role reports
+through hooks like Claude Code (task 1668), and adds `failed interrupted`: a
+turn stopped part way, by its person or by your ctrl+c / escape. Unlike
+everything above these are not arithmetic: the CLI said it.
+
+**`lost its Polter connection 12s ago while its program (pid 4242) still
+runs`** means the agent's MCP server is gone and the agent is not: it cannot
+call any Polter tool -- no `task_progress`, no `group_post` -- until it is
+restarted, and a CLI does not restart that server by itself (Codex answers
+every later call with `Transport closed`). Its silence from then on means
+nothing. Read the terminal; have it finish what it is doing and quit, and
+start it again (a role start resumes the session). The quote is only
 the start of the answer; `terminal_turn(id)` has the whole of it, up to 16 KB,
 and says when it was cut. The note on `awaiting approval` is likewise the
 start of the command; `terminal_turn(id)`'s `pending_tool` has the whole
@@ -548,8 +558,12 @@ nothing you can do would answer it. Then, in this order:
    know the answer from the task; a guess is worse than a delay.
 3. **`terminal_answer_prompt(id, choice, state_at_ms, event_at_ms)`**, copying
    the two moments straight off the line. With them nothing is pressed unless
-   that prompt is the one still there; without them the count is pressed blind
-   into whatever is on screen now. A box with a countdown in it (Claude Code's
+   that prompt is the one still there. Without them nothing is pressed blind
+   either: the keys go only if the agent says it is waiting on an approval, or,
+   for an agent that says nothing, if the screen shows a box its CLI's plugin
+   declares. `PromptGone` then means it is not waiting; `PromptUnknown` means
+   nothing can tell -- read the screen, and if a box is there answer it with
+   `terminal_key`. A box with a countdown in it (Claude Code's
    `will automatically deny this request in 1:54`) can be answered like any
    other: the countdown is not counted as the screen moving. `PromptGone` on
    one means the box itself changed or went -- read again. `choice` counts from the highlighted

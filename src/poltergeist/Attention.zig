@@ -172,8 +172,9 @@ pub const Facts = struct {
     said_by: Bus.SaidBy,
     /// When `state` last changed.
     state_since_ms: u64,
-    /// When `hooks` became `expected`.
-    expected_ms: u64,
+    /// When the wait for the hooks began, or null while it has not
+    /// (`Bus.Agent.expected_ms`).
+    expected_ms: ?u64,
     /// When a hook event last arrived, if that is recorded.
     last_event_ms: ?u64,
     waiting_on_background: bool,
@@ -287,14 +288,22 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
             break :decided .{ .kind = kind, .since_ms = since, .source = source, .age_ms = hook_age };
         }
 
-        if (f.hooks == .expected and f.process == .running and
-            now_ms -| f.expected_ms >= t.hooks_expected_ms)
-        {
-            break :decided .{
+        if (f.hooks == .expected and f.process == .running) {
+            if (f.expected_ms) |began| if (now_ms -| began >= t.hooks_expected_ms) break :decided .{
                 .kind = .suspect_stuck,
-                .since_ms = f.expected_ms +| t.hooks_expected_ms,
+                .since_ms = began +| t.hooks_expected_ms,
                 .source = .hook_missing,
-                .age_ms = now_ms -| f.expected_ms,
+                .age_ms = now_ms -| began,
+            };
+            // Started with hooks that have not spoken yet: at its prompt,
+            // not at work. Its screen moves while it starts and draws, and
+            // read by the screen it was drawn as working (c1669-04); a
+            // turn would have said so through those hooks.
+            break :decided .{
+                .kind = .idle,
+                .since_ms = f.state_since_ms,
+                .source = .none,
+                .age_ms = null,
             };
         }
 
@@ -408,7 +417,10 @@ pub fn nextChange(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
             break :at @max(at, f.state_since_ms);
         }
         if (f.hooks == .expected) {
-            const due = f.expected_ms +| t.hooks_expected_ms;
+            // A wait that has not begun ends by a line being typed, not
+            // by the clock.
+            const began = f.expected_ms orelse return null;
+            const due = began +| t.hooks_expected_ms;
             if (due > now_ms) break :at due;
             return null;
         }
@@ -899,6 +911,29 @@ test "Attention: hooks that were promised and never came are suspect" {
     try testing.expectEqual(Source.hook_missing, s.source);
     try testing.expectEqual(50 * min + Bus.hooks_expected_timeout_ms, s.since_ms);
 
+    f.expected_ms = now - 1000;
+    try testing.expectEqual(Kind.idle, classify(f, T, now).kind);
+}
+
+test "1668: hooks whose wait has not begun are not suspect, and no clock will make them" {
+    var f: Facts = .none;
+    f.hooks = .expected;
+    f.expected_ms = null;
+    try testing.expect(classify(f, T, now).kind != .suspect_stuck);
+    try testing.expect(nextChange(f, T, now) == null);
+
+    // Once a line has started it, it is the wait it always was.
+    f.expected_ms = 50 * min;
+    try testing.expectEqual(Kind.suspect_stuck, classify(f, T, now).kind);
+}
+
+test "1668: an agent whose hooks have not spoken yet is at its prompt, not at work" {
+    var f: Facts = .none;
+    f.hooks = .expected;
+    f.expected_ms = null;
+    // Drawn a second ago, as a CLI starting up is.
+    f.screen = .{ .still_ms = 1000 };
+    try testing.expectEqual(Kind.idle, classify(f, T, now).kind);
     f.expected_ms = now - 1000;
     try testing.expectEqual(Kind.idle, classify(f, T, now).kind);
 }

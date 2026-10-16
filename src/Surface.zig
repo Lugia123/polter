@@ -3308,6 +3308,23 @@ pub fn keyCallback(
     const draft_was = self.poltergeist_draft.outstanding;
     self.poltergeist_draft.note(event);
 
+    // And a third: a line was handed to whatever runs here. Whoever typed
+    // it -- a person, `terminal_send`, a notice -- it is what starts a turn,
+    // and so what starts the wait for a CLI that says nothing before its
+    // first one (task 1668, `Bus.noteLineSubmitted`).
+    // Not a command to the CLI itself (`/exit`), which starts no turn; the
+    // row is read only for a terminal whose wait this would start.
+    if (submitsLine(event) and self.app.poltergeist.waitsForFirstLine(self.id)) {
+        const command = if (self.cursorRowText(self.alloc)) |row| command: {
+            defer self.alloc.free(row);
+            break :command poltergeistpkg.Bus.slashCommandLine(row);
+        } else false;
+        if (!command) self.app.poltergeist.noteLineSubmitted(
+            self.id,
+            self.app.poltergeistElapsedMs(),
+        );
+    }
+
     // A notice that was refused because of that draft comes back once the
     // keyboard has been quiet after this key.
     if (draftJustCleared(self.poltergeist_notice_refused, draft_was, self.poltergeist_draft.outstanding)) {
@@ -4531,6 +4548,35 @@ pub const TypeError = error{
 /// person: it says a key arrived at this surface, nothing about who sent it
 /// or whether they are still there. `poltergeistMayType` and the wording in
 /// `rpc.zig` both say so, and they have to keep saying so.
+/// The text of the row the cursor is on, or null when it cannot be read.
+/// Takes the renderer lock, so never from under it.
+fn cursorRowText(self: *Surface, alloc: Allocator) ?[:0]const u8 {
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
+    const screen = self.io.terminal.screens.active;
+    const y = screen.cursor.y;
+    const tl = screen.pages.pin(.{ .active = .{ .x = 0, .y = y } }) orelse return null;
+    const br = screen.pages.pin(.{ .active = .{ .x = screen.pages.cols - 1, .y = y } }) orelse return null;
+    return screen.selectionString(alloc, .{ .sel = .init(tl, br, false), .trim = true }) catch null;
+}
+
+/// Whether a key hands a line to the program: a return, pressed, with no
+/// modifier that would make it a binding instead (⌘↩ is full screen).
+/// Shift is let through -- it is still a return to the line.
+pub fn submitsLine(event: input.KeyEvent) bool {
+    if (event.action != .press or event.key != .enter) return false;
+    return !(event.mods.ctrl or event.mods.alt or event.mods.super);
+}
+
+test "1668: a return submits a line; a release or a bound return does not" {
+    const testing = std.testing;
+    try testing.expect(submitsLine(.{ .key = .enter }));
+    try testing.expect(submitsLine(.{ .key = .enter, .mods = .{ .shift = true } }));
+    try testing.expect(!submitsLine(.{ .key = .enter, .action = .release }));
+    try testing.expect(!submitsLine(.{ .key = .enter, .mods = .{ .super = true } }));
+    try testing.expect(!submitsLine(.{ .key = .key_a }));
+}
+
 pub fn keyIsPresence(event: input.KeyEvent) bool {
     // A release carries no evidence a press did not already carry -- except
     // the manufactured ones, which are the defect above.

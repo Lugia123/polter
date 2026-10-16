@@ -303,6 +303,31 @@ pub const Launch = struct {
     /// `+launch` tells Polter to expect them (`Bus.Hooks.expected`). Only a
     /// JSON `true` says so: an adapter that did not say it did not do it.
     hooks: bool,
+
+    /// When the CLI's first hook comes (task 1668). Read only with `hooks`.
+    hooks_heard: HooksHeard,
+};
+
+/// When a CLI whose hooks were configured says its first word, as a
+/// launch answer's `hooks_heard` gives it.
+pub const HooksHeard = enum {
+    /// As soon as it has started: Claude Code's `SessionStart`. The wait
+    /// for it starts with the launch. Also what any other word, or none,
+    /// is read as -- the wait that has always been.
+    startup,
+    /// With its first turn: Codex's `SessionStart` is held until a turn
+    /// begins (`run_pending_session_start_hooks`), so a Codex nobody has
+    /// typed at says nothing however long it sits there. The wait starts
+    /// at the first line submitted (`Bus.noteLineSubmitted`).
+    first_turn,
+
+    fn of(v: ?std.json.Value) HooksHeard {
+        const s = switch (v orelse return .startup) {
+            .string => |s| s,
+            else => return .startup,
+        };
+        return std.meta.stringToEnum(HooksHeard, s) orelse .startup;
+    }
 };
 
 pub const LaunchError = error{
@@ -356,6 +381,7 @@ pub fn parseLaunch(arena: Allocator, answer: []const u8) LaunchError!Launch {
         .summary = if (obj.get("summary")) |s| (if (s == .string) s.string else null) else null,
         .notes = try notes.toOwnedSlice(arena),
         .hooks = if (obj.get("hooks")) |h| h == .bool and h.bool else false,
+        .hooks_heard = HooksHeard.of(obj.get("hooks_heard")),
     };
 }
 
@@ -900,6 +926,20 @@ test "agent_cli: the launch request carries the role and one CLI's choices" {
     try testing.expectEqualStrings("mcp:argus", cli.get("mcp").?.object.get("except").?.array.items[0].string);
     try testing.expectEqualStrings("sonnet", cli.get("model").?.string);
     try testing.expectEqualStrings("--verbose", cli.get("args").?.array.items[0].string);
+}
+
+test "1668: a launch answer says when the first hook comes, and the wait from the launch is the default" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const plain = try parseLaunch(aa, "{\"argv\":[\"claude\"],\"hooks\":true}");
+    try testing.expectEqual(HooksHeard.startup, plain.hooks_heard);
+    const codex = try parseLaunch(aa, "{\"argv\":[\"codex\"],\"hooks\":true,\"hooks_heard\":\"first_turn\"}");
+    try testing.expectEqual(HooksHeard.first_turn, codex.hooks_heard);
+    const newer = try parseLaunch(aa, "{\"argv\":[\"codex\"],\"hooks\":true,\"hooks_heard\":\"later\"}");
+    try testing.expectEqual(HooksHeard.startup, newer.hooks_heard);
+    const stringly = try parseLaunch(aa, "{\"argv\":[\"codex\"],\"hooks\":true,\"hooks_heard\":1}");
+    try testing.expectEqual(HooksHeard.startup, stringly.hooks_heard);
 }
 
 test "agent_cli: a launch answer is strict about the command and lenient about the rest" {

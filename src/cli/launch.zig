@@ -278,7 +278,7 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
     // (adapters.md 3.4). Before the CLI starts, so its `session_started`
     // cannot arrive first. Best effort, like `+hook` itself: a launch is
     // not refused because Polter could not be told.
-    if (launch.hooks) expectHooks(io, &env, adapter.key);
+    if (launch.hooks) expectHooks(io, &env, adapter.key, launch.hooks_heard);
 
     if (comptime std.process.can_replace) {
         const err = std.process.replace(io, .{ .argv = launch.argv, .environ_map = &env });
@@ -366,12 +366,18 @@ fn reportFailed(io: std.Io, progress: *const Progress) void {
     };
 }
 
-fn expectHooks(io: std.Io, env: *const std.process.Environ.Map, cli: []const u8) void {
+fn expectHooks(
+    io: std.Io,
+    env: *const std.process.Environ.Map,
+    cli: []const u8,
+    heard: agent_cli.HooksHeard,
+) void {
     const socket_path = env.get("GHOSTTY_POLTER_SOCKET") orelse return;
     const token = env.get("GHOSTTY_POLTER_TOKEN") orelse return;
     var ev: AgentEvent.Event = .none;
     ev.event = .hooks_expected;
     ev.cli = cli;
+    ev.detail = AgentEvent.hooksExpectedDetail(heard == .first_turn);
     hook.deliver(io, socket_path, token, ev) catch |err| {
         std.log.scoped(.launch).warn("could not say hooks are expected err={t}", .{err});
     };

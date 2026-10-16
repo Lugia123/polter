@@ -53,6 +53,22 @@ pub const Kind = enum {
     allowance_written,
 };
 
+/// The `detail` of a `hooks_expected` whose CLI says nothing until its first
+/// turn (`agent_cli.HooksHeard.first_turn`), or null for one that speaks
+/// when it starts.
+pub fn hooksExpectedDetail(at_first_turn: bool) ?[]const u8 {
+    return if (at_first_turn) first_turn else null;
+}
+
+/// Whether a `hooks_expected` said its CLI's first hook comes with its
+/// first turn. Any other word, or none, is the wait from the launch.
+pub fn heardAtFirstTurn(detail: ?[]const u8) bool {
+    const d = detail orelse return false;
+    return std.mem.eql(u8, d, first_turn);
+}
+
+const first_turn = "first_turn";
+
 /// Why a launch started no CLI, as `+launch` says it in `detail`.
 pub const LaunchFailure = enum {
     /// The CLI's program is not there to run: not installed, or not on the
@@ -209,6 +225,7 @@ pub fn translate(
     };
 
     if (std.mem.eql(u8, cli, "claude-code")) return claudeCode(arena, hook, obj);
+    if (std.mem.eql(u8, cli, "codex")) return codex(arena, hook, obj);
     return error.UnknownCli;
 }
 
@@ -253,23 +270,7 @@ fn claudeCode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error
         ev.detail = try requireString(obj, "error");
         ev.note = try oneLine(arena, try optionalString(obj, "error_details"));
     } else if (std.mem.eql(u8, hook, "PermissionRequest")) {
-        ev.event = .awaiting_approval;
-        const tool = try requireString(obj, "tool_name");
-        ev.detail = tool;
-        ev.note = try oneLine(arena, try approvalSummary(obj, tool));
-        // And all of it, as it was written: the control room cuts a
-        // command into its steps, which a first 120 characters cannot be.
-        if (try approvalWhole(obj, tool)) |whole| {
-            ev.text = cutBytes(whole, max_text_bytes);
-            ev.text_bytes = whole.len;
-        }
-        // And the call itself, every field of it: what the box asks about
-        // is more than its first line (task 1651).
-        if (obj.get("tool_input")) |input| {
-            const json = try std.json.Stringify.valueAlloc(arena, input, .{});
-            ev.input = cutBytes(json, max_input_bytes);
-            ev.input_bytes = json.len;
-        }
+        try approval(arena, &ev, obj);
     } else if (std.mem.eql(u8, hook, "PostToolUse") or
         std.mem.eql(u8, hook, "PostToolUseFailure"))
     {
@@ -308,6 +309,87 @@ fn claudeCode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error
     return ev;
 }
 
+/// An approval: the tool, one line of what it is for, all of it, and the
+/// call itself. The same for every CLI whose `PermissionRequest` carries
+/// `tool_name` and `tool_input`.
+fn approval(arena: Allocator, ev: *Event, obj: std.json.ObjectMap) Error!void {
+    ev.event = .awaiting_approval;
+    const tool = try requireString(obj, "tool_name");
+    ev.detail = tool;
+    ev.note = try oneLine(arena, try approvalSummary(obj, tool));
+    // And all of it, as it was written: the control room cuts a
+    // command into its steps, which a first 120 characters cannot be.
+    if (try approvalWhole(obj, tool)) |whole| {
+        ev.text = cutBytes(whole, max_text_bytes);
+        ev.text_bytes = whole.len;
+    }
+    // And the call itself, every field of it: what the box asks about
+    // is more than its first line (task 1651).
+    if (obj.get("tool_input")) |input| {
+        const json = try std.json.Stringify.valueAlloc(arena, input, .{});
+        ev.input = cutBytes(json, max_input_bytes);
+        ev.input_bytes = json.len;
+    }
+}
+
+/// Codex, 0.163 and later (task 1668). Its hooks are Claude Code's in
+/// shape -- the same event names, the same `session_id`, `tool_name`,
+/// `tool_input`, `last_assistant_message` -- and the field names here are
+/// the ones in its own input schemas (`codex-rs/hooks/src/schema.rs`).
+///
+/// What it does not have, and so what still falls to the screen: no
+/// `StopFailure` (an API error ends a turn without a word), and no
+/// notification for waiting on the person. What it has that Claude Code
+/// does not: `Interrupt`, said when a turn is stopped part way -- the case
+/// Claude Code's `Stop` stays silent on (adapters.md part 5).
+///
+/// ⚠️ Its `SessionStart` comes with the first turn, not when the program
+/// starts (`run_pending_session_start_hooks`). That is the launch's to know
+/// (`agent_cli.Launch.hooks_heard`); nothing here depends on it.
+fn codex(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error!Event {
+    if (obj.get("hook_event_name")) |v| switch (v) {
+        .string => |s| if (!std.mem.eql(u8, s, hook)) return error.UnknownEvent,
+        else => return error.MissingField,
+    };
+
+    var ev: Event = .none;
+    ev.cli = "codex";
+    ev.session_id = try requireString(obj, "session_id");
+    ev.transcript_path = try optionalString(obj, "transcript_path");
+    ev.agent_id = try optionalString(obj, "agent_id");
+
+    if (std.mem.eql(u8, hook, "SessionStart")) {
+        ev.event = .session_started;
+        ev.detail = try optionalString(obj, "source");
+    } else if (std.mem.eql(u8, hook, "UserPromptSubmit")) {
+        ev.event = .turn_started;
+    } else if (std.mem.eql(u8, hook, "Stop")) {
+        ev.event = .turn_ended;
+        if (try optionalString(obj, "last_assistant_message")) |text| {
+            ev.text = cutBytes(text, max_text_bytes);
+            ev.text_bytes = text.len;
+        }
+        // Codex has no background work that outlives a turn to report.
+        ev.waiting_on_background = false;
+    } else if (std.mem.eql(u8, hook, "Interrupt")) {
+        // Stopped part way, by the person or by a supervisor's ctrl+c:
+        // the turn is over and did not finish, which is what `failed`
+        // says. The word says why, so it is not read as an API error.
+        ev.event = .turn_failed;
+        ev.detail = "interrupted";
+    } else if (std.mem.eql(u8, hook, "PermissionRequest")) {
+        try approval(arena, &ev, obj);
+    } else if (std.mem.eql(u8, hook, "PostToolUse")) {
+        ev.event = .turn_resumed;
+        ev.detail = try requireString(obj, "tool_name");
+    } else if (std.mem.eql(u8, hook, "PreToolUse")) {
+        ev.event = .tool_started;
+        ev.detail = try requireString(obj, "tool_name");
+    } else return error.UnknownEvent;
+
+    return ev;
+}
+
 /// The one line that says what an approval is for. A shell tool's command is
 /// the case that matters -- `Bash`, or `PowerShell` on Windows (#888); other
 /// tools say which file when they have one.
@@ -316,9 +398,33 @@ fn approvalSummary(obj: std.json.ObjectMap, tool: []const u8) Error!?[]const u8 
         .object => |o| o,
         else => return null,
     };
+    if (isPatchTool(tool)) {
+        const patch = (try optionalString(input, "command")) orelse return null;
+        return prefixChars(patchFile(patch) orelse return null, summary_chars);
+    }
     const key = if (isShellTool(tool)) "command" else "file_path";
     const s = (try optionalString(input, key)) orelse return null;
     return prefixChars(s, summary_chars);
+}
+
+/// Codex's file edits: one tool, `apply_patch`, whose input is the whole
+/// patch under `command` (`ApplyPatch` in `codex-rs/core/src/tools/approvals.rs`).
+fn isPatchTool(tool: []const u8) bool {
+    return std.mem.eql(u8, tool, "apply_patch");
+}
+
+/// The first file a patch touches, as its header line names it -- `***
+/// Update File: src/a.zig` -- or null when it names none. The patch's first
+/// line is `*** Begin Patch`, which says nothing about what is asked.
+fn patchFile(patch: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, patch, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        for ([_][]const u8{ "*** Update File: ", "*** Add File: ", "*** Delete File: " }) |head| {
+            if (std.mem.startsWith(u8, line, head)) return line;
+        }
+    }
+    return null;
 }
 
 /// All of what an approval is for: the command, or the file.
@@ -327,7 +433,7 @@ fn approvalWhole(obj: std.json.ObjectMap, tool: []const u8) Error!?[]const u8 {
         .object => |o| o,
         else => return null,
     };
-    const key = if (isShellTool(tool)) "command" else "file_path";
+    const key = if (isShellTool(tool) or isPatchTool(tool)) "command" else "file_path";
     return try optionalString(input, key);
 }
 
@@ -691,6 +797,125 @@ test "claude-code PreToolUse starts a tool and PostToolUseFailure ends one, nami
     ));
 }
 
+fn trCodex(hook: []const u8, payload: []const u8) Error!Event {
+    return translate(test_arena.allocator(), "codex", hook, payload);
+}
+
+// Codex payloads below have every field its input schemas
+// (`codex-rs/hooks/src/schema.rs`, rust-v0.163.0) give the event.
+
+test "1668: codex SessionStart, UserPromptSubmit and Stop are a session and a turn, with the answer" {
+    setup();
+    defer teardown();
+    const started = try trCodex("SessionStart",
+        \\{"session_id":"019a-c0de","transcript_path":"/h/.codex/sessions/r.jsonl","cwd":"/w",
+        \\ "hook_event_name":"SessionStart","model":"gpt-5.6-luna","permission_mode":"default","source":"clear"}
+    );
+    try testing.expectEqual(Kind.session_started, started.event);
+    try testing.expectEqualStrings("codex", started.cli);
+    try testing.expectEqualStrings("019a-c0de", started.session_id.?);
+    try testing.expectEqualStrings("clear", started.detail.?);
+    try testing.expectEqualStrings("/h/.codex/sessions/r.jsonl", started.transcript_path.?);
+
+    const turn = try trCodex("UserPromptSubmit",
+        \\{"session_id":"019a-c0de","turn_id":"t1","transcript_path":null,"cwd":"/w",
+        \\ "hook_event_name":"UserPromptSubmit","model":"gpt-5.6-luna","permission_mode":"default","prompt":"say hi"}
+    );
+    try testing.expectEqual(Kind.turn_started, turn.event);
+    try testing.expect(turn.text == null);
+
+    const ended = try trCodex("Stop",
+        \\{"session_id":"019a-c0de","turn_id":"t1","transcript_path":null,"cwd":"/w",
+        \\ "hook_event_name":"Stop","model":"gpt-5.6-luna","permission_mode":"default",
+        \\ "stop_hook_active":false,"last_assistant_message":"hi，做完了"}
+    );
+    try testing.expectEqual(Kind.turn_ended, ended.event);
+    try testing.expectEqualStrings("hi，做完了", ended.text.?);
+    try testing.expectEqual(@as(u64, ended.text.?.len), ended.text_bytes);
+    try testing.expect(!ended.waiting_on_background);
+
+    // A turn that ended with nothing said: null, not a refusal.
+    const silent = try trCodex("Stop",
+        \\{"session_id":"s","turn_id":"t","transcript_path":null,"cwd":"/w","hook_event_name":"Stop",
+        \\ "model":"m","permission_mode":"default","stop_hook_active":false,"last_assistant_message":null}
+    );
+    try testing.expectEqual(Kind.turn_ended, silent.event);
+    try testing.expect(silent.text == null);
+}
+
+test "1668: codex Interrupt is a turn that failed because it was stopped" {
+    setup();
+    defer teardown();
+    const ev = try trCodex("Interrupt",
+        \\{"session_id":"s","turn_id":"t","transcript_path":null,"cwd":"/w",
+        \\ "hook_event_name":"Interrupt","model":"m","permission_mode":"default"}
+    );
+    try testing.expectEqual(Kind.turn_failed, ev.event);
+    try testing.expectEqualStrings("interrupted", ev.detail.?);
+}
+
+test "1668: codex PermissionRequest names a shell command, a patch's file and an MCP tool" {
+    setup();
+    defer teardown();
+    const bash = try trCodex("PermissionRequest",
+        \\{"session_id":"s","turn_id":"t","transcript_path":null,"cwd":"/w","hook_event_name":"PermissionRequest",
+        \\ "model":"m","permission_mode":"default","tool_name":"Bash",
+        \\ "tool_input":{"command":"zig build test","description":"run the tests"}}
+    );
+    try testing.expectEqual(Kind.awaiting_approval, bash.event);
+    try testing.expectEqualStrings("Bash", bash.detail.?);
+    try testing.expectEqualStrings("zig build test", bash.note.?);
+    try testing.expectEqualStrings("zig build test", bash.text.?);
+    try testing.expect(bash.input != null);
+
+    const patch = try trCodex("PermissionRequest",
+        \\{"session_id":"s","turn_id":"t","transcript_path":null,"cwd":"/w","hook_event_name":"PermissionRequest",
+        \\ "model":"m","permission_mode":"default","tool_name":"apply_patch",
+        \\ "tool_input":{"command":"*** Begin Patch\n*** Update File: src/a.zig\n@@\n-x\n+y\n*** End Patch"}}
+    );
+    try testing.expectEqualStrings("apply_patch", patch.detail.?);
+    try testing.expectEqualStrings("*** Update File: src/a.zig", patch.note.?);
+    try testing.expect(std.mem.startsWith(u8, patch.text.?, "*** Begin Patch"));
+
+    const mcp = try trCodex("PermissionRequest",
+        \\{"session_id":"s","turn_id":"t","transcript_path":null,"cwd":"/w","hook_event_name":"PermissionRequest",
+        \\ "model":"m","permission_mode":"default","tool_name":"mcp__polter__me","tool_input":{}}
+    );
+    try testing.expectEqualStrings("mcp__polter__me", mcp.detail.?);
+    try testing.expect(mcp.note == null);
+    try testing.expectEqualStrings("{}", mcp.input.?);
+}
+
+test "1668: codex PreToolUse and PostToolUse start and end a tool; what it lacks is refused" {
+    setup();
+    defer teardown();
+    const pre = try trCodex("PreToolUse",
+        \\{"session_id":"s","turn_id":"t","transcript_path":null,"cwd":"/w","hook_event_name":"PreToolUse",
+        \\ "model":"m","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"c1"}
+    );
+    try testing.expectEqual(Kind.tool_started, pre.event);
+    try testing.expectEqualStrings("Bash", pre.detail.?);
+    const post = try trCodex("PostToolUse",
+        \\{"session_id":"s","turn_id":"t","transcript_path":null,"cwd":"/w","hook_event_name":"PostToolUse",
+        \\ "model":"m","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"ls"},
+        \\ "tool_response":"a\nb","tool_use_id":"c1"}
+    );
+    try testing.expectEqual(Kind.turn_resumed, post.event);
+    try testing.expectEqualStrings("Bash", post.detail.?);
+
+    // Claude Code's words that Codex never says are not taken from it.
+    try testing.expectError(error.UnknownEvent, trCodex("StopFailure",
+        \\{"session_id":"s","hook_event_name":"StopFailure","error":"rate_limit"}
+    ));
+    try testing.expectError(error.UnknownEvent, trCodex("SessionEnd",
+        \\{"session_id":"s","transcript_path":null,"cwd":"/w","hook_event_name":"SessionEnd","reason":"exit"}
+    ));
+    // Without a session, nothing it says can be put anywhere.
+    try testing.expectError(error.MissingField, trCodex("Stop",
+        \\{"turn_id":"t","hook_event_name":"Stop","last_assistant_message":"x"}
+    ));
+}
+
 test "a payload missing a field the table needs is refused, not guessed at" {
     setup();
     defer teardown();
@@ -725,7 +950,7 @@ test "not JSON, an unknown hook, a mismatched hook name and an unknown CLI are a
     ));
     try testing.expectError(error.UnknownCli, translate(
         test_arena.allocator(),
-        "codex",
+        "gemini",
         "Stop",
         "{}",
     ));
