@@ -340,6 +340,22 @@ pub const Agent = struct {
     note: Small(160),
     waiting_on_background: bool,
 
+    /// How many tool calls are running in this agent's turn, by its own
+    /// `PreToolUse` and `PostToolUse`/`PostToolUseFailure` (task 1625), or
+    /// null when nothing has said: a CLI with no such hooks, a launch made
+    /// before they were written, a session that has not started a tool yet.
+    ///
+    /// **Null and zero are different answers** and are said differently
+    /// (`writeTurn`): zero is "a turn with nothing running in it", which is
+    /// what a stuck turn looks like; null is "this agent does not tell us",
+    /// and saying "nothing running" about it would be a claim (#62).
+    tools: ?u8,
+    /// The tool started last, while `tools` is not null.
+    tool: Small(32),
+    /// When `tools` last went from zero to one or from one to zero: how long
+    /// something has been running, or how long nothing has.
+    tool_ms: u64,
+
     pending: ?AgentNotice,
     handed: u8,
 
@@ -372,6 +388,9 @@ pub const Agent = struct {
         .detail = .{},
         .note = .{},
         .waiting_on_background = false,
+        .tools = null,
+        .tool = .{},
+        .tool_ms = 0,
         .pending = null,
         .handed = 0,
         .handed_ms = 0,
@@ -677,6 +696,26 @@ pub const Entry = struct {
     /// a plain shell, or an agent that has not started yet, has never
     /// spoken to Polter, and nothing about that says it stopped.
     last_call_ms: ?u64 = null,
+
+    /// Whether an agent is connected from this terminal, as the host last
+    /// said (`noteAgentHere`, from `Server.agentPresent`); null when it has
+    /// not said (#63).
+    ///
+    /// **Three answers, because the notices need all three.** An agent that
+    /// exits leaves its hooks' last state behind -- `awaiting input`, say --
+    /// and every other field here as it was, so a terminal that is now a
+    /// bare shell read exactly like a worker waiting for its next
+    /// instruction. `false` is the one fact that tells them apart, and the
+    /// quiet and `no tool call` lines say it (`writeAgentWords`). Null is
+    /// "nobody asked", which is not the same as "nobody there".
+    agent_here: ?bool = null,
+
+    /// This terminal's own `no tool call` threshold, set by its supervisor
+    /// (`setCallsSilentAfter`, `set_quiescence_threshold`'s
+    /// `no_tool_call_ms`); null for the configured one (#62). Zero switches
+    /// the line off for this terminal. Never turns it on when the
+    /// configured one is zero: that is the person switching it off.
+    calls_silent_after_ms: ?u64 = null,
 
     /// How long the calls had been silent when that was last put in the
     /// box, rounded down to a whole threshold, so the next entry comes one
@@ -1005,8 +1044,14 @@ pub fn noteCall(self: *Bus, id: Id, now_ms: u64) void {
 /// Whether the agent's own hooks account for it calling nothing: it ended
 /// its turn, failed, or is waiting on somebody (task 1503). Only with hooks
 /// `live`; a terminal with none is measured as before.
-fn silenceExplained(a: Agent) bool {
-    return a.hooks == .live and stateExplains(a.state);
+///
+/// **Never for an agent that is not there** (#63): an exited worker's last
+/// word is usually `turn ended` or `awaiting input`, and taking that as the
+/// reason it is silent kept both clocks quiet about a terminal that had
+/// become a bare shell.
+fn silenceExplained(e: Entry) bool {
+    if (e.agent_here == false) return false;
+    return e.agent.hooks == .live and stateExplains(e.agent.state);
 }
 
 /// How long this terminal's calls have been silent, as the `no tool call`
@@ -1028,13 +1073,57 @@ pub fn callSilentMs(self: *const Bus, id: Id, now_ms: u64) ?u64 {
     return now_ms -| last;
 }
 
-/// Whether this terminal's calls have been silent for at least
-/// `calls_silent_after_ms`. Never, when that is zero.
+/// The `no tool call` threshold that applies to this terminal: its own
+/// when its supervisor set one, the configured one otherwise (#62). Zero
+/// means never, and a configured zero stays zero whatever was set here --
+/// the person switched the line off, and a supervisor does not switch it
+/// back on.
+fn callsSilentAfter(self: *const Bus, e: Entry) u64 {
+    const configured = self.config.calls_silent_after_ms;
+    if (configured == 0) return 0;
+    return e.calls_silent_after_ms orelse configured;
+}
+
+/// Whether this terminal's calls have been silent for at least its
+/// threshold (`callsSilentAfter`). Never, when that is zero.
 fn callsSilent(self: *const Bus, id: Id, now_ms: u64) bool {
-    const after = self.config.calls_silent_after_ms;
+    const e = self.entries.get(id) orelse return false;
+    const after = self.callsSilentAfter(e);
     if (after == 0) return false;
     const silent = self.callSilentMs(id, now_ms) orelse return false;
     return silent >= after;
+}
+
+/// Give one terminal its own `no tool call` threshold, or null to go back
+/// to the configured one (#62). The quiet threshold has always been per
+/// terminal (`set_quiescence_threshold`); this one was the configuration's
+/// alone, so a worker told to stand by kept being reported every quarter
+/// of an hour after its quiet reports had been turned down.
+///
+/// A line already in the box that the new threshold would not have raised
+/// goes, the way `withdrawQuiet` takes back a quiet report: it is about a
+/// rule the supervisor has just changed.
+pub fn setCallsSilentAfter(self: *Bus, id: Id, ms: ?u64, now_ms: u64) Allocator.Error!void {
+    try self.register(id);
+    const e = self.entries.getPtr(id).?;
+    e.calls_silent_after_ms = ms;
+    const after = self.callsSilentAfter(e.*);
+    const silent = silenceMs(e.*, now_ms) orelse 0;
+    if (after == 0 or silent < after) {
+        e.silent_pending = false;
+        e.silent_handed = 0;
+        e.silent_raised_ms = 0;
+    } else {
+        e.silent_raised_ms = @min(e.silent_raised_ms, silent - silent % after);
+    }
+}
+
+/// Record whether an agent is connected from this terminal, as the host
+/// sees it now (#63). The bus cannot see connections; the host asks
+/// `Server.agentPresent` and says what it found. See `Entry.agent_here`.
+pub fn noteAgentHere(self: *Bus, id: Id, here: bool) void {
+    const e = self.entries.getPtr(id) orelse return;
+    e.agent_here = here;
 }
 
 /// Put a line in the box for every watched terminal whose calls have gone
@@ -1059,8 +1148,7 @@ fn callsSilent(self: *const Bus, id: Id, now_ms: u64) bool {
 ///
 /// Answers whether anything new went in.
 pub fn considerCalls(self: *Bus, now_ms: u64) bool {
-    const after = self.config.calls_silent_after_ms;
-    if (after == 0) return false;
+    if (self.config.calls_silent_after_ms == 0) return false;
 
     var raised = false;
     var it = self.entries.iterator();
@@ -1068,12 +1156,15 @@ pub fn considerCalls(self: *Bus, now_ms: u64) bool {
         const e = kv.value_ptr;
         if (e.role != .watched) continue;
         if (e.duty == .off) continue;
+        // Its own threshold, when its supervisor gave it one (#62).
+        const after = self.callsSilentAfter(e.*);
+        if (after == 0) continue;
         // **Not while the agent has said why it is not calling** (task
         // 1503): a turn that ended, failed, or is waiting on somebody has
         // its own notice, and a worker sitting at its prompt waiting for
         // the next instruction is not stuck. The clock is for a turn in
         // progress, and for terminals with no hooks to say anything.
-        if (silenceExplained(e.agent)) continue;
+        if (silenceExplained(e.*)) continue;
         const silent = silenceMs(e.*, now_ms) orelse continue;
         if (silent < e.silent_raised_ms + after) continue;
 
@@ -1690,12 +1781,24 @@ pub fn agentEvent(
     // screen is still the one that was asked about.
     if (ev.event == .allowance_written) return false;
 
+    // **A tool call started, or one ended: counted, and nothing else
+    // moves** (task 1625). Both are said around every tool call in a turn;
+    // what they add is whether something is running now, which the `no
+    // tool call` line needs and nothing else does (`writeTurn`). Not the
+    // state, not the clocks, not the box, not a terminal the bus has never
+    // seen.
+    if (ev.event == .tool_started) {
+        const e = self.entries.getPtr(id) orelse return false;
+        toolStarted(&e.agent, ev.detail, now_ms);
+        return false;
+    }
+
     // **A tool call finished: only a terminal that was waiting moves**
     // (task 1561). Said after every tool call in a turn, so in any other
-    // state it is not news and touches nothing -- not the clocks, not the
-    // box, not a terminal the bus has never seen.
+    // state it is not news and touches nothing more than the count above.
     if (ev.event == .turn_resumed) {
         const e = self.entries.getPtr(id) orelse return false;
+        toolEnded(&e.agent, now_ms);
         if (!resumes(e.agent, ev)) return false;
     }
 
@@ -1707,7 +1810,7 @@ pub fn agentEvent(
     if (ev.session_id) |sid| a.session_id.set(sid);
 
     const state: AgentState, const notice: ?AgentNotice = switch (ev.event) {
-        .launch_failed => unreachable,
+        .launch_failed, .tool_started => unreachable,
         .hooks_expected => {
             // A second launch in the same terminal starts the wait again;
             // a terminal already live stays live -- it has proved its
@@ -1757,6 +1860,21 @@ pub fn agentEvent(
     // the state. When an event arrived at all is `last_event_ms`.
     if (!sameState(before, a.*)) a.since_ms = now_ms;
     a.waiting_on_background = ev.event == .turn_ended and ev.waiting_on_background;
+
+    // A turn's edges end whatever tool count it had: a command declined
+    // without feedback ends the turn with no hook (#879), and its start was
+    // counted. A new session has not said yet whether it reports tools.
+    switch (ev.event) {
+        .turn_started, .turn_ended, .turn_failed => if (a.tools) |n| {
+            if (n != 0) a.tool_ms = now_ms;
+            a.tools = 0;
+        },
+        .session_started => {
+            a.tools = null;
+            a.tool.set(null);
+        },
+        else => {},
+    }
 
     if (ev.event == .turn_ended) try self.keepTurn(id, ev, now_ms);
     try self.keepAsk(id, ev);
@@ -1838,6 +1956,25 @@ fn resumes(a: Agent, ev: AgentEvent.Event) bool {
         .awaiting_input => !sameText(a.detail.get(), idle_prompt),
         .idle, .in_turn, .ended, .failed => false,
     };
+}
+
+/// A tool call started (task 1625): one more running, and it is the one
+/// named from now on.
+fn toolStarted(a: *Agent, tool: ?[]const u8, now_ms: u64) void {
+    const n = a.tools orelse 0;
+    if (n == 0) a.tool_ms = now_ms;
+    a.tools = n +| 1;
+    a.tool.set(tool);
+}
+
+/// A tool call ended. Counted only for an agent that has said its tools
+/// start: an end with no start heard is a launch made without
+/// `PreToolUse`, and taking it as "nothing running" would be a guess.
+fn toolEnded(a: *Agent, now_ms: u64) void {
+    const n = a.tools orelse return;
+    if (n == 0) return;
+    a.tools = n - 1;
+    if (n == 1) a.tool_ms = now_ms;
 }
 
 /// What Claude Code's adapter writes as the detail of an idle notification
@@ -2395,7 +2532,15 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
                 // still screen: the screen moved after that event.
                 const outlived = e.agent.hooks == .live and stateExplains(e.agent.state);
                 const written = switch (kind) {
-                    .quiescent, .still_quiescent => if (outlived) w.print(
+                    // **No agent in it** (#63): whatever its hooks last
+                    // said is about an agent that has gone, and a worker
+                    // waiting for its next instruction reads exactly like
+                    // that. Said first, because it is the one fact that
+                    // changes what the supervisor should do.
+                    .quiescent, .still_quiescent => if (e.agent_here == false) w.print(
+                        "{s}0x{x:0>16} quiet {d}s (no agent in it)",
+                        .{ sep, id, self.quietMs(id, now_ms) / std.time.ms_per_s },
+                    ) else if (outlived) w.print(
                         "{s}0x{x:0>16} quiet {d}s (last event: {s} {d}s ago)",
                         .{
                             sep,
@@ -2404,14 +2549,13 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
                             stateWords(e.agent.state),
                             (now_ms -| e.agent.eventMs()) / std.time.ms_per_s,
                         },
-                    ) else if (in_turn) w.print(
-                        "{s}0x{x:0>16} quiet {d}s (in turn {d}m)",
-                        .{
-                            sep,
-                            id,
-                            self.quietMs(id, now_ms) / std.time.ms_per_s,
-                            (now_ms -| e.agent.since_ms) / std.time.ms_per_min,
-                        },
+                    ) else if (in_turn) quietInTurn(
+                        &w,
+                        sep,
+                        id,
+                        self.quietMs(id, now_ms),
+                        e.agent,
+                        now_ms,
                     ) else w.print(
                         "{s}0x{x:0>16} quiet {d}s",
                         .{ sep, id, self.quietMs(id, now_ms) / std.time.ms_per_s },
@@ -2460,13 +2604,13 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
             if (listed < max_listed) {
                 const sep = if (listed == 0) " " else ", ";
                 const mark = w.end;
-                const silent_min = (silenceMs(e.*, now_ms) orelse 0) / std.time.ms_per_min;
-                const written = if (self.observed(id)) w.print(
-                    "{s}0x{x:0>16} no tool call {d}m (screen changed {d}s ago)",
-                    .{ sep, id, silent_min, self.quietMs(id, now_ms) / std.time.ms_per_s },
-                ) else w.print(
-                    "{s}0x{x:0>16} no tool call {d}m",
-                    .{ sep, id, silent_min },
+                const written = noToolCall(
+                    &w,
+                    sep,
+                    id,
+                    e.*,
+                    if (self.observed(id)) self.quietMs(id, now_ms) else null,
+                    now_ms,
                 );
                 written catch {
                     w.end = mark;
@@ -2582,6 +2726,8 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
 /// screen's figure is only read where there is one.
 fn quietExplained(self: *const Bus, id: Id, now_ms: u64) bool {
     const e = self.entries.get(id) orelse return false;
+    // What an agent that has gone last said explains nothing (#63).
+    if (e.agent_here == false) return false;
     const a = e.agent;
     if (a.hooks != .live or !stateExplains(a.state)) return false;
     if (!self.observed(id)) return true;
@@ -2600,6 +2746,75 @@ fn quietExplained(self: *const Bus, id: Id, now_ms: u64) bool {
 }
 
 /// Whether being in this state is a reason for the screen to be still.
+/// `quiet Ns (in turn …)`: see `writeTurn`.
+fn quietInTurn(
+    w: *std.Io.Writer,
+    sep: []const u8,
+    id: Id,
+    quiet_ms: u64,
+    a: Agent,
+    now_ms: u64,
+) std.Io.Writer.Error!void {
+    try w.print("{s}0x{x:0>16} quiet {d}s (", .{ sep, id, quiet_ms / std.time.ms_per_s });
+    try writeTurn(w, a, now_ms);
+    try w.writeAll(")");
+}
+
+/// The `no tool call` line (`considerCalls`), with what is known of why in
+/// brackets.
+///
+/// **What used to read the same now reads differently** (#62, #63):
+///
+/// - `(no agent in it)` -- the agent has gone; nothing will call again.
+/// - `(in turn 20m, Bash running 16m; …)` -- a command is running.
+/// - `(in turn 20m, no tool running for 16m; …)` -- a turn with nothing
+///   running in it, which is what a stuck one looks like.
+/// - `(in turn 20m; …)` -- in a turn, and its CLI does not say whether a
+///   tool is running.
+///
+/// The screen's figure rides along last when there is one, because "no
+/// tool call, and the screen changed three seconds ago" is the case the
+/// line was made for.
+fn noToolCall(
+    w: *std.Io.Writer,
+    sep: []const u8,
+    id: Id,
+    e: Entry,
+    quiet_ms: ?u64,
+    now_ms: u64,
+) std.Io.Writer.Error!void {
+    const silent_min = (silenceMs(e, now_ms) orelse 0) / std.time.ms_per_min;
+    try w.print("{s}0x{x:0>16} no tool call {d}m", .{ sep, id, silent_min });
+    if (e.agent_here == false) return w.writeAll(" (no agent in it)");
+
+    const in_turn = e.agent.hooks == .live and e.agent.state == .in_turn;
+    if (!in_turn and quiet_ms == null) return;
+    try w.writeAll(" (");
+    if (in_turn) try writeTurn(w, e.agent, now_ms);
+    if (quiet_ms) |q| {
+        if (in_turn) try w.writeAll("; ");
+        try w.print("screen changed {d}s ago", .{q / std.time.ms_per_s});
+    }
+    try w.writeAll(")");
+}
+
+/// `in turn 20m`, and what is running in it when the agent says (task
+/// 1625): `, Bash running 16m`, `, 2 tools running 3m, last Read`, or
+/// `, no tool running for 16m`. Nothing about tools when `tools` is null:
+/// "no tool running" about an agent that does not report its tools would
+/// be a claim.
+fn writeTurn(w: *std.Io.Writer, a: Agent, now_ms: u64) std.Io.Writer.Error!void {
+    try w.print("in turn {d}m", .{(now_ms -| a.since_ms) / std.time.ms_per_min});
+    const n = a.tools orelse return;
+    const for_min = (now_ms -| a.tool_ms) / std.time.ms_per_min;
+    const name = a.tool.get() orelse "a tool";
+    switch (n) {
+        0 => try w.print(", no tool running for {d}m", .{for_min}),
+        1 => try w.print(", {s} running {d}m", .{ name, for_min }),
+        else => try w.print(", {d} tools running {d}m, last {s}", .{ n, for_min, name }),
+    }
+}
+
 fn stateExplains(state: AgentState) bool {
     return switch (state) {
         .ended, .failed, .awaiting_approval, .awaiting_input => true,
@@ -5456,4 +5671,176 @@ test "notices 1503: a hand-over that did not go in comes round again, and what c
     const after = b.drain(boss, 62_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expect(std.mem.indexOf(u8, after, "turn ended") == null);
     try testing.expect(std.mem.indexOf(u8, after, "a note for later") != null);
+}
+
+test "#62: a turn running a tool and a turn with nothing running read differently on the no tool call line" {
+    const min = std.time.ms_per_min;
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    const t = b.config.calls_silent_after_ms;
+
+    _ = try b.agentEvent(worker, hookEv(.session_started), 0);
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+    b.noteCall(worker, 0);
+    var bash = hookEv(.tool_started);
+    bash.detail = "Bash";
+    // Counting a tool moves nothing else: no notice, no state.
+    try testing.expect(!try b.agentEvent(worker, bash, 1 * min));
+    try testing.expectEqual(AgentState.in_turn, b.agentOf(worker).state);
+
+    try testing.expect(b.considerCalls(t));
+    const running = b.drain(boss, t, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 no tool call 15m (in turn 15m, Bash running 14m)",
+        running,
+    );
+
+    // The command ends and the turn goes on with nothing running in it:
+    // what a stuck turn looks like, and it reads as that.
+    var ended = hookEv(.turn_resumed);
+    ended.detail = "Bash";
+    _ = try b.agentEvent(worker, ended, 16 * min);
+    try testing.expect(b.considerCalls(2 * t));
+    const idle = b.drain(boss, 2 * t, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 no tool call 30m (in turn 30m, no tool running for 14m)",
+        idle,
+    );
+}
+
+test "#62: an agent that does not report its tools is not said to have none running" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    const t = b.config.calls_silent_after_ms;
+
+    _ = try b.agentEvent(worker, hookEv(.session_started), 0);
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+    b.noteCall(worker, 0);
+    // A tool's end with no start heard: a launch made without PreToolUse.
+    var ended = hookEv(.turn_resumed);
+    ended.detail = "Read";
+    _ = try b.agentEvent(worker, ended, 1_000);
+    try testing.expect(b.agentOf(worker).tools == null);
+
+    try testing.expect(b.considerCalls(t));
+    const line = b.drain(boss, t, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 no tool call 15m (in turn 15m)",
+        line,
+    );
+}
+
+test "#62: a turn's edges and a new session reset the tool count" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(worker, hookEv(.session_started), 0);
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+    var bash = hookEv(.tool_started);
+    bash.detail = "Bash";
+    _ = try b.agentEvent(worker, bash, 1_000);
+    _ = try b.agentEvent(worker, bash, 2_000);
+    try testing.expectEqual(@as(?u8, 2), b.agentOf(worker).tools);
+    // Declined without feedback: no end is heard, and the turn ends.
+    _ = try b.agentEvent(worker, hookEv(.turn_ended), 3_000);
+    try testing.expectEqual(@as(?u8, 0), b.agentOf(worker).tools);
+    _ = try b.agentEvent(worker, hookEv(.session_started), 4_000);
+    try testing.expect(b.agentOf(worker).tools == null);
+}
+
+test "#62: one terminal's own no tool call threshold, off, and back to the configured one" {
+    const min = std.time.ms_per_min;
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    const t = b.config.calls_silent_after_ms;
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+    b.noteCall(worker, 0);
+
+    // Raised past the configured fifteen minutes: nothing at fifteen.
+    try b.setCallsSilentAfter(worker, 45 * min, 0);
+    try testing.expect(!b.considerCalls(t));
+    try testing.expect(!b.considerCalls(45 * min - 1));
+    try testing.expect(b.considerCalls(45 * min));
+    _ = b.drain(boss, 45 * min, &buf, .none) orelse return error.TestExpectedNotice;
+
+    // Off for this terminal.
+    try b.setCallsSilentAfter(worker, 0, 45 * min);
+    try testing.expect(!b.considerCalls(10 * t));
+
+    // Back to the configured one; a line it would have raised is raised.
+    try b.setCallsSilentAfter(worker, null, 10 * t);
+    try testing.expect(b.considerCalls(10 * t));
+}
+
+test "#62: raising a terminal's threshold takes back the line it would not have raised" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    const t = b.config.calls_silent_after_ms;
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+    b.noteCall(worker, 0);
+    try testing.expect(b.considerCalls(t));
+    try b.setCallsSilentAfter(worker, 3 * t, t);
+    try testing.expect(b.drain(boss, t, &buf, .none) == null);
+}
+
+test "#62: a configured zero stays off whatever a terminal was given" {
+    var b: Bus = .init(testing.allocator, .{ .calls_silent_after_ms = 0 });
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+    b.noteCall(worker, 0);
+    try b.setCallsSilentAfter(worker, 1_000, 0);
+    try testing.expect(!b.considerCalls(std.time.ms_per_hour));
+}
+
+test "#63: a terminal with no agent in it says so on the quiet and no tool call lines" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    const t = b.config.calls_silent_after_ms;
+
+    // The measured shape: a worker whose last word was a finished turn, and
+    // which then exited -- the hooks still say `ended`.
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+    b.noteCall(worker, 0);
+    var done = hookEv(.turn_ended);
+    done.text = "done";
+    done.text_bytes = 4;
+    _ = try b.agentEvent(worker, done, 1_000);
+    _ = b.drain(boss, 1_000, &buf, .none);
+
+    // Asked, and there: a turn that ended explains a still screen, and
+    // nothing is said (task 1503). This is also all that was said about it
+    // once it had exited -- the bug.
+    b.noteAgentHere(worker, true);
+    b.noteQuiet(worker, 0, 90_000);
+    _ = b.report(worker, quiet(30_000), 120_000);
+    try testing.expect(b.drain(boss, 120_000, &buf, .none) == null);
+    try testing.expect(!b.considerCalls(t));
+
+    // Gone: its last word explains nothing, and the line says why.
+    b.noteAgentHere(worker, false);
+    b.noteQuiet(worker, 0, 120_000);
+    _ = b.report(worker, quiet(60_000), 180_000);
+    const gone = b.drain(boss, 180_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 quiet 60s (no agent in it)",
+        gone,
+    );
+
+    // And the other clock, for one that left inside a turn.
+    var b2 = try hookedBus();
+    defer b2.deinit();
+    _ = try b2.agentEvent(worker, hookEv(.turn_started), 0);
+    b2.noteCall(worker, 0);
+    b2.noteAgentHere(worker, false);
+    try testing.expect(b2.considerCalls(t));
+    const silent = b2.drain(boss, t, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 no tool call 15m (no agent in it)",
+        silent,
+    );
 }

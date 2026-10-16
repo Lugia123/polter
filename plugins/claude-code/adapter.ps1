@@ -839,7 +839,7 @@ function Split-Settings($ArgList, $Notes) {
 
 # --- hooks (adapters.md 3.1-3.2) --------------------------------------------
 #
-# See the same section in adapter.py: from Claude Code 2.1.145, seven hooks go
+# See the same section in adapter.py: from Claude Code 2.1.145, nine hooks go
 # into the one `--settings`, each running `<polter> +hook --cli claude-code
 # <event>` in exec form (`command` + `args`, no shell); otherwise none, and a
 # note saying why.
@@ -852,7 +852,9 @@ $script:HookEvents = @(
     @('StopFailure', $null),
     @('PermissionRequest', $null),
     @('Notification', 'idle_prompt|elicitation_dialog'),
-    @('PostToolUse', $null)
+    @('PostToolUse', $null),
+    @('PreToolUse', $null),
+    @('PostToolUseFailure', $null)
 )
 $script:HookTimeout = 5
 # How the person's own status line command reaches `polter +statusline`.

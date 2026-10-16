@@ -107,6 +107,16 @@
 | `PermissionRequest` | `awaiting_approval` | `tool_name`、一行摘要（shell 工具——`Bash`，Windows 上是 `PowerShell`——取 `command` 前 120 字符） |
 | `Notification` matcher `idle_prompt` / `elicitation_dialog` | `awaiting_input` | `notification_type` |
 | `PostToolUse` | `turn_resumed` | `tool_name`、`agent_id`（子代理里才有） |
+| `PostToolUseFailure` | `turn_resumed` | `tool_name`（工具失败也是结束，task 1625） |
+| `PreToolUse` | `tool_started` | `tool_name` |
+
+**`tool_started` 与工具计数（task 1625，#62）**：`PreToolUse` 加一，`PostToolUse`/`PostToolUseFailure`
+减一，一轮的边界（`turn_started`/`turn_ended`/`turn_failed`）归零，`session_started` 回到「不知道」（null）。
+只动 `Bus.Agent.tools`/`tool`/`tool_ms`，不动 state、时钟和信箱。`no tool call` 那一行在 `in_turn` 时
+据此写成 `(in turn 20m, Bash running 16m; …)` 或 `(in turn 20m, no tool running for 16m; …)`；
+从没听到过 `PreToolUse` 的 agent（旧的启动、别的 CLI）只写 `(in turn 20m; …)`，不说「没有工具在跑」。
+同样同步：异步的 `PreToolUse(A)` 可能晚于它自己的 `PostToolUse(A)` 到达，把一个已经结束的工具算成在跑。
+代价是每次工具调用再多起一次 `polter`（约 20ms，见下）。
 
 **`turn_resumed`（task 1561）**：批准或回答之后 agent 接着干活，原来要等这一轮的 `Stop` 才有下一个事件，
 「等批准」会一直挂着。`PostToolUse` 每次工具调用都发，所以它只在两种状态下起作用：`awaiting_approval`

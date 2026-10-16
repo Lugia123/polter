@@ -38,6 +38,13 @@ pub const Kind = enum {
     /// one; this one is said a hundred times inside one turn and moves
     /// only a terminal that was waiting (`Bus.agentEvent`).
     turn_resumed,
+    /// A tool call is starting: Claude Code's `PreToolUse` (task 1625).
+    /// Paired with the `turn_resumed` its `PostToolUse` or
+    /// `PostToolUseFailure` says when it ends, so the bus can tell a turn
+    /// that is running a long command from a turn with nothing running in
+    /// it -- the two read the same on the `no tool call` clock (#62).
+    /// Moves nothing else: not the state, not the clocks, not the box.
+    tool_started,
     /// Not a hook either: `polter +statusline` saying it has just written
     /// the allowance it was handed (`QuotaWatch`). It says nothing about
     /// what the agent is doing and changes nothing the bus keeps -- it is
@@ -231,10 +238,19 @@ fn claudeCode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error
             ev.text = cutBytes(whole, max_text_bytes);
             ev.text_bytes = whole.len;
         }
-    } else if (std.mem.eql(u8, hook, "PostToolUse")) {
+    } else if (std.mem.eql(u8, hook, "PostToolUse") or
+        std.mem.eql(u8, hook, "PostToolUseFailure"))
+    {
         // Only the tool's name: its input and its response are the
         // agent's work, and this signal says only that work goes on.
+        // A tool that failed has ended as surely as one that worked, and
+        // without this a failed command would be counted as running until
+        // the turn ends (task 1625).
         ev.event = .turn_resumed;
+        ev.detail = try requireString(obj, "tool_name");
+    } else if (std.mem.eql(u8, hook, "PreToolUse")) {
+        // The name and nothing else, on the same terms as `PostToolUse`.
+        ev.event = .tool_started;
         ev.detail = try requireString(obj, "tool_name");
     } else if (std.mem.eql(u8, hook, "Notification")) {
         const kind = try requireString(obj, "notification_type");
@@ -565,6 +581,30 @@ test "claude-code PostToolUse is turn_resumed naming the tool, and nothing of it
     ));
 }
 
+test "claude-code PreToolUse starts a tool and PostToolUseFailure ends one, naming it" {
+    setup();
+    defer teardown();
+    const start = try tr("PreToolUse",
+        \\{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash",
+        \\ "tool_input":{"command":"zig build test"},"tool_use_id":"toolu_01"}
+    );
+    try testing.expectEqual(Kind.tool_started, start.event);
+    try testing.expectEqualStrings("Bash", start.detail.?);
+    try testing.expect(start.note == null);
+    try testing.expect(start.text == null);
+
+    const failed = try tr("PostToolUseFailure",
+        \\{"session_id":"s","hook_event_name":"PostToolUseFailure","tool_name":"Bash",
+        \\ "tool_input":{"command":"false"},"error":"exit 1","tool_use_id":"toolu_01"}
+    );
+    try testing.expectEqual(Kind.turn_resumed, failed.event);
+    try testing.expectEqualStrings("Bash", failed.detail.?);
+
+    try testing.expectError(error.MissingField, tr("PreToolUse",
+        \\{"session_id":"s","hook_event_name":"PreToolUse","tool_input":{}}
+    ));
+}
+
 test "a payload missing a field the table needs is refused, not guessed at" {
     setup();
     defer teardown();
@@ -591,8 +631,8 @@ test "not JSON, an unknown hook, a mismatched hook name and an unknown CLI are a
     defer teardown();
     try testing.expectError(error.NotJson, tr("Stop", "not json"));
     try testing.expectError(error.NotJson, tr("Stop", "[1,2]"));
-    try testing.expectError(error.UnknownEvent, tr("PreToolUse",
-        \\{"session_id":"s","hook_event_name":"PreToolUse"}
+    try testing.expectError(error.UnknownEvent, tr("SubagentStart",
+        \\{"session_id":"s","hook_event_name":"SubagentStart"}
     ));
     try testing.expectError(error.UnknownEvent, tr("Stop",
         \\{"session_id":"s","hook_event_name":"SessionStart"}

@@ -34,7 +34,7 @@ Three things it deliberately does not do, and each is checkable by reading:
     keeps; running the CLI to ask would start every MCP server it has.
 
 Hooks (`dev-docs/poltergeist/adapters.md` 3.1-3.2): from Claude Code
-2.1.145 on, `launch` puts seven hooks into the one `--settings` it passes, each
+2.1.145 on, `launch` puts nine hooks into the one `--settings` it passes, each
 running `<polter> +hook --cli claude-code <event>` in exec form -- `command`
 is the Polter executable and `args` the rest, so no shell reads it: on
 Windows without Git Bash the shell is PowerShell, which read the sh-quoted
@@ -149,6 +149,14 @@ HOOK_EVENTS = (
     # on after an approval or an answer (task 1561), and an `async` one could
     # land after the next tool's `PermissionRequest` and take that one back.
     ("PostToolUse", None),
+    # The other two ends of a tool call (task 1625): when one starts, and
+    # when one ends by failing. Together with `PostToolUse` they say whether
+    # a turn has a tool running in it, which is what tells a worker sitting
+    # through a long build from one that has stopped. Synchronous for the
+    # same reason as `PostToolUse`: an `async` start could land after its
+    # own end and leave a tool counted as running.
+    ("PreToolUse", None),
+    ("PostToolUseFailure", None),
 )
 
 # How the person's own status line command reaches `polter +statusline`
