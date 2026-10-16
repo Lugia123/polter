@@ -338,70 +338,76 @@ pub fn parse(parser: *Parser, terminator_ch: ?u8) ?*Command {
 test "OSC 99: empty metadata and payload" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;;";
-    for (input) |ch| p.next(ch);
+        const input = "99;;";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("", cmd.kitty_desktop_notification.metadata);
-    try testing.expectEqualStrings("", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualDeep(Option.a.default(), cmd.kitty_desktop_notification.readOption(.a));
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.c) == false);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.d) == true);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.e) == false);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.f) == null);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.g) == null);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.i) == null);
-    {
-        var it = cmd.kitty_desktop_notification.readOption(.n);
-        try testing.expect(it.next() == null);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("", cmd.kitty_desktop_notification.metadata);
+        try testing.expectEqualStrings("", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualDeep(Option.a.default(), cmd.kitty_desktop_notification.readOption(.a));
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.c) == false);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.d) == true);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.e) == false);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.f) == null);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.g) == null);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.i) == null);
+        {
+            var it = cmd.kitty_desktop_notification.readOption(.n);
+            try testing.expect(it.next() == null);
+        }
+        try testing.expectEqual(.always, cmd.kitty_desktop_notification.readOption(.o));
+        try testing.expectEqual(.title, cmd.kitty_desktop_notification.readOption(.p));
+        try testing.expectEqualStrings("system", cmd.kitty_desktop_notification.readOption(.s));
+        {
+            var it = cmd.kitty_desktop_notification.readOption(.t);
+            try testing.expect(it.next() == null);
+        }
+        try testing.expectEqual(.normal, cmd.kitty_desktop_notification.readOption(.u));
+        try testing.expectEqual(-1, cmd.kitty_desktop_notification.readOption(.w));
+        try testing.expectEqual(.st, cmd.kitty_desktop_notification.terminator);
     }
-    try testing.expectEqual(.always, cmd.kitty_desktop_notification.readOption(.o));
-    try testing.expectEqual(.title, cmd.kitty_desktop_notification.readOption(.p));
-    try testing.expectEqualStrings("system", cmd.kitty_desktop_notification.readOption(.s));
-    {
-        var it = cmd.kitty_desktop_notification.readOption(.t);
-        try testing.expect(it.next() == null);
-    }
-    try testing.expectEqual(.normal, cmd.kitty_desktop_notification.readOption(.u));
-    try testing.expectEqual(-1, cmd.kitty_desktop_notification.readOption(.w));
-    try testing.expectEqual(.st, cmd.kitty_desktop_notification.terminator);
 }
 
 test "OSC 99: empty metadata with payload" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;;bobr";
-    for (input) |ch| p.next(ch);
+        const input = "99;;bobr";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("", cmd.kitty_desktop_notification.metadata);
-    try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualDeep(Option.a.default(), cmd.kitty_desktop_notification.readOption(.a));
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.c) == false);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.d) == true);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.e) == false);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.f) == null);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.g) == null);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.i) == null);
-    {
-        var it = cmd.kitty_desktop_notification.readOption(.n);
-        try testing.expect(it.next() == null);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("", cmd.kitty_desktop_notification.metadata);
+        try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualDeep(Option.a.default(), cmd.kitty_desktop_notification.readOption(.a));
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.c) == false);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.d) == true);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.e) == false);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.f) == null);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.g) == null);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.i) == null);
+        {
+            var it = cmd.kitty_desktop_notification.readOption(.n);
+            try testing.expect(it.next() == null);
+        }
+        try testing.expectEqual(.always, cmd.kitty_desktop_notification.readOption(.o));
+        try testing.expectEqual(.title, cmd.kitty_desktop_notification.readOption(.p));
+        try testing.expectEqualStrings("system", cmd.kitty_desktop_notification.readOption(.s));
+        {
+            var it = cmd.kitty_desktop_notification.readOption(.t);
+            try testing.expect(it.next() == null);
+        }
+        try testing.expectEqual(.normal, cmd.kitty_desktop_notification.readOption(.u));
+        try testing.expectEqual(-1, cmd.kitty_desktop_notification.readOption(.w));
     }
-    try testing.expectEqual(.always, cmd.kitty_desktop_notification.readOption(.o));
-    try testing.expectEqual(.title, cmd.kitty_desktop_notification.readOption(.p));
-    try testing.expectEqualStrings("system", cmd.kitty_desktop_notification.readOption(.s));
-    {
-        var it = cmd.kitty_desktop_notification.readOption(.t);
-        try testing.expect(it.next() == null);
-    }
-    try testing.expectEqual(.normal, cmd.kitty_desktop_notification.readOption(.u));
-    try testing.expectEqual(-1, cmd.kitty_desktop_notification.readOption(.w));
 }
 
 test "OSC 99: payload size limits" {
@@ -433,769 +439,931 @@ test "OSC 99: payload size limits" {
 test "OSC 99: unknown prefix does not hide dotted identifier" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
-    const input = "99;invalid=wrong:i=org.ghostty;payload";
-    for (input) |ch| p.next(ch);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
+        const input = "99;invalid=wrong:i=org.ghostty;payload";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expectEqualStrings(
-        "org.ghostty",
-        cmd.kitty_desktop_notification.readOption(.i).?,
-    );
+        const cmd = p.end('\x1b').?.*;
+        try testing.expectEqualStrings(
+            "org.ghostty",
+            cmd.kitty_desktop_notification.readOption(.i).?,
+        );
+    }
 }
 
 test "OSC 99: single parameter i" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;i=bobr;payload";
-    for (input) |ch| p.next(ch);
+        const input = "99;i=bobr;payload";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.readOption(.i).?);
-    try testing.expectEqualStrings("payload", cmd.kitty_desktop_notification.payload);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.readOption(.i).?);
+        try testing.expectEqualStrings("payload", cmd.kitty_desktop_notification.payload);
+    }
 }
 
 test "OSC 99: repeated parameter i" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;i=bobr:i=foobar;payload";
-    for (input) |ch| p.next(ch);
+        const input = "99;i=bobr:i=foobar;payload";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.readOption(.i).?);
-    try testing.expectEqualStrings("payload", cmd.kitty_desktop_notification.payload);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.readOption(.i).?);
+        try testing.expectEqualStrings("payload", cmd.kitty_desktop_notification.payload);
+    }
 }
 
 test "OSC 99: multiple types" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;t=mail: t = chat : t = alert ;notification";
-    for (input) |ch| p.next(ch);
+        const input = "99;t=mail: t = chat : t = alert ;notification";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("notification", cmd.kitty_desktop_notification.payload);
-    var it = cmd.kitty_desktop_notification.readOption(.t);
-    try testing.expectEqualStrings("mail", it.next().?);
-    try testing.expectEqualStrings("chat", it.next().?);
-    try testing.expectEqualStrings("alert", it.next().?);
-    try testing.expect(it.next() == null);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("notification", cmd.kitty_desktop_notification.payload);
+        var it = cmd.kitty_desktop_notification.readOption(.t);
+        try testing.expectEqualStrings("mail", it.next().?);
+        try testing.expectEqualStrings("chat", it.next().?);
+        try testing.expectEqualStrings("alert", it.next().?);
+        try testing.expect(it.next() == null);
+    }
 }
 
 test "OSC 99: a 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;a=report,focus;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;a=report,focus;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualDeep(Action{ .report = true, .focus = true }, cmd.kitty_desktop_notification.readOption(.a));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualDeep(Action{ .report = true, .focus = true }, cmd.kitty_desktop_notification.readOption(.a));
+    }
 }
 
 test "OSC 99: a 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;a=report,-focus;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;a=report,-focus;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualDeep(Action{ .report = true, .focus = false }, cmd.kitty_desktop_notification.readOption(.a));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualDeep(Action{ .report = true, .focus = false }, cmd.kitty_desktop_notification.readOption(.a));
+    }
 }
 
 test "OSC 99: a 3" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;a=-report,focus;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;a=-report,focus;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualDeep(Action{ .report = false, .focus = true }, cmd.kitty_desktop_notification.readOption(.a));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualDeep(Action{ .report = false, .focus = true }, cmd.kitty_desktop_notification.readOption(.a));
+    }
 }
 
 test "OSC 99: a 4" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;a=-report,-focus;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;a=-report,-focus;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualDeep(Action{ .report = false, .focus = false }, cmd.kitty_desktop_notification.readOption(.a));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualDeep(Action{ .report = false, .focus = false }, cmd.kitty_desktop_notification.readOption(.a));
+    }
 }
 
 test "OSC 99: c 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;c=0;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;c=0;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.c) == false);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.c) == false);
+    }
 }
 
 test "OSC 99: c 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;c=1;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;c=1;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.c) == true);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.c) == true);
+    }
 }
 
 test "OSC 99: c 3" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;c=bobr;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;c=bobr;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.c) == false);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.c) == false);
+    }
 }
 
 test "OSC 99: d 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;d=0;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;d=0;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.d) == false);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.d) == false);
+    }
 }
 
 test "OSC 99: d 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;d=1;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;d=1;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.d) == true);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.d) == true);
+    }
 }
 
 test "OSC 99: d 3" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;d=bobr;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;d=bobr;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.d) == true);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.d) == true);
+    }
 }
 
 test "OSC 99: e 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;e=0;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;e=0;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.e) == false);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.e) == false);
+    }
 }
 
 test "OSC 99: e 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;e=1;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;e=1;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.e) == true);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.e) == true);
+    }
 }
 
 test "OSC 99: e 3" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;e=bobr;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;e=bobr;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.e) == false);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.e) == false);
+    }
 }
 
 test "OSC 99: f 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;f=R2hvc3R0eQ==;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;f=R2hvc3R0eQ==;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualStrings("R2hvc3R0eQ==", cmd.kitty_desktop_notification.readOption(.f).?);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualStrings("R2hvc3R0eQ==", cmd.kitty_desktop_notification.readOption(.f).?);
+    }
 }
 
 test "OSC 99: f 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;c=0:f= R2hvc3R0eQ== ;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;c=0:f= R2hvc3R0eQ== ;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualStrings("R2hvc3R0eQ==", cmd.kitty_desktop_notification.readOption(.f).?);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualStrings("R2hvc3R0eQ==", cmd.kitty_desktop_notification.readOption(.f).?);
+    }
 }
 
 test "OSC 99: g 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;c=0:g=7f8a9129-a35d-4e9f-8043-ce2700e15e2c;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;c=0:g=7f8a9129-a35d-4e9f-8043-ce2700e15e2c;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualStrings("7f8a9129-a35d-4e9f-8043-ce2700e15e2c", cmd.kitty_desktop_notification.readOption(.g).?);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualStrings("7f8a9129-a35d-4e9f-8043-ce2700e15e2c", cmd.kitty_desktop_notification.readOption(.g).?);
+    }
 }
 
 test "OSC 99: g 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;c=0:g=aaa*bbb;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;c=0:g=aaa*bbb;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.g) == null);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.g) == null);
+    }
 }
 
 test "OSC 99: i 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expect(cmd.kitty_desktop_notification.readOption(.i) == null);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expect(cmd.kitty_desktop_notification.readOption(.i) == null);
+    }
 }
 
 test "OSC 99: i 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;i=bobr;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;i=bobr;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.readOption(.i).?);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.readOption(.i).?);
+    }
 }
 
 test "OSC 99: i 3" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;i=;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;i=;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualStrings("", cmd.kitty_desktop_notification.readOption(.i).?);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualStrings("", cmd.kitty_desktop_notification.readOption(.i).?);
+    }
 }
 
 test "OSC 99: i 4" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;i= :;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;i= :;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualStrings("", cmd.kitty_desktop_notification.readOption(.i).?);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualStrings("", cmd.kitty_desktop_notification.readOption(.i).?);
+    }
 }
 
 test "OSC 99: i 5" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;i= bobr ;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;i= bobr ;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.readOption(.i).?);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.readOption(.i).?);
+    }
 }
 
 test "OSC 99: i 6" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;i= bobr : i=kurwa ;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;i= bobr : i=kurwa ;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.readOption(.i).?);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualStrings("bobr", cmd.kitty_desktop_notification.readOption(.i).?);
+    }
 }
 
 test "OSC 99: n 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;n=R2hvc3R0eQ==;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;n=R2hvc3R0eQ==;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    var it = cmd.kitty_desktop_notification.readOption(.n);
-    try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
-    try testing.expect(it.next() == null);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        var it = cmd.kitty_desktop_notification.readOption(.n);
+        try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
+        try testing.expect(it.next() == null);
+    }
 }
 
 test "OSC 99: n 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;n=R2hvc3R0eQ==:n=R2hvc3R0eQ==;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;n=R2hvc3R0eQ==:n=R2hvc3R0eQ==;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    var it = cmd.kitty_desktop_notification.readOption(.n);
-    try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
-    try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
-    try testing.expect(it.next() == null);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        var it = cmd.kitty_desktop_notification.readOption(.n);
+        try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
+        try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
+        try testing.expect(it.next() == null);
+    }
 }
 
 test "OSC 99: o 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;o= ;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;o= ;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.always, cmd.kitty_desktop_notification.readOption(.o));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.always, cmd.kitty_desktop_notification.readOption(.o));
+    }
 }
 
 test "OSC 99: o 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;o=always;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;o=always;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.always, cmd.kitty_desktop_notification.readOption(.o));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.always, cmd.kitty_desktop_notification.readOption(.o));
+    }
 }
 
 test "OSC 99: o 3" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;o=unfocused;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;o=unfocused;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.unfocused, cmd.kitty_desktop_notification.readOption(.o));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.unfocused, cmd.kitty_desktop_notification.readOption(.o));
+    }
 }
 
 test "OSC 99: o 4" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;o=invisible;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;o=invisible;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.invisible, cmd.kitty_desktop_notification.readOption(.o));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.invisible, cmd.kitty_desktop_notification.readOption(.o));
+    }
 }
 
 test "OSC 99: o 5" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;o=bobr;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;o=bobr;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.always, cmd.kitty_desktop_notification.readOption(.o));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.always, cmd.kitty_desktop_notification.readOption(.o));
+    }
 }
 
 test "OSC 99: p 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;p=alive;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;p=alive;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.alive, cmd.kitty_desktop_notification.readOption(.p));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.alive, cmd.kitty_desktop_notification.readOption(.p));
+    }
 }
 
 test "OSC 99: p 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;p=body;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;p=body;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.body, cmd.kitty_desktop_notification.readOption(.p));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.body, cmd.kitty_desktop_notification.readOption(.p));
+    }
 }
 
 test "OSC 99: p 3" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;p=buttons;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;p=buttons;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.buttons, cmd.kitty_desktop_notification.readOption(.p));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.buttons, cmd.kitty_desktop_notification.readOption(.p));
+    }
 }
 
 test "OSC 99: p 4" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;p=close;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;p=close;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.close, cmd.kitty_desktop_notification.readOption(.p));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.close, cmd.kitty_desktop_notification.readOption(.p));
+    }
 }
 
 test "OSC 99: p 5" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;p=icon;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;p=icon;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.icon, cmd.kitty_desktop_notification.readOption(.p));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.icon, cmd.kitty_desktop_notification.readOption(.p));
+    }
 }
 
 test "OSC 99: p 6" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;p=?;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;p=?;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.query, cmd.kitty_desktop_notification.readOption(.p));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.query, cmd.kitty_desktop_notification.readOption(.p));
+    }
 }
 
 test "OSC 99: p 7" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;p=title;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;p=title;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.title, cmd.kitty_desktop_notification.readOption(.p));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.title, cmd.kitty_desktop_notification.readOption(.p));
+    }
 }
 
 test "OSC 99: p 8" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;p=query;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;p=query;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.unknown, cmd.kitty_desktop_notification.readOption(.p));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.unknown, cmd.kitty_desktop_notification.readOption(.p));
+    }
 }
 
 test "OSC 99: p 9" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;p=bobr;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;p=bobr;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.unknown, cmd.kitty_desktop_notification.readOption(.p));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.unknown, cmd.kitty_desktop_notification.readOption(.p));
+    }
 }
 
 test "OSC 99: s 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;s=R2hvc3R0eQ==;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;s=R2hvc3R0eQ==;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqualStrings("R2hvc3R0eQ==", cmd.kitty_desktop_notification.readOption(.s));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqualStrings("R2hvc3R0eQ==", cmd.kitty_desktop_notification.readOption(.s));
+    }
 }
 
 test "OSC 99: t 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;t=R2hvc3R0eQ==;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;t=R2hvc3R0eQ==;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    var it = cmd.kitty_desktop_notification.readOption(.t);
-    try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
-    try testing.expect(it.next() == null);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        var it = cmd.kitty_desktop_notification.readOption(.t);
+        try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
+        try testing.expect(it.next() == null);
+    }
 }
 
 test "OSC 99: t 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;t=R2hvc3R0eQ==:t=R2hvc3R0eQ==;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;t=R2hvc3R0eQ==:t=R2hvc3R0eQ==;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    var it = cmd.kitty_desktop_notification.readOption(.t);
-    try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
-    try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
-    try testing.expect(it.next() == null);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        var it = cmd.kitty_desktop_notification.readOption(.t);
+        try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
+        try testing.expectEqualStrings("R2hvc3R0eQ==", it.next().?);
+        try testing.expect(it.next() == null);
+    }
 }
 
 test "OSC 99: u 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;u=0;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;u=0;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.low, cmd.kitty_desktop_notification.readOption(.u));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.low, cmd.kitty_desktop_notification.readOption(.u));
+    }
 }
 
 test "OSC 99: u 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;u=1;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;u=1;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.normal, cmd.kitty_desktop_notification.readOption(.u));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.normal, cmd.kitty_desktop_notification.readOption(.u));
+    }
 }
 
 test "OSC 99: u 3" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;u=2;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;u=2;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.high, cmd.kitty_desktop_notification.readOption(.u));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.high, cmd.kitty_desktop_notification.readOption(.u));
+    }
 }
 
 test "OSC 99: u 4" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;u=bobr;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;u=bobr;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(.normal, cmd.kitty_desktop_notification.readOption(.u));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(.normal, cmd.kitty_desktop_notification.readOption(.u));
+    }
 }
 
 test "OSC 99: w 1" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;w=0;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;w=0;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(0, cmd.kitty_desktop_notification.readOption(.w));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(0, cmd.kitty_desktop_notification.readOption(.w));
+    }
 }
 
 test "OSC 99: w 2" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;w=-1;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;w=-1;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(-1, cmd.kitty_desktop_notification.readOption(.w));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(-1, cmd.kitty_desktop_notification.readOption(.w));
+    }
 }
 
 test "OSC 99: w 3" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;w=-42;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;w=-42;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(-1, cmd.kitty_desktop_notification.readOption(.w));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(-1, cmd.kitty_desktop_notification.readOption(.w));
+    }
 }
 
 test "OSC 99: w 4" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "99;w=4294967296;foobar";
-    for (input) |ch| p.next(ch);
+        const input = "99;w=4294967296;foobar";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_desktop_notification);
-    try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
-    try testing.expectEqual(-1, cmd.kitty_desktop_notification.readOption(.w));
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_desktop_notification);
+        try testing.expectEqualStrings("foobar", cmd.kitty_desktop_notification.payload);
+        try testing.expectEqual(-1, cmd.kitty_desktop_notification.readOption(.w));
+    }
 }

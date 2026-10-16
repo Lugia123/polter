@@ -12,6 +12,13 @@
 //! `macos/Sources/App/Base.lproj/MainMenu.xib` (103 menu items, zero Swift
 //! lines) needs no Windows counterpart.
 //!
+//! **The other rows are the menu's.** A `__polter_*` row of `menu.rs` --
+//! «加载项目…», «设置…» -- is the host's own and the core has no entry for it,
+//! so until #50 those were reachable from the menu and not from here. They
+//! are read from the menu's table each time the palette opens
+//! (`menu::host_commands`) and run through the menu's own `perform`
+//! (`menu::perform_host`), so this file still knows what none of them means.
+//!
 //! **Why the input box is a native `EDIT` and not self-drawn.** A self-drawn
 //! field would need its own caret, selection, and — the expensive part — its
 //! own `ITextStoreACP`, because an IME composes into a document, not into a
@@ -310,6 +317,35 @@ fn jump_commands() -> Vec<Command> {
         .collect()
 }
 
+/// One row per host action the menu could run right now (#50): «加载项目…»
+/// and the rest of the rows the core has never heard of, read from
+/// `menu.rs`'s table by `menu::host_commands`. Made afresh each time the
+/// palette opens, as the jump rows are, because whether a row can be picked
+/// is a fact about now -- "Rename Project…" only for a page in a project.
+///
+/// **Found in English as well as in the interface's language**: the
+/// untranslated label and the action are words to match, as a core command's
+/// action is ([`action_alias`]).
+fn host_commands() -> Vec<Command> {
+    crate::menu::host_commands()
+        .into_iter()
+        .map(|h| {
+            let title = crate::i18n::tr(h.label);
+            let mut aliases = synonyms_for(&title);
+            aliases.push(h.label.to_lowercase());
+            aliases.push(action_alias(h.action.trim_start_matches(crate::keys::HOST_ACTION_PREFIX)));
+            Command {
+                action: h.action.to_string(),
+                haystack: title.to_lowercase(),
+                aliases,
+                title,
+                description: String::new(),
+                go_to: None,
+            }
+        })
+        .collect()
+}
+
 /// Extra words that reach a command, on top of its own title.
 ///
 /// **Why this exists.** 20 of the 69 commands on macOS's menu bar are the same
@@ -497,6 +533,9 @@ thread_local! {
     /// window handle, and `focus_back` dispatches. It is a surface child
     /// window, and its `WM_SETFOCUS` is what restores the terminal's IME.
     static PREV_FOCUS: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
+    /// The window the palette was opened over: a host row runs in it, as the
+    /// menu of that window would have run it (`menu::perform_host`).
+    static FRAME: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
 }
 
 /// The handles, or `None` before `init`. **Takes no borrow -- that is the
@@ -1002,9 +1041,12 @@ fn show(asked: Option<HWND>) {
         // The terminals there are to go to, read before the borrow: it asks
         // the window list and the core.
         let jumps = jump_commands();
+        let hosts = host_commands();
+        FRAME.set(frame);
         STATE.with(|c| {
             if let Some(st) = c.borrow_mut().as_mut() {
-                st.commands.retain(|c| c.go_to.is_none());
+                st.commands.retain(|c| c.go_to.is_none() && !crate::keys::is_host_action(&c.action));
+                st.commands.extend(hosts);
                 st.commands.extend(jumps);
                 st.visible = true;
                 refilter(st, "");
@@ -1119,6 +1161,13 @@ fn run_index(i: usize) {
         return;
     }
     match action {
+        Some(a) if crate::keys::is_host_action(&a) => {
+            hide();
+            let ok = crate::menu::perform_host(FRAME.get(), &a);
+            // process-wide: the palette is one window for the process; the
+            // window the row ran in is on `perform_host`'s own `[menu] pick`
+            plogf!("[palette] uia invoke row {i} -> host row {a:?} ok = {ok}");
+        }
         Some(a) => {
             hide();
             let ok = crate::binding(&a);
@@ -1154,6 +1203,13 @@ fn run_selected() {
         return;
     }
     if let Some(a) = action {
+        if crate::keys::is_host_action(&a) {
+            // The window the palette was opened over, which is where the row runs.
+            let frame = FRAME.get();
+            let ok = crate::menu::perform_host(frame, &a);
+            wlogf!(frame, "[palette] run host row {:?} -> {}", a, ok);
+            return;
+        }
         let ok = crate::binding(&a);
         logf!("[palette] run {:?} -> binding_action = {}", a, ok);
     }

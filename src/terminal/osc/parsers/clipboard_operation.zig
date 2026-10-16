@@ -52,43 +52,52 @@ pub fn parse(parser: *Parser, terminator_ch: ?u8) ?*Command {
 test "OSC 52: get/set clipboard" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "52;s;?";
-    for (input) |ch| p.next(ch);
+        const input = "52;s;?";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end(null).?.*;
-    try testing.expect(cmd == .clipboard_contents);
-    try testing.expect(cmd.clipboard_contents.kind == 's');
-    try testing.expectEqualStrings("?", cmd.clipboard_contents.data);
-    try testing.expectEqual(.st, cmd.clipboard_contents.terminator);
+        const cmd = p.end(null).?.*;
+        try testing.expect(cmd == .clipboard_contents);
+        try testing.expect(cmd.clipboard_contents.kind == 's');
+        try testing.expectEqualStrings("?", cmd.clipboard_contents.data);
+        try testing.expectEqual(.st, cmd.clipboard_contents.terminator);
+    }
 }
 
 test "OSC 52: get clipboard with BEL terminator" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "52;c;?";
-    for (input) |ch| p.next(ch);
+        const input = "52;c;?";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end(0x07).?.*;
-    try testing.expect(cmd == .clipboard_contents);
-    try testing.expectEqual(.bel, cmd.clipboard_contents.terminator);
+        const cmd = p.end(0x07).?.*;
+        try testing.expect(cmd == .clipboard_contents);
+        try testing.expectEqual(.bel, cmd.clipboard_contents.terminator);
+    }
 }
 
 test "OSC 52: get/set clipboard (optional parameter)" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "52;;?";
-    for (input) |ch| p.next(ch);
+        const input = "52;;?";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end(null).?.*;
-    try testing.expect(cmd == .clipboard_contents);
-    try testing.expect(cmd.clipboard_contents.kind == 'c');
-    try testing.expectEqualStrings("?", cmd.clipboard_contents.data);
+        const cmd = p.end(null).?.*;
+        try testing.expect(cmd == .clipboard_contents);
+        try testing.expect(cmd.clipboard_contents.kind == 'c');
+        try testing.expectEqualStrings("?", cmd.clipboard_contents.data);
+    }
 }
 
 test "OSC 52: get/set clipboard with allocator" {
@@ -109,14 +118,16 @@ test "OSC 52: get/set clipboard with allocator" {
 test "OSC 52: clear clipboard" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
-    defer p.deinit();
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "52;;";
-    for (input) |ch| p.next(ch);
+        const input = "52;;";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end(null).?.*;
-    try testing.expect(cmd == .clipboard_contents);
-    try testing.expect(cmd.clipboard_contents.kind == 'c');
-    try testing.expectEqualStrings("", cmd.clipboard_contents.data);
+        const cmd = p.end(null).?.*;
+        try testing.expect(cmd == .clipboard_contents);
+        try testing.expect(cmd.clipboard_contents.kind == 'c');
+        try testing.expectEqualStrings("", cmd.clipboard_contents.data);
+    }
 }

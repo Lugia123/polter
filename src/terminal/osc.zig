@@ -405,6 +405,14 @@ pub const Parser = struct {
         @"5522",
     };
 
+    /// For tests of an OSC whose data is captured with `.allocating`: run
+    /// the test once per entry. With an allocator is the path the product
+    /// takes (the stream always hands the parser one); without one,
+    /// `captureTrailing` falls back to the fixed buffer, which is where
+    /// these tests used to run exclusively -- 68 of them, so the
+    /// allocating path for OSC 66 and OSC 99 had no coverage at all (#61).
+    pub const test_allocators = [_]?Allocator{ null, std.testing.allocator };
+
     pub fn init(alloc: ?Allocator) Parser {
         var result: Parser = .{
             .alloc = alloc,

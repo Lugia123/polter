@@ -1548,6 +1548,73 @@ fn perform(frame: HWND, row: &Row) -> bool {
     ok
 }
 
+// ------------------------------------------------------ the palette's rows
+
+/// One of the host's own rows, as the command palette lists it (#50).
+pub struct HostCommand {
+    /// The `__polter_*` action, which `perform_host` finds the row by.
+    pub action: &'static str,
+    /// The label as the table writes it, untranslated: the palette shows
+    /// `tr(label)` and also matches this, so "load project" finds the row in
+    /// a Chinese interface the way "split" finds a core command (task 1604).
+    pub label: &'static str,
+}
+
+/// The host's own rows that can be picked right now, for the command palette.
+///
+/// **The palette used to list only the core's commands** -- its rows came from
+/// `command-palette-entry`, and a `__polter_*` row is by definition one the
+/// core has never heard of. So «加载项目…» could be reached from this menu and
+/// from nowhere you could type into (#50). These are read **from this table**
+/// rather than written out again in `palette.rs`: a second list is a second
+/// thing to keep in step, and the day it fell behind a new row would be
+/// missing from the palette with nothing anywhere going red.
+///
+/// A row this menu would grey is left out, by the palette's own rule (a
+/// search result you cannot act on is worse than one that is not offered;
+/// see `palette::Unavailable`). The persona submenu's rows are built when it
+/// opens and are not here.
+pub fn host_commands() -> Vec<HostCommand> {
+    host_commands_where(row_enabled)
+}
+
+/// `host_commands` with the "can it be picked now" question passed in, so the
+/// tests can ask about the table without a window to ask the state of.
+fn host_commands_where(live: impl Fn(&Row) -> bool) -> Vec<HostCommand> {
+    fn walk(rows: &'static [Row], live: &dyn Fn(&Row) -> bool, out: &mut Vec<HostCommand>) {
+        for r in rows {
+            if let Some(s) = r.sub {
+                walk(s, live, out);
+            } else if let Some(action) = r.action {
+                if crate::keys::is_host_action(action) && live(r) {
+                    out.push(HostCommand { action, label: r.label });
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(ROOT, &live, &mut out);
+    out
+}
+
+/// The table's row for a `__polter_*` action.
+fn host_row(rows: &'static [Row], action: &str) -> Option<&'static Row> {
+    rows.iter().find_map(|r| match r.sub {
+        Some(s) => host_row(s, action),
+        None => (r.action == Some(action)).then_some(r),
+    })
+}
+
+/// Run a host row the palette offered **the way a click on it runs**:
+/// through `perform`, so the palette and the menu cannot drift apart and the
+/// log says `[menu] pick` for both. False for an action no row has.
+pub fn perform_host(frame: HWND, action: &str) -> bool {
+    match host_row(ROOT, action) {
+        Some(row) => perform(frame, row),
+        None => false,
+    }
+}
+
 /// Open the root menu under the button itself -- the mouse path and the
 /// keyboard path (`Alt`, `F10`) both land here, so they cannot drift apart.
 ///
@@ -1873,6 +1940,50 @@ mod tests {
                 assert!(HOST_ACTIONS.contains(&a), "{a} has no handler");
             }
         }
+    }
+
+    /// The palette is offered every host row in the table -- the Project
+    /// group's among them, which is what #50 found missing -- and nothing
+    /// that is not a host row.
+    #[test]
+    fn the_palette_is_offered_every_host_row() {
+        let offered: Vec<&str> = host_commands_where(|_| true).iter().map(|c| c.action).collect();
+        let table: Vec<&str> = all_rows().iter().filter_map(|r| r.action).filter(|a| crate::keys::is_host_action(a)).collect();
+        assert_eq!(offered, table);
+        for a in [
+            "__polter_save_project",
+            "__polter_load_project",
+            "__polter_add_to_project",
+            "__polter_rename_project",
+            "__polter_take_out_of_project",
+            "__polter_close_project",
+            "__polter_manage_projects",
+        ] {
+            assert!(offered.contains(&a), "{a} is not offered to the palette");
+        }
+    }
+
+    /// A row this menu would grey is not offered: the palette asks the same
+    /// question the menu does, and leaves out what it answers no to.
+    #[test]
+    fn the_palette_is_not_offered_a_greyed_row() {
+        let offered: Vec<&str> = host_commands_where(|r| r.enabled != Enable::No).iter().map(|c| c.action).collect();
+        assert!(!offered.contains(&"__polter_help_docs"));
+        assert!(offered.contains(&"__polter_load_project"));
+    }
+
+    /// What the palette runs is the row it showed: each host action names
+    /// exactly one row, and `perform_host` finds that row by it. A second row
+    /// with the same action would make the palette run whichever came first.
+    #[test]
+    fn each_host_action_finds_its_own_row() {
+        for c in host_commands_where(|_| true) {
+            let row = host_row(ROOT, c.action).expect("no row for an offered action");
+            assert_eq!(row.label, c.label, "{} finds another row", c.action);
+            let n = all_rows().iter().filter(|r| r.action == Some(c.action)).count();
+            assert_eq!(n, 1, "{} is on {n} rows", c.action);
+        }
+        assert!(host_row(ROOT, "__polter_no_such_row").is_none());
     }
 
     /// Settings… opens the settings window itself, and still shows Ctrl+,
