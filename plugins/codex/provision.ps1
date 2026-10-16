@@ -206,7 +206,10 @@ function Set-HostSettings {
     $lines = @()
     if (Test-Path -LiteralPath $path) {
         $lines = @([System.IO.File]::ReadAllText($path, $script:PolterUtf8) -split "`r?`n")
-        if ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') { $lines = $lines[0..($lines.Count - 2)] }
+        # Not `0..(Count - 2)`: with one line that range is `0, -1`, two lines.
+        if ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') {
+            $lines = @($lines | Select-Object -First ($lines.Count - 1))
+        }
     }
     $have = @($lines | Where-Object { $_.Contains($mark) -and $_ -notmatch '^\s*\[' }).Count -gt 0
     $theirs = @($lines | Where-Object { -not $_.Contains($mark) -and $_ -match '(^|[.\s])daemon_auto_start\s*=' }).Count -gt 0
@@ -228,7 +231,13 @@ function Set-HostSettings {
             for ($j = $i + 1; $j -lt $lines.Count -and $lines[$j] -notmatch '^\s*\['; $j++) {
                 if ($lines[$j] -notmatch '^\s*(#.*)?$' -and -not $lines[$j].Contains($mark)) { $other = $true }
             }
-            if ($other) { $out.Add($l) }
+            if ($other) {
+                $out.Add($l)
+            } elseif ($out.Count -gt 0 -and $out[$out.Count - 1] -eq '') {
+                # Gone with it: the one blank line put in front of it when it
+                # was made, so taking it back gives the file back byte for byte.
+                $out.RemoveAt($out.Count - 1)
+            }
             continue
         }
         if ($l -match '^\s*\[\s*features\s*\]\s*(#.*)?$') {
@@ -242,10 +251,16 @@ function Set-HostSettings {
     $dir = Split-Path -Parent $path
     if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Path $dir) }
     $tmp = "$path.polter-tmp"
-    [System.IO.File]::WriteAllText($tmp, (($out -join "`n") + "`n"), $script:PolterUtf8)
+    $text = $(if ($out.Count -gt 0) { ($out -join "`n") + "`n" } else { '' })
+    [System.IO.File]::WriteAllText($tmp, $text, $script:PolterUtf8)
     Move-Item -LiteralPath $tmp -Destination $path -Force
     $script:PolterWrote = $true
-    Write-PolterLog "daemon_auto_start: $(if ($want) { 'set to false' } else { 'taken back out' })"
+    # The person's daemon is not stopped: see provision.sh.
+    if ($want) {
+        Write-PolterLog 'daemon_auto_start: set to false; an app-server daemon already running is not stopped and keeps its sessions, so this takes effect once it has exited (or after signing in again or a restart)'
+    } else {
+        Write-PolterLog 'daemon_auto_start: taken back out'
+    }
 }
 
 # Codex took the Agent Skills standard in January 2026 and looks in the same
@@ -261,4 +276,7 @@ function Get-HostSkillsDir {
 # repository.
 function Get-HostRulesFile { Join-Path $script:PolterHome '.codex\AGENTS.md' }
 
-Invoke-PolterProvisionMain
+
+# A test that only wants the functions above sets this
+# (`test/codex-adapter/provision-settings.py`).
+if ($env:POLTER_PROVISION_FUNCTIONS_ONLY -ne '1') { Invoke-PolterProvisionMain }

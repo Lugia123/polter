@@ -235,27 +235,37 @@ host_settings_apply() {
   # taking the line out leaves it empty; one the person had stays.
   if ! awk -v want="$want" -v line="daemon_auto_start = false $POLTER_CODEX_DAEMON_MARK" \
     -v head="[features] $POLTER_CODEX_DAEMON_MARK" -v mark="$POLTER_CODEX_DAEMON_MARK" '
+    function flush() { if (blank) { print ""; blank = 0 } }
     { lines[++n] = $0 }
     END {
       for (i = 1; i <= n; i++) {
         l = lines[i]
+        # One blank line is held back at a time -- the one right in front of
+        # whatever comes next -- so it can go with a header of ours.
+        if (l == "") { flush(); blank = 1; continue }
         if (index(l, mark) && l !~ /^[ \t]*\[/) continue
         if (index(l, mark) && l ~ /^[ \t]*\[/) {
           # Our own table: kept only if something other than our line is in it.
-          if (want == "yes") { print l; print line; done = 1; continue }
+          if (want == "yes") { flush(); print l; print line; done = 1; continue }
           other = 0
           for (j = i + 1; j <= n && lines[j] !~ /^[ \t]*\[/; j++)
             if (lines[j] !~ /^[ \t]*(#.*)?$/ && !index(lines[j], mark)) other = 1
-          if (other) print l
+          # Gone with it: the one blank line put in front of it when it was
+          # made (task 1674), so that taking it back gives the file back
+          # byte for byte.
+          if (other) { flush(); print l } else blank = 0
           continue
         }
         if (l ~ /^[ \t]*\[[ \t]*features[ \t]*\][ \t]*(#.*)?$/) {
+          flush()
           print l
           if (want == "yes") { print line; done = 1 }
           continue
         }
+        flush()
         print l
       }
+      flush()
       if (want == "yes" && !done) { print ""; print head; print line }
     }
   ' "$f" >"$tmp"; then
@@ -264,7 +274,13 @@ host_settings_apply() {
   fi
   mv "$tmp" "$f" || return 1
   wrote=yes
-  say "daemon_auto_start: $([ "$want" = yes ] && echo "set to false" || echo "taken back out")"
+  # **The person's daemon is not stopped** (task 1674): it may be running
+  # their sessions. The line says when the setting will start to count.
+  if [ "$want" = yes ]; then
+    say "daemon_auto_start: set to false; an app-server daemon already running is not stopped and keeps its sessions, so this takes effect once it has exited (or after signing in again or a restart)"
+  else
+    say "daemon_auto_start: taken back out"
+  fi
   return 0
 }
 
@@ -284,4 +300,7 @@ host_rules_file() {
   printf '%s/.codex/AGENTS.md' "$home"
 }
 
-polter_provision_main
+
+# A test that only wants the functions above (`test/codex-adapter/
+# provision-settings.py`) sets this, and nothing is read from stdin.
+[ "${POLTER_PROVISION_FUNCTIONS_ONLY:-}" = 1 ] || polter_provision_main
