@@ -26,7 +26,16 @@ struct ControlRoomView: View {
                     onInSight: { model.onCardsInSight($0) },
                     onEnter: { model.goToSupervisor() },
                     onFix: { model.fix($0) },
-                    fixRefusal: model.fixRefusal)
+                    fixRefusal: model.fixRefusal,
+                    menu: { model.menu(for: $0) },
+                    renaming: model.renaming,
+                    onRenameTyped: { model.renameTyped($0) },
+                    onRenameSubmit: { model.submitRename() },
+                    onRenameCancel: { model.cancelRename() },
+                    rowLines: model.rowLines,
+                    archivedOpen: model.archivedOpen,
+                    onToggleArchived: { model.archivedOpen.toggle() },
+                    archivedMenu: { model.menu(forArchived: $0) })
             } else {
                 // No snapshot yet: the list's place, with nothing in it.
                 Color.clear.frame(width: CGFloat(Look.Side.width))
@@ -64,6 +73,21 @@ struct ControlRoomView: View {
                 guard let group = model.selection else { return }
                 model.takeOver(group: group, question: question)
             })
+            // The group's note, docked at the right while it is edited
+            // (task 1660, design v21 `04-B`): the supervisor's frame gives
+            // it its width and the gap between frames, and keeps its title.
+            if let note = model.noteEditing {
+                ControlRoomNotePanel(
+                    group: note.group,
+                    saved: note.saved,
+                    text: Binding(get: { model.noteEditing?.draft ?? "" },
+                                  set: { model.noteEditing?.draft = $0 }),
+                    refusal: note.refusal,
+                    onSave: { model.saveNote() },
+                    onClose: { model.closeNote() })
+                    // A panel for another group starts afresh.
+                    .id(note.group)
+            }
         }
         .padding(edge)
         .background(Look.theme(scheme).windowBase.color)

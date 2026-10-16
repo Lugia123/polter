@@ -53,6 +53,21 @@ struct ControlRoomListView: View {
     var refraction: Bool = Look.Selection.refractionShown
     /// Stops every motion, as Reduce Motion does. For still pictures.
     var still: Bool = false
+    /// The menu a right-click on a row opens (task 1660); nil for none.
+    var menu: (Row) -> NSMenu? = { _ in nil }
+    /// The row whose name is a field, and what the field says and does.
+    var renaming: ControlRoomRowMenuState.Renaming?
+    var onRenameTyped: (String) -> Void = { _ in }
+    var onRenameSubmit: () -> Void = {}
+    var onRenameCancel: () -> Void = {}
+    /// The line under a row, by row: what its supervisor was asked, or
+    /// why something the menu did was refused (task 1660).
+    var rowLines: [String: ControlRoomRowMenuState.RowLine] = [:]
+    /// Whether "Archived" at the bottom is open, and opening or closing it.
+    var archivedOpen = false
+    var onToggleArchived: () -> Void = {}
+    /// The menu a right-click on an archived group opens.
+    var archivedMenu: (ControlRoomList.ArchivedGroup) -> NSMenu? = { _ in nil }
 
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -80,7 +95,16 @@ struct ControlRoomListView: View {
          onEnter: @escaping () -> Void = {},
          onFix: @escaping (Row) -> Void = { _ in },
          fixRefusal: (row: String, message: String)? = nil,
-         refraction: Bool = Look.Selection.refractionShown, still: Bool = false, midSlide: CGSize? = nil) {
+         refraction: Bool = Look.Selection.refractionShown, still: Bool = false, midSlide: CGSize? = nil,
+         menu: @escaping (Row) -> NSMenu? = { _ in nil },
+         renaming: ControlRoomRowMenuState.Renaming? = nil,
+         onRenameTyped: @escaping (String) -> Void = { _ in },
+         onRenameSubmit: @escaping () -> Void = {},
+         onRenameCancel: @escaping () -> Void = {},
+         rowLines: [String: ControlRoomRowMenuState.RowLine] = [:],
+         archivedOpen: Bool = false,
+         onToggleArchived: @escaping () -> Void = {},
+         archivedMenu: @escaping (ControlRoomList.ArchivedGroup) -> NSMenu? = { _ in nil }) {
         self.list = list
         self._selection = selection
         self.onNewGroup = onNewGroup
@@ -91,6 +115,15 @@ struct ControlRoomListView: View {
         self.fixRefusal = fixRefusal
         self.refraction = refraction
         self.still = still
+        self.menu = menu
+        self.renaming = renaming
+        self.onRenameTyped = onRenameTyped
+        self.onRenameSubmit = onRenameSubmit
+        self.onRenameCancel = onRenameCancel
+        self.rowLines = rowLines
+        self.archivedOpen = archivedOpen
+        self.onToggleArchived = onToggleArchived
+        self.archivedMenu = archivedMenu
         self.away = midSlide ?? .zero
         self._lift = State(initialValue: midSlide == nil ? 0 : 1)
     }
@@ -109,10 +142,9 @@ struct ControlRoomListView: View {
             // when no refusal is there to take it (task 1511).
             let retention = note == nil ? list.retentionWaitingBytes : nil
             let retentionText = retention.map(LogManagementRules.noticeTitle)
-            let layout = ControlRoomListLayout(list: list, height: proxy.size.height,
-                                               noteUnderHeader: note.map(Self.noteHeight)
-                                                   ?? retentionText.map { Self.noteHeight($0) + ControlRoomRetentionNotice.buttonHeight } ?? 0,
-                                               needed: ControlRoomAskText.needed)
+            let layout = layout(height: proxy.size.height,
+                                noteUnderHeader: note.map(Self.noteHeight)
+                                    ?? retentionText.map { Self.noteHeight($0) + ControlRoomRetentionNotice.buttonHeight } ?? 0)
             ZStack(alignment: .topLeading) {
                 if naming {
                     nameField.place(layout.header)
@@ -139,7 +171,7 @@ struct ControlRoomListView: View {
             .onChange(of: layout.inSight(order: list.rows.map(\.id), scrolled: scrolled)) { onInSight($0) }
         }
         .frame(width: CGFloat(Look.Side.width))
-        .background(panel)
+        .background(ControlRoomSidePanel())
         .font(.system(size: CGFloat(Look.Font.body)))
         .monospacedDigit()
         .foregroundStyle(theme.text.color)
@@ -170,6 +202,64 @@ struct ControlRoomListView: View {
         .onChange(of: selection) { _ in takeOff() }
     }
 
+    /// The text of the line under each row that has one: why its new name
+    /// is refused, while it is being renamed and that is so; otherwise what
+    /// its supervisor was asked or what was refused.
+    private var lineTexts: [String: (text: String, delivered: Bool, refusal: Bool)] {
+        var out = rowLines.mapValues { (text: $0.text, delivered: $0.delivered, refusal: false) }
+        if let renaming, let refusal = renaming.refusal {
+            out[renaming.row] = (refusal, false, true)
+        }
+        return out
+    }
+
+    /// Where everything is, with the menu's lines and the groups put away
+    /// counted in (`ControlRoomListLayout`, task 1661): the one place the
+    /// list's layout is made, so the chip and the rows agree.
+    private func layout(height: CGFloat, noteUnderHeader: CGFloat) -> ControlRoomListLayout {
+        ControlRoomListLayout(list: list, height: height, noteUnderHeader: noteUnderHeader,
+                              needed: ControlRoomAskText.needed,
+                              linesUnder: Set(lineTexts.keys),
+                              archived: list.archived.map(\.name), archivedOpen: archivedOpen)
+    }
+
+    /// A line under a row, its text where the row's name starts.
+    @ViewBuilder
+    private func lineUnder(_ id: String) -> some View {
+        if let line = lineTexts[id] {
+            Group {
+                if line.refusal {
+                    ControlRoomRowRefusal(text: line.text)
+                } else {
+                    ControlRoomAskedLine(text: line.text, delivered: line.delivered)
+                }
+            }
+            .padding(.leading, CGFloat(Look.Side.rowPaddingX) + CGFloat(Look.Side.glyph) + CGFloat(Look.Side.rowItemGap))
+            .padding(.trailing, CGFloat(Look.Side.rowPaddingX))
+        }
+    }
+
+    /// A group put away: its name and the day, a step back, and the menu
+    /// for it on a right-click.
+    private func archivedRow(_ group: ControlRoomList.ArchivedGroup) -> some View {
+        HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
+            Color.clear.frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
+            Text(group.name)
+                .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
+                .lineLimit(1)
+                .fixedSize()
+            Text(ControlRoomGroupWords.archivedOn(group.archivedMs, calendar: .current, locale: .current))
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(theme.textTertiary.color)
+        .padding(.horizontal, CGFloat(Look.Side.rowPaddingX))
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .overlay { ControlRoomRightClick { archivedMenu(group) } }
+    }
+
     /// The chip and the rows, clipped to the room above the allowance block
     /// and scrolled inside it (task 1654). Each piece stands where the
     /// layout put it, less the viewport's top; a row is moved there by
@@ -191,7 +281,24 @@ struct ControlRoomListView: View {
                     quietHeader.place(inside(layout.quietHeader))
                 }
                 ForEach(list.quiet) { row in
-                    quietRow(row).stand(inside(layout.rows[row.id] ?? .zero))
+                    // The row is its own height; the line under it is apart.
+                    let rect = layout.rows[row.id] ?? .zero
+                    let line = layout.lineRects[row.id]?.height ?? 0
+                    quietRow(row).stand(inside(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height - line)))
+                }
+                // In the core's order of the rows, as everything else.
+                ForEach(list.rows.filter { layout.lineRects[$0.id] != nil }) { row in
+                    lineUnder(row.id).stand(inside(layout.lineRects[row.id] ?? .zero))
+                }
+                if layout.archivedHeader.height > 0 {
+                    theme.lineFaint.color.place(inside(layout.archivedSeparator))
+                    ControlRoomArchivedHeader(count: list.archived.count, open: archivedOpen, onToggle: onToggleArchived)
+                        .place(inside(layout.archivedHeader))
+                }
+                ForEach(list.archived) { group in
+                    if let rect = layout.archivedRows[group.name] {
+                        archivedRow(group).stand(inside(rect))
+                    }
                 }
             }
             .frame(width: layout.viewport.width, height: layout.contentHeight, alignment: .topLeading)
@@ -242,7 +349,7 @@ struct ControlRoomListView: View {
     /// Selecting is one call whether it came from a click or a key, so both
     /// slide the chip the same way.
     private func select(_ id: String?) {
-        let layout = ControlRoomListLayout(list: list, height: 0, needed: ControlRoomAskText.needed)
+        let layout = layout(height: 0, noteUnderHeader: 0)
         let plan = id.flatMap { layout.chip(for: $0) }.map {
             ControlRoomChipSlide.plan(from: layout.chip(for: selection), to: $0, reduceMotion: !moves)
         }
@@ -314,22 +421,6 @@ struct ControlRoomListView: View {
     }
 
     // MARK: Pieces
-
-    private var panel: some View {
-        let shape = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.sidePanel), style: .continuous)
-        let hairline = CGFloat(Look.Line.hairline)
-        return shape
-            .fill(theme.sidePanel.color)
-            .overlay(
-                // A highlight along the top edge only.
-                shape.strokeBorder(theme.sidePanelHighlight.color, lineWidth: hairline)
-                    .mask(alignment: .top) { Rectangle().frame(height: CGFloat(Look.Radius.sidePanel)) }
-            )
-            .background(shape.inset(by: -hairline).strokeBorder(theme.sidePanelEdge.color, lineWidth: hairline))
-            .background(
-                shape.shadowOutside([(theme.sidePanelShadowAlpha, Look.Pane.frameShadowBlur / 2, Look.Pane.frameShadowY)])
-            )
-    }
 
     private var header: some View {
         HStack(spacing: 0) {
@@ -475,6 +566,36 @@ struct ControlRoomListView: View {
         return Text(text)
     }
 
+    /// How wide the pinned and muted marks after a name are, with the gap
+    /// before them: none when there are none.
+    static func marksWidth(_ facts: ControlRoomList.GroupFacts?) -> CGFloat {
+        let n = [facts?.pinned == true, facts?.muted == true].filter { $0 }.count
+        guard n > 0 else { return 0 }
+        return CGFloat(Look.Side.rowItemGap) + CGFloat(n) * CGFloat(Look.Side.glyph)
+            + CGFloat(n - 1) * CGFloat(Look.Side.markGap)
+    }
+
+    /// The marks after a row's name.
+    @ViewBuilder
+    private func marks(_ row: Row) -> some View {
+        if let facts = row.facts, facts.pinned || facts.muted {
+            ControlRoomRowMarks(pinned: facts.pinned, muted: facts.muted)
+                .padding(.leading, CGFloat(Look.Side.rowItemGap))
+        }
+    }
+
+    /// The field a row's name becomes while it is renamed, at the name's
+    /// size; nil when this row is not being renamed.
+    private func renameField(_ row: Row, size: Double) -> ControlRoomRenameField? {
+        guard let renaming, renaming.row == row.id else { return nil }
+        return ControlRoomRenameField(
+            text: Binding(get: { renaming.draft }, set: { onRenameTyped($0) }),
+            refused: renaming.refusal != nil,
+            size: size,
+            onSubmit: onRenameSubmit,
+            onCancel: onRenameCancel)
+    }
+
     /// A group that is waiting: the glyph in its column; the name, and at
     /// the right who is waiting and for which of the four; then what it is
     /// waiting for -- a sentence in the interface's face, a command in the
@@ -491,9 +612,12 @@ struct ControlRoomListView: View {
             weight: Self.weight(selected ? Look.Font.weightStrong : Look.Font.weightGroupName))
         let wordFont = NSFont.systemFont(ofSize: CGFloat(Look.Font.body), weight: Self.weight(Look.Font.weightEmphasis))
         let whoText = who(row.waiter)
+        // The marks after the name take its room on the line: they are
+        // measured with it, and the name is cut before they are.
+        let marksWidth = Self.marksWidth(row.facts)
         let line1 = ControlRoomLine1.fit(
             width: Double(ControlRoomListLayout.askWidth), gap: Double(gap),
-            name: Double(Self.width(of: row.name, font: nameFont)),
+            name: Double(Self.width(of: row.name, font: nameFont) + marksWidth),
             who: whoText.map { _ in Double(Self.whoWidth(row.waiter)) },
             word: row.word.isEmpty ? 0 : Double(Self.width(of: row.word, font: wordFont)))
         return HStack(alignment: .top, spacing: gap) {
@@ -502,12 +626,18 @@ struct ControlRoomListView: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    if let field = renameField(row, size: Look.Font.groupName) {
+                        // Who waits and for what fold away while it is
+                        // renamed (design v21 `03`).
+                        field.frame(maxWidth: .infinity)
+                    } else {
                     Text(row.name)
                         .font(.system(size: CGFloat(Look.Font.groupName), design: .monospaced))
                         .fontWeight(Look.weight(selected ? Look.Font.weightStrong : Look.Font.weightGroupName))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .frame(width: CGFloat(line1.name), alignment: .leading)
+                        .frame(width: max(0, CGFloat(line1.name) - marksWidth), alignment: .leading)
+                    marks(row)
                     Spacer(minLength: 0)
                     if let whoText, let room = line1.who {
                         // Cut from its start: the end of a long title is
@@ -524,6 +654,7 @@ struct ControlRoomListView: View {
                             .foregroundStyle(ink(row.shown, selected: selected))
                             .fixedSize()
                             .padding(.leading, gap)
+                    }
                     }
                 }
                 .frame(height: CGFloat(Look.Side.rowLine1Height))
@@ -547,9 +678,11 @@ struct ControlRoomListView: View {
         .contentShape(Rectangle())
         .onTapGesture { select(row.id) }
         .help(ControlRoomList.tooltip(for: row) ?? "")
-        .accessibilityElement(children: .ignore)
+        // While its name is a field, the field is reachable on its own.
+        .accessibilityElement(children: renaming?.row == row.id ? .contain : .ignore)
         .accessibilityLabel(ControlRoomList.spoken(row))
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .overlay { ControlRoomRightClick { menu(row) } }
         // Over the row and not in it: the row is one element to the
         // accessibility tree, and the button is a second, beside it. In the
         // room `rowHeight` left at the bottom, under the row's text.
@@ -610,26 +743,63 @@ struct ControlRoomListView: View {
                     ControlRoomGlyph(shown: row.shown, still: still)
                 }
             }
-            Text(row.name)
-                .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
-                .fontWeight(Look.weight(selected ? Look.Font.weightStrong : Look.Font.weightBody))
-                .foregroundStyle((idle && !selected ? theme.textSecondary : theme.text).color)
-                .lineLimit(1)
-                .fixedSize()
-            Text(said)
-                .foregroundStyle(theme.textSecondary.color)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
+            if let field = renameField(row, size: Look.Font.body) {
+                field
+            } else {
+                Text(row.name)
+                    .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
+                    .fontWeight(Look.weight(selected ? Look.Font.weightStrong : Look.Font.weightBody))
+                    .foregroundStyle((idle && !selected ? theme.textSecondary : theme.text).color)
+                    .lineLimit(1)
+                    .fixedSize()
+                // Right after the name, before what it is doing; the row's
+                // gap is already `row_item_gap`.
+                if let facts = row.facts, facts.pinned || facts.muted {
+                    ControlRoomRowMarks(pinned: facts.pinned, muted: facts.muted)
+                }
+                Text(said)
+                    .foregroundStyle(theme.textSecondary.color)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
         }
         .padding(.horizontal, CGFloat(Look.Side.rowPaddingX))
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
         .onTapGesture { select(row.id) }
         .help(said)
-        .accessibilityElement(children: .ignore)
+        // While its name is a field, the field is reachable on its own.
+        .accessibilityElement(children: renaming?.row == row.id ? .contain : .ignore)
         .accessibilityLabel(ControlRoomList.spoken(row))
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .overlay { ControlRoomRightClick { menu(row) } }
+    }
+}
+
+/// The ground of a panel at the side of the control room: the group list,
+/// and the group's note when it is being edited (task 1660), which is the
+/// same kind of thing at the other side.
+struct ControlRoomSidePanel: View {
+    typealias Look = ControlRoomLook
+
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let theme = Look.theme(scheme)
+        let shape = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.sidePanel), style: .continuous)
+        let hairline = CGFloat(Look.Line.hairline)
+        shape
+            .fill(theme.sidePanel.color)
+            .overlay(
+                // A highlight along the top edge only.
+                shape.strokeBorder(theme.sidePanelHighlight.color, lineWidth: hairline)
+                    .mask(alignment: .top) { Rectangle().frame(height: CGFloat(Look.Radius.sidePanel)) }
+            )
+            .background(shape.inset(by: -hairline).strokeBorder(theme.sidePanelEdge.color, lineWidth: hairline))
+            .background(
+                shape.shadowOutside([(theme.sidePanelShadowAlpha, Look.Pane.frameShadowBlur / 2, Look.Pane.frameShadowY)])
+            )
     }
 }
 

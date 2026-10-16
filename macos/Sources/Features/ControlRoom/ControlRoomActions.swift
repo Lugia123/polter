@@ -53,6 +53,27 @@ struct ControlRoomActions {
         /// "Let the control room take over?" on a group's supervisor, once
         /// the person said yes to the core's question (task 1635).
         case takeOver(group: String)
+        // The group row's menu (task 1660; `issue-fix/1659-interface.md`).
+        case pin(group: String)
+        case unpin(group: String)
+        /// Until then (wall clock); nil for until it is unmuted.
+        case mute(group: String, untilMs: UInt64?)
+        case unmute(group: String)
+        case archive(group: String)
+        case unarchive(group: String)
+        case renameGroup(from: String, to: String)
+        case setBrief(group: String, brief: String)
+        /// The two counts the question showed: the core refuses with
+        /// `Stale`, deleting nothing, when they no longer hold.
+        case deleteGroup(group: String, members: Int, openTasks: Int)
+        case askSupervisor(group: String, ask: Ask)
+    }
+
+    /// The two things the group row's menu asks a supervisor to do: the
+    /// core types a sentence of its own for each (task 1659).
+    enum Ask: CaseIterable {
+        case reportProgress
+        case closeIdleWorkers
     }
 
     /// Why an action was not done. `name` is the core's word for it and is
@@ -152,6 +173,32 @@ struct ControlRoomActions {
             case "AlreadyTakingOver":
                 return String(localized: "The control room is already taking over a supervisor.",
                               comment: "总控台：点「让总控台接管？」时已有一次接管在进行")
+            case "EmptyName":
+                return String(localized: "A group's name can't be empty.", comment: "总控台：行内改名，名字删空了")
+            case "RenameFailed":
+                return String(localized: "The group could not be renamed.",
+                              comment: "总控台：改名在核心里失败了（比如写不进磁盘）")
+            case "RenameBlocked":
+                return String(localized: "Records by that name are still on disk from a group that was deleted. Pick another name.",
+                              comment: "总控台：改名时新名字下还留着以前删掉的群的记录")
+            case "RenameBusy":
+                return String(localized: "Another Polter is renaming a group right now. Try again in a few seconds.",
+                              comment: "总控台：改名时另一个 Polter 正在改名")
+            case "RenameUnfinished":
+                return String(localized: "An earlier rename was left unfinished. Restart Polter, then try again.",
+                              comment: "总控台：改名时上一次改名没做完")
+            case "RenameDeferred":
+                return String(localized: "The rename will finish the next time Polter starts; until then the group keeps its old name.",
+                              comment: "总控台：改名要等下次启动才能做完")
+            case "DeleteFailed":
+                return String(localized: "The group is off the list, but some of its records could not be deleted.",
+                              comment: "总控台：删除群时群已经从列表删掉了，但有记录没删掉")
+            case "MuteInThePast":
+                return String(localized: "That time has already passed.",
+                              comment: "总控台：先放着到某个时刻，但时刻已过")
+            case "NoSupervisor":
+                return String(localized: "This group has no supervisor.",
+                              comment: "总控台：右侧没有总管时的说明")
             case "NoExecutable":
                 return String(localized: "Polter could not find its own program to start the role with.",
                               comment: "总控台：启动总管时找不到 Polter 自己的可执行文件")
@@ -203,6 +250,34 @@ struct ControlRoomActions {
             return ["act": "fix", "terminal": terminal]
         case .takeOver(let group):
             return ["act": "take_over", "group": group]
+        case .pin(let group):
+            return ["act": "pin", "group": group]
+        case .unpin(let group):
+            return ["act": "unpin", "group": group]
+        case .mute(let group, let untilMs):
+            // No time: muted until it is unmuted.
+            var request: [String: Any] = ["act": "mute", "group": group]
+            if let untilMs { request["until_ms"] = untilMs }
+            return request
+        case .unmute(let group):
+            return ["act": "unmute", "group": group]
+        case .archive(let group):
+            return ["act": "archive", "group": group]
+        case .unarchive(let group):
+            return ["act": "unarchive", "group": group]
+        case .renameGroup(let from, let to):
+            return ["act": "rename_group", "from": from, "to": to]
+        case .setBrief(let group, let brief):
+            return ["act": "set_brief", "group": group, "brief": brief]
+        case .deleteGroup(let group, let members, let openTasks):
+            return ["act": "delete_group", "group": group, "members": members, "open_tasks": openTasks]
+        case .askSupervisor(let group, let ask):
+            let word: String
+            switch ask {
+            case .reportProgress: word = "report"
+            case .closeIdleWorkers: word = "close_idle"
+            }
+            return ["act": "ask_supervisor", "group": group, "ask": word]
         }
     }
 
