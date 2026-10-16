@@ -268,6 +268,60 @@ pub const Started = enum {
     not_started,
 };
 
+/// Whether a provisioning plugin this call started was told what Polter is
+/// (#1673). It subscribes after the run's one `provision` event went by,
+/// so "being fed the events as they happen" was true of the feed and false
+/// of the outcome: nothing would happen until the next restart.
+pub const Provision = enum {
+    /// Not a provisioning plugin, or this call did not start it.
+    none,
+
+    /// Switched on now and handed the event at once: it registers now.
+    handed,
+
+    /// Running with changed settings, so it was restarted and handed the
+    /// event again: the change is applied now, not at the next start.
+    restarted,
+
+    /// Polter has not registered its tools in this run, so there was
+    /// nothing to hand it -- the same thing every provisioning plugin gets.
+    withheld,
+
+    /// It was meant to be handed and could not be; Polter's log says why.
+    failed,
+};
+
+/// What a configure has to do about provisioning, once it knows how the
+/// plugin stands. Pulled out of `App.configurePlugin` so the decision can be
+/// tested without an `App`: the wiring around it is one call each way.
+pub const ProvisionStep = enum {
+    /// Nothing: not a provisioning plugin, or this call did not start it.
+    none,
+    /// Hand it this run's event, to it alone.
+    hand,
+    /// Started, but Polter has not registered in this run, so there is no
+    /// event to hand anybody yet; `ensureMcpRegistered` will hand it one
+    /// with everybody else's.
+    withhold,
+};
+
+pub fn provisionStep(provisions: bool, started: Started, registered: bool) ProvisionStep {
+    if (!provisions or started != .started_now) return .none;
+    return if (registered) .hand else .withhold;
+}
+
+/// Whether a configure restarts a running plugin so that it acts on what
+/// was just written (#1673). Only a provisioning plugin: its one event of
+/// the run has gone by, so the running copy will never act on the new
+/// settings, and restarting costs it nothing it keeps. An archive would
+/// lose its queue, and keeps the "next time Polter starts" answer.
+///
+/// `same_params` rather than "parameters were sent": the settings window
+/// sends its whole form on every save.
+pub fn restartsForSettings(provisions: bool, enabled: bool, same_params: bool) bool {
+    return provisions and enabled and !same_params;
+}
+
 /// What `plugin_configure` says about when a change takes hold -- §2.6.
 ///
 /// There is no `kind` to branch on any more, and the three sentences it
@@ -284,6 +338,7 @@ pub fn configured(
     /// Whether any parameter was written.
     params_written: bool,
     started: Started,
+    provision: Provision,
 ) Allocator.Error![]const u8 {
     const what = if (switched_on and params_written)
         try std.fmt.allocPrint(alloc, "{s} is switched on and its settings are written", .{key})
@@ -309,11 +364,41 @@ pub fn configured(
             .{ what, key },
         ),
 
-        .started_now => std.fmt.allocPrint(
-            alloc,
-            "{s}. {s} is now being fed the events it subscribed to, as they happen.",
-            .{ what, key },
-        ),
+        // Exhaustive over `Provision` too: "being fed" is the one sentence
+        // a provisioning plugin must not get, because its only event has
+        // already happened.
+        .started_now => switch (provision) {
+            .none => std.fmt.allocPrint(
+                alloc,
+                "{s}. {s} is now being fed the events it subscribed to, as they happen.",
+                .{ what, key },
+            ),
+            .handed => std.fmt.allocPrint(
+                alloc,
+                "{s}. {s} is running and has just been handed what Polter is, so it " ++
+                    "registers Polter with its CLI now; its own log says what it did.",
+                .{ what, key },
+            ),
+            .restarted => std.fmt.allocPrint(
+                alloc,
+                "{s}. {s} was restarted with these settings and handed what Polter is " ++
+                    "again, so the change is applied now; its own log says what it did.",
+                .{ what, key },
+            ),
+            .withheld => std.fmt.allocPrint(
+                alloc,
+                "{s}. {s} is running, but Polter has not registered its tools in this " ++
+                    "run (poltergeist-register-mcp is off, or no terminal has opened yet), " ++
+                    "so it has been handed nothing and has registered nothing.",
+                .{ what, key },
+            ),
+            .failed => std.fmt.allocPrint(
+                alloc,
+                "{s}. {s} is running, but it could not be handed what Polter is, so it " ++
+                    "has registered nothing; Polter's log says why.",
+                .{ what, key },
+            ),
+        },
 
         .subscribes_to_nothing => std.fmt.allocPrint(
             alloc,
@@ -838,6 +923,52 @@ test "a plugin that would not start is not reported as running" {
     }
 }
 
+test "a provisioning plugin started by a configure is handed the event, once Polter has registered" {
+    try testing.expectEqual(ProvisionStep.hand, provisionStep(true, .started_now, true));
+    try testing.expectEqual(ProvisionStep.withhold, provisionStep(true, .started_now, false));
+
+    // Not started by this call: whatever is running already had its event,
+    // or will be told why it is not running.
+    for ([_]Started{ .already_running, .not_started, .subscribes_to_nothing }) |st| {
+        try testing.expectEqual(ProvisionStep.none, provisionStep(true, st, true));
+    }
+    // Not a provisioning plugin: handed nothing extra, ever.
+    try testing.expectEqual(ProvisionStep.none, provisionStep(false, .started_now, true));
+}
+
+test "only a provisioning plugin whose parameters changed is restarted" {
+    try testing.expect(restartsForSettings(true, true, false));
+    // The settings window re-sends an unchanged form: no restart.
+    try testing.expect(!restartsForSettings(true, true, true));
+    // Switched off: nothing to restart into.
+    try testing.expect(!restartsForSettings(true, false, false));
+    // An archive keeps its queue and its "next time Polter starts".
+    try testing.expect(!restartsForSettings(false, true, false));
+}
+
+test "a provisioning plugin started now is never told it is being fed as things happen" {
+    // #1673: its one event happened before it existed, so that sentence
+    // promised a registration that would only come at the next restart.
+    const alloc = testing.allocator;
+    for ([_]Provision{ .handed, .restarted, .withheld, .failed }) |p| {
+        const said = try configured(alloc, "codex", true, false, .started_now, p);
+        defer alloc.free(said);
+        try testing.expect(std.mem.indexOf(u8, said, "as they happen") == null);
+    }
+
+    const handed = try configured(alloc, "codex", true, false, .started_now, .handed);
+    defer alloc.free(handed);
+    try testing.expect(std.mem.indexOf(u8, handed, "registers Polter with its CLI now") != null);
+
+    const restarted = try configured(alloc, "codex", false, true, .started_now, .restarted);
+    defer alloc.free(restarted);
+    try testing.expect(std.mem.indexOf(u8, restarted, "applied now") != null);
+
+    const withheld = try configured(alloc, "codex", true, false, .started_now, .withheld);
+    defer alloc.free(withheld);
+    try testing.expect(std.mem.indexOf(u8, withheld, "registered nothing") != null);
+}
+
 test "what a configure changes now and what waits for a restart" {
     const alloc = testing.allocator;
 
@@ -846,7 +977,7 @@ test "what a configure changes now and what waits for a restart" {
     // that is the sentence a user reads after switching on a plugin whose
     // manifest still says `"kind"` and nothing about events.
     {
-        const said = try configured(alloc, "webhook", true, true, .subscribes_to_nothing);
+        const said = try configured(alloc, "webhook", true, true, .subscribes_to_nothing, .none);
         defer alloc.free(said);
         try testing.expect(std.mem.indexOf(u8, said, "subscribes to no events") != null);
         try testing.expect(std.mem.indexOf(u8, said, "wants") != null);
@@ -856,7 +987,7 @@ test "what a configure changes now and what waits for a restart" {
     // say so: an agent that believed the new dsn was in effect would report
     // a database that is not being written to.
     {
-        const said = try configured(alloc, "chat-archive", false, true, .already_running);
+        const said = try configured(alloc, "chat-archive", false, true, .already_running, .none);
         defer alloc.free(said);
         try testing.expect(std.mem.indexOf(u8, said, "next time Polter starts") != null);
         try testing.expect(std.mem.indexOf(u8, said, "handed every event twice") != null);
@@ -864,7 +995,7 @@ test "what a configure changes now and what waits for a restart" {
 
     // Switching one on when no copy exists does start one, and that is live.
     {
-        const said = try configured(alloc, "chat-archive", true, false, .started_now);
+        const said = try configured(alloc, "chat-archive", true, false, .started_now, .none);
         defer alloc.free(said);
         try testing.expect(std.mem.indexOf(u8, said, "now being fed") != null);
     }
@@ -872,7 +1003,7 @@ test "what a configure changes now and what waits for a restart" {
     // When it did not start, this says only what was written: the caller
     // appends `residentNote`, so the reason is written once, in one place.
     {
-        const said = try configured(alloc, "chat-archive", true, false, .not_started);
+        const said = try configured(alloc, "chat-archive", true, false, .not_started, .none);
         defer alloc.free(said);
         try testing.expect(std.mem.indexOf(u8, said, "switched on") != null);
         try testing.expect(std.mem.indexOf(u8, said, "now being fed") == null);

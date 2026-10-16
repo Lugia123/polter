@@ -96,7 +96,15 @@ enum PluginCore {
         // A name this build has not heard of is still a save that worked;
         // it is only the restart dot that cannot be told anything.
         let started = PluginStarted(rawValue: said) ?? .notStarted
-        if started == .alreadyRunning { PluginLaunch.shared.savedWhileRunning.insert(key) }
+        // Anything but `already_running` means no copy runs on older
+        // settings: the core started one with these (a provisioning plugin
+        // is restarted when they change, #1673), or none runs. What runs is
+        // what is saved now -- the Windows host's `started_with`.
+        if started == .alreadyRunning {
+            PluginLaunch.shared.savedWhileRunning.insert(key)
+        } else {
+            PluginLaunch.shared.startedWithSaved(key)
+        }
         return .success(started)
     }
 }
@@ -119,6 +127,15 @@ final class PluginLaunch {
             out[plugin.key] = PluginSettings.load(for: plugin)
         }
         atLaunch = out
+    }
+
+    /// The core started this plugin with what is saved now, or runs none:
+    /// nothing waits for a restart, and a later save of the same values
+    /// must not raise ↻ against what was read at launch.
+    func startedWithSaved(_ key: String) {
+        savedWhileRunning.remove(key)
+        guard let plugin = PluginCatalog.installed().first(where: { $0.key == key }) else { return }
+        atLaunch[key] = PluginSettings.load(for: plugin)
     }
 
     func restartPending(_ plugin: Plugin, now: PluginSettings) -> Bool {

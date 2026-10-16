@@ -1199,6 +1199,26 @@ pub const Settings = struct {
     enabled: bool = false,
     params: []const Param = &.{},
 
+    /// Whether the two hand a plugin the same parameters, whatever order
+    /// they were written in. `merge` keeps each name once, so this compares
+    /// name for name.
+    ///
+    /// For deciding whether a running plugin has to be restarted to see a
+    /// change (#1673): the settings window sends its whole form on every
+    /// save, so "parameters were sent" is not "parameters changed".
+    pub fn sameParams(self: Settings, other: Settings) bool {
+        if (self.params.len != other.params.len) return false;
+        outer: for (self.params) |mine| {
+            for (other.params) |theirs| {
+                if (!std.mem.eql(u8, mine.name, theirs.name)) continue;
+                if (!std.mem.eql(u8, mine.value, theirs.value)) return false;
+                continue :outer;
+            }
+            return false;
+        }
+        return true;
+    }
+
     /// Read one. Missing or unparseable reads as "not configured", which is
     /// the same as not enabled -- a plugin nobody has set up should not be
     /// sending anything.
@@ -1728,6 +1748,28 @@ test "a manifest is read, and its exec made absolute" {
     // Absolute, so running it never depends on where Polter happens to be.
     const want = try std.fmt.allocPrint(alloc, "{s}/send.sh", .{dir});
     try testing.expectEqualStrings(want, m.exec);
+}
+
+test "settings with the same parameters in another order are the same" {
+    const a: Settings = .{ .params = &.{
+        .{ .name = "scope", .value = "user" },
+        .{ .name = "skills", .value = "yes" },
+    } };
+    const b: Settings = .{ .params = &.{
+        .{ .name = "skills", .value = "yes" },
+        .{ .name = "scope", .value = "user" },
+    } };
+    try testing.expect(a.sameParams(b));
+
+    // One value changed, one name missing: both are a change.
+    const c: Settings = .{ .params = &.{
+        .{ .name = "skills", .value = "no" },
+        .{ .name = "scope", .value = "user" },
+    } };
+    try testing.expect(!a.sameParams(c));
+    const d: Settings = .{ .params = &.{.{ .name = "scope", .value = "user" }} };
+    try testing.expect(!a.sameParams(d));
+    try testing.expect(!d.sameParams(a));
 }
 
 test "an event this build never sends is passed over, not fatal" {

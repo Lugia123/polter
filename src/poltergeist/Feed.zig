@@ -574,6 +574,42 @@ pub fn publish(self: *Feed, ev: Event) void {
     }
 }
 
+/// Hand one event to one listener, stamped in the same order as everything
+/// `publish` hands out.
+///
+/// For the event a subscriber missed by arriving late, and only that one:
+/// a provisioning plugin switched on while Polter is running subscribes
+/// after the one `provision` event of this run went by (#1673), and with no
+/// history to catch up from it would wait for the next restart. Handing it
+/// to **one** subscriber rather than republishing keeps the other
+/// provisioning plugins from registering a second time for nothing.
+///
+/// The number is taken from the same counter, so the order every subscriber
+/// sees stays total; the others simply see a gap, which a filtered kind
+/// already gives them.
+pub fn publishTo(self: *Feed, sub: *Subscription, ev: Event) void {
+    self.mutex.lockUncancelable(self.io);
+    defer self.mutex.unlock(self.io);
+
+    self.next_n += 1;
+    var stamped = ev;
+    switch (stamped) {
+        inline else => |*e| e.n = self.next_n,
+    }
+
+    // Only to a subscription the feed still holds: one given back between
+    // the caller finding it and this call would be freed memory.
+    for (self.subs.items) |s| {
+        if (s != sub) continue;
+        const copy = stamped.clone(self.alloc) catch {
+            s.countDrop();
+            return;
+        };
+        s.push(copy);
+        return;
+    }
+}
+
 /// How many are listening. For tests and for a log line, nothing else.
 pub fn subscribers(self: *Feed) usize {
     self.mutex.lockUncancelable(self.io);
@@ -783,6 +819,40 @@ test "a subscription starts empty, whatever was published before it" {
     defer freeBatch(alloc, batch);
     try testing.expectEqual(@as(usize, 1), batch.len);
     try testing.expectEqual(@as(u64, 2), batch[0].n());
+}
+
+test "an event handed to one subscriber reaches that one, in the shared order" {
+    // #1673: the late subscriber gets the event it missed, and nobody else
+    // gets it a second time.
+    const alloc = testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+
+    var feed: Feed = .init(alloc, threaded.io());
+    defer feed.deinit();
+
+    const early = try feed.subscribe(.{});
+    const late = try feed.subscribe(.{});
+
+    feed.publish(chatEvent(1, "build", "before"));
+    feed.publishTo(late, chatEvent(2, "build", "only for the late one"));
+    feed.publish(chatEvent(3, "build", "after"));
+
+    const got_late = try late.take(alloc, 16, 1 << 20);
+    defer freeBatch(alloc, got_late);
+    try testing.expectEqual(@as(usize, 3), got_late.len);
+    try testing.expectEqualStrings("only for the late one", got_late[1].chat.text);
+
+    const got_early = try early.take(alloc, 16, 1 << 20);
+    defer freeBatch(alloc, got_early);
+    try testing.expectEqual(@as(usize, 2), got_early.len);
+
+    // One counter: the early one sees a gap where the other one's event
+    // went, never a number used twice.
+    try testing.expectEqual(@as(u64, 1), got_early[0].n());
+    try testing.expectEqual(@as(u64, 3), got_early[1].n());
+    try testing.expectEqual(@as(u64, 2), got_late[1].n());
 }
 
 test "publishing from another thread while one reads is safe" {
