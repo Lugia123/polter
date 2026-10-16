@@ -6346,11 +6346,11 @@ test "1656: a title's wait stands for an answer while the title does, whatever t
     try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 4_000));
     // The screen keeps moving under Codex's box: reports of it change nothing.
     _ = b.report(worker, .{ .resumed = .{ .quiet_ms = 0, .silent_ms = 0, .changed_rows = 1, .total_rows = 24 } }, 5_000);
-    try testing.expect(b.promptStanding(worker, 4_000, 4_000, 9_000));
-    try testing.expect(!b.promptStanding(worker, 3_000, 4_000, 9_000));
+    try testing.expect(b.promptStanding(worker, 4_000, 4_000, 9_000, null));
+    try testing.expect(!b.promptStanding(worker, 3_000, 4_000, 9_000, null));
 
     _ = try b.noteTitle(worker, null, "zsh", 10_000);
-    try testing.expect(!b.promptStanding(worker, 4_000, 4_000, 11_000));
+    try testing.expect(!b.promptStanding(worker, 4_000, 4_000, 11_000, null));
 }
 
 test "1656: an unwatched terminal's title is noted, and put in nobody's box" {
