@@ -178,6 +178,7 @@
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift",
       "macos/Tests/CommandPaletteAliasTests.swift",
       "macos/Tests/PluginChoiceLabelTests.swift",
+      "macos/Tests/PluginInterfaceLanguageTests.swift",
       "macos/Tests/PluginNoteSayTests.swift",
       "macos/Tests/CommandPaletteHostMenuTests.swift",
       "macos/Tests/Projects/ProjectPaneSizesTests.swift"

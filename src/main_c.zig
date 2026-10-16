@@ -266,6 +266,16 @@ pub export fn ghostty_translate(msgid: [*:0]const u8) [*:0]const u8 {
     return internal_os.i18n._(msgid);
 }
 
+/// The language `ghostty_translate` answers in: a name from the shipped
+/// catalogues (`zh_CN`, `de`), or NULL when it answers in English. The
+/// pointer is static. Windows only; NULL elsewhere. A host choosing words of
+/// its own by language asks this rather than the system, so that they come
+/// out in the same language as everything else (task 1663).
+pub export fn ghostty_translate_locale() ?[*:0]const u8 {
+    const l = internal_os.i18n.activeLocale() orelse return null;
+    return l.ptr;
+}
+
 /// Free a string allocated by Ghostty.
 pub export fn ghostty_string_free(str: String) void {
     str.deinit();

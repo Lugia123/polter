@@ -70,9 +70,9 @@ features = [
     "Foundation",
     "UI_Notifications",
     "Win32_Foundation",
-    # `GetUserPreferredUILanguages` and `ResolveLocaleName`, for the plugin
+    # `ResolveLocaleName` and `GetLocaleInfoEx`, for the plugin
     # settings page: a plugin carries its own translations and this is how the
-    # host finds out which of them to read.
+    # host turns the interface's language into the files to look for.
     "Win32_Globalization",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",

@@ -224,6 +224,15 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
     xgettext.addArg(control_act_path);
     xgettext.addFileInput(b.path(control_act_path));
 
+    // A plugin's state, said to a person: the hover over its row in
+    // Settings > Plugins (`NoteSay`, task 1644) and the line printed into a
+    // terminal when it stops (`alertIn`, task 1663). Both were in the
+    // catalogues before this file was listed, entered by hand, and a
+    // regenerated template would have dropped them without a word.
+    const report_path = "src/poltergeist/report.zig";
+    xgettext.addArg(report_path);
+    xgettext.addFileInput(b.path(report_path));
+
     // Add support for localizing our `nautilus` integration
     const xgettext_py = b.addSystemCommand(&.{
         "xgettext",

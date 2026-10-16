@@ -644,41 +644,30 @@ pub fn locale_candidates(preferred: &[String]) -> Vec<String> {
     out
 }
 
-/// The languages this person prefers, most wanted first.
+/// The language a plugin's own words are chosen in: **the one the window
+/// around them is in**, which is whatever catalogue the core's `translate`
+/// answers from (`ghostty_translate_locale`). Empty when that is English,
+/// so a plugin's sidecars are not read and its manifest's English shows.
 ///
-/// **The whole list, not just the default.** Somebody whose machine is
-/// English with Chinese second still reads Chinese; taking only
-/// `GetUserDefaultLocaleName` would never reach their second choice, and
-/// macOS asks for `Locale.preferredLanguages` for the same reason.
-pub fn preferred_languages() -> Vec<String> {
-    use windows::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
-    let mut count: u32 = 0;
-    let mut chars: u32 = 0;
-    unsafe {
-        if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, None, &mut chars).is_err() {
-            // process-wide: the person's language list, asked of Windows once
-            plogf!("[plug] GetUserPreferredUILanguages sizing failed; plugin text stays English");
-            return Vec::new();
-        }
-        let mut buf = vec![0u16; chars as usize];
-        if GetUserPreferredUILanguages(
-            MUI_LANGUAGE_NAME,
-            &mut count,
-            Some(windows::core::PWSTR(buf.as_mut_ptr())),
-            &mut chars,
-        )
-        .is_err()
-        {
-            // process-wide: same call as above, the second half of it
-            plogf!("[plug] GetUserPreferredUILanguages failed; plugin text stays English");
-            return Vec::new();
-        }
-        // A double-NUL-terminated list of NUL-separated tags.
-        buf.split(|&c| c == 0)
-            .filter(|s| !s.is_empty())
-            .map(String::from_utf16_lossy)
-            .collect()
+/// **Not the system's language list.** This used to ask
+/// `GetUserPreferredUILanguages`, so somebody who picked English in Polter
+/// (or started it with `LANG=en_US`) on a Chinese Windows got an English
+/// window with a Chinese plugin page in it (task 1663, the test machine).
+/// The core already made this decision -- `LANG`, then the saved choice
+/// `language.rs` puts there, then the system -- and a second answer here
+/// is how the two came apart. One question, one answer.
+///
+/// The list form is kept because `locale_candidates` turns one name into
+/// the ladder of files to look for (`zh_CN` -> `zh-Hans-CN`, `zh-Hans`, ...).
+pub fn interface_languages() -> Vec<String> {
+    let Some(api) = crate::api_opt() else {
+        return Vec::new();
+    };
+    let p = unsafe { (api.translate_locale)() };
+    if p.is_null() {
+        return Vec::new();
     }
+    vec![unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()]
 }
 
 /// What one sidecar file says, or nothing when there is no sidecar.
@@ -913,8 +902,8 @@ fn parse_settings(key: &str, text: &str) -> (bool, BTreeMap<String, String>) {
 pub fn catalog() -> Vec<Plugin> {
     let mut out: Vec<Plugin> = Vec::new();
     // Asked once for the whole listing rather than once per plugin: it is a
-    // property of the person, not of any plugin.
-    let prefs = preferred_languages();
+    // property of the window, not of any plugin.
+    let prefs = interface_languages();
 
     if let Some(d) = user_dir() {
         // process-wide: the directory the catalog is read from: one per process

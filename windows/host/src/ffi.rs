@@ -1777,6 +1777,11 @@ pub struct Api {
     /// loaded by `i18n.init` during `ghostty_init`; this is the only thing
     /// the host needed in order to use them. See `i18n.rs`.
     pub translate: unsafe extern "C" fn(*const c_char) -> *const c_char,
+    /// `ghostty_translate_locale() -> zh_CN | de | … | NULL`: the language
+    /// `translate` answers in, NULL for English. Static. What the plugin
+    /// page chooses a plugin's own translation by, so that it is in the
+    /// language of the window around it (task 1663).
+    pub translate_locale: unsafe extern "C" fn() -> *const c_char,
 
     // -- personas. Contract §3.3 / §3.5. (§3.4's `ghostty_app_persona_hosts`
     // was read only by the old editor page, and went with it.)
