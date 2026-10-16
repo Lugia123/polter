@@ -43,6 +43,12 @@ pub const EncodeOptions = struct {
     /// written before the cut is known, and that field is advisory. Row
     /// totals after decoding come from the pages actually written.
     max_history_bytes: ?u64 = null,
+
+    /// Whether each SCREEN carries the history rows that share a page with
+    /// the top of its active area (`screen.Prefix`). `.drop` is for a writer
+    /// that keeps those rows itself; anybody else wants `.keep`, or the
+    /// snapshot comes back without them.
+    active_page_prefix: screen.Prefix = .keep,
 };
 
 /// Encode one complete terminal snapshot.
@@ -73,15 +79,17 @@ pub fn encode(
     try terminal.encode(t, &stream);
 
     // 3. Primary and alt screen
-    try screen.encode(
+    try screen.encodePrefix(
         t.screens.get(.primary).?,
         .primary,
         &stream,
+        options.active_page_prefix,
     );
-    if (t.screens.get(.alternate)) |alternate| try screen.encode(
+    if (t.screens.get(.alternate)) |alternate| try screen.encodePrefix(
         alternate,
         .alternate,
         &stream,
+        options.active_page_prefix,
     );
 
     // 4. Standard Stream continuation.
