@@ -2483,6 +2483,66 @@ msgstr ""
 msgid "Screen still for {1} min, no tool call for {2} min"
 msgstr ""
 
+#: src/poltergeist/ControlRoom.zig:925
+msgid "Started by hand: no status"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:926
+msgid "Unknown CLI: no status"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:964
+msgid "This ends the {1} running in this terminal and starts it again through Polter, with its status hooks, going on with session {2} (last written {3} min ago)."
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:965
+msgid "This ends the {1} running in this terminal and starts it again through Polter, with its status hooks, going on with session {2}. That session was last written {3} min ago, well before its last tool call: if it was cleared since, what comes back is the conversation from before that."
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:966
+msgid "This ends the {1} running in this terminal and starts it again through Polter, with its status hooks. Its session was not found, so it starts a new one."
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:967
+msgid "Taking over…"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:968
+msgid "Not taken over: it is busy. Try again when it is idle"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:969
+msgid "Not taken over: somebody is typing in it"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:970
+msgid "Not taken over: it did not quit"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:971
+msgid "It quit, and the one started in its place did not come"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:972
+msgid "Not taken over: there is no role or CLI to start it in"
+msgstr ""
+
+#: windows/control-room/src/scene.rs
+msgid "Let the control room take over?"
+msgstr ""
+
+#: windows/control-room/src/scene.rs
+msgid "Take Over"
+msgstr ""
+
+#: windows/control-room/src/scene.rs
+msgid "There is nothing here the control room can take over."
+msgstr ""
+
+#: windows/control-room/src/scene.rs
+msgid "The control room is already taking over a supervisor."
+msgstr ""
+
 #: src/poltergeist/report.zig:122
 msgid "Switched off, so nothing is handed to it. Turn it on with the switch on its page."
 msgstr ""

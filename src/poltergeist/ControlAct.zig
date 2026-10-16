@@ -32,6 +32,7 @@
 //! {"act":"start_supervisor","group":"web-app","role":"…","cwd":"/…"}
 //! {"act":"start_supervisor","group":"web-app","session":"new"}
 //!                                                       last | new
+//! {"act":"take_over","group":"web-app"}                 task 1635
 //! ```
 //!
 //! The group row's right-click menu (task 1659):
@@ -71,6 +72,14 @@
 //! ask]`, then the request in the person's language), kept in the group as
 //! the person's, by the road a `group_post` mention takes. Done means it was
 //! typed, not that the supervisor did it.
+//!
+//! `take_over` is "Let the control room take over?" on the frame of a
+//! supervisor somebody started by hand (`TakeOver.zig`): its CLI is told to
+//! quit and is started again through Polter, with hooks, in the same
+//! terminal and group, going on with its session. **It returns when the
+//! take-over has begun**: what becomes of it is the group's
+//! `supervisor.hookless.take_over` in the snapshot (`running`, then gone,
+//! or `failed` with why). The group row's menu offers the same act.
 //!
 //! `fix` is the "Fix" button on a card that reads "Failed"
 //! (`ControlFix.zig`): a paragraph naming who failed, with what and when,
@@ -180,6 +189,9 @@
 //! | start_supervisor | `NoSuchPersona`, `NotASupervisorRole`, `NoCli` | the role named is not there, does not make a supervisor, or has no CLI to start |
 //! | start_supervisor | `NotAbsolute`, `NoSuchDirectory`, `NotADirectory` | the directory |
 //! | start_supervisor | `OpenFailed` | no tab could be opened |
+//! | take_over | `NoSuchGroup` | the group is not there |
+//! | take_over | `NotStartedByHand` | its supervisor is not one an adapter recognised as started by hand, or that adapter gave no way to quit it |
+//! | take_over | `AlreadyTakingOver` | a take-over is under way |
 //! | projects | `BadRequest` | an entry lacks a key, two projects have one name, a terminal is on the pages of two, or the supervisor's pane is on no page |
 //! | project_failed | `NoSuchProject` | no group is tied to a project by that name |
 //! | project_remove | `ProjectsUnknown` | the host has stated nothing yet |
@@ -250,6 +262,8 @@ pub const Act = union(enum) {
     set_brief: struct { group: []const u8, brief: []const u8 },
     delete_group: struct { group: []const u8, members: u64, open_tasks: u64 },
     ask_supervisor: struct { group: []const u8, ask: Ask },
+    /// "Let the control room take over?" on a group's supervisor (task 1635).
+    take_over: []const u8,
 };
 
 /// What the person asks a group's supervisor to do from the right-click
@@ -315,6 +329,8 @@ pub const Refusal = error{
     EmptyName,
     RenameFailed,
     NoSupervisor,
+    NotStartedByHand,
+    AlreadyTakingOver,
 };
 
 /// The keys an approval and a refusal are. One key each, and neither
@@ -367,6 +383,9 @@ pub const Host = struct {
     projectRename: *const fn (ctx: *anyopaque, from: []const u8, to: []const u8) anyerror!void,
     /// The person agreed to the first sweep of old records.
     retentionAgree: *const fn (ctx: *anyopaque) anyerror!void,
+    /// Begin taking over `group`'s supervisor (`TakeOver.zig`); refuses
+    /// with `NotStartedByHand` or `AlreadyTakingOver`.
+    takeOver: *const fn (ctx: *anyopaque, group: []const u8) anyerror!void,
     /// The card the "Fix" button on `key` is on, as last drawn; null when
     /// none offers it (`ControlRoom.fixCard`).
     fixCard: *const fn (ctx: *anyopaque, key: ControlFix.Key) ?ControlFix.Card,
@@ -440,6 +459,7 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
         set_brief,
         delete_group,
         ask_supervisor,
+        take_over,
     };
     const name = std.meta.stringToEnum(Name, try textOf(obj, "act")) orelse return error.BadRequest;
     return switch (name) {
@@ -493,6 +513,7 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
             .to = try textOf(obj, "to"),
         } },
         .retention_agree => .retention_agree,
+        .take_over => .{ .take_over = try textOf(obj, "group") },
         .pin => .{ .pin = try textOf(obj, "group") },
         .unpin => .{ .unpin = try textOf(obj, "group") },
         .mute => .{ .mute = .{
@@ -630,6 +651,10 @@ pub fn perform(
         .project_remove => |terminal| try host.projectRemove(host.ctx, terminal),
         .project_rename => |r| try host.projectRename(host.ctx, r.from, r.to),
         .retention_agree => try host.retentionAgree(host.ctx),
+        .take_over => |group| {
+            if (!chat.exists(group)) return error.NoSuchGroup;
+            try host.takeOver(host.ctx, group);
+        },
         .pin, .unpin => |group| {
             try chat.setPinned(group, act == .pin);
             host.persist(host.ctx, group, try chat.marksOf(group));
@@ -730,6 +755,7 @@ const Recorder = struct {
     asked_remove: ?Id = null,
     renames: usize = 0,
     agreed: usize = 0,
+    taken_over: usize = 0,
     /// The terminal's agent has exited and left its shell behind.
     agent_gone: bool = false,
     /// The card a "Fix" is aimed at, and what came of it.
@@ -785,6 +811,7 @@ const Recorder = struct {
             .projectRemove = projectRemove,
             .projectRename = projectRename,
             .retentionAgree = retentionAgree,
+            .takeOver = takeOver,
             .fixCard = fixCard,
             .fixPost = fixPost,
             .fixSend = fixSend,
@@ -857,6 +884,12 @@ const Recorder = struct {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
         if (self.refuse_with) |err| return err;
         self.agreed += 1;
+    }
+
+    fn takeOver(ctx: *anyopaque, _: []const u8) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.taken_over += 1;
     }
 
     fn stateProjects(ctx: *anyopaque, list: []const Projects.Stated) anyerror!void {
@@ -1436,6 +1469,27 @@ test "Projects: the core takes what the Windows host writes, line for line" {
     try b.act(lines.next().?, 1_000);
     try testing.expectEqual(@as(usize, 1), b.rec.renames);
     try testing.expectEqual(@as(?[]const u8, null), lines.next());
+}
+
+test "ControlRoom act: a take-over reaches the host for a group that is there, and its refusals are the host's (task 1635)" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try b.chat.restoreShell("nightly", "", 0, .none);
+    try testing.expectError(error.NoSuchGroup, b.act(
+        \\{"act":"take_over","group":"nope"}
+    , 1_000));
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"take_over"}
+    , 1_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.taken_over);
+    try b.act(
+        \\{"act":"take_over","group":"nightly"}
+    , 1_000);
+    try testing.expectEqual(@as(usize, 1), b.rec.taken_over);
+    b.rec.refuse_with = error.AlreadyTakingOver;
+    try testing.expectError(error.AlreadyTakingOver, b.act(
+        \\{"act":"take_over","group":"nightly"}
+    , 1_000));
 }
 
 test "agreeing to the first sweep reaches the host" {

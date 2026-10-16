@@ -63,6 +63,23 @@ pub struct SupervisorTitle {
     pub name: String,
     pub shown: Shown,
     pub word: String,
+    /// What the core says of a supervisor started by hand (task 1635),
+    /// in English; drawn before the status, said in the person's language.
+    /// `None` for every other title.
+    pub note: Option<crate::snapshot::Say>,
+    /// What the frame offers about taking it over; `None` for every other.
+    pub take_over: Option<TakeOverTitle>,
+}
+
+/// "Let the control room take over?" as the title bar has it (task 1635):
+/// whether the button is there, the question it asks and what is said
+/// beside it, all the core's and in English. The macOS host's
+/// `ControlRoomList.TakeOverTitle`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TakeOverTitle {
+    pub offered: bool,
+    pub confirm: Option<crate::snapshot::Say>,
+    pub status: Option<crate::snapshot::Say>,
 }
 
 /// A terminal that is in no group and has a row of its own: a supervisor
@@ -235,6 +252,19 @@ impl List {
                     name: t.title.clone(),
                     shown: t.shown,
                     word: t.text.clone(),
+                    note: g.supervisor.as_ref().and_then(|sv| sv.hookless.as_ref()).and_then(|h| h.note.clone()),
+                    take_over: g
+                        .supervisor
+                        .as_ref()
+                        .and_then(|sv| sv.hookless.as_ref())
+                        .and_then(|h| h.take_over.as_ref())
+                        .filter(|t| t.state != "none")
+                        .map(|t| TakeOverTitle {
+                            // Offered on offer, and again on failed with why.
+                            offered: t.state == "offer" || t.state == "failed",
+                            confirm: t.confirm.clone(),
+                            status: t.status.clone(),
+                        }),
                 }),
             };
             if g.needs_me {
@@ -264,7 +294,7 @@ impl List {
                 start: None,
                 alone: Some(Alone { terminal: one.id.clone(), title: one.title.clone(), pane }),
                 fix: one.fix,
-                title: Some(SupervisorTitle { name: one.title.clone(), shown: one.shown, word: one.text.clone() }),
+                title: Some(SupervisorTitle { name: one.title.clone(), shown: one.shown, word: one.text.clone(), note: None, take_over: None }),
                 brief: String::new(),
                 pinned: false,
                 muted: None,

@@ -90,6 +90,7 @@ MAP_FIELDS = {
     ("src/poltergeist/ControlFix.zig", "stamps"): "keyed by a hash of the terminal told, the terminals that failed and their moments (stampOf), not by group",
     ("src/poltergeist/ControlNotify.zig", "done"): "keyed by the waiting terminal, its kind and the moment it started (Signature), not by group",
     ("src/poltergeist/Bus.zig", "entries"): "keyed by terminal id",
+    ("src/poltergeist/Identities.zig", "entries"): "keyed by terminal id",
     ("src/poltergeist/Bus.zig", "turns"): "keyed by terminal id",
     ("src/poltergeist/Bus.zig", "asks"): "keyed by terminal id",
     ("src/poltergeist/Bus.zig", "pending_tools"): "keyed by terminal id",

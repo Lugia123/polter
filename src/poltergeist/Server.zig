@@ -30,6 +30,8 @@ const Bus = @import("Bus.zig");
 const transport = @import("transport.zig");
 const rpc = @import("rpc.zig");
 const wire = @import("wire.zig");
+const agent_cli = @import("agent_cli.zig");
+const Plugin = @import("Plugin.zig");
 
 const log = std.log.scoped(.poltergeist);
 
@@ -55,6 +57,12 @@ pub const max_request_bytes = 64 * 1024;
 /// a very large value would reserve memory for connections that will never
 /// arrive.
 pub const default_max_connections = 64;
+
+/// Room for a slot's sighting: every adapter's names and their values,
+/// checked to be short (`Plugin.AgentCli`, `agent_cli.Sighting`).
+const max_sighting = 2048;
+/// Most variables a sighting carries, across all adapters.
+const max_sighting_env = 16;
 pub const min_max_connections = 1;
 pub const limit_max_connections = 256;
 
@@ -86,6 +94,15 @@ const Slot = struct {
     /// The connection said, when it authenticated, that it only waits to be
     /// told things (`Kind.listens`). Cleared with `caller`.
     listens: bool = false,
+
+    /// What the connection said about the program that started it
+    /// (`agent_cli.Sighting`), checked and written back compactly as
+    /// `{"pid":…,"env":{…}}`; empty when it said nothing. **In the slot
+    /// itself, not allocated**, because a slot is wiped by assigning `.{}`
+    /// in four places and an allocation would leak at each. Cleared with
+    /// `caller`.
+    sighting: [max_sighting]u8 = undefined,
+    sighting_len: u16 = 0,
 
     /// Set by the connection thread on its way out, so the accept loop can
     /// reap it without blocking.
@@ -809,6 +826,7 @@ fn connectionMain(self: *Server, index: usize) void {
         // speaks for anybody.
         self.slots[index].caller = null;
         self.slots[index].listens = false;
+        self.slots[index].sighting_len = 0;
         self.slots_mutex.unlock(self.io);
 
         stream.close(self.io);
@@ -830,6 +848,8 @@ fn connectionMain(self: *Server, index: usize) void {
         defer self.slots_mutex.unlock(self.io);
         self.slots[index].caller = caller;
         self.slots[index].listens = shook.kind.listens();
+        self.slots[index].sighting_len = shook.sighting_len;
+        @memcpy(self.slots[index].sighting[0..shook.sighting_len], shook.sighting[0..shook.sighting_len]);
     }
     switch (caller) {
         .terminal => |tid| log.info("poltergeist: connection slot={d} for terminal={x} kind={t}", .{
@@ -853,7 +873,7 @@ fn handshake(
     self: *Server,
     reader: *transport.Reader,
     writer: *transport.Writer,
-) ?struct { caller: Bus.Caller, kind: Kind } {
+) ?Shook {
     const line = (reader.interface.takeDelimiter('\n') catch return null) orelse return null;
 
     const token = parseAuthToken(self.alloc, line) orelse {
@@ -869,7 +889,116 @@ fn handshake(
 
     wire.writeResponse(&writer.interface, .ok) catch return null;
     writer.interface.flush() catch return null;
-    return .{ .caller = caller, .kind = parseAuthKind(self.alloc, line) };
+    var shook: Shook = .{ .caller = caller, .kind = parseAuthKind(self.alloc, line) };
+    shook.sighting_len = parseAuthSighting(self.alloc, line, &shook.sighting);
+    return shook;
+}
+
+const Shook = struct {
+    caller: Bus.Caller,
+    kind: Kind,
+    sighting: [max_sighting]u8 = undefined,
+    sighting_len: u16 = 0,
+};
+
+/// `params.identity` of an `auth` request -- `{"pid":N,"env":{name:value}}`,
+/// what a sidecar says of the program that started it (task 1635) --
+/// checked and written back compactly into `out`. Returns how much was
+/// written; 0 when there was none, or when any part of it is not what a
+/// sidecar sends: a name that is not `[A-Z0-9_]`, a value that is not short
+/// printable ASCII, too many of them. **All or nothing**, and never logged:
+/// the values are only for the adapters that asked for them.
+fn parseAuthSighting(alloc: Allocator, line: []const u8, out: *[max_sighting]u8) u16 {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const v = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), line, .{}) catch return 0;
+    const params = switch (v) {
+        .object => |o| switch (o.get("params") orelse return 0) {
+            .object => |p| p,
+            else => return 0,
+        },
+        else => return 0,
+    };
+    const identity = switch (params.get("identity") orelse return 0) {
+        .object => |o| o,
+        else => return 0,
+    };
+    var w: std.Io.Writer = .fixed(out);
+    w.writeAll("{\"pid\":") catch return 0;
+    switch (identity.get("pid") orelse .null) {
+        .integer => |pid| if (pid > 0) w.print("{d}", .{pid}) catch return 0 else w.writeAll("null") catch return 0,
+        else => w.writeAll("null") catch return 0,
+    }
+    w.writeAll(",\"env\":{") catch return 0;
+    if (identity.get("env")) |ev| {
+        const env = switch (ev) {
+            .object => |o| o,
+            else => return 0,
+        };
+        if (env.count() > max_sighting_env) return 0;
+        var it = env.iterator();
+        var first = true;
+        while (it.next()) |kv| {
+            const value = switch (kv.value_ptr.*) {
+                .string => |sv| sv,
+                else => return 0,
+            };
+            if (!Plugin.AgentCli.validEnvName(kv.key_ptr.*) or !agent_cli.Sighting.validValue(value)) return 0;
+            if (!first) w.writeAll(",") catch return 0;
+            first = false;
+            w.print("\"{s}\":\"{s}\"", .{ kv.key_ptr.*, value }) catch return 0;
+        }
+    }
+    w.writeAll("}}") catch return 0;
+    return @intCast(w.end);
+}
+
+/// What the agent connection from terminal `id` said about the program that
+/// started it, in `arena`; `Sighting.none` when it said nothing or none is
+/// connected.
+pub fn sightingOf(self: *Server, arena: Allocator, id: Bus.Id) Allocator.Error!agent_cli.Sighting {
+    var copy: [max_sighting]u8 = undefined;
+    const len = len: {
+        self.slots_mutex.lockUncancelable(self.io);
+        defer self.slots_mutex.unlock(self.io);
+        for (self.slots) |*slot| {
+            const caller = slot.caller orelse continue;
+            if (slot.listens) continue;
+            switch (caller) {
+                .terminal => |tid| if (tid == id and slot.sighting_len > 0) {
+                    @memcpy(copy[0..slot.sighting_len], slot.sighting[0..slot.sighting_len]);
+                    break :len slot.sighting_len;
+                },
+                .plugin => {},
+            }
+        }
+        return .none;
+    };
+    return parseSighting(arena, copy[0..len]);
+}
+
+/// Read back what `parseAuthSighting` wrote.
+fn parseSighting(arena: Allocator, text: []const u8) Allocator.Error!agent_cli.Sighting {
+    const v = std.json.parseFromSliceLeaky(std.json.Value, arena, try arena.dupe(u8, text), .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .none,
+    };
+    const obj = switch (v) {
+        .object => |o| o,
+        else => return .none,
+    };
+    const pid: ?u64 = switch (obj.get("pid") orelse .null) {
+        .integer => |p| if (p > 0) @intCast(p) else null,
+        else => null,
+    };
+    var env: std.ArrayList([2][]const u8) = .empty;
+    if (obj.get("env")) |ev| if (ev == .object) {
+        var it = ev.object.iterator();
+        while (it.next()) |kv| if (kv.value_ptr.* == .string) {
+            try env.append(arena, .{ kv.key_ptr.*, kv.value_ptr.string });
+        };
+    };
+    return .{ .pid = pid, .env = try env.toOwnedSlice(arena) };
 }
 
 /// `params.kind` of an `auth` request, read the way `Kind` says: absent,
@@ -1193,6 +1322,39 @@ test {
     // reached from a thread rather than from a test. Without this the
     // socket and threading code would never be type-checked at all.
     testing.refAllDecls(@This());
+}
+
+test "Server sighting: only plain names and short printable values come through, all or nothing (task 1635)" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var buf: [max_sighting]u8 = undefined;
+
+    const good =
+        \\{"method":"auth","params":{"token":"t","identity":{"pid":77,"env":{"CLAUDECODE":"1","CLAUDE_CODE_SESSION_ID":"0b1d1c35-5e33-4b5e-9f8c-1a2b3c4d5e6f"}}}}
+    ;
+    const n = parseAuthSighting(testing.allocator, good, &buf);
+    try testing.expect(n > 0);
+    const s = try parseSighting(arena.allocator(), buf[0..n]);
+    try testing.expectEqual(@as(?u64, 77), s.pid);
+    try testing.expectEqualStrings("1", s.get("CLAUDECODE").?);
+    try testing.expectEqualStrings("0b1d1c35-5e33-4b5e-9f8c-1a2b3c4d5e6f", s.get("CLAUDE_CODE_SESSION_ID").?);
+
+    for ([_][]const u8{
+        // None.
+        \\{"method":"auth","params":{"token":"t"}}
+        ,
+        // A name that is not one.
+        \\{"method":"auth","params":{"token":"t","identity":{"pid":1,"env":{"path":"x"}}}}
+        ,
+        // A value with a control character, or a quote.
+        \\{"method":"auth","params":{"token":"t","identity":{"pid":1,"env":{"A":"x\ny"}}}}
+        ,
+        \\{"method":"auth","params":{"token":"t","identity":{"pid":1,"env":{"A":"x\"y"}}}}
+        ,
+        // Not text.
+        \\{"method":"auth","params":{"token":"t","identity":{"pid":1,"env":{"A":3}}}}
+        ,
+    }) |line| try testing.expectEqual(@as(u16, 0), parseAuthSighting(testing.allocator, line, &buf));
 }
 
 test "an auth line yields its token" {

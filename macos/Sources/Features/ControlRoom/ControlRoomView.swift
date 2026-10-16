@@ -60,6 +60,10 @@ struct ControlRoomView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .environment(\.paneFrameTakeOver, { question in
+                guard let group = model.selection else { return }
+                model.takeOver(group: group, question: question)
+            })
         }
         .padding(edge)
         .background(Look.theme(scheme).windowBase.color)

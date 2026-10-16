@@ -44,6 +44,8 @@ pub const Sampler = @import("Sampler.zig");
 pub const Server = @import("Server.zig");
 pub const Plugin = @import("Plugin.zig");
 pub const agent_cli = @import("agent_cli.zig");
+pub const Identities = @import("Identities.zig");
+pub const TakeOver = @import("TakeOver.zig");
 pub const agent_event = @import("agent_event.zig");
 pub const PluginLog = @import("PluginLog.zig");
 pub const notes = @import("notes.zig");
@@ -132,6 +134,8 @@ test {
     _ = PersonaWaits;
     _ = Plugin;
     _ = agent_cli;
+    _ = Identities;
+    _ = TakeOver;
     _ = PluginLog;
     _ = reap;
     _ = report;

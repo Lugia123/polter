@@ -99,6 +99,10 @@ pub mod msg {
     /// itself what would be shown there. The macOS host's sentences.
     pub const TERMINAL_GONE: &str = n_("This terminal is no longer open.");
     pub const TERMINAL_IN_ITS_OWN_TAB: &str = n_("Showing in its own tab");
+    /// The button on the frame of a supervisor somebody started by hand
+    /// (task 1635), and the title of the question it asks. The macOS
+    /// host's words.
+    pub const TAKE_OVER: &str = n_("Let the control room take over?");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1056,6 +1060,11 @@ pub struct Right {
     /// host puts the terminal's window exactly there; this draws only the
     /// frame round it.
     pub terminal: Option<Rect>,
+    /// "Let the control room take over?", when the frame offers it: the
+    /// title bar it is on. It is the bar's last part on the right, so it is
+    /// pressed from the bar's right end back as far as its words reach --
+    /// which the host measures, as it does every word it draws.
+    pub take_over: Option<Rect>,
 }
 
 /// What the person has picked for the supervisor about to be started, and
@@ -1365,6 +1374,13 @@ pub fn terminal_rect(width: f64, height: f64) -> Rect {
 /// selected row, for its name and state. `in_terminal` is whether the
 /// terminal shown here has the keyboard. `width` and `height` are the right
 /// side's own.
+/// How "Let the control room take over?" is set on the supervisor's bar:
+/// what a host measures to know how far back from the bar's right end a
+/// press is the button's (`Right::take_over`).
+pub fn take_over_style(theme: &Theme) -> Style {
+    Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.attention_text) }
+}
+
 pub fn build_right(
     detail: &Detail_,
     row: Option<&Row>,
@@ -1415,6 +1431,22 @@ pub fn build_right(
         // The state is the terminal's own -- the supervisor's -- and not
         // the row's, which may be about one of its workers.
         if let Some(title) = title {
+            // A supervisor started by hand (task 1635): said before its
+            // status, in the attention ink -- it is why nothing else on
+            // this frame will ever change.
+            if let Some(note) = &title.note {
+                let said = crate::snapshot::fill(&tr(&note.template), &note.args);
+                if draws(&said) {
+                    parts.push(words(said, body(theme.attention_text), Side::Trail, pane::BAR_GAP));
+                }
+            }
+            // What is happening to it, or why the last take-over stopped.
+            if let Some(status) = title.take_over.as_ref().and_then(|t| t.status.as_ref()) {
+                let said = crate::snapshot::fill(&tr(&status.template), &status.args);
+                if draws(&said) {
+                    parts.push(words(said, body(theme.text_secondary), Side::Trail, pane::BAR_GAP));
+                }
+            }
             let word_ink = match title.shown {
                 Shown::NeedsYou | Shown::DoneUnseen => theme.attention_text,
                 // Where the word is not red is the table's to say.
@@ -1433,12 +1465,17 @@ pub fn build_right(
                 parts.push(words(title.word.clone(), Style { weight: font::WEIGHT_EMPHASIS, ..body(word_ink) }, Side::Trail, side::STATUS_WORD_GAP));
             }
         }
+        // The button, last: at the bar's right end, where the host finds it.
+        let offered = title.and_then(|t| t.take_over.as_ref()).is_some_and(|t| t.offered && t.confirm.is_some());
+        if offered {
+            parts.push(words(tr(msg::TAKE_OVER), take_over_style(theme), Side::Trail, pane::BAR_GAP));
+        }
         items.push(Item::Line { rect: bar, parts });
         // The terminal's own ground, for the moment before the terminal's
         // window is over it.
         let terminal = terminal_rect(width, height);
         items.push(Item::Fill { rect: terminal, color: theme.terminal_background });
-        return Right { items, go: None, terminal: Some(terminal) };
+        return Right { items, go: None, terminal: Some(terminal), take_over: offered.then_some(bar) };
     }
 
     let ground = theme.terminal_background;
@@ -1511,7 +1548,7 @@ pub fn build_right(
         }
         Detail_::Terminal(_) => {}
     }
-    Right { items, go, terminal: None }
+    Right { items, go, terminal: None, take_over: None }
 }
 
 #[cfg(test)]
@@ -2333,6 +2370,47 @@ mod tests {
     }
 
     #[test]
+    fn a_supervisor_started_by_hand_is_said_to_be_on_its_frame_in_the_persons_language() {
+        use crate::lend::Loan;
+        let l = list();
+        let frame_of = |name: &str, tr: &dyn Fn(&str) -> String| {
+            let row = l.rows().find(|r| r.id == name).expect("the fixture has that group");
+            let loan = Loan { group: row.id.clone(), terminal: row.steward.clone().unwrap() };
+            texts(&build_right(&Detail_::Terminal(loan), Some(row), 600.0, 700.0, look::theme(false), 1.0, false, tr).items)
+        };
+        let english = |s: &str| s.to_string();
+        assert!(frame_of("docs-site", &english).contains(&"Started by hand: no status".to_string()));
+        assert!(frame_of("design-system", &english).contains(&"Unknown CLI: no status".to_string()));
+        // Said, not copied: the words go through the catalogue.
+        let chinese = |s: &str| if s == "Started by hand: no status" { "手动启动，没接上状态".to_string() } else { s.to_string() };
+        assert!(frame_of("docs-site", &chinese).contains(&"手动启动，没接上状态".to_string()));
+        // Task 1635: docs-site's is offered for taking over -- the button is
+        // the bar's last part on the right, and `take_over` is that bar --
+        // and design-system's (no adapter knows it) is not.
+        let right_of = |name: &str| {
+            let row = l.rows().find(|r| r.id == name).unwrap();
+            let loan = Loan { group: row.id.clone(), terminal: row.steward.clone().unwrap() };
+            build_right(&Detail_::Terminal(loan), Some(row), 600.0, 700.0, look::theme(false), 1.0, false, &english)
+        };
+        let offered = right_of("docs-site");
+        let bar = offered.take_over.expect("docs-site offers the take-over");
+        let Some(Item::Line { rect, parts }) = offered.items.iter().find(|i| matches!(i, Item::Line { .. })) else { panic!("no bar") };
+        assert_eq!(*rect, bar);
+        let last = parts.iter().rev().find(|p| p.side == Side::Trail).unwrap();
+        assert!(matches!(&last.piece, Piece::Words { text, style } if text == msg::TAKE_OVER && *style == take_over_style(look::theme(false))));
+        assert!(right_of("design-system").take_over.is_none());
+        assert_eq!(
+            crate::act::encode(&crate::act::Act::TakeOver { group: "docs-site" }).unwrap(),
+            r#"{"act":"take_over","group":"docs-site"}"#
+        );
+        // Every other supervisor's frame says neither.
+        for row in l.rows().filter(|r| r.steward.is_some() && r.id != "docs-site" && r.id != "design-system") {
+            let t = frame_of(&row.id, &english);
+            assert!(!t.iter().any(|w| w.contains("no status")), "{}: {t:?}", row.id);
+        }
+    }
+
+    #[test]
     fn the_right_side_says_which_nothing_it_is_and_offers_the_tab_only_for_another_window() {
         use crate::lend::Loan;
         let l = list();
@@ -2549,7 +2627,7 @@ mod tests {
 
     fn start_row(state: crate::snapshot::SupervisorState, can_start: bool, failed: crate::snapshot::StartFailure) -> Row {
         let mut row = list().quiet[0].clone();
-        row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into(), last: None });
+        row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into(), last: None, hookless: None });
         row
     }
 

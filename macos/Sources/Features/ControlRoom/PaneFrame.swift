@@ -27,18 +27,27 @@ enum PaneFrame {
         /// (`ControlRoomList.SupervisorTitle.says`); nil for a pane of a
         /// split, whose frame is what it is.
         var says: Kind?
+        /// What the core says of a supervisor started by hand, before the
+        /// status (`SupervisorTitle.note`); nil for every other title.
+        var note: String?
+        /// "Let the control room take over?" (`SupervisorTitle.takeOver`).
+        var takeOver: ControlRoomList.TakeOverTitle?
 
-        init(name: String, shown: ControlRoomSnapshot.Terminal.Bar.Shown, word: String, says: Kind? = nil) {
+        init(name: String, shown: ControlRoomSnapshot.Terminal.Bar.Shown, word: String, says: Kind? = nil, note: String? = nil,
+             takeOver: ControlRoomList.TakeOverTitle? = nil) {
             self.name = name
             self.shown = shown
             self.word = word
             self.says = says
+            self.note = note
+            self.takeOver = takeOver
         }
 
         /// The control room's own frame: the supervisor's status, which is
         /// one of the row's glyphs, and the word the title brings with it.
         init(_ supervisor: ControlRoomList.SupervisorTitle) {
-            self.init(name: supervisor.name, shown: .init(supervisor.shown), word: supervisor.word, says: supervisor.says)
+            self.init(name: supervisor.name, shown: .init(supervisor.shown), word: supervisor.word, says: supervisor.says,
+                      note: supervisor.note, takeOver: supervisor.takeOver)
         }
 
         /// The word after the name on the bar of a frame that is `wears`:

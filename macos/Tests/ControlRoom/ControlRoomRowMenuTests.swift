@@ -41,4 +41,18 @@ struct ControlRoomRowMenuTests {
             #expect(!zip(e, e.dropFirst()).contains { $0 == .separator && $1 == .separator })
         }
     }
+
+    /// Which supervisor a row's menu is made for (task 1635): "take over"
+    /// only where the core offers it -- docs-site, recognised and started by
+    /// hand -- and not for design-system, whose CLI nobody recognised.
+    @Test func takeOverIsOfferedWhereTheCoreOffersIt() throws {
+        let list = try ControlRoomList.decode(snapshot: ControlRoomListTests.fixture())
+        let sup = Dictionary(uniqueKeysWithValues: list.rows.map { ($0.id, Menu.supervisor(of: $0)) })
+        #expect(sup["docs-site"] == .hookless)
+        #expect(sup["design-system"] == .hooked)
+        #expect(sup["web-app"] == .hooked)
+        var none = try #require(list.rows.first)
+        none.supervisor = nil
+        #expect(Menu.supervisor(of: none) == .none)
+    }
 }

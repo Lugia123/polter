@@ -1356,6 +1356,29 @@ pub fn isAtShellPrompt(self: *Surface) bool {
     return self.io.terminal.cursorIsAtPrompt();
 }
 
+/// Whether the shell in this terminal is back at its prompt with nothing
+/// running in it -- the program it ran has ended (task 1635). The answer
+/// closing a tab asks for (`needsConfirmQuit`), without the setting that
+/// decides whether closing asks at all: shell integration's prompt mark,
+/// and on Windows, where PowerShell marks no prompt, whether the shell has
+/// a child process (`termio.shell_busy`).
+pub fn shellIdle(self: *Surface) bool {
+    if (self.child_exited) return false;
+    const busy = self.io.shellBusy();
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
+    return !termio.shell_busy.confirms(self.io.terminal.cursorIsAtPrompt(), busy);
+}
+
+/// The active area as text, top to bottom, in `alloc` (task 1635: what a
+/// take-over reads before it types). Read under the renderer lock and
+/// nothing else done under it.
+pub fn activeText(self: *Surface, alloc: Allocator) ![]const u8 {
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
+    return self.io.terminal.screens.active.dumpStringAlloc(alloc, .{ .active = .{} });
+}
+
 /// Whether `who` is to treat this terminal's input line as holding a draft.
 ///
 /// An agent is told what the key events say (`poltergeist_draft`), which

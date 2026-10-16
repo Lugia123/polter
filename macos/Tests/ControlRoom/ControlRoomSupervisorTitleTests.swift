@@ -43,6 +43,30 @@ struct ControlRoomSupervisorTitleTests {
         #expect(title == Title(name: member.title, shown: .none, word: ""))
     }
 
+    @Test func aSupervisorStartedByHandIsSaidToBeAndNoOtherIs() throws {
+        // Task 1635: docs-site's supervisor was started by hand and its
+        // adapter knows it; design-system's no adapter recognised.
+        #expect(try ControlRoomList.supervisorTitle(of: group("docs-site"))?.note == "Started by hand: no status")
+        #expect(try ControlRoomList.supervisorTitle(of: group("design-system"))?.note == "Unknown CLI: no status")
+        for g in try snapshot().groups where g.name != "docs-site" && g.name != "design-system" {
+            #expect(ControlRoomList.supervisorTitle(of: g)?.note == nil, "\(g.name)")
+        }
+        // And the frame's title carries it.
+        let title = try #require(ControlRoomList.supervisorTitle(of: group("docs-site")))
+        #expect(PaneFrame.Title(title).note == "Started by hand: no status")
+        // docs-site's is offered for taking over, with the core's question
+        // filled in; design-system's (no adapter knows it) is not.
+        let take = try #require(title.takeOver)
+        #expect(take.offered)
+        #expect(take.confirm == "This ends the Claude Code running in this terminal and starts it again through Polter, "
+            + "with its status hooks, going on with session 0b1d1c35 (last written 3 min ago).")
+        #expect(take.status == nil)
+        #expect(PaneFrame.Title(title).takeOver == take)
+        #expect(try ControlRoomList.supervisorTitle(of: group("design-system"))?.takeOver == nil)
+        #expect(ControlRoomActions.request(for: .takeOver(group: "docs-site")) as? [String: String]
+            == ["act": "take_over", "group": "docs-site"])
+    }
+
     @Test func theNameIsTheSupervisorsOwnTitleNotAnotherMembers() throws {
         var web = try group("web-app")
         let steward = try #require(web.steward)

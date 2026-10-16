@@ -32,6 +32,18 @@ enum ControlRoomRowMenu {
         case hookless
     }
 
+    /// The supervisor of the group on `row` (task 1635): hookless only
+    /// where the core offers to take it over -- the question it would ask
+    /// is in the snapshot. One it could not recognise, or is still asking
+    /// about, has nothing to offer here and is only jumped to. A supervisor
+    /// is one the frame has a title for: the core named it and it is open.
+    /// The Windows host's is `rowmenu::sup_of`.
+    static func supervisor(of row: ControlRoomList.Row) -> Supervisor {
+        guard let title = row.supervisor else { return .none }
+        let offered = title.takeOver.map { $0.offered && $0.confirm != nil } ?? false
+        return offered ? .hookless : .hooked
+    }
+
     struct State: Equatable {
         var archived: Bool
         var supervisor: Supervisor

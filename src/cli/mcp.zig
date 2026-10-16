@@ -5,6 +5,8 @@ const args = @import("args.zig");
 const global = @import("../global.zig");
 const transport = @import("../poltergeist/transport.zig");
 const poltergeist_server = @import("../poltergeist/Server.zig");
+const agent_cli = @import("../poltergeist/agent_cli.zig");
+const builtin = @import("builtin");
 
 const log = std.log.scoped(.mcp);
 
@@ -184,10 +186,54 @@ pub fn run(alloc: Allocator) !u8 {
         env.get("GHOSTTY_POLTER_TOKEN") orelse
         return complain(io, "GHOSTTY_POLTER_TOKEN");
 
-    var host: Host = try .connect(alloc, io, socket_path, token, .agent);
+    var identity_arena: std.heap.ArenaAllocator = .init(alloc);
+    defer identity_arena.deinit();
+    const identity = identityField(identity_arena.allocator(), io, &env);
+
+    var host: Host = try .connectWith(alloc, io, socket_path, token, .agent, identity);
     defer host.deinit();
 
     return serve(alloc, io, &host, socket_path, token);
+}
+
+/// `,"identity":{"pid":…,"env":{…}}` for the `auth` request: what this
+/// sidecar can say of the program that started it, so that an agent CLI
+/// started by hand -- no hooks, nothing else to go on -- can be recognised
+/// by its adapter (task 1635, `poltergeist/Identities.zig`).
+///
+/// **Only the variables some adapter declared** (`agent_cli.identify_env`)
+/// are read, and only those whose values are short printable text; the rest
+/// of this environment, keys and tokens included, never leaves this
+/// process. Nothing here is logged. Empty when there is nothing to say,
+/// which costs nothing: an agent started through Polter is known by its
+/// hooks anyway.
+fn identityField(arena: Allocator, io: std.Io, env: *const std.process.Environ.Map) []const u8 {
+    var out: std.Io.Writer.Allocating = .init(arena);
+    const w = &out.writer;
+    const ppid: ?u64 = if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi)
+        // Not read on Windows yet: no adapter needs it today.
+        null
+    else
+        @intCast(std.posix.system.getppid());
+
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    w.writeAll(",\"identity\":{\"pid\":") catch return "";
+    if (ppid) |p| w.print("{d}", .{p}) catch return "" else w.writeAll("null") catch return "";
+    w.writeAll(",\"env\":{") catch return "";
+    var n: usize = 0;
+    for (agent_cli.discover(arena, io, env)) |a| for (a.identify_env) |name| {
+        if (seen.contains(name)) continue;
+        seen.put(arena, name, {}) catch return "";
+        const value = env.get(name) orelse continue;
+        if (!agent_cli.Sighting.validValue(value)) continue;
+        if (n == 16) break;
+        if (n > 0) w.writeAll(",") catch return "";
+        w.print("\"{s}\":\"{s}\"", .{ name, value }) catch return "";
+        n += 1;
+    };
+    w.writeAll("}}") catch return "";
+    if (n == 0 and ppid == null) return "";
+    return out.written();
 }
 
 /// Say why this will not start, where whoever ran it will see it.
@@ -285,6 +331,19 @@ pub const Host = struct {
         token: []const u8,
         kind: poltergeist_server.Kind,
     ) !Host {
+        return connectWith(alloc, io, path, token, kind, "");
+    }
+
+    /// `connect`, with `extra` -- a `,"identity":{…}` written by
+    /// `identityField`, or empty -- added to the `auth` params.
+    pub fn connectWith(
+        alloc: Allocator,
+        io: std.Io,
+        path: []const u8,
+        token: []const u8,
+        kind: poltergeist_server.Kind,
+        extra: []const u8,
+    ) !Host {
         const stream = try transport.connect(io, path);
         errdefer stream.close(io);
 
@@ -306,8 +365,8 @@ pub const Host = struct {
         // Prove who we are before anything else. The host closes the
         // connection if this does not check out.
         try self.writer.interface.print(
-            \\{{"method":"auth","params":{{"token":"{s}"{s}}}}}
-        ++ "\n", .{ token, kind.authField() });
+            \\{{"method":"auth","params":{{"token":"{s}"{s}{s}}}}}
+        ++ "\n", .{ token, kind.authField(), extra });
         try self.writer.interface.flush();
 
         const reply = (try self.reader.interface.takeDelimiter('\n')) orelse

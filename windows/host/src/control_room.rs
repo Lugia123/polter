@@ -1095,6 +1095,7 @@ fn row_item_works(id: &str) -> bool {
     matches!(
         id,
         "jump_to_supervisor"
+            | "take_over"
             | "start_resume"
             | "start_new"
             | "start"
@@ -1146,9 +1147,7 @@ fn row_menu(hwnd: HWND, x: i32, y: i32) {
                 archived: false,
                 pinned: row.pinned,
                 muted: row.muted.is_some(),
-                // A supervisor that reports no hooks (task 1635) is not
-                // told apart here yet.
-                sup: if row.steward.is_some() { polter_control_room::rowmenu::Sup::Hooked } else { polter_control_room::rowmenu::Sup::None },
+                sup: polter_control_room::rowmenu::sup_of(row),
                 resumable: scene::offers_session(row.start.as_ref()),
             };
             Some((id, Some((state, row.muted))))
@@ -1246,6 +1245,15 @@ fn row_item(hwnd: HWND, group: &str, id: &str) {
                 wlogf!(frame, "[control-room] go to supervisor {} of {:?} -> {}", key, group, went);
             }
             None => wlogf!(frame, "[control-room] go to supervisor: {:?} has none", group),
+        },
+        // The same question and the same act as the button on the frame's
+        // title (task 1635).
+        "take_over" => match row.title.as_ref().and_then(|t| t.take_over.as_ref()).and_then(|t| t.confirm.as_ref()) {
+            Some(confirm) => {
+                let question = polter_control_room::snapshot::fill(&tr(&confirm.template), &confirm.args);
+                take_over(hwnd, group, &question);
+            }
+            None => wlogf!(frame, "[control-room] take-over: {:?} no longer offers one", group),
         },
         "start_resume" => start_supervisor_as(hwnd, group, Some(act::Session::Last)),
         "start_new" => start_supervisor_as(hwnd, group, Some(act::Session::New)),
@@ -2293,7 +2301,77 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 /// How many quiet rows one notch of the wheel scrolls the list.
 const WHEEL_ROWS: f64 = 3.0;
 
+/// "Let the control room take over?" on the supervisor's frame, when the
+/// press at (x, y) is on it: the group, and the core's question in the
+/// person's language (task 1635). The button is the bar's last part, so it
+/// is the press from the bar's right end back as far as its words reach.
+fn take_over_at(hwnd: HWND, x: i32, y: i32) -> Option<(String, String)> {
+    let g = geometry(hwnd);
+    let (px, py) = (x as f64 / g.scale, y as f64 / g.scale);
+    let detail = detail();
+    let selected = selection()?;
+    let theme = look::theme(dark(hwnd));
+    source::with(|data| {
+        let Data::Ready(r) = data else { return None };
+        let row = r.list.row(&selected)?;
+        let right = scene::build_right(&detail, Some(row), g.room.right.w, g.room.right.h, theme, g.scale, false, &|s| tr(s));
+        let bar = right.take_over?;
+        let (rx, ry) = (px - g.room.right.x, py - g.room.right.y);
+        if !inside(bar, rx, ry) {
+            return None;
+        }
+        let label = tr(scene::msg::TAKE_OVER);
+        let width = unsafe {
+            let dc = GetDC(Some(hwnd));
+            let w = measure_words(dc, g.scale, &[(label.as_str(), scene::take_over_style(theme))]);
+            ReleaseDC(Some(hwnd), dc);
+            w.first().copied().unwrap_or(0.0)
+        };
+        if rx < bar.x + bar.w - width {
+            return None;
+        }
+        let confirm = row.title.as_ref()?.take_over.as_ref()?.confirm.as_ref()?;
+        Some((selected.clone(), polter_control_room::snapshot::fill(&tr(&confirm.template), &confirm.args)))
+    })
+}
+
+/// `s` with a terminating NUL, for a Win32 call.
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Ask the core's question; on yes, ask the core to take over. What becomes
+/// of it arrives in the next snapshot; a refusal is said at once.
+fn take_over(hwnd: HWND, group: &str, question: &str) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let title = wide(&tr(scene::msg::TAKE_OVER));
+    let body = wide(question);
+    let yes = unsafe { MessageBoxW(Some(frame), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) };
+    if yes != IDYES {
+        wlogf!(frame, "[control-room] take-over of {:?}'s supervisor: not confirmed", group);
+        return;
+    }
+    let Some(request) = act::encode(&act::Act::TakeOver { group }) else { return };
+    match source::act(&request) {
+        Ok(()) => wlogf!(frame, "[control-room] take-over of {:?}'s supervisor taken", group),
+        Err(why) => {
+            wlogf!(frame, "[control-room] take-over of {:?}'s supervisor refused: {}", group, why);
+            let said = wide(&refusal_words(&why));
+            unsafe {
+                MessageBoxW(Some(frame), PCWSTR(said.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONINFORMATION);
+            }
+        }
+    }
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
 fn click(hwnd: HWND, x: i32, y: i32) {
+    if let Some((group, question)) = take_over_at(hwnd, x, y) {
+        take_over(hwnd, &group, &question);
+        return;
+    }
     let g = geometry(hwnd);
     let (px, py) = (x as f64 / g.scale, y as f64 / g.scale);
     // The archived section's header opens and closes it; its rows are not

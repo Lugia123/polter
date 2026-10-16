@@ -16,6 +16,37 @@ eleven is the contract; this file is one side of it.
                  "session":"<id>"|null,"role":{…},"cli":{…}}
         stdout  {"version":1,"argv":[…],"env":{},"summary":…,"notes":[…],"hooks":true?}
 
+    adapter.py identify '<request>'
+        request {"version":1,"cwd":…|null,"home":…,"pid":N|null,
+                 "env":{<only the names plugin.json's identify_env lists>}}
+        stdout  {"version":1,"me":true|false,"session":"<id>"|null,
+                 "session_written_ms":N|null,"quit":{…}|null,"notes":[…]}
+
+`identify` (task 1635) is asked about an agent that talks to Polter with no
+hooks and no role launch behind it -- one somebody started by typing
+`claude`. Polter's MCP sidecar is one of the programs Claude Code starts,
+and Claude Code gives every one of them `CLAUDECODE=1`, `AI_AGENT=claude-code_<version>_…`
+and `CLAUDE_CODE_SESSION_ID=<the session>` (measured on claude 2.1.301, by
+reading a running sidecar's environment). Those three names are the
+manifest's `identify_env`; the sidecar sends their values and nothing else
+of its environment. So:
+
+  * **me** when `CLAUDECODE` is `1` or `AI_AGENT` starts `claude-code`.
+  * **session** is `CLAUDE_CODE_SESSION_ID` when it has a transcript here
+    (`has_transcript`, the check `launch` makes before `--resume`), with the
+    transcript's last write as `session_written_ms`. ⚠️ The sidecar's
+    environment is the one it was started with: after a `/clear` the CLI
+    is in a new session and this still names the old one. That the
+    transcript stopped being written while the agent goes on is how Polter
+    can tell, which is why the time is reported; this adapter does not
+    decide it.
+  * **quit** is `/exit`, typed only when the screen shows the input line
+    empty (`❯` alone between the rules) and nothing that says a turn is
+    running, a question is waiting, or a menu is open. Measured on 2.1.301:
+    an idle Claude Code draws `❯` alone on its input line; a turn adds
+    `esc to interrupt`; a permission question draws `Do you want` and a
+    numbered `❯ 1.` menu. Anything else, and Polter does not type.
+
 The request is the second argument (read from stdin instead when it is
 absent, which is only for trying it by hand). One JSON object on stdout; a
 reason on stderr and a non-zero exit when there is no answer.
@@ -849,9 +880,62 @@ def split_settings(args, notes):
     return rest, settings, named_file
 
 
+QUIT = {
+    "text": "/exit",
+    "ready": {
+        "line": ["\u276f", ">"],
+        "none_of": ["esc to interrupt", "Do you want", "\u276f 1.", "\u276f 2.", "Press Ctrl-C again",
+                    "Enter to confirm", "Esc to cancel"],
+    },
+}
+
+
+def identify(req):
+    """Whether the CLI that started a sidecar is Claude Code, and its session."""
+    env = req.get("env") if isinstance(req.get("env"), dict) else {}
+    agent = env.get("AI_AGENT") if isinstance(env.get("AI_AGENT"), str) else ""
+    me = env.get("CLAUDECODE") == "1" or agent.startswith("claude-code")
+    if not me:
+        return {"version": 1, "me": False, "session": None, "session_written_ms": None,
+                "quit": None, "notes": []}
+    notes = []
+    session = env.get("CLAUDE_CODE_SESSION_ID")
+    written = None
+    if not isinstance(session, str) or not SESSION_ID.fullmatch(session):
+        notes.append("Claude Code did not say which session it is in.")
+        session = None
+    else:
+        home = req.get("home") or os.path.expanduser("~")
+        path = transcript_of(home, session)
+        if path is None:
+            notes.append("Session %s has no transcript on this machine." % session)
+            session = None
+        else:
+            try:
+                written = int(os.path.getmtime(path) * 1000)
+            except OSError:
+                written = None
+    return {"version": 1, "me": True, "session": session, "session_written_ms": written,
+            "quit": QUIT, "notes": notes}
+
+
+def transcript_of(home, session):
+    """The transcript file of `session`, under whichever project, or None."""
+    root = os.path.join(home, ".claude", "projects")
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return None
+    for name in names:
+        path = os.path.join(root, name, session + ".jsonl")
+        if os.path.isfile(path):
+            return path
+    return None
+
+
 def main():
-    if len(sys.argv) not in (2, 3) or sys.argv[1] not in ("inventory", "launch"):
-        sys.stderr.write("usage: adapter.py inventory|launch '<request json>'\n")
+    if len(sys.argv) not in (2, 3) or sys.argv[1] not in ("inventory", "launch", "identify"):
+        sys.stderr.write("usage: adapter.py inventory|launch|identify '<request json>'\n")
         return 2
     raw = sys.argv[2] if len(sys.argv) == 3 else sys.stdin.read()
     try:
@@ -862,7 +946,7 @@ def main():
     if not isinstance(req, dict):
         sys.stderr.write("the request is not a JSON object\n")
         return 2
-    answer = inventory(req) if sys.argv[1] == "inventory" else launch(req)
+    answer = {"inventory": inventory, "launch": launch, "identify": identify}[sys.argv[1]](req)
     sys.stdout.write(json.dumps(answer, ensure_ascii=False))
     sys.stdout.write("\n")
     return 0

@@ -112,9 +112,12 @@ struct PaneFrameChrome: ViewModifier {
             .overlay { overContent(theme).allowsHitTesting(false) }
             .padding(Self.room(for: wears))
             .background { behind(theme) }
-            .overlay { overFrame(theme).allowsHitTesting(false) }
-            // The strip takes clicks, which nothing else over the frame
-            // does, so it is a layer of its own.
+            // Nothing over the frame takes a click but the take-over button
+            // on a supervisor's bar (task 1635): each of its parts says so
+            // itself, since a layer that takes none passes the button's
+            // clicks through to whatever is under it.
+            .overlay { overFrame(theme) }
+            // The strip takes clicks, so it is a layer of its own.
             .overlay(alignment: .top) { strip(theme) }
             .padding(outside)
     }
@@ -249,25 +252,31 @@ struct PaneFrameChrome: ViewModifier {
                         .polterCloseHole(closeHole && stack == nil, textLeading: padding)
                     Spacer(minLength: 0)
                 }
-                switch wears {
-                case .supervisor:
-                    EmptyView()
-                case .worker:
-                    let shape = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.worker), style: .continuous)
-                    if let cover {
-                        PaneFrameCorners(radius: CGFloat(Look.Radius.worker), top: false).cover(cover)
-                    }
-                    // Inside the edge: there in the dark theme only.
-                    shape.strokeBorder(theme.workerEdgeInner.color, lineWidth: CGFloat(Look.Pane.workerLine))
-                case .plain:
-                    let shape = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.plain), style: .continuous)
-                    if let cover {
-                        PaneFrameCorners(radius: CGFloat(Look.Radius.plain), top: false).cover(cover)
-                    }
-                    if Look.Pane.plainHasLine {
-                        shape.strokeBorder(theme.lineFaint.color, lineWidth: hairline)
-                    }
-                }
+                edges(wears, theme: theme)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func edges(_ wears: PaneFrame.Kind, theme: Look.Theme) -> some View {
+        switch wears {
+        case .supervisor:
+            EmptyView()
+        case .worker:
+            let shape = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.worker), style: .continuous)
+            if let cover {
+                PaneFrameCorners(radius: CGFloat(Look.Radius.worker), top: false).cover(cover)
+            }
+            // Inside the edge: there in the dark theme only.
+            shape.strokeBorder(theme.workerEdgeInner.color, lineWidth: CGFloat(Look.Pane.workerLine))
+        case .plain:
+            let shape = RoundedRectangle(cornerRadius: CGFloat(Look.Radius.plain), style: .continuous)
+            if let cover {
+                PaneFrameCorners(radius: CGFloat(Look.Radius.plain), top: false).cover(cover)
+            }
+            if Look.Pane.plainHasLine {
+                shape.strokeBorder(theme.lineFaint.color, lineWidth: hairline)
             }
         }
     }
@@ -315,6 +324,19 @@ struct PaneFrameCorners: Shape {
     }
 }
 
+private struct PaneFrameTakeOverKey: EnvironmentKey {
+    static let defaultValue: ((String) -> Void)? = nil
+}
+
+extension EnvironmentValues {
+    /// "Let the control room take over?" on a supervisor's frame (task
+    /// 1635): handed the question the core asks before anything is done.
+    var paneFrameTakeOver: ((String) -> Void)? {
+        get { self[PaneFrameTakeOverKey.self] }
+        set { self[PaneFrameTakeOverKey.self] = newValue }
+    }
+}
+
 /// The title of a frame: the name and what the pane is on the left; on the
 /// right its status -- the glyph and the word. Not how long it has waited:
 /// that was here once and told the person nothing they could act on.
@@ -326,6 +348,9 @@ struct PaneFrameBar: View {
     var caption: String?
 
     @Environment(\.colorScheme) private var scheme
+    /// What "Let the control room take over?" does, handed the core's
+    /// question; nil where nothing can take over (task 1635).
+    @Environment(\.paneFrameTakeOver) private var takeOver
 
     var body: some View {
         let theme = Look.theme(scheme)
@@ -344,7 +369,23 @@ struct PaneFrameBar: View {
                 // by them, the role only after a whole name). The last two
                 // are this host's alone; Windows lets the status run past
                 // the bar's left edge instead.
+                //
+                // A note (a supervisor started by hand, task 1635) is said
+                // whole or not at all, and goes before anything else does:
+                // the bar is still the frame's title first.
                 ViewThatFits(in: .horizontal) {
+                    if title.note != nil {
+                        line(title, theme: theme, role: true, nameCut: false, word: true, note: true)
+                        line(title, theme: theme, role: false, nameCut: false, word: true, note: true)
+                        line(title, theme: theme, role: false, nameCut: true, word: true, note: true)
+                        // Where the note and what became of a take-over do
+                        // not both fit, the note gives way: "not taken
+                        // over: it is busy" is the newer news, and the
+                        // button stays with it.
+                        if title.takeOver?.status != nil || title.takeOver?.offered == true {
+                            line(title, theme: theme, role: false, nameCut: true, word: true, note: true, said: false)
+                        }
+                    }
                     line(title, theme: theme, role: true, nameCut: false, word: true)
                     line(title, theme: theme, role: false, nameCut: false, word: true)
                     line(title, theme: theme, role: false, nameCut: true, word: true)
@@ -353,6 +394,8 @@ struct PaneFrameBar: View {
                         Spacer(minLength: 0)
                         status(title, theme: theme, word: false)
                     }
+                    .accessibilityElement(children: .combine)
+                    .allowsHitTesting(false)
                 }
             } else {
                 HStack(spacing: CGFloat(Look.Pane.barGap)) {
@@ -363,11 +406,12 @@ struct PaneFrameBar: View {
                         .truncationMode(.middle)
                     Spacer(minLength: 0)
                 }
+                .allowsHitTesting(false)
             }
         }
         .font(.system(size: CGFloat(Look.Font.body)))
         .monospacedDigit()
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 
     /// The narrowest a cut name is let go before the status word gives way:
@@ -382,9 +426,40 @@ struct PaneFrameBar: View {
     /// `nameFloor` and takes what it is given; otherwise it asks for all of
     /// itself, so the line fits only where the whole name does.
     @ViewBuilder
-    private func line(_ title: PaneFrame.Title, theme: Look.Theme, role: Bool, nameCut: Bool, word: Bool) -> some View {
+    private func line(_ title: PaneFrame.Title, theme: Look.Theme, role: Bool, nameCut: Bool, word: Bool,
+                      note: Bool = false, said: Bool = true) -> some View {
         // The gap between the two sides is the spacer's, and only the
         // spacer's: a spacing here would be added on both sides of it.
+        HStack(spacing: 0) {
+            words(title, theme: theme, role: role, nameCut: nameCut, word: word,
+                  hookless: note ? (said ? .said : .status) : .none)
+            // The button, last: at the bar's right end, as on Windows
+            // (`scene::build_right`), and an element of its own -- inside
+            // the bar's `.combine` it is no button anybody can press but
+            // with the pointer (task 1635).
+            if note, let take = title.takeOver, take.offered, let confirm = take.confirm, let takeOver {
+                Button(String(localized: "Let the control room take over?",
+                              comment: "总控台：手动启动的总管，标题条上的按钮")) { takeOver(confirm) }
+                    .buttonStyle(.link)
+                    .fixedSize()
+                    .padding(.leading, CGFloat(Look.Pane.barGap))
+            }
+        }
+    }
+
+    /// How much of a hand-started supervisor (task 1635) a line says.
+    private enum HooklessWords {
+        case none
+        /// What became of a take-over, without the note.
+        case status
+        /// The note too.
+        case said
+    }
+
+    /// Everything on a line but the take-over button, said as one.
+    @ViewBuilder
+    private func words(_ title: PaneFrame.Title, theme: Look.Theme, role: Bool, nameCut: Bool, word: Bool,
+                       hookless: HooklessWords) -> some View {
         HStack(spacing: 0) {
             HStack(spacing: CGFloat(Look.Pane.nameRoleGap)) {
                 if nameCut {
@@ -403,8 +478,24 @@ struct PaneFrameBar: View {
                 }
             }
             Spacer(minLength: CGFloat(Look.Pane.barGap))
+            if hookless == .said, let note = title.note {
+                Text(note)
+                    .foregroundStyle(theme.attentionText.color)
+                    .fixedSize()
+                    .padding(.trailing, CGFloat(Look.Pane.barGap))
+            }
+            if hookless != .none, let take = title.takeOver {
+                if let status = take.status {
+                    Text(status)
+                        .foregroundStyle(secondaryColor(theme))
+                        .fixedSize()
+                        .padding(.trailing, CGFloat(Look.Pane.barGap))
+                }
+            }
             status(title, theme: theme, word: word)
         }
+        .accessibilityElement(children: .combine)
+        .allowsHitTesting(false)
     }
 
     private func name(_ title: PaneFrame.Title, theme: Look.Theme) -> some View {

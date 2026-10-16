@@ -50,6 +50,17 @@
         "resume": {
           "can": false,
           "why": "no_record"
+        },
+        "hookless": {
+          "state": "none",
+          "cli_label": null,
+          "session": false,
+          "note": null,
+          "take_over": {
+            "state": "none",
+            "confirm": null,
+            "status": null
+          }
         }
       },
       "project": {
@@ -172,6 +183,17 @@
         "resume": {
           "can": false,
           "why": "no_record"
+        },
+        "hookless": {
+          "state": "none",
+          "cli_label": null,
+          "session": false,
+          "note": null,
+          "take_over": {
+            "state": "none",
+            "confirm": null,
+            "status": null
+          }
         }
       },
       "project": {
@@ -277,6 +299,17 @@
         "resume": {
           "can": false,
           "why": "no_record"
+        },
+        "hookless": {
+          "state": "none",
+          "cli_label": null,
+          "session": false,
+          "note": null,
+          "take_over": {
+            "state": "none",
+            "confirm": null,
+            "status": null
+          }
         }
       },
       "project": {
@@ -397,6 +430,17 @@
         "resume": {
           "can": false,
           "why": "session_in_use"
+        },
+        "hookless": {
+          "state": "none",
+          "cli_label": null,
+          "session": false,
+          "note": null,
+          "take_over": {
+            "state": "none",
+            "confirm": null,
+            "status": null
+          }
         }
       },
       "project": {
@@ -500,6 +544,29 @@
         "resume": {
           "can": false,
           "why": "no_record"
+        },
+        "hookless": {
+          "state": "known",
+          "cli_label": "Claude Code",
+          "session": true,
+          "note": {
+            "key": "started_by_hand",
+            "template": "Started by hand: no status",
+            "args": []
+          },
+          "take_over": {
+            "state": "offer",
+            "confirm": {
+              "key": "take_over_confirm_sure",
+              "template": "This ends the {1} running in this terminal and starts it again through Polter, with its status hooks, going on with session {2} (last written {3} min ago).",
+              "args": [
+                "Claude Code",
+                "0b1d1c35",
+                "3"
+              ]
+            },
+            "status": null
+          }
         }
       },
       "project": {
@@ -617,6 +684,17 @@
         "resume": {
           "can": false,
           "why": "no_record"
+        },
+        "hookless": {
+          "state": "none",
+          "cli_label": null,
+          "session": false,
+          "note": null,
+          "take_over": {
+            "state": "none",
+            "confirm": null,
+            "status": null
+          }
         }
       },
       "project": {
@@ -720,6 +798,21 @@
         "resume": {
           "can": false,
           "why": "no_record"
+        },
+        "hookless": {
+          "state": "unknown",
+          "cli_label": null,
+          "session": false,
+          "note": {
+            "key": "cli_not_recognised",
+            "template": "Unknown CLI: no status",
+            "args": []
+          },
+          "take_over": {
+            "state": "none",
+            "confirm": null,
+            "status": null
+          }
         }
       },
       "project": {
@@ -840,6 +933,17 @@
         "resume": {
           "can": true,
           "why": "none"
+        },
+        "hookless": {
+          "state": "none",
+          "cli_label": null,
+          "session": false,
+          "note": null,
+          "take_over": {
+            "state": "none",
+            "confirm": null,
+            "status": null
+          }
         }
       },
       "project": {
