@@ -495,6 +495,32 @@ pub struct Group {
     pub record_dir: Option<String>,
     /// The project it is tied to, by name; none when it has none.
     pub project_name: Option<String>,
+    /// What became of the control room's last ask of its supervisor (task
+    /// 1671); none when none was made since the core started, or from a
+    /// core before it said.
+    pub ask: Option<AskState>,
+}
+
+/// How the control room's last ask of a group's supervisor went (task
+/// 1671, `ControlAsk.zig`): the ask's own reply was the first try's, and a
+/// retry's end is only ever said here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskState {
+    /// The group message the ask was kept as.
+    pub seq: u64,
+    pub stage: AskStage,
+    /// The last refusal's code, as the core names it; none once delivered.
+    pub code: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskStage {
+    /// It will be typed again.
+    Retrying,
+    /// It is in the supervisor's terminal.
+    Delivered,
+    /// It was not typed, and will not be.
+    GaveUp,
 }
 
 /// A group whose notifications are off (task 1659).
@@ -996,6 +1022,7 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         pinned: if v.get("pinned").is_some() { boolean(v, path, "pinned")? } else { false },
         muted: muted_of(v, path)?,
         delete_cost: delete_cost_of(v, path)?,
+        ask: ask_of(v, path)?,
         record_dir: if v.get("record_dir").is_some() { opt_text(v, path, "record_dir")? } else { None },
         project_name: match v.get("project") {
             Some(p) if p.get("name").is_some() => opt_text(p, &format!("{path}.project"), "name")?,
@@ -1036,6 +1063,24 @@ fn muted_of(v: &Value, path: &str) -> Res<Option<Muted>> {
     match v.get("muted") {
         None | Some(Value::Null) => Ok(None),
         Some(m) => Ok(Some(Muted { until_ms: opt_int(m, &format!("{path}.muted"), "until_ms")? })),
+    }
+}
+
+/// `ask`: none when it is absent, null, or in a stage this build does not
+/// know -- then the line under the row stays as the ask's reply left it.
+fn ask_of(v: &Value, path: &str) -> Res<Option<AskState>> {
+    match v.get("ask") {
+        None | Some(Value::Null) => Ok(None),
+        Some(a) => {
+            let at = format!("{path}.ask");
+            let stage = match text(a, &at, "state")?.as_str() {
+                "retrying" => AskStage::Retrying,
+                "delivered" => AskStage::Delivered,
+                "gave_up" => AskStage::GaveUp,
+                _ => return Ok(None),
+            };
+            Ok(Some(AskState { seq: int(a, &at, "seq")?, stage, code: opt_text(a, &at, "code")? }))
+        }
     }
 }
 

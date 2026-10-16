@@ -487,6 +487,10 @@ fn startWindows(self: *Command, arena: Allocator) !void {
     if (attribute_list != null) flags |= windows.EXTENDED_STARTUPINFO_PRESENT;
 
     var process_information: windows.PROCESS_INFORMATION = undefined;
+    // Shared with the plugins' spawns: a shell lives as long as its tab, and
+    // inheriting a plugin's pipe end in this call would keep that pipe open
+    // for all of it (`windows.spawn_lock`).
+    windows.lockSpawn(global.io());
     windows.spawnTrace("shell CreateProcessW", .begin, 0);
     const created = windows.exp.kernel32.CreateProcessW(
         null,
@@ -501,6 +505,7 @@ fn startWindows(self: *Command, arena: Allocator) !void {
         &process_information,
     );
     windows.spawnTrace("shell CreateProcessW", .end, 0);
+    windows.unlockSpawn(global.io());
     if (created == windows.FALSE) return spawnError(windows.GetLastError());
 
     self.pid = process_information.hProcess;

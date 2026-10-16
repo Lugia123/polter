@@ -46,6 +46,7 @@ GROUP_NAME_FILES = {
     "src/cli/chat.zig": "the chat page: names groups to the socket; holds no storage",
     "src/poltergeist/Chat.zig": "the table of groups (group_stores.Table.chat_groups)",
     "src/poltergeist/ChatLog.zig": "the record and the stream (group_stores.Root.chat, Stream.*)",
+    "src/poltergeist/ControlAsk.zig": "the control room's last ask of each group's supervisor, keyed by the group's name (group_stores.Table.control_asks): dropped on delete, re-keyed on rename",
     "src/poltergeist/ControlAct.zig": "a request from the control room: carries a group's name to Chat and GroupLog; stores nothing",
     "src/poltergeist/ControlFix.zig": "the control room's Fix button: carries a group's name to the post it makes; what it keeps (`Sent`) is keyed by the terminal told, the terminals that failed and when, not by name -- a rename neither loses a press nor needs re-keying",
     "src/poltergeist/ControlNotify.zig": "decides the control room's notifications from the snapshot's rows; the group's name only rides along to be said and clicked, and what it keeps (`done`) is keyed by terminal, kind and moment, not by name -- a rename neither re-sends nor loses anything",
@@ -84,6 +85,7 @@ TREE_FILES = {
 # (file, field name) -> what it is
 MAP_FIELDS = {
     ("src/poltergeist/Chat.zig", "groups"): "keyed by group name: group_stores.Table.chat_groups",
+    ("src/poltergeist/ControlAsk.zig", "asks"): "keyed by group name: group_stores.Table.control_asks",
     ("src/poltergeist/StatsLog.zig", "last"): "keyed by group name: group_stores.Table.stats_last",
     ("src/poltergeist/Server.zig", "tokens"): "keyed by token, not by group",
     ("src/poltergeist/Projects.zig", "settled"): "keyed by terminal id",

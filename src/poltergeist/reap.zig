@@ -53,6 +53,72 @@ pub fn kill(id: std.process.Child.Id) !void {
     }
 }
 
+/// Our ends of a child's pipes, which a fired deadline cuts as well as
+/// signalling the child.
+///
+/// **A kill does not end a read on its own.** It ends the process, and the
+/// read ends when the *last* holder of the pipe's other end lets go -- which
+/// is the child only while nothing else has a copy. On Windows something
+/// else often does: `spawn` creates the child's ends inheritable, nothing
+/// serialises one spawn against another, and a plugin or a shell started in
+/// that moment walks off with a copy that keeps the pipe open for as long as
+/// it lives. #1672 is that shape: the spawn trace shows four plugins
+/// started inside the same 16ms, and the one that exited by itself was
+/// never read to its end -- which process kept the copy was not
+/// identified. A plugin that exits by itself then leaves the host
+/// reading a pipe nobody will ever write to or close, and `TerminateProcess`
+/// on the corpse answers `ACCESS_DENIED` and changes nothing. A child that
+/// forks a helper without redirecting it does the same thing on POSIX.
+///
+/// So the end that is blocking is cut from our side, the way #26 ended the
+/// pty reader: by not caring who holds the far end.
+pub const Ends = struct {
+    /// The end we read the child's answers from.
+    read: ?std.Io.File.Handle = null,
+
+    /// The end we write to the child on. Windows only: a POSIX pipe has no
+    /// way to fail a write in flight from another thread.
+    write: ?std.Io.File.Handle = null,
+
+    pub const none: Ends = .{};
+};
+
+/// Make a read blocked on `ends.read`, and every read after it, end at once;
+/// on Windows, a write blocked on `ends.write` as well.
+///
+/// Windows: both are the server ends of named pipes (`spawn` makes them with
+/// `NtCreateNamedPipeFile`), and `DisconnectNamedPipe` ends what is in
+/// flight with `STATUS_PIPE_DISCONNECTED` -- an ordinary error, read as "the
+/// child is gone" -- and is sticky. Never `CancelIoEx`: see `Resident.hush`.
+///
+/// POSIX: `shutdown(SHUT_RD)`, which needs a socket. A pipe answers
+/// `ENOTSOCK` and nothing happens, which is no worse than before this
+/// existed.
+pub fn sever(ends: Ends) void {
+    switch (builtin.os.tag) {
+        .windows => {
+            const k32 = internal_os.windows.exp.kernel32;
+            if (ends.read) |h| _ = k32.DisconnectNamedPipe(h);
+            if (ends.write) |h| _ = k32.DisconnectNamedPipe(h);
+        },
+        else => if (ends.read) |fd| {
+            _ = std.c.shutdown(fd, std.c.SHUT.RD);
+        },
+    }
+}
+
+/// The exit code of a child that has already exited, for a log line; null
+/// while it is running, and always null off Windows (there the only way to
+/// ask is to reap, and reaping is not this file's to do).
+fn exitedWith(id: std.process.Child.Id) ?u32 {
+    if (comptime builtin.os.tag != .windows) return null;
+    const k32 = internal_os.windows.exp.kernel32;
+    if (k32.WaitForSingleObject(id, 0) != 0) return null;
+    var code: internal_os.windows.DWORD = 0;
+    if (k32.GetExitCodeProcess(id, &code) == internal_os.windows.FALSE) return null;
+    return code;
+}
+
 /// A number for this child that means something to a person reading a log.
 ///
 /// `Child.Id` is the process *handle* on Windows, and printing a handle
@@ -85,6 +151,11 @@ pub const Reaper = struct {
 
     /// Null once the waiter has reaped: nothing left to signal.
     pid: ?std.process.Child.Id = null,
+
+    /// Cut along with the signal. Valid for exactly as long as `pid` is
+    /// non-null: whoever closes them retires the reaper first, and this is
+    /// only read under the lock.
+    ends: Ends = .none,
 
     /// Milliseconds still allowed before the kill. Zero means "at the next
     /// tick".
@@ -121,10 +192,11 @@ pub const Reaper = struct {
     /// A `hurry` that already happened is honoured: the new child gets no
     /// grace either, because the reason to stop has not gone away just
     /// because the process has changed.
-    pub fn rearm(self: *Reaper, pid: ?std.process.Child.Id, ms: u64) void {
+    pub fn rearm(self: *Reaper, pid: ?std.process.Child.Id, ms: u64, ends: Ends) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.pid = pid;
+        self.ends = ends;
         self.left_ms = if (self.stopping) 0 else ms;
     }
 
@@ -151,6 +223,7 @@ pub const Reaper = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.pid = null;
+        self.ends = .none;
     }
 
     /// Whether this reaper is the reason the child is gone.
@@ -175,14 +248,29 @@ pub const Reaper = struct {
                     // Inside the lock: see the module comment. Between
                     // dropping it and calling `kill` the pid could already
                     // belong to somebody else.
-                    log.warn("plugin {s}: out of time, stopping it", .{self.key});
                     self.fired.store(true, .release);
-                    kill(pid) catch |err| {
+                    if (exitedWith(pid)) |code| {
                         log.warn(
-                            "plugin {s}: could not stop it err={}",
-                            .{ self.key, err },
+                            "plugin {s}: it exited by itself (code {d}) " ++
+                                "without answering; cutting its pipes",
+                            .{ self.key, code },
                         );
-                    };
+                    } else {
+                        log.warn("plugin {s}: out of time, stopping it", .{self.key});
+                        kill(pid) catch |err| {
+                            log.warn(
+                                "plugin {s}: could not stop it err={}; " ++
+                                    "cutting its pipes instead",
+                                .{ self.key, err },
+                            );
+                        };
+                    }
+
+                    // Whatever the kill did. Without this a read whose
+                    // far end somebody else holds waits for ever, and the
+                    // thread waiting in it is the one that would restart
+                    // the plugin and tell the person.
+                    sever(self.ends);
                     return;
                 }
             }
@@ -322,7 +410,7 @@ test "a child handed over after hurry gets no grace either" {
     reaper.hurry();
 
     var child = try sleeper(io);
-    reaper.rearm(child.id, 60 * std.time.ms_per_s);
+    reaper.rearm(child.id, 60 * std.time.ms_per_s, .none);
 
     const thread = std.Thread.spawn(.{}, Reaper.run, .{&reaper}) catch null;
     const term = try child.wait(io);

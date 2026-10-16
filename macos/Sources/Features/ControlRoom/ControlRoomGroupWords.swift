@@ -216,8 +216,10 @@ enum ControlRoomGroupWords {
     /// has text in it"); for a refusal with no short form, the core's own
     /// sentence. The two the core tries again by itself, three times
     /// (#1626), say so.
-    static func askReason(_ refusal: String) -> String {
-        let again = String(localized: ", will try again", comment: "总控台：没送出去的原因后面，核心会自己再试时加的半句")
+    static func askReason(_ refusal: String, willTryAgain: Bool = true) -> String {
+        let again = willTryAgain && triedAgain(refusal)
+            ? String(localized: ", will try again", comment: "总控台：没送出去的原因后面，核心会自己再试时加的半句")
+            : ""
         switch refusal {
         case "DraftInLine":
             return String(localized: "the supervisor's input has text in it", comment: "总控台：没送出去的原因：总管的输入框里有字") + again
@@ -232,6 +234,11 @@ enum ControlRoomGroupWords {
         default:
             return ControlRoomActions.Refusal(name: refusal).message
         }
+    }
+
+    /// The two refusals the core tries again by itself (#1626).
+    static func triedAgain(_ refusal: String) -> Bool {
+        refusal == "DraftInLine" || refusal == "UserPresent"
     }
 
     /// The same line when the sentence did not go in: why, as the core

@@ -455,6 +455,8 @@ pub fn snapshot_changed() {
     list_changed(hwnd);
     // A group the person just made is selected as soon as it is listed.
     select_made(hwnd);
+    // An ask being tried again may have gone in, or been given up on.
+    follow_asks(hwnd);
     // The supervisor the core names may have changed, or gone.
     sync_loan(hwnd);
     unsafe {
@@ -1643,7 +1645,52 @@ fn ask_supervisor(hwnd: HWND, group: &str, ask: act::Ask) {
         Err(why) => {
             wlogf!(frame, "[control-room] {} refused: {}", request, why);
             let (words, retried) = act::not_delivered(&why);
-            say_under(hwnd, group, Some(scene::UnderLine::NotDelivered { why: tr(words), retried }), None);
+            say_under(hwnd, group, Some(scene::UnderLine::NotDelivered { why: tr(words), retried, ask, on: None }), None);
+        }
+    }
+}
+
+/// A new snapshot may say how an ask that is being tried again ended (task
+/// 1671): the line under its row says it went in, and folds away, or says
+/// why it was given up on. The ask's own reply could only say it would be
+/// tried again.
+fn follow_asks(hwnd: HWND) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let waiting: Vec<(String, act::Ask, Option<u64>)> = UNDER.with(|u| {
+        u.borrow()
+            .iter()
+            .filter_map(|(id, line, _)| match line {
+                scene::UnderLine::NotDelivered { retried: true, ask, on, .. } => Some((id.clone(), *ask, *on)),
+                _ => None,
+            })
+            .collect()
+    });
+    for (group, ask, on) in waiting {
+        let said = source::with(|data| match data {
+            Data::Ready(r) => r.list.rows().find(|row| row.id == group && row.alone.is_none()).and_then(|row| row.ask.clone()),
+            Data::NotYet => None,
+            Data::Unreadable(_) => None,
+        });
+        match act::follow_ask(on, said.as_ref()) {
+            act::AskNow::Keep => {}
+            act::AskNow::Wait(seq) => UNDER.with(|u| {
+                for (id, line, _) in u.borrow_mut().iter_mut() {
+                    if *id == group {
+                        if let scene::UnderLine::NotDelivered { on, .. } = line {
+                            *on = Some(seq);
+                        }
+                    }
+                }
+            }),
+            act::AskNow::Delivered => {
+                wlogf!(frame, "[control-room] ask in {:?} went in on a retry", group);
+                say_under(hwnd, &group, Some(scene::UnderLine::Asked(ask)), Some(std::time::Duration::from_secs_f64(look::group_note::FEEDBACK_SECONDS)));
+            }
+            act::AskNow::GaveUp(code) => {
+                wlogf!(frame, "[control-room] ask in {:?} given up on: {}", group, code);
+                let (words, _) = act::not_delivered(&code);
+                say_under(hwnd, &group, Some(scene::UnderLine::NotDelivered { why: tr(words), retried: false, ask, on }), None);
+            }
         }
     }
 }
@@ -1721,20 +1768,14 @@ fn rename_handles() -> Option<(String, isize)> {
 /// first line, from the text column to the row's end.
 fn rename_rect(hwnd: HWND, group: &str) -> Option<RECT> {
     let g = geometry(hwnd);
-    let row = source::with(|data| match data {
+    let line = source::with(|data| match data {
         Data::Ready(r) => {
             let lay = list_layout(hwnd, &r.list, g.room.panel.h);
-            let rect = lay.chip(Some(group))?;
-            let waiting = r.list.waiting.iter().any(|w| w.id == group);
-            Some((rect, waiting))
+            scene::rename_field(&r.list, &lay, group)
         }
         Data::NotYet => None,
         Data::Unreadable(_) => None,
     })?;
-    let (rect, waiting) = row;
-    let text_x = rect.x + side::ROW_PADDING_X + side::GLYPH + side::ROW_ITEM_GAP;
-    let (top, h) = if waiting { (rect.y + side::ROW_PADDING_Y, side::ROW_LINE1_HEIGHT) } else { (rect.y, side::QUIET_ROW_HEIGHT) };
-    let line = layout::Rect { x: text_x, y: top, w: (rect.x + rect.w - side::ROW_PADDING_X - text_x).max(1.0), h };
     Some(panel_origin(&g).rect(line))
 }
 

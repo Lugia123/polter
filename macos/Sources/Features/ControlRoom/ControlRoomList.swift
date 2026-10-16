@@ -96,6 +96,28 @@ struct ControlRoomList: Equatable {
         /// The project's name when the group is bound to one.
         var project: String?
         var deleteCost: ControlRoomSnapshot.DeleteCost?
+        /// What became of the control room's last ask of its supervisor
+        /// (task 1671); nil when none was made since the core started.
+        var ask: AskState?
+    }
+
+    /// How the control room's last ask of a group's supervisor went (task
+    /// 1671, `ControlAsk.zig`): the ask's own answer was the first try's,
+    /// and a retry's end is only ever said here.
+    struct AskState: Equatable {
+        enum Stage: String {
+            /// It will be typed again.
+            case retrying
+            /// It is in the supervisor's terminal.
+            case delivered
+            /// It was not typed, and will not be.
+            case gaveUp = "gave_up"
+        }
+        /// The group message the ask was kept as.
+        var seq: UInt64
+        var stage: Stage
+        /// The last refusal's code, as the core names it; nil once delivered.
+        var code: String?
     }
 
     /// A group in "Archived": its name, its note, when it was put away, and
@@ -779,6 +801,15 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var record_dir: String?
         var brief: String?
         var project: Project?
+        /// Task 1671. Null when the group was not asked anything.
+        var ask: Ask?
+
+        struct Ask: Decodable, Equatable {
+            var seq: UInt64
+            /// retrying | delivered | gave_up; another is not read.
+            var state: String
+            var code: String?
+        }
 
         struct Muted: Decodable, Equatable {
             /// Wall clock; null for until it is unmuted.
@@ -1085,7 +1116,10 @@ extension ControlRoomList {
                     recordDir: group.record_dir,
                     brief: group.brief ?? "",
                     project: group.project?.tie == "bound" ? group.project?.name : nil,
-                    deleteCost: group.delete_cost)))
+                    deleteCost: group.delete_cost,
+                    ask: group.ask.flatMap { a in
+                        AskState.Stage(rawValue: a.state).map { AskState(seq: a.seq, stage: $0, code: a.code) }
+                    })))
         }
         let rows = groups + lone
         self.init(

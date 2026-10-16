@@ -81,6 +81,10 @@ pub const Table = enum {
     /// group, for marking the reader told and for the line that says it
     /// gave up (#60).
     mention_retries,
+
+    /// `ControlAsk.asks`: how the control room's last ask of the group's
+    /// supervisor went (task 1671).
+    control_asks,
 };
 
 /// An open file or directory handle that points into a place a rename

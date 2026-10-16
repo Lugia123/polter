@@ -611,6 +611,40 @@ pub fn ProcThreadAttributeValue(
         (if (additive) PROC_THREAD_ATTRIBUTE_ADDITIVE else 0);
 }
 
+/// One child at a time comes into being on Windows, for the spawns that hold
+/// it.
+///
+/// **Why a lock, when the code it guards is not ours.** `std.process.spawn`
+/// creates the child's ends of its pipes *inheritable* and then calls
+/// `CreateProcessW` with `bInheritHandles = TRUE`; so does the shell spawn in
+/// `Command.zig`. Neither asks for a handle list, so every process created in
+/// that window -- by any thread -- inherits every inheritable handle in the
+/// process at that moment, including the ends meant for somebody else's
+/// child. #1672 is the case that brought this here: the spawn trace shows four
+/// plugins started inside the same 16ms, and the one that exited by itself was
+/// never seen to exit. A sibling holding a copy of its standard output is the
+/// explanation that fits; which process held it was not identified.
+///
+/// Held from before the pipes are made until after the parent's copies of
+/// the child's ends are closed -- which `spawn` does before it returns -- so
+/// no spawn that takes this lock can inherit another's ends. It is a
+/// narrowing, not a guarantee: a spawn that does not take it (the Rust host,
+/// a library) can still collect them, which is why the reaper also cuts the
+/// pipe from our side (`reap.sever`) instead of trusting end of input.
+///
+/// A no-op off Windows: there `spawn` makes its pipes close-on-exec.
+pub var spawn_lock: std.Io.Mutex = .init;
+
+pub fn lockSpawn(io: std.Io) void {
+    if (comptime builtin.os.tag != .windows) return;
+    spawn_lock.lockUncancelable(io);
+}
+
+pub fn unlockSpawn(io: std.Io) void {
+    if (comptime builtin.os.tag != .windows) return;
+    spawn_lock.unlock(io);
+}
+
 /// **An instrument for #26, not a feature: remove it with the question.**
 ///
 /// The #26 hypothesis is that a process spawned while `CreatePseudoConsole`

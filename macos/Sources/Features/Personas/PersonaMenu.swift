@@ -214,25 +214,16 @@ enum PersonaMenu {
                 entry.isEnabled = !shielded && actionable
                 if !persona.summaryForMenu.isEmpty { entry.toolTip = persona.summaryForMenu }
 
-                // More than one CLI: the row opens a list of them, and the
-                // chosen one rides along as `key,cli`. With one or none the
-                // core already knows which, and the row acts directly.
-                if persona.clis.count > 1 {
-                    entry.action = nil
-                    let sub = NSMenu()
-                    sub.autoenablesItems = false
-                    for cli in persona.clis {
-                        let row = NSMenuItem(
-                            title: cli.label,
-                            action: #selector(PersonaMenuTarget.setPoltergeistPersona(_:)),
-                            keyEquivalent: "")
-                        row.target = target
-                        row.representedObject = "\(persona.key),\(cli.key)"
-                        row.isEnabled = !shielded && actionable
-                        sub.addItem(row)
-                    }
-                    entry.submenu = sub
-                }
+                // Several CLIs here: the row opens a list of them, and the
+                // chosen one rides along as `key,cli`. Only the ones the
+                // core found an adapter for are listed (`RoleCliOffer`).
+                persona.cliOffer.apply(
+                    to: entry,
+                    key: persona.key,
+                    labels: Dictionary(persona.clis.map { ($0.key, $0.label) }, uniquingKeysWith: { a, _ in a }),
+                    action: #selector(PersonaMenuTarget.setPoltergeistPersona(_:)),
+                    target: target,
+                    enabled: !shielded && actionable)
                 menu.addItem(entry)
             }
         }

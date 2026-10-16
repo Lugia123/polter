@@ -1969,3 +1969,25 @@ fn take_over_is_in_the_menu_where_the_core_offers_it() {
     none.title = None;
     assert_eq!(sup_of(&none), Sup::None);
 }
+
+/// Task 1671: the core says how its last ask of a group's supervisor went
+/// -- in the fixture, web-app's is being tried again -- and of every other
+/// group nothing, as it says of one never asked.
+#[test]
+fn the_last_ask_of_a_supervisor_is_read_from_the_cores_own_words() {
+    use crate::snapshot::{AskStage, AskState};
+    let l = list();
+    for row in l.rows().filter(|r| r.alone.is_none()) {
+        if row.id == "web-app" {
+            assert_eq!(row.ask, Some(AskState { seq: 41, stage: AskStage::Retrying, code: Some("DraftInLine".into()) }));
+        } else {
+            assert_eq!(row.ask, None, "{}", row.id);
+        }
+    }
+    // A stage this build does not know is not read, and a core from before
+    // the field is read as one that says nothing.
+    let unknown = FIXTURE.replacen("\"state\": \"retrying\"", "\"state\": \"pondering\"", 1);
+    assert_ne!(unknown, FIXTURE);
+    let l = List::from_snapshot(&snapshot::decode(&unknown).expect("still decodes"));
+    assert!(l.rows().all(|r| r.ask.is_none()));
+}

@@ -363,8 +363,10 @@ pub enum UnderLine {
     /// sentence was typed into its terminal. Not "done" -- asked.
     Asked(crate::act::Ask),
     /// It could not be typed in, and why, in a few words; `retried` when
-    /// the core will try again by itself.
-    NotDelivered { why: String, retried: bool },
+    /// the core will try again by itself. `ask` is what was asked, for the
+    /// line that replaces this one when a retry goes in, and `on` the
+    /// message it is about, once a snapshot has said (`act::follow_ask`).
+    NotDelivered { why: String, retried: bool, ask: crate::act::Ask, on: Option<u64> },
 }
 
 /// The lines under rows, the archived section, and the red line under a
@@ -400,15 +402,19 @@ pub fn build_extras(
                 ),
                 theme.text_secondary,
             ),
-            UnderLine::NotDelivered { why, retried } => (
+            UnderLine::NotDelivered { why, retried, .. } => (
                 format!("\u{26a0} {}", list::fill(&tr(if *retried { msg::NOT_DELIVERED_RETRIED } else { msg::NOT_DELIVERED }), why)),
                 theme.problem_text_on_row,
             ),
         };
         out.push(Item::Text { rect, text, style: body(color), align: Align::Left });
         if matches!(line, UnderLine::Refused(_)) {
-            // The field's underline, red: the line just above this one.
-            out.push(fill(Rect { x: text_x, y: r.y - 2.0, w: rect.w, h: 2.0 }, theme.problem_text_on_row));
+            // The field's underline, red: in the strip `rename_field` keeps
+            // clear of the field, where the field cannot paint over it
+            // (task 1671: it used to sit under the field's own window).
+            if let Some(f) = rename_field(list, at, id) {
+                out.push(fill(Rect { x: f.x, y: f.y + f.h, w: f.w, h: crate::look::line::STROKE }, theme.problem_text_on_row));
+            }
         }
     }
     if at.archived_header.h > 0.0 {
@@ -737,6 +743,19 @@ pub fn quiet_text(row: &Row) -> String {
 
 /// The column every row's glyph stands in, so that the eye runs down one
 /// line of them: where it starts, and where what follows it starts.
+/// Where the field is that a group's name becomes while it is renamed, in
+/// the list's coordinates (scrolled as the rows are): the name's line, from
+/// the text column to the row's end, less a `line::STROKE` at its foot for
+/// the red line a refused name is underlined with -- a strip the host's edit
+/// control does not cover. `None` when the group has no row.
+pub fn rename_field(list: &List, at: &ListLayout, id: &str) -> Option<Rect> {
+    let row = at.chip(Some(id))?;
+    let waiting = list.waiting.iter().any(|w| w.id == id);
+    let (_, text_x) = glyph_column(row);
+    let (top, h) = if waiting { (row.y + side::ROW_PADDING_Y, side::ROW_LINE1_HEIGHT) } else { (row.y, side::QUIET_ROW_HEIGHT) };
+    Some(Rect { x: text_x, y: top, w: (row.x + row.w - side::ROW_PADDING_X - text_x).max(1.0), h: (h - line::STROKE).max(1.0) })
+}
+
 fn glyph_column(rect: Rect) -> (f64, f64) {
     let x = rect.x + side::ROW_PADDING_X;
     (x, x + side::GLYPH + side::ROW_ITEM_GAP)
@@ -1437,7 +1456,10 @@ pub fn build_right(
             if let Some(note) = &title.note {
                 let said = crate::snapshot::fill(&tr(&note.template), &note.args);
                 if draws(&said) {
-                    parts.push(words(said, body(theme.attention_text), Side::Trail, pane::BAR_GAP));
+                    // The first to give way when the bar is short (task
+                    // 1671; the macOS host lets it go first too): the name,
+                    // its role, the status and the button keep their room.
+                    parts.push(words(said, body(theme.attention_text), Side::Squeezed, pane::BAR_GAP));
                 }
             }
             // What is happening to it, or why the last take-over stopped.
@@ -1620,7 +1642,7 @@ mod tests {
         let theme = look::theme(true);
         let view = View { theme, scale: 1.0, selection: None, lit: Lit::Selection, chip: None, lift: 0.0, pulsing: None, naming: None, fix_refusal: None };
         let under = vec![
-            (w.clone(), UnderLine::NotDelivered { why: "x".into(), retried: true }),
+            (w.clone(), UnderLine::NotDelivered { why: "x".into(), retried: true, ask: crate::act::Ask::Report, on: None }),
             (q.clone(), UnderLine::Asked(crate::act::Ask::CloseIdle)),
         ];
         let items = build_extras(&l, &at, &view, &under, true, 8 * 3_600_000, &same);
@@ -1640,6 +1662,40 @@ mod tests {
         assert_eq!(r.y, at.line_rects.iter().find(|(id, _)| *id == q).unwrap().1.y);
         assert!(text_at("Archived (1)").is_some());
         assert!(texts(&items).iter().any(|t| t == "archived 10/16"), "{:?}", texts(&items));
+    }
+
+    /// Task 1671 (the test machine, #1666): a refused name's red line is
+    /// drawn just under the field, in the strip the field leaves clear --
+    /// for a waiting card's name and a quiet row's. It used to be drawn in
+    /// the field's last two pixels, where the edit control covered it.
+    #[test]
+    fn a_refused_names_red_line_is_under_the_field_not_beneath_it() {
+        use crate::layout::Extras;
+        let l = list();
+        let (w, q) = (l.waiting[0].id.clone(), l.quiet[0].id.clone());
+        let extras = Extras { lines_under: vec![w.clone(), q.clone()], archived: vec![], archived_open: false };
+        let at = ListLayout::measured_with(&l, 900.0, &|t, _| crate::layout::nominal_lines(t), &extras);
+        let theme = look::theme(false);
+        let view = View { theme, scale: 1.0, selection: None, lit: Lit::Selection, chip: None, lift: 0.0, pulsing: None, naming: None, fix_refusal: None };
+        for id in [&w, &q] {
+            let under = vec![(id.clone(), UnderLine::Refused("taken".into()))];
+            let items = build_extras(&l, &at, &view, &under, false, 0, &same);
+            let field = rename_field(&l, &at, id).unwrap();
+            let red: Vec<Rect> = items
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Fill { rect, color, .. } if *color == theme.problem_text_on_row => Some(*rect),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(red.len(), 1, "{id}: {red:?}");
+            let line = red[0];
+            assert_eq!((line.x, line.w), (field.x, field.w), "{id}");
+            assert_eq!(line.y, field.y + field.h, "{id}: the line is just under the field");
+            assert!(line.h > 0.0);
+            let row = at.chip(Some(id)).unwrap();
+            assert!(line.y + line.h <= row.y + row.h, "{id}: and inside its row");
+        }
     }
 
     /// Task 1661 (design v21 `04-B`): the brief's panel says whose brief
@@ -2367,6 +2423,44 @@ mod tests {
 
     fn right(detail: &Detail_, row: Option<&Row>, in_terminal: bool) -> Right {
         build_right(detail, row, 600.0, 700.0, look::theme(false), 1.0, in_terminal, &same)
+    }
+
+    /// Task 1671 (the test machine, #1666, 1635-W5): on a bar too short for
+    /// all of it, the "started by hand" note gives way -- the name and the
+    /// role word beside it stay whole, as do the status and the button. It
+    /// used to keep its width and push left over the role word.
+    #[test]
+    fn the_started_by_hand_note_gives_way_before_the_supervisors_name() {
+        use crate::lend::Loan;
+        let l = list();
+        let row = l.rows().find(|r| r.id == "docs-site").unwrap();
+        let loan = Loan { group: row.id.clone(), terminal: row.steward.clone().unwrap() };
+        let right = build_right(&Detail_::Terminal(loan), Some(row), 600.0, 700.0, look::theme(false), 1.0, false, &same);
+        let Some(Item::Line { parts, .. }) = right.items.iter().find(|i| matches!(i, Item::Line { .. })) else { panic!("no bar") };
+        let text = |p: &Part| match &p.piece {
+            Piece::Words { text, .. } => text.clone(),
+            _ => String::new(),
+        };
+        let note = parts.iter().position(|p| text(p) == "Started by hand: no status").expect("docs-site's bar has the note");
+        // Seven pixels a character, a glyph 14: what a host would measure.
+        let measured: Vec<(Side, i32, i32)> = parts
+            .iter()
+            .map(|p| (p.side, p.gap as i32, match &p.piece { Piece::Words { text, .. } => 7 * text.chars().count() as i32, _ => 14 }))
+            .collect();
+        let whole: i32 = measured.iter().map(|(_, g, w)| g + w).sum();
+        let note_w = measured[note].2;
+        // Half the note too short, and short by all of it and its gap.
+        for short in [note_w / 2, note_w + measured[note].1] {
+            let placed = place_line(0, whole - short, &measured);
+            for (i, p) in parts.iter().enumerate() {
+                if i == note {
+                    assert!(placed[i].is_none_or(|at| at.cut), "the note gives way by {short}: {:?}", placed[i]);
+                } else {
+                    let at = placed[i].unwrap_or_else(|| panic!("{:?} has no room, {short} short", text(p)));
+                    assert!(!at.cut, "{:?} is cut, {short} short", text(p));
+                }
+            }
+        }
     }
 
     #[test]

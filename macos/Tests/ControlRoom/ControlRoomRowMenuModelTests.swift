@@ -190,6 +190,57 @@ struct ControlRoomRowMenuModelTests {
         #expect(rig.later.isEmpty)
     }
 
+    /// Task 1671 (the test machine, #1666): a retry that went in left the
+    /// line saying "will try again". The core's next words on the ask --
+    /// the fixture's web-app is being tried again as message 41 -- are
+    /// followed: the line learns its message, then that it went in.
+    @Test func aRetryThatWentInSaysAskedAndFoldsAway() throws {
+        let rig = try Rig()
+        rig.refuse["ask_supervisor"] = "DraftInLine"
+        rig.model.choose("report_progress", on: try rig.row("web-app"))
+        let waiting = try #require(rig.model.rowLines["web-app"])
+        #expect(waiting.retry == .init(ask: .reportProgress, on: nil))
+
+        try say(rig, ask: ["seq": 41, "state": "retrying", "code": "DraftInLine"])
+        #expect(rig.model.rowLines["web-app"]?.retry?.on == 41)
+        #expect(rig.model.rowLines["web-app"]?.text == waiting.text)
+        #expect(rig.later.isEmpty)
+
+        try say(rig, ask: ["seq": 41, "state": "delivered", "code": NSNull()])
+        let line = try #require(rig.model.rowLines["web-app"])
+        #expect(line.delivered)
+        #expect(line.text == ControlRoomGroupWords.asked(.reportProgress))
+        #expect(rig.later.map(\.0) == [ControlRoomLook.GroupNote.feedbackSeconds])
+    }
+
+    /// One given up on says why, and no longer that it will try again; the
+    /// ask before this one is never taken for it.
+    @Test func aRetryGivenUpOnSaysWhyAndOnlyThisAsksEndCounts() throws {
+        let rig = try Rig()
+        rig.refuse["ask_supervisor"] = "UserPresent"
+        rig.model.choose("report_progress", on: try rig.row("web-app"))
+        try say(rig, ask: ["seq": 41, "state": "retrying", "code": "UserPresent"])
+        try say(rig, ask: ["seq": 40, "state": "delivered", "code": NSNull()])
+        #expect(rig.model.rowLines["web-app"]?.delivered == false)
+
+        try say(rig, ask: ["seq": 41, "state": "gave_up", "code": "UserPresent"])
+        let line = try #require(rig.model.rowLines["web-app"])
+        #expect(!line.delivered)
+        #expect(line.retry == nil)
+        #expect(line.text == ControlRoomGroupWords.notDelivered(ControlRoomGroupWords.askReason("UserPresent", willTryAgain: false)))
+        #expect(!line.text.contains(ControlRoomGroupWords.askReason("UserPresent")))
+    }
+
+    /// The rig's snapshot again, with web-app's last ask as given.
+    private func say(_ rig: Rig, ask: [String: Any]) throws {
+        var snapshot = try #require(try JSONSerialization.jsonObject(with: Data(rig.core.json.utf8)) as? [String: Any])
+        var groups = try #require(snapshot["groups"] as? [[String: Any]])
+        let i = try #require(groups.firstIndex { $0["name"] as? String == "web-app" })
+        groups[i]["ask"] = ask
+        snapshot["groups"] = groups
+        rig.core.say(try #require(String(bytes: try JSONSerialization.data(withJSONObject: snapshot), encoding: .utf8)))
+    }
+
     /// An old line folding away does not take a newer one with it.
     @Test func foldingAnOldLineLeavesTheNewOne() throws {
         let rig = try Rig()

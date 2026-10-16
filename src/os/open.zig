@@ -55,6 +55,10 @@ pub fn open(
     // a console, not output.
     spawn_opts.create_no_window = true;
 
+    // What opens a link can live for hours (an editor, a browser), which is
+    // the kind of process that must not inherit a plugin's pipe end.
+    windows.lockSpawn(global.io());
+    defer windows.unlockSpawn(global.io());
     windows.spawnTrace("open spawn", .begin, 0);
     const exe = if (comptime build_config.snap) local_env: {
         // In the snap on Linux the launcher exports LD_LIBRARY_PATH

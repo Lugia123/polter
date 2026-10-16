@@ -289,6 +289,8 @@ final class ControlRoomModel: ObservableObject {
             guard let self else { return }
             let next = ControlRoomList(snapshot: snapshot, showing: showing())
             self.list = next
+            // An ask being tried again may have gone in, or been given up on.
+            self.followAsks(in: next)
             // A refusal is about a button that is there to press again;
             // once the card stops offering it, there is nothing to say.
             if let refused = self.fixRefusal,

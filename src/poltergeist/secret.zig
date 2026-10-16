@@ -291,6 +291,7 @@ fn runCapturing(
     io: std.Io,
     argv: []const []const u8,
 ) Error![]const u8 {
+    internal_os.windows.lockSpawn(io);
     internal_os.windows.spawnTrace("secret spawn", .begin, 0);
     const spawned = std.process.spawn(io, .{
         .argv = argv,
@@ -303,6 +304,7 @@ fn runCapturing(
         .stderr = .inherit,
     });
     internal_os.windows.spawnTrace("secret spawn", .end, 0);
+    internal_os.windows.unlockSpawn(io);
     var child = spawned catch |err| {
         log.warn("secret: could not run resolver err={}", .{err});
         return error.Unresolved;
@@ -321,6 +323,11 @@ fn runCapturing(
     // half that blocks first; killing the child is what closes the pipe and
     // ends it.
     var reaper: reap.Reaper = .init(io, "secret resolver", child.id, timeout_ms);
+
+    // Cut as well as killed: a resolver that exits while somebody else holds
+    // a copy of its standard output would otherwise leave the read below
+    // open for good (`reap.Ends`).
+    reaper.ends = .{ .read = if (child.stdout) |f| f.handle else null };
     const clock = std.Thread.spawn(.{}, reap.Reaper.run, .{&reaper}) catch null;
 
     var out: std.Io.Writer.Allocating = .init(alloc);

@@ -115,7 +115,9 @@
         ],
         "why": "only the measurements of the gap round a framed pane are taken, which ProjectPaneSizes sizes a reopened pane by; the rest needs Ghostty.App, the real SurfaceView and BaseTerminalController: it is where a frame is put round a live pane"
       },
-      "macos/Sources/Features/Projects/ProjectPaneSizes.swift"
+      "macos/Sources/Features/Projects/ProjectPaneSizes.swift",
+      "macos/Sources/Features/Personas/RoleCliOffer.swift",
+      "macos/Sources/Features/Roles/RoleModels.swift"
     ],
     "out": [
       {
@@ -190,7 +192,8 @@
       "macos/Tests/PluginInterfaceLanguageTests.swift",
       "macos/Tests/PluginNoteSayTests.swift",
       "macos/Tests/CommandPaletteHostMenuTests.swift",
-      "macos/Tests/Projects/ProjectPaneSizesTests.swift"
+      "macos/Tests/Projects/ProjectPaneSizesTests.swift",
+      "macos/Tests/Personas/RoleCliOfferTests.swift"
     ],
     "out": [
       {

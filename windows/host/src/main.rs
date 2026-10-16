@@ -1594,6 +1594,68 @@ static API: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HWND_G: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static CELL_W: AtomicU32 = AtomicU32::new(0);
 static CELL_H: AtomicU32 = AtomicU32::new(0);
+/// Whether `app_tick` is running, so the modal ticker never re-enters it.
+static IN_TICK: AtomicBool = AtomicBool::new(false);
+
+/// Run the core's tick, unless it is already running further up this stack.
+///
+/// That happens when something the core called back into opens a box of its
+/// own: the box's loop dispatches the modal ticker, and the core is not
+/// re-entrant. The box then stalls the core, as every box did before.
+fn tick_core(api: &Api, app: *mut c_void) -> bool {
+    if IN_TICK.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    unsafe { (api.app_tick)(app) };
+    IN_TICK.store(false, Ordering::Release);
+    true
+}
+
+/// How often the modal ticker looks, in ms. The main loop goes round every
+/// 8 ms, so a period this long that saw no turn of it is not a slow turn.
+const MODAL_TICK_MS: u32 = 50;
+
+/// **The core keeps being ticked while a modal loop holds the main loop**
+/// (task 1671).
+///
+/// `app_tick` is called from the main loop and nowhere else, and a modal loop
+/// -- a TaskDialog, a MessageBox, a popup menu, a window being dragged -- runs
+/// inside one of that loop's `DispatchMessageW` calls until it closes. Until
+/// then the core's mailbox is not drained, and **every agent's MCP call waits
+/// for the person to answer the box**: measured on the test machine, a
+/// `task_create` sat 30 s and timed out behind a delete confirmation.
+///
+/// A modal loop does dispatch a thread timer, so this is one. It ticks only
+/// when the main loop has not gone round since the last look -- dispatched by
+/// the main loop itself, it does nothing. `TICKS` is left alone, so the
+/// watchdog's `PUMP BUSY` still reads a modal loop for what it is.
+unsafe extern "system" fn modal_tick(_hwnd: HWND, _msg: u32, _id: usize, _time: u32) {
+    static SEEN: AtomicU64 = AtomicU64::new(u64::MAX);
+    static TICKING: AtomicBool = AtomicBool::new(false);
+    let now = TICKS.load(Ordering::Relaxed);
+    if SEEN.swap(now, Ordering::Relaxed) != now {
+        // absence: means it was not reached -- the ticker had not started.
+        if TICKING.swap(false, Ordering::Relaxed) {
+            // process-wide: one core, one main loop
+            plogf!("[loop] main loop going round again at tick {now}; the modal ticker stops");
+        }
+        return;
+    }
+    let app = APP.load(Ordering::Acquire);
+    if app.is_null() {
+        return;
+    }
+    // absence: means it was not reached -- no modal loop held the main loop
+    // for a whole period, or the core was already in its tick further up.
+    if tick_core(api(), app) && !TICKING.swap(true, Ordering::Relaxed) {
+        // process-wide: one core, one main loop
+        plogf!(
+            "[loop] main loop held at tick {now} (a modal box, menu or drag); \
+             the core is ticked every {MODAL_TICK_MS} ms until it comes back"
+        );
+    }
+}
+
 /// Whether to call ghostty_surface_draw from the window procedure.
 /// Off by default: the renderer thread owns the WGL context, so a
 /// main-thread draw has no context current. See dev-docs/windows/status.md.
@@ -7724,6 +7786,14 @@ fn main() {
         logf!("--polter-host-selfresize: the host will resize its own window once, at ~5s");
     }
 
+    // See `modal_tick`.
+    let modal_ticker = unsafe { SetTimer(None, 0, MODAL_TICK_MS, Some(modal_tick)) };
+    // absence: means it was not reached -- the ticker started.
+    if modal_ticker == 0 {
+        // process-wide: one core, one main loop
+        plogf!("[loop] the modal ticker did not start; a modal box will hold the core until it closes");
+    }
+
     let mut msg = MSG::default();
     let mut ticks: u64 = 0;
     let mut pf_logged = false;
@@ -8056,7 +8126,7 @@ fn main() {
                 }
                 TRACING_INTERCEPT.store(false, Ordering::Release);
             }
-            (api_box.app_tick)(app);
+            tick_core(api_box, app);
         }
         ticks += 1;
         TICKS.store(ticks, Ordering::Relaxed);

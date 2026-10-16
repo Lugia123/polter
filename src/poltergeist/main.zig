@@ -14,6 +14,7 @@ pub const Resident = @import("Resident.zig");
 pub const Bus = @import("Bus.zig");
 pub const Chat = @import("Chat.zig");
 pub const ControlAct = @import("ControlAct.zig");
+pub const ControlAsk = @import("ControlAsk.zig");
 pub const ControlFix = @import("ControlFix.zig");
 pub const ControlNotify = @import("ControlNotify.zig");
 pub const ControlRoom = @import("ControlRoom.zig");
@@ -102,6 +103,7 @@ test {
     _ = Chat;
     _ = ControlAct;
     _ = @import("HostProjectActs.zig");
+    _ = ControlAsk;
     _ = ControlFix;
     _ = ControlNotify;
     _ = ControlRoom;
