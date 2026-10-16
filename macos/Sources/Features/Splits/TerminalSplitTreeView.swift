@@ -95,6 +95,9 @@ private struct TerminalSplitLeaf: View {
 
     @State private var dropState: DropState = .idle
     @State private var isSelfDragging: Bool = false
+    /// A drag started inside this pane: the pane itself, or one of its own
+    /// stack by its tab. Its middle is then no target (task 1633).
+    @State private var isDraggingFromInside: Bool = false
 
     /// Whether the control room has this pane's terminal just now.
     @ObservedObject private var lender = ControlRoomLender.shared
@@ -126,6 +129,9 @@ private struct TerminalSplitLeaf: View {
                             dropState: $dropState,
                             viewSize: geometry.size,
                             destinationSurface: surfaceView,
+                            middle: TerminalSplitDropZone.middle(
+                                draggedFromInside: isDraggingFromInside,
+                                holdsStacks: BaseTerminalController.controller(owning: surfaceView)?.holdsStacks ?? false),
                             action: action
                         ))
                 }
@@ -150,6 +156,7 @@ private struct TerminalSplitLeaf: View {
             }
             .onPreferenceChange(Ghostty.DraggingSurfaceKey.self) { value in
                 isSelfDragging = value == surfaceView.id
+                isDraggingFromInside = value != nil
                 if isSelfDragging {
                     dropState = .idle
                 }
@@ -162,28 +169,46 @@ private struct TerminalSplitLeaf: View {
     private enum DropState: Equatable {
         case idle
         case dropping(TerminalSplitDropZone)
+        /// Over the middle of the pane the drag came out of: nothing lit,
+        /// and letting go does nothing (task 1633).
+        case inert
     }
 
     private struct SplitDropDelegate: DropDelegate {
         @Binding var dropState: DropState
         let viewSize: CGSize
         let destinationSurface: Ghostty.SurfaceView
+        /// What this pane's middle does (task 1633).
+        let middle: TerminalSplitDropZone.Middle
         let action: (TerminalSplitOperation) -> Void
 
         func validateDrop(info: DropInfo) -> Bool {
             info.hasItemsConforming(to: [.ghosttySurfaceId])
         }
 
+        /// The zone under the pointer, or nil where letting go does nothing.
+        private func zone(_ info: DropInfo) -> TerminalSplitDropZone? {
+            let zone = TerminalSplitDropZone.calculate(at: info.location, in: viewSize, middle: middle != .absent)
+            return zone == .middle && middle == .inert ? nil : zone
+        }
+
         func dropEntered(info: DropInfo) {
-            dropState = .dropping(.calculate(at: info.location, in: viewSize))
+            dropState = zone(info).map { .dropping($0) } ?? .inert
         }
 
         func dropUpdated(info: DropInfo) -> DropProposal? {
             // For some reason dropUpdated is sent after performDrop is called
             // and we don't want to reset our drop zone to show it so we have
             // to guard on the state here.
-            guard case .dropping = dropState else { return DropProposal(operation: .forbidden) }
-            dropState = .dropping(.calculate(at: info.location, in: viewSize))
+            switch dropState {
+            case .idle: return DropProposal(operation: .forbidden)
+            case .dropping, .inert: break
+            }
+            guard let zone = zone(info) else {
+                dropState = .inert
+                return DropProposal(operation: .forbidden)
+            }
+            dropState = .dropping(zone)
             return DropProposal(operation: .move)
         }
 
@@ -192,8 +217,8 @@ private struct TerminalSplitLeaf: View {
         }
 
         func performDrop(info: DropInfo) -> Bool {
-            let zone = TerminalSplitDropZone.calculate(at: info.location, in: viewSize)
             dropState = .idle
+            guard let zone = zone(info) else { return false }
 
             // Load the dropped surface asynchronously using Transferable
             let providers = info.itemProviders(for: [.ghosttySurfaceId])
@@ -261,6 +286,46 @@ enum TerminalSplitDropZone: String, Equatable {
     case bottom
     case left
     case right
+    /// Onto the pane's stack, in front (task 1633): only for a pane being
+    /// dragged, and only where `calculate(at:in:middle:)` is asked for it.
+    case middle
+
+    /// How far into the pane, as a share of its width and of its height,
+    /// each edge's zone reaches when there is a middle: the middle is what
+    /// is at least this far from every edge, 40% across and 40% down.
+    static let middleEdge: CGFloat = 0.3
+
+    /// `calculate(at:in:)`, with a middle when `middle` is true: a point at
+    /// least `middleEdge` from all four edges stacks rather than splits.
+    /// Nearer an edge than that it is that edge's zone, as before.
+    static func calculate(at point: CGPoint, in size: CGSize, middle: Bool) -> TerminalSplitDropZone {
+        if middle {
+            let relX = point.x / size.width
+            let relY = point.y / size.height
+            if min(relX, 1 - relX) >= middleEdge, min(relY, 1 - relY) >= middleEdge { return .middle }
+        }
+        return calculate(at: point, in: size)
+    }
+
+    /// What a drag over a pane's middle does (task 1633). A pane in a
+    /// window that keeps stacks has a middle; one dragged from inside it --
+    /// the pane itself, or a terminal of its own stack picked up by its tab
+    /// -- is already where the middle would put it, so there the middle is
+    /// no target: nothing lit, nothing done. It is still the middle, so
+    /// the drop does not fall through to the nearest side and split it out.
+    enum Middle: Equatable {
+        /// No middle: the four sides, as for a tab dragged over a pane.
+        case absent
+        /// The middle takes it onto the stack.
+        case stacks
+        /// The middle is there and does nothing.
+        case inert
+    }
+
+    static func middle(draggedFromInside: Bool, holdsStacks: Bool) -> Middle {
+        guard holdsStacks else { return .absent }
+        return draggedFromInside ? .inert : .stacks
+    }
 
     /// Determines which drop zone the cursor is in based on proximity to edges.
     ///
@@ -317,7 +382,19 @@ enum TerminalSplitDropZone: String, Equatable {
                     .fill(overlayColor)
                     .frame(width: geometry.size.width / 2)
             }
+        case .middle:
+            // Where the stack's strip would be: the ghost of the tabs the
+            // pane is about to have, in the light the four sides use.
+            VStack(spacing: 0) {
+                Rectangle()
+                    .fill(overlayColor)
+                    .frame(height: min(Self.ghostStripHeight, geometry.size.height))
+                Spacer()
+            }
         }
     }
+
+    /// The height of the strip a stack shows its tabs in.
+    static let ghostStripHeight = CGFloat(ControlRoomLook.StackTab.stripHeight)
 }
 

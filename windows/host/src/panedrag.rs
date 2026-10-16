@@ -418,12 +418,27 @@ fn target_at(pt: POINT, dragged: PaneId, home: isize, from_split: bool) -> Targe
         if !drag::contains(&r, p) {
             continue;
         }
-        let zone = drag::Zone::at(r, p);
-        let over = Over::Pane { pane, zone, own: pane == dragged };
-        let lit = drag::lit(over).map(|(_, z)| to_screen(root, z.highlight(r)));
+        // With a middle (task 1633): onto the pane's stack, lit as the
+        // ghost of the strip its tabs would be in.
+        let zone = drag::Zone::at_or_middle(r, p, true);
+        let over = Over::Pane { pane, zone, own: pane == dragged, home: in_place(root, pane, dragged) };
+        let strip = drag::px(polter_control_room::look::stack_tab::STRIP_HEIGHT, tabs::scale_of(root));
+        let lit = drag::lit(over).map(|(_, z)| to_screen(root, z.highlight(r, strip)));
         return Target { over, frame: Some(root), lit, tab: None, stack: None };
     }
     Target { over: Over::Window, frame: Some(root), lit: None, tab: None, stack: None }
+}
+
+/// Whether `dragged` is in the place `pane` shows in `frame`'s tab in
+/// front: the pane itself, or one stacked behind it (task 1633). Its
+/// middle is then no target.
+fn in_place(frame: HWND, pane: PaneId, dragged: PaneId) -> bool {
+    if pane == dragged {
+        return true;
+    }
+    let Some(win) = tabs::window(frame) else { return false };
+    let Some(term) = win.tabs.get(win.active).and_then(|t| t.terminal()) else { return false };
+    term.tree.stack_of(pane).is_some_and(|s| s.members.contains(&dragged))
 }
 
 fn track(pt: POINT) {
@@ -536,8 +551,20 @@ fn finish(d: Drag, cancelled: Option<&str>) {
         return;
     }
     match (ending, t.frame) {
-        (Ending::Move { onto, zone }, Some(dst)) => {
-            tabs::move_pane(frame, d.pane, dst, onto, zone.direction());
+        (Ending::Move { onto, zone }, Some(dst)) => match zone.direction() {
+            Some(dir) => {
+                tabs::move_pane(frame, d.pane, dst, onto, dir);
+            }
+            None => wlogf!(frame, "[drag] pane {} let go on the middle of {} as a split; nothing", d.pane, onto),
+        },
+        // Onto the stack, in front, as its last tab: the step a tab let go
+        // at the end of a strip takes (task 1633).
+        (Ending::Stack { onto }, Some(dst)) => {
+            wlogf!(frame, "[drag] pane {} let go on the middle of pane {}; onto its stack", d.pane, onto);
+            tabs::stack_member_into(frame, d.pane, dst, onto, usize::MAX);
+        }
+        (Ending::Stack { onto }, None) => {
+            wlogf!(frame, "[drag] pane {} let go on pane {} in no window; nothing", d.pane, onto);
         }
         (Ending::Move { onto, .. }, None) => {
             wlogf!(frame, "[drag] pane {} let go on pane {} in no window; nothing", d.pane, onto);

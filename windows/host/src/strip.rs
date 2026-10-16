@@ -1065,13 +1065,14 @@ fn pane_into_at(frame: HWND, id: TabId, pt: POINT) -> Option<(HWND, PaneId, polt
     use polter_split_tree::drag::Zone;
     let (dst, pane, r, p) = pane_at(pt)?;
     tabs::tab_into_pane_refusal(frame, id, dst, pane).ok()?;
+    // The four sides only: a tab is not offered a pane's middle (task 1633).
     let zone = Zone::at(r, p);
-    let h = zone.highlight(r);
+    let h = zone.highlight(r, 0.0);
     let mut tl = POINT { x: h.x.round() as i32, y: h.y.round() as i32 };
     unsafe {
         let _ = ClientToScreen(dst, &mut tl);
     }
-    Some((dst, pane, zone.direction(), RECT { left: tl.x, top: tl.y, right: tl.x + h.w.round() as i32, bottom: tl.y + h.h.round() as i32 }))
+    Some((dst, pane, zone.direction()?, RECT { left: tl.x, top: tl.y, right: tl.x + h.w.round() as i32, bottom: tl.y + h.h.round() as i32 }))
 }
 
 /// The tab dragged out of `frame` was let go: into the pane under it
