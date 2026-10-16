@@ -254,10 +254,14 @@ The order, and step 2 is a note to yourself:
    what it reported). It types `/clear`, waits up to 10s for the CLI to
    report a new session, then types the task line, which also tells it the
    group to `group_read`; the reply says `cleared: confirmed` or `cleared:
-   unconfirmed` (read the screen before trusting the second). Only claude-code
-   with hooks, sitting at its prompt: `AgentBusy` in a turn or at a
-   permission box, `FreshUnsupported` for any other CLI — and then nothing
-   was typed and nothing assigned. Send the instruction (step 3) **after**
+   unconfirmed` (read the screen before trusting the second). Codex says it
+   has cleared only when its next turn starts — the turn the task line
+   starts — so for codex there is nothing to wait for: the line follows two
+   seconds after `/clear`, and the reply says `cleared: pending`;
+   `terminal_list` shows the new `session_id` once that turn has begun. Only
+   claude-code and codex with hooks, sitting at the prompt: `AgentBusy` in a
+   turn or at a permission box, `FreshUnsupported` for any other CLI — and
+   then nothing was typed and nothing assigned. Send the instruction (step 3) **after**
    this, or the clear throws it away. A brand-new worker per task is the
    other way to a clean context.
 

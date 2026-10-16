@@ -180,11 +180,20 @@ pub const Left = struct {
     };
 };
 
+/// The program an agent's connection came from: its pid, and when that
+/// process started, so that the same number on a later process is not
+/// taken for it (#1669 c1669-12). `started` is null where it could not be
+/// read; it is only ever compared with another reading of the host's.
+pub const Program = struct {
+    pid: u64,
+    started: ?u64,
+};
+
 /// An agent's connection to Polter, gone (`Entry.link_lost`).
 pub const LinkLost = struct {
     at_ms: u64,
     /// The program it had come from; null when that was not known.
-    pid: ?u64,
+    program: ?Program,
 };
 
 /// How long a connection may be gone before its loss is a fact: the
@@ -837,7 +846,7 @@ pub const Entry = struct {
     /// when it connected (`agent_cli.Sighting.pid`: the sidecar's parent,
     /// the agent CLI). Null while nobody is connected, and where it is not
     /// read (Windows, today).
-    agent_pid: ?u64 = null,
+    agent_program: ?Program = null,
 
     /// The agent's connection to Polter went, and when, and which program
     /// it had come from (task 1668, #83). A CLI whose MCP server dies does
@@ -1266,12 +1275,12 @@ pub fn setCallsSilentAfter(self: *Bus, id: Id, ms: ?u64, now_ms: u64) Allocator.
 /// Record whether an agent is connected from this terminal, as the host
 /// sees it now (#63). The bus cannot see connections; the host asks
 /// `Server.agentPresent` and says what it found. See `Entry.agent_here`.
-pub fn noteAgentHere(self: *Bus, id: Id, here: bool, pid: ?u64, now_ms: u64) void {
+pub fn noteAgentHere(self: *Bus, id: Id, here: bool, program: ?Program, now_ms: u64) void {
     const e = self.entries.getPtr(id) orelse return;
     const was = e.agent_here;
     e.agent_here = here;
     if (here) {
-        if (pid) |p| e.agent_pid = p;
+        if (program) |p| e.agent_program = p;
         // Back: whatever was about to be said, or was said and not yet
         // read, about it being gone is no longer true.
         e.link_lost = null;
@@ -1281,8 +1290,8 @@ pub fn noteAgentHere(self: *Bus, id: Id, here: bool, pid: ?u64, now_ms: u64) voi
     }
     // Gone, this time: from here, whether its program is still running
     // decides whether that is news (`considerLinks`).
-    if (was == true) e.link_lost = .{ .at_ms = now_ms, .pid = e.agent_pid };
-    e.agent_pid = null;
+    if (was == true) e.link_lost = .{ .at_ms = now_ms, .program = e.agent_program };
+    e.agent_program = null;
     // An agent whose hooks were still awaited has gone (c1669-04: `/exit`
     // before a first turn): nothing more is due from it, and a wait left
     // running would report an agent that is not there.
@@ -1291,29 +1300,44 @@ pub fn noteAgentHere(self: *Bus, id: Id, here: bool, pid: ?u64, now_ms: u64) voi
 
 /// Put a line in the box for every watched terminal whose agent's
 /// connection has been gone `link_grace_ms` while the program it came from
-/// is still running (`alive`, asked by the host: the bus does not look at
-/// processes). Once per loss. A program that has gone is an agent that
-/// exited, which the screen and the quiet report already say; a loss with
-/// no program known is not said, because it cannot be told from that.
+/// is still running in it (`runs`, asked by the host: the bus does not look
+/// at processes or screens). Once per loss. A program that has gone is an
+/// agent that exited, which the screen and the quiet report already say; a
+/// loss with no program known is not said, because it cannot be told from
+/// that.
+///
+/// **And taken back while it waits to be read**, as soon as `runs` says
+/// otherwise: a program that was still shutting down when it was looked
+/// at, and is gone a moment later, was an agent that exited (#1669
+/// c1669-12: a Codex that had quit with `/exit`, reported 40 s later as
+/// still running).
 ///
 /// Answers whether anything new went in.
 pub fn considerLinks(
     self: *Bus,
     now_ms: u64,
     ctx: *anyopaque,
-    alive: *const fn (ctx: *anyopaque, pid: u64) bool,
+    runs: *const fn (ctx: *anyopaque, id: Id, program: Program) bool,
 ) bool {
     var raised = false;
     var it = self.entries.iterator();
     while (it.next()) |kv| {
         const e = kv.value_ptr;
+        const id = kv.key_ptr.*;
+        if (e.link_pending) |said| {
+            const still = if (said.program) |p| runs(ctx, id, p) else false;
+            if (!still) {
+                e.link_pending = null;
+                e.link_handed = 0;
+            }
+        }
         const lost = e.link_lost orelse continue;
         if (now_ms -| lost.at_ms < link_grace_ms) continue;
         // Looked at once, whatever comes of it.
         e.link_lost = null;
         if (e.role != .watched or e.duty == .off) continue;
-        const pid = lost.pid orelse continue;
-        if (!alive(ctx, pid)) continue;
+        const program = lost.program orelse continue;
+        if (!runs(ctx, id, program)) continue;
         e.link_pending = lost;
         e.link_handed = 0;
         raised = true;
@@ -2785,6 +2809,9 @@ fn isWaiting(kind: AgentNotice) bool {
 
 /// A waiting notice nobody has been handed yet.
 fn freshlyWaiting(e: *const Entry) bool {
+    // An agent that can no longer reach Polter cannot say it is stuck
+    // either: that goes out at once, like a wait (task 1668).
+    if (e.link_pending != null and e.link_handed == 0) return true;
     const kind = e.agent.pending orelse return false;
     return isWaiting(kind) and e.agent.handed == 0;
 }
@@ -3078,7 +3105,7 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
 
         // Its connection to Polter is gone while its program runs: see
         // `considerLinks`.
-        if (!only_waiting) if (e.link_pending) |lost| {
+        if (!only_waiting or e.link_handed == 0) if (e.link_pending) |lost| {
             total += 1;
 
             switch (how) {
@@ -3100,7 +3127,7 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
                 const mark = w.end;
                 w.print(
                     "{s}0x{x:0>16} lost its Polter connection {d}s ago while its program (pid {d}) still runs: it cannot call Polter tools until it is restarted",
-                    .{ sep, id, (now_ms -| lost.at_ms) / std.time.ms_per_s, lost.pid orelse 0 },
+                    .{ sep, id, (now_ms -| lost.at_ms) / std.time.ms_per_s, if (lost.program) |p| p.pid else 0 },
                 ) catch {
                     w.end = mark;
                     break;
@@ -5266,7 +5293,7 @@ test "1668: the wait for a first turn ends when the agent goes, before or after 
     // Its connection came and went: it exited (`/exit`) with nothing said.
     _ = try b.agentEvent(worker, ev, 0);
     try testing.expect(b.waitsForFirstLine(worker));
-    b.noteAgentHere(worker, true, 77, 1_000);
+    b.noteAgentHere(worker, true, .{ .pid = 77, .started = 500 }, 1_000);
     b.noteLineSubmitted(worker, 2_000);
     b.noteAgentHere(worker, false, null, 3_000);
     try testing.expectEqual(Hooks.none, b.agentOf(worker).hooks);
@@ -5280,7 +5307,7 @@ test "1668: the wait for a first turn ends when the agent goes, before or after 
 
     // A live agent's connection going says nothing about its hooks.
     _ = try b.agentEvent(worker, hookEv(.session_started), 30_000);
-    b.noteAgentHere(worker, true, 77, 31_000);
+    b.noteAgentHere(worker, true, .{ .pid = 77, .started = 500 }, 31_000);
     b.noteAgentHere(worker, false, null, 32_000);
     try testing.expectEqual(Hooks.live, b.agentOf(worker).hooks);
 }
@@ -5817,18 +5844,66 @@ test "1668: a title that never said it waits does not keep a moving box standing
     try testing.expect(!b.promptStanding(worker, 1_000, 1_000, 14_000, null));
 }
 
-fn aliveYes(_: *anyopaque, _: u64) bool {
+fn aliveYes(_: *anyopaque, _: Id, _: Program) bool {
     return true;
 }
-fn aliveNo(_: *anyopaque, _: u64) bool {
+fn aliveNo(_: *anyopaque, _: Id, _: Program) bool {
     return false;
 }
 var alive_ctx: u8 = 0;
 
+/// A program that runs until it is told not to, and remembers what it was
+/// asked about.
+const Runner = struct {
+    runs: bool = true,
+    asked: ?Program = null,
+    fn ask(ctx: *anyopaque, _: Id, p: Program) bool {
+        const self: *Runner = @ptrCast(@alignCast(ctx));
+        self.asked = p;
+        return self.runs;
+    }
+};
+
+test "1668: a lost connection goes out at once, not at the next scheduled box" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    // A delivery a moment ago: the next scheduled one is an interval away.
+    _ = try b.agentEvent(worker, hookEv(.turn_ended), 500);
+    try testing.expect(b.drainIfDue(boss, 1_000, &buf, .none) != null);
+
+    b.noteAgentHere(worker, true, .{ .pid = 77, .started = 500 }, 1_000);
+    b.noteAgentHere(worker, false, null, 2_000);
+    try testing.expect(b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveYes));
+    try testing.expect(b.hasFreshWaiting(boss, .none));
+    const line = b.drainIfDue(boss, 2_000 + link_grace_ms, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "lost its Polter connection") != null);
+}
+
+test "1668: a lost connection said while its program ran is taken back once the program has gone" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var r: Runner = .{};
+    b.noteAgentHere(worker, true, .{ .pid = 53324, .started = 123 }, 1_000);
+    b.noteAgentHere(worker, false, null, 2_000);
+    try testing.expect(b.considerLinks(2_000 + link_grace_ms, &r, Runner.ask));
+    // What the host is asked about is the program as it was seen, start
+    // time and all: the same pid on a later process is not it.
+    try testing.expectEqual(@as(u64, 53324), r.asked.?.pid);
+    try testing.expectEqual(@as(?u64, 123), r.asked.?.started);
+
+    // Still shutting down when it was looked at; gone before anybody read
+    // the line (#1669 c1669-12).
+    r.runs = false;
+    _ = b.considerLinks(2_000 + 2 * link_grace_ms, &r, Runner.ask);
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, 2_000 + 2 * link_grace_ms, &buf, .none) == null);
+}
+
 test "1668: a connection gone while its program runs is said once, after the grace" {
     var b = try hookedBus();
     defer b.deinit();
-    b.noteAgentHere(worker, true, 77, 1_000);
+    b.noteAgentHere(worker, true, .{ .pid = 77, .started = 500 }, 1_000);
     b.noteAgentHere(worker, false, null, 2_000);
 
     try testing.expect(!b.considerLinks(2_000 + link_grace_ms - 1, &alive_ctx, aliveYes));
@@ -5846,20 +5921,20 @@ test "1668: a connection gone with its program, or back in time, or from nobody 
     defer b.deinit();
 
     // The program went too: an agent that exited.
-    b.noteAgentHere(worker, true, 77, 1_000);
+    b.noteAgentHere(worker, true, .{ .pid = 77, .started = 500 }, 1_000);
     b.noteAgentHere(worker, false, null, 2_000);
     try testing.expect(!b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveNo));
 
     // Back within the grace: a restart, not a loss.
-    b.noteAgentHere(worker, true, 78, 10_000);
+    b.noteAgentHere(worker, true, .{ .pid = 78, .started = 500 }, 10_000);
     b.noteAgentHere(worker, false, null, 11_000);
-    b.noteAgentHere(worker, true, 78, 12_000);
+    b.noteAgentHere(worker, true, .{ .pid = 78, .started = 500 }, 12_000);
     try testing.expect(!b.considerLinks(11_000 + link_grace_ms, &alive_ctx, aliveYes));
 
     // Said, then back before anybody read it: taken back.
     b.noteAgentHere(worker, false, null, 20_000);
     try testing.expect(b.considerLinks(20_000 + link_grace_ms, &alive_ctx, aliveYes));
-    b.noteAgentHere(worker, true, 78, 26_000);
+    b.noteAgentHere(worker, true, .{ .pid = 78, .started = 500 }, 26_000);
     var buf: [255]u8 = undefined;
     try testing.expect(b.drain(boss, 26_000, &buf, .none) == null);
 

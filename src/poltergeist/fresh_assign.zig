@@ -6,7 +6,9 @@
 //! with it, or land in a prompt that is about to be redrawn. Claude Code
 //! says when the clear is done -- a `SessionStart` hook with `source:
 //! clear`, and a new session id -- so the request is held until that
-//! arrives, or `wait_ms` passes. Past that the line is typed anyway and the
+//! arrives, or `wait_ms` passes. Codex says it only with its next turn, so
+//! for it the line is held just long enough for `/clear` to be taken
+//! (`Confirm.next_turn`, task 1668). Past that the line is typed anyway and the
 //! reply says `cleared: unconfirmed`, rather than leaving the supervisor
 //! with a task that was never handed over.
 //!
@@ -24,6 +26,33 @@ const Bus = @import("Bus.zig");
 
 /// How long the line waits for the CLI to say it cleared.
 pub const wait_ms: u64 = 10 * std.time.ms_per_s;
+
+/// How a CLI says its clear is done (task 1668).
+pub const Confirm = enum {
+    /// A `SessionStart` with `source: clear`, or a new session, as soon as
+    /// the clear is done: Claude Code. The line waits for it, at most
+    /// `wait_ms`.
+    session_start,
+    /// Only with its next turn: Codex 0.163 holds `SessionStart` until a
+    /// turn begins (`run_pending_session_start_hooks`), and the turn that
+    /// begins is the one the line starts -- so nothing can be waited for.
+    /// The line waits `settle_ms` for `/clear` to be taken, and the reply
+    /// says the clear is still to be confirmed.
+    next_turn,
+
+    /// How long the line is held.
+    pub fn holdMs(self: Confirm) u64 {
+        return switch (self) {
+            .session_start => wait_ms,
+            .next_turn => settle_ms,
+        };
+    }
+};
+
+/// How long a clear that cannot be confirmed before the line is given to be
+/// taken before the line is typed: long enough for the CLI to have read the
+/// command and redrawn its prompt.
+pub const settle_ms: u64 = 2 * std.time.ms_per_s;
 
 /// Whether an agent event says the session `before` was cleared: Claude
 /// Code's `SessionStart` with `source: clear`, or a session that is not the
@@ -47,6 +76,7 @@ pub fn Waits(comptime Held: type) type {
             /// The session it had when /clear was typed. Owned.
             before: ?[]u8,
             deadline_ms: u64,
+            confirm: Confirm,
         };
 
         entries: std.ArrayListUnmanaged(Entry) = .empty,
@@ -67,6 +97,7 @@ pub fn Waits(comptime Held: type) type {
             id: Bus.Id,
             task: u64,
             before: ?[]const u8,
+            confirm: Confirm,
             now_ms: u64,
         ) Allocator.Error!void {
             const b: ?[]u8 = if (before) |v| try alloc.dupe(u8, v) else null;
@@ -76,7 +107,8 @@ pub fn Waits(comptime Held: type) type {
                 .id = id,
                 .task = task,
                 .before = b,
-                .deadline_ms = now_ms +| wait_ms,
+                .deadline_ms = now_ms +| confirm.holdMs(),
+                .confirm = confirm,
             });
         }
 
@@ -92,6 +124,8 @@ pub fn Waits(comptime Held: type) type {
         ) ?Entry {
             for (self.entries.items, 0..) |e, i| {
                 if (e.id != id) continue;
+                // Nothing this CLI says before the line can be its clear.
+                if (e.confirm != .session_start) continue;
                 if (!clearedBy(event, detail, session_id, e.before)) continue;
                 return self.entries.orderedRemove(i);
             }
@@ -128,8 +162,8 @@ test "fresh assign: the event finishes that terminal's wait and no other" {
     const W = Waits(u8);
     var w: W = .{};
     defer w.deinit(testing.allocator);
-    try w.park(testing.allocator, 1, 0xa, 7, "old", 1_000);
-    try w.park(testing.allocator, 2, 0xb, 8, "other", 1_000);
+    try w.park(testing.allocator, 1, 0xa, 7, "old", .session_start, 1_000);
+    try w.park(testing.allocator, 2, 0xb, 8, "other", .session_start, 1_000);
 
     // Another terminal clearing finishes nothing of 0xa's.
     try testing.expect(w.takeCleared(0xa, .session_started, "resume", "old") == null);
@@ -145,9 +179,23 @@ test "fresh assign: a wait runs out at ten seconds, not before" {
     const W = Waits(u8);
     var w: W = .{};
     defer w.deinit(testing.allocator);
-    try w.park(testing.allocator, 1, 0xa, 7, null, 1_000);
+    try w.park(testing.allocator, 1, 0xa, 7, null, .session_start, 1_000);
     try testing.expect(w.takeExpired(1_000 + wait_ms - 1) == null);
     const e = w.takeExpired(1_000 + wait_ms).?;
     W.free(testing.allocator, e);
     try testing.expectEqual(@as(usize, 0), w.entries.items.len);
+}
+
+test "1668: a clear confirmed only by the next turn holds the line briefly, and nothing before it confirms it" {
+    const W = Waits(u8);
+    var w: W = .{};
+    defer w.deinit(testing.allocator);
+    try w.park(testing.allocator, 1, 0xa, 7, "s1", .next_turn, 1_000);
+    // Whatever arrives meanwhile is not its clear.
+    try testing.expect(w.takeCleared(0xa, .session_started, "clear", "s2") == null);
+    try testing.expect(w.takeExpired(1_000 + settle_ms - 1) == null);
+    const e = w.takeExpired(1_000 + settle_ms).?;
+    defer W.free(testing.allocator, e);
+    try testing.expectEqual(Confirm.next_turn, e.confirm);
+    try testing.expect(settle_ms < wait_ms);
 }

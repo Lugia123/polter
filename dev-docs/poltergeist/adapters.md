@@ -369,7 +369,19 @@ timeout 取 3，因为 codex 把 `Interrupt` 的超时钳在 3 秒以内，而�
 **MCP 连接断了要报**（task 1668 B3，#83）：sidecar 握手时报了它的父进程 pid（`agent_cli.Sighting.pid`，就是 CLI 本身）。
 `Bus.noteAgentHere` 记下连着时的 pid，连接从有变无时记下时刻；5 秒（`link_grace_ms`）内没连回来、而那个 pid 还活着，就往总管的盒子里放一行
 `lost its Polter connection Ns ago while its program (pid N) still runs`，每次断开只报一次；连回来就收回。pid 已经不在 = agent 退出了，不报（屏幕和 quiet 会说）。
+「还活着」不能用 `kill(pid, 0)` 判断（#1669 c1669-12：正常 `/exit` 之后，codex 被报成 40 秒后仍在运行，可那个 pid 在收尾时已经不在了）。实测：
+一个已退出、还没被父进程收尸的进程（僵尸），`kill(pid, 0)` 照样返回 0。现在要同时满足三条才算「还在跑」（`App.poltergeistProgramRuns`）：
+这个终端的 shell 没有回到提示符（`Surface.shellIdle`）；`process_info.of(pid)` 读得到，并且不是僵尸——macOS 上对僵尸，`proc_pidinfo` 直接返回 ESRCH；
+进程的启动时间和连上时记下的一样，防 pid 复用。另外，已经放进盒子、还没被读走的那一条，下次检查时如果不再成立，就收回。
+谁连着，原来只在被看着的屏幕报静止或心跳时才去看；agent 断了而屏幕不动，就永远不会被发现（c1668-04 第一轮：修前修后的包都没报，连正例也没报）。
+现在 `Server.Submit.agent_gone` 在连接线程关掉一个终端的 agent 连接时通知 App，App 当下记下断开，`link_grace_ms` 之后自己醒来再查。
+这一行和等批准一样当场送出（`freshlyWaiting`），不等下一个定时的盒子，因为断了连接的 agent 自己什么都报不出来。
 ⚠️ Windows 上 sidecar 还不报 pid，所以这条在 Windows 上不会出现。
+
+**fresh（task_assign 带 fresh，task 1668 B4，#80）**：codex 的清上下文命令是 `/clear`（`InitialHistory::Cleared`）。它的 `SessionStart(source=clear)`
+和别的 SessionStart 一样，要等下一轮开始才发，而下一轮正是任务那一行开启的，所以在那一行之前没有任何东西可等。
+`fresh_clis` 给每个 CLI 标上确认方式（`fresh_assign.Confirm`）：claude-code 是 `session_start`，最多等 10 秒；codex 是 `next_turn`，打完 `/clear`
+只等 2 秒（`settle_ms`）让它把命令吃下去，然后打任务那一行，回复写 `cleared: pending`。`session_id` 变了就是清过了，terminal_list 看得到。
 
 ## 未决问题
 

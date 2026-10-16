@@ -251,12 +251,26 @@ pub const Submit = struct {
     /// Optional so tests and any other embedder can leave it out.
     full: ?*const fn (ctx: *anyopaque, in_use: usize) void = null,
 
+    /// An agent's connection from a terminal has closed (task 1668). Called
+    /// on the connection's own thread, after the slot no longer names the
+    /// terminal, so `agentPresent` already answers without it. **Nothing
+    /// else would notice**: who is connected is otherwise looked at only
+    /// when a watched screen reports, and an agent whose MCP server died
+    /// while its screen stayed still would never be looked at again.
+    ///
+    /// Optional so tests and any other embedder can leave it out.
+    agent_gone: ?*const fn (ctx: *anyopaque) void = null,
+
     fn call(self: Submit, pending: *Pending) void {
         self.func(self.ctx, pending);
     }
 
     fn callFull(self: Submit, in_use: usize) void {
         if (self.full) |f| f(self.ctx, in_use);
+    }
+
+    fn callAgentGone(self: Submit) void {
+        if (self.agent_gone) |f| f(self.ctx);
     }
 };
 
@@ -812,6 +826,10 @@ fn connectionMain(self: *Server, index: usize) void {
         // lock shutdown uses. After this nobody else can find the
         // descriptor, so nobody can act on one this thread has closed.
         self.slots_mutex.lockUncancelable(self.io);
+        // Whether this was an agent `agentPresent` counted, for the
+        // `agent_gone` call below.
+        const was_agent = !self.slots[index].listens and
+            if (self.slots[index].caller) |c| c == .terminal else false;
         // The moment `agentPresent` stops counting it (#1534): set against
         // the moment the agent was seen to exit, this is how long a bare
         // shell was still answered as an agent.
@@ -828,6 +846,9 @@ fn connectionMain(self: *Server, index: usize) void {
         self.slots[index].listens = false;
         self.slots[index].sighting_len = 0;
         self.slots_mutex.unlock(self.io);
+        // Outside the lock: the host's answer is to wake its own thread,
+        // which asks `agentPresent`, which takes this lock.
+        if (was_agent) self.submit.callAgentGone();
 
         stream.close(self.io);
         self.slots[index].finished.store(true, .release);

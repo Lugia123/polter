@@ -30,6 +30,7 @@ pub const login_path = @import("login_path.zig");
 pub const ChatLog = @import("ChatLog.zig");
 pub const MentionRetry = @import("MentionRetry.zig");
 pub const fresh_assign = @import("fresh_assign.zig");
+pub const process_info = @import("process_info.zig");
 pub const Feed = @import("Feed.zig");
 pub const GroupLog = @import("GroupLog.zig");
 pub const GroupRename = @import("GroupRename.zig");
@@ -112,6 +113,7 @@ test {
     _ = ChatLog;
     _ = MentionRetry;
     _ = fresh_assign;
+    _ = process_info;
     _ = Feed;
     _ = GroupLog;
     _ = GroupRename;
