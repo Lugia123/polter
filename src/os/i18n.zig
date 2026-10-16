@@ -389,6 +389,32 @@ const lc_all: c_int = switch (builtin.os.tag) {
 /// is the design does not get reported as one that is not.
 var windows_catalog: ?Mo = null;
 
+/// Which of `i18n_locales.zig`'s entries `windows_catalog` was read for, or
+/// null when none was read -- the interface is then in its msgids' English.
+/// Written with `windows_catalog`, under the same rule.
+var windows_locale: ?[:0]const u8 = null;
+
+/// The language the interface is in, as the catalogue `_` answers from:
+/// one of `i18n_locales.zig`'s names (`zh_CN`, `de`), or null for English.
+///
+/// **This, and not the system's language list, is what a host asks when
+/// it has words of its own to choose by language** -- a plugin's sidecar
+/// translation, say. The system list and the interface disagree whenever
+/// somebody picks a language in Polter itself, or sets `LANG`: the
+/// Windows plugin page was then in Chinese inside an English window
+/// (task 1663), because it asked `GetUserPreferredUILanguages`.
+///
+/// Windows only. Elsewhere libintl holds the answer and does not say it,
+/// and the hosts there ask their own toolkit (the macOS app asks
+/// `Bundle.main.preferredLocalizations`, which is what its own words use).
+pub fn activeLocale() ?[:0]const u8 {
+    if (comptime !build_config.i18n) return null;
+    return switch (builtin.os.tag) {
+        .windows => windows_locale,
+        else => null,
+    };
+}
+
 /// `GetUserDefaultLocaleName` writes a BCP-47 name -- `de-DE`, `zh-Hans-CN` --
 /// into a buffer of at most `LOCALE_NAME_MAX_LENGTH` (85) WTF-16 units.
 ///
@@ -510,6 +536,7 @@ fn loadWindowsCatalog(share_dir: []const u8) ?Mo {
         "loaded catalog locale={s} entries={d} path={s}",
         .{ locale, mo.count, path },
     );
+    windows_locale = locale;
     return mo;
 }
 

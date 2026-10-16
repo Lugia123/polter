@@ -339,7 +339,15 @@ plugins/archive/
 
 ### 回退次序（原未决问题 3，就地定了）
 
-用户的偏好语言按顺序展开成一条从具体到笼统的梯子，第一个**存在的文件**赢：
+**选哪种语言：界面用的那种，不是系统的偏好列表。**插件页是 Polter 的一页，所以它跟着
+窗口的语言走：mac 问 `Bundle.main.preferredLocalizations` 的第一项（app 自己的字用的
+就是它，`PluginLocale.interfaceLanguages`）；Windows 问核心实际装上的目录
+（`ghostty_translate_locale`，宿主的 `plugins::interface_languages`），NULL 就是英文、不读边车。
+以前两边问的都是系统列表，于是在 Polter 里选了英文（或 `LANG=en_US`）的中文 Windows
+上，英文窗口里出现了一整页中文（task 1663）；mac 上「英文第一、中文第二」也会这样，
+因为只有插件会顺着列表往下找到一个有文件的语言。
+
+这一种语言再按顺序展开成一条从具体到笼统的梯子，第一个**存在的文件**赢：
 
 ```text
 zh-Hans-CN  →  zh-Hans-CN, zh-Hans, zh-CN, zh

@@ -19,6 +19,7 @@ const Plugin = @import("Plugin.zig");
 const Resident = @import("Resident.zig");
 const scrub = @import("scrub.zig");
 const i18n = @import("../os/i18n.zig");
+const ControlRoom = @import("ControlRoom.zig");
 
 /// Everything about a resident plugin that decides what to say about it.
 ///
@@ -373,50 +374,88 @@ pub fn alert(
     /// How many times in a row it has failed.
     failures: u32,
 ) Allocator.Error![]const u8 {
+    return alertIn(alloc, english, key, wants, why, failures);
+}
+
+/// Looks a msgid up. `interface` for the line that goes on a screen,
+/// `english` where the words are compared or read by an agent.
+pub const Tr = *const fn (msgid: [:0]const u8) []const u8;
+
+/// The msgid itself: the English every template is written in.
+pub fn english(msgid: [:0]const u8) []const u8 {
+    return msgid;
+}
+
+/// The msgid in the interface's language -- the one the core was started
+/// in (`LANG`, which both apps set from their own language choice), as
+/// every other word the core prints into a terminal (`ControlFix`).
+pub fn interface(msgid: [:0]const u8) []const u8 {
+    return std.mem.span(i18n._(msgid.ptr));
+}
+
+/// `alert` in the language `tr` gives.
+///
+/// **The line is printed on the person's screen, so it is in their
+/// language** (task 1663: an English line in a Chinese window, on the
+/// Windows test machine; the macOS app prints the same line). Every piece
+/// is a whole template with `{N}` for what varies, so a translator sees a
+/// sentence and can move the key and the count wherever their grammar puts
+/// them; `fitMiddle` still gets the same three parts and still gives up the
+/// middle first.
+pub fn alertIn(
+    alloc: Allocator,
+    tr: Tr,
+    key: []const u8,
+    wants: Plugin.Wants,
+    why: Trouble,
+    failures: u32,
+) Allocator.Error![]const u8 {
+    var arena_state: std.heap.ArenaAllocator = .init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const fill = ControlRoom.Say.fill;
+
     // Every subscription this build knows, so a fourth one added to
     // `Plugin.Event` has to be given a consequence here rather than
     // silently producing a sentence that names no cost at all.
-    var costs: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer costs.deinit(alloc);
-
+    var cost: ?[]const u8 = null;
     for (std.enums.values(Plugin.Event)) |e| {
         if (!wants.subscribes(e)) continue;
-        try costs.append(alloc, switch (e) {
-            .provision => "an agent started here has no Polter tools",
-            .terminal_quiet => "nothing will tell you when a terminal needs you",
-            .chat => "the extra copy of the chat is not being written",
+        const this = tr(switch (e) {
+            .provision => i18n.N_("an agent started here has no Polter tools"),
+            .terminal_quiet => i18n.N_("nothing will tell you when a terminal needs you"),
+            .chat => i18n.N_("the extra copy of the chat is not being written"),
         });
+        cost = if (cost) |before|
+            try fill(arena, tr(i18n.N_("{1}, and {2}")), &.{ before, this })
+        else
+            this;
     }
 
     // A plugin that subscribes to nothing is never started, so this cannot
     // be reached from the resident loop -- but a sentence that names no
     // consequence at all is still better than an empty screen.
-    const cost = if (costs.items.len == 0)
-        try alloc.dupe(u8, "it is not doing what it was installed to do")
-    else
-        try std.mem.join(alloc, ", and ", costs.items);
-    defer alloc.free(cost);
+    const said_cost = cost orelse tr(i18n.N_("it is not doing what it was installed to do"));
+
+    var count_buf: [10]u8 = undefined;
+    const count = std.fmt.bufPrint(&count_buf, "{d}", .{failures}) catch unreachable;
 
     // Which plugin, what it costs, and what to do or where to look: the
     // three parts, so a sentence too long for the screen loses the middle
     // and keeps the end.
     const head = switch (why) {
-        .stopped => try std.fmt.allocPrint(alloc, "polter: the \"{s}\" plugin is not running", .{key}),
-        .dormant => try std.fmt.allocPrint(
-            alloc,
-            "polter: the \"{s}\" plugin has failed {d} times and is now only " ++
-                "retried every fifteen minutes",
-            .{ key, failures },
+        .stopped => try fill(arena, tr(i18n.N_("polter: the \"{1}\" plugin is not running")), &.{key}),
+        .dormant => try fill(
+            arena,
+            tr(i18n.N_("polter: the \"{1}\" plugin has failed {2} times and is now only retried every fifteen minutes")),
+            &.{ key, count },
         ),
     };
-    defer alloc.free(head);
-    const so_cost = try std.mem.concat(alloc, u8, &.{ ", so ", cost });
-    defer alloc.free(so_cost);
+    const so_cost = try fill(arena, tr(i18n.N_(", so {1}")), &.{said_cost});
     const tail = switch (why) {
-        .stopped => try alloc.dupe(u8, ". It is being retried; what it complained about is in Polter's log."),
-        .dormant => try std.fmt.allocPrint(alloc, ". Its settings are in $XDG_CONFIG_HOME/polter/plugins/{s}.json", .{key}),
+        .stopped => tr(i18n.N_(". It is being retried; what it complained about is in Polter's log.")),
+        .dormant => try fill(arena, tr(i18n.N_(". Its settings are in $XDG_CONFIG_HOME/polter/plugins/{1}.json")), &.{key}),
     };
-    defer alloc.free(tail);
 
     return fitMiddle(alloc, head, so_cost, tail);
 }
@@ -962,6 +1001,63 @@ test "a plugin failure reaches the user, and says what it costs them" {
             // reader knowing what they lose by it.
             try testing.expect(std.mem.indexOf(u8, said, " so ") != null);
         }
+    }
+}
+
+/// A catalogue for the test below: what `po/zh_CN.po` says for some of
+/// `alertIn`'s msgids, and the msgid for the rest.
+fn chineseForTest(msgid: [:0]const u8) []const u8 {
+    const table = [_][2][]const u8{
+        .{ "polter: the \"{1}\" plugin is not running", "polter：插件「{1}」没在跑" },
+        .{ "an agent started here has no Polter tools", "在这里起的 agent 拿不到 Polter 的工具" },
+        .{ ", so {1}", "，所以{1}" },
+        .{ ". It is being retried; what it complained about is in Polter's log.", "。正在重试；它报了什么错见 Polter 的日志。" },
+        .{ "polter: the \"{1}\" plugin has failed {2} times and is now only retried every fifteen minutes", "polter：插件「{1}」已经失败 {2} 次，现在每 15 分钟才试一次" },
+    };
+    for (table) |row| if (std.mem.eql(u8, row[0], msgid)) return row[1];
+    return msgid;
+}
+
+test "a plugin failure is said in the interface's language, key and count filled in" {
+    // Task 1663: the line printed into a terminal when a plugin stops was
+    // English in a Chinese window. Every word comes through `tr`.
+    const alloc = testing.allocator;
+    {
+        const said = try alertIn(alloc, chineseForTest, "claude-code", .{
+            .events = &.{.provision},
+        }, .stopped, 1);
+        defer alloc.free(said);
+        try testing.expectEqualStrings(
+            "polter：插件「claude-code」没在跑，所以在这里起的 agent 拿不到 Polter 的工具。正在重试；它报了什么错见 Polter 的日志。",
+            said,
+        );
+    }
+    {
+        const said = try alertIn(alloc, chineseForTest, "kimi", .{
+            .events = &.{.provision},
+        }, .dormant, 11);
+        defer alloc.free(said);
+        try testing.expect(std.mem.startsWith(u8, said, "polter：插件「kimi」已经失败 11 次"));
+    }
+    // And the English path is the msgids, unchanged: `alert` is `english`.
+    {
+        const a = try alert(alloc, "x", .{ .events = &.{.chat}, .groups = &.{"*"} }, .stopped, 1);
+        defer alloc.free(a);
+        const b = try alertIn(alloc, english, "x", .{ .events = &.{.chat}, .groups = &.{"*"} }, .stopped, 1);
+        defer alloc.free(b);
+        try testing.expectEqualStrings(a, b);
+    }
+    // A long key and every consequence, in Chinese: still fits, still
+    // whole characters.
+    {
+        const key = "a-plugin-with-a-name-of-exactly-sixty-four-characters-aaaaaaaaaaa";
+        const said = try alertIn(alloc, chineseForTest, key, .{
+            .events = std.enums.values(Plugin.Event),
+        }, .stopped, 999);
+        defer alloc.free(said);
+        try testing.expect(said.len <= max_alert);
+        try testing.expect(std.unicode.utf8ValidateSlice(said));
+        try testing.expect(std.mem.endsWith(u8, said, "它报了什么错见 Polter 的日志。"));
     }
 }
 

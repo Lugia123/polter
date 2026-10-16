@@ -2529,6 +2529,46 @@ msgstr "启动失败 {1} 次，现在每 15 分钟试一次。原因见 Polter �
 msgid "Stopped. It starts again when Polter does."
 msgstr "已停止，下次启动 Polter 时才会再运行。"
 
+#: src/poltergeist/report.zig:425
+msgid "an agent started here has no Polter tools"
+msgstr "在这里起的 agent 拿不到 Polter 的工具"
+
+#: src/poltergeist/report.zig:426
+msgid "nothing will tell you when a terminal needs you"
+msgstr "终端需要你的时候，没有东西会告诉你"
+
+#: src/poltergeist/report.zig:427
+msgid "the extra copy of the chat is not being written"
+msgstr "群聊的另一份没在写"
+
+#: src/poltergeist/report.zig:430
+msgid "{1}, and {2}"
+msgstr "{1}，而且{2}"
+
+#: src/poltergeist/report.zig:438
+msgid "it is not doing what it was installed to do"
+msgstr "它没在做装它要做的事"
+
+#: src/poltergeist/report.zig:447
+msgid "polter: the \"{1}\" plugin is not running"
+msgstr "polter：插件「{1}」没在跑"
+
+#: src/poltergeist/report.zig:450
+msgid "polter: the \"{1}\" plugin has failed {2} times and is now only retried every fifteen minutes"
+msgstr "polter：插件「{1}」已经失败 {2} 次，现在每 15 分钟才试一次"
+
+#: src/poltergeist/report.zig:454
+msgid ", so {1}"
+msgstr "，所以{1}"
+
+#: src/poltergeist/report.zig:456
+msgid ". It is being retried; what it complained about is in Polter's log."
+msgstr "。正在重试；它报了什么错见 Polter 的日志。"
+
+#: src/poltergeist/report.zig:457
+msgid ". Its settings are in $XDG_CONFIG_HOME/polter/plugins/{1}.json"
+msgstr "。它的设置在 $XDG_CONFIG_HOME/polter/plugins/{1}.json"
+
 # U+2026, action prompt_tab_title: opens the title overlay (menu.rs, ctxmenu.rs). "Rename Tab..." with three ASCII dots is a DIFFERENT action, rename_tab, in-place on the tab strip. Do not merge them.
 #. TRANSLATORS: U+2026, not three ASCII dots. This opens the title
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action

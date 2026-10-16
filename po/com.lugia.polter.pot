@@ -2515,6 +2515,46 @@ msgstr ""
 msgid "Stopped. It starts again when Polter does."
 msgstr ""
 
+#: src/poltergeist/report.zig:425
+msgid "an agent started here has no Polter tools"
+msgstr ""
+
+#: src/poltergeist/report.zig:426
+msgid "nothing will tell you when a terminal needs you"
+msgstr ""
+
+#: src/poltergeist/report.zig:427
+msgid "the extra copy of the chat is not being written"
+msgstr ""
+
+#: src/poltergeist/report.zig:430
+msgid "{1}, and {2}"
+msgstr ""
+
+#: src/poltergeist/report.zig:438
+msgid "it is not doing what it was installed to do"
+msgstr ""
+
+#: src/poltergeist/report.zig:447
+msgid "polter: the \"{1}\" plugin is not running"
+msgstr ""
+
+#: src/poltergeist/report.zig:450
+msgid "polter: the \"{1}\" plugin has failed {2} times and is now only retried every fifteen minutes"
+msgstr ""
+
+#: src/poltergeist/report.zig:454
+msgid ", so {1}"
+msgstr ""
+
+#: src/poltergeist/report.zig:456
+msgid ". It is being retried; what it complained about is in Polter's log."
+msgstr ""
+
+#: src/poltergeist/report.zig:457
+msgid ". Its settings are in $XDG_CONFIG_HOME/polter/plugins/{1}.json"
+msgstr ""
+
 #. TRANSLATORS: U+2026, not three ASCII dots. This opens the title
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action
 #. (rename_tab) that edits the tab strip in place. The two entries look

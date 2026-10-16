@@ -24,6 +24,31 @@ import Foundation
 /// person gets their own language; an agent gets the same words everywhere.
 /// See `dev-docs/poltergeist/boundary.md` section 4.
 enum PluginLocale {
+    /// The language the app's own words are in, as the one-entry list
+    /// `candidates` takes: what a plugin's sidecar is chosen by.
+    ///
+    /// **One entry, not the system's list.** `Locale.preferredLanguages`
+    /// with English first and Chinese second gives an English app -- it has
+    /// English words -- and used to give a Chinese plugin page, because a
+    /// plugin with only `zh-Hans.json` went on down the list until it found
+    /// a file (task 1663). The plugin page is a page of this app, so it is
+    /// in this app's language; a plugin's sidecar for a language the app is
+    /// not in is not read, and its manifest's English shows.
+    static var interfaceLanguages: [String] {
+        interfaceLanguages(
+            from: Bundle.main.preferredLocalizations,
+            development: Bundle.main.developmentLocalization)
+    }
+
+    /// `interfaceLanguages` from its inputs, so a test can give them.
+    /// `Base` is the development language under another name: the app's
+    /// English lives in `Base.lproj`.
+    static func interfaceLanguages(from localizations: [String], development: String?) -> [String] {
+        guard let first = localizations.first else { return [] }
+        if first == "Base" { return [development ?? "en"] }
+        return [first]
+    }
+
     /// Which sidecar files to look for, in the order they should be tried.
     ///
     /// Built from the user's preferred languages, each one expanded into a

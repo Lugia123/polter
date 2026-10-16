@@ -276,7 +276,7 @@ pub const Drain = struct {
 
             for (buf[0..got]) |b| {
                 if (b == '\n') {
-                    self.plog.say(.plugin, line[0..n]);
+                    self.sayChild(line[0..n]);
                     n = 0;
                     continue;
                 }
@@ -286,7 +286,7 @@ pub const Drain = struct {
                 // a runaway line is as likely to be at the end as at the
                 // start, and nothing here can tell which.
                 if (n == line.len) {
-                    self.plog.say(.plugin, line[0..n]);
+                    self.sayChild(line[0..n]);
                     n = 0;
                 }
 
@@ -297,9 +297,100 @@ pub const Drain = struct {
 
         // What the child wrote without a newline after it. It said it, so
         // it is written down.
-        if (n > 0) self.plog.say(.plugin, line[0..n]);
+        if (n > 0) self.sayChild(line[0..n]);
+    }
+
+    /// One line of the child's, in UTF-8 whatever it was written in.
+    fn sayChild(self: *Drain, bytes: []const u8) void {
+        var out: [3 * max_line]u8 = undefined;
+        self.plog.say(.plugin, asUtf8(bytes, &out, childCodePage));
     }
 };
+
+/// Turns bytes in some other encoding into UTF-8 in `out`, or null.
+pub const Decoder = *const fn (bytes: []const u8, out: []u8) ?[]const u8;
+
+/// `bytes` as UTF-8: unchanged when they already are, else what `decode`
+/// makes of them, else unchanged (and `scrub` marks what will not read).
+///
+/// **A child's standard error is in whatever encoding the child chose**,
+/// and on Windows that is usually not UTF-8: a console program writes in
+/// its console's code page, and a plugin is given a console (hidden, by
+/// `CREATE_NO_WINDOW` in `Resident`) whose code page is the system's OEM
+/// one -- 936, GBK, on a Chinese machine. Read as UTF-8, every Chinese
+/// character in Windows PowerShell's error output became a run of
+/// unreadable marks in the settings window's log panel (task 1663, the
+/// test machine). UTF-8 is tried first because a child that chose it --
+/// `chcp 65001`, Python's UTF-8 mode, anything written for the SDK -- must
+/// not be "decoded" a second time, and a line of GBK Chinese is almost
+/// never valid UTF-8 by accident.
+///
+/// Per line, and `\n` is safe to split on first: no trail byte of GBK (or
+/// of any other Windows double-byte code page) is below 0x40.
+pub fn asUtf8(bytes: []const u8, out: []u8, decode: ?Decoder) []const u8 {
+    if (std.unicode.utf8ValidateSlice(bytes)) return bytes;
+    const d = decode orelse return bytes;
+    return d(bytes, out) orelse bytes;
+}
+
+/// What `asUtf8` decodes a child's non-UTF-8 output with: the OEM code
+/// page on Windows, nothing elsewhere (a Unix child's bytes are what its
+/// locale says, and that is UTF-8 on every machine this runs on).
+const childCodePage: ?Decoder = if (builtin.os.tag == .windows) fromOemCodePage else null;
+
+const win = struct {
+    extern "kernel32" fn GetOEMCP() callconv(.winapi) u32;
+    extern "kernel32" fn MultiByteToWideChar(
+        CodePage: u32,
+        dwFlags: u32,
+        lpMultiByteStr: [*]const u8,
+        cbMultiByte: i32,
+        lpWideCharStr: ?[*]u16,
+        cchWideChar: i32,
+    ) callconv(.winapi) i32;
+    extern "kernel32" fn WideCharToMultiByte(
+        CodePage: u32,
+        dwFlags: u32,
+        lpWideCharStr: [*]const u16,
+        cchWideChar: i32,
+        lpMultiByteStr: ?[*]u8,
+        cbMultiByte: i32,
+        lpDefaultChar: ?[*]const u8,
+        lpUsedDefaultChar: ?*i32,
+    ) callconv(.winapi) i32;
+    const CP_UTF8: u32 = 65001;
+};
+
+/// `bytes` from the OEM code page to UTF-8. A byte that code page does not
+/// map comes out as the code page's default character, not as a failure:
+/// the rest of the line is still worth reading.
+fn fromOemCodePage(bytes: []const u8, out: []u8) ?[]const u8 {
+    if (bytes.len == 0 or bytes.len > max_line) return null;
+    // One UTF-16 unit per byte at most (a DBCS pair is one unit), and at
+    // most three UTF-8 bytes per unit, which is what `out` is sized for.
+    var wide: [max_line]u16 = undefined;
+    const units = win.MultiByteToWideChar(
+        win.GetOEMCP(),
+        0,
+        bytes.ptr,
+        @intCast(bytes.len),
+        &wide,
+        @intCast(wide.len),
+    );
+    if (units <= 0) return null;
+    const written = win.WideCharToMultiByte(
+        win.CP_UTF8,
+        0,
+        &wide,
+        units,
+        out.ptr,
+        @intCast(out.len),
+        null,
+        null,
+    );
+    if (written <= 0) return null;
+    return out[0..@intCast(written)];
+}
 
 // -- tests ------------------------------------------------------------------
 
@@ -320,6 +411,38 @@ fn read(alloc: Allocator, io: std.Io, path: []const u8) []const u8 {
         alloc,
         .limited(64 * 1024 * 1024),
     ) catch "";
+}
+
+test "a child's line that is not UTF-8 is decoded, and one that is stays" {
+    // Task 1663. The decoder is a stand-in: the routing is what is tested
+    // here; the OEM code page itself is a Windows API, checked on the
+    // Windows test machine.
+    const fake = struct {
+        fn decode(bytes: []const u8, out: []u8) ?[]const u8 {
+            _ = bytes;
+            const said = "解码了";
+            @memcpy(out[0..said.len], said);
+            return out[0..said.len];
+        }
+        fn refuse(bytes: []const u8, out: []u8) ?[]const u8 {
+            _ = bytes;
+            _ = out;
+            return null;
+        }
+    };
+    var out: [64]u8 = undefined;
+
+    // "错误" in GBK: not UTF-8.
+    const gbk = "\xb4\xed\xce\xf3";
+    try testing.expectEqualStrings("解码了", asUtf8(gbk, &out, fake.decode));
+
+    // Already UTF-8, Chinese or not: never decoded a second time.
+    try testing.expectEqualStrings("错误 error", asUtf8("错误 error", &out, fake.decode));
+
+    // No decoder (not Windows), or one that cannot: the bytes as they came,
+    // for `scrub` to mark.
+    try testing.expectEqualStrings(gbk, asUtf8(gbk, &out, null));
+    try testing.expectEqualStrings(gbk, asUtf8(gbk, &out, fake.refuse));
 }
 
 test "both sides land in one file, in the order they happened" {

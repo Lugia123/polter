@@ -5657,6 +5657,7 @@ fn load_api() -> Option<Api> {
             surface_free_text: sym!(internal, "ghostty_surface_free_text"),
             cli_try_action: sym!(internal, "ghostty_cli_try_action"),
             translate: sym!(internal, "ghostty_translate"),
+            translate_locale: sym!(internal, "ghostty_translate_locale"),
             codepoint_width: sym!(vt, "ghostty_unicode_codepoint_width"),
             grapheme_width: sym!(vt, "ghostty_unicode_grapheme_width"),
             surface_inspector: sym!(internal, "ghostty_surface_inspector"),

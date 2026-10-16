@@ -1389,8 +1389,10 @@ fn tell(self: *Resident, why: report.Trouble, failures: u32) void {
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     defer arena.deinit();
 
-    const line = report.alert(
+    // In the person's language: it is printed on their screen (task 1663).
+    const line = report.alertIn(
         arena.allocator(),
+        report.interface,
         self.key,
         self.wants,
         why,

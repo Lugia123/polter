@@ -373,9 +373,15 @@ struct PluginCatalog {
     /// One plugin directory as the settings UI shows it, in the first of
     /// `preferred` the plugin ships a translation for. Internal so a test
     /// can name the language instead of inheriting the machine's.
+    ///
+    /// The default is the language the app's own words are in
+    /// (`PluginLocale.interfaceLanguages`), not the system's list: with
+    /// English first and Chinese second, the app is English and the plugin
+    /// page used to be Chinese, because only the plugin went down the list
+    /// to a language it had a file for (task 1663).
     static func read(
         directory: URL,
-        preferring preferred: [String] = Locale.preferredLanguages
+        preferring preferred: [String] = PluginLocale.interfaceLanguages
     ) -> Plugin? {
         let manifestURL = directory.appendingPathComponent("plugin.json")
         guard let data = try? Data(contentsOf: manifestURL),
