@@ -1278,6 +1278,20 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     override func showWindow(_ sender: Any?) {
         guard let terminalWindow = window as? TerminalWindow else { return }
 
+        // **A tab is where its group is.** Every `newTab` adds the window to
+        // its group before showing it, and a frame set on one window of a
+        // group moves the whole group. The remembered frame is one value for
+        // the whole application -- whichever window last moved or became
+        // main -- so putting it on a new tab carried the window the person
+        // had just dragged to another display back to where some other
+        // window had been (task 1618). The group has already given the tab
+        // its frame; nothing here changes it.
+        if isTabbedBesideOthers {
+            super.showWindow(sender)
+            syncAppearance()
+            return
+        }
+
         // Set the initial window position. This must happen after the window
         // is fully set up (content view, toolbar, default size) so that
         // decorations added by subclass awakeFromNib (e.g. toolbar for tabs
@@ -1302,6 +1316,16 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         super.showWindow(sender)
 
         syncAppearance()
+    }
+
+    /// Whether this window is already one of several in a tab group.
+    private var isTabbedBesideOthers: Bool {
+        guard let window else { return false }
+        // With no other window on screen there is no group to be in, and
+        // asking for `tabGroup` would build AppKit's tab machinery for
+        // nothing (see `windowDidLoad`) -- the first window at launch.
+        guard NSApp.windows.contains(where: { $0 !== window && $0.isVisible }) else { return false }
+        return (window.tabGroup?.windows.count ?? 1) > 1
     }
 
     // Shows the "+" button in the tab bar, responds to that click.
