@@ -30,6 +30,16 @@
         ],
         "default": "yes"
       },
+      "approve_tools": {
+        "type": "string",
+        "title": "Let Codex call Polter's tools without asking",
+        "description": "yes sets default_tools_approval_mode = \"approve\" on the polter server in ~/.codex/config.toml, and on nothing else. Codex otherwise asks before every call to one of Polter's tools, and a worker nobody is watching stops at the first one, before it can report anything. Your other MCP servers and your global approval policy are not touched. no takes the line back out, and Codex asks again.",
+        "enum": [
+          "yes",
+          "no"
+        ],
+        "default": "yes"
+      },
       "rules": {
         "type": "string",
         "title": "Write Polter's note into this CLI's rules file",

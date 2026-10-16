@@ -850,6 +850,18 @@ function Remove-PolterRulesLines {
     return $kept
 }
 
+# One of this plugin's parameters as the greeting gave it, or $Default when
+# the greeting did not name it. For the parameters only one host declares --
+# Codex's `approve_tools` -- so the SDK need not learn every host's names.
+# Kept in step with `polter_param` in provision.sh.
+function Get-PolterParam {
+    param([string]$Name, [string]$Default)
+    if ($null -eq $script:PolterParams) { return $Default }
+    $v = Get-PolterProp $script:PolterParams $Name ''
+    if ($v) { return [string]$v }
+    return $Default
+}
+
 function Invoke-PolterProvisionMain {
     $hello = $script:PolterIn.ReadLine()
     if ($null -eq $hello) { exit 0 }
@@ -866,8 +878,10 @@ function Invoke-PolterProvisionMain {
     $script:PolterScope = 'user'
     $script:PolterWantSkills = 'yes'
     $script:PolterWantRules = 'yes'
+    $script:PolterParams = $null
     try {
         $params = Get-PolterProp (ConvertFrom-Json $hello) 'params'
+        $script:PolterParams = $params
         $scope = Get-PolterProp $params 'scope' ''
         $skills = Get-PolterProp $params 'skills' ''
         $rules = Get-PolterProp $params 'rules' ''

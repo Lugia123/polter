@@ -101,6 +101,19 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
   否，每次启动都会重写 config.toml。判断改读 `codex mcp get polter --json`，那里
   的值不打码，`env_vars` 也在里面。注册完整与否另由宿主可选的
   `host_mcp_complete` / `Test-HostMcpComplete` 说（缺 `env_vars` 就算过期）。
+- **Codex 默认每调一个 Polter 工具都要人批准**（#1653，0.163.0 实测）。条目没写
+  `default_tools_approval_mode` 时是 `auto`：凡是没标 `readOnlyHint` 的工具都弹
+  「Allow the polter MCP server to run tool …?」，而 Polter 的工具都没标。worker
+  没人看着，就停在第一次调用上，连「我卡住了」都报不出来。所以插件参数
+  `approve_tools`（默认 yes）在同一张 `[mcp_servers.polter]` 表里再写一行
+  `default_tools_approval_mode = "approve"`。`approve` 在 Codex 里的意思是
+  「这个服务器的工具一律不问」，见 codex-rs/core/src/mcp_tool_call.rs 的
+  `requires_mcp_tool_approval_for_mode`。只写这一张表：用户别的服务器、全局的
+  `approval_policy` 都不碰。改成 no，这一行就被拿掉。
+  `codex mcp get --json` **不带**这一项（只有不加 `--json` 的那种输出里有），所以
+  「完整没有」是直接读 config.toml 里这张表来判断的。
+  Claude Code 那边插件不预先批准任何东西：它的批准框会触发 `PermissionRequest`
+  钩子，Polter 能看到；Codex 没有钩子，框弹出来 Polter 什么也看不到。两边差在这里。
 - **opencode 的键是 `mcp`，结构也不同**，不是换个文件名的 `mcpServers`。
 - **Qwen Code 和 Gemini CLI 是一系**，形状一样。这不是巧合，是两家共用一份上
   游——**也意味着上游一变，两家一起变**。（iFlow CLI 原本是这一系的第三家；

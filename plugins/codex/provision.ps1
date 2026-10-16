@@ -17,8 +17,9 @@ $PolterHostBin = 'codex'
 # an underscore, where every other host in this directory uses JSON and
 # `mcpServers`. That difference bites harder here than on the `sh` side:
 # PowerShell has JSON in the language and no TOML at all. `codex mcp` writes
-# the entry; the one line it has no flag for, `env_vars`, is put into that
-# entry's table by plain line editing and nowhere else (`Set-CodexEnvVars`).
+# the entry; the two lines it has no flags for -- `env_vars` and the approval
+# mode -- go into that entry's table by plain line editing and nowhere else
+# (`Set-CodexTable`).
 #
 # **`--json`, because the plain form hides the one thing asked of it**
 # (#1645). `codex mcp get` prints every env value as `*****`, so the version
@@ -56,9 +57,36 @@ function Get-HostMcpCurrent {
 # (src/cli/mcp.zig).
 $script:PolterCodexEnvVars = 'env_vars = ["GHOSTTY_POLTER_SOCKET", "GHOSTTY_POLTER_TOKEN"]'
 
+# **Polter's own tools are not asked about one by one** (#1653). Codex's
+# default for an MCP server's tools is `auto`, which asks before every call to
+# a tool not annotated read-only -- and none of Polter's is -- so a worker
+# stopped at "Allow the polter MCP server to run tool "me"?" before its first
+# report. `approve` is Codex's "never ask". Set on the `polter` table only;
+# `approve_tools=no` takes the line back out. Kept in step with `provision.sh`.
+$script:PolterCodexApprove = 'default_tools_approval_mode = "approve"'
+
+function Test-CodexWantApprove { (Get-PolterParam 'approve_tools' 'yes') -eq 'yes' }
+
+# The lines of the `[mcp_servers.polter]` table, header excluded, straight
+# from the file: `codex mcp get --json` does not carry the approval mode
+# (0.163.0, measured), and the plain form hides the env values.
+function Get-CodexPolterTable {
+    $path = Get-CodexConfig
+    if (-not (Test-Path -LiteralPath $path)) { return @() }
+    $inside = $false
+    $lines = @()
+    foreach ($line in ([System.IO.File]::ReadAllText($path, $script:PolterUtf8) -split "`r?`n")) {
+        if ($line -match '^\s*\[') { $inside = $line -match '^\s*\[\s*mcp_servers\.polter\s*\]\s*$'; continue }
+        if ($inside) { $lines += $line }
+    }
+    return $lines
+}
+
 function Test-HostMcpComplete {
     param([string]$Current)
-    $Current -match 'env_vars: .*GHOSTTY_POLTER_SOCKET' -and $Current -match 'env_vars: .*GHOSTTY_POLTER_TOKEN'
+    if (-not ($Current -match 'env_vars: .*GHOSTTY_POLTER_SOCKET' -and $Current -match 'env_vars: .*GHOSTTY_POLTER_TOKEN')) { return $false }
+    $approves = @(Get-CodexPolterTable | Where-Object { $_ -match "^\s*default_tools_approval_mode\s*=\s*[`"']approve[`"']" }).Count -gt 0
+    return ($approves -eq (Test-CodexWantApprove))
 }
 
 # Where Codex keeps it: `$env:CODEX_HOME`, else `%USERPROFILE%\.codex` --
@@ -68,14 +96,15 @@ function Get-CodexConfig {
     Join-Path $dir 'config.toml'
 }
 
-# Put `env_vars` into the `[mcp_servers.polter]` table `codex mcp add` has
-# just written; `codex mcp add` has no flag for it. **Inside that one table
+# Put `env_vars`, and the approval mode when `approve_tools` is yes, into the
+# `[mcp_servers.polter]` table `codex mcp add` has just written; `codex mcp
+# add` has a flag for neither. **Inside that one table
 # and nowhere else**: straight under its header, any `env_vars = ...` line
 # already in it dropped first, every other line copied as it was. So
 # `codex mcp remove polter`, which deletes the table, takes it away too.
 # Written BOM-less through a temp file and replaced atomically, the way
 # `Edit-PolterJson` does it. Throws on failure, as `Register-HostMcp` must.
-function Set-CodexEnvVars {
+function Set-CodexTable {
     $path = Get-CodexConfig
     if (-not (Test-Path -LiteralPath $path)) { throw "no $path after codex mcp add" }
     $raw = [System.IO.File]::ReadAllText($path, $script:PolterUtf8)
@@ -87,10 +116,14 @@ function Set-CodexEnvVars {
         if ($line -match '^\s*\[') {
             $inside = $line -match '^\s*\[\s*mcp_servers\.polter\s*\]\s*$'
             $out.Add($line)
-            if ($inside) { $out.Add($script:PolterCodexEnvVars); $found = $true }
+            if ($inside) {
+                $out.Add($script:PolterCodexEnvVars)
+                if (Test-CodexWantApprove) { $out.Add($script:PolterCodexApprove) }
+                $found = $true
+            }
             continue
         }
-        if ($inside -and $line -match '^\s*env_vars\s*=') { continue }
+        if ($inside -and $line -match '^\s*(env_vars|default_tools_approval_mode)\s*=') { continue }
         $out.Add($line)
     }
     if (-not $found) { throw "no [mcp_servers.polter] table in $path to put env_vars in" }
@@ -118,7 +151,7 @@ function Register-HostMcp {
         '--env', "$VersionKey=$Version",
         '--', $Exe, '+mcp'
     )
-    Set-CodexEnvVars
+    Set-CodexTable
 }
 
 # Codex took the Agent Skills standard in January 2026 and looks in the same

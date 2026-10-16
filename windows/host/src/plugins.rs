@@ -1829,7 +1829,7 @@ mod shipped_manifest_tests {
         let expected: Vec<(String, Vec<String>)> = [
             ("archive", &["dir", "sign_key"][..]),
             ("claude-code", &["rules", "scope", "skills"][..]),
-            ("codex", &["rules", "skills"][..]),
+            ("codex", &["approve_tools", "rules", "skills"][..]),
             ("gemini", &["rules", "skills"][..]),
             ("kimi", &[][..]),
         ]

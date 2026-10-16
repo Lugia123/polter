@@ -596,6 +596,18 @@ ack() {
 POLTER_SCOPE=user
 POLTER_WANT_SKILLS=yes
 POLTER_WANT_RULES=yes
+# The greeting itself, for a parameter only one host has (`polter_param`).
+POLTER_HELLO=
+
+# One of this plugin's parameters as the greeting gave it, or $2 when the
+# greeting did not name it. For the parameters only one host declares --
+# Codex's `approve_tools` -- so the SDK need not learn every host's names.
+# The same flat `"name":"value"` read as the three above, with the same
+# caveat: a name must not appear twice in the greeting.
+polter_param() {
+  _v=$(printf '%s' "$POLTER_HELLO" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p")
+  if [ -n "$_v" ]; then printf '%s' "$_v"; else printf '%s' "$2"; fi
+}
 
 # The block, byte for byte, markers included.
 #
@@ -712,6 +724,7 @@ polter_provision_main() {
 
   case "$hello" in
     *'"hello"'*)
+      POLTER_HELLO=$hello
       _scope=$(printf '%s' "$hello" | sed -n 's/.*"scope":"\([^"]*\)".*/\1/p')
       _skills=$(printf '%s' "$hello" | sed -n 's/.*"skills":"\([^"]*\)".*/\1/p')
       _rules=$(printf '%s' "$hello" | sed -n 's/.*"rules":"\([^"]*\)".*/\1/p')
