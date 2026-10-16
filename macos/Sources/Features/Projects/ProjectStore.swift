@@ -421,13 +421,16 @@ final class ProjectStore {
     ///   entire point when actually opening a page, so only call this
     ///   then. Use `list()`/`entry(name:)` for anything that just displays
     ///   metadata.
-    func materialize(_ tab: ProjectTab, of entry: Entry, app: ghostty_app_t) -> SplitTree<Ghostty.SurfaceView> {
+    ///
+    /// `area` is what the page will be laid out in, nil when that is not
+    /// known (`ProjectNode.materializing`).
+    func materialize(_ tab: ProjectTab, of entry: Entry, app: ghostty_app_t, area: ProjectPageArea?) -> SplitTree<Ghostty.SurfaceView> {
         // The snapshots sit beside the file they were saved with, which is
         // `entry.url` even when that is an older rule's name.
         let location = ProjectScrollback.Location(
             directory: ProjectScrollback.directory(forProjectFile: entry.url),
             key: bindingKey(name: entry.name))
-        return tab.root.materializing(app, scrollback: location)
+        return tab.root.materializing(app, scrollback: location, area: area)
     }
 
     /// Put `name`'s previous generation back, keeping the current one as

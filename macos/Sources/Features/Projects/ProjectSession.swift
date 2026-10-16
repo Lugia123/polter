@@ -440,13 +440,24 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
                 window.frame, isFirstWindow: number == 0, homeIsNamed: home != nil,
                 hasCurrentWindow: current != nil, screens: screens)
             let behind = !wasOpen && place == .tabs(in: .named) && !inFront
+            // What the page's panes will be laid out in, for the one case
+            // that is known before they exist: a window of its own at the
+            // frame the file recorded, holding this page alone (a second
+            // tab would bring a tab bar). Anywhere else nil, and the panes
+            // start at the core's placeholder (#47).
+            let toOpen = window.pages.filter { controller(of: $0.id) == nil }.count
+            var area: ProjectPageArea?
+            if case .ownWindow(let frame?) = place, firstOpen == nil, toOpen == 1 {
+                area = ProjectPageAreas.ownWindow(frame, ghostty: ghostty)
+                Self.logger.info("project '\(self.name, privacy: .public)' window \(number): panes sized for \(area.map { "\(Int($0.size.width))x\(Int($0.size.height))@\($0.scale)" } ?? "nothing", privacy: .public) in a \(Int(frame.width))x\(Int(frame.height)) frame")
+            }
 
             for page in window.pages {
                 if let existing = controller(of: page.id) {
                     previous = existing.window
                     continue
                 }
-                let tree = store.materialize(page.tab, of: entry, app: app)
+                let tree = store.materialize(page.tab, of: entry, app: app, area: area)
                 let controller = TerminalController(ghostty, withSurfaceTree: tree)
                 guard let tab = controller.window else { continue }
                 if let previous {

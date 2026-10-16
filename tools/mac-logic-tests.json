@@ -92,7 +92,17 @@
           "import GhosttyKit"
         ],
         "why": "the colour arithmetic the command palette ranks by (task 1604); from the marker on it reads a ghostty_config_color_s"
-      }
+      },
+      {
+        "path": "macos/Sources/Features/ControlRoom/PaneFrameSplit.swift",
+        "from": "enum PaneFrameSplit {",
+        "until": "extension View {",
+        "prepend": [
+          "import CoreGraphics"
+        ],
+        "why": "only the measurements of the gap round a framed pane are taken, which ProjectPaneSizes sizes a reopened pane by; the rest needs Ghostty.App, the real SurfaceView and BaseTerminalController: it is where a frame is put round a live pane"
+      },
+      "macos/Sources/Features/Projects/ProjectPaneSizes.swift"
     ],
     "out": [
       {
@@ -102,10 +112,6 @@
       {
         "path": "macos/Sources/Features/ControlRoom/ControlRoomLender.swift",
         "why": "imports GhosttyKit: it moves a real terminal view between windows"
-      },
-      {
-        "path": "macos/Sources/Features/ControlRoom/PaneFrameSplit.swift",
-        "why": "needs Ghostty.App, the real SurfaceView and BaseTerminalController: it is where a frame is put round a live pane. The frame itself (PaneFrameView.swift) and the rule for which frame (PaneFrame.swift) are in"
       }
     ]
   },
@@ -158,7 +164,8 @@
       "macos/Tests/Roles/OfficialWhyTests.swift",
       "macos/Tests/Splits/TabIntoPaneTests.swift",
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift",
-      "macos/Tests/CommandPaletteAliasTests.swift"
+      "macos/Tests/CommandPaletteAliasTests.swift",
+      "macos/Tests/Projects/ProjectPaneSizesTests.swift"
     ],
     "out": [
       {

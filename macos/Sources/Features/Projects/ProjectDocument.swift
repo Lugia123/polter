@@ -900,14 +900,36 @@ extension ProjectNode {
     /// `scrollback` is where this project's snapshots live (see
     /// `ProjectScrollback.directory`) and the project they belong to; nil
     /// restores no scrollback at all.
+    ///
+    /// `area` is what the page's split tree will be laid out in, when the
+    /// caller knows it; each terminal is then created at the size its pane
+    /// will have (`ProjectPaneSizes`), which is the size its scrollback is
+    /// restored at (#47). **No default**: nil is an answer -- "not known",
+    /// and the terminals start at the core's placeholder -- and a caller
+    /// has to give it.
     func materializing(
         _ app: ghostty_app_t,
-        scrollback project: ProjectScrollback.Location? = nil
+        scrollback project: ProjectScrollback.Location?,
+        area: ProjectPageArea?
     ) -> SplitTree<Ghostty.SurfaceView> {
-        building { $0.surface(app, scrollback: project) }
+        let sizes = area.map { area in
+            ProjectPaneSizes.sizes(of: self, in: area.size, framed: area.framed).map { size in
+                size.map { ProjectPaneSizes.pixels($0, scale: area.scale) }
+            }
+        }
+        var next = 0
+        return building { node in
+            defer { next += 1 }
+            let size = sizes.flatMap { next < $0.count ? $0[next] : nil }
+            return node.surface(app, scrollback: project, pixelSize: size)
+        }
     }
 
-    private func surface(_ app: ghostty_app_t, scrollback project: ProjectScrollback.Location?) -> Ghostty.SurfaceView {
+    private func surface(
+        _ app: ghostty_app_t,
+        scrollback project: ProjectScrollback.Location?,
+        pixelSize: (width: UInt32, height: UInt32)?
+    ) -> Ghostty.SurfaceView {
         switch self {
         // Who was in the pane is not acted on here: a restored pane is a
         // terminal in the right place, and starting an agent in it is a
@@ -926,6 +948,7 @@ extension ProjectNode {
             if let project, !scrollback.isEmpty {
                 config.scrollbackRestore = project.directory.appendingPathComponent(scrollback).path
             }
+            config.pixelSize = pixelSize
             let view = Ghostty.SurfaceView(app, baseConfig: config)
             // Not forced into the "explicitly named" tier (see
             // `titleFromTerminal` in `SurfaceView_AppKit.swift`): a saved
