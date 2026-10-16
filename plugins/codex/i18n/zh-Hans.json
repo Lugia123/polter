@@ -17,6 +17,14 @@
         "yes": "写入",
         "no": "不写"
       }
+    },
+    "approve_tools": {
+      "title": "Polter 的工具不用逐个批准",
+      "description": "选「不用问」会在 ~/.codex/config.toml 的 polter 服务上写 default_tools_approval_mode = \"approve\"，别处一概不动。不写的话，Codex 每次调用 Polter 的工具都要先问一句，没人看着的 worker 会停在第一次调用上，连进度都报不出来。你的其他 MCP 服务和全局批准策略都不受影响。选「要问」会把这一行删掉，Codex 恢复逐个询问。",
+      "choices": {
+        "yes": "不用问",
+        "no": "要问"
+      }
     }
   }
 }
