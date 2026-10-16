@@ -66,6 +66,9 @@ struct ControlRoomList: Equatable {
         /// The "Fix" button on a card that reads "Failed" (task 1560): the
         /// core's word, from the snapshot's `fix`.
         var fix: Fix = .none
+        /// What the row's menu needs to know about the group (task 1660);
+        /// nil on a terminal's own row and in a list made by hand.
+        var facts: GroupFacts?
 
         /// What the row is called: the group's name, or the terminal's
         /// title.
@@ -76,6 +79,34 @@ struct ControlRoomList: Equatable {
     /// and greyed until the card changes. Which is the core's to say.
     enum Fix: String, Equatable, Decodable {
         case none, offered, sent
+    }
+
+    /// A group as its row's menu and what that opens need it (task 1660):
+    /// copied from the snapshot, nothing worked out.
+    struct GroupFacts: Equatable {
+        var pinned: Bool
+        var muted: Bool
+        /// Wall clock; nil while muted means until it is unmuted, and means
+        /// nothing when not muted.
+        var mutedUntilMs: UInt64?
+        /// The supervisor's terminal; nil with none.
+        var steward: String?
+        var recordDir: String?
+        var brief: String
+        /// The project's name when the group is bound to one.
+        var project: String?
+        var deleteCost: ControlRoomSnapshot.DeleteCost?
+    }
+
+    /// A group in "Archived": its name, its note, when it was put away, and
+    /// what deleting it would take.
+    struct ArchivedGroup: Equatable, Identifiable {
+        var name: String
+        var brief: String
+        var archivedMs: UInt64
+        var recordDir: String?
+        var deleteCost: ControlRoomSnapshot.DeleteCost?
+        var id: String { name }
     }
 
     /// A terminal that is in no group and has a row of its own: a
@@ -352,6 +383,9 @@ struct ControlRoomList: Equatable {
     /// delete this much (task 1511); nil when nothing waits. Said once, as
     /// a note under the header with an OK.
     var retentionWaitingBytes: UInt64?
+    /// The groups put away, newest first (task 1659). Not rows: the
+    /// list's "Archived" part shows them, folded away until opened.
+    var archived: [ArchivedGroup] = []
 
     /// Every row in the order it is listed, which is the order the up and
     /// down keys walk.
@@ -734,6 +768,47 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var same_as: String?
         /// Absent in snapshots from before task 1560: no button.
         var fix: ControlRoomList.Fix?
+        // The row's menu (task 1659's interface, `issue-fix/1659-interface.md`).
+        // Absent in snapshots from before it: nothing pinned or muted.
+        /// The core has already put pinned groups first in their section.
+        var pinned: Bool?
+        /// Null when not muted.
+        var muted: Muted?
+        var delete_cost: DeleteCost?
+        /// The group's record directory, for "Show in Finder".
+        var record_dir: String?
+        var brief: String?
+        var project: Project?
+
+        struct Muted: Decodable, Equatable {
+            /// Wall clock; null for until it is unmuted.
+            var until_ms: UInt64?
+        }
+
+        struct Project: Decodable, Equatable {
+            /// bound | undecided | declined.
+            var tie: String
+            /// Null unless bound.
+            var name: String?
+        }
+    }
+
+    /// What deleting a group would take with it: how many terminals are in
+    /// it besides the person's own, the supervisor counted, and how many
+    /// tasks are not closed or cancelled.
+    struct DeleteCost: Decodable, Equatable {
+        var members: Int
+        var open_tasks: Int
+    }
+
+    /// A group put away (task 1659): not in `groups`, counted in nothing.
+    struct Archived: Decodable, Equatable {
+        var name: String
+        var brief: String?
+        /// Wall clock.
+        var archived_ms: UInt64
+        var record_dir: String?
+        var delete_cost: DeleteCost?
     }
 
     /// A terminal in no group, with a row of its own (`ControlRoom.zig`,
@@ -789,6 +864,8 @@ struct ControlRoomSnapshot: Decodable, Equatable {
     var choose_supervisor_role: Bool?
     /// Absent before task 1511, and then nothing waits.
     var retention_waiting_bytes: UInt64?
+    /// Newest first. Absent before task 1659: none.
+    var archived: [Archived]?
 }
 
 /// Which waiting glyph breathes.
@@ -999,7 +1076,16 @@ extension ControlRoomList {
                     SupervisorStart(state: $0.state, canStart: $0.can_start, failed: $0.failed,
                                     role: $0.role, cwd: $0.cwd, last: $0.startLast)
                 },
-                fix: group.fix ?? .none))
+                fix: group.fix ?? .none,
+                facts: GroupFacts(
+                    pinned: group.pinned ?? false,
+                    muted: group.muted != nil,
+                    mutedUntilMs: group.muted?.until_ms,
+                    steward: group.steward,
+                    recordDir: group.record_dir,
+                    brief: group.brief ?? "",
+                    project: group.project?.tie == "bound" ? group.project?.name : nil,
+                    deleteCost: group.delete_cost)))
         }
         let rows = groups + lone
         self.init(
@@ -1017,6 +1103,10 @@ extension ControlRoomList {
             supervisorRoles: (snapshot.supervisor_roles ?? []).map { SupervisorRole(key: $0.key, name: $0.name) },
             chooseSupervisorRole: snapshot.choose_supervisor_role ?? false,
             retentionWaitingBytes: snapshot.retention_waiting_bytes)
+        archived = (snapshot.archived ?? []).map {
+            ArchivedGroup(name: $0.name, brief: $0.brief ?? "", archivedMs: $0.archived_ms,
+                          recordDir: $0.record_dir, deleteCost: $0.delete_cost)
+        }
     }
 
     static func decode(snapshot json: Data, showing: String? = nil, loneRows: Bool = false) throws -> ControlRoomList {

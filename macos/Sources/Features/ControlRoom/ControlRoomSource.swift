@@ -169,10 +169,29 @@ final class ControlRoomModel: ObservableObject {
     /// try again or look at another group.
     @Published private(set) var startRefusal: (group: String, message: String)?
     /// A group the person has just made, until the core lists it.
-    private var madeGroup: String?
+    /// Also a group the person has just renamed, by its new name.
+    var madeGroup: String?
     /// Why the last "Fix" was not done, and on which row: said beside the
     /// button until it is pressed again or the card stops offering it.
     @Published private(set) var fixRefusal: (row: String, message: String)?
+
+    // MARK: The row's menu (task 1660; `ControlRoomModel+RowMenu.swift`)
+
+    /// The row whose name is a field, what is in it, and why that would
+    /// be refused; nil when no row is being renamed.
+    @Published var renaming: ControlRoomRowMenuState.Renaming?
+    /// The group whose note is open in the panel at the right; nil when
+    /// the panel is not there.
+    @Published var noteEditing: ControlRoomRowMenuState.NoteEditing?
+    /// The line under a row once its supervisor was asked something, or a
+    /// menu item was refused, by row.
+    @Published var rowLines: [String: ControlRoomRowMenuState.RowLine] = [:]
+    /// Whether "Archived" at the bottom of the list is open.
+    @Published var archivedOpen = false
+    /// Where a group's records are shown, a terminal's id copied, and the
+    /// two questions asked. Handed in, so the rest runs without AppKit's
+    /// side effects (tests replace them).
+    var effects = ControlRoomRowMenuState.Effects.system
 
     /// Make a group by the name the person typed. Returns what to tell
     /// them when it was not made; nil when it was -- and then it is
