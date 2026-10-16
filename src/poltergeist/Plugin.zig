@@ -322,6 +322,10 @@ pub const Manifest = struct {
     /// every plugin but the ones for CLIs that have no hooks to say it with.
     title_says: TitleSays = .none,
 
+    /// What this plugin's CLI shows on its screen while a permission box is
+    /// up -- see `ScreenSays`. Empty for a plugin that declares nothing.
+    screen_says: ScreenSays = .none,
+
     /// The parameter by that name, if the manifest declares one.
     pub fn param(self: Manifest, name: []const u8) ?ParamSpec {
         for (self.params) |p| if (std.mem.eql(u8, p.name, name)) return p;
@@ -373,6 +377,140 @@ pub fn titleAwaitsApproval(manifests: []const Manifest, title: []const u8) ?[]co
         if (m.title_says.awaitsApproval(title)) return m.key;
     }
     return null;
+}
+
+/// What a CLI shows on its screen while it waits for a person to approve
+/// something (task 1668).
+///
+/// ```json
+/// "screen_says": { "awaiting_approval": { "contains": ["Would you like to run the following command?"] } }
+/// ```
+///
+/// **For the one question nothing else answers**: `terminal_answer_prompt`
+/// asked without the moments of the prompt it is answering, about a
+/// terminal whose agent has said nothing -- no hooks, no title. It used to
+/// press its keys anyway, and a return pressed at no box at all is a
+/// return into whatever is there: it once chose the default of an upgrade
+/// dialog (qwen, on the test machine). Now it presses only when the screen
+/// shows a box its CLI's plugin declares; with no declaration it refuses.
+///
+/// Text, fixed, from the CLI's own source or measured on its screen; looked
+/// for only in the bottom `rows` rows, where a box is drawn -- the same
+/// words higher up are scrollback, a box already answered.
+pub const ScreenSays = struct {
+    /// A screen whose bottom rows contain any of these: a box is up.
+    awaiting_approval: []const []const u8,
+
+    pub const none: ScreenSays = .{ .awaiting_approval = &.{} };
+
+    pub const max_texts = 8;
+    pub const max_text_bytes = 64;
+
+    /// How many rows from the bottom, after trailing empty ones, are
+    /// looked at.
+    pub const rows = 16;
+
+    pub fn declared(self: ScreenSays) bool {
+        return self.awaiting_approval.len > 0;
+    }
+
+    pub fn awaitsApproval(self: ScreenSays, screen: []const u8) bool {
+        const tail = bottomRows(screen, rows);
+        for (self.awaiting_approval) |text| {
+            if (std.mem.indexOf(u8, tail, text) != null) return true;
+        }
+        return false;
+    }
+};
+
+/// The last `n` rows of `screen` that end at its last row with anything
+/// on it.
+fn bottomRows(screen: []const u8, n: usize) []const u8 {
+    const end = std.mem.trimEnd(u8, screen, " \t\r\n").len;
+    var start = end;
+    var seen: usize = 0;
+    while (start > 0) : (start -= 1) {
+        if (screen[start - 1] == '\n') {
+            seen += 1;
+            if (seen == n) break;
+        }
+    }
+    return screen[start..end];
+}
+
+/// Whether a box is up on `screen`, by what the plugins declare, for a
+/// terminal whose CLI is `cli` when that is known.
+pub const ScreenVerdict = enum {
+    /// A declared box is on the screen.
+    box,
+    /// The CLI declares its boxes and none is on the screen.
+    no_box,
+    /// Nothing declared can say: the CLI is not known and no declared box
+    /// is showing, or the CLI is known and declares nothing.
+    unknown,
+};
+
+pub fn screenVerdict(manifests: []const Manifest, cli: ?[]const u8, screen: []const u8) ScreenVerdict {
+    if (cli) |c| {
+        for (manifests) |m| {
+            if (!std.mem.eql(u8, m.key, c)) continue;
+            if (!m.screen_says.declared()) return .unknown;
+            return if (m.screen_says.awaitsApproval(screen)) .box else .no_box;
+        }
+        return .unknown;
+    }
+    // Not known which CLI it is: a box some plugin declares, showing, is a
+    // box; its absence says nothing about a CLI that declares none.
+    for (manifests) |m| {
+        if (m.screen_says.awaitsApproval(screen)) return .box;
+    }
+    return .unknown;
+}
+
+fn screenSaysOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Allocator.Error!ScreenSays {
+    const section = switch (obj.get("screen_says") orelse return .none) {
+        .object => |o| o,
+        else => {
+            log.warn("plugin {s}: screen_says is not an object; ignored", .{key});
+            return .none;
+        },
+    };
+    const approval = switch (section.get("awaiting_approval") orelse return .none) {
+        .object => |o| o,
+        else => {
+            log.warn("plugin {s}: screen_says.awaiting_approval is not an object; ignored", .{key});
+            return .none;
+        },
+    };
+    const list = switch (approval.get("contains") orelse return .none) {
+        .array => |a| a.items,
+        else => {
+            log.warn("plugin {s}: screen_says.awaiting_approval.contains is not a list; ignored", .{key});
+            return .none;
+        },
+    };
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (list) |item| {
+        const text = switch (item) {
+            .string => |v| v,
+            else => {
+                log.warn("plugin {s}: a screen text that is not a string; skipped", .{key});
+                continue;
+            },
+        };
+        // Short texts match too much: an empty one, everything. A box's
+        // own sentence is what is wanted, so fewer than 8 bytes is refused.
+        if (text.len < 8 or text.len > ScreenSays.max_text_bytes or !printable(text)) {
+            log.warn("plugin {s}: screen text {s} skipped -- 8 to {d} printable bytes", .{ key, text, ScreenSays.max_text_bytes });
+            continue;
+        }
+        if (out.items.len == ScreenSays.max_texts) {
+            log.warn("plugin {s}: more than {d} screen texts; the rest are ignored", .{ key, ScreenSays.max_texts });
+            break;
+        }
+        try out.append(arena, text);
+    }
+    return .{ .awaiting_approval = out.items };
 }
 
 /// What the manifest declares under `title_says`. Like `agent_cli`, a
@@ -697,6 +835,7 @@ pub fn load(
         .params = specsOf(arena, key, obj),
         .agent_cli = try agentCliOf(arena, key, dir, obj),
         .title_says = try titleSaysOf(arena, key, obj),
+        .screen_says = try screenSaysOf(arena, key, obj),
     };
 }
 
@@ -3133,4 +3272,62 @@ test "1656: the shipped Codex manifest declares the titles Codex 0.163 was measu
     try testing.expect(says.awaitsApproval("[ . ] Action Required | t1653-w"));
     // What it writes while working is not a wait.
     try testing.expect(!says.awaitsApproval("\u{2827} t1653-w"));
+}
+
+test "1668: a declared screen text says a box is up only in the bottom rows" {
+    const says: ScreenSays = .{ .awaiting_approval = &.{"Do you want to proceed?"} };
+    try testing.expect(says.awaitsApproval(" Bash command\n   rm -rf dist/\n Do you want to proceed?\n ❯ 1. Yes\n\n\n"));
+    try testing.expect(!says.awaitsApproval("$ ls\nREADME.md\n"));
+
+    // The same words above the bottom rows are scrollback: a box answered.
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try buf.appendSlice(testing.allocator, " Do you want to proceed?\n");
+    for (0..ScreenSays.rows) |_| try buf.appendSlice(testing.allocator, "⏺ done\n");
+    try testing.expect(!says.awaitsApproval(buf.items));
+}
+
+test "1668: which CLI it is decides whose screen texts are read, and silence is not a no" {
+    const codex: Manifest = .{ .key = "codex", .exec = "p", .screen_says = .{ .awaiting_approval = &.{" to run tool \""} } };
+    const qwen: Manifest = .{ .key = "qwen-code", .exec = "p" };
+    const all = [_]Manifest{ qwen, codex };
+    const box = "  Allow the polter MCP server to run tool \"me\"?\n  › 1. Allow\n";
+    const none = "› Ask Codex to do anything\n";
+
+    try testing.expectEqual(ScreenVerdict.box, screenVerdict(&all, "codex", box));
+    try testing.expectEqual(ScreenVerdict.no_box, screenVerdict(&all, "codex", none));
+    // A CLI that declares nothing: whatever is on the screen, not known.
+    try testing.expectEqual(ScreenVerdict.unknown, screenVerdict(&all, "qwen-code", box));
+    try testing.expectEqual(ScreenVerdict.unknown, screenVerdict(&all, "gemini", none));
+    // Not known which CLI: a declared box showing is a box; its absence is
+    // not a no.
+    try testing.expectEqual(ScreenVerdict.box, screenVerdict(&all, null, box));
+    try testing.expectEqual(ScreenVerdict.unknown, screenVerdict(&all, null, none));
+}
+
+test "1668: a screen text too short to mean a box, or not text, is not taken" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"screen_says":{"awaiting_approval":{"contains":["","Allow","a\u0007bell text","Do you want to proceed?",7]}}}
+    , .{});
+    const says = try screenSaysOf(a, "x", parsed.object);
+    try testing.expectEqual(@as(usize, 1), says.awaiting_approval.len);
+    try testing.expectEqualStrings("Do you want to proceed?", says.awaiting_approval[0]);
+}
+
+test "1668: the shipped Codex manifest declares the boxes Codex 0.163 draws" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, @embedFile("plugin_codex_json"), .{});
+    const says = try screenSaysOf(a, "codex", parsed.object);
+    // Measured on the screen in c1668-01 (issue-fix/1668-B1-evidence).
+    try testing.expect(says.awaitsApproval("• Calling polter.me\n  Allow the polter MCP server to run tool \"me\"?\n  › 1. Allow   Run the tool and continue\n"));
+    // From codex-rs/tui/src/bottom_pane/approval_overlay.rs, rust-v0.163.0.
+    try testing.expect(says.awaitsApproval("  Would you like to run the following command?\n  $ zig build test\n› 1. Yes, proceed\n"));
+    try testing.expect(says.awaitsApproval("  Would you like to make the following edits?\n"));
+    // Its idle prompt is not a box.
+    try testing.expect(!says.awaitsApproval("› Ask Codex to do anything\n  ? for shortcuts\n"));
 }

@@ -977,6 +977,16 @@ pub fn sightingOf(self: *Server, arena: Allocator, id: Bus.Id) Allocator.Error!a
     return parseSighting(arena, copy[0..len]);
 }
 
+/// The program the agent connected from in this terminal said it was --
+/// its sidecar's parent -- or null when no agent is connected there or it
+/// said nothing (task 1668). Allocates nothing: asked on every heartbeat.
+pub fn agentPid(self: *Server, id: Bus.Id) ?u64 {
+    var buf: [4 * max_sighting]u8 = undefined;
+    var fba: std.heap.FixedBufferAllocator = .init(&buf);
+    const s = self.sightingOf(fba.allocator(), id) catch return null;
+    return s.pid;
+}
+
 /// Read back what `parseAuthSighting` wrote.
 fn parseSighting(arena: Allocator, text: []const u8) Allocator.Error!agent_cli.Sighting {
     const v = std.json.parseFromSliceLeaky(std.json.Value, arena, try arena.dupe(u8, text), .{}) catch |err| switch (err) {

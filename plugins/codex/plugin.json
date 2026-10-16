@@ -11,6 +11,17 @@
       ]
     }
   },
+  "screen_says": {
+    "awaiting_approval": {
+      "contains": [
+        "Would you like to run the following command?",
+        "Would you like to make the following edits?",
+        "Would you like to grant these permissions?",
+        "Would you like to send input to",
+        " to run tool \""
+      ]
+    }
+  },
   "exec": "provision.sh",
   "exec_windows": "provision.ps1",
   "timeout_ms": 20000,

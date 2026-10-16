@@ -663,7 +663,8 @@ pub const Request = union(Method) {
     /// `state_at_ms` and `event_at_ms` are the prompt the caller looked at,
     /// as `terminal_list` gave them: with them, nothing is pressed unless
     /// that prompt is the one still there (`Bus.promptStanding`). Without
-    /// them this is what it always was, a count pressed blind. `wire` takes
+    /// them it is no longer a count pressed blind: something has to say a
+    /// box is up (`blindRefusal`, task 1668). `wire` takes
     /// both or neither; they are fields here rather than one optional pair
     /// because a parameter is accepted by being a field of this struct.
     terminal_answer_prompt: struct {
@@ -3290,6 +3291,8 @@ test "a prompt answered with a return that never arrived is a failure, not an ok
     // about the return and not about the switch. Two refusals that both
     // read as "no" is exactly the shape that makes a floor lie.
     try b.setMayAuthorise(worker, true, .user);
+    // And a box to answer: without one nothing is pressed (task 1668).
+    _ = try dispatch(alloc, &b, fake.host(), term(worker), .{ .agent_event = hookEvent(.awaiting_approval) });
 
     fake.key_outcome = .written;
     const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{
@@ -5388,6 +5391,12 @@ pub const Host = struct {
 
         personaDelete: *const fn (ctx: *anyopaque, key: []const u8) anyerror!void,
 
+        /// The installed plugins that declare what their CLI's screen
+        /// shows while a permission box is up (`Plugin.ScreenSays`), for
+        /// `terminal_answer_prompt` asked without moments (task 1668).
+        /// Owned by the host; valid for the request.
+        promptScreens: *const fn (ctx: *anyopaque) []const Plugin.Manifest,
+
         /// The agent CLI cache as JSON (`agent_cli.Cache.snapshot`),
         /// starting a fresh read first when `refresh` is set.
         agentClis: *const fn (
@@ -6069,6 +6078,10 @@ pub const Host = struct {
 
     fn agentClis(self: Host, alloc: std.mem.Allocator, refresh: bool) anyerror![]const u8 {
         return self.vtable.agentClis(self.ctx, alloc, refresh);
+    }
+
+    fn promptScreens(self: Host) []const Plugin.Manifest {
+        return self.vtable.promptScreens(self.ctx);
     }
 
     fn personaLaunch(
@@ -7582,7 +7595,7 @@ fn dispatchOne(
                         "drawn -- so no key was sent. Read the terminal and terminal_list again; " ++
                         "`state_at_ms` and `event_at_ms` there are the ones to pass.",
                 );
-            }
+            } else if (try blindRefusal(alloc, bus, host, p.id)) |refused| return refused;
 
             var step: u8 = 1;
             while (step < p.choice) : (step += 1) {
@@ -8919,6 +8932,57 @@ fn assignAndTell(
     ) };
 }
 
+/// Why `terminal_answer_prompt` asked without moments presses nothing, or
+/// null when there is a box to press at (task 1668).
+///
+/// **It used to press blind.** A return at no box at all goes into whatever
+/// is there -- once the default of an upgrade dialog (qwen, on the test
+/// machine). Now something has to say a box is up:
+/// - the agent's own word, when it has one (hooks live, or a title its
+///   plugin declares): waiting on an approval, or not;
+/// - else the screen, by the texts the CLI's plugin declares
+///   (`Plugin.ScreenSays`);
+/// - else nothing can say, and nothing is pressed.
+fn blindRefusal(alloc: std.mem.Allocator, bus: *const Bus, host: Host, id: Bus.Id) std.mem.Allocator.Error!?wire.Response {
+    const a = bus.agentOf(id);
+    if (a.known()) {
+        if (a.state == .awaiting_approval) return null;
+        return hostFailure(
+            "PromptGone",
+            "the agent in that terminal says it is not waiting on a prompt, so no key " ++
+                "was sent: a return pressed at no box goes into whatever is there. Read " ++
+                "the terminal and terminal_list; when it does wait, pass `state_at_ms` and " ++
+                "`event_at_ms` from there.",
+        );
+    }
+    const screen = host.readTerminal(alloc, id, 0) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return hostFailure(
+            "PromptUnknown",
+            "that terminal's screen could not be read, and its agent reports nothing, " ++
+                "so whether a prompt is up there is not known. No key was sent.",
+        ),
+    };
+    defer alloc.free(screen);
+    return switch (Plugin.screenVerdict(host.promptScreens(), a.cli.get(), screen)) {
+        .box => null,
+        .no_box => hostFailure(
+            "PromptGone",
+            "no permission box is on that terminal's screen -- none of the ones its CLI's " ++
+                "plugin declares -- so no key was sent: a return pressed at no box goes into " ++
+                "whatever is there. Read the terminal to see what it is doing.",
+        ),
+        .unknown => hostFailure(
+            "PromptUnknown",
+            "nothing says whether a prompt is up in that terminal: its agent reports no " ++
+                "state, and no plugin declares a box for its CLI that is on the screen. No key " ++
+                "was sent, because a return pressed at no box goes into whatever is there -- " ++
+                "it has chosen an upgrade dialog's default before. Read the terminal; if a " ++
+                "box is there, answer it with terminal_key.",
+        ),
+    };
+}
+
 /// The CLIs a clear can be asked of, and what clears them (#64). One entry:
 /// it is the one whose clear was looked at, and whose hooks say when it
 /// has happened (`SessionStart` with `source: clear`).
@@ -9661,6 +9725,8 @@ const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
     /// What `readTerminal` answers.
     screen: []const u8 = "screen contents",
+    /// What `promptScreens` answers.
+    prompt_screens: []const Plugin.Manifest = &.{},
 
     /// What `layout` was last handed, how often, and how it answers.
     laid_out: ?LayoutCall = null,
@@ -9996,6 +10062,7 @@ const FakeHost = struct {
             .personaPut = personaPut,
             .personaDelete = personaDelete,
             .agentClis = agentClis,
+            .promptScreens = promptScreens,
             .personaLaunch = personaLaunch,
             .personaSlot = personaSlot,
             .sendKey = sendKey,
@@ -10669,6 +10736,11 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         self.clis_refreshed = refresh;
         return "{\"stale\":false,\"refreshing\":false,\"clis\":[]}";
+    }
+
+    fn promptScreens(ctx: *anyopaque) []const Plugin.Manifest {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.prompt_screens;
     }
 
     fn personaLaunch(
@@ -16505,7 +16577,7 @@ test "answer_prompt: a box whose countdown redraws every second can still be ans
     try testing.expect(fake.keyed == null);
 }
 
-test "ControlRoom answer_prompt: without the prompt it saw, it is what it always was" {
+test "1668: answer_prompt without moments, about a terminal nothing speaks for, presses nothing" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
@@ -16515,12 +16587,14 @@ test "ControlRoom answer_prompt: without the prompt it saw, it is what it always
     fake.key_outcome = .written;
     try b.setMayAuthorise(worker, true, .user);
 
-    // No hooks at all, nothing waiting on anything: still pressed, blind.
-    const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{
+    // No hooks at all, no title, no plugin declaring a box: it used to be
+    // pressed blind. Now nothing is.
+    const blind = try dispatch(alloc, &b, fake.host(), term(boss), .{
         .terminal_answer_prompt = .{ .id = worker, .choice = 1 },
     });
-    try testing.expect(taken == .ok);
-    try testing.expectEqualStrings("enter", fake.keyed.?.key);
+    try testing.expect(blind == .failed);
+    try testing.expectEqualStrings("PromptUnknown", blind.failed.code);
+    try testing.expect(fake.keyed == null);
 
     // The same terminal, asked with moments: there is no prompt to match.
     fake.keyed = null;
@@ -16534,6 +16608,71 @@ test "ControlRoom answer_prompt: without the prompt it saw, it is what it always
     // not further down as a field that is not there.
     try testing.expect(refused == .failed);
     try testing.expectEqualStrings("PromptGone", refused.failed.code);
+    try testing.expect(fake.keyed == null);
+}
+
+test "1668: answer_prompt without moments follows the agent's own word when it has one" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .now_ms = 1_000 };
+    fake.key_outcome = .written;
+    try b.setMayAuthorise(worker, true, .user);
+
+    // Hooks say the turn ended: there is no box, so nothing is pressed.
+    _ = try dispatch(alloc, &b, fake.host(), term(worker), .{ .agent_event = hookEvent(.turn_ended) });
+    const gone = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .terminal_answer_prompt = .{ .id = worker, .choice = 1 },
+    });
+    try testing.expect(gone == .failed);
+    try testing.expectEqualStrings("PromptGone", gone.failed.code);
+    try testing.expect(fake.keyed == null);
+    // Its word is enough: the screen is not read for it.
+    try testing.expectEqual(@as(usize, 0), fake.read_count);
+
+    // Hooks say it waits: pressed.
+    _ = try dispatch(alloc, &b, fake.host(), term(worker), .{ .agent_event = hookEvent(.awaiting_approval) });
+    const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .terminal_answer_prompt = .{ .id = worker, .choice = 1 },
+    });
+    try testing.expect(taken == .ok);
+    try testing.expectEqualStrings("enter", fake.keyed.?.key);
+}
+
+test "1668: answer_prompt without moments reads the screen by what the CLI's plugin declares" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const codex: Plugin.Manifest = .{
+        .key = "codex",
+        .exec = "provision.sh",
+        .screen_says = .{ .awaiting_approval = &.{" to run tool \""} },
+    };
+    var fake: FakeHost = .{ .now_ms = 1_000, .prompt_screens = &.{codex} };
+    fake.key_outcome = .written;
+    try b.setMayAuthorise(worker, true, .user);
+
+    // Nothing says which CLI it is, and a declared box is on the screen.
+    fake.screen = "• Calling polter.me\n  Allow the polter MCP server to run tool \"me\"?\n  › 1. Allow\n\n";
+    const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .terminal_answer_prompt = .{ .id = worker, .choice = 1 },
+    });
+    try testing.expect(taken == .ok);
+    try testing.expectEqualStrings("enter", fake.keyed.?.key);
+
+    // A screen with no declared box on it, of a CLI that is not known:
+    // nothing can say.
+    fake.keyed = null;
+    fake.screen = "$ ls\nREADME.md\n$ ";
+    const unknown = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .terminal_answer_prompt = .{ .id = worker, .choice = 1 },
+    });
+    try testing.expect(unknown == .failed);
+    try testing.expectEqualStrings("PromptUnknown", unknown.failed.code);
     try testing.expect(fake.keyed == null);
 }
 
