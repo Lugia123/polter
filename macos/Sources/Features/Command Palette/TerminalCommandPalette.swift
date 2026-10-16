@@ -79,7 +79,7 @@ struct TerminalCommandPaletteView: View {
         // Sort the rest. We replace ":" with a character that sorts before space
         // so that "Foo:" sorts before "Foo Bar:". Use sortKey as a tie-breaker
         // for stable ordering when titles are equal.
-        options.append(contentsOf: sortedTerminalPaletteOptions(jumpOptions + terminalOptions))
+        options.append(contentsOf: sortedTerminalPaletteOptions(jumpOptions + terminalOptions + hostOptions))
         return options
     }
 
@@ -140,6 +140,25 @@ struct TerminalCommandPaletteView: View {
                     onAction(c.action)
                 }
             }
+    }
+
+    /// The menu bar's own commands -- "Load Project…" and the rest the core
+    /// has no entry for (#50) -- read from the menu bar each time, and run
+    /// through it (`HostMenuCommands`). Found by the selector as words too,
+    /// so "load project" finds the item in a Chinese interface.
+    private var hostOptions: [CommandOption] {
+        guard let appDelegate = NSApp.delegate as? AppDelegate, let mainMenu = NSApp.mainMenu else { return [] }
+        let skipping: Set<ObjectIdentifier> = NSApp.servicesMenu.map { [ObjectIdentifier($0)] } ?? []
+        return HostMenuCommands.entries(in: mainMenu, core: appDelegate.coreMenuItems, skipping: skipping).map { entry in
+            let item = entry.item
+            return CommandOption(
+                title: item.title,
+                description: entry.path.joined(separator: " › "),
+                aliases: item.action.map { [HostMenuCommands.alias(for: $0)] } ?? []
+            ) {
+                HostMenuCommands.perform(item)
+            }
+        }
     }
 
     /// Commands for jumping to other terminal surfaces.

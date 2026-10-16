@@ -1623,6 +1623,16 @@ extension AppDelegate {
         return made
     }
 
+    /// The menu items the core's binding table drives, for the command
+    /// palette to leave out of the menu's own commands (#50) -- it lists the
+    /// core's commands already. "Toggle Full Screen" is one though it is not
+    /// synced: see the note at the end of `syncMenuShortcuts`.
+    @MainActor var coreMenuItems: Set<ObjectIdentifier> {
+        var items = menuShortcutManager.coreItems
+        if let fullScreen = menuToggleFullScreen { items.insert(ObjectIdentifier(fullScreen)) }
+        return items
+    }
+
     @MainActor private func syncMenuShortcut(_ config: Ghostty.Config, action: String, menuItem: NSMenuItem?) {
         menuShortcutManager.syncMenuShortcut(config, action: action, menuItem: menuItem)
     }

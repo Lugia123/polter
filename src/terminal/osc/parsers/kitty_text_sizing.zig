@@ -148,108 +148,132 @@ pub fn parse(parser: *Parser, _: ?u8) ?*Command {
 test "OSC 66: empty parameters" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "66;;bobr";
-    for (input) |ch| p.next(ch);
+        const input = "66;;bobr";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_text_sizing);
-    try testing.expectEqual(1, cmd.kitty_text_sizing.scale);
-    try testing.expectEqualStrings("bobr", cmd.kitty_text_sizing.text);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_text_sizing);
+        try testing.expectEqual(1, cmd.kitty_text_sizing.scale);
+        try testing.expectEqualStrings("bobr", cmd.kitty_text_sizing.text);
+    }
 }
 
 test "OSC 66: single parameter" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "66;s=2;kurwa";
-    for (input) |ch| p.next(ch);
+        const input = "66;s=2;kurwa";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_text_sizing);
-    try testing.expectEqual(2, cmd.kitty_text_sizing.scale);
-    try testing.expectEqualStrings("kurwa", cmd.kitty_text_sizing.text);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_text_sizing);
+        try testing.expectEqual(2, cmd.kitty_text_sizing.scale);
+        try testing.expectEqualStrings("kurwa", cmd.kitty_text_sizing.text);
+    }
 }
 
 test "OSC 66: multiple parameters" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "66;s=2:w=7:n=13:d=15:v=1:h=2;long";
-    for (input) |ch| p.next(ch);
+        const input = "66;s=2:w=7:n=13:d=15:v=1:h=2;long";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_text_sizing);
-    try testing.expectEqual(2, cmd.kitty_text_sizing.scale);
-    try testing.expectEqual(7, cmd.kitty_text_sizing.width);
-    try testing.expectEqual(13, cmd.kitty_text_sizing.numerator);
-    try testing.expectEqual(15, cmd.kitty_text_sizing.denominator);
-    try testing.expectEqual(.bottom, cmd.kitty_text_sizing.valign);
-    try testing.expectEqual(.center, cmd.kitty_text_sizing.halign);
-    try testing.expectEqualStrings("long", cmd.kitty_text_sizing.text);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_text_sizing);
+        try testing.expectEqual(2, cmd.kitty_text_sizing.scale);
+        try testing.expectEqual(7, cmd.kitty_text_sizing.width);
+        try testing.expectEqual(13, cmd.kitty_text_sizing.numerator);
+        try testing.expectEqual(15, cmd.kitty_text_sizing.denominator);
+        try testing.expectEqual(.bottom, cmd.kitty_text_sizing.valign);
+        try testing.expectEqual(.center, cmd.kitty_text_sizing.halign);
+        try testing.expectEqualStrings("long", cmd.kitty_text_sizing.text);
+    }
 }
 
 test "OSC 66: scale is zero" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "66;s=0;nope";
-    for (input) |ch| p.next(ch);
-    const cmd = p.end('\x1b').?.*;
+        const input = "66;s=0;nope";
+        for (input) |ch| p.next(ch);
+        const cmd = p.end('\x1b').?.*;
 
-    try testing.expect(cmd == .kitty_text_sizing);
-    try testing.expectEqual(1, cmd.kitty_text_sizing.scale);
+        try testing.expect(cmd == .kitty_text_sizing);
+        try testing.expectEqual(1, cmd.kitty_text_sizing.scale);
+    }
 }
 
 test "OSC 66: invalid parameters" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    for ("66;w=8:v=3:n=16;") |ch| p.next(ch);
-    const cmd = p.end('\x1b').?.*;
+        for ("66;w=8:v=3:n=16;") |ch| p.next(ch);
+        const cmd = p.end('\x1b').?.*;
 
-    try testing.expect(cmd == .kitty_text_sizing);
-    try testing.expectEqual(0, cmd.kitty_text_sizing.width);
-    try testing.expect(cmd.kitty_text_sizing.valign == .top);
-    try testing.expectEqual(0, cmd.kitty_text_sizing.numerator);
+        try testing.expect(cmd == .kitty_text_sizing);
+        try testing.expectEqual(0, cmd.kitty_text_sizing.width);
+        try testing.expect(cmd.kitty_text_sizing.valign == .top);
+        try testing.expectEqual(0, cmd.kitty_text_sizing.numerator);
+    }
 }
 
 test "OSC 66: UTF-8" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "66;;👻魑魅魍魉ゴースッティ";
-    for (input) |ch| p.next(ch);
+        const input = "66;;👻魑魅魍魉ゴースッティ";
+        for (input) |ch| p.next(ch);
 
-    const cmd = p.end('\x1b').?.*;
-    try testing.expect(cmd == .kitty_text_sizing);
-    try testing.expectEqualStrings("👻魑魅魍魉ゴースッティ", cmd.kitty_text_sizing.text);
+        const cmd = p.end('\x1b').?.*;
+        try testing.expect(cmd == .kitty_text_sizing);
+        try testing.expectEqualStrings("👻魑魅魍魉ゴースッティ", cmd.kitty_text_sizing.text);
+    }
 }
 
 test "OSC 66: unsafe UTF-8" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "66;;\n";
-    for (input) |ch| p.next(ch);
+        const input = "66;;\n";
+        for (input) |ch| p.next(ch);
 
-    try testing.expect(p.end('\x1b') == null);
+        try testing.expect(p.end('\x1b') == null);
+    }
 }
 
 test "OSC 66: overlong UTF-8" {
     const testing = std.testing;
 
-    var p: Parser = .init(null);
+    for (Parser.test_allocators) |alloc| {
+        var p: Parser = .init(alloc);
+        defer p.deinit();
 
-    const input = "66;;" ++ "bobr" ** 1025;
-    for (input) |ch| p.next(ch);
+        const input = "66;;" ++ "bobr" ** 1025;
+        for (input) |ch| p.next(ch);
 
-    try testing.expect(p.end('\x1b') == null);
+        try testing.expect(p.end('\x1b') == null);
+    }
 }

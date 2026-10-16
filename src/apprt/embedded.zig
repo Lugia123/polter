@@ -83,7 +83,7 @@ pub const App = struct {
         /// this call) or deny_clipboard_request with the given request.
         confirm_read_clipboard: *const fn (
             SurfaceUD,
-            *const CAPI.ClipboardConfirm,
+            *const CTypes.ClipboardConfirm,
             *apprt.ClipboardRequest,
             apprt.ClipboardRequestType,
         ) callconv(.c) void,
@@ -92,7 +92,7 @@ pub const App = struct {
         write_clipboard: *const fn (
             SurfaceUD,
             c_int,
-            [*]const CAPI.ClipboardContent,
+            [*]const CTypes.ClipboardContent,
             usize,
             bool,
         ) callconv(.c) void,
@@ -533,6 +533,82 @@ pub const TextOut = struct {
         copy("abc", &one, one.len);
         try std.testing.expectEqual(@as(u8, 0), one[0]);
         copy("abc", null, 0);
+    }
+};
+
+/// The extern structs in this file are the same memory as their C types in
+/// `ghostty.h`: the host fills them by the header, the core reads them by
+/// these declarations, and both compile whatever the other says. This is
+/// what compares them (#48). Before it, the only guard on the Zig side was
+/// "Declared after X to match ..." in doc comments; the Rust host's copy
+/// has `windows/tools/the-ffi-structs-match-the-header.py`.
+///
+/// Referenced from `src/apprt.zig`'s `test` block, like `PlatformTag` and
+/// for the same reason: nothing else pulls this file into a test build.
+pub const HeaderLayout = struct {
+    test "ghostty.h ghostty_runtime_config_s" {
+        try lib.checkGhosttyHStruct(App.Options, "ghostty_runtime_config_s", .{
+            .wakeup = "wakeup_cb",
+            .action = "action_cb",
+            .read_clipboard = "read_clipboard_cb",
+            .confirm_read_clipboard = "confirm_read_clipboard_cb",
+            .write_clipboard = "write_clipboard_cb",
+            .close_surface = "close_surface_cb",
+        });
+    }
+
+    test "ghostty.h ghostty_surface_config_s" {
+        try lib.checkGhosttyHStruct(Surface.Options, "ghostty_surface_config_s", .{});
+    }
+
+    test "ghostty.h ghostty_platform_u" {
+        try lib.checkGhosttyHStruct(Platform.C, "ghostty_platform_u", .{});
+        try lib.checkGhosttyHStruct(@FieldType(Platform.C, "macos"), "ghostty_platform_macos_s", .{});
+        try lib.checkGhosttyHStruct(@FieldType(Platform.C, "ios"), "ghostty_platform_ios_s", .{});
+        try lib.checkGhosttyHStruct(@FieldType(Platform.C, "win32"), "ghostty_platform_win32_s", .{});
+    }
+
+    test "ghostty.h ghostty_env_var_s" {
+        try lib.checkGhosttyHStruct(EnvVar, "ghostty_env_var_s", .{});
+    }
+
+    test "ghostty.h ghostty_input_key_s" {
+        try lib.checkGhosttyHStruct(CTypes.KeyEvent, "ghostty_input_key_s", .{});
+    }
+
+    test "ghostty.h ghostty_surface_size_s" {
+        try lib.checkGhosttyHStruct(CTypes.SurfaceSize, "ghostty_surface_size_s", .{});
+    }
+
+    test "ghostty.h ghostty_clipboard_content_s" {
+        try lib.checkGhosttyHStruct(CTypes.ClipboardContent, "ghostty_clipboard_content_s", .{});
+    }
+
+    test "ghostty.h ghostty_clipboard_complete_s" {
+        try lib.checkGhosttyHStruct(CTypes.ClipboardComplete, "ghostty_clipboard_complete_s", .{});
+    }
+
+    test "ghostty.h ghostty_clipboard_confirm_s" {
+        try lib.checkGhosttyHStruct(CTypes.ClipboardConfirm, "ghostty_clipboard_confirm_s", .{});
+    }
+
+    test "ghostty.h ghostty_text_s" {
+        try lib.checkGhosttyHStruct(CTypes.Text, "ghostty_text_s", .{});
+    }
+
+    test "ghostty.h ghostty_point_s" {
+        try lib.checkGhosttyHStruct(CTypes.Point, "ghostty_point_s", .{ .coord_tag = "coord" });
+    }
+
+    test "ghostty.h ghostty_selection_s" {
+        try lib.checkGhosttyHStruct(CTypes.Selection, "ghostty_selection_s", .{
+            .tl = "top_left",
+            .br = "bottom_right",
+        });
+    }
+
+    test "ghostty.h ghostty_persona_s" {
+        try lib.checkGhosttyHStruct(CTypes.Persona, "ghostty_persona_s", .{});
     }
 };
 
@@ -1702,10 +1778,13 @@ pub const Inspector = struct {
     }
 };
 
-// C API
-pub const CAPI = struct {
+/// The extern structs the C API passes across the boundary. Kept out of
+/// `CAPI` because naming anything in `CAPI` analyses its `export fn`s,
+/// which do not compile in a test build (whose apprt is not this one);
+/// `HeaderLayout` needs to name these. `CAPI` aliases each of them.
+pub const CTypes = struct {
     /// This is the same as Surface.KeyEvent but this is the raw C API version.
-    const KeyEvent = extern struct {
+    pub const KeyEvent = extern struct {
         action: input.Action,
         mods: c_int,
         consumed_mods: c_int,
@@ -1734,7 +1813,7 @@ pub const CAPI = struct {
         }
     };
 
-    const SurfaceSize = extern struct {
+    pub const SurfaceSize = extern struct {
         columns: u16,
         rows: u16,
         width_px: u32,
@@ -1747,7 +1826,7 @@ pub const CAPI = struct {
     //
     // One representation of clipboard contents. The data is binary-safe
     // and its length is explicit; it is not sentinel-terminated.
-    const ClipboardContent = extern struct {
+    pub const ClipboardContent = extern struct {
         mime: [*:0]const u8,
         data: [*]const u8,
         len: usize,
@@ -1757,7 +1836,7 @@ pub const CAPI = struct {
     //
     // The payload for completing a clipboard read request. See
     // Surface.CompleteClipboard for the field documentation.
-    const ClipboardComplete = extern struct {
+    pub const ClipboardComplete = extern struct {
         contents: ?[*]const ClipboardContent,
         contents_len: usize,
         available: ?[*]const [*:0]const u8,
@@ -1772,7 +1851,7 @@ pub const CAPI = struct {
     // would-be completion contents plus the information shown in the
     // permission prompt. All memory is borrowed for the duration of
     // the confirm_read_clipboard callback.
-    const ClipboardConfirm = extern struct {
+    pub const ClipboardConfirm = extern struct {
         contents: ?[*]const ClipboardContent,
         contents_len: usize,
         available: ?[*]const [*:0]const u8,
@@ -1789,7 +1868,7 @@ pub const CAPI = struct {
     };
 
     // ghostty_text_s
-    const Text = extern struct {
+    pub const Text = extern struct {
         tl_px_x: f64,
         tl_px_y: f64,
         offset_start: u32,
@@ -1805,7 +1884,7 @@ pub const CAPI = struct {
     };
 
     // ghostty_point_s
-    const Point = extern struct {
+    pub const Point = extern struct {
         tag: Tag,
         coord_tag: CoordTag,
         x: u32,
@@ -1867,7 +1946,7 @@ pub const CAPI = struct {
     };
 
     // ghostty_selection_s
-    const Selection = extern struct {
+    pub const Selection = extern struct {
         tl: Point,
         br: Point,
         rectangle: bool,
@@ -1885,6 +1964,27 @@ pub const CAPI = struct {
             };
         }
     };
+
+    /// Sync with: ghostty_persona_s
+    pub const Persona = extern struct {
+        key: [*:0]const u8,
+        name: [*:0]const u8,
+    };
+};
+
+// C API
+pub const CAPI = struct {
+    // The extern structs of the C API live in `CTypes`, outside this
+    // container, so that a test can name them without analysing the
+    // exports in here. See `HeaderLayout`.
+    const KeyEvent = CTypes.KeyEvent;
+    const SurfaceSize = CTypes.SurfaceSize;
+    const ClipboardContent = CTypes.ClipboardContent;
+    const ClipboardComplete = CTypes.ClipboardComplete;
+    const ClipboardConfirm = CTypes.ClipboardConfirm;
+    const Text = CTypes.Text;
+    const Point = CTypes.Point;
+    const Selection = CTypes.Selection;
 
     // Reference the conditional exports based on target platform
     // so they're included in the C API.
@@ -1970,11 +2070,7 @@ pub const CAPI = struct {
         return names.len;
     }
 
-    /// Sync with: ghostty_persona_s
-    const Persona = extern struct {
-        key: [*:0]const u8,
-        name: [*:0]const u8,
-    };
+    const Persona = CTypes.Persona;
 
     /// What this terminal is actually handing out right now, as JSON.
     ///

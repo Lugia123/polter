@@ -14,15 +14,24 @@ extension Ghostty {
         /// If multiple items map to the same shortcut, the most recent one wins.
         private var menuItemsByShortcut: [MenuShortcutKey: Weak<NSMenuItem>] = [:]
 
+        /// Every menu item synced to a core action, whether or not a key is
+        /// bound to it: the command palette lists the core's commands itself,
+        /// so these are the menu items it must not list a second time
+        /// (`HostMenuCommands`, #50). Identities only -- nothing here owns an
+        /// item.
+        private(set) var coreItems: Set<ObjectIdentifier> = []
+
         /// Reset our shortcut index since we're about to rebuild all menu bindings.
         func reset() {
             menuItemsByShortcut.removeAll(keepingCapacity: true)
+            coreItems.removeAll(keepingCapacity: true)
         }
 
         /// Syncs a single menu shortcut for the given action. The action string is the same
         /// action string used for the Ghostty configuration.
         func syncMenuShortcut(_ config: Ghostty.Config, action: String?, menuItem: NSMenuItem?) {
             guard let menu = menuItem else { return }
+            if action != nil { coreItems.insert(ObjectIdentifier(menu)) }
 
             if !updateMenuShortcut(config, action: action, menuItem: menu) {
                 menu.keyEquivalent = ""

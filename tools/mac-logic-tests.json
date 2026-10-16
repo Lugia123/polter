@@ -84,6 +84,7 @@
       "macos/Sources/Features/Projects/ProjectPageRules.swift",
       "macos/Sources/Features/Projects/ProjectPages.swift",
       "macos/Sources/Features/Command Palette/CommandPalette.swift",
+      "macos/Sources/Features/Command Palette/HostMenuCommands.swift",
       "macos/Sources/Helpers/Extensions/NSColor+Extension.swift",
       {
         "path": "macos/Sources/Helpers/Extensions/OSColor+Extension.swift",
@@ -158,7 +159,8 @@
       "macos/Tests/Roles/OfficialWhyTests.swift",
       "macos/Tests/Splits/TabIntoPaneTests.swift",
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift",
-      "macos/Tests/CommandPaletteAliasTests.swift"
+      "macos/Tests/CommandPaletteAliasTests.swift",
+      "macos/Tests/CommandPaletteHostMenuTests.swift"
     ],
     "out": [
       {

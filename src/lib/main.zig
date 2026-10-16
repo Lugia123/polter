@@ -12,6 +12,7 @@ pub const Enum = enumpkg.Enum;
 pub const Packed = packedpkg.Packed;
 pub const PackedTaggedUnion = packedpkg.PackedTaggedUnion;
 pub const checkGhosttyHEnum = enumpkg.checkGhosttyHEnum;
+pub const checkGhosttyHStruct = structpkg.checkGhosttyHStruct;
 pub const String = types.String;
 pub const Struct = structpkg.Struct;
 pub const structSizedFieldFits = structpkg.sizedFieldFits;
