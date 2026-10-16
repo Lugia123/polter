@@ -476,6 +476,23 @@ cleared: only that terminal's next event clears it.
   finished, carry on; finished, say so in one line.
 - Several at once come in one paragraph; deal with each.
 
+### `[Polter ask]`: the person asked you something from the control room
+
+The group row's right-click menu can type one of two lines into you, each
+starting `[Polter ask]` (the same in every language) and kept in the group
+as the person's message:
+
+- **report** -- say in the group where the work stands: what is done, what
+  is in progress, what is stuck. Read `task_list` and your workers first;
+  the panel is the record, your memory is not.
+- **close idle workers** -- close the workers in this group that have
+  finished or are waiting with nothing to do (`terminal_read` each first:
+  a still screen is not an idle worker), and say in the group which you
+  closed and which you kept, and why.
+
+Either is the person asking, so it comes before what you were doing next;
+answer in the group, where they will look.
+
 ### A worker waiting on a prompt is yours to deal with
 
 The person's rule, in their words (2026-10-12): a worker's waiting and its

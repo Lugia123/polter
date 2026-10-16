@@ -399,6 +399,30 @@ fn render(s: *std.json.Stringify, entry: Entry) std.Io.Writer.Error!void {
             try s.endObject();
         },
     }
+    // The control room's right-click marks (task 1659), on the same terms:
+    // each only when there is one.
+    if (marks.pinned) {
+        try s.objectField("pinned");
+        try s.write(true);
+    }
+    switch (marks.mute) {
+        .none => {},
+        .until => |until| {
+            try s.objectField("mute");
+            try s.beginObject();
+            try s.objectField("until_ms");
+            try s.write(until);
+            try s.endObject();
+        },
+        .forever => {
+            try s.objectField("mute");
+            try s.write("forever");
+        },
+    }
+    if (marks.archived_ms) |ms| {
+        try s.objectField("archived_ms");
+        try s.write(ms);
+    }
     try s.endObject();
 }
 
@@ -496,6 +520,16 @@ fn msOf(v: std.json.Value) ?u64 {
 fn marksIn(obj: std.json.ObjectMap) Marks {
     var out: Marks = .none;
     if (obj.get("seen_ms")) |v| out.seen_ms = msOf(v);
+    out.pinned = switch (obj.get("pinned") orelse std.json.Value.null) {
+        .bool => |b| b,
+        else => false,
+    };
+    out.mute = switch (obj.get("mute") orelse std.json.Value.null) {
+        .string => |v| if (std.mem.eql(u8, v, "forever")) .forever else .none,
+        .object => |o| if (msOf(o.get("until_ms") orelse .null)) |until| .{ .until = until } else .none,
+        else => .none,
+    };
+    if (obj.get("archived_ms")) |v| out.archived_ms = msOf(v);
 
     const snooze = switch (obj.get("snooze") orelse std.json.Value.null) {
         .object => |o| o,
@@ -746,6 +780,44 @@ fn warn(err: anyerror) void {
 
 // -- tests ------------------------------------------------------------------
 
+fn seenAt(ms: u64) Marks {
+    var m: Marks = .none;
+    m.seen_ms = ms;
+    return m;
+}
+
+test "GroupLog: the right-click marks come back as they were written, and an old file has none (task 1659)" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const state = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(state);
+
+    var pinned: Marks = .none;
+    pinned.pinned = true;
+    pinned.mute = .{ .until = 1_700_000_900_000 };
+    var archived: Marks = .none;
+    archived.mute = .forever;
+    archived.archived_ms = 1_700_000_000_042;
+    {
+        var gl = try GroupLog.open(alloc, io, state);
+        defer gl.deinit();
+        gl.note("pinned", "");
+        gl.mark("pinned", pinned);
+        gl.note("archived", "");
+        gl.mark("archived", archived);
+        gl.note("plain", "");
+    }
+    var gl = try GroupLog.open(alloc, io, state);
+    defer gl.deinit();
+    const shells = try gl.restore(alloc);
+    defer GroupLog.free(alloc, shells);
+    try testing.expectEqual(pinned, (shellNamed(shells, "pinned") orelse return error.TestGroupMissing).marks);
+    try testing.expectEqual(archived, (shellNamed(shells, "archived") orelse return error.TestGroupMissing).marks);
+    try testing.expectEqual(Marks.none, (shellNamed(shells, "plain") orelse return error.TestGroupMissing).marks);
+}
+
 const testing = std.testing;
 
 fn testDir(alloc: Allocator, io: std.Io) ![]const u8 {
@@ -986,12 +1058,13 @@ test "ControlRoom marks: a group that was seen is still seen after it is read ba
         alloc.free(state);
     }
 
-    const seen: Marks = .{ .seen_ms = 1_700_000_000_123, .snooze = .none };
-    const snoozed: Marks = .{ .seen_ms = null, .snooze = .{ .next_event = 1_700_000_000_456 } };
-    const timed: Marks = .{
-        .seen_ms = 1_700_000_000_001,
-        .snooze = .{ .until = .{ .at_ms = 1_700_000_000_002, .until_ms = 1_700_000_900_000 } },
-    };
+    var seen: Marks = .none;
+    seen.seen_ms = 1_700_000_000_123;
+    var snoozed: Marks = .none;
+    snoozed.snooze = .{ .next_event = 1_700_000_000_456 };
+    var timed: Marks = .none;
+    timed.seen_ms = 1_700_000_000_001;
+    timed.snooze = .{ .until = .{ .at_ms = 1_700_000_000_002, .until_ms = 1_700_000_900_000 } };
     {
         var gl = try GroupLog.open(alloc, io, state);
         defer gl.deinit();
@@ -1104,7 +1177,7 @@ test "ControlRoom resume: a group's last supervisor is written down whole and ou
 
     // Each of the other three writers rewrites the whole file.
     gl.note("build", "why, again");
-    gl.mark("build", .{ .seen_ms = 1_700_000_000_000, .snooze = .none });
+    gl.mark("build", seenAt(1_700_000_000_000));
     gl.forget("build");
     gl.note("build", "why, again");
 
@@ -1227,7 +1300,7 @@ test "ControlRoom resume: a record from before there was a section reads its dir
 
     // The next writer of anything moves it into the section, once, and
     // loses nothing on the way.
-    gl.mark("old", .{ .seen_ms = 8, .snooze = .none });
+    gl.mark("old", seenAt(8));
     const text = try metaText(alloc, io, state, "old");
     defer alloc.free(text);
     try testing.expectEqualStrings(
@@ -1285,7 +1358,7 @@ test "Projects: a group's tie to a project is written down in its own words and 
 
     // Each of the other writers rewrites the whole file.
     gl.note("build", "why, again");
-    gl.mark("build", .{ .seen_ms = 7, .snooze = .none });
+    gl.mark("build", seenAt(7));
     gl.supervisor("build", .none);
     gl.forget("build");
     gl.note("build", "why, again");

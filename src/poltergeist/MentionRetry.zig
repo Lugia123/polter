@@ -170,6 +170,18 @@ pub fn renameGroup(self: *MentionRetry, old: []const u8, new: []const u8) Alloca
     }
 }
 
+/// The group was deleted (task 1659): nothing waits to be typed in its name.
+pub fn dropGroup(self: *MentionRetry, group: []const u8) void {
+    var i: usize = 0;
+    while (i < self.items.items.len) {
+        if (std.mem.eql(u8, self.items.items[i].group, group)) {
+            self.free(self.items.orderedRemove(i));
+            continue;
+        }
+        i += 1;
+    }
+}
+
 /// The one line the author is told when the last try was refused too.
 pub fn writeGaveUp(
     w: *std.Io.Writer,

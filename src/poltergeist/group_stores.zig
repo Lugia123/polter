@@ -101,3 +101,71 @@ pub const Handle = enum {
     /// `SessionLog`'s open day file.
     session_log_tree,
 };
+
+/// Delete a group's directory under every `Root` of `state_dir` (task 1659):
+/// the disk half of the control room's "Delete group", the only delete that
+/// removes a record. Nothing else is touched -- not another group's
+/// directory, not the streams every group shares.
+///
+/// **`chat` last.** It holds `group.json`, which is what makes a group come
+/// back at the next start. Stopped part way, this leaves a group that is
+/// still listed, with less in it, for the person to delete again -- never
+/// directories that no listed group owns. A directory that is not there is
+/// already deleted.
+///
+/// Every handle into these must have been let go first (`Handle`): Windows
+/// will not delete a file that is open.
+pub fn deleteGroupDirs(alloc: std.mem.Allocator, io: std.Io, state_dir: []const u8, group: []const u8) !void {
+    // An empty or dotted name would be a path to something that is not this
+    // group's: refused rather than joined. Names are checked long before
+    // here (`Chat.isValidName`); this is the last place to be wrong.
+    if (group.len == 0 or std.mem.indexOfAny(u8, group, "/\\") != null or
+        std.mem.eql(u8, group, ".") or std.mem.eql(u8, group, "..")) return error.BadName;
+    inline for (.{ false, true }) |chat_pass| inline for (comptime std.enums.values(Root)) |root| {
+        if ((root == .chat) == chat_pass) {
+            const path = try std.fs.path.join(alloc, &.{ state_dir, root.subdir(), group });
+            defer alloc.free(path);
+            try std.Io.Dir.cwd().deleteTree(io, path);
+        }
+    };
+}
+
+test "deleteGroupDirs: the group's directory under every root, and nothing else (task 1659)" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const state = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(state);
+
+    inline for (comptime std.enums.values(Root)) |root| {
+        for ([_][]const u8{ "doomed", "kept" }) |g| {
+            const sub = try std.fs.path.join(testing.allocator, &.{ root.subdir(), g });
+            defer testing.allocator.free(sub);
+            try tmp.dir.createDirPath(io, sub);
+            const file = try std.fs.path.join(testing.allocator, &.{ sub, "2026-10-17.jsonl" });
+            defer testing.allocator.free(file);
+            try tmp.dir.writeFile(io, .{ .sub_path = file, .data = "{\"group\":\"x\"}\n" });
+        }
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "chat/chat.jsonl", .data = "{\"group\":\"doomed\"}\n" });
+
+    try deleteGroupDirs(testing.allocator, io, state, "doomed");
+
+    inline for (comptime std.enums.values(Root)) |root| {
+        const gone = try std.fs.path.join(testing.allocator, &.{ root.subdir(), "doomed" });
+        defer testing.allocator.free(gone);
+        try testing.expectError(error.FileNotFound, tmp.dir.access(io, gone, .{}));
+        const kept = try std.fs.path.join(testing.allocator, &.{ root.subdir(), "kept", "2026-10-17.jsonl" });
+        defer testing.allocator.free(kept);
+        try tmp.dir.access(io, kept, .{});
+    }
+    // The stream every group shares is not this one's to rewrite.
+    try tmp.dir.access(io, "chat/chat.jsonl", .{});
+
+    // Again: nothing there is nothing to do.
+    try deleteGroupDirs(testing.allocator, io, state, "doomed");
+    // And never a path that is not a group's.
+    try testing.expectError(error.BadName, deleteGroupDirs(testing.allocator, io, state, ".."));
+    try testing.expectError(error.BadName, deleteGroupDirs(testing.allocator, io, state, ""));
+}

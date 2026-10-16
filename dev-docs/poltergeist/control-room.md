@@ -892,7 +892,7 @@ Windows 是 `rules::menu_row_offered` 加 `rules::project_tab`）：
 |---|---|
 | `ghostty_app_control_snapshot` | **有。** JSON 的形状写在 `src/poltergeist/ControlRoom.zig` 文件头，夹具是 `src/poltergeist/testdata/control_snapshot.json`。返回 0 字节表示还没算过，不是空的总控台 |
 | 动作 `CONTROL_ROOM_CHANGED` | **有。** mac 的宿主还没有接它的分支；Windows 宿主记为欠账；gtk 记为未实现 |
-| `ghostty_app_control_act` | **有一部分**：已看、先放着（到下一个事件 / 到某时刻）、取消先放着、批准一次、拒绝、回一句、新建群（`new_group`）、给没有总管的群启动总管（`start_supervisor`，§6.4）。**没有**：归档、移交。请求与每一种拒绝写在 `src/poltergeist/ControlAct.zig` 文件头 |
+| `ghostty_app_control_act` | **有一部分**：已看、先放着（到下一个事件 / 到某时刻）、取消先放着、批准一次、拒绝、回一句、新建群（`new_group`）、给没有总管的群启动总管（`start_supervisor`，§6.4）；群行右键菜单（task 1659）：置顶 / 取消置顶、静音（到某时刻或一直）/ 取消静音、归档 / 取消归档、重命名、改群简介、删除群、请总管汇报进度 / 关闭闲置 worker（`ask_supervisor`）。**没有**：移交。请求与每一种拒绝写在 `src/poltergeist/ControlAct.zig` 文件头 |
 | `ghostty_app_control_group` | 还没有 |
 | `ghostty_app_control_messages` | 还没有 |
 
@@ -1467,6 +1467,9 @@ mac 上总控台在前时的「新建标签页」原先不问规则、直接进�
   现在一条通知把它点名的和数进去的都记为已说；只有谁都没被告知过的（状态又变了，或者通知之后才开始等的）才是新的一件，
   各自满 2 分钟再发。同一总管下好几件新事同时到点时点名「等审批」那件，因为免打扰时段挡不住它。这是「一件事只响一次」的口径，和 §4.4 说的 `Attention.needsMeCount`
   一样按终端去重，不拿 Dock 的数（Dock 数行）。
+- **静音的群不通知**（task 1659，右键「静音这个群的通知」）：卡片、计数照常，只是不发系统通知；到点自己结束
+  （快照里 `muted` 变回 null，核心在那一刻唤醒刷新）。和「先放着」不同，它不随群的状态变化结束。**归档的群**不在
+  `groups` 里、不进任何计数、也不通知，列在快照顶层的 `archived`；它的终端、群聊、任务照常。
 - **先放着之后不通知**，直到它回来；回来时若还是放着之前那件事、而且已经通知过，不补发；没通知过的，照 2 分钟算。
 - **在场抑制。** 到点那一刻，若这张卡在一个**在前台**的总控台里**整张可见**，或用户正在那个等待的终端里，就不发，
   并把这件事记为「人在场看过」，之后不补发。「在前台」按窗口算：mac 是总控台窗口为 key、应用在前台、窗口没被遮住；

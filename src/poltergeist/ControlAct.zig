@@ -34,6 +34,44 @@
 //!                                                       last | new
 //! ```
 //!
+//! The group row's right-click menu (task 1659):
+//!
+//! ```
+//! {"act":"pin",      "group":"web-app"}                 / "unpin"
+//! {"act":"mute",     "group":"web-app","until_ms":N}    until then (wall)
+//! {"act":"mute",     "group":"web-app"}                 until lifted
+//! {"act":"unmute",   "group":"web-app"}
+//! {"act":"archive",  "group":"web-app"}                 / "unarchive"
+//! {"act":"rename_group","from":"web-app","to":"store"}
+//! {"act":"set_brief","group":"web-app","brief":"…"}
+//! {"act":"delete_group","group":"web-app","members":N,"open_tasks":N}
+//!                                                       what the dialog said
+//! {"act":"ask_supervisor","group":"web-app","ask":"report"}
+//!                                                       report | close_idle
+//! ```
+//!
+//! `pin`, `mute` and `archive` are the person's marks on the group and are
+//! written down with the rest of them. A mute keeps the group's system
+//! notifications back -- its card is shown as ever -- until its moment, or
+//! until lifted; an archived group is off the list, out of every count and
+//! raises nothing, while its terminals, its talk and its panel go on.
+//!
+//! **`delete_group` is the one delete that removes the record**, and it is
+//! the person's alone. `group_destroy` -- what an agent can call -- takes a
+//! group off the list and leaves every word of it on the disk, because an
+//! agent asked to tidy up should never be able to destroy what the person
+//! would read the next morning. A person who has read the dialog, which
+//! says what goes and that it cannot be had back, may. So this takes the
+//! terminals in it out of it (none is closed), drops its tasks, and deletes
+//! the group's directory under each of `group_stores.Root`. It is aimed at
+//! what the dialog said: the two numbers it showed come back in the request,
+//! and it is `Stale` -- nothing deleted -- unless they are still so.
+//!
+//! `ask_supervisor` types a fixed line into the group's supervisor (`[Polter
+//! ask]`, then the request in the person's language), kept in the group as
+//! the person's, by the road a `group_post` mention takes. Done means it was
+//! typed, not that the supervisor did it.
+//!
 //! `fix` is the "Fix" button on a card that reads "Failed"
 //! (`ControlFix.zig`): a paragraph naming who failed, with what and when,
 //! typed into the card's supervisor -- or, with none, into each failed
@@ -148,6 +186,16 @@
 //! | project_remove | `NotInAProject` | that terminal is on no page of an open project |
 //! | project_remove | `SupervisorPage` | a group's supervisor is on that page, and the project is that group's |
 //! | project_rename | `BadName`, `GroupExists`, and the rest of a group's rename | the project is a group's, and the group cannot take that name |
+//! | pin, unpin, mute, unmute, archive, unarchive, set_brief, delete_group, ask_supervisor | `NoSuchGroup` | the group is not there |
+//! | rename_group | `NoSuchGroup` | `from` is not there |
+//! | mute | `MuteInThePast` | `until_ms` is not after now |
+//! | rename_group | `EmptyName` | `to` is empty |
+//! | rename_group | `BadName`, `GroupExists` | as for `new_group` |
+//! | rename_group | `RenameBlocked`, `RenameBusy`, `RenameUnfinished`, `RenameDeferred`, `RenameFailed` | a rename's own refusals, as `group_rename` gives them (dev-docs/poltergeist/mcp.md); anything else the host fails with is `RenameFailed` |
+//! | delete_group | `DeleteFailed` | a directory of its record could not be deleted: it is out of the list and out of memory, and what was not deleted is still on disk |
+//! | delete_group | `Stale` | `members` or `open_tasks` are not what they are now |
+//! | ask_supervisor | `NoSupervisor` | the group has none |
+//! | ask_supervisor | `NoAgent`, `UserPresent`, `DraftInLine`, `ChildExited`, ... | a mention's refusals: kept in the group, not typed; the two that clear by themselves are tried again (#60) |
 //!
 //! The last four are the terminal's own, from the path every agent's text
 //! takes; they are not decided here.
@@ -160,6 +208,7 @@ const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Projects = @import("Projects.zig");
 const ControlFix = @import("ControlFix.zig");
+const i18n = @import("../os/i18n.zig");
 
 pub const Id = Bus.Id;
 
@@ -191,6 +240,43 @@ pub const Act = union(enum) {
     /// The person agreed to the first sweep of old records the notice told
     /// them about (task 1511).
     retention_agree,
+    pin: []const u8,
+    unpin: []const u8,
+    mute: struct { group: []const u8, until_ms: ?u64 },
+    unmute: []const u8,
+    archive: []const u8,
+    unarchive: []const u8,
+    rename_group: struct { from: []const u8, to: []const u8 },
+    set_brief: struct { group: []const u8, brief: []const u8 },
+    delete_group: struct { group: []const u8, members: u64, open_tasks: u64 },
+    ask_supervisor: struct { group: []const u8, ask: Ask },
+};
+
+/// What the person asks a group's supervisor to do from the right-click
+/// menu (task 1659).
+pub const Ask = enum {
+    /// Report on progress in the group.
+    report,
+    /// Close the workers that are idle.
+    close_idle,
+
+    /// The line, as an English msgid; `tag` goes before it untranslated.
+    fn words(self: Ask) [:0]const u8 {
+        return switch (self) {
+            .report => ask_words.report,
+            .close_idle => ask_words.close_idle,
+        };
+    }
+};
+
+/// What `ask_supervisor` starts with, in every language, as `[Polter fix]`
+/// does for "Fix": one string the supervisor and its skill can look for.
+pub const ask_tag = "[Polter ask]";
+
+// One literal each: `xgettext` reads this file as C and does not follow `++`.
+const ask_words = struct {
+    const report = i18n.N_("The person asked from the control room: please report on this group's progress -- what is done, what is in progress and what is stuck -- in this group.");
+    const close_idle = i18n.N_("The person asked from the control room: please close the workers in this group that are idle -- finished, or waiting with nothing to do -- and say in this group which ones you closed.");
 };
 
 /// Why the host could not open a project it was ordered to.
@@ -225,6 +311,10 @@ pub const Refusal = error{
     AlreadyStarting,
     NothingToFix,
     AlreadyNotified,
+    MuteInThePast,
+    EmptyName,
+    RenameFailed,
+    NoSupervisor,
 };
 
 /// The keys an approval and a refusal are. One key each, and neither
@@ -247,6 +337,14 @@ pub const Host = struct {
     /// reads it: for a permission box whose own rows keep redrawing, the
     /// guard compares it with the box as it was drawn (task 1655).
     readScreen: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, id: Id) anyerror![]const u8,
+    /// Rename a group, the way `group_rename` does: disk, panel, project.
+    renameGroup: *const fn (ctx: *anyopaque, from: []const u8, to: []const u8) anyerror!void,
+    /// Keep a group's brief, the way `group_set_brief` does.
+    setBrief: *const fn (ctx: *anyopaque, group: []const u8, brief: []const u8) anyerror!void,
+    /// How many of a group's tasks are still open.
+    openTasks: *const fn (ctx: *anyopaque, group: []const u8) usize,
+    /// Delete a group and its record (see `delete_group` above).
+    deleteGroup: *const fn (ctx: *anyopaque, group: []const u8) anyerror!void,
     /// Write a group's marks down.
     persist: *const fn (ctx: *anyopaque, group: []const u8, marks: Chat.Marks) void,
     /// Make a group, the way the person makes one anywhere else: they are
@@ -332,6 +430,16 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
         project_remove,
         project_rename,
         retention_agree,
+        pin,
+        unpin,
+        mute,
+        unmute,
+        archive,
+        unarchive,
+        rename_group,
+        set_brief,
+        delete_group,
+        ask_supervisor,
     };
     const name = std.meta.stringToEnum(Name, try textOf(obj, "act")) orelse return error.BadRequest;
     return switch (name) {
@@ -385,6 +493,35 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
             .to = try textOf(obj, "to"),
         } },
         .retention_agree => .retention_agree,
+        .pin => .{ .pin = try textOf(obj, "group") },
+        .unpin => .{ .unpin = try textOf(obj, "group") },
+        .mute => .{ .mute = .{
+            .group = try textOf(obj, "group"),
+            .until_ms = if (obj.get("until_ms")) |v| switch (v) {
+                .null => null,
+                else => try msOf(obj, "until_ms"),
+            } else null,
+        } },
+        .unmute => .{ .unmute = try textOf(obj, "group") },
+        .archive => .{ .archive = try textOf(obj, "group") },
+        .unarchive => .{ .unarchive = try textOf(obj, "group") },
+        .rename_group => .{ .rename_group = .{
+            .from = try textOf(obj, "from"),
+            .to = try textOf(obj, "to"),
+        } },
+        .set_brief => .{ .set_brief = .{
+            .group = try textOf(obj, "group"),
+            .brief = try textOf(obj, "brief"),
+        } },
+        .delete_group => .{ .delete_group = .{
+            .group = try textOf(obj, "group"),
+            .members = try msOf(obj, "members"),
+            .open_tasks = try msOf(obj, "open_tasks"),
+        } },
+        .ask_supervisor => .{ .ask_supervisor = .{
+            .group = try textOf(obj, "group"),
+            .ask = std.meta.stringToEnum(Ask, try textOf(obj, "ask")) orelse return error.BadRequest,
+        } },
     };
 }
 
@@ -493,6 +630,67 @@ pub fn perform(
         .project_remove => |terminal| try host.projectRemove(host.ctx, terminal),
         .project_rename => |r| try host.projectRename(host.ctx, r.from, r.to),
         .retention_agree => try host.retentionAgree(host.ctx),
+        .pin, .unpin => |group| {
+            try chat.setPinned(group, act == .pin);
+            host.persist(host.ctx, group, try chat.marksOf(group));
+        },
+        .mute => |m| {
+            const mute: Chat.Marks.Mute = if (m.until_ms) |until| until: {
+                if (until <= wall_ms) return error.MuteInThePast;
+                break :until .{ .until = until };
+            } else .forever;
+            try chat.setMute(m.group, mute);
+            host.persist(host.ctx, m.group, try chat.marksOf(m.group));
+        },
+        .unmute => |group| {
+            try chat.setMute(group, .none);
+            host.persist(host.ctx, group, try chat.marksOf(group));
+        },
+        .archive, .unarchive => |group| {
+            try chat.setArchived(group, if (act == .archive) wall_ms else null);
+            host.persist(host.ctx, group, try chat.marksOf(group));
+        },
+        .rename_group => |r| {
+            if (!chat.exists(r.from)) return error.NoSuchGroup;
+            if (r.to.len == 0) return error.EmptyName;
+            if (!Chat.isValidName(r.to)) return error.BadName;
+            if (std.mem.eql(u8, r.from, r.to)) return;
+            if (chat.exists(r.to)) return error.GroupExists;
+            // A rename's own refusals by their own names (`GroupRename
+            // .refusal`): `RenameBlocked` -- the disk still has a record by
+            // that name -- is a different thing to tell the person from
+            // "could not be moved". Anything else is `RenameFailed`.
+            host.renameGroup(host.ctx, r.from, r.to) catch |err| return switch (err) {
+                error.NoSuchGroup,
+                error.BadName,
+                error.GroupExists,
+                error.RenameBlocked,
+                error.RenameBusy,
+                error.RenameUnfinished,
+                error.RenameDeferred,
+                error.RenameFailed,
+                => err,
+                else => error.RenameFailed,
+            };
+        },
+        .set_brief => |b| {
+            if (!chat.exists(b.group)) return error.NoSuchGroup;
+            try host.setBrief(host.ctx, b.group, b.brief);
+        },
+        .delete_group => |d| {
+            const members = chat.othersIn(d.group) catch return error.NoSuchGroup;
+            if (members != d.members or host.openTasks(host.ctx, d.group) != d.open_tasks) return error.Stale;
+            try host.deleteGroup(host.ctx, d.group);
+        },
+        .ask_supervisor => |a| {
+            if (!chat.exists(a.group)) return error.NoSuchGroup;
+            const steward = host.stewardOf(host.ctx, a.group) orelse return error.NoSupervisor;
+            var buf: [1024]u8 = undefined;
+            const text = std.fmt.bufPrint(&buf, "{s} {s}", .{ ask_tag, host.voice.tr(a.ask.words()) }) catch return error.BadRequest;
+            var to = [_]ControlFix.Target{.{ .to = steward }};
+            try host.fixPost(host.ctx, a.group, text, &to);
+            if (to[0].err) |err| return err;
+        },
     }
 }
 
@@ -541,6 +739,12 @@ const Recorder = struct {
     fix_marked: ?u64 = null,
     /// What `readScreen` answers.
     screen: []const u8 = "",
+    /// What reached the host, copied: the request's strings are gone when
+    /// `act` returns.
+    renamed: ?[]const u8 = null,
+    brief: ?[]const u8 = null,
+    open_tasks: usize = 0,
+    deleted: ?[]const u8 = null,
 
     const Started = struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session };
 
@@ -555,6 +759,9 @@ const Recorder = struct {
         }
         self.started.deinit(testing.allocator);
         for (self.fix_posts.items) |t| testing.allocator.free(t);
+        inline for (.{ "renamed", "brief", "deleted" }) |f| {
+            if (@field(self, f)) |v| testing.allocator.free(v);
+        }
         self.fix_posts.deinit(testing.allocator);
     }
 
@@ -565,6 +772,10 @@ const Recorder = struct {
             .sendText = sendText,
             .agentPresent = agentPresent,
             .readScreen = readScreen,
+            .renameGroup = renameGroup,
+            .setBrief = setBrief,
+            .openTasks = openTasks,
+            .deleteGroup = deleteGroup,
             .persist = persist,
             .createGroup = createGroup,
             .stewardOf = stewardOf,
@@ -585,6 +796,32 @@ const Recorder = struct {
     fn readScreen(ctx: *anyopaque, alloc: std.mem.Allocator, _: Id) anyerror![]const u8 {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
         return alloc.dupe(u8, self.screen);
+    }
+
+    fn keep(slot: *?[]const u8, s: []const u8) !void {
+        if (slot.*) |old| testing.allocator.free(old);
+        slot.* = try testing.allocator.dupe(u8, s);
+    }
+
+    fn renameGroup(ctx: *anyopaque, _: []const u8, to: []const u8) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        try keep(&self.renamed, to);
+    }
+
+    fn setBrief(ctx: *anyopaque, _: []const u8, brief: []const u8) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        try keep(&self.brief, brief);
+    }
+
+    fn openTasks(ctx: *anyopaque, _: []const u8) usize {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        return self.open_tasks;
+    }
+
+    fn deleteGroup(ctx: *anyopaque, group: []const u8) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        try keep(&self.deleted, group);
     }
 
     fn fixCard(ctx: *anyopaque, _: ControlFix.Key) ?ControlFix.Card {
@@ -971,7 +1208,7 @@ test "ControlRoom act: a request that is not one is refused before anything is l
         "not json",
         "[]",
         "{}",
-        "{\"act\":\"archive\",\"group\":\"web-app\"}",
+        "{\"act\":\"explode\",\"group\":\"web-app\"}",
         "{\"act\":\"seen\"}",
         "{\"act\":\"approve\",\"terminal\":\"161\",\"since_ms\":1,\"event_ms\":1}",
         "{\"act\":\"approve\",\"terminal\":\"0x00000000000000a1\",\"since_ms\":1}",
@@ -1272,4 +1509,165 @@ test "ControlRoom act: a Fix that could not be typed is refused by the mention's
     try testing.expectEqual(@as(usize, 2), b.rec.fix_posts.items.len);
     try testing.expectEqual(@as(usize, 1), b.rec.fix_typed);
     try testing.expect(b.rec.fix_marked != null);
+}
+
+// -- the group row's right-click menu (task 1659) ----------------------------
+
+test "ControlRoom act: pin, mute and archive are the person's marks, written down each time (task 1659)" {
+    var b = try Bench.init();
+    defer b.deinit();
+
+    try b.act(
+        \\{"act":"pin","group":"web-app"}
+    , 1_000);
+    try testing.expect((try b.chat.marksOf("web-app")).pinned);
+    try b.act(
+        \\{"act":"unpin","group":"web-app"}
+    , 1_000);
+    try testing.expect(!(try b.chat.marksOf("web-app")).pinned);
+
+    // An hour from now, on the wall clock.
+    try b.act(
+        \\{"act":"mute","group":"web-app","until_ms":1700003601000}
+    , 1_000);
+    try testing.expectEqual(Chat.Marks.Mute{ .until = 1_700_003_601_000 }, (try b.chat.marksOf("web-app")).mute);
+    try b.act(
+        \\{"act":"mute","group":"web-app"}
+    , 1_000);
+    try testing.expectEqual(Chat.Marks.Mute.forever, (try b.chat.marksOf("web-app")).mute);
+    try b.act(
+        \\{"act":"unmute","group":"web-app"}
+    , 1_000);
+    try testing.expectEqual(Chat.Marks.Mute.none, (try b.chat.marksOf("web-app")).mute);
+
+    try b.act(
+        \\{"act":"archive","group":"web-app"}
+    , 1_000);
+    try testing.expectEqual(@as(?u64, wall + 1_000), (try b.chat.marksOf("web-app")).archived_ms);
+    // Again: when it was archived does not move.
+    try b.act(
+        \\{"act":"archive","group":"web-app"}
+    , 5_000);
+    try testing.expectEqual(@as(?u64, wall + 1_000), (try b.chat.marksOf("web-app")).archived_ms);
+    try b.act(
+        \\{"act":"unarchive","group":"web-app"}
+    , 6_000);
+    try testing.expectEqual(@as(?u64, null), (try b.chat.marksOf("web-app")).archived_ms);
+
+    // Every one of them written down, the last as it stands.
+    try testing.expectEqual(@as(usize, 8), b.rec.persisted.items.len);
+    try testing.expectEqual(Chat.Marks.none, b.rec.persisted.items[7]);
+}
+
+test "ControlRoom act: a mute that would already be over, or a group that is not there, is refused (task 1659)" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try testing.expectError(error.MuteInThePast, b.act(
+        \\{"act":"mute","group":"web-app","until_ms":1700000001000}
+    , 1_000));
+    for ([_][]const u8{
+        "{\"act\":\"pin\",\"group\":\"nope\"}",
+        "{\"act\":\"unpin\",\"group\":\"nope\"}",
+        "{\"act\":\"mute\",\"group\":\"nope\"}",
+        "{\"act\":\"unmute\",\"group\":\"nope\"}",
+        "{\"act\":\"archive\",\"group\":\"nope\"}",
+        "{\"act\":\"unarchive\",\"group\":\"nope\"}",
+        "{\"act\":\"set_brief\",\"group\":\"nope\",\"brief\":\"x\"}",
+        "{\"act\":\"rename_group\",\"from\":\"nope\",\"to\":\"other\"}",
+        "{\"act\":\"delete_group\",\"group\":\"nope\",\"members\":0,\"open_tasks\":0}",
+        "{\"act\":\"ask_supervisor\",\"group\":\"nope\",\"ask\":\"report\"}",
+    }) |json| try testing.expectError(error.NoSuchGroup, b.act(json, 1_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.persisted.items.len);
+    // An ask that is neither is not a request.
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"ask_supervisor","group":"web-app","ask":"dance"}
+    , 1_000));
+}
+
+test "ControlRoom act: rename says which of the three sentences, and nothing reaches the host for them (task 1659)" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try b.chat.create("billing", term);
+    try testing.expectError(error.EmptyName, b.act(
+        \\{"act":"rename_group","from":"web-app","to":""}
+    , 1_000));
+    try testing.expectError(error.BadName, b.act(
+        \\{"act":"rename_group","from":"web-app","to":"Web App"}
+    , 1_000));
+    try testing.expectError(error.GroupExists, b.act(
+        \\{"act":"rename_group","from":"web-app","to":"billing"}
+    , 1_000));
+    // To its own name: done, and nothing to do.
+    try b.act(
+        \\{"act":"rename_group","from":"web-app","to":"web-app"}
+    , 1_000);
+    try testing.expect(b.rec.renamed == null);
+
+    try b.act(
+        \\{"act":"rename_group","from":"web-app","to":"storefront"}
+    , 1_000);
+    try testing.expectEqualStrings("storefront", b.rec.renamed.?);
+
+    // A rename's own refusal keeps its name; anything else is "failed".
+    b.rec.refuse_with = error.RenameBlocked;
+    try testing.expectError(error.RenameBlocked, b.act(
+        \\{"act":"rename_group","from":"web-app","to":"shop"}
+    , 1_000));
+    b.rec.refuse_with = error.AccessDenied;
+    try testing.expectError(error.RenameFailed, b.act(
+        \\{"act":"rename_group","from":"web-app","to":"shop"}
+    , 1_000));
+}
+
+test "ControlRoom act: the brief goes to the host as written (task 1659)" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try b.act(
+        \\{"act":"set_brief","group":"web-app","brief":"the storefront rewrite"}
+    , 1_000);
+    try testing.expectEqualStrings("the storefront rewrite", b.rec.brief.?);
+}
+
+test "ControlRoom act: delete happens only for what the dialog said (task 1659)" {
+    var b = try Bench.init();
+    defer b.deinit();
+    // `term` made the group and is in it; two tasks nobody has finished.
+    b.rec.open_tasks = 2;
+    try testing.expectError(error.Stale, b.act(
+        \\{"act":"delete_group","group":"web-app","members":0,"open_tasks":2}
+    , 1_000));
+    try testing.expectError(error.Stale, b.act(
+        \\{"act":"delete_group","group":"web-app","members":1,"open_tasks":1}
+    , 1_000));
+    try testing.expect(b.rec.deleted == null);
+    try b.act(
+        \\{"act":"delete_group","group":"web-app","members":1,"open_tasks":2}
+    , 1_000);
+    try testing.expectEqualStrings("web-app", b.rec.deleted.?);
+}
+
+test "ControlRoom act: asking the supervisor types the tagged line into it, and says when it was not typed (task 1659)" {
+    var b = try Bench.init();
+    defer b.deinit();
+    try testing.expectError(error.NoSupervisor, b.act(
+        \\{"act":"ask_supervisor","group":"web-app","ask":"report"}
+    , 1_000));
+    try testing.expectEqual(@as(usize, 0), b.rec.fix_posts.items.len);
+
+    b.rec.steward = term;
+    try b.act(
+        \\{"act":"ask_supervisor","group":"web-app","ask":"report"}
+    , 1_000);
+    try b.act(
+        \\{"act":"ask_supervisor","group":"web-app","ask":"close_idle"}
+    , 1_000);
+    try testing.expectEqual(@as(usize, 2), b.rec.fix_posts.items.len);
+    try testing.expect(std.mem.startsWith(u8, b.rec.fix_posts.items[0], ask_tag ++ " The person asked from the control room: please report"));
+    try testing.expect(std.mem.indexOf(u8, b.rec.fix_posts.items[1], "close the workers in this group that are idle") != null);
+
+    // Kept in the group, and not typed: the mention's own refusal, by name.
+    b.rec.refuse_with = error.DraftInLine;
+    try testing.expectError(error.DraftInLine, b.act(
+        \\{"act":"ask_supervisor","group":"web-app","ask":"report"}
+    , 1_000));
 }

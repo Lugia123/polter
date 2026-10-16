@@ -2465,6 +2465,16 @@ msgstr ""
 msgid "{1} {2}"
 msgstr ""
 
+#: src/poltergeist/ControlAct.zig:278
+msgid ""
+"The person asked from the control room: please report on this group's progress -- what is done, what is in progress and what is stuck -- in this group."
+msgstr ""
+
+#: src/poltergeist/ControlAct.zig:279
+msgid ""
+"The person asked from the control room: please close the workers in this group that are idle -- finished, or waiting with nothing to do -- and say in this group which ones you closed."
+msgstr ""
+
 #: src/poltergeist/ControlRoom.zig:870
 msgid "Screen still for {1} min"
 msgstr ""
