@@ -1,0 +1,4 @@
+{
+  "name": "DeepSeek-TUI",
+  "description": "通过编辑 ~/.deepseek/mcp.json 把 Polter 的 MCP 服务注册到 DeepSeek-TUI。DeepSeek 官方没有 CLI，这里对接的是第三方的 DeepSeek-TUI，它的配置格式随时可能变，所以出错会明确报出来。需要 python3。DeepSeek-TUI 没有说明过 skill 机制。"
+}

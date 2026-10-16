@@ -327,6 +327,10 @@ extension PluginPageBridge: WKScriptMessageHandlerWithReply {
             case .choice(let choices):
                 described["type"] = "enum"
                 described["choices"] = choices.map(\.value)
+                // What each value is called in the person's language, for a
+                // page that wants to show it; the value is still what is saved.
+                described["choice_labels"] = Dictionary(
+                    choices.map { ($0.value, $0.label) }, uniquingKeysWith: { first, _ in first })
             }
             if let value = parameter.defaultValue { described["default"] = value }
             parameters.append(described)

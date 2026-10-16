@@ -2473,6 +2473,38 @@ msgstr ""
 msgid "Screen still for {1} min, no tool call for {2} min"
 msgstr ""
 
+#: src/poltergeist/report.zig:122
+msgid "Switched off, so nothing is handed to it. Turn it on with the switch on its page."
+msgstr ""
+
+#: src/poltergeist/report.zig:123
+msgid "Its plugin.json subscribes to nothing, so it was not started. That is the plugin's own file to change."
+msgstr ""
+
+#: src/poltergeist/report.zig:124
+msgid "It subscribes to chat but names no groups, so it is running and will be handed nothing."
+msgstr ""
+
+#: src/poltergeist/report.zig:125
+msgid "Switched on, but nothing runs it until a terminal is open."
+msgstr ""
+
+#: src/poltergeist/report.zig:126
+msgid "Switched on, but it would not start. Polter's log says why."
+msgstr ""
+
+#: src/poltergeist/report.zig:127
+msgid "It failed to start {1} time(s) and will be tried again shortly. Polter's log has what it said."
+msgstr ""
+
+#: src/poltergeist/report.zig:128
+msgid "It failed to start {1} time(s) and is now tried every fifteen minutes. Polter's log says why."
+msgstr ""
+
+#: src/poltergeist/report.zig:129
+msgid "Stopped. It starts again when Polter does."
+msgstr ""
+
 #. TRANSLATORS: U+2026, not three ASCII dots. This opens the title
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action
 #. (rename_tab) that edits the tab strip in place. The two entries look

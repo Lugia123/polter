@@ -1,0 +1,4 @@
+{
+  "name": "Qwen Code",
+  "description": "把 Polter 的 MCP 服务注册到阿里的 Qwen Code（~/.qwen/settings.json）。不装 skill：Qwen Code 说支持 skill，但目录还没确认；Polter 的指引照样能通过 skill_read 和 MCP 握手里的工具表拿到。"
+}

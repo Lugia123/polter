@@ -446,7 +446,7 @@ struct PluginSidebarRows: View {
                     }
                     .padding(.leading, Grid.pad)
                 }
-                .help(pane.statuses?[key]?.note ?? "")
+                .help(pane.statuses?[key]?.shownNote() ?? "")
                 .onTapGesture { onSelect(key) }
             }
         }

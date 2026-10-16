@@ -80,7 +80,27 @@ pub struct Runtime {
     /// `state` was present: a copy is running. Absent means none is.
     pub running: bool,
     pub failures: u32,
+    /// English and addressed to an agent: `plugin_list`'s own note.
     pub note: String,
+    /// The same reason for a person (`report.NoteSay`, #1644): a template
+    /// and its arguments, said in the person's language. Only the settings
+    /// window's document carries it; `None` from an agent's document or an
+    /// older core.
+    pub note_say: Option<(String, Vec<String>)>,
+}
+
+impl Runtime {
+    /// What the page shows for `note`: the core's reason in the person's
+    /// language when it sent one to say, else the note as it came.
+    /// `translate` is the host's catalogue lookup, `fill` the same `{N}`
+    /// filler the control room uses -- passed in because this crate has no
+    /// dependencies on purpose.
+    pub fn shown_note(&self, translate: impl Fn(&str) -> String, fill: impl Fn(&str, &[String]) -> String) -> String {
+        match &self.note_say {
+            Some((template, args)) => fill(&translate(template), args),
+            None => self.note.clone(),
+        }
+    }
 }
 
 /// Everything the dot is decided from.
@@ -164,6 +184,23 @@ pub fn missing_required(params: &[(String, String, bool)], values: &[(String, St
         .filter(|(name, _, required)| *required && !values.iter().any(|(k, v)| k == name && !v.trim().is_empty()))
         .map(|(_, title, _)| title.clone())
         .collect()
+}
+
+/// What a choice field shows for one of its values: the plugin's own name
+/// for it when its translation gives one (`i18n/<lang>.json`, `choices`),
+/// else the value itself (#1636).
+pub fn choice_shown<'a>(value: &'a str, labels: &'a std::collections::BTreeMap<String, String>) -> &'a str {
+    labels.get(value).map(String::as_str).filter(|l| !l.is_empty()).unwrap_or(value)
+}
+
+/// The value a choice field saves, from the row the list has selected.
+///
+/// **By position, never by the text in the box.** The box shows the
+/// translated name, and reading that back would write `是` into a settings
+/// file whose plugin only knows `yes`. None when nothing is selected
+/// (`CB_ERR`) or the row is past the end.
+pub fn choice_value(options: &[String], selected: isize) -> Option<String> {
+    usize::try_from(selected).ok().and_then(|i| options.get(i)).cloned()
 }
 
 /// Whether the switch may be turned **on** (§5.2 item 2): not while a
@@ -682,10 +719,38 @@ pub fn message_from_page(source: &str, key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_runtime_note_is_said_in_the_persons_language_when_the_core_sent_one_to_say() {
+        let fill = |t: &str, a: &[String]| t.replace("{1}", a.first().map(String::as_str).unwrap_or("{1}"));
+        let translate = |t: &str| if t.starts_with("It failed") { "启动失败 {1} 次".to_string() } else { t.to_string() };
+        let said = super::Runtime {
+            running: true,
+            failures: 7,
+            note: "kimi is dormant".into(),
+            note_say: Some(("It failed to start {1} time(s)".into(), vec!["7".into()])),
+        };
+        assert_eq!(said.shown_note(translate, fill), "启动失败 7 次");
+        let agent_only = super::Runtime { running: false, failures: 0, note: "codex is installed but switched off".into(), note_say: None };
+        assert_eq!(agent_only.shown_note(translate, fill), "codex is installed but switched off", "no note_say: the note as it came");
+    }
+
+    #[test]
+    fn a_choice_shows_its_translated_name_and_saves_its_value() {
+        let options = vec!["yes".to_string(), "no".to_string()];
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("yes".to_string(), "装".to_string());
+        let shown: Vec<&str> = options.iter().map(|o| super::choice_shown(o, &labels)).collect();
+        assert_eq!(shown, ["装", "no"], "a value the translation does not name is shown as itself");
+        assert_eq!(super::choice_value(&options, 0).as_deref(), Some("yes"), "the saved value is the value, not 装");
+        assert_eq!(super::choice_value(&options, 1).as_deref(), Some("no"));
+        assert_eq!(super::choice_value(&options, -1), None, "CB_ERR is no selection");
+        assert_eq!(super::choice_value(&options, 2), None);
+    }
+
     use super::*;
 
     fn rt(running: bool, failures: u32, note: &str) -> Option<Runtime> {
-        Some(Runtime { running, failures, note: note.into() })
+        Some(Runtime { running, failures, note: note.into(), note_say: None })
     }
 
     /// **The table the macOS side's `SettingsRules` tests too** (settings.md

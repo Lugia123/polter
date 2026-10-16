@@ -5126,7 +5126,18 @@ fn pluginList(
     alloc: Allocator,
     key: []const u8,
 ) anyerror![]const poltergeistpkg.rpc.PluginView {
-    const self: *App = @ptrCast(@alignCast(ctx));
+    return pluginListFor(@ptrCast(@alignCast(ctx)), alloc, key, false);
+}
+
+/// `pluginList`, and whether the reader is a person (the settings window)
+/// rather than an agent: only then does each row carry `note_say`, the note
+/// to be said in the person's language (#1644).
+fn pluginListFor(
+    self: *App,
+    alloc: Allocator,
+    key: []const u8,
+    for_person: bool,
+) anyerror![]const poltergeistpkg.rpc.PluginView {
 
     const io = global.io();
     var environ_map = try global.environMap();
@@ -5205,14 +5216,16 @@ fn pluginList(
             view.failures = st.failures;
         }
 
-        view.note = try poltergeistpkg.report.residentNote(alloc, .{
+        const facts: poltergeistpkg.report.ResidentFacts = .{
             .key = manifest.key,
             .enabled = installed.settings.enabled,
             .declares_events = !manifest.wants.empty(),
             .groupless = manifest.wants.groupless(),
             .log_open = self.chat_log != null,
             .status = status,
-        });
+        };
+        view.note = try poltergeistpkg.report.residentNote(alloc, facts);
+        if (for_person) view.note_say = try poltergeistpkg.report.residentNoteSay(alloc, facts);
 
         try out.append(alloc, view);
     }
@@ -5227,11 +5240,12 @@ fn pluginList(
 /// Every plugin, as the JSON document `plugin_list` answers with -- the
 /// same `wire.writeResponse` rendering of the same `pluginList`. The
 /// settings window reads this, so it and an agent cannot be told two
-/// different stories about a plugin (settings.md §5.1).
+/// different stories about a plugin (settings.md §5.1). The one addition is
+/// `note_say`, the same story told to a person in their language (#1644).
 pub fn pluginListJson(self: *App, alloc: Allocator) ![]u8 {
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
-    const list = try pluginList(self, arena.allocator(), "");
+    const list = try pluginListFor(self, arena.allocator(), "", true);
 
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();

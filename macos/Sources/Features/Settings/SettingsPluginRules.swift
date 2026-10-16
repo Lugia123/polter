@@ -16,9 +16,27 @@ struct PluginCoreStatus: Equatable {
     var state: String = ""
     var failures: Int = 0
     /// Why nothing is happening, when nothing is. Empty when it is fine.
+    /// English and addressed to an agent: it is `plugin_list`'s own note.
     var note: String = ""
+    /// The same reason for a person (`report.NoteSay`, #1644): a template to
+    /// say in their language and the arguments to fill it with. Only the
+    /// settings window's document carries it; an agent's never does.
+    var noteSay: NoteSay?
+
+    struct NoteSay: Equatable {
+        var template: String
+        var args: [String]
+    }
 
     var running: Bool { !state.isEmpty }
+
+    /// What the window shows for `note`: the core's reason said in the
+    /// person's language when it sent one to say, else the note as it came.
+    func shownNote(in bundle: Bundle = .main) -> String {
+        guard let say = noteSay else { return note }
+        return ControlRoomList.fill(
+            bundle.localizedString(forKey: say.template, value: say.template, table: nil), say.args)
+    }
 
     /// `plugin_list`'s document, by plugin key. Nil when it is not one --
     /// not JSON, or `ok` is not true -- which is "the core did not say",
@@ -33,12 +51,17 @@ struct PluginCoreStatus: Equatable {
         var out: [String: PluginCoreStatus] = [:]
         for plugin in plugins {
             guard let key = plugin["key"] as? String else { continue }
+            var say: NoteSay?
+            if let raw = plugin["note_say"] as? [String: Any], let template = raw["template"] as? String {
+                say = NoteSay(template: template, args: (raw["args"] as? [Any] ?? []).compactMap { $0 as? String })
+            }
             out[key] = PluginCoreStatus(
                 key: key,
                 enabled: plugin["enabled"] as? Bool ?? false,
                 state: plugin["state"] as? String ?? "",
                 failures: plugin["failures"] as? Int ?? 0,
-                note: plugin["note"] as? String ?? "")
+                note: plugin["note"] as? String ?? "",
+                noteSay: say)
         }
         return out
     }

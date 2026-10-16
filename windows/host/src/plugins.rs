@@ -64,6 +64,10 @@ pub struct Parameter {
     /// written to the file until the user saves** -- writing it on sight would
     /// turn a default into a decision.
     pub default: Option<String>,
+    /// What to show for a `Choice`'s values, keyed by the value, from the
+    /// plugin's own translation. Display only: the value is what is saved
+    /// and what the plugin reads (#1636). Empty means show the values.
+    pub labels: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -321,6 +325,7 @@ fn parse_manifest(key: &str, dir: &Path, text: &str) -> Option<Plugin> {
                 secret: spec.get("secret").and_then(|s| s.as_bool()).unwrap_or(false),
                 control: control,
                 default: spec.get("default").map(as_str).filter(|s| !s.is_empty()),
+                labels: BTreeMap::new(),
             });
         }
     }
@@ -684,8 +689,18 @@ pub fn preferred_languages() -> Vec<String> {
 pub struct PluginText {
     pub name: Option<String>,
     pub summary: Option<String>,
-    /// Parameter name -> (title, description).
-    pub fields: BTreeMap<String, (Option<String>, Option<String>)>,
+    pub fields: BTreeMap<String, FieldText>,
+}
+
+/// One parameter's strings in a sidecar.
+#[derive(Default, Debug, PartialEq)]
+pub struct FieldText {
+    pub title: Option<String>,
+    pub help: Option<String>,
+    /// An `enum`'s values, each to the name to show for it (#1636). A value
+    /// not named is shown as itself; a name for a value the schema does not
+    /// have is never shown, because only the schema's values are listed.
+    pub choices: BTreeMap<String, String>,
 }
 
 /// Read the first sidecar that exists, nearest language first.
@@ -723,12 +738,23 @@ pub fn load_text(dir: &Path, preferred: &[String]) -> PluginText {
         if let Some(params) = obj.get("params").and_then(|p| p.as_object()) {
             for (name, spec) in params {
                 let Some(spec) = spec.as_object() else { continue };
+                let choices = spec
+                    .get("choices")
+                    .and_then(|c| c.as_object())
+                    .map(|c| {
+                        c.iter()
+                            .map(|(value, label)| (value.clone(), as_str(label)))
+                            .filter(|(_, label)| !label.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 out.fields.insert(
                     name.clone(),
-                    (
-                        spec.get("title").map(as_str).filter(|s| !s.is_empty()),
-                        spec.get("description").map(as_str).filter(|s| !s.is_empty()),
-                    ),
+                    FieldText {
+                        title: spec.get("title").map(as_str).filter(|s| !s.is_empty()),
+                        help: spec.get("description").map(as_str).filter(|s| !s.is_empty()),
+                        choices,
+                    },
                 );
             }
         }
@@ -741,7 +767,7 @@ pub fn load_text(dir: &Path, preferred: &[String]) -> PluginText {
 ///
 /// **Only the sentences.** A sidecar carries no `type`, no `required` and no
 /// `enum`: it is the list of things to translate, not a second copy of the
-/// schema.
+/// schema. Its `choices` name the schema's values; they never add one.
 fn apply_text(p: &mut Plugin, text: PluginText) {
     if let Some(name) = text.name {
         p.name = name;
@@ -750,13 +776,14 @@ fn apply_text(p: &mut Plugin, text: PluginText) {
         p.summary = summary;
     }
     for param in p.params.iter_mut() {
-        let Some((title, help)) = text.fields.get(&param.name) else { continue };
-        if let Some(t) = title {
+        let Some(field) = text.fields.get(&param.name) else { continue };
+        if let Some(t) = &field.title {
             param.title = t.clone();
         }
-        if let Some(h) = help {
+        if let Some(h) = &field.help {
             param.help = h.clone();
         }
+        param.labels = field.choices.clone();
     }
 }
 
@@ -1056,6 +1083,15 @@ pub fn parse_runtimes(text: &str) -> Option<BTreeMap<String, polter_settings_she
                 running: !state.is_empty(),
                 failures: r.get("failures").and_then(|f| f.as_u64()).unwrap_or(0) as u32,
                 note: r.get("note").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                note_say: r.get("note_say").and_then(|s| {
+                    let template = s.get("template")?.as_str()?.to_string();
+                    let args = s
+                        .get("args")
+                        .and_then(|a| a.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    Some((template, args))
+                }),
             },
         );
     }
@@ -1458,6 +1494,20 @@ mod locale_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// #1636: an `enum`'s values get names from the sidecar's `choices`;
+    /// a label that is empty is not a name.
+    #[test]
+    fn a_sidecar_names_an_enums_values() {
+        let dir = scratch("choices");
+        write(&dir, "zh-Hans", r#"{"params":{"skills":{"title":"装 skill","choices":{"yes":"装","no":""}}}}"#);
+        let text = load_text(&dir, &["zh-Hans".to_string()]);
+        let f = text.fields.get("skills").expect("the field is read");
+        assert_eq!(f.title.as_deref(), Some("装 skill"));
+        assert_eq!(f.choices.get("yes").map(String::as_str), Some("装"));
+        assert_eq!(f.choices.get("no"), None, "an empty label is no label");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// No sidecar at all is the ordinary case: everything falls back to the
     /// manifest, and nothing is an error.
     #[test]
@@ -1485,13 +1535,16 @@ mod locale_tests {
                 secret: false,
                 control: Control::Choice(vec!["a".into(), "b".into()]),
                 default: Some("a".into()),
+                labels: BTreeMap::new(),
             }],
             events: vec!["chat".into()],
             enabled: false,
             values: BTreeMap::new(),
         };
         let mut fields = BTreeMap::new();
-        fields.insert("dir".to_string(), (Some("存到哪".to_string()), None));
+        let mut choices = BTreeMap::new();
+        choices.insert("a".to_string(), "甲".to_string());
+        fields.insert("dir".to_string(), FieldText { title: Some("存到哪".to_string()), help: None, choices });
         apply_text(&mut p, PluginText {
             name: Some("存档".into()),
             summary: None,
@@ -1502,7 +1555,11 @@ mod locale_tests {
         assert_eq!(p.params[0].title, "存到哪");
         assert_eq!(p.params[0].help, "English help");
         assert!(p.params[0].required, "required is the schema's, not the sidecar's");
-        assert!(matches!(p.params[0].control, Control::Choice(_)));
+        assert!(
+            matches!(p.params[0].control, Control::Choice(ref c) if c == &["a".to_string(), "b".to_string()]),
+            "the values stay the schema's"
+        );
+        assert_eq!(p.params[0].labels.get("a").map(String::as_str), Some("甲"), "a choice's name is laid over");
     }
 }
 
@@ -1827,9 +1884,16 @@ mod runtime_tests {
             {"key":"slack","enabled":false,"note":"installed but switched off"}
         ]}"#;
         let m = parse_runtimes(doc).expect("parses");
-        assert_eq!(m["feishu"], polter_settings_shell::plugins::Runtime { running: true, failures: 2, note: String::new() });
+        assert_eq!(m["feishu"], polter_settings_shell::plugins::Runtime { running: true, failures: 2, note: String::new(), note_say: None });
         assert!(!m["slack"].running);
         assert_eq!(m["slack"].note, "installed but switched off");
+        // #1644: the settings window's document carries the reason to say.
+        let said = parse_runtimes(
+            r#"{"ok":true,"plugins":[{"key":"kimi","enabled":true,"state":"dormant","failures":7,"note":"x",
+                "note_say":{"key":"dormant","template":"It failed to start {1} time(s)","args":["7"]}}]}"#,
+        )
+        .expect("parses");
+        assert_eq!(said["kimi"].note_say, Some(("It failed to start {1} time(s)".to_string(), vec!["7".to_string()])));
         assert!(parse_runtimes("not json").is_none());
         assert!(parse_runtimes(r#"{"ok":true}"#).is_none());
     }

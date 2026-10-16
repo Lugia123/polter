@@ -87,6 +87,9 @@
       "macos/Sources/Features/Projects/ProjectPageRules.swift",
       "macos/Sources/Features/Projects/ProjectPages.swift",
       "macos/Sources/Features/Command Palette/CommandPalette.swift",
+      "macos/Sources/Features/Plugins/Plugin.swift",
+      "macos/Sources/Features/Plugins/PluginLocale.swift",
+      {"path": "macos/Sources/Features/Settings/SettingsPluginRules.swift", "until": "extension SettingsRules {", "why": "the plugin facts Plugin.swift is built from (PluginRequirement and the dot); what follows extends the settings window's own rules and routes"},
       "macos/Sources/Features/Command Palette/HostMenuCommands.swift",
       "macos/Sources/Helpers/Extensions/NSColor+Extension.swift",
       {
@@ -171,6 +174,8 @@
       "macos/Tests/Splits/TabIntoPaneTests.swift",
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift",
       "macos/Tests/CommandPaletteAliasTests.swift",
+      "macos/Tests/PluginChoiceLabelTests.swift",
+      "macos/Tests/PluginNoteSayTests.swift",
       "macos/Tests/CommandPaletteHostMenuTests.swift",
       "macos/Tests/Projects/ProjectPaneSizesTests.swift"
     ],

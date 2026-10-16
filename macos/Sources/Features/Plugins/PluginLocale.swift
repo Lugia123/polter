@@ -110,6 +110,11 @@ struct PluginText {
     struct Field {
         var title: String?
         var help: String?
+        /// What to show for each of an `enum`'s values, keyed by the value.
+        /// Display only: the value is what the settings file holds and what
+        /// the plugin reads, so it is never translated (#1636 -- "yes" and
+        /// "user" were the English left on a Chinese page).
+        var choices: [String: String] = [:]
     }
 
     var name: String?
@@ -124,7 +129,8 @@ struct PluginText {
     ///       "name": "存档",
     ///       "description": "…",
     ///       "params": {
-    ///         "dir": { "title": "…", "description": "…" }
+    ///         "dir": { "title": "…", "description": "…" },
+    ///         "skills": { "title": "…", "choices": { "yes": "装", "no": "不装" } }
     ///       }
     ///     }
     ///
@@ -132,7 +138,9 @@ struct PluginText {
     /// repeating the manifest's `params.properties` nesting: a sidecar is not
     /// a second copy of the schema, and nothing in it is a `type`, a
     /// `required` or an `enum`. What a translator opens is the list of
-    /// sentences to translate.
+    /// sentences to translate. `choices` names an `enum`'s values only to
+    /// say what each one is called; a value it does not name is shown as
+    /// itself, and a name for a value the schema does not have is ignored.
     static func load(from directory: URL, preferring preferred: [String]) -> PluginText {
         let base = directory.appendingPathComponent("i18n")
 
@@ -161,9 +169,14 @@ struct PluginText {
         if let params = root["params"] as? [String: Any] {
             for (name, raw) in params {
                 guard let spec = raw as? [String: Any] else { continue }
+                var choices: [String: String] = [:]
+                for (value, label) in (spec["choices"] as? [String: Any]) ?? [:] {
+                    if let label = label as? String, !label.isEmpty { choices[value] = label }
+                }
                 text.fields[name] = Field(
                     title: spec["title"] as? String,
-                    help: spec["description"] as? String)
+                    help: spec["description"] as? String,
+                    choices: choices)
             }
         }
 

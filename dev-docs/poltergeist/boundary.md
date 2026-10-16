@@ -296,13 +296,21 @@ plugins/archive/
 {
   "name": "存档",
   "description": "…",
-  "params": { "dir": { "title": "…", "description": "…" } }
+  "params": {
+    "dir": { "title": "…", "description": "…" },
+    "skills": { "title": "…", "choices": { "yes": "装", "no": "不装" } }
+  }
 }
 ```
 
 `params` 直接是参数名到那几句话，不重复清单的 `params.properties` 嵌套——
 **边车不是 schema 的第二份拷贝**，里面没有 `type`、没有 `required`、没有 `enum`。
 译者打开它看到的就是要翻的那几句。
+
+`choices` 是 #1636 加的：给 `enum` 的每个值起一个显示名。**值本身不翻**——
+它是设置文件里存的、插件读的那个词，界面上显示「装」，存下去的仍是 `yes`
+（Windows 的下拉框因此按选中的行取值，不再读框里的字）。边车没起名的值照原样
+显示；边车给清单没有的值起的名不会出现，因为列出来的只有清单的值。
 
 ### 关键决定：工具面不本地化
 
@@ -360,7 +368,10 @@ en-GB       →  en-Latn-GB, en-Latn, en-GB, en
 `isPlainName` 一样：一个从别处拿来的字符串马上要变成路径。
 
 **状态：已实现**（`PluginLocale` / `PluginText`，落在 `PluginCatalog.read`；
-随插件目录装出去的边车见 `plugins/archive/i18n/zh-Hans.json`）。
+Windows 是 `plugins.rs` 的 `load_text` / `apply_text`）。随构建装出去的每个插件都带
+`i18n/zh-Hans.json`，闸 `tools/every-shipped-plugin-string-has-chinese.py` 要求
+清单里每一句给人看的话（名字、说明、参数标题与说明、`enum` 的每个值）都有中文，
+专有名词照写一遍也算——「还没翻」和「故意不翻」不能是同一种沉默。
 
 ## 取舍记录
 

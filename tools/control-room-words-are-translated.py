@@ -32,6 +32,12 @@ are templates in `ControlRoom.zig`'s `Say.templateOf`, marked `N_`, with
 `{N}` where the arguments go, and both checks cover them -- a translation
 must also keep every `{N}` the English has, or an argument would vanish.
 
+The settings window's hover over a plugin's row says the core's reason for a
+plugin doing nothing (#1644) the same way: `NoteSay.templateOf` in
+`src/poltergeist/report.zig`, English templates marked `N_`, said by each
+host from its own catalogue. They are checked by the same rules. (The note
+`plugin_list` hands an agent stays English and is not one of these.)
+
 Finding no words at all is a failure, not a pass: a table that moved or was
 renamed would otherwise leave this green with nothing checked.
 """
@@ -43,6 +49,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TABLE = ROOT / "src/poltergeist/Attention.zig"
 SENTENCES = ROOT / "src/poltergeist/ControlRoom.zig"
+NOTES = ROOT / "src/poltergeist/report.zig"
 BASE = ROOT / "macos/Sources/App/Base.lproj/Localizable.strings"
 ZH = ROOT / "macos/Sources/App/zh-Hans.lproj/Localizable.strings"
 PO = ROOT / "po/zh_CN.po"
@@ -65,7 +72,7 @@ def po_table(path: Path) -> dict:
 
 
 def main() -> int:
-    for p in (TABLE, SENTENCES, BASE, ZH, PO):
+    for p in (TABLE, SENTENCES, NOTES, BASE, ZH, PO):
         if not p.is_file():
             print(f"FAIL: {p.relative_to(ROOT)} is not there")
             return 1
@@ -83,6 +90,14 @@ def main() -> int:
     if not sentences:
         print(f"FAIL: no N_(\"…\") templates in `Say.templateOf`")
         return 1
+    notes_tmpl = re.search(r"pub fn templateOf\(key: Key\)[^{]*\{(.*?)\n    \}", NOTES.read_text(), re.S)
+    if not notes_tmpl:
+        print(f"FAIL: `NoteSay.templateOf` not found in {NOTES.relative_to(ROOT)}; it moved or this check is reading the wrong file")
+        return 1
+    notes = re.findall(r'i18n\.N_\("([^"]+)"\)', notes_tmpl.group(1))
+    if not notes:
+        print(f"FAIL: no N_(\"…\") templates in `NoteSay.templateOf`")
+        return 1
 
     problems = []
 
@@ -97,12 +112,14 @@ def main() -> int:
         problems.append("Attention.zig: `held_text` not found")
     elif CJK.search(re.sub(r"//.*", "", held.group(1))):
         problems.append("Attention.zig: held_text is a CJK literal")
+    if CJK.search(re.sub(r"//.*", "", notes_tmpl.group(1))):
+        problems.append("report.zig: NoteSay.templateOf writes a CJK literal; write an English msgid in N_ and translate it on both hosts")
     if CJK.search(re.sub(r"//.*", "", tmpl.group(1))):
         problems.append("ControlRoom.zig: Say.templateOf writes a CJK literal; write an English msgid in N_ and translate it on both hosts")
 
     # 1. Both hosts can say each one.
     base, zh, po = strings_table(BASE), strings_table(ZH), po_table(PO)
-    for w in words + sentences:
+    for w in words + sentences + notes:
         if w not in base:
             problems.append(f'"{w}": not in {BASE.relative_to(ROOT)}')
         # Translated, not copied: "{1}: {2}" is "{1}：{2}", which has no
@@ -121,7 +138,7 @@ def main() -> int:
         for p in problems:
             print("FAIL:", p)
         return 1
-    print(f"OK: {len(words)} control-room words and {len(sentences)} sentences, each translated on both hosts with its arguments; the core writes none in Chinese")
+    print(f"OK: {len(words)} control-room words, {len(sentences)} sentences and {len(notes)} plugin notes, each translated on both hosts with its arguments; the core writes none in Chinese")
     return 0
 
 

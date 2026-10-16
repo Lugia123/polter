@@ -4504,6 +4504,12 @@ pub const PluginView = struct {
 
     /// Why nothing is happening, when nothing is. Empty when it is fine.
     note: []const u8 = "",
+
+    /// The same reason for a person, to be said in their language
+    /// (`report.NoteSay`, #1644). Set only for the settings window's
+    /// document (`App.pluginListJson`); `plugin_list` never carries it, so
+    /// an agent reads the same English on every machine.
+    note_say: ?@import("report.zig").NoteSay = null,
 };
 
 pub const PluginParamView = struct {

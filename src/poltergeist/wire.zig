@@ -1891,6 +1891,19 @@ fn writePlugin(s: *std.json.Stringify, v: rpc.PluginView) std.Io.Writer.Error!vo
         try s.objectField("note");
         try s.write(v.note);
     }
+    if (v.note_say) |say| {
+        try s.objectField("note_say");
+        try s.beginObject();
+        try s.objectField("key");
+        try s.write(@tagName(say.key));
+        try s.objectField("template");
+        try s.write(say.template);
+        try s.objectField("args");
+        try s.beginArray();
+        for (say.args) |arg| try s.write(arg);
+        try s.endArray();
+        try s.endObject();
+    }
 
     try s.endObject();
 }
@@ -2663,6 +2676,30 @@ test "a configure that only sets a parameter does not read as switching off" {
     try testing.expectError(error.BadParams, parse(
         \\{"method":"plugin_configure","params":{"key":"webhook","params":{"n":1}}}
     ));
+}
+
+test "a plugin's note for a person is written only where one was set" {
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const report = @import("report.zig");
+    const list = [_]rpc.PluginView{
+        // What `plugin_list` hands an agent: the note, and no note_say.
+        .{ .key = "codex", .name = "Codex CLI", .note = "codex is installed but switched off" },
+        // What the settings window reads: the same note, and the same
+        // reason as a template to say.
+        .{
+            .key = "kimi",
+            .name = "Kimi CLI",
+            .note = "kimi is dormant",
+            .note_say = .{ .key = .dormant, .template = report.NoteSay.templateOf(.dormant), .args = &.{"3"} },
+        },
+    };
+    try writeResponse(&w, .{ .plugins = &list });
+    const out = w.buffered();
+    try testing.expectEqual(@as(usize, 2), count(out, "\"note\""));
+    try testing.expectEqual(@as(usize, 1), count(out, "\"note_say\""));
+    try testing.expect(std.mem.indexOf(u8, out, "\"note_say\":{\"key\":\"dormant\",\"template\":\"It failed to start {1} time(s)") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"args\":[\"3\"]}") != null);
 }
 
 test "a plugin listing round-trips" {
