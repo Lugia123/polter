@@ -18,6 +18,7 @@ const Allocator = std.mem.Allocator;
 const Plugin = @import("Plugin.zig");
 const Resident = @import("Resident.zig");
 const scrub = @import("scrub.zig");
+const i18n = @import("../os/i18n.zig");
 
 /// Everything about a resident plugin that decides what to say about it.
 ///
@@ -80,6 +81,80 @@ pub fn residentNote(alloc: Allocator, facts: ResidentFacts) Allocator.Error![]co
     };
 
     return sentence(alloc, facts, "");
+}
+
+/// `residentNote` for a person rather than an agent (#1644): the settings
+/// window's hover over a plugin's row.
+///
+/// **The note itself stays as it is**, English and addressed to an agent
+/// ("plugin_configure with enabled: true switches it on") -- it is
+/// `plugin_list`'s answer, and an agent must read the same words on every
+/// machine. This is a second rendering of the same branch: a template the
+/// host says in the person's language (`Localizable.strings`, `po/`), with
+/// `{N}` filled by the same `fill` as the control room's `Say`. It is only
+/// written into the document the settings window reads (`for_person`), so
+/// `plugin_list` never carries it.
+///
+/// Null exactly where `residentNote` is empty, and the same branches in the
+/// same order, so the hover and the listing cannot disagree about why.
+pub const NoteSay = struct {
+    key: Key,
+    template: []const u8,
+    /// Numbers in decimal; nothing here is translated.
+    args: []const []const u8,
+
+    pub const Key = enum {
+        switched_off,
+        subscribes_to_nothing,
+        no_groups,
+        waiting_for_a_terminal,
+        would_not_start,
+        backing_off,
+        dormant,
+        stopped,
+    };
+
+    /// Said to the person looking at the plugin's row, so it names the
+    /// switch on the page rather than a tool, and leaves out the design
+    /// argument the agent's sentence carries.
+    pub fn templateOf(key: Key) [:0]const u8 {
+        return switch (key) {
+            .switched_off => i18n.N_("Switched off, so nothing is handed to it. Turn it on with the switch on its page."),
+            .subscribes_to_nothing => i18n.N_("Its plugin.json subscribes to nothing, so it was not started. That is the plugin's own file to change."),
+            .no_groups => i18n.N_("It subscribes to chat but names no groups, so it is running and will be handed nothing."),
+            .waiting_for_a_terminal => i18n.N_("Switched on, but nothing runs it until a terminal is open."),
+            .would_not_start => i18n.N_("Switched on, but it would not start. Polter's log says why."),
+            .backing_off => i18n.N_("It failed to start {1} time(s) and will be tried again shortly. Polter's log has what it said."),
+            .dormant => i18n.N_("It failed to start {1} time(s) and is now tried every fifteen minutes. Polter's log says why."),
+            .stopped => i18n.N_("Stopped. It starts again when Polter does."),
+        };
+    }
+};
+
+pub fn residentNoteSay(alloc: Allocator, facts: ResidentFacts) Allocator.Error!?NoteSay {
+    const say = struct {
+        fn of(a: Allocator, key: NoteSay.Key, args: []const []const u8) Allocator.Error!NoteSay {
+            const owned = try a.alloc([]const u8, args.len);
+            for (args, owned) |src, *dst| dst.* = try a.dupe(u8, src);
+            return .{ .key = key, .template = NoteSay.templateOf(key), .args = owned };
+        }
+    }.of;
+
+    if (!facts.enabled) return try say(alloc, .switched_off, &.{});
+    if (!facts.declares_events) return try say(alloc, .subscribes_to_nothing, &.{});
+    if (facts.groupless) return try say(alloc, .no_groups, &.{});
+    const st = facts.status orelse {
+        if (!facts.log_open) return try say(alloc, .waiting_for_a_terminal, &.{});
+        return try say(alloc, .would_not_start, &.{});
+    };
+    var buf: [20]u8 = undefined;
+    const failures = std.fmt.bufPrint(&buf, "{d}", .{st.failures}) catch unreachable;
+    return switch (st.state) {
+        .feeding, .starting => null,
+        .backing_off => try say(alloc, .backing_off, &.{failures}),
+        .dormant => try say(alloc, .dormant, &.{failures}),
+        .stopped => try say(alloc, .stopped, &.{}),
+    };
 }
 
 /// The one body of branches both of the above read out of.
@@ -533,6 +608,52 @@ const testing = std.testing;
 
 test {
     testing.refAllDecls(@This());
+}
+
+test "the hover says the same branch as the note, in a person's words, and only when the note does" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const base: ResidentFacts = .{ .key = "codex", .enabled = true, .declares_events = true, .log_open = true };
+
+    // Off: a sentence for the switch, and no tool in it.
+    var facts = base;
+    facts.enabled = false;
+    const off = (try residentNoteSay(a, facts)).?;
+    try testing.expectEqual(NoteSay.Key.switched_off, off.key);
+    try testing.expect(std.mem.indexOf(u8, off.template, "plugin_configure") == null);
+    try testing.expect((try residentNote(a, facts)).len > 0);
+
+    // Running and well: no note, so no hover.
+    facts = base;
+    facts.status = .{ .state = .feeding, .cursor = 4, .failures = 0 };
+    try testing.expect(try residentNoteSay(a, facts) == null);
+    try testing.expectEqualStrings("", try residentNote(a, facts));
+
+    // A count goes in as an argument, said in decimal.
+    facts.status = .{ .state = .dormant, .cursor = 4, .failures = 7 };
+    const dormant = (try residentNoteSay(a, facts)).?;
+    try testing.expectEqual(NoteSay.Key.dormant, dormant.key);
+    try testing.expectEqual(@as(usize, 1), dormant.args.len);
+    try testing.expectEqualStrings("7", dormant.args[0]);
+
+    // Every branch the note has, the hover has, in the same order.
+    facts = base;
+    facts.declares_events = false;
+    try testing.expectEqual(NoteSay.Key.subscribes_to_nothing, (try residentNoteSay(a, facts)).?.key);
+    facts = base;
+    facts.groupless = true;
+    try testing.expectEqual(NoteSay.Key.no_groups, (try residentNoteSay(a, facts)).?.key);
+    facts = base;
+    facts.log_open = false;
+    try testing.expectEqual(NoteSay.Key.waiting_for_a_terminal, (try residentNoteSay(a, facts)).?.key);
+    facts = base;
+    try testing.expectEqual(NoteSay.Key.would_not_start, (try residentNoteSay(a, facts)).?.key);
+    facts.status = .{ .state = .backing_off, .cursor = 0, .failures = 2 };
+    try testing.expectEqual(NoteSay.Key.backing_off, (try residentNoteSay(a, facts)).?.key);
+    facts.status = .{ .state = .stopped, .cursor = 0, .failures = 0 };
+    try testing.expectEqual(NoteSay.Key.stopped, (try residentNoteSay(a, facts)).?.key);
 }
 
 test "a plugin is never started to test it" {

@@ -109,7 +109,9 @@ cut short, how wide the window onto them is and how wide they are together
 status are, the same stacks with the other candidate for the least width,
 where the tab in front is scrolled to from three offsets, and which member's
 glyph each edge carries for three orders the core might hand in -- and
-a tab's nominal width for five names.
+a tab's nominal width for five names, macOS's with its close button's place
+added back first: the one way the two are meant to differ, by exactly
+`close_gap + close_button` (task 1642; see `mac_as_windows`).
 
 **NOT COMPARED, and why.**
 
@@ -140,6 +142,10 @@ a tab's nominal width for five names.
     shown (closed, or in its own tab), and the word after its name on the
     bar. On Windows that is the crate's scene; on macOS it is in the view.
     Each side's own tests hold the same sentences and the same word.
+  * Whether a stack tab's close button is in sight at macOS's own end, the
+    left (task 1642). Windows has its button at the right; both sides are
+    asked about the right end and compared, and the macOS tests hold the
+    left.
   * Anything drawn. This compares numbers and strings, not pixels.
   * That the app links these files the way the package does. It is the same
     source; it is not the same binary.
@@ -154,7 +160,9 @@ dumps that differ in one line and checks it says so.
 Exit 0 and `compared N lines` with N > 0, or non-zero.
 """
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -164,6 +172,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 FIXTURE = "src/poltergeist/testdata/control_snapshot.json"
+LOOK = "src/input/control-room-look.json"
 SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomList.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
@@ -173,6 +182,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomQuota.swift",
     "macos/Sources/Features/ControlRoom/PaneStackStrip.swift",
+    "macos/Sources/Features/Splits/PolterCloseCircle.swift",
     "macos/Sources/Features/ControlRoom/PaneFrame.swift",
     "macos/Sources/Features/Terminal/TabAccessory.swift",
 ]
@@ -688,7 +698,7 @@ for (n, c) in stripCases.enumerated() {
     }
     let closes = [CGFloat(0), 250, 10000].map { o -> String in
         let o = min(o, table.maxOffset)
-        return table.tabs.filter { table.closeSeen($0.member, offset: o) }.map { String($0.member) }.joined(separator: ",")
+        return table.tabs.filter { table.closeSeen($0.member, offset: o, at: .trailing) }.map { String($0.member) }.joined(separator: ",")
     }
     print("strip \(n) at68=[\(widths.joined(separator: " "))] scrolls68=\(sl.scrolls) "
         + "reveals=\(revealed.joined(separator: "/")) carries=\(carried.joined(separator: "/")) "
@@ -740,6 +750,35 @@ for from in ids {
         print("move from=\(from ?? "-") step=\(step) to=\(to)")
     }
 }
+// Scrolling the rows (tasks 1654 and 1657): the room they are seen in
+// with the allowance block at the bottom, how tall what scrolls is, which
+// rows are wholly seen and how far the selection scrolls them, at the top,
+// part way and at the end -- in a panel as tall as asked, and in one too
+// short for the rows, so that they do scroll -- then the rule itself on
+// made-up rows.
+for tall in [CGFloat(height), 300] {
+    let room = ControlRoomListLayout(list: list, height: tall)
+    rect("viewport h=\(f(tall))", room.viewport)
+    let maxScroll = max(0, room.contentHeight - room.viewport.height)
+    print("content h=\(f(room.contentHeight)) max=\(f(maxScroll))")
+    for scrolled in [CGFloat(0), min(100, maxScroll), maxScroll] {
+        print("in_sight scrolled=\(f(scrolled)) rows=\(room.inSight(order: list.rows.map(\.id), scrolled: scrolled).joined(separator: ","))")
+        for r in list.rows {
+            print("reveal scrolled=\(f(scrolled)) id=\(r.id) to=\(room.reveal(r.id, scrolled: scrolled).map(f) ?? "-")")
+        }
+    }
+}
+for (vy, vh) in [(CGFloat(40), CGFloat(200)), (0, 50), (10, 0)] {
+    let view = CGRect(x: 0, y: vy, width: 300, height: vh)
+    for (ry, rh) in [(CGFloat(40), CGFloat(28)), (20, 28), (230, 28), (226, 28), (100, 300), (50, 0), (240, 10)] {
+        for scrolled in [CGFloat(0), 30, 200] {
+            let row = CGRect(x: 0, y: ry, width: 300, height: rh)
+            let to = ControlRoomListLayout.reveal(row: row, viewport: view, scrolled: scrolled).map(f) ?? "-"
+            print("reveal-of view=\(f(vy))+\(f(vh)) row=\(f(ry))+\(f(rh)) scrolled=\(f(scrolled)) to=\(to) "
+                + "in_view=\(ControlRoomListLayout.inView(row: row, viewport: view, scrolled: scrolled))")
+        }
+    }
+}
 // The chip's slide: whether it moves, when it starts down, when it is
 // still, and where it is at the same moments on both sides.
 func g(_ v: Double) -> String { String(format: "%.6f", v) }
@@ -769,6 +808,43 @@ for (name, dx, dy, scale) in [("tab", -587.5, 0.0, ControlRoomLook.Selection.lif
 '''
 
 
+# **The one place the hosts are meant to differ, and by how much** (task 1642,
+# the user's decision of 2026-10-16). A stack tab's close button is where each
+# platform puts one: at the right end on Windows, after the glyph, with its
+# place kept in every tab; at the left end on macOS, over the name and only
+# while the pointer is on the tab, as macOS's own window tabs have it -- so a
+# macOS tab keeps no place for it. A tab's nominal width on macOS is therefore
+# Windows' less `close_gap + close_button`, exactly. This is not a line let
+# off: the macOS figure has that much added back and is then compared like
+# every other line, so a difference of anything else is still red, and so is
+# the right amount on any line but these.
+#
+# Which tab's button is in sight (`closes=`) is compared at Windows' end on
+# both sides (`closeSeen(..., at: .trailing)`); macOS's own end is its tests'.
+NOMINAL = re.compile(r"^(strip nominal .*) plain=(-?[0-9.]+) glyph=(-?[0-9.]+)$")
+
+
+def close_room():
+    """`close_gap + close_button` of a stack tab, from the look's data."""
+    with open(os.path.join(ROOT, LOOK)) as f:
+        tab = json.load(f)["numbers"]["stack_tab"]
+    def v(x):
+        return x["v"] if isinstance(x, dict) else x
+    return float(v(tab["close_gap"])) + float(v(tab["close_button"]))
+
+
+def mac_as_windows(mac, room):
+    """The macOS dump with each tab's nominal width given its close button's
+    place back, which is the only way it is meant to differ."""
+    out = []
+    for line in mac.splitlines():
+        m = NOMINAL.match(line)
+        if m:
+            line = f"{m.group(1)} plain={float(m.group(2)) + room:.3f} glyph={float(m.group(3)) + room:.3f}"
+        out.append(line)
+    return "\n".join(out) + ("\n" if mac.endswith("\n") else "")
+
+
 def compare(mac, win):
     """The lines that differ, as (line number, mac, windows)."""
     a = mac.splitlines()
@@ -792,6 +868,13 @@ def self_test():
         return "self-test: two identical dumps were reported as different"
     if not compare(same, same + "move from=- step=1 to=x\n")[0]:
         return "self-test: a line one side has and the other does not was not reported"
+    win = 'strip nominal "api" plain=68.000 glyph=90.000\n'
+    if compare(mac_as_windows('strip nominal "api" plain=48.000 glyph=70.000\n', 20), win)[0]:
+        return "self-test: a macOS tab narrower by exactly the close button's place was reported"
+    if not compare(mac_as_windows('strip nominal "api" plain=49.000 glyph=70.000\n', 20), win)[0]:
+        return "self-test: a macOS tab narrower by anything else was not reported"
+    if not compare(mac_as_windows('strip nominal "api" plain=68.000 glyph=90.000\n', 20), win)[0]:
+        return "self-test: a macOS tab as wide as Windows' (keeping the place) was not reported"
     return None
 
 
@@ -859,19 +942,25 @@ def main():
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    diffs, n = compare(mac.stdout, win.stdout)
+    room = close_room()
+    diffs, n = compare(mac_as_windows(mac.stdout, room), win.stdout)
     if n == 0:
         print("FAIL: both sides printed nothing, so nothing was compared")
         return 1
     if diffs:
         print(f"FAIL: the two hosts disagree on {len(diffs)} of {n} lines.")
+        raw = mac.stdout.splitlines()
         for line, x, y in diffs[:40]:
             print(f"  line {line}")
             print(f"    macOS:   {x}")
+            if line <= len(raw) and raw[line - 1] != x:
+                print(f"             (macOS printed `{raw[line - 1]}`; {room:g} added back for the close button's place)")
             print(f"    Windows: {y}")
         return 1
 
     print(f"compared {n} lines: the macOS host and the Windows host agree")
+    print(f"RULE: a stack tab's nominal width on macOS is Windows' less close_gap + close_button "
+          f"= {room:g} (the close button is at the left on macOS, task 1642); checked on every such line")
     print("NOT COMPARED: the snapshot's own now_ms (the macOS list does not keep it); "
           "a snapshot with no unseen or no tabs; what calls a seen mark off; "
           "translated text; anything drawn.")

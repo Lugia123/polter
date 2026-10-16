@@ -205,12 +205,21 @@ struct Plugin: Identifiable {
             case flag
         }
 
-        /// One allowed value. The label is the value: a JSON Schema `enum`
-        /// carries no titles, and inventing prettier ones here would mean
-        /// the screen and the file disagreeing about what was chosen.
+        /// One allowed value. The label is the value unless the plugin's
+        /// own translation names it (`PluginText.Field.choices`): a JSON
+        /// Schema `enum` carries no titles, and inventing prettier ones here
+        /// would mean the screen and the file disagreeing about what was
+        /// chosen. A translated label is the plugin's own word for its own
+        /// value, and the value is still what is saved.
         struct Choice: Identifiable, Equatable {
             let value: String
+            var label: String
             var id: String { value }
+
+            init(value: String, label: String? = nil) {
+                self.value = value
+                self.label = label ?? value
+            }
         }
 
         /// Whether this is the kind of value that should not be typed in
@@ -361,7 +370,13 @@ struct PluginCatalog {
         return byKey.values.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
     }
 
-    private static func read(directory: URL) -> Plugin? {
+    /// One plugin directory as the settings UI shows it, in the first of
+    /// `preferred` the plugin ships a translation for. Internal so a test
+    /// can name the language instead of inheriting the machine's.
+    static func read(
+        directory: URL,
+        preferring preferred: [String] = Locale.preferredLanguages
+    ) -> Plugin? {
         let manifestURL = directory.appendingPathComponent("plugin.json")
         guard let data = try? Data(contentsOf: manifestURL),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -387,7 +402,7 @@ struct PluginCatalog {
         // than at display time so that everything below sees one answer.
         let text = PluginText.load(
             from: directory,
-            preferring: Locale.preferredLanguages)
+            preferring: preferred)
 
         return Plugin(
             key: key,
@@ -420,7 +435,10 @@ struct PluginCatalog {
         return properties.keys.sorted().compactMap { name in
             guard let spec = properties[name] as? [String: Any] else { return nil }
             let field = text.fields[name]
-            let control = control(from: spec)
+            var control = control(from: spec)
+            if case .choice(let choices) = control, let names = field?.choices, !names.isEmpty {
+                control = .choice(choices.map { .init(value: $0.value, label: names[$0.value]) })
+            }
             return Plugin.Parameter(
                 name: name,
                 title: field?.title ?? (spec["title"] as? String) ?? name,
@@ -449,7 +467,7 @@ struct PluginCatalog {
             // there matches what the core does with an empty choice list:
             // anything is allowed, because nothing readable was declared.
             let choices = raw.compactMap { $0 as? String }
-                .map(Plugin.Parameter.Choice.init(value:))
+                .map { Plugin.Parameter.Choice(value: $0) }
             if !choices.isEmpty { return .choice(choices) }
         }
 

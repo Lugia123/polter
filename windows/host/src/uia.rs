@@ -2146,8 +2146,8 @@ impl IRawElementProviderSimple_Impl for ControlRoomRow_Impl {
             // Asked of Windows, never assumed; see `window_enabled`.
             UIA_IsEnabledPropertyId => variant_bool(window_enabled(self.hwnd())),
             UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => variant_bool(true),
-            // Every listed row is drawn: the list does not scroll.
-            UIA_IsOffscreenPropertyId => variant_bool(false),
+            // A row scrolled wholly out of the list's room (task 1657).
+            UIA_IsOffscreenPropertyId => variant_bool(crate::control_room::uia_row_offscreen(&self.group)),
             _ => variant_empty(),
         })
     }

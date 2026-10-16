@@ -226,11 +226,12 @@ struct PaneStackStripTests {
 
     @Test func aTabsNominalWidthIsItsCellsItsPaddingsAndItsGlyph() {
         // 8 a cell, a wide character two; 12 each side; 8 and 14 for a
-        // glyph; 4 and 16 for the close button every tab keeps a place for.
-        #expect(Layout.nominalWidth(name: "api", glyph: false) == 68)
-        #expect(Layout.nominalWidth(name: "api", glyph: true) == 90)
-        #expect(Layout.nominalWidth(name: "任务", glyph: false) == 76)
-        #expect(Layout.nominalWidth(name: "", glyph: false) == 44)
+        // glyph. No place for the close button (task 1642): on macOS it
+        // comes over the name's start, so these are Windows' less 4 + 16.
+        #expect(Layout.nominalWidth(name: "api", glyph: false) == 48)
+        #expect(Layout.nominalWidth(name: "api", glyph: true) == 70)
+        #expect(Layout.nominalWidth(name: "任务", glyph: false) == 56)
+        #expect(Layout.nominalWidth(name: "", glyph: false) == 24)
     }
 
     // MARK: The frame is the showing member's
@@ -252,22 +253,46 @@ struct PaneStackStripTests {
 
     /// Task 1600 (#1601 W3): scrolled so that a tab stood under the plus,
     /// its close button was drawn there. It is seen only whole inside the
-    /// window the tabs are seen through.
+    /// window the tabs are seen through -- at the tab's left end on macOS
+    /// (task 1642), its right end on Windows.
     @Test func aCloseButtonScrolledOutOfTheWindowIsNotSeen() {
         let l = Layout(wants: Array(repeating: 150, count: 8), current: 7, width: 400, status: 0)
-        let button = CGFloat(Look.StackTab.closeButton), pad = CGFloat(Look.StackTab.paddingX)
+        let pad = CGFloat(Look.StackTab.paddingX)
         let inset = CGFloat(Look.StackTab.inset)
         for offset in [CGFloat(0), 100, 300, 400, l.maxOffset] {
             for tab in l.tabs {
-                let x = tab.x - inset - offset + tab.width - pad - button
-                #expect(l.closeSeen(tab.member, offset: offset) == (x >= 0 && x + button <= l.viewport),
-                        "offset \(offset), tab \(tab.member) at \(x)")
+                // macOS: the 18pt square, 11 in (the disc's edge on the name's).
+                let x = tab.x - inset - offset + pad - 1
+                #expect(l.closeSeen(tab.member, offset: offset, at: .leading) == (x >= 0 && x + 18 <= l.viewport),
+                        "leading: offset \(offset), tab \(tab.member) at \(x)")
+                // Windows: 16pt, inside the right padding.
+                let y = tab.x - inset - offset + tab.width - pad - 16
+                #expect(l.closeSeen(tab.member, offset: offset, at: .trailing) == (y >= 0 && y + 16 <= l.viewport),
+                        "trailing: offset \(offset), tab \(tab.member) at \(y)")
             }
         }
         // At the start the first tab's is seen, the last tab's is not.
-        #expect(l.closeSeen(0, offset: 0))
-        #expect(!l.closeSeen(7, offset: 0))
-        #expect(!l.closeSeen(99, offset: 0))
+        #expect(l.closeSeen(0, offset: 0, at: .leading))
+        #expect(!l.closeSeen(7, offset: 0, at: .leading))
+        #expect(!l.closeSeen(99, offset: 0, at: .leading))
+    }
+
+    /// The two ends part where a tab is half out of the window: its left
+    /// end in sight and its right end not, or the other way (task 1642).
+    /// Scrolled through, eight tabs in a window of 400 show both.
+    @Test func aTabHalfInSightShowsTheButtonAtTheEndThatIsIn() {
+        let l = Layout(wants: Array(repeating: 150, count: 8), current: 7, width: 400, status: 0)
+        var leftOnly = 0, rightOnly = 0
+        for offset in stride(from: CGFloat(0), through: l.maxOffset, by: 10) {
+            for tab in l.tabs {
+                let leading = l.closeSeen(tab.member, offset: offset, at: .leading)
+                let trailing = l.closeSeen(tab.member, offset: offset, at: .trailing)
+                if leading && !trailing { leftOnly += 1 }
+                if trailing && !leading { rightOnly += 1 }
+            }
+        }
+        #expect(leftOnly > 0)
+        #expect(rightOnly > 0)
     }
 
     // MARK: The glyph at the right end

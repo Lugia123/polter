@@ -259,6 +259,13 @@ poltergeist_plugin_tested_ms: ?u64 = null,
 poltergeist_plugins: []const poltergeistpkg.Plugin.Manifest = &.{},
 poltergeist_plugin_arena: ?std.heap.ArenaAllocator = null,
 
+/// Every installed plugin that declares what its CLI's title says
+/// (`Plugin.TitleSays`, task 1656) -- **switched on or not**. Reading a
+/// title starts nothing and writes nothing, and the CLI is in use whether
+/// or not its provisioning plugin is: Codex's is off until somebody turns
+/// it on. In `plugin_arena`, with the rest.
+poltergeist_title_says: []const poltergeistpkg.Plugin.Manifest = &.{},
+
 /// Where last night's arrangement is written down. Null until the state
 /// directory is known. Owned.
 poltergeist_session_path: ?[]const u8 = null,
@@ -1122,6 +1129,7 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .sendKey = controlActKey,
             .sendText = controlActText,
             .agentPresent = controlActAgentPresent,
+            .readScreen = controlActReadScreen,
             .persist = controlActPersist,
             .createGroup = controlActCreateGroup,
             .stewardOf = controlActStewardOf,
@@ -1140,6 +1148,12 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
         self.poltergeistElapsedMs(),
         @intCast(@max(0, self.poltergeistWallMs())),
     );
+}
+
+/// A terminal's screen for the control room's prompt guard, read the way
+/// terminal_read reads it (task 1655).
+fn controlActReadScreen(ctx: *anyopaque, alloc: Allocator, id: poltergeistpkg.Bus.Id) anyerror![]const u8 {
+    return poltergeistRead(ctx, alloc, id, 0);
 }
 
 /// One key into a terminal for the control room, by the road an agent's
@@ -2158,11 +2172,30 @@ fn poltergeistHeartbeat(
 ) void {
     const now_ms = self.poltergeistElapsedMs();
     self.poltergeist.noteQuiet(from, quiet_ms, now_ms);
+    self.capturePermissionBox(from, now_ms);
     self.notePoltergeistAgentsHere();
     _ = self.poltergeist.considerCalls(now_ms);
     _ = self.poltergeist.considerAgents(now_ms);
     self.deliverPoltergeistNotices(now_ms);
     self.refreshPoltergeistTabs();
+}
+
+/// Capture a permission box whose own rows keep redrawing, once it has
+/// been drawn (task 1655): `Bus.promptStanding` compares the screen with it
+/// when the box is answered, since "the screen has not moved" can never be
+/// true of it. Here because a heartbeat is what arrives while a screen
+/// moves -- a still one needs nothing captured -- and read the way
+/// terminal_read reads, which is how the answer side reads it too.
+fn capturePermissionBox(self: *App, id: poltergeistpkg.Bus.Id, now_ms: u64) void {
+    if (!self.poltergeist.wantsBoxPrint(id, now_ms)) return;
+    const event_ms = self.poltergeist.agentOf(id).eventMs();
+    const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+        log.debug("poltergeist: could not read the box id={x} err={}", .{ id, err });
+        return;
+    };
+    defer self.alloc.free(screen);
+    const kept = self.poltergeist.noteBoxPrint(id, event_ms, screen);
+    log.info("poltergeist: permission box captured id={x} event_ms={d} kept={}", .{ id, event_ms, kept });
 }
 
 /// Remind one worker that printing is not reporting, once, when it stops.
@@ -2486,7 +2519,17 @@ pub fn ensurePlugins(self: *App) void {
     };
     for (found, 0..) |f, i| manifests[i] = f.manifest;
 
+    // The title declarations, from every plugin installed. A second walk
+    // rather than a flag on the first: what runs is the switched-on ones,
+    // and the first walk is that list.
+    var says: std.ArrayListUnmanaged(poltergeistpkg.Plugin.Manifest) = .empty;
+    for (self.scanPlugins(alloc, io, &environ_map, true)) |f| {
+        if (f.manifest.title_says.awaiting_approval.len == 0) continue;
+        says.append(alloc, f.manifest) catch break;
+    }
+
     self.poltergeist_plugins = manifests;
+    self.poltergeist_title_says = says.items;
     self.poltergeist_plugin_arena = arena;
 
     log.info(
@@ -2626,10 +2669,33 @@ pub fn reloadPlugins(self: *App) void {
     // list; the other order would leave this slice pointing into freed
     // memory for whichever notification came next.
     self.poltergeist_plugins = &.{};
+    self.poltergeist_title_says = &.{};
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
     self.poltergeist_plugin_arena = null;
 
     self.ensurePlugins();
+}
+
+/// A terminal's program set its title (task 1656). Asked of every title,
+/// and answered from the plugins' declarations: a CLI with no hooks that
+/// says in its title that it waits on an approval is put in the
+/// supervisor's box the way a hook would put it, and stops being reported
+/// so the moment the title changes.
+///
+/// On the app thread, from `Surface.handleMessage` -- which is also where
+/// the bus is read and written everywhere else.
+pub fn poltergeistTitle(self: *App, id: poltergeistpkg.Bus.Id, title: []const u8) void {
+    self.ensurePlugins();
+    const waits_for = poltergeistpkg.Plugin.titleAwaitsApproval(self.poltergeist_title_says, title);
+    const now_ms = self.poltergeistElapsedMs();
+    const raised = self.poltergeist.noteTitle(id, waits_for, title, now_ms) catch |err| {
+        log.warn("poltergeist: could not note the title of {x} err={}", .{ id, err });
+        return;
+    };
+    if (raised) {
+        log.info("poltergeist: {x} title says it awaits approval ({s})", .{ id, waits_for orelse "" });
+        self.deliverPoltergeistNotices(now_ms);
+    }
 }
 
 /// Where plugins live, nearest first.
@@ -5126,7 +5192,18 @@ fn pluginList(
     alloc: Allocator,
     key: []const u8,
 ) anyerror![]const poltergeistpkg.rpc.PluginView {
-    const self: *App = @ptrCast(@alignCast(ctx));
+    return pluginListFor(@ptrCast(@alignCast(ctx)), alloc, key, false);
+}
+
+/// `pluginList`, and whether the reader is a person (the settings window)
+/// rather than an agent: only then does each row carry `note_say`, the note
+/// to be said in the person's language (#1644).
+fn pluginListFor(
+    self: *App,
+    alloc: Allocator,
+    key: []const u8,
+    for_person: bool,
+) anyerror![]const poltergeistpkg.rpc.PluginView {
 
     const io = global.io();
     var environ_map = try global.environMap();
@@ -5205,14 +5282,16 @@ fn pluginList(
             view.failures = st.failures;
         }
 
-        view.note = try poltergeistpkg.report.residentNote(alloc, .{
+        const facts: poltergeistpkg.report.ResidentFacts = .{
             .key = manifest.key,
             .enabled = installed.settings.enabled,
             .declares_events = !manifest.wants.empty(),
             .groupless = manifest.wants.groupless(),
             .log_open = self.chat_log != null,
             .status = status,
-        });
+        };
+        view.note = try poltergeistpkg.report.residentNote(alloc, facts);
+        if (for_person) view.note_say = try poltergeistpkg.report.residentNoteSay(alloc, facts);
 
         try out.append(alloc, view);
     }
@@ -5227,11 +5306,12 @@ fn pluginList(
 /// Every plugin, as the JSON document `plugin_list` answers with -- the
 /// same `wire.writeResponse` rendering of the same `pluginList`. The
 /// settings window reads this, so it and an agent cannot be told two
-/// different stories about a plugin (settings.md §5.1).
+/// different stories about a plugin (settings.md §5.1). The one addition is
+/// `note_say`, the same story told to a person in their language (#1644).
 pub fn pluginListJson(self: *App, alloc: Allocator) ![]u8 {
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
-    const list = try pluginList(self, arena.allocator(), "");
+    const list = try pluginListFor(self, arena.allocator(), "", true);
 
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();

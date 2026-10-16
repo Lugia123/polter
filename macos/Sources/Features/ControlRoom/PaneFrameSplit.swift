@@ -200,6 +200,8 @@ private struct PaneFramed: ViewModifier {
         let grip = stack == nil ? drawn : nil
         let focused = lastFocused?.value === surfaceView
         let lent = lender.lentID == surfaceView.id
+        // Under the pointer only, as the window's own tabs (task 1642).
+        let closeShows = grip != nil && !lent && PolterPaneTabRules.closeShows(hovering: titleHovered)
         content
             .environment(\.paneHasTitle, grip != nil)
             .environment(\.paneHoldsStack, stack != nil)
@@ -213,13 +215,15 @@ private struct PaneFramed: ViewModifier {
                 outside: outside,
                 stack: stack,
                 stackActions: actions(members: members),
-                closeRoom: grip != nil && !lent))
+                closeHole: closeShows))
             // A layer over the title band, and nothing round what is framed:
             // what picks the pane up and opens its menu, and its close
-            // button at the right end (task 1582).
+            // button at the left end, over the name (tasks 1582, 1642).
             .overlay(alignment: .top) {
                 if let grip {
-                    ZStack(alignment: .trailing) {
+                    let band = PaneFrameChrome.room(for: grip.wears).top
+                    let button = PolterCloseCircle.frame(textLeading: PaneFrameChrome.barPadding(for: grip.wears), height: band)
+                    ZStack(alignment: .leading) {
                         Ghostty.SurfaceTitleGrip(
                             surfaceView: surfaceView,
                             dragHandle: ghostty.config.dragHandle,
@@ -228,13 +232,16 @@ private struct PaneFramed: ViewModifier {
                                 guard let surfaceView else { return nil }
                                 return (BaseTerminalController.controller(owning: surfaceView) as? TerminalController)?
                                     .polterPaneMenu(for: surfaceView, inStack: false)
-                            })
-                        if !lent, PolterPaneTabRules.closeShows(hovering: titleHovered, current: focused) {
-                            PolterPaneCloseButton { close(surfaceView) }
-                                .padding(.trailing, PaneFrameChrome.barPadding(for: grip.wears))
+                            },
+                            // The cross below is a button: an arrow over it,
+                            // not the hand (task 1634).
+                            leadingButton: lent ? nil : .init(size: button.width, padding: button.minX))
+                        if closeShows {
+                            PolterCloseCircleButton { close(surfaceView) }
+                                .padding(.leading, button.minX)
                         }
                     }
-                    .frame(height: PaneFrameChrome.room(for: grip.wears).top)
+                    .frame(height: band)
                     .onHover { titleHovered = $0 }
                     .padding(outside)
                 }
@@ -283,7 +290,13 @@ private struct PaneFramed: ViewModifier {
                         guard let member else { return nil }
                         return (BaseTerminalController.controller(owning: member) as? TerminalController)?
                             .polterPaneMenu(for: member, inStack: true)
-                    }))
+                    },
+                    // The tab's close button (`PaneStackStripView.tab`), tasks 1634, 1642.
+                    leadingButton: {
+                        let button = PolterCloseCircle.frame(textLeading: CGFloat(ControlRoomLook.StackTab.paddingX),
+                                                             height: CGFloat(ControlRoomLook.StackTab.height))
+                        return .init(size: button.width, padding: button.minX)
+                    }()))
             },
             dropTypes: [.ghosttySurfaceId],
             drop: { index, provider in
@@ -316,29 +329,5 @@ extension View {
     /// On what one leaf of it shows.
     func paneFramed(_ surfaceView: Ghostty.SurfaceView) -> some View {
         modifier(PaneFramed(surfaceView: surfaceView))
-    }
-}
-
-/// The close button at the right end of a pane's title (task 1582): the
-/// window tab's, at the title's size.
-struct PolterPaneCloseButton: View {
-    typealias Look = ControlRoomLook
-
-    let action: () -> Void
-
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        let label = String(localized: "Close Terminal", comment: "分屏标题和层叠标签右端的 x；层叠标签右键菜单：关闭这一个终端")
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: CGFloat(Look.Font.body) - 2, weight: .semibold))
-                .foregroundStyle(Look.theme(scheme).terminalDim.color)
-                .frame(width: CGFloat(Look.StackTab.closeButton), height: CGFloat(Look.StackTab.closeButton))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(label)
-        .accessibilityLabel(label)
     }
 }

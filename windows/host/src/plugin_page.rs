@@ -616,6 +616,13 @@ fn describe(key: &str) -> Result<serde_json::Value, &'static str> {
                 plugins::Control::Choice(c) => {
                     d["type"] = "enum".into();
                     d["choices"] = serde_json::json!(c);
+                    // What each value is called in the person's language,
+                    // for a page that wants it; the value is what is saved.
+                    let labels: serde_json::Map<String, serde_json::Value> = c
+                        .iter()
+                        .map(|v| (v.clone(), polter_settings_shell::plugins::choice_shown(v, &x.labels).into()))
+                        .collect();
+                    d["choice_labels"] = labels.into();
                 }
             }
             if let Some(v) = &x.default {

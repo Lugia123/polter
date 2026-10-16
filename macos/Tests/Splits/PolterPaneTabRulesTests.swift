@@ -6,10 +6,11 @@ import Testing
 struct PolterPaneTabRulesTests {
     private typealias Rules = PolterPaneTabRules
 
-    @Test func aCloseButtonShowsUnderThePointerAndOnTheOneInFront() {
-        #expect(Rules.closeShows(hovering: true, current: false))
-        #expect(Rules.closeShows(hovering: false, current: true))
-        #expect(!Rules.closeShows(hovering: false, current: false))
+    /// Under the pointer only: the one in front no longer keeps its button
+    /// showing (task 1642), which is why there is no `current` to pass.
+    @Test func aCloseButtonShowsUnderThePointerOnly() {
+        #expect(Rules.closeShows(hovering: true))
+        #expect(!Rules.closeShows(hovering: false))
     }
 
     @Test func closingOthersRightAndLeftTakeWhatTheySay() {

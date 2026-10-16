@@ -1027,6 +1027,14 @@
 "{1}: {2}" = "{1}：{2}";
 "Screen still for {1} min" = "屏幕 {1} 分没动";
 "Screen still for {1} min, no tool call for {2} min" = "屏幕 {1} 分没动，{2} 分没调工具";
+"Switched off, so nothing is handed to it. Turn it on with the switch on its page." = "已关，什么都不会交给它。在它的页面上打开开关就行。";
+"Its plugin.json subscribes to nothing, so it was not started. That is the plugin's own file to change." = "它的 plugin.json 没订阅任何事件，所以没启动。要改的是插件自己的文件。";
+"It subscribes to chat but names no groups, so it is running and will be handed nothing." = "它订阅了群聊，却没指定任何群：在运行，但什么也收不到。";
+"Switched on, but nothing runs it until a terminal is open." = "已开，但要等有终端开着才会运行。";
+"Switched on, but it would not start. Polter's log says why." = "已开，但没能启动，原因见 Polter 的日志。";
+"It failed to start {1} time(s) and will be tried again shortly. Polter's log has what it said." = "启动失败 {1} 次，稍后会再试。它说了什么见 Polter 的日志。";
+"It failed to start {1} time(s) and is now tried every fifteen minutes. Polter's log says why." = "启动失败 {1} 次，现在每 15 分钟试一次。原因见 Polter 的日志。";
+"Stopped. It starts again when Polter does." = "已停止，下次启动 Polter 时才会再运行。";
 "Fix" = "修复";
 "Supervisor notified" = "已通知总管";
 "It is no longer failing. Nothing was sent." = "它已经不是出错了，什么都没有发出去。";
@@ -1041,3 +1049,7 @@
 "Close Tab" = "关闭标签页";
 "Close Other Tabs" = "关闭其他标签页";
 "Move Tab to New Window" = "将标签页移到新窗口";
+
+/* «Copy Terminal ID» on the terminal, pane title, stack tab and window tab menus (task 1643). */
+"Copy Terminal ID" = "复制终端 ID";
+"Copy All" = "复制全部";

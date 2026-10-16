@@ -163,6 +163,30 @@ pub fn stack_tab_grip(setting: Setting, lent: bool) -> TitleGrip {
     }
 }
 
+/// The pointer over a pane's title band (task 1634; macOS's
+/// `SurfaceDragGrip.cursorAreas`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TitleCursor {
+    /// The move cursor: this title drags its pane.
+    Move,
+    /// The window's own arrow: a button, or a title that does not drag.
+    Arrow,
+}
+
+/// Which cursor a point on a title gets. **The close cross is a button**,
+/// and so is everything on a stack's strip, whose tabs are clicked: the
+/// arrow there, never the cursor that says the title can be dragged --
+/// which is what the Mac showed on its cross until task 1634.
+pub fn title_cursor(grip: TitleGrip, on_close: bool, on_strip: bool) -> TitleCursor {
+    if on_close || on_strip {
+        return TitleCursor::Arrow;
+    }
+    match grip {
+        TitleGrip::Drag => TitleCursor::Move,
+        TitleGrip::Click | TitleGrip::None => TitleCursor::Arrow,
+    }
+}
+
 /// How far, in points, the pointer has to move held down on a title before
 /// it is a drag and not a click. The handle has none: it does nothing else.
 pub const TITLE_DRAG_THRESHOLD_PT: f64 = 4.0;
@@ -260,7 +284,17 @@ pub enum Zone {
     Bottom,
     Left,
     Right,
+    /// Onto the pane's stack, in front (task 1633). Only for a pane being
+    /// dragged, and only where [`Zone::at_or_middle`] is asked for it; a tab
+    /// dragged over a pane is offered the four sides (`Zone::at`).
+    Middle,
 }
+
+/// How far into the pane, as a share of its width and of its height, each
+/// edge's zone reaches when there is a middle: the middle is what is at
+/// least this far from every edge, 40% across and 40% down
+/// (`TerminalSplitDropZone.middleEdge`).
+pub const MIDDLE_EDGE: f64 = 0.3;
 
 impl Zone {
     /// Which edge `p` is nearest, relative to the pane's size -- four
@@ -282,24 +316,43 @@ impl Zone {
         }
     }
 
-    /// The half of the pane that lights up for this zone.
-    pub fn highlight(self, pane: Rect) -> Rect {
+    /// [`Zone::at`], with a middle when `middle` is true: a point at least
+    /// [`MIDDLE_EDGE`] from all four edges stacks rather than splits
+    /// (`TerminalSplitDropZone.calculate(at:in:middle:)`).
+    pub fn at_or_middle(pane: Rect, p: (f64, f64), middle: bool) -> Zone {
+        if middle {
+            let rx = (p.0 - pane.x) / pane.w.max(1.0);
+            let ry = (p.1 - pane.y) / pane.h.max(1.0);
+            if rx.min(1.0 - rx) >= MIDDLE_EDGE && ry.min(1.0 - ry) >= MIDDLE_EDGE {
+                return Zone::Middle;
+            }
+        }
+        Zone::at(pane, p)
+    }
+
+    /// What lights up for this zone: the half of the pane for a side, and
+    /// for the middle the ghost of a stack's strip along its top, `strip`
+    /// pixels high -- where the tabs it is about to have would be.
+    pub fn highlight(self, pane: Rect, strip: f64) -> Rect {
         let (hw, hh) = (pane.w / 2.0, pane.h / 2.0);
         match self {
             Zone::Top => Rect::new(pane.x, pane.y, pane.w, hh),
             Zone::Bottom => Rect::new(pane.x, pane.y + pane.h - hh, pane.w, hh),
             Zone::Left => Rect::new(pane.x, pane.y, hw, pane.h),
             Zone::Right => Rect::new(pane.x + pane.w - hw, pane.y, hw, pane.h),
+            Zone::Middle => Rect::new(pane.x, pane.y, pane.w, strip.min(pane.h)),
         }
     }
 
-    /// Where the dropped pane goes, as a split.
-    pub fn direction(self) -> NewSplit {
+    /// Where the dropped pane goes, as a split; none for the middle, which
+    /// is not a split.
+    pub fn direction(self) -> Option<NewSplit> {
         match self {
-            Zone::Top => NewSplit::Up,
-            Zone::Bottom => NewSplit::Down,
-            Zone::Left => NewSplit::Left,
-            Zone::Right => NewSplit::Right,
+            Zone::Top => Some(NewSplit::Up),
+            Zone::Bottom => Some(NewSplit::Down),
+            Zone::Left => Some(NewSplit::Left),
+            Zone::Right => Some(NewSplit::Right),
+            Zone::Middle => None,
         }
     }
 }
@@ -366,8 +419,9 @@ pub fn dot_box(x: f64, y: f64, d: f64) -> (i32, i32, i32, i32) {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Over {
     /// A pane of ours, in the zone given. `own` when it is the pane being
-    /// dragged.
-    Pane { pane: PaneId, zone: Zone, own: bool },
+    /// dragged; `home` when the pane being dragged is in this pane's stack
+    /// -- itself, or one behind it picked up by its tab (task 1633).
+    Pane { pane: PaneId, zone: Zone, own: bool, home: bool },
     /// A gap in a strip, at this index (`StripTarget::Insert`).
     Strip(usize),
     /// One of our windows, but no pane in it and no gap of a strip: the
@@ -382,6 +436,9 @@ pub enum Over {
 pub enum Ending {
     /// Split `onto` and put the pane there.
     Move { onto: PaneId, zone: Zone },
+    /// Into the stack of the pane `onto` is, in front, as its last tab
+    /// (task 1633).
+    Stack { onto: PaneId },
     /// The pane gets a window of its own where the pointer is.
     NewWindow,
     /// The pane becomes a tab of its own at this index of the strip it was
@@ -394,6 +451,8 @@ pub enum Ending {
 /// What letting go over `over` does.
 ///
 /// - Onto itself: nothing; it is not a target (macOS hides its drop zone).
+/// - Into the middle of a pane: onto its stack (task 1633) -- but onto the
+///   stack it is already in, nothing, wherever in it it is.
 /// - Into a gap of a strip: a tab of its own there (task 1557). Whether
 ///   there is a gap at all -- not on its own strip for a pane alone in its
 ///   tab -- is `strip_target`'s to say.
@@ -409,7 +468,9 @@ pub fn ending(over: Over, from_split: bool, cancelled: bool) -> Ending {
     }
     match over {
         Over::Pane { own: true, .. } => Ending::Nothing,
-        Over::Pane { pane, zone, own: false } => Ending::Move { onto: pane, zone },
+        Over::Pane { zone: Zone::Middle, home: true, .. } => Ending::Nothing,
+        Over::Pane { pane, zone: Zone::Middle, .. } => Ending::Stack { onto: pane },
+        Over::Pane { pane, zone, own: false, .. } => Ending::Move { onto: pane, zone },
         Over::Strip(index) => Ending::NewTab(index),
         Over::Window => Ending::Nothing,
         Over::Outside if from_split => Ending::NewWindow,
@@ -421,7 +482,8 @@ pub fn ending(over: Over, from_split: bool, cancelled: bool) -> Ending {
 /// pane being dragged, and none where letting go would do nothing.
 pub fn lit(over: Over) -> Option<(PaneId, Zone)> {
     match over {
-        Over::Pane { pane, zone, own: false } => Some((pane, zone)),
+        Over::Pane { zone: Zone::Middle, home: true, .. } => None,
+        Over::Pane { pane, zone, own: false, .. } => Some((pane, zone)),
         Over::Pane { own: true, .. } | Over::Strip(_) | Over::Window | Over::Outside => None,
     }
 }
@@ -695,6 +757,17 @@ mod tests {
     const LONE: Situation = Situation { titled: false, lent: false, split: false };
 
     #[test]
+    fn the_close_cross_and_the_strip_keep_the_arrow_over_a_title_that_drags() {
+        // Task 1634: the title says "drag me"; its cross does not.
+        assert_eq!(title_cursor(TitleGrip::Drag, false, false), TitleCursor::Move);
+        assert_eq!(title_cursor(TitleGrip::Drag, true, false), TitleCursor::Arrow);
+        assert_eq!(title_cursor(TitleGrip::Drag, false, true), TitleCursor::Arrow);
+        // A title that only clicks never shows the move cursor.
+        assert_eq!(title_cursor(TitleGrip::Click, false, false), TitleCursor::Arrow);
+        assert_eq!(title_cursor(TitleGrip::None, false, false), TitleCursor::Arrow);
+    }
+
+    #[test]
     fn the_veil_is_what_the_opacity_leaves_and_never_hides_a_pane() {
         assert!((veil_opacity(0.7) - 0.3).abs() < 1e-9);
         assert_eq!(veil_opacity(1.0), 0.0);
@@ -861,22 +934,71 @@ mod tests {
     #[test]
     fn the_highlight_is_the_half_on_the_zones_side() {
         let pane = Rect::new(10.0, 20.0, 400.0, 100.0);
-        assert_eq!(Zone::Top.highlight(pane), Rect::new(10.0, 20.0, 400.0, 50.0));
-        assert_eq!(Zone::Bottom.highlight(pane), Rect::new(10.0, 70.0, 400.0, 50.0));
-        assert_eq!(Zone::Left.highlight(pane), Rect::new(10.0, 20.0, 200.0, 100.0));
-        assert_eq!(Zone::Right.highlight(pane), Rect::new(210.0, 20.0, 200.0, 100.0));
-        assert_eq!(Zone::Top.direction(), NewSplit::Up);
-        assert_eq!(Zone::Right.direction(), NewSplit::Right);
+        assert_eq!(Zone::Top.highlight(pane, 32.0), Rect::new(10.0, 20.0, 400.0, 50.0));
+        assert_eq!(Zone::Bottom.highlight(pane, 32.0), Rect::new(10.0, 70.0, 400.0, 50.0));
+        assert_eq!(Zone::Left.highlight(pane, 32.0), Rect::new(10.0, 20.0, 200.0, 100.0));
+        assert_eq!(Zone::Right.highlight(pane, 32.0), Rect::new(210.0, 20.0, 200.0, 100.0));
+        assert_eq!(Zone::Top.direction(), Some(NewSplit::Up));
+        assert_eq!(Zone::Right.direction(), Some(NewSplit::Right));
+    }
+
+    #[test]
+    fn the_middle_forty_percent_stacks_and_the_edges_still_split() {
+        // Task 1633, `TerminalSplitDropZone.calculate(at:in:middle:)`.
+        let pane = Rect::new(0.0, 0.0, 100.0, 100.0);
+        for p in [(50.0, 50.0), (30.0, 30.0), (70.0, 70.0), (30.0, 70.0)] {
+            assert_eq!(Zone::at_or_middle(pane, p, true), Zone::Middle, "{p:?}");
+        }
+        assert_eq!(Zone::at_or_middle(pane, (29.0, 50.0), true), Zone::Left);
+        assert_eq!(Zone::at_or_middle(pane, (71.0, 50.0), true), Zone::Right);
+        assert_eq!(Zone::at_or_middle(pane, (50.0, 29.0), true), Zone::Top);
+        assert_eq!(Zone::at_or_middle(pane, (50.0, 71.0), true), Zone::Bottom);
+        // A share of each side: in a wide pane 40% across is 160 of 400.
+        let wide = Rect::new(0.0, 0.0, 400.0, 100.0);
+        assert_eq!(Zone::at_or_middle(wide, (125.0, 50.0), true), Zone::Middle);
+        assert_eq!(Zone::at_or_middle(wide, (115.0, 50.0), true), Zone::Left);
+        // Not asked for (a tab dragged over a pane): the four sides.
+        assert_eq!(Zone::at_or_middle(pane, (50.0, 50.0), false), Zone::Left);
+        assert_eq!(Zone::at(pane, (50.0, 50.0)), Zone::Left);
+    }
+
+    #[test]
+    fn the_middle_lights_a_ghost_strip_and_is_no_split() {
+        let pane = Rect::new(10.0, 20.0, 400.0, 100.0);
+        assert_eq!(Zone::Middle.highlight(pane, 48.0), Rect::new(10.0, 20.0, 400.0, 48.0));
+        // Never taller than the pane.
+        assert_eq!(Zone::Middle.highlight(Rect::new(0.0, 0.0, 400.0, 30.0), 48.0), Rect::new(0.0, 0.0, 400.0, 30.0));
+        assert_eq!(Zone::Middle.direction(), None);
+    }
+
+    #[test]
+    fn letting_go_in_the_middle_stacks_except_onto_its_own_stack() {
+        let mid = Zone::Middle;
+        assert_eq!(ending(Over::Pane { pane: 2, zone: mid, own: false, home: false }, true, false), Ending::Stack { onto: 2 });
+        assert_eq!(lit(Over::Pane { pane: 2, zone: mid, own: false, home: false }), Some((2, mid)));
+        // One behind in this very pane, picked up by its tab: nothing, and
+        // nothing lit.
+        assert_eq!(ending(Over::Pane { pane: 2, zone: mid, own: false, home: true }, true, false), Ending::Nothing);
+        assert_eq!(lit(Over::Pane { pane: 2, zone: mid, own: false, home: true }), None);
+        // The pane itself: nothing, as on any side.
+        assert_eq!(ending(Over::Pane { pane: 1, zone: mid, own: true, home: true }, true, false), Ending::Nothing);
+        // From the same stack onto an edge it still splits out (task 1583).
+        assert_eq!(
+            ending(Over::Pane { pane: 2, zone: Zone::Left, own: false, home: true }, true, false),
+            Ending::Move { onto: 2, zone: Zone::Left }
+        );
+        // Esc cancels the middle too.
+        assert_eq!(ending(Over::Pane { pane: 2, zone: mid, own: false, home: false }, true, true), Ending::Nothing);
     }
 
     #[test]
     fn letting_go_moves_onto_another_pane_and_nowhere_else() {
         let left = Zone::Left;
-        assert_eq!(ending(Over::Pane { pane: 2, zone: left, own: false }, true, false), Ending::Move { onto: 2, zone: left });
-        assert_eq!(ending(Over::Pane { pane: 1, zone: left, own: true }, true, false), Ending::Nothing);
+        assert_eq!(ending(Over::Pane { pane: 2, zone: left, own: false, home: false }, true, false), Ending::Move { onto: 2, zone: left });
+        assert_eq!(ending(Over::Pane { pane: 1, zone: left, own: true, home: true }, true, false), Ending::Nothing);
         assert_eq!(ending(Over::Window, true, false), Ending::Nothing);
-        assert_eq!(lit(Over::Pane { pane: 1, zone: left, own: true }), None);
-        assert_eq!(lit(Over::Pane { pane: 2, zone: left, own: false }), Some((2, left)));
+        assert_eq!(lit(Over::Pane { pane: 1, zone: left, own: true, home: true }), None);
+        assert_eq!(lit(Over::Pane { pane: 2, zone: left, own: false, home: false }), Some((2, left)));
     }
 
     #[test]
@@ -888,7 +1010,7 @@ mod tests {
     #[test]
     fn esc_cancels_wherever_the_pointer_is() {
         assert_eq!(ending(Over::Outside, true, true), Ending::Nothing);
-        assert_eq!(ending(Over::Pane { pane: 2, zone: Zone::Top, own: false }, true, true), Ending::Nothing);
+        assert_eq!(ending(Over::Pane { pane: 2, zone: Zone::Top, own: false, home: false }, true, true), Ending::Nothing);
         assert_eq!(ending(Over::Strip(1), true, true), Ending::Nothing);
     }
 

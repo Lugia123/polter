@@ -111,11 +111,11 @@ struct PaneStackStripView: View {
     }
 
     /// How wide a tab's body wants to be: its name at the heavier of its
-    /// two weights and the word for what it is, and room for a glyph and
-    /// for the close button whether or not either is there just now,
-    /// between the paddings -- so that a tab is the same width in front and
-    /// behind, waiting and not, pointed at and not, and the strip does not
-    /// shuffle.
+    /// two weights and the word for what it is, and room for a glyph
+    /// whether or not there is one just now, between the paddings -- so
+    /// that a tab is the same width in front and behind, waiting and not,
+    /// and the strip does not shuffle. None for the close button: it comes
+    /// over the name's start while the pointer is on the tab (task 1642).
     static func wanted(_ member: PaneStack.Member) -> CGFloat {
         let t = Look.StackTab.self
         var name = (member.name as NSString).size(withAttributes: [.font: nameFont(current: true)]).width.rounded(.up)
@@ -124,7 +124,6 @@ struct PaneStackStripView: View {
                 + (role as NSString).size(withAttributes: [.font: roleFont()]).width.rounded(.up)
         }
         return 2 * CGFloat(t.paddingX) + name + CGFloat(t.gap) + CGFloat(Look.Side.glyph)
-            + CGFloat(t.closeGap) + CGFloat(t.closeButton)
     }
 
     /// How wide the status at the right end is: the glyph, the gap, the word.
@@ -218,7 +217,7 @@ struct PaneStackStripView: View {
                         .allowsHitTesting(false)
                 }
                 self.tab(stack.members[tab.member], index: tab.member, current: tab.current,
-                         closeSeen: layout.closeSeen(tab.member, offset: offset))
+                         closeSeen: layout.closeSeen(tab.member, offset: offset, at: .leading))
                     .frame(width: tab.width, height: tabH)
                     .offset(x: x, y: top)
             }
@@ -284,11 +283,13 @@ struct PaneStackStripView: View {
         }
     }
 
-    /// One tab: its name and what it is at the left, its glyph and its
-    /// close button at the right. What it is picked up and right-clicked
-    /// by lies behind it (`PaneStackActions.grip`).
+    /// One tab: its name and what it is at the left, its glyph at the
+    /// right, and its close button over the name's start while the pointer
+    /// is on it (task 1642). What it is picked up and right-clicked by lies
+    /// behind it (`PaneStackActions.grip`).
     private func tab(_ member: PaneStack.Member, index: Int, current: Bool, closeSeen: Bool) -> some View {
-        let closeLabel = String(localized: "Close Terminal", comment: "分屏标题和层叠标签右端的 x；层叠标签右键菜单：关闭这一个终端")
+        let pad = CGFloat(Look.StackTab.paddingX)
+        let closeShows = closeSeen && PolterPaneTabRules.closeShows(hovering: hovered == index)
         return ZStack {
             if let grip = actions.grip {
                 grip(index)
@@ -317,30 +318,21 @@ struct PaneStackStripView: View {
                 Color.clear
                     .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
                     .overlay { glyph(member.shown) }
-                Color.clear.frame(width: CGFloat(Look.StackTab.closeGap) + CGFloat(Look.StackTab.closeButton), height: 1)
             }
-            .padding(.horizontal, CGFloat(Look.StackTab.paddingX))
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, pad)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            // The name is cut away under the button's disc, so the cross is
+            // never read through letters.
+            .polterCloseHole(closeShows, textLeading: pad)
             .allowsHitTesting(false)
-            // The close button: under the pointer, and always on the tab in
-            // front (`PolterPaneTabRules.closeShows`) -- while it is whole
+            // The close button: under the pointer only, as the window's own
+            // tabs (`PolterPaneTabRules.closeShows`) -- while it is whole
             // in the window, never under the plus (`closeSeen`, task 1600).
-            HStack(spacing: 0) {
-                Spacer(minLength: 0)
-                if closeSeen, PolterPaneTabRules.closeShows(hovering: hovered == index, current: current) {
-                    Button { actions.close(index) } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: CGFloat(Look.Font.body) - 2, weight: .semibold))
-                            .foregroundStyle(otherInk)
-                            .frame(width: CGFloat(Look.StackTab.closeButton), height: CGFloat(Look.StackTab.closeButton))
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(closeLabel)
-                    .accessibilityLabel(closeLabel)
-                }
+            if closeShows {
+                PolterCloseCircleButton { actions.close(index) }
+                    .padding(.leading, PolterCloseCircle.frame(textLeading: pad, height: CGFloat(Look.StackTab.height)).minX)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.trailing, CGFloat(Look.StackTab.paddingX))
         }
         .onHover { inside in
             if inside { hovered = index } else if hovered == index { hovered = nil }

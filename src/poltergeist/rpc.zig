@@ -4504,6 +4504,12 @@ pub const PluginView = struct {
 
     /// Why nothing is happening, when nothing is. Empty when it is fine.
     note: []const u8 = "",
+
+    /// The same reason for a person, to be said in their language
+    /// (`report.NoteSay`, #1644). Set only for the settings window's
+    /// document (`App.pluginListJson`); `plugin_list` never carries it, so
+    /// an agent reads the same English on every machine.
+    note_say: ?@import("report.zig").NoteSay = null,
 };
 
 pub const PluginParamView = struct {
@@ -6935,16 +6941,27 @@ fn dispatchOne(
         },
 
         .terminal_turn => |p| {
+            // Copied, as the turn's text is below.
+            const pending: ?Bus.PendingTool = if (bus.pendingToolOf(p.id)) |t| .{
+                .name = try alloc.dupe(u8, t.name),
+                .input = try alloc.dupe(u8, t.input),
+                .input_bytes = t.input_bytes,
+                .at_ms = t.at_ms,
+            } else null;
             const turn = bus.turnOf(p.id) orelse return .{ .turn = .{
                 .id = p.id,
                 .agent = bus.agentOf(p.id),
                 .turn = null,
                 .ago_ms = 0,
+                .pending_tool = pending,
+                .now_ms = host.nowMs(),
             } };
             return .{
                 .turn = .{
                     .id = p.id,
                     .agent = bus.agentOf(p.id),
+                    .pending_tool = pending,
+                    .now_ms = host.nowMs(),
                     // Copied: the bus may free it before the reply is written.
                     .turn = .{
                         .text = try alloc.dupe(u8, turn.text),
@@ -7546,9 +7563,16 @@ fn dispatchOne(
             // has been replaced is not one to walk a highlight around in
             // either.
             if (p.state_at_ms != null or p.event_at_ms != null) {
+                // The screen as it is now, for a box whose own rows keep
+                // redrawing (task 1655); read only for one of those.
+                const screen: ?[]const u8 = if (bus.promptNeedsScreen(p.id))
+                    host.readTerminal(alloc, p.id, 0) catch null
+                else
+                    null;
+                defer if (screen) |s| alloc.free(s);
                 // One without the other cannot be the prompt anybody saw.
                 const standing = if (p.state_at_ms) |state_at|
-                    (if (p.event_at_ms) |event_at| bus.promptStanding(p.id, state_at, event_at, host.nowMs()) else false)
+                    (if (p.event_at_ms) |event_at| bus.promptStanding(p.id, state_at, event_at, host.nowMs(), screen) else false)
                 else
                     false;
                 if (!standing) return hostFailure(
@@ -7637,8 +7661,14 @@ fn dispatchOne(
 
         .set_quiescence_threshold => |p| {
             if (p.ms) |ms| {
-                host.setThreshold(p.id, ms) catch
-                    return hostFailure("ThresholdFailed", "could not change that threshold");
+                // **A terminal that is not there says so** (task 1656). Every
+                // failure used to come back as `ThresholdFailed`, which reads
+                // like a sampler that refused -- and the case that produced it
+                // was an id that named no terminal.
+                host.setThreshold(p.id, ms) catch |err| return switch (err) {
+                    error.NoSuchTerminal, error.UnknownTerminal => failure(error.UnknownTerminal),
+                    else => hostFailure("ThresholdFailed", "could not change that threshold"),
+                };
                 bus.withdrawQuiet(p.id, ms, host.nowMs());
             }
             // The other clock's, per terminal (#62). Kept on the bus, which
@@ -8496,7 +8526,9 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         // `hooks: "none"` said rather than left out (task 880), the same
         // answer `terminal_turn` gives; no duration, since nothing started
         // one.
-        .agent = if (e.agent.hooks == .none) .{
+        // A title saying it waits (task 1656) has its moments like a hook
+        // does: they are what `terminal_answer_prompt` is handed back.
+        .agent = if (e.agent.hooks == .none and e.agent.said_by != .title) .{
             .agent = e.agent,
             .since_ms = null,
             .state_at_ms = null,
@@ -9627,6 +9659,8 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 /// A host that records what it was asked to do and can be told to refuse.
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
+    /// What `readTerminal` answers.
+    screen: []const u8 = "screen contents",
 
     /// What `layout` was last handed, how often, and how it answers.
     laid_out: ?LayoutCall = null,
@@ -9688,6 +9722,8 @@ const FakeHost = struct {
     set_to: ?struct { id: Bus.Id, ms: u64 } = null,
     read_count: usize = 0,
     refuse: bool = false,
+    /// `setThreshold` answers as the App does for an id no surface has.
+    no_such_terminal: bool = false,
 
     /// How many members `chatMembers` reports. Configurable because a
     /// group of one and a group of several are different cases for the
@@ -10515,7 +10551,7 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.Refused;
         self.read_count += 1;
-        return alloc.dupe(u8, "screen contents");
+        return alloc.dupe(u8, self.screen);
     }
 
     fn send(ctx: *anyopaque, id: Bus.Id, text: []const u8, submit: bool) anyerror!void {
@@ -10763,6 +10799,7 @@ const FakeHost = struct {
     fn setThreshold(ctx: *anyopaque, id: Bus.Id, ms: u64) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.Refused;
+        if (self.no_such_terminal) return error.NoSuchTerminal;
         self.set_to = .{ .id = id, .ms = ms };
     }
 };
@@ -11149,6 +11186,33 @@ test "raising the threshold of a terminal already reported quiet stops the repor
     // A minute later the terminal has been quiet 241s, far short of an hour.
     const next = b.drainIfDue(boss, 241_000, &buf, .none);
     try testing.expect(next == null);
+}
+
+test "1656: a threshold for a terminal that is not there says UnknownTerminal" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .no_such_terminal = true };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_quiescence_threshold = .{ .id = worker, .ms = 10_000, .no_tool_call_ms = .keep },
+    });
+    const code = switch (res) {
+        .failed => |f| f.code,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expectEqualStrings("UnknownTerminal", code);
+
+    // Any other failure is still the host's own.
+    fake.no_such_terminal = false;
+    fake.refuse = true;
+    const refused = try dispatch(testing.allocator, &b, fake.host(), term(boss), .{
+        .set_quiescence_threshold = .{ .id = worker, .ms = 10_000, .no_tool_call_ms = .keep },
+    });
+    const other_code = switch (refused) {
+        .failed => |f| f.code,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expectEqualStrings("ThresholdFailed", other_code);
 }
 
 test "lowering the threshold below how long a terminal has been quiet keeps its report (task 873)" {
@@ -15730,6 +15794,27 @@ test "hooks: terminal_list carries the agent state, and leaves it out with no ho
     ) != null);
 }
 
+test "1656: a title's wait shows in terminal_list as awaiting_approval with detail title, and its moments" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .now_ms = 4_000 };
+
+    _ = try b.noteTitle(worker, "codex", "[ ! ] Action Required | w", 1_000);
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
+    const a = res.me.agent;
+    try testing.expectEqual(Bus.Hooks.none, a.agent.hooks);
+    try testing.expectEqual(Bus.AgentState.awaiting_approval, a.agent.state);
+    // Without the moments the answer guard could not be handed back.
+    try testing.expectEqual(@as(?u64, 1_000), a.state_at_ms);
+
+    var out: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    try wire.writeResponse(&w, res);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(),
+        \\"agent":{"hooks":"none","state":"awaiting_approval","since_ms":3000,"state_at_ms":1000,"event_at_ms":1000,"cli":"codex","detail":"title","note":"[ ! ] Action Required | w","waiting_on_background":false}
+    ) != null);
+}
+
 test "a terminal without hooks says so in terminal_list, as terminal_turn does (task 880)" {
     // Measured: for one terminal with no hooks, terminal_list left `agent`
     // out and terminal_turn said `"hooks":"none"`. Both terminals here have
@@ -15805,6 +15890,50 @@ test "hooks: terminal_turn hands back the whole answer and says when it was cut"
     try testing.expect(std.mem.indexOf(u8, w.buffered(),
         \\"turn":{"ended_ms_ago":2500,"session_id":"sess-1","text":"the whole answer","text_bytes":20000,"truncated":true}
     ) != null);
+}
+
+test "hooks: terminal_turn hands a supervisor the whole tool call waiting for approval (task 1651)" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .now_ms = 10_000 };
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // What 0xd4ef was stopped on: the notice and the screen both showed
+    // the first line, and the `rm` was past it.
+    const command = "D=/private/tmp/x/issue-fix; S=$D/scratch; rm -rf \"$S\"";
+    var ev = hookEvent(.awaiting_approval);
+    ev.detail = "Bash";
+    ev.note = command[0..29];
+    ev.text = command;
+    ev.text_bytes = command.len;
+    ev.input = "{\"command\":\"D=/private/tmp/x/issue-fix; S=$D/scratch; rm -rf \\\"$S\\\"\",\"description\":\"clean\"}";
+    ev.input_bytes = 30_000;
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = ev });
+
+    fake.now_ms = 11_000;
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_turn = .{ .id = worker },
+    });
+    // No turn has ended, and the call is there all the same.
+    try testing.expect(res.turn.turn == null);
+    var out: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    try wire.writeResponse(&w, res);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(),
+        \\"pending_tool":{"name":"Bash","asked_ms_ago":1000,"input":"{\"command\":\"D=/private/tmp/x/issue-fix; S=$D/scratch; rm -rf \\\"$S\\\"\",\"description\":\"clean\"}","input_bytes":30000,"truncated":true}
+    ) != null);
+    // The agent's note says it is the start of something longer.
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"note_truncated\":true,\"note_bytes\":53") != null);
+
+    // Answered: the call is gone.
+    var done = hookEvent(.turn_resumed);
+    done.detail = "Bash";
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = done });
+    const after = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_turn = .{ .id = worker },
+    });
+    try testing.expect(after.turn.pending_tool == null);
 }
 
 // -- role_launch into a split (task 874) --------------------------------------
@@ -16308,6 +16437,72 @@ test "ControlRoom answer_prompt: given the prompt it saw, it presses nothing onc
     } });
     try testing.expect(taken == .ok);
     try testing.expectEqualStrings("enter", fake.keyed.?.key);
+}
+
+/// A Claude Code permission box in auto mode, its countdown at `left`.
+fn countdownBox(alloc: std.mem.Allocator, left: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(alloc,
+        \\ Bash command
+        \\   rm -rf dist/
+        \\ ⚠ Claude Code will automatically deny this request in {s}, to avoid blocking progress on an unattended session
+        \\ Do you want to proceed?
+        \\ ❯ 1. Yes
+        \\   2. No
+    , .{left});
+}
+
+test "answer_prompt: a box whose countdown redraws every second can still be answered (task 1655)" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .now_ms = 1_000 };
+    fake.key_outcome = .written;
+    try b.setMayAuthorise(worker, true, .user);
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    var ask = hookEvent(.awaiting_approval);
+    ask.detail = "Bash";
+    ask.note = "rm -rf dist/";
+    _ = try dispatch(alloc, &b, fake.host(), term(worker), .{ .agent_event = ask });
+
+    // The box is drawn, and its countdown redraws: the sampler restates a
+    // screen that keeps moving, and the first restatement past the grace
+    // captures the box.
+    b.noteQuiet(worker, 0, 5_000);
+    try testing.expect(b.wantsBoxPrint(worker, 5_000));
+    try testing.expect(b.noteBoxPrint(worker, 1_000, try countdownBox(alloc, "1:54")));
+    b.noteQuiet(worker, 0, 9_000);
+
+    // Nine seconds on, the countdown says 1:50 and the screen moved a
+    // second ago. Before task 1655 this was PromptGone for as long as the
+    // box stood.
+    fake.now_ms = 9_000;
+    fake.screen = try countdownBox(alloc, "1:50");
+    const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{
+        .id = worker,
+        .choice = 2,
+        .state_at_ms = 1_000,
+        .event_at_ms = 1_000,
+    } });
+    try testing.expect(taken == .ok);
+    try testing.expectEqualStrings("enter", fake.keyed.?.key);
+
+    // The box gone -- declined from the keyboard, which says nothing --
+    // and the screen moved on: not pressed into whatever is there.
+    fake.keyed = null;
+    fake.screen = "> \n  ⏵⏵ auto mode on\n";
+    const gone = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{
+        .id = worker,
+        .choice = 2,
+        .state_at_ms = 1_000,
+        .event_at_ms = 1_000,
+    } });
+    try testing.expect(gone == .failed);
+    try testing.expectEqualStrings("PromptGone", gone.failed.code);
+    try testing.expect(fake.keyed == null);
 }
 
 test "ControlRoom answer_prompt: without the prompt it saw, it is what it always was" {

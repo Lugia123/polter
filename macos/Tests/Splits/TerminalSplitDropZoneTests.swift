@@ -125,4 +125,43 @@ struct TerminalSplitDropZoneTests {
         let zone = TerminalSplitDropZone.calculate(at: CGPoint(x: 80, y: 70), in: standardSize)
         #expect(zone == .right)
     }
+
+    // MARK: - The middle: onto the pane's stack (task 1633)
+
+    @Test func theMiddleFortyPercentStacks() {
+        for p in [CGPoint(x: 50, y: 50), CGPoint(x: 30, y: 30), CGPoint(x: 70, y: 70), CGPoint(x: 30, y: 70)] {
+            #expect(TerminalSplitDropZone.calculate(at: p, in: standardSize, middle: true) == .middle)
+        }
+    }
+
+    @Test func justOutsideTheMiddleIsAnEdgeAsBefore() {
+        #expect(TerminalSplitDropZone.calculate(at: CGPoint(x: 29, y: 50), in: standardSize, middle: true) == .left)
+        #expect(TerminalSplitDropZone.calculate(at: CGPoint(x: 71, y: 50), in: standardSize, middle: true) == .right)
+        #expect(TerminalSplitDropZone.calculate(at: CGPoint(x: 50, y: 29), in: standardSize, middle: true) == .top)
+        #expect(TerminalSplitDropZone.calculate(at: CGPoint(x: 50, y: 71), in: standardSize, middle: true) == .bottom)
+    }
+
+    @Test func theMiddleIsShareOfEachSideNotOfTheShortOne() {
+        // A wide pane: 40% across is 160 of 400, 40% down 40 of 100.
+        let wide = CGSize(width: 400, height: 100)
+        #expect(TerminalSplitDropZone.calculate(at: CGPoint(x: 125, y: 50), in: wide, middle: true) == .middle)
+        #expect(TerminalSplitDropZone.calculate(at: CGPoint(x: 115, y: 50), in: wide, middle: true) == .left)
+    }
+
+    @Test func withoutAMiddleItIsTheFourSides() {
+        // A tab dragged over a pane (#1558) is offered the four sides only.
+        #expect(TerminalSplitDropZone.calculate(at: CGPoint(x: 50, y: 50), in: standardSize, middle: false) == .left)
+        #expect(TerminalSplitDropZone.calculate(at: CGPoint(x: 50, y: 50), in: standardSize) == .left)
+    }
+
+    @Test func aPanesMiddleIsInertToItsOwnStackAndAbsentWithoutStacks() {
+        #expect(TerminalSplitDropZone.middle(draggedFromInside: false, holdsStacks: true) == .stacks)
+        // The pane itself, or one of its stack picked up by its tab: the
+        // middle is there (so it does not fall to a side and split it out)
+        // and does nothing.
+        #expect(TerminalSplitDropZone.middle(draggedFromInside: true, holdsStacks: true) == .inert)
+        // The quick terminal keeps no stacks: the four sides.
+        #expect(TerminalSplitDropZone.middle(draggedFromInside: false, holdsStacks: false) == .absent)
+        #expect(TerminalSplitDropZone.middle(draggedFromInside: true, holdsStacks: false) == .absent)
+    }
 }

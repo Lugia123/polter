@@ -262,6 +262,40 @@ pub const hooks_expected_timeout_ms: u64 = 30 * std.time.ms_per_s;
 /// is still read as explained. The next redraw after it is not.
 pub const event_redraw_grace_ms: u64 = 3 * std.time.ms_per_s;
 
+/// A permission box's own content, captured after it was drawn: the screen
+/// with its volatile rows taken out (`boxPrint`), and the event it was
+/// drawn for.
+pub const BoxPrint = struct { event_ms: u64, hash: u64 };
+
+const box_seed: u64 = 0x706f_6c74_6572_1655;
+
+/// The screen as a box is identified by: every line of `screen` but those
+/// holding one of `volatile_rows`, hashed in order (task 1655). **Null when
+/// no line holds one** -- that is, when the box those rows belong to is not
+/// on the screen -- and when the CLI declares none, so nothing is ever
+/// matched on a screen nobody said how to read.
+///
+/// Pure, and the only interpretation of a screen the guard does: one
+/// substring per row, given by the CLI's adapter (`AgentEvent.volatileRows`).
+pub fn boxPrint(screen: []const u8, volatile_rows: []const []const u8) ?u64 {
+    if (volatile_rows.len == 0) return null;
+    var h: std.hash.Wyhash = .init(box_seed);
+    var seen = false;
+    var it = std.mem.splitScalar(u8, screen, '\n');
+    while (it.next()) |line| {
+        const moving = for (volatile_rows) |v| {
+            if (std.mem.indexOf(u8, line, v) != null) break true;
+        } else false;
+        if (moving) {
+            seen = true;
+            continue;
+        }
+        h.update(line);
+        h.update("\n");
+    }
+    return if (seen) h.final() else null;
+}
+
 /// What an agent said that is waiting in the box. One slot, like
 /// `NoticeKind`: a later thing it said replaces an earlier one.
 pub const AgentNotice = enum {
@@ -300,10 +334,28 @@ pub fn Small(comptime n: usize) type {
     };
 }
 
+/// What put an agent's `state` there.
+///
+/// **Two answers, because "the hooks said so" and "the title says so" are
+/// held to different rules.** A hook event is something that happened, and
+/// `state` stands until the next one; a title is something being shown,
+/// and `state` stands only while it is (task 1656). Rules that ask whether
+/// a state is known at all -- `known` -- take either; rules about what a
+/// hook did or did not fire take only `hooks`.
+pub const SaidBy = enum {
+    /// The agent's own hooks, or nothing: the state a terminal starts in.
+    hooks,
+    /// Its terminal's title matches one its plugin declared
+    /// (`Plugin.TitleSays`). The CLI has no hooks to say it with.
+    title,
+};
+
 /// Everything the bus knows about a terminal's agent from its hooks.
 pub const Agent = struct {
     hooks: Hooks,
     state: AgentState,
+    /// Whether `state` came from the hooks or from the title. See `SaidBy`.
+    said_by: SaidBy,
 
     /// When `state` last changed, on the bus's clock.
     since_ms: u64,
@@ -338,6 +390,11 @@ pub const Agent = struct {
     cli: Small(32),
     detail: Small(64),
     note: Small(160),
+    /// How long what `note` is the start of was: the whole command, the
+    /// whole question (task 1651). More than `note`'s length means the
+    /// note stops short, and the line that quotes it has to say so -- a
+    /// command cut at a `;` reads as a whole command that ends there.
+    note_bytes: u64,
     waiting_on_background: bool,
 
     /// How many tool calls are running in this agent's turn, by its own
@@ -355,6 +412,11 @@ pub const Agent = struct {
     /// When `tools` last went from zero to one or from one to zero: how long
     /// something has been running, or how long nothing has.
     tool_ms: u64,
+
+    /// The permission box as it was once drawn, for one whose screen keeps
+    /// moving while it stands (task 1655). Null until `noteBoxPrint`, and
+    /// again after any event that changes the state.
+    box: ?BoxPrint,
 
     pending: ?AgentNotice,
     handed: u8,
@@ -375,9 +437,17 @@ pub const Agent = struct {
         return self.last_event_ms orelse self.since_ms;
     }
 
+    /// Whether `state` is something this terminal's agent said -- through
+    /// its hooks, or through a title its plugin declared -- rather than
+    /// the default of a terminal nothing has spoken for.
+    pub fn known(self: Agent) bool {
+        return self.hooks == .live or self.said_by == .title;
+    }
+
     pub const none: Agent = .{
         .hooks = .none,
         .state = .idle,
+        .said_by = .hooks,
         .since_ms = 0,
         .expected_ms = 0,
         .expected_said = false,
@@ -387,10 +457,12 @@ pub const Agent = struct {
         .cli = .{},
         .detail = .{},
         .note = .{},
+        .note_bytes = 0,
         .waiting_on_background = false,
         .tools = null,
         .tool = .{},
         .tool_ms = 0,
+        .box = null,
         .pending = null,
         .handed = 0,
         .handed_ms = 0,
@@ -811,12 +883,33 @@ turns: std.AutoHashMapUnmanaged(Id, Turn) = .empty,
 /// `Entry` for the reason `turns` is.
 asks: std.AutoHashMapUnmanaged(Id, []u8) = .empty,
 
+/// The tool call each terminal is waiting to have approved, every field of
+/// it, while it waits (task 1651): `asks` has only its command or its
+/// file. Owned; kept and dropped by the same rule as `asks`. In memory
+/// only -- nothing writes it down.
+pending_tools: std.AutoHashMapUnmanaged(Id, PendingToolKept) = .empty,
+
 /// What a supervisor has put in front of the person and not yet had looked
 /// at: `notify_user` with `authorisation`, by the terminal that called it.
 /// The sentence is owned; outside `Entry` for the reason `turns` is.
 raises: std.AutoHashMapUnmanaged(Id, RaiseKept) = .empty,
 
 const RaiseKept = struct { at_ms: u64, text: []u8 };
+
+const PendingToolKept = struct { input: []u8, input_bytes: u64, at_ms: u64 };
+
+/// A tool call waiting for approval, as `pendingToolOf` lends it.
+pub const PendingTool = struct {
+    /// The tool's name: `Agent.detail` while the approval stands.
+    name: []const u8,
+    /// Its `tool_input` as JSON, as much of it as `+hook` could carry.
+    input: []const u8,
+    /// How long `input` was before it was cut; more than `input.len`
+    /// when it was, and then `input` is no longer whole JSON.
+    input_bytes: u64,
+    /// When the approval was asked for, on the bus's clock.
+    at_ms: u64,
+};
 
 /// A supervisor saying "this needs the person": when, and in what words.
 pub const Raise = struct { at_ms: u64, text: []const u8 };
@@ -837,6 +930,9 @@ pub fn deinit(self: *Bus) void {
     var asks = self.asks.valueIterator();
     while (asks.next()) |a| self.alloc.free(a.*);
     self.asks.deinit(self.alloc);
+    var tools = self.pending_tools.valueIterator();
+    while (tools.next()) |t| self.alloc.free(t.input);
+    self.pending_tools.deinit(self.alloc);
     var raises = self.raises.valueIterator();
     while (raises.next()) |r| self.alloc.free(r.text);
     self.raises.deinit(self.alloc);
@@ -859,6 +955,7 @@ pub fn unregister(self: *Bus, id: Id) void {
     _ = self.entries.remove(id);
     if (self.turns.fetchRemove(id)) |kv| self.alloc.free(kv.value.text);
     if (self.asks.fetchRemove(id)) |kv| self.alloc.free(kv.value);
+    if (self.pending_tools.fetchRemove(id)) |kv| self.alloc.free(kv.value.input);
     if (self.raises.fetchRemove(id)) |kv| self.alloc.free(kv.value.text);
 }
 
@@ -1051,7 +1148,7 @@ pub fn noteCall(self: *Bus, id: Id, now_ms: u64) void {
 /// become a bare shell.
 fn silenceExplained(e: Entry) bool {
     if (e.agent_here == false) return false;
-    return e.agent.hooks == .live and stateExplains(e.agent.state);
+    return e.agent.known() and stateExplains(e.agent.state);
 }
 
 /// How long this terminal's calls have been silent, as the `no tool call`
@@ -1387,6 +1484,7 @@ pub fn facts(self: *const Bus, id: Id, now_ms: u64, outside: Attention.Facts.Out
         .id = id,
         .hooks = e.agent.hooks,
         .state = e.agent.state,
+        .said_by = e.agent.said_by,
         .state_since_ms = e.agent.since_ms,
         .expected_ms = e.agent.expected_ms,
         .last_event_ms = e.agent.last_event_ms,
@@ -1839,6 +1937,9 @@ pub fn agentEvent(
     // else: each event either clears the slot or replaces it.
     const before = a.*;
     a.hooks = .live;
+    // A hook outranks a title: whatever the title was saying, this is the
+    // agent's own word, and from here on only its hooks set the state.
+    a.said_by = .hooks;
 
     a.state = state;
     a.last_event_ms = now_ms;
@@ -1849,6 +1950,9 @@ pub fn agentEvent(
     a.agent_id.set(ev.agent_id);
     a.detail.set(ev.detail);
     a.note.set(ev.note);
+    // Whatever box was captured was for the last thing said.
+    a.box = null;
+    a.note_bytes = if (ev.note) |n| @max(n.len, ev.text_bytes) else 0;
 
     // **`since_ms` moves when the state does, and not when it is said
     // again.** A supervisor pressing a working agent starts another turn
@@ -1878,6 +1982,7 @@ pub fn agentEvent(
 
     if (ev.event == .turn_ended) try self.keepTurn(id, ev, now_ms);
     try self.keepAsk(id, ev);
+    try self.keepPendingTool(id, ev, now_ms);
 
     // A new turn makes whatever was waiting about the last one stale, the
     // way `resumed` replaces a quiet report. The `no tool call` clock
@@ -1903,6 +2008,63 @@ pub fn agentEvent(
     if (e.role != .watched or e.duty == .off) return false;
     if (!saysSomethingNew(before, a.*, kind)) return false;
     a.pending = kind;
+    a.handed = 0;
+    return true;
+}
+
+/// What the terminal's title says now, as its plugin declared it (task
+/// 1656): `waits_for` is the key of the plugin whose `title_says` matched
+/// -- the CLI is waiting on an approval -- or null when none did.
+///
+/// **For a CLI that has no hooks.** Codex's approval box keeps its screen
+/// moving, so no quiet report comes and nothing else would ever say it is
+/// stuck; it says so in its title instead. A terminal whose hooks are live
+/// is left to them: they say more, and two voices for one state would
+/// disagree.
+///
+/// **The state lasts as long as the title.** Entering puts
+/// `awaiting_approval` in place with the title as its note, and the same
+/// line in the box a hook's would; another title that still matches --
+/// Codex alternates `[ ! ]` and `[ . ]` once a second -- is the same wait.
+/// A title that no longer matches ends it, and takes back a line still
+/// waiting to be read, as an answered prompt does.
+///
+/// Answers whether anything went in the box.
+pub fn noteTitle(self: *Bus, id: Id, waits_for: ?[]const u8, title: []const u8, now_ms: u64) Allocator.Error!bool {
+    if (self.entries.getPtr(id)) |e| if (e.agent.hooks == .live) return false;
+
+    const cli = waits_for orelse {
+        const e = self.entries.getPtr(id) orelse return false;
+        const a = &e.agent;
+        if (a.said_by != .title) return false;
+        a.said_by = .hooks;
+        a.state = .idle;
+        a.since_ms = now_ms;
+        a.last_event_ms = now_ms;
+        a.detail.set(null);
+        a.note.set(null);
+        if (a.pending) |kind| if (isWaiting(kind)) {
+            a.pending = null;
+            a.handed = 0;
+        };
+        return false;
+    };
+
+    try self.register(id);
+    const e = self.entries.getPtr(id).?;
+    const a = &e.agent;
+    if (a.said_by == .title and a.state == .awaiting_approval) return false;
+
+    a.said_by = .title;
+    a.state = .awaiting_approval;
+    a.since_ms = now_ms;
+    a.last_event_ms = now_ms;
+    a.detail.set("title");
+    a.note.set(title);
+    if (a.cli.get() == null) a.cli.set(cli);
+
+    if (e.role != .watched or e.duty == .off) return false;
+    a.pending = .awaiting_approval;
     a.handed = 0;
     return true;
 }
@@ -2005,13 +2167,77 @@ fn sameText(a: ?[]const u8, b: ?[]const u8) bool {
 ///
 /// Everything that types an answer into a prompt on the person's behalf
 /// asks this first, and sends nothing when it says no.
-pub fn promptStanding(self: *const Bus, id: Id, since_ms: u64, event_ms: u64, now_ms: u64) bool {
+///
+/// `screen` is the terminal's screen as it is now, read only when
+/// `promptNeedsScreen` says it would be looked at; null otherwise.
+///
+/// **A box whose own rows keep redrawing is the same box while the rest of
+/// it is** (task 1655). Claude Code's auto-mode countdown redraws every
+/// second, so the screen never stops moving and the rule above -- it has
+/// not moved since the box was drawn -- refused every answer to such a box
+/// for as long as it stood. For one, the box's content was captured after
+/// it was drawn (`noteBoxPrint`), without the rows its CLI says redraw;
+/// the screen now, read the same way, has to match it. Not looser than
+/// that: the event is still this one, so a second box -- which says a
+/// `PermissionRequest` of its own -- is not it; the volatile row has to be
+/// on screen now, so a box that was declined (no hook) is not it; and
+/// every other row has to be as it was, so a screen that moved on is not.
+pub fn promptStanding(self: *const Bus, id: Id, since_ms: u64, event_ms: u64, now_ms: u64, screen: ?[]const u8) bool {
     const e = self.entries.get(id) orelse return false;
     const a = e.agent;
+    // **A title's wait stands while the title does** (task 1656), and
+    // `noteTitle` ends it the moment the title changes. The screen is no
+    // help here: Codex keeps redrawing under its box, which is the reason
+    // the title is read at all.
+    if (a.said_by == .title) {
+        return a.state == .awaiting_approval and a.since_ms == since_ms and
+            a.last_event_ms != null and a.last_event_ms.? == event_ms;
+    }
     if (a.hooks != .live or a.state != .awaiting_approval) return false;
     if (a.since_ms != since_ms) return false;
     if (a.last_event_ms == null or a.last_event_ms.? != event_ms) return false;
-    return self.quietExplained(id, now_ms);
+    if (self.quietExplained(id, now_ms)) return true;
+    const box = a.box orelse return false;
+    if (box.event_ms != event_ms) return false;
+    const now = boxPrint(screen orelse return false, AgentEvent.volatileRows(a.cli.get() orelse "")) orelse return false;
+    return now == box.hash;
+}
+
+/// Whether `promptStanding` would read the screen for this terminal: a box
+/// was captured for its approval (`noteBoxPrint`). The callers read it only
+/// then, so an answer to an ordinary box costs no read.
+pub fn promptNeedsScreen(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    return e.agent.state == .awaiting_approval and e.agent.box != null;
+}
+
+/// Whether this terminal's permission box should be captured now: it is
+/// waiting on an approval whose box has had `event_redraw_grace_ms` to be
+/// drawn, none was captured for it yet, and its CLI says which of the box's
+/// rows redraw (task 1655). Asked on each heartbeat -- which is the only
+/// thing that runs while a screen keeps moving, and so exactly while it
+/// matters.
+pub fn wantsBoxPrint(self: *const Bus, id: Id, now_ms: u64) bool {
+    const e = self.entries.get(id) orelse return false;
+    const a = e.agent;
+    if (a.hooks != .live or a.state != .awaiting_approval) return false;
+    if (a.box) |b| if (b.event_ms == a.eventMs()) return false;
+    if (AgentEvent.volatileRows(a.cli.get() orelse "").len == 0) return false;
+    return now_ms >= a.eventMs() + event_redraw_grace_ms;
+}
+
+/// Keep the box captured for the approval asked at `event_ms`, if that is
+/// still the one waiting. `screen` is the terminal's screen as read now;
+/// nothing is kept when the box's volatile rows are not on it -- not drawn
+/// yet, or already gone -- and the next heartbeat asks again.
+pub fn noteBoxPrint(self: *Bus, id: Id, event_ms: u64, screen: []const u8) bool {
+    const e = self.entries.getPtr(id) orelse return false;
+    const a = &e.agent;
+    if (a.hooks != .live or a.state != .awaiting_approval) return false;
+    if (a.last_event_ms == null or a.last_event_ms.? != event_ms) return false;
+    const hash = boxPrint(screen, AgentEvent.volatileRows(a.cli.get() orelse "")) orelse return false;
+    a.box = .{ .event_ms = event_ms, .hash = hash };
+    return true;
 }
 
 /// The whole of what this terminal is waiting to have approved, or null
@@ -2038,6 +2264,40 @@ fn keepAsk(self: *Bus, id: Id, ev: AgentEvent.Event) Allocator.Error!void {
     const gop = try self.asks.getOrPut(self.alloc, id);
     if (gop.found_existing) self.alloc.free(gop.value_ptr.*);
     gop.value_ptr.* = kept;
+}
+
+/// The tool call waiting for approval in this terminal, or null when it is
+/// not waiting on one or its hook did not send it. Borrowed: valid until
+/// the next `agentEvent` or `unregister` for it.
+pub fn pendingToolOf(self: *const Bus, id: Id) ?PendingTool {
+    const t = self.pending_tools.get(id) orelse return null;
+    // The entry itself, not a copy: the name is lent out of it.
+    const e = self.entries.getPtr(id) orelse return null;
+    return .{
+        .name = e.agent.detail.get() orelse "",
+        .input = t.input,
+        .input_bytes = t.input_bytes,
+        .at_ms = t.at_ms,
+    };
+}
+
+/// `keepAsk`'s rule for the whole tool call: kept while the approval it
+/// came with stands, gone with any other event.
+fn keepPendingTool(self: *Bus, id: Id, ev: AgentEvent.Event, now_ms: u64) Allocator.Error!void {
+    const input = if (ev.event == .awaiting_approval) ev.input else null;
+    const whole = input orelse {
+        if (self.pending_tools.fetchRemove(id)) |kv| self.alloc.free(kv.value.input);
+        return;
+    };
+    const kept = try self.alloc.dupe(u8, whole);
+    errdefer self.alloc.free(kept);
+    const gop = try self.pending_tools.getOrPut(self.alloc, id);
+    if (gop.found_existing) self.alloc.free(gop.value_ptr.input);
+    gop.value_ptr.* = .{
+        .input = kept,
+        .input_bytes = @max(whole.len, ev.input_bytes),
+        .at_ms = now_ms,
+    };
 }
 
 fn keepTurn(self: *Bus, id: Id, ev: AgentEvent.Event, now_ms: u64) Allocator.Error!void {
@@ -2530,7 +2790,7 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
                 const in_turn = e.agent.hooks == .live and e.agent.state == .in_turn;
                 // Still here with the agent in a state that would explain a
                 // still screen: the screen moved after that event.
-                const outlived = e.agent.hooks == .live and stateExplains(e.agent.state);
+                const outlived = e.agent.known() and stateExplains(e.agent.state);
                 const written = switch (kind) {
                     // **No agent in it** (#63): whatever its hooks last
                     // said is about an agent that has gone, and a worker
@@ -2729,6 +2989,9 @@ fn quietExplained(self: *const Bus, id: Id, now_ms: u64) bool {
     // What an agent that has gone last said explains nothing (#63).
     if (e.agent_here == false) return false;
     const a = e.agent;
+    // A title saying it waits explains the stillness for as long as it says
+    // so; it stops saying so the moment the box goes (`noteTitle`).
+    if (a.said_by == .title) return a.state == .awaiting_approval;
     if (a.hooks != .live or !stateExplains(a.state)) return false;
     if (!self.observed(id)) return true;
     // **A turn that ended or failed, or a question being waited on, holds
@@ -2858,7 +3121,7 @@ fn writeAgent(
             const text = if (turn) |t| t.text else "";
             if (text.len > 0) {
                 try w.writeAll(": \"");
-                try fitTail(w, AgentEvent.prefixChars(text, excerpt_chars), text.len, 1);
+                _ = try fitTail(w, AgentEvent.prefixChars(text, excerpt_chars), text.len, 1);
                 try w.writeAll("\"");
             }
         },
@@ -2874,13 +3137,29 @@ fn writeAgent(
             // this line knows both without a `terminal_list` in between.
             // Before the note because the note is what gets cut when the
             // line is full.
-            try w.print(
+            // A title names no tool: what it says is that the CLI waits,
+            // and the title itself goes where a hook's note would.
+            if (a.said_by == .title) try w.print(
+                "{s}0x{x:0>16} awaiting approval (title says so) [state_at_ms={d} event_at_ms={d} answer={s}]",
+                .{ sep, id, a.since_ms, a.eventMs(), may.word() },
+            ) else try w.print(
                 "{s}0x{x:0>16} awaiting approval {s} [state_at_ms={d} event_at_ms={d} answer={s}]",
                 .{ sep, id, a.detail.get() orelse "(no tool name)", a.since_ms, a.eventMs(), may.word() },
             );
+            // **A cut note says it was cut, and by how much** (task 1651):
+            // a command stopped at `; S` read as a command that ended
+            // there. The rest is terminal_turn's `pending_tool`.
             if (a.note.get()) |note| {
                 try w.writeAll(": ");
-                try fitTail(w, note, note.len, 0);
+                var more_buf: [64]u8 = undefined;
+                const more = std.fmt.bufPrint(
+                    &more_buf,
+                    " [{d} bytes; terminal_turn has all]",
+                    .{@max(note.len, a.note_bytes)},
+                ) catch unreachable;
+                if (try fitTail(w, note, @max(note.len, a.note_bytes), more.len)) {
+                    try w.writeAll(more);
+                }
             }
         },
         .awaiting_input => try w.print(
@@ -2898,8 +3177,8 @@ fn writeAgent(
 /// follows it, cut on a character boundary with an ellipsis when it does
 /// not fit whole or when `full_len` says it was already a prefix. Control
 /// characters become spaces: this line is typed into a terminal, where a
-/// newline submits it.
-fn fitTail(w: *std.Io.Writer, s: []const u8, full_len: usize, reserve: usize) std.Io.Writer.Error!void {
+/// newline submits it. True when it was cut.
+fn fitTail(w: *std.Io.Writer, s: []const u8, full_len: usize, reserve: usize) std.Io.Writer.Error!bool {
     const ellipsis = "\u{2026}";
     const room = w.buffer.len -| w.end -| reserve;
     const cut = s.len < full_len or s.len > room;
@@ -2909,6 +3188,7 @@ fn fitTail(w: *std.Io.Writer, s: []const u8, full_len: usize, reserve: usize) st
         AgentEvent.cutBytes(s, @min(s.len, room - ellipsis.len));
     for (body) |c| try w.writeByte(if (c < 0x20 or c == 0x7f) ' ' else c);
     if (cut) try w.writeAll(ellipsis);
+    return cut;
 }
 
 /// The box, but only if enough time has passed to interrupt the supervisor
@@ -4859,7 +5139,7 @@ test "hooks: a worker stopped on a question is handed over at once, inside the i
         "[poltergeist] 0x0000000000002222 awaiting approval Bash [state_at_ms=10000 event_at_ms=10000 answer=allowed]: rm -rf dist",
         line,
     );
-    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 10_000));
+    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 10_000, null));
 
     // Handed once: it does not come again a second later.
     try testing.expect(!b.hasFreshWaiting(boss, .none));
@@ -4965,7 +5245,7 @@ test "hooks: an approval answered, then the tool finishing, is back in the turn 
     // What was to be approved, and the line saying so, are gone with it.
     try testing.expect(b.askOf(worker) == null);
     try testing.expect(a.pending == null);
-    try testing.expect(!b.promptStanding(worker, 2_000, 2_000, 900_000));
+    try testing.expect(!b.promptStanding(worker, 2_000, 2_000, 900_000, null));
 
     // And the next tool call inside the same turn is not a new state.
     _ = try b.agentEvent(worker, toolDone("Read"), 950_000);
@@ -5045,7 +5325,7 @@ test "hooks: a subagent's tool finishing does not take the main agent's approval
     const a = b.agentOf(worker);
     try testing.expectEqual(AgentState.awaiting_approval, a.state);
     try testing.expectEqual(@as(?u64, 2_000), a.last_event_ms);
-    try testing.expect(b.promptStanding(worker, 2_000, 2_000, 3_000));
+    try testing.expect(b.promptStanding(worker, 2_000, 2_000, 3_000, null));
 
     // The main agent's own next tool call is what ends it.
     _ = try b.agentEvent(worker, toolDone("Bash"), 4_000);
@@ -5144,7 +5424,144 @@ test "hooks: a long note is what gets cut, never the guard" {
     _ = try b.agentEvent(worker, ask, 123_456);
     const line = b.drain(boss, 123_456, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expect(std.mem.indexOf(u8, line, "[state_at_ms=123456 event_at_ms=123456 answer=allowed]") != null);
-    try testing.expect(std.mem.endsWith(u8, line, "\u{2026}"));
+    // Cut, and says so: how long it was and where the rest is (task 1651).
+    try testing.expect(std.mem.endsWith(u8, line, "\u{2026} [400 bytes; terminal_turn has all]"));
+    try testing.expect(line.len <= buf.len);
+}
+
+test "hooks: a note cut by +hook says so on the line even when it would fit (task 1651)" {
+    // The instance: the hook kept the first 120 characters of a longer
+    // command, the line had room for all 120, and it went out without a
+    // mark -- a command that seemed to end at `; S`.
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    ask.note = "D=/tmp/issue-fix; S";
+    ask.text = "D=/tmp/issue-fix; S=$D/x; rm -rf \"$S\"";
+    ask.text_bytes = 812;
+    _ = try b.agentEvent(worker, ask, 5);
+    const line = b.drain(boss, 5, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.endsWith(u8, line, ": D=/tmp/issue-fix; S\u{2026} [812 bytes; terminal_turn has all]"));
+
+    // And one that is whole carries no mark.
+    var b2 = try hookedBus();
+    defer b2.deinit();
+    ask.text = ask.note;
+    ask.text_bytes = ask.note.?.len;
+    _ = try b2.agentEvent(worker, ask, 5);
+    const whole = b2.drain(boss, 5, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.endsWith(u8, whole, ": D=/tmp/issue-fix; S"));
+}
+
+test "hooks: the tool call waiting for approval is kept whole while it waits, and only then (task 1651)" {
+    var b = try hookedBus();
+    defer b.deinit();
+    try testing.expect(b.pendingToolOf(worker) == null);
+
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Edit";
+    ask.note = "/w/a.zig";
+    ask.input = "{\"file_path\":\"/w/a.zig\",\"old_string\":\"a\",\"new_string\":\"b\"}";
+    ask.input_bytes = 9000;
+    _ = try b.agentEvent(worker, ask, 70);
+    const t = b.pendingToolOf(worker) orelse return error.TestExpectedPendingTool;
+    try testing.expectEqualStrings("Edit", t.name);
+    // Lent out of the entry itself. A copy's bytes still read "Edit" for a
+    // moment after it is gone, which is how a name came back as four bytes
+    // of rubbish in terminal_turn and nowhere here.
+    const held = &b.entries.getPtr(worker).?.agent.detail.buf;
+    try testing.expectEqual(@intFromPtr(held), @intFromPtr(t.name.ptr));
+    try testing.expectEqualStrings(ask.input.?, t.input);
+    try testing.expectEqual(@as(u64, 9000), t.input_bytes);
+    try testing.expectEqual(@as(u64, 70), t.at_ms);
+
+    // Started tools inside the wait move nothing (task 1625's rule)...
+    var started = hookEv(.tool_started);
+    started.detail = "Read";
+    _ = try b.agentEvent(worker, started, 71);
+    try testing.expect(b.pendingToolOf(worker) != null);
+
+    // ...an answered approval ends it.
+    var resumed = hookEv(.turn_resumed);
+    resumed.detail = "Edit";
+    _ = try b.agentEvent(worker, resumed, 72);
+    try testing.expect(b.pendingToolOf(worker) == null);
+
+    // A question is not a tool call.
+    _ = try b.agentEvent(worker, ask, 73);
+    var q = hookEv(.awaiting_input);
+    q.detail = "elicitation_dialog";
+    q.input = "{}";
+    q.input_bytes = 2;
+    _ = try b.agentEvent(worker, q, 74);
+    try testing.expect(b.pendingToolOf(worker) == null);
+
+    // Gone with the terminal.
+    _ = try b.agentEvent(worker, ask, 75);
+    b.unregister(worker);
+    try testing.expect(b.pendingToolOf(worker) == null);
+}
+
+test "boxPrint: the same box whatever its countdown says, and nothing without one (task 1655)" {
+    const rows: []const []const u8 = &.{"will automatically deny this request in"};
+    const a = " Bash command\n   rm -rf dist/\n ⚠ Claude Code will automatically deny this request in 1:54, to avoid blocking\n Do you want to proceed?\n";
+    const b = " Bash command\n   rm -rf dist/\n ⚠ Claude Code will automatically deny this request in about 9 seconds, to avoid blocking\n Do you want to proceed?\n";
+    const other = " Bash command\n   git push --force\n ⚠ Claude Code will automatically deny this request in 1:54, to avoid blocking\n Do you want to proceed?\n";
+    const gone = " Bash command\n   rm -rf dist/\n Do you want to proceed?\n";
+    try testing.expect(boxPrint(a, rows) != null);
+    try testing.expectEqual(boxPrint(a, rows).?, boxPrint(b, rows).?);
+    try testing.expect(boxPrint(a, rows).? != boxPrint(other, rows).?);
+    // No countdown row: not this kind of box, or not on screen.
+    try testing.expect(boxPrint(gone, rows) == null);
+    // A CLI that declares no rows matches nothing.
+    try testing.expect(boxPrint(a, &.{}) == null);
+}
+
+test "hooks: a box whose own rows redraw stands while the rest of it does, and no longer (task 1655)" {
+    var b = try hookedBus();
+    defer b.deinit();
+    const box = " rm -rf dist/\n ⚠ Claude Code will automatically deny this request in 1:54, to avoid\n ❯ 1. Yes\n";
+    const later = " rm -rf dist/\n ⚠ Claude Code will automatically deny this request in 1:41, to avoid\n ❯ 1. Yes\n";
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    _ = try b.agentEvent(worker, ask, 1_000);
+
+    // Not before the box has had its grace to be drawn.
+    b.noteQuiet(worker, 0, 2_000);
+    try testing.expect(!b.wantsBoxPrint(worker, 2_000));
+    // Not kept from a screen without the countdown on it.
+    try testing.expect(!b.noteBoxPrint(worker, 1_000, " rm -rf dist/\n"));
+    try testing.expect(b.wantsBoxPrint(worker, 4_000));
+    // Not for an event that is not the one waiting.
+    try testing.expect(!b.noteBoxPrint(worker, 999, box));
+    try testing.expect(b.noteBoxPrint(worker, 1_000, box));
+    try testing.expect(!b.wantsBoxPrint(worker, 5_000));
+    try testing.expect(b.promptNeedsScreen(worker));
+
+    // The screen keeps moving: by the old rule alone, gone.
+    b.noteQuiet(worker, 0, 14_000);
+    try testing.expect(!b.promptStanding(worker, 1_000, 1_000, 14_000, null));
+    // With the screen as it is now, the same box.
+    try testing.expect(b.promptStanding(worker, 1_000, 1_000, 14_000, later));
+    // Still the moments of this box, and no other.
+    try testing.expect(!b.promptStanding(worker, 1_000, 999, 14_000, later));
+    // The rest of the box changed, or the countdown is gone: not it.
+    try testing.expect(!b.promptStanding(worker, 1_000, 1_000, 14_000, " git push\n ⚠ Claude Code will automatically deny this request in 1:41, to avoid\n ❯ 1. Yes\n"));
+    try testing.expect(!b.promptStanding(worker, 1_000, 1_000, 14_000, " rm -rf dist/\n ❯ 1. Yes\n"));
+
+    // A second box is a new event, and what was captured goes with the first.
+    _ = try b.agentEvent(worker, ask, 15_000);
+    try testing.expect(!b.promptNeedsScreen(worker));
+    b.noteQuiet(worker, 0, 30_000);
+    try testing.expect(!b.promptStanding(worker, 15_000, 15_000, 30_000, later));
+
+    // A CLI that declares no redrawing rows is asked nothing.
+    var other = hookEv(.awaiting_approval);
+    other.cli = "codex";
+    _ = try b.agentEvent(worker, other, 40_000);
+    try testing.expect(!b.wantsBoxPrint(worker, 60_000));
 }
 
 test "hooks: a new turn makes the last one's notice stale" {
@@ -5446,28 +5863,28 @@ test "ControlRoom prompt: the one a caller saw, and no other" {
     var first = hookEv(.awaiting_approval);
     first.note = "rm -rf dist/";
     _ = try b.agentEvent(worker, first, 1_000);
-    try testing.expect(b.promptStanding(worker, 1_000, 1_000, 2_000));
+    try testing.expect(b.promptStanding(worker, 1_000, 1_000, 2_000, null));
 
     // Not the time it was seen at.
-    try testing.expect(!b.promptStanding(worker, 999, 1_000, 2_000));
-    try testing.expect(!b.promptStanding(worker, 1_000, 999, 2_000));
+    try testing.expect(!b.promptStanding(worker, 999, 1_000, 2_000, null));
+    try testing.expect(!b.promptStanding(worker, 1_000, 999, 2_000, null));
     // Not a terminal nobody knows.
-    try testing.expect(!b.promptStanding(0xdead, 1_000, 1_000, 2_000));
+    try testing.expect(!b.promptStanding(0xdead, 1_000, 1_000, 2_000, null));
 
     // Announced again: the same wait, and a later event than the one seen.
     _ = try b.agentEvent(worker, first, 3_000);
-    try testing.expect(!b.promptStanding(worker, 1_000, 1_000, 4_000));
-    try testing.expect(b.promptStanding(worker, 1_000, 3_000, 4_000));
+    try testing.expect(!b.promptStanding(worker, 1_000, 1_000, 4_000, null));
+    try testing.expect(b.promptStanding(worker, 1_000, 3_000, 4_000, null));
 
     // Answered at the terminal, which no hook reports: the screen moved
     // after the box was drawn, and that is all there is to go on.
     b.noteSampling(worker, true, 3_000);
     b.noteQuiet(worker, 0, 20_000);
-    try testing.expect(!b.promptStanding(worker, 1_000, 3_000, 21_000));
+    try testing.expect(!b.promptStanding(worker, 1_000, 3_000, 21_000, null));
 
     // No longer waiting on an approval at all.
     _ = try b.agentEvent(worker, hookEv(.turn_started), 30_000);
-    try testing.expect(!b.promptStanding(worker, 30_000, 30_000, 31_000));
+    try testing.expect(!b.promptStanding(worker, 30_000, 30_000, 31_000, null));
 }
 
 test "hooks: the status line saying it wrote the allowance changes nothing the bus keeps" {
@@ -5480,7 +5897,7 @@ test "hooks: the status line saying it wrote the allowance changes nothing the b
     ask.detail = "Bash";
     _ = try b.agentEvent(worker, ask, 10_000);
     const before = b.agentOf(worker);
-    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 11_000));
+    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 11_000, null));
 
     // Its status line refreshes a second later and says a file was written.
     try testing.expect(!try b.agentEvent(worker, hookEv(.allowance_written), 11_000));
@@ -5490,7 +5907,7 @@ test "hooks: the status line saying it wrote the allowance changes nothing the b
     // Not "heard from": the prompt on screen is still the one asked about.
     try testing.expectEqual(before.last_event_ms, after.last_event_ms);
     try testing.expectEqual(before.pending, after.pending);
-    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 12_000));
+    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 12_000, null));
 
     // And from a terminal the bus has never heard of, it makes no entry:
     // a status line is not an agent's hook.
@@ -5843,4 +6260,108 @@ test "#63: a terminal with no agent in it says so on the quiet and no tool call 
         "[poltergeist] 0x0000000000002222 no tool call 15m (no agent in it)",
         silent,
     );
+}
+
+const codex_wait = "[ ! ] Action Required | t1653-w";
+const codex_blink = "[ . ] Action Required | t1653-w";
+
+test "1656: a title that says it waits puts awaiting approval in the box, said as the title's" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+
+    try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 4_000));
+    const a = b.agentOf(worker);
+    try testing.expectEqual(SaidBy.title, a.said_by);
+    try testing.expectEqual(AgentState.awaiting_approval, a.state);
+    try testing.expectEqual(Hooks.none, a.hooks);
+    try testing.expectEqualStrings("title", a.detail.get().?);
+    try testing.expectEqualStrings("codex", a.cli.get().?);
+    try testing.expect(b.hasFreshWaiting(boss, .none));
+
+    const line = b.drain(boss, 5_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 awaiting approval (title says so) [state_at_ms=4000 event_at_ms=4000 answer=allowed]: " ++ codex_wait,
+        line,
+    );
+}
+
+test "1656: the title blinking is one wait, not one a second" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+
+    try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 4_000));
+    _ = b.drain(boss, 4_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(!try b.noteTitle(worker, "codex", codex_blink, 5_000));
+    try testing.expect(!try b.noteTitle(worker, "codex", codex_wait, 6_000));
+    try testing.expectEqual(@as(u64, 4_000), b.agentOf(worker).since_ms);
+    try testing.expect(b.drain(boss, 6_000, &buf, .none) == null);
+}
+
+test "1656: a title that stops saying it ends the wait, and takes back a line nobody read" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+
+    try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 4_000));
+    try testing.expect(!try b.noteTitle(worker, null, "\u{2827} t1653-w", 7_000));
+    const a = b.agentOf(worker);
+    try testing.expectEqual(AgentState.idle, a.state);
+    try testing.expectEqual(SaidBy.hooks, a.said_by);
+    try testing.expect(a.detail.get() == null);
+    try testing.expect(b.drain(boss, 7_000, &buf, .none) == null);
+
+    // And a new box is a new wait.
+    try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 9_000));
+    try testing.expectEqual(@as(u64, 9_000), b.agentOf(worker).since_ms);
+}
+
+test "1656: live hooks outrank the title, both ways" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // Hooks speaking first: a matching title is not a second voice.
+    _ = try b.agentEvent(worker, hookEv(.session_started), 1_000);
+    try testing.expect(!try b.noteTitle(worker, "codex", codex_wait, 2_000));
+    try testing.expectEqual(AgentState.idle, b.agentOf(worker).state);
+    try testing.expectEqual(SaidBy.hooks, b.agentOf(worker).said_by);
+
+    // The title first, then a hook: the hook's word stands.
+    var c = try hookedBus();
+    defer c.deinit();
+    try testing.expect(try c.noteTitle(worker, "codex", codex_wait, 1_000));
+    _ = try c.agentEvent(worker, hookEv(.turn_started), 2_000);
+    try testing.expectEqual(SaidBy.hooks, c.agentOf(worker).said_by);
+    try testing.expectEqual(AgentState.in_turn, c.agentOf(worker).state);
+    // A title leaving after that changes nothing the hook said.
+    try testing.expect(!try c.noteTitle(worker, null, "zsh", 3_000));
+    try testing.expectEqual(AgentState.in_turn, c.agentOf(worker).state);
+}
+
+test "1656: a title's wait stands for an answer while the title does, whatever the screen does" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 4_000));
+    // The screen keeps moving under Codex's box: reports of it change nothing.
+    _ = b.report(worker, .{ .resumed = .{ .quiet_ms = 0, .silent_ms = 0, .changed_rows = 1, .total_rows = 24 } }, 5_000);
+    try testing.expect(b.promptStanding(worker, 4_000, 4_000, 9_000, null));
+    try testing.expect(!b.promptStanding(worker, 3_000, 4_000, 9_000, null));
+
+    _ = try b.noteTitle(worker, null, "zsh", 10_000);
+    try testing.expect(!b.promptStanding(worker, 4_000, 4_000, 11_000, null));
+}
+
+test "1656: an unwatched terminal's title is noted, and put in nobody's box" {
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    try testing.expect(!try b.noteTitle(worker, "codex", codex_wait, 1_000));
+    try testing.expectEqual(AgentState.awaiting_approval, b.agentOf(worker).state);
+    var buf: [255]u8 = undefined;
+    try testing.expect(b.drain(boss, 1_000, &buf, .none) == null);
+    // And a title nobody declared is no reason to keep an entry.
+    try testing.expect(!try b.noteTitle(0x3333, null, "zsh", 1_000));
+    try testing.expect(b.entries.get(0x3333) == null);
 }

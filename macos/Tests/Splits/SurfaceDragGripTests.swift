@@ -151,4 +151,39 @@ struct SurfaceDragGripTests {
         let moved = Grip.isDrag(from: .zero, to: .zero, threshold: 0)
         #expect(moved)
     }
+
+    // MARK: - The cursor over a grip with a button on it (tasks 1634, 1642)
+
+    @Test func theCloseButtonsColumnIsTheArrowsAndTheRestIsTheHands() {
+        // A title band 500 wide, its 18pt button 7pt in from the start.
+        let bounds = CGRect(x: 0, y: 0, width: 500, height: 28)
+        let areas = Grip.cursorAreas(in: bounds, button: .init(size: 18, padding: 7))
+        #expect(areas.arrow == CGRect(x: 0, y: 0, width: 25, height: 28))
+        #expect(areas.hand == CGRect(x: 25, y: 0, width: 475, height: 28))
+        // The cross's centre is under the arrow, the title's text under the hand.
+        #expect(areas.arrow?.contains(CGPoint(x: 16, y: 14)) == true)
+        #expect(!areas.hand.contains(CGPoint(x: 16, y: 14)))
+        #expect(areas.hand.contains(CGPoint(x: 100, y: 14)))
+    }
+
+    @Test func aGripThatDoesNotStartAtZeroCountsFromItsOwnStart() {
+        let bounds = CGRect(x: 40, y: 0, width: 200, height: 28)
+        let areas = Grip.cursorAreas(in: bounds, button: .init(size: 18, padding: 11))
+        #expect(areas.arrow == CGRect(x: 40, y: 0, width: 29, height: 28))
+        #expect(areas.hand == CGRect(x: 69, y: 0, width: 171, height: 28))
+    }
+
+    @Test func withNoButtonTheWholeGripIsTheHands() {
+        let bounds = CGRect(x: 0, y: 0, width: 99, height: 28)
+        let areas = Grip.cursorAreas(in: bounds, button: nil)
+        #expect(areas.hand == bounds)
+        #expect(areas.arrow == nil)
+    }
+
+    @Test func aGripNarrowerThanItsButtonIsAllArrow() {
+        let bounds = CGRect(x: 10, y: 0, width: 12, height: 28)
+        let areas = Grip.cursorAreas(in: bounds, button: .init(size: 18, padding: 11))
+        #expect(areas.hand.width == 0)
+        #expect(areas.arrow == bounds)
+    }
 }

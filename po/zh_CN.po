@@ -1174,6 +1174,14 @@ msgstr "关闭左侧"
 msgid "Close Terminal"
 msgstr "关闭终端"
 
+#: windows/host/src/terminal_id.rs:22
+msgid "Copy Terminal ID"
+msgstr "复制终端 ID"
+
+#: windows/host/src/terminal_id.rs:24
+msgid "Copy All"
+msgstr "复制全部"
+
 #: src/input/command.zig:668
 msgid "Close the current terminal."
 msgstr "关闭当前终端。"
@@ -2478,6 +2486,38 @@ msgstr "屏幕 {1} 分没动"
 #: src/poltergeist/ControlRoom.zig:871
 msgid "Screen still for {1} min, no tool call for {2} min"
 msgstr "屏幕 {1} 分没动，{2} 分没调工具"
+
+#: src/poltergeist/report.zig:122
+msgid "Switched off, so nothing is handed to it. Turn it on with the switch on its page."
+msgstr "已关，什么都不会交给它。在它的页面上打开开关就行。"
+
+#: src/poltergeist/report.zig:123
+msgid "Its plugin.json subscribes to nothing, so it was not started. That is the plugin's own file to change."
+msgstr "它的 plugin.json 没订阅任何事件，所以没启动。要改的是插件自己的文件。"
+
+#: src/poltergeist/report.zig:124
+msgid "It subscribes to chat but names no groups, so it is running and will be handed nothing."
+msgstr "它订阅了群聊，却没指定任何群：在运行，但什么也收不到。"
+
+#: src/poltergeist/report.zig:125
+msgid "Switched on, but nothing runs it until a terminal is open."
+msgstr "已开，但要等有终端开着才会运行。"
+
+#: src/poltergeist/report.zig:126
+msgid "Switched on, but it would not start. Polter's log says why."
+msgstr "已开，但没能启动，原因见 Polter 的日志。"
+
+#: src/poltergeist/report.zig:127
+msgid "It failed to start {1} time(s) and will be tried again shortly. Polter's log has what it said."
+msgstr "启动失败 {1} 次，稍后会再试。它说了什么见 Polter 的日志。"
+
+#: src/poltergeist/report.zig:128
+msgid "It failed to start {1} time(s) and is now tried every fifteen minutes. Polter's log says why."
+msgstr "启动失败 {1} 次，现在每 15 分钟试一次。原因见 Polter 的日志。"
+
+#: src/poltergeist/report.zig:129
+msgid "Stopped. It starts again when Polter does."
+msgstr "已停止，下次启动 Polter 时才会再运行。"
 
 # U+2026, action prompt_tab_title: opens the title overlay (menu.rs, ctxmenu.rs). "Rename Tab..." with three ASCII dots is a DIFFERENT action, rename_tab, in-place on the tab strip. Do not merge them.
 #. TRANSLATORS: U+2026, not three ASCII dots. This opens the title

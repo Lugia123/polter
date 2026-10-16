@@ -1,0 +1,30 @@
+{
+  "name": "Codex CLI",
+  "description": "把 Polter 的 MCP 服务注册到 OpenAI 的 Codex CLI，并把 Polter 的 skill 同步到 ~/.codex/skills/polter-*。Codex 的配置是 ~/.codex/config.toml 里的 mcp_servers（TOML），不是别家用的 mcpServers；注册一律走 `codex mcp`。",
+  "params": {
+    "skills": {
+      "title": "安装 skill",
+      "description": "选「装」会把 Polter 的 skill 同步到这个 CLI 的 skill 目录。CLI 只拿自己的 skill 去匹配用户的请求，而 Polter 的 skill_read 得先想到才会用，差别就在这里。选「不装」就只注册 MCP 服务。",
+      "choices": {
+        "yes": "装",
+        "no": "不装"
+      }
+    },
+    "rules": {
+      "title": "写进规则文件",
+      "description": "选「写入」会在用户级规则文件里（从不碰项目级的）加一段带标记的说明：agent 打印的东西没人看得到，并指向 operating-a-terminal 这个 skill。之所以要写，是因为 skill 只按用户的请求去匹配，没有哪个请求叫「你刚做完一件事」：实测 71 个任务只有 15 个报了完成。标记以外的内容一概不动；选「不写」会把这段删掉。",
+      "choices": {
+        "yes": "写入",
+        "no": "不写"
+      }
+    },
+    "approve_tools": {
+      "title": "Polter 的工具不用逐个批准",
+      "description": "选「不用问」会在 ~/.codex/config.toml 的 polter 服务上写 default_tools_approval_mode = \"approve\"，别处一概不动。不写的话，Codex 每次调用 Polter 的工具都要先问一句，没人看着的 worker 会停在第一次调用上，连进度都报不出来。你的其他 MCP 服务和全局批准策略都不受影响。选「要问」会把这一行删掉，Codex 恢复逐个询问。",
+      "choices": {
+        "yes": "不用问",
+        "no": "要问"
+      }
+    }
+  }
+}

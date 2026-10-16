@@ -47,6 +47,10 @@ extension Ghostty {
         /// The menu a right-click opens on it (task 1582); nil for none.
         var menu: (() -> NSMenu?)?
 
+        /// A button laid over its leading end, whose column keeps the arrow
+        /// instead of the hand (tasks 1634, 1642); nil for none.
+        var leadingButton: SurfaceDragGrip.LeadingButton?
+
         var body: some View {
             SurfaceDragSourceViewRepresentable(
                 surfaceView: surfaceView,
@@ -55,7 +59,8 @@ extension Ghostty {
                 dragThreshold: dragThreshold,
                 onClick: onClick,
                 canDrag: canDrag,
-                menu: menu)
+                menu: menu,
+                leadingButton: leadingButton)
             .preference(key: DraggingSurfaceKey.self, value: isDragging ? surfaceView.id : nil)
         }
     }
@@ -70,6 +75,7 @@ extension Ghostty {
         let onClick: (() -> Void)?
         let canDrag: Bool
         let menu: (() -> NSMenu?)?
+        let leadingButton: SurfaceDragGrip.LeadingButton?
 
         func makeNSView(context: Context) -> SurfaceDragSourceView {
             let view = SurfaceDragSourceView()
@@ -77,6 +83,7 @@ extension Ghostty {
             view.dragThreshold = dragThreshold
             view.onClick = onClick
             view.canDrag = canDrag
+            view.leadingButton = leadingButton
             view.menuProvider = menu
             view.onDragStateChanged = { dragging in
                 isDragging = dragging
@@ -93,8 +100,9 @@ extension Ghostty {
             nsView.surfaceView = surfaceView
             nsView.dragThreshold = dragThreshold
             nsView.onClick = onClick
-            if nsView.canDrag != canDrag {
+            if nsView.canDrag != canDrag || nsView.leadingButton != leadingButton {
                 nsView.canDrag = canDrag
+                nsView.leadingButton = leadingButton
                 nsView.window?.invalidateCursorRects(for: nsView)
             }
             nsView.menuProvider = menu
@@ -138,6 +146,9 @@ extension Ghostty {
 
         /// See `SurfaceDragSource.canDrag`.
         var canDrag: Bool = true
+
+        /// See `SurfaceDragSource.leadingButton`.
+        var leadingButton: SurfaceDragGrip.LeadingButton?
 
         /// See `SurfaceDragSource.menu`.
         var menuProvider: (() -> NSMenu?)?
@@ -209,7 +220,14 @@ extension Ghostty {
 
         override func resetCursorRects() {
             guard canDrag else { return }
-            addCursorRect(bounds, cursor: isTracking ? .closedHand : .openHand)
+            // Not over the button on its end (task 1634): `cursorAreas`.
+            let areas = SurfaceDragGrip.cursorAreas(in: bounds, button: leadingButton)
+            if !areas.hand.isEmpty {
+                addCursorRect(areas.hand, cursor: isTracking ? .closedHand : .openHand)
+            }
+            if let arrow = areas.arrow, !arrow.isEmpty {
+                addCursorRect(arrow, cursor: .arrow)
+            }
         }
 
         override func mouseEntered(with event: NSEvent) {

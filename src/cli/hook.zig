@@ -4,6 +4,7 @@ const Action = @import("ghostty.zig").Action;
 const global = @import("../global.zig");
 const AgentEvent = @import("../poltergeist/agent_event.zig");
 const transport = @import("../poltergeist/transport.zig");
+const Server = @import("../poltergeist/Server.zig");
 
 const log = std.log.scoped(.hook);
 
@@ -194,7 +195,8 @@ pub fn deliver(
     const auth = (try reader.interface.takeDelimiter('\n')) orelse return error.EndOfStream;
     if (std.mem.indexOf(u8, auth, "\"ok\":true") == null) return error.AuthRefused;
 
-    try writeRequest(w, ev);
+    var line_buf: [Server.max_request_bytes - 1]u8 = undefined;
+    try w.writeAll(try fitRequest(&line_buf, ev));
     try w.writeByte('\n');
     try w.flush();
 
@@ -202,6 +204,33 @@ pub fn deliver(
     if (std.mem.indexOf(u8, reply, "\"ok\":true") == null) {
         log.warn("+hook: refused: {s}", .{reply[0..@min(reply.len, 200)]});
         return error.Refused;
+    }
+}
+
+/// The `agent_event` request line, without its newline, written into `buf`
+/// and cut until it fits there (task 1651).
+///
+/// An approval carries its whole tool call, and the host reads no request
+/// longer than `Server.max_request_bytes` -- it drops the connection, and
+/// the approval would never be heard. So the tool call is halved until the
+/// line fits, then the text; `input_bytes` and `text_bytes` still say how
+/// long each was, so what arrives says it was cut. What is cut is
+/// measured after JSON escaping, which no fixed budget can: a command of
+/// control characters is six times its length on the wire.
+pub fn fitRequest(buf: []u8, ev: AgentEvent.Event) error{TooLong}![]const u8 {
+    var e = ev;
+    while (true) {
+        var w: std.Io.Writer = .fixed(buf);
+        if (writeRequest(&w, e)) |_| return w.buffered() else |_| {}
+        if (e.input) |s| if (s.len > 0) {
+            e.input = AgentEvent.cutBytes(s, s.len / 2);
+            continue;
+        };
+        if (e.text) |s| if (s.len > 0) {
+            e.text = AgentEvent.cutBytes(s, s.len / 2);
+            continue;
+        };
+        return error.TooLong;
     }
 }
 
@@ -227,6 +256,12 @@ pub fn writeRequest(w: *std.Io.Writer, ev: AgentEvent.Event) std.Io.Writer.Error
     if (ev.text != null) {
         try s.objectField("text_bytes");
         try s.write(ev.text_bytes);
+    }
+    if (ev.input) |v| {
+        try s.objectField("input");
+        try s.write(v);
+        try s.objectField("input_bytes");
+        try s.write(ev.input_bytes);
     }
     if (ev.waiting_on_background) {
         try s.objectField("waiting_on_background");
@@ -268,6 +303,43 @@ test "the request +hook writes is the one the host parses back" {
     try testing.expect(got.note == null);
 }
 
+test "an approval's whole tool call reaches the host, and is cut to fit when it would not (task 1651)" {
+    var buf: [Server.max_request_bytes - 1]u8 = undefined;
+    var ev: AgentEvent.Event = .none;
+    ev.event = .awaiting_approval;
+    ev.cli = "claude-code";
+    ev.detail = "Bash";
+    ev.text = "rm -rf dist";
+    ev.text_bytes = 11;
+    ev.input = "{\"command\":\"rm -rf dist\",\"description\":\"clean\"}";
+    ev.input_bytes = ev.input.?.len;
+    {
+        var p = try wire.parseRequest(testing.allocator, try fitRequest(&buf, ev));
+        defer p.deinit();
+        try testing.expectEqualStrings(ev.input.?, p.value.agent_event.input.?);
+        try testing.expectEqual(ev.input_bytes, p.value.agent_event.input_bytes);
+    }
+
+    // A tool call of quotes doubles on the wire: 24 KB of them is 48 KB,
+    // and with 16 KB of control characters as the text, six times over,
+    // nothing fits until it is cut.
+    const quotes: [AgentEvent.max_input_bytes]u8 = @splat('"');
+    const bells: [AgentEvent.max_text_bytes]u8 = @splat(7);
+    ev.input = &quotes;
+    ev.input_bytes = 100_000;
+    ev.text = &bells;
+    ev.text_bytes = bells.len;
+    const line = try fitRequest(&buf, ev);
+    try testing.expect(line.len < Server.max_request_bytes);
+    var p = try wire.parseRequest(testing.allocator, line);
+    defer p.deinit();
+    const got = p.value.agent_event;
+    try testing.expect(got.input.?.len < quotes.len);
+    // Still says how long it was.
+    try testing.expectEqual(@as(u64, 100_000), got.input_bytes);
+    try testing.expectEqual(@as(u64, bells.len), got.text_bytes);
+}
+
 test "an event with nothing optional still parses" {
     var buf: [256]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -295,7 +367,6 @@ test "an event with nothing optional still parses" {
 // position to deliver.
 
 const builtin = @import("builtin");
-const Server = @import("../poltergeist/Server.zig");
 
 const Seen = struct {
     io: std.Io,

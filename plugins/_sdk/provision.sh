@@ -54,6 +54,11 @@
 #                        here has checked: writing into the wrong file in
 #                        somebody's home directory is worse than not writing.
 #                        Never a project file. See `polter_rules_apply`.
+#   host_mcp_complete()  **Optional.** $1 the current registration. Non-zero
+#                        when a registration of this build at this version
+#                        still lacks something this host needs -- Codex's
+#                        `env_vars` (#1645) -- so it is written again. A host
+#                        that does not define it is judged by version alone.
 
 # One value out of the line. Every key used here appears once, which is what
 # makes this safe with sed rather than a JSON parser -- `sed` is greedy, so a
@@ -284,6 +289,13 @@ polter_provision() {
         *"$version"*) stale=no ;;
         *) stale=yes ;;
       esac
+      # **The version is not all a registration can be missing** (#1645):
+      # an entry this build wrote before it knew to pass Codex its two
+      # variables is this build's, at this version, and useless.
+      if [ "$stale" = no ] && command -v host_mcp_complete >/dev/null 2>&1 &&
+        ! host_mcp_complete "$current"; then
+        stale=yes
+      fi
       ;;
     other)
       # **Refused, and said twice.** Once into this log, because that is
@@ -584,6 +596,18 @@ ack() {
 POLTER_SCOPE=user
 POLTER_WANT_SKILLS=yes
 POLTER_WANT_RULES=yes
+# The greeting itself, for a parameter only one host has (`polter_param`).
+POLTER_HELLO=
+
+# One of this plugin's parameters as the greeting gave it, or $2 when the
+# greeting did not name it. For the parameters only one host declares --
+# Codex's `approve_tools` -- so the SDK need not learn every host's names.
+# The same flat `"name":"value"` read as the three above, with the same
+# caveat: a name must not appear twice in the greeting.
+polter_param() {
+  _v=$(printf '%s' "$POLTER_HELLO" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p")
+  if [ -n "$_v" ]; then printf '%s' "$_v"; else printf '%s' "$2"; fi
+}
 
 # The block, byte for byte, markers included.
 #
@@ -700,6 +724,7 @@ polter_provision_main() {
 
   case "$hello" in
     *'"hello"'*)
+      POLTER_HELLO=$hello
       _scope=$(printf '%s' "$hello" | sed -n 's/.*"scope":"\([^"]*\)".*/\1/p')
       _skills=$(printf '%s' "$hello" | sed -n 's/.*"skills":"\([^"]*\)".*/\1/p')
       _rules=$(printf '%s' "$hello" | sed -n 's/.*"rules":"\([^"]*\)".*/\1/p')

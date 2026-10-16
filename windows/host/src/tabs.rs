@@ -4716,6 +4716,22 @@ pub fn surface_of_tab_pane(frame: HWND, tab: TabId, pane: PaneId) -> Surface {
     }
 }
 
+/// Every terminal of a tab -- in the tree's order, each place's whole stack
+/// -- with its surface and the title it shows (the tab's when it has none of
+/// its own). Empty for a tab that has gone or holds no terminal. What the
+/// tab menu's «Copy Terminal ID» lists (task 1643).
+pub fn terminals_of_tab(frame: HWND, tab: TabId) -> Vec<(Surface, String)> {
+    let Some(win) = window(frame) else { return Vec::new() };
+    let Some(t) = win.tabs.iter().find(|t| t.id == tab) else { return Vec::new() };
+    let Some(term) = t.terminal() else { return Vec::new() };
+    term.tree
+        .members()
+        .iter()
+        .filter_map(|id| term.panes.iter().find(|p| p.id == *id))
+        .map(|p| (p.surface as Surface, p.title.clone().unwrap_or_else(|| t.title.clone())))
+        .collect()
+}
+
 /// Send a core binding action to a **named tab's** surface.
 ///
 /// The twin of `crate::binding`, which sends to whichever surface has focus.

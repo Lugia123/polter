@@ -550,6 +550,64 @@ struct ControlRoomListTests {
         #expect(layout.rows["design-system"] == CGRect(x: 6, y: 482.5, width: 368, height: 28))
     }
 
+    /// Thirty quiet groups under the sample's waiting ones, with the
+    /// allowance block at the bottom: more than the panel holds.
+    private var long: ControlRoomList {
+        var long = list
+        let one = list.quiet[0]
+        long.quiet = (0 ..< 30).map { var row = one; row.id = "g\($0)"; return row }
+        long.quietCount = 30
+        long.quota = ControlRoomQuota.Sample.ordinary
+        return long
+    }
+
+    /// Task 1654: a long list was drawn over the allowance block. The rows
+    /// are seen in a viewport that ends where the block starts, and what
+    /// scrolls in it holds every row.
+    @Test func aLongListScrollsAboveTheAllowanceBlock() throws {
+        let layout = ControlRoomListLayout(list: long, height: 824)
+        #expect(layout.quota.height > 0)
+        #expect(layout.viewport.minY == layout.header.maxY)
+        #expect(layout.viewport.maxY == layout.quota.minY)
+        let last = try #require(layout.rows["g29"])
+        // Laid out past the block: only the viewport keeps it off it.
+        #expect(last.maxY > layout.quota.minY)
+        #expect(layout.contentHeight > layout.viewport.height)
+        for (_, frame) in layout.rows {
+            #expect(frame.minY >= layout.viewport.minY)
+            #expect(frame.maxY <= layout.viewport.minY + layout.contentHeight)
+        }
+    }
+
+    @Test func aRowScrolledOutOfEitherEndIsNotInSight() throws {
+        let layout = ControlRoomListLayout(list: long, height: 824)
+        let order = long.rows.map(\.id)
+        let top = layout.inSight(order: order)
+        #expect(top.first == order.first)
+        #expect(!top.contains("g29"))
+        let last = try #require(layout.rows["g29"])
+        let bottom = layout.inSight(order: order, scrolled: last.maxY - layout.viewport.maxY)
+        #expect(bottom.contains("g29"))
+        #expect(!bottom.contains(try #require(order.first)))
+    }
+
+    @Test func aSelectedRowOutOfSightIsBroughtToTheNearerEnd() throws {
+        let layout = ControlRoomListLayout(list: long, height: 824)
+        let first = try #require(long.rows.first?.id)
+        let last = try #require(layout.rows["g29"])
+        let g0 = try #require(layout.rows["g0"])
+        let atBottom = last.maxY - layout.viewport.maxY
+        // In sight: no scroll.
+        #expect(layout.reveal(first, scrolled: 0) == nil)
+        #expect(layout.reveal("g29", scrolled: atBottom) == nil)
+        // Below: its bottom to the viewport's bottom.
+        #expect(layout.reveal("g29", scrolled: 0) == atBottom)
+        // Above: its top to the viewport's top -- not the top of the list.
+        #expect(layout.reveal("g0", scrolled: atBottom) == g0.minY - layout.viewport.minY)
+        #expect(layout.reveal(first, scrolled: atBottom) == 0)
+        #expect(layout.reveal("nobody", scrolled: 0) == nil)
+    }
+
     @Test func whenTheCoreSaysNobodyWaitsTheGroupsFollowTheOneHeader() {
         var nobody = list
         nobody.quiet = list.rows

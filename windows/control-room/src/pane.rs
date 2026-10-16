@@ -636,7 +636,7 @@ mod tests {
             .iter()
             .filter_map(|i| match i {
                 Item::Fill { rect, color } => Some((*rect, *color)),
-                Item::Round { .. } | Item::Text { .. } | Item::Line { .. } | Item::Block { .. } => None,
+                Item::Round { .. } | Item::Text { .. } | Item::Line { .. } | Item::Block { .. } | Item::Clip { .. } => None,
             })
             .collect()
     }
@@ -812,7 +812,7 @@ mod tests {
                         Piece::Words { text, style } if text == "出错" => Some(style.color),
                         Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } => None,
                     }),
-                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
+                    Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => None,
                 })
                 .unwrap()
         };
@@ -833,7 +833,7 @@ mod tests {
             let items = build(f, &a(wears, "n", Shown::NeedsYou, "等批准"), &view(false, 1.0, false), &same);
             let pulses = items.iter().any(|i| match i {
                 Item::Line { parts, .. } => parts.iter().any(|p| matches!(&p.piece, Piece::Glyph { pulses: true, .. })),
-                Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => false,
+                Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => false,
             });
             assert!(!pulses, "{wears:?}");
         }
@@ -957,7 +957,7 @@ mod tests {
                     .iter()
                     .find_map(|i| match i {
                         Item::Line { parts, .. } => Some(parts),
-                        Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } => None,
+                        Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => None,
                     })
                     .unwrap();
                 // The glyph, then the word to its right: both trailing.

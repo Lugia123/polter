@@ -701,7 +701,16 @@ fn head(p: &Plugin, dot: Dot, width: i32) -> Head {
     // otherwise", and the page should not pass that off as "running fine".
     let (runtimes_known, note) = ST.with(|c| {
         let s = c.borrow();
-        (s.runtimes.is_some(), s.runtimes.as_ref().and_then(|m| m.get(&p.key)).map(|r| r.note.clone()).unwrap_or_default())
+        (
+            s.runtimes.is_some(),
+            // The core's reason in the person's language when it sent one
+            // to say (#1644); `note` itself is the agent's English.
+            s.runtimes
+                .as_ref()
+                .and_then(|m| m.get(&p.key))
+                .map(|r| r.shown_note(|t| tr(t), polter_control_room::snapshot::fill))
+                .unwrap_or_default(),
+        )
     });
     if dot == Dot::Error && !note.trim().is_empty() {
         lines.push((note.clone(), f, theme::warn(), measure(&note, width, f, 3)));
@@ -785,8 +794,11 @@ fn rebuild() {
                     }
                 }
                 Control::Choice(options) => {
+                    // The plugin's own name for each value when its
+                    // translation gives one; what is saved is read back by
+                    // position (`read_fields`), never from this text.
                     for o in options {
-                        let w = wide(o);
+                        let w = wide(rules::choice_shown(o, &param.labels));
                         unsafe {
                             SendMessageW(h, CB_ADDSTRING, Some(WPARAM(0)), Some(LPARAM(w.as_ptr() as isize)));
                         }
@@ -832,7 +844,7 @@ fn rebuild() {
 }
 
 /// Every field's value as it would be saved: a flag as `true` / `false`,
-/// a choice as its text, a text box as typed.
+/// a choice as the value at the selected row, a text box as typed.
 fn read_fields(fields: &[Field]) -> Vec<(String, String)> {
     fields
         .iter()
@@ -842,7 +854,12 @@ fn read_fields(fields: &[Field]) -> Vec<(String, String)> {
                     let on = unsafe { SendMessageW(f.hwnd, BM_GETCHECK, None, None).0 == 1 };
                     (if on { "true" } else { "false" }).to_string()
                 }
-                _ => get_text(f.hwnd),
+                // By position: the box shows the translated name (#1636).
+                Control::Choice(ref options) => {
+                    let sel = unsafe { SendMessageW(f.hwnd, CB_GETCURSEL, None, None).0 };
+                    rules::choice_value(options, sel).unwrap_or_default()
+                }
+                Control::Text => get_text(f.hwnd),
             };
             (f.name.clone(), v)
         })

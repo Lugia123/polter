@@ -1185,11 +1185,21 @@ class BaseTerminalController: NSWindowController,
         zone: TerminalSplitDropZone
     ) {
         // Map drop zone to split direction
-        let direction: SplitTree<Ghostty.SurfaceView>.NewDirection = switch zone {
-        case .top: .up
-        case .bottom: .down
-        case .left: .left
-        case .right: .right
+        let direction: SplitTree<Ghostty.SurfaceView>.NewDirection
+        switch zone {
+        case .top: direction = .up
+        case .bottom: direction = .down
+        case .left: direction = .left
+        case .right: direction = .right
+        case .middle:
+            // **Onto its stack, in front** (task 1633): the same step as a
+            // tab let go at the end of the strip (`polterDrop`), from this
+            // tab or another window's. One of the pane's own stack is not
+            // offered the middle; if it gets here anyway, it stays.
+            if let stack = surfaceTree.stack(of: destination),
+               stack.members.contains(where: { $0 === source }) { return }
+            polterDrop(source, onStackOf: destination, at: Int.max)
+            return
         }
 
         // Check if source is in our tree -- a pane, or one terminal of a

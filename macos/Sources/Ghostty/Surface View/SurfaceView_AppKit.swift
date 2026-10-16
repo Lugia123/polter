@@ -1763,6 +1763,12 @@ extension Ghostty {
             item.setImageIfDesired(systemSymbolName: "pencil.line")
             item = menu.addItem(withTitle: String(localized: "Change Terminal Title...", comment: "右键菜单：修改终端标题"), action: #selector(changeTitle(_:)), keyEquivalent: "")
 
+            // This terminal's id, for pasting to an agent (task 1643).
+            if let copy = TerminalIDMenu.item(for: self) {
+                menu.addItem(.separator())
+                menu.addItem(copy)
+            }
+
             menu.addItem(.separator())
             // Ticked when the terminal already is what the item offers to
             // make it. Without this an item that has been used reads

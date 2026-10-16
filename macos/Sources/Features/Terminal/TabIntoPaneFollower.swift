@@ -148,11 +148,14 @@ extension BaseTerminalController {
     /// `target`, on the `zone` side: stacked in this tab's order, showing
     /// the one this tab had the keyboard on. This tab then closes.
     func giveTerminals(to target: BaseTerminalController, beside pane: Ghostty.SurfaceView, zone: TerminalSplitDropZone) {
-        let direction: SplitTree<Ghostty.SurfaceView>.NewDirection = switch zone {
-        case .top: .up
-        case .bottom: .down
-        case .left: .left
-        case .right: .right
+        let direction: SplitTree<Ghostty.SurfaceView>.NewDirection
+        switch zone {
+        case .top: direction = .up
+        case .bottom: direction = .down
+        case .left: direction = .left
+        case .right: direction = .right
+        // A tab is offered the four sides only (`calculate(at:in:)`).
+        case .middle: return
         }
         guard let shown = focusedSurface.flatMap({ surfaceTree.shown(for: $0) }) ?? surfaceTree.shownLeaves().first else {
             return

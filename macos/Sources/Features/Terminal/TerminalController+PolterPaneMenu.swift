@@ -1,4 +1,6 @@
 import AppKit
+import GhosttyKit
+import OSLog
 
 /// The menu of a pane's title and of a stack's tab (task 1582).
 ///
@@ -27,7 +29,7 @@ extension TerminalController {
         menu.autoenablesItems = true
 
         menu.addItem(PolterMenuAction.item(
-            String(localized: "Close Terminal", comment: "分屏标题和层叠标签右端的 x；层叠标签右键菜单：关闭这一个终端"),
+            String(localized: "Close Terminal", comment: "分屏标题和层叠标签左端的 x；层叠标签右键菜单：关闭这一个终端"),
             symbol: "xmark") { [weak self, weak view] in
                 guard let self, let view else { return }
                 self.performAction("close_surface", on: view)
@@ -50,6 +52,12 @@ extension TerminalController {
             }
         }
 
+        // This pane's terminal id, for pasting to an agent (task 1643).
+        if let copy = TerminalIDMenu.item(for: view) {
+            menu.addItem(.separator())
+            menu.addItem(copy)
+        }
+
         menu.addItem(.separator())
 
         // The window tab's own items, which the system puts on its menu.
@@ -70,9 +78,81 @@ extension TerminalController {
         move.target = window
         menu.addItem(move)
 
-        (window as? TerminalWindow)?.polterAppendTabSections(to: menu, target: self)
+        // Without the tab's «Copy Terminal ID»: the row above is this pane's,
+        // and the tab's would be a second one about the same thing.
+        (window as? TerminalWindow)?.polterAppendTabSections(to: menu, target: self, copyIDs: false)
         return menu
     }
+}
+
+/// «Copy Terminal ID» on the three menus (task 1643): the terminal's own,
+/// a pane's title and a stack's tab, and the window tab's. What they copy
+/// and say is `TerminalIDCopy`; this is the part that needs AppKit.
+enum TerminalIDMenu {
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty", category: "terminal-id")
+
+    /// The id of `view`'s terminal; 0 when it has no surface.
+    static func id(of view: Ghostty.SurfaceView) -> UInt64 {
+        guard let surface = view.surface else { return 0 }
+        return ghostty_surface_poltergeist_id(surface)
+    }
+
+    static func entry(_ view: Ghostty.SurfaceView) -> TerminalIDCopy.Entry {
+        .init(id: id(of: view), title: view.title)
+    }
+
+    /// Put `text` on the clipboard. Nothing is shown: the person pastes it.
+    static func copy(_ text: String, what: String) {
+        NSPasteboard.general.clearContents()
+        let ok = NSPasteboard.general.setString(text, forType: .string)
+        logger.info("copied \(what, privacy: .public): \(text, privacy: .public) ok=\(ok)")
+    }
+
+    /// «Copy Terminal ID» for one terminal; nil when it has no id.
+    static func item(for view: Ghostty.SurfaceView) -> NSMenuItem? {
+        let entry = entry(view)
+        guard TerminalIDCopy.known(entry.id) else { return nil }
+        return PolterMenuAction.item(title, symbol: symbol) {
+            copy(TerminalIDCopy.text(entry.id), what: "terminal id")
+        }
+    }
+
+    /// The tab's: one terminal is copied straight; several get a submenu of
+    /// one row each and «Copy All». Nil when no terminal has an id.
+    static func tabItem(for views: [Ghostty.SurfaceView]) -> NSMenuItem? {
+        switch TerminalIDCopy.offer(views.map(entry)) {
+        case nil:
+            return nil
+        case .single(let entry):
+            return PolterMenuAction.item(title, symbol: symbol) {
+                copy(TerminalIDCopy.text(entry.id), what: "terminal id")
+            }
+        case .each(let entries):
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.setImageIfDesired(systemSymbolName: symbol)
+            let submenu = NSMenu()
+            submenu.autoenablesItems = true
+            for entry in entries {
+                submenu.addItem(PolterMenuAction.item(TerminalIDCopy.rowLabel(entry), symbol: "") {
+                    copy(TerminalIDCopy.text(entry.id), what: "terminal id")
+                })
+            }
+            submenu.addItem(.separator())
+            submenu.addItem(PolterMenuAction.item(
+                String(localized: "Copy All", comment: "标签页右键菜单·复制终端 ID 子菜单最下面：把这个标签页里每个终端的标题和 ID 按行复制"),
+                symbol: "doc.on.doc") {
+                    copy(TerminalIDCopy.allText(entries), what: "\(entries.count) terminal ids")
+                })
+            item.submenu = submenu
+            return item
+        }
+    }
+
+    private static var title: String {
+        String(localized: "Copy Terminal ID", comment: "右键菜单（终端、分屏标题、层叠标签、标签页）：复制 MCP 工具认的终端 ID（0x…），用来告诉 AI 操作哪个终端")
+    }
+
+    private static let symbol = "number"
 }
 
 /// A menu item that runs a closure. The item keeps the action alive, and

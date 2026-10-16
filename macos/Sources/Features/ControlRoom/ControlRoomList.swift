@@ -1088,6 +1088,16 @@ struct ControlRoomListLayout: Equatable {
     /// list above it holds, so that it is there when the list is long. No
     /// height when the list has none.
     var quota: CGRect
+    /// Where the rows are seen, in the panel: from under the header (and
+    /// whatever is said under it) down to the allowance block, or to the
+    /// panel's bottom when there is none. The rows are clipped to it and
+    /// scroll inside it (task 1654: a long list was drawn over the
+    /// allowance block).
+    var viewport: CGRect
+    /// How tall what scrolls in `viewport` is: from its top to under the
+    /// last row. Every frame in `rows` lies within `viewport.minY` and
+    /// `viewport.minY + contentHeight`.
+    var contentHeight: CGFloat
 
     /// How wide what a row waits on is: the row, less its padding and the
     /// column the glyph stands in.
@@ -1126,6 +1136,7 @@ struct ControlRoomListLayout: Equatable {
         var y = pad
         header = CGRect(x: pad, y: y, width: inner, height: headerH)
         y += headerH + max(0, noteUnderHeader)
+        let listTop = y
 
         var frames: [String: CGRect] = [:]
         var fitted: [String: ControlRoomAskFit] = [:]
@@ -1160,6 +1171,10 @@ struct ControlRoomListLayout: Equatable {
 
         let quotaH = list.quota.map { ControlRoomQuotaLayout(quota: $0).height } ?? 0
         quota = CGRect(x: pad, y: height - pad - quotaH, width: inner, height: quotaH)
+
+        let listBottom = quotaH > 0 ? quota.minY : height
+        viewport = CGRect(x: 0, y: listTop, width: width, height: max(0, listBottom - listTop))
+        contentHeight = y + pad - listTop
     }
 
     /// Where the selection chip rests for a row; nil for a row not listed.
@@ -1167,15 +1182,44 @@ struct ControlRoomListLayout: Equatable {
         id.flatMap { rows[$0] }
     }
 
-    /// The rows whose whole card is on screen: above the allowance block,
-    /// or above the panel's bottom when there is none. The list does not
-    /// scroll -- rows past the bottom are simply cut off -- so this is what
-    /// "the card is in sight" is (task 1505: no notification about a card
-    /// the person can see). `order` is the list's own (`ControlRoomList.rows`);
-    /// this only filters it.
-    func inSight(order: [String]) -> [String] {
-        let bottom = quota.height > 0 ? quota.minY : size.height
-        return order.filter { id in rows[id].map { $0.height > 0 && $0.maxY <= bottom } ?? false }
+    /// How far to scroll the rows so that the whole of a row is seen,
+    /// from `scrolled`: the least scroll that does it, as a selection
+    /// walked with the arrow keys expects -- the row's top to the
+    /// viewport's top when it is above (or taller than the viewport), its
+    /// bottom to the viewport's bottom when it is below. Nil when it is in
+    /// sight already, or not listed.
+    func reveal(_ id: String?, scrolled: CGFloat) -> CGFloat? {
+        guard let id, let row = rows[id] else { return nil }
+        return Self.reveal(row: row, viewport: viewport, scrolled: scrolled)
+    }
+
+    /// The rule itself, for a row where it was laid out: the Windows host's
+    /// `layout::scroll::reveal`, which `tools/control-room-hosts-agree.py`
+    /// holds the two to (task 1657).
+    static func reveal(row: CGRect, viewport: CGRect, scrolled: CGFloat) -> CGFloat? {
+        guard row.height > 0 else { return nil }
+        let top = viewport.minY + scrolled, bottom = viewport.maxY + scrolled
+        if row.minY < top || row.height > viewport.height { return row.minY - viewport.minY }
+        if row.maxY > bottom { return row.maxY - viewport.maxY }
+        return nil
+    }
+
+    /// Whether the whole of a row is seen with the rows scrolled up by
+    /// `scrolled`; a row with no height never is. The Windows host's
+    /// `layout::scroll::in_view`.
+    static func inView(row: CGRect, viewport: CGRect, scrolled: CGFloat) -> Bool {
+        row.height > 0 && row.minY >= viewport.minY + scrolled && row.maxY <= viewport.maxY + scrolled
+    }
+
+    /// The rows whose whole card is on screen: inside `viewport` once the
+    /// rows have been scrolled up by `scrolled`, which is above the
+    /// allowance block, or above the panel's bottom when there is none.
+    /// This is what "the card is in sight" is (task 1505: no notification
+    /// about a card the person can see); a card scrolled out of the top is
+    /// no more in sight than one below the bottom. `order` is the list's
+    /// own (`ControlRoomList.rows`); this only filters it.
+    func inSight(order: [String], scrolled: CGFloat = 0) -> [String] {
+        order.filter { id in rows[id].map { Self.inView(row: $0, viewport: viewport, scrolled: scrolled) } ?? false }
     }
 }
 

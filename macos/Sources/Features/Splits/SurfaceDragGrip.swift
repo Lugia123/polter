@@ -99,4 +99,31 @@ enum SurfaceDragGrip {
     static func isDrag(from start: CGPoint, to now: CGPoint, threshold: CGFloat) -> Bool {
         hypot(now.x - start.x, now.y - start.y) >= threshold
     }
+
+    /// A button at the leading end of what picks a pane up: a title's close
+    /// button, a stack tab's (tasks 1634, 1642). Its side, and how far its
+    /// leading edge is from the grip's.
+    struct LeadingButton: Equatable {
+        var size: CGFloat
+        var padding: CGFloat
+    }
+
+    /// Where the open hand goes over a grip, and where the arrow does (tasks
+    /// 1634, 1642).
+    ///
+    /// **A button laid over a grip does not take the grip's cursor away.**
+    /// The grip is an `NSView` whose cursor rectangle is its whole bounds,
+    /// and the close button over its leading end is SwiftUI, which sets no
+    /// cursor of its own -- so the pointer on the cross was the hand that
+    /// says "drag me". So the grip leaves the button's column to the arrow:
+    /// from the grip's start to the button's trailing edge, the whole height,
+    /// with the two rectangles side by side rather than overlapping (AppKit
+    /// does not say which of two overlapping cursor rectangles wins).
+    static func cursorAreas(in bounds: CGRect, button: LeadingButton?) -> (hand: CGRect, arrow: CGRect?) {
+        guard let button, !bounds.isEmpty else { return (bounds, nil) }
+        let split = min(max(bounds.minX, bounds.minX + button.padding + button.size), bounds.maxX)
+        let arrow = CGRect(x: bounds.minX, y: bounds.minY, width: split - bounds.minX, height: bounds.height)
+        let hand = CGRect(x: split, y: bounds.minY, width: bounds.maxX - split, height: bounds.height)
+        return (hand, arrow)
+    }
 }

@@ -79,6 +79,14 @@ pub const max_text_bytes = 16 * 1024;
 /// How much of a command goes into an approval's one-line summary.
 pub const summary_chars = 120;
 
+/// The most of a tool call's input that is carried while it waits for
+/// approval (task 1651). Less than `max_text_bytes` would allow alone,
+/// because an approval carries both: its command in `text` for the
+/// control room, and the whole input here for a supervisor deciding.
+/// `+hook` cuts this further if the request would not fit
+/// (`hook.fitRequest`); `input_bytes` still says how long it was.
+pub const max_input_bytes = 24 * 1024;
+
 /// One thing an agent CLI said about itself.
 ///
 /// **No defaults, on purpose.** Every translation has to say what it put in
@@ -124,6 +132,21 @@ pub const Event = struct {
     /// was not. Zero with no text.
     text_bytes: u64,
 
+    /// For an approval, the whole of the tool call that waits on it: its
+    /// `tool_input`, as compact JSON, at most `max_input_bytes` (task
+    /// 1651). `text` is one field of it -- the command, or the file -- and
+    /// a supervisor asked to approve an `Edit` has to see what the edit
+    /// is. Not JSON any more when it was cut; `input_bytes` says so.
+    ///
+    /// **Not scrubbed**, on `Transcript`'s terms: it is what the
+    /// permission box on that terminal's screen shows, kept in memory
+    /// only while the approval stands, and handed only to whoever may
+    /// read that screen.
+    input: ?[]const u8,
+
+    /// How long `input` was before it was cut. Zero with no input.
+    input_bytes: u64,
+
     /// The turn ended with background work still running, so a still
     /// screen is waiting, not finished.
     waiting_on_background: bool,
@@ -138,6 +161,8 @@ pub const Event = struct {
         .note = null,
         .text = null,
         .text_bytes = 0,
+        .input = null,
+        .input_bytes = 0,
         .waiting_on_background = false,
     };
 };
@@ -238,6 +263,13 @@ fn claudeCode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error
             ev.text = cutBytes(whole, max_text_bytes);
             ev.text_bytes = whole.len;
         }
+        // And the call itself, every field of it: what the box asks about
+        // is more than its first line (task 1651).
+        if (obj.get("tool_input")) |input| {
+            const json = try std.json.Stringify.valueAlloc(arena, input, .{});
+            ev.input = cutBytes(json, max_input_bytes);
+            ev.input_bytes = json.len;
+        }
     } else if (std.mem.eql(u8, hook, "PostToolUse") or
         std.mem.eql(u8, hook, "PostToolUseFailure"))
     {
@@ -302,6 +334,28 @@ fn approvalWhole(obj: std.json.ObjectMap, tool: []const u8) Error!?[]const u8 {
 /// The tools whose input is a command line.
 fn isShellTool(tool: []const u8) bool {
     return std.mem.eql(u8, tool, "Bash") or std.mem.eql(u8, tool, "PowerShell");
+}
+
+/// The rows of this CLI's permission box that redraw while the box stands,
+/// by a piece of text each contains (task 1655): a row with one of these in
+/// it is not part of what makes a box the same box.
+///
+/// Claude Code in auto mode puts a countdown in the box -- "⚠ Claude Code
+/// will automatically deny this request in 1:54, to avoid blocking
+/// progress on an unattended session" (2.1.301), redrawn every second --
+/// so the screen never stops moving while the box is up, and "has the
+/// screen moved since the box was drawn" (`Bus.promptStanding`) said yes
+/// for as long as it stood. The text is the CLI's own, read out of its
+/// binary; the number in it is the only part that changes.
+///
+/// **Also what says such a box is up**: `Bus.boxPrint` gives nothing for a
+/// screen with none of these rows on it, so the allowance never reaches a
+/// screen whose box has gone.
+pub fn volatileRows(cli: []const u8) []const []const u8 {
+    if (std.mem.eql(u8, cli, "claude-code")) return &.{
+        "will automatically deny this request in",
+    };
+    return &.{};
 }
 
 /// What kind of thing a tool asks approval for, by the tool's name as an
@@ -498,6 +552,38 @@ test "claude-code PermissionRequest names the tool and the first 120 characters 
     try testing.expectEqual(Kind.awaiting_approval, ev.event);
     try testing.expectEqualStrings("Bash", ev.detail.?);
     try testing.expectEqual(@as(usize, 240), ev.note.?.len);
+}
+
+test "claude-code PermissionRequest carries the whole tool input, and says when it was cut (task 1651)" {
+    setup();
+    defer teardown();
+    const ev = try tr("PermissionRequest",
+        \\{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"Edit",
+        \\ "tool_input":{"file_path":"/w/a.zig","old_string":"x\n","new_string":"rm -rf /"}}
+    );
+    try testing.expectEqualStrings(
+        \\{"file_path":"/w/a.zig","old_string":"x\n","new_string":"rm -rf /"}
+    , ev.input.?);
+    try testing.expectEqual(@as(u64, ev.input.?.len), ev.input_bytes);
+
+    const a = test_arena.allocator();
+    var body: std.ArrayListUnmanaged(u8) = .empty;
+    try body.appendSlice(a,
+        \\{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"Write",
+        \\ "tool_input":{"file_path":"/w/b","content":"
+    );
+    for (0..max_input_bytes) |_| try body.appendSlice(a, "é");
+    try body.appendSlice(a, "\"}}");
+    const big = try tr("PermissionRequest", body.items);
+    try testing.expect(big.input.?.len <= max_input_bytes);
+    try testing.expect(big.input_bytes > max_input_bytes * 2);
+    try testing.expect(std.unicode.utf8ValidateSlice(big.input.?));
+
+    // Nothing but an approval carries it.
+    const done = try tr("PostToolUse",
+        \\{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"a":1}}
+    );
+    try testing.expect(done.input == null);
 }
 
 test "claude-code PermissionRequest for the PowerShell tool names its command (#888)" {

@@ -1,0 +1,4 @@
+{
+  "name": "opencode",
+  "description": "通过编辑 ~/.config/opencode/opencode.json 把 Polter 的 MCP 服务注册到 opencode——opencode 没有 `mcp add`，只能改配置文件，现有内容看不懂就直接拒绝。这一步需要 python3。不装 skill：skill 目录还没确认。"
+}

@@ -243,6 +243,14 @@ pub fn add(
         .root_source_file = b.path("plugins/claude-code/adapter.py"),
     });
 
+    // And the Codex manifest, for the one thing in it the core acts on:
+    // the titles Codex writes while it waits on an approval (task 1656).
+    // Those were measured against codex 0.163 with `script -r`, and the
+    // test beside `Plugin.TitleSays` holds the shipped file to them.
+    step.root_module.addAnonymousImport("plugin_codex_json", .{
+        .root_source_file = b.path("plugins/codex/plugin.json"),
+    });
+
     // And `qwen-code`, for one property that has nothing to do with skills:
     // **the command line it builds for `qwen mcp add`.** That argument order
     // was wrong from the day the file was written -- `-e` is an array option

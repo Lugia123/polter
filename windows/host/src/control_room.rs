@@ -117,8 +117,13 @@ pub struct UiaRow {
     /// What the row says when read out (`scene::spoken`).
     pub name: String,
     pub selected: bool,
-    /// In the panel's client pixels: left, top, right, bottom.
+    /// In the panel's client pixels: left, top, right, bottom -- the part
+    /// of the row that is seen, when it is scrolled half out of the list's
+    /// room.
     pub rect: (i32, i32, i32, i32),
+    /// Scrolled wholly out of the list's room (task 1657): no rectangle,
+    /// and `IsOffscreen` says so.
+    pub offscreen: bool,
 }
 
 static UIA_ROWS: Mutex<Vec<UiaRow>> = Mutex::new(Vec::new());
@@ -235,8 +240,14 @@ pub fn uia_rows() -> Vec<UiaRow> {
 /// rectangle comes from**: it is the rectangle the paint drew the row in.
 pub fn uia_row_rect(group: &str) -> Option<RECT> {
     let rows = UIA_ROWS.lock().ok()?;
-    let r = rows.iter().find(|r| r.group == group)?;
+    let r = rows.iter().find(|r| r.group == group && !r.offscreen)?;
     Some(RECT { left: r.rect.0, top: r.rect.1, right: r.rect.2, bottom: r.rect.3 })
+}
+
+/// Whether row `group` is scrolled wholly out of sight; false for a group
+/// not listed, which is gone rather than off screen.
+pub fn uia_row_offscreen(group: &str) -> bool {
+    UIA_ROWS.lock().ok().is_some_and(|rows| rows.iter().any(|r| r.group == group && r.offscreen))
 }
 
 /// The groups listed just before and just after `group`, by name. Found by
@@ -289,6 +300,42 @@ thread_local! {
     /// the core made for them is not kept: a control room reopened with no
     /// choice of the person's own starts on the core's group again.
     static KEPT: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// How far the rows are scrolled up, in points (task 1657). **Not in
+    /// `State`**: `list_layout` reads it, and is called from inside
+    /// borrows of `STATE`.
+    static SCROLLED: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    /// The row the rows were last scrolled to bring into sight: a
+    /// selection that is not this one -- made here, by the core, or by a
+    /// screen reader -- is brought into sight at the next paint.
+    static REVEALED: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Scroll the rows to `to` points, kept to what they can be. A chip on its
+/// way moves with the rows, so that it goes on from where it is seen.
+/// Whether anything moved.
+fn set_scroll(hwnd: HWND, at: &ListLayout, to: f64) -> bool {
+    let to = layout::scroll::kept(to, at.content_height, at.viewport);
+    let by = to - at.scrolled;
+    if by == 0.0 {
+        return false;
+    }
+    SCROLLED.with(|s| s.set(to));
+    STATE.with(|s| {
+        if let Some(sl) = s.borrow_mut().as_mut().and_then(|st| st.slide.as_mut()) {
+            sl.from.y -= by;
+        }
+    });
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    true
+}
+
+/// Bring row `id` wholly into sight by the least scroll, as `at` is
+/// scrolled now, and remember that it was (`REVEALED`).
+fn reveal(hwnd: HWND, at: &ListLayout, id: Option<&str>) {
+    if let Some(to) = at.reveal(id) {
+        set_scroll(hwnd, at, to);
+    }
+    REVEALED.with(|r| *r.borrow_mut() = id.map(str::to_string));
 }
 
 fn selection() -> Option<String> {
@@ -490,6 +537,13 @@ fn select(hwnd: HWND, id: Option<String>) {
         return;
     }
     let g = geometry(hwnd);
+    // The row brought into sight first, so that both ends of the slide are
+    // where they are seen after it (task 1657).
+    source::with(|data| {
+        if let Data::Ready(r) = data {
+            reveal(hwnd, &list_layout(hwnd, &r.list, g.room.panel.h), id.as_deref());
+        }
+    });
     // Both ends of the slide, from the one layout the list has now.
     let ends = source::with(|data| match data {
         Data::Ready(r) => {
@@ -1148,6 +1202,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
         }
+        // The wheel scrolls the rows (task 1657), three quiet rows a notch;
+        // a list that fits has nothing to scroll and leaves it be.
+        WM_MOUSEWHEEL => {
+            let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as i32;
+            let g = geometry(hwnd);
+            // The paint it asks for tells the core which cards are in sight.
+            source::with(|data| {
+                if let Data::Ready(r) = data {
+                    let at = list_layout(hwnd, &r.list, g.room.panel.h);
+                    let by = polter_control_room::panestack::scroll(0, delta, WHEEL_ROWS * side::QUIET_ROW_HEIGHT);
+                    set_scroll(hwnd, &at, at.scrolled + by);
+                }
+            });
+            LRESULT(0)
+        }
         WM_LBUTTONDOWN => {
             unsafe {
                 let _ = SetFocus(Some(hwnd));
@@ -1302,11 +1371,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             // process-wide: the panel is one per process
             plogf!("[control-room] panel destroyed");
+            // A control room opened again starts at the top, and brings
+            // its selection into sight from there.
+            SCROLLED.with(|s| s.set(0.0));
+            REVEALED.with(|r| *r.borrow_mut() = None);
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
 }
+
+/// How many quiet rows one notch of the wheel scrolls the list.
+const WHEEL_ROWS: f64 = 3.0;
 
 fn click(hwnd: HWND, x: i32, y: i32) {
     let g = geometry(hwnd);
@@ -1354,6 +1430,11 @@ fn click(hwnd: HWND, x: i32, y: i32) {
     let pressed_fix = source::with(|data| match data {
         Data::Ready(r) => {
             let lay = list_layout(hwnd, &r.list, g.room.panel.h);
+            // Not a button scrolled out from under the pointer.
+            let y = py - g.room.panel.y;
+            if y < lay.viewport.y || y >= lay.viewport.y + lay.viewport.h {
+                return None;
+            }
             r.list.waiting.iter().find_map(|w| {
                 let rect = lay.chip(Some(&w.id))?;
                 if !inside(scene::fix_hit(rect), px - g.room.panel.x, py - g.room.panel.y) {
@@ -1501,6 +1582,18 @@ fn paint(hwnd: HWND) {
     let g = geometry(hwnd);
     let theme = look::theme(dark(hwnd));
     let selected = selection();
+    // A selection not made by `select` -- the core's, a screen reader's --
+    // is brought into sight here; and a list grown shorter keeps the rows
+    // scrolled no further than they can be.
+    source::with(|data| {
+        if let Data::Ready(r) = data {
+            let at = list_layout(hwnd, &r.list, g.room.panel.h);
+            SCROLLED.with(|s| s.set(at.scrolled));
+            if REVEALED.with(|r| *r.borrow() != selected) {
+                reveal(hwnd, &at, selected.as_deref());
+            }
+        }
+    });
     let t = source::clock();
     let translate = |s: &str| tr(s);
     let detail = detail();
@@ -1573,12 +1666,16 @@ fn paint(hwnd: HWND) {
                 let spoken: Vec<UiaRow> = list
                     .rows()
                     .filter_map(|r| {
-                        let rc = at.rect(lay.chip(Some(&r.id))?);
+                        let row = lay.chip(Some(&r.id))?;
+                        // Only the part in the list's room.
+                        let (top, bottom) = (row.y.max(lay.viewport.y), (row.y + row.h).min(lay.viewport.y + lay.viewport.h));
+                        let rc = at.rect(Rect { y: top, h: (bottom - top).max(0.0), ..row });
                         Some(UiaRow {
                             group: r.id.clone(),
                             name: scene::spoken(r, &translate),
                             selected: selected.as_deref() == Some(r.id.as_str()),
                             rect: (rc.left, rc.top, rc.right, rc.bottom),
+                            offscreen: bottom <= top,
                         })
                     })
                     .collect();
@@ -1757,6 +1854,17 @@ unsafe fn paint_items(dc: HDC, at: Px, items: &[Item], fonts: &mut Fonts, t: f64
                 draw_text(dc, fonts.get(style), style.color, text, r, how | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
             },
             Item::Line { rect, parts } => unsafe { paint_line(dc, at, at.rect(*rect), parts, fonts, t) },
+            // In pairs: a rect saves the clip there is and narrows it, none
+            // puts the saved one back -- so a clip a caller set round all of
+            // this (the chip's outline) stays.
+            Item::Clip { rect: Some(rect) } => unsafe {
+                let r = at.rect(*rect);
+                SaveDC(dc);
+                IntersectClipRect(dc, r.left, r.top, r.right, r.bottom);
+            },
+            Item::Clip { rect: None } => unsafe {
+                let _ = RestoreDC(dc, -1);
+            },
             // Running text, a line at a time: GDI's own wrapping sets lines
             // at the font's height, and the row was laid out at the
             // design's (`ASK_LINE_HEIGHT`). Where the lines break is
@@ -1861,7 +1969,7 @@ fn list_layout(hwnd: HWND, list: &List, height: f64) -> ListLayout {
             layout::wrap(text, &|s| fit_chars(dc, font, s, width)).len()
         });
         ReleaseDC(Some(hwnd), dc);
-        lay
+        lay.scrolled_to(SCROLLED.with(|s| s.get()))
     }
 }
 

@@ -168,7 +168,7 @@ struct PluginSettingsForm: View {
                 }
 
                 ForEach(choices) { choice in
-                    Text(choice.value).tag(choice.value)
+                    Text(choice.label).tag(choice.value)
                 }
             }
             .labelsHidden()

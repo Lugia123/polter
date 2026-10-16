@@ -306,12 +306,118 @@ pub const Manifest = struct {
     /// did not read, which is logged.
     agent_cli: ?AgentCli = null,
 
+    /// What this plugin's CLI says about itself in its terminal's title --
+    /// see `TitleSays`. Empty for a plugin that declares nothing, which is
+    /// every plugin but the ones for CLIs that have no hooks to say it with.
+    title_says: TitleSays = .none,
+
     /// The parameter by that name, if the manifest declares one.
     pub fn param(self: Manifest, name: []const u8) ?ParamSpec {
         for (self.params) |p| if (std.mem.eql(u8, p.name, name)) return p;
         return null;
     }
 };
+
+/// What a CLI says about itself in its terminal's title (task 1656).
+///
+/// ```json
+/// "title_says": { "awaiting_approval": { "starts_with": ["[ ! ] Action Required"] } }
+/// ```
+///
+/// **For a CLI with no hooks, and for the one state its screen cannot
+/// tell.** Codex 0.163 waiting on an approval box keeps re-colouring the
+/// bullet in front of the call it is asking about (measured: 270 redraws in
+/// 55s, six greys on a two-second cycle), so its screen never goes still and
+/// no quiet report ever comes -- but it also writes `[ ! ] Action Required
+/// | ...` into the title, alternating with `[ . ] ...` once a second, for as
+/// long as the box is up. The plugin declares that, the core reads it, and
+/// nothing about any one CLI is written into the core.
+///
+/// A prefix, not a pattern: what a CLI writes there is a fixed string
+/// followed by its own context, and a prefix is the whole of what has been
+/// measured.
+pub const TitleSays = struct {
+    /// A title beginning with any of these: the CLI is waiting for a
+    /// person to approve something.
+    awaiting_approval: []const []const u8,
+
+    pub const none: TitleSays = .{ .awaiting_approval = &.{} };
+
+    /// Most prefixes one plugin may declare, and the most bytes in one.
+    pub const max_prefixes = 8;
+    pub const max_prefix_bytes = 64;
+
+    pub fn awaitsApproval(self: TitleSays, title: []const u8) bool {
+        for (self.awaiting_approval) |prefix| {
+            if (std.mem.startsWith(u8, title, prefix)) return true;
+        }
+        return false;
+    }
+};
+
+/// The key of the first plugin whose declared title says this one is
+/// waiting on an approval, or null when none does.
+pub fn titleAwaitsApproval(manifests: []const Manifest, title: []const u8) ?[]const u8 {
+    for (manifests) |m| {
+        if (m.title_says.awaitsApproval(title)) return m.key;
+    }
+    return null;
+}
+
+/// What the manifest declares under `title_says`. Like `agent_cli`, a
+/// section that does not read costs the section and is logged: a prefix
+/// that matched nothing it should, or everything, would be worse than none.
+fn titleSaysOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Allocator.Error!TitleSays {
+    const section = switch (obj.get("title_says") orelse return .none) {
+        .object => |o| o,
+        else => {
+            log.warn("plugin {s}: title_says is not an object; ignored", .{key});
+            return .none;
+        },
+    };
+    const approval = switch (section.get("awaiting_approval") orelse return .none) {
+        .object => |o| o,
+        else => {
+            log.warn("plugin {s}: title_says.awaiting_approval is not an object; ignored", .{key});
+            return .none;
+        },
+    };
+    const list = switch (approval.get("starts_with") orelse return .none) {
+        .array => |a| a.items,
+        else => {
+            log.warn("plugin {s}: title_says.awaiting_approval.starts_with is not a list; ignored", .{key});
+            return .none;
+        },
+    };
+
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (list) |item| {
+        const prefix = switch (item) {
+            .string => |v| v,
+            else => {
+                log.warn("plugin {s}: a title prefix that is not a string; skipped", .{key});
+                continue;
+            },
+        };
+        // An empty prefix would match every title there is, and one with a
+        // control character can never be a title a terminal shows.
+        if (prefix.len == 0 or prefix.len > TitleSays.max_prefix_bytes or !printable(prefix)) {
+            log.warn("plugin {s}: title prefix {s} skipped -- 1 to {d} printable bytes", .{ key, prefix, TitleSays.max_prefix_bytes });
+            continue;
+        }
+        if (out.items.len == TitleSays.max_prefixes) {
+            log.warn("plugin {s}: more than {d} title prefixes; the rest are ignored", .{ key, TitleSays.max_prefixes });
+            break;
+        }
+        try out.append(arena, prefix);
+    }
+    return .{ .awaiting_approval = out.items };
+}
+
+fn printable(s: []const u8) bool {
+    for (s) |c| if (c < 0x20 or c == 0x7f) return false;
+    return true;
+}
 
 /// A plugin that manages an agent CLI.
 ///
@@ -553,6 +659,7 @@ pub fn load(
         .wants = wantsOf(arena, key, obj),
         .params = specsOf(arena, key, obj),
         .agent_cli = try agentCliOf(arena, key, dir, obj),
+        .title_says = try titleSaysOf(arena, key, obj),
     };
 }
 
@@ -2792,4 +2899,65 @@ test "Settings.parseChange refuses what it would drop" {
     try std.testing.expectError(error.BadSettings, Settings.parseChange(a,
         \\{"enable": true}
     ));
+}
+
+test "1656: a declared title prefix says awaiting approval, and only a prefix" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"title_says":{"awaiting_approval":{"starts_with":["[ ! ] Action Required","[ . ] Action Required"]}}}
+    , .{});
+    const says = try titleSaysOf(a, "codex", parsed.object);
+    try testing.expectEqual(@as(usize, 2), says.awaiting_approval.len);
+    try testing.expect(says.awaitsApproval("[ ! ] Action Required | t1653-w"));
+    try testing.expect(says.awaitsApproval("[ . ] Action Required | t1653-w"));
+    // Somewhere other than the start is not what was declared.
+    try testing.expect(!says.awaitsApproval("zsh: [ ! ] Action Required"));
+    try testing.expect(!says.awaitsApproval("[ ! ] Action"));
+    try testing.expect(!says.awaitsApproval(""));
+    try testing.expect(!TitleSays.none.awaitsApproval("[ ! ] Action Required"));
+}
+
+test "1656: a title prefix that would match everything, or nothing, is not taken" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"title_says":{"awaiting_approval":{"starts_with":["", 7, "ok", "tab\there", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]}}}
+    , .{});
+    const says = try titleSaysOf(a, "x", parsed.object);
+    try testing.expectEqual(@as(usize, 1), says.awaiting_approval.len);
+    try testing.expectEqualStrings("ok", says.awaiting_approval[0]);
+    // The empty one would have made every title a wait.
+    try testing.expect(!says.awaitsApproval("zsh"));
+
+    const wrong = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"title_says":{"awaiting_approval":["[ ! ]"]}}
+    , .{});
+    try testing.expectEqual(@as(usize, 0), (try titleSaysOf(a, "x", wrong.object)).awaiting_approval.len);
+}
+
+test "1656: the first plugin whose title matches is the one named" {
+    const ms = [_]Manifest{
+        .{ .key = "plain", .exec = "/p" },
+        .{ .key = "codex", .exec = "/c", .title_says = .{ .awaiting_approval = &.{"[ ! ] Action Required"} } },
+    };
+    try testing.expectEqualStrings("codex", titleAwaitsApproval(&ms, "[ ! ] Action Required | w").?);
+    try testing.expect(titleAwaitsApproval(&ms, "zsh") == null);
+}
+
+test "1656: the shipped Codex manifest declares the titles Codex 0.163 was measured writing" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, @embedFile("plugin_codex_json"), .{});
+    const says = try titleSaysOf(a, "codex", parsed.object);
+    // Both phases of the blink, byte for byte as recorded with `script -r`
+    // (issue-fix/1653-evidence/t1653-R.rec): `ESC ] 0 ; [ ! ] Action
+    // Required | t1653-w BEL`, then `[ . ]` a second later.
+    try testing.expect(says.awaitsApproval("[ ! ] Action Required | t1653-w"));
+    try testing.expect(says.awaitsApproval("[ . ] Action Required | t1653-w"));
+    // What it writes while working is not a wait.
+    try testing.expect(!says.awaitsApproval("\u{2827} t1653-w"));
 }

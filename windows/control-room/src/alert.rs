@@ -65,12 +65,12 @@ pub fn body(who: &str, text: &str, more: u32, tr: impl Fn(&str) -> String) -> St
     lines.join("\n")
 }
 
-/// The rows whose whole card is on screen: wholly above the list's bottom.
-/// The list does not scroll -- rows past the bottom are cut off -- so this
-/// is what "the card is in sight" is. In the list's own order: the order is
-/// the core's, and this only filters it.
+/// The rows whose whole card is on screen: wholly inside the viewport, as
+/// the rows are scrolled now (`ListLayout::in_view`). A card scrolled out
+/// of the top is no more in sight than one below the bottom. In the list's
+/// own order: the order is the core's, and this only filters it.
 pub fn in_sight(layout: &ListLayout) -> Vec<String> {
-    layout.rows.iter().filter(|(_, r)| r.h > 0.0 && r.y + r.h <= layout.height).map(|(id, _)| id.clone()).collect()
+    layout.rows.iter().filter(|(id, _)| layout.in_view(id)).map(|(id, _)| id.clone()).collect()
 }
 
 /// The control room's half of where the person is.
@@ -217,10 +217,19 @@ mod tests {
             separator: r(0.0),
             quiet_header: r(0.0),
             notice: None,
+            quota: Rect { x: 0.0, y: 100.0, w: 300.0, h: 0.0 },
+            viewport: Rect { x: 0.0, y: 10.0, w: 300.0, h: 90.0 },
+            content_height: 120.0,
+            scrolled: 0.0,
         };
         // `api` ends exactly at the bottom and is in; `docs` is cut off.
         // In the list's order.
         assert_eq!(in_sight(&lay), vec![id("web"), id("api")]);
+        // Scrolled to the end (task 1657): `docs` is in, and `web`, gone
+        // out of the top, is not.
+        let end = lay.scrolled_to(30.0);
+        assert_eq!(end.scrolled, 30.0);
+        assert_eq!(in_sight(&end), vec![id("api"), id("docs")]);
     }
 
     #[test]

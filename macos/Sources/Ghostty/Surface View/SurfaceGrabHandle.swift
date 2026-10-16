@@ -102,6 +102,8 @@ extension Ghostty {
         let lent: Bool
         /// The title's menu: the window tab's, for this pane (task 1582).
         var menu: (() -> NSMenu?)?
+        /// Its close button, at the left end (tasks 1634, 1642).
+        var leadingButton: SurfaceDragGrip.LeadingButton?
 
         @State private var isHovering: Bool = false
         @State private var isDragging: Bool = false
@@ -119,7 +121,8 @@ extension Ghostty {
                     onClick: focus,
                     // Not a hand over a title that will not drag.
                     canDrag: surfaceView.titleGrip(dragHandle, lent: lent) == .drag,
-                    menu: menu
+                    menu: menu,
+                    leadingButton: leadingButton
                 )
                 .contentShape(Rectangle())
             case .none:
@@ -143,6 +146,8 @@ extension Ghostty {
         let inControlRoom: Bool
         let select: () -> Void
         let menu: () -> NSMenu?
+        /// Its close button, at the left end (tasks 1634, 1642).
+        var leadingButton: SurfaceDragGrip.LeadingButton?
 
         @State private var isHovering: Bool = false
         @State private var isDragging: Bool = false
@@ -159,7 +164,8 @@ extension Ghostty {
                     dragThreshold: SurfaceDragGrip.titleDragThreshold,
                     onClick: select,
                     canDrag: grip == .drag,
-                    menu: menu
+                    menu: menu,
+                    leadingButton: leadingButton
                 )
                 .contentShape(Rectangle())
             case .none:

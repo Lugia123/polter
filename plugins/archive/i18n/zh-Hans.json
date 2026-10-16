@@ -4,7 +4,7 @@
   "params": {
     "dir": {
       "title": "这一份存到哪",
-      "description": "一个目录，绝对路径或者以 ~/ 开头。一天一个文件，名字是 YYYY-MM-DD.jsonl，往后追加。默认 ~/.local/state/polter/archive（设了 XDG_STATE_HOME 就是它下面的 polter/archive）——那是一个方便你改指到别处的起点，不是任何东西的兜底。"
+      "description": "一个目录，绝对路径或者以 ~/ 开头。一天一个文件，名字是 YYYY-MM-DD.jsonl，往后追加。默认 ~/.local/state/polter/archive（设了 XDG_STATE_HOME 就是它下面的 polter/archive），Windows 上是 %LOCALAPPDATA%\\polter\\archive，和核心自己的状态目录同一处——那是一个方便你改指到别处的起点，不是任何东西的兜底。"
     },
     "sign_key": {
       "title": "给每一行签名的密钥",

@@ -121,7 +121,7 @@
 //! | seen (a terminal) | `UnknownTerminal` | the terminal is not there |
 //! | snooze | `SnoozeInThePast` | `until_ms` is not after now |
 //! | approve, refuse, reply | `UnknownTerminal` | the terminal is not there |
-//! | approve, refuse | `PromptGone` | it is not waiting on an approval; or `since_ms` / `event_ms` are not the ones it has now; or its screen has moved since the box was drawn |
+//! | approve, refuse | `PromptGone` | it is not waiting on an approval; or `since_ms` / `event_ms` are not the ones it has now; or its screen has moved since the box was drawn -- except, for a box with rows its CLI says redraw (Claude Code's auto-mode countdown, task 1655), where the rest of the box has to be as it was and those rows still on screen |
 //! | reply | `NothingToReplyTo` | it is not waiting on an answer, finished, or failed -- a box or a turn in progress is not somewhere to type a sentence; or no agent is connected from it any more, so the line would go to a bare shell |
 //! | reply | `Stale` | `since_ms` is not the one it has now |
 //! | reply | `EmptyText` | nothing but whitespace |
@@ -243,6 +243,10 @@ pub const Host = struct {
     /// Whether an agent is connected from that terminal right now
     /// (`Server.agentPresent`): what the hooks last said is not that.
     agentPresent: *const fn (ctx: *anyopaque, id: Id) bool,
+    /// That terminal's screen as it is now, in `alloc`, as terminal_read
+    /// reads it: for a permission box whose own rows keep redrawing, the
+    /// guard compares it with the box as it was drawn (task 1655).
+    readScreen: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, id: Id) anyerror![]const u8,
     /// Write a group's marks down.
     persist: *const fn (ctx: *anyopaque, group: []const u8, marks: Chat.Marks) void,
     /// Make a group, the way the person makes one anywhere else: they are
@@ -424,11 +428,11 @@ pub fn perform(
             host.persist(host.ctx, group, try chat.marksOf(group));
         },
         .approve => |p| {
-            try standing(bus, p, now_ms);
+            try standing(bus, host, p, now_ms);
             try host.sendKey(host.ctx, p.terminal, approve_key);
         },
         .refuse => |p| {
-            try standing(bus, p, now_ms);
+            try standing(bus, host, p, now_ms);
             try host.sendKey(host.ctx, p.terminal, refuse_key);
         },
         .reply => |r| {
@@ -494,9 +498,16 @@ pub fn perform(
 
 /// The guard on anything that answers a prompt: the one the person saw is
 /// the one still there.
-fn standing(bus: *const Bus, p: Prompt, now_ms: u64) Refusal!void {
+fn standing(bus: *const Bus, host: Host, p: Prompt, now_ms: u64) Refusal!void {
     if (bus.get(p.terminal) == null) return error.UnknownTerminal;
-    if (!bus.promptStanding(p.terminal, p.since_ms, p.event_ms, now_ms)) return error.PromptGone;
+    // Read only for a box that needs it, as terminal_answer_prompt does.
+    const alloc = std.heap.page_allocator;
+    const screen: ?[]const u8 = if (bus.promptNeedsScreen(p.terminal))
+        host.readScreen(host.ctx, alloc, p.terminal) catch null
+    else
+        null;
+    defer if (screen) |s| alloc.free(s);
+    if (!bus.promptStanding(p.terminal, p.since_ms, p.event_ms, now_ms, screen)) return error.PromptGone;
 }
 
 // -- tests ------------------------------------------------------------------
@@ -528,6 +539,8 @@ const Recorder = struct {
     fix_posts: std.ArrayListUnmanaged([]const u8) = .empty,
     fix_typed: usize = 0,
     fix_marked: ?u64 = null,
+    /// What `readScreen` answers.
+    screen: []const u8 = "",
 
     const Started = struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session };
 
@@ -551,6 +564,7 @@ const Recorder = struct {
             .sendKey = sendKey,
             .sendText = sendText,
             .agentPresent = agentPresent,
+            .readScreen = readScreen,
             .persist = persist,
             .createGroup = createGroup,
             .stewardOf = stewardOf,
@@ -566,6 +580,11 @@ const Recorder = struct {
             .fixSent = fixSent,
             .voice = .{ .clock = clock, .tr = ControlFix.english },
         };
+    }
+
+    fn readScreen(ctx: *anyopaque, alloc: std.mem.Allocator, _: Id) anyerror![]const u8 {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        return alloc.dupe(u8, self.screen);
     }
 
     fn fixCard(ctx: *anyopaque, _: ControlFix.Key) ?ControlFix.Card {
@@ -810,6 +829,35 @@ test "ControlRoom act: a reply goes to an agent that is waiting to be told somet
         \\{"act":"reply","terminal":"0x00000000000000a1","since_ms":1000,"text":"the second"}
     , 7_000);
     try testing.expectEqual(@as(usize, 2), b.rec.texts.items.len);
+}
+
+test "ControlRoom act: a box whose countdown redraws can be refused from the control room (task 1655)" {
+    var b = Bus.init(testing.allocator, .{});
+    defer b.deinit();
+    var chat: Chat = .init(testing.allocator, .{});
+    defer chat.deinit();
+    var rec: Recorder = .{};
+    defer rec.deinit();
+    try b.addSupervisor(0xb0);
+    try b.watch(0xa1, 0xb0);
+    var ev: AgentEvent.Event = .none;
+    ev.event = .awaiting_approval;
+    ev.cli = "claude-code";
+    ev.session_id = "s";
+    ev.detail = "Bash";
+    _ = try b.agentEvent(0xa1, ev, 1_000);
+    const box = " rm x\n ⚠ Claude Code will automatically deny this request in 1:54, to avoid\n";
+    try testing.expect(b.noteBoxPrint(0xa1, 1_000, box));
+    b.noteQuiet(0xa1, 0, 20_000);
+
+    const p: Prompt = .{ .terminal = 0xa1, .since_ms = 1_000, .event_ms = 1_000 };
+    rec.screen = " rm x\n ⚠ Claude Code will automatically deny this request in 1:35, to avoid\n";
+    try perform(.{ .refuse = p }, &b, &chat, rec.host(), 20_000, 0);
+    try testing.expectEqual(@as(usize, 1), rec.keys.items.len);
+
+    rec.screen = " > \n";
+    try testing.expectError(error.PromptGone, perform(.{ .refuse = p }, &b, &chat, rec.host(), 20_000, 0));
+    try testing.expectEqual(@as(usize, 1), rec.keys.items.len);
 }
 
 test "ControlRoom act: a reply is not typed into a box, a turn, or a state that has moved on" {

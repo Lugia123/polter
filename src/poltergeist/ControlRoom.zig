@@ -826,7 +826,7 @@ pub const Reason = struct {
 
     /// `raised`: what the supervisor said when it put this in front of the
     /// person (`notify_user`, `authorisation`; `Bus.raise`).
-    pub const From = enum { hook_note, hook_detail, process, clocks, hooks, last_turn, task, raised, none };
+    pub const From = enum { hook_note, hook_detail, process, clocks, hooks, last_turn, task, raised, title, none };
     pub const Missing = enum { empty_note, empty_detail, no_turn_kept, self_report_text };
 
     pub const none: Reason = .{ .from = .none, .text = "", .missing = null };
@@ -1511,6 +1511,11 @@ fn reasonOf(
     const agent = in.bus.agentOf(s.id);
     switch (s.kind) {
         .needs_approval => {
+            // What the title said, as the CLI wrote it (task 1656).
+            if (s.source == .title) {
+                const title = agent.note.get() orelse return .lacking(.title, .empty_note);
+                return .{ .from = .title, .text = try arena.dupe(u8, title), .missing = null };
+            }
             const note = agent.note.get() orelse return .lacking(.hook_note, .empty_note);
             return .{ .from = .hook_note, .text = try arena.dupe(u8, note), .missing = null };
         },
@@ -1624,7 +1629,8 @@ fn whatOf(arena: Allocator, in: Input, s: Attention.Status, reason: Reason) Allo
     // Everything else is the reason line. A last line is the end of a turn;
     // a hook's note may have been cut.
     const how: What.Cut = switch (reason.from) {
-        .hook_note => note_cut,
+        // A title is kept where a hook's note is, and cut the same way.
+        .hook_note, .title => note_cut,
         .hook_detail => if (noteMayBeCut(in.bus.agentOf(s.id).note.get() orelse "")) .tail else .none,
         .last_turn => how: {
             const turn = in.bus.turnOf(s.id) orelse break :how .none;

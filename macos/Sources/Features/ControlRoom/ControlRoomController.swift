@@ -698,6 +698,14 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         }
     }
 
+    /// The tab bar's "+" while this tab is selected (task 1641): what "New
+    /// Tab" does here. AppKit sends the button's click to the selected
+    /// window's controller, and only `TerminalController` answered it, so
+    /// with the control room in front the "+" was drawn and did nothing.
+    override func newWindowForTab(_ sender: Any?) {
+        newTab(sender)
+    }
+
     /// "New Tab" while this tab is selected: a terminal tab, in this
     /// window and in front (`ControlRoomRules.newTab`, asked by the
     /// person). It used to go to the terminal window used last, and with
