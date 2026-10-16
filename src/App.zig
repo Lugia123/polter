@@ -3699,6 +3699,23 @@ fn startResident(
     return true;
 }
 
+/// Stop and forget the running copy of one plugin, if there is one, so the
+/// next `startResident` starts it afresh. Returns whether there was one.
+///
+/// Its tokens go with it: the next copy is minted its own, and a socket the
+/// old one left open must not go on acting as the plugin.
+fn stopResident(self: *App, key: []const u8) bool {
+    for (self.poltergeist_residents.items, 0..) |r, i| {
+        if (!std.mem.eql(u8, r.key, key)) continue;
+        _ = self.poltergeist_residents.orderedRemove(i);
+        r.destroy();
+        if (self.poltergeist_server) |*srv| srv.revokePluginTokens(key);
+        log.info("poltergeist: plugin {s} stopped to be started with new settings", .{key});
+        return true;
+    }
+    return false;
+}
+
 /// The running copy of one archive plugin, if there is one.
 ///
 /// Walked rather than mapped: there are single digits of these, and
@@ -3752,14 +3769,20 @@ pub fn ensureMcpRegistered(self: *App, want: bool) void {
     // later anyway -- said here so that this does not depend on the order
     // two calls in another file happen to be written in.
     self.ensurePlugins();
-    self.publishProvision();
+    _ = self.publishProvision(null);
 }
 
 /// Publish what Polter is to the provisioning plugins: `ensureMcpRegistered`
 /// once at the start, and again whenever the text of a skill changes under
 /// them (`skillsChanged`) -- a plugin mirrors the files it is handed, and
 /// one it was handed before the edit is one it has no reason to read again.
-fn publishProvision(self: *App) void {
+///
+/// `to` names one subscriber instead of all of them: the plugin switched on,
+/// or restarted with new settings, while Polter was running (#1673). It
+/// subscribed after this run's event went by, and the feed keeps no history,
+/// so without this it waited for the next restart while `plugin_configure`
+/// told the agent it was being fed. Returns whether the event went out.
+fn publishProvision(self: *App, to: ?*poltergeistpkg.Feed.Subscription) bool {
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -3769,7 +3792,7 @@ fn publishProvision(self: *App) void {
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe = exe_buf[0 .. std.process.executablePath(io, &exe_buf) catch |err| {
         log.warn("poltergeist: could not find my own path err={}", .{err});
-        return;
+        return false;
     }];
 
     // # Two silent exits used to be here, and the silence was the defect
@@ -3791,7 +3814,7 @@ fn publishProvision(self: *App) void {
                 "agent runtime will be registered",
             .{err},
         );
-        return;
+        return false;
     };
     defer environ_map.deinit();
 
@@ -3846,9 +3869,9 @@ fn publishProvision(self: *App) void {
     // to do it, and that is a thing the user asked for that will not
     // happen, which is the same silence this whole path exists to end.
     if (poltergeistpkg.notify.count(self.poltergeist_plugins, .provision) == 0) {
-        const line = poltergeistpkg.provision.nothingInstalled(self.alloc) catch return;
+        const line = poltergeistpkg.provision.nothingInstalled(self.alloc) catch return false;
         self.poltergeist_alerts.append(self.alloc, line) catch self.alloc.free(line);
-        return;
+        return false;
     }
 
     // The skills are half of it. One the runtime has never heard of is one
@@ -3885,7 +3908,7 @@ fn publishProvision(self: *App) void {
     // provisioning plugin is a resident subscribed to one event, and this
     // is that event. `publish` copies everything into each subscriber's own
     // queue, so the arena above may go away the moment this returns.
-    self.poltergeist_feed.publish(poltergeistpkg.provision.published(
+    const event = poltergeistpkg.provision.published(
         .{
             .exe = exe,
             .version = build_config.version_string,
@@ -3893,12 +3916,20 @@ fn publishProvision(self: *App) void {
             .skills = skills.items,
         },
         self.poltergeistWallMs(),
-    ));
+    );
 
+    if (to) |sub| {
+        self.poltergeist_feed.publishTo(sub, event);
+        log.info("poltergeist: handed what Polter is to one provisioning plugin started late", .{});
+        return true;
+    }
+
+    self.poltergeist_feed.publish(event);
     log.info(
         "poltergeist: handed what Polter is to {d} provisioning plugin(s)",
         .{poltergeistpkg.notify.count(self.poltergeist_plugins, .provision)},
     );
+    return true;
 }
 
 /// Put everything that has been waiting on a terminal that now exists.
@@ -5938,14 +5969,48 @@ pub fn configurePlugin(
 
     self.reloadPlugins();
 
+    // **A provisioning plugin is restarted when its settings change**, and
+    // no other kind is (#1673). Its whole job is one event per run, which
+    // has already gone by: the copy that is running acted on the old
+    // settings, and "takes effect the next time Polter starts" left the
+    // CLI registered the old way until then. Restarting costs it nothing it
+    // would keep -- it has no queue worth having, the event is handed again
+    // below -- which is not true of an archive, whose queued messages would
+    // go with it. Compared, not counted: the settings window sends its
+    // whole form on every save.
+    const provisions = manifest.wants.subscribes(.provision);
+    const restarted = poltergeistpkg.report.restartsForSettings(
+        provisions,
+        next.enabled,
+        next.sameParams(installed.settings),
+    ) and self.stopResident(manifest.key);
+
     const started: poltergeistpkg.report.Started = if (manifest.wants.empty())
         .subscribes_to_nothing
     else if (self.residentFor(manifest.key) != null)
         .already_running
-    else if (switched_on and self.startResidentNow(alloc, io, &environ_map, manifest.key))
+    else if ((switched_on or restarted) and
+        self.startResidentNow(alloc, io, &environ_map, manifest.key))
         .started_now
     else
         .not_started;
+
+    // The event it missed by starting late, to it alone. Only once Polter
+    // has registered in this run: before that nobody has been handed one,
+    // and `ensureMcpRegistered` will hand it to this plugin with the rest.
+    const provision: poltergeistpkg.report.Provision = switch (poltergeistpkg.report.provisionStep(
+        provisions,
+        started,
+        self.poltergeist_registered,
+    )) {
+        .none => .none,
+        .withhold => .withheld,
+        .hand => hand: {
+            const r = self.residentFor(manifest.key) orelse break :hand .failed;
+            if (!self.publishProvision(r.sub)) break :hand .failed;
+            break :hand if (restarted) .restarted else .handed;
+        },
+    };
 
     const said = try poltergeistpkg.report.configured(
         alloc,
@@ -5953,6 +6018,7 @@ pub fn configurePlugin(
         switched_on,
         params.len > 0,
         started,
+        provision,
     );
     if (started != .not_started) return .{ .said = said, .started = started };
 
@@ -10088,7 +10154,7 @@ pub fn acknowledgeOfficialSkill(self: *App, name: []const u8) !void {
 /// needs nothing; the copies the agent CLIs keep are the plugins' to
 /// rewrite, so they are told again -- when they were told the first time.
 fn skillsChanged(self: *App) void {
-    if (self.poltergeist_registered) self.publishProvision();
+    if (self.poltergeist_registered) _ = self.publishProvision(null);
 }
 
 fn poltergeistThreshold(

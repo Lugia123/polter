@@ -3100,6 +3100,84 @@ test "a plugin that dies before answering is sent the same batch again" {
     try testing.expectEqual(@as(u64, 0), a.status().cursor);
 }
 
+test "a provisioning plugin started after the event went by is handed it on its own" {
+    // #1673: switched on while Polter is running, a provisioning plugin
+    // subscribes after the one `provision` event of the run, and the feed
+    // keeps no history -- so it sat there until the next restart. The App
+    // hands it the event alone (`Feed.publishTo`); this is that path from
+    // the feed to the plugin's standard input, with a stand-in plugin.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try scratchDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
+
+    const event = @import("provision.zig").published(.{
+        .exe = "/Applications/Polter.app/Contents/MacOS/polter",
+        .version = "0.10.0",
+        .home = "/Users/you",
+        .skills = &.{},
+    }, 1_786_819_274_901);
+
+    // The run's event, before the plugin exists: nobody is listening.
+    feed.publish(event);
+
+    const got = try std.fmt.allocPrint(alloc, "{s}/got.jsonl", .{dir});
+    const exec = try scriptFor(alloc, io, try std.fmt.allocPrint(alloc,
+        \\#!/bin/sh
+        \\read -r hello
+        \\echo '{{"ok":true}}'
+        \\while read -r batch; do
+        \\  printf '%s\n' "$batch" >> {s}
+        \\  echo '{{"ok":true}}'
+        \\done
+    , .{got}), try std.fmt.allocPrint(alloc,
+        \\$null = $stdin.ReadLine()
+        \\$stdout.Write('{{"ok":true}}' + "`n")
+        \\while ($null -ne ($batch = $stdin.ReadLine())) {{
+        \\  [IO.File]::AppendAllText('{s}', $batch + "`n", $u8)
+        \\  $stdout.Write('{{"ok":true}}' + "`n")
+        \\}}
+    , .{got}));
+
+    const env = try fixtureEnviron(testing.allocator);
+
+    const a = try start(testing.allocator, io, .{
+        .key = "late-provision",
+        .exec = exec,
+        .timeout_ms = 5 * std.time.ms_per_s,
+        .wants = .{ .events = &.{.provision} },
+        .params = &.{},
+        .feed = &feed,
+        .environ = env,
+        .log_dir = dir,
+        .timing = .{
+            .poll_idle_ms = 10,
+            // Far past the wait below: a heartbeat is a batch too, and one
+            // landing inside the wait would be a line that is not the event.
+            .heartbeat_ms = 60 * std.time.ms_per_s,
+            .backoff_start_ms = 20,
+        },
+    });
+    defer a.destroy();
+
+    // What the App does for it when it is switched on.
+    feed.publishTo(a.sub, event);
+
+    try testing.expect(waitForLines(alloc, io, got, 1, 10_000));
+    const batches = contentsOf(alloc, io, got);
+    try testing.expect(std.mem.indexOf(u8, batches, "\"kind\":\"provision\"") != null);
+    try testing.expect(std.mem.indexOf(u8, batches, "/Users/you") != null);
+}
+
 test "a plugin with nothing to do is not killed for having nothing to do" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
