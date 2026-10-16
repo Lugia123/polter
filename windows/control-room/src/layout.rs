@@ -424,6 +424,17 @@ impl ListLayout {
         self.rows.iter().find(|(name, _)| name == id).map(|(_, r)| Rect { y: r.y + self.scrolled, ..*r })
     }
 
+    /// What a selection was brought into sight for (task 1664): the row,
+    /// and where it was laid out -- before any scroll, so that the person
+    /// scrolling away changes nothing, while a row put above it (a group
+    /// just made, one pinned, a line under another row) does. None for a
+    /// row not listed. A host brings the selection into sight again
+    /// whenever this is not what it was the last time.
+    pub fn sight_key(&self, id: Option<&str>) -> Option<(String, Option<(f64, f64)>)> {
+        let id = id?;
+        Some((id.to_string(), self.laid_out(id).map(|r| (r.y, r.h))))
+    }
+
     /// The archived group under a point of the panel, by name; only in the
     /// viewport.
     pub fn archived_at(&self, x: f64, y: f64) -> Option<&str> {
@@ -711,5 +722,44 @@ mod extras_tests {
         let end = short.clone().scrolled_to(1.0e6);
         assert_eq!(end.archived_header.y, short.archived_header.y - end.scrolled);
         assert_eq!(end.archived_rows[1].1.y, short.archived_rows[1].1.y - end.scrolled);
+    }
+}
+
+#[cfg(test)]
+mod sight_tests {
+    use super::*;
+
+    fn list() -> List {
+        const FIXTURE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/poltergeist/testdata/control_snapshot.json"));
+        List::from_snapshot(&crate::snapshot::decode(FIXTURE).unwrap())
+    }
+
+    /// Task 1664: a group made while the control room is open is listed
+    /// above the selected one and pushes it down -- the selection did not
+    /// change, and it was not brought into sight again. What a host keeps
+    /// to know when to is the row and where it was laid out: scrolling
+    /// leaves that alone, a row put above it does not.
+    #[test]
+    fn a_row_put_above_the_selection_changes_what_it_was_brought_into_sight_for() {
+        let l = list();
+        let last = l.quiet.last().unwrap().id.clone();
+        let at = ListLayout::new(&l, 300.0);
+        let key = at.sight_key(Some(&last));
+        assert!(key.as_ref().unwrap().1.is_some());
+        // Scrolled: the same.
+        assert_eq!(at.clone().scrolled_to(120.0).sight_key(Some(&last)), key);
+        // A group made, listed first among the quiet ones: it moved.
+        let mut more = l.clone();
+        let mut made = more.quiet[0].clone();
+        made.id = "just-made".into();
+        more.quiet.insert(0, made);
+        let after = ListLayout::new(&more, 300.0);
+        assert_ne!(after.sight_key(Some(&last)), key);
+        assert!(after.reveal(Some(&last)).is_some());
+        // Not listed yet, then listed: that changes it too.
+        let early = ListLayout::new(&l, 300.0).sight_key(Some("just-made"));
+        assert_eq!(early, Some(("just-made".to_string(), None)));
+        assert_ne!(after.sight_key(Some("just-made")), early);
+        assert_eq!(at.sight_key(None), None);
     }
 }

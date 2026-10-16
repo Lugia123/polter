@@ -309,7 +309,7 @@ thread_local! {
     /// The row the rows were last scrolled to bring into sight: a
     /// selection that is not this one -- made here, by the core, or by a
     /// screen reader -- is brought into sight at the next paint.
-    static REVEALED: RefCell<Option<String>> = const { RefCell::new(None) };
+    static REVEALED: RefCell<Option<(String, Option<(f64, f64)>)>> = const { RefCell::new(None) };
 }
 
 /// Scroll the rows to `to` points, kept to what they can be. A chip on its
@@ -342,7 +342,10 @@ fn reveal(hwnd: HWND, at: &ListLayout, id: Option<&str>) {
     if let Some(to) = at.reveal(id) {
         set_scroll(hwnd, at, to);
     }
-    REVEALED.with(|r| *r.borrow_mut() = id.map(str::to_string));
+    // Where it lies now that it has been scrolled to (`ListLayout::sight_key`):
+    // the layout is the one it was scrolled in, before the scroll, and
+    // where a row was laid out does not move when the rows scroll.
+    REVEALED.with(|r| *r.borrow_mut() = at.sight_key(id));
 }
 
 fn selection() -> Option<String> {
@@ -2528,7 +2531,10 @@ fn paint(hwnd: HWND) {
         if let Data::Ready(r) = data {
             let at = list_layout(hwnd, &r.list, g.room.panel.h);
             SCROLLED.with(|s| s.set(at.scrolled));
-            if REVEALED.with(|r| *r.borrow() != selected) {
+            // Again when the selection has moved in the list without being
+            // changed (task 1664: a group made above it pushed it down).
+            let now = at.sight_key(selected.as_deref());
+            if REVEALED.with(|r| *r.borrow() != now) {
                 reveal(hwnd, &at, selected.as_deref());
             }
         }
