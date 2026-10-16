@@ -194,6 +194,12 @@ pub fn renameGroup(self: *StatsLog, old: []const u8, new: []const u8) Allocator.
     self.last.putAssumeCapacity(owned, at);
 }
 
+/// The group was deleted (task 1659): its clock goes with it.
+pub fn dropGroup(self: *StatsLog, group: []const u8) void {
+    const removed = self.last.fetchRemove(group) orelse return;
+    self.alloc.free(removed.key);
+}
+
 /// Let go of the open day file. The next write opens what is then there.
 pub fn closeHandles(self: *StatsLog) void {
     self.tree.close();

@@ -133,6 +133,13 @@
           "shielded": false
         }
       ],
+      "pinned": false,
+      "muted": null,
+      "delete_cost": {
+        "members": 2,
+        "open_tasks": 0
+      },
+      "record_dir": "/state/chat/web-app",
       "fix": "none"
     },
     {
@@ -231,6 +238,13 @@
           "shielded": false
         }
       ],
+      "pinned": false,
+      "muted": null,
+      "delete_cost": {
+        "members": 1,
+        "open_tasks": 0
+      },
+      "record_dir": "/state/chat/web-app-docs",
       "fix": "none"
     },
     {
@@ -344,6 +358,13 @@
           "shielded": false
         }
       ],
+      "pinned": false,
+      "muted": null,
+      "delete_cost": {
+        "members": 2,
+        "open_tasks": 0
+      },
+      "record_dir": "/state/chat/mobile",
       "fix": "none"
     },
     {
@@ -440,6 +461,13 @@
           "shielded": false
         }
       ],
+      "pinned": false,
+      "muted": null,
+      "delete_cost": {
+        "members": 1,
+        "open_tasks": 0
+      },
+      "record_dir": "/state/chat/billing",
       "fix": "none"
     },
     {
@@ -550,6 +578,13 @@
           "shielded": false
         }
       ],
+      "pinned": false,
+      "muted": null,
+      "delete_cost": {
+        "members": 1,
+        "open_tasks": 0
+      },
+      "record_dir": "/state/chat/docs-site",
       "fix": "offered"
     },
     {
@@ -646,6 +681,13 @@
           "shielded": false
         }
       ],
+      "pinned": false,
+      "muted": null,
+      "delete_cost": {
+        "members": 1,
+        "open_tasks": 0
+      },
+      "record_dir": "/state/chat/infra",
       "fix": "none"
     },
     {
@@ -759,6 +801,13 @@
           "shielded": false
         }
       ],
+      "pinned": false,
+      "muted": null,
+      "delete_cost": {
+        "members": 2,
+        "open_tasks": 1
+      },
+      "record_dir": "/state/chat/design-system",
       "fix": "none"
     },
     {
@@ -853,9 +902,17 @@
           "shielded": false
         }
       ],
+      "pinned": false,
+      "muted": null,
+      "delete_cost": {
+        "members": 1,
+        "open_tasks": 0
+      },
+      "record_dir": "/state/chat/notes",
       "fix": "none"
     }
   ],
+  "archived": [],
   "ungrouped": [
     {
       "id": "0x00000000000000c1",

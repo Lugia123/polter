@@ -483,8 +483,32 @@ pub const Kept = struct {
 pub const Marks = struct {
     seen_ms: ?u64,
     snooze: Snooze,
+    /// Kept at the front of its section in the control room (task 1659).
+    pinned: bool,
+    /// No system notification about it while this stands; its card is
+    /// shown as ever (task 1659).
+    mute: Mute,
+    /// When it was archived, on the wall clock; null while it is listed.
+    /// An archived group is off the control room's list and raises no
+    /// notification, and nothing else changes: its terminals, its talk and
+    /// its panel go on (task 1659).
+    archived_ms: ?u64,
 
-    pub const none: Marks = .{ .seen_ms = null, .snooze = .none };
+    pub const none: Marks = .{
+        .seen_ms = null,
+        .snooze = .none,
+        .pinned = false,
+        .mute = .none,
+        .archived_ms = null,
+    };
+
+    pub const Mute = union(enum) {
+        none,
+        /// Until this moment on the wall clock, and then not: an expired
+        /// mute reads as `none` (`muteOf`) without anybody clearing it.
+        until: u64,
+        forever,
+    };
 
     pub const Snooze = union(enum) {
         none,
@@ -530,6 +554,34 @@ pub fn snoozeOf(self: *const Chat, name: []const u8, now_ms: u64, wall_ms: u64) 
         .next_event => .{ .until_change = group.snoozed_run_ms orelse 0 },
         .until => |u| .{ .until_ms = now_ms +| (u.until_ms -| wall_ms) },
     };
+}
+
+pub fn setPinned(self: *Chat, name: []const u8, pinned: bool) Error!void {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    group.marks.pinned = pinned;
+}
+
+pub fn setMute(self: *Chat, name: []const u8, mute: Marks.Mute) Error!void {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    group.marks.mute = mute;
+}
+
+/// The group's mute as it stands at `wall_ms`: one whose moment has passed
+/// is over, whatever is still written down.
+pub fn muteOf(self: *const Chat, name: []const u8, wall_ms: u64) Marks.Mute {
+    const group = self.groups.getPtr(name) orelse return .none;
+    return switch (group.marks.mute) {
+        .until => |until| if (until > wall_ms) group.marks.mute else .none,
+        .none, .forever => group.marks.mute,
+    };
+}
+
+/// Archive the group at `wall_ms`, or with null take it out of the archive.
+/// Archiving again keeps the first moment.
+pub fn setArchived(self: *Chat, name: []const u8, wall_ms: ?u64) Error!void {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    if (wall_ms != null and group.marks.archived_ms != null) return;
+    group.marks.archived_ms = wall_ms;
 }
 
 /// Put back what the disk remembered of the person's marks on a group.
@@ -1848,6 +1900,13 @@ pub fn read(
 /// Ids only. What to call each one is not the chat's business: it knows
 /// terminals by the id the host assigned, and the host is the one that can
 /// turn that into whatever the tab currently says.
+/// How many terminals are in the group besides the person.
+pub fn othersIn(self: *const Chat, name: []const u8) Error!usize {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    const n = group.members.count();
+    return if (group.members.contains(user_id)) n - 1 else n;
+}
+
 pub fn membersOf(
     self: *const Chat,
     alloc: Allocator,
@@ -3468,7 +3527,10 @@ test "ControlRoom marks: marks that came back off disk have seen nothing in this
     var chat = testChat();
     defer chat.deinit();
     try chat.restoreShell("build", "", 0, .none);
-    try chat.restoreMarks("build", .{ .seen_ms = 1_700_000_000_000, .snooze = .{ .next_event = 1_700_000_000_000 } });
+    var marks: Marks = .none;
+    marks.seen_ms = 1_700_000_000_000;
+    marks.snooze = .{ .next_event = 1_700_000_000_000 };
+    try chat.restoreMarks("build", marks);
 
     try testing.expectEqual(@as(?u64, 1_700_000_000_000), (try chat.marksOf("build")).seen_ms);
     try testing.expectEqual(@as(?u64, null), chat.seenRunMs("build"));
@@ -3569,10 +3631,10 @@ test "ControlRoom marks: a group comes back from disk with what the person had s
     var chat = testChat();
     defer chat.deinit();
     const wall: u64 = 1_700_000_000_000;
-    try chat.restoreShell("build", "", 0, .{
-        .seen_ms = wall,
-        .snooze = .{ .until = .{ .at_ms = wall, .until_ms = wall + 3_600_000 } },
-    });
+    var marks: Marks = .none;
+    marks.seen_ms = wall;
+    marks.snooze = .{ .until = .{ .at_ms = wall, .until_ms = wall + 3_600_000 } };
+    try chat.restoreShell("build", "", 0, marks);
 
     // Still put aside until the hour is up, across the restart...
     try testing.expectEqual(@as(?u64, wall), (try chat.marksOf("build")).seen_ms);

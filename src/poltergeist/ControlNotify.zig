@@ -83,6 +83,11 @@ pub const Row = struct {
     /// What the row comes to, **before** a snooze: the snapshot's `under`.
     top: Need,
     snoozed: bool,
+    /// The person muted the group's notifications (task 1659): like a
+    /// snooze, nothing is raised for it, while its card is shown as ever.
+    /// Unlike one, it does not end when the row changes -- only when its
+    /// moment comes or the person lifts it.
+    muted: bool,
     /// The supervisor's own wait, when it is alive and on duty; null
     /// otherwise.
     own: ?Need,
@@ -284,7 +289,7 @@ pub fn step(
             }
             try current.put(arena, Signature.of(r.top), {});
             if (r.own) |o| try current.put(arena, Signature.of(o), {});
-            if (r.snoozed or !interrupts(r.top.kind)) continue;
+            if (r.snoozed or r.muted or !interrupts(r.top.kind)) continue;
             waiting += 1;
         }
         if (waiting == 0) continue;
@@ -294,7 +299,7 @@ pub fn step(
         var things: std.ArrayListUnmanaged(Thing) = .empty;
         for (m.groups.items) |gi| {
             const r = rows[gi];
-            if (r.snoozed or !interrupts(r.top.kind)) continue;
+            if (r.snoozed or r.muted or !interrupts(r.top.kind)) continue;
             const need = own orelse r.top;
             const sig = Signature.of(need);
             const seen = for (things.items) |t| {
@@ -432,6 +437,7 @@ fn row(group: []const u8, kind: Attention.Kind, since_ms: u64, terminal: Id) Row
         .steward = sup,
         .top = .{ .kind = kind, .since_ms = since_ms, .terminal = terminal },
         .snoozed = false,
+        .muted = false,
         .own = if (terminal == sup) .{ .kind = kind, .since_ms = since_ms, .terminal = sup } else null,
         .who = if (terminal == sup) "" else "worker-core",
         .text = "may I write retry.py?",
@@ -564,6 +570,30 @@ test "ControlNotify: nothing is sent while snoozed, and what was sent is not sen
     _ = try r.at(&.{x}, .nobody, .open, 12 * min);
     x.snoozed = false;
     try testing.expectEqual(@as(usize, 0), (try r.at(&.{x}, .nobody, .open, 13 * min)).alerts.len);
+}
+
+test "ControlNotify: nothing is sent for a muted group, and it is not held over for when the mute ends (task 1659)" {
+    var r: Run = .{};
+    defer r.deinit();
+    var x = row("web", .needs_approval, 0, sup);
+    x.muted = true;
+    try testing.expectEqual(@as(usize, 0), (try r.at(&.{x}, .nobody, .open, 10 * min)).alerts.len);
+    // Another group waiting at the same time is not muted with it.
+    var y = row("api", .needs_answer, 0, worker);
+    y.steward = null;
+    try testing.expectEqual(@as(usize, 1), (try r.at(&.{ x, y }, .nobody, .open, 11 * min)).alerts.len);
+}
+
+test "ControlNotify: the same supervisor's other group is named alone, the muted one not counted in it (task 1659)" {
+    var r: Run = .{};
+    defer r.deinit();
+    var x = row("web", .needs_approval, 0, worker);
+    x.muted = true;
+    const z = row("api", .needs_answer, 0, 0xc3);
+    const d = try r.at(&.{ x, z }, .nobody, .open, 10 * min);
+    try testing.expectEqual(@as(usize, 1), d.alerts.len);
+    try testing.expectEqualStrings("api", d.alerts[0].group);
+    try testing.expectEqual(@as(usize, 0), d.alerts[0].more);
 }
 
 test "ControlNotify: not while the card is in sight or the person is in the terminal, and then never" {

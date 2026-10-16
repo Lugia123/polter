@@ -378,6 +378,16 @@ pub fn forget(self: *Tasks, id: Id) void {
     }
 }
 
+/// How many of a group's tasks are still open: what deleting the group
+/// would take with it that nobody has finished (task 1659).
+pub fn openInGroup(self: *const Tasks, group: []const u8) usize {
+    var n: usize = 0;
+    for (self.list.items) |t| {
+        if (t.state == .open and std.mem.eql(u8, t.group, group)) n += 1;
+    }
+    return n;
+}
+
 /// Drop a group's tasks, because the group is gone.
 pub fn forgetGroup(self: *Tasks, group: []const u8) void {
     var i: usize = 0;

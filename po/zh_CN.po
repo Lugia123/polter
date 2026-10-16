@@ -2479,6 +2479,16 @@ msgstr "你自己：{1}"
 msgid "{1} {2}"
 msgstr "{1}{2}"
 
+#: src/poltergeist/ControlAct.zig:278
+msgid ""
+"The person asked from the control room: please report on this group's progress -- what is done, what is in progress and what is stuck -- in this group."
+msgstr "用户在总控台请你在这个群里汇报一下进度：哪些做完了、哪些在做、哪些卡住了。"
+
+#: src/poltergeist/ControlAct.zig:279
+msgid ""
+"The person asked from the control room: please close the workers in this group that are idle -- finished, or waiting with nothing to do -- and say in this group which ones you closed."
+msgstr "用户在总控台请你关掉这个群里闲着的 worker（做完了的，或者在等着却没事可做的），并在这个群里说一声关了哪几个。"
+
 #: src/poltergeist/ControlRoom.zig:870
 msgid "Screen still for {1} min"
 msgstr "屏幕 {1} 分没动"

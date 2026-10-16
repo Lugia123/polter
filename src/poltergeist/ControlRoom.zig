@@ -503,6 +503,7 @@ pub fn notifyRows(arena: Allocator, groups: []const GroupRow) Allocator.Error![]
                 .terminal = if (g.attention.terminal) |h| h.id else null,
             },
             .snoozed = g.attention.kind == .snoozed,
+            .muted = g.muted != null,
             .own = own,
             .who = try arena.dupe(u8, g.waiter.name),
             .text = try arena.dupe(u8, text),
@@ -611,6 +612,9 @@ pub const Input = struct {
     /// The person's home directory, where a supervisor is started when
     /// nothing says better. Empty when it is not known.
     home: []const u8,
+    /// Where groups' records are, `<state>/chat`: a group's own is this and
+    /// its name (`GroupRow.record_dir`). Empty when there is no record.
+    record_root: []const u8,
     /// The cards the person has pressed "Fix" on, and as of which moment
     /// (`ControlFix.Sent`). No default: a caller that forgot it would offer
     /// the button again the moment it was pressed.
@@ -795,6 +799,39 @@ pub const AttentionOut = struct {
             },
         };
     }
+};
+
+/// A group's mute as the snapshot says it: until a moment on the wall
+/// clock, or `null` for until the person lifts it.
+pub const MuteOut = struct {
+    until_ms: ?u64,
+
+    fn of(m: Chat.Marks.Mute) ?MuteOut {
+        return switch (m) {
+            .none => null,
+            .until => |until| .{ .until_ms = until },
+            .forever => .{ .until_ms = null },
+        };
+    }
+};
+
+/// What deleting a group takes with it: the terminals in it besides the
+/// person -- taken out of it, not closed -- and its tasks nobody has closed
+/// or cancelled. `delete_group` is refused unless these are what the
+/// dialog showed.
+pub const DeleteCost = struct {
+    members: usize,
+    open_tasks: usize,
+};
+
+/// An archived group, off the list (task 1659).
+pub const ArchivedRow = struct {
+    name: []const u8,
+    brief: []const u8,
+    /// When it was archived, on the wall clock.
+    archived_ms: u64,
+    record_dir: []const u8,
+    delete_cost: DeleteCost,
 };
 
 pub const SnoozeOut = struct {
@@ -1090,6 +1127,17 @@ pub const GroupRow = struct {
     more: usize,
     same_as: ?[]const u8,
     members: []const Member,
+    /// Kept at the front of its section (task 1659): `build` sorts it there,
+    /// so a host draws `groups` in the order given.
+    pinned: bool,
+    /// Muted, and until when; null when it is not (task 1659). A mute whose
+    /// moment has passed is already null here.
+    muted: ?MuteOut,
+    /// What the delete dialog says it takes with it (task 1659).
+    delete_cost: DeleteCost,
+    /// The group's record directory, for "show in Finder"; empty when there
+    /// is no record.
+    record_dir: []const u8,
     /// The "Fix" button (`ControlFix`): none, offered, or pressed and
     /// standing until the card changes.
     fix: ControlFix.State,
@@ -1331,6 +1379,9 @@ pub const Snapshot = struct {
     /// order and "has an agent" is a judgement.
     open_on: ?[]const u8,
     groups: []const GroupRow,
+    /// Archived groups, newest archived first: in none of the counts above
+    /// and raising no notification (task 1659).
+    archived: []const ArchivedRow,
     ungrouped: []const LoneRow,
     terminals: []const TerminalOut,
     tabs: []const Tab,
@@ -1819,9 +1870,19 @@ fn hasAgent(in: Input, t: Terminal) bool {
 }
 
 fn pendingBefore(_: void, a: Pending, b: Pending) bool {
+    // **A pinned group leads its section, and only its section** (task
+    // 1659): the groups waiting for the person stay above every other,
+    // pinned or not, and inside each half the order is what it was.
+    if (a.row.needs_me != b.row.needs_me) return a.row.needs_me;
+    if (a.row.pinned != b.row.pinned) return a.row.pinned;
     if (Attention.before(a.attention, b.attention)) return true;
     if (Attention.before(b.attention, a.attention)) return false;
     return std.mem.lessThan(u8, a.row.name, b.row.name);
+}
+
+fn archivedBefore(_: void, a: ArchivedRow, b: ArchivedRow) bool {
+    if (a.archived_ms != b.archived_ms) return a.archived_ms > b.archived_ms;
+    return std.mem.lessThan(u8, a.name, b.name);
 }
 
 const Lone = struct {
@@ -1854,6 +1915,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
 
     var grouped: std.AutoHashMapUnmanaged(Id, ?u64) = .empty;
     var rows: std.ArrayListUnmanaged(Pending) = .empty;
+    var archived: std.ArrayListUnmanaged(ArchivedRow) = .empty;
     var fix_cards: std.ArrayListUnmanaged(ControlFix.Card) = .empty;
 
     for (names.items) |name| {
@@ -1862,6 +1924,47 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         const seen = in.chat.seenRunMs(name);
         const marks = in.chat.marksOf(name) catch Chat.Marks.none;
         const snooze = in.chat.snoozeOf(name, in.now_ms, in.wall_ms);
+        const cost: DeleteCost = .{
+            .members = members: {
+                var n: usize = 0;
+                for (all) |id| {
+                    if (id != Chat.user_id) n += 1;
+                }
+                break :members n;
+            },
+            .open_tasks = in.tasks.openInGroup(name),
+        };
+        const record_dir: []const u8 = if (in.record_root.len == 0)
+            ""
+        else
+            try std.fs.path.join(arena, &.{ in.record_root, name });
+
+        // **Off the list, and nothing else** (task 1659). Its terminals are
+        // still its own -- counted as in a group, so a supervisor that goes
+        // on working in an archived group is not drawn as one in none --
+        // but it has no row, no count and no notification.
+        if (marks.archived_ms) |at| {
+            for (all) |id| {
+                if (id == Chat.user_id) continue;
+                const gop = try grouped.getOrPut(arena, id);
+                if (!gop.found_existing) gop.value_ptr.* = null;
+            }
+            try archived.append(arena, .{
+                .name = try arena.dupe(u8, name),
+                .brief = try arena.dupe(u8, in.chat.briefOf(name) catch ""),
+                .archived_ms = at,
+                .record_dir = record_dir,
+                .delete_cost = cost,
+            });
+            continue;
+        }
+
+        // A mute that ends has to be redrawn as ended when it does.
+        const mute = in.chat.muteOf(name, in.wall_ms);
+        switch (mute) {
+            .until => |until| wake.consider(in.now_ms +| (until -| in.wall_ms)),
+            .none, .forever => {},
+        }
 
         var steward: ?Attention.Status = null;
         var workers: std.ArrayListUnmanaged(Attention.Status) = .empty;
@@ -1998,12 +2101,17 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
                 .more = more,
                 .same_as = null,
                 .members = members.items,
+                .pinned = marks.pinned,
+                .muted = MuteOut.of(mute),
+                .delete_cost = cost,
+                .record_dir = record_dir,
                 .fix = fix,
             },
         });
     }
 
     std.mem.sort(Pending, rows.items, {}, pendingBefore);
+    std.mem.sort(ArchivedRow, archived.items, {}, archivedBefore);
 
     // One supervisor, several groups: the one spoken in last carries the
     // reason, the others point at it (4.4). 暂定: "spoken in last" is the
@@ -2200,6 +2308,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             .header_quiet = .over(group_rows.len - needing, 0),
             .open_on = open_on,
             .groups = group_rows,
+            .archived = archived.items,
             .ungrouped = lone_rows,
             .terminals = terminals.items,
             .tabs = tabs.items,
@@ -2422,6 +2531,7 @@ const World = struct {
             .projects = self.projects,
             .cli_names = self.cli_names,
             .home = self.home,
+            .record_root = "/state/chat",
             .fix_sent = &self.fix_sent,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
@@ -3113,6 +3223,130 @@ test "ControlRoom snapshot: a timed snooze ends on its own, and the core knows w
 
     const after = try build(arena.allocator(), w.input(fixture_now + 20_000));
     try testing.expectEqual(Attention.Kind.needs_answer, (try rowNamed(after.snapshot, "billing")).attention.kind);
+}
+
+test "ControlRoom snapshot: a pinned group leads its own section and no other (task 1659)" {
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const before = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+    // The last of the quiet half, and the last of the waiting half.
+    const quiet_last = before.groups[before.groups.len - 1];
+    try testing.expect(!quiet_last.needs_me);
+    var waiting_last: ?GroupRow = null;
+    for (before.groups) |g| {
+        if (g.needs_me) waiting_last = g;
+    }
+    try testing.expect(waiting_last != null);
+    for (before.groups) |g| try testing.expect(!g.pinned);
+
+    try w.chat.setPinned(quiet_last.name, true);
+    try w.chat.setPinned(waiting_last.?.name, true);
+    const after = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+    try testing.expectEqual(before.groups.len, after.groups.len);
+    // The waiting half is still all above the quiet one.
+    const first_quiet = for (after.groups, 0..) |g, i| {
+        if (!g.needs_me) break i;
+    } else after.groups.len;
+    for (after.groups[0..first_quiet]) |g| try testing.expect(g.needs_me);
+    for (after.groups[first_quiet..]) |g| try testing.expect(!g.needs_me);
+    // And each pinned one is first in its half.
+    try testing.expectEqualStrings(waiting_last.?.name, after.groups[0].name);
+    try testing.expect(after.groups[0].pinned);
+    try testing.expectEqualStrings(quiet_last.name, after.groups[first_quiet].name);
+    try testing.expect(after.groups[first_quiet].pinned);
+    // Everything else in the order it was.
+    var rest_before: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (before.groups) |g| {
+        if (!std.mem.eql(u8, g.name, quiet_last.name) and !std.mem.eql(u8, g.name, waiting_last.?.name))
+            try rest_before.append(arena.allocator(), g.name);
+    }
+    var k: usize = 0;
+    for (after.groups) |g| {
+        if (g.pinned) continue;
+        try testing.expectEqualStrings(rest_before.items[k], g.name);
+        k += 1;
+    }
+}
+
+test "ControlRoom snapshot: an archived group is off the list, out of every count, and its terminals are still its own (task 1659)" {
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const before = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+    const was = try rowNamed(before, "billing");
+    try testing.expect(was.needs_me);
+    try testing.expectEqual(@as(usize, 0), before.archived.len);
+
+    try w.chat.setArchived("billing", w.wall_ms + 5);
+    const after = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+    try testing.expectError(error.TestRowMissing, rowNamed(after, "billing"));
+    try testing.expectEqual(before.groups.len - 1, after.groups.len);
+    try testing.expectEqual(before.needs_me - 1, after.needs_me);
+    try testing.expectEqual(after.groups_needing_me + after.groups_other, after.groups.len);
+    try testing.expectEqual(@as(usize, 1), after.archived.len);
+    try testing.expectEqualStrings("billing", after.archived[0].name);
+    try testing.expectEqual(w.wall_ms + 5, after.archived[0].archived_ms);
+    try testing.expectEqualStrings("/state/chat/billing", after.archived[0].record_dir);
+    // Its members do not turn into terminals in no group.
+    try testing.expectEqual(before.ungrouped.len, after.ungrouped.len);
+    // Nothing is raised for it.
+    for (try notifyRows(arena.allocator(), after.groups)) |r| try testing.expect(!std.mem.eql(u8, r.group, "billing"));
+
+    try w.chat.setArchived("billing", null);
+    const back = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+    try testing.expectEqual(before.groups.len, back.groups.len);
+    try testing.expectEqual(@as(usize, 0), back.archived.len);
+}
+
+test "ControlRoom snapshot: a mute says until when, keeps the card, holds back the notification and ends on its own (task 1659)" {
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const wall = w.wall_ms + fixture_now;
+    try w.chat.setMute("billing", .{ .until = wall + 30_000 });
+    const during = try build(arena.allocator(), w.input(fixture_now));
+    const row = try rowNamed(during.snapshot, "billing");
+    try testing.expectEqual(@as(?u64, wall + 30_000), row.muted.?.until_ms);
+    // The card is what it was: still waiting, still counted.
+    try testing.expect(row.needs_me);
+    for (try notifyRows(arena.allocator(), during.snapshot.groups)) |r| {
+        try testing.expectEqual(std.mem.eql(u8, r.group, "billing"), r.muted);
+    }
+    // Woken no later than when it ends.
+    try testing.expect(during.wake_ms.? <= fixture_now + 30_000);
+
+    const after = try build(arena.allocator(), w.input(fixture_now + 30_000));
+    try testing.expect((try rowNamed(after.snapshot, "billing")).muted == null);
+
+    try w.chat.setMute("billing", .forever);
+    const ever = try build(arena.allocator(), w.input(fixture_now + 99_000_000));
+    try testing.expectEqual(@as(?u64, null), (try rowNamed(ever.snapshot, "billing")).muted.?.until_ms);
+}
+
+test "ControlRoom snapshot: what deleting a group would take is counted for its dialog (task 1659)" {
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const s0 = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+    const row0 = try rowNamed(s0, "billing");
+    try testing.expectEqual(try w.chat.othersIn("billing"), row0.delete_cost.members);
+    try testing.expectEqualStrings("/state/chat/billing", row0.record_dir);
+
+    const open = try w.tasks.create("billing", "still to do", .feature);
+    const done = try w.tasks.create("billing", "finished", .feature);
+    try w.tasks.close(done);
+    _ = open;
+    const s1 = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
+    try testing.expectEqual(row0.delete_cost.open_tasks + 1, (try rowNamed(s1, "billing")).delete_cost.open_tasks);
 }
 
 test "ControlRoom rev: standing still does not change it" {

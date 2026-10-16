@@ -1005,6 +1005,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .projects = projects,
         .cli_names = self.controlCliNames(alloc) catch return,
         .home = self.controlHome(),
+        .record_root = if (self.group_log) |*l| l.dir else "",
         .fix_sent = &self.control_fix_sent,
         .now_ms = now_ms,
         .wall_ms = @intCast(@max(0, wall_ms)),
@@ -1130,6 +1131,10 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .sendText = controlActText,
             .agentPresent = controlActAgentPresent,
             .readScreen = controlActReadScreen,
+            .renameGroup = controlActRenameGroup,
+            .setBrief = controlActSetBrief,
+            .openTasks = controlActOpenTasks,
+            .deleteGroup = controlActDeleteGroup,
             .persist = controlActPersist,
             .createGroup = controlActCreateGroup,
             .stewardOf = controlActStewardOf,
@@ -1230,6 +1235,83 @@ fn controlFixTr(msgid: [:0]const u8) []const u8 {
 fn controlFixClock(buf: *[19]u8, at_ms: i64) []const u8 {
     const full = poltergeistpkg.daylog.stamp(buf, at_ms);
     return if (full.len >= 16) full[5..16] else full;
+}
+
+/// "Rename" from the control room: `group_rename`'s road, by the person.
+fn controlActRenameGroup(ctx: *anyopaque, from: []const u8, to: []const u8) anyerror!void {
+    try chatRename(ctx, from, to, poltergeistpkg.Chat.user_id);
+}
+
+/// "Edit the brief" from the control room: `group_set_brief`'s road.
+fn controlActSetBrief(ctx: *anyopaque, group: []const u8, brief: []const u8) anyerror!void {
+    _ = try chatSetBrief(ctx, group, brief);
+}
+
+fn controlActOpenTasks(ctx: *anyopaque, group: []const u8) usize {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.tasks.openInGroup(group);
+}
+
+/// "Delete group" from the control room, after its dialog (task 1659).
+///
+/// **The one delete that removes the record, and it is the person's.**
+/// `chatDestroy` -- `group_destroy`, what an agent can call -- takes a group
+/// off the list and leaves every word of it on disk: an agent asked to tidy
+/// up must never be able to destroy what the person reads the morning
+/// after. The person may, having read a dialog that says what goes and that
+/// it does not come back. So here, in this order:
+///
+///  1. **Its terminals are taken out of it, and none is closed** -- by
+///     `group_remove`'s road, so each one's leaving is recorded like any
+///     other (into the record that is about to go, and harmless).
+///  2. **Everything in memory under its name goes**, by `group_stores.Table`
+///     with no `else`, so a table added there without being dropped here
+///     does not compile.
+///  3. **Its directory under each of `group_stores.Root` is deleted**, with
+///     every handle into them let go first. `chat/` last: a crash part way
+///     leaves the group listed, with less in it, to be deleted again --
+///     never directories no group owns.
+///
+/// What it does not touch: the stream every group shares (`chat.jsonl`),
+/// which the archive plugin follows by seq and which forgets by size on its
+/// own; copies a plugin has made elsewhere; and the terminals' own
+/// transcripts, which are the terminals' and not the group's.
+fn controlActDeleteGroup(ctx: *anyopaque, group: []const u8) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const stores = poltergeistpkg.group_stores;
+    if (!self.chat.exists(group)) return error.NoSuchGroup;
+
+    {
+        var arena: std.heap.ArenaAllocator = .init(self.alloc);
+        defer arena.deinit();
+        const members = try self.chat.membersOf(arena.allocator(), group);
+        for (members) |id| {
+            if (id == poltergeistpkg.Chat.user_id) continue;
+            chatRemove(ctx, group, id) catch |err| {
+                log.warn("control room: could not take {x} out of {s} err={}", .{ id, group, err });
+            };
+        }
+    }
+
+    inline for (comptime std.enums.values(stores.Table)) |table| switch (table) {
+        .chat_groups => try self.chat.destroy(group),
+        .task_group_field => self.tasks.forgetGroup(group),
+        .stats_last => if (self.stats_log) |*l| l.dropGroup(group),
+        .mention_retries => self.mention_retries.dropGroup(group),
+    };
+
+    if (self.poltergeist_state_dir) |dir| {
+        closeStoreHandles(self);
+        defer self.reopenStoreHandles();
+        stores.deleteGroupDirs(self.alloc, global.io(), dir, group) catch |err| {
+            log.warn("control room: could not delete the record of {s} err={}", .{ group, err });
+            return error.DeleteFailed;
+        };
+    }
+
+    log.info("control room: group {s} deleted with its record", .{group});
+    self.saveSession();
+    self.controlRoomTouch();
 }
 
 fn controlActAgentPresent(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
