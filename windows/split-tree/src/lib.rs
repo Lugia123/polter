@@ -179,8 +179,60 @@ pub struct Divider {
     /// How the split arranges its children. **A `Horizontal` split's divider
     /// is a vertical line** -- the axis names the arrangement, not the line.
     pub axis: Axis,
-    /// The boundary, `thickness` across, centred on the split point.
+    /// The boundary, `thickness` across, centred on the split point and
+    /// snapped down to a whole pixel ([`divider_span`]).
     pub rect: Rect,
+}
+
+/// Where a divider `thickness` across lies on a seam at `seam`, as
+/// `(start, end)` in whole pixels: centred on the seam, then snapped down to
+/// the pixel the host's `as i32` would have put it on anyway.
+///
+/// **One function for both sides of #58.** [`Tree::dividers`] places the
+/// divider windows with it and [`clear_of_dividers`] keeps the panes out from
+/// under them. Two copies of this rounding would disagree by a pixel, and a
+/// pixel is the whole bug.
+pub fn divider_span(seam: f64, thickness: f64) -> (f64, f64) {
+    let start = (seam - thickness / 2.0).floor();
+    (start, start + thickness)
+}
+
+/// `cell` -- a pane's rectangle from [`Tree::layout`] inside `bounds` --
+/// with every edge that is a seam moved off the divider on it (#58).
+///
+/// **Why the pane has to move rather than the divider.** A divider is a
+/// window, so the pixels it covers are not the pane's to paint; and its
+/// window is its hit area, `thickness` wide on purpose (`divider.rs` in the
+/// host). Centred on a seam it reached half its width into the pane on the
+/// far side, further than that pane's padding at 150% top/bottom and at
+/// 200%, so the first row or column of cells lost a pixel of ink. No placement
+/// of a nine-pixel window fits inside two four-pixel paddings (150%, the
+/// default `window-padding-x`), so the panes
+/// give up the divider's width between them instead -- what the pane frames
+/// already do with the gap between two frames, where this is not needed.
+///
+/// An edge on `bounds` is the window's edge and stays where it is; every
+/// other edge borders another pane, so a divider lies on it. The result is
+/// in whole pixels on every moved edge, so the host's truncation cannot put
+/// a pixel back under the divider.
+pub fn clear_of_dividers(cell: Rect, bounds: Rect, thickness: f64) -> Rect {
+    // Half a pixel either way: seams are fractions, the window's edges whole.
+    let inside = |edge: f64, lo: f64, hi: f64| edge > lo + 0.5 && edge < hi - 0.5;
+    let (mut left, mut right) = (cell.min_x(), cell.max_x());
+    let (mut top, mut bottom) = (cell.min_y(), cell.max_y());
+    if inside(left, bounds.min_x(), bounds.max_x()) {
+        left = divider_span(left, thickness).1;
+    }
+    if inside(right, bounds.min_x(), bounds.max_x()) {
+        right = divider_span(right, thickness).0;
+    }
+    if inside(top, bounds.min_y(), bounds.max_y()) {
+        top = divider_span(top, thickness).1;
+    }
+    if inside(bottom, bounds.min_y(), bounds.max_y()) {
+        bottom = divider_span(bottom, thickness).0;
+    }
+    Rect::new(left, top, (right - left).max(0.0), (bottom - top).max(0.0))
 }
 
 /// A node is either a pane or a division of space between two nodes.
@@ -924,11 +976,10 @@ impl Node {
     ) {
         let Node::Split(s) = self else { return };
         let (l, r) = Node::subdivide(s, bounds);
-        let half = thickness / 2.0;
         let rect = match s.axis {
             // The boundary sits where the two children meet, straddling it.
-            Axis::Horizontal => Rect::new(l.max_x() - half, bounds.y, thickness, bounds.h),
-            Axis::Vertical => Rect::new(bounds.x, l.max_y() - half, bounds.w, thickness),
+            Axis::Horizontal => Rect::new(divider_span(l.max_x(), thickness).0, bounds.y, thickness, bounds.h),
+            Axis::Vertical => Rect::new(bounds.x, divider_span(l.max_y(), thickness).0, bounds.w, thickness),
         };
         out.push(Divider {
             path: path.clone(),

@@ -668,6 +668,112 @@ fn every_divider_path_can_be_dragged() {
     }
 }
 
+// -- panes clear of dividers (#58) -------------------------------------------
+
+/// A rectangle as the host puts it on screen: `x as i32` and `w as i32`
+/// separately (`pane_frames::work_out`'s `px`, `divider::sync`'s `RECT`),
+/// as `[left, top, right, bottom]`.
+fn on_screen(r: Rect) -> [i32; 4] {
+    let (x, y, w, h) = (r.x as i32, r.y as i32, r.w as i32, r.h as i32);
+    [x, y, x + w, y + h]
+}
+
+fn overlap(a: [i32; 4], b: [i32; 4]) -> bool {
+    a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+}
+
+/// Every shape, ratio, scale and window size the next test runs over: the
+/// host's thickness `(6 * dpi / 96).max(3)` at 100%..200%, plus the odd and
+/// even ones in between, at ratios that put seams on fractions.
+fn clear_cases() -> Vec<(Tree, Rect, f64)> {
+    let col = Tree::with_pane(A).insert(B, A, NewSplit::Down).unwrap();
+    let shapes = [row(), row3(), grid(), col];
+    let bounds = [Rect::new(0.0, 0.0, 1000.0, 655.0), Rect::new(0.0, 37.0, 1003.0, 611.0)];
+    let mut out = Vec::new();
+    for shape in shapes {
+        for b in bounds {
+            for pos in [0.5, 0.37, 0.613] {
+                for thickness in 3..=13 {
+                    let mut t = shape.clone();
+                    for d in shape.dividers(b, thickness as f64) {
+                        let at = match d.axis {
+                            Axis::Horizontal => b.x + b.w * pos,
+                            Axis::Vertical => b.y + b.h * pos,
+                        };
+                        // The nested ones may not take this position; they
+                        // keep theirs, which is still a fraction.
+                        if let Ok(moved) = t.resize_at(&d.path, at, b) {
+                            t = moved;
+                        }
+                    }
+                    out.push((t, b, thickness as f64));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// **The #58 criterion.** No pixel of any pane is under any divider, as the
+/// host puts both on screen.
+#[test]
+fn no_pane_pixel_is_under_a_divider() {
+    let mut checked = 0;
+    for (t, b, thickness) in clear_cases() {
+        let divs: Vec<[i32; 4]> = t.dividers(b, thickness).iter().map(|d| on_screen(d.rect)).collect();
+        for (id, at) in t.layout(b) {
+            let pane = on_screen(clear_of_dividers(at.rect().unwrap(), b, thickness));
+            for d in &divs {
+                checked += 1;
+                assert!(!overlap(pane, *d), "pane {id} {pane:?} is under divider {d:?} (thickness {thickness}, bounds {b:?})");
+            }
+        }
+    }
+    assert!(checked > 1000, "only {checked} pairs were looked at");
+}
+
+/// The other half: moving the panes leaves no hole. Each edge of a pane is
+/// either the window's edge or touches a divider exactly, so nothing shows
+/// between a pane and the divider next to it.
+#[test]
+fn every_pane_edge_is_the_window_or_touches_a_divider() {
+    for (t, b, thickness) in clear_cases() {
+        let divs: Vec<[i32; 4]> = t.dividers(b, thickness).iter().map(|d| on_screen(d.rect)).collect();
+        let win = on_screen(b);
+        for (id, at) in t.layout(b) {
+            let p = on_screen(clear_of_dividers(at.rect().unwrap(), b, thickness));
+            let spans_y = |d: &[i32; 4]| d[1] < p[3] && p[1] < d[3];
+            let spans_x = |d: &[i32; 4]| d[0] < p[2] && p[0] < d[2];
+            let ok = [
+                p[0] == win[0] || divs.iter().any(|d| d[2] == p[0] && spans_y(d)),
+                p[2] == win[2] || divs.iter().any(|d| d[0] == p[2] && spans_y(d)),
+                p[1] == win[1] || divs.iter().any(|d| d[3] == p[1] && spans_x(d)),
+                p[3] == win[3] || divs.iter().any(|d| d[1] == p[3] && spans_x(d)),
+            ];
+            assert_eq!(ok, [true; 4], "pane {id} {p:?} (thickness {thickness}, bounds {b:?}, dividers {divs:?})");
+        }
+    }
+}
+
+/// A pane alone keeps the whole window: there is no seam to move off.
+#[test]
+fn a_pane_alone_is_not_moved() {
+    let b = Rect::new(0.0, 37.0, 1003.0, 611.0);
+    assert_eq!(clear_of_dividers(b, b, 9.0), b);
+}
+
+/// The numbers from #58's table: 150%, nine pixels, a seam at 500.
+#[test]
+fn at_150_percent_the_far_pane_starts_where_the_divider_ends() {
+    let b = Rect::new(0.0, 0.0, 1000.0, 655.0);
+    let far = clear_of_dividers(Rect::new(500.0, 0.0, 500.0, 655.0), b, 9.0);
+    let near = clear_of_dividers(Rect::new(0.0, 0.0, 500.0, 655.0), b, 9.0);
+    // The divider is [495, 504): centred on 500, snapped down.
+    assert_eq!(divider_span(500.0, 9.0), (495.0, 504.0));
+    assert_rect(far, 504.0, 0.0, 496.0, 655.0);
+    assert_rect(near, 0.0, 0.0, 495.0, 655.0);
+}
+
 // -- equalize --------------------------------------------------------------
 
 #[test]

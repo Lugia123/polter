@@ -204,7 +204,12 @@ impl Asked {
     /// stack when it holds one -- and, for each pane, where its window goes.
     /// Called by `tabs::layout` with the window's state locked; it touches
     /// no window.
-    pub fn work_out(&self, visible: &[(PaneId, TreeRect, String, Option<Stacked>)], bounds: TreeRect, scale: f64) -> (Frames, Vec<(PaneId, TreeRect)>) {
+    ///
+    /// `thickness` is the dividers' (`divider::scaled_thickness`): a pane
+    /// that wears no frame gives up the pixels of the divider on each of its
+    /// seams (`polter_split_tree::clear_of_dividers`, #58), because nothing
+    /// else keeps the divider window off its cells.
+    pub fn work_out(&self, visible: &[(PaneId, TreeRect, String, Option<Stacked>)], bounds: TreeRect, scale: f64, thickness: f64) -> (Frames, Vec<(PaneId, TreeRect)>) {
         // The quick terminal is a window of its own with one surface and no
         // tabs (`quick.rs`); it never comes through here.
         let place = Place { enabled: self.enabled, quick_terminal: false, alone: visible.len() == 1 };
@@ -222,8 +227,11 @@ impl Asked {
                     let well = pane::well_px(rect, d.wears, scale);
                     (rect, TreeRect::new(well.x as f64, well.y as f64, well.w as f64, well.h as f64))
                 }
-                // Nothing in this tab is framed: the pane is its cell.
-                (Some(_), false) | (None, _) => (cell_px, *cell),
+                // Not framed: the pane is its cell, less the dividers on its
+                // seams (#58). A framed one needs no such thing -- its
+                // window is already inside its frame, and the divider lies
+                // in the gap between two frames.
+                (Some(_), false) | (None, _) => (cell_px, polter_split_tree::clear_of_dividers(*cell, bounds, thickness)),
             };
             windows.push((*id, window));
             panes.push(One { pane: *id, key: self.key(*id).map(str::to_string), own_name: name.clone(), drawn, rect, stack: stack.clone() });
