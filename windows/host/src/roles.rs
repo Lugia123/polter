@@ -653,6 +653,13 @@ impl CliSnapshot {
     pub fn label(&self, key: &str) -> String {
         self.cli(key).map(|c| c.label.clone()).unwrap_or_else(|| key.to_string())
     }
+
+    /// The keys of the CLIs the core found adapters for, or `None` while it
+    /// has never been read -- which is not "none" (#1670). An adapter whose
+    /// inventory failed was still found, so it is in.
+    pub fn available(&self) -> Option<Vec<String>> {
+        (!self.stale).then(|| self.clis.iter().map(|c| c.key.clone()).collect())
+    }
 }
 
 /// The skills or MCP servers of one CLI, in groups a person recognises:

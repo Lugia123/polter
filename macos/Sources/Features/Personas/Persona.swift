@@ -50,10 +50,14 @@ struct Persona: Identifiable, Equatable, Hashable {
         var isEmpty: Bool { disableHostPlugins.isEmpty && model == nil }
     }
 
-    /// The agent CLIs this role can start, as (key, label), in the order
-    /// the role lists them. Two or more make its menu row a submenu, so the
-    /// person says which; one or none leave it a single row.
+    /// The agent CLIs this role is set up for, as (key, label), in the
+    /// order the role lists them. Which of them its menu row offers is
+    /// `cliOffer`, not this: a CLI whose plugin is off is still set up.
     var clis: [Cli] = []
+
+    /// What the role's menu row offers: one row, or a submenu of the CLIs
+    /// that can be started here (`RoleCliOffer`, #1670).
+    var cliOffer: RoleCliOffer
 
     /// A role's one-line description, shown as the row's tooltip.
     var summaryForMenu: String = ""
@@ -63,12 +67,22 @@ struct Persona: Identifiable, Equatable, Hashable {
         var label: String
     }
 
-    init(key: String, name: String, prompt: String? = nil, hint: Hint? = nil, clis: [Cli] = []) {
+    /// - Parameter available: the CLIs the core found adapters for, or
+    ///   `nil` while it has not been read; see `RoleCliOffer.of`.
+    init(
+        key: String,
+        name: String,
+        prompt: String? = nil,
+        hint: Hint? = nil,
+        clis: [Cli] = [],
+        available: Set<String>? = nil
+    ) {
         self.key = key
         self.name = name
         self.prompt = prompt
         self.hint = hint
         self.clis = clis
+        self.cliOffer = .of(configured: clis.map(\.key), available: available)
     }
 }
 

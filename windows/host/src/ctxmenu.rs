@@ -671,32 +671,55 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
 /// *why* there is nothing to pick, and dropping it would leave a submenu that
 /// opens onto nothing -- which reads as a broken menu rather than as an
 /// answer. `menu.rs`'s `Enable::No` makes the same argument.
+///
+/// A row other rows name as their `parent` opens a popup of them (#1670: a
+/// role with several agent CLIs here). Every row that can be picked keeps
+/// its own index as its id, wherever it is drawn, so the caller dispatches
+/// by index as before. The three menus that carry roles -- this one, the
+/// tab strip's and the menu bar's -- all build it here.
 pub(crate) fn build_roles_menu(owner: HWND, entries: &[crate::personas::Entry]) -> Option<HMENU> {
+    let popup = || match unsafe { CreatePopupMenu() } {
+        Ok(m) => Some(m),
+        Err(e) => {
+            hlogf!(owner, "[ctx] CreatePopupMenu for roles failed: {e:?}");
+            None
+        }
+    };
+    let flags_of = |e: &crate::personas::Entry| {
+        let mut flags = MF_STRING;
+        if e.checked {
+            flags |= MF_CHECKED;
+        }
+        if !e.enabled {
+            flags |= MF_GRAYED;
+        }
+        flags
+    };
+    let menu = popup()?;
     unsafe {
-        let menu = match CreatePopupMenu() {
-            Ok(m) => m,
-            Err(e) => {
-                hlogf!(owner, "[ctx] CreatePopupMenu for roles failed: {e:?}");
-                return None;
-            }
-        };
         for (i, e) in entries.iter().enumerate() {
+            if e.parent.is_some() {
+                continue;
+            }
             if e.separator {
                 let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
                 continue;
             }
-            let mut flags = MF_STRING;
-            if e.checked {
-                flags |= MF_CHECKED;
-            }
-            if !e.enabled {
-                flags |= MF_GRAYED;
-            }
             let wide: Vec<u16> = e.text.encode_utf16().chain(Some(0)).collect();
-            let _ = AppendMenuW(menu, flags, crate::personas::ID_BASE + i, PCWSTR(wide.as_ptr()));
+            let under: Vec<usize> = (0..entries.len()).filter(|&j| entries[j].parent == Some(i)).collect();
+            if under.is_empty() {
+                let _ = AppendMenuW(menu, flags_of(e), crate::personas::ID_BASE + i, PCWSTR(wide.as_ptr()));
+                continue;
+            }
+            let Some(sub) = popup() else { continue };
+            for j in under {
+                let text: Vec<u16> = entries[j].text.encode_utf16().chain(Some(0)).collect();
+                let _ = AppendMenuW(sub, flags_of(&entries[j]), crate::personas::ID_BASE + j, PCWSTR(text.as_ptr()));
+            }
+            let _ = AppendMenuW(menu, flags_of(e) | MF_POPUP, sub.0 as usize, PCWSTR(wide.as_ptr()));
         }
-        Some(menu)
     }
+    Some(menu)
 }
 
 /// Entry point from the surface window procedure.

@@ -1426,33 +1426,10 @@ fn build(
     }
 }
 
-/// Build the persona popup. `None` when Windows would not give us a menu.
+/// Build the persona popup: the same one the right-click menus build,
+/// submenus included (#1670). `None` when Windows would not give us a menu.
 fn build_personas(frame: HWND, entries: &[crate::personas::Entry]) -> Option<HMENU> {
-    unsafe {
-        let menu = match CreatePopupMenu() {
-            Ok(m) => m,
-            Err(e) => {
-                wlogf!(frame, "[menu] CreatePopupMenu for personas failed: {e:?}");
-                return None;
-            }
-        };
-        for (i, e) in entries.iter().enumerate() {
-            if e.separator {
-                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-                continue;
-            }
-            let mut flags = MF_STRING;
-            if e.checked {
-                flags = flags | MF_CHECKED;
-            }
-            if !e.enabled {
-                flags = flags | MF_GRAYED;
-            }
-            let wide: Vec<u16> = e.text.encode_utf16().chain(Some(0)).collect();
-            let _ = AppendMenuW(menu, flags, crate::personas::ID_BASE + i, PCWSTR(wide.as_ptr()));
-        }
-        Some(menu)
-    }
+    crate::ctxmenu::build_roles_menu(frame, entries)
 }
 
 /// Open the root menu with its top-left at a screen point.

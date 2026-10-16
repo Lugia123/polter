@@ -81,11 +81,14 @@ final class PersonaCatalog: ObservableObject {
             isKnown = false
             return
         }
+        // Only the CLIs the core found an adapter for are offered (#1670).
+        let available = RoleCliOffer.available(library.clis)
         setPersonas(library.catalog.roles.map { role in
             var p = Persona(
                 key: role.key,
                 name: role.displayName,
-                clis: role.clis.map { Persona.Cli(key: $0.cli, label: library.clis.label(for: $0.cli)) })
+                clis: role.clis.map { Persona.Cli(key: $0.cli, label: library.clis.label(for: $0.cli)) },
+                available: available)
             p.summaryForMenu = role.displaySummary
             return p
         })

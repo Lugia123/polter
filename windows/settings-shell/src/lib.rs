@@ -30,6 +30,7 @@ pub mod official;
 pub mod palette;
 pub mod picker;
 pub mod projects;
+pub mod role_cli;
 pub mod search;
 
 // ================================================================ sections

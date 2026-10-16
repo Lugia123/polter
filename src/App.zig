@@ -2792,6 +2792,15 @@ pub fn reloadPlugins(self: *App) void {
     self.poltergeist_plugin_arena = null;
 
     self.ensurePlugins();
+
+    // A plugin switched on or off can add or take away an agent CLI, and
+    // the role menus offer only the CLIs this cache lists (#1670) -- while
+    // a role started without a CLI is matched against the plugin
+    // directories afresh (#1667). Left alone, the menu would go on offering
+    // a CLI whose plugin is off until the next restart. A cache nobody has
+    // asked for stays unread.
+    const io = global.io();
+    if (self.poltergeist_agent_clis.askedFor(io)) self.poltergeist_agent_clis.refresh(io);
 }
 
 /// A terminal's program set its title (task 1656). Asked of every title,

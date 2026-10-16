@@ -37,6 +37,7 @@ use std::sync::{Mutex, OnceLock};
 
 pub use crate::ffi::Surface;
 use crate::i18n::tr;
+use polter_settings_shell::role_cli::CliOffer;
 
 // ------------------------------------------------------------------- model
 
@@ -65,6 +66,13 @@ pub struct Persona {
     /// launch. Kept as text because this host neither reads nor applies it --
     /// it shows it so a person can see what a restart would do.
     pub hint: Vec<(String, String)>,
+    /// The agent CLIs the role is set up for, as (key, label), in its
+    /// order. Which of them its row offers is `cli_offer`, not this: a CLI
+    /// whose plugin is off is still set up.
+    pub clis: Vec<(String, String)>,
+    /// What the role's row offers: one row, or a submenu of the CLIs that
+    /// can be started here (#1670; `polter_settings_shell::role_cli`).
+    pub cli_offer: CliOffer,
 }
 
 /// What this host knows about the personas the user has defined.
@@ -364,7 +372,9 @@ pub fn effect_note(c: HostClass) -> Option<String> {
 /// What a picked row does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pick {
-    /// Set this terminal's persona, or clear it with `None`.
+    /// Set this terminal's persona, or clear it with `None`. The string is
+    /// what the core's `poltergeist_persona_set` takes: the key, or
+    /// `key,cli` to say which agent CLI to start (#1670).
     Set(Option<String>),
     /// Open the role library (`roles_ui.rs`).
     Editor,
@@ -382,6 +392,15 @@ pub struct Entry {
     pub checked: bool,
     pub enabled: bool,
     pub pick: Pick,
+    /// The row this one is listed under, by index into the same vector:
+    /// a role set up for several CLIs that are all here opens a list of
+    /// them (#1670). `None` for a row of the submenu itself.
+    ///
+    /// **Flat, with a parent index, rather than nested**, because a row's
+    /// command id is its index into this vector and the three menus that
+    /// show it dispatch by that index: nesting would give a row two
+    /// numbers to be found by.
+    pub parent: Option<usize>,
 }
 
 /// Where the persona rows' command ids live.
@@ -419,6 +438,7 @@ pub fn entries(surface: Surface) -> Vec<Entry> {
         // and a sentence that can be clicked reads as a thing to do.
         enabled: false,
         pick: Pick::Nothing,
+        parent: None,
     };
     let sep = || Entry {
         text: String::new(),
@@ -426,6 +446,7 @@ pub fn entries(surface: Surface) -> Vec<Entry> {
         checked: false,
         enabled: true,
         pick: Pick::Nothing,
+        parent: None,
     };
 
     // §3.5's error first of all, because it changes what the list below it
@@ -487,6 +508,7 @@ pub fn entries(surface: Surface) -> Vec<Entry> {
                 checked: st.key.is_none(),
                 enabled: !st.shielded,
                 pick: Pick::Set(None),
+                parent: None,
             });
             for r in personas {
                 if !key_is_spellable(&r.key) {
@@ -513,6 +535,11 @@ pub fn entries(surface: Surface) -> Vec<Entry> {
                 // persona had been modified.
                 let name = crate::roles::menu_name(&r.key, &r.name);
                 let text = if on { display_name(&name, st.deviated) } else { name };
+                // #1670: only the CLIs the core found an adapter for. Of
+                // several set up, one here is picked by this row itself and
+                // two or more open a list under it; the row of a list picks
+                // nothing.
+                let row = out.len();
                 out.push(Entry {
                     text,
                     separator: false,
@@ -521,8 +548,20 @@ pub fn entries(surface: Surface) -> Vec<Entry> {
                     // the claim that it is.
                     checked: on && st.agent_present,
                     enabled: !st.shielded,
-                    pick: Pick::Set(Some(r.key.clone())),
+                    pick: r.cli_offer.row_arg(&r.key).map_or(Pick::Nothing, |arg| Pick::Set(Some(arg))),
+                    parent: None,
                 });
+                for (cli, arg) in r.cli_offer.choices(&r.key) {
+                    let label = r.clis.iter().find(|(k, _)| *k == cli).map_or(cli.clone(), |(_, l)| l.clone());
+                    out.push(Entry {
+                        text: label,
+                        separator: false,
+                        checked: false,
+                        enabled: !st.shielded,
+                        pick: Pick::Set(Some(arg)),
+                        parent: Some(row),
+                    });
+                }
             }
         }
     }
@@ -540,6 +579,7 @@ pub fn entries(surface: Surface) -> Vec<Entry> {
         checked: false,
         enabled: true,
         pick: Pick::Editor,
+        parent: None,
     });
     out
 }
@@ -819,7 +859,7 @@ impl Provider for CoreProvider {
         // **Copied here and nowhere later.** The header gives these strings
         // until the next call or the next config reload; a `&str` kept past
         // this loop would be a dangling one by the time a menu is on screen.
-        let out: Vec<Persona> = rows
+        let mut out: Vec<Persona> = rows
             .iter()
             .take(got.min(n))
             .filter_map(|r| {
@@ -829,11 +869,39 @@ impl Provider for CoreProvider {
                 let key = unsafe { std::ffi::CStr::from_ptr(r.key) }.to_string_lossy().into_owned();
                 let name =
                     unsafe { std::ffi::CStr::from_ptr(r.name) }.to_string_lossy().into_owned();
-                Some(Persona { key, name, skills: Vec::new(), mcp: Vec::new(), prompt: None, hint: Vec::new() })
+                Some(Persona {
+                    key,
+                    name,
+                    skills: Vec::new(),
+                    mcp: Vec::new(),
+                    prompt: None,
+                    hint: Vec::new(),
+                    clis: Vec::new(),
+                    cli_offer: CliOffer::Role,
+                })
             })
             .collect();
         if out.is_empty() {
             return Catalogue::NotWired;
+        }
+        // #1670: each role's CLIs come from the role library, and which of
+        // them can start here from the core's CLI cache -- the macOS menu
+        // reads the same two (`PersonaCatalog.reloadPersonas`). Neither call
+        // starts a process on this thread; the first read of the cache starts
+        // on the core's own and answers `stale` until it lands.
+        let library = crate::roles::catalog();
+        let snapshot = crate::roles::clis(false);
+        let available = snapshot.available();
+        for p in &mut out {
+            let keys: Vec<String> = library.role(&p.key).map_or(Vec::new(), |r| r.clis.iter().map(|c| c.cli.clone()).collect());
+            p.cli_offer = CliOffer::of(&keys, available.as_deref());
+            p.clis = keys
+                .into_iter()
+                .map(|k| {
+                    let label = snapshot.label(&k);
+                    (k, label)
+                })
+                .collect();
         }
         Catalogue::Personas(out)
     }
@@ -927,6 +995,8 @@ mod tests {
             mcp: Vec::new(),
             prompt: None,
             hint: Vec::new(),
+            clis: Vec::new(),
+            cli_offer: CliOffer::Role,
         }
     }
 
@@ -1046,6 +1116,69 @@ mod tests {
         let ticked: Vec<&Entry> = e.iter().filter(|x| x.checked).collect();
         assert_eq!(ticked.len(), 1, "{e:?}");
         assert_eq!(ticked[0].pick, Pick::Set(Some("archer".into())));
+    }
+
+    fn duo(offer: CliOffer) -> Persona {
+        Persona {
+            clis: vec![("claude-code".into(), "Claude Code".into()), ("codex".into(), "Codex".into())],
+            cli_offer: offer,
+            ..persona("duo", "Duo")
+        }
+    }
+
+    fn wearing_nothing(shielded: bool) -> Standing {
+        Standing { agent_present: true, shielded, host_class: HostClass::Hot, ..Standing::unknown() }
+    }
+
+    /// #1670, as the official roles ship: only Claude Code's adapter is
+    /// here, so the row starts it with no list under it -- and says which.
+    #[test]
+    fn a_role_with_one_cli_here_is_one_row_that_names_it() {
+        let _g = serialised();
+        install(Catalogue::Personas(vec![duo(CliOffer::Only("claude-code".into()))]), wearing_nothing(false));
+        let e = entries(NO_SURFACE);
+        let row = e.iter().find(|x| x.text == "Duo").unwrap();
+        assert_eq!(row.pick, Pick::Set(Some("duo,claude-code".into())));
+        assert!(e.iter().all(|x| x.parent.is_none()), "{e:?}");
+    }
+
+    /// #1670: both here is a list under the role's row, each row naming its
+    /// CLI; the role's row itself picks nothing.
+    #[test]
+    fn a_role_with_two_clis_here_opens_a_list_of_them() {
+        let _g = serialised();
+        install(
+            Catalogue::Personas(vec![duo(CliOffer::Choose(vec!["claude-code".into(), "codex".into()])), persona("solo", "Solo")]),
+            wearing_nothing(false),
+        );
+        let e = entries(NO_SURFACE);
+        let at = e.iter().position(|x| x.text == "Duo").unwrap();
+        assert_eq!(e[at].pick, Pick::Nothing);
+        let under: Vec<&Entry> = e.iter().filter(|x| x.parent == Some(at)).collect();
+        assert_eq!(under.iter().map(|x| x.text.as_str()).collect::<Vec<_>>(), ["Claude Code", "Codex"]);
+        assert_eq!(
+            under.iter().map(|x| x.pick.clone()).collect::<Vec<_>>(),
+            [Pick::Set(Some("duo,claude-code".into())), Pick::Set(Some("duo,codex".into()))]
+        );
+        assert!(under.iter().all(|x| x.enabled && !x.separator));
+        // A role with no list is one row, as before.
+        let solo = e.iter().find(|x| x.text == "Solo").unwrap();
+        assert_eq!(solo.pick, Pick::Set(Some("solo".into())));
+        assert_eq!(e.iter().filter(|x| x.parent.is_some()).count(), 2, "{e:?}");
+    }
+
+    /// A shielded terminal greys the list's rows too.
+    #[test]
+    fn a_shielded_terminal_greys_the_list() {
+        let _g = serialised();
+        install(
+            Catalogue::Personas(vec![duo(CliOffer::Choose(vec!["claude-code".into(), "codex".into()]))]),
+            wearing_nothing(true),
+        );
+        let e = entries(NO_SURFACE);
+        let under: Vec<&Entry> = e.iter().filter(|x| x.parent.is_some()).collect();
+        assert_eq!(under.len(), 2, "{e:?}");
+        assert!(under.iter().all(|x| !x.enabled));
     }
 
     /// §5.2 once more, through the menu rather than through the formatter:
