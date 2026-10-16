@@ -645,6 +645,31 @@ adapter launch '{"version":1,"cwd":…,"home":…,"polter":…,"session":"<id>"|
   以参数传），不给 `env`，URL 里的 `user:pw@` 剥掉。这两条有测试钉着。
 - 关掉的插件不列：它已经在每个会话之外了，角色对它无事可做。
 
+### 11.3.1 第三个问题 `identify`：手动起的 CLI 是谁（任务 #1635）
+
+不经 Polter、手动敲 `claude` 起来的 agent 没有 hook，也没有角色启动记录：Bus 只知道「这里连着一个
+agent」（它的 MCP 边车连上了），别的一概不知，总控台原来对它什么都不说。认它是谁，**归适配器**：
+
+```text
+plugin.json  "agent_cli": { …, "identify_env": ["CLAUDECODE","AI_AGENT","CLAUDE_CODE_SESSION_ID"] }
+
+adapter identify '{"version":1,"cwd":…|null,"home":…,"pid":N|null,
+                   "env":{<只有本适配器在 identify_env 里声明的那几个>}}'
+→ {"version":1,"me":true|false,"session":"<id>"|null,"session_written_ms":N|null,
+   "quit":{"text":"/exit","ready":{"line":["❯"],"none_of":["esc to interrupt",…]}}|null,"notes":[…]}
+```
+
+- **变量从哪来**：边车 `polter +mcp` 握手时，按**所有已装适配器声明过的名字**读自己的环境，只带这些名字
+  （值限短的可打印 ASCII），外加父进程 pid（Windows 暂为 null）。环境里的 key、token 一个字节都出不去；
+  核心再按名字分发，每个适配器只看得到自己声明的那几个。日志里不打值。
+- **谁被问**：声明了、而且手上至少有一个它声明的变量的适配器，按 key 顺序问，第一个答 `me: true` 的算数。
+  一个都没有、都答 no、都失败，结论是 `unknown`——**这不是「没问题」**，总控台说「不认得的 CLI，状态未知」。
+- `session` 是适配器找到、`launch` 接得上的会话；`session_written_ms` 是它的记录最后写入的时刻，
+  「是不是还在这个会话里」由用的人判（Claude Code 边车的环境活过 `/clear`，id 会停在旧的那个）。
+- `quit` 是让 CLI 退出要打的字，和**屏幕什么样时打才安全**：倒数几行里有一行去掉空格后**正好是**
+  `line` 之一，而且没有哪一行含 `none_of` 的任何一个。没有屏幕规则就没有 `quit`，核心不打字。
+- 在核心的 `Identities.zig` 里、独立线程上问；快照里落在总管的 `supervisor.hookless`。
+
 ## 11.4 角色文件 v2
 
 ```jsonc

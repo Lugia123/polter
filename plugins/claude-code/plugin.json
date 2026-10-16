@@ -10,7 +10,12 @@
     "label": "Claude Code",
     "bin": "claude",
     "adapter": "adapter.py",
-    "adapter_windows": "adapter.ps1"
+    "adapter_windows": "adapter.ps1",
+    "identify_env": [
+      "CLAUDECODE",
+      "AI_AGENT",
+      "CLAUDE_CODE_SESSION_ID"
+    ]
   },
   "wants": {
     "events": [

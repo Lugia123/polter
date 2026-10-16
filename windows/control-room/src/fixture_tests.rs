@@ -1060,11 +1060,12 @@ fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
 
     // A core from before it said any of this: nothing, not a made-up "no".
     // And half of it is not a snapshot.
-    let block = "        \"last\": {\n          \"role\": null,\n          \"cli\": null,\n          \"cli_label\": null,\n          \"heard_ms\": null\n        },\n        \"resume\": {\n          \"can\": false,\n          \"why\": \"no_record\"\n        }\n";
+    let block = "        \"last\": {\n          \"role\": null,\n          \"cli\": null,\n          \"cli_label\": null,\n          \"heard_ms\": null\n        },\n        \"resume\": {\n          \"can\": false,\n          \"why\": \"no_record\"\n        },\n";
     assert!(FIXTURE.contains(block), "the fixture no longer writes the block this test cuts");
-    let before = first(&format!("\"cwd_from\": \"home\",\n{block}"), "\"cwd_from\": \"home\"\n");
+    // `hookless` follows it (task 1635), so the comma stays.
+    let before = first(&format!("\"cwd_from\": \"home\",\n{block}"), "\"cwd_from\": \"home\",\n");
     assert_eq!(read(before).unwrap(), None);
-    let half = first("        \"resume\": {\n          \"can\": false,\n          \"why\": \"no_record\"\n        }\n", "        \"x\": 1\n");
+    let half = first("        \"resume\": {\n          \"can\": false,\n          \"why\": \"no_record\"\n        },\n", "        \"x\": 1,\n");
     assert!(read(half).is_err());
 }
 
@@ -1469,12 +1470,12 @@ fn the_title_of_a_groups_frame_is_its_supervisors_own_terminal() {
     // The supervisor's own glyph and word, whoever the row is about.
     assert_eq!(
         l.row("mobile").unwrap().title,
-        Some(SupervisorTitle { name: "mobile".into(), shown: Shown::None, word: String::new() })
+        Some(SupervisorTitle { name: "mobile".into(), shown: Shown::None, word: String::new(), note: None, take_over: None })
     );
     assert_eq!(l.row("mobile").unwrap().shown, Shown::NeedsYou);
     assert_eq!(
         l.row("billing").unwrap().title,
-        Some(SupervisorTitle { name: "billing".into(), shown: Shown::NeedsYou, word: "Awaiting input".into() })
+        Some(SupervisorTitle { name: "billing".into(), shown: Shown::NeedsYou, word: "Awaiting input".into(), note: None, take_over: None })
     );
     // Two groups under one supervisor both name that terminal.
     assert_eq!(l.row("web-app-docs").unwrap().title.as_ref().unwrap().name, "web-app");
@@ -1715,6 +1716,8 @@ fn every_refusal_is_said_in_chinese() {
             | Refusal::RenameUnfinished
             | Refusal::RenameDeferred
             | Refusal::DeleteFailed
+            | Refusal::NotStartedByHand
+            | Refusal::AlreadyTakingOver
             | Refusal::Other => r,
         }
     }
@@ -1754,11 +1757,13 @@ fn every_refusal_is_said_in_chinese() {
         Refusal::RenameUnfinished,
         Refusal::RenameDeferred,
         Refusal::DeleteFailed,
+        Refusal::NotStartedByHand,
+        Refusal::AlreadyTakingOver,
         Refusal::Other,
     ];
     // The list and the match agree on the count: the match alone proves
     // every variant is named, not that every one is in `all`.
-    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 36);
+    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 38);
 
     // msgid and msgstr, with the continuation lines `msgmerge` wraps long
     // ones into joined back up.
@@ -1946,4 +1951,21 @@ fn the_menus_fields_are_read_and_their_absence_is_nothing() {
     let row = l.row(&g.name).unwrap();
     assert!(row.pinned && row.muted.is_some() && row.record_dir.is_some());
     assert_eq!(l.archived.len(), 1);
+}
+
+/// Which supervisor a row's menu is made for (task 1635): "take over" only
+/// where the core offers it -- docs-site, recognised and started by hand --
+/// and not for design-system, whose CLI nobody recognised. The macOS host's
+/// `ControlRoomRowMenuTests` has the same.
+#[test]
+fn take_over_is_in_the_menu_where_the_core_offers_it() {
+    use crate::rowmenu::{sup_of, Sup};
+    let l = list();
+    let sup = |id: &str| sup_of(l.row(id).expect("the row is listed"));
+    assert_eq!(sup("docs-site"), Sup::Hookless);
+    assert_eq!(sup("design-system"), Sup::Hooked);
+    assert_eq!(sup("web-app"), Sup::Hooked);
+    let mut none = l.row("web-app").unwrap().clone();
+    none.title = None;
+    assert_eq!(sup_of(&none), Sup::None);
 }

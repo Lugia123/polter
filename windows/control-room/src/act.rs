@@ -55,6 +55,10 @@ pub enum Act<'a> {
     DeleteGroup { group: &'a str, members: u64, open_tasks: u64 },
     /// Type the core's fixed sentence into the group's supervisor.
     AskSupervisor { group: &'a str, ask: Ask },
+    /// "Let the control room take over?" on a group's supervisor, once the
+    /// person said yes to the core's question (task 1635): from the frame's
+    /// title and from the row's menu alike.
+    TakeOver { group: &'a str },
 }
 
 /// What the supervisor is asked from the row's menu.
@@ -156,6 +160,7 @@ pub fn encode(act: &Act) -> Option<String> {
         Act::RetentionAgree => "{\"act\":\"retention_agree\"}".to_string(),
         Act::Fix { group } => format!("{{\"act\":\"fix\",\"group\":{}}}", quote(group)),
         Act::FixTerminal { terminal } => format!("{{\"act\":\"fix\",\"terminal\":{}}}", quote(terminal)),
+        Act::TakeOver { group } => format!("{{\"act\":\"take_over\",\"group\":{}}}", quote(group)),
         Act::Pin { group } => format!("{{\"act\":\"pin\",\"group\":{}}}", quote(group)),
         Act::Unpin { group } => format!("{{\"act\":\"unpin\",\"group\":{}}}", quote(group)),
         Act::Mute { group, until_ms: Some(until) } => format!("{{\"act\":\"mute\",\"group\":{},\"until_ms\":{until}}}", quote(group)),
@@ -255,6 +260,11 @@ pub enum Refusal {
     /// The group is off the list, but some of its records could not be
     /// deleted and are still on disk.
     DeleteFailed,
+    /// "Let the control room take over?" on a supervisor that is not one
+    /// an adapter recognised as started by hand (task 1635).
+    NotStartedByHand,
+    /// A take-over is under way.
+    AlreadyTakingOver,
     /// A name this build does not know. Shown as it came, never dropped.
     Other,
 }
@@ -298,6 +308,8 @@ impl Refusal {
             "RenameUnfinished" => Refusal::RenameUnfinished,
             "RenameDeferred" => Refusal::RenameDeferred,
             "DeleteFailed" => Refusal::DeleteFailed,
+            "NotStartedByHand" => Refusal::NotStartedByHand,
+            "AlreadyTakingOver" => Refusal::AlreadyTakingOver,
             _ => Refusal::Other,
         }
     }
@@ -343,6 +355,8 @@ impl Refusal {
             Refusal::RenameUnfinished => n_("An earlier rename was left unfinished. Restart Polter, then try again."),
             Refusal::RenameDeferred => n_("The rename could not be finished now; it will be finished the next time Polter starts."),
             Refusal::DeleteFailed => n_("Deleted from the list, but some of its records could not be deleted."),
+            Refusal::NotStartedByHand => n_("There is nothing here the control room can take over."),
+            Refusal::AlreadyTakingOver => n_("The control room is already taking over a supervisor."),
             Refusal::Other => n_("It was not done ({})."),
         }
     }

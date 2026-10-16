@@ -85,7 +85,9 @@ hands back, and the terminal the right-hand side then shows; which rows are
 marked seen by being looked at, and
 after how long, what the title of the frame on the right says while it
 holds each row's terminal (that terminal's own name, glyph and word -- the
-supervisor's, not the row's), and the request marking each row seen sends (a group's
+supervisor's, not the row's -- and what it says of a supervisor started by
+hand, task 1635, with whether "Let the control room take over?" is offered,
+the question it asks and what is said beside it), and the request marking each row seen sends (a group's
 name, or the terminal of a row that is in no group); the list's two
 headings -- the count, what the rows are called and the form of the number
 as the core wrote them, and the English sentence each side makes of that; the selection chip's slide -- whether it moves at all (from
@@ -519,7 +521,8 @@ for asker in tabAskers {
     }
 }
 for name in ["BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
-             "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable"] {
+             "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable",
+             "NotStartedByHand", "AlreadyTakingOver"] {
     print("refusal \(name) says=\(quote(ControlRoomActions.Refusal(name: name).message))")
 }
 
@@ -573,7 +576,9 @@ for r in list.rows {
 // terminal: that terminal's own name, glyph and word.
 for r in list.rows {
     if let t = r.supervisor {
-        print("frame_title row=\(r.id) name=\(quote(t.name)) shown=\(shownName(t.shown)) word=\(quote(t.word))")
+        print("frame_title row=\(r.id) name=\(quote(t.name)) shown=\(shownName(t.shown)) word=\(quote(t.word)) note=\(quote(t.note ?? ""))"
+              + " take_over=\(t.takeOver.map { $0.offered ? "offered" : "not_offered" } ?? "-")"
+              + " confirm=\(quote(t.takeOver?.confirm ?? "")) status=\(quote(t.takeOver?.status ?? ""))")
     } else {
         print("frame_title row=\(r.id) -")
     }
@@ -833,6 +838,10 @@ for item in ControlRoomRowMenu.Item.allCases {
     if let sub = item.submenu {
         print("group_submenu \(item.rawValue) items=\(sub.map(\.rawValue).joined(separator: " "))")
     }
+}
+// Which supervisor each row's menu is made for (task 1635).
+for r in list.rows where r.alone == nil {
+    print("group_menu_sup row=\(r.id) sup=\(ControlRoomRowMenu.supervisor(of: r).rawValue)")
 }
 '''
 

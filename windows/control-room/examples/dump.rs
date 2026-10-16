@@ -393,7 +393,7 @@ fn main() {
             ("cli-empty", Some(1), "/Users/me/work", true, Some(""), Some("Claude Code"), Some("/srv/other"), false),
             ("never-recorded", None, "/Users/me/work", true, Some("claude-code"), Some("Claude Code"), Some("/srv/other"), false),
         ];
-        let start = |cwd: &str, last| SupervisorStart { state: SupervisorState::Absent, can_start: true, failed: StartFailure::None, role: None, cwd: cwd.to_string(), last };
+        let start = |cwd: &str, last| SupervisorStart { state: SupervisorState::Absent, can_start: true, failed: StartFailure::None, role: None, cwd: cwd.to_string(), last, hookless: None };
         for (name, heard, cwd, is_last, cli, label, picked, can) in cases {
             let s = start(
                 cwd,
@@ -429,7 +429,7 @@ fn main() {
     {
         use polter_control_room::scene::no_supervisor_words;
         use polter_control_room::snapshot::{StartFailure, SupervisorStart, SupervisorState};
-        let start = |state, failed, can_start| SupervisorStart { state, can_start, failed, role: None, cwd: String::new(), last: None };
+        let start = |state, failed, can_start| SupervisorStart { state, can_start, failed, role: None, cwd: String::new(), last: None, hookless: None };
         for failed in StartFailure::ALL {
             println!(
                 "start_says state=failed failed={} says={}",
@@ -479,6 +479,7 @@ fn main() {
     for name in [
         "BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
         "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable",
+        "NotStartedByHand", "AlreadyTakingOver",
     ] {
         println!("refusal {name} says={}", quote(Refusal::parse(name).message()));
     }
@@ -539,7 +540,20 @@ fn main() {
     // row's terminal: that terminal's own name, glyph and word.
     for r in l.rows() {
         match &r.title {
-            Some(t) => println!("frame_title row={} name={} shown={} word={}", r.id, quote(&t.name), t.shown.name(), quote(&t.word)),
+            Some(t) => {
+                let said = |s: Option<&polter_control_room::snapshot::Say>| s.map_or(String::new(), |n| polter_control_room::snapshot::fill(&n.template, &n.args));
+                println!(
+                    "frame_title row={} name={} shown={} word={} note={} take_over={} confirm={} status={}",
+                    r.id,
+                    quote(&t.name),
+                    t.shown.name(),
+                    quote(&t.word),
+                    quote(&said(t.note.as_ref())),
+                    t.take_over.as_ref().map_or("-", |o| if o.offered { "offered" } else { "not_offered" }),
+                    quote(&said(t.take_over.as_ref().and_then(|o| o.confirm.as_ref()))),
+                    quote(&said(t.take_over.as_ref().and_then(|o| o.status.as_ref()))),
+                )
+            }
             None => println!("frame_title row={} -", r.id),
         }
     }
@@ -852,5 +866,11 @@ fn main() {
     }
     for id in ["mute", "project"] {
         println!("group_submenu {id} items={}", rowmenu::submenu(id).join(" "));
+    }
+    // Which supervisor each row's menu is made for (task 1635).
+    for r in l.rows() {
+        if r.alone.is_none() {
+            println!("group_menu_sup row={} sup={}", r.id, rowmenu::sup_of(r).name());
+        }
     }
 }

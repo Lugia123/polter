@@ -42,6 +42,19 @@ impl Sup {
     }
 }
 
+/// The supervisor of the group on `row`, as the menu needs it (task 1635):
+/// hookless only where the core offers to take it over -- the question it
+/// would ask is in the snapshot. One it could not recognise, or is still
+/// asking about, has nothing to offer here and is only jumped to. A
+/// supervisor is one the frame has a title for: the core named it and it
+/// is open -- what both hosts' rows carry. `ControlRoomRowMenu.supervisor(of:)`
+/// is the macOS host's.
+pub fn sup_of(row: &crate::list::Row) -> Sup {
+    let Some(title) = &row.title else { return Sup::None };
+    let offered = title.take_over.as_ref().is_some_and(|t| t.offered && t.confirm.is_some());
+    if offered { Sup::Hookless } else { Sup::Hooked }
+}
+
 /// What the menu is made from: what the core says of the group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct State {

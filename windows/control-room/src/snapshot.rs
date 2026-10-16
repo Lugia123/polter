@@ -224,11 +224,16 @@ pub fn fill(template: &str, args: &[String]) -> String {
 /// `what.say`: absent in a snapshot from before the core said it, null
 /// when the line is not the core's own.
 pub(crate) fn say_of(what: &Value, what_at: &str) -> Res<Option<Say>> {
-    let Some(v) = what.get("say") else { return Ok(None) };
+    say_named(what, what_at, "say")
+}
+
+/// A `Say` under `name` in `obj`: absent or null is none.
+pub(crate) fn say_named(obj: &Value, obj_at: &str, name: &str) -> Res<Option<Say>> {
+    let Some(v) = obj.get(name) else { return Ok(None) };
     if matches!(v, Value::Null) {
         return Ok(None);
     }
-    let at = format!("{what_at}.say");
+    let at = format!("{obj_at}.{name}");
     let mut args = Vec::new();
     for (i, a) in list(v, &at, "args")?.iter().enumerate() {
         match a {
@@ -407,6 +412,36 @@ pub struct SupervisorStart {
     /// The last supervisor and whether its session is gone on with.
     /// `None` for a snapshot from before the core said it.
     pub last: Option<SupervisorLast>,
+    /// Whether the supervisor there was started by hand (task 1635).
+    /// `None` for a snapshot from before the core said it.
+    pub hookless: Option<Hookless>,
+}
+
+/// A supervisor somebody started by typing its command: no hooks, so none
+/// of its state reaches Polter (`ControlRoom.zig`, `HooklessOut`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hookless {
+    /// none | asking | known | unknown, as the core wrote it.
+    pub state: String,
+    pub cli_label: Option<String>,
+    pub session: bool,
+    /// What the supervisor frame's title says of it; `None` for `none`.
+    pub note: Option<Say>,
+    /// "Let the control room take over?" (task 1635); `None` from a core
+    /// before it said.
+    pub take_over: Option<TakeOver>,
+}
+
+/// What the supervisor's frame offers about taking it over
+/// (`ControlRoom.TakeOverOut`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TakeOver {
+    /// none | offer | running | failed, as the core wrote it.
+    pub state: String,
+    /// The question asked before anything is done.
+    pub confirm: Option<Say>,
+    /// What is happening, or why the last try stopped.
+    pub status: Option<Say>,
 }
 
 /// A role a supervisor can be started in.
@@ -929,6 +964,29 @@ fn group(v: &Value, path: &str) -> Res<Group> {
                     }
                     (None, None) => None,
                     _ => return Err(DecodeError::Field(format!("{sp}.resume"))),
+                },
+                hookless: match s.get("hookless") {
+                    None => None,
+                    Some(h) => {
+                        let hp = format!("{sp}.hookless");
+                        Some(Hookless {
+                            state: text(h, &hp, "state")?,
+                            cli_label: if h.get("cli_label").is_some() { opt_text(h, &hp, "cli_label")? } else { None },
+                            session: boolean(h, &hp, "session")?,
+                            note: say_named(h, &hp, "note")?,
+                            take_over: match h.get("take_over") {
+                                None => None,
+                                Some(t) => {
+                                    let tp = format!("{hp}.take_over");
+                                    Some(TakeOver {
+                                        state: text(t, &tp, "state")?,
+                                        confirm: say_named(t, &tp, "confirm")?,
+                                        status: say_named(t, &tp, "status")?,
+                                    })
+                                }
+                            },
+                        })
+                    }
                 },
             })
         }

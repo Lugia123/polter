@@ -217,6 +217,34 @@ final class ControlRoomModel: ObservableObject {
         }
     }
 
+    /// "Let the control room take over?" on `group`'s supervisor (task
+    /// 1635): ask the core's question, and on yes, ask the core to do it.
+    /// What becomes of it arrives in the next list; a refusal is said at
+    /// once, in a second sheet, because there is nowhere on the bar to keep
+    /// it.
+    func takeOver(group: String, question: String) {
+        let ask = NSAlert()
+        ask.messageText = String(localized: "Let the control room take over?",
+                                 comment: "总控台：手动启动的总管，标题条上的按钮")
+        ask.informativeText = question
+        ask.addButton(withTitle: String(localized: "Take Over", comment: "总控台：确认接管手动启动的总管"))
+        let cancel = ask.addButton(withTitle: String(localized: "Cancel", comment: "总控台：确认接管手动启动的总管时取消"))
+        // Escape is bound to an English "Cancel" only; say it here.
+        cancel.keyEquivalent = "\u{1b}"
+        guard ask.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try perform(.takeOver(group: group))
+        } catch let refusal as ControlRoomActions.Refusal {
+            let told = NSAlert()
+            told.messageText = refusal.message
+            told.runModal()
+        } catch {
+            let told = NSAlert()
+            told.messageText = ControlRoomActions.Refusal(name: "Refused").message
+            told.runModal()
+        }
+    }
+
     /// Start a supervisor for `group`. A nil role or directory is the one
     /// the core named. What becomes of it arrives in the next list; a
     /// refusal is kept to be shown.

@@ -289,6 +289,20 @@ struct ControlRoomList: Equatable {
         /// and shows in it a terminal that may be a worker or neither. Nil
         /// for "what the frame is", which is every title but those.
         var says: ControlRoomSnapshot.Terminal.Pane?
+        /// What the core says of a supervisor somebody started by hand
+        /// (task 1635), in the person's language; nil for every other.
+        var note: String?
+        /// What the frame offers about taking it over; nil for every other.
+        var takeOver: TakeOverTitle?
+    }
+
+    /// "Let the control room take over?" as the title bar has it: whether
+    /// the button is there, the question it asks, and what is said beside
+    /// it -- all the core's, said in the person's language.
+    struct TakeOverTitle: Equatable {
+        var offered: Bool
+        var confirm: String?
+        var status: String?
     }
 
     /// The terminal a row is about, and when. Both times are on the core's
@@ -644,6 +658,30 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         /// What `cli` is called to a person; nil when the core has no
         /// name for it, or is from before it said.
         var cli_label: String?
+        /// Whether the supervisor there was started by hand (task 1635);
+        /// nil from a core before it said.
+        var hookless: Hookless?
+
+        struct Hookless: Decodable, Equatable {
+            /// none | asking | known | unknown, as the core wrote it.
+            var state: String
+            var cli_label: String?
+            var session: Bool
+            /// What the frame's title says of it; nil for `none`.
+            var note: ControlRoomSnapshot.What.Say?
+            /// "Let the control room take over?" (task 1635); nil from a
+            /// core before it said.
+            var take_over: TakeOver?
+
+            struct TakeOver: Decodable, Equatable {
+                /// none | offer | running | failed, as the core wrote it.
+                var state: String
+                /// The question asked before anything is done.
+                var confirm: ControlRoomSnapshot.What.Say?
+                /// What is happening, or why the last try stopped.
+                var status: ControlRoomSnapshot.What.Say?
+            }
+        }
 
         struct Last: Decodable, Equatable {
             var role: String?
@@ -875,7 +913,23 @@ extension ControlRoomList {
         // the row is about the supervisor or about one of its workers is
         // not asked here: the core says who waits (`waiter`), and the
         // member's glyph and word are the supervisor's either way.
-        return SupervisorTitle(name: member.title, shown: member.shown, word: say(member.text))
+        let take = group.supervisor?.hookless?.take_over
+        return SupervisorTitle(name: member.title, shown: member.shown, word: say(member.text),
+                               note: group.supervisor?.hookless?.note.map { said($0) },
+                               takeOver: take.flatMap { take in
+                                   take.state == "none" ? nil : TakeOverTitle(
+                                       // The core says when it is offered: offer, and failed
+                                       // (offered again, with why the last try stopped).
+                                       offered: take.state == "offer" || take.state == "failed",
+                                       confirm: take.confirm.map { said($0) },
+                                       status: take.status.map { said($0) })
+                               })
+    }
+
+    /// One of the core's own sentences in the person's language, its
+    /// arguments put in -- the way `lines(of:)` says a row's.
+    static func said(_ s: ControlRoomSnapshot.What.Say, in bundle: Bundle = .main) -> String {
+        fill(bundle.localizedString(forKey: s.template, value: s.template, table: nil), s.args)
     }
 }
 

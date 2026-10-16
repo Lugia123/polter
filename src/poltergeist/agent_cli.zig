@@ -10,6 +10,10 @@
 //!     (`"resume": true`).
 //!   * `launch` -- the command line that starts this CLI wearing a role,
 //!     going on with the session the request names when it names one.
+//!   * `identify` -- whether the CLI a terminal's agent is running, started
+//!     by hand and so without hooks, is this one, and which session it is
+//!     in (task 1635; `Identities`). Optional: an adapter that does not
+//!     answer it recognises nothing, and says so by failing.
 //!
 //! Adding a CLI is adding a plugin that answers both. Nothing here changes.
 //! The contract is in `dev-docs/poltergeist/roles.md` part eleven; the
@@ -66,6 +70,9 @@ pub const Adapter = struct {
     label: []const u8,
     bin: []const u8,
     adapter: []const u8,
+    /// `Plugin.AgentCli.identify_env`: the only variables of a sidecar's
+    /// environment this adapter is ever shown.
+    identify_env: []const []const u8,
 };
 
 /// Every plugin on the search path that manages an agent CLI and can run
@@ -120,6 +127,7 @@ pub fn discover(
                 .label = cli.label,
                 .bin = cli.bin,
                 .adapter = cli.adapter,
+                .identify_env = cli.identify_env,
             }) catch continue;
         }
     }
@@ -139,7 +147,7 @@ pub fn find(adapters: []const Adapter, key: []const u8) ?Adapter {
     return null;
 }
 
-pub const Question = enum { inventory, launch };
+pub const Question = enum { inventory, launch, identify };
 
 /// What an adapter said.
 pub const Answer = union(enum) {
@@ -584,6 +592,209 @@ pub const Cache = struct {
     }
 };
 
+// ---------------------------------------------------------------- identify
+
+/// What a sidecar (`polter +mcp`) told Polter about the program that
+/// started it, at its handshake (task 1635). Everything is optional and
+/// nothing here is trusted beyond "this is what that process said".
+pub const Sighting = struct {
+    /// The sidecar's parent: the agent CLI, when the CLI started it
+    /// directly. Null where it is not read (Windows, today).
+    pid: ?u64,
+    /// Name and value, for the names some adapter declared in
+    /// `identify_env` and nothing else. See `Plugin.AgentCli.identify_env`.
+    env: []const [2][]const u8,
+
+    pub const none: Sighting = .{ .pid = null, .env = &.{} };
+
+    /// Longest value carried. A session id is a UUID; anything longer is
+    /// not what any adapter asked for.
+    pub const max_value = 256;
+
+    /// A value worth carrying: printable ASCII, no quotes or backslashes to
+    /// get wrong, not too long.
+    pub fn validValue(v: []const u8) bool {
+        if (v.len == 0 or v.len > max_value) return false;
+        for (v) |c| if (c < 0x20 or c >= 0x7f or c == '"' or c == '\\') return false;
+        return true;
+    }
+
+    pub fn get(self: Sighting, name: []const u8) ?[]const u8 {
+        for (self.env) |kv| if (std.mem.eql(u8, kv[0], name)) return kv[1];
+        return null;
+    }
+};
+
+/// The request `identify` is sent: where the terminal is, the home
+/// directory, and the sighting -- **only the variables this adapter
+/// declared**, never another adapter's.
+pub fn writeIdentifyRequest(
+    w: *std.Io.Writer,
+    adapter: Adapter,
+    sighting: Sighting,
+    cwd: ?[]const u8,
+    home: ?[]const u8,
+) std.Io.Writer.Error!void {
+    try w.print("{{\"version\":{d},\"cwd\":", .{contract_version});
+    try writeOptional(w, cwd);
+    try w.writeAll(",\"home\":");
+    try writeOptional(w, home);
+    try w.writeAll(",\"pid\":");
+    if (sighting.pid) |p| try w.print("{d}", .{p}) else try w.writeAll("null");
+    try w.writeAll(",\"env\":{");
+    var first = true;
+    for (adapter.identify_env) |name| {
+        const v = sighting.get(name) orelse continue;
+        if (!first) try w.writeAll(",");
+        first = false;
+        try w.print("{f}:{f}", .{ std.json.fmt(name, .{}), std.json.fmt(v, .{}) });
+    }
+    try w.writeAll("}}");
+}
+
+/// Whether `sighting` carries anything `adapter` could recognise its CLI
+/// by. An adapter with nothing to go on is not asked: running it would
+/// cost a process for an answer that can only be no.
+pub fn couldRecognise(adapter: Adapter, sighting: Sighting) bool {
+    for (adapter.identify_env) |name| if (sighting.get(name) != null) return true;
+    return false;
+}
+
+/// What `identify` answered, read.
+pub const Identified = struct {
+    /// It is this adapter's CLI. Only a JSON `true` says so.
+    me: bool,
+    /// The session it is in, when the adapter found one it could hand to
+    /// `launch`; null otherwise. Only a valid `isSessionToken` is kept.
+    session: ?[]const u8,
+    /// When that session's record was last written, real-clock ms; null
+    /// when not known. How sure "this is the session" is depends on it
+    /// (`Identities`), and the adapter only reports it.
+    session_written_ms: ?i64,
+    /// How to make the CLI quit, and how its screen looks when typing that
+    /// is safe; null when the adapter gave none, and then nothing types it.
+    quit: ?Quit,
+
+    pub const Quit = struct {
+        /// Typed, followed by a return.
+        text: []const u8,
+        /// Typing it is safe only when one of the screen's last rows,
+        /// trimmed of spaces, **is** one of these -- an empty input line,
+        /// typically, which is also "nothing half-typed"...
+        ready_lines: []const []const u8,
+        /// ...and no row contains any of these: a turn going on, a question
+        /// waiting for an answer, a menu.
+        ready_none: []const []const u8,
+    };
+
+    pub const no: Identified = .{ .me = false, .session = null, .session_written_ms = null, .quit = null };
+};
+
+/// Read an `identify` answer. Lenient everywhere except `me`: an answer
+/// that does not read is "not mine", which is the safe side -- a terminal
+/// nobody recognises is said to be one, and nothing is typed into it.
+pub fn parseIdentify(arena: Allocator, answer: []const u8) Allocator.Error!Identified {
+    const root = std.json.parseFromSliceLeaky(std.json.Value, arena, answer, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .no,
+    };
+    const obj = switch (root) {
+        .object => |o| o,
+        else => return .no,
+    };
+    const me = if (obj.get("me")) |m| m == .bool and m.bool else false;
+    if (!me) return .no;
+
+    const session: ?[]const u8 = if (obj.get("session")) |v| switch (v) {
+        .string => |sv| if (isSessionToken(sv)) sv else null,
+        else => null,
+    } else null;
+    const written: ?i64 = if (obj.get("session_written_ms")) |v| switch (v) {
+        .integer => |i| i,
+        else => null,
+    } else null;
+
+    const quit: ?Identified.Quit = quit: {
+        const q = switch (obj.get("quit") orelse break :quit null) {
+            .object => |o| o,
+            else => break :quit null,
+        };
+        const text = switch (q.get("text") orelse break :quit null) {
+            .string => |t| t,
+            else => break :quit null,
+        };
+        // Something typed into a terminal: one line, printable, short.
+        if (text.len == 0 or text.len > 64) break :quit null;
+        for (text) |c| if (c < 0x20 or c == 0x7f) break :quit null;
+        const ready = switch (q.get("ready") orelse break :quit null) {
+            .object => |o| o,
+            else => break :quit null,
+        };
+        const lines = try stringsOf(arena, ready.get("line"));
+        // **No screen rule, no quitting**: without one, "safe to type" is
+        // a guess, and the guess that goes wrong presses return in a
+        // permission box.
+        if (lines.len == 0) break :quit null;
+        break :quit .{
+            .text = text,
+            .ready_lines = lines,
+            .ready_none = try stringsOf(arena, ready.get("none_of")),
+        };
+    };
+
+    return .{ .me = true, .session = session, .session_written_ms = written, .quit = quit };
+}
+
+fn stringsOf(arena: Allocator, v: ?std.json.Value) Allocator.Error![]const []const u8 {
+    const arr = switch (v orelse return &.{}) {
+        .array => |a| a,
+        else => return &.{},
+    };
+    var out: std.ArrayList([]const u8) = .empty;
+    for (arr.items) |item| if (item == .string and item.string.len > 0) try out.append(arena, item.string);
+    return out.toOwnedSlice(arena);
+}
+
+/// Who the agent in a terminal is, as far as the adapters can tell.
+pub const Recognised = union(enum) {
+    /// An adapter said it is its CLI.
+    known: struct { key: []const u8, label: []const u8, identified: Identified },
+    /// No adapter said so: none could recognise it, or every one that
+    /// could said no or failed. **Not "fine"**: Polter does not know what
+    /// it is, and so does not know its state.
+    unknown,
+};
+
+/// Ask every adapter that could recognise the CLI, in key order, until one
+/// says it is its own. Everything returned belongs to `arena`. Runs
+/// processes: never on the app thread (`Identities`).
+pub fn recognise(
+    arena: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    adapters: []const Adapter,
+    sighting: Sighting,
+    cwd: ?[]const u8,
+) Allocator.Error!Recognised {
+    const home = environ_map.get("HOME") orelse environ_map.get("USERPROFILE");
+    for (adapters) |a| {
+        if (!couldRecognise(a, sighting)) continue;
+        var request: std.Io.Writer.Allocating = .init(arena);
+        writeIdentifyRequest(&request.writer, a, sighting, cwd, home) catch return error.OutOfMemory;
+        switch (try ask(arena, io, environ_map, a, .identify, request.written())) {
+            .ok => |json| {
+                const said = try parseIdentify(arena, json);
+                if (said.me) return .{ .known = .{ .key = a.key, .label = a.label, .identified = said } };
+            },
+            // The values it was shown are not in this line: an adapter's
+            // stderr is its own words, and a session id is not a secret,
+            // but nothing here needs it.
+            .failed => |why| log.info("agent cli {s}: identify gave no answer: {s}", .{ a.key, why }),
+        }
+    }
+    return .unknown;
+}
+
 /// What only the control room adds to a launch line: the group a
 /// supervisor is started for, and the session it goes on with.
 pub const LaunchFor = struct {
@@ -812,7 +1023,7 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
         defer f.close(io);
         try f.writeStreamingAll(io, @embedFile("plugin_claude_code_adapter_py"));
     }
-    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = exec };
+    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = exec, .identify_env = &.{} };
 
     var env = try global.environMap();
     defer env.deinit();
@@ -963,7 +1174,7 @@ test "agent_cli: a role never switches off what belongs to the directory it is l
         defer f.close(io);
         try f.writeStreamingAll(io, @embedFile("plugin_claude_code_adapter_py"));
     }
-    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = exec };
+    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = exec, .identify_env = &.{} };
 
     var env = try global.environMap();
     defer env.deinit();
@@ -1086,7 +1297,7 @@ fn askHooks(aa: Allocator, io: std.Io, rig: HookRig, cell: HookCell) !?HookAnswe
     };
     var req: std.Io.Writer.Allocating = .init(aa);
     try writeLaunchRequest(&req.writer, p, choice, null, rig.home, cell.polter, cell.session);
-    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = rig.exec };
+    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = rig.exec, .identify_env = &.{} };
     const answer = switch (try ask(aa, io, &env, adapter, .launch, req.written())) {
         .ok => |j| j,
         .failed => |why| {
@@ -1462,7 +1673,7 @@ test "agent_cli resume: the shipped Claude Code adapter says it can, and goes on
     // What it says of itself, asked the way the cache asks.
     var env = try global.environMap();
     defer env.deinit();
-    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = rig.exec };
+    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = rig.exec, .identify_env = &.{} };
     const request = try std.fmt.allocPrint(aa, "{{\"version\":1,\"cwd\":null,\"home\":{f}}}", .{std.json.fmt(rig.home, .{})});
     const inv = switch (try ask(aa, io, &env, adapter, .inventory, request)) {
         .ok => |j| j,
@@ -1536,6 +1747,117 @@ test "agent_cli resume: a session that is gone, or is not one, starts a new sess
             return error.TestExpectedEqual;
         }
     }
+}
+
+test "agent_cli identify: an adapter is shown only the variables it declared, and asked only when it has one" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const claude: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = "a.py", .identify_env = &.{ "CLAUDECODE", "CLAUDE_CODE_SESSION_ID" } };
+    const other: Adapter = .{ .key = "other", .label = "Other", .bin = "o", .adapter = "o.py", .identify_env = &.{"OTHER_ID"} };
+    const sighting: Sighting = .{ .pid = 4242, .env = &.{
+        .{ "CLAUDECODE", "1" },
+        .{ "CLAUDE_CODE_SESSION_ID", "0b1d1c35-5e33-4b5e-9f8c-1a2b3c4d5e6f" },
+        .{ "OTHER_ID", "x" },
+    } };
+    var w: std.Io.Writer.Allocating = .init(aa);
+    try writeIdentifyRequest(&w.writer, claude, sighting, "/w", "/h");
+    try testing.expectEqualStrings(
+        \\{"version":1,"cwd":"/w","home":"/h","pid":4242,"env":{"CLAUDECODE":"1","CLAUDE_CODE_SESSION_ID":"0b1d1c35-5e33-4b5e-9f8c-1a2b3c4d5e6f"}}
+    , w.written());
+
+    try testing.expect(couldRecognise(claude, sighting));
+    try testing.expect(!couldRecognise(claude, .{ .pid = 1, .env = &.{.{ "OTHER_ID", "x" }} }));
+    try testing.expect(!couldRecognise(other, .none));
+}
+
+test "agent_cli identify: only a JSON true is mine, and a quit needs a screen rule" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const full = try parseIdentify(aa,
+        \\{"me":true,"session":"0b1d1c35-5e33-4b5e-9f8c-1a2b3c4d5e6f","session_written_ms":5,
+        \\ "quit":{"text":"/exit","ready":{"line":["❯"],"none_of":["Do you want"]}}}
+    );
+    try testing.expect(full.me);
+    try testing.expectEqualStrings("/exit", full.quit.?.text);
+    try testing.expectEqual(@as(?i64, 5), full.session_written_ms);
+
+    for ([_][]const u8{
+        \\{"me":"true"}
+        ,
+        \\{"me":1}
+        ,
+        \\{}
+        ,
+        \\not json
+        ,
+    }) |answer| try testing.expect(!(try parseIdentify(aa, answer)).me);
+
+    // Mine, and nothing that can be typed: no rule for the screen, a rule
+    // that names no line, a line with a return in it.
+    for ([_][]const u8{
+        \\{"me":true,"quit":{"text":"/exit"}}
+        ,
+        \\{"me":true,"quit":{"text":"/exit","ready":{"line":[],"none_of":["x"]}}}
+        ,
+        \\{"me":true,"quit":{"text":"/exit\r","ready":{"line":["❯"]}}}
+        ,
+    }) |answer| {
+        const said = try parseIdentify(aa, answer);
+        try testing.expect(said.me);
+        try testing.expect(said.quit == null);
+    }
+    // A session id that is not one is not kept.
+    try testing.expect((try parseIdentify(aa,
+        \\{"me":true,"session":"--resume x"}
+    )).session == null);
+}
+
+test "agent_cli identify: the shipped Claude Code adapter knows its own, finds the session, and leaves the rest" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const rig = try hookRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+    const session = "0a1b2c3d-1111-4222-8333-444455556666";
+    try writeTranscript(aa, io, rig, session);
+
+    var env = try global.environMap();
+    defer env.deinit();
+    try env.put("HOME", rig.home);
+    // The names plugins/claude-code/plugin.json declares.
+    const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = rig.exec, .identify_env = &.{ "CLAUDECODE", "AI_AGENT", "CLAUDE_CODE_SESSION_ID" } };
+
+    const found = try recognise(aa, io, &env, &.{adapter}, .{ .pid = 1, .env = &.{
+        .{ "CLAUDECODE", "1" },
+        .{ "AI_AGENT", "claude-code_2-1-301_harness" },
+        .{ "CLAUDE_CODE_SESSION_ID", session },
+    } }, null);
+    const k = switch (found) {
+        .known => |k| k,
+        .unknown => return error.SkipZigTest, // no python3 to run it
+    };
+    try testing.expectEqualStrings("claude-code", k.key);
+    try testing.expectEqualStrings(session, k.identified.session.?);
+    try testing.expect(k.identified.session_written_ms != null);
+    try testing.expectEqualStrings("/exit", k.identified.quit.?.text);
+
+    // Its session gone from this machine: still Claude Code, no session.
+    const gone = try recognise(aa, io, &env, &.{adapter}, .{ .pid = 1, .env = &.{
+        .{ "CLAUDECODE", "1" },
+        .{ "CLAUDE_CODE_SESSION_ID", "99999999-1111-4222-8333-444455556666" },
+    } }, null);
+    try testing.expect(gone.known.identified.session == null);
+
+    // Something else's sidecar: nothing to recognise, so it is not asked.
+    try testing.expectEqual(Recognised.unknown, try recognise(aa, io, &env, &.{adapter}, .{ .pid = 1, .env = &.{} }, null));
+    // Asked and not its own.
+    try testing.expectEqual(Recognised.unknown, try recognise(aa, io, &env, &.{adapter}, .{ .pid = 1, .env = &.{.{ "AI_AGENT", "codex_1" }} }, null));
 }
 
 test "agent_cli names: what each CLI is called is read out of what a read leaves, and nothing out of what does not read" {

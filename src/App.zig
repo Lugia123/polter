@@ -67,6 +67,16 @@ personas_attempted: bool = false,
 /// reports it. Filled on a thread of its own; see `agent_cli.Cache`.
 poltergeist_agent_clis: poltergeistpkg.agent_cli.Cache,
 
+/// Who a hand-started agent is, by its adapter's word (task 1635); asked on
+/// a thread, and `identity_changed` is raised when an answer is kept.
+identities: poltergeistpkg.Identities,
+identity_changed: std.atomic.Value(bool) = .init(false),
+
+/// "Let the control room take over?" under way (task 1635,
+/// `takeOverStep`), and the last one that stopped without taking over.
+take_over: ?TakeOverRun = null,
+take_over_failed: ?TakeOverFailed = null,
+
 /// What the terminals have said to each other. Separate from the bus
 /// because talking is not steering, and mixing them would blur that.
 chat: poltergeistpkg.Chat,
@@ -584,6 +594,7 @@ pub fn init(
         .poltergeist = .init(alloc, .{}),
         .personas = .{ .alloc = alloc },
         .poltergeist_agent_clis = .init(alloc),
+        .identities = .init(alloc),
         .poltergeist_persona_waits = .{ .alloc = alloc, .io = global.io() },
         .mention_retries = .{ .alloc = alloc },
         .poltergeist_feed = .init(alloc, global.io()),
@@ -592,6 +603,8 @@ pub fn init(
         .tasks = .init(alloc, .{}),
         .control_room = .init(alloc),
     };
+    self.identities.changed = identitiesChanged;
+    self.identities.ctx = self;
 }
 
 pub fn deinit(self: *App) void {
@@ -599,6 +612,10 @@ pub fn deinit(self: *App) void {
     // before anything it could touch is.
     self.poltergeist_stopping.store(true, .release);
     if (self.poltergeist_late_alert) |t| t.join();
+    // The identify threads raise a flag on this App; gone before it is.
+    self.identities.deinit(global.io());
+    if (self.take_over) |*t| t.deinit(self.alloc);
+    if (self.take_over_failed) |*f| self.alloc.free(f.group);
 
     // The storage threads read and write the state directory: gone before
     // the logs they would race are closed.
@@ -883,6 +900,15 @@ pub fn controlRoomTouch(self: *App) void {
     if (self.poltergeist_rt_app) |rt| rt.wakeup();
 }
 
+/// An identify thread's whole job on this side: say there is an answer and
+/// get `tick` called.
+fn identitiesChanged(ctx: *anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.poltergeist_stopping.load(.acquire)) return;
+    self.identity_changed.store(true, .release);
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
 /// The wake thread's whole job: raise the flag and get `tick` called.
 fn controlRoomDue(ctx: *anyopaque) void {
     const self: *App = @ptrCast(@alignCast(ctx));
@@ -923,7 +949,8 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     if (self.poltergeist_stopping.load(.acquire)) return;
     const due = self.control_due.swap(false, .acq_rel);
     const quota_new = self.quota_changed.swap(false, .acq_rel);
-    const dirty = self.control_dirty or quota_new;
+    const identity_new = self.identity_changed.swap(false, .acq_rel);
+    const dirty = self.control_dirty or quota_new or identity_new;
     if (!due and !dirty) return;
 
     // Something happened in a terminal, which is when an allowance moves:
@@ -936,6 +963,8 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     const alloc = arena.allocator();
 
     const now_ms = self.poltergeistElapsedMs();
+    // Before the snapshot: a step that settles a take-over is in this one.
+    const take_over_wake = self.takeOverStep(now_ms);
     var terminals: std.ArrayListUnmanaged(poltergeistpkg.ControlRoom.Terminal) = .empty;
     for (self.surfaces.items) |v| {
         const surface: *Surface = v.core();
@@ -975,6 +1004,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
             .role = if (self.personas.launchOf(id)) |l| l.role else self.personas.stateOf(id).key orelse "",
             .launched_cli = if (self.personas.launchOf(id)) |l| l.choice.cli else "",
             .still_ms = surface.poltergeist_threshold_ms,
+            .hookless = self.hooklessOf(alloc, id),
         }) catch return;
     }
 
@@ -1007,6 +1037,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .home = self.controlHome(),
         .record_root = if (self.group_log) |*l| l.dir else "",
         .fix_sent = &self.control_fix_sent,
+        .take_over = self.takeOverIn(),
         .now_ms = now_ms,
         .wall_ms = @intCast(@max(0, wall_ms)),
     }, if (dirty) .event else .timer) catch |err| {
@@ -1026,10 +1057,11 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         log.warn("control room: could not decide the notifications err={}", .{err});
         break :wake null;
     };
-    const wake_ms: ?u64 = if (notify_wake) |n|
+    const both: ?u64 = if (notify_wake) |n|
         (if (outcome.wake_ms) |o| @min(o, n) else n)
     else
         outcome.wake_ms;
+    const wake_ms: ?u64 = if (take_over_wake) |t| (if (both) |b| @min(b, t) else t) else both;
 
     if (wake_ms != null and self.control_wake == null) {
         self.control_wake = .{ .io = global.io(), .fire = controlRoomDue, .ctx = self };
@@ -1144,6 +1176,7 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .projectRemove = controlActProjectRemove,
             .projectRename = controlActProjectRename,
             .retentionAgree = controlActRetentionAgree,
+            .takeOver = controlActTakeOver,
             .fixCard = controlActFixCard,
             .fixPost = controlActFixPost,
             .fixSend = controlActFixSend,
@@ -4612,6 +4645,7 @@ fn poltergeistAgentArrived(
     id: poltergeistpkg.Bus.Id,
 ) void {
     const self: *App = @ptrCast(@alignCast(ctx));
+    self.identifyIfHandStarted(bus, id);
     const applied = self.personas.claimStanding(bus, id, self.poltergeistElapsedMs()) orelse return;
     defer self.refreshPoltergeistTabs();
     defer self.saveSession();
@@ -4622,6 +4656,306 @@ fn poltergeistAgentArrived(
     const surface = self.findSurfaceByID(id) orelse return;
     if (applied.watched_by != null) surface.setPoltergeistWatching(true);
     if (applied.want.quiet_ms) |ms| surface.setPoltergeistThreshold(ms);
+}
+
+/// An agent that is talking to Polter from `id` with no hooks and no role
+/// launch behind it was started by hand: ask the adapters who it is (task
+/// 1635). Once per agent -- `Identities.ask` does nothing for a terminal
+/// it already has -- and forgotten when the agent goes (`controlRoomTick`).
+fn identifyIfHandStarted(self: *App, bus: *poltergeistpkg.Bus, id: poltergeistpkg.Bus.Id) void {
+    if (self.personas.launchOf(id) != null) return;
+    if (bus.agentOf(id).hooks != .none) return;
+    const srv = if (self.poltergeist_server) |*s| s else return;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const sighting = srv.sightingOf(arena.allocator(), id) catch return;
+    self.identities.ask(global.io(), id, sighting, null, self.poltergeistElapsedMs());
+}
+
+/// What the control room is told about an agent started by hand in `id`
+/// (task 1635). Asks the adapters the first time it is wanted -- an agent
+/// that has not called a tool yet has sent no request to start the asking
+/// from -- and forgets the answer once the agent has gone.
+fn hooklessOf(self: *App, arena: Allocator, id: poltergeistpkg.Bus.Id) poltergeistpkg.ControlRoom.Hookless {
+    const io = global.io();
+    if (!self.agentPresent(id)) {
+        self.identities.forget(io, id);
+        return .no;
+    }
+    if (self.personas.launchOf(id) != null) return .no;
+    if (self.poltergeist.agentOf(id).hooks != .none) return .no;
+    const v = (self.identities.view(io, arena, id) catch return .asking) orelse {
+        self.identifyIfHandStarted(&self.poltergeist, id);
+        return .asking;
+    };
+    const now_ms = self.poltergeistElapsedMs();
+    // When its session was last written goes on changing: ask again now
+    // and then, so that "is it still that session" is not an hour old.
+    if (v.state == .known) if (self.poltergeist_server) |*srv| {
+        const sighting = srv.sightingOf(arena, id) catch poltergeistpkg.agent_cli.Sighting.none;
+        self.identities.refresh(io, id, sighting, null, now_ms, identity_refresh_ms);
+    };
+    return switch (v.state) {
+        .asking => .asking,
+        .unknown => .unknown,
+        .known => known: {
+            const wall: i64 = self.poltergeistWallMs();
+            const last_call: ?i64 = if (self.poltergeist.callSilentMs(id, now_ms)) |silent| wall - @as(i64, @intCast(silent)) else null;
+            const session = v.identified.session;
+            const written = v.identified.session_written_ms;
+            break :known .{ .known = .{
+                .label = v.label,
+                .session = session != null,
+                .session_short = if (session) |sid| sid[0..@min(8, sid.len)] else "",
+                .sure = session != null and poltergeistpkg.TakeOver.sure(written, last_call),
+                .written_min = if (written) |w| @intCast(@divFloor(@max(0, wall - w), std.time.ms_per_min)) else null,
+                .can_quit = v.identified.quit != null,
+            } };
+        },
+    };
+}
+
+/// How often what an adapter said of a hand-started agent is asked again.
+const identity_refresh_ms: u64 = 60 * std.time.ms_per_s;
+
+/// A take-over under way (task 1635).
+const TakeOverRun = struct {
+    group: []u8,
+    terminal: poltergeistpkg.Bus.Id,
+    phase: poltergeistpkg.TakeOver.Phase,
+    /// When the phase is next looked at, or gives up.
+    at_ms: u64,
+    /// The screen as it was when last looked at: it has to be the same
+    /// `settle_ms` later.
+    screen: []u8,
+    /// How many more times a screen that moved is looked at again.
+    tries: u8 = poltergeistpkg.TakeOver.settle_tries,
+    /// The CLI to start again, and the session it goes on with.
+    cli: []u8,
+    session: ?[]u8,
+
+    fn deinit(self: *TakeOverRun, alloc: Allocator) void {
+        alloc.free(self.group);
+        alloc.free(self.screen);
+        alloc.free(self.cli);
+        if (self.session) |sid| alloc.free(sid);
+    }
+};
+
+const TakeOverFailed = struct {
+    group: []u8,
+    why: poltergeistpkg.TakeOver.Why,
+};
+
+/// How often a take-over that waits on something looks again.
+const take_over_poll_ms: u64 = 500;
+
+/// "Let the control room take over?": check that there is something to
+/// take over, look at its screen, and leave the rest to `takeOverStep`.
+/// **Nothing is typed here**: the screen has to be the same in
+/// `TakeOver.settle_ms`, and then it is the step that types.
+fn controlActTakeOver(ctx: *anyopaque, group: []const u8) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.take_over != null) return error.AlreadyTakingOver;
+    const id = controlActStewardOf(ctx, group) orelse return error.NotStartedByHand;
+    const surface = self.findSurfaceByID(id) orelse return error.NotStartedByHand;
+    if (!self.agentPresent(id) or self.personas.launchOf(id) != null or
+        self.poltergeist.agentOf(id).hooks != .none) return error.NotStartedByHand;
+
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const io = global.io();
+    const v = (try self.identities.view(io, aa, id)) orelse return error.NotStartedByHand;
+    if (v.state != .known or v.identified.quit == null) return error.NotStartedByHand;
+    surface.mayTypeAs(.agent) catch |err| return controlActRefusal(err);
+
+    const screen = try surface.activeText(aa);
+    const now_ms = self.poltergeistElapsedMs();
+    var run: TakeOverRun = .{
+        .group = try self.alloc.dupe(u8, group),
+        .terminal = id,
+        .phase = .settling,
+        .at_ms = now_ms + poltergeistpkg.TakeOver.settle_ms,
+        .screen = &.{},
+        .cli = &.{},
+        .session = null,
+    };
+    errdefer run.deinit(self.alloc);
+    run.screen = try self.alloc.dupe(u8, screen);
+    run.cli = try self.alloc.dupe(u8, v.key);
+    if (v.identified.session) |sid| run.session = try self.alloc.dupe(u8, sid);
+    self.take_over = run;
+    if (self.take_over_failed) |f| {
+        self.alloc.free(f.group);
+        self.take_over_failed = null;
+    }
+    log.info("control room: taking over the supervisor of a group, cli={s} session={s}", .{
+        v.key, if (v.identified.session != null) "found" else "none",
+    });
+    self.controlRoomTouch();
+}
+
+/// What the snapshot is told of the take-over (`ControlRoom.TakeOverIn`).
+fn takeOverIn(self: *App) ?poltergeistpkg.ControlRoom.TakeOverIn {
+    if (self.take_over) |t| return .{ .group = t.group, .state = .{ .running = t.phase } };
+    if (self.take_over_failed) |f| return .{ .group = f.group, .state = .{ .failed = f.why } };
+    return null;
+}
+
+/// Stop the take-over without taking over, and say why.
+fn takeOverFail(self: *App, why: poltergeistpkg.TakeOver.Why) void {
+    var run = self.take_over orelse return;
+    self.take_over = null;
+    log.warn("control room: the take-over stopped ({t})", .{why});
+    if (self.take_over_failed) |f| self.alloc.free(f.group);
+    self.take_over_failed = .{ .group = run.group, .why = why };
+    run.group = &.{};
+    run.deinit(self.alloc);
+    self.controlRoomTouch();
+}
+
+/// Move a take-over on, if one is under way and its moment has come.
+/// Returns when it next wants to be looked at.
+///
+/// **Settling**: the same screen as at the press, and the adapter's rule
+/// says it is waiting at its prompt; then the quit is typed, through the
+/// guards an agent's text goes through. **Quitting**: its sidecar has gone
+/// and its shell is at the prompt again; then the supervisor's role is
+/// started there, going on with the session, the way the control room
+/// starts one. **Starting**: `+launch` has said it is coming (its hooks are
+/// expected); then it is over. Each has its deadline, and each way of not
+/// getting there is said (`TakeOver.Why`).
+fn takeOverStep(self: *App, now_ms: u64) ?u64 {
+    const run = if (self.take_over) |*t| t else return null;
+    const TakeOver = poltergeistpkg.TakeOver;
+    const surface = self.findSurfaceByID(run.terminal) orelse {
+        self.takeOverFail(.did_not_quit);
+        return null;
+    };
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    switch (run.phase) {
+        .settling => {
+            if (now_ms < run.at_ms) return run.at_ms;
+            // Each way of not going on says which it was: they all tell the
+            // person "busy", and only the log can tell them apart.
+            const v = (self.identities.view(global.io(), aa, run.terminal) catch null) orelse {
+                log.warn("control room: take-over: the terminal is no longer identified", .{});
+                self.takeOverFail(.busy);
+                return null;
+            };
+            const quit = v.identified.quit orelse {
+                log.warn("control room: take-over: its adapter has no screen rule any more", .{});
+                self.takeOverFail(.busy);
+                return null;
+            };
+            if (!self.agentPresent(run.terminal)) {
+                log.warn("control room: take-over: its agent went away before the quit", .{});
+                self.takeOverFail(.busy);
+                return null;
+            }
+            surface.mayTypeAs(.agent) catch |err| {
+                log.warn("control room: take-over: may not type into it err={}", .{err});
+                self.takeOverFail(.typing);
+                return null;
+            };
+            const screen = surface.activeText(aa) catch |err| {
+                log.warn("control room: take-over: could not read its screen err={}", .{err});
+                self.takeOverFail(.busy);
+                return null;
+            };
+            switch (TakeOver.settle(run.screen, screen, quit, run.tries)) {
+                .quit => {},
+                .again => {
+                    log.info("control room: take-over: the screen moved, looking again ({d} left)", .{run.tries});
+                    const kept = self.alloc.dupe(u8, screen) catch {
+                        self.takeOverFail(.busy);
+                        return null;
+                    };
+                    self.alloc.free(run.screen);
+                    run.screen = kept;
+                    run.tries -= 1;
+                    run.at_ms = now_ms + TakeOver.settle_ms;
+                    return run.at_ms;
+                },
+                .busy => {
+                    log.warn("control room: take-over: busy, moved={} ready={}", .{
+                        !std.mem.eql(u8, screen, run.screen), TakeOver.ready(screen, quit),
+                    });
+                    self.takeOverFail(.busy);
+                    return null;
+                },
+            }
+            surface.typePoltergeistTextAs(quit.text, true, .agent) catch {
+                self.takeOverFail(.typing);
+                return null;
+            };
+            log.info("control room: take-over typed the quit, waiting for it to end", .{});
+            run.phase = .quitting;
+            run.at_ms = now_ms + TakeOver.quit_ms;
+            self.controlRoomTouch();
+            return now_ms + take_over_poll_ms;
+        },
+        .quitting => {
+            if (!self.agentPresent(run.terminal) and surface.shellIdle()) {
+                self.takeOverLaunch(aa, now_ms) catch |err| {
+                    log.warn("control room: take-over could not start it again err={}", .{err});
+                    self.takeOverFail(.cannot_start);
+                    return null;
+                };
+                return now_ms + take_over_poll_ms;
+            }
+            if (now_ms >= run.at_ms) {
+                self.takeOverFail(.did_not_quit);
+                return null;
+            }
+            return now_ms + take_over_poll_ms;
+        },
+        .starting => {
+            if (self.poltergeist.agentOf(run.terminal).hooks != .none) {
+                log.info("control room: take-over done, its hooks are expected", .{});
+                var done = self.take_over.?;
+                self.take_over = null;
+                done.deinit(self.alloc);
+                self.controlRoomTouch();
+                return null;
+            }
+            if (now_ms >= run.at_ms) {
+                self.takeOverFail(.did_not_start);
+                return null;
+            }
+            return now_ms + take_over_poll_ms;
+        },
+    }
+}
+
+/// The CLI has quit: start the supervisor's role in its terminal, going on
+/// with its session, recorded as the control room records a start.
+fn takeOverLaunch(self: *App, aa: Allocator, now_ms: u64) !void {
+    const run = &self.take_over.?;
+    const ControlRoom = poltergeistpkg.ControlRoom;
+    const Store = poltergeistpkg.PersonaStore;
+    self.ensurePersonas();
+    const last = self.chat.lastSupervisorOf(run.group);
+    const roles = try self.controlStartRoles(aa);
+    const role = ControlRoom.startRoleOf(roles, last) orelse return error.NoSupervisorRole;
+    const choice = try self.resolveLaunch(aa, role.key, run.cli);
+    const line = try launchLineFor(aa, choice, .{ .group = run.group, .session = run.session });
+
+    self.chat.beginStart(run.group, now_ms, now_ms + Store.pending_launch_ms, run.session != null, .directory) catch {};
+    self.chat.startOpened(run.group, run.terminal, now_ms + Store.standing_wait_ms);
+    errdefer self.chat.endStart(run.group);
+    // What was known of the CLI that quit is not what the new one is.
+    self.identities.forget(global.io(), run.terminal);
+    try self.startRoleIn(run.terminal, poltergeistpkg.Chat.user_id, choice, line, .agent);
+    log.info("control room: take-over started the supervisor again, role {s}, session={s}", .{
+        choice.key, if (run.session != null) "going on" else "new",
+    });
+    run.phase = .starting;
+    run.at_ms = now_ms + poltergeistpkg.TakeOver.start_ms;
+    self.controlRoomTouch();
 }
 
 /// `+launch` in terminal `id` says its CLI did not start (`rpc`,

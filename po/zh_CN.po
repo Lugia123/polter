@@ -2497,6 +2497,66 @@ msgstr "屏幕 {1} 分没动"
 msgid "Screen still for {1} min, no tool call for {2} min"
 msgstr "屏幕 {1} 分没动，{2} 分没调工具"
 
+#: src/poltergeist/ControlRoom.zig:925
+msgid "Started by hand: no status"
+msgstr "手动启动，没接上状态"
+
+#: src/poltergeist/ControlRoom.zig:926
+msgid "Unknown CLI: no status"
+msgstr "不认得的 CLI，状态未知"
+
+#: src/poltergeist/ControlRoom.zig:964
+msgid "This ends the {1} running in this terminal and starts it again through Polter, with its status hooks, going on with session {2} (last written {3} min ago)."
+msgstr "会结束这个终端里正在运行的 {1}，再由 Polter 带状态钩子重启，并续上会话 {2}（{3} 分钟前写过）。"
+
+#: src/poltergeist/ControlRoom.zig:965
+msgid "This ends the {1} running in this terminal and starts it again through Polter, with its status hooks, going on with session {2}. That session was last written {3} min ago, well before its last tool call: if it was cleared since, what comes back is the conversation from before that."
+msgstr "会结束这个终端里正在运行的 {1}，再由 Polter 带状态钩子重启，并续上会话 {2}。这个会话 {3} 分钟前写过，比它最后一次调工具早得多：如果之后清过上下文（/clear），续上的会是清之前的对话。"
+
+#: src/poltergeist/ControlRoom.zig:966
+msgid "This ends the {1} running in this terminal and starts it again through Polter, with its status hooks. Its session was not found, so it starts a new one."
+msgstr "会结束这个终端里正在运行的 {1}，再由 Polter 带状态钩子重启。找不到它的会话，所以会开一个新会话。"
+
+#: src/poltergeist/ControlRoom.zig:967
+msgid "Taking over…"
+msgstr "正在接管…"
+
+#: src/poltergeist/ControlRoom.zig:968
+msgid "Not taken over: it is busy. Try again when it is idle"
+msgstr "没接管：它正忙，等它空下来再试"
+
+#: src/poltergeist/ControlRoom.zig:969
+msgid "Not taken over: somebody is typing in it"
+msgstr "没接管：有人在它里面打字"
+
+#: src/poltergeist/ControlRoom.zig:970
+msgid "Not taken over: it did not quit"
+msgstr "没接管：它没有退出"
+
+#: src/poltergeist/ControlRoom.zig:971
+msgid "It quit, and the one started in its place did not come"
+msgstr "它退出了，但替它启动的那个没起来"
+
+#: src/poltergeist/ControlRoom.zig:972
+msgid "Not taken over: there is no role or CLI to start it in"
+msgstr "没接管：没有可以用来启动它的角色或 CLI"
+
+#: windows/control-room/src/scene.rs
+msgid "Let the control room take over?"
+msgstr "让总控台接管？"
+
+#: windows/control-room/src/scene.rs
+msgid "Take Over"
+msgstr "接管"
+
+#: windows/control-room/src/scene.rs
+msgid "There is nothing here the control room can take over."
+msgstr "这里没有总控台能接管的东西。"
+
+#: windows/control-room/src/scene.rs
+msgid "The control room is already taking over a supervisor."
+msgstr "总控台已经在接管一个总管了。"
+
 #: src/poltergeist/report.zig:122
 msgid "Switched off, so nothing is handed to it. Turn it on with the switch on its page."
 msgstr "已关，什么都不会交给它。在它的页面上打开开关就行。"

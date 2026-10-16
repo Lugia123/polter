@@ -50,6 +50,9 @@ struct ControlRoomActions {
         case fix(group: String)
         /// The same, on the row of a terminal that is in no group.
         case fixTerminal(String)
+        /// "Let the control room take over?" on a group's supervisor, once
+        /// the person said yes to the core's question (task 1635).
+        case takeOver(group: String)
     }
 
     /// Why an action was not done. `name` is the core's word for it and is
@@ -143,6 +146,12 @@ struct ControlRoomActions {
             case "NoSuchTerminal":
                 return String(localized: "That terminal is no longer there.",
                               comment: "总控台：终端已经不在了")
+            case "NotStartedByHand":
+                return String(localized: "There is nothing here the control room can take over.",
+                              comment: "总控台：点「让总控台接管？」时，这个总管不是手动启动、能被认出来的那种")
+            case "AlreadyTakingOver":
+                return String(localized: "The control room is already taking over a supervisor.",
+                              comment: "总控台：点「让总控台接管？」时已有一次接管在进行")
             case "NoExecutable":
                 return String(localized: "Polter could not find its own program to start the role with.",
                               comment: "总控台：启动总管时找不到 Polter 自己的可执行文件")
@@ -192,6 +201,8 @@ struct ControlRoomActions {
             return ["act": "fix", "group": group]
         case .fixTerminal(let terminal):
             return ["act": "fix", "terminal": terminal]
+        case .takeOver(let group):
+            return ["act": "take_over", "group": group]
         }
     }
 

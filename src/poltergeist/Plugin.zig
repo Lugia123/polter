@@ -451,6 +451,32 @@ pub const AgentCli = struct {
     /// Whether this system can start `adapter`. Same meaning, and the same
     /// reason for existing, as `Manifest.runnable`.
     runnable: bool,
+
+    /// The environment variables this CLI gives the programs it starts --
+    /// Polter's MCP sidecar among them -- by which a CLI started by hand can
+    /// be told apart from another (task 1635): `"identify_env":
+    /// ["CLAUDE_CODE_SESSION_ID", …]`. **Only these names are ever read
+    /// out of a sidecar's environment and sent to Polter**, and only to this
+    /// plugin's adapter; an environment also holds keys and tokens, and a
+    /// list of names is how none of them can come along. Empty when the
+    /// manifest names none, which is also when a name is not
+    /// `[A-Z0-9_]`, or there are more than `max_identify_env`.
+    identify_env: []const []const u8,
+
+    pub const max_identify_env = 8;
+    pub const max_identify_name = 64;
+
+    /// A name `identify_env` may carry: upper-case letters, digits and
+    /// `_`, not starting with a digit.
+    pub fn validEnvName(name: []const u8) bool {
+        if (name.len == 0 or name.len > max_identify_name) return false;
+        if (std.ascii.isDigit(name[0])) return false;
+        for (name) |c| switch (c) {
+            'A'...'Z', '0'...'9', '_' => {},
+            else => return false,
+        };
+        return true;
+    }
 };
 
 /// How this system starts a file of that kind.
@@ -718,7 +744,38 @@ fn agentCliFor(
         .bin = stringField(a, "bin") orelse key,
         .adapter = abs,
         .runnable = launchKindFor(tag, abs) != .unsupported,
+        .identify_env = try identifyEnvOf(arena, key, a),
     };
+}
+
+/// `agent_cli.identify_env`, or empty. All or nothing: one name that is
+/// not a name, or too many, and none are taken -- a list that is half used
+/// is a CLI that is recognised on some machines and not others.
+fn identifyEnvOf(arena: Allocator, key: []const u8, a: std.json.ObjectMap) Allocator.Error![]const []const u8 {
+    const list = switch (a.get("identify_env") orelse return &.{}) {
+        .array => |l| l,
+        else => {
+            log.warn("plugin {s}: agent_cli.identify_env is not a list; ignored", .{key});
+            return &.{};
+        },
+    };
+    if (list.items.len > AgentCli.max_identify_env) {
+        log.warn("plugin {s}: agent_cli.identify_env names more than {d}; ignored", .{ key, AgentCli.max_identify_env });
+        return &.{};
+    }
+    const out = try arena.alloc([]const u8, list.items.len);
+    for (list.items, out) |v, *o| {
+        const name = switch (v) {
+            .string => |n| n,
+            else => "",
+        };
+        if (!AgentCli.validEnvName(name)) {
+            log.warn("plugin {s}: agent_cli.identify_env has a name that is not [A-Z0-9_]; ignored", .{key});
+            return &.{};
+        }
+        o.* = try arena.dupe(u8, name);
+    }
+    return out;
 }
 
 /// `persona.isValidKey`, repeated rather than imported so that this file
@@ -2781,6 +2838,47 @@ test "agent_cli: a plugin that manages a CLI says so, and one that does not is u
     try testing.expectEqualStrings("claude", cli.bin);
     const want = try std.fmt.allocPrint(alloc, "{s}/adapter.py", .{dir});
     try testing.expectEqualStrings(want, cli.adapter);
+}
+
+test "agent_cli: identify_env is a list of plain names, taken whole or not at all (task 1635)" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const Case = struct { json: []const u8, names: []const []const u8 };
+    const cases = [_]Case{
+        .{ .json =
+        \\{"adapter":"a.py","identify_env":["CLAUDECODE","AI_AGENT","CLAUDE_CODE_SESSION_ID"]}
+        , .names = &.{ "CLAUDECODE", "AI_AGENT", "CLAUDE_CODE_SESSION_ID" } },
+        // None named: none.
+        .{ .json =
+        \\{"adapter":"a.py"}
+        , .names = &.{} },
+        // One that is not a name -- lower case, a space, `=` -- and none
+        // are taken.
+        .{ .json =
+        \\{"adapter":"a.py","identify_env":["CLAUDECODE","path"]}
+        , .names = &.{} },
+        .{ .json =
+        \\{"adapter":"a.py","identify_env":["CLAUDECODE","A=B"]}
+        , .names = &.{} },
+        .{ .json =
+        \\{"adapter":"a.py","identify_env":["1ABC"]}
+        , .names = &.{} },
+        // Not a list, or too many.
+        .{ .json =
+        \\{"adapter":"a.py","identify_env":"CLAUDECODE"}
+        , .names = &.{} },
+        .{ .json =
+        \\{"adapter":"a.py","identify_env":["A","B","C","D","E","F","G","H","I"]}
+        , .names = &.{} },
+    };
+    for (cases) |c| {
+        const a = (try std.json.parseFromSliceLeaky(std.json.Value, alloc, c.json, .{})).object;
+        const got = try identifyEnvOf(alloc, "claude-code", a);
+        try testing.expectEqual(c.names.len, got.len);
+        for (c.names, got) |want, have| try testing.expectEqualStrings(want, have);
+    }
 }
 
 test "agent_cli: each system is given the adapter it can start" {

@@ -118,7 +118,7 @@
 //!                                 Each is null when nobody wrote it down;
 //!                                 heard_ms (the real clock) is null when
 //!                                 no supervisor was ever recorded at all
-//!         "resume": { "can": true, "why": "none" } },
+//!         "resume": { "can": true, "why": "none" },
 //!                                 whether starting one now goes on with
 //!                                 the last one's session, for `role` and
 //!                                 `cli` above. A host offers "go on with
@@ -138,6 +138,30 @@
 //!                                 does not say it can go on with a
 //!                                 session) | session_in_use (an open
 //!                                 terminal is in that session now)
+//!         "hookless": { "state": "none", "cli_label": null, "session": false,
+//!                       "note": null | {"key":"started_by_hand","template":"…","args":[]},
+//!                       "take_over": { "state": "none", "confirm": null, "status": null } } },
+//!                                 whether the supervisor that is there was
+//!                                 started by hand -- no hooks, no role
+//!                                 launch -- so that nothing of its state
+//!                                 reaches the control room (task 1635):
+//!                                 none (it was not, or there is none) |
+//!                                 asking (it was; its adapter is being
+//!                                 asked who it is) | known (its adapter
+//!                                 said; cli_label names the CLI and
+//!                                 session says whether its session was
+//!                                 found) | unknown (no adapter recognised
+//!                                 it). A host says so on the supervisor
+//!                                 frame's title bar for asking, known and
+//!                                 unknown. take_over is "Let the control room
+//!                                 take over?" on that bar (TakeOver.zig):
+//!                                 state none (not offered) | offer (a host
+//!                                 shows the button) | running | failed
+//!                                 (stopped; offered again). confirm is the
+//!                                 question a host asks before sending
+//!                                 take_over, with Take Over as its yes;
+//!                                 status what is happening or why the last
+//!                                 try stopped. Both are Says, like note
 //!       "project": {
 //!         "tie": "bound",         bound | undecided | declined. Whether
 //!                                 this group has a project (`Projects.zig`):
@@ -335,6 +359,7 @@ const ShellSteps = @import("ShellSteps.zig");
 const quota = @import("quota.zig");
 const Tasks = @import("Tasks.zig");
 const ControlFix = @import("ControlFix.zig");
+const TakeOver = @import("TakeOver.zig");
 
 pub const Id = Bus.Id;
 
@@ -575,6 +600,44 @@ pub const Terminal = struct {
     /// This terminal's own T1, when it was given one; null for the common
     /// one.
     still_ms: ?u64,
+    /// Whether its agent was started by hand, and who the adapters say it
+    /// is (task 1635). No default: a caller that forgot it would say "no"
+    /// for every terminal, which is the silence this exists to end.
+    hookless: Hookless,
+};
+
+/// An agent talking to Polter with no hooks and no role launch behind it:
+/// one a person started by typing its command (task 1635,
+/// `Identities.zig`). Polter hears nothing of its state, so the control
+/// room has nothing to show for it, and says why.
+pub const Hookless = union(enum) {
+    pub const Known = struct {
+        label: []const u8,
+        /// The adapter found the session it is in.
+        session: bool,
+        /// That session's id, for a person to recognise: its first eight
+        /// characters. Empty with no session.
+        session_short: []const u8,
+        /// Whether that is still the session it is in (`TakeOver.sure`).
+        sure: bool,
+        /// Minutes since the session's record was last written; null when
+        /// not known.
+        written_min: ?u64,
+        /// The adapter said how to make it quit and when that is safe: a
+        /// take-over can be offered.
+        can_quit: bool,
+    };
+
+    /// Not that: there are hooks, or a role launch started it, or there is
+    /// no agent.
+    no,
+    /// It is; the adapters are being asked who it is.
+    asking,
+    /// It is, and an adapter said it is its CLI.
+    known: Known,
+    /// It is, and no adapter recognised it: Polter does not know what it
+    /// is. Not "fine".
+    unknown,
 };
 
 pub const Input = struct {
@@ -619,6 +682,10 @@ pub const Input = struct {
     /// (`ControlFix.Sent`). No default: a caller that forgot it would offer
     /// the button again the moment it was pressed.
     fix_sent: *const ControlFix.Sent,
+    /// The take-over under way or last stopped (task 1635); null for none.
+    /// No default: a caller that forgot it would show a take-over that is
+    /// under way as one that can be started.
+    take_over: ?TakeOverIn,
     /// The bus's clock, and the real one.
     now_ms: u64,
     wall_ms: u64,
@@ -907,7 +974,24 @@ pub const Say = struct {
     /// them. None of them is translated.
     args: []const []const u8,
 
-    pub const Key = enum { process_exited, hooks_missing, failed, still, still_and_silent };
+    pub const Key = enum {
+        process_exited,
+        hooks_missing,
+        failed,
+        still,
+        still_and_silent,
+        started_by_hand,
+        cli_not_recognised,
+        take_over_confirm_sure,
+        take_over_confirm_unsure,
+        take_over_confirm_new,
+        take_over_running,
+        take_over_busy,
+        take_over_typing,
+        take_over_did_not_quit,
+        take_over_did_not_start,
+        take_over_cannot_start,
+    };
 
     pub fn templateOf(key: Key) [:0]const u8 {
         return switch (key) {
@@ -917,6 +1001,21 @@ pub const Say = struct {
             .failed => i18n.N_("{1}: {2}"),
             .still => i18n.N_("Screen still for {1} min"), // 暂定
             .still_and_silent => i18n.N_("Screen still for {1} min, no tool call for {2} min"), // 暂定
+            // A supervisor somebody started by typing its command: none of
+            // its state reaches Polter (task 1635).
+            .started_by_hand => i18n.N_("Started by hand: no status"),
+            .cli_not_recognised => i18n.N_("Unknown CLI: no status"),
+            // The question asked before a take-over (task 1635): CLI,
+            // session (its first characters), minutes since it was written.
+            .take_over_confirm_sure => i18n.N_("This ends the {1} running in this terminal and starts it again through Polter, with its status hooks, going on with session {2} (last written {3} min ago)."),
+            .take_over_confirm_unsure => i18n.N_("This ends the {1} running in this terminal and starts it again through Polter, with its status hooks, going on with session {2}. That session was last written {3} min ago, well before its last tool call: if it was cleared since, what comes back is the conversation from before that."),
+            .take_over_confirm_new => i18n.N_("This ends the {1} running in this terminal and starts it again through Polter, with its status hooks. Its session was not found, so it starts a new one."),
+            .take_over_running => i18n.N_("Taking over…"),
+            .take_over_busy => i18n.N_("Not taken over: it is busy. Try again when it is idle"),
+            .take_over_typing => i18n.N_("Not taken over: somebody is typing in it"),
+            .take_over_did_not_quit => i18n.N_("Not taken over: it did not quit"),
+            .take_over_did_not_start => i18n.N_("It quit, and the one started in its place did not come"),
+            .take_over_cannot_start => i18n.N_("Not taken over: there is no role or CLI to start it in"),
         };
     }
 
@@ -1055,6 +1154,7 @@ pub const SupervisorOut = struct {
     cwd_from: CwdFrom,
     last: LastOut,
     @"resume": ResumeOut,
+    hookless: HooklessOut,
 
     pub const State = enum { present, absent, starting, failed };
     pub const CwdFrom = enum { none, last_supervisor, session_snapshot, members, home };
@@ -1067,6 +1167,49 @@ pub const LastOut = struct {
     cli: ?[]const u8,
     cli_label: ?[]const u8,
     heard_ms: ?u64,
+};
+
+/// Whether the supervisor that is there was started by hand (`Hookless`).
+pub const HooklessOut = struct {
+    state: State,
+    /// What the adapter calls the CLI; null unless `known`.
+    cli_label: ?[]const u8,
+    /// Its session was found; false unless `known`.
+    session: bool,
+    /// What the supervisor frame's title says of it, in English with its
+    /// key; null for `none`. A host says it in the person's language, as it
+    /// does a row's `what.say`.
+    note: ?Say,
+    take_over: TakeOverOut,
+
+    pub const State = enum { none, asking, known, unknown };
+    pub const none: HooklessOut = .{ .state = .none, .cli_label = null, .session = false, .note = null, .take_over = .none };
+};
+
+/// "Let the control room take over?" on the supervisor's frame (task 1635,
+/// `TakeOver.zig`).
+pub const TakeOverOut = struct {
+    /// none (not offered) | offer (a host shows the button) | running |
+    /// failed (the last try stopped; the button is offered again).
+    state: State,
+    /// What the confirmation says before anything is done, in English with
+    /// its key; null unless offered. A host asks it as the question of a
+    /// dialog whose yes is "Take Over".
+    confirm: ?Say,
+    /// What is happening, or why the last try stopped; null otherwise.
+    status: ?Say,
+
+    pub const State = enum { none, offer, running, failed };
+    pub const none: TakeOverOut = .{ .state = .none, .confirm = null, .status = null };
+};
+
+/// A take-over the app is carrying out, or the last that stopped.
+pub const TakeOverIn = struct {
+    group: []const u8,
+    state: union(enum) {
+        running: TakeOver.Phase,
+        failed: TakeOver.Why,
+    },
 };
 
 /// Whether a start goes on with the last session, and when not, why not.
@@ -1849,7 +1992,61 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
             .heard_ms = last.heard_ms,
         },
         .@"resume" = go_on,
+        .hookless = if (steward) |id| try hooklessOf(arena, in, name, id) else .none,
     };
+}
+
+fn sayOf(key: Say.Key) Say {
+    return .{ .key = key, .template = Say.templateOf(key), .args = &.{} };
+}
+
+fn hooklessOf(arena: Allocator, in: Input, group: []const u8, id: Id) Allocator.Error!HooklessOut {
+    // A take-over under way outlives what it is taking over: the agent has
+    // quit, and the frame still says what is being done about it.
+    const run: ?TakeOverIn = if (in.take_over) |t| (if (std.mem.eql(u8, t.group, group)) t else null) else null;
+    for (in.terminals) |t| if (t.id == id) return switch (t.hookless) {
+        .no => if (run) |r| .{ .state = .none, .cli_label = null, .session = false, .note = null, .take_over = takeOverRun(r) } else .none,
+        .asking => .{ .state = .asking, .cli_label = null, .session = false, .note = sayOf(.started_by_hand), .take_over = if (run) |r| takeOverRun(r) else .none },
+        .unknown => .{ .state = .unknown, .cli_label = null, .session = false, .note = sayOf(.cli_not_recognised), .take_over = if (run) |r| takeOverRun(r) else .none },
+        .known => |k| .{
+            .state = .known,
+            .cli_label = try arena.dupe(u8, k.label),
+            .session = k.session,
+            .note = sayOf(.started_by_hand),
+            .take_over = try takeOverOf(arena, k, run),
+        },
+    };
+    return .none;
+}
+
+fn takeOverRun(r: TakeOverIn) TakeOverOut {
+    return switch (r.state) {
+        .running => .{ .state = .running, .confirm = null, .status = sayOf(.take_over_running) },
+        .failed => |why| .{ .state = .failed, .confirm = null, .status = sayOf(switch (why) {
+            .busy => .take_over_busy,
+            .typing => .take_over_typing,
+            .did_not_quit => .take_over_did_not_quit,
+            .did_not_start => .take_over_did_not_start,
+            .cannot_start => .take_over_cannot_start,
+        }) },
+    };
+}
+
+/// What the supervisor's frame offers for one an adapter recognised.
+fn takeOverOf(arena: Allocator, k: Hookless.Known, run: ?TakeOverIn) Allocator.Error!TakeOverOut {
+    if (run) |r| if (r.state == .running) return takeOverRun(r);
+    if (!k.can_quit) return .none;
+    const label = try arena.dupe(u8, k.label);
+    const confirm: Say = if (!k.session)
+        .{ .key = .take_over_confirm_new, .template = Say.templateOf(.take_over_confirm_new), .args = try arena.dupe([]const u8, &.{label}) }
+    else confirm: {
+        const short = try arena.dupe(u8, k.session_short);
+        const age = if (k.written_min) |m| try std.fmt.allocPrint(arena, "{d}", .{m}) else "?";
+        const key: Say.Key = if (k.sure) .take_over_confirm_sure else .take_over_confirm_unsure;
+        break :confirm .{ .key = key, .template = Say.templateOf(key), .args = try arena.dupe([]const u8, &.{ label, short, age }) };
+    };
+    const failed = if (run) |r| takeOverRun(r).status else null;
+    return .{ .state = if (failed != null) .failed else .offer, .confirm = confirm, .status = failed };
 }
 
 const Pending = struct {
@@ -2437,6 +2634,7 @@ const World = struct {
     cli_names: []const CliName = &.{.{ .key = "claude-code", .label = "Claude Code" }},
     home: []const u8 = "/Users/me",
     fix_sent: ControlFix.Sent = .{},
+    take_over: ?TakeOverIn = null,
 
     fn init() World {
         return .{
@@ -2488,6 +2686,7 @@ const World = struct {
             .role = "",
             .launched_cli = "",
             .still_ms = null,
+            .hookless = .no,
         });
     }
 
@@ -2533,6 +2732,7 @@ const World = struct {
             .home = self.home,
             .record_root = "/state/chat",
             .fix_sent = &self.fix_sent,
+            .take_over = self.take_over,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
         };
@@ -2611,10 +2811,16 @@ fn fixtureWorld() !World {
     // which is not the same answer as the worker whose hooks were never
     // heard and whose shell does not say (not known). The web-app worker
     // was started in a role, in a pane its supervisor opened.
+    //
+    // Two supervisors somebody started by typing their command (task
+    // 1635): one its adapter recognised, in a session it found, and one no
+    // adapter did.
     for (w.open.items) |*t| switch (t.id) {
         0xc2 => t.at_prompt = true,
         0xb1 => t.role = "dev-worker",
         0xa1 => t.role = "polter-supervisor",
+        0xa3 => t.hookless = .{ .known = .{ .label = "Claude Code", .session = true, .session_short = "0b1d1c35", .sure = true, .written_min = 3, .can_quit = true } },
+        0xa5 => t.hookless = .unknown,
         else => {},
     };
     try w.bus.markOpenedByAgent(0xb1, 0xa1);
@@ -2695,6 +2901,114 @@ test "ControlRoom snapshot: the fixture is what the fixture's world comes to" {
         std.debug.print("\n<<<control_snapshot.json\n{s}\n>>>control_snapshot.json\n", .{json});
         return error.TestFixtureOutOfDate;
     }
+}
+
+test "ControlRoom snapshot: a supervisor started by hand is said to be, on its frame, and only its own" {
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var room = try fixtureRoom(&w);
+    defer room.deinit();
+    const s = (try room.compute(arena.allocator(), w.input(fixture_now))).snapshot;
+
+    const known = (try rowNamed(s, "docs-site")).supervisor.hookless;
+    try testing.expectEqual(HooklessOut.State.known, known.state);
+    try testing.expectEqualStrings("Claude Code", known.cli_label.?);
+    try testing.expect(known.session);
+    try testing.expectEqual(Say.Key.started_by_hand, known.note.?.key);
+
+    const unknown = (try rowNamed(s, "design-system")).supervisor.hookless;
+    try testing.expectEqual(HooklessOut.State.unknown, unknown.state);
+    try testing.expectEqual(Say.Key.cli_not_recognised, unknown.note.?.key);
+    try testing.expect(unknown.cli_label == null);
+
+    // Everyone else: nothing said, and no words.
+    for (s.groups) |g| {
+        if (std.mem.eql(u8, g.name, "docs-site") or std.mem.eql(u8, g.name, "design-system")) continue;
+        try testing.expectEqual(HooklessOut.State.none, g.supervisor.hookless.state);
+        try testing.expect(g.supervisor.hookless.note == null);
+    }
+
+    // Asked about, not yet answered: said already -- that much is known.
+    for (w.open.items) |*t| if (t.id == 0xa3) {
+        t.hookless = .asking;
+    };
+    var room2 = try fixtureRoom(&w);
+    defer room2.deinit();
+    const s2 = (try room2.compute(arena.allocator(), w.input(fixture_now))).snapshot;
+    try testing.expectEqual(Say.Key.started_by_hand, (try rowNamed(s2, "docs-site")).supervisor.hookless.note.?.key);
+}
+
+test "ControlRoom snapshot: the take-over is offered with the question it asks, and says how it goes (task 1635)" {
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const Look = struct {
+        fn of(world: *World, a: Allocator) !TakeOverOut {
+            var room = try fixtureRoom(world);
+            defer room.deinit();
+            const s = (try room.compute(a, world.input(fixture_now))).snapshot;
+            return (try rowNamed(s, "docs-site")).supervisor.hookless.take_over;
+        }
+        fn set(world: *World, k: Hookless) void {
+            for (world.open.items) |*t| if (t.id == 0xa3) {
+                t.hookless = k;
+            };
+        }
+    };
+    const base: Hookless.Known = .{ .label = "Claude Code", .session = true, .session_short = "0b1d1c35", .sure = true, .written_min = 3, .can_quit = true };
+
+    // Offered, going on with the session it found.
+    var t = try Look.of(&w, aa);
+    try testing.expectEqual(TakeOverOut.State.offer, t.state);
+    try testing.expectEqual(Say.Key.take_over_confirm_sure, t.confirm.?.key);
+    try testing.expectEqualStrings("0b1d1c35", t.confirm.?.args[1]);
+    try testing.expectEqualStrings("3", t.confirm.?.args[2]);
+    try testing.expect(t.status == null);
+
+    // Its record stopped while it went on: the question says what that means.
+    var k = base;
+    k.sure = false;
+    Look.set(&w, .{ .known = k });
+    try testing.expectEqual(Say.Key.take_over_confirm_unsure, (try Look.of(&w, aa)).confirm.?.key);
+    // No session: says it starts a new one, and does not pretend.
+    k = base;
+    k.session = false;
+    k.session_short = "";
+    Look.set(&w, .{ .known = k });
+    t = try Look.of(&w, aa);
+    try testing.expectEqual(Say.Key.take_over_confirm_new, t.confirm.?.key);
+    try testing.expectEqual(@as(usize, 1), t.confirm.?.args.len);
+    // No way to make it quit: not offered at all.
+    k = base;
+    k.can_quit = false;
+    Look.set(&w, .{ .known = k });
+    try testing.expectEqual(TakeOverOut.State.none, (try Look.of(&w, aa)).state);
+
+    // Under way: no question, and what is happening.
+    Look.set(&w, .{ .known = base });
+    w.take_over = .{ .group = "docs-site", .state = .{ .running = .quitting } };
+    t = try Look.of(&w, aa);
+    try testing.expectEqual(TakeOverOut.State.running, t.state);
+    try testing.expect(t.confirm == null);
+    try testing.expectEqual(Say.Key.take_over_running, t.status.?.key);
+    // ...and still said once the CLI has quit and is not recognised any more.
+    Look.set(&w, .no);
+    try testing.expectEqual(TakeOverOut.State.running, (try Look.of(&w, aa)).state);
+
+    // Stopped: why, and offered again.
+    Look.set(&w, .{ .known = base });
+    w.take_over = .{ .group = "docs-site", .state = .{ .failed = .busy } };
+    t = try Look.of(&w, aa);
+    try testing.expectEqual(TakeOverOut.State.failed, t.state);
+    try testing.expectEqual(Say.Key.take_over_busy, t.status.?.key);
+    try testing.expect(t.confirm != null);
+    // Another group's take-over is not this one's.
+    w.take_over = .{ .group = "billing", .state = .{ .running = .settling } };
+    try testing.expectEqual(TakeOverOut.State.offer, (try Look.of(&w, aa)).state);
 }
 
 test "ControlRoom snapshot: Fix is on the cards that read Failed, names who failed, and stands until they change" {

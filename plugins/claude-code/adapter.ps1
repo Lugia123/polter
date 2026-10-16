@@ -1242,11 +1242,74 @@ function Get-Launch($Req) {
     return , $answer
 }
 
+# --- identify ---------------------------------------------------------------
+
+# Whether the CLI that started a sidecar is Claude Code, and its session. See
+# `identify` in `adapter.py`, which this follows line for line.
+function Get-TranscriptPath([string]$HomeDir, [string]$Session) {
+    $root = Join-PyPath (Join-PyPath $HomeDir '.claude') 'projects'
+    foreach ($name in (Get-SortedNames $root)) {
+        $file = Join-PyPath (Join-PyPath $root $name) ($Session + '.jsonl')
+        if ([System.IO.File]::Exists($file)) { return $file }
+    }
+    return $null
+}
+
+function Get-Quit {
+    $ready = New-Map
+    $ready['line'] = @([string][char]0x276F, '>')
+    $ready['none_of'] = @('esc to interrupt', 'Do you want', ([string][char]0x276F + ' 1.'), ([string][char]0x276F + ' 2.'),
+        'Press Ctrl-C again', 'Enter to confirm', 'Esc to cancel')
+    $quit = New-Map
+    $quit['text'] = '/exit'
+    $quit['ready'] = $ready
+    return $quit
+}
+
+function Get-Identify($Req) {
+    $envIn = Get-J $Req 'env'
+    if (-not (Test-JDict $envIn)) { $envIn = New-Map }
+    $agent = Get-J $envIn 'AI_AGENT'
+    if (-not ($agent -is [string])) { $agent = '' }
+    $me = ((Get-J $envIn 'CLAUDECODE') -ceq '1') -or $agent.StartsWith('claude-code', [System.StringComparison]::Ordinal)
+    $answer = New-Map
+    $answer['version'] = 1
+    $answer['me'] = [bool]$me
+    $notes = New-List
+    $session = $null
+    $written = $null
+    if ($me) {
+        $session = Get-J $envIn 'CLAUDE_CODE_SESSION_ID'
+        if (-not ($session -is [string]) -or -not [regex]::IsMatch($session, '\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z')) {
+            $notes.Add('Claude Code did not say which session it is in.')
+            $session = $null
+        } else {
+            $homeDir = Get-J $Req 'home'
+            if (-not (Test-Truthy $homeDir)) {
+                $homeDir = $(if ($script:OnWindows) { [string]$env:USERPROFILE } else { [string]$env:HOME })
+            }
+            $path = Get-TranscriptPath $homeDir $session
+            if ($null -eq $path) {
+                $notes.Add("Session $session has no transcript on this machine.")
+                $session = $null
+            } else {
+                $utc = [System.IO.File]::GetLastWriteTimeUtc($path)
+                $written = [long]([System.DateTimeOffset]::new($utc).ToUnixTimeMilliseconds())
+            }
+        }
+    }
+    $answer['session'] = $session
+    $answer['session_written_ms'] = $written
+    $answer['quit'] = $(if ($me) { Get-Quit } else { $null })
+    $answer['notes'] = $notes
+    return $answer
+}
+
 # --- main -------------------------------------------------------------------
 
 function Invoke-Main($Argv) {
-    if (($Argv.Count -ne 1 -and $Argv.Count -ne 2) -or -not (@('inventory', 'launch') -ccontains [string]$Argv[0])) {
-        Write-Err "usage: adapter.ps1 inventory|launch '<request json>'"
+    if (($Argv.Count -ne 1 -and $Argv.Count -ne 2) -or -not (@('inventory', 'launch', 'identify') -ccontains [string]$Argv[0])) {
+        Write-Err "usage: adapter.ps1 inventory|launch|identify '<request json>'"
         return 2
     }
     if ($Argv.Count -eq 2) {
@@ -1268,7 +1331,11 @@ function Invoke-Main($Argv) {
         return 2
     }
     try {
-        $answer = $(if ([string]$Argv[0] -ceq 'inventory') { Get-Inventory $req } else { Get-Launch $req })
+        $answer = $(switch -CaseSensitive ([string]$Argv[0]) {
+                'inventory' { Get-Inventory $req }
+                'launch' { Get-Launch $req }
+                default { Get-Identify $req }
+            })
     } catch {
         Write-Err $_.Exception.Message
         return 1

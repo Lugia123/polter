@@ -127,8 +127,17 @@ LOCK_GATE = os.path.join(HERE, "lock-reentry.py")
 # (`mayTypeAs` from `startRoleIn`, and again inside `typePoltergeistTextAs`)
 # are further down that same call. The `.agent` paths never reach it.
 # Not done: nothing here was run under a held lock to see it hang.
-CALLS = 104
-SPLIT = {"lockUncancelable": 52, "unlock": 52}
+#
+# 104 -> 108 (#1635), re-read 2026-10-16 by the same method. Both pairs are
+# ours: `shellIdle` (is the shell back at its prompt; it asks `shellBusy`
+# before the lock, as `needsConfirmQuit` does) and `activeText` (the active
+# area as text). **Their callers were enumerated**: both are called only
+# from `App.controlActTakeOver` and `App.takeOverStep`, on the app thread,
+# where what is held around them is the server's slot lock and the
+# identities' lock in calls that have returned -- never this one. Not done:
+# nothing here was run under a held lock to see it hang.
+CALLS = 108
+SPLIT = {"lockUncancelable": 54, "unlock": 54}
 
 # Claim 2. Down is a safety regression; up means somebody found another.
 CAREFUL_SITES = 2
