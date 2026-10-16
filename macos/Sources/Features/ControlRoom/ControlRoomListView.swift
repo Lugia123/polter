@@ -199,6 +199,21 @@ struct ControlRoomListView: View {
         }
         .onAppear { reveal(selection, in: layout) }
         .onChange(of: selection) { reveal($0, in: layout) }
+        // The selection moved in the list without being changed -- a group
+        // made, or pinned, above it pushed it down (task 1664): into sight
+        // again. Where it was laid out, not where it is seen, so scrolling
+        // away from it is left alone.
+        .onChange(of: selection.flatMap { layout.rows[$0] }) { frame in
+            // From the frame handed in, not `layout`: what this closure
+            // holds is from before the change (measured: it still had the
+            // row where it was, and said it was in sight). The viewport is
+            // the same. And on the next turn, when the scroll view's
+            // content has grown to the new list -- a scroll past its old
+            // end would be held at it.
+            guard let frame,
+                  let to = ControlRoomListLayout.reveal(row: frame, viewport: layout.viewport, scrolled: scrolled) else { return }
+            DispatchQueue.main.async { scroller.scroll(to: to) }
+        }
     }
 
     /// Brings a row wholly into sight, by the least scroll that does.

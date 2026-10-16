@@ -78,4 +78,61 @@ struct ControlRoomListScrollTests {
         }
         #expect(offset == (try row("g29")).maxY - bottom)
     }
+
+    final class Model: ObservableObject {
+        @Published var id: String?
+        @Published var list: ControlRoomList
+        init(list: ControlRoomList) { self.list = list }
+    }
+
+    struct Changing: View {
+        @ObservedObject var model: Model
+        var body: some View {
+            ControlRoomListView(list: model.list, selection: Binding(get: { model.id }, set: { model.id = $0 }), still: true)
+                .frame(height: 824)
+        }
+    }
+
+    /// Task 1664: a group made while the control room is open is listed
+    /// above the selected one and pushes it below the bottom; the
+    /// selection does not change, and the list followed it only once the
+    /// control room was opened again. It follows it now.
+    @Test func aRowPutAboveTheSelectionScrollsItBackIntoSight() async throws {
+        func quiet(_ n: Int, prefix: String) -> [ControlRoomList.Row] {
+            let one = ControlRoomList.sample.quiet[0]
+            return (0 ..< n).map { var row = one; row.id = "\(prefix)\($0)"; return row }
+        }
+        var list = ControlRoomList.sample
+        list.quiet = quiet(30, prefix: "g")
+        list.quietCount = 30
+        let model = Model(list: list)
+        model.id = "g29"
+        let host = NSHostingView(rootView: Changing(model: model))
+        host.frame = NSRect(x: 0, y: 0, width: 400, height: 824)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: true)
+        window.contentView = host
+        func settle() async throws {
+            for _ in 0 ..< 15 {
+                try await Task.sleep(nanoseconds: 20_000_000)
+                host.layoutSubtreeIfNeeded()
+            }
+        }
+        try await settle()
+        let scrollView = try #require(Self.scrollViews(in: host).first)
+        var offset: CGFloat { scrollView.contentView.bounds.origin.y }
+        func inSight() -> Bool {
+            let layout = ControlRoomListLayout(list: model.list, height: 824, needed: ControlRoomAskText.needed)
+            guard let row = layout.rows["g29"] else { return false }
+            return ControlRoomListLayout.inView(row: row, viewport: layout.viewport, scrolled: offset)
+        }
+        #expect(inSight())
+        // Three groups made, listed first among the quiet ones.
+        var more = model.list
+        more.quiet = quiet(3, prefix: "new") + more.quiet
+        more.quietCount = 33
+        model.list = more
+        try await settle()
+        #expect(model.id == "g29")
+        #expect(inSight(), "g29 at offset \(offset)")
+    }
 }
