@@ -112,6 +112,17 @@ pub const Event = enum {
         }
         return null;
     }
+
+    /// The event whose Zig identifier is `text` (`terminal_quiet`), when
+    /// that is not also its wire name. Only for saying what was meant: a
+    /// manifest is never subscribed by this spelling.
+    pub fn parseZigName(text: []const u8) ?Event {
+        inline for (@typeInfo(Event).@"enum".fields) |f| {
+            const e: Event = @enumFromInt(f.value);
+            if (!std.mem.eql(u8, f.name, e.wireName()) and std.mem.eql(u8, f.name, text)) return e;
+        }
+        return null;
+    }
 };
 
 /// What a plugin says it needs.
@@ -939,7 +950,16 @@ fn eventsOf(arena: Allocator, key: []const u8, w: std.json.ObjectMap) []const Ev
     var out: std.ArrayListUnmanaged(Event) = .empty;
     for (names) |name| {
         const e = Event.parse(name) orelse {
-            log.warn(
+            // The Zig spelling is the one mistake worth naming: it is what
+            // the code, `plugin_list`'s neighbours and a checklist written
+            // from the code all show, and it reads as right (#1672).
+            if (Event.parseZigName(name)) |meant| {
+                log.warn(
+                    "plugin {s}: wants.events names {s}, which this build never sends " ++
+                        "-- the event is spelled {s} -- so nothing is subscribed for it",
+                    .{ key, name, meant.wireName() },
+                );
+            } else log.warn(
                 "plugin {s}: wants.events names {s}, which this build never sends, " ++
                     "so nothing is subscribed for it",
                 .{ key, name },
@@ -1731,6 +1751,19 @@ test "an event this build never sends is passed over, not fatal" {
     const m = try load(alloc, io, dir);
     try testing.expectEqual(@as(usize, 1), m.wants.events.len);
     try testing.expect(m.wants.subscribes(.chat));
+}
+
+test "the Zig spelling of an event is named as a mistake, never subscribed" {
+    // #1672: a checklist written from the code said `terminal_quiet`, the
+    // plugin was never started, and the log line did not say why the name
+    // was wrong.
+    try testing.expectEqual(Event.terminal_quiet, Event.parseZigName("terminal_quiet").?);
+    try testing.expect(Event.parse("terminal_quiet") == null);
+
+    // A name that is the same both ways is not a mistake to point at, and a
+    // name that is neither is just unknown.
+    try testing.expect(Event.parseZigName("chat") == null);
+    try testing.expect(Event.parseZigName("weather") == null);
 }
 
 test "a manifest that still carries a kind loads, and kind decides nothing" {

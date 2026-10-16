@@ -921,6 +921,12 @@ const Line = union(enum) {
 /// end we hold is the server end, and `DisconnectNamedPipe` on a server end
 /// is what `shutdown(SHUT_RD)` is on a socket -- our side, sticky, and
 /// deaf to whether a grandchild still holds the writing end. See `hush`.
+///
+/// **Standard output gets the same pair on POSIX** (#1672), for the same
+/// reason said about the other stream: the host blocks reading the
+/// plugin's answer, and a copy of the writing end in somebody else's hands
+/// keeps that read open after the plugin has exited. There the cut is made by
+/// the reaper (`reap.sever`) rather than by `hush`.
 const Stderr = struct {
     /// Ours to read. Closed here, after the drain has stopped.
     ours: std.Io.File,
@@ -944,6 +950,21 @@ const Stderr = struct {
             0,
             &fds,
         ) != 0) return null;
+
+        // Close-on-exec on both, which `socketpair` on macOS cannot be asked
+        // for up front. Without it every child any thread starts while this
+        // pair exists -- the next plugin, a terminal's shell -- inherits a
+        // copy, and a copy of the child's end is exactly the thing that keeps
+        // a read from ever ending. The child still gets its end: `spawn`
+        // `dup2`s it onto 1 or 2, and the copy `dup2` makes is not
+        // close-on-exec.
+        for (fds) |fd| {
+            if (std.c.fcntl(fd, std.c.F.SETFD, @as(c_int, std.c.FD_CLOEXEC)) == -1) {
+                _ = std.c.close(fds[0]);
+                _ = std.c.close(fds[1]);
+                return null;
+            }
+        }
 
         // Blocking, which is what everything downstream assumes: the drain
         // wants to sit in a read until there is something, and the child
@@ -1544,6 +1565,18 @@ fn main(self: *Resident) void {
 
                 const pair: ?Stderr = if (plan == .pair) Stderr.make() else null;
 
+                // **Standard output is a socket on POSIX for the same reason
+                // standard error is**: it is the one end something can
+                // block on for ever, and a socket is what can be cut from
+                // our side (`reap.sever`). A pipe ends a read only when every
+                // copy of its write end is closed, and a plugin that starts
+                // a helper without redirecting it has handed one copy to
+                // somebody we cannot see. Windows keeps the standard
+                // library's pipe: it is a named pipe already, and
+                // `DisconnectNamedPipe` is its cut. If the pair cannot be
+                // made, the pipe is the fallback -- the old behaviour.
+                const out_pair: ?Stderr = if (builtin.os.tag != .windows) Stderr.make() else null;
+
                 // **The one place a plugin's command line is built.**
                 // `Plugin.launchArgv` owns the extension table; nothing here
                 // knows that a `.ps1` needs an interpreter, and nothing else
@@ -1565,6 +1598,9 @@ fn main(self: *Resident) void {
                     break :step .failure;
                 };
 
+                // Held across the whole `spawn`, which is where the child's
+                // inheritable ends exist: see `internal_os.windows.spawn_lock`.
+                internal_os.windows.lockSpawn(io);
                 internal_os.windows.spawnTrace("plugin spawn", .begin, 0);
                 const spawned = std.process.spawn(io, .{
                     .argv = argv,
@@ -1619,7 +1655,7 @@ fn main(self: *Resident) void {
 
                     // The one shape difference from a one-shot plugin: it
                     // answers, so we have to be able to hear it.
-                    .stdout = .pipe,
+                    .stdout = if (out_pair) |p| .{ .file = p.theirs } else .pipe,
 
                     .stderr = switch (plan) {
                         .none => .inherit,
@@ -1628,14 +1664,26 @@ fn main(self: *Resident) void {
                     },
                 });
                 internal_os.windows.spawnTrace("plugin spawn", .end, 0);
+                internal_os.windows.unlockSpawn(io);
+
+                // The child has its own copy now, or never will; ours goes
+                // either way, or the far end would never close.
+                if (out_pair) |p| p.theirs.close(io);
+
                 child = spawned catch |err| {
                     if (pair) |p| {
                         p.ours.close(io);
                         p.theirs.close(io);
                     }
+                    if (out_pair) |p| p.ours.close(io);
                     self.note(.warn, "could not start err={}", .{err});
                     break :step .failure;
                 };
+
+                // Handed to the child struct, so that `collect` closes it
+                // exactly where it closed the pipe, and `wait` finds it
+                // already gone.
+                if (out_pair) |p| child.?.stdout = p.ours;
 
                 // Whichever way it was made, this is our end to read.
                 const mine: ?std.Io.File = switch (plan) {
@@ -1690,7 +1738,16 @@ fn main(self: *Resident) void {
                     .{ self.exec, reap.pidNumber(pid) },
                 );
 
-                self.reaper.rearm(child.?.id, self.timeout_ms);
+                // The ends a fired deadline cuts, as well as killing: the
+                // read below is what never returns when a copy of the far
+                // end lives on in some other process (`reap.Ends`).
+                self.reaper.rearm(child.?.id, self.timeout_ms, .{
+                    .read = if (child.?.stdout) |f| f.handle else null,
+                    .write = if (builtin.os.tag == .windows)
+                        (if (child.?.stdin) |f| f.handle else null)
+                    else
+                        null,
+                });
                 keeper = std.Thread.spawn(.{}, reap.Reaper.run, .{&self.reaper}) catch null;
 
                 // The one place a missing thread is not survivable. An
@@ -3496,6 +3553,83 @@ test "a plugin that will not start is put on the user's screen, once" {
     // two different facts. Everything in between is the first line said
     // again.
     try testing.expectEqual(@as(usize, 2), heard.count());
+}
+
+test "a plugin that exits by itself is said to be not running, even when its answer pipe stays open" {
+    // #1672, measured on Windows: a plugin that wrote to standard error and
+    // exited 1 was never seen to exit. The deadline fired, `TerminateProcess`
+    // on the corpse said `ACCESS_DENIED`, and the resident sat in the read
+    // for its greeting for good -- no retry, no line on the screen. The read
+    // not ending means something else held a copy of the plugin's standard
+    // output; the spawn trace shows three siblings starting in the same 16ms,
+    // which is the explanation that fits, not one that was proven.
+    //
+    // The POSIX shape of the same thing is a plugin that starts a helper
+    // without redirecting it, which is what the script below does: the
+    // `sleep` outlives the plugin holding its standard output. Same read,
+    // same deadline, and a kill that lands on a zombie and changes nothing.
+    // The PowerShell body cannot leave a copy behind that way; on Windows
+    // this covers the ordinary exit, and the checklist covers the leak.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try scratchDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
+
+    var heard: Heard = .{ .alloc = testing.allocator, .io = io };
+    defer heard.deinit();
+
+    const exec = try scriptFor(alloc, io,
+        \\#!/bin/sh
+        \\echo 'plugin says: no configuration' >&2
+        \\sleep 30 &
+        \\exit 1
+    ,
+        \\[Console]::Error.WriteLine('plugin says: no configuration')
+        \\exit 1
+    );
+
+    const env = try fixtureEnviron(testing.allocator);
+
+    const a = try start(testing.allocator, io, .{
+        .key = "exits",
+        .exec = exec,
+        // The deadline is what ends the read; the sleep outlives it by far,
+        // so a green here cannot be the far end closing by itself.
+        .timeout_ms = 500,
+        .wants = .{ .events = &.{.chat}, .groups = &.{"*"} },
+        .params = &.{},
+        .feed = &feed,
+        .environ = env,
+        .alert = heard.hook(),
+        .log_dir = dir,
+        .timing = .{
+            .poll_idle_ms = 10,
+            .heartbeat_ms = 10 * std.time.ms_per_s,
+            .backoff_start_ms = 50,
+            .dormant_retry_ms = 60 * std.time.ms_per_s,
+        },
+    });
+    defer a.destroy();
+
+    const told = struct {
+        fn yet(h: *Heard) bool {
+            return h.heard("not running");
+        }
+    };
+    try testing.expect(waitFor(io, &heard, told.yet, 10 * std.time.ms_per_s));
+    try testing.expect(heard.heard("\"exits\""));
+
+    // What it complained about is where the line says it is.
+    try testing.expect(std.mem.indexOf(u8, logOf(alloc, io, dir, "exits"), "plugin says") != null);
 }
 
 test "a plugin that never fails never says anything" {
