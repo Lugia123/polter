@@ -151,7 +151,12 @@
         "open_tasks": 0
       },
       "record_dir": "/state/chat/web-app",
-      "fix": "none"
+      "fix": "none",
+      "ask": {
+        "seq": 41,
+        "state": "retrying",
+        "code": "DraftInLine"
+      }
     },
     {
       "name": "web-app-docs",
@@ -267,7 +272,8 @@
         "open_tasks": 0
       },
       "record_dir": "/state/chat/web-app-docs",
-      "fix": "none"
+      "fix": "none",
+      "ask": null
     },
     {
       "name": "mobile",
@@ -398,7 +404,8 @@
         "open_tasks": 0
       },
       "record_dir": "/state/chat/mobile",
-      "fix": "none"
+      "fix": "none",
+      "ask": null
     },
     {
       "name": "billing",
@@ -512,7 +519,8 @@
         "open_tasks": 0
       },
       "record_dir": "/state/chat/billing",
-      "fix": "none"
+      "fix": "none",
+      "ask": null
     },
     {
       "name": "docs-site",
@@ -652,7 +660,8 @@
         "open_tasks": 0
       },
       "record_dir": "/state/chat/docs-site",
-      "fix": "offered"
+      "fix": "offered",
+      "ask": null
     },
     {
       "name": "infra",
@@ -766,7 +775,8 @@
         "open_tasks": 0
       },
       "record_dir": "/state/chat/infra",
-      "fix": "none"
+      "fix": "none",
+      "ask": null
     },
     {
       "name": "design-system",
@@ -901,7 +911,8 @@
         "open_tasks": 1
       },
       "record_dir": "/state/chat/design-system",
-      "fix": "none"
+      "fix": "none",
+      "ask": null
     },
     {
       "name": "notes",
@@ -1013,7 +1024,8 @@
         "open_tasks": 0
       },
       "record_dir": "/state/chat/notes",
-      "fix": "none"
+      "fix": "none",
+      "ask": null
     }
   ],
   "archived": [],

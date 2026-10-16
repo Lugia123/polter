@@ -873,4 +873,14 @@ fn main() {
             println!("group_menu_sup row={} sup={}", r.id, rowmenu::sup_of(r).name());
         }
     }
+    // How the last ask of each group's supervisor went, and what a line
+    // waiting on a retry makes of it (task 1671).
+    for r in l.rows() {
+        if r.alone.is_none() {
+            println!("group_ask row={} {}", r.id, polter_control_room::act::follow_ask_line(None, r.ask.as_ref()));
+        }
+    }
+    for (on, said) in polter_control_room::act::follow_ask_cases() {
+        println!("{}", polter_control_room::act::follow_ask_line(on, said.as_ref()));
+    }
 }

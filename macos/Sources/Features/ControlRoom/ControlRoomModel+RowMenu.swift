@@ -28,6 +28,14 @@ enum ControlRoomRowMenuState {
         /// Told apart from a later line on the same row, so that folding
         /// away an old one does not take a new one with it.
         var serial: Int
+        /// A line saying the core will try again: what was asked, and the
+        /// message it is about once a snapshot has said (task 1671).
+        var retry: Retry?
+
+        struct Retry: Equatable {
+            var ask: ControlRoomGroupWords.Ask
+            var on: UInt64?
+        }
     }
 
     /// What the menu does outside the control room. `system` is the real
@@ -234,9 +242,9 @@ extension ControlRoomModel {
     /// Put `text` under `row`. One that says something was done folds away
     /// after `group_note.feedback_seconds`; one that says it was not stays
     /// until the next is put there (design v21 `07`).
-    func say(_ text: String, under row: String, delivered: Bool) {
+    func say(_ text: String, under row: String, delivered: Bool, retry: ControlRoomRowMenuState.RowLine.Retry? = nil) {
         let serial = (rowLines.values.map(\.serial).max() ?? 0) + 1
-        rowLines[row] = .init(text: text, delivered: delivered, serial: serial)
+        rowLines[row] = .init(text: text, delivered: delivered, serial: serial, retry: retry)
         guard delivered else { return }
         effects.after(ControlRoomLook.GroupNote.feedbackSeconds) { [weak self] in
             guard let self, self.rowLines[row]?.serial == serial else { return }
@@ -252,8 +260,31 @@ extension ControlRoomModel {
             try perform(.askSupervisor(group: row.id, ask: ask))
             say(ControlRoomGroupWords.asked(ask), under: row.id, delivered: true)
         } catch {
-            say(ControlRoomGroupWords.notDelivered(ControlRoomGroupWords.askReason(Self.refusal(error).name)),
-                under: row.id, delivered: false)
+            let name = Self.refusal(error).name
+            say(ControlRoomGroupWords.notDelivered(ControlRoomGroupWords.askReason(name)),
+                under: row.id, delivered: false,
+                retry: ControlRoomGroupWords.triedAgain(name) ? .init(ask: ask, on: nil) : nil)
+        }
+    }
+
+    /// A new list may say how an ask being tried again ended (task 1671):
+    /// the line says it went in, and folds away, or says why it was given
+    /// up on. The ask's own answer could only say it would be tried again.
+    func followAsks(in list: ControlRoomList) {
+        for (row, line) in rowLines {
+            guard let retry = line.retry else { continue }
+            let said = list.rows.first { $0.id == row && $0.alone == nil }?.facts?.ask
+            switch ControlRoomRowMenu.followAsk(waitingOn: retry.on, ask: said) {
+            case .keep:
+                break
+            case .wait(let seq):
+                rowLines[row]?.retry?.on = seq
+            case .delivered:
+                say(ControlRoomGroupWords.asked(retry.ask), under: row, delivered: true)
+            case .gaveUp(let code):
+                say(ControlRoomGroupWords.notDelivered(ControlRoomGroupWords.askReason(code, willTryAgain: false)),
+                    under: row, delivered: false)
+            }
         }
     }
 

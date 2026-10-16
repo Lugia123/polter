@@ -126,6 +126,15 @@ pub fn add(
     return delay;
 }
 
+/// Whether the mention kept as `seq` in `group` to `to` is waiting to be
+/// typed again.
+pub fn pending(self: *const MentionRetry, group: []const u8, seq: u64, to: Id) bool {
+    for (self.items.items) |e| {
+        if (e.seq == seq and e.to == to and std.mem.eql(u8, e.group, group)) return true;
+    }
+    return false;
+}
+
 /// The earliest moment anything here is due, or null when nothing is.
 pub fn nextDueMs(self: *const MentionRetry) ?u64 {
     var at: ?u64 = null;

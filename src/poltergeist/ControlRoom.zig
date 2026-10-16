@@ -359,6 +359,7 @@ const ShellSteps = @import("ShellSteps.zig");
 const quota = @import("quota.zig");
 const Tasks = @import("Tasks.zig");
 const ControlFix = @import("ControlFix.zig");
+const ControlAsk = @import("ControlAsk.zig");
 const TakeOver = @import("TakeOver.zig");
 
 pub const Id = Bus.Id;
@@ -682,6 +683,10 @@ pub const Input = struct {
     /// (`ControlFix.Sent`). No default: a caller that forgot it would offer
     /// the button again the moment it was pressed.
     fix_sent: *const ControlFix.Sent,
+    /// How the control room's last ask of each group's supervisor went
+    /// (task 1671). No default: a caller that forgot it would leave a line
+    /// that says "will try again" under a row for ever.
+    asks: *const ControlAsk,
     /// The take-over under way or last stopped (task 1635); null for none.
     /// No default: a caller that forgot it would show a take-over that is
     /// under way as one that can be started.
@@ -1284,6 +1289,10 @@ pub const GroupRow = struct {
     /// The "Fix" button (`ControlFix`): none, offered, or pressed and
     /// standing until the card changes.
     fix: ControlFix.State,
+    /// What became of the control room's last ask of its supervisor (task
+    /// 1671): still being tried, typed in, or given up on, and as which
+    /// message. Null when none was made since the start.
+    ask: ?ControlAsk.Ask,
 };
 
 pub const LoneRow = struct {
@@ -2303,6 +2312,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
                 .delete_cost = cost,
                 .record_dir = record_dir,
                 .fix = fix,
+                .ask = in.asks.of(name),
             },
         });
     }
@@ -2634,6 +2644,7 @@ const World = struct {
     cli_names: []const CliName = &.{.{ .key = "claude-code", .label = "Claude Code" }},
     home: []const u8 = "/Users/me",
     fix_sent: ControlFix.Sent = .{},
+    asks: ControlAsk = .{},
     take_over: ?TakeOverIn = null,
 
     fn init() World {
@@ -2646,6 +2657,7 @@ const World = struct {
 
     fn deinit(self: *World) void {
         self.fix_sent.deinit(testing.allocator);
+        self.asks.deinit(testing.allocator);
         self.open.deinit(testing.allocator);
         self.tasks.deinit();
         self.chat.deinit();
@@ -2732,6 +2744,7 @@ const World = struct {
             .home = self.home,
             .record_root = "/state/chat",
             .fix_sent = &self.fix_sent,
+            .asks = &self.asks,
             .take_over = self.take_over,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
@@ -2845,6 +2858,10 @@ fn fixtureWorld() !World {
         .session = "s-before",
         .heard_ms = 1_699_913_600_000,
     });
+
+    // The control room asked web-app's supervisor for a report, and the
+    // input line had a draft in it: being tried again (task 1671).
+    try w.asks.asked(testing.allocator, "web-app", 41, error.DraftInLine, true);
 
     return w;
 }
@@ -3661,6 +3678,25 @@ test "ControlRoom snapshot: what deleting a group would take is counted for its 
     _ = open;
     const s1 = (try build(arena.allocator(), w.input(fixture_now))).snapshot;
     try testing.expectEqual(row0.delete_cost.open_tasks + 1, (try rowNamed(s1, "billing")).delete_cost.open_tasks);
+}
+
+test "ControlRoom snapshot: an ask being tried again says so, and says when it went in (task 1671)" {
+    var w = try fixtureWorld();
+    defer w.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    _ = try room.refresh(w.input(fixture_now), .event);
+    const rev = room.rev;
+    try testing.expect(std.mem.indexOf(u8, room.json, "\"ask\":{\"seq\":41,\"state\":\"retrying\",\"code\":\"DraftInLine\"}") != null);
+    // Only web-app was asked anything.
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, room.json, "\"ask\":{"));
+
+    // The retry is typed in: a new snapshot says so.
+    try testing.expect(w.asks.settled("web-app", 41, null));
+    _ = try room.refresh(w.input(fixture_now), .event);
+    try testing.expect(room.rev > rev);
+    try testing.expect(std.mem.indexOf(u8, room.json, "\"ask\":{\"seq\":41,\"state\":\"delivered\",\"code\":null}") != null);
 }
 
 test "ControlRoom rev: standing still does not change it" {

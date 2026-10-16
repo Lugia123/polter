@@ -168,6 +168,9 @@ control_room: poltergeistpkg.ControlRoom,
 /// (`ControlFix.Sent`). Not written down: a terminal's id does not outlive
 /// the run, and a failure is the run's.
 control_fix_sent: poltergeistpkg.ControlFix.Sent = .{},
+/// How the control room's last ask of each group's supervisor went, for
+/// the line under its row (task 1671).
+control_asks: poltergeistpkg.ControlAsk = .{},
 
 /// Something happened that the snapshot may not show yet. Read and cleared
 /// by `tick`, which is the one place it is worked out.
@@ -679,6 +682,7 @@ pub fn deinit(self: *App) void {
     self.chat_surfaces.deinit(self.alloc);
     self.control_room.deinit();
     self.control_fix_sent.deinit(self.alloc);
+    self.control_asks.deinit(self.alloc);
     self.control_notify.deinit(self.alloc);
     self.control_sight.deinit(self.alloc);
     if (self.control_home) |h| if (h.len > 0) self.alloc.free(h);
@@ -1037,6 +1041,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .home = self.controlHome(),
         .record_root = if (self.group_log) |*l| l.dir else "",
         .fix_sent = &self.control_fix_sent,
+        .asks = &self.control_asks,
         .take_over = self.takeOverIn(),
         .now_ms = now_ms,
         .wall_ms = @intCast(@max(0, wall_ms)),
@@ -1179,6 +1184,7 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .takeOver = controlActTakeOver,
             .fixCard = controlActFixCard,
             .fixPost = controlActFixPost,
+            .askPost = controlActAskPost,
             .fixSend = controlActFixSend,
             .fixSent = controlActFixSent,
             .voice = .{ .clock = controlFixClock, .tr = controlFixTr },
@@ -1243,6 +1249,30 @@ fn controlActFixPost(
     });
     for (to, 0..) |*t, i| t.err = deliveries[i].err;
     log.info("control room: fix posted in group={s} typed={d}", .{ group, to.len });
+}
+
+/// "Ask the Supervisor…" from a group's menu: `controlActFixPost`'s road,
+/// and the ask kept for the snapshot, so the line under the row can say
+/// what became of a retry (task 1671).
+fn controlActAskPost(
+    ctx: *anyopaque,
+    group: []const u8,
+    text: []const u8,
+    to: []poltergeistpkg.ControlFix.Target,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (to.len != 1) return error.BadRequest;
+    var deliveries = [_]poltergeistpkg.rpc.Delivery{.{ .to = to[0].to }};
+    const posted = try chatPost(ctx, group, poltergeistpkg.Chat.user_id, text, .{
+        .from_title = "you",
+        .to = &deliveries,
+    });
+    to[0].err = deliveries[0].err;
+    const pending = deliveries[0].err != null and self.mention_retries.pending(group, posted.seq, to[0].to);
+    self.control_asks.asked(self.alloc, group, posted.seq, deliveries[0].err, pending) catch |err| {
+        log.warn("control room: ask in group={s} seq={d} not kept err={}", .{ group, posted.seq, err });
+    };
+    log.info("control room: ask posted in group={s} seq={d} pending={}", .{ group, posted.seq, pending });
 }
 
 /// "Fix" on a lone terminal's card: typed into it, by `terminal_send`'s
@@ -1334,6 +1364,7 @@ fn controlActDeleteGroup(ctx: *anyopaque, group: []const u8) anyerror!void {
         .task_group_field => self.tasks.forgetGroup(group),
         .stats_last => if (self.stats_log) |*l| l.dropGroup(group),
         .mention_retries => self.mention_retries.dropGroup(group),
+        .control_asks => self.control_asks.forget(self.alloc, group),
     };
 
     if (self.poltergeist_state_dir) |dir| {
@@ -8385,6 +8416,7 @@ fn chatRename(
         .task_group_field => try self.tasks.renameGroup(group, to),
         .stats_last => if (self.stats_log) |*l| try l.renameGroup(group, to),
         .mention_retries => try self.mention_retries.renameGroup(group, to),
+        .control_asks => try self.control_asks.renameGroup(self.alloc, group, to),
     };
 
     self.reopenStoreHandles();
@@ -9017,6 +9049,8 @@ fn retryMentions(self: *App, now_ms: u64) void {
         else if (poltergeistSend(self, e.to, e.line, true)) |_| {
             self.chat.markTold(e.group, e.to, now_ms);
             log.info("poltergeist: mention delivered on retry group={s} seq={d} to={x}", .{ e.group, e.seq, e.to });
+            // The control room's ask, if it was one, says so (task 1671).
+            if (e.from == poltergeistpkg.Chat.user_id and self.control_asks.settled(e.group, e.seq, null)) self.controlRoomTouch();
             self.mention_retries.free(e);
             continue;
         } else |err| o: {
@@ -9030,6 +9064,7 @@ fn retryMentions(self: *App, now_ms: u64) void {
                 self.noticeRetryIn(delay + chat_notice_retry_margin_ms);
             },
             .gave_up => |code| {
+                if (e.from == poltergeistpkg.Chat.user_id and self.control_asks.settled(e.group, e.seq, code)) self.controlRoomTouch();
                 self.tellMentionGaveUp(e, code);
                 self.mention_retries.free(e);
             },

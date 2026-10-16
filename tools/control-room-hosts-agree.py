@@ -843,6 +843,14 @@ for item in ControlRoomRowMenu.Item.allCases {
 for r in list.rows where r.alone == nil {
     print("group_menu_sup row=\(r.id) sup=\(ControlRoomRowMenu.supervisor(of: r).rawValue)")
 }
+// How the last ask of each group's supervisor went, and what a line
+// waiting on a retry makes of it (task 1671).
+for r in list.rows where r.alone == nil {
+    print("group_ask row=\(r.id) \(ControlRoomRowMenu.followAskLine(waitingOn: nil, ask: r.facts?.ask))")
+}
+for (on, said) in ControlRoomRowMenu.followAskCases {
+    print(ControlRoomRowMenu.followAskLine(waitingOn: on, ask: said))
+}
 '''
 
 

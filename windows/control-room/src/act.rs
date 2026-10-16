@@ -496,6 +496,127 @@ pub fn not_delivered(refusal: &str) -> (&'static str, bool) {
     }
 }
 
+/// What a "not delivered, will try again" line under a row becomes, now
+/// that a snapshot says how the row's last ask went (task 1671). The macOS
+/// host's `ControlRoomRowMenu.followAsk`; `hosts-agree` compares the two.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AskNow {
+    /// Nothing to change.
+    Keep,
+    /// The ask the line is about is this message: wait for its end.
+    Wait(u64),
+    /// It went in: the line says it was asked, and folds away.
+    Delivered,
+    /// It was given up on, for this reason (the core's code).
+    GaveUp(String),
+}
+
+/// `waiting_on` is the message the line already knows it is about; none
+/// until a snapshot has said. The line was put there by the ask's own
+/// reply, so the first ask the core says is being tried again is that one
+/// -- and a later message than the one waited on is a later ask by the
+/// person, which is the line's now. **An earlier one never is**: a snapshot
+/// from before the reply can still be on its way, saying how the ask
+/// before went.
+pub fn follow_ask(waiting_on: Option<u64>, ask: Option<&crate::snapshot::AskState>) -> AskNow {
+    use crate::snapshot::AskStage;
+    let Some(ask) = ask else { return AskNow::Keep };
+    let ours = match waiting_on {
+        None => ask.stage == AskStage::Retrying,
+        Some(seq) => ask.seq >= seq,
+    };
+    if !ours {
+        return AskNow::Keep;
+    }
+    match ask.stage {
+        AskStage::Retrying if waiting_on == Some(ask.seq) => AskNow::Keep,
+        AskStage::Retrying => AskNow::Wait(ask.seq),
+        AskStage::Delivered => AskNow::Delivered,
+        AskStage::GaveUp => AskNow::GaveUp(ask.code.clone().unwrap_or_default()),
+    }
+}
+
+/// The cases `hosts-agree` runs both hosts' `follow_ask` over: what the
+/// line waits on, and what the snapshot says.
+pub fn follow_ask_cases() -> Vec<(Option<u64>, Option<crate::snapshot::AskState>)> {
+    use crate::snapshot::{AskStage::*, AskState};
+    let s = |seq, stage, code: Option<&str>| Some(AskState { seq, stage, code: code.map(str::to_string) });
+    vec![
+        (None, None),
+        (None, s(7, Retrying, Some("DraftInLine"))),
+        (None, s(7, Delivered, None)),
+        (None, s(7, GaveUp, Some("UserPresent"))),
+        (Some(7), None),
+        (Some(7), s(7, Retrying, Some("DraftInLine"))),
+        (Some(7), s(7, Delivered, None)),
+        (Some(7), s(7, GaveUp, Some("UserPresent"))),
+        (Some(7), s(6, Delivered, None)),
+        (Some(7), s(6, Retrying, Some("DraftInLine"))),
+        (Some(7), s(9, Retrying, Some("UserPresent"))),
+        (Some(7), s(9, Delivered, None)),
+    ]
+}
+
+/// One line of `hosts-agree` for a case of `follow_ask`.
+pub fn follow_ask_line(waiting_on: Option<u64>, ask: Option<&crate::snapshot::AskState>) -> String {
+    use crate::snapshot::AskStage;
+    let on = waiting_on.map_or("none".to_string(), |s| s.to_string());
+    let said = match ask {
+        None => "none".to_string(),
+        Some(a) => format!(
+            "{}:{}:{}",
+            a.seq,
+            match a.stage {
+                AskStage::Retrying => "retrying",
+                AskStage::Delivered => "delivered",
+                AskStage::GaveUp => "gave_up",
+            },
+            a.code.as_deref().unwrap_or("-")
+        ),
+    };
+    let now = match follow_ask(waiting_on, ask) {
+        AskNow::Keep => "keep".to_string(),
+        AskNow::Wait(s) => format!("wait {s}"),
+        AskNow::Delivered => "delivered".to_string(),
+        AskNow::GaveUp(c) => format!("gave_up {c}"),
+    };
+    format!("follow_ask on={on} said={said} -> {now}")
+}
+
+#[cfg(test)]
+mod follow_ask_tests {
+    use super::*;
+    use crate::snapshot::{AskStage, AskState};
+
+    fn said(seq: u64, stage: AskStage) -> AskState {
+        AskState { seq, stage, code: (stage != AskStage::Delivered).then(|| "DraftInLine".to_string()) }
+    }
+
+    /// Task 1671 (the test machine, #1666): the retry went in and the line
+    /// said "will try again" forty seconds later. The line learns which ask
+    /// it is about, then that it went in -- or why it was given up on.
+    #[test]
+    fn a_line_waiting_on_a_retry_hears_how_it_ended() {
+        assert_eq!(follow_ask(None, Some(&said(7, AskStage::Retrying))), AskNow::Wait(7));
+        assert_eq!(follow_ask(Some(7), Some(&said(7, AskStage::Retrying))), AskNow::Keep);
+        assert_eq!(follow_ask(Some(7), Some(&said(7, AskStage::Delivered))), AskNow::Delivered);
+        assert_eq!(follow_ask(Some(7), Some(&said(7, AskStage::GaveUp))), AskNow::GaveUp("DraftInLine".into()));
+        // A core that does not say keeps the line as it was.
+        assert_eq!(follow_ask(Some(7), None), AskNow::Keep);
+    }
+
+    /// The ask before this one is never taken for it, whatever it says;
+    /// a later one -- the person asked again -- is.
+    #[test]
+    fn only_this_ask_or_a_later_one_moves_the_line() {
+        assert_eq!(follow_ask(None, Some(&said(6, AskStage::Delivered))), AskNow::Keep);
+        assert_eq!(follow_ask(Some(7), Some(&said(6, AskStage::Delivered))), AskNow::Keep);
+        assert_eq!(follow_ask(Some(7), Some(&said(6, AskStage::Retrying))), AskNow::Keep);
+        assert_eq!(follow_ask(Some(7), Some(&said(9, AskStage::Retrying))), AskNow::Wait(9));
+        assert_eq!(follow_ask(Some(7), Some(&said(9, AskStage::Delivered))), AskNow::Delivered);
+    }
+}
+
 #[cfg(test)]
 mod menu_tests {
     use super::*;

@@ -35,6 +35,12 @@ DISPATCH = [
     "MoveWindow", "UpdateWindow", "SetWindowLongPtrW", "TrackPopupMenu",
     "CallWindowProcW", "RedrawWindow", "SetCapture", "ReleaseCapture",
     "SetMenu", "SetWindowRgn",
+    # **A modal box runs a message loop, and since task 1671 that loop ticks
+    # the core** (`main.rs::modal_tick`): every callback the core makes can
+    # run inside one of these, so a borrow held across one meets them all.
+    # Checked when they were added: no hit.
+    "TaskDialogIndirect", "MessageBoxW", "TrackPopupMenuEx", "GetOpenFileNameW",
+    "GetSaveFileNameW", "DoDragDrop",
     # **Raising a UI Automation event is a dispatching call**, and it is the
     # newest member of this list rather than an odd one out: UIAutomationCore
     # answers by calling straight back into the provider to read properties,

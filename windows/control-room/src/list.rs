@@ -52,6 +52,8 @@ pub struct Row {
     pub delete_cost: Option<crate::snapshot::DeleteCost>,
     pub record_dir: Option<String>,
     pub project_name: Option<String>,
+    /// What became of the control room's last ask (task 1671).
+    pub ask: Option<crate::snapshot::AskState>,
 }
 
 /// What the frame's title says of the terminal in it: that terminal's own
@@ -245,6 +247,7 @@ impl List {
                 delete_cost: g.delete_cost,
                 record_dir: g.record_dir.clone(),
                 project_name: g.project_name.clone(),
+                ask: g.ask.clone(),
                 // Always the supervisor's own terminal, as the core wrote
                 // it. Whether the row is about the supervisor or about one
                 // of its workers is not asked here.
@@ -301,6 +304,7 @@ impl List {
                 delete_cost: None,
                 record_dir: None,
                 project_name: None,
+                ask: None,
             };
             if one.needs_me {
                 waiting.push(row);

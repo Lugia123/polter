@@ -392,6 +392,9 @@ pub const Host = struct {
     /// `ControlFix.Port.post` and `.send`: a group post from the person
     /// naming `to`, typed into each; a line typed into a lone terminal.
     fixPost: *const fn (ctx: *anyopaque, group: []const u8, text: []const u8, to: []ControlFix.Target) anyerror!void,
+    /// `fixPost`, for `ask_supervisor`: the same road, and the ask kept so
+    /// the snapshot can say what became of a retry (task 1671).
+    askPost: *const fn (ctx: *anyopaque, group: []const u8, text: []const u8, to: []ControlFix.Target) anyerror!void,
     fixSend: *const fn (ctx: *anyopaque, id: Id, text: []const u8) anyerror!void,
     /// Remember the press (`ControlFix.Sent`, `ControlFix.stampOf`).
     fixSent: *const fn (ctx: *anyopaque, stamp: u64) anyerror!void,
@@ -713,7 +716,7 @@ pub fn perform(
             var buf: [1024]u8 = undefined;
             const text = std.fmt.bufPrint(&buf, "{s} {s}", .{ ask_tag, host.voice.tr(a.ask.words()) }) catch return error.BadRequest;
             var to = [_]ControlFix.Target{.{ .to = steward }};
-            try host.fixPost(host.ctx, a.group, text, &to);
+            try host.askPost(host.ctx, a.group, text, &to);
             if (to[0].err) |err| return err;
         },
     }
@@ -814,6 +817,7 @@ const Recorder = struct {
             .takeOver = takeOver,
             .fixCard = fixCard,
             .fixPost = fixPost,
+            .askPost = fixPost,
             .fixSend = fixSend,
             .fixSent = fixSent,
             .voice = .{ .clock = clock, .tr = ControlFix.english },

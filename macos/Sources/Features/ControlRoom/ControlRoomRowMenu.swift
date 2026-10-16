@@ -162,3 +162,72 @@ enum ControlRoomRowMenu {
             + "items=\(items.joined(separator: " "))"
     }
 }
+
+// MARK: What became of an ask being tried again (task 1671)
+
+extension ControlRoomRowMenu {
+    /// What a "not delivered, will try again" line under a row becomes, now
+    /// that a snapshot says how the row's last ask went. The Windows host's
+    /// `act::follow_ask`; `hosts-agree` compares the two.
+    enum AskNow: Equatable {
+        /// Nothing to change.
+        case keep
+        /// The ask the line is about is this message: wait for its end.
+        case wait(UInt64)
+        /// It went in: the line says it was asked, and folds away.
+        case delivered
+        /// It was given up on, for this reason (the core's code).
+        case gaveUp(String)
+    }
+
+    /// `waitingOn` is the message the line already knows it is about; nil
+    /// until a snapshot has said. The line was put there by the ask's own
+    /// answer, so the first ask the core says is being tried again is that
+    /// one -- and a later message than the one waited on is a later ask by
+    /// the person, which is the line's now. **An earlier one never is**: a
+    /// snapshot from before the answer can still arrive, saying how the ask
+    /// before went.
+    static func followAsk(waitingOn: UInt64?, ask: ControlRoomList.AskState?) -> AskNow {
+        guard let ask else { return .keep }
+        let ours = waitingOn.map { ask.seq >= $0 } ?? (ask.stage == .retrying)
+        guard ours else { return .keep }
+        switch ask.stage {
+        case .retrying: return waitingOn == ask.seq ? .keep : .wait(ask.seq)
+        case .delivered: return .delivered
+        case .gaveUp: return .gaveUp(ask.code ?? "")
+        }
+    }
+
+    /// The cases `hosts-agree` runs both hosts over (`act::follow_ask_cases`).
+    static let followAskCases: [(UInt64?, ControlRoomList.AskState?)] = {
+        typealias Said = ControlRoomList.AskState
+        return [
+            (nil, nil),
+            (nil, Said(seq: 7, stage: .retrying, code: "DraftInLine")),
+            (nil, Said(seq: 7, stage: .delivered, code: nil)),
+            (nil, Said(seq: 7, stage: .gaveUp, code: "UserPresent")),
+            (7, nil),
+            (7, Said(seq: 7, stage: .retrying, code: "DraftInLine")),
+            (7, Said(seq: 7, stage: .delivered, code: nil)),
+            (7, Said(seq: 7, stage: .gaveUp, code: "UserPresent")),
+            (7, Said(seq: 6, stage: .delivered, code: nil)),
+            (7, Said(seq: 6, stage: .retrying, code: "DraftInLine")),
+            (7, Said(seq: 9, stage: .retrying, code: "UserPresent")),
+            (7, Said(seq: 9, stage: .delivered, code: nil)),
+        ]
+    }()
+
+    /// One line of `hosts-agree` for a case of `followAsk`.
+    static func followAskLine(waitingOn: UInt64?, ask: ControlRoomList.AskState?) -> String {
+        let on = waitingOn.map(String.init) ?? "none"
+        let said = ask.map { "\($0.seq):\($0.stage.rawValue):\($0.code ?? "-")" } ?? "none"
+        let now: String
+        switch followAsk(waitingOn: waitingOn, ask: ask) {
+        case .keep: now = "keep"
+        case .wait(let seq): now = "wait \(seq)"
+        case .delivered: now = "delivered"
+        case .gaveUp(let code): now = "gave_up \(code)"
+        }
+        return "follow_ask on=\(on) said=\(said) -> \(now)"
+    }
+}
