@@ -2818,6 +2818,10 @@ msgstr "没有记录到原因。"
 msgid "Polter could not open its first terminal and will close."
 msgstr "Polter 无法打开第一个终端，即将关闭。"
 
+#: windows/host/src/main.rs:6941
+msgid "Polter already started again with software rendering (GALLIUM_DRIVER=llvmpipe), and that failed as well."
+msgstr "Polter 已经用软件渲染（GALLIUM_DRIVER=llvmpipe）重新启动过一次，仍然失败。"
+
 #: windows/host/src/main.rs:6856
 #, rust-format
 msgid "The full log is at {}"

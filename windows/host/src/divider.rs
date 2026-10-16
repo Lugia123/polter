@@ -7,12 +7,15 @@
 //! capture during a drag. Painting them on the frame would mean re-deriving
 //! all three from rectangles, in a file the tab strip already owns.
 //!
-//! **Why they overlap the panes instead of sitting in a gap.** The tree tiles
-//! its bounds exactly -- `layout` leaves no gutter, and the area-conservation
-//! test says so. Rather than teach the model about a presentation width, the
-//! dividers are siblings drawn *over* the seam. A few pixels of each GL
-//! surface end up underneath, which is what a divider looks like anyway.
-//! **No pixel of this file enters the tree**, the same rule the strip follows.
+//! **Why the tree knows nothing about them.** The tree tiles its bounds
+//! exactly -- `layout` leaves no gutter, and the area-conservation test says
+//! so. The dividers are siblings put *on* the seams, and the panes are moved
+//! off them where the host places the panes: inside their frames when they
+//! wear one, and otherwise by `polter_split_tree::clear_of_dividers` (#58).
+//! They used to lie over the seam, half a divider into each pane, and on the
+//! far side that was further than the padding: the first row or column of
+//! cells lost a pixel of ink. **No pixel of this file enters the tree**, the
+//! same rule the strip follows.
 //!
 //! **Why the pointer is read with `GetCursorPos` and not from `lParam`.**
 //! The packed halves of `lParam` are signed, and a drag that leaves the window
@@ -72,11 +75,12 @@ const THICKNESS: i32 = 6;
 /// **Where the illusion breaks**, knowingly: with a non-default
 /// `unfocused-split-fill` the unfocused side's background is not `background`
 /// (with the default, the dimming layer *is* `background`, so it matches); a
-/// background that is not one flat colour is not matched; and the outer
-/// pixels of the column right at the seam stay covered, as they were under
-/// the old six-pixel bar.
+/// background that is not one flat colour is not matched.
 const LINE: i32 = 1;
+/// The line when `split-divider-color` is not set (#56).
 const COL: u32 = 0x00141312;
+/// The line under the pointer, whatever `split-divider-color` says: the one
+/// sign that the divider can be grabbed.
 const COL_HOT: u32 = 0x00605f5d;
 
 /// One divider window and what it stands for.
@@ -121,7 +125,7 @@ thread_local! {
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 
-fn scaled_thickness(frame: HWND) -> i32 {
+pub(crate) fn scaled_thickness(frame: HWND) -> i32 {
     let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(frame) }.max(96) as i32;
     (THICKNESS * dpi / 96).max(3)
 }
@@ -166,6 +170,31 @@ pub(crate) fn terminal_background() -> Option<COLORREF> {
         (crate::api().config_get)(cfg, &mut c as *mut _ as *mut std::ffi::c_void, key.as_ptr(), key.len())
     };
     ok.then(|| COLORREF(c.r as u32 | (c.g as u32) << 8 | (c.b as u32) << 16))
+}
+
+/// `split-divider-color`, read when a divider is painted so a reloaded
+/// config is followed (#56). `None` when it is not set, or cannot be read.
+fn configured_line_color() -> Option<COLORREF> {
+    let cfg = crate::config_handle();
+    if cfg.is_null() {
+        return None;
+    }
+    let mut c = crate::ffi::ConfigColor::default();
+    let key = "split-divider-color";
+    let ok = unsafe {
+        (crate::api().config_get)(cfg, &mut c as *mut _ as *mut std::ffi::c_void, key.as_ptr(), key.len())
+    };
+    ok.then(|| COLORREF(c.r as u32 | (c.g as u32) << 8 | (c.b as u32) << 16))
+}
+
+/// The line's colour: lit under the pointer, otherwise `split-divider-color`
+/// (#56), otherwise the colour it always was.
+fn line_color(hot: bool, configured: Option<COLORREF>) -> COLORREF {
+    match (hot, configured) {
+        (true, _) => COLORREF(COL_HOT),
+        (false, Some(c)) => c,
+        (false, None) => COLORREF(COL),
+    }
 }
 
 // ------------------------------------------------------------------ setup
@@ -604,7 +633,7 @@ extern "system" fn div_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
                     let mut rc = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rc);
                     let hot = STATE.with(|c| c.borrow().hot) == Some(hwnd);
-                    let line_col = COLORREF(if hot { COL_HOT } else { COL });
+                    let line_col = line_color(hot, configured_line_color());
 
                     // See `LINE`: the whole window is the hit area, only the
                     // middle of it is the line.
@@ -671,6 +700,14 @@ mod tests {
         let at200 = line_rect(r(0, 0, 12, 100), 192);
         assert_eq!(at200.right - at200.left, 2);
         assert_eq!(at200.left, 5);
+    }
+
+    #[test]
+    fn the_line_is_the_configured_colour_unless_the_pointer_is_on_it() {
+        let green = COLORREF(0x0000ff00);
+        assert_eq!(line_color(false, Some(green)), green);
+        assert_eq!(line_color(false, None), COLORREF(COL));
+        assert_eq!(line_color(true, Some(green)), COLORREF(COL_HOT));
     }
 
     #[test]

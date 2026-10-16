@@ -155,6 +155,7 @@ mod wintitle;
 mod search;
 mod shell;
 mod shot;
+mod software_render;
 mod shot_agent;
 mod shots;
 mod shellopen;
@@ -6926,20 +6927,19 @@ fn die() -> ! {
 /// and the log line comes first so the log says a box was shown even if
 /// nobody is there to close it.
 fn first_tab_failed(app: ffi::App) {
-    let reason = unsafe {
-        let p = (api().app_last_error)(app);
-        if p.is_null() {
-            String::new()
-        } else {
-            std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
-        }
-    };
+    let reason = last_error(app);
     let reason = if reason.is_empty() {
         // Said as what it is: the core did not record one, which is itself
         // worth knowing -- not dressed up as a cause.
         i18n::tr("No reason was recorded.").to_string()
     } else {
         reason
+    };
+    // The software-rendering retry says so: the reason below is then
+    // llvmpipe's, and the driver that refused first is in the log (#18).
+    let reason = match software_render::retry_of() {
+        Some(_) => format!("{}\n\n{}", i18n::tr("Polter already started again with software rendering (GALLIUM_DRIVER=llvmpipe), and that failed as well."), reason),
+        None => reason,
     };
     let text = format!(
         "{}\n\n{}\n\n{}",
@@ -6960,6 +6960,19 @@ fn first_tab_failed(app: ffi::App) {
             windows::Win32::UI::WindowsAndMessaging::MB_OK
                 | windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
         );
+    }
+}
+
+/// `ghostty_app_last_error`: why the last surface could not be created, or
+/// "" when the core recorded nothing.
+fn last_error(app: ffi::App) -> String {
+    unsafe {
+        let p = (api().app_last_error)(app);
+        if p.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+        }
     }
 }
 
@@ -7092,7 +7105,12 @@ fn main() {
     // point where this program first looks at its own command line -- so a
     // `+mcp` child deleted the GUI's pinned log before it knew it was a CLI
     // action at all. See `owns_the_log`.
-    if owns_the_log() {
+    // **A software-rendering retry (#18) waits for the process that gave
+    // up, and keeps its log**: the lines saying why it was started are the
+    // ones that process just wrote.
+    let waited = software_render::wait_for_the_one_that_gave_up();
+    software_render::forget_retry_var();
+    if owns_the_log() && waited.is_none() {
         let _ = std::fs::remove_file(log_path());
         // **Before the first line, and before the panic hook.** A mark written
         // later would sit in the middle of the file, where it is not a mark but
@@ -7113,6 +7131,7 @@ fn main() {
         log_path().display()
     );
     logf!("{stdio}");
+    software_render::announce(waited);
     if owns_the_log() {
         start_log_sweep();
     }
@@ -7518,6 +7537,10 @@ fn main() {
 
     // ---- first tab ----
     if !tabs::create_tab(hwnd, app, hinst) {
+        // A driver that refused the OpenGL version may be Mesa's, which has
+        // a software rasteriser: start again with it, once (#18). Returns
+        // only when it did not.
+        software_render::restart_or_return(&last_error(app));
         first_tab_failed(app);
         logf!("FATAL could not create the first tab");
         die();

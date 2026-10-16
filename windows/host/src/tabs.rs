@@ -2146,6 +2146,10 @@ pub fn layout(frame: HWND) {
         Option<HWND>,
     ) = {
         let mut orphans: Vec<PaneId> = Vec::new();
+        // The dividers' width, for the panes to keep clear of (#58). Asked of
+        // the window, not of this lock: it is the number `divider::sync`
+        // places them with.
+        let thickness = crate::divider::scaled_thickness(frame) as f64;
         let Some(mut win) = window(frame) else {
             return;
         };
@@ -2236,7 +2240,7 @@ pub fn layout(frame: HWND) {
                     Some((*id, cell, own(*id), stack))
                 })
                 .collect();
-            let (worked_out, windows) = asked.work_out(&showing, bounds, win.scale.max(0.1));
+            let (worked_out, windows) = asked.work_out(&showing, bounds, win.scale.max(0.1), thickness);
             frames = worked_out;
             for p in term.panes.iter() {
                 let hw = HWND(p.hwnd as *mut c_void);

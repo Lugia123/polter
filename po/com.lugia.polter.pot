@@ -2792,6 +2792,10 @@ msgstr ""
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
+#: windows/host/src/main.rs:6941
+msgid "Polter already started again with software rendering (GALLIUM_DRIVER=llvmpipe), and that failed as well."
+msgstr ""
+
 #: windows/host/src/main.rs:6856
 #, rust-format
 msgid "The full log is at {}"

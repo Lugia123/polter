@@ -176,6 +176,10 @@ pub fn init(hwnd: HWND) Error!Context {
             "driver refused an OpenGL {d}.{d} core profile context",
             .{ required_major, required_minor },
         );
+        // ⚠️ The Windows host starts itself again with Mesa's software
+        // rasteriser when the first tab fails with exactly this error name
+        // (`windows/host/src/software_render.rs`, #18). Renaming it turns
+        // that retry off without a word.
         return error.VersionUnsupported;
     };
     errdefer _ = c.wglDeleteContext(hglrc);
