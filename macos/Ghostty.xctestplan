@@ -20,7 +20,9 @@
         "value" : "\/tmp\/Ghostty\/testing_config.ghostty"
       }
     ],
+    "language" : "en",
     "performanceAntipatternCheckerEnabled" : true,
+    "region" : "US",
     "targetForVariableExpansion" : {
       "containerPath" : "container:Ghostty.xcodeproj",
       "identifier" : "A5B30530299BEAAA0047F10C",

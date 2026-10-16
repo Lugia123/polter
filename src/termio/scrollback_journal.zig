@@ -398,7 +398,38 @@ fn writeWhole(io: std.Io, path: []const u8, bytes: []const u8) !void {
     // cheap where it is paid; appends are not flushed, and a torn tail is
     // cut off by its CRC.
     try atomic.file.sync(io);
-    try atomic.replace(io);
+    try replace(io, &atomic);
+}
+
+/// `atomic.replace`, except that a directory removed while it runs is an
+/// error rather than a crash. macOS's `renameat` answers EINVAL while the
+/// directory it renames in is being deleted, and the standard library calls
+/// that a programmer bug -- a panic in a Debug build. Measured 2026-10-16
+/// (task 1617): a test deleting its project directory under a pane that was
+/// still journalling killed the whole XCTest host this way, and an
+/// 8-second rename-versus-rmtree race gave EINVAL 4102 times. Somebody
+/// deleting a project folder is the same thing.
+fn replace(io: std.Io, atomic: *std.Io.File.Atomic) !void {
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) return atomic.replace(io);
+    if (atomic.file_open) {
+        atomic.file.close(io);
+        atomic.file_open = false;
+    }
+    const tmp = std.fmt.hex(atomic.file_basename_hex);
+    var tmp_buf: [tmp.len + 1]u8 = undefined;
+    const tmp_z = std.fmt.bufPrintZ(&tmp_buf, "{s}", .{&tmp}) catch unreachable;
+    var dest_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dest_z = std.fmt.bufPrintZ(&dest_buf, "{s}", .{atomic.dest_sub_path}) catch return error.NameTooLong;
+    const fd = atomic.dir.handle;
+    while (true) switch (std.posix.errno(std.posix.system.renameat(fd, tmp_z, fd, dest_z))) {
+        .SUCCESS => {
+            atomic.file_exists = false;
+            return;
+        },
+        .INTR => continue,
+        .INVAL, .NOENT => return error.FileNotFound,
+        else => |err| return std.posix.unexpectedErrno(err),
+    };
 }
 
 fn indexOfSerial(live: []const *const PageNode, serial: u64) ?usize {
@@ -1199,4 +1230,42 @@ test "journal: a journal cut short where a v1 snapshot used to be" {
     defer testing.allocator.free(got);
     try testing.expect(std.mem.indexOf(u8, got, "AFTER-V1") != null);
     try testing.expect(std.mem.indexOf(u8, got, "L1000000") == null);
+}
+
+test "journal: a directory deleted while the file is rewritten is an error, not a crash" {
+    // Task 1617: macOS's renameat answers EINVAL while the directory is
+    // being deleted, which the standard library panics on in Debug. Race
+    // whole rewrites against deleting the directory; every outcome has to
+    // come back as a value. Counted so a run where the race never happened
+    // is not read as a pass. Windows and WASI keep `atomic.replace`, and the
+    // directory below is a POSIX path.
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
+    var raw: [6]u8 = undefined;
+    testing.io.random(&raw);
+    var dir_buf: [64]u8 = undefined;
+    const dir = try std.fmt.bufPrint(&dir_buf, "/tmp/polter-journal-gone-{x}", .{&raw});
+    var path_buf: [80]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/0.snap", .{dir});
+    defer std.Io.Dir.cwd().deleteTree(testing.io, dir) catch {};
+
+    const Remover = struct {
+        fn run(d: []const u8, stop: *std.atomic.Value(bool)) void {
+            while (!stop.load(.acquire)) std.Io.Dir.cwd().deleteTree(testing.io, d) catch {};
+        }
+    };
+    var stop: std.atomic.Value(bool) = .init(false);
+    const remover = try std.Thread.spawn(.{}, Remover.run, .{ dir, &stop });
+    defer remover.join();
+    defer stop.store(true, .release);
+
+    var failed: usize = 0;
+    var i: usize = 0;
+    while (i < 20_000) : (i += 1) {
+        writeWhole(testing.io, path, "x" ** 4096) catch {
+            failed += 1;
+            // Enough of the race has happened; the rest would only cost time.
+            if (failed == 500) break;
+        };
+    }
+    try testing.expect(failed > 0);
 }
