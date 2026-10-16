@@ -30,7 +30,49 @@ POLTER_HOST_BIN=codex
 # and `env_vars` with them. A Codex too old for `--json` falls back to the
 # plain form, which is the old behaviour and no worse.
 host_mcp_current() {
-  codex mcp get polter --json 2>/dev/null || codex mcp get polter 2>/dev/null || true
+  rm -f "$POLTER_CODEX_STUCK"
+  _s=0
+  _out=$(codex_call /dev/null mcp get polter --json) || _s=$?
+  if [ "$_s" -eq 124 ]; then return 124; fi
+  if [ "$_s" -ne 0 ]; then
+    _s=0
+    _out=$(codex_call /dev/null mcp get polter) || _s=$?
+    if [ "$_s" -eq 124 ]; then return 124; fi
+  fi
+  printf '%s' "$_out"
+  return 0
+}
+
+# **Every `codex` this file runs is bounded** (task 1667). Signed in to a
+# ChatGPT account in the test session, Codex sat in one of these subcommands
+# for over three minutes, and provisioning sat with it: nothing written,
+# nothing in the log. Inferred, not caught in the act: the subcommands load
+# the same config the TUI does, and the TUI has been seen to wait on the
+# network there ("workspace routing discovery timed out", task 1640).
+#
+# So each call gets `POLTER_CODEX_SECONDS`, its whole process group is stopped
+# when that runs out (`polter_bounded`), the log says which call and that
+# it was stopped, and **nothing more is asked of Codex in this batch** -- a
+# CLI that did not answer one question is not going to answer the next, and
+# four of them in a row would outlast the plugin's own deadline. The SDK
+# then leaves the registration alone, does the rest, and reports `failed`,
+# so Polter offers the whole thing again later.
+POLTER_CODEX_SECONDS=8
+POLTER_CODEX_STUCK="${TMPDIR:-/tmp}/polter-codex-stuck.$$"
+trap 'rm -f "$POLTER_CODEX_STUCK"' EXIT
+
+# `codex_call ERR ARG...`: `codex ARG...`, bounded; ERR as `polter_bounded`'s.
+codex_call() {
+  _err=$1
+  shift
+  if [ -e "$POLTER_CODEX_STUCK" ]; then return 124; fi
+  _status=0
+  polter_bounded "$POLTER_CODEX_SECONDS" "$_err" codex "$@" || _status=$?
+  if [ "$_status" -eq 124 ]; then
+    : >"$POLTER_CODEX_STUCK"
+    say "\`codex $*\` did not answer within ${POLTER_CODEX_SECONDS}s and was stopped; nothing more is asked of codex this time"
+  fi
+  return "$_status"
 }
 
 # **What Codex lets through to the server** (#1645). Codex hands an MCP
@@ -53,6 +95,14 @@ POLTER_CODEX_ENV_VARS='env_vars = ["GHOSTTY_POLTER_SOCKET", "GHOSTTY_POLTER_TOKE
 # the line back out.
 POLTER_CODEX_APPROVE='default_tools_approval_mode = "approve"'
 
+# **Which CLI started the server** (#1667). Codex gives an MCP server nothing
+# that says Codex -- not its name, not its session (measured on 0.163.0) --
+# and a Polter that cannot tell what is running in a terminal cannot take it
+# over (`identify`, plugins/codex/adapter.py). The entry's own `env` is the
+# one thing that does reach the server, so it carries this. Only the name is
+# matched in what `codex mcp get` prints: the plain form hides every value.
+POLTER_CODEX_MARKER=POLTER_AGENT_CLI
+
 codex_want_approve() {
   [ "$(polter_param approve_tools yes)" = yes ]
 }
@@ -72,6 +122,10 @@ codex_polter_table() {
 host_mcp_complete() {
   case "$1" in
     *'"env_vars"'*GHOSTTY_POLTER_SOCKET*GHOSTTY_POLTER_TOKEN*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *"$POLTER_CODEX_MARKER"*) ;;
     *) return 1 ;;
   esac
   approves=no
@@ -129,9 +183,105 @@ host_mcp_register() {
   # `scope` is not passed on: Codex has no user/local split to pass it to.
   # Its user config is the only one `codex mcp add` writes, which is the
   # scope this plugin wants anyway.
-  codex mcp remove polter >/dev/null 2>&1 || true
-  codex mcp add polter --env "$version_key=$version" -- "$exe" +mcp || return 1
+  # Nothing to remove is the common case, and fine; not answering is not.
+  _s=0
+  codex_call /dev/null mcp remove polter >/dev/null || _s=$?
+  if [ "$_s" -eq 124 ]; then return 124; fi
+  codex_call - mcp add polter --env "$version_key=$version" --env "$POLTER_CODEX_MARKER=codex" -- "$exe" +mcp || return $?
   codex_table_apply
+}
+
+# **Keeping a Codex typed by hand out of the shared daemon** (task 1674).
+# Signed in to a ChatGPT account, a hand-started Codex runs its session in one
+# app-server daemon shared by every terminal, and Polter cannot tell which
+# terminal such a session belongs to: its sidecar refuses to act as any
+# (src/cli/mcp.zig, `unclaimed`). `[features] daemon_auto_start = false`
+# (Codex 0.163, a stable feature) keeps it in its own process instead, as
+# `--no-daemon` does for a role launch. It is the person's global Codex
+# setting, so it is a parameter, off unless they turn it on.
+#
+# **Only this one line, and only ours.** It carries a marker comment; turning
+# the parameter off takes out the marked line and nothing else, and a
+# `daemon_auto_start` the person wrote themselves is left as it is, either
+# way, and said in the log.
+POLTER_CODEX_DAEMON_MARK='# set by Polter: hand-started Codex stays out of the shared app-server daemon'
+
+codex_want_no_daemon() {
+  [ "$(polter_param manual_out_of_daemon no)" = yes ]
+}
+
+host_settings_apply() {
+  f=$(codex_config)
+  want=no
+  codex_want_no_daemon && want=yes
+  have=no
+  theirs=no
+  if [ -f "$f" ]; then
+    grep -Fq "$POLTER_CODEX_DAEMON_MARK" "$f" && have=yes
+    grep -v -F "$POLTER_CODEX_DAEMON_MARK" "$f" | grep -Eq '(^|[.[:space:]])daemon_auto_start[[:space:]]*=' && theirs=yes
+  fi
+  [ "$want" = "$have" ] && return 0
+  if [ "$want" = yes ] && [ "$theirs" = yes ]; then
+    say "daemon_auto_start: left alone, $f already sets it"
+    return 0
+  fi
+  if [ "$want" = yes ]; then
+    mkdir -p "$(dirname "$f")" || return 1
+    [ -f "$f" ] || : >"$f" || return 1
+  fi
+  tmp="$f.polter-tmp"
+  cp -p "$f" "$tmp" || return 1
+  # A `[features]` table this made is marked as well, and goes again when
+  # taking the line out leaves it empty; one the person had stays.
+  if ! awk -v want="$want" -v line="daemon_auto_start = false $POLTER_CODEX_DAEMON_MARK" \
+    -v head="[features] $POLTER_CODEX_DAEMON_MARK" -v mark="$POLTER_CODEX_DAEMON_MARK" '
+    function flush() { if (blank) { print ""; blank = 0 } }
+    { lines[++n] = $0 }
+    END {
+      for (i = 1; i <= n; i++) {
+        l = lines[i]
+        # One blank line is held back at a time -- the one right in front of
+        # whatever comes next -- so it can go with a header of ours.
+        if (l == "") { flush(); blank = 1; continue }
+        if (index(l, mark) && l !~ /^[ \t]*\[/) continue
+        if (index(l, mark) && l ~ /^[ \t]*\[/) {
+          # Our own table: kept only if something other than our line is in it.
+          if (want == "yes") { flush(); print l; print line; done = 1; continue }
+          other = 0
+          for (j = i + 1; j <= n && lines[j] !~ /^[ \t]*\[/; j++)
+            if (lines[j] !~ /^[ \t]*(#.*)?$/ && !index(lines[j], mark)) other = 1
+          # Gone with it: the one blank line put in front of it when it was
+          # made (task 1674), so that taking it back gives the file back
+          # byte for byte.
+          if (other) { flush(); print l } else blank = 0
+          continue
+        }
+        if (l ~ /^[ \t]*\[[ \t]*features[ \t]*\][ \t]*(#.*)?$/) {
+          flush()
+          print l
+          if (want == "yes") { print line; done = 1 }
+          continue
+        }
+        flush()
+        print l
+      }
+      flush()
+      if (want == "yes" && !done) { print ""; print head; print line }
+    }
+  ' "$f" >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$f" || return 1
+  wrote=yes
+  # **The person's daemon is not stopped** (task 1674): it may be running
+  # their sessions. The line says when the setting will start to count.
+  if [ "$want" = yes ]; then
+    say "daemon_auto_start: set to false; an app-server daemon already running is not stopped and keeps its sessions, so this takes effect once it has exited (or after signing in again or a restart)"
+  else
+    say "daemon_auto_start: taken back out"
+  fi
+  return 0
 }
 
 # Codex took the Agent Skills standard in January 2026 and looks in the same
@@ -150,4 +300,7 @@ host_rules_file() {
   printf '%s/.codex/AGENTS.md' "$home"
 }
 
-polter_provision_main
+
+# A test that only wants the functions above (`test/codex-adapter/
+# provision-settings.py`) sets this, and nothing is read from stdin.
+[ "${POLTER_PROVISION_FUNCTIONS_ONLY:-}" = 1 ] || polter_provision_main

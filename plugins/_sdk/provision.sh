@@ -108,6 +108,75 @@ fail() {
   return 1
 }
 
+# --- asking a CLI that may not answer ---------------------------------------
+#
+# **A host's own CLI can hang, and a provision that waits on it waits for
+# ever** (task 1667). Codex, signed in to a ChatGPT account, sat inside one of
+# its `codex mcp` subcommands for over three minutes in the test session; the
+# whole batch waited with it, nothing was written, and the log said nothing,
+# because nothing had finished to say anything about.
+#
+# `polter_bounded SECONDS ERR COMMAND [ARG...]` runs it with stdin from
+# `/dev/null` -- this script's stdin is Polter's feed, and is nobody else's to
+# read -- and stops it after SECONDS, **with everything it started**: a CLI
+# installed through npm is a `node` wrapper around the real program, and
+# stopping only the wrapper leaves the real one running (task 1640 measured
+# exactly that). Its stdout comes out on ours; its stderr on ours when ERR is
+# `-`, else into ERR.
+#
+# **Through files, not straight through.** Called as `$(...)`, the command
+# substitution waits until every holder of its pipe has let go; a helper the
+# CLI starts and leaves behind would hold it, and the substitution would wait
+# on that instead.
+#
+# **The tree, not a process group.** `set -m` would give the command a group
+# of its own to signal, and it does at the top level -- but inside two command
+# substitutions (which is where `host_mcp_current` runs) the signal also
+# reached the subshell that was waiting, measured on macOS's `sh`, and the
+# 124 never came back. So the children are found by parent (`pgrep -P`) and
+# stopped deepest first, then the command itself.
+#
+# Exit: the command's own, or 124 when it was stopped -- the number GNU
+# `timeout` uses, which no CLI here gives for anything else.
+polter_kill_tree() {
+  for _pk_child in $(pgrep -P "$2" 2>/dev/null); do
+    polter_kill_tree "$1" "$_pk_child" || :
+  done
+  kill "-$1" "$2" 2>/dev/null || :
+}
+
+polter_bounded() {
+  _pb_limit=$1
+  _pb_err=$2
+  shift 2
+  _pb_dir=$(mktemp -d "${TMPDIR:-/tmp}/polter-bounded.XXXXXX") || return 125
+  "$@" </dev/null >"$_pb_dir/out" 2>"$_pb_dir/err" &
+  _pb_pid=$!
+  # The watcher's own output goes nowhere, for the reason above: it must not
+  # be what a command substitution ends up waiting for.
+  (
+    sleep "$_pb_limit"
+    : >"$_pb_dir/stopped"
+    polter_kill_tree TERM "$_pb_pid"
+    sleep 1
+    if kill -0 "$_pb_pid" 2>/dev/null; then polter_kill_tree KILL "$_pb_pid"; fi
+    :
+  ) </dev/null >/dev/null 2>&1 &
+  _pb_watch=$!
+  # Every status is taken with `||`: the hosts' scripts run under `set -e`,
+  # and inside a command substitution a bare non-zero `wait` ends the
+  # subshell there and then -- which is how the 124 was first lost.
+  _pb_status=0
+  wait "$_pb_pid" || _pb_status=$?
+  [ -e "$_pb_dir/stopped" ] || polter_kill_tree TERM "$_pb_watch"
+  wait "$_pb_watch" 2>/dev/null || :
+  if [ -e "$_pb_dir/stopped" ]; then _pb_status=124; fi
+  cat "$_pb_dir/out"
+  if [ "$_pb_err" = - ]; then cat "$_pb_dir/err" >&2; else cat "$_pb_dir/err" >"$_pb_err"; fi
+  rm -rf "$_pb_dir"
+  return "$_pb_status"
+}
+
 # --- editing a config file, for the hosts with no `mcp add` -----------------
 #
 # **This is the other kind of host, and it is not the same job wearing a
@@ -248,7 +317,19 @@ polter_provision() {
   # is every in-place upgrade. The version marker is what makes "written by a
   # different build" visible, and it is why `host_mcp_register` is handed the
   # key and the value rather than being trusted to invent one.
-  current=$(host_mcp_current)
+  # **124 is "it did not answer"**, not "nothing is registered" (task 1667):
+  # read as empty, a CLI that hung would have been registered over, or
+  # registered into the same hang. The registration is left as it was, the
+  # rest of the job is still done, and the batch says it failed so that
+  # Polter offers it again later. The host's own function says what it was
+  # waiting on (`polter_bounded`).
+  mcp_unanswered=no
+  asked=0
+  current=$(host_mcp_current) || asked=$?
+  if [ "$asked" -eq 124 ]; then
+    mcp_unanswered=yes
+    current=
+  fi
 
   # **Three states, and they were one flag.** `stale=yes` used to mean all
   # three of these at once:
@@ -272,53 +353,56 @@ polter_provision() {
   # laid out. What it can tell is whether the entry that is already there is
   # its own. That is the whole of the distinction, it needs no path
   # patterns, and it is the same answer on every host.
-  registration=other
-  if [ -z "$current" ]; then
-    registration=none
-  else
-    case "$current" in
-      *"$exe"*) registration=mine ;;
+  stale=no
+  if [ "$mcp_unanswered" = no ]; then
+    registration=other
+    if [ -z "$current" ]; then
+      registration=none
+    else
+      case "$current" in
+        *"$exe"*) registration=mine ;;
+      esac
+    fi
+
+    stale=no
+    case "$registration" in
+      none) stale=yes ;;
+      mine)
+        case "$current" in
+          *"$version"*) stale=no ;;
+          *) stale=yes ;;
+        esac
+        # **The version is not all a registration can be missing** (#1645):
+        # an entry this build wrote before it knew to pass Codex its two
+        # variables is this build's, at this version, and useless.
+        if [ "$stale" = no ] && command -v host_mcp_complete >/dev/null 2>&1 &&
+          ! host_mcp_complete "$current"; then
+          stale=yes
+        fi
+        ;;
+      other)
+        # **Refused, and said twice.** Once into this log, because that is
+        # where somebody debugging it will look, and once to the person,
+        # because a refusal nobody is told about is the same silence in the
+        # other direction -- the user would see Polter's tools missing from a
+        # build they are running and have nothing to read.
+        #
+        # ⚠️ What this deliberately does not do is ask whether the registered
+        # command still exists. Telling a moved install from a live one means
+        # parsing a path out of eight different `mcp get` shapes, and a
+        # half-right parse here would take over exactly when it guessed
+        # wrong. So a user who has genuinely moved their install is told to
+        # clear the old entry, which is one command, rather than having this
+        # guess for them.
+        declined=yes
+        say "status=declined step=mcp -- another installation is already registered here"
+        say "registration-kept=$(polter_one_line "$current")"
+        say "registration-refused=$exe ($version_key=$version)"
+        say "refused-by=$exe version=$version"
+        polter_tell "$POLTER_HOST_LABEL is already registered to another Polter installation, so this build left it alone rather than pointing your agents at itself. Its tools will not appear in it. To hand it to this build, remove the existing \`polter\` server from $POLTER_HOST_LABEL and start Polter again."
+        ;;
     esac
   fi
-
-  stale=no
-  case "$registration" in
-    none) stale=yes ;;
-    mine)
-      case "$current" in
-        *"$version"*) stale=no ;;
-        *) stale=yes ;;
-      esac
-      # **The version is not all a registration can be missing** (#1645):
-      # an entry this build wrote before it knew to pass Codex its two
-      # variables is this build's, at this version, and useless.
-      if [ "$stale" = no ] && command -v host_mcp_complete >/dev/null 2>&1 &&
-        ! host_mcp_complete "$current"; then
-        stale=yes
-      fi
-      ;;
-    other)
-      # **Refused, and said twice.** Once into this log, because that is
-      # where somebody debugging it will look, and once to the person,
-      # because a refusal nobody is told about is the same silence in the
-      # other direction -- the user would see Polter's tools missing from a
-      # build they are running and have nothing to read.
-      #
-      # ⚠️ What this deliberately does not do is ask whether the registered
-      # command still exists. Telling a moved install from a live one means
-      # parsing a path out of eight different `mcp get` shapes, and a
-      # half-right parse here would take over exactly when it guessed
-      # wrong. So a user who has genuinely moved their install is told to
-      # clear the old entry, which is one command, rather than having this
-      # guess for them.
-      declined=yes
-      say "status=declined step=mcp -- another installation is already registered here"
-      say "registration-kept=$(polter_one_line "$current")"
-      say "registration-refused=$exe ($version_key=$version)"
-      say "refused-by=$exe version=$version"
-      polter_tell "$POLTER_HOST_LABEL is already registered to another Polter installation, so this build left it alone rather than pointing your agents at itself. Its tools will not appear in it. To hand it to this build, remove the existing \`polter\` server from $POLTER_HOST_LABEL and start Polter again."
-      ;;
-  esac
 
   if [ "$stale" = yes ]; then
     # Said before the write, not after: these three are the whole of what
@@ -334,11 +418,16 @@ polter_provision() {
     # "your opencode.json has a syntax error on line 12". Swallowing both
     # streams threw that away, which was found the first time this file
     # refused a broken config and said nothing about why.
-    if ! host_mcp_register "$version" "$version_key" "$exe" "$scope" >/dev/null; then
+    registered=0
+    host_mcp_register "$version" "$version_key" "$exe" "$scope" >/dev/null || registered=$?
+    if [ "$registered" -eq 124 ]; then
+      mcp_unanswered=yes
+    elif [ "$registered" -ne 0 ]; then
       fail mcp "could not register the MCP server"
       return 1
+    else
+      wrote=yes
     fi
-    wrote=yes
   fi
 
   # --- the rules block ------------------------------------------------------
@@ -362,7 +451,17 @@ polter_provision() {
     return 1
   fi
 
-  [ "$want_skills" = yes ] || { polter_provision_done; return 0; }
+  # **A host's own settings, when it has any to keep** (task 1674). Optional:
+  # a host that defines no `host_settings_apply` has none, and nothing here
+  # runs. It sets `wrote=yes` itself when it changed something.
+  if command -v host_settings_apply >/dev/null 2>&1; then
+    if ! host_settings_apply; then
+      fail settings "could not apply its settings"
+      return 1
+    fi
+  fi
+
+  [ "$want_skills" = yes ] || { polter_provision_done; return $?; }
 
   skills_dir=$(host_skills_dir)
   if [ -z "$skills_dir" ]; then
@@ -373,7 +472,7 @@ polter_provision() {
     # them per launch. It surfaces only alongside a write that happened.
     note=" skills=unsupported -- MCP only; the tool map in \`initialize\` and \`skill_read\` cover it"
     polter_provision_done
-    return 0
+    return $?
   fi
 
   # --- the skills -----------------------------------------------------------
@@ -388,7 +487,7 @@ polter_provision() {
   # `/polter-supervising` says where it came from.
 
   skills=$(printf '%s' "$line" | sed -n 's/.*"skills":\[\([^]]*\)\].*/\1/p')
-  [ -n "$skills" ] || { polter_provision_done; return 0; }
+  [ -n "$skills" ] || { polter_provision_done; return $?; }
 
   status=0
 
@@ -502,7 +601,7 @@ polter_provision() {
   shipped=$(printf '%s\n' "$skills" | sed 's/},{/}\
   {/g' | sed -n 's/.*"name":"\([^"]*\)".*/polter-\1/p')
 
-  [ -n "$shipped" ] || { polter_provision_done; return 0; }
+  [ -n "$shipped" ] || { polter_provision_done; return $?; }
 
   for dir in "$skills_dir"/polter-*; do
     [ -d "$dir" ] || continue
@@ -536,7 +635,7 @@ polter_provision() {
   done
 
   polter_provision_done
-  return 0
+  return $?
 }
 
 # One line per launch, always, and it used to be one line only when something
@@ -556,6 +655,11 @@ polter_provision() {
 # the log actually has. Eight cheap lines that answer it beat eight absences
 # that do not.
 polter_provision_done() {
+  if [ "${mcp_unanswered:-no}" = yes ]; then
+    say "status=failed step=mcp -- $POLTER_HOST_BIN did not answer in time, so the MCP registration was neither read nor written; the rest was done${note:-}"
+    polter_tell "$POLTER_HOST_LABEL did not answer in time when Polter went to register itself, so its tools may not appear in it yet. Polter will try again."
+    return 1
+  fi
   if [ "$wrote" = yes ]; then
     say "status=provisioned${note:-}"
   elif [ "${declined:-no}" = yes ]; then

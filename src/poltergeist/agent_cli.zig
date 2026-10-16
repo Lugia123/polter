@@ -627,6 +627,11 @@ pub const Sighting = struct {
     /// The sidecar's parent: the agent CLI, when the CLI started it
     /// directly. Null where it is not read (Windows, today).
     pid: ?u64,
+    /// The sidecar's own pid, when it said (task 1667). When it started is
+    /// when the CLI's session started Polter's server, which is what tells
+    /// two sessions in one directory apart (`plugins/codex/adapter.py`,
+    /// `by_directory`). Null where it is not said.
+    sidecar: ?u64 = null,
     /// Name and value, for the names some adapter declared in
     /// `identify_env` and nothing else. See `Plugin.AgentCli.identify_env`.
     env: []const [2][]const u8,
@@ -667,6 +672,8 @@ pub fn writeIdentifyRequest(
     try writeOptional(w, home);
     try w.writeAll(",\"pid\":");
     if (sighting.pid) |p| try w.print("{d}", .{p}) else try w.writeAll("null");
+    try w.writeAll(",\"sidecar_pid\":");
+    if (sighting.sidecar) |p| try w.print("{d}", .{p}) else try w.writeAll("null");
     try w.writeAll(",\"env\":{");
     var first = true;
     for (adapter.identify_env) |name| {
@@ -1803,7 +1810,7 @@ test "agent_cli identify: an adapter is shown only the variables it declared, an
     var w: std.Io.Writer.Allocating = .init(aa);
     try writeIdentifyRequest(&w.writer, claude, sighting, "/w", "/h");
     try testing.expectEqualStrings(
-        \\{"version":1,"cwd":"/w","home":"/h","pid":4242,"env":{"CLAUDECODE":"1","CLAUDE_CODE_SESSION_ID":"0b1d1c35-5e33-4b5e-9f8c-1a2b3c4d5e6f"}}
+        \\{"version":1,"cwd":"/w","home":"/h","pid":4242,"sidecar_pid":null,"env":{"CLAUDECODE":"1","CLAUDE_CODE_SESSION_ID":"0b1d1c35-5e33-4b5e-9f8c-1a2b3c4d5e6f"}}
     , w.written());
 
     try testing.expect(couldRecognise(claude, sighting));
@@ -1917,4 +1924,661 @@ test "agent_cli names: what each CLI is called is read out of what a read leaves
     try std.testing.expectEqualStrings("", read[1].label);
     try std.testing.expectEqual(@as(usize, 0), (try Cache.namesIn(a, "[]")).len);
     try std.testing.expectEqual(@as(usize, 0), (try Cache.namesIn(a, "not json")).len);
+}
+
+// -- the Codex adapter (task 1667) -------------------------------------------
+//
+// The shipped `plugins/codex/adapter.py`, run the way `+launch` and
+// `Identities` run it, against a made-up home. Every `-c` it is held to here
+// was first measured against a real codex 0.163 (the file's header says
+// how); these keep the file saying what was measured.
+
+const codex_session = "01a14638-8e88-7993-b863-bd9d4c1a0ba8";
+
+const CodexRig = struct {
+    root: []const u8,
+    home: []const u8,
+    project: []const u8,
+    rollout: []const u8,
+    adapter: Adapter,
+};
+
+fn codexRig(aa: Allocator, io: std.Io) !CodexRig {
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const root = try std.fmt.allocPrint(aa, "/tmp/polter-codex-{x}", .{&raw});
+    const cwd = std.Io.Dir.cwd();
+    const files = [_][2][]const u8{
+        .{
+            "home/.codex/config.toml",
+            \\model = "gpt-5.6-luna"
+            \\developer_instructions = "mine"
+            \\
+            \\[mcp_servers.polter]
+            \\command = "/Applications/Polter.app/Contents/MacOS/polter"
+            \\args = ["+mcp"]
+            \\
+            \\[mcp_servers.polter.env]
+            \\POLTER_AGENT_CLI = "codex"
+            \\
+            \\[mcp_servers.pencil]
+            \\command = "/opt/pencil/bin/pencil-mcp"
+            \\args = ["--api-key", "hunter2"]
+            \\
+            \\[mcp_servers.docs]
+            \\url = "https://user:pw@docs.example.com/mcp"
+            \\
+            \\[mcp_servers.gone]
+            \\command = "/bin/gone"
+            \\enabled = false
+            \\
+        },
+        // The person's: in Codex's own directory, in the Agent Skills one,
+        // and what Codex ships with.
+        .{ "home/.codex/skills/pdf/SKILL.md", "---\nname: pdf\ndescription: Mine.\n---\n" },
+        .{ "home/.agents/skills/writer/SKILL.md", "---\nname: writer\ndescription: Write.\n---\n" },
+        .{ "home/.codex/skills/.system/imagegen/SKILL.md", "---\nname: imagegen\ndescription: Images.\n---\n" },
+        // The project's, in both places Codex reads a project's from: one of
+        // its own, and one with the person's `pdf`'s name.
+        .{ "project/.agents/skills/提交/SKILL.md", "---\nname: 提交\ndescription: Commit.\n---\n" },
+        .{ "project/.codex/skills/pdf/SKILL.md", "---\nname: pdf\ndescription: Ours.\n---\n" },
+        .{ "home/.codex/sessions/2026/10/17/rollout-2026-10-17T01-00-00-" ++ codex_session ++ ".jsonl", "" },
+    };
+    for (files) |f| {
+        const path = try std.fmt.allocPrint(aa, "{s}/{s}", .{ root, f[0] });
+        try cwd.createDirPath(io, std.fs.path.dirname(path).?);
+        var file = try cwd.createFile(io, path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, f[1]);
+    }
+    // The rollout's first line, as Codex writes it: which directory the
+    // session is in is what `identify` matches when no process names it.
+    {
+        const path = try std.fmt.allocPrint(aa, "{s}/{s}", .{ root, files[files.len - 1][0] });
+        var f = try cwd.createFile(io, path, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, try std.fmt.allocPrint(aa,
+            \\{{"type":"session_meta","payload":{{"session_id":"{s}","cwd":"{s}/project","originator":"codex-tui"}}}}
+            \\
+        , .{ codex_session, root }));
+    }
+    const exec = try std.fmt.allocPrint(aa, "{s}/adapter.py", .{root});
+    {
+        var f = try cwd.createFile(io, exec, .{ .permissions = .fromMode(0o755) });
+        defer f.close(io);
+        try f.writeStreamingAll(io, @embedFile("plugin_codex_adapter_py"));
+    }
+    return .{
+        .root = root,
+        .home = try std.fmt.allocPrint(aa, "{s}/home", .{root}),
+        .project = try std.fmt.allocPrint(aa, "{s}/project", .{root}),
+        .rollout = try std.fmt.allocPrint(aa, "{s}/{s}", .{ root, files[files.len - 1][0] }),
+        .adapter = .{
+            .key = "codex",
+            .label = "Codex",
+            .bin = "codex",
+            .adapter = exec,
+            .identify_env = &.{ "POLTER_AGENT_CLI", "POLTER_REGISTERED" },
+        },
+    };
+}
+
+/// This process's environment without `CODEX_HOME`, which would point the
+/// adapter away from the made-up home.
+fn codexEnv() !std.process.Environ.Map {
+    var env = try global.environMap();
+    _ = env.swapRemove("CODEX_HOME");
+    return env;
+}
+
+/// The adapter's answer, or a skip when this machine cannot run Python.
+fn askCodex(aa: Allocator, io: std.Io, rig: CodexRig, question: Question, request: []const u8) ![]const u8 {
+    var env = try codexEnv();
+    defer env.deinit();
+    return switch (try ask(aa, io, &env, rig.adapter, question, request)) {
+        .ok => |j| j,
+        .failed => |why| {
+            if (std.mem.indexOf(u8, why, "could not be run") != null) return error.SkipZigTest;
+            std.debug.print("adapter failed: {s}\n", .{why});
+            return error.TestUnexpectedResult;
+        },
+    };
+}
+
+fn codexLaunch(aa: Allocator, io: std.Io, rig: CodexRig, p: persona.Persona, choice: persona.CliChoice, session: ?[]const u8) !Launch {
+    var req: std.Io.Writer.Allocating = .init(aa);
+    try writeLaunchRequest(&req.writer, p, choice, rig.project, rig.home, null, session);
+    return try parseLaunch(aa, try askCodex(aa, io, rig, .launch, req.written()));
+}
+
+test "codex adapter: what a role can pick from, with nothing secret and nothing switched off already (task 1667)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const rig = try codexRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    const req = try std.fmt.allocPrint(aa, "{{\"version\":1,\"cwd\":\"{s}\",\"home\":\"{s}\"}}", .{ rig.project, rig.home });
+    const inv = try askCodex(aa, io, rig, .inventory, req);
+
+    // The key passed as an argument and the password in a URL never leave,
+    // and neither does where anything lives.
+    try testing.expect(std.mem.indexOf(u8, inv, "hunter2") == null);
+    try testing.expect(std.mem.indexOf(u8, inv, "user:pw") == null);
+    try testing.expect(std.mem.indexOf(u8, inv, rig.root) == null);
+
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, inv, .{});
+    try testing.expect(v.object.get("resume").?.bool);
+    var ids: std.StringHashMapUnmanaged(std.json.ObjectMap) = .empty;
+    for (v.object.get("items").?.array.items) |item| try ids.put(aa, item.object.get("id").?.string, item.object);
+    const want = [_][]const u8{
+        "skill:pdf",  "skill:writer", "skill:imagegen",
+        "skill:提交",
+        "mcp:polter", "mcp:pencil",   "mcp:docs",
+    };
+    for (want) |id| if (!ids.contains(id)) {
+        std.debug.print("missing {s} in {s}\n", .{ id, inv });
+        return error.TestUnexpectedResult;
+    };
+    // `gone` is switched off in the person's own config: nothing to decide.
+    try testing.expectEqual(@as(usize, want.len), ids.count());
+    try testing.expect(ids.get("mcp:polter").?.get("locked").?.bool);
+    try testing.expectEqualStrings("stdio · pencil-mcp", ids.get("mcp:pencil").?.get("detail").?.string);
+    try testing.expectEqualStrings("http · docs.example.com", ids.get("mcp:docs").?.get("detail").?.string);
+    // One name, the person's and the project's: the project's row.
+    try testing.expectEqualStrings("project", ids.get("skill:pdf").?.get("source").?.string);
+    try testing.expectEqualStrings("codex", ids.get("skill:imagegen").?.get("source").?.string);
+}
+
+test "codex adapter: a role is the -c overrides Codex was measured to take, and never the project's (task 1667)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const rig = try codexRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    // A supervisor's shape, keeping one skill, taking one server and trying
+    // to take Polter's.
+    const p: persona.Persona = .{ .key = "r", .name = "r", .instructions = "say \"hi\"\nthen stop\x7f" };
+    const choice: persona.CliChoice = .{
+        .cli = "codex",
+        .skills = .{ .default = false, .except = &.{"skill:writer"} },
+        .mcp = .{ .except = &.{ "mcp:pencil", "mcp:polter" } },
+        .model = "gpt-5.6-luna",
+    };
+    const l = try codexLaunch(aa, io, rig, p, choice, null);
+    const argv = try std.mem.join(aa, "\x00", l.argv);
+
+    try testing.expectEqualStrings("codex", l.argv[0]);
+    try testing.expectEqualStrings("--no-daemon", l.argv[1]);
+    // Exactly one skill goes, by its file: what Codex ships with. The
+    // person's `pdf` shares its name with the project's, so in this
+    // directory it is the project's and stays; `writer` was kept; `提交`
+    // is the project's.
+    const skills = try std.fmt.allocPrint(aa, "\x00-c\x00skills.config=[{{path=\"{s}/.codex/skills/.system/imagegen/SKILL.md\",enabled=false}}]\x00", .{rig.home});
+    const one_skill_off = std.mem.indexOf(u8, argv, skills) != null;
+    try testing.expect(one_skill_off);
+    const project_kept = std.mem.indexOf(u8, argv, "/project/") == null;
+    try testing.expect(project_kept);
+    // A server is not started at all; Polter's is never the role's to take.
+    const pencil_off = std.mem.indexOf(u8, argv, "\x00-c\x00mcp_servers.pencil.enabled=false") != null;
+    try testing.expect(pencil_off);
+    const polter_kept = std.mem.indexOf(u8, argv, "mcp_servers.polter") == null;
+    try testing.expect(polter_kept);
+    const docs_kept = std.mem.indexOf(u8, argv, "mcp_servers.docs") == null;
+    try testing.expect(docs_kept);
+    // The instructions as one TOML basic string: quotes and newlines
+    // escaped as JSON does, and DEL, which TOML wants escaped and JSON
+    // leaves alone.
+    const instructions = std.mem.indexOf(u8, argv, "\x00-c\x00developer_instructions=\"say \\\"hi\\\"\\nthen stop\\u007f\"") != null;
+    try testing.expect(instructions);
+    const model = std.mem.indexOf(u8, argv, "\x00-m\x00gpt-5.6-luna") != null;
+    try testing.expect(model);
+    // The person's own `developer_instructions` is stood in for, and said.
+    const said = std.mem.indexOf(u8, try std.mem.join(aa, "\n", l.notes), "developer_instructions in config.toml") != null;
+    try testing.expect(said);
+    const fresh = std.mem.indexOf(u8, argv, "resume") == null;
+    try testing.expect(fresh);
+}
+
+test "codex adapter: a session is gone on with only when its rollout is on this machine (task 1667)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const rig = try codexRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    const p: persona.Persona = .{ .key = "r", .name = "r" };
+    const choice: persona.CliChoice = .{ .cli = "codex", .model = "m" };
+
+    // Here: `codex resume <id>`, and the options after it -- `resume` takes
+    // every option the bare command does.
+    const here = try codexLaunch(aa, io, rig, p, choice, codex_session);
+    try testing.expect(here.argv.len >= 5);
+    try testing.expectEqualStrings("resume", here.argv[1]);
+    try testing.expectEqualStrings(codex_session, here.argv[2]);
+    // Never in the shared app-server daemon, resumed or new (task 1667).
+    try testing.expectEqualStrings("--no-daemon", here.argv[3]);
+    try testing.expectEqualStrings("-m", here.argv[4]);
+
+    // Not here, or not a session id at all (a word would be a session
+    // *name* to Codex): a new session, and a note that says why.
+    const cases = [_][]const u8{ "99999999-1111-4222-8333-444455556666", "latest" };
+    for (cases) |s| {
+        const l = try codexLaunch(aa, io, rig, p, choice, s);
+        const argv = try std.mem.join(aa, "\x00", l.argv);
+        const resumed = std.mem.indexOf(u8, argv, "resume") != null;
+        try testing.expect(!resumed);
+        const noted = std.mem.indexOf(u8, try std.mem.join(aa, "\n", l.notes), "starting a new session") != null;
+        try testing.expect(noted);
+    }
+
+    // A role that already chose keeps its choice.
+    var own = choice;
+    own.args = &.{ "resume", "--last" };
+    const l = try codexLaunch(aa, io, rig, p, own, codex_session);
+    const argv = try std.mem.join(aa, "\x00", l.argv);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, argv, "resume"));
+    try testing.expect(std.mem.indexOf(u8, argv, codex_session) == null);
+}
+
+test "codex adapter: identify knows Codex by the provision's marker or by its process, and quits only at rest (task 1667)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const rig = try codexRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    const asked = struct {
+        fn f(a: Allocator, i: std.Io, r: CodexRig, sighting: Sighting) !Identified {
+            var req: std.Io.Writer.Allocating = .init(a);
+            try writeIdentifyRequest(&req.writer, r.adapter, sighting, null, r.home);
+            return try parseIdentify(a, try askCodex(a, i, r, .identify, req.written()));
+        }
+    }.f;
+
+    // The marker alone (Windows, where there is no pid): Codex, with no
+    // session to name rather than a guessed one.
+    const marked = try asked(aa, io, rig, .{ .pid = null, .env = &.{.{ "POLTER_AGENT_CLI", "codex" }} });
+    try testing.expect(marked.me);
+    try testing.expect(marked.session == null);
+    const quit = marked.quit orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("/exit", quit.text);
+
+    // Only the version marker every host's entry carries, and a parent that
+    // is not Codex (this test): not Codex.
+    const other = try asked(aa, io, rig, .{ .pid = @intCast(std.c.getpid()), .env = &.{.{ "POLTER_REGISTERED", "1.2.3" }} });
+    try testing.expect(!other.me);
+
+    // The screens, as read off real Codex 0.163 terminals (tasks 1640, 1656).
+    const TakeOver = @import("TakeOver.zig");
+    const idle =
+        \\  /review - review any changes and find issues
+        \\
+        \\› Ask Codex to do anything
+        \\
+        \\  GPT-5.6-Luna low · /Users/Shared/polter-test/out/t1640-w
+        \\  ? for shortcuts                                    ⚠ 1 warning · f2 to view
+        \\
+    ;
+    try testing.expect(TakeOver.ready(idle, quit));
+    const turn =
+        \\• Working (7s • esc to interrupt)
+        \\
+        \\› Ask Codex to do anything
+        \\
+        \\  ? for shortcuts
+    ;
+    try testing.expect(!TakeOver.ready(turn, quit));
+    const approval =
+        \\• Calling polter.me
+        \\  Allow the polter MCP server to run tool "me"?
+        \\  › 1. Allow                   Run the tool and continue
+        \\  enter to submit | esc to cancel
+    ;
+    try testing.expect(!TakeOver.ready(approval, quit));
+    const draft =
+        \\› fix the failing test
+        \\
+        \\  ? for shortcuts
+    ;
+    try testing.expect(!TakeOver.ready(draft, quit));
+}
+
+test "codex adapter: identify names the session whose rollout the Codex process holds open (task 1667)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const rig = try codexRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    // A stand-in for the native Codex: a program called `codex` that holds
+    // a rollout open, as the real one was measured to (lsof, codex 0.163).
+    // It is `/bin/sh` under that name, so the process's executable is what
+    // the adapter reads, not a script's interpreter.
+    const cwd = std.Io.Dir.cwd();
+    const bin = try std.fmt.allocPrint(aa, "{s}/bin/codex", .{rig.root});
+    try cwd.createDirPath(io, std.fs.path.dirname(bin).?);
+    {
+        const sh = cwd.readFileAlloc(io, "/bin/sh", aa, .limited(16 * 1024 * 1024)) catch return error.SkipZigTest;
+        var f = try cwd.createFile(io, bin, .{ .permissions = .fromMode(0o755) });
+        defer f.close(io);
+        try f.writeStreamingAll(io, sh);
+    }
+    const script = try std.fmt.allocPrint(aa, "exec 3>>'{s}'; sleep 30", .{rig.rollout});
+    var child = std.process.spawn(io, .{
+        .argv = &.{ bin, "-c", script },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    defer {
+        child.kill(io);
+    }
+    const pid: u64 = @intCast(child.id.?);
+
+    var req: std.Io.Writer.Allocating = .init(aa);
+    // Nothing in the environment: an entry written before the marker. The
+    // process is what says Codex.
+    try writeIdentifyRequest(&req.writer, rig.adapter, .{ .pid = pid, .env = &.{.{ "POLTER_REGISTERED", "1.2.3" }} }, null, rig.home);
+    var found: Identified = .no;
+    for (0..40) |_| {
+        found = try parseIdentify(aa, try askCodex(aa, io, rig, .identify, req.written()));
+        if (found.session != null) break;
+        try io.sleep(.fromMilliseconds(50), .awake);
+    }
+    try testing.expect(found.me);
+    try testing.expectEqualStrings(codex_session, found.session orelse "(none)");
+    try testing.expect(found.session_written_ms != null);
+}
+
+test "codex adapter: a session no process holds open is named by its directory, and not when two are at work there (task 1667)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const rig = try codexRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    // Codex in its app-server daemon: nothing names the session but the
+    // marker and the terminal's directory. No pid, as on Windows.
+    const sighting: Sighting = .{ .pid = null, .env = &.{.{ "POLTER_AGENT_CLI", "codex" }} };
+    var req: std.Io.Writer.Allocating = .init(aa);
+    try writeIdentifyRequest(&req.writer, rig.adapter, sighting, rig.project, rig.home);
+    const one = try parseIdentify(aa, try askCodex(aa, io, rig, .identify, req.written()));
+    try testing.expect(one.me);
+    try testing.expectEqualStrings(codex_session, one.session orelse "(none)");
+    try testing.expect(one.session_written_ms != null);
+
+    // Another directory has none of it.
+    var elsewhere: std.Io.Writer.Allocating = .init(aa);
+    try writeIdentifyRequest(&elsewhere.writer, rig.adapter, sighting, rig.home, rig.home);
+    const none = try parseIdentify(aa, try askCodex(aa, io, rig, .identify, elsewhere.written()));
+    try testing.expect(none.session == null);
+
+    // A second session at work in the same directory, written just now as
+    // well: which one this terminal has is not known, and it is not guessed.
+    const second = try std.fmt.allocPrint(aa, "{s}/home/.codex/sessions/2026/10/17/rollout-2026-10-17T02-00-00-01a1468a-e0d0-7471-be34-4b7c25283f13.jsonl", .{rig.root});
+    {
+        var f = try std.Io.Dir.cwd().createFile(io, second, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, try std.fmt.allocPrint(aa,
+            \\{{"type":"session_meta","payload":{{"session_id":"01a1468a-e0d0-7471-be34-4b7c25283f13","cwd":"{s}","originator":"codex-tui"}}}}
+            \\
+        , .{rig.project}));
+    }
+    const two = try parseIdentify(aa, try askCodex(aa, io, rig, .identify, req.written()));
+    try testing.expect(two.me);
+    const unsure = two.session == null;
+    try testing.expect(unsure);
+}
+
+/// A UUIDv7 whose time is `ms`, as Codex's session ids are.
+fn v7(aa: Allocator, ms: u64, tail: u32) ![]const u8 {
+    const hex = try std.fmt.allocPrint(aa, "{x:0>12}", .{ms});
+    return std.fmt.allocPrint(aa, "{s}-{s}-7000-8000-{x:0>12}", .{ hex[0..8], hex[8..12], tail });
+}
+
+test "codex adapter: two Codex in one directory are told apart by when each started, and not guessed (task 1667)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const rig = try codexRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+    const cwd = std.Io.Dir.cwd();
+    const day = try std.fmt.allocPrint(aa, "{s}/home/.codex/sessions/2026/10/18", .{rig.root});
+    try cwd.createDirPath(io, day);
+
+    // The sidecar of the Codex being asked about: started now.
+    var sidecar = std.process.spawn(io, .{
+        .argv = &.{ "/bin/sh", "-c", "sleep 30" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    defer sidecar.kill(io);
+    const now_ms: u64 = @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms));
+
+    // Measured in the test session: a role's Codex and one started by hand,
+    // both in `/`, both written in the same minute. The hand-started one's
+    // session started with its sidecar; the other five minutes before.
+    const mine = try v7(aa, now_ms, 1);
+    const other = try v7(aa, now_ms - 5 * std.time.ms_per_min, 2);
+    for ([_][]const u8{ mine, other }) |sid| {
+        const path = try std.fmt.allocPrint(aa, "{s}/rollout-2026-10-18T06-00-00-{s}.jsonl", .{ day, sid });
+        var f = try cwd.createFile(io, path, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, try std.fmt.allocPrint(aa,
+            \\{{"type":"session_meta","payload":{{"session_id":"{s}","cwd":"{s}"}}}}
+            \\
+        , .{ sid, rig.project }));
+    }
+
+    const sighting: Sighting = .{
+        .pid = null,
+        .sidecar = @intCast(sidecar.id.?),
+        .env = &.{.{ "POLTER_AGENT_CLI", "codex" }},
+    };
+    var req: std.Io.Writer.Allocating = .init(aa);
+    try writeIdentifyRequest(&req.writer, rig.adapter, sighting, rig.project, rig.home);
+    const found = try parseIdentify(aa, try askCodex(aa, io, rig, .identify, req.written()));
+    try testing.expect(found.me);
+    try testing.expectEqualStrings(mine, found.session orelse "(none)");
+
+    // A third that started at the same moment: no telling, so none.
+    const twin = try v7(aa, now_ms + 1000, 3);
+    {
+        const path = try std.fmt.allocPrint(aa, "{s}/rollout-2026-10-18T06-00-01-{s}.jsonl", .{ day, twin });
+        var f = try cwd.createFile(io, path, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, try std.fmt.allocPrint(aa,
+            \\{{"type":"session_meta","payload":{{"session_id":"{s}","cwd":"{s}"}}}}
+            \\
+        , .{ twin, rig.project }));
+    }
+    const two = try parseIdentify(aa, try askCodex(aa, io, rig, .identify, req.written()));
+    const not_guessed = two.session == null;
+    try testing.expect(not_guessed);
+}
+
+test "codex adapter: what Codex's app-server daemon has open is not taken for this terminal's session (task 1667)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const rig = try codexRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+
+    // A stand-in for `codex app-server --listen …`: a program called
+    // `codex`, `app-server` on its command line, holding open the record of
+    // a session that is some other terminal's. Measured in the test session:
+    // a take-over went on with exactly that.
+    const cwd = std.Io.Dir.cwd();
+    const bin = try std.fmt.allocPrint(aa, "{s}/bin/codex", .{rig.root});
+    try cwd.createDirPath(io, std.fs.path.dirname(bin).?);
+    {
+        const sh = cwd.readFileAlloc(io, "/bin/sh", aa, .limited(16 * 1024 * 1024)) catch return error.SkipZigTest;
+        var f = try cwd.createFile(io, bin, .{ .permissions = .fromMode(0o755) });
+        defer f.close(io);
+        try f.writeStreamingAll(io, sh);
+    }
+    const script = try std.fmt.allocPrint(aa, "exec 3>>'{s}'; sleep 30", .{rig.rollout});
+    var daemon = std.process.spawn(io, .{
+        .argv = &.{ bin, "-c", script, "app-server" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    defer daemon.kill(io);
+    const pid: u64 = @intCast(daemon.id.?);
+
+    var req: std.Io.Writer.Allocating = .init(aa);
+    try writeIdentifyRequest(&req.writer, rig.adapter, .{ .pid = pid, .env = &.{.{ "POLTER_REGISTERED", "1.2.3" }} }, null, rig.home);
+    var found: Identified = .no;
+    for (0..20) |_| {
+        found = try parseIdentify(aa, try askCodex(aa, io, rig, .identify, req.written()));
+        if (found.me) break;
+        try io.sleep(.fromMilliseconds(50), .awake);
+    }
+    try testing.expect(found.me);
+    const not_taken = found.session == null;
+    try testing.expect(not_taken);
+}
+
+/// `ms` as Codex writes `session_meta.timestamp`: `2026-10-17T07:01:38.123Z`.
+fn isoOf(aa: Allocator, ms: u64) ![]const u8 {
+    const es: std.time.epoch.EpochSeconds = .{ .secs = ms / std.time.ms_per_s };
+    const day = es.getEpochDay().calculateYearDay();
+    const md = day.calculateMonthDay();
+    const ds = es.getDaySeconds();
+    return std.fmt.allocPrint(aa, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}Z", .{
+        day.year,               md.month.numeric(),      md.day_index + 1,
+        ds.getHoursIntoDay(),   ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
+        ms % std.time.ms_per_s,
+    });
+}
+
+test "codex adapter: a single Codex started by hand in its own directory is recognised, by the file it holds and by its directory (task 1674)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const rig = try codexRig(aa, io);
+    defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
+    const cwd = std.Io.Dir.cwd();
+
+    // The shape measured in the test session (c1669-18): its own directory,
+    // one record in it, `session_meta` written as Codex writes it, the
+    // session started with the TUI and with its sidecar. The id is the one
+    // measured, whose own time is hours from now: only the ISO timestamp can
+    // match, which is the field Codex fills.
+    const alone = try std.fmt.allocPrint(aa, "{s}/alone", .{rig.root});
+    try cwd.createDirPath(io, alone);
+    const sid = "01a146f3-15ea-7cf0-a720-46df485d608c";
+    const now_ms: u64 = @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms));
+    const day = try std.fmt.allocPrint(aa, "{s}/home/.codex/sessions/2026/10/17", .{rig.root});
+    const rollout = try std.fmt.allocPrint(aa, "{s}/rollout-2026-10-17T07-01-38-{s}.jsonl", .{ day, sid });
+    {
+        var f = try cwd.createFile(io, rollout, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, try std.fmt.allocPrint(aa,
+            \\{{"timestamp":"{s}","type":"session_meta","payload":{{"session_id":"{s}","id":"{s}","timestamp":"{s}","cwd":"{s}","originator":"codex-tui","cli_version":"0.163.0"}}}}
+            \\{{"type":"event_msg","payload":{{"type":"task_started"}}}}
+            \\
+        , .{ try isoOf(aa, now_ms), sid, sid, try isoOf(aa, now_ms), alone }));
+    }
+
+    // Its sidecar, started with it.
+    var sidecar = std.process.spawn(io, .{
+        .argv = &.{ "/bin/sh", "-c", "sleep 30" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    defer sidecar.kill(io);
+
+    // By its directory and start alone -- no process to read, as when the
+    // TUI's open files cannot be read, and as on Windows.
+    {
+        var req: std.Io.Writer.Allocating = .init(aa);
+        try writeIdentifyRequest(&req.writer, rig.adapter, .{
+            .pid = null,
+            .sidecar = @intCast(sidecar.id.?),
+            .env = &.{.{ "POLTER_AGENT_CLI", "codex" }},
+        }, alone, rig.home);
+        const found = try parseIdentify(aa, try askCodex(aa, io, rig, .identify, req.written()));
+        try testing.expectEqualStrings(sid, found.session orelse "(none)");
+    }
+
+    // By the file it holds: a stand-in TUI, the program called `codex`.
+    const bin = try std.fmt.allocPrint(aa, "{s}/bin/codex", .{rig.root});
+    try cwd.createDirPath(io, std.fs.path.dirname(bin).?);
+    {
+        const sh = cwd.readFileAlloc(io, "/bin/sh", aa, .limited(16 * 1024 * 1024)) catch return error.SkipZigTest;
+        var f = try cwd.createFile(io, bin, .{ .permissions = .fromMode(0o755) });
+        defer f.close(io);
+        try f.writeStreamingAll(io, sh);
+    }
+    var tui = std.process.spawn(io, .{
+        .argv = &.{ bin, "-c", try std.fmt.allocPrint(aa, "exec 3>>'{s}'; sleep 30", .{rollout}), "--no-daemon" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    defer tui.kill(io);
+    var req: std.Io.Writer.Allocating = .init(aa);
+    try writeIdentifyRequest(&req.writer, rig.adapter, .{
+        .pid = @intCast(tui.id.?),
+        .sidecar = @intCast(sidecar.id.?),
+        .env = &.{.{ "POLTER_AGENT_CLI", "codex" }},
+    }, alone, rig.home);
+    var held: Identified = .no;
+    for (0..40) |_| {
+        held = try parseIdentify(aa, try askCodex(aa, io, rig, .identify, req.written()));
+        if (held.session != null) break;
+        try io.sleep(.fromMilliseconds(50), .awake);
+    }
+    try testing.expectEqualStrings(sid, held.session orelse "(none)");
 }

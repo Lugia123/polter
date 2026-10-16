@@ -13,6 +13,17 @@
         ]
       },
       "mcp": { "default": false, "except": [] }
+    },
+    "codex": {
+      "skills": {
+        "default": false,
+        "except": [
+          "skill:polter-supervising",
+          "skill:polter-operating-a-terminal",
+          "skill:polter-reading-a-terminal"
+        ]
+      },
+      "mcp": { "default": false, "except": [] }
     }
   },
   "polter": { "supervisor": true }

@@ -88,6 +88,13 @@ states: std.AutoHashMapUnmanaged(Bus.Id, persona.State) = .empty,
 /// replaces `arena` cannot pull the strings out from under it.
 launches: std.AutoHashMapUnmanaged(Bus.Id, Launched) = .empty,
 
+/// Who started the role in each terminal: a supervisor's terminal, or
+/// `Chat.user_id` for the person. Kept apart from `standings`, which only a
+/// role with a Polter half has, because a launch that fails is the
+/// launcher's to hear about whatever the role is (task 1667,
+/// `App.poltergeistLaunchFailed`).
+launchers: std.AutoHashMapUnmanaged(Bus.Id, Bus.Id) = .empty,
+
 /// A role's Polter half (`persona.Polter`) waiting for the agent it was
 /// started for, one per terminal. See `holdStanding`.
 ///
@@ -166,6 +173,7 @@ pub fn deinit(self: *PersonaStore) void {
     var it = self.launches.valueIterator();
     while (it.next()) |l| l.arena.deinit();
     self.launches.deinit(self.alloc);
+    self.launchers.deinit(self.alloc);
     self.standings.deinit(self.alloc);
     if (self.pending_launch) |*p| p.deinit();
     self.* = undefined;
@@ -935,7 +943,13 @@ pub fn startRole(
     const p = self.set.find(key) orelse return error.NoSuchPersona;
     try self.setPersona(id, key);
     if (p.cli(cli)) |c| try self.noteLaunch(id, key, c);
+    try self.launchers.put(self.alloc, id, by);
     try self.holdStanding(id, by, p.polter, now_ms);
+}
+
+/// Who started the last role launch in `id`, or null for none.
+pub fn launcherOf(self: *const PersonaStore, id: Bus.Id) ?Bus.Id {
+    return self.launchers.get(id);
 }
 
 /// Remember a launch for the next terminal to finish starting. Replaces

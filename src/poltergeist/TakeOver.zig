@@ -87,6 +87,32 @@ pub fn ready(screen: []const u8, quit: agent_cli.Identified.Quit) bool {
     return false;
 }
 
+/// Whether the CLI the quit was typed into has gone: **its shell is at the
+/// prompt again**, whether or not its Polter connection is still there.
+///
+/// It used to need both, and the second never came for Codex 0.163 signed
+/// in to a ChatGPT account (task 1667, measured in the test session): its
+/// TUI runs the session in the shared app-server daemon, so `/exit` leaves
+/// the TUI -- "Disconnected from this task. Any running work continues." --
+/// and the session, with the MCP server it started, goes on in the daemon.
+/// The terminal was at its shell prompt and the take-over said "it did not
+/// quit". What the take-over needs is the shell back, to type the launch
+/// line into; the launch goes on with the same session, which the daemon
+/// still has.
+pub fn quitDone(agent_present: bool, shell_idle: bool) bool {
+    _ = agent_present;
+    return shell_idle;
+}
+
+/// Which session a take-over goes on with: the adapter's latest answer when
+/// it names one, else the one it had when the take-over was pressed (task
+/// 1674). Asked again at the press, the latest is the one that has seen the
+/// CLI's first turn; a latest answer that has not come yet, or names none,
+/// does not take back a session that was named.
+pub fn sessionToUse(asked: ?[]const u8, latest: ?[]const u8) ?[]const u8 {
+    return latest orelse asked;
+}
+
 pub const Settle = enum {
     /// Still, and at its prompt: type the quit.
     quit,
@@ -207,4 +233,28 @@ test "TakeOver sure: a record that stopped while the agent went on is a /clear" 
     try testing.expect(sure(10 * min, null));
     // A call made and no time for the record: not sure.
     try testing.expect(!sure(null, 100 * min));
+}
+
+test "TakeOver quitDone: the shell at its prompt is the CLI gone, connection or not (task 1667)" {
+    // Codex in its app-server daemon: back at the prompt, still connected.
+    const daemon = quitDone(true, true);
+    try testing.expect(daemon);
+    // The ordinary case.
+    try testing.expect(quitDone(false, true));
+    // Not at the prompt: still running, whatever the connection says.
+    try testing.expect(!quitDone(true, false));
+    try testing.expect(!quitDone(false, false));
+}
+
+test "TakeOver sessionToUse: the answer asked for at the press wins once it has come (task 1674)" {
+    // Asked before the first turn: none; asked again at the press: found.
+    const found = sessionToUse(null, "01a146e4-0000-7000-8000-000000000001") orelse "(none)";
+    try testing.expectEqualStrings("01a146e4-0000-7000-8000-000000000001", found);
+    // Not come yet: what was named stands.
+    const kept = sessionToUse("01a146e4-0000-7000-8000-000000000001", null) orelse "(none)";
+    try testing.expectEqualStrings("01a146e4-0000-7000-8000-000000000001", kept);
+    try testing.expect(sessionToUse(null, null) == null);
+    // Named before, and named differently now: the newer answer.
+    const newer = sessionToUse("01a146c2-0000-7000-8000-000000000002", "01a146c4-0000-7000-8000-000000000004") orelse "(none)";
+    try testing.expectEqualStrings("01a146c4-0000-7000-8000-000000000004", newer);
 }

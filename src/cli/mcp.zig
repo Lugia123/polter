@@ -186,6 +186,14 @@ pub fn run(alloc: Allocator) !u8 {
         env.get("GHOSTTY_POLTER_TOKEN") orelse
         return complain(io, "GHOSTTY_POLTER_TOKEN");
 
+    watchParent(io);
+
+    // **Not a terminal's sidecar at all** (task 1674): see `unclaimed`.
+    if (parentIsCodexDaemon(alloc, io)) {
+        log.warn("mcp: started by Codex's app-server daemon; not connecting as the terminal it inherited", .{});
+        return serveUnclaimed(alloc, io);
+    }
+
     var identity_arena: std.heap.ArenaAllocator = .init(alloc);
     defer identity_arena.deinit();
     const identity = identityField(identity_arena.allocator(), io, &env);
@@ -194,6 +202,160 @@ pub fn run(alloc: Allocator) !u8 {
     defer host.deinit();
 
     return serve(alloc, io, &host, socket_path, token);
+}
+
+/// **A sidecar started by Codex's app-server daemon is no terminal's**
+/// (task 1674). Signed in to a ChatGPT account, a Codex typed by hand runs
+/// its session in one shared daemon, and the daemon starts the MCP servers
+/// for every session it runs -- with the daemon's environment, which is the
+/// environment of whichever terminal started the daemon. Measured in the
+/// test session: a second Codex started by hand in another terminal got a
+/// sidecar carrying the first terminal's socket, token and id, so `me`
+/// answered with the first terminal, `group_create` and `group_post` were
+/// recorded as the first terminal's, and `become_supervisor` said "already".
+///
+/// There is nothing in that environment to tell which terminal a session
+/// belongs to, so the inherited identity is not used at all: no connection
+/// is made, and the agent is told why and what to do (`unclaimed`). Not
+/// being recognised is the safe failure; being taken for another terminal
+/// is not. Codex started with `--no-daemon` -- every role launch, and
+/// anybody who follows the advice -- runs its session in its own process,
+/// whose sidecars are that terminal's as before.
+const unclaimed =
+    "Polter cannot tell which terminal this Codex is in, so its tools are off here. " ++
+    "This Codex runs its session in Codex's shared app-server daemon, and the daemon starts " ++
+    "Polter's server with the identity of whichever terminal started the daemon; used, " ++
+    "that would make you act as another terminal. Start Codex with `codex --no-daemon` " ++
+    "(or from a Polter role, which does so) to have Polter's tools in this terminal.";
+
+/// Whether a command line is Codex's app-server daemon: the program is
+/// `codex` and `app-server` is one of its words (`codex app-server --listen
+/// unix:// …`, measured in the test session).
+fn isCodexDaemonCommand(command: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, command, " \t\n\x00");
+    const program = it.next() orelse return false;
+    const base = std.fs.path.basename(program);
+    if (!std.mem.eql(u8, base, "codex") and !std.mem.eql(u8, base, "codex.exe")) return false;
+    while (it.next()) |word| if (std.mem.eql(u8, word, "app-server")) return true;
+    return false;
+}
+
+/// Whether this sidecar's parent is Codex's app-server daemon. POSIX only:
+/// the command line comes from `/proc` where there is one, else from `ps`.
+/// Anything that cannot be read is "no": a sidecar is never refused on a
+/// guess.
+fn parentIsCodexDaemon(alloc: Allocator, io: std.Io) bool {
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) return false;
+    const ppid = std.posix.system.getppid();
+    var buf: [64]u8 = undefined;
+    const proc = std.fmt.bufPrint(&buf, "/proc/{d}/cmdline", .{ppid}) catch return false;
+    if (std.Io.Dir.cwd().readFileAlloc(io, proc, alloc, .limited(64 * 1024))) |cmd| {
+        defer alloc.free(cmd);
+        return isCodexDaemonCommand(cmd);
+    } else |_| {}
+    var pid_buf: [32]u8 = undefined;
+    const pid_text = std.fmt.bufPrint(&pid_buf, "{d}", .{ppid}) catch return false;
+    const ran = std.process.run(alloc, io, .{
+        .argv = &.{ "/bin/ps", "-o", "command=", "-p", pid_text },
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(4 * 1024),
+        .timeout = .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } },
+    }) catch return false;
+    defer alloc.free(ran.stdout);
+    defer alloc.free(ran.stderr);
+    return isCodexDaemonCommand(ran.stdout);
+}
+
+/// The MCP server a sidecar is when it will not claim a terminal: it starts,
+/// it lists `me`, and every call is answered with `unclaimed` -- so the agent
+/// learns why it has no Polter and what to do, instead of a server that
+/// never started.
+fn serveUnclaimed(alloc: Allocator, io: std.Io) !u8 {
+    var in_buf: [max_line]u8 = undefined;
+    var out_buf: [64 * 1024]u8 = undefined;
+    var stdin: std.Io.File = .stdin();
+    var stdout: std.Io.File = .stdout();
+    var reader = stdin.reader(io, &in_buf);
+    var writer = stdout.writerStreaming(io, &out_buf);
+    while (true) {
+        const line = (try reader.interface.takeDelimiter('\n')) orelse return 0;
+        if (line.len == 0) continue;
+        handleUnclaimed(alloc, &writer.interface, line) catch |err| {
+            log.warn("mcp: could not answer while unclaimed err={}", .{err});
+        };
+    }
+}
+
+fn handleUnclaimed(alloc: Allocator, out: *std.Io.Writer, line: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const msg = std.json.parseFromSliceLeaky(std.json.Value, aa, line, .{}) catch return;
+    const obj = switch (msg) {
+        .object => |o| o,
+        else => return,
+    };
+    const method = switch (obj.get("method") orelse return) {
+        .string => |m| m,
+        else => return,
+    };
+    const id = obj.get("id") orelse return;
+    if (std.mem.eql(u8, method, "initialize")) return writeResult(out, id, aa, initialize_result);
+    if (std.mem.eql(u8, method, "ping")) return writeResult(out, id, aa, "{}");
+    if (std.mem.eql(u8, method, "tools/list")) {
+        for (tools) |t| if (std.mem.eql(u8, t.name, "me")) {
+            const body = try std.fmt.allocPrint(aa,
+                \\{{"tools":[{{"name":"me","description":{f},"inputSchema":{s}}}]}}
+            , .{ std.json.fmt(unclaimed, .{}), t.schema });
+            return writeResult(out, id, aa, body);
+        };
+        return writeResult(out, id, aa, "{\"tools\":[]}");
+    }
+    if (std.mem.eql(u8, method, "tools/call")) return writeToolError(out, id, aa, unclaimed);
+    return writeError(out, id, aa, -32601, "method not found");
+}
+
+/// **The program that started this sidecar has gone: so does the sidecar**
+/// (task 1667). End of stdin was meant to say so, and does not always: the
+/// write end of that pipe is inherited by whatever the CLI itself starts,
+/// and Codex 0.163 leaves helpers running after it exits. Measured in the
+/// test session: after `/exit` in a Codex started by a role, its `+mcp`
+/// stayed connected with launchd as its parent, so Polter went on saying an
+/// agent was in a terminal that was back at its shell prompt -- and a
+/// take-over waiting for it to leave waited in vain.
+///
+/// So a thread looks at the parent once a second and the process exits the
+/// moment it is not the one it started with. Started before connecting, so
+/// a sidecar stuck in the handshake is covered too. POSIX only: a Windows
+/// process is not re-parented, and its parent's exit would have to be
+/// waited on through a handle (not done; noted in roles.md 11.3.2).
+fn watchParent(io: std.Io) void {
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) return;
+    const started = std.posix.system.getppid();
+    const t = std.Thread.spawn(.{}, parentWatcher, .{ io, started }) catch |err| {
+        log.warn("mcp: could not start the parent watcher err={}", .{err});
+        return;
+    };
+    t.detach();
+}
+
+fn parentWatcher(io: std.Io, started: std.posix.pid_t) void {
+    while (true) {
+        io.sleep(.fromSeconds(parent_check_s), .awake) catch {};
+        if (parentLeft(started, std.posix.system.getppid())) {
+            log.info("mcp: the program that started this has exited (parent was {d}); exiting", .{started});
+            std.process.exit(0);
+        }
+    }
+}
+
+/// How often the parent is looked at.
+const parent_check_s = 1;
+
+/// Whether the parent this process started with is gone: it has a
+/// different one now (launchd or init, or a subreaper).
+fn parentLeft(started: std.posix.pid_t, now: std.posix.pid_t) bool {
+    return now != started;
 }
 
 /// `,"identity":{"pid":…,"env":{…}}` for the `auth` request: what this
@@ -219,6 +381,15 @@ fn identityField(arena: Allocator, io: std.Io, env: *const std.process.Environ.M
     var seen: std.StringHashMapUnmanaged(void) = .empty;
     w.writeAll(",\"identity\":{\"pid\":") catch return "";
     if (ppid) |p| w.print("{d}", .{p}) catch return "" else w.writeAll("null") catch return "";
+    // Its own pid as well (task 1667): when this sidecar started is when
+    // the CLI's session started it, which the adapter matches to the
+    // session's record.
+    const me: ?u64 = if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi)
+        null
+    else
+        @intCast(std.posix.system.getpid());
+    w.writeAll(",\"self\":") catch return "";
+    if (me) |p| w.print("{d}", .{p}) catch return "" else w.writeAll("null") catch return "";
     w.writeAll(",\"env\":{") catch return "";
     var n: usize = 0;
     for (agent_cli.discover(arena, io, env)) |a| for (a.identify_env) |name| {
@@ -2073,4 +2244,49 @@ test "mcp: initialize promises listChanged, or the notification is never heard" 
         return error.ListChangedNotAdvertised;
     };
     try std.testing.expectEqual(std.json.Value{ .bool = true }, advertised);
+}
+
+test "mcp: a sidecar whose parent is gone sees it (task 1667)" {
+    // Re-parented to launchd or init: gone.
+    try std.testing.expect(parentLeft(4242, 1));
+    // Still its own.
+    try std.testing.expect(!parentLeft(4242, 4242));
+}
+
+test "mcp: a sidecar started by Codex's app-server daemon is told apart from a terminal's (task 1674)" {
+    try std.testing.expect(isCodexDaemonCommand("/Users/x/.codex/packages/app-server-daemon/releases/0.163.0/bin/codex app-server --listen unix:// --analytics-default-enabled --managed-daemon"));
+    try std.testing.expect(isCodexDaemonCommand("codex\x00app-server\x00--listen\x00unix://\x00"));
+    // The TUI itself, Claude Code, and a word that only looks like it.
+    try std.testing.expect(!isCodexDaemonCommand("/opt/homebrew/bin/codex --no-daemon -c model=\"x\""));
+    try std.testing.expect(!isCodexDaemonCommand("claude --settings {} app-server"));
+    try std.testing.expect(!isCodexDaemonCommand("/bin/codexx app-server"));
+    try std.testing.expect(!isCodexDaemonCommand(""));
+}
+
+test "mcp: an unclaimed sidecar answers, lists only me, and refuses every call with the reason (task 1674)" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var out: std.Io.Writer.Allocating = .init(aa);
+    try handleUnclaimed(aa, &out.writer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}");
+    try handleUnclaimed(aa, &out.writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+    try handleUnclaimed(aa, &out.writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
+    try handleUnclaimed(aa, &out.writer, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"group_post\",\"arguments\":{}}}");
+    const text = out.written();
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\n"), '\n');
+    const init_line = lines.next().?;
+    try std.testing.expect(std.mem.indexOf(u8, init_line, "\"protocolVersion\"") != null);
+    // A notification is not answered.
+    const list_line = lines.next().?;
+    const listed = try std.json.parseFromSliceLeaky(std.json.Value, aa, list_line, .{});
+    const listed_tools = listed.object.get("result").?.object.get("tools").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), listed_tools.len);
+    try std.testing.expectEqualStrings("me", listed_tools[0].object.get("name").?.string);
+    const call_line = lines.next().?;
+    const called = try std.json.parseFromSliceLeaky(std.json.Value, aa, call_line, .{});
+    const result = called.object.get("result").?.object;
+    try std.testing.expect(result.get("isError").?.bool);
+    const said = result.get("content").?.array.items[0].object.get("text").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, said, "--no-daemon") != null);
+    try std.testing.expect(lines.next() == null);
 }

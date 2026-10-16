@@ -30,8 +30,30 @@ $PolterHostBin = 'codex'
 # the env_vars -- so the SDK's substring tests read them as they read the
 # other hosts'. A Codex too old for `--json` gets the plain form, which is
 # the old behaviour and no worse. Kept in step with `provision.sh`.
+# **Every `codex` this file runs is bounded** (task 1667): see the same note
+# in `provision.sh`. A call that does not answer within the limit is stopped
+# with everything it started and throws `TimeoutException`; after one, nothing
+# more is asked of Codex in this batch.
+$script:PolterCodexSeconds = 8
+$script:PolterCodexStuck = $false
+
+function Invoke-CodexCall {
+    param([string[]]$Arguments)
+    if ($script:PolterCodexStuck) {
+        throw (New-Object System.TimeoutException('codex did not answer earlier in this batch; not asked again'))
+    }
+    try {
+        return Invoke-PolterBounded 'codex' $Arguments $script:PolterCodexSeconds
+    } catch [System.TimeoutException] {
+        $script:PolterCodexStuck = $true
+        throw (New-Object System.TimeoutException("$($_.Exception.Message); nothing more is asked of codex this time"))
+    }
+}
+
 function Get-HostMcpCurrent {
-    $json = Get-PolterCliOutput 'codex' @('mcp', 'get', 'polter', '--json')
+    $script:PolterCodexStuck = $false
+    $r = Invoke-CodexCall @('mcp', 'get', 'polter', '--json')
+    $json = $(if ($r.ExitCode -eq 0) { $r.Out } else { '' })
     if (-not [string]::IsNullOrWhiteSpace($json)) {
         try {
             $j = ConvertFrom-Json $json
@@ -46,7 +68,9 @@ function Get-HostMcpCurrent {
             # Not JSON after all: an older Codex. The plain form below.
         }
     }
-    Get-PolterCliOutput 'codex' @('mcp', 'get', 'polter')
+    $r = Invoke-CodexCall @('mcp', 'get', 'polter')
+    if ($r.ExitCode -eq 0) { return $r.Out }
+    return ''
 }
 
 # **What Codex lets through to the server** (#1645). Codex hands an MCP
@@ -64,6 +88,11 @@ $script:PolterCodexEnvVars = 'env_vars = ["GHOSTTY_POLTER_SOCKET", "GHOSTTY_POLT
 # report. `approve` is Codex's "never ask". Set on the `polter` table only;
 # `approve_tools=no` takes the line back out. Kept in step with `provision.sh`.
 $script:PolterCodexApprove = 'default_tools_approval_mode = "approve"'
+
+# **Which CLI started the server** (#1667). Codex gives an MCP server nothing
+# that says Codex, so the entry's own `env` carries it for `identify`
+# (plugins/codex/adapter.ps1). Kept in step with `provision.sh`.
+$script:PolterCodexMarker = 'POLTER_AGENT_CLI'
 
 function Test-CodexWantApprove { (Get-PolterParam 'approve_tools' 'yes') -eq 'yes' }
 
@@ -85,6 +114,7 @@ function Get-CodexPolterTable {
 function Test-HostMcpComplete {
     param([string]$Current)
     if (-not ($Current -match 'env_vars: .*GHOSTTY_POLTER_SOCKET' -and $Current -match 'env_vars: .*GHOSTTY_POLTER_TOKEN')) { return $false }
+    if (-not $Current.Contains($script:PolterCodexMarker)) { return $false }
     $approves = @(Get-CodexPolterTable | Where-Object { $_ -match "^\s*default_tools_approval_mode\s*=\s*[`"']approve[`"']" }).Count -gt 0
     return ($approves -eq (Test-CodexWantApprove))
 }
@@ -145,13 +175,92 @@ function Register-HostMcp {
     # `$Scope` is not passed on: Codex has no user/local split to pass it to.
     # Its user config is the only one `codex mcp add` writes, which is the
     # scope this plugin wants anyway.
-    Invoke-PolterCliQuietly 'codex' @('mcp', 'remove', 'polter')
-    Invoke-PolterCli 'codex' @(
+    # Nothing to remove is the common case, and fine; not answering is not.
+    $null = Invoke-CodexCall @('mcp', 'remove', 'polter')
+    $r = Invoke-CodexCall @(
         'mcp', 'add', 'polter',
         '--env', "$VersionKey=$Version",
+        '--env', "$($script:PolterCodexMarker)=codex",
         '--', $Exe, '+mcp'
     )
+    if ($r.ExitCode -ne 0) {
+        if ($r.Err) { Write-PolterLog (ConvertTo-PolterOneLine $r.Err) }
+        throw "``codex mcp add polter`` exited $($r.ExitCode)"
+    }
     Set-CodexTable
+}
+
+# **Keeping a Codex typed by hand out of the shared daemon** (task 1674): see
+# the same note in `provision.sh`. One marked line, and a marked `[features]`
+# header when this made the table; turning the parameter off takes out the
+# marked lines, and the header only when the table is left empty. A
+# `daemon_auto_start` the person wrote is left as it is.
+$script:PolterCodexDaemonMark = '# set by Polter: hand-started Codex stays out of the shared app-server daemon'
+
+function Test-CodexWantNoDaemon { (Get-PolterParam 'manual_out_of_daemon' 'no') -eq 'yes' }
+
+function Set-HostSettings {
+    $path = Get-CodexConfig
+    $mark = $script:PolterCodexDaemonMark
+    $want = Test-CodexWantNoDaemon
+    $lines = @()
+    if (Test-Path -LiteralPath $path) {
+        $lines = @([System.IO.File]::ReadAllText($path, $script:PolterUtf8) -split "`r?`n")
+        # Not `0..(Count - 2)`: with one line that range is `0, -1`, two lines.
+        if ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') {
+            $lines = @($lines | Select-Object -First ($lines.Count - 1))
+        }
+    }
+    $have = @($lines | Where-Object { $_.Contains($mark) -and $_ -notmatch '^\s*\[' }).Count -gt 0
+    $theirs = @($lines | Where-Object { -not $_.Contains($mark) -and $_ -match '(^|[.\s])daemon_auto_start\s*=' }).Count -gt 0
+    if ($want -eq $have) { return }
+    if ($want -and $theirs) {
+        Write-PolterLog "daemon_auto_start: left alone, $path already sets it"
+        return
+    }
+    $line = "daemon_auto_start = false $mark"
+    $out = New-Object System.Collections.Generic.List[string]
+    $done = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $l = $lines[$i]
+        $isHeader = $l -match '^\s*\['
+        if ($l.Contains($mark) -and -not $isHeader) { continue }
+        if ($l.Contains($mark) -and $isHeader) {
+            if ($want) { $out.Add($l); $out.Add($line); $done = $true; continue }
+            $other = $false
+            for ($j = $i + 1; $j -lt $lines.Count -and $lines[$j] -notmatch '^\s*\['; $j++) {
+                if ($lines[$j] -notmatch '^\s*(#.*)?$' -and -not $lines[$j].Contains($mark)) { $other = $true }
+            }
+            if ($other) {
+                $out.Add($l)
+            } elseif ($out.Count -gt 0 -and $out[$out.Count - 1] -eq '') {
+                # Gone with it: the one blank line put in front of it when it
+                # was made, so taking it back gives the file back byte for byte.
+                $out.RemoveAt($out.Count - 1)
+            }
+            continue
+        }
+        if ($l -match '^\s*\[\s*features\s*\]\s*(#.*)?$') {
+            $out.Add($l)
+            if ($want) { $out.Add($line); $done = $true }
+            continue
+        }
+        $out.Add($l)
+    }
+    if ($want -and -not $done) { $out.Add(''); $out.Add("[features] $mark"); $out.Add($line) }
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Path $dir) }
+    $tmp = "$path.polter-tmp"
+    $text = $(if ($out.Count -gt 0) { ($out -join "`n") + "`n" } else { '' })
+    [System.IO.File]::WriteAllText($tmp, $text, $script:PolterUtf8)
+    Move-Item -LiteralPath $tmp -Destination $path -Force
+    $script:PolterWrote = $true
+    # The person's daemon is not stopped: see provision.sh.
+    if ($want) {
+        Write-PolterLog 'daemon_auto_start: set to false; an app-server daemon already running is not stopped and keeps its sessions, so this takes effect once it has exited (or after signing in again or a restart)'
+    } else {
+        Write-PolterLog 'daemon_auto_start: taken back out'
+    }
 }
 
 # Codex took the Agent Skills standard in January 2026 and looks in the same
@@ -167,4 +276,7 @@ function Get-HostSkillsDir {
 # repository.
 function Get-HostRulesFile { Join-Path $script:PolterHome '.codex\AGENTS.md' }
 
-Invoke-PolterProvisionMain
+
+# A test that only wants the functions above sets this
+# (`test/codex-adapter/provision-settings.py`).
+if ($env:POLTER_PROVISION_FUNCTIONS_ONLY -ne '1') { Invoke-PolterProvisionMain }

@@ -2850,6 +2850,21 @@ test "a terminal opened to be minded but not sampled says so (task 595)" {
     try testing.expect(std.mem.indexOf(u8, out.written(), "\"watch_failed\"") != null);
 }
 
+test "a directory that cannot be entered stops the terminal being opened, and says why (task 1667)" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var shut: FakeHost = .{ .open_error = error.CannotEnterDirectory };
+    const r = try dispatch(arena.allocator(), &b, shut.host(), term(boss), .{ .terminal_open = .{
+        .cwd = "/Users/Shared/shut",
+    } });
+    try testing.expectEqualStrings("CannotEnterDirectory", r.failed.code);
+    const said = std.mem.indexOf(u8, r.failed.message, "cannot be entered") != null;
+    try testing.expect(said);
+}
+
 test "a directory that is not there stops the terminal being opened" {
     // Refused rather than opened somewhere else in silence: a terminal that
     // quietly started in the wrong place is one the supervisor will hand
@@ -7122,6 +7137,7 @@ fn dispatchOne(
                         "start somewhere else without saying so, which is worse than not " ++
                         "opening it.",
                 ),
+                error.CannotEnterDirectory => cannotEnter(),
                 else => hostFailure("OpenFailed", "could not open a terminal"),
             };
 
@@ -7266,6 +7282,7 @@ fn dispatchOne(
                     "NoSuchDirectory",
                     "there is no directory there.",
                 ),
+                error.CannotEnterDirectory => cannotEnter(),
                 else => hostFailure("LaunchFailed", "could not open a terminal for the role"),
             };
             // A null id is the terminal still being made (every split, and
@@ -9522,6 +9539,18 @@ fn joined(
 /// terminal not minded *yet* whose launch is still holding a `watch` is
 /// "not yet", and saying `false` would be a "no" nobody knows.
 /// `place: "stack"`: a name with nothing behind it yet.
+/// A directory that is there and cannot be entered (task 1667,
+/// `workdir.check`). Said apart from `NoSuchDirectory`, because the fix is
+/// different: the directory's permissions, not its name.
+fn cannotEnter() wire.Response {
+    return hostFailure(
+        "CannotEnterDirectory",
+        "that directory is there but cannot be entered (no permission to search it), " ++
+            "so a terminal there would start somewhere else without saying so. Nothing " ++
+            "was opened. Fix its permissions or give another directory.",
+    );
+}
+
 fn notBuiltYet() wire.Response {
     return hostFailure(
         "NotBuiltYet",
