@@ -47,6 +47,11 @@
 #
 #   Get-HostMcpCurrent    prints the current registration, empty if none.
 #                         Only ever tested for substrings, so any format does.
+#   Test-HostMcpComplete  **Optional.** Given the current registration, false
+#                         when one of this build at this version still lacks
+#                         something this host needs -- Codex's `env_vars`
+#                         (#1645) -- so it is written again. A host that does
+#                         not define it is judged by version alone.
 #   Register-HostMcp      -Version -VersionKey -Exe -Scope
 #                         Registers. **Throws on failure**, where the `sh`
 #                         version returns non-zero; that is the whole of the
@@ -436,7 +441,15 @@ function Invoke-PolterProvision {
     $stale = $false
     switch ($registration) {
         'none' { $stale = $true }
-        'mine' { $stale = -not $current.Contains($version) }
+        'mine' {
+            $stale = -not $current.Contains($version)
+            # The version is not all a registration can be missing (#1645).
+            # Kept in step with `provision.sh`.
+            if (-not $stale -and (Get-Command Test-HostMcpComplete -ErrorAction SilentlyContinue) -and
+                -not (Test-HostMcpComplete $current)) {
+                $stale = $true
+            }
+        }
         'other' {
             # Refused, and said twice: once into this log, once to the
             # person. A refusal nobody is told about is the same silence in

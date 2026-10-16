@@ -90,6 +90,17 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 
 - **Codex 的键是 `mcp_servers`，别家是 `mcpServers`**，而且它是 TOML。照着别家
   抄一定错。Codex 另外要一个 `openai.yaml` 放 UI 元数据，别家会忽略它。
+- **Codex 不把终端的环境交给 MCP 服务器**（#1645，0.163.0 实测）：子进程只拿到
+  HOME、PATH、USER、LANG 等十来个基础变量，外加条目 `env` 里写死的值。`+mcp`
+  要的 `GHOSTTY_POLTER_SOCKET` / `GHOSTTY_POLTER_TOKEN` 是每个终端各不相同的，
+  只能靠条目里的 `env_vars = [...]` 从 Codex 自己的环境放行。`codex mcp add` 没有
+  这个参数，所以 provision 在 add 之后把这一行写进 `[mcp_servers.polter]` 表里，
+  只写这一张表；`codex mcp remove polter` 删表时它跟着走。没有它，Codex 里每个
+  Polter 工具都会失败。
+- **`codex mcp get` 把 env 值打码成 `*****`**，所以拿它判断「是不是这一版」永远是
+  否，每次启动都会重写 config.toml。判断改读 `codex mcp get polter --json`，那里
+  的值不打码，`env_vars` 也在里面。注册完整与否另由宿主可选的
+  `host_mcp_complete` / `Test-HostMcpComplete` 说（缺 `env_vars` 就算过期）。
 - **opencode 的键是 `mcp`，结构也不同**，不是换个文件名的 `mcpServers`。
 - **Qwen Code 和 Gemini CLI 是一系**，形状一样。这不是巧合，是两家共用一份上
   游——**也意味着上游一变，两家一起变**。（iFlow CLI 原本是这一系的第三家；

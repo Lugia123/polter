@@ -54,6 +54,11 @@
 #                        here has checked: writing into the wrong file in
 #                        somebody's home directory is worse than not writing.
 #                        Never a project file. See `polter_rules_apply`.
+#   host_mcp_complete()  **Optional.** $1 the current registration. Non-zero
+#                        when a registration of this build at this version
+#                        still lacks something this host needs -- Codex's
+#                        `env_vars` (#1645) -- so it is written again. A host
+#                        that does not define it is judged by version alone.
 
 # One value out of the line. Every key used here appears once, which is what
 # makes this safe with sed rather than a JSON parser -- `sed` is greedy, so a
@@ -284,6 +289,13 @@ polter_provision() {
         *"$version"*) stale=no ;;
         *) stale=yes ;;
       esac
+      # **The version is not all a registration can be missing** (#1645):
+      # an entry this build wrote before it knew to pass Codex its two
+      # variables is this build's, at this version, and useless.
+      if [ "$stale" = no ] && command -v host_mcp_complete >/dev/null 2>&1 &&
+        ! host_mcp_complete "$current"; then
+        stale=yes
+      fi
       ;;
     other)
       # **Refused, and said twice.** Once into this log, because that is

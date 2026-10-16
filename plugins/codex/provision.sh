@@ -16,11 +16,77 @@ POLTER_HOST_BIN=codex
 # at `~/.codex/config.toml` and its table is `mcp_servers`, with an
 # underscore, where every other host in this directory uses JSON and
 # `mcpServers`. Copying a sibling here produces a file Codex reads as empty
-# and reports nothing about. It is never written by hand anyway -- `codex mcp`
-# owns that file -- but the difference is worth stating where somebody adding
-# the next host will read it.
+# and reports nothing about. `codex mcp` writes the entry; the one line it
+# has no flag for, `env_vars`, is put into that entry's table and nowhere
+# else (`codex_env_vars_apply`). The difference is worth stating where
+# somebody adding the next host will read it.
+#
+# **`--json`, because the plain form hides the one thing asked of it**
+# (#1645). `codex mcp get` prints every env value as `*****`, so the version
+# marker was never found in it: every start judged the entry stale and
+# removed and re-added it, rewriting the user's config.toml each time and
+# moving its `[mcp_servers.*]` tables about. The JSON form gives the values,
+# and `env_vars` with them. A Codex too old for `--json` falls back to the
+# plain form, which is the old behaviour and no worse.
 host_mcp_current() {
-  codex mcp get polter 2>/dev/null || true
+  codex mcp get polter --json 2>/dev/null || codex mcp get polter 2>/dev/null || true
+}
+
+# **What Codex lets through to the server** (#1645). Codex hands an MCP
+# server it starts a fixed short list of variables -- HOME, PATH, USER, LANG
+# and a few more, measured -- plus what the entry's `env` sets. The two
+# `+mcp` needs to find Polter are per terminal, so they cannot go in `env`;
+# without them `+mcp` exits at once and every Polter tool fails in Codex.
+# `env_vars` names variables to pass through from Codex's own environment,
+# which is the terminal's. `+mcp` reads no others (src/cli/mcp.zig).
+POLTER_CODEX_ENV_VARS='env_vars = ["GHOSTTY_POLTER_SOCKET", "GHOSTTY_POLTER_TOKEN"]'
+
+host_mcp_complete() {
+  case "$1" in
+    *'"env_vars"'*GHOSTTY_POLTER_SOCKET*GHOSTTY_POLTER_TOKEN*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Where Codex keeps it: `$CODEX_HOME`, else `~/.codex` -- the same rule
+# `codex mcp add` followed when it wrote the entry.
+codex_config() {
+  printf '%s/config.toml' "${CODEX_HOME:-$home/.codex}"
+}
+
+# Put `env_vars` into the `[mcp_servers.polter]` table `codex mcp add` has
+# just written. `codex mcp add` has no flag for it.
+#
+# **Inside that one table and nowhere else**: the line goes straight under
+# its header, any `env_vars = ...` line already in it is dropped first, and
+# every other line of the file is copied as it was. So the entry carries it,
+# and `codex mcp remove polter` -- which deletes the table -- takes it away
+# with nothing left behind. Written through a copy that keeps the file's mode
+# and moved into place, so a reader never sees half a file.
+codex_env_vars_apply() {
+  f=$(codex_config)
+  if [ ! -f "$f" ]; then
+    echo "no $f after \`codex mcp add\`" >&2
+    return 1
+  fi
+  tmp="$f.polter-tmp"
+  cp -p "$f" "$tmp" || return 1
+  if ! awk -v add="$POLTER_CODEX_ENV_VARS" '
+    /^[ \t]*\[/ {
+      inside = ($0 ~ /^[ \t]*\[[ \t]*mcp_servers\.polter[ \t]*\][ \t]*$/)
+      print
+      if (inside) { print add; found = 1 }
+      next
+    }
+    inside && /^[ \t]*env_vars[ \t]*=/ { next }
+    { print }
+    END { if (!found) exit 3 }
+  ' "$f" >"$tmp"; then
+    rm -f "$tmp"
+    echo "no [mcp_servers.polter] table in $f to put env_vars in" >&2
+    return 1
+  fi
+  mv "$tmp" "$f"
 }
 
 host_mcp_register() {
@@ -30,7 +96,8 @@ host_mcp_register() {
   # Its user config is the only one `codex mcp add` writes, which is the
   # scope this plugin wants anyway.
   codex mcp remove polter >/dev/null 2>&1 || true
-  codex mcp add polter --env "$version_key=$version" -- "$exe" +mcp
+  codex mcp add polter --env "$version_key=$version" -- "$exe" +mcp || return 1
+  codex_env_vars_apply
 }
 
 # Codex took the Agent Skills standard in January 2026 and looks in the same
