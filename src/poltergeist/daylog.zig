@@ -88,6 +88,12 @@ pub fn openAppend(io: std.Io, path: []const u8) !std.Io.File {
 // cannot. The boundaries size-based rotation produces mean nothing to
 // anybody: no one has ever wanted to read the second generation.
 //
+// Two things do remove from it, both by a person's hand: the control room's
+// "Delete group" (a group's directory) and clearing the chat (the days before
+// today). Both hold `ChatLog`'s floor first (`ChatLog.holdFloor`), because
+// the stream still has those lines and the start's backfill would otherwise
+// write them back (task 1665).
+//
 // The record has no size ceiling, and that is what "nothing is ever
 // removed" means when written out. The machine this was built on holds
 // 2.8MB of chat from a fortnight, so the honest thing is to say the number

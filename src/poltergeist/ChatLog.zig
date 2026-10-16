@@ -1255,13 +1255,22 @@ const Walk = struct {
 /// can close, and it is the reason the record rather than the stream is the
 /// fuller of the two.
 fn backfill(self: *ChatLog) void {
-    const floor = self.tree.head() orelse {
+    const measured = self.tree.head() orelse {
         log.warn(
             "chat log: could not tell how far the record goes; not filling it in",
             .{},
         );
         return;
     };
+    // The record's own head only ever says how far the record goes while
+    // nothing has been taken out of it. Taking a group's directory away
+    // (the control room's delete) or its old days (clearing the chat) can
+    // take the highest numbers with them, and the stream still has those
+    // lines: measured alone, the floor drops and the next start writes
+    // the deleted group straight back, listed again (task 1665). So the
+    // head is written down before anything is removed (`holdFloor`), and
+    // the floor is whichever is higher.
+    const floor = @max(measured, readFloor(self.alloc, self.io, self.dir));
     if (floor >= self.head()) return;
 
     const old = std.fmt.allocPrint(self.alloc, "{s}.1", .{self.path}) catch return;
@@ -1271,6 +1280,104 @@ fn backfill(self: *ChatLog) void {
     // live run writes it.
     self.replay(old, floor);
     self.replay(self.path, floor);
+}
+
+/// Where the held floor is kept: `<state>/chat/record.floor`, one decimal
+/// number. The dot is what keeps it out of the way of a group: a group's
+/// name is lowercase letters, digits and dashes (`Chat.isValidName`), so no
+/// group's directory can be called this.
+pub const floor_name = "record.floor";
+
+/// Write down how far the record goes, **before** removing anything from it
+/// (task 1665). `backfill` fills the record in from the stream above the
+/// highest seq the record holds; remove the files holding the highest
+/// numbers and that floor drops, and the lines that were removed come back
+/// from the stream at the next start -- a deleted group listed again, a
+/// cleared chat refilled.
+///
+/// Why this rather than rewriting the stream: the stream is what the
+/// archive plugin follows by seq and offset, and it is only ever appended
+/// to (see the header). Rewriting it under a reader that has a mark into it
+/// is the one thing that file is shaped to never need. And a tombstone per
+/// deleted name would have to answer "the same name, made again" -- a
+/// number does not: every line written after this is above it.
+///
+/// The value is the record's head as measured now, or the stream's when the
+/// record cannot be measured, and never lower than what is already held.
+/// While a run is going the two are the same number -- every message goes
+/// to both in one call. Measuring the record rather than the stream keeps
+/// the one thing `backfill` is for: a record left short by a crash is
+/// still filled in next time.
+///
+/// An error is a reason not to remove anything: removing it anyway is
+/// removing it until the next start.
+pub fn holdFloor(alloc: Allocator, io: std.Io, state_dir: []const u8) !void {
+    const dir = try std.fs.path.join(alloc, &.{ state_dir, "chat" });
+    defer alloc.free(dir);
+
+    var tree: Tree = .{
+        .owner = .chat,
+        .alloc = alloc,
+        .io = io,
+        .dir = dir,
+        .label = "chat log",
+        .probe = tailSeq,
+    };
+    const measured = tree.head() orelse try streamSeq(alloc, io, dir);
+    const held = readFloor(alloc, io, dir);
+    if (measured <= held) return;
+
+    var d = std.Io.Dir.cwd().openDir(io, dir, .{}) catch |err| switch (err) {
+        // No chat directory is no record to hold a floor for.
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer d.close(io);
+
+    var buf: [24]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d}\n", .{measured}) catch unreachable;
+    var atomic = try d.createFileAtomic(io, floor_name, .{ .replace = true });
+    defer atomic.deinit(io);
+    try atomic.file.writeStreamingAll(io, text);
+    try atomic.replace(io);
+}
+
+/// The held floor, or 0 when none has been written. A file that does not
+/// read as a number is said once and counts as none: that is the floor
+/// there was before this file existed.
+fn readFloor(alloc: Allocator, io: std.Io, dir: []const u8) u64 {
+    const path = std.fs.path.join(alloc, &.{ dir, floor_name }) catch return 0;
+    defer alloc.free(path);
+    var buf: [32]u8 = undefined;
+    const bytes = std.Io.Dir.cwd().readFile(io, path, &buf) catch |err| switch (err) {
+        error.FileNotFound => return 0,
+        else => {
+            log.warn("chat log: could not read {s} err={}", .{ path, err });
+            return 0;
+        },
+    };
+    return std.fmt.parseUnsigned(u64, std.mem.trim(u8, bytes, " \r\n"), 10) catch {
+        log.warn("chat log: {s} is not a number; ignored", .{path});
+        return 0;
+    };
+}
+
+/// The highest seq the stream holds, current generation first -- the same
+/// reading as `recoverSeq`, for a caller with no log open.
+fn streamSeq(alloc: Allocator, io: std.Io, dir: []const u8) !u64 {
+    inline for (.{ "chat.jsonl", "chat.jsonl.1" }) |name| {
+        const path = try std.fs.path.join(alloc, &.{ dir, name });
+        defer alloc.free(path);
+        if (std.Io.Dir.openFileAbsolute(io, path, .{})) |file| {
+            defer file.close(io);
+            const end = (try file.stat(io)).size;
+            if (tailSeq(alloc, io, file, end)) |seq| return seq;
+        } else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        }
+    }
+    return 0;
 }
 
 /// Copy every line of one stream generation above `floor` into the record.
@@ -2869,4 +2976,142 @@ test "the record is not disturbed by the stream rotating" {
     try testing.expectEqualStrings("one", page.entries[0].text);
     try testing.expectEqualStrings("three", page.entries[2].text);
     try testing.expect(page.exhausted);
+}
+
+/// Whether `<dir>/chat/<group>` is there.
+fn groupDirIn(io: std.Io, alloc: Allocator, dir: []const u8, group: []const u8) bool {
+    const path = std.fs.path.join(alloc, &.{ dir, "chat", group }) catch return false;
+    defer alloc.free(path);
+    _ = std.Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+    return true;
+}
+
+/// Whether `GroupLog.restore` -- the start's own list of groups -- names it.
+fn listedAtStart(io: std.Io, dir: []const u8, group: []const u8) !bool {
+    const GroupLog = @import("GroupLog.zig");
+    var gl = try GroupLog.open(testing.allocator, io, dir);
+    defer gl.deinit();
+    const shells = try gl.restore(testing.allocator);
+    defer GroupLog.free(testing.allocator, shells);
+    for (shells) |s| if (std.mem.eql(u8, s.name, group)) return true;
+    return false;
+}
+
+test "a group deleted from the control room is not written back at the next start (task 1665)" {
+    // What the test instance showed: the deleted group held the highest
+    // seq, its directory went, and the next start filled the record in from
+    // the stream above the new, lower head -- the group's directory back,
+    // and the group back in the list.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        _ = l.append("keep", 7, "worker", 1000, false, "one");
+        _ = l.append("doomed", 0, "you", 1001, false, "group renamed: t-none -> doomed.");
+        _ = l.append("doomed", 7, "worker", 1002, false, "three");
+    }
+    try testing.expect(try listedAtStart(io, dir, "doomed"));
+
+    const group_stores = @import("group_stores.zig");
+    try group_stores.deleteGroupDirs(alloc, io, dir, "doomed");
+    try testing.expect(!groupDirIn(io, alloc, dir, "doomed"));
+
+    // The restart.
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+    }
+    const back = groupDirIn(io, alloc, dir, "doomed");
+    try testing.expect(!back);
+    const listed = try listedAtStart(io, dir, "doomed");
+    try testing.expect(!listed);
+    try testing.expect(groupDirIn(io, alloc, dir, "keep"));
+}
+
+test "a group made again under a deleted name starts from nothing, and is still filled in (task 1665)" {
+    // The reason the held floor is a number and not a list of names: the
+    // same name made again is a new group, and its own lines are above it.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        _ = l.append("doomed", 7, "worker", 1000, false, "old one");
+        _ = l.append("doomed", 7, "worker", 1001, false, "old two");
+    }
+    const group_stores = @import("group_stores.zig");
+    try group_stores.deleteGroupDirs(alloc, io, dir, "doomed");
+
+    var new_seq: u64 = 0;
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        new_seq = l.append("doomed", 9, "worker", 2000, false, "new");
+    }
+    try testing.expectEqual(@as(u64, 3), new_seq);
+
+    // The record of the new group loses its file, as a crash between the
+    // two writes would leave it; the stream still has the line.
+    const day = try std.fs.path.join(alloc, &.{ dir, "chat", "doomed" });
+    try std.Io.Dir.cwd().deleteTree(io, day);
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        const page = try l.history(alloc, "doomed", 0, 10, .{});
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqualStrings("new", page.entries[0].text);
+    }
+}
+
+test "the held floor never goes down, and a broken one counts as none (task 1665)" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const chat = try std.fs.path.join(alloc, &.{ dir, "chat" });
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        _ = l.append("a", 7, "worker", 1000, false, "one");
+        _ = l.append("a", 7, "worker", 1001, false, "two");
+    }
+    try holdFloor(alloc, io, dir);
+    try testing.expectEqual(@as(u64, 2), readFloor(alloc, io, chat));
+
+    // Lower than what is held: the held one stays.
+    const a_dir = try std.fs.path.join(alloc, &.{ chat, "a" });
+    try std.Io.Dir.cwd().deleteTree(io, a_dir);
+    try holdFloor(alloc, io, dir);
+    try testing.expectEqual(@as(u64, 2), readFloor(alloc, io, chat));
+
+    const path = try std.fs.path.join(alloc, &.{ chat, floor_name });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "not a number" });
+    try testing.expectEqual(@as(u64, 0), readFloor(alloc, io, chat));
 }
