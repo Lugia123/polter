@@ -405,6 +405,14 @@ poltergeist_pending_worker: ?PendingWorker = null,
 /// thread at `pending.done`.
 poltergeist_persona_waits: poltergeistpkg.PersonaWaits = undefined,
 
+/// Mentions refused for a reason that clears by itself, waiting to be typed
+/// again (#60). Woken by the same retry as refused notices (`noticeRetryIn`).
+mention_retries: poltergeistpkg.MentionRetry = undefined,
+
+/// `task_assign` with `fresh`, held between the /clear and the CLI saying
+/// it has cleared (#64). Each holds a reference to its request.
+fresh_assigns: poltergeistpkg.fresh_assign.Waits(*poltergeistpkg.Server.Pending) = .{},
+
 /// Screenshot requests the apprt answered `pending` to, held until it calls
 /// `ghostty_app_poltergeist_screenshot_complete` or their time runs out.
 /// Each holds a reference to its request, taken when it was parked.
@@ -570,6 +578,7 @@ pub fn init(
         .personas = .{ .alloc = alloc },
         .poltergeist_agent_clis = .init(alloc),
         .poltergeist_persona_waits = .{ .alloc = alloc, .io = global.io() },
+        .mention_retries = .{ .alloc = alloc },
         .poltergeist_feed = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
         .projects = .init(alloc),
@@ -657,6 +666,10 @@ pub fn deinit(self: *App) void {
     self.personas.deinit();
     self.poltergeist_agent_clis.deinit(global.io());
     self.poltergeist_persona_waits.deinit();
+    self.mention_retries.deinit();
+    // Answered by the server shutting down, like the waits around it.
+    for (self.fresh_assigns.entries.items) |e| e.held.release();
+    self.fresh_assigns.deinit(self.alloc);
     // The requests themselves are answered by the server shutting down;
     // what is dropped here is this side's reference to each.
     for (self.poltergeist_screenshot_waits.entries.items) |e| e.held.release();
@@ -691,6 +704,12 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
         self.notice_retry_ms = null;
         if (!self.poltergeist_stopping.load(.acquire)) {
             self.deliverPoltergeistNotices(self.poltergeistElapsedMs());
+            // Mentions refused a moment ago, before the sweep below: one
+            // typed now is marked as told, so the sweep does not add a
+            // notice behind it.
+            self.retryMentions(self.poltergeistElapsedMs());
+            // A fresh assignment whose clear was never confirmed.
+            self.sweepFreshAssigns();
             // And the groups: a message that arrived while its reader had
             // just been told about another, or whose notice was refused.
             self.tellTerminalsAboutMessages();
@@ -3933,6 +3952,7 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     // See `persona_wait_timeout_ms` for what this is and is not.
     self.sweepPersonaWaits();
     self.sweepScreenshotWaits();
+    self.sweepFreshAssigns();
 
     // **Held rather than answered**, when it is a wait and nothing has
     // moved. Done here rather than in `dispatch` because `dispatch` is pure
@@ -3986,6 +4006,8 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     // away; still bounded by `poltergeist-notice-interval`.
     if (pending.request == .agent_event) {
         if (caller.terminalId()) |id| self.noteAgentSession(id, pending.request.agent_event);
+        // A clear a `task_assign` is waiting on (#64).
+        if (caller.terminalId()) |id| self.finishFreshAssigns(id, pending.request.agent_event);
         _ = self.poltergeist.considerAgents(now_ms);
         self.deliverPoltergeistNotices(now_ms);
 
@@ -4131,6 +4153,67 @@ pub fn poltergeistScreenshotComplete(
 }
 
 /// Answer screenshots whose apprt never called back.
+/// Hold the `task_assign` being dispatched until its /clear is confirmed
+/// (`Host.parkAssign`, #64). Woken by the notice retry when the wait runs
+/// out, so an idle app does not keep it past its ten seconds.
+fn poltergeistParkAssign(
+    ctx: *anyopaque,
+    id: poltergeistpkg.Bus.Id,
+    task: u64,
+    before: ?[]const u8,
+) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const pending = self.poltergeist_dispatching orelse return error.NothingToHold;
+    try self.fresh_assigns.park(self.alloc, pending, id, task, before, self.poltergeistElapsedMs());
+    pending.retain();
+    self.poltergeist_parked = true;
+    self.noticeRetryIn(poltergeistpkg.fresh_assign.wait_ms + chat_notice_retry_margin_ms);
+}
+
+/// The CLI in `id` said something: answer any fresh assignment its clear
+/// was waiting for.
+fn finishFreshAssigns(self: *App, id: poltergeistpkg.Bus.Id, ev: poltergeistpkg.agent_event.Event) void {
+    if (self.fresh_assigns.entries.items.len == 0) return;
+    log.info("poltergeist: agent event while a fresh assignment waits id={x} event={t} detail={s} session={s}", .{
+        id, ev.event, ev.detail orelse "", ev.session_id orelse "",
+    });
+    while (self.fresh_assigns.takeCleared(id, ev.event, ev.detail, ev.session_id)) |e| {
+        log.info("poltergeist: fresh assignment cleared task={d} id={x}", .{ e.task, e.id });
+        self.finishFreshAssign(e, .confirmed);
+    }
+}
+
+fn sweepFreshAssigns(self: *App) void {
+    const now_ms = self.poltergeistElapsedMs();
+    while (self.fresh_assigns.takeExpired(now_ms)) |e| {
+        log.warn("poltergeist: fresh assignment not confirmed cleared within {d}ms task={d} id={x}; typing it anyway", .{
+            poltergeistpkg.fresh_assign.wait_ms, e.task, e.id,
+        });
+        self.finishFreshAssign(e, .unconfirmed);
+    }
+    // A wake that came a little early leaves one behind: come back for it.
+    for (self.fresh_assigns.entries.items) |e| {
+        self.noticeRetryIn(e.deadline_ms -| now_ms + chat_notice_retry_margin_ms);
+    }
+}
+
+fn finishFreshAssign(
+    self: *App,
+    e: poltergeistpkg.fresh_assign.Waits(*poltergeistpkg.Server.Pending).Entry,
+    cleared: poltergeistpkg.rpc.Fresh,
+) void {
+    defer poltergeistpkg.fresh_assign.Waits(*poltergeistpkg.Server.Pending).free(self.alloc, e);
+    const response = poltergeistpkg.rpc.finishFreshAssign(
+        e.held.arena.allocator(),
+        self.poltergeistHost(),
+        e.task,
+        e.id,
+        cleared,
+    ) catch poltergeistpkg.wire.Response{ .failed = .{ .code = "OutOfMemory", .message = "out of memory" } };
+    e.held.complete(global.io(), response);
+    e.held.release();
+}
+
 fn sweepScreenshotWaits(self: *App) void {
     const now_ms = self.poltergeistElapsedMs();
     while (self.poltergeist_screenshot_waits.takeExpired(now_ms)) |entry| {
@@ -4952,6 +5035,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
     return .{ .ctx = self, .vtable = &.{
         .readTerminal = poltergeistRead,
         .sendText = poltergeistSend,
+        .parkAssign = poltergeistParkAssign,
         .agentPresent = poltergeistAgentPresent,
         .personaFace = poltergeistPersonaFace,
         .terminalCapabilities = poltergeistTerminalCapabilities,
@@ -7793,6 +7877,7 @@ fn chatRename(
         .chat_groups => try self.chat.rename(group, to),
         .task_group_field => try self.tasks.renameGroup(group, to),
         .stats_last => if (self.stats_log) |*l| try l.renameGroup(group, to),
+        .mention_retries => try self.mention_retries.renameGroup(group, to),
     };
 
     self.reopenStoreHandles();
@@ -7928,7 +8013,7 @@ fn taskClose(ctx: *anyopaque, task: u64) anyerror!void {
 fn taskOwner(ctx: *anyopaque, task: u64) anyerror!poltergeistpkg.rpc.TaskOwner {
     const self: *App = @ptrCast(@alignCast(ctx));
     const t = self.tasks.get(task) orelse return error.NoSuchTask;
-    return .{ .owner = t.owner, .title = t.title, .open = t.state == .open };
+    return .{ .owner = t.owner, .title = t.title, .open = t.state == .open, .group = t.group };
 }
 
 /// Mark a task cancelled. The worker has already been told; see above.
@@ -8387,6 +8472,13 @@ fn chatPost(
         for (mentions.to) |*d| {
             poltergeistSend(self, d.to, line, true) catch |err| {
                 d.err = err;
+                // Typed again later when the refusal clears by itself
+                // (#60); `group_post`'s row says so from the same rule.
+                const queued = self.mention_retries.add(group, seq, from, d.to, line, err, now_ms) catch |e| q: {
+                    log.warn("poltergeist: mention to {x} not queued for retry err={}", .{ d.to, e });
+                    break :q null;
+                };
+                if (queued) |delay| self.noticeRetryIn(delay + chat_notice_retry_margin_ms);
                 continue;
             };
             self.chat.markTold(group, d.to, now_ms);
@@ -8399,6 +8491,61 @@ fn chatPost(
     // interpret, and the sentence the writer reads is built where the reply
     // is written. The same shape `setBrief` already answers with.
     return posted;
+}
+
+/// Type again the mentions whose retry is due (#60), and tell the author
+/// about any that the last try could not deliver either.
+fn retryMentions(self: *App, now_ms: u64) void {
+    var due: std.ArrayListUnmanaged(poltergeistpkg.MentionRetry.Entry) = .empty;
+    defer due.deinit(self.alloc);
+    self.mention_retries.takeDue(now_ms, &due) catch return;
+
+    for (due.items) |e| {
+        // **Nobody listening, nothing typed** -- the gate `group_post`
+        // asked when the mention was made (#1533), asked again: an agent
+        // that has exited since leaves a shell that would run the line.
+        var refused: anyerror = error.NoAgent;
+        const outcome: poltergeistpkg.MentionRetry.Outcome = if (!self.agentPresent(e.to))
+            .{ .gave_up = "NoAgent" }
+        else if (poltergeistSend(self, e.to, e.line, true)) |_| {
+            self.chat.markTold(e.group, e.to, now_ms);
+            log.info("poltergeist: mention delivered on retry group={s} seq={d} to={x}", .{ e.group, e.seq, e.to });
+            self.mention_retries.free(e);
+            continue;
+        } else |err| o: {
+            refused = err;
+            break :o self.mention_retries.requeue(e, err, now_ms);
+        };
+
+        switch (outcome) {
+            .again => |delay| {
+                log.info("poltergeist: mention refused again, retrying group={s} seq={d} to={x} err={}", .{ e.group, e.seq, e.to, refused });
+                self.noticeRetryIn(delay + chat_notice_retry_margin_ms);
+            },
+            .gave_up => |code| {
+                self.tellMentionGaveUp(e, code);
+                self.mention_retries.free(e);
+            },
+        }
+    }
+    // A wake that came a little early took nothing: come back for it.
+    if (self.mention_retries.nextDueMs()) |at| {
+        self.noticeRetryIn(at -| now_ms + chat_notice_retry_margin_ms);
+    }
+}
+
+/// The last retry of a mention was refused too: say so in the author's own
+/// terminal, the one place it will be read (#60). Refused there as well, it
+/// is only logged -- a retry of the retry would be the same silence later.
+fn tellMentionGaveUp(self: *App, e: poltergeistpkg.MentionRetry.Entry, code: []const u8) void {
+    log.warn("poltergeist: mention not delivered after retries group={s} seq={d} to={x} code={s}", .{ e.group, e.seq, e.to, code });
+    if (e.from == poltergeistpkg.Chat.user_id or !self.agentPresent(e.from)) return;
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    poltergeistpkg.MentionRetry.writeGaveUp(&w, e.group, e.seq, e.to, code) catch return;
+    poltergeistSend(self, e.from, w.buffered(), true) catch |err| {
+        log.warn("poltergeist: could not tell {x} its mention was not delivered err={}", .{ e.from, err });
+    };
 }
 
 /// Put one message in the log on disk, if there is one.

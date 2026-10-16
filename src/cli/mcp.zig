@@ -649,7 +649,11 @@ const tools = [_]Tool{
             "(UserPresent, DraftInLine, NoAgent, ...) means that terminal was not typed " ++
             "into -- NoAgent is a terminal with no agent connected, which is never typed " ++
             "into, because a bare shell would run the line -- " ++
-            "the message is in the group either way.",
+            "the message is in the group either way. **`undelivered` at the top counts " ++
+            "those rows**, so a nonzero number is visible without reading them. A row " ++
+            "refused with UserPresent or DraftInLine carries `retry` (attempts, every_ms): " ++
+            "the same line is typed again that many times, that far apart, and if the " ++
+            "last try is refused too a line saying so is typed into your own terminal.",
         .schema =
         \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"},"mention":{"type":"array","items":{"type":"string"},"description":"Terminal ids (0x...) to type this message into, each with a return. Every one must be a member of the group."}},"required":["group","text"]}
         ,
@@ -1159,9 +1163,9 @@ const tools = [_]Tool{
     },
     .{
         .name = "task_assign",
-        .description = "Say which terminal is doing a task. **A line is typed into that terminal saying the task is theirs, and only then does the panel record it** -- an assignment nobody was told about is one only you can see, and the group cannot carry it because a terminal you are minding is not woken by a post. **Read the reply**: it says whether the terminal was actually told, and if it could not be, nothing was assigned. The line names the task and tells the worker to report with task_progress when it finishes or gets stuck; **what the work is is still yours to send**, because the acceptance test is the part that cannot be generated. Pass id 0 to take it back off somebody without cancelling it; there is nobody to tell, so nothing is typed. Supervisor only.",
+        .description = "Say which terminal is doing a task. **A line is typed into that terminal saying the task is theirs, and only then does the panel record it** -- an assignment nobody was told about is one only you can see, and the group cannot carry it because a terminal you are minding is not woken by a post. **Read the reply**: it says whether the terminal was actually told, and if it could not be, nothing was assigned. The line names the task and tells the worker to report with task_progress when it finishes or gets stuck; **what the work is is still yours to send**, because the acceptance test is the part that cannot be generated. Pass id 0 to take it back off somebody without cancelling it; there is nobody to tell, so nothing is typed. **`fresh: true` clears the worker's context first** (off by default -- a worker reviewing the same change twice needs what it said the first time): `/clear` is typed, and the task line follows once the CLI reports a new session, at most 10s later; the reply says `cleared: confirmed` or `cleared: unconfirmed`, and the line tells the worker which group to group_read. Only for claude-code with hooks, at its prompt: in a turn or at a permission box it refuses `AgentBusy`, another CLI `FreshUnsupported`, and nothing is typed or assigned. Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"task":{"type":"integer"},"id":{"type":"string","description":"The terminal responsible, or 0 for nobody"}},"required":["task","id"],"additionalProperties":false}
+        \\{"type":"object","properties":{"task":{"type":"integer"},"id":{"type":"string","description":"The terminal responsible, or 0 for nobody"},"fresh":{"type":"boolean","description":"Clear the worker's context (claude-code /clear) before telling it the task is theirs. Default false."}},"required":["task","id"],"additionalProperties":false}
         ,
     },
     .{

@@ -75,6 +75,11 @@ pub const Table = enum {
 
     /// `StatsLog.last`.
     stats_last,
+
+    /// `MentionRetry.items`: a mention waiting to be typed again names its
+    /// group, for marking the reader told and for the line that says it
+    /// gave up (#60).
+    mention_retries,
 };
 
 /// An open file or directory handle that points into a place a rename
