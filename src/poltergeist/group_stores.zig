@@ -23,6 +23,7 @@
 //!     reason.
 
 const std = @import("std");
+const ChatLog = @import("ChatLog.zig");
 
 /// A directory of per-group directories under the state directory:
 /// `<state>/<tag>/<group>/<day>.jsonl`.
@@ -115,12 +116,21 @@ pub const Handle = enum {
 ///
 /// Every handle into these must have been let go first (`Handle`): Windows
 /// will not delete a file that is open.
+///
+/// **The record's floor is held first** (`ChatLog.holdFloor`, task 1665).
+/// The stream every group shares still has this group's lines, and the next
+/// start fills the record in from the stream above the highest seq the
+/// record holds -- which, with this group's directory gone, can be lower
+/// than this group's last line. Without the held floor the group is written
+/// back and listed again. Here rather than in the caller so that no way of
+/// deleting a group can do the one without the other.
 pub fn deleteGroupDirs(alloc: std.mem.Allocator, io: std.Io, state_dir: []const u8, group: []const u8) !void {
     // An empty or dotted name would be a path to something that is not this
     // group's: refused rather than joined. Names are checked long before
     // here (`Chat.isValidName`); this is the last place to be wrong.
     if (group.len == 0 or std.mem.indexOfAny(u8, group, "/\\") != null or
         std.mem.eql(u8, group, ".") or std.mem.eql(u8, group, "..")) return error.BadName;
+    try ChatLog.holdFloor(alloc, io, state_dir);
     inline for (.{ false, true }) |chat_pass| inline for (comptime std.enums.values(Root)) |root| {
         if ((root == .chat) == chat_pass) {
             const path = try std.fs.path.join(alloc, &.{ state_dir, root.subdir(), group });

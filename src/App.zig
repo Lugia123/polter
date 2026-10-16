@@ -1308,7 +1308,10 @@ fn controlActOpenTasks(ctx: *anyopaque, group: []const u8) usize {
 /// What it does not touch: the stream every group shares (`chat.jsonl`),
 /// which the archive plugin follows by seq and which forgets by size on its
 /// own; copies a plugin has made elsewhere; and the terminals' own
-/// transcripts, which are the terminals' and not the group's.
+/// transcripts, which are the terminals' and not the group's. The stream
+/// still holding the group's lines is why step 3 holds the record's floor
+/// before it deletes anything (`ChatLog.holdFloor`, task 1665): without it
+/// the next start fills the group straight back in from the stream.
 fn controlActDeleteGroup(ctx: *anyopaque, group: []const u8) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     const stores = poltergeistpkg.group_stores;

@@ -12,7 +12,9 @@
 //!   * **chat**: every group's day files before today. The group shells
 //!     (`group.json`), the stream (`chat.jsonl`) and the session record are
 //!     left alone: the list of groups, the last supervisor, the project
-//!     ties and the message numbering do not depend on old days;
+//!     ties and the message numbering do not depend on old days. The
+//!     record's floor is held first (`ChatLog.holdFloor`), or the next
+//!     start would fill the cleared days back in from the stream;
 //!   * **tasks**: compacted, not deleted -- `TaskLog.compact`, which the
 //!     app calls with the panel in hand;
 //!   * **shell history**: only the files no saved project and no open
@@ -25,6 +27,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
+const ChatLog = @import("ChatLog.zig");
 const daylog = @import("daylog.zig");
 const Records = @import("Records.zig");
 const Retention = @import("Retention.zig");
@@ -187,7 +190,14 @@ pub fn clear(a: Allocator, io: Io, state_dir: []const u8, shots_dir: ?[]const u8
             r.dirs += 1;
             r.bytes += b.file.bytes;
         },
-        .chat => deleteAll(io, try groupDays(a, io, state_dir, "chat", today, true), &r),
+        // The floor first, for the same reason as deleting a group
+        // (`ChatLog.holdFloor`, task 1665): the old days hold the highest
+        // numbers whenever nobody has spoken today, and the next start would
+        // fill them all back in from the stream.
+        .chat => {
+            try ChatLog.holdFloor(a, io, state_dir);
+            deleteAll(io, try groupDays(a, io, state_dir, "chat", today, true), &r);
+        },
         .archive => deleteAll(io, try archiveDays(a, io, state_dir, today, true), &r),
         .history => {
             const files = try historyFiles(a, io, state_dir);
@@ -358,6 +368,40 @@ test "clearing the chat keeps today, the group shells and the stream" {
     try testing.expect(exists(io, alloc, state, "chat/build/group.json"));
     try testing.expect(exists(io, alloc, state, "chat/chat.jsonl"));
     try testing.expect(exists(io, alloc, state, "sessions/build/2026-10-01.jsonl"));
+}
+
+test "a cleared chat is not filled back in from the stream at the next start (task 1665)" {
+    // Nobody has spoken today, so every day file is before today and every
+    // one goes: measured off the files, the record then goes nowhere, and
+    // the next start would copy the whole stream back in.
+    const alloc = testing.allocator;
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const state = try testState(alloc, io);
+    defer {
+        Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+    {
+        var l = try ChatLog.open(alloc, io, state);
+        defer l.deinit();
+        _ = l.append("build", 7, "worker", 1000, false, "old one");
+        _ = l.append("build", 7, "worker", 2000, false, "old two");
+    }
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const r = try clear(arena.allocator(), io, state, null, .chat, &.{}, 20261015, fakeDay);
+    try testing.expectEqual(@as(usize, 1), r.files);
+
+    // The restart.
+    {
+        var l = try ChatLog.open(alloc, io, state);
+        defer l.deinit();
+    }
+    const left = try groupDays(arena.allocator(), io, state, "chat", 20261015, false);
+    try testing.expectEqual(@as(usize, 0), left.len);
+    try testing.expect(exists(io, alloc, state, "chat/chat.jsonl"));
 }
 
 test "clearing shell history keeps what a project or an open pane names" {
