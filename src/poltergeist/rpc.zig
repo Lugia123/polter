@@ -20,6 +20,7 @@ const Chat = @import("Chat.zig");
 const MentionRetry = @import("MentionRetry.zig");
 const Plugin = @import("Plugin.zig");
 const Tasks = @import("Tasks.zig");
+const fresh_assign = @import("fresh_assign.zig");
 const arrange = @import("arrange.zig");
 const RecordTools = @import("RecordTools.zig");
 const screenshot = @import("screenshot.zig");
@@ -5283,6 +5284,7 @@ pub const Host = struct {
             id: Bus.Id,
             task: u64,
             before: ?[]const u8,
+            confirm: fresh_assign.Confirm,
         ) anyerror!void,
 
         /// Which of Polter's tools this terminal may see, and the version
@@ -6005,8 +6007,8 @@ pub const Host = struct {
         return self.vtable.sendText(self.ctx, id, text, submit);
     }
 
-    fn parkAssign(self: Host, id: Bus.Id, task: u64, before: ?[]const u8) anyerror!void {
-        return self.vtable.parkAssign(self.ctx, id, task, before);
+    fn parkAssign(self: Host, id: Bus.Id, task: u64, before: ?[]const u8, confirm: fresh_assign.Confirm) anyerror!void {
+        return self.vtable.parkAssign(self.ctx, id, task, before, confirm);
     }
 
     fn agentPresent(self: Host, id: Bus.Id) bool {
@@ -8804,7 +8806,7 @@ fn planMention(
 
 /// Whether a `task_assign` came with a clear first, and what became of it
 /// (#64). `none` is the ordinary assignment.
-pub const Fresh = enum { none, confirmed, unconfirmed };
+pub const Fresh = enum { none, confirmed, unconfirmed, pending };
 
 /// Type the line that tells `id` the task is theirs, then record it --
 /// `task_assign`'s second half, shared by the ordinary assignment and the
@@ -8928,6 +8930,10 @@ fn assignAndTell(
             .unconfirmed => " /clear sent; cleared: unconfirmed -- the CLI said nothing " ++
                 "about a new session within 10s, and the line was typed anyway. Read " ++
                 "that terminal before relying on its context being empty.",
+            .pending => " /clear sent; cleared: pending -- this CLI says it has cleared " ++
+                "only when its next turn starts, which is the turn this line starts. " ++
+                "terminal_list shows a new session_id for it once that has happened; read " ++
+                "that terminal before relying on its context being empty.",
         } },
     ) };
 }
@@ -8983,12 +8989,25 @@ fn blindRefusal(alloc: std.mem.Allocator, bus: *const Bus, host: Host, id: Bus.I
     };
 }
 
-/// The CLIs a clear can be asked of, and what clears them (#64). One entry:
-/// it is the one whose clear was looked at, and whose hooks say when it
-/// has happened (`SessionStart` with `source: clear`).
-const fresh_clis = [_]struct { cli: []const u8, command: []const u8 }{
-    .{ .cli = "claude-code", .command = "/clear" },
+/// The CLIs a clear can be asked of, what clears them, and how each says it
+/// has happened (#64). Claude Code's hooks say so at once (`SessionStart`
+/// with `source: clear`). Codex's say so only with its next turn (task
+/// 1668): `/clear` there is `InitialHistory::Cleared`, whose `SessionStart`
+/// waits for a turn to begin like any other.
+const FreshCli = struct { cli: []const u8, command: []const u8, confirm: fresh_assign.Confirm };
+const fresh_clis = [_]FreshCli{
+    .{ .cli = "claude-code", .command = "/clear", .confirm = .session_start },
+    .{ .cli = "codex", .command = "/clear", .confirm = .next_turn },
 };
+
+/// The clear for this agent's CLI, or null for one with none.
+fn freshCli(a: Bus.Agent) ?FreshCli {
+    const cli = a.cli.get() orelse return null;
+    for (fresh_clis) |c| {
+        if (std.mem.eql(u8, c.cli, cli)) return c;
+    }
+    return null;
+}
 
 /// Why `task_assign` with `fresh` will not clear `agent`'s context, or null
 /// when it may. **Pure, so every cell is a test.**
@@ -9010,13 +9029,10 @@ pub fn freshRefusal(agent: ?Bus.Agent) ?struct { code: []const u8, message: []co
             "could not be confirmed. Nothing was typed and nothing was assigned; assign " ++
             "without fresh, or start a new worker for the task.",
     };
-    const cli = a.cli.get() orelse "";
-    for (fresh_clis) |c| {
-        if (std.mem.eql(u8, c.cli, cli)) break;
-    } else return .{
+    if (freshCli(a) == null) return .{
         .code = "FreshUnsupported",
-        .message = "only claude-code (/clear) can be cleared; that terminal's CLI is " ++
-            "another. Nothing was typed and nothing was assigned; assign without fresh, " ++
+        .message = "only claude-code and codex (/clear) can be cleared; that terminal's CLI " ++
+            "is another. Nothing was typed and nothing was assigned; assign without fresh, " ++
             "or start a new worker for the task.",
     };
     return switch (a.state) {
@@ -9059,8 +9075,11 @@ fn freshAssign(
     const entry = bus.get(id);
     if (freshRefusal(if (entry) |e| e.agent else null)) |why| return hostFailure(why.code, why.message);
 
+    // Said by `freshRefusal`, which passed.
+    const clear = freshCli(entry.?.agent).?;
+
     // The same refusals as any typing, and nothing assigned after them.
-    host.sendText(id, fresh_clis[0].command, true) catch |err| return switch (err) {
+    host.sendText(id, clear.command, true) catch |err| return switch (err) {
         error.UserPresent => hostFailure("UserPresent", key_arrived ++
             " Nothing was cleared and nothing was assigned."),
         error.Composing => hostFailure("UserPresent", composing_typed ++
@@ -9072,7 +9091,10 @@ fn freshAssign(
     };
 
     const before = if (entry) |e| e.agent.session_id.get() else null;
-    host.parkAssign(id, task, before) catch return finishFreshAssign(alloc, host, task, id, .unconfirmed);
+    host.parkAssign(id, task, before, clear.confirm) catch return finishFreshAssign(alloc, host, task, id, switch (clear.confirm) {
+        .session_start => .unconfirmed,
+        .next_turn => .pending,
+    });
     // Never read: the request is answered by `finishFreshAssign`.
     return .ok;
 }
@@ -9815,7 +9837,7 @@ const FakeHost = struct {
 
     /// `parkAssign` (#64): what it was asked to hold, and an error to
     /// answer with instead.
-    parked_assign: ?struct { id: Bus.Id, task: u64, before: ?[]const u8 } = null,
+    parked_assign: ?struct { id: Bus.Id, task: u64, before: ?[]const u8, confirm: fresh_assign.Confirm } = null,
     park_error: ?anyerror = null,
     added: ?struct { group: []const u8, id: Bus.Id, history: History } = null,
     compacted: ?struct { group: []const u8, through: u64, summary: []const u8, by: Bus.Id } = null,
@@ -10628,10 +10650,10 @@ const FakeHost = struct {
         self.sent = .{ .id = id, .text = text, .submit = submit };
     }
 
-    fn parkAssign(ctx: *anyopaque, id: Bus.Id, task: u64, before: ?[]const u8) anyerror!void {
+    fn parkAssign(ctx: *anyopaque, id: Bus.Id, task: u64, before: ?[]const u8, confirm: fresh_assign.Confirm) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.park_error) |err| return err;
-        self.parked_assign = .{ .id = id, .task = task, .before = before };
+        self.parked_assign = .{ .id = id, .task = task, .before = before, .confirm = confirm };
     }
 
     fn agentPresent(ctx: *anyopaque, id: Bus.Id) bool {
@@ -13405,7 +13427,7 @@ test "fresh: only a claude-code agent at its prompt, with hooks, may be cleared"
     a.hooks = .live;
 
     // A CLI whose clear is not known is told so by name.
-    a.cli.set("codex");
+    a.cli.set("gemini");
     const other_cli = freshRefusal(a).?;
     try testing.expectEqualStrings("FreshUnsupported", other_cli.code);
     try testing.expect(std.mem.indexOf(u8, other_cli.message, "claude-code") != null);
@@ -13460,6 +13482,60 @@ test "fresh: /clear is typed, the request is held, and nothing is assigned yet" 
     try testing.expectEqual(worker, panel.get(id).?.owner);
 }
 
+test "1668: codex is cleared with /clear, held only to settle, and the reply says the clear is still to come" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    freshAgent(&b, .ended, "codex");
+    try testing.expect(freshRefusal(b.agentOf(worker)) == null);
+
+    const id = try panel.create("build", "take the machine", .bug);
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+        .fresh = true,
+    } });
+    try testing.expectEqualStrings("/clear", fake.sent.?.text);
+    // Held, but only until the clear has been taken: nothing it says
+    // before the line can confirm it.
+    try testing.expectEqual(fresh_assign.Confirm.next_turn, fake.parked_assign.?.confirm);
+    try testing.expectEqual(@as(Bus.Id, 0), panel.get(id).?.owner);
+
+    const res = try finishFreshAssign(alloc, fake.host(), id, worker, .pending);
+    try testing.expect(std.mem.indexOf(u8, res.text, "/clear sent; cleared: pending") != null);
+    try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "in group \"build\": group_read it") != null);
+    try testing.expectEqual(worker, panel.get(id).?.owner);
+
+    // Busy is busy for codex too.
+    freshAgent(&b, .in_turn, "codex");
+    try testing.expectEqualStrings("AgentBusy", freshRefusal(b.agentOf(worker)).?.code);
+}
+
+test "1668: a host that cannot hold a codex clear finishes it at once, pending" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+    fake.park_error = error.NothingToHold;
+    freshAgent(&b, .idle, "codex");
+    const id = try panel.create("build", "t", .bug);
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+        .fresh = true,
+    } });
+    try testing.expect(std.mem.indexOf(u8, res.text, "cleared: pending") != null);
+    try testing.expectEqual(worker, panel.get(id).?.owner);
+}
+
 test "fresh: a clear never confirmed still hands the task over, and says so" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -13500,7 +13576,7 @@ test "fresh: a refused clear assigns nothing and types nothing more" {
     const Case = struct { state: Bus.AgentState, cli: []const u8, send_err: ?anyerror, code: []const u8 };
     for ([_]Case{
         .{ .state = .in_turn, .cli = "claude-code", .send_err = null, .code = "AgentBusy" },
-        .{ .state = .idle, .cli = "codex", .send_err = null, .code = "FreshUnsupported" },
+        .{ .state = .idle, .cli = "gemini", .send_err = null, .code = "FreshUnsupported" },
         .{ .state = .idle, .cli = "claude-code", .send_err = error.DraftInLine, .code = "DraftInLine" },
         .{ .state = .idle, .cli = "claude-code", .send_err = error.UserPresent, .code = "UserPresent" },
     }) |c| {

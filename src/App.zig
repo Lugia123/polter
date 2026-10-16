@@ -198,6 +198,11 @@ notice_retry_ms: ?u64 = null,
 /// The retry thread saying its moment has come. Set off the app thread.
 notice_due: std.atomic.Value(bool) = .init(false),
 
+/// An agent's connection closed (`Server.Submit.agent_gone`): look at who is
+/// connected on the next tick, rather than at the next screen report,
+/// which may never come (task 1668).
+links_due: std.atomic.Value(bool) = .init(false),
+
 /// Started the first time a notice is refused, so a session in which none
 /// ever is never has the thread.
 notice_wake: ?poltergeistpkg.ControlWake = null,
@@ -728,9 +733,21 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
 
     // A notice that was refused in its supervisor's terminal, come back
     // for. Before the snapshot, like everything else that can move it.
+    // A connection closed: note it now, and come back once its grace has
+    // passed to see whether its program still runs (`Bus.considerLinks`).
+    if (self.links_due.swap(false, .acq_rel)) {
+        if (!self.poltergeist_stopping.load(.acquire)) {
+            self.notePoltergeistAgentsHere();
+            self.noticeRetryIn(poltergeistpkg.Bus.link_grace_ms + chat_notice_retry_margin_ms);
+        }
+    }
+
     if (self.notice_due.swap(false, .acq_rel)) {
         self.notice_retry_ms = null;
         if (!self.poltergeist_stopping.load(.acquire)) {
+            // Connections first: a loss whose grace has run out goes into
+            // the box this delivery takes from (task 1668).
+            self.notePoltergeistAgentsHere();
             self.deliverPoltergeistNotices(self.poltergeistElapsedMs());
             // Mentions refused a moment ago, before the sweep below: one
             // typed now is marked as told, so the sweep does not add a
@@ -889,6 +906,15 @@ test "notice delivery: several refusals share one wake, at the earliest moment a
 }
 
 /// The retry thread's whole job: raise the flag and get `tick` called.
+/// From a connection thread: an agent's connection has closed. Only says so;
+/// the app thread looks.
+fn poltergeistAgentGone(ctx: *anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.poltergeist_stopping.load(.acquire)) return;
+    self.links_due.store(true, .release);
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
 fn noticeRetryDue(ctx: *anyopaque) void {
     const self: *App = @ptrCast(@alignCast(ctx));
     if (self.poltergeist_stopping.load(.acquire)) return;
@@ -2626,20 +2652,31 @@ fn notePoltergeistAgentsHere(self: *App) void {
         const id = kv.key_ptr.*;
         const here = self.agentPresent(id);
         const pid: ?u64 = if (!here) null else if (self.poltergeist_server) |*srv| srv.agentPid(id) else null;
-        self.poltergeist.noteAgentHere(id, here, pid, now_ms);
+        const program: ?poltergeistpkg.Bus.Program = if (pid) |p| .{
+            .pid = p,
+            .started = if (poltergeistpkg.process_info.of(p)) |info| info.started else null,
+        } else null;
+        self.poltergeist.noteAgentHere(id, here, program, now_ms);
     }
     // A connection gone while its program runs (task 1668, #83).
-    _ = self.poltergeist.considerLinks(now_ms, self, poltergeistProcessAlive);
+    _ = self.poltergeist.considerLinks(now_ms, self, poltergeistProgramRuns);
 }
 
-/// Whether a process is still there, for `Bus.considerLinks`. Signal 0
-/// checks without sending anything; a process that exists but is not ours
-/// to signal is still there. Never asked on Windows, where no pid is read
+/// Whether the program an agent connected from is still running in that
+/// terminal, for `Bus.considerLinks`. Three ways it is not, each of which
+/// once reported a Codex that had quit with `/exit` as still running
+/// (#1669 c1669-12): the terminal's shell is back at its prompt; the
+/// process has exited and is a zombie nobody has collected; or the number
+/// now belongs to a process that started at another time. A process that
+/// cannot be read is taken as not running: this report is only worth
+/// making when it is certain. Never asked on Windows, where no pid is read
 /// (`agent_cli.Sighting.pid`).
-fn poltergeistProcessAlive(_: *anyopaque, pid: u64) bool {
-    if (comptime builtin.os.tag == .windows) return false;
-    const p = std.math.cast(std.posix.pid_t, pid) orelse return false;
-    std.posix.kill(p, @enumFromInt(0)) catch |err| return err == error.PermissionDenied;
+fn poltergeistProgramRuns(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, program: poltergeistpkg.Bus.Program) bool {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.findSurfaceByID(id)) |surface| if (surface.shellIdle()) return false;
+    const info = poltergeistpkg.process_info.of(program.pid) orelse return false;
+    if (info.zombie) return false;
+    if (program.started) |started| if (info.started != started) return false;
     return true;
 }
 
@@ -4017,6 +4054,7 @@ fn syncPoltergeistServer(self: *App, want: bool, max_agents: u16) !void {
         .ctx = self,
         .func = submitPoltergeistRequest,
         .full = poltergeistAgentsFull,
+        .agent_gone = poltergeistAgentGone,
     }, max_agents);
     errdefer {
         self.poltergeist_server.?.deinit();
@@ -4435,13 +4473,14 @@ fn poltergeistParkAssign(
     id: poltergeistpkg.Bus.Id,
     task: u64,
     before: ?[]const u8,
+    confirm: poltergeistpkg.fresh_assign.Confirm,
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     const pending = self.poltergeist_dispatching orelse return error.NothingToHold;
-    try self.fresh_assigns.park(self.alloc, pending, id, task, before, self.poltergeistElapsedMs());
+    try self.fresh_assigns.park(self.alloc, pending, id, task, before, confirm, self.poltergeistElapsedMs());
     pending.retain();
     self.poltergeist_parked = true;
-    self.noticeRetryIn(poltergeistpkg.fresh_assign.wait_ms + chat_notice_retry_margin_ms);
+    self.noticeRetryIn(confirm.holdMs() + chat_notice_retry_margin_ms);
 }
 
 /// The CLI in `id` said something: answer any fresh assignment its clear
@@ -4460,10 +4499,20 @@ fn finishFreshAssigns(self: *App, id: poltergeistpkg.Bus.Id, ev: poltergeistpkg.
 fn sweepFreshAssigns(self: *App) void {
     const now_ms = self.poltergeistElapsedMs();
     while (self.fresh_assigns.takeExpired(now_ms)) |e| {
-        log.warn("poltergeist: fresh assignment not confirmed cleared within {d}ms task={d} id={x}; typing it anyway", .{
-            poltergeistpkg.fresh_assign.wait_ms, e.task, e.id,
-        });
-        self.finishFreshAssign(e, .unconfirmed);
+        switch (e.confirm) {
+            .session_start => {
+                log.warn("poltergeist: fresh assignment not confirmed cleared within {d}ms task={d} id={x}; typing it anyway", .{
+                    poltergeistpkg.fresh_assign.wait_ms, e.task, e.id,
+                });
+                self.finishFreshAssign(e, .unconfirmed);
+            },
+            // Expected: this CLI confirms its clear with the turn the
+            // line starts.
+            .next_turn => {
+                log.info("poltergeist: fresh assignment settled task={d} id={x}; the clear is confirmed by the next turn", .{ e.task, e.id });
+                self.finishFreshAssign(e, .pending);
+            },
+        }
     }
     // A wake that came a little early leaves one behind: come back for it.
     for (self.fresh_assigns.entries.items) |e| {
