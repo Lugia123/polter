@@ -41,6 +41,7 @@ pub const fn n_(s: &'static str) -> &'static str {
 pub mod act;
 pub mod alert;
 pub mod chrome;
+pub mod confirm;
 pub mod glyph;
 pub mod hud;
 pub mod json;
@@ -54,6 +55,7 @@ pub mod panestack;
 pub mod pulse;
 pub mod quota;
 pub mod reach;
+pub mod rowmenu;
 pub mod rules;
 pub mod scene;
 pub mod slide;

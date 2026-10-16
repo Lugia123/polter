@@ -221,6 +221,10 @@ mod tests {
             viewport: Rect { x: 0.0, y: 10.0, w: 300.0, h: 90.0 },
             content_height: 120.0,
             scrolled: 0.0,
+            line_rects: Vec::new(),
+            archived_separator: r(0.0),
+            archived_header: Rect { h: 0.0, ..r(0.0) },
+            archived_rows: Vec::new(),
         };
         // `api` ends exactly at the bottom and is in; `docs` is cut off.
         // In the list's order.

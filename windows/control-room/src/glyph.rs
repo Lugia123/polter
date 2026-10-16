@@ -46,6 +46,52 @@ pub fn held() -> Vec<Shape> {
     vec![full(Outline::RoundRect(3.8, 3.0, 2.4, 8.0, 0.8)), full(Outline::RoundRect(7.8, 3.0, 2.4, 8.0, 0.8))]
 }
 
+/// The two marks a group's row can carry beside its name (task 1661,
+/// design v21 `05`): pinned, a solid pushpin; muted, a bell drawn in line
+/// with a slash through it. On the status glyphs' own artboard and drawn
+/// in a quieter ink than they are, so that they are not read as a status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    Pinned,
+    Muted,
+}
+
+pub fn mark(mark: Mark) -> Vec<Shape> {
+    match mark {
+        Mark::Pinned => vec![
+            // The head, the body widening to the plate, and the needle.
+            full(Outline::RoundRect(4.0, 1.0, 6.0, 2.2, 1.0)),
+            full(Outline::Polygon(vec![(4.9, 3.0), (9.1, 3.0), (10.0, 7.8), (4.0, 7.8)])),
+            full(Outline::RoundRect(2.5, 7.6, 9.0, 1.6, 0.8)),
+            full(Outline::RoundRect(6.35, 9.0, 1.3, 4.2, 0.65)),
+        ],
+        Mark::Muted => {
+            // A line from the upper left to the lower right, as a band of
+            // half-width `h` about its centre line.
+            let band = |h: f64| {
+                let (a, b) = ((2.0, 1.5), (12.0, 12.5));
+                let (dx, dy): (f64, f64) = (b.0 - a.0, b.1 - a.1);
+                let len = (dx * dx + dy * dy).sqrt();
+                let (nx, ny) = (-dy / len * h, dx / len * h);
+                Outline::Polygon(vec![(a.0 + nx, a.1 + ny), (b.0 + nx, b.1 + ny), (b.0 - nx, b.1 - ny), (a.0 - nx, a.1 - ny)])
+            };
+            vec![
+                // The bell in line: a dome on straight sides, its inside
+                // cut out, standing on its rim, the clapper under it.
+                full(Outline::Ellipse(3.0, 1.5, 8.0, 8.0)),
+                full(Outline::Polygon(vec![(3.0, 5.5), (11.0, 5.5), (11.6, 9.4), (2.4, 9.4)])),
+                cut(Outline::Ellipse(4.3, 2.8, 5.4, 5.4)),
+                cut(Outline::Polygon(vec![(4.3, 5.5), (9.7, 5.5), (10.2, 9.0), (3.8, 9.0)])),
+                full(Outline::RoundRect(1.6, 8.6, 10.8, 1.4, 0.7)),
+                full(Outline::Ellipse(5.9, 10.4, 2.2, 2.2)),
+                // The slash, with a gap cut either side of it.
+                cut(band(1.6)),
+                full(band(0.65)),
+            ]
+        }
+    }
+}
+
 pub fn shapes(shown: Shown, spin_step: usize) -> Vec<Shape> {
     let a = status::ARTBOARD;
     match shown {

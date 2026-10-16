@@ -2169,7 +2169,8 @@ pub fn layout(frame: HWND) {
         let loan_rect: Option<TreeRect> = on_loan.and_then(|_| {
             use polter_control_room::{layout::Room, scene};
             let scale = win.scale.max(0.1);
-            let side = Room::new(bounds.w / scale, bounds.h / scale).right;
+            // Narrower while the group's brief is open beside it (task 1661).
+            let side = Room::new(bounds.w / scale, bounds.h / scale).with_note(crate::control_room::note_open()).right;
             let t = scene::terminal_rect(side.w, side.h);
             let px = |v: f64| (v * scale).round();
             let (w, h) = (px(t.w), px(t.h));

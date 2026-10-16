@@ -37,6 +37,43 @@ pub enum Act<'a> {
     Fix { group: &'a str },
     /// The same, on the row of a terminal that is in no group.
     FixTerminal { terminal: &'a str },
+    // The menu on a group's row (task 1659's acts; the hosts' part is
+    // tasks 1660 and 1661).
+    Pin { group: &'a str },
+    Unpin { group: &'a str },
+    /// Notifications off until a moment on the wall clock; none: until
+    /// they are turned on. "An hour" and "until tomorrow 9:00, local time"
+    /// are the host's to work out (`mute_until`).
+    Mute { group: &'a str, until_ms: Option<u64> },
+    Unmute { group: &'a str },
+    Archive { group: &'a str },
+    Unarchive { group: &'a str },
+    RenameGroup { from: &'a str, to: &'a str },
+    SetBrief { group: &'a str, brief: &'a str },
+    /// The two numbers the dialog showed: the core does nothing if they
+    /// are not what it would delete now (`Stale`).
+    DeleteGroup { group: &'a str, members: u64, open_tasks: u64 },
+    /// Type the core's fixed sentence into the group's supervisor.
+    AskSupervisor { group: &'a str, ask: Ask },
+}
+
+/// What the supervisor is asked from the row's menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ask {
+    /// To say how the work is going.
+    Report,
+    /// To close the workers that have nothing to do.
+    CloseIdle,
+}
+
+impl Ask {
+    /// The core's word.
+    pub fn name(self) -> &'static str {
+        match self {
+            Ask::Report => "report",
+            Ask::CloseIdle => "close_idle",
+        }
+    }
 }
 
 /// What "Fix" on `row` is sent as; none when the row offers no button to
@@ -119,6 +156,21 @@ pub fn encode(act: &Act) -> Option<String> {
         Act::RetentionAgree => "{\"act\":\"retention_agree\"}".to_string(),
         Act::Fix { group } => format!("{{\"act\":\"fix\",\"group\":{}}}", quote(group)),
         Act::FixTerminal { terminal } => format!("{{\"act\":\"fix\",\"terminal\":{}}}", quote(terminal)),
+        Act::Pin { group } => format!("{{\"act\":\"pin\",\"group\":{}}}", quote(group)),
+        Act::Unpin { group } => format!("{{\"act\":\"unpin\",\"group\":{}}}", quote(group)),
+        Act::Mute { group, until_ms: Some(until) } => format!("{{\"act\":\"mute\",\"group\":{},\"until_ms\":{until}}}", quote(group)),
+        Act::Mute { group, until_ms: None } => format!("{{\"act\":\"mute\",\"group\":{}}}", quote(group)),
+        Act::Unmute { group } => format!("{{\"act\":\"unmute\",\"group\":{}}}", quote(group)),
+        Act::Archive { group } => format!("{{\"act\":\"archive\",\"group\":{}}}", quote(group)),
+        Act::Unarchive { group } => format!("{{\"act\":\"unarchive\",\"group\":{}}}", quote(group)),
+        Act::RenameGroup { from, to } => format!("{{\"act\":\"rename_group\",\"from\":{},\"to\":{}}}", quote(from), quote(to)),
+        Act::SetBrief { group, brief } => format!("{{\"act\":\"set_brief\",\"group\":{},\"brief\":{}}}", quote(group), quote(brief)),
+        Act::DeleteGroup { group, members, open_tasks } => {
+            format!("{{\"act\":\"delete_group\",\"group\":{},\"members\":{members},\"open_tasks\":{open_tasks}}}", quote(group))
+        }
+        Act::AskSupervisor { group, ask } => {
+            format!("{{\"act\":\"ask_supervisor\",\"group\":{},\"ask\":{}}}", quote(group), quote(ask.name()))
+        }
         Act::StartSupervisor { group, role, cwd, session } => {
             // Left out when the person picked neither: the core then uses
             // the ones its snapshot named.
@@ -184,6 +236,25 @@ pub enum Refusal {
     /// Nobody connected in the terminal "Fix" would type into; the
     /// paragraph is kept in the group.
     NoAgent,
+    /// A group's new name is empty (task 1659's rename).
+    EmptyName,
+    /// The group has no supervisor to ask.
+    NoSupervisor,
+    /// The rename could not be written; nothing was changed.
+    RenameFailed,
+    /// A record by the new name is still on disk (a group of that name was
+    /// deleted from the list and its history kept).
+    RenameBlocked,
+    /// Another Polter is renaming a group this very moment.
+    RenameBusy,
+    /// An earlier rename was left half done by a Polter that stopped.
+    RenameUnfinished,
+    /// Begun and neither finished nor undone; it is finished at the next
+    /// start, and the group keeps its old name until then.
+    RenameDeferred,
+    /// The group is off the list, but some of its records could not be
+    /// deleted and are still on disk.
+    DeleteFailed,
     /// A name this build does not know. Shown as it came, never dropped.
     Other,
 }
@@ -193,7 +264,8 @@ impl Refusal {
         match name {
             "BadRequest" => Refusal::BadRequest,
             "NoSuchGroup" => Refusal::NoSuchGroup,
-            "SnoozeInThePast" => Refusal::SnoozeInThePast,
+            // A mute's moment is a snooze's in all but name.
+            "SnoozeInThePast" | "MuteInThePast" => Refusal::SnoozeInThePast,
             "UnknownTerminal" | "NoSuchTerminal" => Refusal::UnknownTerminal,
             "PromptGone" => Refusal::PromptGone,
             "NothingToReplyTo" => Refusal::NothingToReplyTo,
@@ -218,6 +290,14 @@ impl Refusal {
             "NothingToFix" => Refusal::NothingToFix,
             "AlreadyNotified" => Refusal::AlreadyNotified,
             "NoAgent" => Refusal::NoAgent,
+            "EmptyName" => Refusal::EmptyName,
+            "NoSupervisor" => Refusal::NoSupervisor,
+            "RenameFailed" => Refusal::RenameFailed,
+            "RenameBlocked" => Refusal::RenameBlocked,
+            "RenameBusy" => Refusal::RenameBusy,
+            "RenameUnfinished" => Refusal::RenameUnfinished,
+            "RenameDeferred" => Refusal::RenameDeferred,
+            "DeleteFailed" => Refusal::DeleteFailed,
             _ => Refusal::Other,
         }
     }
@@ -255,6 +335,14 @@ impl Refusal {
             Refusal::NothingToFix => n_("It is no longer failing. Nothing was sent."),
             Refusal::AlreadyNotified => n_("The supervisor has already been told."),
             Refusal::NoAgent => n_("No agent is connected in that terminal, so nothing was typed. It is kept in the group."),
+            Refusal::EmptyName => n_("A group's name cannot be empty."),
+            Refusal::NoSupervisor => n_("This group has no supervisor."),
+            Refusal::RenameFailed => n_("The group could not be renamed. Nothing was changed."),
+            Refusal::RenameBlocked => n_("Records of a group by that name are still on disk. Pick another name."),
+            Refusal::RenameBusy => n_("Another Polter is renaming a group right now. Try again in a few seconds."),
+            Refusal::RenameUnfinished => n_("An earlier rename was left unfinished. Restart Polter, then try again."),
+            Refusal::RenameDeferred => n_("The rename could not be finished now; it will be finished the next time Polter starts."),
+            Refusal::DeleteFailed => n_("Deleted from the list, but some of its records could not be deleted."),
             Refusal::Other => n_("It was not done ({})."),
         }
     }
@@ -356,5 +444,87 @@ impl SeenMarker {
             Some(terminal) => Act::SeenTerminal { terminal },
             None => Act::Seen { group: &dwell.row },
         })
+    }
+}
+
+/// When "mute" from the row's menu ends, in wall-clock milliseconds: an
+/// hour from `now_ms`; tomorrow at 9:00 in the person's own time, as the
+/// menu says it (the brief: "到明天 9:00") -- tomorrow's even just after
+/// midnight; or never (task 1659: the host works these out, the core is
+/// told the moment). `offset_ms` is how far local time is ahead of UTC at
+/// `now_ms`. None for an id that is not one of the three.
+pub fn mute_until(id: &str, now_ms: u64, offset_ms: i64) -> Option<Option<u64>> {
+    const HOUR: u64 = 3_600_000;
+    const DAY: i64 = 86_400_000;
+    match id {
+        "mute_hour" => Some(Some(now_ms + HOUR)),
+        "mute_forever" => Some(None),
+        "mute_tomorrow" => {
+            let local = now_ms as i64 + offset_ms;
+            let midnight = local.div_euclid(DAY) * DAY;
+            let at = midnight + DAY + 9 * HOUR as i64;
+            Some(Some((at - offset_ms).max(0) as u64))
+        }
+        _ => None,
+    }
+}
+
+/// Why asking the supervisor (`Act::AskSupervisor`) typed nothing, in a
+/// few words for the line under the row, untranslated; and whether the core
+/// will try again by itself (task 1659: it does for these two, three times
+/// some seconds apart, and the host does not send it again).
+pub fn not_delivered(refusal: &str) -> (&'static str, bool) {
+    match Refusal::parse(refusal) {
+        Refusal::DraftInLine => (n_("the supervisor's input line has text in it"), true),
+        Refusal::UserPresent => (n_("somebody just typed in the supervisor's terminal"), true),
+        Refusal::NoAgent => (n_("no agent is connected in the supervisor's terminal"), false),
+        other => (other.message(), false),
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+
+    #[test]
+    fn the_menu_acts_are_the_cores_words() {
+        assert_eq!(encode(&Act::Pin { group: "g" }).unwrap(), r#"{"act":"pin","group":"g"}"#);
+        assert_eq!(encode(&Act::Unpin { group: "g" }).unwrap(), r#"{"act":"unpin","group":"g"}"#);
+        assert_eq!(encode(&Act::Mute { group: "g", until_ms: Some(5) }).unwrap(), r#"{"act":"mute","group":"g","until_ms":5}"#);
+        assert_eq!(encode(&Act::Mute { group: "g", until_ms: None }).unwrap(), r#"{"act":"mute","group":"g"}"#);
+        assert_eq!(encode(&Act::Unmute { group: "g" }).unwrap(), r#"{"act":"unmute","group":"g"}"#);
+        assert_eq!(encode(&Act::Archive { group: "g" }).unwrap(), r#"{"act":"archive","group":"g"}"#);
+        assert_eq!(encode(&Act::Unarchive { group: "g" }).unwrap(), r#"{"act":"unarchive","group":"g"}"#);
+        assert_eq!(encode(&Act::RenameGroup { from: "a", to: "b\"" }).unwrap(), r#"{"act":"rename_group","from":"a","to":"b\""}"#);
+        assert_eq!(encode(&Act::SetBrief { group: "g", brief: "x\ny" }).unwrap(), r#"{"act":"set_brief","group":"g","brief":"x\ny"}"#);
+        assert_eq!(
+            encode(&Act::DeleteGroup { group: "g", members: 2, open_tasks: 3 }).unwrap(),
+            r#"{"act":"delete_group","group":"g","members":2,"open_tasks":3}"#
+        );
+        assert_eq!(encode(&Act::AskSupervisor { group: "g", ask: Ask::Report }).unwrap(), r#"{"act":"ask_supervisor","group":"g","ask":"report"}"#);
+        assert_eq!(encode(&Act::AskSupervisor { group: "g", ask: Ask::CloseIdle }).unwrap(), r#"{"act":"ask_supervisor","group":"g","ask":"close_idle"}"#);
+        assert_eq!(Refusal::parse("MuteInThePast"), Refusal::SnoozeInThePast);
+        assert_eq!(Refusal::parse("EmptyName"), Refusal::EmptyName);
+        assert_eq!(not_delivered("DraftInLine"), ("the supervisor's input line has text in it", true));
+        assert_eq!(not_delivered("UserPresent").1, true);
+        assert_eq!(not_delivered("NoAgent").1, false);
+        assert_eq!(not_delivered("NoSupervisor"), (Refusal::NoSupervisor.message(), false));
+    }
+
+    /// 2026-10-16 15:40 in Shanghai (UTC+8) is 07:40 UTC.
+    #[test]
+    fn muting_ends_in_an_hour_tomorrow_at_nine_or_never() {
+        const HOUR: u64 = 3_600_000;
+        let offset = 8 * HOUR as i64;
+        // 2026-10-16T07:40:00Z
+        let now = 1_792_136_400_000;
+        assert_eq!(mute_until("mute_hour", now, offset), Some(Some(now + HOUR)));
+        assert_eq!(mute_until("mute_forever", now, offset), Some(None));
+        // 2026-10-17 09:00 in Shanghai is 2026-10-17T01:00:00Z.
+        assert_eq!(mute_until("mute_tomorrow", now, offset), Some(Some(1_792_198_800_000)));
+        // Just after midnight it is still tomorrow's 9:00, not today's.
+        let early = 1_792_198_800_000 - 8 * HOUR - 30 * 60_000; // 00:30 local on the 17th
+        assert_eq!(mute_until("mute_tomorrow", early, offset), Some(Some(1_792_198_800_000 + 24 * HOUR)));
+        assert_eq!(mute_until("pin", now, offset), None);
     }
 }

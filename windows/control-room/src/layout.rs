@@ -179,6 +179,27 @@ pub struct ListLayout {
     /// be: every rect in `rows`, `separator` and `quiet_header` is where it
     /// is seen, that much higher than where it was laid out.
     pub scrolled: f64,
+    /// The line under a row (task 1661): why a new name for it was
+    /// refused, or that its supervisor was asked something -- for the rows
+    /// that have one. The row is taller by the line; this is where the line
+    /// is in it.
+    pub line_rects: Vec<(String, Rect)>,
+    /// The list's last section (task 1661, design v21 `06`): the groups
+    /// put away. Its line and its header have no height when there are
+    /// none; its rows, by name, only while the person has it open.
+    pub archived_separator: Rect,
+    pub archived_header: Rect,
+    pub archived_rows: Vec<(String, Rect)>,
+}
+
+/// What the list's layout depends on besides the list (task 1661): the
+/// rows with a line under them, the groups put away in the core's order,
+/// and whether the person opened their section.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Extras {
+    pub lines_under: Vec<String>,
+    pub archived: Vec<String>,
+    pub archived_open: bool,
 }
 
 /// Scrolling the rows in the viewport, as numbers: the same rules as the
@@ -248,6 +269,14 @@ impl ListLayout {
     /// it wanted, and whether it is set in the terminal's face: the host's
     /// measurement.
     pub fn measured(list: &List, height: f64, needed: &dyn Fn(&str, bool) -> usize) -> ListLayout {
+        Self::measured_with(list, height, needed, &Extras::default())
+    }
+
+    /// The same with `extras`. The macOS host's `ControlRoomListLayout`
+    /// with `linesUnder`, `archived` and `archivedOpen` is the same
+    /// arithmetic, and `tools/control-room-hosts-agree.py` holds the two
+    /// to it.
+    pub fn measured_with(list: &List, height: f64, needed: &dyn Fn(&str, bool) -> usize, extras: &Extras) -> ListLayout {
         let pad = space::SIDE_PANEL_PADDING;
         let width = side::WIDTH;
         let inner = width - 2.0 * pad;
@@ -265,14 +294,23 @@ impl ListLayout {
             r
         });
 
+        let line_h = side::ASK_LINE_HEIGHT;
+        let has_line = |id: &str| extras.lines_under.iter().any(|u| u == id);
         let mut rows = Vec::new();
         let mut fits = Vec::new();
+        let mut line_rects = Vec::new();
         for row in &list.waiting {
             let code = crate::list::is_code(&row.what);
             let wanted: Vec<usize> = crate::list::drawn(&row.what).iter().map(|line| needed(line, code)).collect();
             let fit = AskFit::fit(&wanted);
-            let row_h = row_height(&fit, row.others, row.fix);
+            let more = if has_line(&row.id) { line_h } else { 0.0 };
+            let row_h = row_height(&fit, row.others, row.fix) + more;
             rows.push((row.id.clone(), Rect { x: pad, y, w: inner, h: row_h }));
+            if more > 0.0 {
+                // Under what it waits on, above "Fix" when it has that.
+                let fix_h = if row.fix == Fix::None { 0.0 } else { side::FIX_LINE_HEIGHT };
+                line_rects.push((row.id.clone(), Rect { x: pad, y: y + row_h - side::ROW_PADDING_Y - fix_h - line_h, w: inner, h: line_h }));
+            }
             fits.push((row.id.clone(), fit));
             y += row_h + side::ROW_GAP;
         }
@@ -290,16 +328,58 @@ impl ListLayout {
             y += header_h;
             (separator, quiet_header)
         };
+        let quiet_h = side::QUIET_ROW_HEIGHT;
         for row in &list.quiet {
-            rows.push((row.id.clone(), Rect { x: pad, y, w: inner, h: side::QUIET_ROW_HEIGHT }));
-            y += side::QUIET_ROW_HEIGHT;
+            let more = if has_line(&row.id) { line_h } else { 0.0 };
+            rows.push((row.id.clone(), Rect { x: pad, y, w: inner, h: quiet_h + more }));
+            if more > 0.0 {
+                line_rects.push((row.id.clone(), Rect { x: pad, y: y + quiet_h, w: inner, h: line_h }));
+            }
+            y += quiet_h + more;
         }
+
+        // The groups put away: a line, their header, and while it is open
+        // a quiet row each.
+        let mut archived_rows = Vec::new();
+        let (archived_separator, archived_header) = if extras.archived.is_empty() {
+            (Rect { x: pad + pad_x, y, w: inner - 2.0 * pad_x, h: 0.0 }, Rect { x: pad, y, w: inner, h: 0.0 })
+        } else {
+            y += side::SEPARATOR_SPACE_ABOVE;
+            let line = Rect { x: pad + pad_x, y, w: inner - 2.0 * pad_x, h: line::HAIRLINE };
+            y += line::HAIRLINE + side::SEPARATOR_SPACE_BELOW;
+            let head = Rect { x: pad, y, w: inner, h: header_h };
+            y += header_h;
+            if extras.archived_open {
+                for name in &extras.archived {
+                    archived_rows.push((name.clone(), Rect { x: pad, y, w: inner, h: quiet_h }));
+                    y += quiet_h;
+                }
+            }
+            (line, head)
+        };
 
         let list_top = notice.map_or(header.y + header.h, |n| n.y + n.h + side::ROW_GAP);
         let quota = Rect { x: pad, y: height, w: inner, h: 0.0 };
         let viewport = Rect { x: 0.0, y: list_top, w: width, h: (height - list_top).max(0.0) };
         let content_height = y + pad - list_top;
-        ListLayout { width, height, header, rows, fits, separator, quiet_header, notice, quota, viewport, content_height, scrolled: 0.0 }
+        ListLayout {
+            width,
+            height,
+            header,
+            rows,
+            fits,
+            separator,
+            quiet_header,
+            notice,
+            quota,
+            viewport,
+            content_height,
+            scrolled: 0.0,
+            line_rects,
+            archived_separator,
+            archived_header,
+            archived_rows,
+        }
     }
 
     /// The same with the allowance block `height` high at the panel's
@@ -327,11 +407,13 @@ impl ListLayout {
         let to = scroll::kept(scrolled, self.content_height, self.viewport);
         let by = to - self.scrolled;
         if by != 0.0 {
-            for (_, r) in &mut self.rows {
+            for (_, r) in self.rows.iter_mut().chain(self.line_rects.iter_mut()).chain(self.archived_rows.iter_mut()) {
                 r.y -= by;
             }
             self.separator.y -= by;
             self.quiet_header.y -= by;
+            self.archived_separator.y -= by;
+            self.archived_header.y -= by;
             self.scrolled = to;
         }
         self
@@ -340,6 +422,22 @@ impl ListLayout {
     /// Where a row was laid out, before any scroll.
     fn laid_out(&self, id: &str) -> Option<Rect> {
         self.rows.iter().find(|(name, _)| name == id).map(|(_, r)| Rect { y: r.y + self.scrolled, ..*r })
+    }
+
+    /// The archived group under a point of the panel, by name; only in the
+    /// viewport.
+    pub fn archived_at(&self, x: f64, y: f64) -> Option<&str> {
+        if y < self.viewport.y || y >= self.viewport.y + self.viewport.h {
+            return None;
+        }
+        self.archived_rows.iter().find(|(_, r)| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h).map(|(n, _)| n.as_str())
+    }
+
+    /// Whether a point of the panel is on the archived section's header,
+    /// which opens and closes it.
+    pub fn on_archived_header(&self, x: f64, y: f64) -> bool {
+        let r = self.archived_header;
+        r.h > 0.0 && y >= self.viewport.y && y < self.viewport.y + self.viewport.h && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
     }
 
     /// How far to scroll so that the whole of row `id` is seen
@@ -385,6 +483,9 @@ impl ListLayout {
 pub struct Room {
     pub panel: Rect,
     pub right: Rect,
+    /// The group's brief being edited, at the right (task 1661, design v21
+    /// `04-B`): the right side gives up its width and the space between.
+    pub note: Option<Rect>,
 }
 
 impl Room {
@@ -393,7 +494,25 @@ impl Room {
         let h = (height - 2.0 * edge).max(0.0);
         let panel = Rect { x: edge, y: edge, w: side::WIDTH, h };
         let x = panel.x + panel.w + space::BETWEEN_FRAMES;
-        Room { panel, right: Rect { x, y: edge, w: (width - x - edge).max(0.0), h } }
+        Room { panel, right: Rect { x, y: edge, w: (width - x - edge).max(0.0), h }, note: None }
+    }
+
+    /// The same with the brief's panel open at the right, `group_note::
+    /// PANEL_WIDTH` wide: the right side narrower by that and the space
+    /// between frames -- which leaves it no narrower than nothing.
+    pub fn with_note(mut self, open: bool) -> Room {
+        if open {
+            let w = crate::look::group_note::PANEL_WIDTH;
+            let give = (w + space::BETWEEN_FRAMES).min(self.right.w);
+            self.right.w -= give;
+            self.note = Some(Rect {
+                x: self.right.x + self.right.w + space::BETWEEN_FRAMES,
+                y: self.right.y,
+                w: (give - space::BETWEEN_FRAMES).max(0.0),
+                h: self.right.h,
+            });
+        }
+        self
     }
 }
 
@@ -508,5 +627,89 @@ mod scroll_tests {
         assert_eq!(end.row_at(under.x + 1.0, under.y + under.h - 1.0), None);
         let seen = end.chip(Some("g29")).unwrap();
         assert_eq!(end.row_at(seen.x + 1.0, seen.y + 1.0), Some("g29"));
+    }
+}
+
+#[cfg(test)]
+mod note_tests {
+    use super::*;
+
+    /// Design v21 `04-B`: the brief's panel is 420 wide at the right and
+    /// the supervisor's side gives up 428 for it; closed, nothing moves.
+    #[test]
+    fn the_briefs_panel_takes_its_width_from_the_right_side() {
+        let closed = Room::new(1400.0, 800.0);
+        assert_eq!(closed.with_note(false), closed);
+        let open = closed.with_note(true);
+        let note = open.note.unwrap();
+        assert_eq!(note.w, 420.0);
+        assert_eq!(closed.right.w - open.right.w, 428.0);
+        assert_eq!(note.x, open.right.x + open.right.w + space::BETWEEN_FRAMES);
+        assert_eq!(note.x + note.w, closed.right.x + closed.right.w);
+        assert_eq!((note.y, note.h), (closed.right.y, closed.right.h));
+        // Too narrow for both: the right side goes to nothing first.
+        let narrow = Room::new(700.0, 800.0).with_note(true);
+        assert_eq!(narrow.right.w, 0.0);
+        assert!(narrow.note.unwrap().w >= 0.0);
+    }
+}
+
+#[cfg(test)]
+mod extras_tests {
+    use super::*;
+
+    fn list() -> List {
+        const FIXTURE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/poltergeist/testdata/control_snapshot.json"));
+        List::from_snapshot(&crate::snapshot::decode(FIXTURE).unwrap())
+    }
+
+    /// Task 1661: a row with a line under it is that line taller, the rows
+    /// after it move down by as much, and the line is at its bottom (above
+    /// "Fix" on a card that has it); a quiet row's line is under its one.
+    #[test]
+    fn a_line_under_a_row_makes_it_one_line_taller() {
+        let l = list();
+        let (w, q) = (l.waiting[0].id.clone(), l.quiet[0].id.clone());
+        let plain = ListLayout::new(&l, 900.0);
+        let with = ListLayout::measured_with(&l, 900.0, &|t, _| nominal_lines(t), &Extras { lines_under: vec![w.clone(), q.clone()], ..Extras::default() });
+        let (a, b) = (plain.chip(Some(&w)).unwrap(), with.chip(Some(&w)).unwrap());
+        assert_eq!(b.h - a.h, side::ASK_LINE_HEIGHT);
+        let line = with.line_rects.iter().find(|(id, _)| *id == w).unwrap().1;
+        assert_eq!(line.y + line.h, b.y + b.h - side::ROW_PADDING_Y);
+        let next = l.waiting[1].id.clone();
+        assert_eq!(with.chip(Some(&next)).unwrap().y - plain.chip(Some(&next)).unwrap().y, side::ASK_LINE_HEIGHT);
+        let quiet = with.chip(Some(&q)).unwrap();
+        assert_eq!(quiet.h, side::QUIET_ROW_HEIGHT + side::ASK_LINE_HEIGHT);
+        let qline = with.line_rects.iter().find(|(id, _)| *id == q).unwrap().1;
+        assert_eq!((qline.y, qline.h), (quiet.y + side::QUIET_ROW_HEIGHT, side::ASK_LINE_HEIGHT));
+        assert_eq!(with.content_height - plain.content_height, 2.0 * side::ASK_LINE_HEIGHT);
+    }
+
+    /// The groups put away are the list's last section: a line and a
+    /// header after the quiet rows, their rows only while it is open; none
+    /// of it when there are none. Scrolling moves it with the rest.
+    #[test]
+    fn the_archived_section_is_last_and_folds() {
+        let l = list();
+        let archived = vec!["old-app".to_string(), "spike-pdf".to_string()];
+        let none = ListLayout::new(&l, 900.0);
+        assert_eq!((none.archived_header.h, none.archived_separator.h), (0.0, 0.0));
+        let shut = ListLayout::measured_with(&l, 900.0, &|t, _| nominal_lines(t), &Extras { archived: archived.clone(), ..Extras::default() });
+        let last = shut.chip(Some(&l.quiet.last().unwrap().id)).unwrap();
+        assert_eq!(shut.archived_separator.y, last.y + last.h + side::SEPARATOR_SPACE_ABOVE);
+        assert_eq!(shut.archived_header.h, side::HEADER_HEIGHT);
+        assert!(shut.archived_rows.is_empty());
+        let open = ListLayout::measured_with(&l, 900.0, &|t, _| nominal_lines(t), &Extras { archived: archived.clone(), archived_open: true, ..Extras::default() });
+        assert_eq!(open.archived_rows.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(), archived);
+        let first = open.archived_rows[0].1;
+        assert_eq!(first.y, open.archived_header.y + open.archived_header.h);
+        assert_eq!(open.content_height - shut.content_height, 2.0 * side::QUIET_ROW_HEIGHT);
+        assert_eq!(open.archived_at(first.x + 1.0, first.y + 1.0), Some("old-app"));
+        assert!(open.on_archived_header(open.archived_header.x + 1.0, open.archived_header.y + 1.0));
+        assert_eq!(open.row_at(first.x + 1.0, first.y + 1.0), None);
+        let short = ListLayout::measured_with(&l, 300.0, &|t, _| nominal_lines(t), &Extras { archived, archived_open: true, ..Extras::default() });
+        let end = short.clone().scrolled_to(1.0e6);
+        assert_eq!(end.archived_header.y, short.archived_header.y - end.scrolled);
+        assert_eq!(end.archived_rows[1].1.y, short.archived_rows[1].1.y - end.scrolled);
     }
 }

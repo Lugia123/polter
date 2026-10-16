@@ -446,6 +446,49 @@ pub struct Group {
     pub supervisor: Option<SupervisorStart>,
     /// The "Fix" button (`Fix`).
     pub fix: Fix,
+    /// What the group is for, in the person's words (its "brief"); empty
+    /// when it has none.
+    pub brief: String,
+    /// Kept at the front of its section (task 1659). The core has already
+    /// put it there; a host draws the groups in the order given.
+    pub pinned: bool,
+    /// Its notifications are off, and until when (task 1659).
+    pub muted: Option<Muted>,
+    /// What deleting it takes with it, for the dialog that asks first.
+    pub delete_cost: Option<DeleteCost>,
+    /// The directory its record is in: what "Show in Explorer" opens.
+    pub record_dir: Option<String>,
+    /// The project it is tied to, by name; none when it has none.
+    pub project_name: Option<String>,
+}
+
+/// A group whose notifications are off (task 1659).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Muted {
+    /// Wall-clock milliseconds when they come back on; none: not until
+    /// the person turns them on.
+    pub until_ms: Option<u64>,
+}
+
+/// What deleting a group takes with it, as the dialog says it and as the
+/// delete hands back (`act::Act::DeleteGroup`): the terminals in it, the
+/// supervisor counted and the person not, and its tasks not done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeleteCost {
+    pub members: u64,
+    pub open_tasks: u64,
+}
+
+/// A group put away (task 1659): not in `groups`, nothing waits on it, and
+/// it is shown only in the list's last section, newest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Archived {
+    pub name: String,
+    pub brief: String,
+    /// Wall-clock milliseconds when it was put away.
+    pub archived_ms: u64,
+    pub record_dir: Option<String>,
+    pub delete_cost: Option<DeleteCost>,
 }
 
 /// Which of the three frames a terminal's pane wears in its own tab, as the
@@ -727,6 +770,8 @@ pub struct Snapshot {
     /// delete this much (task 1511). None when nothing waits, or from a
     /// core that does not say.
     pub retention_waiting_bytes: Option<u64>,
+    /// The groups put away (task 1659), newest first.
+    pub archived: Vec<Archived>,
 }
 
 impl Snapshot {
@@ -889,6 +934,15 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         }
     };
     Ok(Group {
+        brief: if v.get("brief").is_some() { text(v, path, "brief")? } else { String::new() },
+        pinned: if v.get("pinned").is_some() { boolean(v, path, "pinned")? } else { false },
+        muted: muted_of(v, path)?,
+        delete_cost: delete_cost_of(v, path)?,
+        record_dir: if v.get("record_dir").is_some() { opt_text(v, path, "record_dir")? } else { None },
+        project_name: match v.get("project") {
+            Some(p) if p.get("name").is_some() => opt_text(p, &format!("{path}.project"), "name")?,
+            _ => None,
+        },
         name: text(v, path, "name")?,
         needs_me: boolean(v, path, "needs_me")?,
         unseen: boolean(v, path, "unseen")?,
@@ -917,6 +971,44 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         supervisor,
         fix: fix_of(v, path)?,
     })
+}
+
+/// `muted`: none when it is absent (a core from before task 1659) or null.
+fn muted_of(v: &Value, path: &str) -> Res<Option<Muted>> {
+    match v.get("muted") {
+        None | Some(Value::Null) => Ok(None),
+        Some(m) => Ok(Some(Muted { until_ms: opt_int(m, &format!("{path}.muted"), "until_ms")? })),
+    }
+}
+
+/// `delete_cost`, when the core writes one.
+fn delete_cost_of(v: &Value, path: &str) -> Res<Option<DeleteCost>> {
+    match v.get("delete_cost") {
+        None | Some(Value::Null) => Ok(None),
+        Some(c) => {
+            let at = format!("{path}.delete_cost");
+            Ok(Some(DeleteCost { members: int(c, &at, "members")?, open_tasks: int(c, &at, "open_tasks")? }))
+        }
+    }
+}
+
+/// The groups put away, newest first; none from a core before task 1659.
+fn archived_of(v: &Value) -> Res<Vec<Archived>> {
+    if v.get("archived").is_none() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for (i, a) in list(v, "snapshot", "archived")?.iter().enumerate() {
+        let path = format!("archived[{i}]");
+        out.push(Archived {
+            name: text(a, &path, "name")?,
+            brief: if a.get("brief").is_some() { text(a, &path, "brief")? } else { String::new() },
+            archived_ms: int(a, &path, "archived_ms")?,
+            record_dir: if a.get("record_dir").is_some() { opt_text(a, &path, "record_dir")? } else { None },
+            delete_cost: delete_cost_of(a, &path)?,
+        });
+    }
+    Ok(out)
 }
 
 /// A heading the core wrote, or none where the snapshot has none. One that
@@ -1058,5 +1150,6 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
             None => None,
             Some(_) => opt_int(&v, root, "retention_waiting_bytes")?,
         },
+        archived: archived_of(&v)?,
     })
 }

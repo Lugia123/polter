@@ -5315,3 +5315,219 @@ msgstr "恢复上一版？"
 #: windows/host/src
 msgid "“{}” goes back to its layout before the last change. The current version is kept, so doing this again undoes it."
 msgstr "“{}”将回到上一次改动之前的布局。当前版本会保留下来，再做一次就能撤销。"
+
+#: windows/control-room/src/rowmenu.rs:152
+msgid "Go to Supervisor"
+msgstr "跳到总管"
+
+#: windows/control-room/src/rowmenu.rs:153
+msgid "Let the Control Room Take Over…"
+msgstr "让总控台接管…"
+
+#: windows/control-room/src/rowmenu.rs:154
+msgid "Start Supervisor, Going On with the Last Session"
+msgstr "启动总管，接着上次的会话"
+
+#: windows/control-room/src/rowmenu.rs:155
+msgid "Start Supervisor with a New Session"
+msgstr "启动总管，用新会话"
+
+#: windows/control-room/src/rowmenu.rs:157
+msgid "Ask the Supervisor for a Progress Report"
+msgstr "请总管汇报进度"
+
+#: windows/control-room/src/rowmenu.rs:158
+msgid "Ask the Supervisor to Close Idle Workers"
+msgstr "让总管关闭闲置 worker"
+
+#: windows/control-room/src/rowmenu.rs:160
+msgid "Copy Supervisor's Terminal ID"
+msgstr "复制总管终端 ID"
+
+#: windows/control-room/src/rowmenu.rs:161
+msgid "Pin"
+msgstr "置顶"
+
+#: windows/control-room/src/rowmenu.rs:162
+msgid "Unpin"
+msgstr "取消置顶"
+
+#: windows/control-room/src/rowmenu.rs:163
+msgid "Mute This Group's Notifications"
+msgstr "静音这个群的通知"
+
+#: windows/control-room/src/rowmenu.rs:164
+msgid "Unmute"
+msgstr "取消静音"
+
+#: windows/control-room/src/rowmenu.rs:165
+msgid "For 1 Hour"
+msgstr "1 小时"
+
+#: windows/control-room/src/rowmenu.rs:166
+msgid "Until Tomorrow"
+msgstr "到明天"
+
+#: windows/control-room/src/rowmenu.rs:168
+msgid "Rename Group…"
+msgstr "重命名群…"
+
+#: windows/control-room/src/rowmenu.rs:169
+msgid "Edit Group Note…"
+msgstr "编辑群简介…"
+
+#: windows/control-room/src/rowmenu.rs:173
+msgid "Link to Project…"
+msgstr "关联项目…"
+
+#: windows/control-room/src/rowmenu.rs:174
+msgid "Archive…"
+msgstr "归档…"
+
+#: windows/control-room/src/rowmenu.rs:175
+msgid "Unarchive"
+msgstr "取消归档"
+
+#: windows/control-room/src/rowmenu.rs:176
+msgid "Delete Group…"
+msgstr "删除群…"
+
+#: windows/control-room/src/act.rs:320
+msgid "A group's name cannot be empty."
+msgstr "群名不能是空的。"
+
+#: windows/control-room/src/act.rs:322
+msgid "The group could not be renamed. Nothing was changed."
+msgstr "群没能改名，什么都没变。"
+
+#: windows/control-room/src/rowmenu.rs:221
+msgid "until {}"
+msgstr "到 {}"
+
+#: windows/control-room/src/rowmenu.rs:222
+msgid "until tomorrow {}"
+msgstr "到明天 {}"
+
+#: windows/control-room/src/rowmenu.rs:167
+msgid "Until Turned Back On"
+msgstr "一直"
+
+#: windows/control-room/src/confirm.rs:28
+msgid "Archive {}?"
+msgstr "归档 {}？"
+
+#: windows/control-room/src/confirm.rs:32
+msgid "The supervisor is still running. Archiving does not close its terminal or its workers'."
+msgstr "总管还在跑。归档不会关掉它和 worker 的终端。"
+
+#: windows/control-room/src/confirm.rs:33
+msgid "Archive"
+msgstr "归档"
+
+#: windows/control-room/src/confirm.rs:35
+msgid "Delete the group {}?"
+msgstr "删除 {} 这个群？"
+
+#: windows/control-room/src/confirm.rs:39
+msgid "This group still has {} members. Deleting does not close their terminals, but they leave the group."
+msgstr "这个群里还有 {} 个成员。删除不会关掉它们的终端，但它们会离开这个群。"
+
+#: windows/control-room/src/confirm.rs:40
+msgid "This group still has {} unfinished tasks. They are deleted with it."
+msgstr "这个群里还有 {} 件任务没做完，会一起删掉。"
+
+#: windows/control-room/src/confirm.rs:41
+msgid "Its chat, task panel and brief are deleted with it, and cannot be recovered."
+msgstr "群聊记录、任务面板和群简介会一起删掉，不能恢复。"
+
+#: windows/control-room/src/confirm.rs:42
+msgid "The project {} stays; it just no longer belongs to any group."
+msgstr "项目 {} 留着，只是不再属于任何群。"
+
+#: windows/control-room/src/confirm.rs:43
+msgid "If you would rather not delete this much, archive it instead."
+msgstr "不想删得这么干净，可以改为归档。"
+
+#: windows/control-room/src/confirm.rs:44
+msgid "Delete Group"
+msgstr "删除群"
+
+#: windows/control-room/src/confirm.rs:29
+msgid "It goes into “Archived” at the bottom of the list, and you are not notified about it any more. Its chat, tasks, brief and project are all kept; right-click it in “Archived” and choose “Unarchive” to bring it back."
+msgstr "它会收进列表底部的「已归档」，不再通知你。聊天记录、任务、群简介和项目都留着，在「已归档」里右键「取消归档」就回来。"
+
+#: windows/control-room/src/confirm.rs:34
+msgid "This group still has {} members and {} unfinished tasks. Deleting does not close their terminals, but they leave the group, and the unfinished tasks are deleted too."
+msgstr "这个群里还有 {} 个成员，{} 件任务没做完。删除不会关掉它们的终端，但它们会离开这个群，没做完的任务也一起删掉。"
+
+#: windows/control-room/src/scene.rs:28
+msgid "{}'s brief"
+msgstr "{} 的群简介"
+
+#: windows/control-room/src/scene.rs:29
+msgid "The group's supervisor and workers can all read this."
+msgstr "群里的总管和 worker 都读得到这段话。"
+
+#: windows/control-room/src/scene.rs:30
+msgid "{} characters"
+msgstr "{} 字"
+
+#: windows/control-room/src/scene.rs:31
+msgid "{} characters, not saved"
+msgstr "{} 字，没保存"
+
+#: windows/control-room/src/scene.rs:28
+msgid "Asked the supervisor for a progress report"
+msgstr "已请总管汇报进度"
+
+#: windows/control-room/src/scene.rs:29
+msgid "Asked the supervisor to close idle workers"
+msgstr "已请总管关闭闲置的 worker"
+
+#: windows/control-room/src/scene.rs:30
+msgid "Not delivered: {}"
+msgstr "没送出去：{}"
+
+#: windows/control-room/src/scene.rs:31
+msgid "Not delivered yet: {}. It will be tried again."
+msgstr "还没送出去：{}。会再试。"
+
+#: windows/control-room/src/scene.rs:32
+msgid "Archived ({})"
+msgstr "已归档 ({})"
+
+#: windows/control-room/src/scene.rs:34
+msgid "archived {}/{}"
+msgstr "{} 月 {} 日归档"
+
+#: windows/control-room/src/act.rs:455
+msgid "the supervisor's input line has text in it"
+msgstr "总管的输入框里有字"
+
+#: windows/control-room/src/act.rs:456
+msgid "somebody just typed in the supervisor's terminal"
+msgstr "有人刚在总管终端里打过字"
+
+#: windows/control-room/src/act.rs:457
+msgid "no agent is connected in the supervisor's terminal"
+msgstr "总管终端里没有接上 agent"
+
+#: windows/control-room/src/act.rs:341
+msgid "Records of a group by that name are still on disk. Pick another name."
+msgstr "磁盘上还留着一个同名群的记录，换个名字吧。"
+
+#: windows/control-room/src/act.rs:342
+msgid "Another Polter is renaming a group right now. Try again in a few seconds."
+msgstr "另一个 Polter 正在给群改名，过几秒再试。"
+
+#: windows/control-room/src/act.rs:343
+msgid "An earlier rename was left unfinished. Restart Polter, then try again."
+msgstr "上次的改名没做完。重启 Polter 后再试。"
+
+#: windows/control-room/src/act.rs:344
+msgid "The rename could not be finished now; it will be finished the next time Polter starts."
+msgstr "这次改名没能做完，下次启动 Polter 时会做完。"
+
+#: windows/control-room/src/act.rs:345
+msgid "Deleted from the list, but some of its records could not be deleted."
+msgstr "已从列表删除，但有记录没删掉。"

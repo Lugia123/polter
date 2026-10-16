@@ -178,6 +178,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
+    "macos/Sources/Features/ControlRoom/ControlRoomRowMenu.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomStartChoice.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomQuota.swift",
@@ -803,6 +804,34 @@ for (name, dx, dy, scale) in [("tab", -587.5, 0.0, ControlRoomLook.Selection.lif
         let s = ControlRoomChipSlide.sample(at: t, dx: dx, dy: dy, liftScale: scale)
         print("slide \(name) t=\(g(t)) dx=\(g(s.dx)) dy=\(g(s.dy)) along=\(g(s.along)) across=\(g(s.across)) "
             + "lift=\(g(ControlRoomChipSlide.lift(at: t))) over=\(t >= ControlRoomChipSlide.duration)")
+    }
+}
+// The list's layout with what it depends on besides the list (task 1661):
+// a line under the first waiting row and the first quiet one, and two
+// groups put away, their section closed and open.
+let underIds: Set<String> = Set([list.waiting.first?.id, list.quiet.first?.id].compactMap { $0 })
+for open in [false, true] {
+    let room = ControlRoomListLayout(list: list, height: CGFloat(height), linesUnder: underIds,
+                                     archived: ["old-app", "spike-pdf"], archivedOpen: open)
+    print("extras open=\(open) content h=\(f(room.contentHeight))")
+    for r in list.rows {
+        if let frame = room.rows[r.id] { rect("extras row:\(r.id)", frame) }
+        if let line = room.lineRects[r.id] { rect("extras under:\(r.id)", line) }
+    }
+    rect("extras archived_separator", room.archivedSeparator)
+    rect("extras archived_header", room.archivedHeader)
+    for name in ["old-app", "spike-pdf"] {
+        if let frame = room.archivedRows[name] { rect("extras archived:\(name)", frame) }
+    }
+}
+// The menu on a group's row (tasks 1660 and 1661): what it holds in every
+// state, and what each of its two submenus holds.
+for state in ControlRoomRowMenu.everyState {
+    print(ControlRoomRowMenu.line(state))
+}
+for item in ControlRoomRowMenu.Item.allCases {
+    if let sub = item.submenu {
+        print("group_submenu \(item.rawValue) items=\(sub.map(\.rawValue).joined(separator: " "))")
     }
 }
 '''

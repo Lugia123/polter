@@ -26,6 +26,7 @@
     "v17-style": "design v17, src/style.css",
     "v18-a": "design v18, direction A: src/v18.css and CHANGES.md",
     "v19-q3": "design v19, way three: src/v19.css and CHANGES.md",
+    "v21": "design v21 (the group row's menu, task 1650), CHANGES.md and src/metrics.json",
     "v17-anim": "design v17, src/anim.py",
     "v17-build": "design v17, src/build.py (the glyphs' paths)",
     "supervisor": "the supervisor's ruling, not a design file",
@@ -127,7 +128,14 @@
       "row_item_gap": { "v": 8, "src": "v17-style" },
       "status_word_gap": { "v": 5, "src": "v17-style", "doc": "Between a glyph and its word." },
       "quiet_item_gap": { "v": 6, "src": "v17-style" },
-      "header_item_gap": { "v": 4, "src": "v17-style", "doc": "Between the plus and `new group`." }
+      "header_item_gap": { "v": 4, "src": "v17-style", "doc": "Between the plus and `new group`." },
+      "mark_gap": { "v": 2, "src": "v21", "doc": "Between a group's pinned mark and its muted mark, to the right of its name (task 1660). From the name to the first mark is `row_item_gap`; each mark is `glyph` square." }
+    },
+    "group_note": {
+      "_src": "v21",
+      "_doc": "The group's note, edited in a panel docked at the window's right (tasks 1660, 1661; design v21 `04-B`, the user's choice of 2026-10-16). The supervisor's frame gives up the panel's width and `space.between_frames`.",
+      "panel_width": 420,
+      "feedback_seconds": { "v": 8, "doc": "How long the line under a row that says the supervisor was asked (`report progress`, `close idle workers`) stays before it folds away. One that says it was not delivered stays." }
     },
     "pane": {
       "_src": "v17-style",
