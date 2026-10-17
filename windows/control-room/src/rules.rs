@@ -144,6 +144,21 @@ pub fn new_tab(asker: Option<(bool, bool)>, by_person: bool, control_room_in_fro
     }
 }
 
+/// Where a project the core ordered opened goes. The macOS host's
+/// `ControlRoomRules.orderedProjectTab`, with the same answers.
+///
+/// The core orders one opened only while a supervisor's start is waiting
+/// on its group's project: the application's own tab, asked as `new_tab`
+/// asks for one with no asker and nobody's key. **With the control room in
+/// front it goes beside the control room and stays behind** -- the start
+/// without a project already did; the one with a project opened among the
+/// tabs of the window in front, came forward and took the person off the
+/// control room (#1703; the rule is #1500's).
+pub fn ordered_project_tab(control_room_in_front: bool, tabs_beside_control_room: bool, any_terminal_window: bool) -> NewTab {
+    // The core's order, not anybody's key or menu item.
+    new_tab(None, false, control_room_in_front, tabs_beside_control_room, any_terminal_window)
+}
+
 /// What a tab is called when its shell's title is the path of the program
 /// that was started in it: that program's name. A console's title starts
 /// as the full path of what was launched (`C:\WINDOWS\...\powershell.exe`)

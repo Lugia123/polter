@@ -781,15 +781,22 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     }
 
     /// Open `entry` where `ControlRoomRules.loadedProjectTab` says a
-    /// project opened from the control room goes. Throws instead of
-    /// reporting: a project the core asked for (`ProjectLinker`) has its
-    /// failure told to the core, not put on a sheet.
-    func loadProjectWhereTabsGo(_ entry: ProjectStore.Entry) throws {
+    /// project opened from the control room goes -- or, `orderedByCore`,
+    /// where `ControlRoomRules.orderedProjectTab` says one the core ordered
+    /// goes. Throws instead of reporting: a project the core asked for
+    /// (`ProjectLinker`) has its failure told to the core, not put on a
+    /// sheet.
+    func loadProjectWhereTabsGo(_ entry: ProjectStore.Entry, orderedByCore: Bool = false) throws {
         let beside = terminalTabBeside
         let frontmost = TerminalController.preferredParent?.window
-        let plan = ControlRoomRules.loadedProjectTab(
-            tabsBesideControlRoom: beside != nil,
-            anyTerminalWindow: frontmost != nil)
+        let plan = orderedByCore
+            ? ControlRoomRules.orderedProjectTab(
+                controlRoomInFront: window?.isKeyWindow ?? false,
+                tabsBesideControlRoom: beside != nil,
+                anyTerminalWindow: frontmost != nil)
+            : ControlRoomRules.loadedProjectTab(
+                tabsBesideControlRoom: beside != nil,
+                anyTerminalWindow: frontmost != nil)
 
         func home(_ which: ControlRoomRules.NewTab.Home) -> NSWindow? {
             switch which {

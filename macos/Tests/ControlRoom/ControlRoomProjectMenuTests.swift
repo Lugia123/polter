@@ -60,6 +60,28 @@ struct ControlRoomProjectMenuTests {
         #expect(nowhere == .inFront(of: .controlRooms))
     }
 
+    @Test func aProjectTheCoreOrderedOpensBehindTheControlRoomWhileThatIsInFront() {
+        // #1703: starting the supervisor of a group that has a project
+        // opens the project by the core's order. It came in front, as if
+        // the person had loaded it, and took them off the control room.
+        for (beside, any) in [(true, true), (true, false), (false, true), (false, false)] {
+            let ordered = Rules.orderedProjectTab(controlRoomInFront: true,
+                                                  tabsBesideControlRoom: beside, anyTerminalWindow: any)
+            #expect(ordered == .behind(.controlRooms))
+        }
+        // The same answer as a tab the application asks for, wherever the
+        // control room is -- a start without a project gets that one.
+        for front in [true, false] {
+            for (beside, any) in [(true, true), (true, false), (false, true), (false, false)] {
+                let ordered = Rules.orderedProjectTab(controlRoomInFront: front,
+                                                      tabsBesideControlRoom: beside, anyTerminalWindow: any)
+                let apps = Rules.newTab(asker: nil, byPerson: false, controlRoomInFront: front,
+                                        tabsBesideControlRoom: beside, anyTerminalWindow: any)
+                #expect(ordered == apps)
+            }
+        }
+    }
+
     // MARK: The terminals in no group are not shown
 
     private func snapshot() throws -> ControlRoomSnapshot {

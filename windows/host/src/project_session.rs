@@ -527,8 +527,14 @@ fn work_areas() -> Vec<Rect> {
 /// window some of whose pages are open already takes the rest where those
 /// are.
 ///
+/// `behind`: the pages that go among `frame`'s tabs are added behind the
+/// tab in front there, and nothing is brought in front -- a project the
+/// core ordered while the person is on the control room
+/// (`rules::ordered_project_tab`). A window made for the project shows its
+/// own page, as it would.
+///
 /// Never called from inside `tabs::run_ops` (`open_page_in_new_tab`).
-pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation::HINSTANCE, file: &Path, named: bool) -> Result<(), String> {
+pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation::HINSTANCE, file: &Path, named: bool, behind: bool) -> Result<(), String> {
     // In words: a project from a later format is refused, and "TooNew" on
     // its own does not tell a person that updating is what opens it.
     let snapshot = project::read_file(file).map_err(|e| e.to_string())?;
@@ -576,9 +582,12 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
             continue;
         }
 
+        // Behind the tab in front of a window that was there already; a
+        // window made for the project has no tab of the person's to keep.
+        let tucked = behind && !ours;
         let mut front = None;
         for page in missing {
-            match crate::project_ui::open_page_in_new_tab(target, app, hinst, &page.tab.root, &snaps) {
+            match crate::project_ui::open_page_in_new_tab(target, app, hinst, &page.tab.root, &snaps, tucked) {
                 Ok(tab) => {
                     bound.push((tab, page.id));
                     opened += 1;
@@ -591,7 +600,7 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
             }
         }
         // The page that was in front is the one showing.
-        if let Some(tab) = front {
+        if let Some(tab) = front.filter(|_| !tucked) {
             tabs::activate_tab(target, tab);
         }
         // A window made for pages none of which opened is not left empty.
@@ -610,7 +619,8 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
     // Gone to: the first page just opened, or -- all of it was open already
     // -- the first page that is.
     let go = first.or_else(|| bound.first().and_then(|(tab, _)| tabs::locate_tab(*tab).map(|(f, _, _)| (f, *tab))));
-    if let Some((window, tab)) = go {
+    // Not gone to when it opened behind: the person stays where they are.
+    if let Some((window, tab)) = go.filter(|_| !behind) {
         if opened == 0 {
             tabs::activate_tab(window, tab);
         }
@@ -618,12 +628,13 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
     }
     wlogf!(
         frame,
-        "[project] opened {:?}: {} page(s) opened now, {} open in all, of {}{}",
+        "[project] opened {:?}: {} page(s) opened now, {} open in all, of {}{}{}",
         snapshot.name,
         opened,
         bound.len(),
         pages.page_ids().len(),
-        if was_open { " (it was open already)" } else { "" }
+        if was_open { " (it was open already)" } else { "" },
+        if behind { ", behind the tab in front" } else { "" }
     );
 
     OPEN.with(|o| {
@@ -960,8 +971,17 @@ fn obey() {
                 (Some(file), frame) => {
                     // The first window of it goes among the tabs of the
                     // window the person is in, whatever frame it recorded:
-                    // they asked for it from there.
-                    let opened = open(frame.unwrap_or_default(), crate::app_handle(), hinst(), &file, true);
+                    // they asked for it from there. **With the control
+                    // room in front, into its window and behind it**
+                    // (`rules::ordered_project_tab`): this is a supervisor's
+                    // start, the application's own tab (#1703).
+                    use polter_control_room::rules::{ordered_project_tab, NewTab as To};
+                    let facts = tabs::new_tab_facts();
+                    let (frame, behind) = match (ordered_project_tab(facts.control_room.is_some(), facts.tabs_beside, facts.any_terminal_window), facts.control_room) {
+                        (To::Behind(_), Some(room)) => (room, true),
+                        _ => (frame.unwrap_or_default(), false),
+                    };
+                    let opened = open(frame, crate::app_handle(), hinst(), &file, true, behind);
                     if opened.is_err() && project::read_file(&file).is_err() {
                         let _ = crate::control_room_source::act(&stated::failed(project, FailedWhy::Unreadable));
                     }

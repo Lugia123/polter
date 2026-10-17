@@ -438,6 +438,32 @@ enum ControlRoomRules {
             anyTerminalWindow: anyTerminalWindow)
     }
 
+    /// Where a project the core ordered opened goes, and whether it comes
+    /// in front.
+    ///
+    /// The core orders one opened for one reason only: a supervisor is
+    /// being started for a group that has a project (`Projects`, `open`,
+    /// which it asks only while a start is waiting on it). That is the
+    /// application's own tab, the same as the one a start without a project
+    /// opens, and it is asked the same way: **with the control room in
+    /// front it goes beside the control room and stays behind.** It used to
+    /// go through `loadedProjectTab`, which says "the person chose it" and
+    /// brings it in front -- so starting the supervisor of a group with a
+    /// project took the person off the control room they had pressed Start
+    /// on, where starting one without a project left them there (#1703;
+    /// the rule is #1500's).
+    static func orderedProjectTab(
+        controlRoomInFront: Bool, tabsBesideControlRoom: Bool, anyTerminalWindow: Bool
+    ) -> NewTab {
+        newTab(
+            asker: nil,
+            // The core's order, not anybody's key or menu item.
+            byPerson: false,
+            controlRoomInFront: controlRoomInFront,
+            tabsBesideControlRoom: tabsBesideControlRoom,
+            anyTerminalWindow: anyTerminalWindow)
+    }
+
     /// Whether opening a tab brings the application in front of whatever
     /// the person is using.
     ///

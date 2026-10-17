@@ -511,6 +511,22 @@ fn main() {
             println!("new_tab asker={who} person={person} front={front} beside={beside} any={any} -> {to}");
         }
     }
+    // Where a project the core ordered opened goes (#1703).
+    for bits in 0..8u8 {
+        let (front, beside, any) = (bits & 4 != 0, bits & 2 != 0, bits & 1 != 0);
+        let home = |h: rules::Home| match h {
+            rules::Home::Askers => "askers",
+            rules::Home::ControlRooms => "control_rooms",
+            rules::Home::Frontmost => "frontmost",
+        };
+        let to = match rules::ordered_project_tab(front, beside, any) {
+            rules::NewTab::InFront(h) => format!("in_front({})", home(h)),
+            rules::NewTab::Behind(h) => format!("behind({})", home(h)),
+            rules::NewTab::OwnWindow => "own_window".to_string(),
+            rules::NewTab::Refused => "refused".to_string(),
+        };
+        println!("ordered_project_tab front={front} beside={beside} any={any} -> {to}");
+    }
     // What the person is told when a group was not made or a supervisor
     // not started, by the core's name for why.
     for name in [
