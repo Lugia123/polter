@@ -41,7 +41,7 @@ struct ControlRoomActions {
         /// Start a supervisor for a group that has none. A nil role or
         /// directory is the one the core's snapshot names.
         case startSupervisor(group: String, role: String? = nil, cwd: String? = nil,
-                             session: ControlRoomStartChoice.Session? = nil)
+                             session: ControlRoomStartChoice.Session? = nil, cli: String? = nil)
         /// The person said OK to the first sweep of old records (task 1511).
         case retentionAgree
         /// "Fix" on a card that reads "Failed" (task 1560): the core tells
@@ -149,6 +149,15 @@ struct ControlRoomActions {
             case "NoCli":
                 return String(localized: "This role isn't set up for any agent CLI yet. Pick one in the role library.",
                               comment: "角色启动失败时显示的原因")
+            case "NotSetUpForCli":
+                return String(localized: "That role isn't set up for that agent CLI.",
+                              comment: "总控台：启动总管时选的 CLI 不在这个角色里")
+            case "CliOff":
+                return String(localized: "That agent CLI's plugin is off. Turn it on in Plugins.",
+                              comment: "启动失败：这个 CLI 的插件装着但关着，去插件设置里打开就行")
+            case "CliUnavailable":
+                return String(localized: "That agent CLI can't be started on this machine.",
+                              comment: "启动失败：这台机器上起不了这个 CLI（没有插件管理它，或插件的 adapter 在这里跑不起来），打开插件也没用")
             case "NotAbsolute", "NoSuchDirectory", "NotADirectory":
                 return String(localized: "That directory is not there.",
                               comment: "总控台：启动总管时选的目录不存在")
@@ -232,7 +241,7 @@ struct ControlRoomActions {
             return ["act": "reply", "terminal": target.terminal, "since_ms": target.sinceMs, "text": text]
         case .newGroup(let name):
             return ["act": "new_group", "name": name]
-        case .startSupervisor(let group, let role, let cwd, let session):
+        case .startSupervisor(let group, let role, let cwd, let session, let cli):
             // Left out when the person picked neither: the core then uses
             // the ones its snapshot named. Which session is sent only
             // while the choice is on screen
@@ -241,6 +250,9 @@ struct ControlRoomActions {
             if let role { request["role"] = role }
             if let cwd { request["cwd"] = cwd }
             if let session { request["session"] = session.rawValue }
+            // The CLI picked on the start screen or in the row's menu
+            // (task 1677); left out, the core's (`supervisor.cli`).
+            if let cli { request["cli"] = cli }
             return request
         case .retentionAgree:
             return ["act": "retention_agree"]

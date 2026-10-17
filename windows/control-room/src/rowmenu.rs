@@ -65,6 +65,10 @@ pub struct State {
     pub resumable: bool,
     pub pinned: bool,
     pub muted: bool,
+    /// How many agent CLIs a supervisor can be started in here: the
+    /// default role's whose plugins are on (#1678). Two or more makes "with
+    /// a new session" a submenu of them; the menu tells only one from more.
+    pub clis: u8,
 }
 
 /// One line of the menu.
@@ -86,6 +90,9 @@ pub fn entries(state: State) -> Vec<Entry> {
         let go: Vec<Entry> = match state.sup {
             Sup::Hooked => vec![item("jump_to_supervisor")],
             Sup::Hookless => vec![item("jump_to_supervisor"), item("take_over")],
+            // "Going on" can only be the last supervisor's CLI, and asks
+            // nothing; a new session asks which, when there is a choice.
+            Sup::None if state.resumable && state.clis > 1 => vec![item("start_resume"), opens("start_new")],
             Sup::None if state.resumable => vec![item("start_resume"), item("start_new")],
             Sup::None => vec![item("start")],
         };
@@ -107,7 +114,8 @@ pub fn entries(state: State) -> Vec<Entry> {
 }
 
 /// The items of the submenu item `id` opens, top to bottom; none for an
-/// item that opens none. Which of the project's are greyed is the core's
+/// item that opens none, and none for `start_new`, whose items are the
+/// CLIs (`cli_submenu`). Which of the project's are greyed is the core's
 /// to say (what project the group has), and is not part of this rule.
 pub fn submenu(id: &str) -> &'static [&'static str] {
     match id {
@@ -115,6 +123,28 @@ pub fn submenu(id: &str) -> &'static [&'static str] {
         "project" => &["open_project", "save_project", "link_project"],
         _ => &[],
     }
+}
+
+/// The id of the item that starts a supervisor in a new session of `cli`.
+pub const START_NEW_CLI: &str = "start_new_cli:";
+
+/// What "Start Supervisor with a New Session ›" opens (#1678): one item per
+/// CLI, in the order the core gives them (the role's), each `(id, last)`
+/// -- `last` for the one the group's last supervisor used, which says so
+/// on its right ("Last used").
+pub fn cli_submenu(clis: &[String], last: Option<&str>) -> Vec<(String, bool)> {
+    clis.iter().map(|c| (format!("{START_NEW_CLI}{c}"), Some(c.as_str()) == last)).collect()
+}
+
+/// The CLI an item of that submenu starts; none for any other item.
+pub fn cli_of(id: &str) -> Option<&str> {
+    id.strip_prefix(START_NEW_CLI).filter(|c| !c.is_empty())
+}
+
+/// How the comparison prints that submenu.
+pub fn cli_submenu_line(clis: &[String], last: Option<&str>) -> String {
+    let items: Vec<String> = cli_submenu(clis, last).into_iter().map(|(id, l)| if l { format!("{id}*") } else { id }).collect();
+    format!("group_submenu start_new clis={} last={} items={}", clis.join(","), last.unwrap_or("-"), items.join(" "))
 }
 
 /// How the comparison prints one state's menu: the ids, a submenu's with
@@ -129,18 +159,20 @@ pub fn line(state: State) -> String {
         })
         .collect();
     format!(
-        "group_menu archived={} sup={} resumable={} pinned={} muted={} items={}",
+        "group_menu archived={} sup={} resumable={} pinned={} muted={} clis={} items={}",
         u8::from(state.archived),
         state.sup.name(),
         u8::from(state.resumable),
         u8::from(state.pinned),
         u8::from(state.muted),
+        state.clis,
         items.join(" ")
     )
 }
 
 /// Every state, in the comparison's order: archived 0, 1 × sup none,
-/// hooked, hookless × resumable 0, 1 × pinned 0, 1 × muted 0, 1.
+/// hooked, hookless × resumable 0, 1 × pinned 0, 1 × muted 0, 1 × clis
+/// 1, 2.
 pub fn every_state() -> Vec<State> {
     let mut out = Vec::new();
     for archived in [false, true] {
@@ -148,7 +180,9 @@ pub fn every_state() -> Vec<State> {
             for resumable in [false, true] {
                 for pinned in [false, true] {
                     for muted in [false, true] {
-                        out.push(State { archived, sup, resumable, pinned, muted });
+                        for clis in [1, 2] {
+                            out.push(State { archived, sup, resumable, pinned, muted, clis });
+                        }
                     }
                 }
             }
@@ -166,6 +200,9 @@ pub fn label(id: &str) -> Option<&'static str> {
         "take_over" => n_("Let the Control Room Take Over…"),
         "start_resume" => n_("Start Supervisor, Going On with the Last Session"),
         "start_new" => n_("Start Supervisor with a New Session"),
+        // On the right of the item of the CLI the last supervisor used, in
+        // the submenu of CLIs (#1678). The item itself is the CLI's name.
+        "last_used" => n_("Last used"),
         "start" => n_("Start Supervisor"),
         "report_progress" => n_("Ask the Supervisor for a Progress Report"),
         "close_idle_workers" => n_("Ask the Supervisor to Close Idle Workers"),
@@ -244,7 +281,7 @@ mod tests {
     }
 
     fn st(archived: bool, sup: Sup, resumable: bool, pinned: bool, muted: bool) -> State {
-        State { archived, sup, resumable, pinned, muted }
+        State { archived, sup, resumable, pinned, muted, clis: 1 }
     }
 
     /// The four menus of `02-menu-four-states`, item for item.
@@ -281,7 +318,7 @@ mod tests {
     #[test]
     fn no_menu_has_an_empty_group_and_every_item_is_named() {
         let states = every_state();
-        assert_eq!(states.len(), 48);
+        assert_eq!(states.len(), 96);
         for s in states {
             let e = entries(s);
             assert!(!matches!(e.first(), Some(Entry::Separator) | None), "{s:?}");
@@ -290,13 +327,43 @@ mod tests {
             for item in e {
                 if let Entry::Item { id, submenu: opens } = item {
                     assert!(label(id).is_some(), "{id}");
-                    assert_eq!(opens, !submenu(id).is_empty(), "{id}");
+                    // `start_new` opens the CLIs when there are two, which
+                    // are not a fixed list; with one it opens nothing.
+                    if id == "start_new" {
+                        assert_eq!(opens, s.clis > 1, "{s:?}");
+                    } else {
+                        assert_eq!(opens, !submenu(id).is_empty(), "{id}");
+                    }
                     for sub in submenu(id) {
                         assert!(label(sub).is_some(), "{sub}");
                     }
                 }
             }
         }
+    }
+
+    /// 02A (#1678): with more than one CLI, a new session asks which and
+    /// going on with the last one does not; with one, the menu is today's.
+    /// A group with no session to go on with keeps its one start.
+    #[test]
+    fn more_than_one_cli_makes_a_new_session_a_submenu_of_them() {
+        let two = |resumable| State { clis: 2, ..st(false, Sup::None, resumable, false, false) };
+        assert_eq!(ids(two(true)), "start_resume start_new> - reveal - pin mute> - rename edit_note project> - archive delete");
+        assert_eq!(ids(st(false, Sup::None, true, false, false)), "start_resume start_new - reveal - pin mute> - rename edit_note project> - archive delete");
+        assert_eq!(ids(two(false)), "start - reveal - pin mute> - rename edit_note project> - archive delete");
+        assert_eq!(ids(State { clis: 2, ..st(false, Sup::Hooked, true, false, false) }), ids(st(false, Sup::Hooked, true, false, false)));
+
+        let clis = vec!["claude-code".to_string(), "codex".to_string()];
+        assert_eq!(cli_submenu(&clis, Some("claude-code")), vec![("start_new_cli:claude-code".to_string(), true), ("start_new_cli:codex".to_string(), false)]);
+        assert!(cli_submenu(&clis, Some("other-cli")).iter().all(|(_, last)| !last));
+        assert_eq!(cli_of("start_new_cli:codex"), Some("codex"));
+        assert_eq!(cli_of("start_new_cli:"), None);
+        assert_eq!(cli_of("start_new"), None);
+        assert_eq!(
+            cli_submenu_line(&clis, Some("codex")),
+            "group_submenu start_new clis=claude-code,codex last=codex items=start_new_cli:claude-code start_new_cli:codex*"
+        );
+        assert!(label("last_used").is_some());
     }
 
     #[test]

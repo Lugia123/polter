@@ -446,18 +446,13 @@ pub fn footer_note(ed: &Editor, can_launch: bool) -> Option<(String, bool)> {
 /// Kept of installed, for the CLI on screen: `(kept, all)`. `None` when there
 /// is no CLI, or it has nothing of this kind -- a `0/0` says nothing.
 pub fn tab_count(ed: &Editor, clis: &CliSnapshot, kind: ItemKind) -> Option<(usize, usize)> {
-    let key = ed.active_cli.as_deref()?;
-    let cli = clis.cli(key)?;
-    let choice = ed.draft.as_ref()?.choice(key)?;
-    let all = cli.items_of(kind);
+    let draft = ed.draft.as_ref()?;
+    let all = shared_items(draft, clis, kind);
     if all.is_empty() {
         return None;
     }
-    let sel = match kind {
-        ItemKind::Skill => &choice.skills,
-        ItemKind::Mcp => &choice.mcp,
-    };
-    Some((all.iter().filter(|i| i.locked || sel.is_on(&i.id)).count(), all.len()))
+    let sel = draft.selection(kind);
+    Some((all.iter().filter(|(i, _)| i.locked || sel.is_on(&i.id)).count(), all.len()))
 }
 
 pub fn tab_label(tab: Tab, ed: &Editor, clis: &CliSnapshot) -> String {
@@ -614,8 +609,6 @@ pub enum Kind {
     /// A flat button that reads as a link: Keep All, Show More, a group's
     /// header.
     Link { text: String },
-    /// One of a row of buttons of which one is chosen: the CLI switcher.
-    Segment { text: String, selected: bool },
     Combo { options: Vec<String>, sel: usize },
     /// The strip under the instructions box that drags it taller.
     Grip,
@@ -748,19 +741,49 @@ pub fn parse_minutes(text: &str) -> Option<u64> {
     Some(n.clamp(QUIET_MIN_MINUTES, QUIET_MAX_MINUTES) * 60_000)
 }
 
-/// The CLI a skills or MCP tab is showing: the active one, or the first.
-fn shown_cli(ed: &Editor) -> Option<String> {
-    let d = ed.draft.as_ref()?;
-    ed.active_cli.clone().filter(|c| d.choice(c).is_some()).or_else(|| d.clis.first().map(|c| c.cli.clone()))
+/// The CLIs of the role on screen whose installed items can be read here,
+/// in the role's order: those the core found an adapter for.
+pub fn readable<'a>(d: &Role, clis: &'a CliSnapshot) -> Vec<&'a AgentCli> {
+    d.clis.iter().filter_map(|c| clis.cli(&c.cli)).collect()
 }
 
-/// Every item of one kind, and those the filter lets through.
+/// Every item of `kind` the role's CLIs have installed, **one per id**, with
+/// the keys of the CLIs that have it (role-cli-v2 07, #1678): the role keeps
+/// one selection for every CLI, so a skill both have is one switch. The
+/// first CLI's description is the one shown; a CLI that locks it locks it.
+pub fn shared_items(d: &Role, clis: &CliSnapshot, kind: ItemKind) -> Vec<(CliItem, Vec<String>)> {
+    let mut out: Vec<(CliItem, Vec<String>)> = Vec::new();
+    for cli in readable(d, clis) {
+        for item in cli.items_of(kind) {
+            match out.iter_mut().find(|(i, _)| i.id == item.id) {
+                Some((i, holders)) => {
+                    i.locked |= item.locked;
+                    holders.push(cli.key.clone());
+                }
+                None => out.push((item.clone(), vec![cli.key.clone()])),
+            }
+        }
+    }
+    out
+}
+
+/// The CLI an item is marked as being only in ("Only Codex"), or none.
+/// Only when the role is set up for more than one CLI and every one of
+/// them can be read: with one, "only it" says nothing; with one unread,
+/// "only the other" would be a guess (v2's questions 3 and 4).
+pub fn only_in(d: &Role, clis: &CliSnapshot, holders: &[String]) -> Option<String> {
+    if d.clis.len() < 2 || readable(d, clis).len() != d.clis.len() || holders.len() != 1 {
+        return None;
+    }
+    Some(clis.label(&holders[0]))
+}
+
+/// Every item of the list, and those the filter lets through.
 ///
 /// **Case-insensitive against name, description and group**, as the macOS
 /// side filters -- a person who remembers "the one about browsers" types
 /// that, not its name.
-pub fn items_in_view(cli: &AgentCli, kind: ItemKind, search: &str) -> (Vec<CliItem>, Vec<CliItem>) {
-    let all: Vec<CliItem> = cli.items_of(kind).into_iter().cloned().collect();
+pub fn items_in_view(all: Vec<CliItem>, search: &str) -> (Vec<CliItem>, Vec<CliItem>) {
     let q = search.trim().to_lowercase();
     if q.is_empty() {
         return (all.clone(), all);
@@ -775,28 +798,6 @@ pub fn items_in_view(cli: &AgentCli, kind: ItemKind, search: &str) -> (Vec<CliIt
         .cloned()
         .collect();
     (all, visible)
-}
-
-/// The CLI switcher, shown when a role is set up for more than one.
-fn cli_segments(ed: &Editor, clis: &CliSnapshot) -> Option<Row> {
-    let d = ed.draft.as_ref()?;
-    if d.clis.len() < 2 {
-        return None;
-    }
-    let active = shown_cli(ed);
-    let cells = d
-        .clis
-        .iter()
-        .map(|c| {
-            ctl(
-                format!("seg:{}", c.cli),
-                Kind::Segment { text: clis.label(&c.cli), selected: active.as_deref() == Some(&c.cli) },
-                Width::Auto,
-                true,
-            )
-        })
-        .collect();
-    Some(Row { cells, indent: CONTROL_COL, gap: 4 })
 }
 
 /// Every row of the right-hand pane, top to bottom: what the library and
@@ -1058,36 +1059,101 @@ fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
             }
             out.push(in_controls(cells, 0));
         }
-        // Choices for a CLI no plugin offers any more are still in the role;
-        // say so rather than hide them.
+        // Choices for a CLI that cannot be started here are still in the
+        // role; say why -- off, cannot run, or no plugin -- rather than hide
+        // them (05a). A plugin that is only off is one click from on.
         for orphan in d.clis.iter().filter(|c| v.clis.cli(&c.cli).is_none()) {
-            out.push(in_controls(
-                vec![
-                    check(format!("orphan:{}", orphan.cli), orphan.cli.clone(), true, e.clis),
-                    short(tr("No plugin manages this CLI any more"), Tone::Warn, Font::Small),
-                ],
-                0,
-            ));
-        }
-        if let Some(seg) = cli_segments(v.ed, v.clis) {
-            out.push(seg);
+            out.push(in_controls(vec![check(format!("orphan:{}", orphan.cli), v.clis.label(&orphan.cli), true, e.clis)], 0));
+            let mut cells = vec![short(v.clis.missing_note(&orphan.cli), Tone::Warn, Font::Small)];
+            if v.clis.held(&orphan.cli).is_some_and(|h| h.why == roles::HeldWhy::PluginOff) {
+                cells.push(ctl("openplugins", Kind::Link { text: tr("Open Plugin Settings") }, Width::Auto, true));
+            }
+            out.push(Row { cells, indent: CONTROL_COL, gap: -4 });
         }
     }
+    if !d.clis.is_empty() {
+        out.push(note(
+            tr("With no CLI named: a worker its supervisor starts uses the supervisor's own; when you start it from a menu or the control room, you choose."),
+            CONTROL_COL,
+        ));
+    }
 
-    if let Some(cli) = v.ed.active_cli.as_deref() {
-        if let Some(choice) = d.choice(cli) {
-            out.push(heading(tr("Starting {}").replace("{}", &v.clis.label(cli))));
-            out.push(field(
-                tr("Model"),
-                ctl("model", edit(&choice.model, tr("The CLI's default"), false), Width::Fixed(260), e.start),
-            ));
-            // A command line, not a sentence, so the cue is not translated.
-            out.push(field(
-                tr("Extra Arguments"),
-                ctl("args", edit(&roles::args_join(&choice.args), "--permission-mode auto".into(), true), Width::Fill, e.start),
-            ));
+    // One section per CLI the role is set up for, in its order: what is
+    // set per CLI and nothing else (role-cli-v2 04B). Skills and MCP are
+    // the role's, on their own tabs.
+    for choice in &d.clis {
+        let cli = choice.cli.as_str();
+        let found = v.clis.cli(cli);
+        let mut head = vec![text(tr("Starting {}").replace("{}", &v.clis.label(cli)), Tone::Text, Font::Bold)];
+        if found.is_none() && !v.clis.stale {
+            head.push(short(tr("Can't be used at launch; the settings here are still saved"), Tone::Dim, Font::Small));
+        }
+        out.push(Row { cells: head, indent: 0, gap: SECTION_GAP });
+        out.push(field(
+            tr("Model"),
+            ctl(format!("model:{cli}"), edit(&choice.model, tr("The CLI's default"), false), Width::Fixed(260), e.start),
+        ));
+        out.extend(option_rows(choice, found, e.start));
+        // A command line, not a sentence, so the cue is not translated --
+        // and it is that CLI's own flag, or nothing.
+        out.push(field(
+            tr("Extra Arguments"),
+            ctl(format!("args:{cli}"), edit(&roles::args_join(&choice.args), args_cue(cli).into(), true), Width::Fill, e.start),
+        ));
+        out.push(Row {
+            cells: vec![text(tr("Added to the command line as typed. Quote anything with a space in it."), Tone::Dim, Font::Small)],
+            indent: CONTROL_COL,
+            gap: -4,
+        });
+    }
+    out
+}
+
+/// The example in a CLI's empty "Extra Arguments" box: a flag that CLI
+/// takes and none of the drop-downs above covers. Another CLI's flag there
+/// would be a wrong example (the user, 2026-10-17); one we do not know is
+/// no example.
+pub fn args_cue(cli: &str) -> &'static str {
+    match cli {
+        "claude-code" => "--verbose",
+        "codex" => "--search",
+        _ => "",
+    }
+}
+
+/// What the adapters call their unattended options (`OPTION_FLAGS` in
+/// `plugins/*/adapter.py`): marked here so the catalogue has them, since
+/// the label arrives from the adapter and goes through `tr` as it came.
+#[allow(dead_code)]
+const OPTION_LABELS: [&str; 3] = [crate::i18n::n_("Permission mode"), crate::i18n::n_("Approval"), crate::i18n::n_("Sandbox")];
+
+/// The unattended options of one CLI (role-cli-v2 04B): a drop-down per
+/// option its adapter declares, offering **only the values the installed
+/// version takes** and "the CLI's default" first, with the arguments the
+/// pick adds beside it. A CLI that cannot be read here has no list to
+/// offer; what the role picked for it is shown as it is, and kept.
+fn option_rows(choice: &CliChoice, cli: Option<&AgentCli>, enabled: bool) -> Vec<Row> {
+    let mut out = Vec::new();
+    let Some(cli) = cli else {
+        for (key, value) in &choice.options {
+            out.push(field(key.clone(), short(value.clone(), Tone::Text, Font::Mono)));
+        }
+        return out;
+    };
+    for o in &cli.options {
+        let picked = choice.options.get(&o.key);
+        let sel = picked.and_then(|p| o.values.iter().position(|v| &v.value == p)).map_or(0, |i| i + 1);
+        let options = std::iter::once(tr("The CLI's default")).chain(o.values.iter().map(|v| v.value.clone())).collect();
+        let mut cells = vec![ctl(format!("opt:{}:{}", choice.cli, o.key), Kind::Combo { options, sel }, Width::Fixed(260), enabled)];
+        if let Some(v) = sel.checked_sub(1).and_then(|i| o.values.get(i)) {
+            cells.push(short(roles::args_join(&v.args), Tone::Dim, Font::Mono));
+        }
+        out.push(field_with(tr(&o.label), cells));
+        // A value the role holds that this version does not take: kept in
+        // the file and said, never quietly swapped for the default.
+        if let Some(p) = picked.filter(|_| sel == 0) {
             out.push(Row {
-                cells: vec![text(tr("Added to the command line as typed. Quote anything with a space in it."), Tone::Dim, Font::Small)],
+                cells: vec![text(tr("{} isn't a value this version takes; it is left out at launch.").replace("{}", p), Tone::Warn, Font::Small)],
                 indent: CONTROL_COL,
                 gap: -4,
             });
@@ -1120,21 +1186,29 @@ fn item_rows(v: &View, d: &Role, kind: ItemKind) -> Vec<Row> {
         out.push(row(vec![ctl("gobasics", Kind::Link { text: tr("Go to Basics") }, Width::Auto, true)]));
         return out;
     }
-    if let Some(seg) = cli_segments(v.ed, v.clis) {
-        out.push(seg);
+    // One list for every CLI (role-cli-v2 07/08): said once, at the top.
+    if d.clis.len() == 2 {
+        out.push(note(tr("Both CLIs share these switches. One marked “Only …” is installed in that CLI alone, and its switch acts on that CLI alone."), 0));
+    } else if d.clis.len() > 2 {
+        out.push(note(tr("The role's CLIs share these switches. One marked “Only …” is installed in that CLI alone, and its switch acts on that CLI alone."), 0));
     }
-    let Some(key) = shown_cli(v.ed) else { return out };
-    let Some(cli) = v.clis.cli(&key) else {
+    // A CLI whose items cannot be read is not listed and not guessed at;
+    // what the role keeps for it is left as it is (05b).
+    for c in d.clis.iter().filter(|c| v.clis.cli(&c.cli).is_none()) {
         out.push(note(
-            if v.clis.stale { tr("Reading what's installed…") } else { tr("No plugin manages this CLI any more") },
+            if v.clis.stale { tr("Reading what's installed…") } else { unread_note(v.clis, &c.cli) },
             0,
         ));
+    }
+    let readable = readable(d, v.clis);
+    if readable.is_empty() {
         return out;
-    };
-
-    if let Some(err) = &cli.error {
-        out.push(row(vec![text(tr("Its plugin couldn't list what's installed"), Tone::Warn, Font::Normal)]));
-        out.push(note(err.clone(), 0));
+    }
+    for cli in &readable {
+        if let Some(err) = &cli.error {
+            out.push(row(vec![text(tr("{}'s plugin couldn't list what's installed").replace("{}", &cli.label), Tone::Warn, Font::Normal)]));
+            out.push(note(err.clone(), 0));
+        }
     }
 
     let (cue, title, keep_later, none, elsewhere) = match kind {
@@ -1164,13 +1238,11 @@ fn item_rows(v: &View, d: &Role, kind: ItemKind) -> Vec<Row> {
         gap: 4,
     });
 
-    let choice = d.choice(&key);
-    let sel = choice.map(|c| match kind {
-        ItemKind::Skill => c.skills.clone(),
-        ItemKind::Mcp => c.mcp.clone(),
-    });
-    let sel = sel.unwrap_or_default();
-    let (all, visible) = items_in_view(cli, kind, v.search);
+    // One selection for every CLI (#1677): the CLI on screen only says
+    // which CLI's installed items are listed.
+    let sel = d.selection(kind).clone();
+    let shared = shared_items(d, v.clis, kind);
+    let (all, visible) = items_in_view(shared.iter().map(|(i, _)| i.clone()).collect(), v.search);
     let kept = all.iter().filter(|i| i.locked || sel.is_on(&i.id)).count();
 
     out.push(Row {
@@ -1232,6 +1304,11 @@ fn item_rows(v: &View, d: &Role, kind: ItemKind) -> Vec<Row> {
             if item.locked {
                 cells.push(Cell { key: String::new(), kind: Kind::Lock, width: Width::Fixed(12), enabled: true });
             }
+            // Right after the name, in the text colour (v2's question 2).
+            let holders = shared.iter().find(|(i, _)| i.id == item.id).map(|(_, h)| h.as_slice()).unwrap_or(&[]);
+            if let Some(only) = only_in(d, v.clis, holders) {
+                cells.push(short(tr("Only {}").replace("{}", &only), Tone::Text, Font::Small));
+            }
             if !item.detail.is_empty() {
                 cells.push(short(item.detail.clone(), Tone::Dim, Font::Mono));
             }
@@ -1286,10 +1363,26 @@ fn item_rows(v: &View, d: &Role, kind: ItemKind) -> Vec<Row> {
             gap: SECTION_GAP,
         });
     }
-    for n in &cli.notes {
-        out.push(note(n.clone(), 0));
+    for cli in &readable {
+        for n in &cli.notes {
+            out.push(note(n.clone(), 0));
+        }
     }
     out
+}
+
+/// What the skills and MCP tabs say of a CLI the role is set up for whose
+/// items cannot be read: why, and that its switches stay (05b).
+fn unread_note(clis: &CliSnapshot, key: &str) -> String {
+    let label = clis.label(key);
+    match clis.held(key).map(|h| h.why) {
+        Some(roles::HeldWhy::PluginOff) => tr("The {} plugin is off, so what it has installed can't be read; the role's switches for {} stay as they are.")
+            .replacen("{}", &label, 1)
+            .replacen("{}", &label, 1),
+        _ => tr("What {} has installed can't be read here; the role's switches for {} stay as they are.")
+            .replacen("{}", &label, 1)
+            .replacen("{}", &label, 1),
+    }
 }
 
 // ================================================================== actions
@@ -1336,6 +1429,8 @@ pub struct After {
     pub keep_mine: bool,
     /// "Keep It Under a New Key" was pressed for this key.
     pub adopt: Option<String>,
+    /// "Open Plugin Settings", beside a CLI whose plugin is off (05a).
+    pub open_plugins: bool,
 }
 
 fn set_tab(m: &mut Model, tab: Tab) {
@@ -1368,13 +1463,6 @@ pub fn apply(m: &mut Model, cat: &Catalog, clis: &CliSnapshot, a: Action) -> Aft
         Action::Text(k, t) if k == "skilltext" => {
             if m.ed.skill.is_some() {
                 m.ed.skill_text = t.replace("\r\n", "\n");
-            }
-        }
-        Action::Click(k) if k.starts_with("seg:") => {
-            let cli = k["seg:".len()..].to_string();
-            if m.ed.active_cli.as_deref() != Some(&cli) {
-                m.ed.active_cli = Some(cli);
-                m.search.clear();
             }
         }
         Action::Click(k) if k.starts_with("gcollapse:") => {
@@ -1418,16 +1506,15 @@ pub fn apply(m: &mut Model, cat: &Catalog, clis: &CliSnapshot, a: Action) -> Aft
                         d.polter.quiet_ms = Some(ms);
                     }
                 }
-                "model" | "args" if e.start => {
-                    if let Some(cli) = m.ed.active_cli.clone() {
-                        m.ed.update_choice(&cli, |c| {
-                            if k == "model" {
-                                c.model = t;
-                            } else {
-                                c.args = roles::args_split(&t);
-                            }
-                        });
-                    }
+                _ if e.start && (k.starts_with("model:") || k.starts_with("args:")) => {
+                    let (what, cli) = k.split_once(':').unwrap_or_default();
+                    m.ed.update_choice(cli, |c| {
+                        if what == "model" {
+                            c.model = t;
+                        } else {
+                            c.args = roles::args_split(&t);
+                        }
+                    });
                 }
                 _ => {}
             }
@@ -1490,6 +1577,24 @@ pub fn apply(m: &mut Model, cat: &Catalog, clis: &CliSnapshot, a: Action) -> Aft
                 _ => {}
             }
         }
+        // An unattended option: 0 is the CLI's default (nothing written),
+        // else that value -- one of those the adapter declares.
+        Action::Choose(k, i) if k.starts_with("opt:") && e.start => {
+            if let Some((cli, key)) = k["opt:".len()..].split_once(':') {
+                let value = clis.cli(cli).and_then(|c| c.options.iter().find(|o| o.key == key)).and_then(|o| i.checked_sub(1).and_then(|i| o.values.get(i))).map(|v| v.value.clone());
+                if i == 0 || value.is_some() {
+                    m.ed.update_choice(cli, |c| match value {
+                        Some(v) => {
+                            c.options.insert(key.to_string(), v);
+                        }
+                        None => {
+                            c.options.remove(key);
+                        }
+                    });
+                }
+            }
+        }
+        Action::Click(k) if k == "openplugins" => after.open_plugins = true,
         Action::Choose(k, i) if k == "open" && e.open => {
             if let Some(d) = m.ed.draft.as_mut() {
                 d.polter.open = if i == 1 { Open::Tab } else { Open::Auto };
@@ -1504,16 +1609,12 @@ pub fn apply(m: &mut Model, cat: &Catalog, clis: &CliSnapshot, a: Action) -> Aft
 /// kind and the ones the filter shows.
 fn with_items(m: &mut Model, clis: &CliSnapshot, f: impl FnOnce(&mut roles::Selection, &[CliItem], &[CliItem])) {
     let Some(kind) = m.ed.tab.kind() else { return };
-    let Some(key) = shown_cli(&m.ed) else { return };
-    let Some(cli) = clis.cli(&key) else { return };
-    let (all, visible) = items_in_view(cli, kind, &m.search);
-    m.ed.update_choice(&key, |c| {
-        let sel = match kind {
-            ItemKind::Skill => &mut c.skills,
-            ItemKind::Mcp => &mut c.mcp,
-        };
-        f(sel, &all, &visible);
-    });
+    let Some(d) = m.ed.draft.as_ref() else { return };
+    let shared = shared_items(d, clis, kind);
+    let (all, visible) = items_in_view(shared.into_iter().map(|(i, _)| i).collect(), &m.search);
+    if let Some(d) = m.ed.draft.as_mut() {
+        f(d.selection_mut(kind), &all, &visible);
+    }
 }
 
 // ================================================================= geometry
@@ -1594,7 +1695,6 @@ pub fn place(rows: &[Row], width: i32, dpi: i32, measure: Measure) -> Laid {
                 }
                 (Width::Auto, Kind::Button { text }) => Some((measure(text, avail, Font::Normal, true).0 + s(24)).max(s(72))),
                 (Width::Auto, Kind::Link { text }) => Some(measure(text, avail, Font::Normal, true).0 + s(8)),
-                (Width::Auto, Kind::Segment { text, .. }) => Some(measure(text, avail, Font::Normal, true).0 + s(28)),
                 (Width::Auto, Kind::Combo { options, .. }) => {
                     Some(options.iter().map(|o| measure(o, avail, Font::Normal, true).0).max().unwrap_or(0) + s(40))
                 }
@@ -1627,7 +1727,7 @@ pub fn place(rows: &[Row], width: i32, dpi: i32, measure: Measure) -> Laid {
                 }
                 Kind::Edit { height, .. } => s(*height),
                 Kind::Check { .. } => s(22),
-                Kind::Button { .. } | Kind::Segment { .. } => s(BTN_H),
+                Kind::Button { .. } => s(BTN_H),
                 Kind::Link { .. } => s(22),
                 Kind::Combo { .. } => s(FIELD_H),
                 Kind::Lock => s(14),
@@ -1944,7 +2044,6 @@ enum Tag {
     Check,
     Button,
     Link,
-    Segment,
     Combo,
 }
 
@@ -1954,7 +2053,6 @@ fn tag_of(k: &Kind) -> Option<Tag> {
         Kind::Check { .. } => Tag::Check,
         Kind::Button { .. } => Tag::Button,
         Kind::Link { .. } => Tag::Link,
-        Kind::Segment { .. } => Tag::Segment,
         Kind::Combo { .. } => Tag::Combo,
         _ => return None,
     })
@@ -2651,7 +2749,9 @@ fn refresh() {
             collapsed: &s.model.collapsed,
             expanded: &s.model.expanded,
         };
-        let many = ed.draft.as_ref().is_some_and(|d| d.clis.len() > 1);
+        // #1678: counted over the CLIs the menu would list -- a CLI whose
+        // plugin is off is not one -- so one left is a plain button.
+        let many = ed.draft.as_ref().is_some_and(|d| launch_clis(d, &s.clis).len() > 1);
         Plan {
             rows: rows(&v),
             tab_labels: Tab::ALL.map(|t| tab_label(t, ed, &s.clis)),
@@ -2931,13 +3031,6 @@ fn reconcile(pane: HWND, laid: &Laid, scroll: i32, dpi: i32, gen: u64) -> HashMa
                     live.label = text.clone();
                 }
             }
-            Kind::Segment { text, selected } => {
-                if live.label != *text {
-                    set_text(h, text);
-                    live.label = text.clone();
-                }
-                set_segment(h, *selected);
-            }
             Kind::Combo { options, sel } => {
                 if live.options != *options {
                     unsafe {
@@ -2994,7 +3087,7 @@ fn make_control(pane: HWND, tag: Tag) -> Option<Live> {
             WINDOW_STYLE((ES_AUTOHSCROLL | if number { ES_NUMBER } else { 0 }) as u32) | border,
         ),
         Tag::Check => (w!("BUTTON"), WINDOW_STYLE(BS_AUTOCHECKBOX as u32)),
-        Tag::Button | Tag::Segment => (w!("BUTTON"), WINDOW_STYLE(BS_PUSHBUTTON as u32)),
+        Tag::Button => (w!("BUTTON"), WINDOW_STYLE(BS_PUSHBUTTON as u32)),
         Tag::Link => (w!("BUTTON"), WINDOW_STYLE((BS_PUSHBUTTON | BS_FLAT) as u32)),
         Tag::Combo => (
             w!("COMBOBOX"),
@@ -3025,9 +3118,6 @@ fn make_control(pane: HWND, tag: Tag) -> Option<Live> {
     };
     unsafe {
         SendMessageW(h, WM_SETFONT, Some(WPARAM(f.0 as usize)), Some(LPARAM(1)));
-        if tag == Tag::Segment {
-            let _ = SetPropW(h, PROP_SEG, Some(HANDLE(1 as *mut c_void)));
-        }
         if matches!(tag, Tag::Edit { multi: true, .. }) && custom {
             theme::system().dress_scrollbars(h);
         }
@@ -3592,7 +3682,7 @@ fn launch() {
         let role = s.model.ed.draft.clone();
         let labels: Vec<(String, String)> = role
             .as_ref()
-            .map(|r| r.clis.iter().map(|c| (c.cli.clone(), s.clis.label(&c.cli))).collect())
+            .map(|r| launch_clis(r, &s.clis).into_iter().map(|c| { let label = s.clis.label(&c); (c, label) }).collect())
             .unwrap_or_default();
         (s.owner, role, labels)
     });
@@ -3616,6 +3706,14 @@ fn launch() {
         with_model(|s| s.model.ed.status = Some(format!("{} — {}", tr("The role couldn't be launched"), why)));
     }
     refresh();
+}
+
+/// The CLIs Launch starts `role` in, in the role's order: only those whose
+/// plugin is on (`role_cli::launchable`, #1678).
+fn launch_clis(role: &Role, clis: &CliSnapshot) -> Vec<String> {
+    let configured: Vec<String> = role.clis.iter().map(|c| c.cli.clone()).collect();
+    let available = clis.available();
+    polter_settings_shell::role_cli::launchable(&configured, available.as_deref())
 }
 
 /// The Launch button's menu, for a role set up for more than one CLI.
@@ -3687,6 +3785,11 @@ fn run_action(a: Action) {
     }
     if let Some(key) = after.adopt {
         adopt(&key);
+        return;
+    }
+    if after.open_plugins {
+        // The settings window this section is in, at Plugins (05a).
+        crate::settings_win::request(polter_settings_shell::Route::to(polter_settings_shell::Section::Plugins, None), main_hwnd());
         return;
     }
     if after.reread_clis {
@@ -4576,7 +4679,9 @@ mod tests {
                     item("mcp:x", ItemKind::Mcp, "user", false),
                 ],
                 notes: Vec::new(),
+                options: Vec::new(),
             }],
+            held_back: Vec::new(),
         }
     }
 
@@ -4608,10 +4713,11 @@ mod tests {
         let mut ed = editing(&mut c);
         let clis = snapshot();
         assert_eq!(tab_count(&ed, &clis, ItemKind::Skill), Some((3, 3)));
-        ed.update_choice("claude", |ch| {
-            ch.skills.set("skill:a", false);
-            ch.mcp.keep_by_default = false;
-        });
+        {
+            let d = ed.draft.as_mut().unwrap();
+            d.cli_skills.set("skill:a", false);
+            d.cli_mcp.keep_by_default = false;
+        }
         assert_eq!(tab_count(&ed, &clis, ItemKind::Skill), Some((2, 3)));
         // Everything off by default, and the locked one still counted.
         assert_eq!(tab_count(&ed, &clis, ItemKind::Mcp), Some((1, 2)));
@@ -4795,7 +4901,7 @@ mod tests {
         m.ed.tab = Tab::Skills;
         apply(&mut m, &c, &clis, Action::Check("item:skill:a".into(), false));
         apply(&mut m, &c, &clis, Action::Check("keepdef".into(), false));
-        let sel = &m.ed.draft.as_ref().unwrap().clis[0].skills;
+        let sel = &m.ed.draft.as_ref().unwrap().cli_skills;
         assert!(!sel.keep_by_default);
         assert!(!sel.is_on("skill:a") && sel.is_on("skill:b") && sel.is_on("skill:c"));
         assert!(!sel.is_on("skill:installed-tomorrow"));
@@ -4803,7 +4909,7 @@ mod tests {
         m.ed.tab = Tab::Mcp;
         apply(&mut m, &c, &clis, Action::Check("gtoggle:user".into(), false));
         apply(&mut m, &c, &clis, Action::Check("item:mcp:polter".into(), false));
-        let sel = &m.ed.draft.as_ref().unwrap().clis[0].mcp;
+        let sel = &m.ed.draft.as_ref().unwrap().cli_mcp;
         assert!(!sel.is_on("mcp:x"));
         assert!(!sel.except.contains(&"mcp:polter".to_string()), "a locked item is never switched");
         assert_eq!(tab_count(&m.ed, &clis, ItemKind::Mcp), Some((1, 2)));
@@ -4819,7 +4925,7 @@ mod tests {
         m.ed.tab = Tab::Skills;
         apply(&mut m, &c, &clis, Action::Text("search".into(), "c".into()));
         apply(&mut m, &c, &clis, Action::Click("alloff".into()));
-        let sel = &m.ed.draft.as_ref().unwrap().clis[0].skills;
+        let sel = &m.ed.draft.as_ref().unwrap().cli_skills;
         assert!(!sel.is_on("skill:c"));
         assert!(sel.is_on("skill:a") && sel.is_on("skill:b"));
         // Switching tab clears the filter.
@@ -4909,19 +5015,142 @@ mod tests {
         assert_eq!(keys(&rows(&v)), vec!["gobasics".to_string()]);
     }
 
+    /// The snapshot plus Codex: `skill:a` installed in both, `skill:only`
+    /// in Codex alone, and two unattended options, one declared with
+    /// values.
+    fn two_clis() -> CliSnapshot {
+        use crate::roles::{CliOption, CliOptionValue};
+        let mut clis = snapshot();
+        let mut codex = clis.clis[0].clone();
+        codex.key = "codex".into();
+        codex.label = "Codex".into();
+        codex.items = vec![item("skill:a", ItemKind::Skill, "user", false), item("skill:only", ItemKind::Skill, "user", false)];
+        codex.options = vec![CliOption {
+            key: "sandbox".into(),
+            label: "Sandbox".into(),
+            values: ["read-only", "workspace-write"]
+                .iter()
+                .map(|v| CliOptionValue { value: v.to_string(), args: vec!["--sandbox".into(), v.to_string()] })
+                .collect(),
+        }];
+        clis.clis.push(codex);
+        clis
+    }
+
+    fn words_of(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .flat_map(|r| r.cells.iter())
+            .filter_map(|c| match &c.kind {
+                Kind::Text { text, .. } | Kind::Check { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// role-cli-v2 07: one list for every CLI, no switcher; an id both CLIs
+    /// have is one switch, one only Codex has says so -- and only when the
+    /// role is set up for both.
     #[test]
-    fn two_clis_put_a_switcher_on_the_tab_and_one_does_not() {
+    fn the_skills_tab_is_one_list_for_every_cli_and_marks_what_only_one_has() {
         let mut c = cat(&["r"]);
         let mut ed = editing(&mut c);
         ed.tab = Tab::Skills;
         let empty = HashSet::new();
-        let clis = snapshot();
+        let clis = two_clis();
         let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
-        assert!(!keys(&rows(&v)).iter().any(|k| k.starts_with("seg:")));
+        let one = rows(&v);
+        assert!(!keys(&one).iter().any(|k| k.starts_with("seg:")));
+        assert!(!words_of(&one).iter().any(|t| t.starts_with("Only ")), "one CLI: no mark");
+        assert!(!keys(&one).contains(&"item:skill:only".to_string()), "Codex is not the role's yet");
         ed.set_cli("codex", true);
         let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
-        let k = keys(&rows(&v));
-        assert!(k.contains(&"seg:claude".to_string()) && k.contains(&"seg:codex".to_string()));
+        let two = rows(&v);
+        let k = keys(&two);
+        assert_eq!(k.iter().filter(|k| *k == "item:skill:a").count(), 1, "in both, one switch");
+        assert!(k.contains(&"item:skill:only".to_string()));
+        let t = words_of(&two);
+        let mut only: Vec<String> = t.iter().filter(|t| t.starts_with("Only ")).cloned().collect();
+        only.sort();
+        assert_eq!(only, ["Only Claude Code", "Only Claude Code", "Only Codex"]);
+        assert_eq!(tab_count(&ed, &clis, ItemKind::Skill), Some((4, 4)));
+        // A switch acts on the one selection the role keeps.
+        let mut m = Model { ed, ..Model::default() };
+        apply(&mut m, &c, &clis, Action::Check("item:skill:only".into(), false));
+        assert!(!m.ed.draft.as_ref().unwrap().cli_skills.is_on("skill:only"));
+    }
+
+    /// 05b: a CLI whose plugin is off is not guessed at -- no "Only …"
+    /// anywhere, and a sentence says its switches stay.
+    #[test]
+    fn a_cli_that_cannot_be_read_marks_nothing_and_says_its_switches_stay() {
+        let mut c = cat(&["r"]);
+        let mut ed = editing(&mut c);
+        ed.tab = Tab::Skills;
+        ed.set_cli("codex", true);
+        let mut clis = two_clis();
+        clis.clis.retain(|x| x.key != "codex");
+        clis.held_back = vec![crate::roles::HeldCli { key: "codex".into(), label: "Codex".into(), why: crate::roles::HeldWhy::PluginOff }];
+        let empty = HashSet::new();
+        let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+        let t = words_of(&rows(&v));
+        assert!(!t.iter().any(|t| t.starts_with("Only ")));
+        assert!(t.iter().any(|t| t.starts_with("The Codex plugin is off, so what it has installed can't be read")), "{t:?}");
+        // Basics: the box stays ticked, the reason is "off", and the way
+        // through is offered.
+        ed.tab = Tab::Basics;
+        let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+        let b = rows(&v);
+        assert!(keys(&b).contains(&"openplugins".to_string()));
+        assert!(words_of(&b).iter().any(|t| t.starts_with("The Codex plugin is off:")));
+        // Cannot run: another sentence, and no link -- turning it on would
+        // not help.
+        clis.held_back[0].why = crate::roles::HeldWhy::CannotRun;
+        let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+        let b = rows(&v);
+        assert!(!keys(&b).contains(&"openplugins".to_string()));
+        assert!(words_of(&b).iter().any(|t| t.starts_with("Codex can't be started on this machine")));
+    }
+
+    /// role-cli-v2 04B: a section per CLI with its own model, options and
+    /// extra arguments; an option offers the CLI's default and only the
+    /// values the adapter declares.
+    #[test]
+    fn each_cli_has_its_own_section_and_options_are_only_what_the_cli_takes() {
+        let mut c = cat(&["r"]);
+        let mut ed = editing(&mut c);
+        ed.set_cli("codex", true);
+        let clis = two_clis();
+        let empty = HashSet::new();
+        let v = View { ed: &ed, cat: &Catalog::default(), skills: &SkillCatalog::default(), clis: &clis, instr_h: 240, search: "", collapsed: &empty, expanded: &empty };
+        let r = rows(&v);
+        let k = keys(&r);
+        for want in ["model:claude", "args:claude", "model:codex", "args:codex", "opt:codex:sandbox"] {
+            assert!(k.contains(&want.to_string()), "{want}: {k:?}");
+        }
+        assert!(!k.iter().any(|k| k.starts_with("opt:claude")), "Claude declares no options here");
+        // Each box's example is its own CLI's flag, or none: never another
+        // CLI's (`--permission-mode` under Codex was the bug).
+        let cue = |key: &str| match &r.iter().flat_map(|r| r.cells.iter()).find(|c| c.key == key).unwrap().kind {
+            Kind::Edit { cue, .. } => cue.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(cue("args:codex"), "--search");
+        assert_eq!(cue("args:claude"), "", "a CLI we know no flag of gets no example");
+        assert_eq!(args_cue("claude-code"), "--verbose");
+        let combo = r.iter().flat_map(|r| r.cells.iter()).find(|c| c.key == "opt:codex:sandbox").unwrap();
+        assert_eq!(combo.kind, Kind::Combo { options: vec!["The CLI's default".into(), "read-only".into(), "workspace-write".into()], sel: 0 });
+        let mut m = Model { ed, ..Model::default() };
+        apply(&mut m, &c, &clis, Action::Choose("opt:codex:sandbox".into(), 2));
+        apply(&mut m, &c, &clis, Action::Text("model:codex".into(), "gpt-5.6-luna".into()));
+        let d = m.ed.draft.as_ref().unwrap();
+        assert_eq!(d.choice("codex").unwrap().options.get("sandbox").map(String::as_str), Some("workspace-write"));
+        assert_eq!(d.choice("codex").unwrap().model, "gpt-5.6-luna");
+        assert_eq!(d.choice("claude").unwrap().model, "", "another CLI's field is its own");
+        // An index past the list writes nothing; 0 is the default again.
+        apply(&mut m, &c, &clis, Action::Choose("opt:codex:sandbox".into(), 9));
+        assert_eq!(m.ed.draft.as_ref().unwrap().choice("codex").unwrap().options.len(), 1);
+        apply(&mut m, &c, &clis, Action::Choose("opt:codex:sandbox".into(), 0));
+        assert!(m.ed.draft.as_ref().unwrap().choice("codex").unwrap().options.is_empty());
     }
 
     /// The list is the machine's, the launch is the terminal's, and the

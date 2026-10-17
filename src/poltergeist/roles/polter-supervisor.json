@@ -3,28 +3,17 @@
   "name": "Polter Supervisor",
   "description": "Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it.",
   "clis": {
-    "claude-code": {
-      "skills": {
-        "default": false,
-        "except": [
-          "skill:polter-supervising",
-          "skill:polter-operating-a-terminal",
-          "skill:polter-reading-a-terminal"
-        ]
-      },
-      "mcp": { "default": false, "except": [] }
-    },
-    "codex": {
-      "skills": {
-        "default": false,
-        "except": [
-          "skill:polter-supervising",
-          "skill:polter-operating-a-terminal",
-          "skill:polter-reading-a-terminal"
-        ]
-      },
-      "mcp": { "default": false, "except": [] }
-    }
+    "claude-code": {},
+    "codex": {}
   },
+  "cli_skills": {
+    "default": false,
+    "except": [
+      "skill:polter-supervising",
+      "skill:polter-operating-a-terminal",
+      "skill:polter-reading-a-terminal"
+    ]
+  },
+  "cli_mcp": { "default": false, "except": [] },
   "polter": { "supervisor": true }
 }

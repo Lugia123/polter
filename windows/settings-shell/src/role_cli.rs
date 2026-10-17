@@ -71,6 +71,24 @@ impl CliOffer {
     }
 }
 
+/// The CLIs the role library's Launch button starts (#1678; the macOS side
+/// is `RoleLibraryView`'s Launch menu): of those the role is set up for, in
+/// its order, the ones the core found an adapter for -- a CLI whose plugin
+/// is off is not offered here either, the same set as `CliOffer::of`. More
+/// than one is a menu; one is a plain button.
+///
+/// `None` (never read) offers everything set up, as `CliOffer::of` does.
+/// **None of them here offers everything set up as well**: the button
+/// stays, and the core's refusal says why, rather than a grey button that
+/// says nothing.
+pub fn launchable(configured: &[String], available: Option<&[String]>) -> Vec<String> {
+    let here: Vec<String> = match available {
+        Some(found) => configured.iter().filter(|c| found.contains(c)).cloned().collect(),
+        None => configured.to_vec(),
+    };
+    if here.is_empty() { configured.to_vec() } else { here }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,7 +109,7 @@ mod tests {
     /// -- saying which, so the core is not left to choose again.
     #[test]
     fn a_role_for_two_with_only_one_here_starts_that_one() {
-        assert_eq!(of(BOTH, Some(&["claude-code", "gemini"])), CliOffer::Only("claude-code".into()));
+        assert_eq!(of(BOTH, Some(&["claude-code", "other-cli"])), CliOffer::Only("claude-code".into()));
         assert_eq!(of(BOTH, Some(&["codex"])), CliOffer::Only("codex".into()));
     }
 
@@ -99,8 +117,8 @@ mod tests {
     fn both_here_is_a_choice_in_the_roles_order() {
         assert_eq!(of(BOTH, Some(&["codex", "claude-code"])), CliOffer::Choose(v(BOTH)));
         assert_eq!(
-            of(&["codex", "claude-code", "gemini"], Some(&["gemini", "codex"])),
-            CliOffer::Choose(v(&["codex", "gemini"]))
+            of(&["codex", "claude-code", "other-cli"], Some(&["other-cli", "codex"])),
+            CliOffer::Choose(v(&["codex", "other-cli"]))
         );
     }
 
@@ -117,7 +135,7 @@ mod tests {
     #[test]
     fn otherwise_the_row_carries_the_key_alone() {
         assert_eq!(of(BOTH, Some(&[])), CliOffer::Role);
-        assert_eq!(of(BOTH, Some(&["gemini"])), CliOffer::Role);
+        assert_eq!(of(BOTH, Some(&["other-cli"])), CliOffer::Role);
         assert_eq!(of(&["codex"], Some(&[])), CliOffer::Role);
         assert_eq!(of(&["codex"], Some(&["codex"])), CliOffer::Role);
         assert_eq!(of(&[], Some(&["codex"])), CliOffer::Role);
@@ -135,5 +153,19 @@ mod tests {
         );
         assert!(CliOffer::Role.choices("duo").is_empty());
         assert!(CliOffer::Only("codex".into()).choices("duo").is_empty());
+    }
+
+    #[test]
+    fn launch_offers_only_what_is_here_and_falls_back_to_everything_set_up() {
+        let l = |c: &[&str], a: Option<&[&str]>| {
+            let found = a.map(v);
+            launchable(&v(c), found.as_deref())
+        };
+        assert_eq!(l(BOTH, Some(&["claude-code"])), v(&["claude-code"]));
+        assert_eq!(l(BOTH, Some(&["codex", "claude-code"])), v(BOTH));
+        assert_eq!(l(BOTH, None), v(BOTH));
+        assert_eq!(l(BOTH, Some(&[])), v(BOTH));
+        assert_eq!(l(&["codex"], Some(&["claude-code"])), v(&["codex"]));
+        assert!(l(&[], Some(&["codex"])).is_empty());
     }
 }

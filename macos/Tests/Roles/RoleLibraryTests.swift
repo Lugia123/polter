@@ -75,7 +75,8 @@ struct RoleLibraryTests {
      {"key":"archer","name":"Archer","description":"d","instructions":"be brief",
       "tools":{"deny":["notify_user"]},"hint":{"model":"sonnet","disable_host_plugins":[]},
       "skills":["reading-a-terminal"],
-      "clis":{"claude-code":{"skills":{"default":false,"except":["skill:pdf"]},"mcp":{"default":true,"except":[]},"model":"opus","args":["--verbose"]}}}]}
+      "clis":{"claude-code":{"model":"opus","args":["--verbose"],"options":{"permission_mode":"auto"}},"codex":{}},
+      "cli_skills":{"default":false,"except":["skill:pdf"]},"cli_mcp":{"default":true,"except":[]}}]}
     """
 
     /// A hand-written role's tool rules must survive the window saving its
@@ -157,6 +158,69 @@ struct RoleLibraryTests {
         let cc = (out["clis"] as? [String: Any])?["claude-code"] as? [String: Any]
         #expect(cc?["model"] as? String == "opus")
         #expect(cc?["args"] as? [String] == ["--verbose"])
+        #expect(cc?["options"] as? [String: String] == ["permission_mode": "auto"])
+    }
+
+    /// Skills and MCP servers are the role's, one set for every CLI (task
+    /// 1677): read from `cli_skills`, written back there, and never per CLI
+    /// -- the core would ignore a per-CLI one beside the role's.
+    @Test func skillsAndServersAreOneSetForEveryCli() throws {
+        let catalog = try #require(RoleCatalog(json: catalogJSON))
+        var role = try #require(catalog.roles.first)
+        #expect(!role.skills.keepByDefault && role.skills.except == ["skill:pdf"])
+        role.skills.set("skill:imagegen", on: true)
+        let out = role.jsonObject
+        let skills = try #require(out["cli_skills"] as? [String: Any])
+        #expect(skills["default"] as? Bool == false)
+        #expect(skills["except"] as? [String] == ["skill:pdf", "skill:imagegen"])
+        #expect((out["cli_mcp"] as? [String: Any])?["default"] as? Bool == true)
+        for (_, cli) in try #require(out["clis"] as? [String: [String: Any]]) {
+            #expect(cli["skills"] == nil && cli["mcp"] == nil)
+        }
+    }
+
+    /// 07/08/05b (task 1677): every CLI's items as one list, one row per
+    /// id; "only" beside one CLI's alone, and only when both are read.
+    @Test func everyClisItemsAreOneListMarkedWhereOnlyOneHasIt() throws {
+        let both = try #require(AgentCliSnapshot(json: """
+        {"stale":false,"refreshing":false,"clis":[
+         {"key":"claude-code","label":"Claude Code","inventory":{"items":[
+           {"id":"skill:pdf","kind":"skill","name":"pdf"},{"id":"skill:docx","kind":"skill","name":"docx"},
+           {"id":"mcp:polter","kind":"mcp","name":"polter","locked":true}],
+           "options":[{"key":"permission_mode","label":"Permission mode","values":[{"value":"auto","args":["--permission-mode","auto"]}]}]}},
+         {"key":"codex","label":"Codex","inventory":{"items":[
+           {"id":"skill:pdf","kind":"skill","name":"pdf"},{"id":"skill:spreadsheet","kind":"skill","name":"spreadsheet"}]}}],
+         "held_back":[{"key":"other-cli","label":"Other","why":"plugin_off"}]}
+        """))
+        let merged = RoleMergedItems.of(.skill, clis: ["claude-code", "codex"], in: both)
+        #expect(merged.rows.map(\.id) == ["skill:pdf", "skill:docx", "skill:spreadsheet"])
+        #expect(merged.rows.map(\.only) == [nil, "Claude Code", "Codex"])
+        #expect(merged.unread.isEmpty)
+        // One CLI: nothing is marked (④).
+        #expect(RoleMergedItems.of(.skill, clis: ["codex"], in: both).rows.allSatisfy { $0.only == nil })
+        // One side unread: its items are not guessed at and nothing is marked (③, 05b).
+        let off = RoleMergedItems.of(.skill, clis: ["claude-code", "other-cli"], in: both)
+        #expect(off.rows.map(\.id) == ["skill:pdf", "skill:docx"])
+        #expect(off.rows.allSatisfy { $0.only == nil })
+        #expect(off.unread.map(\.key) == ["other-cli"] && off.unread.map(\.label) == ["Other"])
+        // Why each CLI cannot start, three ways.
+        #expect(both.standing("codex") == .ok)
+        #expect(both.standing("other-cli") == .pluginOff(label: "Other"))
+        #expect(both.standing("gone") == .noPlugin)
+        // The options an adapter offers.
+        #expect(both.cli("claude-code")?.options.map(\.key) == ["permission_mode"])
+        #expect(both.cli("claude-code")?.options.first?.values.first?.args == ["--permission-mode", "auto"])
+    }
+
+    /// The extra-arguments example is the CLI's own flag (task 1677): a
+    /// Claude Code flag under "Starting Codex" is one Codex refuses.
+    @Test func theExtraArgumentsExampleIsTheClisOwn() {
+        #expect(RoleCliStartEditor.argsExample("codex") == "--search")
+        #expect(RoleCliStartEditor.argsExample("claude-code") == "--verbose")
+        #expect(RoleCliStartEditor.argsExample("other-cli") == "")
+        for cli in ["codex", "other-cli"] {
+            #expect(!RoleCliStartEditor.argsExample(cli).contains("permission-mode"))
+        }
     }
 
     @Test func anUntouchedRoleIsNotADraft() throws {

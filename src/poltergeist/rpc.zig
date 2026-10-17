@@ -7270,9 +7270,21 @@ fn dispatchOne(
                     "NoCli",
                     "this role is not set up for any agent CLI yet. Give it one with role_put.",
                 ),
+                error.CliOff => hostFailure(
+                    "CliOff",
+                    "that CLI's plugin is switched off; the person turns it on in Plugins. " ++
+                        "Nothing was opened.",
+                ),
+                error.CliUnavailable => hostFailure(
+                    "CliUnavailable",
+                    "that CLI cannot be started on this machine: no plugin manages it, or " ++
+                        "nothing here can run its plugin's adapter. Turning a plugin on does " ++
+                        "not change that. Nothing was opened.",
+                ),
                 error.ChooseCli => hostFailure(
                     "ChooseCli",
-                    "this role is set up for more than one CLI; say which with cli.",
+                    "this role is set up for more than one CLI that can start here, and none " ++
+                        "of them is the one you are running in; say which with cli.",
                 ),
                 error.NotAbsolute => hostFailure(
                     "BadParams",
@@ -14615,11 +14627,11 @@ const caps_roles = [_]persona.Persona{.{
     .mcp = &.{"argus"},
     .clis = &.{.{
         .cli = "claude-code",
-        .skills = .{ .except = &.{"skill:pdf"} },
-        .mcp = .{ .default = false, .except = &.{"mcp:argus"} },
         .model = "sonnet",
         .args = &.{"--permission-mode=acceptEdits"},
     }},
+    .cli_skills = .{ .except = &.{"skill:pdf"} },
+    .cli_mcp = .{ .default = false, .except = &.{"mcp:argus"} },
 }};
 
 /// What `agent_cli.Cache.snapshot` hands back once the adapter has
@@ -14649,7 +14661,7 @@ const CapsFixture = struct {
         self.store = .{ .alloc = testing.allocator, .set = .{ .personas = &caps_roles }, .loaded = true };
         errdefer self.store.deinit();
         try self.store.setPersona(worker, "w");
-        try self.store.noteLaunch(worker, "w", caps_roles[0].clis[0]);
+        try self.store.noteLaunch(worker, caps_roles[0], caps_roles[0].clis[0]);
         try self.store.setPersona(other, "w");
     }
 

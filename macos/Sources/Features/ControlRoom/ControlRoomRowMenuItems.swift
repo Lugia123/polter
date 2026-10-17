@@ -18,14 +18,23 @@ enum ControlRoomRowMenuItems {
         case separator
     }
 
-    /// The rule's menu as lines.
-    static func lines(_ entries: [ControlRoomRowMenu.Entry]) -> [Line] {
+    /// The rule's menu as lines. `startNew` is what "with a new session"
+    /// opens when it opens anything: the ids of `cliSubmenu`.
+    static func lines(_ entries: [ControlRoomRowMenu.Entry], startNew: [String]? = nil) -> [Line] {
         entries.map { entry in
             switch entry {
             case .separator: return .separator
-            case .item(let item): return .item(item.rawValue, submenu: item.submenu?.map(\.rawValue))
+            case .item(let item):
+                if item == .startNew, let startNew { return .item(item.rawValue, submenu: startNew) }
+                return .item(item.rawValue, submenu: item.submenu?.map(\.rawValue))
             }
         }
+    }
+
+    /// What stands at the right of the CLI the last supervisor used, in the
+    /// submenu of CLIs (02A).
+    static var lastUsedText: String {
+        String(localized: "Last used", comment: "总控台：群行右键「启动总管，用新会话」子菜单里，上次总管用的那个 CLI 右侧的标注")
     }
 
     /// Every key the rule can hand in, with what it says.
@@ -98,6 +107,7 @@ enum ControlRoomRowMenuItems {
     ///   - choose: what to do when an item is chosen, by its key.
     @MainActor
     static func menu(_ lines: [Line],
+                     title named: (String) -> String? = { _ in nil },
                      trailing: (String) -> String? = { _ in nil },
                      enabled: (String) -> Bool = { _ in true },
                      choose: @escaping (String) -> Void) -> NSMenu {
@@ -110,7 +120,7 @@ enum ControlRoomRowMenuItems {
                 case .separator:
                     menu.addItem(.separator())
                 case .item(let key, let submenu):
-                    let item = NSMenuItem(title: title(key) ?? key, action: #selector(Target.chosen(_:)), keyEquivalent: "")
+                    let item = NSMenuItem(title: named(key) ?? title(key) ?? key, action: #selector(Target.chosen(_:)), keyEquivalent: "")
                     item.representedObject = key
                     item.target = target
                     item.isEnabled = enabled(key)

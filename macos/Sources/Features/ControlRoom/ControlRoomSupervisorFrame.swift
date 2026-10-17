@@ -45,7 +45,7 @@ struct ControlRoomDetailMessage: View {
     /// The last frame the terminal drew here before the person took it
     /// back; nil when it has not been drawn here.
     var lastFrame: CGImage?
-    var onStart: (_ role: String?, _ cwd: String?, _ session: ControlRoomStartChoice.Session?) -> Void = { _, _, _ in }
+    var onStart: (_ role: String?, _ cwd: String?, _ session: ControlRoomStartChoice.Session?, _ cli: String?) -> Void = { _, _, _, _ in }
 
     @Environment(\.colorScheme) private var scheme
 
@@ -139,12 +139,13 @@ struct ControlRoomStartSupervisor: View {
     let roles: [ControlRoomList.SupervisorRole]
     let chooseRole: Bool
     let refusal: String?
-    let onStart: (_ role: String?, _ cwd: String?, _ session: ControlRoomStartChoice.Session?) -> Void
+    let onStart: (_ role: String?, _ cwd: String?, _ session: ControlRoomStartChoice.Session?, _ cli: String?) -> Void
 
     /// What the person picked; nil while they have picked nothing.
     @State private var role: String?
     @State private var cwd: String?
     @State private var session: ControlRoomStartChoice.Session?
+    @State private var cli: String?
 
     @Environment(\.colorScheme) private var scheme
 
@@ -185,15 +186,37 @@ struct ControlRoomStartSupervisor: View {
                     .foregroundStyle(theme.textSecondary.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if Choice.offersSession(start) {
-                sessionChoice(theme)
-            } else if let why = start.last.flatMap({ Choice.resumeNote($0.why) }) {
+            let choice = Choice.cliChoice(start, roles: roles, role: role, picked: cli)
+            if choice.shown {
+                // One grid, so the CLI rings and the session rings share a
+                // left edge (01a/01b): picking another CLI greys a ring and
+                // moves none.
+                Grid(alignment: .leading, horizontalSpacing: gap, verticalSpacing: 0) {
+                    GridRow {
+                        Text(Choice.cliRowText)
+                            .foregroundStyle(theme.textSecondary.color)
+                        cliRings(choice, theme)
+                    }
+                    if choice.resume != .hidden {
+                        GridRow {
+                            Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                            sessionChoice(theme, greyed: choice.resume == .greyed)
+                        }
+                    }
+                }
+            } else if choice.resume != .hidden {
+                sessionChoice(theme, greyed: choice.resume == .greyed)
+            }
+            if let why = Choice.resumeSaid(choice, last: start.last) {
                 Text(why)
                     .foregroundStyle(theme.textSecondary.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Button(action: {
-                onStart(role, cwd, Choice.sessionSent(offered: Choice.offersSession(start), picked: session))
+                // The CLI the choice has on, whenever it has one: the same
+                // the core would pick when it is the core's, and the
+                // person's when they picked (`scene::cli_choice`).
+                onStart(role, cwd, Choice.sessionSent(choice, picked: session), choice.picked)
             }, label: {
                 Text(ProjectLink.startTitle(project))
                     .fontWeight(Look.weight(Look.Font.weightEmphasis))
@@ -220,28 +243,53 @@ struct ControlRoomStartSupervisor: View {
 
     /// The two sessions a start can use, one to a line, the one in use
     /// marked: a ring filled in the attention colour, never a grey ground.
-    private func sessionChoice(_ theme: Look.Theme) -> some View {
-        let picked = session ?? .last
-        let mark = CGFloat(Look.Side.glyph)
+    /// `greyed` (01b): the CLI picked cannot go on with the last session,
+    /// so that option stays where it was, greyed and not pickable, and the
+    /// new one is the one in use -- the reason is the line under it.
+    private func sessionChoice(_ theme: Look.Theme, greyed: Bool) -> some View {
+        let picked = greyed ? .new : (session ?? .last)
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(Choice.Session.allCases, id: \.self) { one in
-                Button(action: { session = one }, label: {
-                    HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
-                        Circle()
-                            .strokeBorder(
-                                one == picked ? theme.attentionText.color : theme.textSecondary.color,
-                                lineWidth: one == picked ? mark / 3 : CGFloat(Look.Line.stroke))
-                            .frame(width: mark, height: mark)
-                        Text(Choice.optionText(one))
-                            .foregroundStyle(theme.text.color)
-                    }
-                    .frame(height: CGFloat(Look.Side.quietRowHeight))
-                    .contentShape(Rectangle())
-                })
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(one == picked ? .isSelected : [])
+                let off = greyed && one == .last
+                radio(Choice.optionText(one), on: one == picked, off: off, theme) { session = one }
+                    .accessibilityHint(off ? (Choice.resumeSaid(
+                        Choice.cliChoice(start, roles: roles, role: role, picked: cli), last: start.last) ?? "") : "")
             }
         }
+    }
+
+    /// One ring per CLI the role can start in (01a), the same rings as the
+    /// sessions below, so the two read as one group.
+    private func cliRings(_ choice: Choice.CliChoice, _ theme: Look.Theme) -> some View {
+        HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
+            ForEach(choice.clis, id: \.key) { one in
+                radio(Choice.cliName(key: one.key, label: one.label) ?? one.key,
+                      on: one.key == choice.picked, off: false, theme) { cli = one.key }
+            }
+        }
+    }
+
+    /// One ring and its words: filled in the attention colour when on,
+    /// greyed and inert when `off`.
+    private func radio(_ text: String, on: Bool, off: Bool, _ theme: Look.Theme,
+                       pick: @escaping () -> Void) -> some View {
+        let mark = CGFloat(Look.Side.glyph)
+        return Button(action: pick, label: {
+            HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
+                Circle()
+                    .strokeBorder(
+                        on ? theme.attentionText.color : (off ? theme.textTertiary.color : theme.textSecondary.color),
+                        lineWidth: on ? mark / 3 : CGFloat(Look.Line.stroke))
+                    .frame(width: mark, height: mark)
+                Text(text)
+                    .foregroundStyle(off ? theme.textTertiary.color : theme.text.color)
+            }
+            .frame(height: CGFloat(Look.Side.quietRowHeight))
+            .contentShape(Rectangle())
+        })
+        .buttonStyle(.plain)
+        .disabled(off)
+        .accessibilityAddTraits(on ? .isSelected : [])
     }
 
     /// The directory as it is shown: the home directory as `~`.

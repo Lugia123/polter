@@ -3,20 +3,13 @@
   "name": "Polter Tester",
   "description": "A test worker: checks what was built against what was asked for, with evidence, and changes nothing.",
   "clis": {
-    "claude-code": {
-      "skills": {
-        "default": false,
-        "except": ["skill:polter-operating-a-terminal"]
-      },
-      "mcp": { "default": false, "except": [] }
-    },
-    "codex": {
-      "skills": {
-        "default": false,
-        "except": ["skill:polter-operating-a-terminal"]
-      },
-      "mcp": { "default": false, "except": [] }
-    }
+    "claude-code": {},
+    "codex": {}
   },
+  "cli_skills": {
+    "default": false,
+    "except": ["skill:polter-operating-a-terminal"]
+  },
+  "cli_mcp": { "default": false, "except": [] },
   "polter": { "watch": true }
 }

@@ -748,6 +748,9 @@ struct StartPicks {
     cwd: Option<String>,
     /// Which session, when the two are offered; none until one is pressed.
     session: Option<act::Session>,
+    /// Which agent CLI, when there is a choice (#1678); none until one is
+    /// pressed.
+    cli: Option<String>,
     refusal: Option<String>,
 }
 
@@ -989,6 +992,7 @@ fn start_scene(g: &Geometry, theme: &Theme) -> scene::Start {
             role: picks.role.as_deref(),
             cwd: picks.cwd.as_deref(),
             session: picks.session,
+            cli: picks.cli.as_deref(),
             refusal: picks.refusal.as_deref(),
             home: &home,
         };
@@ -1049,26 +1053,32 @@ fn choose_directory(hwnd: HWND, group: &str) {
 /// snapshot; a refusal is kept to be said under the button.
 fn start_supervisor(hwnd: HWND, group: &str) {
     let picks = picks_for(Some(group));
-    // Which session is said only while the choice is on screen
-    // (`act::session_sent`); whether it is is the core's word.
-    let offered = source::with(|data| match data {
-        Data::Ready(r) => scene::offers_session(r.list.row(group).and_then(|row| row.start.as_ref())),
-        Data::NotYet => false,
-        Data::Unreadable(_) => false,
+    // Which CLI is the one on screen; which session is said only while
+    // "Go on" can be picked (`scene::session_for`) -- both from the same
+    // reading the right side was drawn from (#1678).
+    let choice = source::with(|data| match data {
+        Data::Ready(r) => r
+            .list
+            .row(group)
+            .and_then(|row| row.start.as_ref())
+            .map(|s| scene::cli_choice(s, &r.list.supervisor_roles, picks.role.as_deref(), picks.cli.as_deref())),
+        Data::NotYet => None,
+        Data::Unreadable(_) => None,
     });
-    start_supervisor_as(hwnd, group, act::session_sent(offered, picks.session));
+    let Some(choice) = choice else { return start_supervisor_as(hwnd, group, None, None) };
+    start_supervisor_as(hwnd, group, choice.picked.as_deref(), scene::session_for(&choice, picks.session));
 }
 
 /// Start the group's supervisor on `session`, in the role and directory
 /// picked for it (or the core's): the start button's, and the row menu's
 /// two starts, which say the session themselves (task 1661).
-fn start_supervisor_as(hwnd: HWND, group: &str, session: Option<act::Session>) {
+fn start_supervisor_as(hwnd: HWND, group: &str, cli: Option<&str>, session: Option<act::Session>) {
     let picks = picks_for(Some(group));
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
-    let Some(request) = act::encode(&act::Act::StartSupervisor { group, role: picks.role.as_deref(), cwd: picks.cwd.as_deref(), session }) else { return };
+    let Some(request) = act::encode(&act::Act::StartSupervisor { group, role: picks.role.as_deref(), cwd: picks.cwd.as_deref(), cli, session }) else { return };
     match source::act(&request) {
         Ok(()) => {
-            wlogf!(frame, "[control-room] start supervisor for {:?} (role {:?}, in {:?}, session {:?}) taken", group, picks.role, picks.cwd, session.map(|s| s.name()));
+            wlogf!(frame, "[control-room] start supervisor for {:?} (role {:?}, cli {:?}, in {:?}, session {:?}) taken", group, picks.role, cli, picks.cwd, session.map(|s| s.name()));
             pick(group, |p| p.refusal = None);
         }
         Err(why) => {
@@ -1143,6 +1153,17 @@ fn row_menu(hwnd: HWND, x: i32, y: i32) {
                 // A terminal in no group: there is no group to act on.
                 return Some((id, None));
             }
+            // The CLIs a new session can be started in (#1678): the core's
+            // role's, whose plugins are on; and the one the last
+            // supervisor used, which "going on" uses and the submenu marks.
+            let start = row.start.as_ref();
+            let role = start.and_then(|s| s.role.as_deref()).and_then(|k| r.list.supervisor_roles.iter().find(|x| x.key == k));
+            let clis: Vec<(String, String)> = role
+                .map(|x| x.clis.iter().map(|c| (c.key.clone(), scene::cli_name(Some(&c.key), c.label.as_deref()).unwrap_or_default())).collect())
+                .unwrap_or_default();
+            let last = start.and_then(|s| s.last.as_ref());
+            let last_cli = last.and_then(|l| l.last_cli.clone());
+            let last_label = last.and_then(|l| scene::cli_name(l.last_cli.as_deref(), l.last_cli_label.as_deref()));
             let state = polter_control_room::rowmenu::State {
                 // An archived group has no row here; its menu is the
                 // archived section's.
@@ -1150,15 +1171,16 @@ fn row_menu(hwnd: HWND, x: i32, y: i32) {
                 pinned: row.pinned,
                 muted: row.muted.is_some(),
                 sup: polter_control_room::rowmenu::sup_of(row),
-                resumable: scene::offers_session(row.start.as_ref()),
+                resumable: scene::offers_session(start),
+                clis: if clis.len() > 1 { 2 } else { 1 },
             };
-            Some((id, Some((state, row.muted))))
+            Some((id, Some((state, row.muted, clis, last_cli, last_label))))
         }
         Data::NotYet => None,
         Data::Unreadable(_) => None,
     });
     let Some((group, state)) = found else { return };
-    let Some((state, muted)) = state else {
+    let Some((state, muted, clis, last_cli, last_label)) = state else {
         wlogf!(frame, "[control-room] row menu: {:?} is a terminal in no group; no menu", group);
         return;
     };
@@ -1177,12 +1199,24 @@ fn row_menu(hwnd: HWND, x: i32, y: i32) {
         Some(list::fill(&tr(words), &at))
     };
     // What each id the menu hands back means: an index into this, plus one.
-    let mut ids: Vec<&'static str> = Vec::new();
+    let mut ids: Vec<String> = Vec::new();
+    let cli_keys: Vec<String> = clis.iter().map(|(k, _)| k.clone()).collect();
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         let label = |id: &str| -> Vec<u16> {
-            let mut words = polter_control_room::rowmenu::label(id).map(tr).unwrap_or_else(|| id.to_string());
-            if let Some(at) = when(id) {
+            // An item of the submenu of CLIs is the CLI's name.
+            let cli = polter_control_room::rowmenu::cli_of(id).and_then(|c| clis.iter().find(|(k, _)| k == c));
+            let mut words = match cli {
+                Some((_, name)) => name.clone(),
+                None => polter_control_room::rowmenu::label(id).map(tr).unwrap_or_else(|| id.to_string()),
+            };
+            // The right-hand column: "going on" says which CLI it goes on
+            // in, and asks nothing (02A).
+            let right = match id {
+                "start_resume" => last_label.clone(),
+                _ => when(id),
+            };
+            if let Some(at) = right {
                 words = format!("{words}\t{at}");
             }
             words.encode_utf16().chain(std::iter::once(0)).collect()
@@ -1192,10 +1226,24 @@ fn row_menu(hwnd: HWND, x: i32, y: i32) {
                 polter_control_room::rowmenu::Entry::Separator => {
                     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
                 }
+                polter_control_room::rowmenu::Entry::Item { id: "start_new", submenu: true } => {
+                    let Ok(sub) = CreatePopupMenu() else { continue };
+                    for (child, last) in polter_control_room::rowmenu::cli_submenu(&cli_keys, last_cli.as_deref()) {
+                        let mut words: Vec<u16> = label(&child);
+                        if last {
+                            words.pop();
+                            words.extend(format!("\t{}", tr(polter_control_room::rowmenu::label("last_used").unwrap_or_default())).encode_utf16());
+                            words.push(0);
+                        }
+                        ids.push(child);
+                        let _ = AppendMenuW(sub, MF_STRING, ids.len(), PCWSTR(words.as_ptr()));
+                    }
+                    let _ = AppendMenuW(menu, MF_POPUP | MF_STRING, sub.0 as usize, PCWSTR(label("start_new").as_ptr()));
+                }
                 polter_control_room::rowmenu::Entry::Item { id, submenu: true } => {
                     let Ok(sub) = CreatePopupMenu() else { continue };
                     for &child in polter_control_room::rowmenu::submenu(id) {
-                        ids.push(child);
+                        ids.push(child.to_string());
                         let flags = if row_item_works(child) { MF_STRING } else { MF_STRING | MF_GRAYED };
                         let _ = AppendMenuW(sub, flags, ids.len(), PCWSTR(label(child).as_ptr()));
                     }
@@ -1207,7 +1255,7 @@ fn row_menu(hwnd: HWND, x: i32, y: i32) {
                     let _ = AppendMenuW(menu, flags, sub.0 as usize, PCWSTR(label(id).as_ptr()));
                 }
                 polter_control_room::rowmenu::Entry::Item { id, submenu: false } => {
-                    ids.push(id);
+                    ids.push(id.to_string());
                     let flags = if row_item_works(id) { MF_STRING } else { MF_STRING | MF_GRAYED };
                     let _ = AppendMenuW(menu, flags, ids.len(), PCWSTR(label(id).as_ptr()));
                 }
@@ -1220,7 +1268,7 @@ fn row_menu(hwnd: HWND, x: i32, y: i32) {
         let _ = DestroyMenu(menu);
         picked.0 as usize
     };
-    let Some(&id) = chosen.checked_sub(1).and_then(|i| ids.get(i)) else {
+    let Some(id) = chosen.checked_sub(1).and_then(|i| ids.get(i)) else {
         wlogf!(frame, "[control-room] row menu on {:?}: dismissed", group);
         return;
     };
@@ -1257,9 +1305,15 @@ fn row_item(hwnd: HWND, group: &str, id: &str) {
             }
             None => wlogf!(frame, "[control-room] take-over: {:?} no longer offers one", group),
         },
-        "start_resume" => start_supervisor_as(hwnd, group, Some(act::Session::Last)),
-        "start_new" => start_supervisor_as(hwnd, group, Some(act::Session::New)),
-        "start" => start_supervisor_as(hwnd, group, None),
+        // "Going on" and a lone "new session" leave the CLI to the core
+        // (`supervisor.cli`, the last supervisor's where it can be); an
+        // item of the submenu of CLIs names its own (#1678).
+        "start_resume" => start_supervisor_as(hwnd, group, None, Some(act::Session::Last)),
+        "start_new" => start_supervisor_as(hwnd, group, None, Some(act::Session::New)),
+        "start" => start_supervisor_as(hwnd, group, None, None),
+        _ if polter_control_room::rowmenu::cli_of(id).is_some() => {
+            start_supervisor_as(hwnd, group, polter_control_room::rowmenu::cli_of(id), Some(act::Session::New))
+        }
         // The group's record, where the core keeps it (task 1659's
         // `record_dir`).
         "reveal" => match row.record_dir.clone().filter(|d| !d.is_empty()) {
@@ -1699,7 +1753,7 @@ fn follow_asks(hwnd: HWND) {
 /// the archive, or delete it.
 fn archived_menu(hwnd: HWND, x: i32, y: i32, a: &polter_control_room::snapshot::Archived) {
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
-    let state = polter_control_room::rowmenu::State { archived: true, sup: polter_control_room::rowmenu::Sup::None, resumable: false, pinned: false, muted: false };
+    let state = polter_control_room::rowmenu::State { archived: true, sup: polter_control_room::rowmenu::Sup::None, resumable: false, pinned: false, muted: false, clis: 1 };
     let mut ids: Vec<&'static str> = Vec::new();
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
@@ -2520,6 +2574,14 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         }
         if offered.directory.is_some_and(|r| inside(r, rx, ry)) {
             choose_directory(hwnd, &group);
+            return;
+        }
+        if let Some((cli, _)) = offered.clis.iter().find(|(_, r)| inside(*r, rx, ry)) {
+            let cli = cli.clone();
+            pick(&group, |p| p.cli = Some(cli));
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
             return;
         }
         if let Some((session, _)) = offered.sessions.iter().find(|(_, r)| inside(*r, rx, ry)) {

@@ -1092,12 +1092,17 @@ const tools = [_]Tool{
         .name = "role_put",
         .description = "Add a role to the library, or replace the one with the same key " ++
             "in place. `role` is one object: {key, name, description?, instructions?, " ++
-            "clis: {<cli>: {skills: {default, except: [ids]}, mcp: {default, except: " ++
-            "[ids]}, model?, args?}}, polter?: {supervisor, may_authorise, shielded, " ++
+            "clis: {<cli>: {model?, args?, options?: {<option>: <value>}}}, " ++
+            "cli_skills: {default, except: [ids]}, cli_mcp: {default, except: [ids]}, " ++
+            "polter?: {supervisor, may_authorise, shielded, " ++
             "watch, open: auto|tab, quiet_ms?}}. `key` is lowercase letters, digits and dashes, at " ++
             "most 32; it is how the role is launched. `<cli>` is a CLI key from role_clis " ++
             "(e.g. claude-code) -- a role is only offered for the CLIs it has an entry " ++
-            "for. **`default` plus `except`, not a list of what is on**: default true " ++
+            "for. **cli_skills and cli_mcp are one set for every CLI the role starts " ++
+            "in**; an id only one CLI has only does anything there. `options` are the " ++
+            "launch options a CLI's adapter lists in role_clis (`options`, each with " ++
+            "its values); one left out is the CLI's own default. " ++
+            "**`default` plus `except`, not a list of what is on**: default true " ++
             "keeps everything except the listed ids, default false keeps nothing except " ++
             "them, and anything installed later gets the default. Ids are the `id` " ++
             "fields role_clis lists (`skill:pdf`, `mcp:argus`); an id that is not " ++
@@ -1171,8 +1176,11 @@ const tools = [_]Tool{
             "role and `started: launched` for it -- and `polter +launch <key> <cli>` is " ++
             "typed into it, which builds the " ++
             "command line from the role (skills and MCP servers switched off, " ++
-            "instructions, model, extra args) and becomes the CLI. `cli` can be left out " ++
-            "when the role is set up for exactly one. `cwd` defaults to where you are " ++
+            "instructions, model, extra args) and becomes the CLI. **Leave `cli` out " ++
+            "and it is chosen for you**: the role's only CLI whose plugin is on, else " ++
+            "the CLI you are running in when the role is set up for it, else ChooseCli; " ++
+            "a `cli` whose plugin is off is CliOff, one that cannot start on this " ++
+            "machine at all CliUnavailable, and nothing is opened. `cwd` defaults to where you are " ++
             "standing and must be an absolute path when given. The reply carries the new " ++
             "terminal's `id` -- **except when it does not exist yet, which is every split, " ++
             "and on Windows every tab too**: then there is no `id` and no `watching`, the " ++

@@ -27,8 +27,9 @@ pub enum Act<'a> {
     NewGroup { name: &'a str },
     /// Start a supervisor for a group that has none. No role or no
     /// directory is the one the core's snapshot names. No session is the
-    /// core's own choice (`session_sent`).
-    StartSupervisor { group: &'a str, role: Option<&'a str>, cwd: Option<&'a str>, session: Option<Session> },
+    /// core's own choice (`session_sent`). No CLI is the one the core's
+    /// snapshot names (`supervisor.cli`, #1677).
+    StartSupervisor { group: &'a str, role: Option<&'a str>, cwd: Option<&'a str>, cli: Option<&'a str>, session: Option<Session> },
     /// The person said OK to the first sweep of old records (task 1511).
     RetentionAgree,
     /// "Fix" on a card that reads "Failed" (task 1560): the core tells the
@@ -176,7 +177,7 @@ pub fn encode(act: &Act) -> Option<String> {
         Act::AskSupervisor { group, ask } => {
             format!("{{\"act\":\"ask_supervisor\",\"group\":{},\"ask\":{}}}", quote(group), quote(ask.name()))
         }
-        Act::StartSupervisor { group, role, cwd, session } => {
+        Act::StartSupervisor { group, role, cwd, cli, session } => {
             // Left out when the person picked neither: the core then uses
             // the ones its snapshot named.
             let mut out = format!("{{\"act\":\"start_supervisor\",\"group\":{}", quote(group));
@@ -185,6 +186,9 @@ pub fn encode(act: &Act) -> Option<String> {
             }
             if let Some(cwd) = cwd {
                 out.push_str(&format!(",\"cwd\":{}", quote(cwd)));
+            }
+            if let Some(cli) = cli.filter(|c| !c.is_empty()) {
+                out.push_str(&format!(",\"cli\":{}", quote(cli)));
             }
             if let Some(session) = session {
                 out.push_str(&format!(",\"session\":{}", quote(session.name())));
@@ -229,6 +233,14 @@ pub enum Refusal {
     NoSuchPersona,
     NotASupervisorRole,
     NoCli,
+    /// A start named a CLI the role is not set up for (#1677, D).
+    NotSetUpForCli,
+    /// A start named a CLI whose plugin is off (#1677, D): turning it on
+    /// is the way through.
+    CliOff,
+    /// A start named a CLI whose plugin is on but whose adapter cannot run
+    /// on this machine: turning the plugin on would not help.
+    CliUnavailable,
     /// The directory to start in is not there, or is not one.
     NoSuchDirectory,
     /// No tab could be opened for it.
@@ -294,6 +306,9 @@ impl Refusal {
             "NoSuchPersona" => Refusal::NoSuchPersona,
             "NotASupervisorRole" => Refusal::NotASupervisorRole,
             "NoCli" => Refusal::NoCli,
+            "NotSetUpForCli" => Refusal::NotSetUpForCli,
+            "CliOff" => Refusal::CliOff,
+            "CliUnavailable" => Refusal::CliUnavailable,
             "NotAbsolute" | "NoSuchDirectory" | "NotADirectory" => Refusal::NoSuchDirectory,
             "OpenFailed" | "NoRuntime" => Refusal::OpenFailed,
             "NoExecutable" => Refusal::NoExecutable,
@@ -341,6 +356,9 @@ impl Refusal {
             Refusal::NoSuchPersona => n_("That role no longer exists."),
             Refusal::NotASupervisorRole => n_("That role does not make a supervisor."),
             Refusal::NoCli => n_("This role isn't set up for any agent CLI yet. Pick one in the role library."),
+            Refusal::NotSetUpForCli => n_("That role isn't set up for that agent CLI."),
+            Refusal::CliOff => n_("That agent CLI's plugin is off. Turn it on in Plugins."),
+            Refusal::CliUnavailable => n_("That agent CLI can't be started on this machine."),
             Refusal::NoSuchDirectory => n_("That directory is not there."),
             Refusal::OpenFailed => n_("No tab could be opened for it."),
             Refusal::NoExecutable => n_("Polter could not find its own program to start the role with."),

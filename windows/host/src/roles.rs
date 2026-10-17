@@ -14,7 +14,7 @@
 //! of them starts a process there: `clis(true)` starts the adapters' read on
 //! the core's own thread and answers `refreshing` until it lands.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
@@ -139,25 +139,23 @@ impl Selection {
     }
 }
 
-/// A role's choices for one agent CLI.
+/// A role's choices for one agent CLI: what is set per CLI and nothing
+/// else. Which skills and MCP servers it keeps is the role's, one for every
+/// CLI (`Role::cli_skills`, personas.json version 3, #1677).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CliChoice {
     pub cli: String,
-    pub skills: Selection,
-    pub mcp: Selection,
     pub model: String,
     pub args: Vec<String>,
+    /// The unattended options picked, by the adapter's option key
+    /// (`AgentCli::options`); one left out is the CLI's own default. The
+    /// core passes them through as strings it does not read.
+    pub options: BTreeMap<String, String>,
 }
 
 impl CliChoice {
     pub fn new(cli: &str) -> Self {
-        Self {
-            cli: cli.to_string(),
-            skills: Selection::default(),
-            mcp: Selection::default(),
-            model: String::new(),
-            args: Vec::new(),
-        }
+        Self { cli: cli.to_string(), model: String::new(), args: Vec::new(), options: BTreeMap::new() }
     }
 
     fn from_json(cli: &str, v: Option<&Value>) -> Self {
@@ -165,23 +163,28 @@ impl CliChoice {
         let obj = v.and_then(Value::as_object).unwrap_or(&empty);
         Self {
             cli: cli.to_string(),
-            skills: Selection::from_json(obj.get("skills")),
-            mcp: Selection::from_json(obj.get("mcp")),
             model: obj.get("model").and_then(Value::as_str).unwrap_or("").to_string(),
             args: strings(obj.get("args")),
+            options: obj
+                .get("options")
+                .and_then(Value::as_object)
+                .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+                .unwrap_or_default(),
         }
     }
 
     fn to_json(&self) -> Value {
         let mut out = Map::new();
-        out.insert("skills".into(), self.skills.to_json());
-        out.insert("mcp".into(), self.mcp.to_json());
         let model = self.model.trim();
         if !model.is_empty() {
             out.insert("model".into(), Value::from(model));
         }
         if !self.args.is_empty() {
             out.insert("args".into(), Value::from(self.args.clone()));
+        }
+        if !self.options.is_empty() {
+            let options: Map<String, Value> = self.options.iter().map(|(k, v)| (k.clone(), Value::from(v.clone()))).collect();
+            out.insert("options".into(), Value::Object(options));
         }
         Value::Object(out)
     }
@@ -279,6 +282,12 @@ pub struct Role {
     pub summary: String,
     pub instructions: String,
     pub clis: Vec<CliChoice>,
+    /// Which of the CLIs' own skills and MCP servers the role keeps: one
+    /// for every CLI it is set up for (`cli_skills`, `cli_mcp`; the user's
+    /// word, #1677: set once, not once per CLI). An id that only one CLI
+    /// has only ever reaches that one.
+    pub cli_skills: Selection,
+    pub cli_mcp: Selection,
     pub polter: PolterSettings,
     /// Shipped with Polter. Most of it can be changed here and put back;
     /// its name, its description and what it grants cannot, and it cannot
@@ -293,7 +302,7 @@ pub struct Role {
     pub passthrough: Map<String, Value>,
 }
 
-const EDITED_KEYS: &[&str] = &["key", "name", "description", "instructions", "clis", "polter", "builtin", "official"];
+const EDITED_KEYS: &[&str] = &["key", "name", "description", "instructions", "clis", "cli_skills", "cli_mcp", "polter", "builtin", "official"];
 
 impl Role {
     pub fn new(key: &str, name: &str) -> Self {
@@ -303,6 +312,8 @@ impl Role {
             summary: String::new(),
             instructions: String::new(),
             clis: Vec::new(),
+            cli_skills: Selection::default(),
+            cli_mcp: Selection::default(),
             polter: PolterSettings::default(),
             builtin: false,
             official: None,
@@ -334,6 +345,8 @@ impl Role {
             summary: text("description"),
             instructions: text("instructions"),
             clis,
+            cli_skills: Selection::from_json(obj.get("cli_skills")),
+            cli_mcp: Selection::from_json(obj.get("cli_mcp")),
             polter: PolterSettings::from_json(obj.get("polter")),
             builtin: obj.get("builtin").and_then(Value::as_bool).unwrap_or(false),
             official: Official::from_json(obj.get("official").and_then(Value::as_object)),
@@ -360,6 +373,8 @@ impl Role {
             let clis: Map<String, Value> = self.clis.iter().map(|c| (c.cli.clone(), c.to_json())).collect();
             out.insert("clis".into(), Value::Object(clis));
         }
+        out.insert("cli_skills".into(), self.cli_skills.to_json());
+        out.insert("cli_mcp".into(), self.cli_mcp.to_json());
         if !self.polter.is_default() {
             out.insert("polter".into(), self.polter.to_json());
         }
@@ -385,6 +400,21 @@ impl Role {
 
     pub fn choice_mut(&mut self, cli: &str) -> Option<&mut CliChoice> {
         self.clis.iter_mut().find(|c| c.cli == cli)
+    }
+
+    /// The role's one selection of skills or of MCP servers.
+    pub fn selection(&self, kind: ItemKind) -> &Selection {
+        match kind {
+            ItemKind::Skill => &self.cli_skills,
+            ItemKind::Mcp => &self.cli_mcp,
+        }
+    }
+
+    pub fn selection_mut(&mut self, kind: ItemKind) -> &mut Selection {
+        match kind {
+            ItemKind::Skill => &mut self.cli_skills,
+            ItemKind::Mcp => &mut self.cli_mcp,
+        }
     }
 
     /// A key for a new role, made from its name when the name has any
@@ -582,6 +612,45 @@ pub struct AgentCli {
     pub installed: Option<bool>,
     pub items: Vec<CliItem>,
     pub notes: Vec<String>,
+    /// The unattended options this CLI's version supports, as its adapter
+    /// declared them (#1677); empty when it declares none.
+    pub options: Vec<CliOption>,
+}
+
+/// One unattended option an adapter declares: a key, a name for a person,
+/// and only the values the installed CLI really takes, each with the
+/// arguments it adds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CliOption {
+    pub key: String,
+    pub label: String,
+    pub values: Vec<CliOptionValue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CliOptionValue {
+    pub value: String,
+    pub args: Vec<String>,
+}
+
+impl CliOption {
+    fn from_json(v: &Value) -> Option<CliOption> {
+        let obj = v.as_object()?;
+        let key = obj.get("key")?.as_str()?.to_string();
+        let values = obj
+            .get("values")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| {
+                        let o = v.as_object()?;
+                        Some(CliOptionValue { value: o.get("value")?.as_str()?.to_string(), args: strings(o.get("args")) })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(CliOption { label: obj.get("label").and_then(Value::as_str).unwrap_or(&key).to_string(), key, values })
+    }
 }
 
 impl AgentCli {
@@ -600,6 +669,7 @@ impl AgentCli {
             installed: None,
             items: Vec::new(),
             notes: Vec::new(),
+            options: Vec::new(),
             key: key.clone(),
         };
         if let Some(inv) = obj.get("inventory").and_then(Value::as_object) {
@@ -610,6 +680,11 @@ impl AgentCli {
                 .map(|a| a.iter().filter_map(CliItem::from_json).collect())
                 .unwrap_or_default();
             cli.notes = strings(inv.get("notes"));
+            cli.options = inv
+                .get("options")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(CliOption::from_json).collect())
+                .unwrap_or_default();
         }
         Some(cli)
     }
@@ -623,11 +698,43 @@ pub struct CliSnapshot {
     /// A newer answer is on its way; ask again shortly.
     pub refreshing: bool,
     pub clis: Vec<AgentCli>,
+    /// The CLIs a plugin manages that are not in `clis`, and why (#1677).
+    /// A CLI in neither has no plugin at all.
+    pub held_back: Vec<HeldCli>,
 }
 
 impl Default for CliSnapshot {
     fn default() -> Self {
-        Self { stale: true, refreshing: false, clis: Vec::new() }
+        Self { stale: true, refreshing: false, clis: Vec::new(), held_back: Vec::new() }
+    }
+}
+
+/// Why a CLI a plugin manages cannot be started here. **Two answers, not
+/// one**: the person can turn a plugin on; they cannot make an adapter run
+/// where it does not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeldWhy {
+    PluginOff,
+    CannotRun,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldCli {
+    pub key: String,
+    pub label: String,
+    pub why: HeldWhy,
+}
+
+impl HeldCli {
+    fn from_json(v: &Value) -> Option<HeldCli> {
+        let obj = v.as_object()?;
+        let key = obj.get("key")?.as_str()?.to_string();
+        let why = match obj.get("why")?.as_str()? {
+            "plugin_off" => HeldWhy::PluginOff,
+            "cannot_run" => HeldWhy::CannotRun,
+            _ => return None,
+        };
+        Some(HeldCli { label: obj.get("label").and_then(Value::as_str).unwrap_or(&key).to_string(), key, why })
     }
 }
 
@@ -643,7 +750,32 @@ impl CliSnapshot {
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(AgentCli::from_json).collect())
                 .unwrap_or_default(),
+            held_back: obj
+                .get("held_back")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(HeldCli::from_json).collect())
+                .unwrap_or_default(),
         })
+    }
+
+    pub fn held(&self, key: &str) -> Option<&HeldCli> {
+        self.held_back.iter().find(|h| h.key == key)
+    }
+
+    /// Why a CLI the role is set up for is not one it can be started in
+    /// here, in a sentence -- the role keeps its settings either way.
+    /// Its plugin is off, it cannot run here, or no plugin manages it.
+    pub fn missing_note(&self, key: &str) -> String {
+        match self.held(key) {
+            Some(h) if h.why == HeldWhy::PluginOff => {
+                tr("The {} plugin is off: {} won't be offered when this role starts. Its settings stay in the role.")
+                    .replacen("{}", &h.label, 1)
+                    .replacen("{}", &h.label, 1)
+            }
+            Some(h) => tr("{} can't be started on this machine, so it won't be offered when this role starts. Its settings stay in the role.")
+                .replacen("{}", &h.label, 1),
+            None => tr("No plugin manages this CLI any more"),
+        }
     }
 
     pub fn cli(&self, key: &str) -> Option<&AgentCli> {
@@ -651,7 +783,10 @@ impl CliSnapshot {
     }
 
     pub fn label(&self, key: &str) -> String {
-        self.cli(key).map(|c| c.label.clone()).unwrap_or_else(|| key.to_string())
+        self.cli(key)
+            .map(|c| c.label.clone())
+            .or_else(|| self.held(key).map(|h| h.label.clone()))
+            .unwrap_or_else(|| key.to_string())
     }
 
     /// The keys of the CLIs the core found adapters for, or `None` while it
@@ -1087,8 +1222,9 @@ mod tests {
             "name": "Polter Supervisor",
             "description": "Makes the terminal it starts in this window's supervisor: splits the work, hands it out and checks it.",
             "instructions": "You are the supervisor.",
-            "clis": {"claude-code": {"skills": {"default": false, "except": ["skill:polter-supervising"]},
-                                      "mcp": {"default": false, "except": []}}},
+            "clis": {"claude-code": {}},
+            "cli_skills": {"default": false, "except": ["skill:polter-supervising"]},
+            "cli_mcp": {"default": false, "except": []},
             "polter": {"supervisor": true, "may_authorise": false, "shielded": false, "watch": false, "open": "auto"},
             "builtin": true
         })
@@ -1102,9 +1238,9 @@ mod tests {
         assert_eq!(r.polter.open, Open::Auto);
         assert_eq!(r.display_name(), "Polter Supervisor");
         assert!(r.display_summary().starts_with("Makes the terminal it starts in"));
-        let c = r.choice("claude-code").unwrap();
-        assert!(!c.skills.keep_by_default && c.skills.is_on("skill:polter-supervising"));
-        assert!(!c.mcp.keep_by_default);
+        assert!(r.choice("claude-code").is_some());
+        assert!(!r.cli_skills.keep_by_default && r.cli_skills.is_on("skill:polter-supervising"));
+        assert!(!r.cli_mcp.keep_by_default);
     }
 
     /// The name shown is the name the core sent, official or not, and
@@ -1167,8 +1303,12 @@ mod tests {
         assert!(out.get("description").is_none());
         assert!(out.get("instructions").is_none());
         let cc = &out["clis"]["claude-code"];
-        assert!(cc.get("model").is_none() && cc.get("args").is_none());
-        assert_eq!(cc["skills"], json!({"default": true, "except": []}));
+        assert!(cc.get("model").is_none() && cc.get("args").is_none() && cc.get("options").is_none());
+        // personas.json version 3 (#1677): the selection is the role's,
+        // and a CLI's object never carries one.
+        assert!(cc.get("skills").is_none() && cc.get("mcp").is_none(), "{cc}");
+        assert_eq!(out["cli_skills"], json!({"default": true, "except": []}));
+        assert_eq!(out["cli_mcp"], json!({"default": true, "except": []}));
     }
 
     // --------------------------------------------------------------- parsing
@@ -1287,6 +1427,54 @@ mod tests {
         assert_eq!(bare.error.as_deref(), Some("boom"));
         assert_eq!(s.label("nobody"), "nobody");
         assert!(CliSnapshot::default().stale);
+    }
+
+    /// The adapter's unattended options (#1677, B): only the values it
+    /// declares, each with the arguments it adds; a value with no `value`
+    /// is dropped, a missing label is the key.
+    #[test]
+    fn a_cli_snapshot_reads_the_options_its_adapter_declares() {
+        let s = CliSnapshot::parse(
+            r#"{"stale":false,"clis":[{"key":"codex","inventory":{"options":[
+                {"key":"sandbox","label":"Sandbox","values":[
+                  {"value":"workspace-write","args":["--sandbox","workspace-write"]},
+                  {"args":["--nothing"]}]},
+                {"key":"approval","values":[]}]}}]}"#,
+        )
+        .unwrap();
+        let o = &s.cli("codex").unwrap().options;
+        assert_eq!(o.len(), 2);
+        assert_eq!((o[0].key.as_str(), o[0].label.as_str()), ("sandbox", "Sandbox"));
+        assert_eq!(o[0].values, vec![CliOptionValue { value: "workspace-write".into(), args: ids(&["--sandbox", "workspace-write"]) }]);
+        assert_eq!((o[1].label.as_str(), o[1].values.len()), ("approval", 0));
+    }
+
+    /// personas.json version 3 (#1677, A), both ways: the one selection is
+    /// the role's, a CLI keeps its model, arguments and options, and the old
+    /// per-CLI selection is not carried through as if it were somebody
+    /// else's field.
+    #[test]
+    fn a_v3_role_reads_and_writes_one_selection_and_per_cli_options() {
+        let v = json!({
+            "key": "duo", "name": "Duo",
+            "clis": {"codex": {"model": "gpt-5.6-luna", "args": ["-x"], "options": {"sandbox": "workspace-write", "bad": 3}},
+                     "claude-code": {}},
+            "cli_skills": {"default": false, "except": ["skill:pdf"]},
+            "cli_mcp": {"default": true, "except": ["mcp:github"]}
+        });
+        let r = Role::from_json(&v).unwrap();
+        assert!(r.passthrough.get("cli_skills").is_none() && r.passthrough.get("cli_mcp").is_none());
+        assert!(!r.cli_skills.keep_by_default && r.cli_skills.is_on("skill:pdf") && !r.cli_skills.is_on("skill:x"));
+        assert!(!r.cli_mcp.is_on("mcp:github") && r.cli_mcp.is_on("mcp:x"));
+        let codex = r.choice("codex").unwrap();
+        assert_eq!(codex.options.get("sandbox").map(String::as_str), Some("workspace-write"));
+        assert_eq!(codex.options.len(), 1, "a value that is not a string is not an option");
+        let out = r.to_json();
+        assert_eq!(out["cli_skills"], v["cli_skills"]);
+        assert_eq!(out["cli_mcp"], v["cli_mcp"]);
+        assert_eq!(out["clis"]["codex"], json!({"model": "gpt-5.6-luna", "args": ["-x"], "options": {"sandbox": "workspace-write"}}));
+        assert_eq!(out["clis"]["claude-code"], json!({}));
+        assert_eq!(Role::from_json(&out).unwrap(), r, "what is written reads back as the same role");
     }
 
     // ------------------------------------------------------------- grouping

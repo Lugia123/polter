@@ -3849,7 +3849,7 @@ msgstr "基本信息"
 #: windows/host/src/roles_ui.rs:457
 #, rust-format
 msgid "Skills {}"
-msgstr "Skills {}"
+msgstr "技能 {}"
 
 #: windows/host/src/roles_ui.rs:458 windows/host/src/roles_ui.rs:1132
 msgid "Skills"
@@ -5146,6 +5146,98 @@ msgid ""
 msgstr ""
 "项目的各页都还原，总管在它那一格启动；worker 的格子只还原终端，叫谁回来由总管"
 "决定。"
+
+#: windows/control-room/src/scene.rs:98
+msgid "Agent CLI"
+msgstr "Agent CLI"
+
+#: windows/control-room/src/scene.rs:102
+#, rust-format
+msgid "The last session was {}'s; {} can't go on with it."
+msgstr "上次的会话是 {} 的，{} 接不上。"
+
+#: windows/control-room/src/rowmenu.rs:205
+msgid "Last used"
+msgstr "上次用的"
+
+#: windows/control-room/src/act.rs:359
+msgid "That role isn't set up for that agent CLI."
+msgstr "这个角色没有设置这个 Agent CLI。"
+
+#: windows/control-room/src/act.rs:360
+msgid "That agent CLI's plugin is off. Turn it on in Plugins."
+msgstr "这个 Agent CLI 的插件关着，请在「插件」里打开。"
+
+#: windows/control-room/src/act.rs:361
+msgid "That agent CLI can't be started on this machine."
+msgstr "这个 Agent CLI 在这台机器上起不来。"
+
+#: windows/host/src/roles.rs:771
+#, rust-format
+msgid "The {} plugin is off: {} won't be offered when this role starts. Its settings stay in the role."
+msgstr "{} 插件关着：启动这个角色时不会出现 {}。设置留在角色里。"
+
+#: windows/host/src/roles.rs:775
+#, rust-format
+msgid "{} can't be started on this machine, so it won't be offered when this role starts. Its settings stay in the role."
+msgstr "{} 在这台机器上起不来，启动这个角色时不会出现它。设置留在角色里。"
+
+#: windows/host/src/roles_ui.rs:1069
+msgid "Open Plugin Settings"
+msgstr "打开插件设置"
+
+#: windows/host/src/roles_ui.rs:1076
+msgid "With no CLI named: a worker its supervisor starts uses the supervisor's own; when you start it from a menu or the control room, you choose."
+msgstr "没指定 CLI 时：总管开的 worker 用总管自己的那个；你从菜单或总控台启动时由你选。"
+
+#: windows/host/src/roles_ui.rs:1089
+msgid "Can't be used at launch; the settings here are still saved"
+msgstr "启动时用不上；这里的设置照样保存"
+
+#: windows/host/src/roles_ui.rs:1115
+msgid "Permission mode"
+msgstr "权限模式"
+
+#: windows/host/src/roles_ui.rs:1115
+msgid "Approval"
+msgstr "审批"
+
+#: windows/host/src/roles_ui.rs:1115
+msgid "Sandbox"
+msgstr "沙箱"
+
+#: windows/host/src/roles_ui.rs:1143
+#, rust-format
+msgid "{} isn't a value this version takes; it is left out at launch."
+msgstr "{} 不是这个版本能用的值，启动时不会加上。"
+
+#: windows/host/src/roles_ui.rs:1178
+msgid "Both CLIs share these switches. One marked “Only …” is installed in that CLI alone, and its switch acts on that CLI alone."
+msgstr "两个 CLI 共用这一份开关。标「仅 …」的只装在那一个 CLI 里，开关只对它起作用。"
+
+#: windows/host/src/roles_ui.rs:1180
+msgid "The role's CLIs share these switches. One marked “Only …” is installed in that CLI alone, and its switch acts on that CLI alone."
+msgstr "这个角色的几个 CLI 共用这一份开关。标「仅 …」的只装在那一个 CLI 里，开关只对它起作用。"
+
+#: windows/host/src/roles_ui.rs:1196
+#, rust-format
+msgid "{}'s plugin couldn't list what's installed"
+msgstr "{} 的插件列不出装了什么"
+
+#: windows/host/src/roles_ui.rs:1297
+#, rust-format
+msgid "Only {}"
+msgstr "仅 {}"
+
+#: windows/host/src/roles_ui.rs:1366
+#, rust-format
+msgid "The {} plugin is off, so what it has installed can't be read; the role's switches for {} stay as they are."
+msgstr "{} 插件关着，读不到它装了什么；角色里 {} 那边的开关原样留着。"
+
+#: windows/host/src/roles_ui.rs:1369
+#, rust-format
+msgid "What {} has installed can't be read here; the role's switches for {} stay as they are."
+msgstr "这里读不到 {} 装了什么；角色里 {} 那边的开关原样留着。"
 
 #~ msgid "Filter by key"
 #~ msgstr "按键名筛选"

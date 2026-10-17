@@ -199,6 +199,15 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
     p.instructions = try persona.launchInstructions(aa, p, parsed.group);
 
     // --- which CLI
+    var env = try global.environMap();
+    defer env.deinit();
+    const adapters = agent_cli.discover(aa, io, &env);
+
+    // Named, or the role's default by the app's own rule
+    // (`Persona.defaultCli`): of the CLIs it is set up for, the only one
+    // with an adapter here. The app always names one on the line it types;
+    // this is for a person typing `polter +launch <role>`, who is the one
+    // asking and has no CLI of their own to go by.
     const choice: persona.CliChoice = if (parsed.cli) |key|
         p.cli(key) orelse {
             try err_out.print(
@@ -207,32 +216,32 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
             );
             return 1;
         }
-    else switch (p.clis.len) {
-        1 => p.clis[0],
-        0 => {
-            try err_out.print(
-                "Polter: the role \"{s}\" is not set up for any agent CLI. " ++
-                    "Open the role library and pick one.\n",
-                .{p.name},
-            );
-            return 1;
-        },
-        else => {
-            try err_out.print(
-                "Polter: the role \"{s}\" is set up for more than one CLI; say which:\n",
-                .{p.name},
-            );
-            for (p.clis) |c| try err_out.print("    polter +launch {s} {s}\n", .{ p.key, c.cli });
-            return 2;
-        },
+    else choice: {
+        const keys = try aa.alloc([]const u8, adapters.len);
+        for (adapters, keys) |a, *k| k.* = a.key;
+        const key = p.defaultCli(keys, null) catch |err| switch (err) {
+            error.NoCli => {
+                try err_out.print(
+                    "Polter: the role \"{s}\" is not set up for any agent CLI. " ++
+                        "Open the role library and pick one.\n",
+                    .{p.name},
+                );
+                return 1;
+            },
+            error.ChooseCli => {
+                try err_out.print(
+                    "Polter: the role \"{s}\" is set up for more than one CLI; say which:\n",
+                    .{p.name},
+                );
+                for (p.clis) |c| try err_out.print("    polter +launch {s} {s}\n", .{ p.key, c.cli });
+                return 2;
+            },
+        };
+        break :choice p.cli(key).?;
     };
 
     // --- the adapter
-    var env = try global.environMap();
-    defer env.deinit();
-
     progress.noteCli(choice.cli);
-    const adapters = agent_cli.discover(aa, io, &env);
     const adapter = agent_cli.find(adapters, choice.cli) orelse {
         try whyNoAdapter(aa, io, &env, choice.cli, err_out);
         return 1;

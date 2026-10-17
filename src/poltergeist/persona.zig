@@ -43,13 +43,22 @@ pub const max_key_len = 32;
 /// version there is nothing that tells "a file from an older Polter" apart
 /// from "a file with a mistake in it" -- and those two want opposite
 /// answers.
-pub const supported_version: u32 = 2;
+pub const supported_version: u32 = 3;
 
 /// Whether a file of this version can be read. Version 1 is version 2
 /// without `description`, `instructions` and `clis`, so it reads as a
-/// version 2 file with those empty; it is written back as version 2.
+/// version 2 file with those empty. Version 2 kept a CLI's own skills and
+/// MCP servers once per CLI; version 3 keeps one set for the role
+/// (`cli_skills`, `cli_mcp`) and a version 2 file's are merged into it
+/// (`mergeLegacy`). Both are written back as version 3.
+///
+/// ⚠️ **3 and not 2 with two more fields** (task 1677): a Polter that
+/// reads only version 2 would read a version 3 file, find no per-CLI
+/// selection, and write every role back with all of the CLI's skills and
+/// servers on. Refusing the file is what keeps an older build from doing
+/// that.
 pub fn versionKnown(n: i64) bool {
-    return n == 1 or n == supported_version;
+    return n >= 1 and n <= supported_version;
 }
 
 pub const ParseError = error{
@@ -135,6 +144,15 @@ pub const Persona = struct {
     /// role.
     clis: []const CliChoice = &.{},
 
+    /// Which of the CLI's own skills and MCP servers the role leaves on --
+    /// **one set for every CLI the role is started in** (task 1677). Ids
+    /// are the adapters' and the two adapters write them alike (`skill:pdf`,
+    /// `mcp:github`), so an id that only one CLI has is a switch that only
+    /// does anything there. Polter's own server and skills are never the
+    /// role's to switch off; the adapter keeps them whatever this says.
+    cli_skills: Selection = .{},
+    cli_mcp: Selection = .{},
+
     /// What Polter does with the terminal it is started in. See `Polter`.
     polter: Polter = .{},
 
@@ -150,33 +168,51 @@ pub const Persona = struct {
         return null;
     }
 
-    /// The CLI to start this role in when nobody said which: its only one,
-    /// or -- set up for several -- the only one of them this machine has an
-    /// adapter for (`available`, the keys `agent_cli.discover` found).
+    /// The CLI to start this role in when nobody said which (task 1677),
+    /// in this order:
+    ///
+    ///   1. of the CLIs it is set up for, the only one this machine has an
+    ///      adapter for (`available`, the keys `agent_cli.discover` found:
+    ///      plugin on, adapter runnable);
+    ///   2. of several here, the one the agent that asked is running in
+    ///      (`by`) -- a supervisor in Codex opens Codex workers;
+    ///   3. otherwise `ChooseCli`.
+    ///
+    /// A role set up for exactly one CLI is that one whatever `available`
+    /// says: whether it can start is the launch's question, which answers
+    /// it with the reason, not this one's.
     ///
     /// **Why `available` is asked at all** (task 1667): the official roles
     /// are set up for Claude Code and Codex both, and the Codex plugin is
-    /// off until the person turns it on. Without this, every launch that
-    /// names no CLI -- a menu click, `role_launch {role}` -- would have
-    /// stopped starting Claude Code and started answering `ChooseCli` on the
-    /// day the second CLI was added, on machines with nothing to choose
-    /// between. When none of them has an adapter here, it is the rule from
-    /// before: several set up is `ChooseCli`.
-    pub fn defaultCli(self: Persona, available: []const []const u8) error{ NoCli, ChooseCli }![]const u8 {
+    /// off until the person turns it on. Without it, every launch that
+    /// names no CLI would have started answering `ChooseCli` on the day the
+    /// second CLI was added, on machines with nothing to choose between.
+    pub fn defaultCli(
+        self: Persona,
+        available: []const []const u8,
+        by: ?[]const u8,
+    ) error{ NoCli, ChooseCli }![]const u8 {
         switch (self.clis.len) {
             0 => return error.NoCli,
             1 => return self.clis[0].cli,
             else => {},
         }
         var found: ?[]const u8 = null;
+        var several = false;
         for (self.clis) |c| {
-            for (available) |a| if (std.mem.eql(u8, a, c.cli)) {
-                if (found != null) return error.ChooseCli;
-                found = c.cli;
-                break;
-            };
+            if (!has(available, c.cli)) continue;
+            if (found != null) several = true else found = c.cli;
         }
-        return found orelse error.ChooseCli;
+        if (!several) return found orelse error.ChooseCli;
+        if (by) |own| for (self.clis) |c| {
+            if (std.mem.eql(u8, c.cli, own) and has(available, own)) return c.cli;
+        };
+        return error.ChooseCli;
+    }
+
+    fn has(list: []const []const u8, item: []const u8) bool {
+        for (list) |x| if (std.mem.eql(u8, x, item)) return true;
+        return false;
     }
 };
 
@@ -371,6 +407,11 @@ pub const Selection = struct {
     default: bool = true,
     except: []const []const u8 = &.{},
 
+    /// Everything on, which is what a role that says nothing gets.
+    pub fn isAll(self: Selection) bool {
+        return self.default and self.except.len == 0;
+    }
+
     pub fn enabled(self: Selection, id: []const u8) bool {
         for (self.except) |e| {
             if (std.mem.eql(u8, e, id)) return !self.default;
@@ -379,16 +420,28 @@ pub const Selection = struct {
     }
 };
 
-/// A role's choices for one agent CLI.
+/// A role's choices for one agent CLI: what only that CLI has a word for.
+/// Which of its skills and servers are on is the role's, not this
+/// (`Persona.cli_skills`).
 pub const CliChoice = struct {
     /// The adapter plugin's `agent_cli` key, e.g. `claude-code`.
     cli: []const u8,
-    skills: Selection = .{},
-    mcp: Selection = .{},
     /// Passed to the adapter, which knows the flag.
     model: ?[]const u8 = null,
     /// Appended to the command line as written.
     args: []const []const u8 = &.{},
+    /// The adapter's launch options (its inventory's `options`): which
+    /// value of each the role picks. An option not here is the CLI's own
+    /// default. Keys and values are the adapter's and opaque here; the
+    /// adapter turns them into flags, and ignores, with a note, a value it
+    /// does not offer.
+    options: []const Option = &.{},
+};
+
+/// One launch option and the value picked for it.
+pub const Option = struct {
+    key: []const u8,
+    value: []const u8,
 };
 
 /// Everything `personas.json` declared, in the order it declared it.
@@ -674,6 +727,11 @@ pub fn personaOf(
         else => return error.BadField,
     };
 
+    // Version 2 kept the skills and servers once per CLI; they are read so
+    // that a file written then is merged into the role's one set when it
+    // has none of its own.
+    var legacy_skills: std.ArrayList(Selection) = .empty;
+    var legacy_mcp: std.ArrayList(Selection) = .empty;
     if (obj.get("clis")) |cv| switch (cv) {
         .object => |m| {
             const clis = try aa.alloc(CliChoice, m.count());
@@ -684,12 +742,23 @@ pub fn personaOf(
                 // it names a plugin, and plugin keys are plain names.
                 if (!isValidKey(kv.key_ptr.*)) return error.BadField;
                 clis[i] = try cliChoiceOf(aa, kv.key_ptr.*, kv.value_ptr.*);
+                const cli_obj = kv.value_ptr.*.object;
+                if (cli_obj.get("skills") != null) try legacy_skills.append(aa, try selectionOf(aa, cli_obj, "skills"));
+                if (cli_obj.get("mcp") != null) try legacy_mcp.append(aa, try selectionOf(aa, cli_obj, "mcp"));
             }
             p.clis = clis;
         },
         .null => {},
         else => return error.BadField,
     };
+    p.cli_skills = if (obj.get("cli_skills") != null)
+        try selectionOf(aa, obj, "cli_skills")
+    else
+        try mergeLegacy(aa, legacy_skills.items);
+    p.cli_mcp = if (obj.get("cli_mcp") != null)
+        try selectionOf(aa, obj, "cli_mcp")
+    else
+        try mergeLegacy(aa, legacy_mcp.items);
 
     if (obj.get("polter")) |pv| switch (pv) {
         .object => |o| p.polter = try polterOf(o),
@@ -734,13 +803,75 @@ fn cliChoiceOf(aa: Allocator, key: []const u8, v: std.json.Value) ParseError!Cli
         .object => |o| o,
         else => return error.BadField,
     };
+    // Read here only to be refused when malformed; what they say is the
+    // role's (`personaOf`, `mergeLegacy`).
+    _ = try selectionOf(aa, obj, "skills");
+    _ = try selectionOf(aa, obj, "mcp");
     return .{
         .cli = key,
-        .skills = try selectionOf(aa, obj, "skills"),
-        .mcp = try selectionOf(aa, obj, "mcp"),
         .model = try optionalString(obj, "model"),
         .args = try stringArray(aa, obj, "args"),
+        .options = try optionsOf(aa, obj),
     };
+}
+
+fn optionsOf(aa: Allocator, obj: std.json.ObjectMap) ParseError![]const Option {
+    const m = switch (obj.get("options") orelse return &.{}) {
+        .object => |m| m,
+        .null => return &.{},
+        else => return error.BadField,
+    };
+    const out = try aa.alloc(Option, m.count());
+    var it = m.iterator();
+    var i: usize = 0;
+    while (it.next()) |kv| : (i += 1) {
+        // An option's key goes nowhere but back to its adapter; the charset
+        // is a role key's so that a typo cannot look like a second one.
+        if (!isValidOptionKey(kv.key_ptr.*)) return error.BadField;
+        out[i] = .{ .key = kv.key_ptr.*, .value = switch (kv.value_ptr.*) {
+            .string => |v| v,
+            else => return error.BadField,
+        } };
+    }
+    return out;
+}
+
+/// A role key's charset with `_` as well: `permission_mode`.
+fn isValidOptionKey(key: []const u8) bool {
+    if (key.len == 0 or key.len > max_key_len) return false;
+    for (key) |c| switch (c) {
+        'a'...'z', '0'...'9', '-', '_' => {},
+        else => return false,
+    };
+    return true;
+}
+
+/// One set out of the per-CLI sets a version 2 file kept (task 1677).
+///
+/// The same in every CLI -- the official roles, and any role nobody
+/// ticked differently -- is that set. Otherwise:
+///
+///   * `default` is the first CLI's, in the order written;
+///   * an id ticked the other way in any CLI keeps that tick, because an
+///     id is nearly always one only that CLI has: a union of what is on
+///     would switch back on what the other CLI's tick switched off, and an
+///     intersection would switch off what nobody touched;
+///   * an id two CLIs ticked to opposite ends goes the first CLI's way.
+///
+/// None at all (a version 1 file, or a CLI with no entry) is the default
+/// set: everything on.
+pub fn mergeLegacy(aa: Allocator, sets: []const Selection) Allocator.Error!Selection {
+    if (sets.len == 0) return .{};
+    const default = sets[0].default;
+    var except: std.ArrayList([]const u8) = .empty;
+    var decided: std.ArrayList([]const u8) = .empty;
+    for (sets) |sel| for (sel.except) |id| {
+        if (Persona.has(decided.items, id)) continue;
+        try decided.append(aa, id);
+        // In this set it is ticked the other way from this set's default.
+        if (!sel.default != default) try except.append(aa, id);
+    };
+    return .{ .default = default, .except = try except.toOwnedSlice(aa) };
 }
 
 fn selectionOf(aa: Allocator, obj: std.json.ObjectMap, field: []const u8) ParseError!Selection {
@@ -831,18 +962,33 @@ pub fn writePersona(w: *std.Io.Writer, p: Persona) std.Io.Writer.Error!void {
         try w.writeAll(",\"clis\":{");
         for (p.clis, 0..) |c, i| {
             if (i > 0) try w.writeAll(",");
-            try w.print("{f}:{{\"skills\":", .{jstr(c.cli)});
-            try writeSelection(w, c.skills);
-            try w.writeAll(",\"mcp\":");
-            try writeSelection(w, c.mcp);
-            if (c.model) |m| try w.print(",\"model\":{f}", .{jstr(m)});
+            try w.print("{f}:{{", .{jstr(c.cli)});
+            var first = true;
+            if (c.model) |m| {
+                try w.print("\"model\":{f}", .{jstr(m)});
+                first = false;
+            }
             if (c.args.len > 0) {
-                try w.writeAll(",\"args\":");
+                try w.writeAll(if (first) "\"args\":" else ",\"args\":");
                 try writeStrings(w, c.args);
+                first = false;
+            }
+            if (c.options.len > 0) {
+                try w.writeAll(if (first) "\"options\":" else ",\"options\":");
+                try writeOptions(w, c.options);
             }
             try w.writeAll("}");
         }
         try w.writeAll("}");
+    }
+    // Written for any role a CLI can be started in, everything on
+    // included: a reader handed none would have to know that none means
+    // all on.
+    if (p.clis.len > 0 or !p.cli_skills.isAll() or !p.cli_mcp.isAll()) {
+        try w.writeAll(",\"cli_skills\":");
+        try writeSelection(w, p.cli_skills);
+        try w.writeAll(",\"cli_mcp\":");
+        try writeSelection(w, p.cli_mcp);
     }
     if (!p.polter.isDefault()) {
         const o = p.polter;
@@ -869,7 +1015,16 @@ pub fn writePersona(w: *std.Io.Writer, p: Persona) std.Io.Writer.Error!void {
     try w.writeAll("}");
 }
 
-fn writeSelection(w: *std.Io.Writer, s: Selection) std.Io.Writer.Error!void {
+pub fn writeOptions(w: *std.Io.Writer, options: []const Option) std.Io.Writer.Error!void {
+    try w.writeAll("{");
+    for (options, 0..) |o, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.print("{f}:{f}", .{ jstr(o.key), jstr(o.value) });
+    }
+    try w.writeAll("}");
+}
+
+pub fn writeSelection(w: *std.Io.Writer, s: Selection) std.Io.Writer.Error!void {
     try w.print("{{\"default\":{},\"except\":", .{s.default});
     try writeStrings(w, s.except);
     try w.writeAll("}");
@@ -1075,6 +1230,10 @@ pub const Launch = struct {
     /// The role key the launch was for.
     role: []const u8,
     choice: CliChoice,
+    /// The role's skills and servers as they were at the launch
+    /// (`Persona.cli_skills`), copied for the same reason as `choice`.
+    skills: Selection,
+    mcp: Selection,
 };
 
 /// What `terminal_capabilities` knows about a terminal from the role side:
@@ -1466,7 +1625,7 @@ test "persona: a version 1 file still reads, as a role with no CLI choices" {
     // reading a newer file says so instead of guessing.
     try testing.expectError(error.BadVersion, parseLeaky(
         arena.allocator(),
-        "{\"version\":3,\"personas\":[]}",
+        "{\"version\":4,\"personas\":[]}",
     ));
 }
 
@@ -1484,7 +1643,8 @@ test "persona: what is written reads back as the same roles" {
         \\   "hint":{"disable_host_plugins":["k@x"],"model":"sonnet"},
         \\   "clis":{"claude-code":{"skills":{"default":false,"except":["skill:pdf"]},
         \\                          "mcp":{"default":true,"except":["mcp:argus"]},
-        \\                          "model":"opus","args":["--verbose"]},
+        \\                          "model":"opus","args":["--verbose"],
+        \\                          "options":{"permission_mode":"auto"}},
         \\           "codex":{}}},
         \\  {"key":"scribe","name":"书记"}
         \\]}
@@ -1508,12 +1668,22 @@ test "persona: what is written reads back as the same roles" {
     // offered in.
     const cc = a.clis[0];
     try testing.expectEqualStrings("claude-code", cc.cli);
-    try testing.expect(!cc.skills.default);
-    try testing.expectEqualStrings("skill:pdf", cc.skills.except[0]);
     try testing.expectEqualStrings("opus", cc.model.?);
     try testing.expectEqualStrings("--verbose", cc.args[0]);
+    try testing.expectEqualStrings("permission_mode", cc.options[0].key);
+    try testing.expectEqualStrings("auto", cc.options[0].value);
     try testing.expectEqualStrings("codex", a.clis[1].cli);
-    try testing.expect(a.clis[1].skills.default);
+    try testing.expectEqual(@as(usize, 0), a.clis[1].options.len);
+    // Written as version 2, once per CLI: one CLI said something, the
+    // other nothing, so the role's one set is what the first said -- and
+    // it came back through a version 3 write as that.
+    try testing.expect(!a.cli_skills.default);
+    try testing.expectEqualStrings("skill:pdf", a.cli_skills.except[0]);
+    try testing.expect(a.cli_mcp.default);
+    try testing.expectEqualStrings("mcp:argus", a.cli_mcp.except[0]);
+    // And nothing per CLI is written any more.
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"cli_skills\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "{\"model\":\"opus\"") != null);
 
     try testing.expectEqualStrings("书记", again.personas[official_count + 1].name);
 }
@@ -1596,9 +1766,10 @@ test "persona: every set starts with the official roles" {
     try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "one dedicated test worker") != null);
     // Nothing of the CLI's own but Polter's skills: the polter server is
     // kept whatever this says.
-    try testing.expect(!boss.clis[0].skills.default);
-    try testing.expect(!boss.clis[0].mcp.default);
-    try testing.expectEqual(@as(usize, 3), boss.clis[0].skills.except.len);
+    try testing.expect(!boss.cli_skills.default);
+    try testing.expect(!boss.cli_mcp.default);
+    try testing.expectEqual(@as(usize, 3), boss.cli_skills.except.len);
+    try testing.expectEqual(@as(usize, 2), boss.clis.len);
     try testing.expect(empty.find(tester_key).?.official != null);
     // With no file at all, the same.
     const none = try official.assemble(aa, null, &official.sources, .absent);
@@ -1751,17 +1922,113 @@ test "persona: a role set up for several CLIs starts in the one this machine has
         .{ .cli = "codex" },
     } };
     // The Codex plugin is off, as it ships: Claude Code, as before codex
-    // was added to the role.
-    const claude_only = try both.defaultCli(&.{ "claude-code", "gemini" });
-    try testing.expectEqualStrings("claude-code", claude_only);
-    const codex_only = try both.defaultCli(&.{"codex"});
-    try testing.expectEqualStrings("codex", codex_only);
-    // Both here is a real choice, and nothing here is the old answer.
-    try testing.expectError(error.ChooseCli, both.defaultCli(&.{ "codex", "claude-code" }));
-    try testing.expectError(error.ChooseCli, both.defaultCli(&.{}));
+    // was added to the role -- whoever asks.
+    try testing.expectEqualStrings("claude-code", try both.defaultCli(&.{ "claude-code", "other-cli" }, null));
+    try testing.expectEqualStrings("claude-code", try both.defaultCli(&.{ "claude-code", "other-cli" }, "codex"));
+    try testing.expectEqualStrings("codex", try both.defaultCli(&.{"codex"}, null));
+    // Both here and nobody's CLI to go by is a real choice, and nothing
+    // here is the old answer.
+    try testing.expectError(error.ChooseCli, both.defaultCli(&.{ "codex", "claude-code" }, null));
+    try testing.expectError(error.ChooseCli, both.defaultCli(&.{}, null));
     // One set up is that one whatever is here; none is none.
     const one: Persona = .{ .key = "o", .name = "o", .clis = &.{.{ .cli = "codex" }} };
-    try testing.expectEqualStrings("codex", try one.defaultCli(&.{}));
+    try testing.expectEqualStrings("codex", try one.defaultCli(&.{}, "claude-code"));
     const none: Persona = .{ .key = "n", .name = "n" };
-    try testing.expectError(error.NoCli, none.defaultCli(&.{"codex"}));
+    try testing.expectError(error.NoCli, none.defaultCli(&.{"codex"}, null));
+}
+
+test "persona: of several CLIs that are here, the one the asker runs in (task 1677)" {
+    const both: Persona = .{ .key = "s", .name = "s", .clis = &.{
+        .{ .cli = "claude-code" },
+        .{ .cli = "codex" },
+    } };
+    const here: []const []const u8 = &.{ "claude-code", "codex" };
+    // A supervisor in Codex opens Codex workers; one in Claude Code,
+    // Claude Code ones.
+    try testing.expectEqualStrings("codex", try both.defaultCli(here, "codex"));
+    try testing.expectEqualStrings("claude-code", try both.defaultCli(here, "claude-code"));
+    // The asker's CLI counts only when the role is set up for it and it is
+    // here: a supervisor in some other CLI is no answer.
+    try testing.expectError(error.ChooseCli, both.defaultCli(here, "other-cli"));
+    const three: Persona = .{ .key = "t", .name = "t", .clis = &.{
+        .{ .cli = "claude-code" },
+        .{ .cli = "codex" },
+        .{ .cli = "other-cli" },
+    } };
+    try testing.expectError(error.ChooseCli, three.defaultCli(here, "other-cli"));
+}
+
+test "persona: a version 2 file's per-CLI skills and servers become the role's one set (task 1677)" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // The same in both -- every official role -- is that set.
+    const same = try parsePersonaLeaky(aa,
+        \\{"key":"a","name":"a","clis":{
+        \\  "claude-code":{"skills":{"default":false,"except":["skill:x"]},"mcp":{"default":false,"except":[]}},
+        \\  "codex":{"skills":{"default":false,"except":["skill:x"]},"mcp":{"default":false,"except":[]}}}}
+    );
+    try testing.expect(!same.cli_skills.default);
+    try testing.expectEqual(@as(usize, 1), same.cli_skills.except.len);
+    try testing.expect(!same.cli_mcp.default and same.cli_mcp.except.len == 0);
+
+    // Different: the first CLI's default; every id either CLI ticked keeps
+    // its tick; two ticks the opposite way go the first CLI's way.
+    const differ = try parsePersonaLeaky(aa,
+        \\{"key":"b","name":"b","clis":{
+        \\  "claude-code":{"skills":{"default":true,"except":["skill:pdf","skill:both"]}},
+        \\  "codex":{"skills":{"default":false,"except":["skill:imagegen","skill:both"]}}}}
+    );
+    const sel = differ.cli_skills;
+    try testing.expect(sel.default);
+    // Claude Code switched pdf off: still off, not switched back on by
+    // Codex not mentioning it.
+    try testing.expect(!sel.enabled("skill:pdf"));
+    // Codex switched imagegen on while everything else was off: on, which
+    // the merged default already says.
+    try testing.expect(sel.enabled("skill:imagegen"));
+    // Off in Claude Code, on in Codex: Claude Code's way.
+    try testing.expect(!sel.enabled("skill:both"));
+    try testing.expect(sel.enabled("skill:nobody-ticked"));
+
+    // A version 3 role's own set wins over anything left per CLI.
+    const v3 = try parsePersonaLeaky(aa,
+        \\{"key":"c","name":"c","cli_skills":{"default":false,"except":[]},
+        \\ "clis":{"codex":{"skills":{"default":true,"except":[]}}}}
+    );
+    try testing.expect(!v3.cli_skills.default);
+    // Nothing said anywhere is everything on.
+    const bare = try parsePersonaLeaky(aa,
+        \\{"key":"d","name":"d","clis":{"codex":{}}}
+    );
+    try testing.expect(bare.cli_skills.isAll() and bare.cli_mcp.isAll());
+}
+
+test "persona: version 3 is read, and a version past it is refused" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    _ = try parseLeaky(aa, "{\"version\":3,\"personas\":[]}");
+    _ = try parseLeaky(aa, "{\"version\":2,\"personas\":[]}");
+    try testing.expectError(error.BadVersion, parseLeaky(aa, "{\"version\":4,\"personas\":[]}"));
+}
+
+test "persona: a launch option is a key and a text value, and nothing else" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const p = try parsePersonaLeaky(aa,
+        \\{"key":"a","name":"a","clis":{"codex":{"options":{"sandbox":"workspace-write","approval":"never"}}}}
+    );
+    try testing.expectEqual(@as(usize, 2), p.clis[0].options.len);
+    try testing.expectError(error.BadField, parsePersonaLeaky(aa,
+        \\{"key":"a","name":"a","clis":{"codex":{"options":{"sandbox":true}}}}
+    ));
+    try testing.expectError(error.BadField, parsePersonaLeaky(aa,
+        \\{"key":"a","name":"a","clis":{"codex":{"options":{"Sand Box":"x"}}}}
+    ));
+    try testing.expectError(error.BadField, parsePersonaLeaky(aa,
+        \\{"key":"a","name":"a","clis":{"codex":{"options":["x"]}}}
+    ));
 }

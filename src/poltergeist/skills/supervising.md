@@ -664,7 +664,15 @@ library window, so edit it the way they would: say in the group what you
 changed and why.
 
 `role_launch(key, cli?, cwd?, place?, in?)` opens a terminal for the role,
-gives it the role, and starts the CLI there. `place` is `terminal_open`'s --
+gives it the role, and starts the CLI there. **Leave `cli` out and it is
+the one you are running in**, when the role is set up for it and its plugin
+is on -- a supervisor in Codex starts Codex workers. Before that comes the
+role's only CLI whose plugin is on; when several are on and yours is not
+among them you get `ChooseCli`. A `cli` whose plugin is off is `CliOff`
+(the person can turn it on); one this machine cannot start at all is
+`CliUnavailable` (no switch fixes it). A role's skills and MCP servers are one set for every CLI it is
+started in; what differs per CLI is the model, the arguments and the
+adapter's launch options. `place` is `terminal_open`'s --
 `auto` (the default), `tab`, `here` -- placed by the same code, so the next
 section applies to it word for word; a role whose own `open` is `tab` still
 gets a tab under `auto`.

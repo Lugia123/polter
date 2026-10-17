@@ -186,6 +186,12 @@ final class RoleLibrary: ObservableObject {
             return String(localized: "The role library file couldn't be written.", comment: "角色库：写文件失败")
         case "NotSetUpForCli":
             return String(localized: "This role isn't set up for that agent CLI.", comment: "用角色启动：角色没有为这个 CLI 配置")
+        case "CliOff":
+            return String(localized: "That agent CLI's plugin is off. Turn it on in Plugins.",
+                          comment: "启动失败：这个 CLI 的插件装着但关着，去插件设置里打开就行")
+        case "CliUnavailable":
+            return String(localized: "That agent CLI can't be started on this machine.",
+                          comment: "启动失败：这台机器上起不了这个 CLI（没有插件管理它，或插件的 adapter 在这里跑不起来），打开插件也没用")
         case "NoCli":
             return String(localized: "This role isn't set up for any agent CLI yet. Pick one in the role library.", comment: "用角色启动：角色还没选任何 CLI")
         case "ChooseCli":

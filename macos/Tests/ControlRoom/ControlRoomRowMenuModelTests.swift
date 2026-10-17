@@ -88,7 +88,8 @@ struct ControlRoomRowMenuModelTests {
     @Test func eachRowIsAskedInTheStateTheSnapshotSays() throws {
         let rig = try Rig()
         let web = rig.model.menuState(try rig.row("web-app"))
-        #expect(web == .init(archived: false, supervisor: .hooked, resumable: false, pinned: true, muted: true))
+        // The fixture's supervisor role starts in two CLIs (task 1677).
+        #expect(web == .init(archived: false, supervisor: .hooked, resumable: false, pinned: true, muted: true, clis: 2))
         // The same row with no supervisor the core names a title for.
         var none = try rig.row("notes")
         none.supervisor = nil

@@ -287,7 +287,8 @@ struct SettingsRootView: View {
             part: part,
             filter: "",
             canLaunch: { RoleLibraryOpener.launchSurface != nil },
-            onLaunch: { role, cli in RoleLibraryOpener.launch(role: role, cli: cli) })
+            onLaunch: { role, cli in RoleLibraryOpener.launch(role: role, cli: cli) },
+            onOpenPlugin: { [model] key in model.goPlugin(key) })
     }
 }
 

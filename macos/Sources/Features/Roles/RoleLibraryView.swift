@@ -166,6 +166,13 @@ final class RoleLibraryEditor: ObservableObject {
         draft = role
     }
 
+    /// The role's one set of skills or MCP servers, shared by every CLI.
+    func updateSelection(_ kind: AgentCliItem.Kind, _ change: (inout RoleSelection) -> Void) {
+        guard var role = draft else { return }
+        if kind == .skill { change(&role.skills) } else { change(&role.mcp) }
+        draft = role
+    }
+
     func updateChoice(_ cli: String, _ change: (inout RoleCliChoice) -> Void) {
         guard var role = draft, let i = role.clis.firstIndex(where: { $0.cli == cli }) else { return }
         change(&role.clis[i])
@@ -337,6 +344,13 @@ struct RoleLibraryView: View {
     /// close while this one stays up.
     var canLaunch: () -> Bool
     var onLaunch: (Role, String) -> Void
+    /// Show one plugin in the Plugins section (05a/05b's link).
+    var onOpenPlugin: (String) -> Void = { _ in }
+
+    /// The link to Plugins beside a CLI whose plugin is off.
+    static var openPluginsText: String {
+        String(localized: "Open Plugin Settings", comment: "角色库：CLI 插件关着时的链接，跳到插件设置")
+    }
 
     var body: some View {
         switch part {
@@ -528,7 +542,7 @@ struct RoleLibraryView: View {
             }
             Text(role.clis.isEmpty
                  ? String(localized: "No agent CLI", comment: "角色库：列表行副标题，这个角色还没选 CLI")
-                 : role.clis.map { library.clis.label(for: $0.cli) }.joined(separator: " · "))
+                 : role.clis.map(subtitle).joined(separator: " · "))
                 .font(SettingsFont.minimum)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -580,8 +594,12 @@ struct RoleLibraryView: View {
                                 instructions
                                 polterSection
                                 cliPicker
-                                if let cli = editor.activeCli, editor.draft?.choice(for: cli) != nil {
-                                    RoleCliStartEditor(library: library, editor: editor, cliKey: cli)
+                                // 04B: one "Starting …" per CLI the role
+                                // starts in, in its order -- a CLI whose
+                                // plugin is off included: its settings are
+                                // kept and can be changed (05a).
+                                ForEach(editor.draft?.clis ?? []) { choice in
+                                    RoleCliStartEditor(library: library, editor: editor, cliKey: choice.cli)
                                 }
                             case .skills, .mcp:
                                 itemsTab(editor.tab == .skills ? .skill : .mcp)
@@ -600,15 +618,25 @@ struct RoleLibraryView: View {
         }
     }
 
-    /// "3/40" for the tab label: kept of installed, for the CLI on screen.
+    /// "3/40" for the tab label: kept of installed, every CLI of the role
+    /// as one list.
     private func count(_ kind: AgentCliItem.Kind) -> String? {
-        guard let key = editor.activeCli,
-              let cli = library.clis.cli(key),
-              let choice = editor.draft?.choice(for: key) else { return nil }
-        let all = cli.items(kind)
+        guard let draft = editor.draft, !draft.clis.isEmpty else { return nil }
+        let all = RoleMergedItems.of(kind, clis: draft.clis.map(\.cli), in: library.clis).rows.map(\.item)
         guard !all.isEmpty else { return nil }
-        let sel = kind == .skill ? choice.skills : choice.mcp
+        let sel = kind == .skill ? draft.skills : draft.mcp
         return "\(all.filter { $0.locked || sel.isOn($0.id) }.count)/\(all.count)"
+    }
+
+    /// A CLI in a role's row of the list: its name, and "(plugin off)"
+    /// when that is why it will not be offered (05a).
+    private func subtitle(_ choice: RoleCliChoice) -> String {
+        switch library.clis.standing(choice.cli) {
+        case .pluginOff(let label):
+            return String(localized: "\(label) (plugin off)", comment: "角色库：左侧列表副标题里，插件关着的 CLI，如「Codex（插件关着）」")
+        default:
+            return library.clis.label(for: choice.cli)
+        }
     }
 
     private var tabBar: some View {
@@ -638,21 +666,9 @@ struct RoleLibraryView: View {
                 Button(String(localized: "Go to Basics", comment: "角色库：跳到基本信息 tab")) { editor.tab = .basics }
             }
         } else {
-            if clis.count > 1 {
-                Picker("", selection: Binding(
-                    get: { editor.activeCli ?? clis[0].cli },
-                    set: { editor.activeCli = $0 })) {
-                    ForEach(clis) { choice in
-                        Text(library.clis.label(for: choice.cli)).tag(choice.cli)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 360)
-            }
-            if let cli = editor.activeCli ?? clis.first?.cli {
-                RoleCliItemsEditor(library: library, editor: editor, cliKey: cli, kind: kind)
-            }
+            // One list for every CLI (07): no CLI to pick here.
+            RoleCliItemsEditor(library: library, editor: editor, cliKeys: clis.map(\.cli),
+                               kind: kind, onOpenPlugin: onOpenPlugin)
         }
     }
 
@@ -947,29 +963,32 @@ struct RoleLibraryView: View {
                 // Choices for a CLI no plugin offers any more are still in
                 // the role; say so rather than hide them.
                 ForEach(editor.draft?.clis.filter { library.clis.cli($0.cli) == nil } ?? []) { orphan in
-                    formControl { HStack(spacing: SettingsLayout.rowGap) {
+                    let held = library.clis.heldBack.first { $0.key == orphan.cli }
+                    formControl {
                         Toggle(isOn: Binding(get: { true }, set: { editor.setCli(orphan.cli, used: $0) })) {
-                            Text(orphan.cli).font(.body.monospaced())
+                            if let held { Text(held.label) } else { Text(orphan.cli).font(.body.monospaced()) }
                         }
                         .toggleStyle(.checkbox)
-                        Text(String(localized: "No plugin manages this CLI any more", comment: "角色库：角色里配了某 CLI，但对应插件已不在"))
-                            .font(SettingsFont.minimum)
-                            .foregroundStyle(.orange)
-                    } }
-                }
-                if let clis = editor.draft?.clis, clis.count > 1 {
-                    formControl {
-                        Picker("", selection: Binding(
-                            get: { editor.activeCli ?? clis[0].cli },
-                            set: { editor.activeCli = $0 })) {
-                            ForEach(clis) { choice in
-                                Text(library.clis.label(for: choice.cli)).tag(choice.cli)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: 360)
                     }
+                    // Off, cannot run, or gone: three different things to
+                    // do about it (task 1677), the first with its way to
+                    // Plugins (05a). The tick stays: it is the role's.
+                    formControl { HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        Text(library.clis.whyNot(orphan.cli) ?? "")
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if held?.why == .pluginOff {
+                            Button(Self.openPluginsText) { onOpenPlugin(orphan.cli) }
+                                .buttonStyle(.link)
+                                .fixedSize()
+                        }
+                    }
+                    .font(SettingsFont.minimum) }
+                }
+                formControl {
+                    note(String(localized: "With no CLI named: workers a supervisor opens use the supervisor's own; when you start one from a menu or the control room, you choose.",
+                                comment: "角色库：Agent CLI 勾选框下的说明，没指定 CLI 时用哪个"))
                 }
             }
         }
@@ -1048,7 +1067,13 @@ struct RoleLibraryView: View {
 
     @ViewBuilder
     private var launchButton: some View {
-        let clis = editor.draft?.clis ?? []
+        // Only the CLIs that can start here (06, task 1677): one whose
+        // plugin is off would be a row the core refuses. With none, the
+        // button stays and the core says why when it is pressed. Before
+        // the CLIs have been read, every one the role names.
+        let named = editor.draft?.clis ?? []
+        let here = library.clis.stale ? named : named.filter { library.clis.cli($0.cli) != nil }
+        let clis = here.isEmpty ? Array(named.prefix(1)) : here
         let blocked = launchBlockedReason != nil
         let help = String(localized: "Open a new tab and start the agent CLI in it wearing this role.", comment: "角色库：启动按钮的说明")
         if clis.count > 1 {
@@ -1075,6 +1100,22 @@ struct RoleLibraryView: View {
 
     private func labeled<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         formRow(title, content: content)
+    }
+}
+
+/// "Codex only" beside an item one CLI of the role has (07): the official
+/// mark's shape, in the text colour.
+struct CliOnlyMark: View {
+    var cli: String
+
+    var body: some View {
+        Text(String(localized: "\(cli) only", comment: "角色库：技能/MCP 行名字后的标签，只装在这一个 CLI 里，如「仅 Codex」"))
+            .font(SettingsFont.minimum)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.5), lineWidth: 1))
+            .fixedSize()
+            .accessibilityLabel(Text(String(localized: "\(cli) only", comment: "角色库：技能/MCP 行名字后的标签，只装在这一个 CLI 里，如「仅 Codex」")))
     }
 }
 
@@ -1109,11 +1150,36 @@ struct RoleCliStartEditor: View {
 
     private var choice: RoleCliChoice? { editor.draft?.choice(for: cliKey) }
 
-    /// A command line, not a sentence, so it is not translated.
-    private static let argsExample = "--permission-mode auto"
+    /// An example of what goes in "extra arguments", in the CLI's own words
+    /// -- a command line, not a sentence, so it is not translated. Empty for
+    /// a CLI this window knows no flag of: one CLI's flag shown under
+    /// another's heading is a flag that CLI refuses. The unattended setting
+    /// has a drop-down of its own above (04B), so it is not the example.
+    static func argsExample(_ cli: String) -> String {
+        switch cli {
+        case "claude-code": return "--verbose"
+        case "codex": return "--search"
+        default: return ""
+        }
+    }
+
+    /// The unattended settings its adapter offers; none while it cannot be
+    /// read (plugin off), and then what the role picked is shown as it is.
+    private var offered: [AgentCliOption] { library.clis.cli(cliKey)?.options ?? [] }
 
     var body: some View {
-        section(String(format: String(localized: "Starting %@", comment: "角色库：分区名，%@ 是 CLI 名，启动参数"), library.clis.label(for: cliKey))) {
+        VStack(alignment: .leading, spacing: SettingsLayout.rowGap) {
+            HStack(alignment: .firstTextBaseline, spacing: SettingsLayout.rowGap) {
+                Text(String(format: String(localized: "Starting %@", comment: "角色库：分区名，%@ 是 CLI 名，启动参数"), library.clis.label(for: cliKey)))
+                    .font(.headline)
+                if library.clis.cli(cliKey) == nil && !library.clis.stale {
+                    // 05a: it can still be changed and saved.
+                    Text(String(localized: "Can't be used when starting; what's here is still saved",
+                                comment: "角色库：插件关着时「启动 Codex」标题旁一句，设置照样保存"))
+                        .font(SettingsFont.minimum)
+                        .foregroundStyle(.secondary)
+                }
+            }
             formRow(String(localized: "Model", comment: "角色库：字段名，模型")) {
                 TextField(String(localized: "The CLI's default", comment: "角色库：模型字段占位，留空用 CLI 默认"), text: Binding(
                     get: { choice?.model ?? "" },
@@ -1121,9 +1187,18 @@ struct RoleCliStartEditor: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 260)
             }
+            ForEach(offered) { option in
+                optionRow(option)
+            }
+            // Picked once, and not offered now: kept, and said as it is.
+            ForEach((choice?.options ?? [:]).keys.sorted().filter { key in !offered.contains { $0.key == key } }, id: \.self) { key in
+                formRow(key) {
+                    Text(choice?.options[key] ?? "").font(.body.monospaced()).foregroundStyle(.secondary)
+                }
+            }
             formRow(String(localized: "Extra Arguments", comment: "角色库：字段名，额外命令行参数")) {
                 VStack(alignment: .leading, spacing: 3) {
-                    TextField(Self.argsExample, text: $argsText)
+                    TextField(Self.argsExample(cliKey), text: $argsText)
                         .textFieldStyle(.roundedBorder)
                         .font(.body.monospaced())
                         .onChange(of: argsText) { value in
@@ -1133,32 +1208,91 @@ struct RoleCliStartEditor: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { argsText = RoleArgs.join(choice?.args ?? []) }
         .onChange(of: cliKey) { _ in argsText = RoleArgs.join(choice?.args ?? []) }
         .onChange(of: editor.original) { _ in argsText = RoleArgs.join(choice?.args ?? []) }
     }
+
+    /// One unattended setting (04B): a drop-down of the values this version
+    /// of the CLI takes, "The CLI's default" first, and in grey beside it
+    /// the flags the value adds.
+    private func optionRow(_ option: AgentCliOption) -> some View {
+        let picked = choice?.options[option.key]
+        let args = option.values.first { $0.value == picked }?.args ?? []
+        return formRow(option.title) {
+            HStack(alignment: .firstTextBaseline, spacing: SettingsLayout.rowGap) {
+                Picker("", selection: Binding(
+                    get: { picked ?? "" },
+                    set: { value in editor.updateChoice(cliKey) { $0.options[option.key] = value.isEmpty ? nil : value } })) {
+                    Text(String(localized: "The CLI's default", comment: "角色库：模型字段占位，留空用 CLI 默认")).tag("")
+                    ForEach(option.values, id: \.value) { v in
+                        Text(v.value).font(.body.monospaced()).tag(v.value)
+                    }
+                }
+                .labelsHidden()
+                // As wide as its words and at the control column's left
+                // edge, like every other control of the form (04B: x=626);
+                // a frame wider than the pop-up centred it.
+                .fixedSize()
+                if !args.isEmpty {
+                    Text(args.joined(separator: " "))
+                        .font(.body.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
 }
 
-/// The skills, or the MCP servers, one CLI has, each with a switch: one
-/// tab each, so the servers are not at the bottom of a long list of skills.
+/// The skills, or the MCP servers, of every CLI the role starts in, as one
+/// list with one switch each (07, 08; task 1677): one tab each, so the
+/// servers are not at the bottom of a long list of skills.
 struct RoleCliItemsEditor: View {
     @ObservedObject var library: RoleLibrary
     @ObservedObject var editor: RoleLibraryEditor
-    var cliKey: String
+    /// The CLIs the role starts in, in its order.
+    var cliKeys: [String]
     var kind: AgentCliItem.Kind
+    var onOpenPlugin: (String) -> Void
 
     @State private var search = ""
 
-    private var cli: AgentCli? { library.clis.cli(cliKey) }
+    private var merged: RoleMergedItems {
+        RoleMergedItems.of(kind, clis: cliKeys, in: library.clis)
+    }
+
+    private var read: [AgentCli] { cliKeys.compactMap { library.clis.cli($0) } }
 
     var body: some View {
+        let merged = merged
         VStack(alignment: .leading, spacing: 14) {
-            if let cli {
-                if let error = cli.error {
+            if library.clis.stale && read.isEmpty {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    note(String(localized: "Reading what's installed…", comment: "角色库：正在读取各 CLI 装了什么"))
+                }
+            } else {
+                // Above the list: how one list serves several CLIs, or --
+                // when one of them cannot be read -- that its switches are
+                // kept as they are (07 / 05b).
+                if merged.unread.isEmpty {
+                    if read.count > 1 {
+                        note(String(localized: "Every CLI of this role shares these switches. One marked “only” is installed in that one CLI, and its switch only does anything there.",
+                                    comment: "角色库：技能/MCP 页顶上的说明：几个 CLI 共用一份开关，标「仅 …」的只装在那一个 CLI 里"))
+                    }
+                } else {
+                    ForEach(merged.unread, id: \.key) { cli in
+                        unreadNote(cli.key, label: cli.label)
+                    }
+                }
+
+                ForEach(read.filter { $0.error != nil }) { cli in
                     Label {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(String(localized: "Its plugin couldn't list what's installed", comment: "角色库：适配插件读取清单失败"))
-                            Text(error).font(SettingsFont.minimum).foregroundStyle(.secondary).textSelection(.enabled)
+                            Text(String(format: String(localized: "%@: its plugin couldn't list what's installed", comment: "角色库：某 CLI 的适配插件读取清单失败，%@ 是 CLI 名"), cli.label))
+                            Text(cli.error ?? "").font(SettingsFont.minimum).foregroundStyle(.secondary).textSelection(.enabled)
                         }
                     } icon: {
                         Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
@@ -1189,22 +1323,39 @@ struct RoleCliItemsEditor: View {
                     title: kind == .skill
                         ? String(localized: "Skills", comment: "角色编辑器：分区名，技能")
                         : String(localized: "MCP Servers", comment: "角色编辑器：分区名，MCP 服务器"),
-                    kind: kind, cli: cli, cliKey: cliKey, search: search, editor: editor)
+                    kind: kind, rows: merged.rows, search: search, editor: editor)
 
-                ForEach(cli.notes, id: \.self) { note(String($0)) }
-            } else if library.clis.stale {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    note(String(localized: "Reading what's installed…", comment: "角色库：正在读取各 CLI 装了什么"))
-                }
-            } else {
-                note(String(localized: "No plugin manages this CLI any more", comment: "角色库：角色里配了某 CLI，但对应插件已不在"))
+                ForEach(read.flatMap(\.notes), id: \.self) { note(String($0)) }
             }
         }
-        // A new tab or CLI starts unfiltered: a filter left over from the
-        // other list hides things for no visible reason.
+        // A new tab starts unfiltered: a filter left over from the other
+        // list hides things for no visible reason.
         .onChange(of: kind) { _ in search = "" }
-        .onChange(of: cliKey) { _ in search = "" }
+    }
+
+    /// One CLI of the role whose list cannot be read: why, that its
+    /// switches stay, and the way to Plugins when a switch there is the
+    /// answer (05b).
+    @ViewBuilder
+    private func unreadNote(_ key: String, label: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            switch library.clis.standing(key) {
+            case .pluginOff:
+                Text(String(localized: "\(label) plugin is off, so what it has installed can't be read; the role's switches for \(label) stay as they are.",
+                            comment: "角色库：技能/MCP 页顶上，某 CLI 插件关着读不到它装了什么，角色里那边的开关原样留着。两个都是 CLI 名"))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(RoleLibraryView.openPluginsText) { onOpenPlugin(key) }
+                    .buttonStyle(.link)
+                    .fixedSize()
+            default:
+                Text(library.clis.whyNot(key) ?? "")
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(SettingsFont.minimum)
     }
 }
 
@@ -1213,25 +1364,28 @@ struct RoleCliItemsEditor: View {
 struct RoleItemSection: View {
     var title: String
     var kind: AgentCliItem.Kind
-    var cli: AgentCli
-    var cliKey: String
+    /// Every CLI's items as one list (`RoleMergedItems`).
+    var rows: [RoleMergedItems.Row]
     var search: String
     @ObservedObject var editor: RoleLibraryEditor
 
     @State private var collapsed: Set<String> = []
 
+    /// The role's one set (task 1677), whichever CLI an item is in.
     private var selection: RoleSelection {
-        let choice = editor.draft?.choice(for: cliKey)
-        return (kind == .skill ? choice?.skills : choice?.mcp) ?? RoleSelection()
+        (kind == .skill ? editor.draft?.skills : editor.draft?.mcp) ?? RoleSelection()
     }
 
     private func update(_ change: (inout RoleSelection) -> Void) {
-        editor.updateChoice(cliKey) { choice in
-            if kind == .skill { change(&choice.skills) } else { change(&choice.mcp) }
-        }
+        editor.updateSelection(kind, change)
     }
 
-    private var all: [AgentCliItem] { cli.items(kind) }
+    private var all: [AgentCliItem] { rows.map(\.item) }
+
+    /// The one CLI each item is only in, where that is said.
+    private var only: [String: String] {
+        Dictionary(rows.compactMap { row in row.only.map { (row.item.id, $0) } }, uniquingKeysWith: { a, _ in a })
+    }
 
     private var visible: [AgentCliItem] {
         let query = search.trimmingCharacters(in: .whitespaces)
@@ -1278,8 +1432,8 @@ struct RoleItemSection: View {
 
             if all.isEmpty {
                 Text(kind == .skill
-                     ? String(localized: "No skills are installed for this CLI.", comment: "角色库：这个 CLI 没有 skill")
-                     : String(localized: "No MCP servers are configured for this CLI.", comment: "角色库：这个 CLI 没有 MCP"))
+                     ? String(localized: "No skills are installed for this role's CLIs.", comment: "角色库：这个角色的 CLI 都没有 skill")
+                     : String(localized: "No MCP servers are configured for this role's CLIs.", comment: "角色库：这个角色的 CLI 都没有 MCP"))
                     .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
             } else if visible.isEmpty {
@@ -1307,6 +1461,7 @@ struct RoleItemSection: View {
     private func groupView(_ group: RoleItemGroup, selection sel: RoleSelection) -> some View {
         let isCollapsed = collapsed.contains(group.id)
         let on = group.items.filter { $0.locked || sel.isOn($0.id) }.count
+        let only = only
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Button {
@@ -1353,6 +1508,7 @@ struct RoleItemSection: View {
                         groupName: group.id.hasPrefix("plugin:") ? group.title : nil,
                         groupSummary: group.summary,
                         isOn: item.locked || sel.isOn(item.id),
+                        only: only[item.id],
                         onToggle: { on in update { $0.set(item.id, on: on) } })
                     if item.id != group.items.last?.id {
                         Divider().padding(.leading, 34)
@@ -1375,6 +1531,9 @@ struct RoleItemRow: View {
     /// would only say the same paragraph twice.
     var groupSummary: String?
     var isOn: Bool
+    /// The one CLI it is installed in, when the role starts in more than
+    /// one and that is known (07).
+    var only: String? = nil
     var onToggle: (Bool) -> Void
 
     @State private var expanded = false
@@ -1403,6 +1562,9 @@ struct RoleItemRow: View {
                         .font(.body.weight(.medium))
                         .foregroundStyle(isOn ? .primary : .secondary)
                         .textSelection(.enabled)
+                    if let only {
+                        CliOnlyMark(cli: only)
+                    }
                     if item.locked {
                         Image(systemName: "lock.fill")
                             .font(SettingsFont.minimum)

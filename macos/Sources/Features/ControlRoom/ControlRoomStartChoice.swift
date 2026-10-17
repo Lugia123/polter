@@ -38,6 +38,104 @@ enum ControlRoomStartChoice {
         offered ? (picked ?? .last) : nil
     }
 
+    // MARK: Which agent CLI (task 1677)
+
+    /// "Go on with the last session", for the CLI picked: on and pickable
+    /// (`live`), drawn greyed because another CLI could and this one cannot
+    /// (`greyed`), or not drawn (`hidden`). The Windows host's
+    /// `scene::Resume`.
+    enum Resume: String, Equatable {
+        case live, greyed, hidden
+    }
+
+    /// The CLI row and what it does to the session choice.
+    struct CliChoice: Equatable {
+        /// The CLIs of the role the start is in, in its order.
+        var clis: [ControlRoomList.SupervisorRole.Cli]
+        /// The "Agent CLI" row is drawn: more than one to choose from.
+        var shown: Bool
+        /// The CLI the start uses; nil when the core names none.
+        var picked: String?
+        var resume: Resume
+        /// Why the picked CLI does not go on with the last session; `none`
+        /// when it does.
+        var why: Start.ResumeWhy
+    }
+
+    /// Whether a start in `cli` goes on with the last session, and why not:
+    /// the core's answer for that CLI (`resume_by_cli`), never one worked
+    /// out here. A core from before it said gives the one answer it has, for
+    /// the CLI it names; a CLI it gives no answer for is not gone on with.
+    /// The Windows host's `scene::resume_for`.
+    static func resume(_ last: Start.Last, for cli: String?) -> (can: Bool, why: Start.ResumeWhy) {
+        if let one = last.byCli.first(where: { $0.cli == cli }) { return (one.can, one.why) }
+        if last.byCli.isEmpty || cli == last.cli { return (last.canResume, last.why) }
+        return (false, .cliDiffers)
+    }
+
+    /// The CLI choice for a start in `role` (the core's when nil), with
+    /// `picked` the CLI the person pressed, nil while they pressed none.
+    ///
+    /// Which is on before they press: for the core's role, the core's
+    /// (`supervisor.cli`); for another, the CLI the last supervisor used
+    /// when the role lists it, else the role's first -- the core's own rule
+    /// (`startCliOf`). A pick the role does not list is not kept. The
+    /// Windows host's `scene::cli_choice`; `hosts-agree` prints both.
+    static func cliChoice(_ start: Start, roles: [ControlRoomList.SupervisorRole],
+                          role: String?, picked: String?) -> CliChoice {
+        let key = role ?? start.role
+        let clis = key.flatMap { k in roles.first { $0.key == k } }?.clis ?? []
+        func listed(_ c: String) -> Bool { clis.contains { $0.key == c } }
+        let last = start.last
+        let coreDefault = key == start.role ? last?.cli : nil
+        let chosen = picked.flatMap { listed($0) ? $0 : nil }
+            ?? coreDefault.flatMap { clis.isEmpty || listed($0) ? $0 : nil }
+            ?? last?.lastCli.flatMap { listed($0) ? $0 : nil }
+            ?? clis.first?.key
+        let shown = clis.count > 1
+        guard let last else {
+            return CliChoice(clis: clis, shown: shown, picked: chosen, resume: .hidden, why: .noRecord)
+        }
+        let (can, why) = resume(last, for: chosen)
+        let state: Resume
+        if can {
+            state = .live
+        } else if shown && clis.contains(where: { resume(last, for: $0.key).can }) {
+            state = .greyed
+        } else {
+            state = .hidden
+        }
+        return CliChoice(clis: clis, shown: shown, picked: chosen, resume: state, why: can ? .none : why)
+    }
+
+    /// What the start sends for its session: the one picked while "Go on"
+    /// can be picked, and nothing otherwise -- greyed or not drawn, the
+    /// core starts a new one by itself. `scene::session_for`.
+    static func sessionSent(_ choice: CliChoice, picked: Session?) -> Session? {
+        sessionSent(offered: choice.resume == .live, picked: picked)
+    }
+
+    /// The sentence under the sessions; nil when there is nothing to say.
+    /// Greyed because another CLI was picked: whose session it was, and
+    /// which CLI cannot go on with it. Otherwise the core's reason
+    /// (`resumeNote`). `scene::resume_said`.
+    static func resumeSaid(_ choice: CliChoice, last: Start.Last?) -> String? {
+        if choice.resume == .live { return nil }
+        if choice.resume == .greyed, choice.why == .cliDiffers, let last,
+           let was = cliName(key: last.lastCli, label: last.lastCliLabel),
+           let picked = choice.picked,
+           let now = cliName(key: picked, label: choice.clis.first { $0.key == picked }?.label) {
+            return String(localized: "The last session was \(was)'s; \(now) can't go on with it.",
+                          comment: "总控台：启动总管时选了和上次不同的 CLI，「接着上次的会话」变灰的原因。第一个是上次会话的 CLI，第二个是这次选的 CLI")
+        }
+        return resumeNote(choice.why)
+    }
+
+    /// The label of the CLI row.
+    static var cliRowText: String {
+        String(localized: "Agent CLI", comment: "总控台：启动总管时选用哪个 agent CLI 的那一行的标签")
+    }
+
     /// What an option of the choice is called.
     static func optionText(_ session: Session) -> String {
         switch session {

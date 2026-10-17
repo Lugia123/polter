@@ -942,7 +942,7 @@ pub fn startRole(
 ) !void {
     const p = self.set.find(key) orelse return error.NoSuchPersona;
     try self.setPersona(id, key);
-    if (p.cli(cli)) |c| try self.noteLaunch(id, key, c);
+    if (p.cli(cli)) |c| try self.noteLaunch(id, p, c);
     try self.launchers.put(self.alloc, id, by);
     try self.holdStanding(id, by, p.polter, now_ms);
 }
@@ -999,21 +999,24 @@ pub fn dropLaunch(self: *PersonaStore) void {
     self.pending_launch = null;
 }
 
-/// Record that `id` was started in role `key` with the CLI `choice`, and
-/// forget whatever it was started in before. Copies both.
-pub fn noteLaunch(self: *PersonaStore, id: Bus.Id, key: []const u8, choice: persona.CliChoice) Allocator.Error!void {
+/// Record that `id` was started in role `p` with the CLI `choice`, and
+/// forget whatever it was started in before. Copies what it keeps.
+pub fn noteLaunch(self: *PersonaStore, id: Bus.Id, p: persona.Persona, choice: persona.CliChoice) Allocator.Error!void {
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     errdefer arena.deinit();
     const aa = arena.allocator();
+    const options = try aa.alloc(persona.Option, choice.options.len);
+    for (choice.options, options) |o, *d| d.* = .{ .key = try aa.dupe(u8, o.key), .value = try aa.dupe(u8, o.value) };
     const launch: persona.Launch = .{
-        .role = try aa.dupe(u8, key),
+        .role = try aa.dupe(u8, p.key),
         .choice = .{
             .cli = try aa.dupe(u8, choice.cli),
-            .skills = try dupeSelection(aa, choice.skills),
-            .mcp = try dupeSelection(aa, choice.mcp),
             .model = if (choice.model) |m| try aa.dupe(u8, m) else null,
             .args = try dupeList(aa, choice.args),
+            .options = options,
         },
+        .skills = try dupeSelection(aa, p.cli_skills),
+        .mcp = try dupeSelection(aa, p.cli_mcp),
     };
 
     const gop = try self.launches.getOrPut(self.alloc, id);
@@ -1150,7 +1153,7 @@ fn cliView(aa: Allocator, l: persona.Launch, clis_json: []const u8) Allocator.Er
 
         const is_skill = std.mem.eql(u8, kind, "skill");
         if (!is_skill and !std.mem.eql(u8, kind, "mcp")) continue;
-        const sel = if (is_skill) l.choice.skills else l.choice.mcp;
+        const sel = if (is_skill) l.skills else l.mcp;
         const kept = locked or sel.enabled(item_id);
         const list = if (is_skill)
             (if (kept) &skills_kept else &skills_off)
@@ -1599,7 +1602,7 @@ test "personas: a role put through the writer is in the file and in the set" {
     defer fresh.deinit();
     fresh.load(io, path);
     try testing.expectEqual(persona.official_count + 2, fresh.set.personas.len);
-    try testing.expect(!fresh.set.find("archer").?.clis[0].skills.default);
+    try testing.expect(!fresh.set.find("archer").?.cli_skills.default);
 
     try testing.expectError(error.BadPersona, store.put(io, path,
         \\{"key":"Bad Key","name":"x"}

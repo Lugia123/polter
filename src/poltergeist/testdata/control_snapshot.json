@@ -51,6 +51,18 @@
           "can": false,
           "why": "no_record"
         },
+        "resume_by_cli": [
+          {
+            "cli": "claude-code",
+            "can": false,
+            "why": "no_record"
+          },
+          {
+            "cli": "codex",
+            "can": false,
+            "why": "no_record"
+          }
+        ],
         "hookless": {
           "state": "none",
           "cli_label": null,
@@ -189,6 +201,18 @@
           "can": false,
           "why": "no_record"
         },
+        "resume_by_cli": [
+          {
+            "cli": "claude-code",
+            "can": false,
+            "why": "no_record"
+          },
+          {
+            "cli": "codex",
+            "can": false,
+            "why": "no_record"
+          }
+        ],
         "hookless": {
           "state": "none",
           "cli_label": null,
@@ -306,6 +330,18 @@
           "can": false,
           "why": "no_record"
         },
+        "resume_by_cli": [
+          {
+            "cli": "claude-code",
+            "can": false,
+            "why": "no_record"
+          },
+          {
+            "cli": "codex",
+            "can": false,
+            "why": "no_record"
+          }
+        ],
         "hookless": {
           "state": "none",
           "cli_label": null,
@@ -438,6 +474,18 @@
           "can": false,
           "why": "session_in_use"
         },
+        "resume_by_cli": [
+          {
+            "cli": "claude-code",
+            "can": false,
+            "why": "session_in_use"
+          },
+          {
+            "cli": "codex",
+            "can": false,
+            "why": "cli_differs"
+          }
+        ],
         "hookless": {
           "state": "none",
           "cli_label": null,
@@ -553,6 +601,18 @@
           "can": false,
           "why": "no_record"
         },
+        "resume_by_cli": [
+          {
+            "cli": "claude-code",
+            "can": false,
+            "why": "no_record"
+          },
+          {
+            "cli": "codex",
+            "can": false,
+            "why": "no_record"
+          }
+        ],
         "hookless": {
           "state": "known",
           "cli_label": "Claude Code",
@@ -694,6 +754,18 @@
           "can": false,
           "why": "no_record"
         },
+        "resume_by_cli": [
+          {
+            "cli": "claude-code",
+            "can": false,
+            "why": "no_record"
+          },
+          {
+            "cli": "codex",
+            "can": false,
+            "why": "no_record"
+          }
+        ],
         "hookless": {
           "state": "none",
           "cli_label": null,
@@ -809,6 +881,18 @@
           "can": false,
           "why": "no_record"
         },
+        "resume_by_cli": [
+          {
+            "cli": "claude-code",
+            "can": false,
+            "why": "no_record"
+          },
+          {
+            "cli": "codex",
+            "can": false,
+            "why": "no_record"
+          }
+        ],
         "hookless": {
           "state": "unknown",
           "cli_label": null,
@@ -931,20 +1015,32 @@
         "terminal": null,
         "failed": "none",
         "role": "polter-supervisor",
-        "cli": "claude-code",
-        "cli_label": "Claude Code",
+        "cli": "codex",
+        "cli_label": "Codex",
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
           "role": "polter-supervisor",
-          "cli": "claude-code",
-          "cli_label": "Claude Code",
+          "cli": "codex",
+          "cli_label": "Codex",
           "heard_ms": 1699913600000
         },
         "resume": {
           "can": true,
           "why": "none"
         },
+        "resume_by_cli": [
+          {
+            "cli": "claude-code",
+            "can": false,
+            "why": "cli_differs"
+          },
+          {
+            "cli": "codex",
+            "can": true,
+            "why": "none"
+          }
+        ],
         "hookless": {
           "state": "none",
           "cli_label": null,
@@ -1498,7 +1594,24 @@
   "supervisor_roles": [
     {
       "key": "polter-supervisor",
-      "name": "Polter Supervisor"
+      "name": "Polter Supervisor",
+      "clis": [
+        {
+          "key": "claude-code",
+          "label": "Claude Code"
+        },
+        {
+          "key": "codex",
+          "label": "Codex"
+        }
+      ],
+      "held_back": [
+        {
+          "key": "other-cli",
+          "label": null,
+          "why": "plugin_off"
+        }
+      ]
     }
   ],
   "choose_supervisor_role": false,

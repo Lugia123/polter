@@ -90,7 +90,15 @@ extension ControlRoomModel {
             supervisor: ControlRoomRowMenu.supervisor(of: row),
             resumable: ControlRoomStartChoice.offersSession(row.start),
             pinned: facts?.pinned ?? false,
-            muted: facts?.muted ?? false)
+            muted: facts?.muted ?? false,
+            clis: max(1, startClis(row).count))
+    }
+
+    /// The CLIs a supervisor for `row` can be started in: those of the role
+    /// the core would start it in, whose plugins are on (task 1677).
+    func startClis(_ row: Row) -> [ControlRoomList.SupervisorRole.Cli] {
+        guard let role = row.start?.role else { return [] }
+        return list?.supervisorRoles.first { $0.key == role }?.clis ?? []
     }
 
     /// The state for an archived group: the rule's three items.
@@ -102,7 +110,15 @@ extension ControlRoomModel {
     func trailing(_ key: String, for row: Row) -> String? {
         let now = effects.now()
         let locale = Locale.current
+        // 02A: going on names the CLI it goes on in, and asks nothing; in
+        // the submenu of CLIs the last supervisor's says so.
+        if let cli = ControlRoomRowMenu.cli(of: key) {
+            return cli == row.start?.last?.lastCli ? ControlRoomRowMenuItems.lastUsedText : nil
+        }
         switch key {
+        case "start_resume" where startClis(row).count > 1:
+            let last = row.start?.last
+            return ControlRoomStartChoice.cliName(key: last?.lastCli, label: last?.lastCliLabel)
         case "mute_hour": return ControlRoomGroupWords.muteEndText(.hour, now: now, calendar: effects.calendar, locale: locale)
         case "mute_tomorrow": return ControlRoomGroupWords.muteEndText(.tomorrow, now: now, calendar: effects.calendar, locale: locale)
         case "unmute":
@@ -126,9 +142,19 @@ extension ControlRoomModel {
     /// The menu for `row`.
     @MainActor
     func menu(for row: Row) -> NSMenu {
-        let lines = ControlRoomRowMenuItems.lines(ControlRoomRowMenu.entries(menuState(row)))
+        let state = menuState(row)
+        let clis = startClis(row)
+        let lines = ControlRoomRowMenuItems.lines(
+            ControlRoomRowMenu.entries(state),
+            startNew: state.clis > 1
+                ? ControlRoomRowMenu.cliSubmenu(clis.map(\.key), last: row.start?.last?.lastCli).map(\.id) : nil)
         return ControlRoomRowMenuItems.menu(
             lines,
+            title: { key in
+                ControlRoomRowMenu.cli(of: key).flatMap { cli in
+                    ControlRoomStartChoice.cliName(key: cli, label: clis.first { $0.key == cli }?.label)
+                }
+            },
             trailing: { [weak self] in self?.trailing($0, for: row) },
             enabled: { [weak self] in self?.enabled($0, for: row) ?? false },
             choose: { [weak self] in self?.choose($0, on: row) })
@@ -165,6 +191,8 @@ extension ControlRoomModel {
             startSupervisor(for: group, role: nil, cwd: nil, session: .last)
         case "start_new":
             startSupervisor(for: group, role: nil, cwd: nil, session: .new)
+        case let key where ControlRoomRowMenu.cli(of: key) != nil:
+            startSupervisor(for: group, role: nil, cwd: nil, session: .new, cli: ControlRoomRowMenu.cli(of: key))
         case "start":
             startSupervisor(for: group, role: nil, cwd: nil)
         case "report_progress":

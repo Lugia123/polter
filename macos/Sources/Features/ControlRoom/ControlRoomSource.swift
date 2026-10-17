@@ -268,9 +268,9 @@ final class ControlRoomModel: ObservableObject {
     /// the core named. What becomes of it arrives in the next list; a
     /// refusal is kept to be shown.
     func startSupervisor(for group: String, role: String?, cwd: String?,
-                         session: ControlRoomStartChoice.Session? = nil) {
+                         session: ControlRoomStartChoice.Session? = nil, cli: String? = nil) {
         do {
-            try perform(.startSupervisor(group: group, role: role, cwd: cwd, session: session))
+            try perform(.startSupervisor(group: group, role: role, cwd: cwd, session: session, cli: cli))
             startRefusal = nil
         } catch let refusal as ControlRoomActions.Refusal {
             startRefusal = (group, refusal.message)

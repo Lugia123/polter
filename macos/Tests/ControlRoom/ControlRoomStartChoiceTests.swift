@@ -23,6 +23,67 @@ struct ControlRoomStartChoiceTests {
                           cliLabel: "Claude Code", lastCliLabel: label))
     }
 
+    // MARK: Which agent CLI (task 1677)
+
+    private func twoClis(last lastCli: String = "codex", byCli: [Start.CliResume]) -> (Start, [ControlRoomList.SupervisorRole]) {
+        var s = start(lastCli: lastCli, label: lastCli == "codex" ? "Codex" : "Claude Code")
+        s.last?.cli = lastCli
+        s.last?.byCli = byCli
+        let role = ControlRoomList.SupervisorRole(
+            key: "polter-supervisor", name: "Polter Supervisor",
+            clis: [.init(key: "claude-code", label: "Claude Code"), .init(key: "codex", label: "Codex")])
+        return (s, [role])
+    }
+
+    /// 01a/01b: the core's CLI is on until another is picked; picking one
+    /// that cannot go on with the session greys "Go on" and says whose it
+    /// was; nothing is sent for the session then, and the CLI always is.
+    @Test func pickingAnotherCliGreysGoingOnAndSaysWhy() {
+        let (s, roles) = twoClis(byCli: [.init(cli: "claude-code", can: false, why: .cliDiffers),
+                                         .init(cli: "codex", can: true, why: .none)])
+        let none = Choice.cliChoice(s, roles: roles, role: nil, picked: nil)
+        #expect(none.shown && none.picked == "codex" && none.resume == .live)
+        #expect(Choice.sessionSent(none, picked: nil) == .last)
+        #expect(Choice.resumeSaid(none, last: s.last) == nil)
+
+        let other = Choice.cliChoice(s, roles: roles, role: nil, picked: "claude-code")
+        #expect(other.picked == "claude-code" && other.resume == .greyed && other.why == .cliDiffers)
+        #expect(Choice.sessionSent(other, picked: .last) == nil)
+        #expect(Choice.resumeSaid(other, last: s.last) == "The last session was Codex's; Claude Code can't go on with it.")
+
+        // A pick the role does not list is not kept.
+        #expect(Choice.cliChoice(s, roles: roles, role: nil, picked: "other-cli").picked == "codex")
+    }
+
+    /// No CLI can go on with it: hidden, with the core's reason, as before.
+    /// One CLI: no row (01c).
+    @Test func withNothingToGoOnWithOrOneCliTheScreenIsTodays() throws {
+        let (s, roles) = twoClis(byCli: [.init(cli: "claude-code", can: false, why: .cliDiffers),
+                                         .init(cli: "codex", can: false, why: .sessionInUse)])
+        let c = Choice.cliChoice(s, roles: roles, role: nil, picked: "claude-code")
+        #expect(c.resume == .hidden)
+        let one = [ControlRoomList.SupervisorRole(key: "polter-supervisor", name: "P", clis: [.init(key: "codex", label: "Codex")])]
+        #expect(!Choice.cliChoice(s, roles: one, role: nil, picked: nil).shown)
+        // A core from before `resume_by_cli` has one answer, and it is the
+        // answer whatever is picked (`scene::resume_for`): nothing here is
+        // worked out in its place. Such a core sends one CLI anyway.
+        var old = start()
+        old.last?.byCli = []
+        #expect(Choice.cliChoice(old, roles: roles, role: nil, picked: nil).resume == .live)
+        #expect(Choice.cliChoice(old, roles: roles, role: nil, picked: "codex").resume == .live)
+        // With the per-CLI table, a CLI it gives no answer for -- and that
+        // is not the one its `resume` is about -- is not gone on with.
+        var partial = s
+        partial.last?.byCli = [.init(cli: "codex", can: true, why: .none)]
+        #expect(Choice.resume(try #require(partial.last), for: "claude-code") == (false, .cliDiffers))
+    }
+
+    @Test func theCliPickedIsSent() throws {
+        let request = Actions.request(for: .startSupervisor(group: "g", session: nil, cli: "codex"))
+        #expect(request["cli"] as? String == "codex")
+        #expect(Actions.request(for: .startSupervisor(group: "g"))["cli"] == nil)
+    }
+
     // MARK: The choice
 
     @Test func theChoiceIsOfferedOnlyWhenTheCoreSaysTheLastSessionCanBeGoneOnWith() {

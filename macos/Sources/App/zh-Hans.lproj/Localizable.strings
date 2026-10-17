@@ -393,7 +393,7 @@
 "Applied once, when the role starts an agent CLI. Putting the role on a terminal that's already running changes its tools, not these." = "只在用这个角色启动 agent CLI 时生效一次。给已经在运行的终端换上这个角色，只会切换它的工具，不会改这些设置。";
 "Drag to resize" = "拖动调整大小";
 "Basics" = "基本信息";
-"Skills %@" = "Skills %@";
+"Skills %@" = "技能 %@";
 "MCP %@" = "MCP %@";
 "MCP" = "MCP";
 "Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI." = "先在「基本信息」里选一个 agent CLI：skill 和 MCP 服务器是属于某个 CLI 的。";
@@ -1136,3 +1136,26 @@
 "no agent in the supervisor's terminal" = "总管的终端里没有 agent";
 "the supervisor's program has ended" = "总管的程序已经退出";
 "this group has no supervisor" = "这个群没有总管";
+
+/* 角色多 CLI（任务 1677） */
+"Agent CLI" = "Agent CLI";
+"The last session was %@'s; %@ can't go on with it." = "上次的会话是 %1$@ 的，%2$@ 接不上。";
+"Last used" = "上次用的";
+"That role isn't set up for that agent CLI." = "这个角色没有配这个 agent CLI。";
+"That agent CLI's plugin is off. Turn it on in Plugins." = "这个 agent CLI 的插件关着。到「插件」里打开。";
+"That agent CLI can't be started on this machine." = "这台机器上启动不了这个 agent CLI。";
+"%@ (plugin off)" = "%@（插件关着）";
+"%@ plugin is off: %@ won't be offered when this role is started. The settings stay in the role." = "%1$@ 插件关着：启动这个角色时不会出现 %2$@。设置留在角色里。";
+"%@ can't be started on this machine: nothing here can run its plugin. The settings stay in the role." = "这台机器上启动不了 %@：这里跑不起来它的插件。设置留在角色里。";
+"%@ plugin is off, so what it has installed can't be read; the role's switches for %@ stay as they are." = "%1$@ 插件关着，读不到它装了什么；角色里 %2$@ 那边的开关原样留着。";
+"%@ only" = "仅 %@";
+"%@: its plugin couldn't list what's installed" = "%@：它的插件读不出装了什么";
+"Every CLI of this role shares these switches. One marked “only” is installed in that one CLI, and its switch only does anything there." = "这个角色的几个 CLI 共用这一份开关。标「仅 …」的只装在那一个 CLI 里，开关只对它起作用。";
+"Can't be used when starting; what's here is still saved" = "插件关着，启动时用不上；这里的设置照样保存";
+"No skills are installed for this role's CLIs." = "这个角色的 CLI 都没有装 skill。";
+"No MCP servers are configured for this role's CLIs." = "这个角色的 CLI 都没有配 MCP 服务器。";
+"Open Plugin Settings" = "打开插件设置";
+"Permission Mode" = "权限模式";
+"Approval" = "审批";
+"Sandbox" = "沙箱";
+"With no CLI named: workers a supervisor opens use the supervisor's own; when you start one from a menu or the control room, you choose." = "没指定 CLI 时：总管开的 worker 用总管自己的那个；你从菜单或总控台启动时由你选。";

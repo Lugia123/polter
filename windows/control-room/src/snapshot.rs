@@ -394,6 +394,10 @@ pub struct SupervisorLast {
     /// what is written.
     pub cli_label: Option<String>,
     pub last_cli_label: Option<String>,
+    /// `can_resume` and `why` for each CLI a role here can be started in
+    /// (#1677); `can_resume` and `why` above are the one for `cli`. Empty
+    /// in a snapshot from before the core said.
+    pub by_cli: Vec<CliResume>,
 }
 
 /// What the core says about a group's supervisor and what starting one
@@ -449,6 +453,69 @@ pub struct TakeOver {
 pub struct SupervisorRole {
     pub key: String,
     pub name: String,
+    /// The agent CLIs it can be started in here: only those whose plugin
+    /// is on, in the role's own order (#1677). Empty for a role none of
+    /// whose CLIs is on, and in a snapshot from before the core said.
+    pub clis: Vec<RoleCli>,
+    /// The CLIs the role is set up for that cannot be started here, and
+    /// why (`held_back`, #1677). Empty in a snapshot from before the core
+    /// said.
+    pub held_back: Vec<HeldBack>,
+}
+
+/// Why a CLI a role is set up for is not one it can be started in here.
+/// **Two of these are not one**: a plugin that is off is the person's to
+/// turn on; one that cannot run here is not fixed by that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldWhy {
+    /// Its plugin is installed and switched off.
+    PluginOff,
+    /// Its plugin is on, and its adapter cannot run on this machine.
+    CannotRun,
+    /// No plugin manages it.
+    NoPlugin,
+}
+
+impl HeldWhy {
+    pub const ALL: [HeldWhy; 3] = [HeldWhy::PluginOff, HeldWhy::CannotRun, HeldWhy::NoPlugin];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HeldWhy::PluginOff => "plugin_off",
+            HeldWhy::CannotRun => "cannot_run",
+            HeldWhy::NoPlugin => "no_plugin",
+        }
+    }
+
+    fn parse(s: &str) -> Option<HeldWhy> {
+        Self::ALL.into_iter().find(|v| v.name() == s)
+    }
+}
+
+/// A CLI a role is set up for and cannot be started in here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldBack {
+    pub key: String,
+    pub label: Option<String>,
+    pub why: HeldWhy,
+}
+
+/// One agent CLI a role can be started in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleCli {
+    pub key: String,
+    /// What it is called to a person; `None` when the core has no name,
+    /// and then the key is what is written (`scene::cli_name`).
+    pub label: Option<String>,
+}
+
+/// Whether a start in one CLI goes on with the last session
+/// (`supervisor.resume_by_cli`, #1677): the core's `resumeOf` for that CLI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliResume {
+    pub cli: String,
+    pub can: bool,
+    pub why: ResumeWhy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -986,6 +1053,22 @@ fn group(v: &Value, path: &str) -> Res<Group> {
                             // gave names says none, and that is no name.
                             cli_label: if s.get("cli_label").is_some() { opt_text(s, &sp, "cli_label")? } else { None },
                             last_cli_label: if last.get("cli_label").is_some() { opt_text(last, &lp, "cli_label")? } else { None },
+                            by_cli: match s.get("resume_by_cli") {
+                                None => Vec::new(),
+                                Some(_) => list(s, &sp, "resume_by_cli")?
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, r)| {
+                                        let p = format!("{sp}.resume_by_cli[{i}]");
+                                        let why = text(r, &p, "why")?;
+                                        Ok(CliResume {
+                                            cli: text(r, &p, "cli")?,
+                                            can: boolean(r, &p, "can")?,
+                                            why: ResumeWhy::parse(&why).ok_or(DecodeError::UnknownValue(format!("{p}.why={why}")))?,
+                                        })
+                                    })
+                                    .collect::<Res<Vec<_>>>()?,
+                            },
                         })
                     }
                     (None, None) => None,
@@ -1220,7 +1303,26 @@ pub fn decode(json_text: &str) -> Res<Snapshot> {
     if v.get("supervisor_roles").is_some() {
         for (i, r) in list(&v, root, "supervisor_roles")?.iter().enumerate() {
             let path = format!("supervisor_roles[{i}]");
-            supervisor_roles.push(SupervisorRole { key: text(r, &path, "key")?, name: text(r, &path, "name")? });
+            let mut clis = Vec::new();
+            if r.get("clis").is_some() {
+                for (j, c) in list(r, &path, "clis")?.iter().enumerate() {
+                    let cp = format!("{path}.clis[{j}]");
+                    clis.push(RoleCli { key: text(c, &cp, "key")?, label: opt_text(c, &cp, "label")? });
+                }
+            }
+            let mut held_back = Vec::new();
+            if r.get("held_back").is_some() {
+                for (j, c) in list(r, &path, "held_back")?.iter().enumerate() {
+                    let cp = format!("{path}.held_back[{j}]");
+                    let why = text(c, &cp, "why")?;
+                    held_back.push(HeldBack {
+                        key: text(c, &cp, "key")?,
+                        label: opt_text(c, &cp, "label")?,
+                        why: HeldWhy::parse(&why).ok_or(DecodeError::UnknownValue(format!("{cp}.why={why}")))?,
+                    });
+                }
+            }
+            supervisor_roles.push(SupervisorRole { key: text(r, &path, "key")?, name: text(r, &path, "name")?, clis, held_back });
         }
     }
     let choose_supervisor_role = match v.get("choose_supervisor_role") {
