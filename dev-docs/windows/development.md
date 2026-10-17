@@ -823,8 +823,8 @@ ReleaseSmall `25,574,912` → `25,576,960`（**+2,048**）；Debug `+11,264`。
 
 ### 5.3 Windows 上插件用什么：**每个插件自己补一份**
 
-出厂插件 8 个声明了 `exec`，**7 个是 `provision.sh`**（claude-code / codex / deepseek /
-gemini / kimi / opencode / qwen-code），1 个是 `archive.py`。
+出厂插件 7 个声明了 `exec`，**6 个是 `provision.sh`**（claude-code / codex / deepseek /
+kimi / opencode / qwen-code），1 个是 `archive.py`。（原先还有 gemini，#1681 删除。）
 Windows 不能直接执行 `.sh`，报 `error.InvalidExe`——真机上那几个插件测试全挂在这。
 
 **决定：7 个各补一份 `.ps1`/`.cmd`。** 曾经考虑过的另外两条：要求用户装

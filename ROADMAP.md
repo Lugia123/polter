@@ -43,10 +43,10 @@ started. Nothing in GTK stands in the way; it waits on the same thing as the
 rest of Linux, which is a machine that runs the GTK app.
 `tools/gtk-has-no-project-half.py` keeps half of it from arriving unannounced.
 
-**Agent coverage.** Seven CLIs have provisioning plugins (Claude Code, Codex,
-Gemini, Qwen, opencode, Kimi, DeepSeek). Only Claude Code is used daily by the
+**Agent coverage.** Six CLIs have provisioning plugins (Claude Code, Codex,
+Qwen, opencode, Kimi, DeepSeek). Only Claude Code is used daily by the
 author, and only Claude Code reports the end of a turn through hooks; the other
-six are watched by how long their screen has been still.
+five are watched by how long their screen has been still.
 
 **Network.** Today Polter opens no network port: the MCP server is a socket in
 your own runtime directory, and the one outbound request is Check for Updates,

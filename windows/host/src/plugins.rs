@@ -1777,7 +1777,6 @@ mod shipped_manifest_tests {
     const ARCHIVE: &str = include_str!("../../../plugins/archive/plugin.json");
     const CLAUDE_CODE: &str = include_str!("../../../plugins/claude-code/plugin.json");
     const CODEX: &str = include_str!("../../../plugins/codex/plugin.json");
-    const GEMINI: &str = include_str!("../../../plugins/gemini/plugin.json");
     const KIMI: &str = include_str!("../../../plugins/kimi/plugin.json");
 
     fn parse(key: &str, text: &str) -> Plugin {
@@ -1788,8 +1787,8 @@ mod shipped_manifest_tests {
     /// and zero parameters is exactly what "the page has only an on/off
     /// switch" looks like from a chair.
     ///
-    /// **All five are compared in one assertion, on purpose.** Written as five
-    /// `assert_eq!`s it stopped at the first mismatch, and when `rules` was
+    /// **All of them are compared in one assertion, on purpose.** Written as one
+    /// `assert_eq!` each, it stopped at the first mismatch, and when `rules` was
     /// added to three manifests the failure named only `claude-code`. Fixing
     /// that one moved the red to `codex`, and then to `gemini`: three rounds
     /// to learn what one run could have said. **A test that stops at the
@@ -1810,7 +1809,6 @@ mod shipped_manifest_tests {
             names("archive", ARCHIVE),
             names("claude-code", CLAUDE_CODE),
             names("codex", CODEX),
-            names("gemini", GEMINI),
             // And one that really does declare none, so a parser that answered
             // "two" to everything would not pass either.
             names("kimi", KIMI),
@@ -1819,7 +1817,6 @@ mod shipped_manifest_tests {
             ("archive", &["dir", "sign_key"][..]),
             ("claude-code", &["rules", "scope", "skills"][..]),
             ("codex", &["approve_tools", "manual_out_of_daemon", "rules", "skills"][..]),
-            ("gemini", &["rules", "skills"][..]),
             ("kimi", &[][..]),
         ]
         .iter()

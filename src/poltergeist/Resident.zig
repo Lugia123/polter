@@ -4322,8 +4322,8 @@ test "the mcp add line keeps `-e` after the positional arguments" {
     // **This exists because a command line was wrong on every platform for
     // as long as the file had existed, and every test passed anyway.**
     //
-    // `qwen mcp add` and `gemini mcp add` take `<name> <command> [args...]`,
-    // and their `-e` is an *array* option. yargs makes an array option
+    // `qwen mcp add` takes `<name> <command> [args...]`, and its `-e` is an
+    // *array* option. yargs makes an array option
     // greedy, and `--` ends parsing, so what follows it is not counted as a
     // positional either. Written the obvious way --
     //
@@ -4349,11 +4349,9 @@ test "the mcp add line keeps `-e` after the positional arguments" {
     // breaks, exactly as it did before -- which is why the belief is dated and
     // versioned here instead of being left implicit.
     //
-    // **Both plugins are run, not one.** `gemini` is the same upstream and had
-    // the same line; the comment in each file says "fix one and check the
-    // other", and a comment is not a check. Pinning only one would leave the
-    // pair free to drift in exactly the direction they have already drifted
-    // together once.
+    // This used to run `gemini` too, the same upstream with the same line.
+    // That plugin was removed in task 1681 (Gemini CLI stopped serving
+    // personal accounts on 2026-06-18), so the table below has one row.
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -4362,12 +4360,11 @@ test "the mcp add line keeps `-e` after the positional arguments" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const pair: []const struct { key: []const u8, bin: []const u8, src: []const u8 } = &.{
+    const hosts: []const struct { key: []const u8, bin: []const u8, src: []const u8 } = &.{
         .{ .key = "qwen-code", .bin = "qwen", .src = @embedFile("plugin_qwen_code_sh") },
-        .{ .key = "gemini", .bin = "gemini", .src = @embedFile("plugin_gemini_sh") },
     };
 
-    for (pair) |host| {
+    for (hosts) |host| {
         var raw: [6]u8 = undefined;
         io.random(&raw);
         const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-mcpadd-{x}", .{&raw});
@@ -4512,7 +4509,9 @@ test "a registration that is already current is not written again" {
     // that `mcp add` leaves the entry, marker and all, in the config the
     // plugin now reads back. Measured against gemini 0.33.1 before being
     // written this way: run 1 registers, run 2 is silent, run 3 with a new
-    // version registers again and the marker moves.
+    // version registers again and the marker moves. (The gemini plugin was
+    // removed in task 1681; `qwen-code` carries the same code and is what
+    // this runs now.)
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -4521,16 +4520,15 @@ test "a registration that is already current is not written again" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const pair: []const struct {
+    const hosts: []const struct {
         key: []const u8,
         bin: []const u8,
         src: []const u8,
     } = &.{
         .{ .key = "qwen-code", .bin = "qwen", .src = @embedFile("plugin_qwen_code_sh") },
-        .{ .key = "gemini", .bin = "gemini", .src = @embedFile("plugin_gemini_sh") },
     };
 
-    for (pair) |host| {
+    for (hosts) |host| {
         var raw: [6]u8 = undefined;
         io.random(&raw);
         const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-stale-{x}", .{&raw});
@@ -4641,16 +4639,15 @@ test "another installation's registration is left alone, and said out loud" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const pair: []const struct {
+    const hosts: []const struct {
         key: []const u8,
         bin: []const u8,
         src: []const u8,
     } = &.{
         .{ .key = "qwen-code", .bin = "qwen", .src = @embedFile("plugin_qwen_code_sh") },
-        .{ .key = "gemini", .bin = "gemini", .src = @embedFile("plugin_gemini_sh") },
     };
 
-    for (pair) |host| {
+    for (hosts) |host| {
         var raw: [6]u8 = undefined;
         io.random(&raw);
         const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-takeover-{x}", .{&raw});
@@ -5277,9 +5274,9 @@ test "a plugin's child gets the environment the host prepared, not the host's ow
 /// That last part is the whole point -- the staleness check reads it back.
 ///
 /// It works out its own config directory from `$0`, so one literal serves
-/// both hosts and nothing has to be formatted into it. `qwen` -> `.qwen` and
-/// `gemini` -> `.gemini` happens to hold; that is a convenience of the
-/// fixture, not a claim about either product.
+/// any host and nothing has to be formatted into it. `qwen` -> `.qwen`
+/// happens to hold; that is a convenience of the fixture, not a claim about
+/// the product.
 const mcp_add_stub =
     \\#!/bin/sh
     \\{ echo "--CALL--"; for a in "$@"; do echo "$a"; done; } >> "$POLTER_TEST_ARGV"

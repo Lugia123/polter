@@ -242,7 +242,7 @@ server 是一个 stdio 的 MCP 进程，协议版本 `2024-11-05`。给 MCP 客�
 
 通常不用手配。服务端的总开关 `poltergeist-mcp` 默认开着（设成 `false` 就是一个不开 socket 的普通终端），`poltergeist-register-mcp` 也默认开着，Polter 启动时会替已装的 agent CLI 注册好。接上之后让 agent 调一次 `me`，能答出终端 id 就是通了。答「没有这个工具」的话，README 的 FAQ 列了三个常见原因。
 
-**实测范围要说清楚。** server 是标准 MCP，任何 MCP 客户端照理都能连，发行包里也带了七个注册插件（`claude-code`、`codex`、`deepseek`、`gemini`、`kimi`、`opencode`、`qwen-code`）。但只在 Claude Code 上深度验证过，其余六个请按「没测过」对待。
+**实测范围要说清楚。** server 是标准 MCP，任何 MCP 客户端照理都能连，发行包里也带了六个注册插件（`claude-code`、`codex`、`deepseek`、`kimi`、`opencode`、`qwen-code`）。但只在 Claude Code 上深度验证过，其余五个请按「没测过」对待。
 
 **hooks 目前只有 Claude Code。** 由角色启动的 Claude Code 会在一轮结束时通过 `polter +hook` 把状态和最后一段回答报给 Polter，总管能在 `notices` 里直接看到「这一轮结束了」，也能用 `terminal_turn` 取全文。别的 CLI 没有这条路，`terminal_list` 里它们的 `agent.hooks` 是 `none`，只能靠屏幕静止时长和 `terminal_read`。
 

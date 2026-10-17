@@ -277,7 +277,7 @@ hook 的沉默有三种来源，其中两种 hook 自己报不出来：
 | **1d** | 真机：mac、Windows 各一轮（第七节） | 两个测试 worker |
 | 2 | 手动起的 claude（非角色启动）也接 hook：provision 写用户级 settings 还是做成 Claude Code 插件，待定 | — |
 | 2 | 项目恢复时用 session_id 自动续会话 | — |
-| 3 | Codex、Gemini、Qwen……逐家（第八节） | — |
+| 3 | Codex、Qwen……逐家（第八节；Gemini 插件已在 #1681 删除） | — |
 
 ## 七、判据
 

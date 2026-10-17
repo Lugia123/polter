@@ -242,7 +242,7 @@ It has to be started from inside a Polter terminal. Polter puts `GHOSTTY_POLTER_
 
 Most people never write that line. The master switch `poltergeist-mcp` is on by default (set it to `false` for a plain terminal that opens no socket), `poltergeist-register-mcp` is on by default too, and Polter registers the server for installed agent CLIs at startup. Once connected, ask the agent to call `me`. If it answers with a terminal id, you're connected. If it says there is no such tool, the README's FAQ lists the three usual causes.
 
-On what has been tested: the server is standard MCP, so any MCP client should be able to connect, and seven provisioning plugins ship with it (`claude-code`, `codex`, `deepseek`, `gemini`, `kimi`, `opencode`, `qwen-code`). Only Claude Code has been tested in depth. Treat the other six as untested.
+On what has been tested: the server is standard MCP, so any MCP client should be able to connect, and six provisioning plugins ship with it (`claude-code`, `codex`, `deepseek`, `kimi`, `opencode`, `qwen-code`). Only Claude Code has been tested in depth. Treat the other five as untested.
 
 Hooks are Claude Code only for now. A Claude Code started from a role reports its state and its final answer through `polter +hook` when a turn ends, so the supervisor sees "turn ended" in `notices` and can fetch the full text with `terminal_turn`. Other CLIs have no such path. Their `agent.hooks` reads `none` in `terminal_list`, and what's left is the still-screen timer and `terminal_read`.
 

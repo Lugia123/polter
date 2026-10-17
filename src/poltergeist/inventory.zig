@@ -22,7 +22,7 @@
 //!     are what a person needs to recognise a server; the secrets are not,
 //!     and a list that carried them would end up on a screen, in a log, and
 //!     in an agent's context. Only key *names* leave this file.
-//!   * **It does not guess a path.** Four of the seven hosts have no
+//!   * **It does not guess a path.** Four of the six hosts have no
 //!     confirmed skills directory (see `provisioning.md` section four, and
 //!     the `printf ''` in their `provision.sh`). Those report
 //!     `unknown_location`, which is not the same answer as `absent`.
@@ -64,7 +64,6 @@ const max_config_bytes = 8 * 1024 * 1024;
 pub const Host = enum {
     claude_code,
     codex,
-    gemini,
     qwen_code,
     opencode,
     deepseek,
@@ -75,7 +74,6 @@ pub const Host = enum {
         return switch (self) {
             .claude_code => "Claude Code",
             .codex => "Codex CLI",
-            .gemini => "Gemini CLI",
             .qwen_code => "Qwen Code",
             .opencode => "opencode",
             .deepseek => "DeepSeek-TUI",
@@ -89,7 +87,6 @@ pub const Host = enum {
         return switch (self) {
             .claude_code => "claude",
             .codex => "codex",
-            .gemini => "gemini",
             .qwen_code => "qwen",
             .opencode => "opencode",
             .deepseek => "deepseek",
@@ -137,7 +134,6 @@ fn mcpFile(host: Host) ?McpFile {
     return switch (host) {
         .claude_code => .{ .rel_path = ".claude.json", .key = "mcpServers", .shape = .json_object },
         .codex => .{ .rel_path = ".codex/config.toml", .key = "mcp_servers", .shape = .toml_tables },
-        .gemini => .{ .rel_path = ".gemini/settings.json", .key = "mcpServers", .shape = .json_object },
         .qwen_code => .{ .rel_path = ".qwen/settings.json", .key = "mcpServers", .shape = .json_object },
         // Nested under `mcp`, and the structure differs as well -- for a
         // list of names that does not matter, for anything more it does.
@@ -148,7 +144,7 @@ fn mcpFile(host: Host) ?McpFile {
 }
 
 /// The user-level skills directory, or `null` where `host_skills_dir`
-/// returns the empty string. Four of the seven do, and the comment beside
+/// returns the empty string. Four of the six do, and the comment beside
 /// each of them says why: *"写文件进一个猜出来的目录，比一个都不写更糟"*.
 /// Reading has the milder version of the same problem -- a guess that finds
 /// nothing reports "no skills" and looks like an answer.
@@ -156,7 +152,6 @@ fn skillsDir(host: Host) ?[]const u8 {
     return switch (host) {
         .claude_code => ".claude/skills",
         .codex => ".codex/skills",
-        .gemini => ".gemini/skills",
         .qwen_code, .opencode, .deepseek, .kimi => null,
     };
 }
@@ -369,7 +364,7 @@ fn countSlots(sec: Section) usize {
 ///
 /// Looked up rather than run. Running a host binary to ask its version
 /// would be a side effect on somebody's machine from something that
-/// advertises itself as read-only, and it would be slow seven times over.
+/// advertises itself as read-only, and it would be slow six times over.
 fn onPath(io: std.Io, path_env: []const u8, name: []const u8) bool {
     const sep = if (@import("builtin").os.tag == .windows) ';' else ':';
     var it = std.mem.tokenizeScalar(u8, path_env, sep);
@@ -998,12 +993,12 @@ test "inventory: a file that is there and unreadable is failed, not absent" {
     var fix: Fixture = try .init(testing.allocator, io);
     defer fix.deinit(testing.allocator);
 
-    try fix.write(testing.allocator, ".gemini/settings.json", "{ this is not json");
+    try fix.write(testing.allocator, ".qwen/settings.json", "{ this is not json");
 
     var report = try scan(testing.allocator, io, .{ .home = fix.home });
     defer report.deinit();
 
-    const g = Fixture.find(report, .gemini).mcp;
+    const g = Fixture.find(report, .qwen_code).mcp;
     try testing.expectEqual(Status.failed, g.status);
     try testing.expect(g.detail != null);
     try testing.expect(g.path != null);
@@ -1184,7 +1179,7 @@ test "inventory: the four states survive serialization" {
     var fix: Fixture = try .init(testing.allocator, io);
     defer fix.deinit(testing.allocator);
 
-    try fix.write(testing.allocator, ".gemini/settings.json", "{ not json");
+    try fix.write(testing.allocator, ".qwen/settings.json", "{ not json");
     try fix.write(testing.allocator, ".claude.json", "{\"mcpServers\":{\"a\":{}}}");
 
     var report = try scan(testing.allocator, io, .{ .home = fix.home });
@@ -1206,7 +1201,7 @@ test "inventory: the four states survive serialization" {
     // exactly the sort of thing to get wrong.
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, s, .{});
     defer parsed.deinit();
-    try testing.expectEqual(@as(usize, 7), parsed.value.object.get("hosts").?.array.items.len);
+    try testing.expectEqual(@as(usize, 6), parsed.value.object.get("hosts").?.array.items.len);
 }
 
 test "inventory: the slot budget is the biggest host, not every host added up" {
@@ -1259,10 +1254,10 @@ test "inventory: a host that is installed and unreadable makes the budget a floo
         \\{"mcpServers":{"polter:argus":{}}}
     );
     // Present, installed, and unparseable.
-    try fix.write(testing.allocator, ".gemini/settings.json", "{ not json");
+    try fix.write(testing.allocator, ".qwen/settings.json", "{ not json");
 
     try fix.mkdirs(testing.allocator, "bin");
-    try fix.write(testing.allocator, "bin/gemini", "#!/bin/sh\n");
+    try fix.write(testing.allocator, "bin/qwen", "#!/bin/sh\n");
     const bin = try std.fmt.allocPrint(
         testing.allocator,
         "{s}{c}bin",
@@ -1278,7 +1273,7 @@ test "inventory: a host that is installed and unreadable makes the budget a floo
         defer report.deinit();
         const budget = report.slotBudget();
         try testing.expectEqual(@as(usize, 1), budget.max);
-        // Gemini is on PATH and its config could not be read, so nobody
+        // Qwen is on PATH and its config could not be read, so nobody
         // knows how many slots it has. `max` is a floor.
         try testing.expect(!budget.complete);
     }
