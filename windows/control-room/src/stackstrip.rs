@@ -11,7 +11,9 @@
 //!
 //! **The rule, in the order it gives way:**
 //!
-//!  1. Every tab is as wide as its name wants.
+//!  1. Every tab is as wide as its name wants, and **never narrower than
+//!     `min_width`** (task 1675): a tab named `~` was barely wider than its
+//!     close button, and a drag meant to move it closed it.
 //!  2. When they do not all fit, the widest are cut to one common width --
 //!     the long names give way first and the short are left whole -- down
 //!     to `min_width` and no further. The tab in front is not cut.
@@ -206,10 +208,15 @@ pub fn layout(wants: &[f64], current: usize, width: f64, status: f64) -> Layout 
     layout_with(wants, current, width, status, t::MIN_WIDTH)
 }
 
-/// `layout`, with the least a tab is cut to given rather than read from
-/// the table: for pictures of the other candidate.
+/// `layout`, with the narrowest a tab is -- the least it is cut to, and
+/// what a shorter name is widened to -- given rather than read from the
+/// table: for pictures of the other candidate.
 pub fn layout_with(wants: &[f64], current: usize, width: f64, status: f64, min_width: f64) -> Layout {
     let front = if current < wants.len() { current } else { 0 };
+    // No tab narrower than the least, however short its name (task 1675):
+    // what is left of it is somewhere to pick it up by.
+    let wants: Vec<f64> = wants.iter().map(|w| w.max(min_width)).collect();
+    let wants = wants.as_slice();
     let room = |status: f64| {
         let mut r = width - t::INSET - t::ADD_BUTTON - t::TRAILING;
         if status > 0.0 {
@@ -226,7 +233,7 @@ pub fn layout_with(wants: &[f64], current: usize, width: f64, status: f64, min_w
     let mut widths = wants.to_vec();
     if wants.iter().sum::<f64>() > fits {
         let least: Vec<f64> =
-            wants.iter().enumerate().map(|(i, w)| if i == front { *w } else { w.min(min_width) }).collect();
+            wants.iter().enumerate().map(|(i, w)| if i == front { *w } else { min_width }).collect();
         if least.iter().sum::<f64>() <= fits {
             let mut others = wants.to_vec();
             others.remove(front);
@@ -313,13 +320,13 @@ mod tests {
 
     #[test]
     fn tabs_that_fit_are_as_wide_as_they_want_one_after_another_from_the_inset() {
-        let l = layout(&[100.0, 60.0, 60.0], 1, 400.0, 50.0);
-        assert_eq!(xs(&l), [20.0, 120.0, 180.0]);
-        assert_eq!(widths(&l), [100.0, 60.0, 60.0]);
+        let l = layout(&[130.0, 110.0, 110.0], 1, 500.0, 50.0);
+        assert_eq!(xs(&l), [20.0, 150.0, 260.0]);
+        assert_eq!(widths(&l), [130.0, 110.0, 110.0]);
         assert!(l.tabs.iter().all(|t| !t.squeezed));
         assert!(!l.scrolls());
-        assert_eq!(l.add_x, 240.0);
-        assert_eq!(l.status, Some((338.0, 388.0)));
+        assert_eq!(l.add_x, 370.0);
+        assert_eq!(l.status, Some((438.0, 488.0)));
     }
 
     #[test]
@@ -332,23 +339,23 @@ mod tests {
 
     #[test]
     fn when_they_do_not_fit_the_widest_are_cut_to_one_width_and_the_short_left_whole() {
-        let l = layout(&[200.0, 60.0, 200.0, 60.0], 1, 460.0, 0.0);
-        assert_eq!(widths(&l), [140.0, 60.0, 140.0, 60.0]);
-        assert_eq!(l.add_x, 420.0);
+        let l = layout(&[250.0, 110.0, 250.0, 110.0], 1, 560.0, 0.0);
+        assert_eq!(widths(&l), [140.0, 110.0, 140.0, 110.0]);
+        assert_eq!(l.add_x, 520.0);
     }
 
     #[test]
     fn the_tab_in_front_is_not_cut() {
-        let l = layout(&[200.0, 60.0, 200.0, 60.0], 0, 500.0, 0.0);
-        assert_eq!(widths(&l), [200.0, 60.0, 120.0, 60.0]);
+        let l = layout(&[250.0, 110.0, 250.0, 110.0], 0, 670.0, 0.0);
+        assert_eq!(widths(&l), [250.0, 110.0, 140.0, 110.0]);
     }
 
     #[test]
     fn cutting_stops_at_the_least_width_and_the_least_can_be_the_other_candidate() {
-        let fits = layout(&[200.0, 72.0, 200.0, 200.0], 1, 444.0, 0.0);
-        assert_eq!(widths(&fits), [104.0, 72.0, 104.0, 104.0]);
+        let fits = layout(&[200.0, 120.0, 200.0, 200.0], 1, 492.0, 0.0);
+        assert_eq!(widths(&fits), [104.0, 120.0, 104.0, 104.0]);
         assert!(!fits.scrolls());
-        assert!(layout(&[200.0, 72.0, 200.0, 200.0], 1, 443.0, 0.0).scrolls());
+        assert!(layout(&[200.0, 120.0, 200.0, 200.0], 1, 491.0, 0.0).scrolls());
         // At 68 the same four still fit where at 104 they did not.
         assert_eq!(widths(&layout_with(&[200.0, 72.0, 200.0, 200.0], 1, 336.0, 0.0, 68.0)), [68.0, 72.0, 68.0, 68.0]);
         assert!(layout(&[200.0, 72.0, 200.0, 200.0], 1, 336.0, 0.0).scrolls());
@@ -433,9 +440,36 @@ mod tests {
         // and they scroll.
         assert_eq!((widths(&l), l.viewport), (vec![120.0, 104.0], 140.0));
         assert!(l.scrolls());
-        let roomy = layout(&[120.0, 80.0], 0, 330.0, 60.0);
-        assert_eq!(roomy.status, Some((258.0, 318.0)));
-        assert_eq!(widths(&roomy), [120.0, 80.0]);
+        let roomy = layout(&[120.0, 110.0], 0, 360.0, 60.0);
+        assert_eq!(roomy.status, Some((288.0, 348.0)));
+        assert_eq!(widths(&roomy), [120.0, 110.0]);
+    }
+
+    /// Task 1675: a terminal in its home directory is called `~`, and its
+    /// tab was as wide as that wants -- on macOS barely wider than the
+    /// close button that comes over the name, so a drag meant to move it
+    /// closed it. Every tab is at least `min_width`, the one in front too,
+    /// and being widened is not being squeezed: there is no ellipsis.
+    #[test]
+    fn a_tab_named_tilde_is_never_narrower_than_the_least() {
+        let tilde = crate::panestack::wanted(7.0, None);
+        assert!(tilde < t::MIN_WIDTH, "the case is a name that wants less than the least: {tilde}");
+        for current in 0..2 {
+            let l = layout(&[tilde, tilde], current, 600.0, 0.0);
+            assert_eq!(widths(&l), [t::MIN_WIDTH, t::MIN_WIDTH]);
+            assert_eq!(xs(&l), [20.0, 20.0 + t::MIN_WIDTH]);
+            assert!(l.tabs.iter().all(|t| !t.squeezed));
+        }
+        // Five of them in a narrow pane: none is cut below the least to
+        // fit; they scroll.
+        let l = layout(&[tilde; 5], 2, 300.0, 0.0);
+        assert_eq!(widths(&l), [t::MIN_WIDTH; 5]);
+        assert!(l.scrolls());
+        // What is left of a tab past its close button, to pick it up by.
+        let grip = t::MIN_WIDTH - t::PADDING_X - t::CLOSE_BUTTON;
+        assert!(grip >= 3.0 * t::CLOSE_BUTTON, "{grip}");
+        // The other candidate holds the same way.
+        assert_eq!(widths(&layout_with(&[50.0, 50.0], 0, 600.0, 0.0, 68.0)), [68.0, 68.0]);
     }
 
     #[test]

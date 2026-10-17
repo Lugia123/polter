@@ -621,14 +621,14 @@ mod tests {
 
     #[test]
     fn where_a_terminal_let_go_on_the_strip_goes_in() {
-        // Three at 100 from 20: middles at 70, 170, 270.
-        let geo = g(&[100.0; 3], 0, 500.0, 0.0);
+        // Three at 110 from 20: middles at 75, 185, 295.
+        let geo = g(&[110.0; 3], 0, 500.0, 0.0);
         assert_eq!(geo.insertion(30.0), 0);
-        assert_eq!(geo.insertion(71.0), 1);
-        assert_eq!(geo.insertion(171.0), 2);
+        assert_eq!(geo.insertion(76.0), 1);
+        assert_eq!(geo.insertion(186.0), 2);
         assert_eq!(geo.insertion(400.0), 3);
-        assert_eq!(geo.caret_x(1), 120.0);
-        assert_eq!(geo.caret_x(3), 320.0);
+        assert_eq!(geo.caret_x(1), 130.0);
+        assert_eq!(geo.caret_x(3), 350.0);
         // Scrolled: the middles move with the tabs.
         let far = g(&[150.0; 8], 6, 400.0, 0.0);
         let t6 = far.tab_rect(6).unwrap();
@@ -655,12 +655,12 @@ mod tests {
 
     #[test]
     fn a_supervisors_strip_is_inside_its_border_and_the_others_reach_the_edges() {
-        let s = geometry(Wears::Supervisor, 400.0, &[100.0], 0, 0.0, 0.0, true, false);
+        let s = geometry(Wears::Supervisor, 400.0, &[110.0], 0, 0.0, 0.0, true, false);
         assert_eq!(s.strip, Rect { x: 4.0, y: 0.0, w: 392.0, h: 32.0 });
-        let w = geometry(Wears::Worker, 400.0, &[100.0], 0, 0.0, 0.0, true, false);
+        let w = geometry(Wears::Worker, 400.0, &[110.0], 0, 0.0, 0.0, true, false);
         assert_eq!(w.strip, Rect { x: 0.0, y: 0.0, w: 400.0, h: 32.0 });
         // The tabs stand on the strip's bottom.
-        assert_eq!(w.tab_rect(0), Some(Rect { x: 20.0, y: 4.0, w: 100.0, h: 28.0 }));
+        assert_eq!(w.tab_rect(0), Some(Rect { x: 20.0, y: 4.0, w: 110.0, h: 28.0 }));
     }
 
     #[test]

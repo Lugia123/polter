@@ -94,7 +94,9 @@ enum PaneStackStatusGlyph: Equatable {
 ///
 /// **The rule, in the order it gives way:**
 ///
-///  1. Every tab is as wide as its name wants.
+///  1. Every tab is as wide as its name wants, and **never narrower than
+///     `min_width`** (task 1675): a tab named `~` was barely wider than
+///     its close button, and a drag meant to move it closed it.
 ///  2. When they do not all fit, the widest are cut to one common width --
 ///     so the long names give way first and the short ones are left whole --
 ///     down to `min_width` and no further. **The current tab is not cut**:
@@ -276,13 +278,17 @@ struct PaneStackStripLayout: Equatable {
     ///   - current: which is in front.
     ///   - width: the strip's, between the content's edges.
     ///   - status: how wide the status at the right end is; 0 for none.
-    ///   - minWidth: the least a tab is cut to. The table's, unless a
+    ///   - minWidth: the narrowest a tab is: the least it is cut to, and
+    ///     what a shorter name is widened to. The table's, unless a
     ///     picture is being made of the other candidate.
     init(wants: [CGFloat], current: Int, width: CGFloat, status: CGFloat,
          minWidth: CGFloat = CGFloat(Look.StackTab.minWidth)) {
         let t = Look.StackTab.self
         let leading = CGFloat(t.inset)
         let front = wants.indices.contains(current) ? current : 0
+        // No tab narrower than the least, however short its name (task
+        // 1675): what is left of it is somewhere to pick it up by.
+        let wants = wants.map { max($0, minWidth) }
 
         // What is left for the tabs once the inset, the plus, the trailing
         // space and the status are taken out.
@@ -300,8 +306,8 @@ struct PaneStackStripLayout: Equatable {
         var widths = wants
         if wants.reduce(0, +) > fits {
             // The least each may be: the current one whole, the rest at
-            // `min_width` or their own width when that is less.
-            let least = wants.indices.map { $0 == front ? wants[$0] : min(wants[$0], minWidth) }
+            // `min_width`.
+            let least = wants.indices.map { $0 == front ? wants[$0] : minWidth }
             if least.reduce(0, +) <= fits {
                 // One common ceiling for the wide ones among the rest: the
                 // widest are cut first, to the width at which everything
