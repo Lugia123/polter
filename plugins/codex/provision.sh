@@ -133,10 +133,18 @@ host_mcp_complete() {
   if codex_want_approve; then [ "$approves" = yes ]; else [ "$approves" = no ]; fi
 }
 
-# Where Codex keeps it: `$CODEX_HOME`, else `~/.codex` -- the same rule
-# `codex mcp add` followed when it wrote the entry.
+# Where Codex keeps everything of the person's: `$CODEX_HOME`, else
+# `~/.codex` -- the same rule `codex mcp add` followed when it wrote the
+# entry, and the one Codex reads skills and AGENTS.md by. **Every path below
+# is built from this**: a skills directory or rules file under `~/.codex`
+# while `CODEX_HOME` points elsewhere is written into the person's own
+# directory and never read by the Codex that runs (task 1707).
+codex_home() {
+  printf '%s' "${CODEX_HOME:-$home/.codex}"
+}
+
 codex_config() {
-  printf '%s/config.toml' "${CODEX_HOME:-$home/.codex}"
+  printf '%s/config.toml' "$(codex_home)"
 }
 
 # Put `env_vars`, and the approval mode when `approve_tools` is yes, into the
@@ -288,7 +296,7 @@ host_settings_apply() {
 # place the others do. It also reads an `openai.yaml` beside `SKILL.md` for UI
 # metadata; we write none, and it is optional -- a skill without one loads.
 host_skills_dir() {
-  printf '%s/.codex/skills' "$home"
+  printf '%s/skills' "$(codex_home)"
 }
 
 # The file this CLI reads on every turn. **User level, never a project
@@ -297,7 +305,7 @@ host_skills_dir() {
 # repository. The block is marked and is taken back out if the parameter
 # is switched off; see `polter_rules_apply` in the SDK.
 host_rules_file() {
-  printf '%s/.codex/AGENTS.md' "$home"
+  printf '%s/AGENTS.md' "$(codex_home)"
 }
 
 

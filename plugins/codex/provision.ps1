@@ -119,11 +119,19 @@ function Test-HostMcpComplete {
     return ($approves -eq (Test-CodexWantApprove))
 }
 
-# Where Codex keeps it: `$env:CODEX_HOME`, else `%USERPROFILE%\.codex` --
-# the same rule `codex mcp add` followed when it wrote the entry.
+# Where Codex keeps everything of the person's: `$env:CODEX_HOME`, else
+# `%USERPROFILE%\.codex` -- the same rule `codex mcp add` followed when it
+# wrote the entry, and the one Codex reads skills and AGENTS.md by. **Every
+# path below is built from this**: a skills directory or rules file under
+# `%USERPROFILE%\.codex` while `CODEX_HOME` points elsewhere is written into
+# the person's own directory and never read by the Codex that runs (task
+# 1707).
+function Get-CodexHome {
+    if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $script:PolterHome '.codex' }
+}
+
 function Get-CodexConfig {
-    $dir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $script:PolterHome '.codex' }
-    Join-Path $dir 'config.toml'
+    Join-Path (Get-CodexHome) 'config.toml'
 }
 
 # Put `env_vars`, and the approval mode when `approve_tools` is yes, into the
@@ -267,14 +275,14 @@ function Set-HostSettings {
 # place the others do. It also reads an `openai.yaml` beside `SKILL.md` for UI
 # metadata; we write none, and it is optional -- a skill without one loads.
 function Get-HostSkillsDir {
-    Join-Path $script:PolterHome '.codex\skills'
+    Join-Path (Get-CodexHome) 'skills'
 }
 
 # The file this CLI reads on every turn. **User level, never a project
 # file**: a project's AGENTS.md belongs to whoever owns the repository, and
 # Polter being installed on this machine is not a fact about their
 # repository.
-function Get-HostRulesFile { Join-Path $script:PolterHome '.codex\AGENTS.md' }
+function Get-HostRulesFile { Join-Path (Get-CodexHome) 'AGENTS.md' }
 
 
 # A test that only wants the functions above sets this
