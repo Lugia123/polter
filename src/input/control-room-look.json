@@ -182,7 +182,7 @@
       "min_width": {
         "v": 104,
         "src": "v15-panes",
-        "doc": "The narrowest a tab is squeezed to; past that the tabs scroll sideways (task 1582; they used to go behind a `more` menu). 104 is the design's eight-letter tab: at that a name keeps seven characters and its ellipsis.",
+        "doc": "The narrowest a tab ever is: one whose name wants less is widened to it (task 1675: a tab named `~` was barely wider than its close button, and a drag meant to move it closed it), and when the tabs do not fit they are squeezed to it and no further, then scroll sideways (task 1582; they used to go behind a `more` menu). 104 is the design's eight-letter tab: at that a name keeps seven characters and its ellipsis.",
         "tentative": { "alt": 68, "why": "68 is the design's three-letter tab (padding 12 + three cells + gap 8 + glyph 14 + padding 12): more tabs stay on the strip, and each is one letter and an ellipsis. The design draws no squeezed strip; where squeezing stops has not been ruled on." }
       },
       "outlined": { "v": false, "src": "v14-changes" }

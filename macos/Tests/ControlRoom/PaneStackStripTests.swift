@@ -8,7 +8,9 @@ import Testing
 ///
 /// With the table as it is: the first tab starts 20 in, the plus is 28,
 /// 12 is kept at the right end, a status takes its width and 8 before it,
-/// and a tab is not cut below 104. Past that the tabs scroll (task 1582).
+/// and a tab is never narrower than 104 -- neither cut below it nor left
+/// below it by a short name (task 1675). Past that the tabs scroll (task
+/// 1582).
 struct PaneStackStripTests {
     typealias Layout = PaneStackStripLayout
     typealias Look = ControlRoomLook
@@ -30,16 +32,16 @@ struct PaneStackStripTests {
     // MARK: 1. Everything fits
 
     @Test func tabsThatFitAreAsWideAsTheyWantOneAfterAnotherFromTheInset() {
-        let l = Layout(wants: [100, 60, 60], current: 1, width: 400, status: 50)
-        #expect(xs(l) == [20, 120, 180])
-        #expect(widths(l) == [100, 60, 60])
+        let l = Layout(wants: [130, 110, 110], current: 1, width: 500, status: 50)
+        #expect(xs(l) == [20, 150, 260])
+        #expect(widths(l) == [130, 110, 110])
         #expect(l.tabs.map(\.current) == [false, true, false])
         #expect(l.tabs.allSatisfy { !$0.squeezed })
         #expect(!l.scrolls)
         // The plus straight after the last tab; the status against the
         // right end, 12 in.
-        #expect(l.addX == 240)
-        #expect(l.status == 338...388)
+        #expect(l.addX == 370)
+        #expect(l.status == 438...488)
     }
 
     @Test func aHairlineStandsOnlyBetweenTwoTabsNeitherOfWhichIsInFront() {
@@ -72,31 +74,31 @@ struct PaneStackStripTests {
     // MARK: 2. The widest give way first
 
     @Test func whenTheyDoNotFitTheWidestAreCutToOneWidthAndTheShortLeftWhole() {
-        // 400 for the tabs; they want 520. The two long ones come down to
+        // 500 for the tabs; they want 720. The two long ones come down to
         // 140 each and the two short ones are untouched.
-        let l = Layout(wants: [200, 60, 200, 60], current: 1, width: 460, status: 0)
-        #expect(widths(l) == [140, 60, 140, 60])
+        let l = Layout(wants: [250, 110, 250, 110], current: 1, width: 560, status: 0)
+        #expect(widths(l) == [140, 110, 140, 110])
         #expect(l.tabs.map(\.squeezed) == [true, false, true, false])
         #expect(!l.scrolls)
-        let afterTabs: CGFloat = 420
+        let afterTabs: CGFloat = 520
         #expect(l.addX == afterTabs)
     }
 
     @Test func theTabInFrontIsNotCut() {
-        // 440 for the tabs with a long one in front: it keeps its 200, the
-        // short ones their 60, and the other long one what is left.
-        let l = Layout(wants: [200, 60, 200, 60], current: 0, width: 500, status: 0)
-        #expect(widths(l) == [200, 60, 120, 60])
+        // 610 for the tabs with a long one in front: it keeps its 250, the
+        // short ones their 110, and the other long one what is left.
+        let l = Layout(wants: [250, 110, 250, 110], current: 0, width: 670, status: 0)
+        #expect(widths(l) == [250, 110, 140, 110])
         #expect(l.tabs.map(\.squeezed) == [false, false, true, false])
     }
 
     @Test func cuttingStopsAtTheLeastWidth() {
-        // 384 for the tabs: 104 + 104 + 104 + the 72 in front. One less
+        // 432 for the tabs: 104 + 104 + 104 + the 120 in front. One less
         // and they no longer all fit.
-        let fits = Layout(wants: [200, 72, 200, 200], current: 1, width: 444, status: 0)
-        #expect(widths(fits) == [104, 72, 104, 104])
+        let fits = Layout(wants: [200, 120, 200, 200], current: 1, width: 492, status: 0)
+        #expect(widths(fits) == [104, 120, 104, 104])
         #expect(!fits.scrolls)
-        let over = Layout(wants: [200, 72, 200, 200], current: 1, width: 443, status: 0)
+        let over = Layout(wants: [200, 120, 200, 200], current: 1, width: 491, status: 0)
         #expect(over.scrolls)
     }
 
@@ -199,10 +201,42 @@ struct PaneStackStripTests {
     }
 
     @Test func aStatusThatFitsBesideTheTabInFrontStays() {
-        let l = Layout(wants: [120, 80], current: 0, width: 330, status: 60)
-        #expect(l.status == 258...318)
-        // 202 for the tabs: both, whole.
-        #expect(widths(l) == [120, 80])
+        let l = Layout(wants: [120, 110], current: 0, width: 360, status: 60)
+        #expect(l.status == 288...348)
+        // 232 for the tabs: both, whole.
+        #expect(widths(l) == [120, 110])
+    }
+
+    // MARK: Never narrower than the least (task 1675)
+
+    /// A terminal in its home directory is called `~`, and its tab was as
+    /// wide as that wants: barely wider than the close button that comes
+    /// over the name's start, so a drag meant to move the tab closed it
+    /// (the person's screenshot, #1675). Every tab is at least `min_width`,
+    /// the one in front too, and being widened is not being squeezed.
+    @Test func aTabNamedTildeIsNeverNarrowerThanTheLeast() {
+        let tilde = Layout.nominalWidth(name: "~", glyph: true)
+        let least = CGFloat(Look.StackTab.minWidth)
+        #expect(tilde < least)
+        for current in 0..<2 {
+            let l = Layout(wants: [tilde, tilde], current: current, width: 600, status: 0)
+            #expect(widths(l) == [least, least])
+            #expect(xs(l) == [20, 20 + least])
+            #expect(l.tabs.allSatisfy { !$0.squeezed })
+        }
+        // Five in a narrow pane: none is cut below the least to fit; they
+        // scroll.
+        let five = Layout(wants: Array(repeating: tilde, count: 5), current: 2, width: 300, status: 0)
+        #expect(widths(five) == Array(repeating: least, count: 5))
+        #expect(five.scrolls)
+        // What is left of a tab past its close button, to pick it up by:
+        // the button's square is all a click closes.
+        let close = PolterCloseCircle.frame(textLeading: CGFloat(Look.StackTab.paddingX),
+                                            height: CGFloat(Look.StackTab.height))
+        #expect(least - close.maxX >= 3 * close.width)
+        // The other candidate holds the same way.
+        let narrow = Layout(wants: [50, 50], current: 0, width: 600, status: 0, minWidth: 68)
+        #expect(widths(narrow) == [68, 68])
     }
 
     // MARK: Odd input

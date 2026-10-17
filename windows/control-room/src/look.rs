@@ -278,7 +278,7 @@ pub mod stack_tab {
     /// How wide one character of a tab's name is taken to be where there is no font to measure with: what the two hosts are held to one answer by. A wide character is two.
     /// Source: not in the design: chosen while building the mac list, to be ruled on.
     pub const NOMINAL_CELL_WIDTH: f64 = 8.0;
-    /// The narrowest a tab is squeezed to; past that the tabs scroll sideways (task 1582; they used to go behind a `more` menu). 104 is the design's eight-letter tab: at that a name keeps seven characters and its ellipsis.
+    /// The narrowest a tab ever is: one whose name wants less is widened to it (task 1675: a tab named `~` was barely wider than its close button, and a drag meant to move it closed it), and when the tabs do not fit they are squeezed to it and no further, then scroll sideways (task 1582; they used to go behind a `more` menu). 104 is the design's eight-letter tab: at that a name keeps seven characters and its ellipsis.
     /// TENTATIVE (other candidate: 68). 68 is the design's three-letter tab (padding 12 + three cells + gap 8 + glyph 14 + padding 12): more tabs stay on the strip, and each is one letter and an ellipsis. The design draws no squeezed strip; where squeezing stops has not been ruled on.
     /// Source: design v15, src/style.css and src/06-panes-l.html, checked against 06-panes.png.
     pub const MIN_WIDTH: f64 = 104.0;
