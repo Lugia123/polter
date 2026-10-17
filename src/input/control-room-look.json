@@ -15,6 +15,7 @@
   ],
 
   "sources": {
+    "highlight-v1": "highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689)",
     "v13-grid": "design v13, GRID.md",
     "v14-grid": "design v14, GRID.md",
     "v14-changes": "design v14, CHANGES.md",
@@ -31,7 +32,8 @@
     "v17-build": "design v17, src/build.py (the glyphs' paths)",
     "supervisor": "the supervisor's ruling, not a design file",
     "undesigned": "not in the design: chosen while building the mac list, to be ruled on",
-    "v17-contrast": "design v17, src/contrast.md (measured off the rendered pictures)"
+    "v17-contrast": "design v17, src/contrast.md (measured off the rendered pictures)",
+    "supervisor-pane-v1": "design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692)"
   },
 
   "numbers": {
@@ -154,6 +156,15 @@
       "plain_has_line": { "v": false, "src": "v14-changes" },
       "frame_shadow_y": { "v": 8, "src": "v17-tokens" },
       "frame_shadow_blur": { "v": 24, "src": "v17-tokens" }
+    },
+    "supervisor_badge": {
+      "_src": "supervisor-pane-v1",
+      "_doc": "The badge at the left end of a supervisor's title, the mark before a supervisor's name on a stack's tab, and the edge round a supervisor's pane when panes wear no frames (task 1692).",
+      "height": { "v": 20, "doc": "Round at both ends: its radius is half of this." },
+      "padding_leading": { "v": 6, "doc": "From the badge's left end to the mark." },
+      "padding_trailing": { "v": 8, "doc": "From the word to the badge's right end." },
+      "mark_word_gap": { "v": 4, "doc": "Between the mark and the word inside the badge. The mark is `side.glyph` square." },
+      "edge": { "v": 2, "doc": "The edge drawn just inside a supervisor's pane when `poltergeist-pane-frames` is off." }
     },
     "stack_tab": {
       "_src": "v14-grid",
@@ -279,6 +290,40 @@
       "refraction_band_moving": 6,
       "refraction_strength_rest": { "v": 0.25, "doc": "A fraction of the band's width; strongest at the edge, falling off as the square." },
       "refraction_strength_moving": 0.36
+    },
+    "highlight": {
+      "_src": "highlight-v1",
+      "_doc": "`terminal_highlight` (task 1689): the lit pane's edge, the card over it, the other panes' scrim, and the breathing that the edge, the card's ring and the lit terminal's tab share.",
+      "breath_period": { "v": 1.2, "doc": "One breath, in and out: design A's glow, which the user asked for on B's edge, the card's ring and the tab." },
+      "breath_low": { "v": 0.35, "src": "undesigned", "doc": "The breathing's opacity at its faintest, as a fraction of the accent.", "tentative": { "alt": 0.5, "why": "The design gives the period and not the depth; nobody has watched it breathe yet." } },
+      "breath_high": { "v": 1.0, "src": "undesigned", "doc": "At its strongest. With reduce motion on it rests here and does not breathe." },
+      "edge": { "v": 2, "doc": "Design B's edge round the lit pane, drawn this far outside it." },
+      "edge_radius_mac": { "v": 12, "doc": "The edge's corner on macOS." },
+      "edge_radius_windows": { "v": 8, "doc": "The edge's corner on Windows." },
+      "ring_a": { "v": 3, "doc": "Design A's edge, for a pane too small for the card." },
+      "glow_a": { "v": 14, "doc": "Design A's glow round that edge, as a blur radius." },
+      "card_min_pane_width": { "v": 280, "doc": "A pane narrower than this gets design A instead of the card." },
+      "card_min_pane_height": { "v": 160, "doc": "And one shorter than this." },
+      "card_min_width": 360,
+      "card_max_width_fraction": { "v": 0.88, "doc": "Of the pane's width." },
+      "card_padding_top": 18,
+      "card_padding_x": 22,
+      "card_padding_bottom": 16,
+      "card_radius": 14,
+      "card_ring": { "v": 3, "doc": "The accent ring round the card's own edge, which breathes with the pane's." },
+      "card_ring_alpha": { "v": 0.55, "doc": "How much accent is in it at the top of a breath." },
+      "card_center_y": { "v": 0.56, "doc": "The card's centre, as a fraction of the pane's height from its top." },
+      "label_size": { "v": 28, "doc": "The caller's label, in the accent, weight 700." },
+      "title_size": { "v": 20, "doc": "The terminal's title, weight 600." },
+      "title_gap": 2,
+      "id_gap": 4,
+      "bar_height": 3,
+      "bar_gap": 8,
+      "hint_gap": 10,
+      "fade_out": { "v": 0.4, "doc": "How long it takes to go when the time is up." },
+      "tab_dot": { "v": 6, "src": "undesigned", "doc": "The accent dot before the lit terminal's tab's name." },
+      "tab_ground": { "v": 0.18, "src": "undesigned", "doc": "How much accent the lit terminal's tab -- window tab or stack tab -- is filled with at the top of a breath." },
+      "tab_edge": { "v": 1.5, "src": "undesigned", "doc": "The accent edge round that tab." }
     }
   },
 
@@ -332,6 +377,9 @@
     "supervisor_edge": { "light": "#000000@0.12", "dark": "#000000@0.55" },
     "supervisor_edge_focused": { "light": "#000000@0.38", "dark": "#FFFFFF@0.4", "doc": "Light: the outer edge darkens. Dark: a ring is added just inside it." },
     "supervisor_terminal_edge": { "light": "#000000@0.1", "dark": "#000000@0.4" },
+    "supervisor_badge": { "light": "#3F38C9", "dark": "#5659EB", "src": "supervisor-pane-v1", "doc": "The badge's ground. Light: the app icon's own colour (`images/Polter.icon/icon.json` fill, srgb 0.24706 0.21961 0.78824; `windows/host/polter.ico` the same). Dark: the same hue (OKLCH 275.7) at lightness 0.55, the lightest step its white word still reads on at 4.5 with room." },
+    "supervisor_badge_text": { "light": "#FFFFFF", "dark": "#FFFFFF", "src": "supervisor-pane-v1", "doc": "The mark and the word on the badge." },
+    "supervisor_mark": { "light": "#3F38C9", "dark": "#7D8BFE", "src": "supervisor-pane-v1", "doc": "The mark before a supervisor's name on a stack's tab, and the edge round its pane with no frames. Dark: the icon's hue at lightness 0.68, the first step that is 3 on every ground it is drawn on." },
     "worker_edge": { "light": "#000000@0.22", "dark": "#000000@0.6" },
     "worker_edge_inner": { "light": "#000000@0", "dark": "#FFFFFF@0.1", "doc": "Dark only." },
     "stack_tab_separator": { "light": "#000000@0.16", "dark": "#FFFFFF@0.15" },
@@ -340,7 +388,10 @@
     "surface_row_selected": { "light": "#FDFDFD", "dark": "#3C4043", "src": "v17-contrast", "doc": "Measured: the chip." },
     "surface_window_tab": { "light": "#D9DBDE", "dark": "#0F1112", "src": "v17-contrast", "doc": "Measured: an unselected window tab on its track." },
     "surface_window_tab_selected": { "light": "#F3F4F5", "dark": "#282829", "src": "v17-contrast", "doc": "Measured." },
-    "surface_supervisor_bar": { "light": "#DBDEE2", "dark": "#3C3F43", "src": "v17-contrast", "doc": "Measured: the supervisor's title bar." }
+    "surface_supervisor_bar": { "light": "#DBDEE2", "dark": "#3C3F43", "src": "v17-contrast", "doc": "Measured: the supervisor's title bar." },
+    "highlight_scrim": { "light": "#1E2024@0.46", "dark": "#000000@0.58", "src": "highlight-v1", "doc": "Over every other pane of the lit terminal's window (task 1689)." },
+    "highlight_card": { "light": "#FFFFFF@0.96", "dark": "#282C34@0.97", "src": "highlight-v1", "doc": "The highlight card's ground." },
+    "highlight_card_edge": { "light": "#000000@0.12", "dark": "#FFFFFF@0.14", "src": "highlight-v1", "doc": "The highlight card's hairline, inside its accent ring." }
   },
 
   "strings": {
@@ -392,7 +443,11 @@
       { "on": "surface_window_tab_selected", "text": ["text"], "glyph": ["attention", "problem", "working"] },
       { "on": "surface_supervisor_bar", "text": ["text", "text_secondary", "attention_text", "problem_word"], "glyph": ["attention", "problem", "working"] },
       { "on": "worker_band", "text": ["terminal_bold", "terminal_dim", "attention_text", "problem_word"], "glyph": ["attention", "problem", "working"] },
-      { "on": "terminal_background", "text": ["terminal_text", "terminal_bold", "terminal_dim", "attention_text", "problem_word"], "glyph": ["attention", "problem", "working"] }
+      { "on": "terminal_background", "text": ["terminal_text", "terminal_bold", "terminal_dim", "attention_text", "problem_word"], "glyph": ["attention", "problem", "working"] },
+      { "on": "supervisor_badge", "text": ["supervisor_badge_text"] },
+      { "on": "surface_supervisor_bar", "glyph": ["supervisor_badge", "supervisor_mark"] },
+      { "on": "worker_band", "glyph": ["supervisor_mark"] },
+      { "on": "terminal_background", "glyph": ["supervisor_mark"] }
     ]
   }
 }

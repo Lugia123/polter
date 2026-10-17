@@ -71,6 +71,8 @@ struct PaneFrameBarFitTests {
 
     static let titles: [(PaneFrame.Kind, PaneFrame.Title)] = [
         (.supervisor, PaneFrame.Title(name: "polter", shown: .working, word: "在干活")),
+        // A pane of a split's supervisor, with its badge (task 1692).
+        (.supervisor, PaneFrame.Title(name: "web-app-batch-edit", shown: .working, word: "在干活", badged: true)),
         (.worker, PaneFrame.Title(name: "web-app", shown: .working, word: "在干活")),
         (.worker, PaneFrame.Title(name: "design-system", shown: .needsYou, word: "等批准")),
     ]
@@ -101,5 +103,101 @@ struct PaneFrameBarFitTests {
         let whole = try Self.inkRuns(.worker, title, width: 400, scheme: .light)
         #expect(whole.count == 4, "with room for everything, the role word is there too: \(whole)")
         #expect(runs.first == whole.first, "the name is drawn whole in both: \(runs.first!) and \(whole.first!)")
+    }
+
+    // MARK: The supervisor's badge (task 1692)
+
+    /// How many pixels of the bar are the badge's ground, at a scale of 2.
+    /// Its ground and nothing else: the word and the mark on it are white,
+    /// and no other colour of a bar is near it.
+    static func badgePixels(_ wears: PaneFrame.Kind, _ title: PaneFrame.Title, width: Double, scheme: ColorScheme) throws -> Int {
+        let scale = 2.0
+        let view = PaneFrameView(wears: wears, title: title, caption: nil, focused: false, well: nil, cover: nil, stack: nil) {
+            Color.clear
+        }
+        .frame(width: CGFloat(width), height: 72)
+        .environment(\.colorScheme, scheme)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = CGFloat(scale)
+        let image = try #require(renderer.cgImage)
+        let rep = NSBitmapImageRep(cgImage: image)
+        let want = Look.theme(dark: scheme == .dark).supervisorBadge
+        var count = 0
+        for y in 0..<Int(Look.Pane.barHeight * scale) {
+            for x in 0..<Int(width * scale) {
+                guard let c = rep.colorAt(x: x, y: y) else { continue }
+                let d = abs(c.redComponent * 255 - Double(want.r)) + abs(c.greenComponent * 255 - Double(want.g))
+                    + abs(c.blueComponent * 255 - Double(want.b))
+                if d < 24 { count += 1 }
+            }
+        }
+        return count
+    }
+
+    /// The design's C: a supervisor's bar says what it is with a badge at
+    /// its left end, and **the badge is never what gives way**: the name is
+    /// cut and the status word goes first, and while the bar has room for
+    /// it all of the badge is there, the same as with room to spare. Where
+    /// it has not, the badge keeps its mark (and the ink stays inside the
+    /// bar: `everythingInTheBarIsInsideItsPadding`). No other frame has one.
+    @Test func theSupervisorsBadgeIsWholeAtEveryWidthAndOnlyASupervisorHasOne() throws {
+        let supervisor = PaneFrame.Title(name: "web-app-batch-edit", shown: .working, word: "在干活", badged: true)
+        for scheme in [ColorScheme.light, .dark] {
+            let whole = try Self.badgePixels(.supervisor, supervisor, width: 600, scheme: scheme)
+            // 20 high and some 40 wide or more at a scale of 2.
+            #expect(whole > 20 * 40 * 2, "\(scheme): \(whole) pixels of the badge")
+            for width in [160.0, 240.0] {
+                let narrow = try Self.badgePixels(.supervisor, supervisor, width: width, scheme: scheme)
+                #expect(narrow == whole, "\(scheme) at \(width) pt: \(narrow) pixels of the badge, \(whole) with room")
+            }
+            for width in [80.0, 120.0] {
+                let mark = try Self.badgePixels(.supervisor, supervisor, width: width, scheme: scheme)
+                #expect(mark > 20 * 20 * 2, "\(scheme) at \(width) pt: \(mark) pixels of the badge")
+            }
+            for wears in [PaneFrame.Kind.worker, .plain] {
+                let none = try Self.badgePixels(wears, PaneFrame.Title(name: "api", shown: .working, word: "在干活"), width: 400, scheme: scheme)
+                #expect(none == 0, "\(wears), \(scheme): \(none)")
+            }
+        }
+    }
+
+    /// The control room's own frame has no badge: it is the supervisor's
+    /// and nothing else, and the Windows host draws it without one.
+    @Test func theControlRoomsFrameHasNoBadge() throws {
+        let group = PaneFrame.Title(ControlRoomList.SupervisorTitle(name: "web-app", shown: .working, word: "在干活"))
+        #expect(try Self.badgePixels(.supervisor, group, width: 400, scheme: .light) == 0)
+        let split = PaneFrame.Title(name: "web-app", shown: .working, word: "在干活", badged: true)
+        #expect(try Self.badgePixels(.supervisor, split, width: 400, scheme: .light) > 0)
+    }
+
+    /// The edge round a supervisor's pane with no frames: just inside it,
+    /// `supervisor_badge.edge` thick on every side, and nothing further in.
+    @Test func theEdgeIsJustInsideThePaneOnEverySide() throws {
+        for scheme in [ColorScheme.light, .dark] {
+            for shows in [true, false] {
+                let view = Color.clear.frame(width: 200, height: 100)
+                    .modifier(PaneSupervisorEdge(shows: shows))
+                    .environment(\.colorScheme, scheme)
+                let renderer = ImageRenderer(content: view)
+                renderer.scale = 2
+                let rep = NSBitmapImageRep(cgImage: try #require(renderer.cgImage))
+                let want = Look.theme(dark: scheme == .dark).supervisorMark
+                func isMark(_ x: Int, _ y: Int) -> Bool {
+                    guard let c = rep.colorAt(x: x, y: y), c.alphaComponent > 0.9 else { return false }
+                    return abs(c.redComponent * 255 - Double(want.r)) + abs(c.greenComponent * 255 - Double(want.g))
+                        + abs(c.blueComponent * 255 - Double(want.b)) < 12
+                }
+                let edge = Int(Look.SupervisorBadge.edge * 2)
+                // The middle of each side, just inside the edge's width and just past it.
+                let inside = [(0, 100), (edge - 1, 100), (399, 100), (400 - edge, 100), (200, 0), (200, edge - 1), (200, 199), (200, 200 - edge)]
+                let past = [(edge, 100), (399 - edge, 100), (200, edge), (200, 199 - edge), (200, 100)]
+                for (x, y) in inside {
+                    #expect(isMark(x, y) == shows, "\(scheme) shows=\(shows) at \(x),\(y)")
+                }
+                for (x, y) in past {
+                    #expect(!isMark(x, y), "\(scheme) shows=\(shows) at \(x),\(y)")
+                }
+            }
+        }
     }
 }

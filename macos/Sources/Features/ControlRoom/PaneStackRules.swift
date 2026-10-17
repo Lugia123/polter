@@ -59,7 +59,8 @@ enum PaneStackRules {
                 name: title?.name ?? member.ownName,
                 shown: title?.shown ?? listed.map { .init($0.shown) } ?? .none,
                 wears: frame?.wears ?? .plain,
-                role: title?.roleWord(in: frame?.wears ?? .plain))
+                role: title?.roleWord(in: frame?.wears ?? .plain),
+                terminal: member.terminal)
         }
         let urgent: [Int] = pulses.compactMap { waiting in
             members.firstIndex { $0.terminal == waiting }

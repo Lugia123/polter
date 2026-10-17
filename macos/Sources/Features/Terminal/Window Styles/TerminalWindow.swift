@@ -427,6 +427,7 @@ class TerminalWindow: NSWindow {
     /// view here.
     private func tabAccessoryView(for item: TabAccessory.Item) -> NSView {
         switch item {
+        case .highlight: return highlightDotView
         case .projectMark: return projectMarkView
         case .colorIndicator: return tabColorIndicator
         case .poltergeistMark: return poltergeistMarkLabel
@@ -487,10 +488,95 @@ class TerminalWindow: NSWindow {
             poltergeistMark: poltergeistMark,
             surfaceIsZoomed: surfaceIsZoomed,
             status: tabStatus.shown,
-            project: projectOfTab))
+            project: projectOfTab,
+            highlighted: highlightedTab))
         for item in TabAccessory.Item.allCases {
             tabAccessoryView(for: item).isHidden = !visible.contains(item)
         }
+    }
+
+    // MARK: Highlight
+
+    /// Whether `terminal_highlight` has lit a terminal of this tab (task
+    /// 1689). Set by `PolterHighlight` and by nothing else.
+    private var highlightedTab = false
+
+    /// The breathing dot beside the title.
+    private lazy var highlightDotView: NSHostingView<PolterHighlightDot> = {
+        let size = CGFloat(ControlRoomLook.WindowTab.glyph)
+        let view = NSHostingView(rootView: PolterHighlightDot())
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.widthAnchor.constraint(equalToConstant: size).isActive = true
+        view.heightAnchor.constraint(equalToConstant: size).isActive = true
+        view.isHidden = true
+        return view
+    }()
+
+    /// The layer laid over this tab's own button while it is lit: a ground
+    /// and an edge in the accent that breathe on the pane's curve. Added to
+    /// the system's button and taken off again; nothing of the bar's own is
+    /// changed.
+    private var highlightTabLayer: CALayer?
+    private weak var highlightTabButton: NSView?
+
+    /// Light this tab, or stop. Safe to call again while lit: the bar is
+    /// rebuilt when tabs come and go, and the layer follows the button that
+    /// is this tab's now.
+    func polterHighlightTab(_ on: Bool) {
+        if highlightedTab != on {
+            highlightedTab = on
+            refreshTabAccessory()
+        }
+        guard on, let button = ownTabButton() else {
+            highlightTabLayer?.removeFromSuperlayer()
+            highlightTabLayer = nil
+            highlightTabButton = nil
+            return
+        }
+        if highlightTabButton === button, let layer = highlightTabLayer, layer.superlayer != nil {
+            layer.frame = button.bounds.insetBy(dx: 1, dy: 1)
+            return
+        }
+        highlightTabLayer?.removeFromSuperlayer()
+        button.wantsLayer = true
+        guard let host = button.layer else { return }
+        let layer = CALayer()
+        let accent = NSColor.controlAccentColor
+        layer.frame = button.bounds.insetBy(dx: 1, dy: 1)
+        layer.cornerRadius = 6
+        layer.backgroundColor = accent.withAlphaComponent(ControlRoomLook.Highlight.tabGround).cgColor
+        layer.borderColor = accent.cgColor
+        layer.borderWidth = ControlRoomLook.Highlight.tabEdge
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            layer.opacity = Float(PolterHighlightRules.breath(at: 0, reduceMotion: true))
+        } else {
+            let breathing = CAKeyframeAnimation(keyPath: "opacity")
+            breathing.values = PolterHighlightRules.breathKeyframes()
+            breathing.duration = ControlRoomLook.Highlight.breathPeriod
+            breathing.repeatCount = .infinity
+            breathing.calculationMode = .linear
+            layer.add(breathing, forKey: "polter.highlight.breath")
+        }
+        host.addSublayer(layer)
+        highlightTabLayer = layer
+        highlightTabButton = button
+    }
+
+    /// This tab's button in the bar the person can see; nil when there is
+    /// no bar (one tab) or the bar does not line up with the group.
+    ///
+    /// **The bar of the tab in front, not this window's own.** Every window
+    /// of a tab group carries a bar, and only the selected one's is on
+    /// screen: a layer put on this window's own bar vanished the moment
+    /// another tab was chosen -- which is when it is needed (task 1689).
+    /// `PolterHighlight` calls this again four times a second, so the layer
+    /// follows the selection.
+    private func ownTabButton() -> NSView? {
+        guard let group = tabGroup, let index = group.windows.firstIndex(of: self) else { return nil }
+        let shown = group.selectedWindow ?? self
+        let buttons = shown.tabButtonsInVisualOrder()
+        guard buttons.count == group.windows.count else { return nil }
+        return buttons[index]
     }
 
     // MARK: Tab Key Equivalents

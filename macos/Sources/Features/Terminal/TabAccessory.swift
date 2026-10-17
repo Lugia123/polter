@@ -27,6 +27,11 @@ enum TabAccessory {
     /// wants (0.10) is exactly that: one case, one view, one line below --
     /// nothing that assigns `accessoryView`.
     enum Item: CaseIterable {
+        /// The accent dot of a tab whose terminal `terminal_highlight` has
+        /// lit (task 1689), breathing with the pane until it ends. First,
+        /// so it is the thing nearest the title: the design puts it before
+        /// the name, and the system's tabs keep that side to themselves.
+        case highlight
         /// The mark of a tab that is a page of a project: two stacked
         /// pages. First, so it is the thing nearest the title.
         case projectMark
@@ -55,6 +60,8 @@ enum TabAccessory {
         var status: ControlRoomList.Shown = .none
         /// The project this tab is a page of; nil for none.
         var project: String?
+        /// Whether a terminal of this tab is lit by `terminal_highlight`.
+        var highlighted: Bool = false
     }
 
     /// How a tab says it is a page of a project.
@@ -112,6 +119,8 @@ enum TabAccessory {
     static func visibleItems(_ state: State) -> [Item] {
         Item.allCases.filter { item in
             switch item {
+            case .highlight:
+                return state.highlighted
             case .projectMark:
                 return state.project != nil && projectMark == .stackedPages
             case .colorIndicator, .keyEquivalent:

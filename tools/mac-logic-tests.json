@@ -11,7 +11,8 @@
     "macos/Sources/Features/ControlRoom",
     "macos/Tests/ControlRoom",
     "macos/Tests/Projects",
-    "macos/Tests/Splits"
+    "macos/Tests/Splits",
+    "macos/Sources/Features/Highlight"
   ],
   "stubs": [
     "tools/mac-logic-tests-stubs/GhosttyStandIn.swift"
@@ -50,6 +51,8 @@
       "macos/Sources/Features/ControlRoom/PaneStackStripView.swift",
       "macos/Sources/Features/ControlRoom/PaneStackRules.swift",
       "macos/Sources/Features/ControlRoom/TerminalPresence.swift",
+      "macos/Sources/Features/Highlight/PolterHighlightRules.swift",
+      "macos/Sources/Features/Highlight/PolterHighlightViews.swift",
       "macos/Sources/Features/Splits/SplitTree.swift",
       "macos/Sources/Features/Splits/PolterArrangePlan.swift",
       "macos/Sources/Features/Splits/PolterPaneTabRules.swift",
@@ -127,6 +130,10 @@
       {
         "path": "macos/Sources/Features/ControlRoom/ControlRoomLender.swift",
         "why": "imports GhosttyKit: it moves a real terminal view between windows"
+      },
+      {
+        "path": "macos/Sources/Features/Highlight/PolterHighlight.swift",
+        "why": "imports GhosttyKit: it finds the lit terminal's window and tab through the terminal controllers, and reads the core's id for it; its rules are PolterHighlightRules, which is in"
       }
     ]
   },
@@ -193,7 +200,8 @@
       "macos/Tests/PluginNoteSayTests.swift",
       "macos/Tests/CommandPaletteHostMenuTests.swift",
       "macos/Tests/Projects/ProjectPaneSizesTests.swift",
-      "macos/Tests/Personas/RoleCliOfferTests.swift"
+      "macos/Tests/Personas/RoleCliOfferTests.swift",
+      "macos/Tests/Terminal/PolterHighlightRulesTests.swift"
     ],
     "out": [
       {

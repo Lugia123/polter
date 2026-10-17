@@ -125,6 +125,10 @@ pub struct One {
     /// The terminals stacked in this place, when there is more than one:
     /// its title is then a strip of tabs (task 1583).
     pub stack: Option<Stacked>,
+    /// It wears no frame because the setting is off, and is a supervisor's:
+    /// its window is put the edge in from `rect`, and the edge is painted
+    /// round it (`pane::edged`, task 1692).
+    pub edged: bool,
 }
 
 /// What a window's content area holds besides its panes.
@@ -214,12 +218,13 @@ impl Asked {
         // tabs (`quick.rs`); it never comes through here.
         let place = Place { enabled: self.enabled, quick_terminal: false, alone: visible.len() == 1 };
         let drawn = wears(visible.iter().map(|(id, _, name, stack)| (self.key(*id), name.as_str(), stack.as_ref())), place);
+        let edged = edges(visible.iter().map(|(id, _, _, stack)| (self.key(*id), stack.is_some())), place);
         let ground = pane::ground_shows(&drawn);
         let px = |r: &TreeRect| Px { x: r.x as i32, y: r.y as i32, w: r.w as i32, h: r.h as i32 };
         let area = px(&bounds);
         let mut panes = Vec::new();
         let mut windows = Vec::new();
-        for ((id, cell, name, stack), drawn) in visible.iter().zip(drawn) {
+        for (((id, cell, name, stack), drawn), edged) in visible.iter().zip(drawn).zip(edged) {
             let cell_px = px(cell);
             let (rect, window) = match (&drawn, ground) {
                 (Some(d), true) => {
@@ -231,10 +236,22 @@ impl Asked {
                 // seams (#58). A framed one needs no such thing -- its
                 // window is already inside its frame, and the divider lies
                 // in the gap between two frames.
-                (Some(_), false) | (None, _) => (cell_px, polter_split_tree::clear_of_dividers(*cell, bounds, thickness)),
+                (Some(_), false) | (None, _) => {
+                    let clear = polter_split_tree::clear_of_dividers(*cell, bounds, thickness);
+                    if edged {
+                        // A supervisor's pane with no frames gives up the
+                        // edge on every side, inside what it is left of its
+                        // cell; the edge is painted there.
+                        let rect = px(&clear);
+                        let well = pane::edged_well_px(rect, scale);
+                        (rect, TreeRect::new(well.x as f64, well.y as f64, well.w as f64, well.h as f64))
+                    } else {
+                        (cell_px, clear)
+                    }
+                }
             };
             windows.push((*id, window));
-            panes.push(One { pane: *id, key: self.key(*id).map(str::to_string), own_name: name.clone(), drawn, rect, stack: stack.clone() });
+            panes.push(One { pane: *id, key: self.key(*id).map(str::to_string), own_name: name.clone(), drawn, rect, stack: stack.clone(), edged });
         }
         (Frames { place: Some(place), ground, panes }, windows)
     }
@@ -265,6 +282,19 @@ fn wears<'a>(panes: impl Iterator<Item = (Option<&'a str>, &'a str, Option<&'a S
     })
 }
 
+/// Which of some panes at `place` have the supervisor's edge, from the
+/// snapshot as it is. A place holding a stack never has: it always wears a
+/// frame.
+fn edges<'a>(panes: impl Iterator<Item = (Option<&'a str>, bool)>, place: Place) -> Vec<bool> {
+    source::with(|data| {
+        let terminals = match data {
+            Data::Ready(r) => Some(r.snapshot.terminals.as_slice()),
+            Data::NotYet | Data::Unreadable(_) => None,
+        };
+        panes.map(|(key, stacked)| !stacked && pane::edged(key, place, terminals)).collect()
+    })
+}
+
 /// What a stack's strip says, from the snapshot's terminals and the core's
 /// order of who is waiting.
 fn model(s: &Stacked, terminals: Option<&[polter_control_room::snapshot::Terminal]>, pulses: &[&str]) -> panestack::PaneStack {
@@ -290,7 +320,10 @@ fn stale(frame: HWND, on: bool) -> Stale {
     }
     let now = wears(win.pane_frames.panes.iter().map(|p| (p.key.as_deref(), p.own_name.as_str(), p.stack.as_ref())), place);
     let moved = win.pane_frames.panes.iter().zip(&now).any(|(p, d)| p.drawn.as_ref().map(|d| d.wears) != d.as_ref().map(|d| d.wears));
-    if moved {
+    // A pane that gains or loses the supervisor's edge moves its terminal.
+    let edged = edges(win.pane_frames.panes.iter().map(|p| (p.key.as_deref(), p.stack.is_some())), place);
+    let reedged = win.pane_frames.panes.iter().zip(&edged).any(|(p, e)| p.edged != *e);
+    if moved || reedged {
         return Stale::Layout;
     }
     // A strip says what its members' titles would, and it is worked out
@@ -361,6 +394,35 @@ pub fn ground_color(frame: HWND) -> Option<COLORREF> {
     // find the pane in front (`termcolor::ground`).
     let ground = tabs::window(frame).is_some_and(|w| w.pane_frames.ground);
     ground.then(|| colorref(look::theme(dark(frame)).window_base))
+}
+
+/// Paint the supervisor's edge round each pane that has one (`One::edged`),
+/// into `hdc`, the frame window's: called once the content area below the
+/// strip has been cleared, in a window whose tab in front has no frames.
+pub fn paint_edges(frame: HWND, hdc: HDC) {
+    let (rects, scale): (Vec<Px>, f64) = match tabs::window(frame) {
+        Some(win) if !win.pane_frames.ground => (win.pane_frames.panes.iter().filter(|p| p.edged).map(|p| p.rect).collect(), win.scale.max(0.1)),
+        Some(_) | None => return,
+    };
+    if rects.is_empty() {
+        return;
+    }
+    let color = colorref(look::theme(dark(frame)).supervisor_mark);
+    let e = pane::edge_px(scale);
+    unsafe {
+        let brush = CreateSolidBrush(color);
+        for r in rects {
+            for side in [
+                RECT { left: r.x, top: r.y, right: r.right(), bottom: r.y + e },
+                RECT { left: r.x, top: r.bottom() - e, right: r.right(), bottom: r.bottom() },
+                RECT { left: r.x, top: r.y, right: r.x + e, bottom: r.bottom() },
+                RECT { left: r.right() - e, top: r.y, right: r.right(), bottom: r.bottom() },
+            ] {
+                FillRect(hdc, &side, brush);
+            }
+        }
+        let _ = DeleteObject(brush.into());
+    }
 }
 
 /// Paint the content area `below` the strip, into `hdc`: the ground and
@@ -476,7 +538,11 @@ unsafe fn paint_strip(frame: HWND, mem: HDC, one: &One, stack: &Stacked, wears: 
     }
     words.push((status.word.as_str(), ui(font::WEIGHT_EMPHASIS)));
     let measured = unsafe { crate::control_room::measure_words(mem, scale, &words) };
-    let wants: Vec<f64> = roles.iter().enumerate().map(|(i, role)| panestack::wanted(measured[2 * i], role.as_ref().map(|_| measured[2 * i + 1]))).collect();
+    let wants: Vec<f64> = roles
+        .iter()
+        .enumerate()
+        .map(|(i, role)| panestack::wanted(measured[2 * i], role.as_ref().map(|_| measured[2 * i + 1]), model.members[i].marked()))
+        .collect();
     let status_w = panestack::status_width(&status, measured[measured.len() - 1]);
 
     let key = (frame.0 as isize, stack.id());
@@ -528,6 +594,25 @@ unsafe fn paint_strip(frame: HWND, mem: HDC, one: &One, stack: &Stacked, wears: 
             crate::strip::draw_cross(mem, px_rect(ox, oy, scale, *r), colorref(if on { current_ink } else { drawn.ink }), scale);
         }
         draw_plus(mem, px_rect(ox, oy, scale, drawn.add), colorref(if lit == Some(Hit::Add) { current_ink } else { drawn.ink }), scale);
+        // The lit terminal's tab in the stack (task 1690): its ground and a
+        // dot at its left breathe, in front or behind.
+        for (i, member) in stack.members.iter().enumerate() {
+            let Some(a) = crate::highlight::pane_breath(frame, *member) else { continue };
+            let Some(r) = geometry.tab_rect(i) else { continue };
+            let r = px_rect(ox, oy, scale, r);
+            let clipped = RECT { left: r.left.max(row.left), right: r.right.min(row.right), ..r };
+            if clipped.right <= clipped.left {
+                continue;
+            }
+            let radius = (t::CORNER_RADIUS * scale).round() as i32;
+            crate::highlight::paint_tab(mem, clipped, radius, frame, a, drawn.band);
+            let d = (crate::highlight::TAB_DOT * scale).round().max(2.0) as i32;
+            let top = (r.top + r.bottom - d) / 2;
+            let left = r.left + (4.0 * scale).round() as i32;
+            if left + d <= clipped.right && left >= clipped.left {
+                crate::control_room::round(mem, RECT { left, top, right: left + d, bottom: top + d }, d / 2, crate::highlight::accent(frame, a), None);
+            }
+        }
     }
     Strip { frame: frame.0 as isize, place: one.pane, rect: one.rect, members: stack.members.clone(), scale, geometry }
 }

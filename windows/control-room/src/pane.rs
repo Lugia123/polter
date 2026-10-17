@@ -26,7 +26,7 @@
 //! inside. Nothing has a shadow: a scene has no item for one.
 
 use crate::layout::Rect;
-use crate::look::{font, pane, radius, side, space, window_tab, Rgba, Theme};
+use crate::look::{font, pane, radius, side, space, supervisor_badge, window_tab, Rgba, Theme};
 use crate::scene::{self, Face, Item, Part, Piece, Side, Style};
 use crate::snapshot::{BarShown, Shown, Terminal};
 
@@ -98,6 +98,42 @@ pub fn drawn(terminal: Option<&str>, own_name: &str, place: Place, terminals: Op
         return None;
     }
     Some(drawn)
+}
+
+/// Whether the pane of `terminal` at `place` is drawn with the supervisor's
+/// edge: a line just inside it, all round, and nothing else (task 1692, the
+/// design's `supervisor-pane-v1`, situation 2). Only where it wears no frame
+/// because the setting is off -- with no title there is nowhere for the
+/// badge to go -- and for the core's supervisor only; alone in its tab too,
+/// as its frame would be. Never in the quick terminal. macOS's
+/// `PaneFrame.edged`.
+pub fn edged(terminal: Option<&str>, place: Place, terminals: Option<&[Terminal]>) -> bool {
+    if place.enabled || place.quick_terminal {
+        return false;
+    }
+    let listed = terminal.and_then(|id| terminals?.iter().find(|t| t.id == id));
+    listed.is_some_and(|t| t.pane == Some(Wears::Supervisor))
+}
+
+/// The ground of the supervisor's badge: the pane's own colour when it has
+/// one, the supervisor's colour (the app icon's) when it has not. **The one
+/// place it is chosen**: no pane has a colour of its own yet (task 1694 will
+/// give them one), so every caller passes none today. macOS's
+/// `PaneFrame.badgeGround`.
+pub fn badge_ground(pane_color: Option<Rgba>, theme: &Theme) -> Rgba {
+    pane_color.unwrap_or(theme.supervisor_badge)
+}
+
+/// How thick the supervisor's edge is, in device pixels: never less than one.
+pub fn edge_px(scale: f64) -> i32 {
+    len_px(supervisor_badge::EDGE, scale).max(1)
+}
+
+/// Where the terminal's own window goes in a pane with the supervisor's
+/// edge ([`edged`]): `cell` less the edge on every side.
+pub fn edged_well_px(cell: Px, scale: f64) -> Px {
+    let e = edge_px(scale);
+    Px { x: cell.x + e, y: cell.y + e, w: (cell.w - 2 * e).max(1), h: (cell.h - 2 * e).max(1) }
 }
 
 /// Whether the tab's ground shows between and around its panes: it does as
@@ -320,8 +356,25 @@ pub fn build(frame: Px, drawn: &Drawn, view: &View, tr: &dyn Fn(&str) -> String)
 
     // The name and what it is on the left; its state on the right. Words
     // that are not there are not put in the line at all.
+    //
+    // A supervisor says what it is with the badge at the left end, in place
+    // of the word after the name (task 1692, the design's C), and its status
+    // word is what goes before the badge would be cut (`Side::Yield`): the
+    // name is cut first, then the word goes, and the badge stays.
     let ui = |color: Rgba, weight: f64| Style { size: font::BODY, weight, face: Face::Ui, color };
+    let badge = drawn.wears == Wears::Supervisor;
     let mut parts = Vec::new();
+    if badge {
+        parts.push(Part {
+            piece: Piece::Badge {
+                text: tr(crate::lend::msg::SUPERVISOR),
+                style: ui(theme.supervisor_badge_text, font::WEIGHT_EMPHASIS),
+                ground: badge_ground(None, theme),
+            },
+            side: Side::Lead,
+            gap: 0.0,
+        });
+    }
     if scene::draws(&drawn.title.name) {
         parts.push(Part {
             piece: Piece::Words {
@@ -329,10 +382,10 @@ pub fn build(frame: Px, drawn: &Drawn, view: &View, tr: &dyn Fn(&str) -> String)
                 style: Style { size: font::BODY, weight: name_weight, face: Face::Mono, color: name_ink },
             },
             side: Side::Lead,
-            gap: 0.0,
+            gap: if badge { pane::BAR_GAP } else { 0.0 },
         });
     }
-    if let Some(role) = role_word(drawn.wears) {
+    if let Some(role) = role_word(drawn.wears).filter(|_| !badge) {
         parts.push(Part {
             piece: Piece::Words { text: tr(role), style: ui(second_ink, font::WEIGHT_BODY) },
             side: Side::Lead,
@@ -360,7 +413,7 @@ pub fn build(frame: Px, drawn: &Drawn, view: &View, tr: &dyn Fn(&str) -> String)
         };
         parts.push(Part {
             piece: Piece::Words { text: drawn.title.word.clone(), style: ui(ink, font::WEIGHT_EMPHASIS) },
-            side: Side::Trail,
+            side: if badge { Side::Yield } else { Side::Trail },
             gap: side::STATUS_WORD_GAP,
         });
     }
@@ -457,6 +510,31 @@ mod tests {
             for id in [SUPERVISOR, WORKER, SHELL] {
                 assert_eq!(drawn(Some(id), "zsh", place, Some(&terminals())), None, "{id} alone={alone}");
             }
+        }
+    }
+
+    /// With no frames, a supervisor's pane still says it is one: an edge
+    /// just inside it, alone in its tab or not; no other pane has one, nor
+    /// any pane with frames on, nor the quick terminal (task 1692).
+    #[test]
+    fn with_the_setting_off_only_the_supervisors_pane_has_the_edge() {
+        let all = terminals();
+        for alone in [false, true] {
+            let place = Place { enabled: false, quick_terminal: false, alone };
+            for t in &all {
+                assert_eq!(edged(Some(&t.id), place, Some(&all)), t.pane == Some(Wears::Supervisor), "{} alone={alone}", t.id);
+            }
+            assert!(!edged(None, place, Some(&all)));
+            assert!(!edged(Some("0xee"), place, Some(&all)));
+            assert!(!edged(Some(SUPERVISOR), place, None));
+            assert!(!edged(Some(SUPERVISOR), Place { enabled: true, ..place }, Some(&all)));
+            assert!(!edged(Some(SUPERVISOR), Place { quick_terminal: true, ..place }, Some(&all)));
+        }
+        // The terminal's window is the edge in from its cell on every side,
+        // and never less than a pixel in.
+        let cell = Px { x: 10, y: 20, w: 300, h: 200 };
+        for (scale, e) in [(1.0, 2), (1.5, 3), (2.0, 4), (0.25, 1)] {
+            assert_eq!(edged_well_px(cell, scale), Px { x: 10 + e, y: 20 + e, w: 300 - 2 * e, h: 200 - 2 * e }, "{scale}");
         }
     }
 
@@ -736,12 +814,55 @@ mod tests {
     fn a_title_says_the_name_what_it_is_and_its_state_and_an_ordinary_one_not_what_it_is() {
         let f = Px { x: 0, y: 0, w: 700, h: 500 };
         let v = view(false, 1.0, false);
-        assert_eq!(words(&build(f, &a(Wears::Supervisor, "web-app", Shown::NeedsYou, "等批准"), &v, &same)), ["web-app", "Supervisor", "等批准"]);
+        assert_eq!(words(&build(f, &a(Wears::Supervisor, "web-app", Shown::NeedsYou, "等批准"), &v, &same)), ["Supervisor", "web-app", "等批准"]);
         assert_eq!(words(&build(f, &a(Wears::Worker, "api", Shown::Trouble, "出错"), &v, &same)), ["api", "Worker", "出错"]);
         assert_eq!(words(&build(f, &a(Wears::Plain, "zsh", Shown::None, ""), &v, &same)), ["zsh"]);
         // The word for what it is goes through the host's translation.
         let zh = |s: &str| if s == "Worker" { "worker".to_string() } else { s.to_string() };
         assert_eq!(words(&build(f, &a(Wears::Worker, "api", Shown::None, ""), &v, &zh)), ["api", "worker"]);
+    }
+
+    /// The design's C (task 1692): a supervisor's title leads with the
+    /// badge -- the flag and its word on the icon's colour -- with no word
+    /// after the name, and its status word is what yields before the badge
+    /// would be cut. Nothing else changes on any other frame.
+    #[test]
+    fn a_supervisors_title_leads_with_the_badge_and_its_status_word_yields() {
+        let f = Px { x: 0, y: 0, w: 700, h: 500 };
+        for dark in [false, true] {
+            let theme = look::theme(dark);
+            let v = view(dark, 1.0, false);
+            let line = |wears: Wears| -> Vec<Part> {
+                build(f, &a(wears, "web-app", Shown::Working, "在干活"), &v, &same)
+                    .into_iter()
+                    .find_map(|i| match i {
+                        Item::Line { parts, .. } => Some(parts),
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            let sv = line(Wears::Supervisor);
+            assert_eq!(
+                sv[0],
+                Part {
+                    piece: Piece::Badge {
+                        text: "Supervisor".into(),
+                        style: Style { size: font::BODY, weight: font::WEIGHT_EMPHASIS, face: Face::Ui, color: theme.supervisor_badge_text },
+                        ground: theme.supervisor_badge,
+                    },
+                    side: Side::Lead,
+                    gap: 0.0,
+                }
+            );
+            assert!(matches!(&sv[1].piece, Piece::Words { text, .. } if text == "web-app") && sv[1].gap == pane::BAR_GAP);
+            assert_eq!(sv.iter().map(|p| p.side).collect::<Vec<_>>(), [Side::Lead, Side::Lead, Side::Trail, Side::Yield]);
+            for wears in [Wears::Worker, Wears::Plain] {
+                let other = line(wears);
+                assert!(!other.iter().any(|p| matches!(p.piece, Piece::Badge { .. })), "{wears:?}");
+                assert!(!other.iter().any(|p| p.side == Side::Yield), "{wears:?}");
+                assert_eq!(other[0].gap, 0.0);
+            }
+        }
     }
 
     #[test]
@@ -810,7 +931,7 @@ mod tests {
                 .find_map(|i| match i {
                     Item::Line { parts, .. } => parts.iter().find_map(|p| match &p.piece {
                         Piece::Words { text, style } if text == "出错" => Some(style.color),
-                        Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } => None,
+                        Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } => None,
                     }),
                     Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => None,
                 })
@@ -847,7 +968,7 @@ mod tests {
             for item in &items {
                 if let Item::Line { parts, .. } = item {
                     for p in parts {
-                        if let Piece::Words { style, .. } = &p.piece {
+                        if let Piece::Words { style, .. } | Piece::Badge { style, .. } = &p.piece {
                             assert!(style.size >= font::MIN);
                         }
                     }

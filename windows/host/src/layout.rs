@@ -445,6 +445,47 @@ pub fn perform_tab_move(action: &Action, target: Option<Surface>) -> bool {
     true
 }
 
+/// Perform `polter_highlight` (task 1690): queued and drained like a tab
+/// move, so the answer -- what was switched, whether the window came
+/// forward -- is read before this returns (#1689's interface, section 2).
+pub fn perform_highlight(action: &Action, target: Option<Surface>) -> bool {
+    let (seconds, label, out) = action.as_polter_highlight();
+    let write = |code: i32, text: &str| {
+        if out.is_null() {
+            return;
+        }
+        unsafe {
+            (*out).result = code;
+            if !(*out).buf.is_null() && (*out).cap > 0 {
+                let n = text.len().min((*out).cap);
+                std::ptr::copy_nonoverlapping(text.as_ptr(), (*out).buf, n);
+                (*out).len = n;
+            }
+        }
+    };
+    let Some(surface) = target else {
+        write(REFUSED, &coded("NotShown", "the highlight named no terminal"));
+        return false;
+    };
+    let Some(frame) = tabs::frame_of_surface(surface) else {
+        write(REFUSED, &coded("NotShown", "that terminal is in no window this host shows; the quick terminal is not brought out for it"));
+        return false;
+    };
+    let outcome: Outcome = Arc::new(Mutex::new(None));
+    tabs::post_op(frame, tabs::Op::Highlight(surface as usize, seconds, label, outcome.clone()), "highlight action");
+    tabs::drain_for_layout(frame);
+    let answer = outcome.lock().ok().and_then(|mut o| o.take());
+    match answer {
+        Some(Ok(json)) => write(APPLIED, &json),
+        Some(Err(why)) => write(REFUSED, &why),
+        None => {
+            write(REFUSED, &coded("HighlightNotRun", "the highlight was queued and did not run; the window may have closed"));
+            wlogf!(frame, "[highlight] queued op produced no answer");
+        }
+    }
+    true
+}
+
 /// Perform `poltergeist_layout`.
 pub fn perform(action: &Action, target: Option<Surface>) -> bool {
     let (spec, out) = action.as_poltergeist_layout();

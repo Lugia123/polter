@@ -411,7 +411,18 @@ pub enum Op {
     /// every prompt, forever.
     SetTabTitle { surface: usize, title: String, explicit: bool },
     CopyTitleToClipboard,
-    PresentTerminal,
+    /// The core's `present_terminal`: bring **this surface** forward -- its
+    /// window, its tab, and its place in a stack.
+    ///
+    /// **Carries the surface**, which it did not until task 1690: all it
+    /// had was the window, so a terminal in a tab behind or stacked behind
+    /// another was "presented" by raising a window that showed something
+    /// else. A `usize` for the reason `SetTabTitle`'s is.
+    PresentTerminal(usize),
+    /// The core's `polter_highlight` (task 1690): light surface `.0` for
+    /// `.1` seconds (0 ends it) with the label `.2`, and answer in `.3`.
+    /// Queued and drained like `MoveTabForTool`, for its reason.
+    Highlight(usize, u32, Option<String>, crate::layout::Outcome),
     /// `ghostty_action_split_direction_e`.
     /// The direction, where the new pane's shell starts (`None` means
     /// wherever the split source is standing), and **which pane to split**
@@ -518,7 +529,8 @@ impl Op {
             Op::ResetWindowSize => "ResetWindowSize",
             Op::SetTabTitle { .. } => "SetTabTitle",
             Op::CopyTitleToClipboard => "CopyTitleToClipboard",
-            Op::PresentTerminal => "PresentTerminal",
+            Op::PresentTerminal(_) => "PresentTerminal",
+            Op::Highlight(..) => "Highlight",
             Op::NewSplit(..) => "NewSplit",
             Op::PaneStack(..) => "PaneStack",
             Op::GotoSplit(..) => "GotoSplit",
@@ -7437,6 +7449,96 @@ fn focus_pane_reached(hwnd: HWND, reach: polter_control_room::lend::Reach) {
     crate::control_room::repaint();
 }
 
+/// The core's `present_terminal` (task 1690): the window restored and
+/// brought forward, then the terminal's tab made active and, stacked behind
+/// another, brought to the front of its place -- with the keyboard, as the
+/// macOS host's `ghosttyDidPresentTerminal` gives it.
+///
+/// **Reached as a click, not as a going-to.** A terminal shown in the
+/// control room is presented there (macOS: `homeComesForward(lent:)` is
+/// false for a lent one, and the window brought forward is the one it is
+/// shown in); `Reach::Clicked` is the reach that keeps it there, and for a
+/// terminal that is not on loan the two reaches are the same.
+fn present_terminal(frame: HWND, surface: usize) {
+    let Some(pane) = pane_hwnd_of_surface(surface as Surface) else {
+        wlogf!(frame, "[win] present_terminal: surface {:#x} is in no pane of this window; nothing presented", surface);
+        return;
+    };
+    let before = pane_of(pane).and_then(|(_, tab_idx, id)| {
+        window(frame).map(|w| {
+            let behind = w.tabs.get(tab_idx).and_then(|t| t.terminal()).is_some_and(|t| t.tree.revealing(id).is_some());
+            (w.active != tab_idx, behind)
+        })
+    });
+    let (ok, front) = unsafe {
+        let _ = ShowWindow(frame, SW_RESTORE);
+        let ok = SetForegroundWindow(frame).as_bool();
+        (ok, GetForegroundWindow() == frame)
+    };
+    focus_pane_reached(pane, polter_control_room::lend::Reach::Clicked);
+    // **What was switched is read before, what is in front after** -- the
+    // second is a reading, not the request's return value.
+    let (tab, stack) = before.unwrap_or((false, false));
+    wlogf!(
+        frame,
+        "[win] present_terminal surface {:#x}: tab switched={} stack switched={}; SetForegroundWindow ok={} -- in front: {}",
+        surface,
+        tab as u8,
+        stack as u8,
+        ok as u8,
+        front as u8
+    );
+}
+
+/// Bring `pane` of `frame` into view for a highlight (task 1690): its tab
+/// made active and, stacked behind another, brought to the front of its
+/// place. Says whether each happened: `(tab, stack)`.
+///
+/// **Unlike [`present_terminal`] the keyboard is not the point.** It moves
+/// only when it has to: with the tab, because the one it was in is no
+/// longer on screen, or with the stack when the member it was in is the one
+/// now covered (`show_member`'s rule). The supervisor's pane in the same tab
+/// keeps it from start to end (the design's "键盘").
+///
+/// A terminal shown in the control room is lit there: nothing switches.
+pub fn reveal_for_highlight(frame: HWND, pane: PaneId) -> (bool, bool) {
+    let (idx, tab, stack, keyboard) = {
+        let Some(mut win) = window(frame) else { return (false, false) };
+        if win.shown_on_loan().is_some_and(|l| l.pane == pane) {
+            return (false, false);
+        }
+        let Some(idx) = win.tabs.iter().position(|t| t.panes().iter().any(|p| p.id == pane)) else {
+            return (false, false);
+        };
+        let tab = idx != win.active;
+        let Some(term) = win.tabs.get_mut(idx).and_then(|t| t.terminal_mut()) else {
+            return (false, false);
+        };
+        let covered = term.tree.shown_for(pane);
+        let revealed = term.tree.revealing(pane);
+        let stack = revealed.is_some();
+        if let Some(t) = revealed {
+            term.tree = t;
+        }
+        let keyboard = polter_control_room::highlight::keyboard_moves(tab, stack, covered == Some(term.focused));
+        if keyboard {
+            term.focused = pane;
+        }
+        (idx, tab, stack, keyboard)
+    };
+    if tab {
+        // Lays out and focuses.
+        set_active(frame, idx);
+    } else if stack {
+        layout(frame);
+        if keyboard {
+            focus_active(frame);
+        }
+    }
+    wlogf!(frame, "[highlight] pane {}: tab switched={} stack switched={} keyboard moved={}", pane, tab as u8, stack as u8, keyboard as u8);
+    (tab, stack)
+}
+
 fn set_active(frame: HWND, idx: usize) {
     {
         let Some(mut win) = window(frame) else { return };
@@ -8427,11 +8529,13 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 wlogf!(frame, "[ops] ClosePane {} finished: closed={}", id, ok as u8);
             }
             Op::ToggleQuickTerminal => crate::quick::toggle(app, hinst),
-            Op::PresentTerminal => unsafe {
-                let _ = ShowWindow(frame, SW_RESTORE);
-                let _ = SetForegroundWindow(frame);
-                wlogf!(frame, "[win] present_terminal");
-            },
+            Op::PresentTerminal(surface) => present_terminal(frame, surface),
+            Op::Highlight(surface, seconds, label, outcome) => {
+                let answer = crate::highlight::light_up(frame, surface, seconds, label);
+                if let Ok(mut o) = outcome.lock() {
+                    *o = Some(answer);
+                }
+            }
         }
     }
 }

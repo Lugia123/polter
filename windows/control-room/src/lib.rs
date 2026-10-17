@@ -8,6 +8,7 @@
 //! | [`list`] | the rows in their two sections, what each says, where the selection goes |
 //! | [`lone`] | the terminals that are in no group and have a row of their own, read; not drawn by this host yet |
 //! | [`layout`] | where everything in the list panel is; the chip's spring |
+//! | [`highlight`] | a terminal lit up to be found: how lit it is as it breathes, whether its card fits, what a key does to it, why it ended |
 //! | [`pulse`] | which waiting glyph breathes; what a window tab carries and whether it is drawn |
 //! | [`act`] | the person's acts as requests to the core, what a refusal says, when looking marks a group seen |
 //! | [`lend`] | which terminal is shown on the right, and what happens to it when anything changes |
@@ -43,6 +44,7 @@ pub mod alert;
 pub mod chrome;
 pub mod confirm;
 pub mod glyph;
+pub mod highlight;
 pub mod hud;
 pub mod json;
 pub mod layout;

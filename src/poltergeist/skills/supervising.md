@@ -857,6 +857,18 @@ terminal shown in the control room right now; `UserPresent` is a key that
 reached one of them — the destination tab's own panes included — in the last
 ten seconds, and clears on its own (your own terminal is never asked).
 
+### When the person asks "which one is it?"
+
+Show them instead of describing it: `terminal_highlight(id, seconds, label)`
+brings that terminal forward, dims the rest of its window and lights its pane
+and its tab for 30 seconds, with your `label` (e.g. the task number) on a card.
+Use it whenever an answer would otherwise be "the third pane in the tab called
+…". Their first plain key in that window only ends the highlight — it is not
+typed into the worker — so it is safe while they are talking to you; switching
+tabs does not end it, and the lit terminal's tab keeps breathing. Read `front`
+back before you say "look": `refused` means Polter is not in front, so tell
+them to switch back to it.
+
 ### Building a shape by hand, and the one thing that makes it hard
 
 ⚠️ **`terminal_action` never tells you what it made.** A `new_split` answers

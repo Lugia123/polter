@@ -698,6 +698,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_POLTER_TAB_MOVE:
                 return polterTabMove(target: target, v: action.action.polter_tab_move)
 
+            case GHOSTTY_ACTION_POLTER_HIGHLIGHT:
+                return polterHighlight(target: target, v: action.action.polter_highlight)
+
             case GHOSTTY_ACTION_POLTERGEIST_LAYOUT:
                 return poltergeistLayout(app, target: target, v: action.action.poltergeist_layout)
 
@@ -2648,6 +2651,35 @@ extension Ghostty {
                 answer = (false, "the terminal named as the window is not in a terminal tab")
             } else {
                 answer = controller.polterMoveTab(to: Int(v.index), into: into)
+            }
+
+            out.pointee.result = answer.applied ? GHOSTTY_ACTION_POLTERGEIST_LAYOUT_APPLIED : GHOSTTY_ACTION_POLTERGEIST_LAYOUT_REFUSED
+            let bytes = Array(answer.text.utf8)
+            let n = min(bytes.count, out.pointee.cap)
+            out.pointee.len = n
+            if n > 0, let buf = out.pointee.buf {
+                buf.withMemoryRebound(to: UInt8.self, capacity: n) { dst in
+                    for i in 0..<n { dst[i] = bytes[i] }
+                }
+            }
+            return true
+        }
+
+        /// Light the target up for `terminal_highlight` (task 1689). See
+        /// `PolterHighlight`; this is the C ABI glue. Answered before it
+        /// returns, as the core expects.
+        private static func polterHighlight(
+            target: ghostty_target_s,
+            v: ghostty_action_polter_highlight_s) -> Bool {
+            guard let out = v.out else { return false }
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface)
+            else { return false }
+
+            let label = v.label.map { String(cString: $0) }
+            let answer = MainActor.assumeIsolated {
+                PolterHighlight.shared.perform(surface: surfaceView, seconds: v.seconds, label: label)
             }
 
             out.pointee.result = answer.applied ? GHOSTTY_ACTION_POLTERGEIST_LAYOUT_APPLIED : GHOSTTY_ACTION_POLTERGEIST_LAYOUT_REFUSED

@@ -86,6 +86,13 @@ pub const Method = enum {
     /// Type into another terminal, as if the user had.
     terminal_send,
 
+    /// Bring a terminal in front of the person and make its pane stand out
+    /// for a while (task 1689): the answer to "which one is it?" when words
+    /// cannot point. Reached like `terminal_read`; it changes what is on
+    /// the screen and nothing in the terminal, and never moves the keyboard
+    /// focus into it on its own.
+    terminal_highlight,
+
     /// Mark a terminal as done for the day.
     clock_out,
 
@@ -508,6 +515,11 @@ pub const Request = union(Method) {
     session_recall,
     terminal_read: struct { id: Bus.Id, lines: u16 = 0 },
     terminal_send: struct { id: Bus.Id, text: []const u8, submit: bool = true },
+    /// `seconds` is 0 (end this terminal's highlight now) or
+    /// `highlight_seconds_min`..`highlight_seconds_max`. `label` is the
+    /// caller's words to the person, shown as written, at most
+    /// `highlight_label_max` code points.
+    terminal_highlight: struct { id: Bus.Id, seconds: u32 = highlight_seconds_default, label: ?[]const u8 = null },
     clock_out: struct { id: Bus.Id, reason: []const u8 = "" },
     clock_in: struct { id: Bus.Id },
     /// Either threshold or both; at least one (#62). See `CallsThreshold`.
@@ -872,6 +884,31 @@ pub fn capTaskEvents(events: []const TaskEvent) struct {
     return .{ .events = events, .more = false };
 }
 
+/// `terminal_highlight`'s numbers (task 1689; the design is
+/// `highlight-v1/README.md`, "工具"). The user ruled on them on 2026-10-18.
+pub const highlight_seconds_default: u32 = 30;
+pub const highlight_seconds_min: u32 = 5;
+pub const highlight_seconds_max: u32 = 120;
+/// Counted in code points, not bytes: it is a line the person reads, and
+/// "做 Windows 那个" is eleven of them.
+pub const highlight_label_max: usize = 40;
+
+/// Why a `terminal_highlight` is refused before anything is asked of the
+/// host, or null when it may go ahead. **Named, never trimmed**: a label cut
+/// to fit is a sentence the caller did not write.
+pub fn highlightRefusal(seconds: u32, label: ?[]const u8) ?wire.Response {
+    if (seconds != 0 and (seconds < highlight_seconds_min or seconds > highlight_seconds_max))
+        return hostFailure("BadSeconds", "seconds is 0 (end the highlight now) or 5 to 120");
+    const l = label orelse return null;
+    const n = std.unicode.utf8CountCodepoints(l) catch
+        return hostFailure("BadLabel", "label is not UTF-8");
+    if (n > highlight_label_max)
+        return hostFailure("BadLabel", "label is at most 40 characters; it is shown as written, so it is not cut");
+    for (l) |c| if (c < 0x20 or c == 0x7f)
+        return hostFailure("BadLabel", "label is one line: no control characters");
+    return null;
+}
+
 pub const History = @import("Chat.zig").History;
 
 pub const Error = error{
@@ -977,6 +1014,7 @@ pub fn callableByPlugin(method: Method) bool {
         // one an agent goes through.
         .terminal_list,
         .terminal_read,
+        .terminal_highlight,
         .terminal_send,
         .terminal_action,
         .terminal_actions,
@@ -1295,6 +1333,7 @@ pub fn requiresSupervisor(method: Method) bool {
         // supervisor's standing for that made the standing a formality to
         // be claimed rather than a role.
         .terminal_read,
+        .terminal_highlight,
         .terminal_send,
         .terminal_action,
         .terminal_key,
@@ -1568,6 +1607,7 @@ pub fn targetsTerminal(method: Method) bool {
         .task_assign,
         .terminal_turn,
         .terminal_read,
+        .terminal_highlight,
         .terminal_send,
         .clock_out,
         .clock_in,
@@ -1827,6 +1867,7 @@ pub fn selfPermitted(req: Request) bool {
         // the tab it is in" is what holds this side now.
         .terminal_layout,
         .terminal_tab_move,
+        .terminal_highlight,
         => true,
 
         // Decided per action, exhaustively, in `actions.selfSafeTag`.
@@ -1946,6 +1987,7 @@ pub fn promptReach(method: Method) enum {
         .me,
         .terminal_list,
         .terminal_read,
+        .terminal_highlight,
         .terminal_open,
         // `role_launch` types a line and presses return, but only into the
         // terminal it has just opened, where nothing is waiting to be
@@ -5008,6 +5050,42 @@ pub const LayoutAnswer = struct {
     text: []const u8,
 };
 
+/// What the host answered a `terminal_highlight` with (task 1689; the
+/// interface is `highlight-interface.md`). Read back off the screen by the
+/// host, never assumed from what it asked for.
+pub const HighlightAnswer = union(enum) {
+    /// It is lit, or about to be.
+    shown: Shown,
+    /// `seconds = 0`: whether this terminal had a highlight that has now
+    /// ended. False is "there was none", not a failure.
+    ended: bool,
+    /// The host would not, and says why -- `NotShown` for a terminal that is
+    /// not on any screen, which it will not pop out for the caller.
+    refused: struct { code: []const u8, message: []const u8 },
+
+    pub const Shown = struct {
+        switched: struct { window: bool, tab: bool, stack: bool },
+        front: Front,
+        timer: Timer,
+        /// The terminal whose highlight this one ended. The same terminal
+        /// asked again restarts its countdown and is not a replacement.
+        replaced: ?Bus.Id,
+        /// When it ends, on the wall clock, if nothing ends it sooner. With
+        /// `timer = .waiting` it is the earliest it can end.
+        until_ms: i64,
+    };
+
+    /// What the host read back after it tried to bring the window forward.
+    /// **`pending` and `unknown` are not `refused`**: one is "cannot be
+    /// read until after this call", the other "the reading failed", and a
+    /// supervisor tells the person something different for each.
+    pub const Front = enum { yes, minimized_restored, refused, other_space, pending, unknown };
+
+    /// Whether the countdown has started. Without it a highlight still
+    /// waiting for its window looks exactly like one already counting.
+    pub const Timer = enum { running, waiting };
+};
+
 /// What a caller wants out of a panel, on the wire's side of `Tasks.Page`.
 ///
 /// Two structs rather than one shared: the wire speaks strings and numbers
@@ -5922,6 +6000,18 @@ pub const Host = struct {
         /// Move the tab `id` is in to `index` in its strip, or in the strip
         /// of `window`'s window when that is not zero (task 1571). The
         /// answer's text is the reply on success and the reason otherwise.
+        /// Light up a terminal's pane for `terminal_highlight`
+        /// (task 1689). `seconds` and `label` are already checked
+        /// (`highlightRefusal`). `NoSuchTerminal` when there is no such
+        /// surface; `HighlightUnsupported` when this apprt has no highlight.
+        highlight: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+            seconds: u32,
+            label: ?[]const u8,
+        ) anyerror!HighlightAnswer,
+
         tabMove: *const fn (
             ctx: *anyopaque,
             alloc: std.mem.Allocator,
@@ -6370,6 +6460,16 @@ pub const Host = struct {
         return self.vtable.layout(self.ctx, alloc, call);
     }
 
+    fn highlight(
+        self: Host,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+        seconds: u32,
+        label: ?[]const u8,
+    ) anyerror!HighlightAnswer {
+        return self.vtable.highlight(self.ctx, alloc, id, seconds, label);
+    }
+
     fn tabMove(
         self: Host,
         alloc: std.mem.Allocator,
@@ -6649,6 +6749,7 @@ pub fn isAgentCall(method: Method) bool {
         .terminal_answer_prompt,
         .terminal_layout,
         .terminal_tab_move,
+        .terminal_highlight,
         .stand_down,
         .become_supervisor,
         .task_create,
@@ -7549,6 +7650,25 @@ fn dispatchOne(
             } };
 
             return .{ .text = answer.text };
+        },
+
+        .terminal_highlight => |p| {
+            if (highlightRefusal(p.seconds, p.label)) |no| return no;
+            const answer = host.highlight(alloc, p.id, p.seconds, p.label) catch |err| return switch (err) {
+                error.NoSuchTerminal,
+                error.UnknownTerminal,
+                => failure(error.UnknownTerminal),
+                error.HighlightUnsupported => hostFailure(
+                    "Unsupported",
+                    "this platform does not highlight terminals, and nothing was changed.",
+                ),
+                else => hostFailure("HighlightFailed", "the terminal could not be highlighted"),
+            };
+            return switch (answer) {
+                .refused => |r| .{ .failed = .{ .code = r.code, .message = r.message } },
+                .ended => |e| .{ .json = if (e) "{\"ended\":true}" else "{\"ended\":false}" },
+                .shown => |v| .{ .json = try highlightJson(alloc, v) },
+            };
         },
 
         .terminal_tab_move => |p| {
@@ -9745,6 +9865,23 @@ fn projectRefusalMessage(err: anyerror) []const u8 {
     };
 }
 
+/// `terminal_highlight`'s answer as the caller reads it. A terminal id
+/// goes out the way every other one does, `0x` and sixteen digits.
+fn highlightJson(alloc: std.mem.Allocator, v: HighlightAnswer.Shown) ![]const u8 {
+    var id_buf: [18]u8 = undefined;
+    const replaced: ?[]const u8 = if (v.replaced) |r|
+        std.fmt.bufPrint(&id_buf, "0x{x:0>16}", .{r}) catch unreachable
+    else
+        null;
+    return std.json.Stringify.valueAlloc(alloc, .{
+        .until_ms = v.until_ms,
+        .switched = v.switched,
+        .front = @tagName(v.front),
+        .timer = @tagName(v.timer),
+        .replaced = replaced,
+    }, .{});
+}
+
 fn hostFailure(code: []const u8, message: []const u8) wire.Response {
     return .{ .failed = .{ .code = code, .message = message } };
 }
@@ -9798,6 +9935,9 @@ const FakeHost = struct {
     layout_refusal: ?struct { code: []const u8, text: []const u8 } = null,
     /// What `tabMove` was last handed.
     tab_moved: ?struct { id: Bus.Id, index: u32, window: Bus.Id } = null,
+    /// What `highlight` was last handed, and what it answers.
+    highlighted: ?struct { id: Bus.Id, seconds: u32, label: ?[]const u8 } = null,
+    highlight_answer: HighlightAnswer = .{ .ended = false },
     /// The terminals a key reached a moment ago, for `userPresent`.
     keyed_terminals: []const Bus.Id = &.{},
     /// The terminals an input method is composing in, for `userPresent`.
@@ -10170,6 +10310,7 @@ const FakeHost = struct {
             .taskEdit = taskEdit,
             .layout = layout,
             .tabMove = tabMove,
+            .highlight = highlight,
             .userPresent = userPresent,
             .screenshotAllowed = screenshotAllowedFake,
             .screenshotHost = screenshotHostFake,
@@ -10258,6 +10399,19 @@ const FakeHost = struct {
         // Stands in for an apprt that does rearrange panes, and answers with
         // what it was handed so a test can see the shape arrived intact.
         return .{ .applied = true, .text = try alloc.dupe(u8, call.spec) };
+    }
+
+    fn highlight(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+        seconds: u32,
+        label: ?[]const u8,
+    ) anyerror!HighlightAnswer {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (id == 0xdead) return error.NoSuchTerminal;
+        self.highlighted = .{ .id = id, .seconds = seconds, .label = if (label) |l| try alloc.dupe(u8, l) else null };
+        return self.highlight_answer;
     }
 
     fn tabMove(
@@ -17085,6 +17239,111 @@ test "tidying: a refusal keeps the code the apprt gave it" {
         .layout = "{\"stack\":[{\"pane\":\"0x2222\"},{\"new\":null}]}",
     } });
     try testing.expectEqualStrings("NotBuiltYet", d.failed.code);
+}
+
+test "terminal_highlight: a bad seconds or label is refused by name and never reaches the host" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fake: FakeHost = .{};
+    for ([_]u32{ 1, 4, 121, std.math.maxInt(u32) }) |seconds| {
+        const r = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_highlight = .{ .id = worker, .seconds = seconds } });
+        try testing.expectEqualStrings("BadSeconds", r.failed.code);
+    }
+    // Forty-one code points, each three bytes: too long, and not cut.
+    const long = "做" ** 41;
+    for ([_][]const u8{ long, "two\nlines", "\xff" }) |label| {
+        const r = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_highlight = .{ .id = worker, .label = label } });
+        try testing.expectEqualStrings("BadLabel", r.failed.code);
+    }
+    try testing.expect(fake.highlighted == null);
+
+    // The edges are allowed: 5, 120, 0, and forty code points.
+    for ([_]u32{ 5, 120, 0 }) |seconds| {
+        _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_highlight = .{ .id = worker, .seconds = seconds, .label = "做" ** 40 } });
+        try testing.expectEqual(seconds, fake.highlighted.?.seconds);
+    }
+}
+
+test "terminal_highlight: the caller is told what the host read back, and a pending front is not refused" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fake: FakeHost = .{ .highlight_answer = .{ .shown = .{
+        .switched = .{ .window = true, .tab = true, .stack = false },
+        .front = .pending,
+        .timer = .waiting,
+        .replaced = other,
+        .until_ms = 1792140000000,
+    } } };
+    const r = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_highlight = .{ .id = worker, .label = "#1635" } });
+    try testing.expectEqualStrings(
+        "{\"until_ms\":1792140000000,\"switched\":{\"window\":true,\"tab\":true,\"stack\":false}," ++
+            "\"front\":\"pending\",\"timer\":\"waiting\",\"replaced\":\"0x0000000000003333\"}",
+        r.json,
+    );
+    try testing.expectEqual(worker, fake.highlighted.?.id);
+    try testing.expectEqual(highlight_seconds_default, fake.highlighted.?.seconds);
+    try testing.expectEqualStrings("#1635", fake.highlighted.?.label.?);
+
+    fake.highlight_answer = .{ .shown = .{
+        .switched = .{ .window = false, .tab = false, .stack = false },
+        .front = .yes,
+        .timer = .running,
+        .replaced = null,
+        .until_ms = 1,
+    } };
+    const n = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_highlight = .{ .id = worker } });
+    try testing.expect(std.mem.indexOf(u8, n.json, "\"replaced\":null") != null);
+
+    fake.highlight_answer = .{ .ended = true };
+    const e = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_highlight = .{ .id = worker, .seconds = 0 } });
+    try testing.expectEqualStrings("{\"ended\":true}", e.json);
+
+    fake.highlight_answer = .{ .refused = .{ .code = "NotShown", .message = "in the quick terminal, which is hidden" } };
+    const no = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_highlight = .{ .id = worker } });
+    try testing.expectEqualStrings("NotShown", no.failed.code);
+
+    const gone = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_highlight = .{ .id = 0xdead } });
+    try testing.expectEqualStrings("UnknownTerminal", gone.failed.code);
+}
+
+test "terminal_highlight reaches exactly what terminal_read reaches" {
+    // The design's rule (`highlight-v1/README.md`, "谁可以调"): anyone who
+    // can see the terminal. Compared against `terminal_read` itself rather
+    // than written out, so the two cannot drift apart.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.register(other);
+    const shielded: Bus.Id = 0x4444;
+    try b.register(shielded);
+    try b.setShielded(shielded, true, .user);
+
+    for ([_]Bus.Id{ boss, worker, other, shielded, 0xdead }) |from| {
+        for ([_]Bus.Id{ boss, worker, other, shielded, 0xdead }) |to| {
+            const read = authorize(&b, term(from), .{ .terminal_read = .{ .id = to } });
+            const lit = authorize(&b, term(from), .{ .terminal_highlight = .{ .id = to } });
+            if (read) |_| {
+                lit catch |err| {
+                    std.debug.print("\n0x{x} -> 0x{x}: read allowed, highlight {}\n", .{ from, to, err });
+                    return err;
+                };
+            } else |want| {
+                // Reading yourself is refused because it loops; lighting
+                // yourself up does not, and is the supervisor answering
+                // "which one are you?".
+                if (from == to and want == error.SelfTarget) continue;
+                try testing.expectError(want, lit);
+            }
+        }
+    }
+    try testing.expectError(error.Shielded, authorize(&b, term(boss), .{ .terminal_highlight = .{ .id = shielded } }));
 }
 
 test "tidying: a tab move reaches the host, and a key in that tab refuses it" {

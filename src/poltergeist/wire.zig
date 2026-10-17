@@ -156,6 +156,15 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .lines = try optionalU16(params, "lines", 0),
         } },
 
+        .terminal_highlight => .{ .terminal_highlight = .{
+            .id = try requireId(params),
+            // Out of range is the dispatcher's to refuse by name
+            // (`BadSeconds`), so a number too big for the field is kept too
+            // big rather than wrapped into one that is allowed.
+            .seconds = std.math.cast(u32, try optionalU64(params, "seconds", rpc.highlight_seconds_default)) orelse std.math.maxInt(u32),
+            .label = try optionalString(aa, params, "label"),
+        } },
+
         .terminal_send => .{ .terminal_send = .{
             .id = try requireId(params),
             .text = try requireString(aa, params, "text"),
@@ -2217,6 +2226,29 @@ test "optional fields fall back to their defaults" {
     );
     defer q.deinit();
     try testing.expectEqual(@as(u16, 80), q.value.terminal_read.lines);
+}
+
+test "terminal_highlight: seconds defaults to 30, and one too big to fit stays too big" {
+    var p = try parse(
+        \\{"method":"terminal_highlight","params":{"id":1}}
+    );
+    defer p.deinit();
+    try testing.expectEqual(@as(u32, 30), p.value.terminal_highlight.seconds);
+    try testing.expect(p.value.terminal_highlight.label == null);
+
+    var q = try parse(
+        \\{"method":"terminal_highlight","params":{"id":1,"seconds":0,"label":"#1635"}}
+    );
+    defer q.deinit();
+    try testing.expectEqual(@as(u32, 0), q.value.terminal_highlight.seconds);
+    try testing.expectEqualStrings("#1635", q.value.terminal_highlight.label.?);
+
+    // Wrapped to 32 bits this would be 30, which is allowed.
+    var r = try parse(
+        \\{"method":"terminal_highlight","params":{"id":1,"seconds":4294967326}}
+    );
+    defer r.deinit();
+    try testing.expectEqual(@as(u32, std.math.maxInt(u32)), r.value.terminal_highlight.seconds);
 }
 
 test "a lines count that cannot fit is refused" {

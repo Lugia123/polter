@@ -1663,6 +1663,15 @@ pub fn paint(frame: HWND) {
                 right: right_edge,
                 bottom: sh,
             };
+            // The lit terminal's tab (task 1690): a dot in the accent before
+            // its name, breathing, for as long as the highlight lasts.
+            if let Some(a) = crate::highlight::tab_breath(frame, slot.id) {
+                let d = (crate::highlight::TAB_DOT * scale).round().max(2.0) as i32;
+                let top = (sh - d) / 2;
+                let dot = RECT { left: tr.left, top, right: tr.left + d, bottom: top + d };
+                crate::control_room::round(mem, dot, d / 2, crate::highlight::accent(frame, a), None);
+                tr.left += d + (4.0 * scale).round() as i32;
+            }
             // A tab always has its number, so this is never an empty string
             // -- which `USER32` must not be handed (task 1439).
             if !wide.is_empty() && tr.right > tr.left {
@@ -1715,6 +1724,11 @@ pub fn paint(frame: HWND) {
                 let pill = tabstrip::chip(rect_f(&slot.rect), shf, scale);
                 crate::control_room::round(mem, rect_px(pill), tabstrip::corner(pill, scale, false) as i32, color, None);
             }
+            // The lit terminal's tab breathes in the accent behind it.
+            if let Some(a) = crate::highlight::tab_breath(frame, slot.id).filter(|_| !is_active) {
+                let pill = tabstrip::chip(rect_f(&slot.rect), shf, scale);
+                crate::highlight::paint_tab(mem, rect_px(pill), tabstrip::corner(pill, scale, false) as i32, frame, a, tabstrip::track_color(ground, theme));
+            }
 
             // The line after this tab, faint, and only between two plain
             // tabs (task 1562, which put back what 1556 removed).
@@ -1739,6 +1753,11 @@ pub fn paint(frame: HWND) {
                 tabstrip::chip_color(ground, theme, now.lift),
                 Some(tabstrip::chip_edge(ground, theme, now.lift)),
             );
+
+            // The lit terminal's tab in front breathes over its chip.
+            if let Some(a) = active_id.and_then(|id| crate::highlight::tab_breath(frame, id)) {
+                crate::highlight::paint_tab(mem, box_, radius as i32, frame, a, tabstrip::chip_color(ground, theme, now.lift));
+            }
 
             // And what is on it, written as selected, through its outline.
             let d = radius as i32 * 2;
@@ -1892,6 +1911,8 @@ pub fn paint(frame: HWND) {
     below.top = sh;
     if below.bottom > below.top && ps.rcPaint.bottom > sh && !crate::pane_frames::paint(frame, hdc, below) {
         fill(hdc, &below, gdi(crate::termcolor::chrome(frame).ground));
+        // With no frames, a supervisor's pane still has its edge (task 1692).
+        crate::pane_frames::paint_edges(frame, hdc);
     }
 
     let _ = unsafe { EndPaint(frame, &ps) };

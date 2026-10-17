@@ -25,6 +25,15 @@ struct PaneStack: Equatable {
         /// writes it (`PaneFrame.Title.roleWord`); nil for an ordinary
         /// terminal.
         var role: String?
+        /// The core's id for the terminal, as the snapshot writes it; nil
+        /// while it has none. What a tab is lit by (`terminal_highlight`,
+        /// task 1689).
+        var terminal: String?
+
+        /// Its tab carries the supervisor's mark before the name (task
+        /// 1692): wherever it is in the stack, in front or behind -- behind,
+        /// the frame is the one in front's and says nothing of it.
+        var marked: Bool { wears == .supervisor }
     }
 
     /// How an ordinary terminal's stack is drawn. **The design draws

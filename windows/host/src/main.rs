@@ -110,6 +110,7 @@ mod dnd;
 mod ffi;
 mod keybinds;
 mod keys;
+mod highlight;
 mod hud;
 mod i18n;
 mod inspector;
@@ -3737,7 +3738,14 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         }
         ACTION_PRESENT_TERMINAL => {
             alogf!(origin, "[action] present_terminal");
-            queue_from(origin, Op::PresentTerminal, "present_terminal action")
+            match target_surface(&target) {
+                Some(s) => queue_from(origin, Op::PresentTerminal(s as usize), "present_terminal action"),
+                None => {
+                    // process-wide: the action named no surface, which is the report
+                    plogf!("[action] present_terminal names no terminal; nothing presented");
+                    false
+                }
+            }
         }
         // **Per surface, because a pointer shape is about one pane.** After a
         // split the pointer is over exactly one of them, and a shape stored
@@ -4536,6 +4544,10 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // strip, or into the strip of another window. A move -- the panes
         // keep their windows and surfaces (`tabs::move_tab_for_tool`).
         ffi::ACTION_POLTER_TAB_MOVE => layout::perform_tab_move(&action, target_surface(&target)),
+
+        // A terminal lit up for the person to find (`terminal_highlight`,
+        // task 1690): answered before this returns, as a tab move is.
+        ffi::ACTION_POLTER_HIGHLIGHT => layout::perform_highlight(&action, target_surface(&target)),
 
         // Stacking terminals in one pane (`Binding.zig`, `pane_stack`; task
         // 1583). **Answered now**: a verb with nothing to do returns false
@@ -7728,6 +7740,7 @@ fn main() {
     notify::init(hinst);
     divider::init(hinst);
     panedrag::init(hinst);
+    highlight::init(hinst);
     // What each plugin's running copy starts with: the status dots' ↻
     // (settings.md §5.1) compares against it, and the core keeps no copy.
     plugins::snapshot_at_startup();
@@ -7967,6 +7980,13 @@ fn main() {
                 }
                 if msg.message == WM_QUIT {
                     break 'outer;
+                }
+
+                // **The first key while a terminal is lit ends it and goes
+                // nowhere** (task 1690) -- asked before TSF, which would
+                // otherwise have the key first.
+                if highlight::pre_translate(&msg) {
+                    continue;
                 }
 
                 // **Chords that are ours are not offered to TSF at all.**

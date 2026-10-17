@@ -43,7 +43,9 @@ window tab draws it; which frame the pane of every terminal wears
 (`PaneFrame.drawn` and `pane::drawn`) -- every terminal the snapshot lists,
 one it does not and none at all, in a split tab, alone in its tab, with the
 setting off and in the quick terminal: the frame, the name, the glyph and
-the word -- whether the tab's ground then shows, and the English word for
+the word, whether the bar has the supervisor's badge and whether the pane has
+the supervisor's edge with no frames (task 1692) -- whether the tab's ground
+then shows, and the English word for
 what each frame is -- the glyph and the word being the pair the core gives
 for the title's right end, `held` among them; what the core says of every group's
 supervisor (its state, whether one can be started, why the last try made
@@ -581,6 +583,9 @@ for (placeName, place) in panePlaces {
         } else {
             print("pane place=\(placeName) terminal=\(id ?? "-") wears=-")
         }
+        // Task 1692: the supervisor's badge on the bar, and its edge with no frames.
+        print("pane_mark place=\(placeName) terminal=\(id ?? "-") badge=\(d.map { $0.title.badge(in: $0.wears) } ?? false) "
+            + "edged=\(PaneFrame.edged(terminal: id, at: place, in: terminals))")
         all.append(d)
     }
     print("pane_ground place=\(placeName) shows=\(PaneFrame.groundShows(all))")
