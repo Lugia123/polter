@@ -53,6 +53,27 @@ function Get-Prop {
     return $p.Value
 }
 
+# A property that is a JSON array, as an array, and an empty one for anything
+# else -- `archive.py`'s `isinstance(events, list)`.
+#
+# **Not `Get-Prop`, and not `@(Get-Prop ...)`.** A function's output goes
+# through the pipeline, which unrolls a one-element array into its element:
+# `Get-Prop` hands back the one event itself, and a test for `[array]` after
+# that calls a batch of one empty. `ConvertFrom-Json` is not what loses it --
+# the array is still there on the property, on 5.1 and 7 alike. `@()` around
+# the call would put it back, but would also turn an object that was never a
+# list into a list of one, which `archive.py` refuses. So the type is checked
+# on the property itself, inside this function, before anything is unrolled.
+# That is the fix; the leading comma only keeps the answer an array for a
+# caller that counts it, since `foreach` walks a lone object once anyway.
+function Get-List {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return ,@() }
+    $p = $Object.PSObject.Properties[$Name]
+    if ($null -eq $p -or $p.Value -isnot [array]) { return ,@() }
+    return ,$p.Value
+}
+
 # An integer, or `$null` for anything that is not one. JSON numbers arrive as
 # `Int32`, `Int64` or `Decimal`/`Double` depending on magnitude, and `at_ms`
 # is past `Int32`. A float here would be a format change, and it must not
@@ -338,8 +359,7 @@ function Invoke-Handle {
 
     $through = Get-Integer (Get-Prop $batch 'through')
     if ($null -eq $through) { $through = $script:Acked }
-    $events = Get-Prop $batch 'events'
-    if ($events -isnot [array]) { $events = @() }
+    $events = Get-List $batch 'events'
 
     $written = $null
     try {
