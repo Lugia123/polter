@@ -254,7 +254,7 @@ function Invoke-Commit {
 # evidence, not just the conclusion** -- on a machine whose profile ACL has
 # been changed it does not hold, and a reader with the evidence can check.
 #
-# ⚠️ **Half of it is still unverified**: what was read is `%LOCALAPPDATA%`
+# WARNING: **Half of it is still unverified**: what was read is `%LOCALAPPDATA%`
 # itself. The `polter\archive` directory this creates did not exist yet, so
 # "it really does inherit" has not been observed. Do not read the paragraph
 # above as covering the subdirectory.

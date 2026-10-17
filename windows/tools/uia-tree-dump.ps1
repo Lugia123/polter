@@ -519,7 +519,7 @@ switch ($Mode) {
             param($Element, $Walker, [System.Collections.ArrayList]$Sink, [int]$Depth = 0)
             $type = $Element.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
             $r = $Element.Current.BoundingRectangle
-            # ⚠️ **Every value here is parenthesised, and it is not style.**
+            # WARNING: **Every value here is parenthesised, and it is not style.**
             # Inside a `@{}` literal a bare `-f` or a bare pipeline ends at the
             # first comma, which the parser reads as the next hashtable entry;
             # the error it produces names a line several lines later and the
@@ -556,7 +556,7 @@ switch ($Mode) {
                 Collect -Element $w -Walker $pair[1] -Sink $rows
 
                 # **Not matched by name.** The names are localised -- on a
-                # Chinese system they are 最小化 / 最大化 / 关闭 -- and a probe
+                # Chinese system they are not Minimize / Maximize / Close -- and a probe
                 # that looked for English words would report "absent" on the
                 # machine this port is actually tested on. Control type is the
                 # thing that does not move.
