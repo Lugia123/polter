@@ -193,13 +193,15 @@ final class ProjectLinker {
         }
     }
 
-    /// Open a project the core asked for where the control room would have
-    /// put it had the person asked there; with no control room on screen,
-    /// by the frames in its file and beside the terminal in front.
+    /// Open a project the core asked for where the control room puts a tab
+    /// the application asked for (`ControlRoomRules.orderedProjectTab`):
+    /// beside it and behind it while it is in front; with no control room
+    /// on screen, by the frames in its file and beside the terminal in
+    /// front.
     private func open(_ entry: ProjectStore.Entry) throws {
         let room = NSApp.windows.compactMap { $0.windowController as? ControlRoomController }.first
         if let room {
-            try room.loadProjectWhereTabsGo(entry)
+            try room.loadProjectWhereTabsGo(entry, orderedByCore: true)
         } else {
             try TerminalController.load(
                 entry, ghostty: ghostty, into: nil, beside: TerminalController.preferredParent?.window)

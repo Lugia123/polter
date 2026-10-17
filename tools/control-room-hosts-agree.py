@@ -542,6 +542,17 @@ for asker in tabAskers {
         print("new_tab asker=\(who) person=\(person) front=\(front) beside=\(beside) any=\(any) -> \(to)")
     }
 }
+for bits in 0..<8 {
+    let (front, beside, any) = (bits & 4 != 0, bits & 2 != 0, bits & 1 != 0)
+    let to: String
+    switch ControlRoomRules.orderedProjectTab(controlRoomInFront: front, tabsBesideControlRoom: beside, anyTerminalWindow: any) {
+    case .inFront(let h): to = "in_front(\(homeName(h)))"
+    case .behind(let h): to = "behind(\(homeName(h)))"
+    case .ownWindow: to = "own_window"
+    case .refused: to = "refused"
+    }
+    print("ordered_project_tab front=\(front) beside=\(beside) any=\(any) -> \(to)")
+}
 for name in ["BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
              "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable",
              "NotStartedByHand", "AlreadyTakingOver", "NotSetUpForCli", "CliOff", "CliUnavailable"] {

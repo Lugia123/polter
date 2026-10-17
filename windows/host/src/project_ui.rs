@@ -597,6 +597,7 @@ pub fn open_page_in_new_tab(
     hinst: windows::Win32::Foundation::HINSTANCE,
     root: &SavedNode,
     snaps: &std::path::Path,
+    behind: bool,
 ) -> Result<TabId, String> {
     // The seed pane is created here rather than by the layout step, so its
     // scrollback has to be given here too -- the same reason as `cwd` and
@@ -608,13 +609,15 @@ pub fn open_page_in_new_tab(
         cwd: Some(seed.cwd.clone()).filter(|c| !c.is_empty()),
         history: Some(seed.history.clone()).filter(|h| !h.is_empty()),
         scrollback: project::scrollback_path(snaps, seed),
+        behind,
         ..Default::default()
     };
     if !tabs::create_tab_with(frame, app, hinst, seed_spec) {
         return Err("could not create a new tab".to_string());
     }
-    // `create_tab_with` appends and activates, so the tab just made is the
-    // last one -- picked up by identity here, before anything can reorder.
+    // `create_tab_with` appends (and activates unless `behind`), so the tab
+    // just made is the last one -- picked up by identity here, before
+    // anything can reorder.
     let Some(id) = tabs::last_tab_id(frame) else {
         return Err("the new tab is not in its window".to_string());
     };
@@ -624,7 +627,8 @@ pub fn open_page_in_new_tab(
     // refused layout used to leave its first pane standing alone in a tab
     // nobody asked for, and a window made for the project with it.
     let built = (|| -> Result<(), String> {
-        let seed_surface = tabs::active_surface(frame);
+        // The new tab's, by identity: behind, the active one is another.
+        let seed_surface = tabs::surface_of_tab(frame, id);
         if seed_surface.is_null() {
             return Err("the new tab has no active surface".to_string());
         }
@@ -666,7 +670,7 @@ pub fn open_project(
     hinst: windows::Win32::Foundation::HINSTANCE,
     file: &std::path::Path,
 ) -> Result<(), String> {
-    crate::project_session::open(frame, app, hinst, file, false)
+    crate::project_session::open(frame, app, hinst, file, false, false)
 }
 
 #[cfg(test)]

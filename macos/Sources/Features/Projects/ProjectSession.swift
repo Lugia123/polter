@@ -495,7 +495,10 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
             if !wasOpen, !behind, let front {
                 front.tabGroup?.selectedWindow = front
             }
-            if number == 0, !behind {
+            // Not brought in front when asked for behind, open already or
+            // not: the core repeats an open order for a project that is
+            // (#1703), and that brought it over the control room.
+            if number == 0, !behind, inFront || !wasOpen {
                 toShow = front ?? firstOpen
             }
 

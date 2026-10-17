@@ -1164,6 +1164,26 @@ fn a_group_just_made_is_selected_when_the_core_lists_it_and_not_before() {
 }
 
 #[test]
+fn a_project_the_core_ordered_opens_behind_the_control_room_while_that_is_in_front() {
+    use crate::rules::{new_tab, ordered_project_tab, Home, NewTab};
+    // #1703: starting the supervisor of a group that has a project opens
+    // the project by the core's order. It opened among the tabs of the
+    // window in front and came forward, off the control room.
+    for (beside, any) in [(true, true), (true, false), (false, true), (false, false)] {
+        assert_eq!(ordered_project_tab(true, beside, any), NewTab::Behind(Home::ControlRooms));
+    }
+    // The same answer as a tab the application asks for, wherever the
+    // control room is -- a start without a project gets that one.
+    for front in [false, true] {
+        for beside in [false, true] {
+            for any in [false, true] {
+                assert_eq!(ordered_project_tab(front, beside, any), new_tab(None, false, front, beside, any));
+            }
+        }
+    }
+}
+
+#[test]
 fn where_a_tab_the_core_asked_for_goes() {
     use crate::rules::{new_tab, Home, NewTab};
     // (lent, has a home)
