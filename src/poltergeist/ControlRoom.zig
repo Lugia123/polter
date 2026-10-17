@@ -306,9 +306,21 @@
 //!                             and stated the result, and gone when it has.
 //!                             Carrying one out twice changes nothing
 //!   "supervisor_roles": [ {"key":"polter-supervisor",
-//!       "name":"Polter Supervisor"} ],
+//!       "name":"Polter Supervisor",
+//!       "clis":[{"key":"claude-code","label":"Claude Code"|null}]} ],
 //!                             the roles a supervisor can be started in,
-//!                             in the order to offer them
+//!                             in the order to offer them. `clis` are the
+//!                             ones it can be started in here: set up in
+//!                             the role, plugin on (task 1677), in the
+//!                             role's order; all it is set up for while the
+//!                             adapters have not been read. May be empty --
+//!                             the start is then refused, with the reason.
+//!                             More than one is the "Agent CLI" row.
+//!       "held_back":[{"key":"other-cli","label":…|null,
+//!         "why":"plugin_off"|"cannot_run"|"no_plugin"}]
+//!                             set up in the role and not in `clis`, and
+//!                             why: a switch in Plugins, an adapter nothing
+//!                             here can run, no plugin at all
 //!   "choose_supervisor_role": false,
 //!                             whether there is a choice to offer: more
 //!                             than one. A host does not count them
@@ -665,6 +677,11 @@ pub const Input = struct {
     /// adapters' own word. No default: a caller that forgot it would have
     /// every group say "not read yet" for ever.
     cli_resume: CliResume,
+    /// Every agent CLI a plugin here manages, and whether it can be
+    /// started (`agent_cli.survey`); null when that could not be read, and
+    /// then every CLI a role is set up for is offered. No default: a caller
+    /// that forgot it would offer CLIs whose plugin is off.
+    cli_standings: ?[]const CliStanding,
     /// Where every group stands with a project, and what the host is to
     /// do about it. No default: a caller that forgot it would have every
     /// group read "the host has not said" for ever.
@@ -712,6 +729,52 @@ pub const ProjectsIn = struct {
 pub const SupervisorRole = struct {
     key: []const u8,
     name: []const u8,
+    /// The CLIs it can be started in here (`startClisOf`), each with what
+    /// its adapter calls it -- null when nobody has said, and a host writes
+    /// the key.
+    clis: []const CliOut,
+    /// The ones it is set up for that are not in `clis`, in its order, and
+    /// why each is not.
+    held_back: []const HeldBackOut,
+};
+
+pub const CliOut = struct {
+    key: []const u8,
+    label: ?[]const u8,
+};
+
+/// One agent CLI a plugin manages, and whether it can be started here.
+pub const CliStanding = struct {
+    key: []const u8,
+    standing: Standing,
+
+    pub const Standing = enum {
+        ok,
+        /// Installed, switched off: a switch in Plugins starts it.
+        plugin_off,
+        /// Switched on, and nothing here can run its adapter: no switch
+        /// does.
+        cannot_run,
+    };
+};
+
+/// A CLI a role is set up for and that is not offered, and why -- three
+/// reasons, because the person does three different things about them.
+pub const HeldBackOut = struct {
+    key: []const u8,
+    label: ?[]const u8,
+    why: Why,
+
+    pub const Why = enum { plugin_off, cannot_run, no_plugin };
+};
+
+/// Whether a start in this CLI goes on with the last session: `resumeOf`,
+/// asked once per CLI so that a host whose person picks another CLI reads
+/// the answer rather than works it out (task 1677).
+pub const CliResumeOut = struct {
+    cli: []const u8,
+    can: bool,
+    why: ResumeOut.Why,
 };
 
 /// The same role as it is handed in: with the CLIs it is set up for, in
@@ -761,8 +824,29 @@ pub fn startRoleOf(roles: []const StartRole, last: Chat.LastSupervisor) ?StartRo
     return if (roles.len > 0) roles[0] else null;
 }
 
-/// The CLI a role is started in: the last supervisor's when the role is
-/// set up for it, else the role's first. Null for a role with none.
+/// The CLIs `role` can be started in here: the ones it is set up for
+/// that stand `ok`, in its order -- or all of them while that has not been
+/// read (null). In `arena` unless nothing is taken out.
+pub fn startClisOf(arena: Allocator, role: StartRole, standings: ?[]const CliStanding) Allocator.Error![]const []const u8 {
+    const here = standings orelse return role.clis;
+    var out: std.ArrayList([]const u8) = .empty;
+    for (role.clis) |c| if (standingOf(here, c) == null) try out.append(arena, c);
+    return out.items;
+}
+
+/// Why `cli` is not offered, or null when it is.
+pub fn standingOf(standings: []const CliStanding, cli: []const u8) ?HeldBackOut.Why {
+    for (standings) |s| if (std.mem.eql(u8, s.key, cli)) return switch (s.standing) {
+        .ok => null,
+        .plugin_off => .plugin_off,
+        .cannot_run => .cannot_run,
+    };
+    return .no_plugin;
+}
+
+/// The CLI a role is started in, of those it can be here (`startClisOf`):
+/// the last supervisor's when it is one of them, else the first. Null for
+/// none.
 pub fn startCliOf(clis: []const []const u8, last: Chat.LastSupervisor) ?[]const u8 {
     if (last.cli.len > 0) for (clis) |c| {
         if (std.mem.eql(u8, c, last.cli)) return c;
@@ -1158,7 +1242,11 @@ pub const SupervisorOut = struct {
     cwd: []const u8,
     cwd_from: CwdFrom,
     last: LastOut,
+    /// For `cli`, the one a start uses when none is picked.
     @"resume": ResumeOut,
+    /// The same for every CLI any supervisor role can be started in here,
+    /// in the order they first appear in `supervisor_roles`.
+    resume_by_cli: []const CliResumeOut,
     hookless: HooklessOut,
 
     pub const State = enum { present, absent, starting, failed };
@@ -1969,7 +2057,7 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
         .{ .dir = "", .from = .none };
 
     const role = startRoleOf(in.supervisor_roles, last);
-    const cli = if (role) |r| startCliOf(r.clis, last) else null;
+    const cli = if (role) |r| startCliOf(try startClisOf(arena, r, in.cli_standings), last) else null;
 
     const open = try arena.alloc(Id, in.terminals.len);
     for (in.terminals, open) |t, *o| o.* = t.id;
@@ -1983,6 +2071,22 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
     // Reading the adapters is under way and nothing happens here when it
     // ends, so the snapshot asks to be made again shortly.
     if (go_on.why == .clis_unread) wake.consider(in.now_ms + 1_000);
+
+    var by_cli: std.ArrayList(CliResumeOut) = .empty;
+    for (in.supervisor_roles) |r| for (try startClisOf(arena, r, in.cli_standings)) |c| {
+        const seen = for (by_cli.items) |b| {
+            if (std.mem.eql(u8, b.cli, c)) break true;
+        } else false;
+        if (seen) continue;
+        const this_one = resumeOf(.{
+            .last = last,
+            .cli = c,
+            .cli_resume = in.cli_resume,
+            .held = sessionHeld(in.bus, open, last.session),
+            .last_try_failed = start.state == .failed and start.resuming,
+        });
+        try by_cli.append(arena, .{ .cli = try arena.dupe(u8, c), .can = this_one.can, .why = this_one.why });
+    };
 
     return .{
         .state = state,
@@ -2001,6 +2105,7 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
             .heard_ms = last.heard_ms,
         },
         .@"resume" = go_on,
+        .resume_by_cli = by_cli.items,
         .hookless = if (steward) |id| try hooklessOf(arena, in, name, id) else .none,
     };
 }
@@ -2533,10 +2638,29 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
             },
             .supervisor_roles = roles: {
                 const out = try arena.alloc(SupervisorRole, in.supervisor_roles.len);
-                for (in.supervisor_roles, out) |r, *o| o.* = .{
-                    .key = try arena.dupe(u8, r.key),
-                    .name = try arena.dupe(u8, r.name),
-                };
+                for (in.supervisor_roles, out) |r, *o| {
+                    const here = try startClisOf(arena, r, in.cli_standings);
+                    const clis = try arena.alloc(CliOut, here.len);
+                    for (here, clis) |c, *d| d.* = .{
+                        .key = try arena.dupe(u8, c),
+                        .label = if (cliLabelOf(in.cli_names, c)) |l| try arena.dupe(u8, l) else null,
+                    };
+                    var held: std.ArrayList(HeldBackOut) = .empty;
+                    if (in.cli_standings) |all| for (r.clis) |c| {
+                        const why = standingOf(all, c) orelse continue;
+                        try held.append(arena, .{
+                            .key = try arena.dupe(u8, c),
+                            .label = if (cliLabelOf(in.cli_names, c)) |l| try arena.dupe(u8, l) else null,
+                            .why = why,
+                        });
+                    };
+                    o.* = .{
+                        .key = try arena.dupe(u8, r.key),
+                        .name = try arena.dupe(u8, r.name),
+                        .clis = clis,
+                        .held_back = held.items,
+                    };
+                }
                 break :roles out;
             },
             .choose_supervisor_role = in.supervisor_roles.len > 1,
@@ -2640,6 +2764,7 @@ const World = struct {
     retention_waiting: ?u64 = null,
     roles: []const StartRole = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{"claude-code"} }},
     cli_resume: CliResume = .{ .read = &.{"claude-code"} },
+    cli_standings: ?[]const CliStanding = &.{.{ .key = "claude-code", .standing = .ok }},
     projects: ProjectsIn = .unknown,
     cli_names: []const CliName = &.{.{ .key = "claude-code", .label = "Claude Code" }},
     home: []const u8 = "/Users/me",
@@ -2739,6 +2864,7 @@ const World = struct {
             .retention_waiting = self.retention_waiting,
             .supervisor_roles = self.roles,
             .cli_resume = self.cli_resume,
+            .cli_standings = self.cli_standings,
             .projects = self.projects,
             .cli_names = self.cli_names,
             .home = self.home,
@@ -2854,10 +2980,25 @@ fn fixtureWorld() !World {
         .dir = "",
         .dir_from = .none,
         .role = "polter-supervisor",
-        .cli = "claude-code",
+        .cli = "codex",
         .session = "s-before",
         .heard_ms = 1_699_913_600_000,
     });
+
+    // The supervisor role set up for two CLIs, both plugins on and both
+    // able to go on with a session (task 1677): `notes` was last in Codex
+    // and `billing` in Claude Code, so a host has a group to show picking
+    // the other one for, each way round.
+    // And a third the role is set up for whose plugin is off, which the
+    // snapshot says rather than drops.
+    w.roles = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{ "claude-code", "codex", "other-cli" } }};
+    w.cli_standings = &.{
+        .{ .key = "claude-code", .standing = .ok },
+        .{ .key = "codex", .standing = .ok },
+        .{ .key = "other-cli", .standing = .plugin_off },
+    };
+    w.cli_resume = .{ .read = &.{ "claude-code", "codex" } };
+    w.cli_names = &.{ .{ .key = "claude-code", .label = "Claude Code" }, .{ .key = "codex", .label = "Codex" } };
 
     // The control room asked web-app's supervisor for a report, and the
     // input line had a draft in it: being tried again (task 1671).

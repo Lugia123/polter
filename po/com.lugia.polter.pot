@@ -5405,3 +5405,95 @@ msgstr ""
 #: windows/control-room/src/act.rs:345
 msgid "Deleted from the list, but some of its records could not be deleted."
 msgstr ""
+
+#: windows/control-room/src/scene.rs:98
+msgid "Agent CLI"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:102
+#, rust-format
+msgid "The last session was {}'s; {} can't go on with it."
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:205
+msgid "Last used"
+msgstr ""
+
+#: windows/control-room/src/act.rs:359
+msgid "That role isn't set up for that agent CLI."
+msgstr ""
+
+#: windows/control-room/src/act.rs:360
+msgid "That agent CLI's plugin is off. Turn it on in Plugins."
+msgstr ""
+
+#: windows/control-room/src/act.rs:361
+msgid "That agent CLI can't be started on this machine."
+msgstr ""
+
+#: windows/host/src/roles.rs:771
+#, rust-format
+msgid "The {} plugin is off: {} won't be offered when this role starts. Its settings stay in the role."
+msgstr ""
+
+#: windows/host/src/roles.rs:775
+#, rust-format
+msgid "{} can't be started on this machine, so it won't be offered when this role starts. Its settings stay in the role."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1069
+msgid "Open Plugin Settings"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1076
+msgid "With no CLI named: a worker its supervisor starts uses the supervisor's own; when you start it from a menu or the control room, you choose."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1089
+msgid "Can't be used at launch; the settings here are still saved"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1115
+msgid "Permission mode"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1115
+msgid "Approval"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1115
+msgid "Sandbox"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1143
+#, rust-format
+msgid "{} isn't a value this version takes; it is left out at launch."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1178
+msgid "Both CLIs share these switches. One marked “Only …” is installed in that CLI alone, and its switch acts on that CLI alone."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1180
+msgid "The role's CLIs share these switches. One marked “Only …” is installed in that CLI alone, and its switch acts on that CLI alone."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1196
+#, rust-format
+msgid "{}'s plugin couldn't list what's installed"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1297
+#, rust-format
+msgid "Only {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1366
+#, rust-format
+msgid "The {} plugin is off, so what it has installed can't be read; the role's switches for {} stay as they are."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1369
+#, rust-format
+msgid "What {} has installed can't be read here; the role's switches for {} stay as they are."
+msgstr ""

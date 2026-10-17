@@ -494,6 +494,28 @@ for state in [ControlRoomList.SupervisorStart.State.starting, .absent] {
 print("start_roles choose=\(list.chooseSupervisorRole)")
 for role in list.supervisorRoles {
     print("start_role key=\(role.key) name=\(quote(role.name))")
+    for c in role.clis {
+        print("start_role_cli role=\(role.key) key=\(c.key) label=\(c.label.map(quote) ?? "-")")
+    }
+    for h in role.heldBack {
+        print("start_role_held role=\(role.key) key=\(h.key) label=\(h.label.map(quote) ?? "-") why=\(h.why.rawValue)")
+    }
+}
+// Which agent CLI a start uses and what becomes of "Go on with the last
+// session" (task 1677): every group a supervisor can be started for, in
+// every role, with nothing picked and with each of the role's CLIs.
+for r in list.rows where r.alone == nil {
+    guard let start = r.start else { continue }
+    for role in list.supervisorRoles {
+        for picked in [nil] + role.clis.map { Optional($0.key) } {
+            let c = ControlRoomStartChoice.cliChoice(start, roles: list.supervisorRoles, role: role.key, picked: picked)
+            let says = ControlRoomStartChoice.resumeSaid(c, last: start.last)
+            print("start_cli group=\(r.id) role=\(role.key) picked=\(picked ?? "-") shown=\(c.shown ? 1 : 0) "
+                + "on=\(c.picked ?? "-") resume=\(c.resume.rawValue) why=\(c.why.rawValue) "
+                + "says=\(says.map(quote) ?? "-") sends_cli=\(c.picked ?? "-") "
+                + "sends_session=\(ControlRoomStartChoice.sessionSent(c, picked: nil)?.rawValue ?? "-")")
+        }
+    }
 }
 for awaited in ["billing", "not-yet", nil] as [String?] {
     print("made awaited=\(awaited ?? "-") select=\(ControlRoomRules.madeGroupToSelect(awaited, in: list.rows) ?? "-")")
@@ -522,7 +544,7 @@ for asker in tabAskers {
 }
 for name in ["BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
              "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable",
-             "NotStartedByHand", "AlreadyTakingOver"] {
+             "NotStartedByHand", "AlreadyTakingOver", "NotSetUpForCli", "CliOff", "CliUnavailable"] {
     print("refusal \(name) says=\(quote(ControlRoomActions.Refusal(name: name).message))")
 }
 
@@ -838,6 +860,13 @@ for item in ControlRoomRowMenu.Item.allCases {
     if let sub = item.submenu {
         print("group_submenu \(item.rawValue) items=\(sub.map(\.rawValue).joined(separator: " "))")
     }
+}
+// What "with a new session ›" opens for each group (task 1677): the CLIs of
+// the role the core would start, and the one the last supervisor used.
+for r in list.rows where r.alone == nil {
+    guard let start = r.start else { continue }
+    let clis = start.role.flatMap { k in list.supervisorRoles.first { $0.key == k } }?.clis.map(\.key) ?? []
+    print("\(ControlRoomRowMenu.cliSubmenuLine(clis, last: start.last?.lastCli)) row=\(r.id)")
 }
 // Which supervisor each row's menu is made for (task 1635).
 for r in list.rows where r.alone == nil {

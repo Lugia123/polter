@@ -93,6 +93,13 @@ pub mod msg {
     pub const WHY_CLIS_UNREAD: &str = n_("Checking whether the last session can be gone on with…");
     pub const WHY_CLI_CANNOT_RESUME: &str = n_("A new session will be started: this CLI cannot go on with an earlier session.");
     pub const WHY_SESSION_IN_USE: &str = n_("A new session will be started: an open terminal is in the last session now.");
+    /// The label of the line of agent CLIs a start can use (#1678), shown
+    /// only when the role can be started in more than one.
+    pub const AGENT_CLI: &str = n_("Agent CLI");
+    /// Why "Go on with the last session" is greyed: another CLI was picked
+    /// than the one that session was in. The first `{}` is that session's
+    /// CLI, the second the one picked.
+    pub const LAST_SESSION_WAS: &str = n_("The last session was {}'s; {} can't go on with it.");
     /// The directory, when the core names none: the new tab's own.
     pub const WHERE_THE_TAB_STARTS: &str = n_("Where the tab starts");
     /// The right side, for a row that is a terminal in no group: it is
@@ -1100,6 +1107,9 @@ pub struct StartView<'a> {
     /// Which session they picked; none while they have picked neither,
     /// and then it is the last one (`act::session_sent`).
     pub session: Option<crate::act::Session>,
+    /// Which agent CLI they picked; none while they have picked none, and
+    /// then it is the one `cli_choice` puts on.
+    pub cli: Option<&'a str>,
     /// Why the last press of "Start Supervisor" did nothing.
     pub refusal: Option<&'a str>,
     /// The person's home directory, shown as `~`.
@@ -1118,8 +1128,12 @@ pub struct Start {
     /// "Start Supervisor".
     pub start: Option<Rect>,
     /// The two sessions' lines, when the core says the last one can be
-    /// gone on with: pressing one picks it. Empty otherwise.
+    /// gone on with: pressing one picks it. Empty otherwise. **Not one
+    /// whose line is greyed**: pressing that picks nothing.
     pub sessions: Vec<(crate::act::Session, Rect)>,
+    /// The agent CLIs' lines, by CLI key, when the role can be started in
+    /// more than one: pressing one picks it (#1678). Empty otherwise.
+    pub clis: Vec<(String, Rect)>,
 }
 
 /// Whether the two-way choice of session is drawn: only when the core says
@@ -1127,6 +1141,132 @@ pub struct Start {
 /// offering something that then does not happen.
 pub fn offers_session(start: Option<&crate::snapshot::SupervisorStart>) -> bool {
     start.and_then(|s| s.last.as_ref()).is_some_and(|l| l.can_resume)
+}
+
+/// How "Go on with the last session" stands for the CLI picked (#1678).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resume {
+    /// Offered and can be picked: the picked CLI can go on with it.
+    Live,
+    /// Drawn grey, with "New session" taken instead: another CLI of the
+    /// role could go on with it, the picked one cannot (01b). The layout
+    /// does not jump as the CLI changes.
+    Greyed,
+    /// Not drawn: no CLI on screen can go on with it, and a sentence says
+    /// why -- as before there was a choice of CLI.
+    Hidden,
+}
+
+impl Resume {
+    pub fn name(self) -> &'static str {
+        match self {
+            Resume::Live => "live",
+            Resume::Greyed => "greyed",
+            Resume::Hidden => "hidden",
+        }
+    }
+}
+
+/// What a start offers of the role's agent CLIs (#1678; the macOS host's
+/// `ControlRoomStartChoice`), for the role on screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliChoice {
+    /// The CLIs the role can be started in: the core's list, whose plugins
+    /// are on, in the role's order.
+    pub clis: Vec<crate::snapshot::RoleCli>,
+    /// The "Agent CLI" line is drawn: only for more than one (01c).
+    pub shown: bool,
+    /// The CLI the start uses; none when the core names none.
+    pub picked: Option<String>,
+    pub resume: Resume,
+    /// Why the picked CLI does not go on with the last session; `None` (the
+    /// reason) when it does.
+    pub why: crate::snapshot::ResumeWhy,
+}
+
+/// Whether a start in `cli` goes on with the last session, and why not:
+/// the core's answer for that CLI (`resume_by_cli`), and never one worked
+/// out here. A core from before it said gives the one answer it has for
+/// the CLI it names (`resume`); a CLI it gives no answer for is not gone
+/// on with.
+pub fn resume_for(last: &crate::snapshot::SupervisorLast, cli: Option<&str>) -> (bool, crate::snapshot::ResumeWhy) {
+    if let Some(r) = last.by_cli.iter().find(|r| Some(r.cli.as_str()) == cli) {
+        return (r.can, r.why);
+    }
+    if last.by_cli.is_empty() || cli == last.cli.as_deref() {
+        return (last.can_resume, last.why);
+    }
+    (false, crate::snapshot::ResumeWhy::CliDiffers)
+}
+
+/// The CLI choice for a start in `role` (the core's when none is picked),
+/// with `picked` the CLI the person pressed, none while they pressed none.
+///
+/// Which one is on before they press: for the core's role, the core's
+/// (`supervisor.cli`); for another, the CLI the last supervisor used when
+/// the role lists it, else the role's first -- the rule the core uses for
+/// its own (`startCliOf`). A pick the role does not list is not kept.
+pub fn cli_choice(
+    start: &crate::snapshot::SupervisorStart,
+    roles: &[crate::snapshot::SupervisorRole],
+    role: Option<&str>,
+    picked: Option<&str>,
+) -> CliChoice {
+    use crate::snapshot::ResumeWhy;
+    let key = role.or(start.role.as_deref());
+    let clis = key.and_then(|k| roles.iter().find(|r| r.key == k)).map(|r| r.clis.clone()).unwrap_or_default();
+    let listed = |c: &str| clis.iter().any(|x| x.key == c);
+    let last = start.last.as_ref();
+    let core_default = if key == start.role.as_deref() { last.and_then(|l| l.cli.clone()) } else { None };
+    let chosen = picked
+        .filter(|c| listed(c))
+        .map(str::to_string)
+        .or_else(|| core_default.filter(|c| clis.is_empty() || listed(c)))
+        .or_else(|| last.and_then(|l| l.last_cli.clone()).filter(|c| listed(c)))
+        .or_else(|| clis.first().map(|c| c.key.clone()));
+    let shown = clis.len() > 1;
+    let Some(last) = last else {
+        return CliChoice { clis, shown, picked: chosen, resume: Resume::Hidden, why: ResumeWhy::NoRecord };
+    };
+    let (can, why) = resume_for(last, chosen.as_deref());
+    let resume = if can {
+        Resume::Live
+    } else if shown && clis.iter().any(|c| resume_for(last, Some(&c.key)).0) {
+        Resume::Greyed
+    } else {
+        Resume::Hidden
+    };
+    CliChoice { clis, shown, picked: chosen, resume, why: if can { ResumeWhy::None } else { why } }
+}
+
+/// What the start sends for its session (`act::session_sent`): the one
+/// picked while "Go on" can be picked, and nothing otherwise -- greyed or
+/// not drawn, the core starts a new one by itself.
+pub fn session_for(choice: &CliChoice, picked: Option<crate::act::Session>) -> Option<crate::act::Session> {
+    crate::act::session_sent(choice.resume == Resume::Live, picked)
+}
+
+/// The sentence under the sessions, as the English to translate and what
+/// goes where its `{}` are; none when there is nothing to say. Greyed
+/// because another CLI was picked: whose session it was, and which CLI
+/// cannot go on with it. Otherwise the core's reason (`resume_note`).
+pub fn resume_said(choice: &CliChoice, last: Option<&crate::snapshot::SupervisorLast>) -> Option<(&'static str, Vec<String>)> {
+    use crate::snapshot::ResumeWhy;
+    if choice.resume == Resume::Live {
+        return None;
+    }
+    if choice.resume == Resume::Greyed && choice.why == ResumeWhy::CliDiffers {
+        let last = last?;
+        let was = cli_name(last.last_cli.as_deref(), last.last_cli_label.as_deref());
+        let now = choice.picked.as_deref().and_then(|p| {
+            let label = choice.clis.iter().find(|c| c.key == p).and_then(|c| c.label.as_deref());
+            cli_name(Some(p), label)
+        });
+        if let (Some(was), Some(now)) = (was, now) {
+            return Some((msg::LAST_SESSION_WAS, vec![was, now]));
+        }
+    }
+    resume_note(choice.why).map(|t| (t, Vec::new()))
 }
 
 /// What an option of the choice is called.
@@ -1324,39 +1464,66 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
     if let Some(said) = last_supervisor_words(Some(start), view.cwd, view.home, tr).filter(|s| draws(s)) {
         sentence(&mut out, &mut y, said);
     }
-    // Go on with its session or start a new one -- only when the core says
-    // the first can be done. When it cannot, a sentence says why instead.
-    if offers_session(Some(start)) {
-        let picked = crate::act::session_sent(true, view.session);
-        for one in crate::act::Session::ALL {
-            let rect = Rect { x: pad, y, w, h: side::QUIET_ROW_HEIGHT };
-            let on = picked == Some(one);
-            let mark = Rect { x: pad, y: y + (side::QUIET_ROW_HEIGHT - side::GLYPH) / 2.0, w: side::GLYPH, h: side::GLYPH };
-            // The one in use: a ring filled in the attention colour, never
-            // a grey ground. The other: an empty ring.
-            let ink = if on { theme.attention_text } else { theme.terminal_dim };
-            out.items.push(Item::Round { rect: mark, radius: side::GLYPH / 2.0, color: if on { ink } else { theme.terminal_background }, edge: Some(ink) });
-            if on {
-                let hole = side::GLYPH / 3.0;
-                out.items.push(Item::Round {
-                    rect: Rect { x: mark.x + hole, y: mark.y + hole, w: side::GLYPH - 2.0 * hole, h: side::GLYPH - 2.0 * hole },
-                    radius: (side::GLYPH - 2.0 * hole) / 2.0,
-                    color: theme.terminal_background,
-                    edge: None,
-                });
-            }
-            let lead = side::GLYPH + side::ROW_ITEM_GAP;
-            out.items.push(Item::Text {
-                rect: Rect { x: pad + lead, y, w: (w - lead).max(0.0), h: side::QUIET_ROW_HEIGHT },
-                text: tr(session_words(one)),
-                style: body(theme.terminal_text),
-                align: Align::Left,
+    // A ring for each choice: the one in use filled in the attention colour,
+    // never a grey ground; another an empty ring; one that cannot be
+    // picked, greyed with its words.
+    let radio = |out: &mut Start, y: f64, on: bool, enabled: bool, text: String| -> Rect {
+        let rect = Rect { x: pad, y, w, h: side::QUIET_ROW_HEIGHT };
+        let mark = Rect { x: pad, y: y + (side::QUIET_ROW_HEIGHT - side::GLYPH) / 2.0, w: side::GLYPH, h: side::GLYPH };
+        let ink = if on { theme.attention_text } else if enabled { theme.terminal_dim } else { theme.text_tertiary };
+        out.items.push(Item::Round { rect: mark, radius: side::GLYPH / 2.0, color: if on { ink } else { theme.terminal_background }, edge: Some(ink) });
+        if on {
+            let hole = side::GLYPH / 3.0;
+            out.items.push(Item::Round {
+                rect: Rect { x: mark.x + hole, y: mark.y + hole, w: side::GLYPH - 2.0 * hole, h: side::GLYPH - 2.0 * hole },
+                radius: (side::GLYPH - 2.0 * hole) / 2.0,
+                color: theme.terminal_background,
+                edge: None,
             });
-            out.sessions.push((one, rect));
+        }
+        let lead = side::GLYPH + side::ROW_ITEM_GAP;
+        out.items.push(Item::Text {
+            rect: Rect { x: pad + lead, y, w: (w - lead).max(0.0), h: side::QUIET_ROW_HEIGHT },
+            text,
+            style: body(if enabled { theme.terminal_text } else { theme.text_tertiary }),
+            align: Align::Left,
+        });
+        rect
+    };
+
+    // Which agent CLI (#1678): only when the role can be started in more
+    // than one. Its rings stand on the same left edge as the sessions'.
+    let choice = cli_choice(start, view.roles, view.role, view.cli);
+    if choice.shown {
+        out.items.push(Item::Line { rect: Rect { x: pad, y, w, h: line_h }, parts: vec![label(msg::AGENT_CLI)] });
+        y += line_h;
+        for c in &choice.clis {
+            let on = choice.picked.as_deref() == Some(c.key.as_str());
+            let name = cli_name(Some(&c.key), c.label.as_deref()).unwrap_or_default();
+            let rect = radio(&mut out, y, on, true, name);
+            out.clis.push((c.key.clone(), rect));
             y += side::QUIET_ROW_HEIGHT;
         }
-    } else if let Some(why) = start.last.as_ref().and_then(|l| resume_note(l.why)) {
-        sentence(&mut out, &mut y, tr(why));
+    }
+
+    // Go on with its session or start a new one -- only when the core says
+    // the first can be done, for some CLI on screen. Greyed when it can for
+    // another CLI than the one picked. When it cannot, a sentence says why.
+    if choice.resume != Resume::Hidden {
+        let live = choice.resume == Resume::Live;
+        let picked = session_for(&choice, view.session).unwrap_or(crate::act::Session::New);
+        for one in crate::act::Session::ALL {
+            let enabled = live || one == crate::act::Session::New;
+            let rect = radio(&mut out, y, picked == one, enabled, tr(session_words(one)));
+            if enabled {
+                out.sessions.push((one, rect));
+            }
+            y += side::QUIET_ROW_HEIGHT;
+        }
+    }
+    if let Some((template, args)) = resume_said(&choice, start.last.as_ref()) {
+        let said = args.iter().fold(tr(template), |said, arg| list::fill(&said, arg));
+        sentence(&mut out, &mut y, said);
     }
     y += side::ROW_GAP;
 
@@ -2727,8 +2894,8 @@ mod tests {
 
     fn roles() -> Vec<crate::snapshot::SupervisorRole> {
         vec![
-            crate::snapshot::SupervisorRole { key: "polter-supervisor".into(), name: "Polter Supervisor".into() },
-            crate::snapshot::SupervisorRole { key: "reviewer".into(), name: "Reviewer".into() },
+            crate::snapshot::SupervisorRole { key: "polter-supervisor".into(), name: "Polter Supervisor".into(), clis: Vec::new(), held_back: Vec::new() },
+            crate::snapshot::SupervisorRole { key: "reviewer".into(), name: "Reviewer".into(), clis: Vec::new(), held_back: Vec::new() },
         ]
     }
 
@@ -2791,9 +2958,9 @@ mod tests {
     #[test]
     fn a_role_is_shown_under_the_cores_name_whatever_its_key() {
         let shout = |t: &str| format!("TR<{t}>");
-        let boss = crate::snapshot::SupervisorRole { key: "polter-supervisor".into(), name: "Polter Supervisor".into() };
+        let boss = crate::snapshot::SupervisorRole { key: "polter-supervisor".into(), name: "Polter Supervisor".into(), clis: Vec::new(), held_back: Vec::new() };
         assert_eq!(role_name(&boss, &shout), "Polter Supervisor");
-        let other = crate::snapshot::SupervisorRole { key: "reviewer".into(), name: "Reviewer".into() };
+        let other = crate::snapshot::SupervisorRole { key: "reviewer".into(), name: "Reviewer".into(), clis: Vec::new(), held_back: Vec::new() };
         assert_eq!(role_name(&other, &shout), "Reviewer");
     }
 
@@ -2875,6 +3042,7 @@ mod tests {
             cwd_is_last,
             cli_label: Some("Claude Code".into()),
             last_cli_label: last_cli.filter(|c| !c.is_empty()).map(|_| "Claude Code".to_string()),
+            by_cli: Vec::new(),
         });
         row
     }
@@ -3184,5 +3352,109 @@ mod tests {
         untitled.alone.as_mut().unwrap().title.clear();
         let texts = said(&Detail_::SupervisorGone { group: row.id.clone() }, Some(&untitled));
         assert!(texts.iter().all(|t| draws(t)), "{texts:?}");
+    }
+
+    // ---- which agent CLI a start uses (#1678, role-cli-v1 01a/01b/01c)
+
+    fn rc(key: &str, label: &str) -> crate::snapshot::RoleCli {
+        crate::snapshot::RoleCli { key: key.into(), label: Some(label.into()) }
+    }
+
+    /// The official supervisor set up for both, both plugins on; the last
+    /// supervisor was Claude Code's, and only Claude Code can go on with
+    /// its session (the core's answer for each, `resume_by_cli`).
+    fn duo() -> (Row, Vec<crate::snapshot::SupervisorRole>) {
+        use crate::snapshot::{CliResume, ResumeWhy as W, SupervisorRole};
+        let mut row = last_row(Some(1), Some("claude-code"), true, true, W::None);
+        row.start.as_mut().unwrap().last.as_mut().unwrap().by_cli = vec![
+            CliResume { cli: "claude-code".into(), can: true, why: W::None },
+            CliResume { cli: "codex".into(), can: false, why: W::CliDiffers },
+        ];
+        let roles = vec![
+            SupervisorRole { key: "polter-supervisor".into(), name: "Polter Supervisor".into(), clis: vec![rc("claude-code", "Claude Code"), rc("codex", "Codex")], held_back: Vec::new() },
+            SupervisorRole { key: "night-lead".into(), name: "Night Lead".into(), clis: vec![rc("codex", "Codex"), rc("claude-code", "Claude Code")], held_back: Vec::new() },
+            SupervisorRole { key: "solo".into(), name: "Solo".into(), clis: vec![rc("codex", "Codex")], held_back: Vec::new() },
+        ];
+        (row, roles)
+    }
+
+    #[test]
+    fn two_clis_are_a_choice_and_another_than_the_last_greys_going_on() {
+        use crate::act::Session;
+        use crate::snapshot::ResumeWhy as W;
+        let (row, roles) = duo();
+        let start = row.start.as_ref().unwrap();
+        // 01a: the core's CLI is on, and going on can be picked.
+        let a = cli_choice(start, &roles, None, None);
+        assert!(a.shown);
+        assert_eq!((a.picked.as_deref(), a.resume, a.why), (Some("claude-code"), Resume::Live, W::None));
+        assert_eq!(session_for(&a, None), Some(Session::Last));
+        assert_eq!(resume_said(&a, start.last.as_ref()), None);
+        // 01b: Codex picked -- going on greyed, nothing said of a session,
+        // and why in the two CLIs' names.
+        let b = cli_choice(start, &roles, None, Some("codex"));
+        assert_eq!((b.picked.as_deref(), b.resume, b.why), (Some("codex"), Resume::Greyed, W::CliDiffers));
+        assert_eq!(session_for(&b, Some(Session::Last)), None);
+        assert_eq!(resume_said(&b, start.last.as_ref()), Some((msg::LAST_SESSION_WAS, vec!["Claude Code".to_string(), "Codex".to_string()])));
+        // A pick the role does not list is not kept.
+        assert_eq!(cli_choice(start, &roles, None, Some("other-cli")).picked.as_deref(), Some("claude-code"));
+    }
+
+    #[test]
+    fn one_cli_is_no_choice_and_another_role_starts_where_the_last_one_was() {
+        use crate::snapshot::ResumeWhy as W;
+        let (row, roles) = duo();
+        let start = row.start.as_ref().unwrap();
+        // 01c: a role with one CLI draws no line, and Codex cannot go on
+        // with Claude Code's session: hidden, the core's reason said.
+        let solo = cli_choice(start, &roles, Some("solo"), None);
+        assert!(!solo.shown);
+        assert_eq!((solo.picked.as_deref(), solo.resume, solo.why), (Some("codex"), Resume::Hidden, W::CliDiffers));
+        assert_eq!(resume_said(&solo, start.last.as_ref()), Some((msg::WHY_CLI_DIFFERS, Vec::new())));
+        // Another role that lists the last supervisor's CLI starts in it,
+        // though it is not that role's first.
+        assert_eq!(cli_choice(start, &roles, Some("night-lead"), None).picked.as_deref(), Some("claude-code"));
+        // Nobody can go on: hidden, whichever is picked.
+        let mut nobody = row.clone();
+        nobody.start.as_mut().unwrap().last.as_mut().unwrap().by_cli[0].can = false;
+        nobody.start.as_mut().unwrap().last.as_mut().unwrap().by_cli[0].why = W::SessionInUse;
+        let n = cli_choice(nobody.start.as_ref().unwrap(), &roles, None, None);
+        assert_eq!((n.resume, n.why), (Resume::Hidden, W::SessionInUse));
+        // A core from before the list of CLIs: the CLI it names, its one
+        // answer, no line.
+        let (old, _) = duo();
+        let mut old = old;
+        old.start.as_mut().unwrap().last.as_mut().unwrap().by_cli.clear();
+        let o = cli_choice(old.start.as_ref().unwrap(), &[], None, None);
+        assert_eq!((o.shown, o.picked.as_deref(), o.resume), (false, Some("claude-code"), Resume::Live));
+    }
+
+    #[test]
+    fn the_cli_line_is_drawn_for_two_and_the_greyed_session_cannot_be_pressed() {
+        use crate::act::Session;
+        let (row, roles) = duo();
+        let detail = Detail_::NoSupervisor { group: row.id.clone() };
+        let theme = look::theme(false);
+        let drawn = |cli: Option<&'static str>, role: Option<&'static str>| {
+            build_start(&detail, Some(&row), 600.0, theme, &StartView { roles: &roles, role, cli, home: "", ..Default::default() }, &same)
+        };
+        let a = drawn(None, None);
+        assert_eq!(a.clis.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["claude-code", "codex"]);
+        assert!(all_text(&a.items).contains(&msg::AGENT_CLI));
+        assert_eq!(a.sessions.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [Session::Last, Session::New]);
+        // The CLIs' rings and the sessions' stand on one left edge.
+        assert!(a.clis.iter().chain(a.sessions.iter().map(|(_, r)| r).map(|r| ("", *r)).collect::<Vec<_>>().iter().map(|(k, r)| (k.to_string(), *r)).collect::<Vec<_>>().iter()).all(|(_, r)| r.x == a.clis[0].1.x));
+        // 01b: the same lines, so nothing jumps; going on is not pressable,
+        // and the reason is drawn.
+        let b = drawn(Some("codex"), None);
+        assert_eq!(b.clis.len(), 2);
+        assert_eq!(b.sessions.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [Session::New]);
+        assert_eq!(b.sessions[0].1, a.sessions[1].1, "new session stays where it was");
+        assert!(all_text(&b.items).contains(&"The last session was Claude Code's; Codex can't go on with it."), "{:?}", all_text(&b.items));
+        // 01c: one CLI, no line, and nothing about CLIs drawn.
+        let c = drawn(None, Some("solo"));
+        assert!(c.clis.is_empty());
+        assert!(!all_text(&c.items).contains(&msg::AGENT_CLI));
+        assert!(c.sessions.is_empty());
     }
 }

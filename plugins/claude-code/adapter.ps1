@@ -771,6 +771,7 @@ function Get-Inventory($Req) {
     $answer['installed'] = $null -ne (Resolve-ClaudeCommand)
     # `launch` goes on with a session it is handed (`Get-SessionToResume`).
     $answer['resume'] = $true
+    $answer['options'] = Get-LaunchOptions (Get-HelpText)
     $answer['items'] = $unique
     $answer['notes'] = $notes
     return , $answer
@@ -787,6 +788,212 @@ function Get-Inventory($Req) {
 function Test-ProjectSource($Item) {
     $source = [string]$Item['source']
     return ($source -ceq 'project') -or ($source -ceq 'local')
+}
+
+# (key, label, flag): see OPTION_FLAGS in adapter.py.
+$script:OptionFlags = @(, @('permission_mode', 'Permission mode', '--permission-mode'))
+
+# --- launch options (see `launch_options` in adapter.py, task 1677) -------------
+
+$script:HelpTimeoutMs = 10000
+
+# Python's `str.splitlines()`: no empty line after a last line ending.
+function Split-PyLines([string]$Text) {
+    $out = New-List
+    if ($Text.Length -eq 0) { return , $out }
+    $parts = [regex]::Split($Text, "\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e\x85  ]")
+    $n = $parts.Count
+    if ($parts[$n - 1].Length -eq 0) { $n -= 1 }
+    for ($k = 0; $k -lt $n; $k++) { $out.Add($parts[$k]) }
+    return , $out
+}
+
+# `on_path(binary) or binary`, as `help_text` runs it.
+function Get-HelpExe {
+    if ($script:OnWindows) {
+        $start = Resolve-ClaudeCommand
+        if ($null -eq $start) { return , @('claude') }
+        return , $start
+    }
+    foreach ($d in ([string]$env:PATH).Split([System.IO.Path]::PathSeparator)) {
+        if ($d.Length -gt 0) {
+            $c = Join-PyPath $d 'claude'
+            if (Test-PosixExecutable $c) { return , @($c) }
+        }
+    }
+    if (Test-PosixExecutable "$([string]$env:HOME)/.local/bin/claude") { return , @("$([string]$env:HOME)/.local/bin/claude") }
+    if (Test-PosixExecutable "$([string]$env:HOME)/.claude/local/claude") { return , @("$([string]$env:HOME)/.claude/local/claude") }
+    if (Test-PosixExecutable '/opt/homebrew/bin/claude') { return , @('/opt/homebrew/bin/claude') }
+    if (Test-PosixExecutable '/usr/local/bin/claude') { return , @('/usr/local/bin/claude') }
+    return , @('claude')
+}
+
+# `<binary> --help`, or `$null`. Reads a usage text; starts no session.
+function Get-HelpText {
+    $start = Get-HelpExe
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = [string]$start[0]
+        $argv = New-List
+        for ($k = 1; $k -lt $start.Count; $k++) { $argv.Add([string]$start[$k]) }
+        $argv.Add('--help')
+        Set-StartArguments $psi $argv
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.RedirectStandardInput = $true
+        $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $p.StandardInput.Close()
+        $outTask = $p.StandardOutput.ReadToEndAsync()
+        $null = $p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($script:HelpTimeoutMs)) {
+            try { $p.Kill() } catch { }
+            return $null
+        }
+        $out = [string]$outTask.Result
+        if ($p.ExitCode -eq 0 -and $out.Length -gt 0) { return $out }
+        return $null
+    } catch {
+        return $null
+    }
+}
+
+# The values `--help` lists for `$Flag`, in its order; none when it lists none.
+function Get-FlagValues([string]$Text, [string]$Flag) {
+    $out = New-List
+    $lines = Split-PyLines $Text
+    $f = [regex]::Escape($Flag)
+    $start = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ([regex]::IsMatch($lines[$i], "\A\s*(-\w, )?$f\b")) { $start = $i; break }
+    }
+    if ($start -lt 0) { return , $out }
+    $block = New-List
+    $block.Add($lines[$start])
+    for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ([regex]::IsMatch($line, '\A\s*-{1,2}[A-Za-z]') -and -not [regex]::IsMatch($line, '\A\s*- [\w-]+:')) { break }
+        $block.Add($line)
+    }
+    $joined = [string]::Join(' ', $block.ToArray())
+    $m = [regex]::Match($joined, 'choices:\s*((?:"[^"]+"\s*,?\s*)+)')
+    if ($m.Success) {
+        foreach ($v in [regex]::Matches($m.Groups[1].Value, '"([^"]+)"')) { $out.Add($v.Groups[1].Value) }
+        return , $out
+    }
+    $m = [regex]::Match($joined, '\[possible values:\s*([^\]]+)\]')
+    if ($m.Success) {
+        foreach ($v in $m.Groups[1].Value.Split(',')) {
+            $t = $v.Trim()
+            if ($t.Length -gt 0) { $out.Add($t) }
+        }
+        return , $out
+    }
+    foreach ($line in $block) {
+        $m = [regex]::Match($line, '\A\s*- ([\w-]+):')
+        if ($m.Success) { $out.Add($m.Groups[1].Value) }
+    }
+    return , $out
+}
+
+# The short spellings `--help` gives `$Flag` (`-s, --sandbox`).
+function Get-FlagAliases([string]$Text, [string]$Flag) {
+    $out = New-List
+    $f = [regex]::Escape($Flag)
+    foreach ($line in (Split-PyLines $Text)) {
+        $m = [regex]::Match($line, "\A\s*((?:-\w, )+)$f\b")
+        if ($m.Success) {
+            foreach ($a in $m.Groups[1].Value.Split(',')) {
+                $t = $a.Trim()
+                if ($t.Length -gt 0) { $out.Add($t) }
+            }
+            return , $out
+        }
+    }
+    return , $out
+}
+
+# The `options` an inventory offers, from a `--help` text (`$null` is none).
+function Get-LaunchOptions($Text) {
+    $t = $(if ($null -eq $Text) { '' } else { [string]$Text })
+    $out = New-List
+    foreach ($o in $script:OptionFlags) {
+        $values = Get-FlagValues $t $o[2]
+        if ($values.Count -eq 0) { continue }
+        $vs = New-List
+        foreach ($v in $values) {
+            $one = New-Map
+            $one['value'] = $v
+            $one['args'] = New-List
+            $one['args'].Add($o[2])
+            $one['args'].Add($v)
+            $vs.Add($one)
+        }
+        $entry = New-Map
+        $entry['key'] = $o[0]
+        $entry['label'] = $o[1]
+        $entry['flag'] = $o[2]
+        $entry['aliases'] = Get-FlagAliases $t $o[2]
+        $entry['values'] = $vs
+        $out.Add($entry)
+    }
+    return , $out
+}
+
+# Whether the extra arguments already give one of `$Spellings`, alone or as
+# `--flag=value`.
+function Test-GivesFlag($Extra, $Spellings) {
+    foreach ($a in $Extra) {
+        foreach ($f in $Spellings) {
+            if (($a -ceq $f) -or ([string]$a).StartsWith($f + '=', $script:Ordinal)) { return $true }
+        }
+    }
+    return $false
+}
+
+# What Python's `'%s' % v` writes of a JSON value.
+function Get-PyPercentS($v) {
+    if ($null -eq $v) { return 'None' }
+    if ($v -is [bool]) { return $(if ($v) { 'True' } else { 'False' }) }
+    if ($v -is [string]) { return $v }
+    if (($v -is [long]) -or ($v -is [int])) { return [string]$v }
+    return ConvertTo-PyJson $v
+}
+
+# The flags the role's `cli.options` stand for (see `apply_options`).
+function Get-AppliedOptions($Cli, $Extra, $Notes) {
+    $args0 = New-List
+    $picked = Get-J $Cli 'options'
+    if (-not (Test-Truthy $picked)) { return , $args0 }
+    if (-not (Test-JDict $picked)) { return , $args0 }
+    $offered = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::Ordinal)
+    foreach ($o in (Get-LaunchOptions (Get-HelpText))) { $offered[[string]$o['key']] = $o }
+    foreach ($key in (Get-JKeys $picked)) {
+        $value = Get-J $picked $key
+        if (-not $offered.ContainsKey($key)) {
+            $Notes.Add('Launch option "' + $key + '" is not one this version offers; left out.')
+            continue
+        }
+        $o = $offered[$key]
+        $spellings = New-List
+        $spellings.Add([string]$o['flag'])
+        foreach ($a in $o['aliases']) { $spellings.Add([string]$a) }
+        if (Test-GivesFlag $Extra $spellings) {
+            $Notes.Add('Launch option "' + $key + '" left out: the extra arguments already give ' + [string]$o['flag'] + '.')
+            continue
+        }
+        $hit = $null
+        foreach ($v in $o['values']) {
+            if (($value -is [string]) -and ([string]$v['value'] -ceq $value)) { $hit = $v; break }
+        }
+        if ($null -eq $hit) {
+            $Notes.Add('Launch option ' + $key + '="' + (Get-PyPercentS $value) + '" is not a value this version takes; left out.')
+            continue
+        }
+        foreach ($a in $hit['args']) { $args0.Add($a) }
+    }
+    return , $args0
 }
 
 # Whether a role leaves this item on: its default, flipped by `except`.
@@ -1230,6 +1437,7 @@ function Get-Launch($Req) {
         $argv.Add('--resume')
         $argv.Add($session)
     }
+    foreach ($o in (Get-AppliedOptions $cli $extra $notes)) { $argv.Add($o) }
     foreach ($e in $extra) { $argv.Add($e) }
 
     $answer = New-Map

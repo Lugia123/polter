@@ -51,13 +51,16 @@ struct RoleSelection: Equatable {
     var json: [String: Any] { ["default": keepByDefault, "except": except] }
 }
 
-/// A role's choices for one agent CLI.
+/// A role's choices for one agent CLI: what only that CLI has a word for.
+/// Which of its skills and MCP servers are on is the role's, one set for
+/// every CLI (`Role.skills`, task 1677).
 struct RoleCliChoice: Equatable, Identifiable {
     var cli: String
-    var skills = RoleSelection()
-    var mcp = RoleSelection()
     var model: String = ""
     var args: [String] = []
+    /// The adapter's launch options as the role picked them (`persona.Option`
+    /// in the core): option key to value. Carried through as read.
+    var options: [String: String] = [:]
 
     var id: String { cli }
 
@@ -66,17 +69,17 @@ struct RoleCliChoice: Equatable, Identifiable {
     init(cli: String, json: Any?) {
         self.cli = cli
         let obj = json as? [String: Any] ?? [:]
-        skills = RoleSelection(json: obj["skills"])
-        mcp = RoleSelection(json: obj["mcp"])
         model = (obj["model"] as? String) ?? ""
         args = (obj["args"] as? [String]) ?? []
+        options = (obj["options"] as? [String: String]) ?? [:]
     }
 
     var json: [String: Any] {
-        var out: [String: Any] = ["skills": skills.json, "mcp": mcp.json]
+        var out: [String: Any] = [:]
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { out["model"] = trimmed }
         if !args.isEmpty { out["args"] = args }
+        if !options.isEmpty { out["options"] = options }
         return out
     }
 }
@@ -139,6 +142,11 @@ struct Role: Equatable, Identifiable {
     var summary: String = ""
     var instructions: String = ""
     var clis: [RoleCliChoice] = []
+    /// Which of the CLIs' own skills and MCP servers the role keeps: one set
+    /// for every CLI it is started in (`cli_skills` / `cli_mcp`, task 1677).
+    /// The core reads an older file's per-CLI sets into this.
+    var skills = RoleSelection()
+    var mcp = RoleSelection()
     var polter = RolePolter()
 
     /// An official role: shipped with Polter. Some of it can be changed
@@ -155,7 +163,7 @@ struct Role: Equatable, Identifiable {
 
     var id: String { key }
 
-    static let editedKeys: Set<String> = ["key", "name", "description", "instructions", "clis", "polter", "builtin", "official"]
+    static let editedKeys: Set<String> = ["key", "name", "description", "instructions", "clis", "cli_skills", "cli_mcp", "polter", "builtin", "official"]
 
     /// The key of the supervisor role Polter ships (`persona.supervisor_key`).
     static let supervisorKey = "polter-supervisor"
@@ -181,6 +189,8 @@ struct Role: Equatable, Identifiable {
         if let clis = obj["clis"] as? [String: Any] {
             self.clis = clis.keys.sorted().map { RoleCliChoice(cli: $0, json: clis[$0]) }
         }
+        skills = RoleSelection(json: obj["cli_skills"])
+        mcp = RoleSelection(json: obj["cli_mcp"])
         polter = RolePolter(json: obj["polter"])
         builtin = (obj["builtin"] as? Bool) ?? false
         official = RoleOfficial(json: obj["official"])
@@ -205,6 +215,8 @@ struct Role: Equatable, Identifiable {
         if !clis.isEmpty {
             out["clis"] = Dictionary(uniqueKeysWithValues: clis.map { ($0.cli, $0.json) })
         }
+        out["cli_skills"] = skills.json
+        out["cli_mcp"] = mcp.json
         if !polter.isDefault { out["polter"] = polter.json }
         return out
     }
@@ -411,6 +423,10 @@ struct AgentCli: Equatable, Identifiable {
     var installed: Bool?
     var items: [AgentCliItem] = []
     var notes: [String] = []
+    /// The unattended settings its adapter offers, each with only the
+    /// values this version of the CLI takes (the inventory's `options`,
+    /// task 1677).
+    var options: [AgentCliOption] = []
 
     var id: String { key }
 
@@ -428,7 +444,108 @@ struct AgentCli: Equatable, Identifiable {
             installed = inventory["installed"] as? Bool
             items = ((inventory["items"] as? [[String: Any]]) ?? []).compactMap(AgentCliItem.init(json:))
             notes = (inventory["notes"] as? [String]) ?? []
+            options = ((inventory["options"] as? [[String: Any]]) ?? []).compactMap(AgentCliOption.init(json:))
         }
+    }
+}
+
+/// One unattended setting an adapter offers (`permission_mode`, `sandbox`):
+/// a drop-down whose values are the CLI's own words, each with the flags it
+/// adds -- shown in grey beside it.
+struct AgentCliOption: Equatable, Identifiable {
+    struct Value: Equatable {
+        var value: String
+        var args: [String]
+    }
+
+    var key: String
+    var label: String
+    var values: [Value]
+
+    var id: String { key }
+
+    init?(json obj: [String: Any]) {
+        guard let key = obj["key"] as? String else { return nil }
+        self.key = key
+        label = (obj["label"] as? String) ?? key
+        values = ((obj["values"] as? [[String: Any]]) ?? []).compactMap { v in
+            guard let value = v["value"] as? String else { return nil }
+            return Value(value: value, args: (v["args"] as? [String]) ?? [])
+        }
+    }
+
+    /// What the window calls it: the three the two adapters offer by their
+    /// words in the design, anything else by the adapter's own label.
+    var title: String {
+        switch key {
+        case "permission_mode": return String(localized: "Permission Mode", comment: "角色库：Claude Code 的无人值守下拉，--permission-mode")
+        case "approval": return String(localized: "Approval", comment: "角色库：Codex 的无人值守下拉，--ask-for-approval")
+        case "sandbox": return String(localized: "Sandbox", comment: "角色库：Codex 的无人值守下拉，--sandbox")
+        default: return label
+        }
+    }
+}
+
+/// The skills or MCP servers of every CLI a role starts in, as one list
+/// (07, 08; task 1677): the role keeps one set for all of them.
+///
+/// The rules, the design's four answers:
+/// 1. **One id is one row.** Both adapters write ids alike, so a skill
+///    both CLIs have is one switch; the first CLI's description is shown.
+/// 2. A row only one CLI has says so ("Codex only"), beside its name.
+/// 3. A CLI that cannot be read (plugin off, or none) is not guessed at:
+///    its items are not listed, and **no row is marked "only"** -- with one
+///    side unread, "only the other" would be a guess. The role's ticks for
+///    it stay as they are.
+/// 4. With one CLI, nothing is marked: "only it" says nothing.
+struct RoleMergedItems: Equatable {
+    struct Row: Equatable, Identifiable {
+        var item: AgentCliItem
+        /// The name of the one CLI that has it, when that is worth saying.
+        var only: String?
+        var id: String { item.id }
+    }
+
+    var rows: [Row]
+    /// CLIs the role starts in whose lists could not be read: their key,
+    /// and their name when the core has one.
+    var unread: [(key: String, label: String)]
+
+    static func == (a: Self, b: Self) -> Bool {
+        a.rows == b.rows && a.unread.map(\.key) == b.unread.map(\.key)
+    }
+
+    static func of(_ kind: AgentCliItem.Kind, clis keys: [String], in snapshot: AgentCliSnapshot) -> RoleMergedItems {
+        var read: [AgentCli] = []
+        var unread: [(key: String, label: String)] = []
+        for key in keys {
+            if let cli = snapshot.cli(key), cli.error == nil {
+                read.append(cli)
+            } else {
+                let held = snapshot.heldBack.first { $0.key == key }
+                unread.append((key, snapshot.cli(key)?.label ?? held?.label ?? key))
+            }
+        }
+        let marking = read.count > 1 && unread.isEmpty
+        var rows: [Row] = []
+        var at: [String: Int] = [:]
+        var holders: [String: [String]] = [:]
+        for cli in read {
+            for item in cli.items(kind) {
+                holders[item.id, default: []].append(cli.label)
+                if at[item.id] == nil {
+                    at[item.id] = rows.count
+                    rows.append(Row(item: item, only: nil))
+                }
+            }
+        }
+        if marking {
+            for i in rows.indices {
+                let who = holders[rows[i].item.id] ?? []
+                if who.count == 1 { rows[i].only = who[0] }
+            }
+        }
+        return RoleMergedItems(rows: rows, unread: unread)
     }
 }
 
@@ -439,6 +556,54 @@ struct AgentCliSnapshot: Equatable {
     /// A newer answer is on its way; ask again shortly.
     var refreshing = false
     var clis: [AgentCli] = []
+    /// CLIs a plugin manages that are not in `clis` because they cannot be
+    /// started here, and why (task 1677). A CLI in neither has no plugin.
+    var heldBack: [HeldBack] = []
+
+    struct HeldBack: Equatable {
+        enum Why: String { case pluginOff = "plugin_off", cannotRun = "cannot_run" }
+        var key: String
+        var label: String
+        var why: Why
+    }
+
+    /// Where a CLI a role names stands here. Three reasons it cannot start,
+    /// because the person does three different things about them.
+    enum Standing: Equatable {
+        case ok
+        /// Installed, switched off: a switch in Plugins.
+        case pluginOff(label: String)
+        /// On, and nothing here can run its adapter: no switch fixes it.
+        case cannotRun(label: String)
+        /// No plugin manages it.
+        case noPlugin
+    }
+
+    func standing(_ key: String) -> Standing {
+        if cli(key) != nil { return .ok }
+        guard let held = heldBack.first(where: { $0.key == key }) else { return .noPlugin }
+        switch held.why {
+        case .pluginOff: return .pluginOff(label: held.label)
+        case .cannotRun: return .cannotRun(label: held.label)
+        }
+    }
+
+    /// The sentence for a CLI a role names that cannot start here; nil
+    /// when it can.
+    func whyNot(_ key: String) -> String? {
+        switch standing(key) {
+        case .ok:
+            return nil
+        case .pluginOff(let label):
+            return String(localized: "\(label) plugin is off: \(label) won't be offered when this role is started. The settings stay in the role.",
+                          comment: "角色库：角色勾了某 CLI，但它的插件装着、关着。两个都是 CLI 名")
+        case .cannotRun(let label):
+            return String(localized: "\(label) can't be started on this machine: nothing here can run its plugin. The settings stay in the role.",
+                          comment: "角色库：角色勾了某 CLI，插件开着，但这台机器上跑不起来它的 adapter。是 CLI 名")
+        case .noPlugin:
+            return String(localized: "No plugin manages this CLI any more", comment: "角色库：角色里配了某 CLI，但对应插件已不在")
+        }
+    }
 
     init() {}
 
@@ -448,6 +613,11 @@ struct AgentCliSnapshot: Equatable {
         stale = (obj["stale"] as? Bool) ?? true
         refreshing = (obj["refreshing"] as? Bool) ?? false
         clis = ((obj["clis"] as? [[String: Any]]) ?? []).compactMap(AgentCli.init(json:))
+        heldBack = ((obj["held_back"] as? [[String: Any]]) ?? []).compactMap { one in
+            guard let key = one["key"] as? String,
+                  let why = (one["why"] as? String).flatMap(HeldBack.Why.init(rawValue:)) else { return nil }
+            return HeldBack(key: key, label: (one["label"] as? String) ?? key, why: why)
+        }
     }
 
     func cli(_ key: String) -> AgentCli? {
@@ -455,7 +625,7 @@ struct AgentCliSnapshot: Equatable {
     }
 
     func label(for key: String) -> String {
-        cli(key)?.label ?? key
+        cli(key)?.label ?? heldBack.first { $0.key == key }?.label ?? key
     }
 }
 

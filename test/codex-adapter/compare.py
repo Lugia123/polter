@@ -82,6 +82,55 @@ FILES = {
 }
 
 
+# Codex 0.163.0's own `--help`, the part the launch options are read from
+# (task 1677; the text `test/codex-adapter/options.py` holds the adapter to).
+CODEX_HELP = """\
+Usage: codex [OPTIONS] [PROMPT]
+
+Options:
+  -s, --sandbox <SANDBOX_MODE>
+          Select the sandbox policy to use when executing model-generated shell commands
+
+          [possible values: read-only, workspace-write, danger-full-access]
+
+      --approve-for-me
+          Route approval requests through automatic review using the workspace-write sandbox
+
+  -a, --ask-for-approval <APPROVAL_POLICY>
+          Configure when the model requires human approval before executing a command
+
+          Possible values:
+          - on-request: The model decides when to ask the user for approval
+          - never:      Never ask for user approval Execution failures are immediately returned to
+            the model
+
+      --search
+          Enable live web search.
+"""
+
+
+def option_requests(paths):
+    """Asked with a stand-in `codex` first on PATH that prints CODEX_HELP."""
+    home, cwd = paths["HOME"], paths["CWD"]
+    role = {"key": "r", "name": "r"}
+
+    def launch(name, options, args=None):
+        cli = {"skills": {"default": True, "except": []}, "mcp": {"default": True, "except": []},
+               "args": args or [], "options": options}
+        return (name, "launch", {"version": 1, "cwd": cwd, "home": home, "polter": None,
+                                 "session": None, "role": role, "cli": cli})
+
+    return [
+        ("options: what --help lists, with the short spellings", "inventory", {"version": 1, "cwd": None, "home": home}),
+        launch("options: both picked, after the hooks", {"sandbox": "workspace-write", "approval": "never"}),
+        launch("options: -s x in the extra arguments keeps the sandbox out", {"sandbox": "read-only", "approval": "on-request"}, ["-s", "danger-full-access"]),
+        launch("options: -s=x too", {"sandbox": "read-only"}, ["-s=danger-full-access"]),
+        launch("options: --sandbox=x and -a x", {"sandbox": "read-only", "approval": "never"}, ["--sandbox=workspace-write", "-a", "never"]),
+        launch("options: a value it does not list, a key it does not have, no value", {"sandbox": "yolo", "model": "x", "approval": None}),
+        launch("options: not an object is no options", ["read-only"]),
+    ]
+
+
 def requests(paths):
     home, cwd = paths["HOME"], paths["CWD"]
     role = {"key": "r", "name": "r", "instructions": "say \"hi\"\nthen stop\x7f \u4e2d\u6587 & | ^"}
@@ -208,9 +257,35 @@ def main():
         if not ON_WINDOWS:
             ps = [args.ps, "-NoProfile", "-NonInteractive", "-File", os.path.join(PLUGIN, "adapter.ps1")]
 
+        # **No real Codex is ever started here, `--help` included** (task
+        # 1678): an inventory now asks the CLI for its launch options, and a
+        # reading that depends on which Codex this machine has is not a
+        # reading -- nor may the Windows test machine start an agent CLI.
+        # POSIX: a stand-in first on PATH that prints CODEX_HELP. Windows,
+        # where `adapter.ps1` takes only a `codex.exe` or npm's shim and a
+        # shell script cannot stand in: no Codex to be found at all, and
+        # the launch options are said to be skipped.
+        if ON_WINDOWS:
+            env["PATH"] = os.pathsep.join(d for d in env.get("PATH", "").split(os.pathsep)
+                                          if not any(os.path.exists(os.path.join(d, "codex" + x))
+                                                     for x in ("", ".exe", ".cmd", ".bat", ".ps1")))
+            env["APPDATA"] = base
+        else:
+            fake = os.path.join(base, "help-bin")
+            os.makedirs(fake)
+            with open(os.path.join(fake, "codex"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\nif [ \"$1\" = --help ]; then cat <<'POLTER_HELP'\n%sPOLTER_HELP\nexit 0\nfi\nexit 1\n" % CODEX_HELP)
+            os.chmod(os.path.join(fake, "codex"), 0o755)
+            env["PATH"] = fake + os.pathsep + env.get("PATH", "")
+
         good = True
         for name, question, req in requests(paths):
             good = compare(name, question, req, py, ps, env) and good
+        if ON_WINDOWS:
+            print("skipped   the launch options (need a stand-in codex, POSIX only)")
+        else:
+            for name, question, req in option_requests(paths):
+                good = compare(name, question, req, py, ps, env) and good
 
         if not ON_WINDOWS:
             stand = os.path.join(base, "bin", "codex")

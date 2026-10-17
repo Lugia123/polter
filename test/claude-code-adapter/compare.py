@@ -195,6 +195,18 @@ def main():
         print("python:     %s" % sys.executable)
         print("powershell: %s" % ps)
         print("fixtures:   %s%s" % (base, "" if args.keep else " (removed afterwards)"))
+        # **No real Claude Code is ever started here, `--help` included**
+        # (task 1678): an inventory now asks the CLI for its launch options,
+        # and a reading that depends on which Claude Code this machine has is
+        # not a reading -- nor may the Windows test machine start an agent
+        # CLI. A case that names no version gets the default stand-in below;
+        # on Windows, where none can stand in, no `claude` is to be found.
+        default_help = next(c["claude_help"] for c in fixtures["requests"] if "claude_help" in c)
+        if ON_WINDOWS:
+            env["PATH"] = os.pathsep.join(d for d in env.get("PATH", "").split(os.pathsep)
+                                          if not any(os.path.exists(os.path.join(d, "claude" + x))
+                                                     for x in ("", ".exe", ".cmd", ".bat", ".ps1")))
+            env["APPDATA"] = base
         failures = 0
         for case in fixtures["requests"]:
             # A case that names a `claude` version gets a stand-in `claude`
@@ -204,16 +216,23 @@ def main():
             # `adapter.ps1` only accepts a `claude.exe`, so there those
             # cases are said to be skipped rather than quietly passed.
             case_env = env
+            if "claude" not in case and not ON_WINDOWS:
+                case = dict(case, claude="2.1.302 (Claude Code)", claude_help=default_help)
             if "claude" in case:
                 if ON_WINDOWS:
                     print("skipped   %-10s %s (needs a stand-in claude, POSIX only)"
                           % (case["question"], case["name"]))
                     continue
-                fake = os.path.join(base, "claude-" + str(abs(hash(case["claude"]))))
+                fake = os.path.join(base, "claude-" + str(abs(hash((case["claude"], case.get("claude_help"))))))
                 os.makedirs(fake, exist_ok=True)
                 script = os.path.join(fake, "claude")
                 with open(script, "w", encoding="utf-8") as f:
-                    f.write("#!/bin/sh\nprintf '%%s\\n' '%s'\n" % case["claude"])
+                    f.write("#!/bin/sh\n")
+                    # And its `--help`, when the case gives one: the launch
+                    # options are read from it (task 1677).
+                    if "claude_help" in case:
+                        f.write("if [ \"$1\" = --help ]; then cat <<'POLTER_HELP'\n%sPOLTER_HELP\nexit 0\nfi\n" % case["claude_help"])
+                    f.write("printf '%%s\\n' '%s'\n" % case["claude"])
                 os.chmod(script, 0o755)
                 case_env = dict(env)
                 case_env["PATH"] = fake + os.pathsep + env.get("PATH", "")

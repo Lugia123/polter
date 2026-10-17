@@ -14,7 +14,8 @@
 //!     {"version":1,
 //!      "roles":{"polter-supervisor":{
 //!        "instructions":{"value":"...","base":"..."},
-//!        "clis.claude-code.model":{"value":"opus","base":null}}},
+//!        "clis.claude-code.model":{"value":"opus","base":null},
+//!        "cli_skills":{"value":{"default":false,"except":[…]},"base":{…}}}},
 //!      "skills":{"supervising":{"base":"<sha256 of the shipped file>"}}}
 //!
 //! `value` is theirs; `base` is what the official role said in that field
@@ -106,9 +107,16 @@ pub const Target = union(enum) {
     watch,
     open,
     quiet_ms,
+    /// The role's one set of the CLI's own skills and servers
+    /// (`Persona.cli_skills`, task 1677).
+    cli_skills,
+    cli_mcp,
     cli: struct { key: []const u8, part: Part },
 
-    pub const Part = enum { present, skills, mcp, model, args };
+    /// `skills` and `mcp` are the paths version 2 wrote, one per CLI. They
+    /// are read -- and merged into `cli_skills` / `cli_mcp` the way a role
+    /// file's are (`persona.mergeLegacy`) -- and never written.
+    pub const Part = enum { present, skills, mcp, model, args, options };
 };
 
 /// A field's value. Which arm a field has is decided by its path, never by
@@ -120,6 +128,7 @@ pub const Value = union(enum) {
     ms: ?u64,
     selection: Selection,
     strings: []const []const u8,
+    options: []const persona.Option,
 
     pub fn eql(a: Value, b: Value) bool {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
@@ -132,9 +141,22 @@ pub const Value = union(enum) {
             .selection => |s| s.default == b.selection.default and
                 sameSet(s.except, b.selection.except),
             .strings => |l| sameList(l, b.strings),
+            .options => |l| sameOptions(l, b.options),
         };
     }
 };
+
+/// Options are a map: the order they were written in says nothing.
+fn sameOptions(a: []const persona.Option, b: []const persona.Option) bool {
+    if (a.len != b.len) return false;
+    for (a) |x| {
+        const y = for (b) |y| {
+            if (std.mem.eql(u8, x.key, y.key)) break y;
+        } else return false;
+        if (!std.mem.eql(u8, x.value, y.value)) return false;
+    }
+    return true;
+}
 
 fn sameList(a: []const []const u8, b: []const []const u8) bool {
     if (a.len != b.len) return false;
@@ -171,6 +193,8 @@ pub fn targetOf(path: []const u8) ?Target {
     if (std.mem.eql(u8, path, "polter.watch")) return .watch;
     if (std.mem.eql(u8, path, "polter.open")) return .open;
     if (std.mem.eql(u8, path, "polter.quiet_ms")) return .quiet_ms;
+    if (std.mem.eql(u8, path, "cli_skills")) return .cli_skills;
+    if (std.mem.eql(u8, path, "cli_mcp")) return .cli_mcp;
 
     const rest = if (std.mem.startsWith(u8, path, "clis.")) path["clis.".len..] else return null;
     // A CLI key has no dot in it (`persona.isValidKey`), so the first dot,
@@ -193,6 +217,8 @@ fn pathOf(aa: Allocator, t: Target) Allocator.Error![]const u8 {
         .watch => "polter.watch",
         .open => "polter.open",
         .quiet_ms => "polter.quiet_ms",
+        .cli_skills => "cli_skills",
+        .cli_mcp => "cli_mcp",
         .cli => |c| if (c.part == .present)
             try std.fmt.allocPrint(aa, "clis.{s}", .{c.key})
         else
@@ -208,14 +234,19 @@ pub fn get(p: Persona, t: Target) Value {
         .watch => .{ .flag = p.polter.watch },
         .open => .{ .open = p.polter.open },
         .quiet_ms => .{ .ms = p.polter.quiet_ms },
+        .cli_skills => .{ .selection = p.cli_skills },
+        .cli_mcp => .{ .selection = p.cli_mcp },
         .cli => |c| blk: {
             const choice: CliChoice = p.cli(c.key) orelse .{ .cli = c.key };
             break :blk switch (c.part) {
                 .present => .{ .flag = p.cli(c.key) != null },
-                .skills => .{ .selection = choice.skills },
-                .mcp => .{ .selection = choice.mcp },
+                // A version 2 path is the role's one set now, so that a
+                // base written then is compared with what it became.
+                .skills => .{ .selection = p.cli_skills },
+                .mcp => .{ .selection = p.cli_mcp },
                 .model => .{ .text = choice.model },
                 .args => .{ .strings = choice.args },
+                .options => .{ .options = choice.options },
             };
         },
     };
@@ -243,22 +274,38 @@ fn apply(aa: Allocator, p: Persona, fields: []const Field) Allocator.Error!Perso
         }
     }
 
+    // Version 2's per-CLI sets, kept for a file that has no role-level one.
+    var legacy_skills: std.ArrayList(Selection) = .empty;
+    var legacy_mcp: std.ArrayList(Selection) = .empty;
+    var role_skills: ?Selection = null;
+    var role_mcp: ?Selection = null;
+
     for (fields) |f| switch (targetOf(f.path) orelse continue) {
         .instructions => out.instructions = f.value.text,
         .watch => out.polter.watch = f.value.flag,
         .open => out.polter.open = f.value.open,
         .quiet_ms => out.polter.quiet_ms = f.value.ms,
+        .cli_skills => role_skills = f.value.selection,
+        .cli_mcp => role_mcp = f.value.selection,
         .cli => |c| {
+            switch (c.part) {
+                .skills => try legacy_skills.append(aa, f.value.selection),
+                .mcp => try legacy_mcp.append(aa, f.value.selection),
+                else => {},
+            }
             const i = indexOfCli(clis.items, c.key) orelse continue;
             switch (c.part) {
-                .present => {},
-                .skills => clis.items[i].skills = f.value.selection,
-                .mcp => clis.items[i].mcp = f.value.selection,
+                .present, .skills, .mcp => {},
                 .model => clis.items[i].model = f.value.text,
                 .args => clis.items[i].args = f.value.strings,
+                .options => clis.items[i].options = f.value.options,
             }
         },
     };
+    if (role_skills) |sel| out.cli_skills = sel else if (legacy_skills.items.len > 0)
+        out.cli_skills = try persona.mergeLegacy(aa, legacy_skills.items);
+    if (role_mcp) |sel| out.cli_mcp = sel else if (legacy_mcp.items.len > 0)
+        out.cli_mcp = try persona.mergeLegacy(aa, legacy_mcp.items);
 
     out.clis = try clis.toOwnedSlice(aa);
     return out;
@@ -326,14 +373,14 @@ pub fn diff(
     var out: std.ArrayList(Field) = .empty;
 
     var targets: std.ArrayList(Target) = .empty;
-    try targets.appendSlice(aa, &.{ .instructions, .watch, .open, .quiet_ms });
+    try targets.appendSlice(aa, &.{ .instructions, .watch, .open, .quiet_ms, .cli_skills, .cli_mcp });
     for (official_role.clis) |c| try targets.append(aa, .{ .cli = .{ .key = c.cli, .part = .present } });
     for (edited.clis) |c| {
         if (official_role.cli(c.cli) == null)
             try targets.append(aa, .{ .cli = .{ .key = c.cli, .part = .present } });
         // Only for a CLI the edit keeps: one it took out has no settings to
         // remember.
-        for ([_]Target.Part{ .skills, .mcp, .model, .args }) |part|
+        for ([_]Target.Part{ .model, .args, .options }) |part|
             try targets.append(aa, .{ .cli = .{ .key = c.cli, .part = part } });
     }
 
@@ -343,11 +390,24 @@ pub fn diff(
         if (theirs.eql(ours)) continue;
         const path = try pathOf(aa, t);
         const base: Value = for (existing) |e| {
-            if (std.mem.eql(u8, e.path, path) and e.value.eql(theirs)) break e.base;
+            if (samePlace(e.path, path) and e.value.eql(theirs)) break e.base;
         } else ours;
         try out.append(aa, .{ .path = path, .value = theirs, .base = base });
     }
     return try out.toOwnedSlice(aa);
+}
+
+/// Whether an override written at `was` is the field `path` names: the
+/// same path, or a version 2 per-CLI set standing for the role's one.
+fn samePlace(was: []const u8, path: []const u8) bool {
+    if (std.mem.eql(u8, was, path)) return true;
+    const t = targetOf(was) orelse return false;
+    const part = switch (t) {
+        .cli => |c| c.part,
+        else => return false,
+    };
+    return (part == .skills and std.mem.eql(u8, path, "cli_skills")) or
+        (part == .mcp and std.mem.eql(u8, path, "cli_mcp"));
 }
 
 // --------------------------------------------------------------- the file
@@ -602,6 +662,19 @@ fn valueOf(aa: Allocator, t: Target, v: std.json.Value) ValueError!Value {
             else => return error.BadField,
         } },
         .strings => .{ .strings = try stringsOf(aa, v) },
+        .options => .{ .options = switch (v) {
+            .object => |o| blk: {
+                const out = try aa.alloc(persona.Option, o.count());
+                var it = o.iterator();
+                var i: usize = 0;
+                while (it.next()) |kv| : (i += 1) out[i] = .{ .key = kv.key_ptr.*, .value = switch (kv.value_ptr.*) {
+                    .string => |s| s,
+                    else => return error.BadField,
+                } };
+                break :blk out;
+            },
+            else => return error.BadField,
+        } },
     };
 }
 
@@ -631,6 +704,11 @@ fn jsonOf(aa: Allocator, v: Value) Allocator.Error!std.json.Value {
             break :blk .{ .object = o };
         },
         .strings => |l| try jsonStrings(aa, l),
+        .options => |l| blk: {
+            var o: std.json.ObjectMap = .empty;
+            for (l) |x| try o.put(aa, x.key, .{ .string = x.value });
+            break :blk .{ .object = o };
+        },
     };
 }
 
@@ -868,11 +946,11 @@ test "official: the tester is a watched worker with one skill and no MCP" {
     try testing.expectEqualStrings("Polter Tester", t.name);
     try testing.expect(t.polter.watch and !t.polter.supervisor);
     try testing.expectEqual(Polter.Open.auto, t.polter.open);
-    const c = t.cli("claude-code").?;
-    try testing.expect(!c.skills.default and !c.mcp.default);
-    try testing.expectEqual(@as(usize, 1), c.skills.except.len);
-    try testing.expectEqualStrings("skill:polter-operating-a-terminal", c.skills.except[0]);
-    try testing.expectEqual(@as(usize, 0), c.mcp.except.len);
+    try testing.expect(t.cli("claude-code") != null and t.cli("codex") != null);
+    try testing.expect(!t.cli_skills.default and !t.cli_mcp.default);
+    try testing.expectEqual(@as(usize, 1), t.cli_skills.except.len);
+    try testing.expectEqualStrings("skill:polter-operating-a-terminal", t.cli_skills.except[0]);
+    try testing.expectEqual(@as(usize, 0), t.cli_mcp.except.len);
     try testing.expect(std.mem.indexOf(u8, t.instructions.?, "You test; you do not fix") != null);
     try testing.expect(std.mem.indexOf(u8, t.instructions.?, "task_progress") != null);
 }

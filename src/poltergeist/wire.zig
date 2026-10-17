@@ -2865,7 +2865,7 @@ test "role_put carries the role as the object that was sent, and nothing else" {
     defer arena.deinit();
     const role = try persona.parsePersonaLeaky(arena.allocator(), p.value.role_put.role);
     try testing.expectEqualStrings("射手", role.name);
-    try testing.expectEqualStrings("skill:pdf", role.clis[0].skills.except[0]);
+    try testing.expectEqualStrings("skill:pdf", role.cli_skills.except[0]);
 
     // A role that is a string of JSON rather than an object is not a role:
     // accepting it would be a second format that nobody writes correctly.

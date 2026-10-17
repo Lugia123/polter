@@ -1004,7 +1004,7 @@ fn who_the_core_says_is_in_a_terminal_is_read_as_one_of_three_and_never_guessed(
 
 #[test]
 fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
-    use crate::snapshot::{ResumeWhy, SupervisorLast};
+    use crate::snapshot::{CliResume, ResumeWhy, SupervisorLast};
     let s = snapshot::decode(FIXTURE).unwrap();
     let last = |name: &str| s.groups.iter().find(|g| g.name == name).unwrap().supervisor.clone().unwrap().last.unwrap();
 
@@ -1023,6 +1023,11 @@ fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
             // never written down, so there is none to name.
             cli_label: Some("Claude Code".into()),
             last_cli_label: None,
+            // One answer for each CLI a role can be started in (#1677).
+            by_cli: vec![
+                CliResume { cli: "claude-code".into(), can: false, why: ResumeWhy::NoRecord },
+                CliResume { cli: "codex".into(), can: false, why: ResumeWhy::NoRecord },
+            ],
         }
     );
     // One whose session a terminal is in now, and one that can be gone on with.
@@ -1031,6 +1036,27 @@ fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
     assert_eq!((billing.can_resume, billing.why), (false, ResumeWhy::SessionInUse));
     let notes = last("notes");
     assert_eq!((notes.can_resume, notes.why), (true, ResumeWhy::None));
+    // Each CLI's answer is the core's: Codex's session goes on in Codex
+    // only, and billing's in neither, for two different reasons.
+    assert_eq!(
+        notes.by_cli,
+        [CliResume { cli: "claude-code".into(), can: false, why: ResumeWhy::CliDiffers }, CliResume { cli: "codex".into(), can: true, why: ResumeWhy::None }]
+    );
+    assert_eq!(
+        billing.by_cli.iter().map(|r| (r.cli.as_str(), r.can, r.why)).collect::<Vec<_>>(),
+        [("claude-code", false, ResumeWhy::SessionInUse), ("codex", false, ResumeWhy::CliDiffers)]
+    );
+    let role = &s.supervisor_roles[0];
+    assert_eq!(
+        role.clis.iter().map(|c| (c.key.as_str(), c.label.as_deref())).collect::<Vec<_>>(),
+        [("claude-code", Some("Claude Code")), ("codex", Some("Codex"))]
+    );
+    // A CLI the role is set up for whose plugin is off is held back, and
+    // said to be off -- not "cannot run" (#1677).
+    assert_eq!(
+        role.held_back.iter().map(|h| (h.key.as_str(), h.why)).collect::<Vec<_>>(),
+        [("other-cli", crate::snapshot::HeldWhy::PluginOff)]
+    );
     assert_eq!((billing.cli_label.as_deref(), billing.last_cli_label.as_deref()), (Some("Claude Code"), Some("Claude Code")));
     // A core that gives no name -- null, or from before it said -- is read
     // as no name, not as the key.
@@ -1073,7 +1099,7 @@ fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
 fn making_a_group_and_starting_a_supervisor_are_requests_the_core_reads() {
     assert_eq!(act::encode(&Act::NewGroup { name: " web app\"x " }).unwrap(), r#"{"act":"new_group","name":" web app\"x "}"#);
     // What the person did not pick is left out, for the core to fill in.
-    let start = |role, cwd| act::encode(&Act::StartSupervisor { group: "web-app", role, cwd, session: None }).unwrap();
+    let start = |role, cwd| act::encode(&Act::StartSupervisor { group: "web-app", role, cwd, cli: None, session: None }).unwrap();
     assert_eq!(start(None, None), r#"{"act":"start_supervisor","group":"web-app"}"#);
     assert_eq!(start(Some("reviewer"), None), r#"{"act":"start_supervisor","group":"web-app","role":"reviewer"}"#);
     assert_eq!(start(None, Some(r"C:\src")), r#"{"act":"start_supervisor","group":"web-app","cwd":"C:\\src"}"#);
@@ -1083,10 +1109,16 @@ fn making_a_group_and_starting_a_supervisor_are_requests_the_core_reads() {
     }
     // Which session is the core's two words, and is left out when there is
     // none to say (`act::session_sent`).
-    let with = |session| act::encode(&Act::StartSupervisor { group: "web-app", role: None, cwd: None, session }).unwrap();
+    let with = |session| act::encode(&Act::StartSupervisor { group: "web-app", role: None, cwd: None, cli: None, session }).unwrap();
     assert_eq!(with(Some(act::Session::Last)), r#"{"act":"start_supervisor","group":"web-app","session":"last"}"#);
     assert_eq!(with(Some(act::Session::New)), r#"{"act":"start_supervisor","group":"web-app","session":"new"}"#);
     assert_eq!(with(None), r#"{"act":"start_supervisor","group":"web-app"}"#);
+    // The agent CLI (#1677, D): the key, before the session; none or empty
+    // is left out, for the core's own choice.
+    let in_cli = |cli| act::encode(&Act::StartSupervisor { group: "web-app", role: None, cwd: None, cli, session: Some(act::Session::New) }).unwrap();
+    assert_eq!(in_cli(Some("codex")), r#"{"act":"start_supervisor","group":"web-app","cli":"codex","session":"new"}"#);
+    assert_eq!(in_cli(Some("")), r#"{"act":"start_supervisor","group":"web-app","session":"new"}"#);
+    assert_eq!(in_cli(None), r#"{"act":"start_supervisor","group":"web-app","session":"new"}"#);
     // On screen: the last session until the person picks the other. Not on
     // screen: nothing is said, whatever was picked while it was.
     assert_eq!(act::session_sent(true, None), Some(act::Session::Last));
@@ -1702,6 +1734,9 @@ fn every_refusal_is_said_in_chinese() {
             | Refusal::NoSuchPersona
             | Refusal::NotASupervisorRole
             | Refusal::NoCli
+            | Refusal::NotSetUpForCli
+            | Refusal::CliOff
+            | Refusal::CliUnavailable
             | Refusal::NoSuchDirectory
             | Refusal::OpenFailed
             | Refusal::NoExecutable
@@ -1743,6 +1778,9 @@ fn every_refusal_is_said_in_chinese() {
         Refusal::NoSuchPersona,
         Refusal::NotASupervisorRole,
         Refusal::NoCli,
+        Refusal::NotSetUpForCli,
+        Refusal::CliOff,
+        Refusal::CliUnavailable,
         Refusal::NoSuchDirectory,
         Refusal::OpenFailed,
         Refusal::NoExecutable,
@@ -1763,7 +1801,7 @@ fn every_refusal_is_said_in_chinese() {
     ];
     // The list and the match agree on the count: the match alone proves
     // every variant is named, not that every one is in `all`.
-    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 38);
+    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 41);
 
     // msgid and msgstr, with the continuation lines `msgmerge` wraps long
     // ones into joined back up.
@@ -1818,7 +1856,9 @@ fn every_string_this_crate_marks_is_said_in_chinese() {
     const PO: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../po/zh_CN.po"));
     // Said the same in every language, so a msgstr equal to its msgid is
     // right for these and nothing else.
-    const NAMES: &[&str] = &["Polter"];
+    // Names kept in English in every language: the product, and what the
+    // design calls the agent programs (#1678, role-cli-v1).
+    const NAMES: &[&str] = &["Polter", "Agent CLI"];
 
     let mut catalogue = std::collections::HashMap::new();
     let (mut id, mut s, mut into) = (String::new(), String::new(), 0u8);

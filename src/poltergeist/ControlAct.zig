@@ -31,6 +31,9 @@
 //!                                                       and directory
 //! {"act":"start_supervisor","group":"web-app","role":"…","cwd":"/…"}
 //! {"act":"start_supervisor","group":"web-app","session":"new"}
+//! {"act":"start_supervisor","group":"web-app","cli":"codex"}  a CLI picked
+//!                                     on the start screen (task 1677); left
+//!                                     out, the snapshot's `supervisor.cli`
 //!                                                       last | new
 //! {"act":"take_over","group":"web-app"}                 task 1635
 //! ```
@@ -187,6 +190,7 @@
 //! | start_supervisor | `AlreadyStarting` | one is on its way |
 //! | start_supervisor | `NoSupervisorRole` | no role was named and there is none to default to |
 //! | start_supervisor | `NoSuchPersona`, `NotASupervisorRole`, `NoCli` | the role named is not there, does not make a supervisor, or has no CLI to start |
+//! | start_supervisor | `NotSetUpForCli`, `CliOff`, `CliUnavailable` | the CLI picked is not one the role is set up for; its plugin is off; or it cannot start on this machine (no plugin, or an adapter nothing here can run). With none picked and none of the role's able to start, the reason is its first CLI's |
 //! | start_supervisor | `NotAbsolute`, `NoSuchDirectory`, `NotADirectory` | the directory |
 //! | start_supervisor | `OpenFailed` | no tab could be opened |
 //! | take_over | `NoSuchGroup` | the group is not there |
@@ -242,8 +246,8 @@ pub const Act = union(enum) {
     new_group: []const u8,
     /// The "Fix" button on a card that reads "Failed".
     fix: ControlFix.Key,
-    /// Empty `role` and `cwd` are "the one the snapshot names".
-    start_supervisor: struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session },
+    /// Empty `role`, `cwd` and `cli` are "the one the snapshot names".
+    start_supervisor: struct { group: []const u8, role: []const u8, cwd: []const u8, cli: []const u8 = "", session: Session },
     /// Everything the host knows about projects, replacing what it said.
     projects: []const Projects.Stated,
     project_failed: struct { name: []const u8, why: ProjectFailure },
@@ -371,7 +375,7 @@ pub const Host = struct {
     stewardOf: *const fn (ctx: *anyopaque, group: []const u8) ?Id,
     /// Open a tab and start a supervisor for `group` in it. Empty `role`
     /// and `cwd` are the snapshot's.
-    startSupervisor: *const fn (ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8, session: Session) anyerror!void,
+    startSupervisor: *const fn (ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8, cli: []const u8, session: Session) anyerror!void,
     /// Take a statement of every project as what is now known.
     stateProjects: *const fn (ctx: *anyopaque, list: []const Projects.Stated) anyerror!void,
     /// A project the host was ordered to open did not open.
@@ -497,6 +501,7 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
                 .group = try textOf(obj, "group"),
                 .role = if (obj.get("role")) |_| try textOf(obj, "role") else "",
                 .cwd = if (obj.get("cwd")) |_| try textOf(obj, "cwd") else "",
+                .cli = if (obj.get("cli")) |_| try textOf(obj, "cli") else "",
                 // A word that is neither is not a request: guessing which was
                 // meant would start the session the person did not ask for.
                 .session = if (obj.get("session")) |_|
@@ -647,7 +652,7 @@ pub fn perform(
             // Asked here as well as where the start is recorded, so that a
             // second press is refused before anything is opened for it.
             if (chat.startOf(s.group, now_ms).state == .starting) return error.AlreadyStarting;
-            try host.startSupervisor(host.ctx, s.group, s.role, s.cwd, s.session);
+            try host.startSupervisor(host.ctx, s.group, s.role, s.cwd, s.cli, s.session);
         },
         .projects => |list| try host.stateProjects(host.ctx, list),
         .project_failed => |f| try host.projectFailed(host.ctx, f.name, f.why),
@@ -775,7 +780,7 @@ const Recorder = struct {
     open_tasks: usize = 0,
     deleted: ?[]const u8 = null,
 
-    const Started = struct { group: []const u8, role: []const u8, cwd: []const u8, session: Session };
+    const Started = struct { group: []const u8, role: []const u8, cwd: []const u8, cli: []const u8, session: Session };
 
     fn deinit(self: *Recorder) void {
         self.keys.deinit(testing.allocator);
@@ -785,6 +790,7 @@ const Recorder = struct {
             testing.allocator.free(st.group);
             testing.allocator.free(st.role);
             testing.allocator.free(st.cwd);
+            testing.allocator.free(st.cli);
         }
         self.started.deinit(testing.allocator);
         for (self.fix_posts.items) |t| testing.allocator.free(t);
@@ -935,12 +941,12 @@ const Recorder = struct {
         return self.steward;
     }
 
-    fn startSupervisor(ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8, session: Session) anyerror!void {
+    fn startSupervisor(ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8, cli: []const u8, session: Session) anyerror!void {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
         if (self.refuse_with) |err| return err;
         // Copied: the request they point into is gone when the act returns.
         const a = testing.allocator;
-        try self.started.append(a, .{ .group = try a.dupe(u8, group), .role = try a.dupe(u8, role), .cwd = try a.dupe(u8, cwd), .session = session });
+        try self.started.append(a, .{ .group = try a.dupe(u8, group), .role = try a.dupe(u8, role), .cwd = try a.dupe(u8, cwd), .cli = try a.dupe(u8, cli), .session = session });
     }
 
     fn sendKey(ctx: *anyopaque, _: Id, key: []const u8) anyerror!void {
@@ -1336,6 +1342,17 @@ test "ControlRoom start: a supervisor is started for a group that has none, once
     , 11_001);
     try testing.expectEqual(Session.new, b.rec.started.items[2].session);
     try testing.expectEqual(Session.last, b.rec.started.items[3].session);
+    try testing.expectEqualStrings("", b.rec.started.items[3].cli);
+    // The CLI picked on the start screen is handed on as picked (task
+    // 1677); none picked is "" -- the snapshot's -- and a CLI that is not
+    // text is not a request.
+    try b.act(
+        \\{"act":"start_supervisor","group":"nightly","cli":"codex"}
+    , 11_001);
+    try testing.expectEqualStrings("codex", b.rec.started.items[4].cli);
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"start_supervisor","group":"nightly","cli":7}
+    , 11_001));
     // A word that is neither starts nothing.
     for ([_][]const u8{
         \\{"act":"start_supervisor","group":"nightly","session":"resume"}
@@ -1345,7 +1362,7 @@ test "ControlRoom start: a supervisor is started for a group that has none, once
         \\{"act":"start_supervisor","group":"nightly","session":true}
         ,
     }) |bad| try testing.expectError(error.BadRequest, b.act(bad, 11_001));
-    try testing.expectEqual(@as(usize, 4), b.rec.started.items.len);
+    try testing.expectEqual(@as(usize, 5), b.rec.started.items.len);
 
     // What the host refuses is the answer, by its own name.
     b.rec.refuse_with = error.NoSuchDirectory;

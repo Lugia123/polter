@@ -275,6 +275,9 @@ poltergeist_plugin_tested_ms: ?u64 = null,
 /// Everything they own lives in `plugin_arena`, which is why they are a
 /// pair: manifests are strings all the way down and are read once.
 poltergeist_plugins: []const poltergeistpkg.Plugin.Manifest = &.{},
+/// Every agent CLI a plugin manages and whether it can be started; in
+/// `poltergeist_plugin_arena`, read with `poltergeist_plugins`.
+poltergeist_cli_standings: []const poltergeistpkg.ControlRoom.CliStanding = &.{},
 poltergeist_plugin_arena: ?std.heap.ArenaAllocator = null,
 
 /// Every installed plugin that declares what its CLI's title says
@@ -1062,6 +1065,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .retention_waiting = if (self.sweeper) |*w| w.waitingBytes() else null,
         .supervisor_roles = roles,
         .cli_resume = cli_resume,
+        .cli_standings = self.controlCliStandings(),
         .projects = projects,
         .cli_names = self.controlCliNames(alloc) catch return,
         .home = self.controlHome(),
@@ -1472,6 +1476,7 @@ fn controlActStartSupervisor(
     group: []const u8,
     role_asked: []const u8,
     cwd_asked: []const u8,
+    cli_asked: []const u8,
     session_asked: poltergeistpkg.ControlAct.Session,
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
@@ -1497,9 +1502,21 @@ fn controlActStartSupervisor(
     if (!p.polter.supervisor) return error.NotASupervisorRole;
     if (p.clis.len == 0) return error.NoCli;
 
-    const cli_keys = try alloc.alloc([]const u8, p.clis.len);
-    for (p.clis, cli_keys) |c, *k| k.* = c.cli;
-    const cli = ControlRoom.startCliOf(cli_keys, last).?;
+    // The CLI: the one picked, or the snapshot's default by the same
+    // function -- of the role's CLIs whose plugin is on, the last
+    // supervisor's, else the first. Whether the picked one can start here
+    // is `resolveLaunch`'s to refuse, with its reason.
+    const cli: []const u8 = if (cli_asked.len > 0)
+        (p.cli(cli_asked) orelse return error.NotSetUpForCli).cli
+    else cli: {
+        const cli_keys = try alloc.alloc([]const u8, p.clis.len);
+        for (p.clis, cli_keys) |c, *k| k.* = c.cli;
+        const role: ControlRoom.StartRole = .{ .key = p.key, .name = p.name, .clis = cli_keys };
+        const here = try ControlRoom.startClisOf(alloc, role, self.controlCliStandings());
+        // None of the role's can start: `resolveLaunch` says which reason,
+        // asked of its first.
+        break :cli ControlRoom.startCliOf(here, last) orelse p.clis[0].cli;
+    };
 
     // A group that has a project is started in it: the pane has its own
     // directory, and none is opened here.
@@ -1524,7 +1541,7 @@ fn controlActStartSupervisor(
     }
 
     const rt_app = self.poltergeist_rt_app orelse return error.NoRuntime;
-    const choice = try self.resolveLaunch(alloc, p.key, cli);
+    const choice = try self.resolveLaunch(alloc, p.key, cli, null);
     const now_ms = self.poltergeistElapsedMs();
 
     // Whether it goes on with the last session. Asked for the role and the
@@ -1967,6 +1984,18 @@ fn controlCliNames(self: *App, alloc: Allocator) Allocator.Error![]const polterg
     const out = try alloc.alloc(poltergeistpkg.ControlRoom.CliName, read.len);
     for (read, out) |n, *o| o.* = .{ .key = n.key, .label = n.label };
     return out;
+}
+
+/// Every agent CLI a plugin here manages, and whether it can be started
+/// (`agent_cli.survey`): plugin on and adapter runnable, plugin off, or on
+/// with an adapter nothing here can run (task 1677). Read when the plugins
+/// are (`ensurePlugins`, again by `reloadPlugins` when one is switched on
+/// or off), so that drawing the snapshot walks no directory and starts
+/// nothing. Null when the plugins could not be read.
+fn controlCliStandings(self: *App) ?[]const poltergeistpkg.ControlRoom.CliStanding {
+    self.ensurePlugins();
+    if (self.poltergeist_plugin_arena == null) return null;
+    return self.poltergeist_cli_standings;
 }
 
 fn controlCliResume(self: *App, alloc: Allocator) Allocator.Error!poltergeistpkg.ControlRoom.CliResume {
@@ -2733,8 +2762,21 @@ pub fn ensurePlugins(self: *App) void {
         says.append(alloc, f.manifest) catch break;
     }
 
+    // Where each agent CLI stands (task 1677), for the control room's
+    // start screen: a walk of its own, as `agent_cli.survey` is the one
+    // definition of "can be started here".
+    var standings: std.ArrayListUnmanaged(poltergeistpkg.ControlRoom.CliStanding) = .empty;
+    for (poltergeistpkg.agent_cli.survey(alloc, io, &environ_map)) |f| {
+        standings.append(alloc, .{ .key = f.adapter.key, .standing = switch (f.standing) {
+            .ok => .ok,
+            .off => .plugin_off,
+            .cannot_run => .cannot_run,
+        } }) catch break;
+    }
+
     self.poltergeist_plugins = manifests;
     self.poltergeist_says = says.items;
+    self.poltergeist_cli_standings = standings.items;
     self.poltergeist_plugin_arena = arena;
 
     log.info(
@@ -2875,6 +2917,7 @@ pub fn reloadPlugins(self: *App) void {
     // memory for whichever notification came next.
     self.poltergeist_plugins = &.{};
     self.poltergeist_says = &.{};
+    self.poltergeist_cli_standings = &.{};
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
     self.poltergeist_plugin_arena = null;
 
@@ -4656,12 +4699,46 @@ fn personasChanged(self: *App) void {
 /// the cache; `refresh` starts a new read on its own thread first.
 pub fn agentClisJson(self: *App, alloc: Allocator, refresh: bool) ![]u8 {
     if (refresh) self.poltergeist_agent_clis.refresh(global.io());
-    return try self.poltergeist_agent_clis.snapshot(global.io(), alloc);
+    const cached = try self.poltergeist_agent_clis.snapshot(global.io(), alloc);
+
+    // `held_back` (task 1677): every CLI a plugin manages that is not in
+    // `clis` because it cannot be started, and why -- a switch in Plugins
+    // (`plugin_off`) or nothing here can run its adapter (`cannot_run`).
+    // Read afresh, as `resolveLaunch` reads it: a directory walk, no
+    // process. A CLI a role names that is in neither list has no plugin
+    // (`no_plugin`), which only a role can say.
+    var env = try global.environMap();
+    defer env.deinit();
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
+    // The cache writes one object; its closing brace is the last byte.
+    try w.writeAll(cached[0 .. cached.len - 1]);
+    try w.writeAll(",\"held_back\":[");
+    var n: usize = 0;
+    for (poltergeistpkg.agent_cli.survey(alloc, global.io(), &env)) |f| {
+        const why = switch (f.standing) {
+            .ok => continue,
+            .off => "plugin_off",
+            .cannot_run => "cannot_run",
+        };
+        if (n > 0) try w.writeAll(",");
+        try w.print("{{\"key\":{f},\"label\":{f},\"why\":\"{s}\"}}", .{
+            std.json.fmt(f.adapter.key, .{}),
+            std.json.fmt(f.adapter.label, .{}),
+            why,
+        });
+        n += 1;
+    }
+    try w.writeAll("]}");
+    return try out.toOwnedSlice();
 }
 
 pub const LaunchPersonaError = error{
     NoSuchPersona,
     NotSetUpForCli,
+    CliOff,
+    CliUnavailable,
     NoCli,
     ChooseCli,
     NoExecutable,
@@ -4671,34 +4748,55 @@ pub const LaunchPersonaError = error{
 const LaunchChoice = struct { key: []const u8, cli: []const u8 };
 
 /// Everything that can be refused about a launch, refused before anything
-/// opens or is typed: a role that does not exist, or that is not set up for
-/// the CLI asked for, must not leave an empty tab or a half-typed line
-/// behind as its only answer. Copies into `alloc`.
+/// opens or is typed: a role that does not exist, that is not set up for
+/// the CLI asked for, or whose CLI has no adapter here (its plugin is off,
+/// or its adapter cannot run) must not leave an empty tab or a half-typed
+/// line behind as its only answer. Copies into `alloc`.
+///
+/// No CLI named: `Persona.defaultCli`, with `by` -- the terminal that
+/// asked -- standing for "the CLI of whoever asked" (task 1677): a
+/// supervisor running in Codex opens Codex workers. Null for a start
+/// nobody's terminal asked for.
 fn resolveLaunch(
     self: *App,
     alloc: Allocator,
     key: []const u8,
     cli: []const u8,
+    by: ?poltergeistpkg.Bus.Id,
 ) !LaunchChoice {
     self.ensurePersonas();
     const p = self.personas.set.find(key) orelse return error.NoSuchPersona;
-    const chosen: []const u8 = if (cli.len > 0)
-        (p.cli(cli) orelse return error.NotSetUpForCli).cli
-    else if (p.clis.len < 2)
-        try p.defaultCli(&.{})
-    else chosen: {
-        // Set up for several: the one this machine has an adapter for
-        // (`Persona.defaultCli`). This reads the plugin directories and
-        // their manifests and starts nothing -- whether an adapter can run
-        // is settled by its file's kind (`Plugin.Manifest.runnable`), not by
-        // a PATH -- so it is fit for this thread.
-        var env = try global.environMap();
-        defer env.deinit();
-        const found = poltergeistpkg.agent_cli.discover(alloc, global.io(), &env);
-        const keys = try alloc.alloc([]const u8, found.len);
-        for (found, keys) |a, *k| k.* = a.key;
-        break :chosen try p.defaultCli(keys);
-    };
+    if (p.clis.len == 0) return error.NoCli;
+    if (cli.len > 0 and p.cli(cli) == null) return error.NotSetUpForCli;
+
+    // Which CLIs have an adapter here. This reads the plugin directories
+    // and their manifests and starts nothing -- whether an adapter can run
+    // is settled by its file's kind (`Plugin.Manifest.runnable`), not by a
+    // PATH -- so it is fit for this thread.
+    var env = try global.environMap();
+    defer env.deinit();
+    const surveyed = poltergeistpkg.agent_cli.survey(alloc, global.io(), &env);
+    var ok: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (surveyed) |f| if (f.standing == .ok) try ok.append(alloc, f.adapter.key);
+    const keys = ok.items;
+
+    const own: ?[]const u8 = if (by) |id|
+        (if (id == poltergeistpkg.Chat.user_id) null else self.poltergeist.agentOf(id).cli.get())
+    else
+        null;
+    const chosen: []const u8 = if (cli.len > 0) cli else try p.defaultCli(keys, own);
+    // Two refusals, because the person does two different things about
+    // them: a plugin that is off is a switch in Plugins; one whose adapter
+    // nothing here can run, or no plugin at all, no switch fixes.
+    for (surveyed) |f| {
+        if (!std.mem.eql(u8, f.adapter.key, chosen)) continue;
+        switch (f.standing) {
+            .ok => {},
+            .off => return error.CliOff,
+            .cannot_run => return error.CliUnavailable,
+        }
+        break;
+    } else return error.CliUnavailable;
     return .{ .key = try alloc.dupe(u8, p.key), .cli = try alloc.dupe(u8, chosen) };
 }
 
@@ -5130,7 +5228,7 @@ fn takeOverLaunch(self: *App, aa: Allocator, now_ms: u64) !void {
     const last = self.chat.lastSupervisorOf(run.group);
     const roles = try self.controlStartRoles(aa);
     const role = ControlRoom.startRoleOf(roles, last) orelse return error.NoSupervisorRole;
-    const choice = try self.resolveLaunch(aa, role.key, run.cli);
+    const choice = try self.resolveLaunch(aa, role.key, run.cli, null);
     const line = try launchLineFor(aa, choice, .{ .group = run.group, .session = run.session });
 
     self.chat.beginStart(run.group, now_ms, now_ms + Store.pending_launch_ms, run.session != null, .directory) catch {};
@@ -5208,7 +5306,7 @@ pub fn launchPersona(
     /// A terminal whose tab the new one is opened in, as a pane (task 1571).
     beside: ?poltergeistpkg.Bus.Id,
 ) anyerror!poltergeistpkg.rpc.Opened {
-    const choice = try self.resolveLaunch(alloc, key, cli);
+    const choice = try self.resolveLaunch(alloc, key, cli, by);
     const line = try launchLine(alloc, choice);
 
     if (into) |target| {
@@ -5566,7 +5664,7 @@ pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) any
     // Half a line in front of the person is not "at the prompt" for this:
     // the launch would be typed into the middle of it, so it gets a tab.
     if (!new_tab and surface.isAtShellPrompt() and !surface.draftFor(.person)) {
-        const choice = try self.resolveLaunch(aa, key, cli);
+        const choice = try self.resolveLaunch(aa, key, cli, id);
         // The person's own click: the keys that opened this tab are not an
         // agent intruding (#1202).
         try self.startRoleIn(id, id, choice, try launchLine(aa, choice), .person);

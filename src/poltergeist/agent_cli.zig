@@ -75,21 +75,44 @@ pub const Adapter = struct {
     identify_env: []const []const u8,
 };
 
-/// Every plugin on the search path that manages an agent CLI and can run
-/// here, sorted by key.
+/// Where one agent CLI stands on this machine, for the question "can it be
+/// started here, and if not, what would the person do about it" (task
+/// 1677). **Two of these used to be one answer** ("no adapter"), and the
+/// person can do something about one of them and not the other: a plugin
+/// that is off is a switch in Plugins, an adapter nothing here can run is
+/// not fixed by any switch.
+pub const Standing = enum {
+    /// Plugin on, adapter runnable: it can be started.
+    ok,
+    /// Plugin installed and switched off.
+    off,
+    /// Plugin on, but nothing on this system can run its adapter
+    /// (`Plugin.Manifest.runnable`).
+    cannot_run,
+};
+
+/// A plugin that manages an agent CLI, found, and where it stands.
+pub const Found = struct {
+    adapter: Adapter,
+    standing: Standing,
+};
+
+/// Every plugin on the search path that manages an agent CLI, switched on
+/// or not, sorted by key. A CLI no plugin manages is not here: that is the
+/// third answer, "absent".
 ///
 /// The same rules as the app's own plugin scan, which is the point of
 /// `Plugin.searchPath`: the user's copy of a plugin wins over the shipped
-/// one, a leading `_` is not a plugin, two directories claiming one key
-/// keep the first, and a plugin the user switched off offers no CLI.
+/// one, a leading `_` is not a plugin, and two directories claiming one key
+/// keep the first.
 ///
 /// Everything returned belongs to `arena`.
-pub fn discover(
+pub fn survey(
     arena: Allocator,
     io: std.Io,
     environ_map: *const std.process.Environ.Map,
-) []const Adapter {
-    var found: std.ArrayListUnmanaged(Adapter) = .empty;
+) []const Found {
+    var found: std.ArrayListUnmanaged(Found) = .empty;
     var dirs: std.StringHashMapUnmanaged(void) = .empty;
     var keys: std.StringHashMapUnmanaged(void) = .empty;
 
@@ -113,31 +136,49 @@ pub fn discover(
             if (keys.contains(manifest.key)) continue;
             keys.put(arena, manifest.key, {}) catch {};
 
-            if (!Plugin.settingsFor(arena, io, environ_map, manifest.key).enabled) continue;
-            if (!cli.runnable) {
+            const standing: Standing = if (!Plugin.settingsFor(arena, io, environ_map, manifest.key).enabled)
+                .off
+            else if (!cli.runnable) cannot: {
                 log.info(
                     "agent cli {s}: nothing on this system can run {s}",
                     .{ manifest.key, cli.adapter },
                 );
-                continue;
-            }
+                break :cannot .cannot_run;
+            } else .ok;
 
-            found.append(arena, .{
+            found.append(arena, .{ .standing = standing, .adapter = .{
                 .key = manifest.key,
                 .label = cli.label,
                 .bin = cli.bin,
                 .adapter = cli.adapter,
                 .identify_env = cli.identify_env,
-            }) catch continue;
+            } }) catch continue;
         }
     }
 
-    std.mem.sortUnstable(Adapter, found.items, {}, struct {
-        fn lt(_: void, a: Adapter, b: Adapter) bool {
-            return std.mem.lessThan(u8, a.key, b.key);
+    std.mem.sortUnstable(Found, found.items, {}, struct {
+        fn lt(_: void, a: Found, b: Found) bool {
+            return std.mem.lessThan(u8, a.adapter.key, b.adapter.key);
         }
     }.lt);
     return found.items;
+}
+
+/// Every plugin on the search path that manages an agent CLI and can run
+/// here, sorted by key: `survey`'s `ok` ones. A plugin the user switched
+/// off offers no CLI.
+///
+/// Everything returned belongs to `arena`.
+pub fn discover(
+    arena: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+) []const Adapter {
+    var out: std.ArrayListUnmanaged(Adapter) = .empty;
+    for (survey(arena, io, environ_map)) |f| {
+        if (f.standing == .ok) out.append(arena, f.adapter) catch continue;
+    }
+    return out.items;
 }
 
 pub fn find(adapters: []const Adapter, key: []const u8) ?Adapter {
@@ -265,17 +306,22 @@ pub fn writeLaunchRequest(
     try writeOptional(w, p.instructions);
     try w.writeAll("},\"cli\":");
 
-    // The role's own shape for one CLI, so the adapter reads the same
-    // field names the file has. `writePersona` is the authority on those;
-    // this repeats one branch of it rather than inventing a second shape.
-    try w.print("{{\"skills\":{{\"default\":{},\"except\":", .{choice.skills.default});
-    try writeList(w, choice.skills.except);
-    try w.print("}},\"mcp\":{{\"default\":{},\"except\":", .{choice.mcp.default});
-    try writeList(w, choice.mcp.except);
-    try w.writeAll("},\"model\":");
+    // The role's choices for this CLI, in the selection shape the file
+    // uses (`persona.writeSelection`). `skills` and `mcp` are the role's
+    // one set (`Persona.cli_skills`, task 1677) -- put where each CLI's
+    // own used to be, so an adapter reads them where it always has.
+    try w.writeAll("{\"skills\":");
+    try persona.writeSelection(w, p.cli_skills);
+    try w.writeAll(",\"mcp\":");
+    try persona.writeSelection(w, p.cli_mcp);
+    try w.writeAll(",\"model\":");
     try writeOptional(w, choice.model);
     try w.writeAll(",\"args\":");
     try writeList(w, choice.args);
+    // The adapter's own launch options (its inventory's `options`), as the
+    // role picked them. Always written, `{}` for none.
+    try w.writeAll(",\"options\":");
+    try persona.writeOptions(w, choice.options);
     try w.writeAll("}}");
 }
 
@@ -904,11 +950,11 @@ test "agent_cli: the launch request carries the role and one CLI's choices" {
         .key = "archer",
         .name = "射手",
         .instructions = "Only read.\n\"Never\" write.",
+        .cli_skills = .{ .default = false, .except = &.{"skill:pdf"} },
+        .cli_mcp = .{ .except = &.{"mcp:argus"} },
     };
     const choice: persona.CliChoice = .{
         .cli = "claude-code",
-        .skills = .{ .default = false, .except = &.{"skill:pdf"} },
-        .mcp = .{ .except = &.{"mcp:argus"} },
         .model = "sonnet",
         .args = &.{"--verbose"},
     };
@@ -1074,6 +1120,7 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
 
     var env = try global.environMap();
     defer env.deinit();
+    try standInClis(aa, io, &env, root);
 
     const inv_req = try std.fmt.allocPrint(aa, "{{\"version\":1,\"cwd\":null,\"home\":\"{s}\"}}", .{home});
     const inv = switch (try ask(aa, io, &env, adapter, .inventory, inv_req)) {
@@ -1096,6 +1143,15 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
     for (v.object.get("items").?.array.items) |item| {
         try ids.put(aa, item.object.get("id").?.string, item.object);
     }
+
+    // The launch options are read from the stand-in's `--help`, not from
+    // whatever `claude` this machine has (`standInClis`, task 1677).
+    const modes = v.object.get("options").?.array.items;
+    try testing.expectEqual(@as(usize, 1), modes.len);
+    const mode = modes[0].object;
+    try testing.expectEqualStrings("permission_mode", mode.get("key").?.string);
+    try testing.expectEqualStrings("stand-in", mode.get("values").?.array.items[0].object.get("value").?.string);
+    try testing.expectEqual(@as(usize, 1), mode.get("values").?.array.items.len);
     const want = [_][]const u8{
         "skill:pdf",          "skill:folded",         "skill:ops:terminal",
         "skill:theme",        "mcp:polter",           "mcp:pencil",
@@ -1114,11 +1170,15 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
     try testing.expect(ids.get("mcp:polter").?.get("locked").?.bool);
 
     // Now a role that turns off one of each, and tries to turn off Polter.
-    const p: persona.Persona = .{ .key = "r", .name = "r", .instructions = "be brief" };
+    const p: persona.Persona = .{
+        .key = "r",
+        .name = "r",
+        .instructions = "be brief",
+        .cli_skills = .{ .except = &.{ "skill:pdf", "skill:ops:terminal", "skill:theme", "skill:design:ux-copy", "skill:.bundled" } },
+        .cli_mcp = .{ .except = &.{ "mcp:pencil", "mcp:plugin_ops_ops", "mcp:polter" } },
+    };
     const choice: persona.CliChoice = .{
         .cli = "claude-code",
-        .skills = .{ .except = &.{ "skill:pdf", "skill:ops:terminal", "skill:theme", "skill:design:ux-copy", "skill:.bundled" } },
-        .mcp = .{ .except = &.{ "mcp:pencil", "mcp:plugin_ops_ops", "mcp:polter" } },
         .args = &.{ "--settings", "{\"theme\":\"dark\"}" },
     };
     var req: std.Io.Writer.Allocating = .init(aa);
@@ -1225,13 +1285,17 @@ test "agent_cli: a role never switches off what belongs to the directory it is l
 
     var env = try global.environMap();
     defer env.deinit();
+    try standInClis(aa, io, &env, root);
 
     // A supervisor's shape: everything off by default, nothing excepted.
-    const p: persona.Persona = .{ .key = "s", .name = "s" };
+    const p: persona.Persona = .{
+        .key = "s",
+        .name = "s",
+        .cli_skills = .{ .default = false },
+        .cli_mcp = .{ .default = false },
+    };
     const choice: persona.CliChoice = .{
         .cli = "claude-code",
-        .skills = .{ .default = false },
-        .mcp = .{ .default = false },
     };
     var req: std.Io.Writer.Allocating = .init(aa);
     try writeLaunchRequest(&req.writer, p, choice, project, home, null, null);
@@ -1334,12 +1398,16 @@ fn askHooks(aa: Allocator, io: std.Io, rig: HookRig, cell: HookCell) !?HookAnswe
 
     var env = try global.environMap();
     defer env.deinit();
+    try standInClis(aa, io, &env, rig.root);
     try env.put("PATH", try std.fmt.allocPrint(aa, "{s}:{s}", .{ bin, env.get("PATH") orelse "" }));
 
-    const p: persona.Persona = .{ .key = "r", .name = "r" };
+    const p: persona.Persona = .{
+        .key = "r",
+        .name = "r",
+        .cli_skills = .{ .except = &.{"skill:pdf"} },
+    };
     const choice: persona.CliChoice = .{
         .cli = "claude-code",
-        .skills = .{ .except = &.{"skill:pdf"} },
         .args = cell.args,
     };
     var req: std.Io.Writer.Allocating = .init(aa);
@@ -1720,6 +1788,7 @@ test "agent_cli resume: the shipped Claude Code adapter says it can, and goes on
     // What it says of itself, asked the way the cache asks.
     var env = try global.environMap();
     defer env.deinit();
+    try standInClis(aa, io, &env, rig.root);
     const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = rig.exec, .identify_env = &.{} };
     const request = try std.fmt.allocPrint(aa, "{{\"version\":1,\"cwd\":null,\"home\":{f}}}", .{std.json.fmt(rig.home, .{})});
     const inv = switch (try ask(aa, io, &env, adapter, .inventory, request)) {
@@ -1876,6 +1945,7 @@ test "agent_cli identify: the shipped Claude Code adapter knows its own, finds t
 
     var env = try global.environMap();
     defer env.deinit();
+    try standInClis(aa, io, &env, rig.root);
     try env.put("HOME", rig.home);
     // The names plugins/claude-code/plugin.json declares.
     const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = rig.exec, .identify_env = &.{ "CLAUDECODE", "AI_AGENT", "CLAUDE_CODE_SESSION_ID" } };
@@ -1942,6 +2012,46 @@ const CodexRig = struct {
     rollout: []const u8,
     adapter: Adapter,
 };
+
+/// Stand-ins for `claude` and `codex`, first on `env`'s PATH, so that no test
+/// here starts the real one -- an adapter's inventory asks `<bin> --help`
+/// for its launch options (task 1677), and what this machine has installed
+/// must not decide a reading. `--version` answers a Claude Code that takes
+/// hooks; `--help` lists one value per option, `stand-in`, which a test
+/// can look for to know the stand-in is what answered. Anything else
+/// fails. In `<root>/stand-in-bin`, which goes with the test's `root`.
+fn standInClis(aa: Allocator, io: std.Io, env: *std.process.Environ.Map, root: []const u8) !void {
+    const bin = try std.fmt.allocPrint(aa, "{s}/stand-in-bin", .{root});
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, bin);
+    for ([_][2][]const u8{
+        .{
+            "claude",
+            \\#!/bin/sh
+            \\case "$1" in
+            \\  --version) echo '2.1.302 (Claude Code)' ;;
+            \\  --help) printf '%s\n' 'Options:' '  --permission-mode <mode>  Permission mode (choices: "stand-in")' ;;
+            \\  *) exit 1 ;;
+            \\esac
+            \\
+        },
+        .{
+            "codex",
+            \\#!/bin/sh
+            \\case "$1" in
+            \\  --help) printf '%s\n' 'Options:' '  -s, --sandbox <MODE>' '          [possible values: stand-in]' ;;
+            \\  *) exit 1 ;;
+            \\esac
+            \\
+        },
+    }) |stub| {
+        const path = try std.fmt.allocPrint(aa, "{s}/{s}", .{ bin, stub[0] });
+        var f = try cwd.createFile(io, path, .{ .permissions = .fromMode(0o755) });
+        defer f.close(io);
+        try f.writeStreamingAll(io, stub[1]);
+    }
+    try env.put("PATH", try std.fmt.allocPrint(aa, "{s}:{s}", .{ bin, env.get("PATH") orelse "" }));
+}
 
 fn codexRig(aa: Allocator, io: std.Io) !CodexRig {
     var raw: [6]u8 = undefined;
@@ -2035,6 +2145,7 @@ fn codexEnv() !std.process.Environ.Map {
 fn askCodex(aa: Allocator, io: std.Io, rig: CodexRig, question: Question, request: []const u8) ![]const u8 {
     var env = try codexEnv();
     defer env.deinit();
+    try standInClis(aa, io, &env, rig.root);
     return switch (try ask(aa, io, &env, rig.adapter, question, request)) {
         .ok => |j| j,
         .failed => |why| {
@@ -2074,6 +2185,14 @@ test "codex adapter: what a role can pick from, with nothing secret and nothing 
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, inv, .{});
     try testing.expect(v.object.get("resume").?.bool);
+    // The launch options come from the stand-in's `--help`, never from a
+    // real `codex` on this machine (`standInClis`, task 1677): only the
+    // sandbox, with its one value and its short spelling.
+    const opts = v.object.get("options").?.array.items;
+    try testing.expectEqual(@as(usize, 1), opts.len);
+    try testing.expectEqualStrings("sandbox", opts[0].object.get("key").?.string);
+    try testing.expectEqualStrings("stand-in", opts[0].object.get("values").?.array.items[0].object.get("value").?.string);
+    try testing.expectEqualStrings("-s", opts[0].object.get("aliases").?.array.items[0].string);
     var ids: std.StringHashMapUnmanaged(std.json.ObjectMap) = .empty;
     for (v.object.get("items").?.array.items) |item| try ids.put(aa, item.object.get("id").?.string, item.object);
     const want = [_][]const u8{
@@ -2109,11 +2228,15 @@ test "codex adapter: a role is the -c overrides Codex was measured to take, and 
 
     // A supervisor's shape, keeping one skill, taking one server and trying
     // to take Polter's.
-    const p: persona.Persona = .{ .key = "r", .name = "r", .instructions = "say \"hi\"\nthen stop\x7f" };
+    const p: persona.Persona = .{
+        .key = "r",
+        .name = "r",
+        .instructions = "say \"hi\"\nthen stop\x7f",
+        .cli_skills = .{ .default = false, .except = &.{"skill:writer"} },
+        .cli_mcp = .{ .except = &.{ "mcp:pencil", "mcp:polter" } },
+    };
     const choice: persona.CliChoice = .{
         .cli = "codex",
-        .skills = .{ .default = false, .except = &.{"skill:writer"} },
-        .mcp = .{ .except = &.{ "mcp:pencil", "mcp:polter" } },
         .model = "gpt-5.6-luna",
     };
     const l = try codexLaunch(aa, io, rig, p, choice, null);
@@ -2581,4 +2704,75 @@ test "codex adapter: a single Codex started by hand in its own directory is reco
         try io.sleep(.fromMilliseconds(50), .awake);
     }
     try testing.expectEqualStrings(sid, held.session orelse "(none)");
+}
+
+test "agent_cli survey: a plugin switched off and one nothing here can run are two answers (task 1677)" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const root = try std.fmt.allocPrint(aa, "/tmp/polter-survey-{x}", .{&raw});
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    const plugins = try std.fmt.allocPrint(aa, "{s}/polter/plugins", .{root});
+
+    // An adapter this system cannot start: a `.ps1` off Windows, a `.sh`
+    // on it (`Plugin.launchKindFor`).
+    const foreign = if (@import("builtin").os.tag == .windows) "adapter.sh" else "adapter.ps1";
+    const native = if (@import("builtin").os.tag == .windows) "adapter.ps1" else "adapter.py";
+    for ([_]struct { key: []const u8, adapter: []const u8, enabled: bool }{
+        .{ .key = "zz-on-cli", .adapter = native, .enabled = true },
+        .{ .key = "zz-off-cli", .adapter = native, .enabled = false },
+        .{ .key = "zz-odd-cli", .adapter = foreign, .enabled = true },
+    }) |p| {
+        const dir = try std.fmt.allocPrint(aa, "{s}/{s}", .{ plugins, p.key });
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+        var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+        defer d.close(io);
+        var m = try d.createFile(io, "plugin.json", .{});
+        try m.writeStreamingAll(io, try std.fmt.allocPrint(aa,
+            \\{{"key":"{s}","name":"{s}","exec":"provision.sh","agent_cli":{{"label":"L-{s}","bin":"x","adapter":"{s}"}}}}
+        , .{ p.key, p.key, p.key, p.adapter }));
+        m.close(io);
+        var a = try d.createFile(io, p.adapter, .{});
+        a.close(io);
+        var pd = try std.Io.Dir.cwd().openDir(io, plugins, .{});
+        defer pd.close(io);
+        var s = try pd.createFile(io, try std.fmt.allocPrint(aa, "{s}.json", .{p.key}), .{});
+        try s.writeStreamingAll(io, if (p.enabled) "{\"enabled\":true}" else "{\"enabled\":false}");
+        s.close(io);
+    }
+
+    var env: std.process.Environ.Map = .init(aa);
+    try env.put("XDG_CONFIG_HOME", root);
+    try env.put("HOME", root);
+
+    var seen: usize = 0;
+    for (survey(aa, io, &env)) |f| {
+        const want: Standing = if (std.mem.eql(u8, f.adapter.key, "zz-on-cli"))
+            .ok
+        else if (std.mem.eql(u8, f.adapter.key, "zz-off-cli"))
+            .off
+        else if (std.mem.eql(u8, f.adapter.key, "zz-odd-cli"))
+            .cannot_run
+        else
+            continue;
+        try testing.expectEqual(want, f.standing);
+        seen += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), seen);
+
+    // `discover` is the ones that can start, and nothing else.
+    var on: usize = 0;
+    for (discover(aa, io, &env)) |a| {
+        if (std.mem.startsWith(u8, a.key, "zz-")) {
+            try testing.expectEqualStrings("zz-on-cli", a.key);
+            on += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), on);
 }

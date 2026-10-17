@@ -9,7 +9,7 @@ eleven is the contract; this file is one side of it.
 
     adapter.py inventory '<request>'
         request {"version":1,"cwd":"/abs"|null,"home":"/abs"}
-        stdout  {"version":1,"installed":…,"resume":true,"items":[…],"notes":[…]}
+        stdout  {"version":1,"installed":…,"resume":true,"options":[…],"items":[…],"notes":[…]}
 
     adapter.py launch '<request>'
         request {"version":1,"cwd":…,"home":…,"polter":"/abs"|null,
@@ -59,9 +59,10 @@ Three things it deliberately does not do, and each is checkable by reading:
   * **It never reads a value out of an `env` block.** MCP entries carry API
     keys there. A server is described by its name, its transport and where
     it came from.
-  * **It runs `claude` for one thing only: `claude --version`**, at launch,
-    to decide whether to configure hooks (below). That starts no MCP server
-    and reads no settings. Everything else comes from the files Claude Code
+  * **It runs `claude` for two things only: `claude --version`**, at launch,
+    to decide whether to configure hooks (below), **and `claude --help`**, to
+    list the permission modes this version takes (`launch_options`, task
+    1677). Neither starts an MCP server or reads settings. Everything else comes from the files Claude Code
     keeps; running the CLI to ask would start every MCP server it has.
 
 Hooks (`dev-docs/poltergeist/adapters.md` 3.1-3.2): from Claude Code
@@ -565,6 +566,7 @@ def inventory(req):
         "installed": on_path("claude") is not None,
         # `launch` goes on with a session it is handed (`session_to_resume`).
         "resume": True,
+        "options": launch_options(help_text(BINARY)),
         "items": unique,
         "notes": notes,
     }
@@ -579,6 +581,119 @@ def inventory(req):
 # and nobody could have said otherwise. They are the project's, visible only
 # in that directory; the role has no say over them.
 PROJECT_SOURCES = ("project", "local")
+
+
+BINARY = "claude"
+# (key, label, flag): measured on 2.1.302, `--permission-mode`.
+OPTION_FLAGS = [("permission_mode", "Permission mode", "--permission-mode")]
+
+
+# Launch options (task 1677): the unattended settings a role picks per CLI,
+# as a drop-down rather than as words typed into "extra arguments". Only the
+# values **this** CLI's own `--help` lists are offered, so a value an older or
+# newer version does not take is never one to pick; a help that could not be
+# read offers none, and says so. The role's `cli.options` is
+# `{"<key>": "<value>"}`; `apply_options` turns it into flags.
+HELP_TIMEOUT = 10
+
+
+def help_text(binary):
+    """`<binary> --help`, or None. Reads a usage text; starts no session."""
+    exe = on_path(binary) or binary
+    try:
+        p = subprocess.run([exe, "--help"], capture_output=True, text=True,
+                           timeout=HELP_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return p.stdout if p.returncode == 0 and p.stdout else None
+
+
+def flag_values(text, flag):
+    """The values `--help` lists for `flag`, in its order; [] when it lists none.
+
+    Three shapes, all measured: Claude Code 2.1.302 writes
+    `(choices: "a", "b", …)` across lines; Codex 0.163 writes
+    `[possible values: a, b]` for `--sandbox` and a `- value: …` list for
+    `--ask-for-approval`."""
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if re.match(r"\s*(-\w, )?%s\b" % re.escape(flag), line):
+            start = i
+            break
+    if start is None:
+        return []
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if re.match(r"\s*-{1,2}[A-Za-z]", line) and not re.match(r"\s*- [\w-]+:", line):
+            break
+        block.append(line)
+    joined = " ".join(block)
+    m = re.search(r"choices:\s*((?:\"[^\"]+\"\s*,?\s*)+)", joined)
+    if m:
+        return re.findall(r"\"([^\"]+)\"", m.group(1))
+    m = re.search(r"\[possible values:\s*([^\]]+)\]", joined)
+    if m:
+        return [v.strip() for v in m.group(1).split(",") if v.strip()]
+    return [m.group(1) for m in (re.match(r"\s*- ([\w-]+):", l) for l in block) if m]
+
+
+def flag_aliases(text, flag):
+    """The short spellings `--help` gives `flag` (`-s, --sandbox`): the same
+    flag to the CLI, so the same flag to `apply_options`."""
+    for line in text.splitlines():
+        m = re.match(r"\s*((?:-\w, )+)%s\b" % re.escape(flag), line)
+        if m:
+            return [a.strip() for a in m.group(1).split(",") if a.strip()]
+    return []
+
+
+def launch_options(text):
+    """The `options` an inventory offers, from a `--help` text."""
+    out = []
+    for key, label, flag in OPTION_FLAGS:
+        values = flag_values(text or "", flag)
+        if values:
+            out.append({"key": key, "label": label, "flag": flag,
+                        "aliases": flag_aliases(text or "", flag),
+                        "values": [{"value": v, "args": [flag, v]} for v in values]})
+    return out
+
+
+def gives_flag(extra, spellings):
+    """Whether the extra arguments already give one of `spellings`, alone or
+    as `--flag=value` (a short one as `-s=value` too, which clap takes)."""
+    for a in extra:
+        for f in spellings:
+            if a == f or a.startswith(f + "="):
+                return True
+    return False
+
+
+def apply_options(cli, extra, notes):
+    """The flags the role's `cli.options` stand for. A value this CLI does not
+    list is left out with a note; so is an option whose flag the role's extra
+    arguments already give, because those are the role's words too and a CLI
+    handed one flag twice keeps whichever it pleases."""
+    picked = cli.get("options") or {}
+    if not isinstance(picked, dict) or not picked:
+        return []
+    offered = {o["key"]: o for o in launch_options(help_text(BINARY))}
+    args = []
+    for key, value in picked.items():
+        o = offered.get(key)
+        if o is None:
+            notes.append('Launch option "%s" is not one this version offers; left out.' % key)
+            continue
+        if gives_flag(extra, [o["flag"]] + o["aliases"]):
+            notes.append('Launch option "%s" left out: the extra arguments already give %s.' % (key, o["flag"]))
+            continue
+        hit = next((v for v in o["values"] if v["value"] == value), None)
+        if hit is None:
+            notes.append('Launch option %s="%s" is not a value this version takes; left out.' % (key, value))
+            continue
+        args += hit["args"]
+    return args
 
 
 def enabled(selection, item_id):
@@ -699,6 +814,7 @@ def launch(req):
     session = session_to_resume(req, extra, notes)
     if session:
         argv += ["--resume", session]
+    argv += apply_options(cli, extra, notes)
     argv += extra
 
     answer = {

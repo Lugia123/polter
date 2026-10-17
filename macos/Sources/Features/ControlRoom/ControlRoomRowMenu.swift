@@ -52,6 +52,11 @@ enum ControlRoomRowMenu {
         var resumable: Bool
         var pinned: Bool
         var muted: Bool
+        /// How many agent CLIs a supervisor can be started in here: the
+        /// core's default role's whose plugins are on (task 1677). Two or
+        /// more make "with a new session" a submenu of them; the menu tells
+        /// only one from more.
+        var clis: Int = 1
     }
 
     /// One item. The raw value is what both hosts print.
@@ -107,6 +112,9 @@ enum ControlRoomRowMenu {
             let has = state.supervisor != .none
             var go: [Item] = []
             switch state.supervisor {
+            // "Going on" can only be the last supervisor's CLI, and asks
+            // nothing; a new session asks which when there is a choice
+            // (`opens`).
             case .none: go = state.resumable ? [.startResume, .startNew] : [.start]
             case .hooked: go = [.jumpToSupervisor]
             case .hookless: go = [.jumpToSupervisor, .takeOver]
@@ -128,9 +136,16 @@ enum ControlRoomRowMenu {
         return out
     }
 
+    /// Whether `item` opens a submenu in `state`: the two fixed ones, and
+    /// "with a new session" when there is more than one CLI to start it in
+    /// (02A, task 1677) -- its items are those CLIs (`cliSubmenu`).
+    static func opens(_ item: Item, in state: State) -> Bool {
+        item.submenu != nil || (item == .startNew && state.clis > 1)
+    }
+
     /// Every state, in the order the hosts' comparison prints them:
-    /// archived, then the supervisor, then resumable, pinned, muted, each
-    /// false before true.
+    /// archived, then the supervisor, then resumable, pinned, muted, CLIs,
+    /// each false (one) before true (two).
     static var everyState: [State] {
         var all: [State] = []
         for archived in [false, true] {
@@ -138,8 +153,10 @@ enum ControlRoomRowMenu {
                 for resumable in [false, true] {
                     for pinned in [false, true] {
                         for muted in [false, true] {
-                            all.append(State(archived: archived, supervisor: supervisor,
-                                             resumable: resumable, pinned: pinned, muted: muted))
+                            for clis in [1, 2] {
+                                all.append(State(archived: archived, supervisor: supervisor,
+                                                 resumable: resumable, pinned: pinned, muted: muted, clis: clis))
+                            }
                         }
                     }
                 }
@@ -154,11 +171,36 @@ enum ControlRoomRowMenu {
         let items = entries(state).map { entry -> String in
             switch entry {
             case .separator: return "-"
-            case .item(let item): return item.rawValue + (item.submenu == nil ? "" : ">")
+            case .item(let item): return item.rawValue + (opens(item, in: state) ? ">" : "")
             }
         }
         return "group_menu archived=\(bit(state.archived)) sup=\(state.supervisor.rawValue) "
             + "resumable=\(bit(state.resumable)) pinned=\(bit(state.pinned)) muted=\(bit(state.muted)) "
+            + "clis=\(state.clis) items=\(items.joined(separator: " "))"
+    }
+
+    /// The id of the item that starts a supervisor in a new session of a CLI.
+    static let startNewCli = "start_new_cli:"
+
+    /// What "with a new session ›" opens: one item per CLI, in the core's
+    /// order (the role's), each with whether it is the one the group's last
+    /// supervisor used -- which says so on its right ("Last used"). The
+    /// Windows host's `rowmenu::cli_submenu`.
+    static func cliSubmenu(_ clis: [String], last: String?) -> [(id: String, last: Bool)] {
+        clis.map { (startNewCli + $0, $0 == last) }
+    }
+
+    /// The CLI an item of that submenu starts; nil for any other item.
+    static func cli(of id: String) -> String? {
+        guard id.hasPrefix(startNewCli) else { return nil }
+        let cli = String(id.dropFirst(startNewCli.count))
+        return cli.isEmpty ? nil : cli
+    }
+
+    /// How the comparison prints that submenu (`rowmenu::cli_submenu_line`).
+    static func cliSubmenuLine(_ clis: [String], last: String?) -> String {
+        let items = cliSubmenu(clis, last: last).map { $0.last ? $0.id + "*" : $0.id }
+        return "group_submenu start_new clis=\(clis.joined(separator: ",")) last=\(last ?? "-") "
             + "items=\(items.joined(separator: " "))"
     }
 }

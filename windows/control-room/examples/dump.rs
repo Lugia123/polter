@@ -407,6 +407,7 @@ fn main() {
                     cwd_is_last: is_last,
                     cli_label: Some("Claude Code".into()),
                     last_cli_label: label.map(str::to_string),
+                    by_cli: Vec::new(),
                 }),
             );
             println!(
@@ -448,6 +449,42 @@ fn main() {
     println!("start_roles choose={}", l.choose_supervisor_role);
     for role in &l.supervisor_roles {
         println!("start_role key={} name={}", role.key, quote(&role.name));
+        for c in &role.clis {
+            println!("start_role_cli role={} key={} label={}", role.key, c.key, c.label.as_deref().map_or("-".to_string(), quote));
+        }
+        for h in &role.held_back {
+            println!("start_role_held role={} key={} label={} why={}", role.key, h.key, h.label.as_deref().map_or("-".to_string(), quote), h.why.name());
+        }
+    }
+    // Which agent CLI a start uses and what becomes of "Go on with the last
+    // session" (#1678): every group a supervisor can be started for, in
+    // every role, with nothing picked and with each of the role's CLIs.
+    {
+        use polter_control_room::scene;
+        let same = |s: &str| s.to_string();
+        for r in l.rows() {
+            let Some(start) = r.start.as_ref().filter(|_| r.alone.is_none()) else { continue };
+            for role in &l.supervisor_roles {
+                let picks: Vec<Option<&str>> = std::iter::once(None).chain(role.clis.iter().map(|c| Some(c.key.as_str()))).collect();
+                for picked in picks {
+                    let c = scene::cli_choice(start, &l.supervisor_roles, Some(&role.key), picked);
+                    let says = scene::resume_said(&c, start.last.as_ref()).map(|(t, args)| args.iter().fold(same(t), |said, a| list::fill(&said, a)));
+                    println!(
+                        "start_cli group={} role={} picked={} shown={} on={} resume={} why={} says={} sends_cli={} sends_session={}",
+                        r.id,
+                        role.key,
+                        picked.unwrap_or("-"),
+                        u8::from(c.shown),
+                        c.picked.as_deref().unwrap_or("-"),
+                        c.resume.name(),
+                        c.why.name(),
+                        says.map_or("-".to_string(), |s| quote(&s)),
+                        c.picked.as_deref().unwrap_or("-"),
+                        scene::session_for(&c, None).map_or("-", |s| s.name())
+                    );
+                }
+            }
+        }
     }
     // A group just made: selected when it is listed, not before.
     for awaited in [Some("billing"), Some("not-yet"), None] {
@@ -479,7 +516,7 @@ fn main() {
     for name in [
         "BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
         "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable",
-        "NotStartedByHand", "AlreadyTakingOver",
+        "NotStartedByHand", "AlreadyTakingOver", "NotSetUpForCli", "CliOff", "CliUnavailable",
     ] {
         println!("refusal {name} says={}", quote(Refusal::parse(name).message()));
     }
@@ -866,6 +903,19 @@ fn main() {
     }
     for id in ["mute", "project"] {
         println!("group_submenu {id} items={}", rowmenu::submenu(id).join(" "));
+    }
+    // What "with a new session ›" opens for each group (#1678): the CLIs of
+    // the role the core would start, and the one the last supervisor used.
+    for r in l.rows() {
+        let Some(start) = r.start.as_ref().filter(|_| r.alone.is_none()) else { continue };
+        let clis: Vec<String> = start
+            .role
+            .as_deref()
+            .and_then(|k| l.supervisor_roles.iter().find(|x| x.key == k))
+            .map(|x| x.clis.iter().map(|c| c.key.clone()).collect())
+            .unwrap_or_default();
+        let last = start.last.as_ref().and_then(|x| x.last_cli.as_deref());
+        println!("{} row={}", rowmenu::cli_submenu_line(&clis, last), r.id);
     }
     // Which supervisor each row's menu is made for (task 1635).
     for r in l.rows() {

@@ -225,6 +225,17 @@ struct ControlRoomList: Equatable {
             /// then the key is what is written.
             var cliLabel: String?
             var lastCliLabel: String?
+            /// Whether a start in each CLI goes on with the session, the
+            /// core's answer per CLI (`resume_by_cli`, task 1677). Empty
+            /// from a core before it said.
+            var byCli: [CliResume] = []
+        }
+
+        /// The core's `resume` for one CLI.
+        struct CliResume: Equatable, Decodable {
+            var cli: String
+            var can: Bool
+            var why: ResumeWhy
         }
 
         var state: State
@@ -242,7 +253,32 @@ struct ControlRoomList: Equatable {
     struct SupervisorRole: Equatable, Identifiable {
         var key: String
         var name: String
+        /// The CLIs it can be started in here, in its order (task 1677).
+        var clis: [Cli] = []
+        /// The ones it is set up for that cannot start here, and why.
+        var heldBack: [HeldBack] = []
         var id: String { key }
+
+        struct Cli: Equatable, Decodable {
+            var key: String
+            /// Nil when the core has no name for it; the key is written.
+            var label: String?
+        }
+
+        struct HeldBack: Equatable, Decodable {
+            enum Why: String, Equatable, Decodable, CaseIterable {
+                /// Installed, switched off: a switch in Plugins.
+                case pluginOff = "plugin_off"
+                /// On, and nothing here can run its adapter.
+                case cannotRun = "cannot_run"
+                /// No plugin manages it.
+                case noPlugin = "no_plugin"
+            }
+
+            var key: String
+            var label: String?
+            var why: Why
+        }
 
         /// The name to show: the name, as the role library shows it. An
         /// official role is English as shipped.
@@ -714,6 +750,9 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         /// What `cli` is called to a person; nil when the core has no
         /// name for it, or is from before it said.
         var cli_label: String?
+        /// `resume` for every CLI a start can use (task 1677); nil from a
+        /// core before it said.
+        var resume_by_cli: [ControlRoomList.SupervisorStart.CliResume]?
         /// Whether the supervisor there was started by hand (task 1635);
         /// nil from a core before it said.
         var hookless: Hookless?
@@ -756,13 +795,17 @@ struct ControlRoomSnapshot: Decodable, Equatable {
             return .init(cli: cli, role: last.role, lastCli: last.cli, heardMs: last.heard_ms,
                          canResume: resume.can, why: resume.why,
                          cwdIsTheLastSupervisors: cwd_from == "last_supervisor",
-                         cliLabel: cli_label, lastCliLabel: last.cli_label)
+                         cliLabel: cli_label, lastCliLabel: last.cli_label,
+                         byCli: resume_by_cli ?? [])
         }
     }
 
     struct SupervisorRole: Decodable, Equatable {
         var key: String
         var name: String
+        /// Nil from a core before task 1677.
+        var clis: [ControlRoomList.SupervisorRole.Cli]?
+        var held_back: [ControlRoomList.SupervisorRole.HeldBack]?
     }
 
     struct Group: Decodable, Equatable {
@@ -1134,7 +1177,9 @@ extension ControlRoomList {
             waitingHeader: snapshot.header_waiting,
             quietHeader: snapshot.header_quiet,
             quota: snapshot.quota,
-            supervisorRoles: (snapshot.supervisor_roles ?? []).map { SupervisorRole(key: $0.key, name: $0.name) },
+            supervisorRoles: (snapshot.supervisor_roles ?? []).map {
+                SupervisorRole(key: $0.key, name: $0.name, clis: $0.clis ?? [], heldBack: $0.held_back ?? [])
+            },
             chooseSupervisorRole: snapshot.choose_supervisor_role ?? false,
             retentionWaitingBytes: snapshot.retention_waiting_bytes)
         archived = (snapshot.archived ?? []).map {
