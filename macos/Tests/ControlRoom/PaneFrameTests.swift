@@ -137,7 +137,8 @@ struct PaneFrameTests {
         for terminal in all {
             let bar = try #require(terminal.bar, "\(terminal.id) has no bar")
             let drawn = try #require(PaneFrame.drawn(terminal: terminal.id, ownName: "", at: split, in: all))
-            #expect(drawn.title == Title(name: terminal.title, shown: bar.shown, word: bar.text), "\(terminal.id)")
+            #expect(drawn.title == Title(name: terminal.title, shown: bar.shown, word: bar.text, badged: terminal.pane == .supervisor),
+                    "\(terminal.id)")
         }
     }
 
@@ -262,5 +263,43 @@ struct PaneFrameTests {
         #expect(PaneFrame.roleWord(.supervisor) != nil)
         #expect(PaneFrame.roleWord(.worker) != nil)
         #expect(PaneFrame.roleWord(.supervisor) != PaneFrame.roleWord(.worker))
+    }
+
+    // MARK: The supervisor's badge and edge (task 1692)
+
+    @Test func theBadgeIsOnASupervisorsPaneOfASplitAndNotInTheControlRoom() throws {
+        for wears in PaneFrame.Kind.allCases {
+            #expect(Title(name: "t", shown: .none, word: "", badged: true).badge(in: wears) == (wears == .supervisor), "\(wears)")
+            #expect(!Title(name: "t", shown: .none, word: "").badge(in: wears), "\(wears)")
+        }
+        // Every pane of a split the core says is a supervisor's, and no other.
+        let all = try terminals()
+        for terminal in all {
+            let drawn = try #require(PaneFrame.drawn(terminal: terminal.id, ownName: "", at: split, in: all))
+            #expect(drawn.title.badge(in: drawn.wears) == (terminal.pane == .supervisor), "\(terminal.id)")
+        }
+        // The control room's frame never has one, whoever it shows.
+        for says in [nil] + PaneFrame.Kind.allCases.map(Optional.some) {
+            let title = Title(ControlRoomList.SupervisorTitle(name: "web-app", shown: .working, word: "在干活", says: says))
+            #expect(!title.badge(in: .supervisor), "\(String(describing: says))")
+        }
+    }
+
+    @Test func withNoFramesOnlyTheSupervisorsPaneHasTheEdgeAloneOrNot() throws {
+        let all = try terminals()
+        let off = Place(enabled: false, quickTerminal: false, alone: false)
+        let offAlone = Place(enabled: false, quickTerminal: false, alone: true)
+        for place in [off, offAlone] {
+            for terminal in all {
+                #expect(PaneFrame.edged(terminal: terminal.id, at: place, in: all) == (terminal.pane == .supervisor), "\(terminal.id) \(place)")
+            }
+            #expect(!PaneFrame.edged(terminal: nil, at: place, in: all))
+            #expect(!PaneFrame.edged(terminal: "0x00000000000000ee", at: place, in: all))
+            #expect(!PaneFrame.edged(terminal: supervisor, at: place, in: nil))
+        }
+        // With frames it wears its frame and has no edge; nor in the quick terminal.
+        #expect(!PaneFrame.edged(terminal: supervisor, at: split, in: all))
+        #expect(!PaneFrame.edged(terminal: supervisor, at: alone, in: all))
+        #expect(!PaneFrame.edged(terminal: supervisor, at: Place(enabled: false, quickTerminal: true, alone: true), in: all))
     }
 }

@@ -235,6 +235,25 @@ enum ControlRoomLook {
         static let frameShadowBlur: Double = 24.0
     }
 
+    /// The badge at the left end of a supervisor's title, the mark before a supervisor's name on a stack's tab, and the edge round a supervisor's pane when panes wear no frames (task 1692).
+    enum SupervisorBadge {
+        /// Round at both ends: its radius is half of this.
+        /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
+        static let height: Double = 20.0
+        /// From the badge's left end to the mark.
+        /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
+        static let paddingLeading: Double = 6.0
+        /// From the word to the badge's right end.
+        /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
+        static let paddingTrailing: Double = 8.0
+        /// Between the mark and the word inside the badge. The mark is `side.glyph` square.
+        /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
+        static let markWordGap: Double = 4.0
+        /// The edge drawn just inside a supervisor's pane when `poltergeist-pane-frames` is off.
+        /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
+        static let edge: Double = 2.0
+    }
+
     /// The tabs over a cell that holds several terminals.
     enum StackTab {
         /// From the content's left and right edges to a tab's body: corner 8 + straight 4 + arc 8. Also the terminal text's inset.
@@ -646,6 +665,15 @@ enum ControlRoomLook {
         var supervisorEdgeFocused: RGBA
         /// Source: design v17, src/tokens-l.css and src/tokens-d.css.
         var supervisorTerminalEdge: RGBA
+        /// The badge's ground. Light: the app icon's own colour (`images/Polter.icon/icon.json` fill, srgb 0.24706 0.21961 0.78824; `windows/host/polter.ico` the same). Dark: the same hue (OKLCH 275.7) at lightness 0.55, the lightest step its white word still reads on at 4.5 with room.
+        /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
+        var supervisorBadge: RGBA
+        /// The mark and the word on the badge.
+        /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
+        var supervisorBadgeText: RGBA
+        /// The mark before a supervisor's name on a stack's tab, and the edge round its pane with no frames. Dark: the icon's hue at lightness 0.68, the first step that is 3 on every ground it is drawn on.
+        /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
+        var supervisorMark: RGBA
         /// Source: design v17, src/tokens-l.css and src/tokens-d.css.
         var workerEdge: RGBA
         /// Dark only.
@@ -741,6 +769,9 @@ enum ControlRoomLook {
         supervisorEdge: RGBA(r: 0, g: 0, b: 0, a: 0.12),
         supervisorEdgeFocused: RGBA(r: 0, g: 0, b: 0, a: 0.38),
         supervisorTerminalEdge: RGBA(r: 0, g: 0, b: 0, a: 0.1),
+        supervisorBadge: RGBA(r: 63, g: 56, b: 201, a: 1.0),
+        supervisorBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
+        supervisorMark: RGBA(r: 63, g: 56, b: 201, a: 1.0),
         workerEdge: RGBA(r: 0, g: 0, b: 0, a: 0.22),
         workerEdgeInner: RGBA(r: 0, g: 0, b: 0, a: 0.0),
         stackTabSeparator: RGBA(r: 0, g: 0, b: 0, a: 0.16),
@@ -804,6 +835,9 @@ enum ControlRoomLook {
         supervisorEdge: RGBA(r: 0, g: 0, b: 0, a: 0.55),
         supervisorEdgeFocused: RGBA(r: 255, g: 255, b: 255, a: 0.4),
         supervisorTerminalEdge: RGBA(r: 0, g: 0, b: 0, a: 0.4),
+        supervisorBadge: RGBA(r: 86, g: 89, b: 235, a: 1.0),
+        supervisorBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
+        supervisorMark: RGBA(r: 125, g: 139, b: 254, a: 1.0),
         workerEdge: RGBA(r: 0, g: 0, b: 0, a: 0.6),
         workerEdgeInner: RGBA(r: 255, g: 255, b: 255, a: 0.1),
         stackTabSeparator: RGBA(r: 255, g: 255, b: 255, a: 0.15),

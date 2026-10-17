@@ -54,10 +54,18 @@ pub fn held() -> Vec<Shape> {
 pub enum Mark {
     Pinned,
     Muted,
+    /// The supervisor's flag (task 1692): `TabMark.supervisor`'s ⚑, a pole
+    /// round at its ends and a pennant notched at its free end. The macOS
+    /// host's `PaneSupervisorMark` is the same from the same numbers.
+    Supervisor,
 }
 
 pub fn mark(mark: Mark) -> Vec<Shape> {
     match mark {
+        Mark::Supervisor => vec![
+            full(Outline::RoundRect(2.5, 0.9, 1.4, 12.4, 0.7)),
+            full(Outline::Polygon(vec![(3.9, 2.1), (11.5, 2.1), (9.6, 5.0), (11.5, 7.9), (3.9, 7.9)])),
+        ],
         Mark::Pinned => vec![
             // The head, the body widening to the plate, and the needle.
             full(Outline::RoundRect(4.0, 1.0, 6.0, 2.2, 1.0)),

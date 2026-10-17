@@ -32,15 +32,21 @@ enum PaneFrame {
         var note: String?
         /// "Let the control room take over?" (`SupervisorTitle.takeOver`).
         var takeOver: ControlRoomList.TakeOverTitle?
+        /// A supervisor's title says what it is with the badge
+        /// (`badge(in:)`): the title of a pane of a split. Not the control
+        /// room's own frame, which is the supervisor's and nothing else, and
+        /// which the Windows host draws without one too.
+        var badged: Bool
 
         init(name: String, shown: ControlRoomSnapshot.Terminal.Bar.Shown, word: String, says: Kind? = nil, note: String? = nil,
-             takeOver: ControlRoomList.TakeOverTitle? = nil) {
+             takeOver: ControlRoomList.TakeOverTitle? = nil, badged: Bool = false) {
             self.name = name
             self.shown = shown
             self.word = word
             self.says = says
             self.note = note
             self.takeOver = takeOver
+            self.badged = badged
         }
 
         /// The control room's own frame: the supervisor's status, which is
@@ -54,6 +60,14 @@ enum PaneFrame {
         /// the title's own when it brings one, the frame's otherwise.
         func roleWord(in wears: Kind) -> String? {
             PaneFrame.roleWord(says ?? wears)
+        }
+
+        /// Whether the bar of a frame that is `wears` says what it is with
+        /// the supervisor's badge, in place of the word after the name
+        /// (task 1692, the design's `supervisor-pane-v1` C): on a pane of a
+        /// split (`badged`), whenever that word would be the supervisor's.
+        func badge(in wears: Kind) -> Bool {
+            badged && (says ?? wears) == .supervisor
         }
     }
 
@@ -91,11 +105,34 @@ enum PaneFrame {
             // The pair the core says the title draws. Only a snapshot from
             // before it said so falls back to the status.
             let shown = listed.bar?.shown ?? .init(listed.shown)
-            return Drawn(wears: listed.pane ?? .plain, title: Title(name: listed.title, shown: shown, word: ControlRoomList.say(listed.bar?.text ?? listed.text)))
+            let wears = listed.pane ?? .plain
+            return Drawn(wears: wears, title: Title(name: listed.title, shown: shown, word: ControlRoomList.say(listed.bar?.text ?? listed.text),
+                                                    badged: wears == .supervisor))
         }
             ?? Drawn(wears: .plain, title: Title(name: ownName, shown: .none, word: ""))
         if drawn.wears == .plain, place.alone { return nil }
         return drawn
+    }
+
+    /// The ground of the supervisor's badge: the pane's own colour when it
+    /// has one, the supervisor's colour (the app icon's) when it has not.
+    /// **The one place it is chosen**: no pane has a colour of its own yet
+    /// (task 1694 will give them one), so every caller passes nil today.
+    static func badgeGround(_ paneColor: ControlRoomLook.RGBA?, theme: ControlRoomLook.Theme) -> ControlRoomLook.RGBA {
+        paneColor ?? theme.supervisorBadge
+    }
+
+    /// Whether the pane of `terminal` at `place` is drawn with the
+    /// supervisor's edge: a line just inside it, all round, and nothing
+    /// else (task 1692, the design's `supervisor-pane-v1`, situation 2).
+    /// Only where it wears no frame because the setting is off -- with no
+    /// title there is nowhere for the badge to go -- and for the core's
+    /// supervisor only; alone in its tab too, as its frame would be. Never
+    /// in the quick terminal, which is never framed.
+    static func edged(terminal: String?, at place: Place, in terminals: [ControlRoomSnapshot.Terminal]?) -> Bool {
+        guard !place.enabled, !place.quickTerminal else { return false }
+        let listed = terminal.flatMap { id in terminals?.first { $0.id == id } }
+        return listed?.pane == .supervisor
     }
 
     /// Whether the tab's ground shows between and around its panes: it

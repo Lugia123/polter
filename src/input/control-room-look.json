@@ -32,7 +32,8 @@
     "v17-build": "design v17, src/build.py (the glyphs' paths)",
     "supervisor": "the supervisor's ruling, not a design file",
     "undesigned": "not in the design: chosen while building the mac list, to be ruled on",
-    "v17-contrast": "design v17, src/contrast.md (measured off the rendered pictures)"
+    "v17-contrast": "design v17, src/contrast.md (measured off the rendered pictures)",
+    "supervisor-pane-v1": "design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692)"
   },
 
   "numbers": {
@@ -155,6 +156,15 @@
       "plain_has_line": { "v": false, "src": "v14-changes" },
       "frame_shadow_y": { "v": 8, "src": "v17-tokens" },
       "frame_shadow_blur": { "v": 24, "src": "v17-tokens" }
+    },
+    "supervisor_badge": {
+      "_src": "supervisor-pane-v1",
+      "_doc": "The badge at the left end of a supervisor's title, the mark before a supervisor's name on a stack's tab, and the edge round a supervisor's pane when panes wear no frames (task 1692).",
+      "height": { "v": 20, "doc": "Round at both ends: its radius is half of this." },
+      "padding_leading": { "v": 6, "doc": "From the badge's left end to the mark." },
+      "padding_trailing": { "v": 8, "doc": "From the word to the badge's right end." },
+      "mark_word_gap": { "v": 4, "doc": "Between the mark and the word inside the badge. The mark is `side.glyph` square." },
+      "edge": { "v": 2, "doc": "The edge drawn just inside a supervisor's pane when `poltergeist-pane-frames` is off." }
     },
     "stack_tab": {
       "_src": "v14-grid",
@@ -367,6 +377,9 @@
     "supervisor_edge": { "light": "#000000@0.12", "dark": "#000000@0.55" },
     "supervisor_edge_focused": { "light": "#000000@0.38", "dark": "#FFFFFF@0.4", "doc": "Light: the outer edge darkens. Dark: a ring is added just inside it." },
     "supervisor_terminal_edge": { "light": "#000000@0.1", "dark": "#000000@0.4" },
+    "supervisor_badge": { "light": "#3F38C9", "dark": "#5659EB", "src": "supervisor-pane-v1", "doc": "The badge's ground. Light: the app icon's own colour (`images/Polter.icon/icon.json` fill, srgb 0.24706 0.21961 0.78824; `windows/host/polter.ico` the same). Dark: the same hue (OKLCH 275.7) at lightness 0.55, the lightest step its white word still reads on at 4.5 with room." },
+    "supervisor_badge_text": { "light": "#FFFFFF", "dark": "#FFFFFF", "src": "supervisor-pane-v1", "doc": "The mark and the word on the badge." },
+    "supervisor_mark": { "light": "#3F38C9", "dark": "#7D8BFE", "src": "supervisor-pane-v1", "doc": "The mark before a supervisor's name on a stack's tab, and the edge round its pane with no frames. Dark: the icon's hue at lightness 0.68, the first step that is 3 on every ground it is drawn on." },
     "worker_edge": { "light": "#000000@0.22", "dark": "#000000@0.6" },
     "worker_edge_inner": { "light": "#000000@0", "dark": "#FFFFFF@0.1", "doc": "Dark only." },
     "stack_tab_separator": { "light": "#000000@0.16", "dark": "#FFFFFF@0.15" },
@@ -430,7 +443,11 @@
       { "on": "surface_window_tab_selected", "text": ["text"], "glyph": ["attention", "problem", "working"] },
       { "on": "surface_supervisor_bar", "text": ["text", "text_secondary", "attention_text", "problem_word"], "glyph": ["attention", "problem", "working"] },
       { "on": "worker_band", "text": ["terminal_bold", "terminal_dim", "attention_text", "problem_word"], "glyph": ["attention", "problem", "working"] },
-      { "on": "terminal_background", "text": ["terminal_text", "terminal_bold", "terminal_dim", "attention_text", "problem_word"], "glyph": ["attention", "problem", "working"] }
+      { "on": "terminal_background", "text": ["terminal_text", "terminal_bold", "terminal_dim", "attention_text", "problem_word"], "glyph": ["attention", "problem", "working"] },
+      { "on": "supervisor_badge", "text": ["supervisor_badge_text"] },
+      { "on": "surface_supervisor_bar", "glyph": ["supervisor_badge", "supervisor_mark"] },
+      { "on": "worker_band", "glyph": ["supervisor_mark"] },
+      { "on": "terminal_background", "glyph": ["supervisor_mark"] }
     ]
   }
 }

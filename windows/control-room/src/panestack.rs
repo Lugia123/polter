@@ -45,6 +45,15 @@ pub struct Member {
     pub role: Option<&'static str>,
 }
 
+impl Member {
+    /// Its tab carries the supervisor's flag before the name (task 1692):
+    /// wherever it is in the stack, in front or behind -- behind, the frame
+    /// is the one in front's and says nothing of it. macOS's `marked`.
+    pub fn marked(&self) -> bool {
+        self.wears == Wears::Supervisor
+    }
+}
+
 /// What a pane holding a stack draws.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneStack {
@@ -194,9 +203,13 @@ pub struct Geometry {
 /// How wide a tab's body wants to be, from the widths a host measured of
 /// its name (at the heavier of its two weights) and of the word for what it
 /// is: the paddings, a glyph's place and the close button's, whether or not
-/// either is showing (macOS's `wanted`).
-pub fn wanted(name: f64, role: Option<f64>) -> f64 {
+/// either is showing (macOS's `wanted`). A `marked` tab has the
+/// supervisor's flag before the name, and the gap after it.
+pub fn wanted(name: f64, role: Option<f64>, marked: bool) -> f64 {
     let mut w = name;
+    if marked {
+        w += side::GLYPH + t::GAP;
+    }
     if let Some(r) = role {
         w += look_pane::NAME_ROLE_GAP + r;
     }
@@ -465,13 +478,23 @@ pub fn build(g: &Geometry, stack: &PaneStack, wears: Wears, title: &Title, view:
             });
         }
         let mut parts = Vec::new();
+        // The supervisor's flag, in its own colour and on no ground of its
+        // own, so that it is not read as the tab in front (task 1692, the
+        // design's `supervisor-pane-v1`, situation 1).
+        if member.marked() {
+            parts.push(Part {
+                piece: Piece::Mark { mark: crate::glyph::Mark::Supervisor, color: theme.supervisor_mark, size: side::GLYPH },
+                side: Side::Lead,
+                gap: 0.0,
+            });
+        }
         if scene::draws(&member.name) {
             let weight = if tab.current { font::WEIGHT_EMPHASIS } else { font::WEIGHT_BODY };
             let ink = if tab.current { current_ink } else { other_ink };
             parts.push(Part {
                 piece: Piece::Words { text: member.name.clone(), style: Style { size: font::BODY, weight, face: Face::Mono, color: ink } },
                 side: Side::Rest,
-                gap: 0.0,
+                gap: if member.marked() { t::GAP } else { 0.0 },
             });
         }
         if let Some(role) = member.role {
@@ -725,8 +748,10 @@ mod tests {
 
     #[test]
     fn a_tab_wants_its_name_its_word_and_the_places_of_its_glyph_and_close_button() {
-        assert_eq!(wanted(40.0, None), 24.0 + 40.0 + 8.0 + 14.0 + 4.0 + 16.0);
-        assert_eq!(wanted(40.0, Some(30.0)), wanted(40.0, None) + 8.0 + 30.0);
+        assert_eq!(wanted(40.0, None, false), 24.0 + 40.0 + 8.0 + 14.0 + 4.0 + 16.0);
+        assert_eq!(wanted(40.0, Some(30.0), false), wanted(40.0, None, false) + 8.0 + 30.0);
+        // The supervisor's flag and the gap after it (task 1692).
+        assert_eq!(wanted(40.0, Some(30.0), true), wanted(40.0, Some(30.0), false) + 14.0 + 8.0);
         let title = Title { name: "x".into(), shown: BarShown::None, word: String::new() };
         assert_eq!(status_width(&title, 50.0), 0.0);
         let waiting = Title { shown: BarShown::NeedsYou, word: "等批准".into(), ..title };
@@ -766,6 +791,47 @@ mod tests {
             })
             .collect();
         assert_eq!(weights, [font::WEIGHT_BODY, font::WEIGHT_EMPHASIS, font::WEIGHT_BODY]);
+    }
+
+    /// The supervisor's tab carries its flag before the name, in front and
+    /// behind, in the flag's own colour; no other tab does (task 1692).
+    #[test]
+    fn only_the_supervisors_tab_has_the_flag_and_it_comes_before_the_name() {
+        let flags = |d: &Drawn| -> Vec<(usize, Rgba)> {
+            d.row
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Line { parts, .. } => Some(parts),
+                    _ => None,
+                })
+                .enumerate()
+                .flat_map(|(n, parts)| {
+                    parts.iter().enumerate().filter_map(move |(at, p)| match &p.piece {
+                        Piece::Mark { mark: crate::glyph::Mark::Supervisor, color, .. } => {
+                            assert_eq!((at, p.side), (0, Side::Lead), "the flag leads its tab");
+                            assert!(matches!(&parts[1].piece, Piece::Words { .. }) && parts[1].gap == t::GAP);
+                            Some((n, *color))
+                        }
+                        _ => None,
+                    })
+                })
+                .collect()
+        };
+        for dark in [false, true] {
+            let theme = look::theme(dark);
+            for current in [0, 1] {
+                let mut s = named(&["frontend", "web-app", "e2e"]);
+                s.members[1].wears = Wears::Supervisor;
+                s.current = current;
+                assert_eq!(s.members.iter().map(Member::marked).collect::<Vec<_>>(), [false, true, false]);
+                let geo = g(&[160.0; 3], current, 600.0, 0.0);
+                let d = build(&geo, &s, wears(&s), &status_title(&s, ""), &view(theme, None), &|x| x.to_string());
+                assert_eq!(flags(&d), [(1, theme.supervisor_mark)], "dark={dark} current={current}");
+            }
+            let s = named(&["frontend", "api", "e2e"]);
+            let d = build(&g(&[160.0; 3], 1, 600.0, 0.0), &s, Wears::Worker, &status_title(&s, ""), &view(theme, None), &|x| x.to_string());
+            assert!(flags(&d).is_empty());
+        }
     }
 
     #[test]

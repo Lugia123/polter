@@ -1911,6 +1911,8 @@ pub fn paint(frame: HWND) {
     below.top = sh;
     if below.bottom > below.top && ps.rcPaint.bottom > sh && !crate::pane_frames::paint(frame, hdc, below) {
         fill(hdc, &below, gdi(crate::termcolor::chrome(frame).ground));
+        // With no frames, a supervisor's pane still has its edge (task 1692).
+        crate::pane_frames::paint_edges(frame, hdc);
     }
 
     let _ = unsafe { EndPaint(frame, &ps) };

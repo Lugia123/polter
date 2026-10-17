@@ -150,6 +150,11 @@ pub enum Side {
     /// is cut short with an ellipsis, and with no room at all is left out.
     /// Of several, the leftmost gives way first.
     Squeezed,
+    /// From the right like `Trail`, but left out -- all of them -- when with
+    /// them the first leading part would not be whole: what a line gives up
+    /// before what leads it. A supervisor's status word, which goes before
+    /// its badge does (task 1692); the glyph left of it moves to the end.
+    Yield,
 }
 
 /// Where one part of a line is painted, in the host's pixels.
@@ -171,12 +176,19 @@ pub struct Placed {
 /// So on a waiting row the status word is whole, the group's name is cut
 /// only by the status word, and who is waiting is what gives way to a long
 /// name -- never the other way round, which is how a row once showed a
-/// worker's whole title and no group at all (task 1444, defect 3).
+/// worker's whole title and no group at all (task 1444, defect 3). Before
+/// any of that, the yielding parts are left out when keeping them would cut
+/// the first leading part.
 pub fn place_line(left: i32, right: i32, parts: &[(Side, i32, i32)]) -> Vec<Option<Placed>> {
     let mut out = vec![None; parts.len()];
+    let trailing = |side: Side, yields: bool| side == Side::Trail || (yields && side == Side::Yield);
+    // Where the trailing parts would begin with the yielding ones kept.
+    let with = right - parts.iter().filter(|(side, _, _)| trailing(*side, true)).map(|(_, gap, width)| width + gap).sum::<i32>();
+    let first = parts.iter().find(|(side, _, _)| *side == Side::Lead).map_or(0, |(_, gap, width)| gap + width);
+    let yields = left + first <= with;
     let mut trail = right;
     for (i, (side, gap, width)) in parts.iter().enumerate().rev() {
-        if *side == Side::Trail {
+        if trailing(*side, yields) {
             out[i] = Some(Placed { left: trail - width, right: trail, cut: false });
             trail -= width + gap;
         }
@@ -224,8 +236,15 @@ pub enum Piece {
     /// The glyph of a terminal the person is holding (`glyph::held`): not a
     /// status, never moving, and only in a pane's title.
     Held { color: Rgba, size: f64 },
-    /// Pinned or muted, beside a group's name (`glyph::mark`).
+    /// Pinned or muted, beside a group's name (`glyph::mark`); the
+    /// supervisor's flag, before its name on a stack's tab.
     Mark { mark: crate::glyph::Mark, color: Rgba, size: f64 },
+    /// The supervisor's badge at the left end of its title (task 1692, the
+    /// design's `supervisor-pane-v1` C): the flag and `text` in `style`, on
+    /// `ground`, round at both ends and `look::supervisor_badge` in size.
+    /// As wide as the two and its paddings; a host given less draws the
+    /// flag alone on it, and nothing when even that does not fit.
+    Badge { text: String, style: Style, ground: Rgba },
 }
 
 /// One part of a line. A host measures the words; that is the one thing
@@ -1017,7 +1036,7 @@ pub fn all_text(items: &[Item]) -> Vec<&str> {
             Item::Line { parts, .. } => {
                 for part in parts {
                     match &part.piece {
-                        Piece::Words { text, .. } => out.push(text.as_str()),
+                        Piece::Words { text, .. } | Piece::Badge { text, .. } => out.push(text.as_str()),
                         Piece::Glyph { .. } => {}
                         Piece::Held { .. } | Piece::Mark { .. } => {}
                     }
@@ -1037,7 +1056,7 @@ pub fn moves(items: &[Item]) -> bool {
         Item::Line { parts, .. } => parts.iter().any(|p| match &p.piece {
             Piece::Glyph { shown, pulses, .. } => *pulses || *shown == Shown::Working,
             Piece::Words { .. } => false,
-            Piece::Held { .. } | Piece::Mark { .. } => false,
+            Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } => false,
         }),
         Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => false,
     })
@@ -2181,7 +2200,7 @@ mod tests {
             Item::Line { parts, .. } => parts.iter().any(|p| match &p.piece {
                 Piece::Glyph { .. } => true,
                 Piece::Words { .. } => false,
-                Piece::Held { .. } | Piece::Mark { .. } => false,
+                Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } => false,
             }),
             Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => false,
         }
@@ -2806,6 +2825,42 @@ mod tests {
     }
 
     #[test]
+    fn a_yielding_part_goes_before_the_first_leading_part_is_cut_and_not_before() {
+        use Side::*;
+        // A supervisor's title (task 1692): badge 58, name 120, glyph 14,
+        // status word 40; 8 between each, 5 before the word.
+        let parts = [(Lead, 0, 58), (Lead, 8, 120), (Trail, 8, 14), (Yield, 5, 40)];
+        // Room for it all: the word is at the right end, the glyph left of it.
+        let wide = place_line(0, 400, &parts);
+        assert_eq!(wide[3], Some(Placed { left: 360, right: 400, cut: false }));
+        assert_eq!(wide[2], Some(Placed { left: 341, right: 355, cut: false }));
+        assert_eq!(wide[1], Some(Placed { left: 66, right: 186, cut: false }));
+        // Narrower: the name is cut first, and the word stays...
+        let cut = place_line(0, 150, &parts);
+        assert_eq!(cut[3], Some(Placed { left: 110, right: 150, cut: false }));
+        assert_eq!(cut[1], Some(Placed { left: 66, right: 83, cut: true }));
+        // ... down to where the badge would be cut with it: just there it
+        // still is, and a pixel narrower the word goes and the glyph takes
+        // the end.
+        let just = place_line(0, 58 + 8 + 14 + 5 + 40, &parts);
+        assert_eq!(just[0], Some(Placed { left: 0, right: 58, cut: false }));
+        assert!(just[3].is_some());
+        let gone = place_line(0, 58 + 8 + 14 + 5 + 40 - 1, &parts);
+        assert_eq!(gone[3], None);
+        assert_eq!(gone[2], Some(Placed { left: 110, right: 124, cut: false }));
+        assert_eq!(gone[0], Some(Placed { left: 0, right: 58, cut: false }));
+        // A line with nothing that yields is placed as it always was.
+        let plain = [(Lead, 0, 58), (Lead, 8, 120), (Trail, 8, 14), (Trail, 5, 40)];
+        for width in [60, 100, 125, 150, 400] {
+            let as_yield = place_line(0, width, &parts);
+            let as_trail = place_line(0, width, &plain);
+            if as_yield[3].is_some() {
+                assert_eq!(as_yield, as_trail, "{width}");
+            }
+        }
+    }
+
+    #[test]
     fn the_rest_of_a_line_is_what_the_others_leave_as_it_always_was() {
         use Side::*;
         let placed = place_line(0, 300, &[(Lead, 0, 50), (Rest, 8, 999), (Trail, 8, 40)]);
@@ -3263,7 +3318,7 @@ mod tests {
             .filter_map(|i| match i {
                 Item::Line { parts, .. } => parts.iter().find_map(|p| match &p.piece {
                     Piece::Words { text, style } if text == "zsh — ~/work" => Some(style.weight),
-                    Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } => None,
+                    Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } => None,
                 }),
                 Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => None,
             })
@@ -3285,7 +3340,7 @@ mod tests {
                             .iter()
                             .filter_map(|p| match &p.piece {
                                 Piece::Words { text, .. } => Some(text.clone()),
-                                Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } => None,
+                                Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } => None,
                             })
                             .collect(),
                     ),

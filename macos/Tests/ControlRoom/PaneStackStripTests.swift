@@ -1,5 +1,7 @@
+import AppKit
 import CoreGraphics
 import Foundation
+import SwiftUI
 import Testing
 @testable import Ghostty
 
@@ -344,6 +346,53 @@ struct PaneStackStripTests {
         // Every case the core can send is one of the two.
         for shown in Bar.allCases {
             #expect(PaneStackStatusGlyph(shown) == (shown == .held ? .held : .status(shown.status!)))
+        }
+    }
+
+    // MARK: The supervisor's mark (task 1692)
+
+    @Test func aSupervisorsTabWantsRoomForItsMarkBeforeTheName() {
+        let worker = PaneStack.Member(name: "web-app", shown: .working, wears: .worker)
+        let supervisor = PaneStack.Member(name: "web-app", shown: .working, wears: .supervisor)
+        #expect(!worker.marked && supervisor.marked)
+        #expect(PaneStackStripView.wanted(supervisor) - PaneStackStripView.wanted(worker)
+            == CGFloat(Look.Side.glyph) + CGFloat(Look.StackTab.gap))
+    }
+
+    /// The mark is drawn on the supervisor's tab, in front and behind, and
+    /// on no other tab: a stack of two workers draws none of its colour.
+    @MainActor @Test func theStripDrawsTheMarkOnTheSupervisorsTabOnly() throws {
+        func markPixels(_ members: [PaneStack.Member], current: Int, scheme: ColorScheme) throws -> Int {
+            let stack = PaneStack(members: members, current: current)
+            let wears = stack.showing?.wears ?? .plain
+            let view = PaneStackStripView(stack: stack, wears: wears, title: nil, well: .white, still: true)
+                .frame(width: 600, height: CGFloat(Look.StackTab.stripHeight))
+                .environment(\.colorScheme, scheme)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            let rep = NSBitmapImageRep(cgImage: try #require(renderer.cgImage))
+            let want = Look.theme(dark: scheme == .dark).supervisorMark
+            var count = 0
+            for y in 0..<rep.pixelsHigh {
+                for x in 0..<rep.pixelsWide {
+                    guard let c = rep.colorAt(x: x, y: y), c.alphaComponent > 0.9 else { continue }
+                    let d = abs(c.redComponent * 255 - Double(want.r)) + abs(c.greenComponent * 255 - Double(want.g))
+                        + abs(c.blueComponent * 255 - Double(want.b))
+                    if d < 24 { count += 1 }
+                }
+            }
+            return count
+        }
+        let sv = PaneStack.Member(name: "web-app", shown: .working, wears: .supervisor)
+        let a = PaneStack.Member(name: "frontend", shown: .working, wears: .worker)
+        let b = PaneStack.Member(name: "e2e", shown: .none, wears: .worker)
+        for scheme in [ColorScheme.light, .dark] {
+            let behind = try markPixels([a, sv, b], current: 0, scheme: scheme)
+            let front = try markPixels([a, sv, b], current: 1, scheme: scheme)
+            let none = try markPixels([a, b], current: 0, scheme: scheme)
+            #expect(behind > 40, "\(scheme): behind, \(behind)")
+            #expect(front > 40, "\(scheme): in front, \(front)")
+            #expect(none == 0, "\(scheme): no supervisor, \(none)")
         }
     }
 }

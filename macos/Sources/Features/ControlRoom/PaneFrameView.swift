@@ -282,6 +282,30 @@ struct PaneFrameChrome: ViewModifier {
     }
 }
 
+/// The line just inside a supervisor's pane when panes wear no frames
+/// (`PaneFrame.edged`, task 1692): over what is in it, on every side, and
+/// taking no click. Only ever drawn over, never a choice round what is in
+/// the pane (task 1461). It lies on the terminal's own padding -- 2 pt by
+/// default (`window-padding-x`, `-y`); with none, on its outermost pixels.
+struct PaneSupervisorEdge: ViewModifier {
+    typealias Look = ControlRoomLook
+
+    var shows: Bool
+
+    @Environment(\.colorScheme) private var scheme
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            if shows {
+                Rectangle()
+                    .strokeBorder(Look.theme(scheme).supervisorMark.color, lineWidth: CGFloat(Look.SupervisorBadge.edge))
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+}
+
 /// A band across the top of a pane: round at the two top corners, square
 /// along the bottom where the terminal begins.
 struct PaneStackBandShape: Shape {
@@ -373,6 +397,11 @@ struct PaneFrameBar: View {
                 // A note (a supervisor started by hand, task 1635) is said
                 // whole or not at all, and goes before anything else does:
                 // the bar is still the frame's title first.
+                //
+                // A supervisor's title says what it is with a badge at its
+                // left end, in place of the word after the name (task 1692),
+                // and the badge is on every one of these lines: it is never
+                // what gives way.
                 ViewThatFits(in: .horizontal) {
                     if title.note != nil {
                         line(title, theme: theme, role: true, nameCut: false, word: true, note: true)
@@ -391,11 +420,33 @@ struct PaneFrameBar: View {
                     line(title, theme: theme, role: false, nameCut: true, word: true)
                     line(title, theme: theme, role: false, nameCut: true, word: false)
                     HStack(spacing: 0) {
+                        // The badge never gives way (task 1692): it is
+                        // what says this is the supervisor.
+                        if title.badge(in: wears) {
+                            PaneSupervisorBadge(word: PaneFrame.roleWord(.supervisor) ?? "", paneColor: nil)
+                                .padding(.trailing, CGFloat(Look.Pane.barGap))
+                        }
                         Spacer(minLength: 0)
                         status(title, theme: theme, word: false)
                     }
                     .accessibilityElement(children: .combine)
                     .allowsHitTesting(false)
+                    // Narrower than a supervisor's badge and its glyph: the
+                    // glyph goes, and then the badge's word -- never the
+                    // badge, and nothing past the bar's edge.
+                    if title.badge(in: wears) {
+                        HStack(spacing: 0) {
+                            PaneSupervisorBadge(word: PaneFrame.roleWord(.supervisor) ?? "", paneColor: nil)
+                            Spacer(minLength: 0)
+                        }
+                        .allowsHitTesting(false)
+                        HStack(spacing: 0) {
+                            PaneSupervisorBadge(word: "", paneColor: nil)
+                                .accessibilityLabel(PaneFrame.roleWord(.supervisor) ?? "")
+                            Spacer(minLength: 0)
+                        }
+                        .allowsHitTesting(false)
+                    }
                 }
             } else {
                 HStack(spacing: CGFloat(Look.Pane.barGap)) {
@@ -461,6 +512,11 @@ struct PaneFrameBar: View {
     private func words(_ title: PaneFrame.Title, theme: Look.Theme, role: Bool, nameCut: Bool, word: Bool,
                        hookless: HooklessWords) -> some View {
         HStack(spacing: 0) {
+            let badge = title.badge(in: wears)
+            if badge {
+                PaneSupervisorBadge(word: PaneFrame.roleWord(.supervisor) ?? "", paneColor: nil)
+                    .padding(.trailing, CGFloat(Look.Pane.barGap))
+            }
             HStack(spacing: CGFloat(Look.Pane.nameRoleGap)) {
                 if nameCut {
                     name(title, theme: theme)
@@ -471,7 +527,7 @@ struct PaneFrameBar: View {
                 }
                 // The title's own word when it brings one; the frame's
                 // otherwise (`SupervisorTitle.says`).
-                if role, let word = title.roleWord(in: wears) {
+                if role, !badge, let word = title.roleWord(in: wears) {
                     Text(word)
                         .foregroundStyle(secondaryColor(theme))
                         .fixedSize()
@@ -561,6 +617,69 @@ struct PaneFrameBar: View {
         case .working, .none, .held:
             return secondaryColor(theme)
         }
+    }
+}
+
+/// The badge at the left end of a supervisor's title (task 1692, the
+/// design's `supervisor-pane-v1` C): the mark and the word for what it is,
+/// on the app icon's colour, round at both ends. As wide as what is on it,
+/// so it fits the word in every language; with no word, the mark alone, as
+/// far from both ends. The Windows host draws the same from the same
+/// numbers (`Piece::Badge`).
+struct PaneSupervisorBadge: View {
+    typealias Look = ControlRoomLook
+
+    var word: String
+    /// The pane's own colour, when it has one (`PaneFrame.badgeGround`).
+    var paneColor: Look.RGBA?
+
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let theme = Look.theme(scheme)
+        let b = Look.SupervisorBadge.self
+        HStack(spacing: CGFloat(b.markWordGap)) {
+            PaneSupervisorMark()
+                .fill(theme.supervisorBadgeText.color)
+                .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
+                .accessibilityHidden(true)
+            if !word.isEmpty {
+                Text(word)
+                    .font(.system(size: CGFloat(Look.Font.body)))
+                    .fontWeight(Look.weight(Look.Font.weightEmphasis))
+                    .foregroundStyle(theme.supervisorBadgeText.color)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.leading, CGFloat(b.paddingLeading))
+        .padding(.trailing, CGFloat(word.isEmpty ? b.paddingLeading : b.paddingTrailing))
+        .frame(height: CGFloat(b.height))
+        .background(Capsule(style: .continuous).fill(PaneFrame.badgeGround(paneColor, theme: theme).color))
+        .fixedSize()
+    }
+}
+
+/// The supervisor's mark, the flag the window's tab puts before a
+/// supervisor's title (`TabMark.supervisor`, ⚑), on the status glyphs' own
+/// artboard: a pole 1.4 wide from 0.9 to 13.3, round at its ends, and a
+/// pennant notched at its free end. The Windows host draws the same from the
+/// same numbers (`polter_control_room::glyph::Mark::Supervisor`).
+struct PaneSupervisorMark: Shape {
+    /// The pole: x, y, width, height, corner.
+    static let pole = (x: 2.5, y: 0.9, width: 1.4, height: 12.4, corner: 0.7)
+    /// The pennant's corners, in order.
+    static let pennant: [(x: Double, y: Double)] = [(3.9, 2.1), (11.5, 2.1), (9.6, 5.0), (11.5, 7.9), (3.9, 7.9)]
+
+    func path(in rect: CGRect) -> Path {
+        let unit = rect.width / CGFloat(ControlRoomLook.Status.artboard)
+        let at = { (x: Double, y: Double) in CGPoint(x: rect.minX + CGFloat(x) * unit, y: rect.minY + CGFloat(y) * unit) }
+        var path = Path()
+        let p = Self.pole
+        path.addRoundedRect(in: CGRect(origin: at(p.x, p.y), size: CGSize(width: CGFloat(p.width) * unit, height: CGFloat(p.height) * unit)),
+                            cornerSize: CGSize(width: CGFloat(p.corner) * unit, height: CGFloat(p.corner) * unit))
+        path.addLines(Self.pennant.map { at($0.x, $0.y) })
+        path.closeSubpath()
+        return path
     }
 }
 

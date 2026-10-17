@@ -119,9 +119,13 @@ struct PaneStackStripView: View {
     /// that a tab is the same width in front and behind, waiting and not,
     /// and the strip does not shuffle. None for the close button: it comes
     /// over the name's start while the pointer is on the tab (task 1642).
+    /// A supervisor's tab has its mark before the name (task 1692).
     static func wanted(_ member: PaneStack.Member) -> CGFloat {
         let t = Look.StackTab.self
         var name = (member.name as NSString).size(withAttributes: [.font: nameFont(current: true)]).width.rounded(.up)
+        if member.marked {
+            name += CGFloat(Look.Side.glyph) + CGFloat(t.gap)
+        }
         if let role = member.role {
             name += CGFloat(Look.Pane.nameRoleGap)
                 + (role as NSString).size(withAttributes: [.font: roleFont()]).width.rounded(.up)
@@ -303,6 +307,16 @@ struct PaneStackStripView: View {
             }
             PolterHighlightStackTab(terminal: member.terminal)
             HStack(spacing: 0) {
+                // The supervisor's mark, in its own colour and on no ground
+                // of its own, so that it is not read as the tab in front
+                // (task 1692, the design's `supervisor-pane-v1`, situation 1).
+                if member.marked {
+                    PaneSupervisorMark()
+                        .fill(theme.supervisorMark.color)
+                        .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
+                        .padding(.trailing, CGFloat(Look.StackTab.gap))
+                        .accessibilityHidden(true)
+                }
                 HStack(spacing: CGFloat(Look.Pane.nameRoleGap)) {
                     if member.terminal != nil, member.terminal == highlight.id, !highlight.fading {
                         PolterHighlightDot()

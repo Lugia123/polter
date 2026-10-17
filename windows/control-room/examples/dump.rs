@@ -565,6 +565,14 @@ fn main() {
                 ),
                 None => println!("pane place={place_name} terminal={} wears=-", id.as_deref().unwrap_or("-")),
             }
+            // Task 1692: the supervisor's badge on the bar (`pane::build` draws
+            // one for a supervisor's frame), and its edge with no frames.
+            println!(
+                "pane_mark place={place_name} terminal={} badge={} edged={}",
+                id.as_deref().unwrap_or("-"),
+                d.as_ref().is_some_and(|d| d.wears == pane::Wears::Supervisor),
+                pane::edged(id.as_deref(), place, Some(&snap.terminals))
+            );
             all.push(d);
         }
         println!("pane_ground place={place_name} shows={}", pane::ground_shows(&all));

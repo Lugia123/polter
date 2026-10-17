@@ -31,6 +31,8 @@ struct PaneStackRulesTests {
             ],
             shown: 1, terminals: s.terminals, pulses: [])
         #expect(stack.members.map(\.wears) == [.worker, .supervisor, .plain])
+        // Only the supervisor's tab has its mark, in front or not (task 1692).
+        #expect(stack.members.map(\.marked) == [false, true, false])
         // The core's titles, not the views'.
         #expect(stack.members.map(\.name) == ["web-app worker", "web-app", "zsh"])
         #expect(stack.members.map(\.shown) == [.needsYou, .needsYou, .none])

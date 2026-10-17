@@ -12,7 +12,8 @@ import UniformTypeIdentifiers
 /// Everything else -- the tree, the divider and its dragging, the drop
 /// zones, zoom, the drag handle, the search bar, the placeholder of a
 /// terminal lent to the control room -- is as it was, and with
-/// `poltergeist-pane-frames = false` so is every pixel.
+/// `poltergeist-pane-frames = false` so is every pixel -- but the line just
+/// inside a supervisor's pane (`PaneFrame.edged`, task 1692).
 ///
 /// Which frame a pane wears and what its title says is `PaneFrame`, from
 /// the core's snapshot. Here is only the wiring.
@@ -193,6 +194,11 @@ private struct PaneFramed: ViewModifier {
                 terminals: source.terminals, pulses: source.waiting)
         }
         let outside = drawn != nil || ground ? PaneFrameSplit.inset : 0
+        // With no frames, a supervisor's pane still says it is one: a line
+        // just inside it, over the terminal's own padding (task 1692). A
+        // stack always wears a frame, so it never has this.
+        let edged = stack == nil && PaneFrame.edged(
+            terminal: ControlRoomLender.terminal(of: surfaceView), at: place, in: source.terminals)
         // The title is where the pane is picked up (task 1508) -- except
         // over a stack, where that band is the strip and the pane is picked
         // up by its tabs, one terminal at a time (task 1582). Neither keeps
@@ -216,6 +222,7 @@ private struct PaneFramed: ViewModifier {
                 stack: stack,
                 stackActions: actions(members: members),
                 closeHole: closeShows))
+            .modifier(PaneSupervisorEdge(shows: edged))
             // A layer over the title band, and nothing round what is framed:
             // what picks the pane up and opens its menu, and its close
             // button at the left end, over the name (tasks 1582, 1642).

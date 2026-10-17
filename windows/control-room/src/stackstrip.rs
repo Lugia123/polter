@@ -452,7 +452,7 @@ mod tests {
     /// and being widened is not being squeezed: there is no ellipsis.
     #[test]
     fn a_tab_named_tilde_is_never_narrower_than_the_least() {
-        let tilde = crate::panestack::wanted(7.0, None);
+        let tilde = crate::panestack::wanted(7.0, None, false);
         assert!(tilde < t::MIN_WIDTH, "the case is a name that wants less than the least: {tilde}");
         for current in 0..2 {
             let l = layout(&[tilde, tilde], current, 600.0, 0.0);
