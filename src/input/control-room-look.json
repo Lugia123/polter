@@ -15,6 +15,7 @@
   ],
 
   "sources": {
+    "highlight-v1": "highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689)",
     "v13-grid": "design v13, GRID.md",
     "v14-grid": "design v14, GRID.md",
     "v14-changes": "design v14, CHANGES.md",
@@ -279,6 +280,40 @@
       "refraction_band_moving": 6,
       "refraction_strength_rest": { "v": 0.25, "doc": "A fraction of the band's width; strongest at the edge, falling off as the square." },
       "refraction_strength_moving": 0.36
+    },
+    "highlight": {
+      "_src": "highlight-v1",
+      "_doc": "`terminal_highlight` (task 1689): the lit pane's edge, the card over it, the other panes' scrim, and the breathing that the edge, the card's ring and the lit terminal's tab share.",
+      "breath_period": { "v": 1.2, "doc": "One breath, in and out: design A's glow, which the user asked for on B's edge, the card's ring and the tab." },
+      "breath_low": { "v": 0.35, "src": "undesigned", "doc": "The breathing's opacity at its faintest, as a fraction of the accent.", "tentative": { "alt": 0.5, "why": "The design gives the period and not the depth; nobody has watched it breathe yet." } },
+      "breath_high": { "v": 1.0, "src": "undesigned", "doc": "At its strongest. With reduce motion on it rests here and does not breathe." },
+      "edge": { "v": 2, "doc": "Design B's edge round the lit pane, drawn this far outside it." },
+      "edge_radius_mac": { "v": 12, "doc": "The edge's corner on macOS." },
+      "edge_radius_windows": { "v": 8, "doc": "The edge's corner on Windows." },
+      "ring_a": { "v": 3, "doc": "Design A's edge, for a pane too small for the card." },
+      "glow_a": { "v": 14, "doc": "Design A's glow round that edge, as a blur radius." },
+      "card_min_pane_width": { "v": 280, "doc": "A pane narrower than this gets design A instead of the card." },
+      "card_min_pane_height": { "v": 160, "doc": "And one shorter than this." },
+      "card_min_width": 360,
+      "card_max_width_fraction": { "v": 0.88, "doc": "Of the pane's width." },
+      "card_padding_top": 18,
+      "card_padding_x": 22,
+      "card_padding_bottom": 16,
+      "card_radius": 14,
+      "card_ring": { "v": 3, "doc": "The accent ring round the card's own edge, which breathes with the pane's." },
+      "card_ring_alpha": { "v": 0.55, "doc": "How much accent is in it at the top of a breath." },
+      "card_center_y": { "v": 0.56, "doc": "The card's centre, as a fraction of the pane's height from its top." },
+      "label_size": { "v": 28, "doc": "The caller's label, in the accent, weight 700." },
+      "title_size": { "v": 20, "doc": "The terminal's title, weight 600." },
+      "title_gap": 2,
+      "id_gap": 4,
+      "bar_height": 3,
+      "bar_gap": 8,
+      "hint_gap": 10,
+      "fade_out": { "v": 0.4, "doc": "How long it takes to go when the time is up." },
+      "tab_dot": { "v": 6, "src": "undesigned", "doc": "The accent dot before the lit terminal's tab's name." },
+      "tab_ground": { "v": 0.18, "src": "undesigned", "doc": "How much accent the lit terminal's tab -- window tab or stack tab -- is filled with at the top of a breath." },
+      "tab_edge": { "v": 1.5, "src": "undesigned", "doc": "The accent edge round that tab." }
     }
   },
 
@@ -340,7 +375,10 @@
     "surface_row_selected": { "light": "#FDFDFD", "dark": "#3C4043", "src": "v17-contrast", "doc": "Measured: the chip." },
     "surface_window_tab": { "light": "#D9DBDE", "dark": "#0F1112", "src": "v17-contrast", "doc": "Measured: an unselected window tab on its track." },
     "surface_window_tab_selected": { "light": "#F3F4F5", "dark": "#282829", "src": "v17-contrast", "doc": "Measured." },
-    "surface_supervisor_bar": { "light": "#DBDEE2", "dark": "#3C3F43", "src": "v17-contrast", "doc": "Measured: the supervisor's title bar." }
+    "surface_supervisor_bar": { "light": "#DBDEE2", "dark": "#3C3F43", "src": "v17-contrast", "doc": "Measured: the supervisor's title bar." },
+    "highlight_scrim": { "light": "#1E2024@0.46", "dark": "#000000@0.58", "src": "highlight-v1", "doc": "Over every other pane of the lit terminal's window (task 1689)." },
+    "highlight_card": { "light": "#FFFFFF@0.96", "dark": "#282C34@0.97", "src": "highlight-v1", "doc": "The highlight card's ground." },
+    "highlight_card_edge": { "light": "#000000@0.12", "dark": "#FFFFFF@0.14", "src": "highlight-v1", "doc": "The highlight card's hairline, inside its accent ring." }
   },
 
   "strings": {

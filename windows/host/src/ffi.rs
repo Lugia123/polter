@@ -165,6 +165,10 @@ pub const ACTION_PANE_STACK: u32 = 81;
 /// **Appended, like every one before it.** The payload is
 /// `ghostty_action_polter_tab_move_s`; see `Action::as_polter_tab_move`.
 pub const ACTION_POLTER_TAB_MOVE: u32 = 82;
+/// `Action.Key.polter_highlight`, appended after `polter_tab_move` (task
+/// 1690): light a terminal for the person to find. The payload is
+/// `ghostty_action_polter_highlight_s`; see `Action::as_polter_highlight`.
+pub const ACTION_POLTER_HIGHLIGHT: u32 = 83;
 
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
@@ -881,6 +885,17 @@ impl Action {
         let window = u64::from_ne_bytes(self.payload[8..16].try_into().unwrap());
         let out = usize::from_ne_bytes(self.payload[16..24].try_into().unwrap()) as *mut LayoutOut;
         (index, window, out)
+    }
+
+    /// `ghostty_action_polter_highlight_s { uint32_t seconds; const char*
+    /// label; out_s* out; }` (task 1690): `seconds` at 0, then 4 bytes of
+    /// padding, `label` at 8 (null when none was given), `out` at 16.
+    pub fn as_polter_highlight(&self) -> (u32, Option<String>, *mut LayoutOut) {
+        let seconds = u32::from_ne_bytes(self.payload[0..4].try_into().unwrap());
+        let label = usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) as *const std::ffi::c_char;
+        let label = (!label.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(label) }.to_string_lossy().into_owned());
+        let out = usize::from_ne_bytes(self.payload[16..24].try_into().unwrap()) as *mut LayoutOut;
+        (seconds, label, out)
     }
 
     /// `ghostty_action_reload_config_s { bool soft; }`.

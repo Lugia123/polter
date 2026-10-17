@@ -450,6 +450,91 @@ enum ControlRoomLook {
         static let refractionStrengthMoving: Double = 0.36
     }
 
+    /// `terminal_highlight` (task 1689): the lit pane's edge, the card over it, the other panes' scrim, and the breathing that the edge, the card's ring and the lit terminal's tab share.
+    enum Highlight {
+        /// One breath, in and out: design A's glow, which the user asked for on B's edge, the card's ring and the tab.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let breathPeriod: Double = 1.2
+        /// The breathing's opacity at its faintest, as a fraction of the accent.
+        /// TENTATIVE (other candidate: 0.5). The design gives the period and not the depth; nobody has watched it breathe yet.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let breathLow: Double = 0.35
+        /// At its strongest. With reduce motion on it rests here and does not breathe.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let breathHigh: Double = 1.0
+        /// Design B's edge round the lit pane, drawn this far outside it.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let edge: Double = 2.0
+        /// The edge's corner on macOS.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let edgeRadiusMac: Double = 12.0
+        /// The edge's corner on Windows.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let edgeRadiusWindows: Double = 8.0
+        /// Design A's edge, for a pane too small for the card.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let ringA: Double = 3.0
+        /// Design A's glow round that edge, as a blur radius.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let glowA: Double = 14.0
+        /// A pane narrower than this gets design A instead of the card.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let cardMinPaneWidth: Double = 280.0
+        /// And one shorter than this.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let cardMinPaneHeight: Double = 160.0
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let cardMinWidth: Double = 360.0
+        /// Of the pane's width.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let cardMaxWidthFraction: Double = 0.88
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let cardPaddingTop: Double = 18.0
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let cardPaddingX: Double = 22.0
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let cardPaddingBottom: Double = 16.0
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let cardRadius: Double = 14.0
+        /// The accent ring round the card's own edge, which breathes with the pane's.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let cardRing: Double = 3.0
+        /// How much accent is in it at the top of a breath.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let cardRingAlpha: Double = 0.55
+        /// The card's centre, as a fraction of the pane's height from its top.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let cardCenterY: Double = 0.56
+        /// The caller's label, in the accent, weight 700.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let labelSize: Double = 28.0
+        /// The terminal's title, weight 600.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let titleSize: Double = 20.0
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let titleGap: Double = 2.0
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let idGap: Double = 4.0
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let barHeight: Double = 3.0
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let barGap: Double = 8.0
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let hintGap: Double = 10.0
+        /// How long it takes to go when the time is up.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        static let fadeOut: Double = 0.4
+        /// The accent dot before the lit terminal's tab's name.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let tabDot: Double = 6.0
+        /// How much accent the lit terminal's tab -- window tab or stack tab -- is filled with at the top of a breath.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let tabGround: Double = 0.18
+        /// The accent edge round that tab.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let tabEdge: Double = 1.5
+    }
+
     /// The system symbols the glyphs are. Working is the system's progress spinner, which has no symbol name. `held` is the supervisor's ruling (the design says only `a pause glyph`).
     enum Symbol {
         static let waiting: String = "bubble.left.fill"
@@ -583,6 +668,15 @@ enum ControlRoomLook {
         /// Measured: the supervisor's title bar.
         /// Source: design v17, src/contrast.md (measured off the rendered pictures).
         var surfaceSupervisorBar: RGBA
+        /// Over every other pane of the lit terminal's window (task 1689).
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        var highlightScrim: RGBA
+        /// The highlight card's ground.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        var highlightCard: RGBA
+        /// The highlight card's hairline, inside its accent ring.
+        /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+        var highlightCardEdge: RGBA
         /// The status word on this surface: `problem_text` when light, `problem_text` when dark.
         /// Source: design v17, CHANGES.md.
         var problemTextOnRow: RGBA
@@ -655,6 +749,9 @@ enum ControlRoomLook {
         surfaceWindowTab: RGBA(r: 217, g: 219, b: 222, a: 1.0),
         surfaceWindowTabSelected: RGBA(r: 243, g: 244, b: 245, a: 1.0),
         surfaceSupervisorBar: RGBA(r: 219, g: 222, b: 226, a: 1.0),
+        highlightScrim: RGBA(r: 30, g: 32, b: 36, a: 0.46),
+        highlightCard: RGBA(r: 255, g: 255, b: 255, a: 0.96),
+        highlightCardEdge: RGBA(r: 0, g: 0, b: 0, a: 0.12),
         problemTextOnRow: RGBA(r: 172, g: 3, b: 17, a: 1.0),
         problemTextOnRowSelected: RGBA(r: 172, g: 3, b: 17, a: 1.0),
         problemTextOnWindowTabSelected: RGBA(r: 172, g: 3, b: 17, a: 1.0),
@@ -715,6 +812,9 @@ enum ControlRoomLook {
         surfaceWindowTab: RGBA(r: 15, g: 17, b: 18, a: 1.0),
         surfaceWindowTabSelected: RGBA(r: 40, g: 40, b: 41, a: 1.0),
         surfaceSupervisorBar: RGBA(r: 60, g: 63, b: 67, a: 1.0),
+        highlightScrim: RGBA(r: 0, g: 0, b: 0, a: 0.58),
+        highlightCard: RGBA(r: 40, g: 44, b: 52, a: 0.97),
+        highlightCardEdge: RGBA(r: 255, g: 255, b: 255, a: 0.14),
         problemTextOnRow: RGBA(r: 252, g: 79, b: 78, a: 1.0),
         problemTextOnRowSelected: RGBA(r: 239, g: 242, b: 246, a: 1.0),
         problemTextOnWindowTabSelected: RGBA(r: 239, g: 242, b: 246, a: 1.0),
@@ -742,6 +842,7 @@ enum ControlRoomLook {
         "selection.glass_at_rest",
         "selection.refraction_shown",
         "selection.seen_after",
+        "highlight.breath_low",
         "text_on.problem_text",
     ]
 }

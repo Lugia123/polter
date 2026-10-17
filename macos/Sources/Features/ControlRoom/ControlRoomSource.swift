@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import SwiftUI
 import Foundation
 
 /// The control room's snapshot, fetched once and handed to everyone who
@@ -365,12 +366,36 @@ final class ControlRoomDetailContainer: NSView, ControlRoomDetailHosting {
         ])
         hosted = view
         hostedGroup = group
+        coverWithHighlight(view)
         return previous
+    }
+
+    /// `terminal_highlight` on a terminal lent here (task 1689): the edge
+    /// and the card over it, as its own pane would have them. Laid over the
+    /// terminal and never in the way of a click.
+    private var highlightCover: NSView?
+
+    private func coverWithHighlight(_ view: NSView) {
+        highlightCover?.removeFromSuperview()
+        highlightCover = nil
+        guard view is Ghostty.SurfaceView else { return }
+        let cover = PolterHighlightCover(rootView: PolterHighlightPaneOverlay(of: view))
+        cover.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(cover, positioned: .above, relativeTo: view)
+        NSLayoutConstraint.activate([
+            cover.topAnchor.constraint(equalTo: topAnchor),
+            cover.bottomAnchor.constraint(equalTo: bottomAnchor),
+            cover.leadingAnchor.constraint(equalTo: leadingAnchor),
+            cover.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+        highlightCover = cover
     }
 
     @discardableResult
     func giveBack() -> NSView? {
         guard let view = hosted else { return nil }
+        highlightCover?.removeFromSuperview()
+        highlightCover = nil
         view.removeFromSuperview()
         hosted = nil
         hostedGroup = nil

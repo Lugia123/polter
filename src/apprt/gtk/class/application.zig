@@ -829,6 +829,9 @@ pub const Application = extern struct {
             // Tidying by tool is macOS and Windows so far; the tool says
             // `Unsupported` here, from the out cell nobody wrote.
             .polter_tab_move,
+            // Highlighting by tool is macOS and Windows (task 1689); the
+            // tool says `Unsupported` here for the same reason.
+            .polter_highlight,
 
             // Poltergeist's own UI is macOS-only so far, and the tab mark
             // is part of it. GTK keeps its tabs unmarked rather than

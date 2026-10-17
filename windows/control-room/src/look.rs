@@ -449,6 +449,91 @@ pub mod selection {
     pub const REFRACTION_STRENGTH_MOVING: f64 = 0.36;
 }
 
+/// `terminal_highlight` (task 1689): the lit pane's edge, the card over it, the other panes' scrim, and the breathing that the edge, the card's ring and the lit terminal's tab share.
+pub mod highlight {
+    /// One breath, in and out: design A's glow, which the user asked for on B's edge, the card's ring and the tab.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const BREATH_PERIOD: f64 = 1.2;
+    /// The breathing's opacity at its faintest, as a fraction of the accent.
+    /// TENTATIVE (other candidate: 0.5). The design gives the period and not the depth; nobody has watched it breathe yet.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const BREATH_LOW: f64 = 0.35;
+    /// At its strongest. With reduce motion on it rests here and does not breathe.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const BREATH_HIGH: f64 = 1.0;
+    /// Design B's edge round the lit pane, drawn this far outside it.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const EDGE: f64 = 2.0;
+    /// The edge's corner on macOS.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const EDGE_RADIUS_MAC: f64 = 12.0;
+    /// The edge's corner on Windows.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const EDGE_RADIUS_WINDOWS: f64 = 8.0;
+    /// Design A's edge, for a pane too small for the card.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const RING_A: f64 = 3.0;
+    /// Design A's glow round that edge, as a blur radius.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const GLOW_A: f64 = 14.0;
+    /// A pane narrower than this gets design A instead of the card.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const CARD_MIN_PANE_WIDTH: f64 = 280.0;
+    /// And one shorter than this.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const CARD_MIN_PANE_HEIGHT: f64 = 160.0;
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const CARD_MIN_WIDTH: f64 = 360.0;
+    /// Of the pane's width.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const CARD_MAX_WIDTH_FRACTION: f64 = 0.88;
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const CARD_PADDING_TOP: f64 = 18.0;
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const CARD_PADDING_X: f64 = 22.0;
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const CARD_PADDING_BOTTOM: f64 = 16.0;
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const CARD_RADIUS: f64 = 14.0;
+    /// The accent ring round the card's own edge, which breathes with the pane's.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const CARD_RING: f64 = 3.0;
+    /// How much accent is in it at the top of a breath.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const CARD_RING_ALPHA: f64 = 0.55;
+    /// The card's centre, as a fraction of the pane's height from its top.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const CARD_CENTER_Y: f64 = 0.56;
+    /// The caller's label, in the accent, weight 700.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const LABEL_SIZE: f64 = 28.0;
+    /// The terminal's title, weight 600.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const TITLE_SIZE: f64 = 20.0;
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const TITLE_GAP: f64 = 2.0;
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const ID_GAP: f64 = 4.0;
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const BAR_HEIGHT: f64 = 3.0;
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const BAR_GAP: f64 = 8.0;
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const HINT_GAP: f64 = 10.0;
+    /// How long it takes to go when the time is up.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub const FADE_OUT: f64 = 0.4;
+    /// The accent dot before the lit terminal's tab's name.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const TAB_DOT: f64 = 6.0;
+    /// How much accent the lit terminal's tab -- window tab or stack tab -- is filled with at the top of a breath.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const TAB_GROUND: f64 = 0.18;
+    /// The accent edge round that tab.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const TAB_EDGE: f64 = 1.5;
+}
+
 /// The system symbols the glyphs are. Working is the system's progress spinner, which has no symbol name. `held` is the supervisor's ruling (the design says only `a pause glyph`).
 pub mod symbol {
     pub const WAITING: &str = "bubble.left.fill";
@@ -583,6 +668,15 @@ pub struct Theme {
     /// Measured: the supervisor's title bar.
     /// Source: design v17, src/contrast.md (measured off the rendered pictures).
     pub surface_supervisor_bar: Rgba,
+    /// Over every other pane of the lit terminal's window (task 1689).
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub highlight_scrim: Rgba,
+    /// The highlight card's ground.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub highlight_card: Rgba,
+    /// The highlight card's hairline, inside its accent ring.
+    /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
+    pub highlight_card_edge: Rgba,
     /// The status word on this surface: `problem_text` when light, `problem_text` when dark.
     /// Source: design v17, CHANGES.md.
     pub problem_text_on_row: Rgba,
@@ -655,6 +749,9 @@ pub const LIGHT: Theme = Theme {
     surface_window_tab: Rgba { r: 217, g: 219, b: 222, a: 1.0 },
     surface_window_tab_selected: Rgba { r: 243, g: 244, b: 245, a: 1.0 },
     surface_supervisor_bar: Rgba { r: 219, g: 222, b: 226, a: 1.0 },
+    highlight_scrim: Rgba { r: 30, g: 32, b: 36, a: 0.46 },
+    highlight_card: Rgba { r: 255, g: 255, b: 255, a: 0.96 },
+    highlight_card_edge: Rgba { r: 0, g: 0, b: 0, a: 0.12 },
     problem_text_on_row: Rgba { r: 172, g: 3, b: 17, a: 1.0 },
     problem_text_on_row_selected: Rgba { r: 172, g: 3, b: 17, a: 1.0 },
     problem_text_on_window_tab_selected: Rgba { r: 172, g: 3, b: 17, a: 1.0 },
@@ -715,6 +812,9 @@ pub const DARK: Theme = Theme {
     surface_window_tab: Rgba { r: 15, g: 17, b: 18, a: 1.0 },
     surface_window_tab_selected: Rgba { r: 40, g: 40, b: 41, a: 1.0 },
     surface_supervisor_bar: Rgba { r: 60, g: 63, b: 67, a: 1.0 },
+    highlight_scrim: Rgba { r: 0, g: 0, b: 0, a: 0.58 },
+    highlight_card: Rgba { r: 40, g: 44, b: 52, a: 0.97 },
+    highlight_card_edge: Rgba { r: 255, g: 255, b: 255, a: 0.14 },
     problem_text_on_row: Rgba { r: 252, g: 79, b: 78, a: 1.0 },
     problem_text_on_row_selected: Rgba { r: 239, g: 242, b: 246, a: 1.0 },
     problem_text_on_window_tab_selected: Rgba { r: 239, g: 242, b: 246, a: 1.0 },
@@ -746,5 +846,6 @@ pub const TENTATIVE: &[&str] = &[
     "selection.glass_at_rest",
     "selection.refraction_shown",
     "selection.seen_after",
+    "highlight.breath_low",
     "text_on.problem_text",
 ];

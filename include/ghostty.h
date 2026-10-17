@@ -1242,6 +1242,21 @@ typedef struct {
   ghostty_action_poltergeist_layout_out_s* out;
 } ghostty_action_polter_tab_move_s;
 
+// apprt.action.PolterHighlight
+//
+// Light up the target surface for `terminal_highlight` (task 1689): bring it
+// forward and make its pane stand out for `seconds` (5..120), or end its
+// highlight now (0). `label` is NULL or one line of UTF-8, at most 40 code
+// points, valid for the call. Answered before the call returns, in `out` as
+// for a layout: applied with
+// {"switched":{"window","tab","stack"},"front","timer","replaced"} (or
+// {"ended":bool} for 0), refused with {"code","message"}.
+typedef struct {
+  uint32_t seconds;
+  const char* label;
+  ghostty_action_poltergeist_layout_out_s* out;
+} ghostty_action_polter_highlight_s;
+
 // apprt.action.ControlRoomChanged
 //
 // The control room's snapshot changed: fetch it with
@@ -1470,6 +1485,7 @@ typedef enum {
   GHOSTTY_ACTION_CONTROL_ROOM_ALERT,
   GHOSTTY_ACTION_PANE_STACK,
   GHOSTTY_ACTION_POLTER_TAB_MOVE,
+  GHOSTTY_ACTION_POLTER_HIGHLIGHT,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1525,6 +1541,7 @@ typedef union {
   ghostty_action_control_room_alert_s control_room_alert;
   ghostty_action_pane_stack_e pane_stack;
   ghostty_action_polter_tab_move_s polter_tab_move;
+  ghostty_action_polter_highlight_s polter_highlight;
 } ghostty_action_u;
 
 typedef struct {

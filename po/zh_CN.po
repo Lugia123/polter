@@ -5723,3 +5723,13 @@ msgstr "这次改名没能做完，下次启动 Polter 时会做完。"
 #: windows/control-room/src/act.rs:345
 msgid "Deleted from the list, but some of its records could not be deleted."
 msgstr "已从列表删除，但有记录没删掉。"
+
+#: windows/host/src/highlight.rs:770
+#, rust-format
+msgid "{} s"
+msgstr "{} 秒"
+
+#: windows/host/src/highlight.rs:802
+#, rust-format
+msgid "Press any key or click to end · {} s left"
+msgstr "按任意键或点一下结束 · 还剩 {} 秒"

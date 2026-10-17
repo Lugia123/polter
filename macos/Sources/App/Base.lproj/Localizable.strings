@@ -1120,3 +1120,9 @@
 "no agent in the supervisor's terminal" = "no agent in the supervisor's terminal";
 "the supervisor's program has ended" = "the supervisor's program has ended";
 "this group has no supervisor" = "this group has no supervisor";
+
+/* The hint at the foot of the card terminal_highlight lays over a terminal (task 1689); the number is the seconds left. */
+"Press any key or click to end · %lld s left" = "Press any key or click to end · %lld s left";
+
+/* The seconds left, on the small badge terminal_highlight puts on a pane too small for its card (task 1689). */
+"%lld s" = "%lld s";

@@ -1370,6 +1370,32 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "terminal_highlight",
+        .description = "**Show the person which terminal you mean** -- the answer when they ask " ++
+            "\"which one is it?\" and a title or an id in words will not do. Brings that " ++
+            "terminal's window forward, selects its tab and its place in a stack, dims the " ++
+            "other panes of the window, and lights its own pane with a breathing edge and a " ++
+            "card (your `label`, its title, its id, a countdown) for `seconds` (default 30, " ++
+            "5 to 120; 0 ends a highlight now). Its tab breathes too, so it can be found from " ++
+            "another tab: choosing another tab (on the tab bar, or with a Cmd/Ctrl shortcut) " ++
+            "does not end it. It ends early on the person's first plain key in that window -- " ++
+            "**that key is not typed into any terminal** -- or a click on its panes. It changes nothing in the " ++
+            "terminal and does not move the keyboard focus to it within a tab. One at a time: " ++
+            "a second call ends the first, and `replaced` names it. Returns at once. " ++
+            "`front` is read back afterwards, not hoped for: `yes`, `minimized_restored`, " ++
+            "`refused` (Polter is not the front app; the dock icon or taskbar button asks for " ++
+            "attention -- tell the person to switch back), `other_space` (macOS: the window is " ++
+            "on another Space), `pending` (cannot be read until the window has come back) or " ++
+            "`unknown` (the reading failed). `timer` says whether the countdown has started " ++
+            "(`running`) or waits for the window (`waiting`). Refused: BadSeconds, BadLabel " ++
+            "(at most 40 characters, one line; shown as written), UnknownTerminal, NotShown " ++
+            "(not on any screen, e.g. in a hidden quick terminal -- it is not popped out for " ++
+            "you). Same reach rule as terminal_read: the target's mark decides.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"seconds":{"type":"integer","minimum":0,"maximum":120,"description":"5 to 120; 0 ends this terminal's highlight now. Default 30."},"label":{"type":"string","maxLength":40,"description":"Your words to the person, e.g. \"#1635\". Shown as written."}},"required":["id"],"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "terminal_keys",
         .description = "The vocabulary terminal_key accepts: every modifier name and " ++
             "every key name, joined with `+`. Read this rather than guessing at a name.",
@@ -2153,6 +2179,7 @@ test "the tools that decide reach say so in their own description" {
             "terminal_answer_prompt",
             "terminal_layout",
             "terminal_tab_move",
+            "terminal_highlight",
         }) |name| {
             if (!std.mem.eql(u8, t.name, name)) continue;
             seen_reach = true;

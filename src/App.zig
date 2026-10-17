@@ -5874,6 +5874,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .taskEdit = taskEdit,
         .layout = poltergeistLayout,
         .tabMove = polterTabMove,
+        .highlight = polterHighlight,
         .userPresent = polterUserPresent,
         .screenshotAllowed = poltergeistScreenshotAllowed,
         .screenshotHost = poltergeistScreenshotHost,
@@ -6806,6 +6807,145 @@ fn polterTabMove(
             };
         },
     };
+}
+
+/// Light a terminal up for `terminal_highlight` (task 1689). The apprt does
+/// everything that is seen and answers before it returns; this turns its
+/// answer into the tool's and writes the line that says it started. The
+/// line that says why it ended is the apprt's, since only it knows.
+fn polterHighlight(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+    seconds: u32,
+    label: ?[]const u8,
+) anyerror!poltergeistpkg.rpc.HighlightAnswer {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+    const label_z: ?[:0]const u8 = if (label) |l| try alloc.dupeZ(u8, l) else null;
+
+    const buf = try alloc.alloc(u8, 4 * 1024);
+    defer alloc.free(buf);
+    var out: apprt.action.PoltergeistLayout.Out = .{ .buf = buf.ptr, .cap = buf.len };
+    _ = surface.rt_app.performAction(
+        .{ .surface = surface },
+        .polter_highlight,
+        .{ .seconds = seconds, .label = if (label_z) |l| l.ptr else null, .out = &out },
+    ) catch |err| {
+        log.warn("polter: highlight action failed err={}", .{err});
+        return error.HighlightFailed;
+    };
+
+    const said = buf[0..@min(out.len, buf.len)];
+    const answer = switch (out.result) {
+        .unsupported => return error.HighlightUnsupported,
+        .refused => refused: {
+            const r = try polterRefusal(alloc, said);
+            break :refused poltergeistpkg.rpc.HighlightAnswer{ .refused = .{ .code = r.code, .message = r.message } };
+        },
+        .applied => try self.highlightApplied(alloc, said, seconds, self.poltergeistWallMs()),
+    };
+
+    switch (answer) {
+        .shown => |v| log.info(
+            "highlight start id=0x{x:0>16} seconds={d} label={} window={} tab={} stack={} front={t} timer={t} replaced=0x{x:0>16}",
+            .{ id, seconds, label != null, v.switched.window, v.switched.tab, v.switched.stack, v.front, v.timer, v.replaced orelse 0 },
+        ),
+        .ended => |e| log.info("highlight cancel id=0x{x:0>16} was_lit={}", .{ id, e }),
+        .refused => |r| log.info("highlight refused id=0x{x:0>16} code={s}", .{ id, r.code }),
+    }
+    return answer;
+}
+
+/// The apprt's `applied` text as the tool's answer. A word the core does not
+/// know for `front` is `unknown`, said in the log -- never `refused`, which
+/// would tell the person something nobody read.
+fn highlightApplied(
+    self: *const App,
+    alloc: Allocator,
+    said: []const u8,
+    seconds: u32,
+    now_ms: i64,
+) !poltergeistpkg.rpc.HighlightAnswer {
+    return parseHighlightApplied(alloc, said, seconds, now_ms, self, struct {
+        fn lookup(ctx: *const anyopaque, handle: u64) ?u64 {
+            const app: *const App = @ptrCast(@alignCast(ctx));
+            return app.surfaceIdOfHandle(handle);
+        }
+    }.lookup);
+}
+
+/// The parse itself, with the handle map passed in so it can be tested
+/// without an `App`.
+fn parseHighlightApplied(
+    alloc: Allocator,
+    said: []const u8,
+    seconds: u32,
+    now_ms: i64,
+    ctx: *const anyopaque,
+    lookup: *const fn (*const anyopaque, u64) ?u64,
+) !poltergeistpkg.rpc.HighlightAnswer {
+    const Answer = poltergeistpkg.rpc.HighlightAnswer;
+    const Said = struct {
+        ended: ?bool = null,
+        switched: ?struct { window: bool = false, tab: bool = false, stack: bool = false } = null,
+        front: ?[]const u8 = null,
+        timer: ?[]const u8 = null,
+        replaced: u64 = 0,
+    };
+    const parsed = std.json.parseFromSlice(Said, alloc, said, .{ .ignore_unknown_fields = true }) catch {
+        log.warn("polter: highlight answer is not what the interface says: {s}", .{said});
+        return .{ .refused = .{ .code = "HighlightFailed", .message = "the apprt's answer could not be read" } };
+    };
+    defer parsed.deinit();
+    const v = parsed.value;
+    if (seconds == 0) return .{ .ended = v.ended orelse false };
+
+    const front: Answer.Front = if (v.front) |w| std.meta.stringToEnum(Answer.Front, w) orelse unknown: {
+        log.warn("polter: highlight front={s} is not a word the core knows; reported as unknown", .{w});
+        break :unknown .unknown;
+    } else .unknown;
+    const timer: Answer.Timer = if (v.timer) |w| std.meta.stringToEnum(Answer.Timer, w) orelse .waiting else .waiting;
+    const sw: @TypeOf(v.switched.?) = v.switched orelse .{};
+    return .{ .shown = .{
+        .switched = .{ .window = sw.window, .tab = sw.tab, .stack = sw.stack },
+        .front = front,
+        .timer = timer,
+        // A handle that no longer names a surface was closed in between;
+        // there is no id left to give.
+        .replaced = if (v.replaced == 0) null else lookup(ctx, v.replaced),
+        .until_ms = now_ms + @as(i64, seconds) * std.time.ms_per_s,
+    } };
+}
+
+test "a highlight answer with a front word the core does not know is unknown, not refused" {
+    const alloc = std.testing.allocator;
+    const none = struct {
+        fn lookup(_: *const anyopaque, handle: u64) ?u64 {
+            return if (handle == 0x77) 0xabc else null;
+        }
+    }.lookup;
+    const a = try parseHighlightApplied(
+        alloc,
+        "{\"switched\":{\"window\":false,\"tab\":true,\"stack\":true},\"front\":\"sideways\",\"timer\":\"running\",\"replaced\":119}",
+        30,
+        1000,
+        &none,
+        none,
+    );
+    try std.testing.expectEqual(poltergeistpkg.rpc.HighlightAnswer.Front.unknown, a.shown.front);
+    try std.testing.expect(a.shown.switched.tab);
+    try std.testing.expect(a.shown.switched.stack);
+    try std.testing.expect(!a.shown.switched.window);
+    try std.testing.expectEqual(@as(?u64, 0xabc), a.shown.replaced);
+    try std.testing.expectEqual(@as(i64, 31000), a.shown.until_ms);
+
+    const b = try parseHighlightApplied(alloc, "{\"front\":\"refused\",\"timer\":\"running\",\"replaced\":0}", 5, 0, &none, none);
+    try std.testing.expectEqual(poltergeistpkg.rpc.HighlightAnswer.Front.refused, b.shown.front);
+    try std.testing.expectEqual(@as(?u64, null), b.shown.replaced);
+
+    const c = try parseHighlightApplied(alloc, "{\"ended\":true}", 0, 0, &none, none);
+    try std.testing.expect(c.ended);
 }
 
 /// For `UserPresent` on a move (task 1571): a terminal somebody is at --

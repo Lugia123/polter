@@ -436,6 +436,10 @@ test "the supervising skill names the tools it tells you to use" {
         // learns that the tools for it exist before reaching for a close.
         "terminal_layout",
         "terminal_tab_move",
+
+        // Task 1689: the user asks "which one is it?", and the answer is to
+        // show them rather than describe it.
+        "terminal_highlight",
     }) |tool| {
         if (std.mem.indexOf(u8, supervising, tool) == null) {
             std.debug.print("\nsupervising never mentions {s}\n", .{tool});

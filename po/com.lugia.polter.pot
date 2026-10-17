@@ -5497,3 +5497,13 @@ msgstr ""
 #, rust-format
 msgid "What {} has installed can't be read here; the role's switches for {} stay as they are."
 msgstr ""
+
+#: windows/host/src/highlight.rs:770
+#, rust-format
+msgid "{} s"
+msgstr ""
+
+#: windows/host/src/highlight.rs:802
+#, rust-format
+msgid "Press any key or click to end · {} s left"
+msgstr ""

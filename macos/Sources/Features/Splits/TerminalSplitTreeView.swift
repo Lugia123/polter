@@ -154,6 +154,12 @@ private struct TerminalSplitLeaf: View {
                     .allowsHitTesting(false)
                 }
             }
+            // `terminal_highlight` (task 1689): the lit pane's edge and card,
+            // or the scrim over the others in its window. Over the frame's
+            // title too, as the design draws it.
+            .overlay {
+                PolterHighlightPaneOverlay(terminal: ControlRoomLender.terminal(of: surfaceView))
+            }
             .onPreferenceChange(Ghostty.DraggingSurfaceKey.self) { value in
                 isSelfDragging = value == surfaceView.id
                 isDraggingFromInside = value != nil

@@ -485,6 +485,11 @@ pub const Action = union(Key) {
     /// terminal in the tab keeps its surface and its process.
     polter_tab_move: PolterTabMove,
 
+    /// Bring the target surface forward and make its pane stand out for a
+    /// while, or end that now (task 1689, `terminal_highlight`). Changes the
+    /// screen only: nothing reaches the terminal.
+    polter_highlight: PolterHighlight,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -575,6 +580,7 @@ pub const Action = union(Key) {
         control_room_alert,
         pane_stack,
         polter_tab_move,
+        polter_highlight,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -2476,6 +2482,36 @@ pub const PolterTabMove = extern struct {
     /// The answer, in the caller's buffer, as for `PoltergeistLayout`:
     /// `applied` with `{"tab_index":n}`, or `refused` with the reason --
     /// which may be `{"code","message"}` when the code is not `Refused`.
+    out: *PoltergeistLayout.Out,
+};
+
+/// Light up a terminal for `terminal_highlight` (task 1689). The interface
+/// is `highlight-interface.md` (task 1689's scratchpad): the core checks
+/// `seconds` and `label` and keeps no state; which terminal is lit, the
+/// countdown, the key it swallows and why it ended are all the apprt's.
+///
+/// **Answered before the call returns**, never filled in later: whatever is
+/// only known afterwards goes in the apprt's own log.
+///
+/// Sync with: ghostty_action_polter_highlight_s
+pub const PolterHighlight = extern struct {
+    test "the highlight cell is laid out the way ghostty.h says" {
+        // Written out: the Windows host reads it by hand, from these
+        // numbers (`ffi.rs`'s `as_polter_highlight`).
+        const testing = std.testing;
+        try testing.expectEqual(@as(usize, 0), @offsetOf(PolterHighlight, "seconds"));
+        try testing.expectEqual(@as(usize, 8), @offsetOf(PolterHighlight, "label"));
+        try testing.expectEqual(@as(usize, 16), @offsetOf(PolterHighlight, "out"));
+    }
+
+    /// 0 ends this terminal's highlight; otherwise 5 to 120.
+    seconds: u32,
+    /// Null, or one line of UTF-8 of at most 40 code points, shown as
+    /// written. Valid for the call.
+    label: ?[*:0]const u8,
+    /// `applied` with `{"switched":{..},"front":..,"timer":..,"replaced":h}`
+    /// (`h` a surface handle, 0 for none) or `{"ended":bool}`; `refused`
+    /// with `{"code","message"}`.
     out: *PoltergeistLayout.Out,
 };
 

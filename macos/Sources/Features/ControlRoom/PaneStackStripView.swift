@@ -82,6 +82,9 @@ struct PaneStackStripView: View {
     var still: Bool = false
 
     @Environment(\.colorScheme) private var scheme
+    /// Which terminal `terminal_highlight` has lit (task 1689): its tab
+    /// breathes with its pane, in front or behind.
+    @ObservedObject private var highlight = PolterHighlightShown.shared
 
     private var theme: Look.Theme { Look.theme(scheme) }
 
@@ -298,8 +301,12 @@ struct PaneStackStripView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { actions.select(index) }
             }
+            PolterHighlightStackTab(terminal: member.terminal)
             HStack(spacing: 0) {
                 HStack(spacing: CGFloat(Look.Pane.nameRoleGap)) {
+                    if member.terminal != nil, member.terminal == highlight.id, !highlight.fading {
+                        PolterHighlightDot()
+                    }
                     Text(member.name)
                         .font(Font(Self.nameFont(current: current)))
                         .foregroundStyle(current ? currentInk : otherInk)

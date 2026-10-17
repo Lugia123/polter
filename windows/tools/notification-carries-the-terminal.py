@@ -153,7 +153,9 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 pane -- neither of which a window alone can say.
 #  26 (task 1571): ACTION_POLTER_TAB_MOVE joined. It names the terminal
 #                 whose tab moves, and only that surface says which tab.
-MIN_CARRYING_ARMS = 26
+#  27 (task 1690): ACTION_POLTER_HIGHLIGHT joined. It lights one terminal,
+#                 and only its surface says which pane, tab and window.
+MIN_CARRYING_ARMS = 27
 
 # The notifications that carry no address **today**, by `TAG -> module::fn`.
 #

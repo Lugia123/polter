@@ -528,6 +528,25 @@ unsafe fn paint_strip(frame: HWND, mem: HDC, one: &One, stack: &Stacked, wears: 
             crate::strip::draw_cross(mem, px_rect(ox, oy, scale, *r), colorref(if on { current_ink } else { drawn.ink }), scale);
         }
         draw_plus(mem, px_rect(ox, oy, scale, drawn.add), colorref(if lit == Some(Hit::Add) { current_ink } else { drawn.ink }), scale);
+        // The lit terminal's tab in the stack (task 1690): its ground and a
+        // dot at its left breathe, in front or behind.
+        for (i, member) in stack.members.iter().enumerate() {
+            let Some(a) = crate::highlight::pane_breath(frame, *member) else { continue };
+            let Some(r) = geometry.tab_rect(i) else { continue };
+            let r = px_rect(ox, oy, scale, r);
+            let clipped = RECT { left: r.left.max(row.left), right: r.right.min(row.right), ..r };
+            if clipped.right <= clipped.left {
+                continue;
+            }
+            let radius = (t::CORNER_RADIUS * scale).round() as i32;
+            crate::highlight::paint_tab(mem, clipped, radius, frame, a, drawn.band);
+            let d = (crate::highlight::TAB_DOT * scale).round().max(2.0) as i32;
+            let top = (r.top + r.bottom - d) / 2;
+            let left = r.left + (4.0 * scale).round() as i32;
+            if left + d <= clipped.right && left >= clipped.left {
+                crate::control_room::round(mem, RECT { left, top, right: left + d, bottom: top + d }, d / 2, crate::highlight::accent(frame, a), None);
+            }
+        }
     }
     Strip { frame: frame.0 as isize, place: one.pane, rect: one.rect, members: stack.members.clone(), scale, geometry }
 }
