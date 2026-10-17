@@ -116,7 +116,7 @@ $mutations = @(
     # a form somebody could plausibly write, and each is the exact shape the
     # real `qwen` refuses with `Not enough non-option arguments`.
 
-    # ⚠️ **Keep each element's trailing comma on the element's own last line.**
+    # WARNING: **Keep each element's trailing comma on the element's own last line.**
     # An earlier edit left the comma from the entry above stranded on a line by
     # itself. A newline ends a statement in PowerShell, so a leading comma is
     # no longer a separator -- it is the unary array operator, and it wrapped

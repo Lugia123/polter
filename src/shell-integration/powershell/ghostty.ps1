@@ -228,7 +228,7 @@ if ($global:GhosttyHasLocationEvent) {
 # The starting directory, which no change event will ever announce.
 __GhosttyReport
 
-# ── Command-line capture (private preexec hook) ──────────────────────────
+# -- Command-line capture (private preexec hook) --------------------------
 #
 # Per-pane command history capture needs the raw command line before it
 # runs -- the same thing OSC 133's `C` mark gives bash and zsh. This section

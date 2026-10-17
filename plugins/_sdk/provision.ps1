@@ -82,7 +82,7 @@ $ErrorActionPreference = 'Stop'
 # `[Console]::In` and `Write-Output` decode and encode with the console's code
 # page, which on a Chinese-locale machine is 936 and not UTF-8. The batch line
 # carries a home directory and skill paths, and a user called
-# `C:\Users\张三` turns into mojibake on the way in and a path that does not
+# `C:\Users\<a Chinese name>` turns into mojibake on the way in and a path that does not
 # exist on the way out. So both ends are opened as raw streams with an
 # explicit UTF-8 encoding, and the `$false` argument is the one that matters:
 # it means "no byte-order mark", and a BOM on the first acknowledgement is a

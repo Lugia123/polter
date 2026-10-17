@@ -757,7 +757,7 @@ $script:HelpTimeoutMs = 10000
 function Split-PyLines([string]$Text) {
     $out = New-List
     if ($Text.Length -eq 0) { return , $out }
-    $parts = [regex]::Split($Text, "\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e\x85  ]")
+    $parts = [regex]::Split($Text, "\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
     $n = $parts.Count
     if ($parts[$n - 1].Length -eq 0) { $n -= 1 }
     for ($k = 0; $k -lt $n; $k++) { $out.Add($parts[$k]) }
