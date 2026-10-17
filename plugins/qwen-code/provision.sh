@@ -12,13 +12,12 @@ POLTER_HOST_KEY=qwen-code
 POLTER_HOST_LABEL="Qwen Code"
 POLTER_HOST_BIN=qwen
 
-# **Qwen Code is a fork of gemini-cli**, so this file is nearly its sibling:
-# `~/.qwen/settings.json`, key `mcpServers`, a `qwen mcp` subcommand of the
-# same shape. That is not a coincidence to be pleased about -- it means an
-# upstream change lands on Gemini CLI and Qwen Code at once, and both of
-# these files break together. Whoever fixes one should check the other.
-# (iFlow CLI was the third of this shape; its service closed on 2026-04-17
-# and the plugin went with it.)
+# **Qwen Code is a fork of gemini-cli**: `~/.qwen/settings.json`, key
+# `mcpServers`, a `qwen mcp` subcommand of the same shape. This file used to
+# have siblings of that shape and now has none: iFlow CLI's service closed on
+# 2026-04-17, and Gemini CLI stopped serving personal accounts on 2026-06-18
+# (task 1681); both plugins went with them. The gemini comparisons below are
+# what was measured while that plugin existed.
 # **The staleness check reads the config file; registration still goes
 # through the CLI.** Those are two different rules and only one of them was
 # ever in force here.
@@ -38,9 +37,8 @@ POLTER_HOST_BIN=qwen
 # `2>/dev/null | grep` was reading the right stream all along. Only the
 # missing environment applies, and it is enough on its own.
 #
-# **The two forks are not broken in the same way.** They share five `mcp`
-# verbs and have already drifted in what those verbs print; whoever changes
-# one still has to check the other, but must not assume the answer.
+# **The two forks were not broken in the same way.** They shared five `mcp`
+# verbs and had already drifted in what those verbs print.
 #
 # **Reading their file is not writing it.** The rule this plugin follows is
 # "the tool that owns the file knows how to edit it", and it still holds:

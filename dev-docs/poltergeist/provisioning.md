@@ -4,7 +4,7 @@
 
 - 一个 agent 跑在 Polter 的终端里，怎么才能真的用上 Polter 的工具
 - 为什么这件事是插件，不是核心功能
-- 七个宿主各自要什么形状，以及它们之间差在哪
+- 六个宿主各自要什么形状，以及它们之间差在哪
 - 为什么除了 Claude Code 之外**默认全部不开**
 - 「这台机器上没装这个 CLI」和「装了但注册失败」怎么区分
 
@@ -54,7 +54,7 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 
 | 族 | 怎么注册 | 谁 |
 | --- | --- | --- |
-| **A. 有 `x mcp add` 子命令** | 调命令，不碰文件 | claude, codex, gemini, qwen, kimi |
+| **A. 有 `x mcp add` 子命令** | 调命令，不碰文件 | claude, codex, qwen, kimi |
 | **B. 只能改 JSON 配置** | 读→合并→写 | opencode, deepseek |
 
 > **B 族的判据是「能不能非交互地调用」，不是「有没有那个子命令」。**
@@ -71,7 +71,7 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 更全部变成我们的债。B 族要做，但它是**另一种东西**，不能和 A 族用同一份代码假装
 一样。
 
-## 四、七个宿主
+## 四、六个宿主
 
 已核实的部分来自各家官方文档（2026-08-30 查）。**没有一条是我实机跑过的**，
 这一点在实现时必须重新验。
@@ -80,7 +80,6 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 | --- | --- | --- | --- | --- | --- |
 | `claude-code` | Claude Code | A | `~/.claude.json` | `mcpServers` | `~/.claude/skills/` |
 | `codex` | OpenAI Codex CLI | A | `~/.codex/config.toml` | `mcp_servers` **(TOML，下划线)** | `~/.codex/skills/` |
-| `gemini` | Google Gemini CLI | A | `~/.gemini/settings.json` | `mcpServers` | `~/.gemini/skills/` |
 | `qwen-code` | 阿里 Qwen Code | A | `~/.qwen/settings.json` | `mcpServers` | 待核 |
 | `kimi` | 月之暗面 Kimi CLI | A | TOML | 待核 | 待核 |
 | `opencode` | opencode | B | `~/.config/opencode/opencode.json` | `mcp` **(嵌套，不是 mcpServers)** | 待核 |
@@ -116,8 +115,9 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
   钩子，Polter 能看到；Codex 没有钩子，框弹出来 Polter 什么也看不到。两边差在这里。
 - **opencode 的键是 `mcp`，结构也不同**，不是换个文件名的 `mcpServers`。
 - **Qwen Code 和 Gemini CLI 是一系**，形状一样。这不是巧合，是两家共用一份上
-  游——**也意味着上游一变，两家一起变**。（iFlow CLI 原本是这一系的第三家；
-  2026-04-17 停止服务，插件已删除。）
+  游。这一系原本还有两家，插件都已删除：iFlow CLI 2026-04-17 停止服务；
+  Gemini CLI 2026-06-18 起不再服务个人账号（#1681），它在上表里那一行是
+  `A`、`~/.gemini/settings.json`、`mcpServers`、`~/.gemini/skills/`。
 
 ### DeepSeek 是个例外，要单独说
 
@@ -181,7 +181,7 @@ host_rules_file() { printf '%s/.claude/CLAUDE.md' "$home"; }   # 空 = 这家不
 3. **内容只说机制，不抄规则。** 「你打印出来的东西不到任何人手里」是关于
    这套东西怎么运作的事实，别处的指令再多也推不出它；规则本身留在 skill 里，
    那儿爱写多长写多长，不占每一轮的上下文。规则文件是这台机器上最贵的散文。
-4. **不知道就不写。** 七家里只有三家（Claude Code / Codex / Gemini）填了路径，
+4. **不知道就不写。** 六家里只有两家（Claude Code / Codex）填了路径，
    其余四家 `host_rules_file` 返回空。**往别人 home 目录里写错文件，比不写更糟。**
 
 幂等和 skill 那边一样是「先读后写」：块和要写的一模一样就什么都不做，
@@ -194,10 +194,10 @@ host_rules_file() { printf '%s/.claude/CLAUDE.md' "$home"; }   # 空 = 这家不
 
 ## 六、默认只开 Claude Code
 
-七个插件全开会让每台机器上有五六个在「静默地什么都没做」——那不是坏，但它会把
+六个插件全开会让每台机器上有四五个在「静默地什么都没做」——那不是坏，但它会把
 日志变成噪音，而噪音里藏不住真正的失败。
 
-**所以默认只有 `claude-code` 是开的，其余六个装了但关着。**
+**所以默认只有 `claude-code` 是开的，其余五个装了但关着。**
 
 代价必须说清楚：**默认关 = 在用户找到那个菜单之前，对任何非 Claude Code 用户都不
 生效。** 一个装了 Codex 的人打开 Polter，什么也不会发生，而且没有任何东西告诉他

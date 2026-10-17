@@ -12,12 +12,11 @@ $PolterHostKey = 'qwen-code'
 $PolterHostLabel = 'Qwen Code'
 $PolterHostBin = 'qwen'
 
-# **Qwen Code is a fork of gemini-cli**, so this file is nearly its sibling:
-# `%USERPROFILE%\.qwen\settings.json`, key `mcpServers`, a `qwen mcp`
-# subcommand of the same shape. That is not a coincidence to be pleased about
-# -- it means an upstream change lands on Gemini CLI and Qwen Code at once,
-# and both of these files break together. Whoever fixes one should check the
-# other.
+# **Qwen Code is a fork of gemini-cli**: `%USERPROFILE%\.qwen\settings.json`,
+# key `mcpServers`, a `qwen mcp` subcommand of the same shape. The gemini
+# plugin that was this file's sibling was removed in task 1681 (Gemini CLI
+# stopped serving personal accounts on 2026-06-18); the comparisons with it
+# below are what was measured while it existed.
 #
 # On Windows what `Get-Command` finds is `qwen.cmd`, the npm shim, not an
 # `.exe`. `Invoke-PolterCli` asks for `-CommandType Application`, which a

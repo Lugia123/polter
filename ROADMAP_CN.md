@@ -35,9 +35,9 @@ Polter 要做成什么，先说一次，后面每一项都拿它来量：**一�
 部分是同一件事：一台跑得起 GTK 版的机器。`tools/gtk-has-no-project-half.py` 防止它被
 悄悄做一半。
 
-**支持的 agent。** 七个 CLI 有随包的配置插件（Claude Code、Codex、Gemini、Qwen、
+**支持的 agent。** 六个 CLI 有随包的配置插件（Claude Code、Codex、Qwen、
 opencode、Kimi、DeepSeek）。作者每天用的只有 Claude Code，通过 hooks 主动报告「一轮
-结束」的也只有 Claude Code；其余六个靠「屏幕静止了多久」来监看。
+结束」的也只有 Claude Code；其余五个靠「屏幕静止了多久」来监看。
 
 **网络。** 今天 Polter 不开任何网络端口：MCP 服务是你自己运行目录下的一个 socket，
 唯一的对外请求是「检查更新」，在你点它的时候才发，从不定时。*这句话说的是今天。它

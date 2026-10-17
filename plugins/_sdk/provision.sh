@@ -25,7 +25,7 @@
 # **Each host stays its own plugin, sharing this rather than being merged into
 # one.** A single plugin with a table of hosts would take all of them down with
 # the first failure, and its `wants.exec` would have to name every binary --
-# every machine declaring the seven CLIs it does not have. What is shared here
+# every machine declaring the six CLIs it does not have. What is shared here
 # is the implementation, not the identity.
 #
 # **POSIX `sh`.** Same reasoning as the plugins that source it: Ghostty builds

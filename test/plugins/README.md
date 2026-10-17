@@ -117,7 +117,8 @@ That was wrong on every platform from the day the files were written, in both
 the `.sh` and the `.ps1`, and every test passed. Group 6b puts a batch file on
 `PATH` that records the argv it was handed and asserts the ordering rule; the
 `.sh` side is pinned by a Zig test (`Resident.zig`, "the mcp add line keeps
-`-e` after the positional arguments") which runs both `qwen-code` and `gemini`.
+`-e` after the positional arguments"), which runs `qwen-code` (it ran `gemini`
+as well until that plugin was removed in #1681).
 
 **What those tests prove is the argv this repository generates** — the part we
 own and the part that was wrong. They do not prove the CLI accepts that shape;
@@ -374,7 +375,6 @@ helper.
 | `claude-code` | `claude mcp get` prints every field | **value echoed** |
 | `codex` | `codex mcp get` prints every field | key echoed, **value masked**; the value is confirmed by the TOML `codex mcp add` itself wrote |
 | `qwen-code` | `qwen mcp list` (Windows, real machine) | not echoed — inferred |
-| `gemini` | entry read back, plus a four-pass idempotence contract | read from the file, not echoed by the CLI |
 | `opencode` | `opencode mcp list` finds it and tries to spawn it | not echoed — inferred |
 | `deepseek`, `kimi` | — | not installed anywhere available |
 
@@ -385,7 +385,6 @@ one went unexamined for so long.
 | Host | Directory | Evidence |
 | --- | --- | --- |
 | `claude-code` | `~/.claude/skills/` | **end to end.** The `polter-*` skills this plugin installed are loaded and listed by a running Claude Code — not "it says it sees them", it is using them |
-| `gemini` | `~/.gemini/skills/` | path confirmed: `gemini skills install` prints it as its own destination. **Whether it loads what we put there is untested** |
 | `codex` | `~/.codex/skills/` | the directory is codex's own (it holds a `.system/` created at codex's install). **Whether it loads what we put there is untested**, and codex has no read-only skills command to ask |
 | the other four | — | `host_skills_dir` returns nothing on purpose. Writing into a guessed directory leaves litter on somebody's machine |
 
