@@ -249,7 +249,10 @@ struct PaneFrameBarFitTests {
     @Test func theEdgeIsJustInsideThePaneOnEverySide() throws {
         for scheme in [ColorScheme.light, .dark] {
             for (shows, colour) in [(true, PaneColor.purple), (false, .purple), (true, .orange)] {
-                let view = Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Opaque, so every pixel of the picture is this render's:
+                // with a clear ground, a render with no edge now and then
+                // came back showing the previous render's edge.
+                let view = Color(.sRGB, red: 0, green: 1, blue: 0, opacity: 1).frame(maxWidth: .infinity, maxHeight: .infinity)
                     .modifier(PaneSupervisorEdge(color: shows ? colour : nil))
                     .frame(width: 200, height: 100)
                     .environment(\.colorScheme, scheme)
