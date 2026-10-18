@@ -57,6 +57,11 @@ const Fixture = struct {
     /// would leave those threads pointing at a dead frame. The first run of
     /// these tests crashed on exactly that.
     fn setup(self: *Fixture, answer: bool) !void {
+        return self.setupCap(answer, Server.default_max_connections);
+    }
+
+    /// `setup`, with room for `cap` connections at once.
+    fn setupCap(self: *Fixture, answer: bool, cap: usize) !void {
         const alloc = testing.allocator;
 
         self.threaded = .init(alloc, .{});
@@ -83,7 +88,7 @@ const Fixture = struct {
         self.server = try .init(alloc, io, self.path, .{
             .ctx = self.fake,
             .func = Fake.submit,
-        }, Server.default_max_connections);
+        }, cap);
         errdefer self.server.deinit();
 
         try self.server.start();
@@ -808,4 +813,44 @@ test "+mcp says which of its connections only listens (#1498)" {
             return err;
         };
     }
+}
+
+// -- full is not refused (task 1736) -----------------------------------------
+
+const hook = @import("../cli/hook.zig");
+
+// Measured on a machine whose every slot was held: ten minutes, 421
+// connections turned away, and the `+hook` and `+statusline` lines for them
+// said `err=AuthRefused` 413 times. Every token was fine. A log that names
+// the wrong reason sends whoever reads it after the wrong thing.
+test "1736: a client turned away because every slot is in use is told so, not that its token was refused" {
+    var f: Fixture = undefined;
+    try f.setupCap(true, 1);
+    defer f.deinit();
+
+    const token = try f.server.issueToken(worker);
+
+    // The one slot, held.
+    var held = try f.connect();
+    defer held.close();
+    try expectOk(try held.auth(token));
+    try roundTrip(&held);
+
+    const hook_said = hook.deliver(f.io, f.path, token, .none);
+    try testing.expectError(error.AgentsFull, hook_said);
+
+    const mcp_said = mcp.Host.connect(testing.allocator, f.io, f.path, token, .notifier);
+    try testing.expectError(error.AgentsFull, mcp_said);
+}
+
+test "1736: a token Polter does not know is still a refused token" {
+    var f: Fixture = undefined;
+    try f.setup(true);
+    defer f.deinit();
+
+    _ = try f.server.issueToken(worker);
+
+    const wrong = "0" ** Server.token_len;
+    const hook_said = hook.deliver(f.io, f.path, wrong, .none);
+    try testing.expectError(error.AuthRefused, hook_said);
 }

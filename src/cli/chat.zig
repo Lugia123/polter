@@ -30,6 +30,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const transport = @import("../poltergeist/transport.zig");
+const hook = @import("hook.zig");
 const vaxis = @import("vaxis");
 const layout = @import("chat_layout.zig");
 const chat_stats = @import("chat_stats.zig");
@@ -207,10 +208,17 @@ const Host = struct {
 
         const reply = (try self.reader.interface.takeDelimiter('\n')) orelse
             return error.EndOfStream;
-        if (std.mem.indexOf(u8, reply, "\"ok\":true") == null) {
-            log.err("polter refused this token", .{});
-            return error.AuthFailed;
-        }
+        // Full and refused are two answers (task 1736): see `hook.admitted`.
+        hook.admitted(reply) catch |err| switch (err) {
+            error.AgentsFull => {
+                log.err("polter has no free connection: every agent slot is in use (poltergeist-max-agents)", .{});
+                return error.AgentsFull;
+            },
+            error.AuthRefused => {
+                log.err("polter refused this token", .{});
+                return error.AuthFailed;
+            },
+        };
 
         return self;
     }

@@ -178,22 +178,21 @@ pub fn deliver(
     var writer = conn.writer(io, &write_buf);
     const w = &writer.interface;
 
-    {
-        var s: std.json.Stringify = .{ .writer = w };
-        try s.beginObject();
-        try s.objectField("method");
-        try s.write("auth");
-        try s.objectField("params");
-        try s.beginObject();
-        try s.objectField("token");
-        try s.write(token);
-        try s.endObject();
-        try s.endObject();
-        try w.writeByte('\n');
-        try w.flush();
-    }
-    const auth = (try reader.interface.takeDelimiter('\n')) orelse return error.EndOfStream;
-    if (std.mem.indexOf(u8, auth, "\"ok\":true") == null) return error.AuthRefused;
+    // A connection turned away for want of a slot is answered and closed
+    // the moment it is accepted, so writing the token can fail on a
+    // connection whose answer is already here to read (task 1736). The
+    // answer is what says why; the failed write is only what it looked
+    // like from this end.
+    const sent = sendAuth(w, token);
+    const auth = (reader.interface.takeDelimiter('\n') catch |err| {
+        try sent;
+        return err;
+    }) orelse {
+        try sent;
+        return error.EndOfStream;
+    };
+    try admitted(auth);
+    try sent;
 
     var line_buf: [Server.max_request_bytes - 1]u8 = undefined;
     try w.writeAll(try fitRequest(&line_buf, ev));
@@ -205,6 +204,34 @@ pub fn deliver(
         log.warn("+hook: refused: {s}", .{reply[0..@min(reply.len, 200)]});
         return error.Refused;
     }
+}
+
+fn sendAuth(w: *std.Io.Writer, token: []const u8) std.Io.Writer.Error!void {
+    var s: std.json.Stringify = .{ .writer = w };
+    try s.beginObject();
+    try s.objectField("method");
+    try s.write("auth");
+    try s.objectField("params");
+    try s.beginObject();
+    try s.objectField("token");
+    try s.write(token);
+    try s.endObject();
+    try s.endObject();
+    try w.writeByte('\n');
+    try w.flush();
+}
+
+/// Whether the first line back let this connection in, and if not, which
+/// refusal it was (task 1736). **Two refusals that are not one**: every
+/// slot in use is a busy Polter, a token it does not know is a terminal
+/// that is not its own, and a log that called both `AuthRefused` sent
+/// whoever read it after a token -- 413 times in ten minutes, measured on
+/// a machine whose tokens were all fine. The code is the server's
+/// (`Server.full_refusal_code`), matched the way `+mcp` matches it.
+pub fn admitted(line: []const u8) error{ AgentsFull, AuthRefused }!void {
+    if (std.mem.indexOf(u8, line, "\"ok\":true") != null) return;
+    if (std.mem.indexOf(u8, line, Server.full_refusal_code) != null) return error.AgentsFull;
+    return error.AuthRefused;
 }
 
 /// The `agent_event` request line, without its newline, written into `buf`

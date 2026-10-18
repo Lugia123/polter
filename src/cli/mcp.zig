@@ -534,14 +534,19 @@ pub const Host = struct {
         };
 
         // Prove who we are before anything else. The host closes the
-        // connection if this does not check out.
-        try self.writer.interface.print(
-            \\{{"method":"auth","params":{{"token":"{s}"{s}{s}}}}}
-        ++ "\n", .{ token, kind.authField(), extra });
-        try self.writer.interface.flush();
-
-        const reply = (try self.reader.interface.takeDelimiter('\n')) orelse
+        // connection if this does not check out -- and one turned away for
+        // want of a slot is answered and closed as soon as it is accepted,
+        // so the write can fail with the answer already here to read
+        // (task 1736). The answer says why; read it before the write's
+        // error is allowed to speak.
+        const sent = sendAuth(&self.writer.interface, token, kind, extra);
+        const reply = (self.reader.interface.takeDelimiter('\n') catch |err| {
+            try sent;
+            return err;
+        }) orelse {
+            try sent;
             return error.EndOfStream;
+        };
         // **The third one on this path, and the worst of them.** Before this
         // the server closed a refused connection without a word, so the
         // measured result was `CONNECTION_CLOSED` in the agent CLI and
@@ -572,6 +577,10 @@ pub const Host = struct {
         // arithmetic below is the honest version -- it tells the person how
         // to work the number out from what they can see.
         if (std.mem.indexOf(u8, reply, poltergeist_server.full_refusal_code) != null) {
+            // Not for a notifier: it is only asked for once the agent's own
+            // connection is in, and "this terminal gets no tools" would be
+            // false -- its tools work, it is only not told of a change.
+            if (kind == .notifier) return error.AgentsFull;
             var buffer: [512]u8 = undefined;
             var stderr: std.Io.File = .stderr();
             var w = stderr.writerStreaming(io, &buffer);
@@ -619,7 +628,15 @@ pub const Host = struct {
             return error.AuthFailed;
         }
 
+        try sent;
         return self;
+    }
+
+    fn sendAuth(w: *std.Io.Writer, token: []const u8, kind: poltergeist_server.Kind, extra: []const u8) std.Io.Writer.Error!void {
+        try w.print(
+            \\{{"method":"auth","params":{{"token":"{s}"{s}{s}}}}}
+        ++ "\n", .{ token, kind.authField(), extra });
+        try w.flush();
     }
 
     pub fn deinit(self: *Host) void {
