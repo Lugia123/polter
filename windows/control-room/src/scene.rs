@@ -326,6 +326,10 @@ fn inset_x(r: Rect, by: f64) -> Rect {
     Rect { x: r.x + by, y: r.y, w: (r.w - 2.0 * by).max(0.0), h: r.h }
 }
 
+pub fn body_style(color: Rgba) -> Style {
+    body(color)
+}
+
 fn body(color: Rgba) -> Style {
     Style { size: font::BODY, weight: font::WEIGHT_BODY, face: Face::Ui, color }
 }
@@ -720,7 +724,7 @@ pub fn build(list: &List, at: &ListLayout, view: &View, tr: &dyn Fn(&str) -> Str
     for row in &list.quiet {
         let Some(rect) = at.chip(Some(&row.id)) else { continue };
         if seen(rect) {
-            quiet_row(&mut out, row, rect, view);
+            quiet_row(&mut out, row, rect, view, tr);
         }
     }
     if clips {
@@ -796,7 +800,7 @@ fn glyph_column(rect: Rect) -> (f64, f64) {
 /// A group that needs nothing: the glyph in the same column as every other
 /// row's, the name, and what it is doing. A group with nothing to say is
 /// its name alone, a step back.
-fn quiet_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View) {
+fn quiet_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View, tr: &dyn Fn(&str) -> String) {
     let theme = view.theme;
     let selected = view.lit(&row.id);
     let said = quiet_text(row);
@@ -831,10 +835,40 @@ fn quiet_row(out: &mut Vec<Item>, row: &Row, rect: Rect, view: &View) {
     let name = if marks.is_empty() { name } else { Part { side: Side::Lead, ..name } };
     let mut parts = vec![name];
     parts.extend(marks);
+    // A project's name is given what is left after what the group is
+    // doing, and cut short when there is not room for it (task 1714): the
+    // words for what it is doing stand where they always did and keep
+    // their width, rather than giving way to it.
+    let project = project_note(row, theme, tr);
+    let name_last = project.iter().any(|p| p.side == Side::Squeezed);
     if !said.is_empty() {
-        parts.push(words(said, body(theme.text_secondary), Side::Rest, side::ROW_ITEM_GAP));
+        parts.push(words(said, body(theme.text_secondary), if name_last { Side::Lead } else { Side::Rest }, side::ROW_ITEM_GAP));
     }
+    parts.extend(project);
     out.push(Item::Line { rect: Rect { x: text_x, y: rect.y, w: (right - text_x).max(0.0), h: rect.h }, parts });
+}
+
+/// What the right end of a group's row says of its project (task 1714,
+/// `project_link::note`): the project's name in the second ink, last to be
+/// given room and the first to be cut short (`Side::Squeezed`); or, when
+/// there is something to answer, the attention glyph -- the same one, in
+/// the same colour, as a row waiting for approval -- and a short word in
+/// the colour of words that ask. Nothing for a group with neither.
+fn project_note(row: &Row, theme: &Theme, tr: &dyn Fn(&str) -> String) -> Vec<Part> {
+    let Some(p) = row.project.as_ref() else { return Vec::new() };
+    let note = crate::project_link::note(&p.tie, &p.why, row.project_name.as_deref());
+    let Some(word) = crate::project_words::note_word(&note, tr) else { return Vec::new() };
+    match note {
+        crate::project_link::Note::Name(_) => vec![words(word, body(theme.text_secondary), Side::Squeezed, side::ROW_ITEM_GAP)],
+        _ => vec![
+            Part {
+                piece: Piece::Glyph { shown: Shown::NeedsYou, color: theme.attention, size: side::GLYPH, pulses: false },
+                side: Side::Trail,
+                gap: side::ROW_ITEM_GAP,
+            },
+            words(word, body(theme.attention_text), Side::Trail, pane::BAR_GAP),
+        ],
+    }
 }
 
 /// The marks after a group's name (task 1661, design v21 `05`): pinned
@@ -1592,8 +1626,40 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
 /// Where the terminal sits inside the right-hand side when it is shown:
 /// under the frame's title bar, inside its border.
 pub fn terminal_rect(width: f64, height: f64) -> Rect {
+    terminal_rect_with(width, height, 0.0)
+}
+
+/// `terminal_rect`, with `notice` points between the title bar and the
+/// terminal for what is said about the group's project (task 1714,
+/// `project_notice`): the terminal moves down by that much and is that much
+/// shorter. The host places the terminal's window with the same number the
+/// frame is drawn with.
+pub fn terminal_rect_with(width: f64, height: f64, notice: f64) -> Rect {
     let b = pane::SUPERVISOR_BORDER;
-    Rect { x: b, y: pane::BAR_HEIGHT, w: (width - 2.0 * b).max(0.0), h: (height - pane::BAR_HEIGHT - b).max(0.0) }
+    Rect { x: b, y: pane::BAR_HEIGHT + notice, w: (width - 2.0 * b).max(0.0), h: (height - pane::BAR_HEIGHT - b - notice).max(0.0) }
+}
+
+/// The band about the group's project, in the right side's points: under
+/// the title bar, as wide as the terminal under it.
+pub fn notice_origin(width: f64) -> (f64, f64, f64) {
+    let t = terminal_rect(width, 0.0);
+    (t.x, t.y, t.w)
+}
+
+/// `items` moved by `(dx, dy)`.
+pub fn moved(items: Vec<Item>, dx: f64, dy: f64) -> Vec<Item> {
+    let m = |r: Rect| Rect { x: r.x + dx, y: r.y + dy, ..r };
+    items
+        .into_iter()
+        .map(|i| match i {
+            Item::Fill { rect, color } => Item::Fill { rect: m(rect), color },
+            Item::Round { rect, radius, color, edge } => Item::Round { rect: m(rect), radius, color, edge },
+            Item::Text { rect, text, style, align } => Item::Text { rect: m(rect), text, style, align },
+            Item::Line { rect, parts } => Item::Line { rect: m(rect), parts },
+            Item::Block { rect, text, style, lines } => Item::Block { rect: m(rect), text, style, lines },
+            Item::Clip { rect } => Item::Clip { rect: rect.map(m) },
+        })
+        .collect()
 }
 
 /// `detail` is what `lend::Lending` says the right side shows; `row` is the
@@ -1616,6 +1682,25 @@ pub fn build_right(
     scale: f64,
     in_terminal: bool,
     tr: &dyn Fn(&str) -> String,
+) -> Right {
+    build_right_with(detail, row, width, height, theme, scale, in_terminal, tr, None)
+}
+
+/// `build_right`, with what is said about the group's project between the
+/// supervisor's title bar and its terminal (task 1714): `notice` laid out
+/// by `project_notice::band` at the width `notice_origin` gives. Only on
+/// the supervisor's frame; elsewhere it is not drawn.
+#[allow(clippy::too_many_arguments)]
+pub fn build_right_with(
+    detail: &Detail_,
+    row: Option<&Row>,
+    width: f64,
+    height: f64,
+    theme: &Theme,
+    scale: f64,
+    in_terminal: bool,
+    tr: &dyn Fn(&str) -> String,
+    notice: Option<&crate::project_notice::Band>,
 ) -> Right {
     let frame = Rect { x: 0.0, y: 0.0, w: width, h: height };
     let hair = hairline(scale).1;
@@ -1702,7 +1787,12 @@ pub fn build_right(
         items.push(Item::Line { rect: bar, parts });
         // The terminal's own ground, for the moment before the terminal's
         // window is over it.
-        let terminal = terminal_rect(width, height);
+        let notice_h = notice.map_or(0.0, |n| n.h);
+        if let Some(n) = notice {
+            let (x, y, _) = notice_origin(width);
+            items.extend(moved(n.items.clone(), x, y));
+        }
+        let terminal = terminal_rect_with(width, height, notice_h);
         items.push(Item::Fill { rect: terminal, color: theme.terminal_background });
         return Right { items, go: None, terminal: Some(terminal), take_over: offered.then_some(bar) };
     }
@@ -1800,6 +1890,85 @@ mod tests {
         let at = ListLayout::new(list, 900.0);
         let view = View { theme: look::theme(dark), scale, selection, lit: Lit::Selection, chip: at.chip(selection), lift: 0.0, pulsing, naming: None, fix_refusal: None };
         build(list, &at, &view, &same)
+    }
+
+    /// Task 1714: the right end of a quiet group's row names its project,
+    /// or, when there is something to answer, says so with the attention
+    /// glyph and a short word; a group with neither says nothing there.
+    #[test]
+    fn a_quiet_rows_right_end_says_what_is_to_answer_about_its_project() {
+        let theme = look::theme(false);
+        let trailing = |tie: &str, why: &str, name: Option<&str>| -> Vec<Part> {
+            let mut l = list();
+            let row = &mut l.quiet[0];
+            row.project = Some(snapshot::ProjectTie { tie: tie.into(), why: why.into(), ask: false });
+            row.project_name = name.map(str::to_string);
+            let who = row.name().to_string();
+            let items = scene(&l, None, false, 1.0, None);
+            items
+                .into_iter()
+                .find_map(|i| match i {
+                    Item::Line { parts, .. } if parts.iter().any(|p| matches!(&p.piece, Piece::Words { text, .. } if *text == who)) => Some(parts),
+                    _ => None,
+                })
+                .expect("the row is drawn")
+                .into_iter()
+                .filter(|p| p.side == Side::Trail || p.side == Side::Squeezed)
+                .collect()
+        };
+        let taken = trailing("undecided", "project_name_taken", None);
+        assert_eq!(taken.len(), 2, "{taken:?}");
+        assert!(matches!(taken[0].piece, Piece::Glyph { shown: Shown::NeedsYou, color, .. } if color == theme.attention), "{taken:?}");
+        assert!(matches!(&taken[1].piece, Piece::Words { text, style, .. } if text == "Same-name project" && style.color == theme.attention_text), "{taken:?}");
+        let bound = trailing("bound", "none", Some("web"));
+        assert!(matches!(&bound[..], [Part { piece: Piece::Words { text, style, .. }, .. }] if text == "web" && style.color == theme.text_secondary), "{bound:?}");
+        let quiet = trailing("undecided", "not_taken_up", None);
+        assert!(quiet.is_empty(), "{quiet:?}");
+    }
+
+    /// Task 1714: a project's name is given the room last. What the group
+    /// is doing keeps its width; the name is what is cut short, and on a
+    /// row too narrow for it, left out -- the two never overlap.
+    #[test]
+    fn a_projects_name_gives_way_to_what_the_group_is_doing() {
+        let mut l = list();
+        let row = l.quiet.iter_mut().find(|r| !quiet_text(r).is_empty()).expect("a quiet row that says something");
+        row.project = Some(snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false });
+        row.project_name = Some("a-long-project-name".into());
+        let who = row.name().to_string();
+        let said = quiet_text(row);
+        let items = scene(&l, None, false, 1.0, None);
+        let parts = items
+            .into_iter()
+            .find_map(|i| match i {
+                Item::Line { parts, .. } if parts.iter().any(|p| matches!(&p.piece, Piece::Words { text, .. } if *text == who)) => Some(parts),
+                _ => None,
+            })
+            .expect("the row is drawn");
+        let side_of = |text: &str| parts.iter().find(|p| matches!(&p.piece, Piece::Words { text: t, .. } if t == text)).map(|p| p.side);
+        assert_eq!(side_of(&said), Some(Side::Lead));
+        assert_eq!(side_of("a-long-project-name"), Some(Side::Squeezed));
+        // Laid out narrow: the name of the group 40, what it is doing 100,
+        // the project 120, in 200.
+        let widths: Vec<(Side, i32, i32)> = parts
+            .iter()
+            .map(|p| {
+                let w = match &p.piece {
+                    Piece::Words { text, .. } if *text == who => 40,
+                    Piece::Words { text, .. } if *text == said => 100,
+                    Piece::Words { .. } => 120,
+                    _ => 10,
+                };
+                (p.side, 0, w)
+            })
+            .collect();
+        let placed = place_line(0, 200, &widths);
+        let at = |w: i32| widths.iter().position(|(_, _, x)| *x == w).and_then(|i| placed[i]).expect("placed");
+        let doing = at(100);
+        assert!(!doing.cut, "{doing:?}");
+        let project = at(120);
+        assert!(project.cut, "{project:?}");
+        assert!(project.left >= doing.right, "{project:?} overlaps {doing:?}");
     }
 
     /// Task 1657: rows more than their room holds are drawn only in it --
@@ -2709,6 +2878,29 @@ mod tests {
             let t = frame_of(&row.id, &english);
             assert!(!t.iter().any(|w| w.contains("no status")), "{}: {t:?}", row.id);
         }
+    }
+
+    /// Task 1714: what is said about the group's project sits between the
+    /// supervisor's title bar and its terminal, and the terminal moves down
+    /// by exactly its height -- the number the host places the window with.
+    #[test]
+    fn the_band_about_the_project_pushes_the_terminal_down_by_its_height() {
+        use crate::lend::Loan;
+        use crate::project_notice::{band, Notice};
+        let l = list();
+        let with = l.rows().find(|r| r.steward.is_some()).expect("the fixture has a group with a supervisor");
+        let loan = Loan { group: with.id.clone(), terminal: with.steward.clone().unwrap() };
+        let theme = look::theme(false);
+        let (_, _, w) = notice_origin(600.0);
+        let b = band(Notice::Hint { text: "Saved.", undo: Some("Undo") }, w, theme, &|s: &str| 8.0 * s.chars().count() as f64);
+        let plain = build_right(&Detail_::Terminal(loan.clone()), Some(with), 600.0, 700.0, theme, 1.0, false, &same);
+        let said = build_right_with(&Detail_::Terminal(loan), Some(with), 600.0, 700.0, theme, 1.0, false, &same, Some(&b));
+        let (t0, t1) = (plain.terminal.unwrap(), said.terminal.unwrap());
+        assert_eq!(t1, terminal_rect_with(600.0, 700.0, b.h));
+        assert_eq!((t1.y - t0.y, t0.h - t1.h), (b.h, b.h));
+        // Its words are drawn, under the bar.
+        let words = texts(&said.items);
+        assert!(words.contains(&"Saved.".to_string()), "{words:?}");
     }
 
     #[test]

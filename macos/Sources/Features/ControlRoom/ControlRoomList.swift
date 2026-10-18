@@ -95,6 +95,10 @@ struct ControlRoomList: Equatable {
         var brief: String
         /// The project's name when the group is bound to one.
         var project: String?
+        /// The group's tie to a project and why it is not bound, as the
+        /// core wrote them (task 1713); empty from a core before it said.
+        var projectTie = ""
+        var projectWhy = ""
         var deleteCost: ControlRoomSnapshot.DeleteCost?
         /// What became of the control room's last ask of its supervisor
         /// (task 1671); nil when none was made since the core started.
@@ -867,6 +871,11 @@ struct ControlRoomSnapshot: Decodable, Equatable {
             var tie: String
             /// Null unless bound.
             var name: String?
+            /// Why it is not bound (`Projects.Why`); absent from a core
+            /// before it said.
+            var why: String?
+            /// Whether to ask "join and link?" now (task 1713).
+            var ask: Bool?
         }
     }
 
@@ -1162,6 +1171,8 @@ extension ControlRoomList {
                     recordDir: group.record_dir,
                     brief: group.brief ?? "",
                     project: group.project?.tie == "bound" ? group.project?.name : nil,
+                    projectTie: group.project?.tie ?? "",
+                    projectWhy: group.project?.why ?? "",
                     deleteCost: group.delete_cost,
                     ask: group.ask.flatMap { a in
                         AskState.Stage(rawValue: a.state).map { AskState(seq: a.seq, stage: $0, code: a.code) }

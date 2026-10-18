@@ -211,6 +211,11 @@ fn to_screen(owner: HWND, r: Rect) -> RECT {
 /// A press on the frame's content area, at `(x, y)` in its pixels. **True
 /// when it was on a pane's title**, and then this has taken it.
 pub fn title_press(frame: HWND, x: i32, y: i32) -> bool {
+    // The line saying a project was made, over the top of a pane (task
+    // 1714): its Undo and its cross are buttons, the rest of it nothing.
+    if crate::pane_frames::hint_press(frame, x, y) {
+        return true;
+    }
     let Some(pane) = crate::pane_frames::title_at(frame, x, y) else { return false };
     // A stack's strip stands where the title would (task 1583): its close
     // buttons below, everything else there.

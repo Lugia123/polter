@@ -369,6 +369,12 @@ struct ProjectLinkTests {
         #expect(Link.startTitle(nil) == Link.startTitle(old))
         #expect(Link.startNote(bound)?.contains("3") == true)
         #expect(Link.startNote(old) == nil)
+        // No project yet, and one will be made: said, with how to undo it
+        // (task 1713). Not when the group said it wants none.
+        let none = Link.GroupProject(tie: "undecided", name: nil, pages: nil, open: nil, start: .directory, why: "not_taken_up")
+        #expect(Link.startNote(none) != nil)
+        let declined = Link.GroupProject(tie: "declined", name: nil, pages: nil, open: nil, start: .directory, why: "declined")
+        #expect(Link.startNote(declined) == nil)
         #expect(Link.startNote(nil) == nil)
         // Not known is not zero: the sentence leaves the count out.
         let unknown = Link.GroupProject(tie: "bound", name: "web-app", pages: nil, open: nil, start: .project, why: "none")

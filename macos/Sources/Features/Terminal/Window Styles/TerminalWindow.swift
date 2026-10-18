@@ -1008,6 +1008,8 @@ extension TerminalWindow {
     private static let copyTerminalIDIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.copyTerminalID")
     private static let projectSeparatorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSeparator")
     private static let projectSaveAsIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectSaveAs")
+    private static let projectForGroupIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectForGroup")
+    private static let projectForGroupSeparatorIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectForGroupSeparator")
     private static let projectLoadIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectLoad")
     private static let projectAddToIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectAddTo")
     private static let projectTakeOutIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.projectTakeOut")
@@ -1250,12 +1252,31 @@ extension TerminalWindow {
     /// kept until you delete it.
     private func appendProjectSection(to menu: NSMenu, target: TerminalController?) {
         menu.removeItems(withIdentifiers: [
+            Self.projectForGroupIdentifier,
+            Self.projectForGroupSeparatorIdentifier,
             Self.projectSeparatorIdentifier,
             Self.projectSaveAsIdentifier,
             Self.projectLoadIdentifier,
             Self.projectAddToIdentifier,
             Self.projectTakeOutIdentifier,
         ])
+
+        // The tab holds a group's supervisor: the menu's first item saves
+        // it as that group's project (task 1713, §3.5).
+        if let target, let group = ProjectLinkDesk.shared?.supervisorGroup(in: target) {
+            let forGroup = NSMenuItem(
+                title: ProjectLinkPlan.saveForGroupTitle(group),
+                action: #selector(TerminalController.saveAsGroupProject(_:)),
+                keyEquivalent: "")
+            forGroup.identifier = Self.projectForGroupIdentifier
+            forGroup.representedObject = group
+            forGroup.target = target
+            forGroup.setImageIfDesired(systemSymbolName: "square.and.arrow.down")
+            let after = NSMenuItem.separator()
+            after.identifier = Self.projectForGroupSeparatorIdentifier
+            menu.insertItem(after, at: 0)
+            menu.insertItem(forGroup, at: 0)
+        }
 
         let separator = NSMenuItem.separator()
         separator.identifier = Self.projectSeparatorIdentifier

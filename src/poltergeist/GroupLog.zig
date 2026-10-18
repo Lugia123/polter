@@ -131,6 +131,9 @@ pub const Shell = struct {
     /// The project it is tied to; `undecided` for every record written
     /// before there were ties. Owned like the rest.
     project: ProjectTie,
+    /// How many times "Not Now" was said to joining the project of its
+    /// name (task 1713).
+    project_not_now: u8,
 };
 
 pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error!GroupLog {
@@ -173,6 +176,7 @@ pub fn note(self: *GroupLog, name: []const u8, brief: []const u8) void {
         .marks = if (was) |m| m.marks else .none,
         .supervisor = if (was) |m| m.supervisor else .none,
         .project = if (was) |m| m.project else .undecided,
+        .project_not_now = if (was) |m| m.project_not_now else 0,
     });
 }
 
@@ -187,6 +191,7 @@ pub fn mark(self: *GroupLog, name: []const u8, marks: Marks) void {
         .marks = marks,
         .supervisor = if (was) |m| m.supervisor else .none,
         .project = if (was) |m| m.project else .undecided,
+        .project_not_now = if (was) |m| m.project_not_now else 0,
     });
 }
 
@@ -207,6 +212,7 @@ pub fn supervisor(self: *GroupLog, name: []const u8, last: LastSupervisor) void 
         .marks = if (was) |m| m.marks else .none,
         .supervisor = last,
         .project = if (was) |m| m.project else .undecided,
+        .project_not_now = if (was) |m| m.project_not_now else 0,
     });
 }
 
@@ -221,6 +227,23 @@ pub fn project(self: *GroupLog, name: []const u8, tie: ProjectTie) void {
         .marks = if (was) |m| m.marks else .none,
         .supervisor = if (was) |m| m.supervisor else .none,
         .project = tie,
+        .project_not_now = if (was) |m| m.project_not_now else 0,
+    });
+}
+
+/// Write down how many times the person answered "Not Now" to joining a
+/// group to the project of its name (task 1713): after the second, the
+/// question is not put again (`Chat.Group.project_not_now`).
+pub fn projectNotNow(self: *GroupLog, name: []const u8, times: u8) void {
+    const was = self.readMeta(self.alloc, name);
+    defer if (was) |m| m.free(self.alloc);
+    self.writeMeta(name, .{
+        .brief = if (was) |m| m.brief else "",
+        .listed = if (was) |m| m.listed else true,
+        .marks = if (was) |m| m.marks else .none,
+        .supervisor = if (was) |m| m.supervisor else .none,
+        .project = if (was) |m| m.project else .undecided,
+        .project_not_now = times,
     });
 }
 
@@ -238,6 +261,7 @@ pub fn forget(self: *GroupLog, name: []const u8) void {
         .marks = if (was) |m| m.marks else .none,
         .supervisor = if (was) |m| m.supervisor else .none,
         .project = if (was) |m| m.project else .undecided,
+        .project_not_now = if (was) |m| m.project_not_now else 0,
     });
 }
 
@@ -251,6 +275,7 @@ const Entry = struct {
     marks: Marks,
     supervisor: LastSupervisor,
     project: ProjectTie,
+    project_not_now: u8,
 };
 
 fn writeMeta(self: *GroupLog, name: []const u8, entry: Entry) void {
@@ -364,6 +389,12 @@ fn render(s: *std.json.Stringify, entry: Entry) std.Io.Writer.Error!void {
         },
     }
 
+    // Only when it is not nought, which is what every older record is.
+    if (entry.project_not_now > 0) {
+        try s.objectField("project_not_now");
+        try s.write(entry.project_not_now);
+    }
+
     // Only when it is false. Being in the list is what a group directory
     // already means, so the ordinary file is a note and nothing else, and
     // the flag is there to say the one thing the directory cannot.
@@ -437,6 +468,9 @@ const Meta = struct {
     supervisor: LastSupervisor,
     /// Owned likewise. `undecided` when the file says nothing of one.
     project: ProjectTie,
+    /// How many times "Not Now" was said to joining the project of the
+    /// group's name (task 1713); nought when the file says nothing.
+    project_not_now: u8,
 
     fn free(self: Meta, alloc: Allocator) void {
         alloc.free(self.brief);
@@ -615,6 +649,10 @@ fn readMetaIn(self: *const GroupLog, alloc: Allocator, seg: []const u8) ?Meta {
             owned_last.free(alloc);
             return null;
         },
+        .project_not_now = switch (obj.get("project_not_now") orelse std.json.Value.null) {
+            .integer => |n| std.math.cast(u8, n) orelse std.math.maxInt(u8),
+            else => 0,
+        },
     };
 }
 
@@ -694,6 +732,7 @@ pub fn restore(self: *GroupLog, alloc: Allocator) Allocator.Error![]Shell {
             .marks = if (meta) |m| m.marks else .none,
             .supervisor = last,
             .project = tie,
+            .project_not_now = if (meta) |m| m.project_not_now else 0,
         });
     }
 
@@ -1369,6 +1408,23 @@ test "Projects: a group's tie to a project is written down in its own words and 
         try testing.expectEqualStrings("scratch", shells[0].project.bound);
     }
 
+    // "Not Now" to joining a project (task 1713): written only once said,
+    // carried through every other writer, and back on restore.
+    {
+        const text = try metaText(alloc, io, state, "build");
+        defer alloc.free(text);
+        try testing.expect(std.mem.indexOf(u8, text, "project_not_now") == null);
+    }
+    gl.projectNotNow("build", 2);
+    gl.note("build", "why, a third time");
+    gl.project("build", .declined);
+    {
+        const shells = try gl.restore(alloc);
+        defer free(alloc, shells);
+        try testing.expectEqual(@as(u8, 2), shells[0].project_not_now);
+        try testing.expect(shells[0].project == .declined);
+    }
+
     // "Has none, its supervisor said so" is not "nobody has said".
     gl.project("build", .declined);
     {
@@ -1383,7 +1439,9 @@ test "Projects: a group's tie to a project is written down in its own words and 
     {
         const text = try metaText(alloc, io, state, "build");
         defer alloc.free(text);
-        try testing.expect(std.mem.indexOf(u8, text, "project") == null);
+        try testing.expect(std.mem.indexOf(u8, text, "\"project\":") == null);
+        // The "Not Now" count is not the tie: it stays (task 1713).
+        try testing.expect(std.mem.indexOf(u8, text, "\"project_not_now\":2") != null);
     }
 
     // Anything that is not one of the two shapes is nobody having said.

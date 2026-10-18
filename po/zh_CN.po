@@ -5964,3 +5964,332 @@ msgstr "{}，总管"
 #, rust-format
 msgid "{}, supervisor, {}"
 msgstr "{}，总管，{}"
+
+#: windows/control-room/src/act.rs:407
+msgid ""
+"The projects on this computer have not been read yet. Try again in a moment."
+msgstr "还没读到这台电脑上的项目，请稍后再试。"
+
+#: windows/control-room/src/act.rs:408
+msgid "That project is not there any more."
+msgstr "那个项目已经不在了。"
+
+#: windows/control-room/src/act.rs:409
+msgid "That project is another group's."
+msgstr "那个项目属于别的群。"
+
+#: windows/control-room/src/act.rs:410
+msgid "Another project already has this group's name."
+msgstr "已有另一个项目和这个群同名。"
+
+#: windows/control-room/src/project_words.rs:21
+#, rust-format
+msgid "Open Project “{}”"
+msgstr "打开项目「{}」"
+
+#: windows/control-room/src/project_words.rs:22
+msgid "Show in Project Settings"
+msgstr "在项目设置中查看"
+
+#: windows/control-room/src/project_words.rs:23
+msgid "Stop Using It as This Group's Project…"
+msgstr "不再作为这个群的项目…"
+
+#: windows/control-room/src/project_words.rs:24
+#, rust-format
+msgid "Save the Supervisor's Tab as Project “{}”"
+msgstr "把总管的标签页存成项目「{}」"
+
+#: windows/control-room/src/project_words.rs:25
+msgid "Use an Existing Project"
+msgstr "改用已有的项目"
+
+#: windows/control-room/src/project_words.rs:26
+msgid "This Group Has No Project"
+msgstr "这个群不用项目"
+
+#: windows/control-room/src/project_words.rs:27
+msgid "Use a Project for This Group"
+msgstr "这个群改用项目"
+
+#: windows/control-room/src/project_words.rs:28
+msgid "Join and Link"
+msgstr "加入并关联"
+
+#: windows/control-room/src/project_words.rs:29
+#, rust-format
+msgid "Replace “{}”…"
+msgstr "替换「{}」…"
+
+#: windows/control-room/src/project_words.rs:30
+#, rust-format
+msgid "Open “{}”"
+msgstr "打开「{}」"
+
+#: windows/control-room/src/project_words.rs:31
+#, rust-format
+msgid "Use “{}”"
+msgstr "用「{}」"
+
+#: windows/control-room/src/project_words.rs:33
+#, rust-format
+msgid "There is already a project “{}”, in no group"
+msgstr "已有项目「{}」，还不属于任何群"
+
+#: windows/control-room/src/project_words.rs:34
+msgid "More than one project says it is this group's"
+msgstr "不止一个项目说是这个群的"
+
+#: windows/control-room/src/project_words.rs:35
+msgid "The supervisor's tab is in a project that is another group's."
+msgstr "总管的标签页在一个属于别的群的项目里。"
+
+#: windows/control-room/src/project_words.rs:37
+msgid ""
+"This supervisor already looks after another group, which has a project. One "
+"supervisor, one project."
+msgstr "这个总管已经是另一个有项目的群的总管。一个总管只管一个项目。"
+
+#: windows/control-room/src/project_words.rs:39
+msgid ""
+"This supervisor looks after several groups with no project, so it is not "
+"known which one its tab is for."
+msgstr "这个总管同时管着几个没项目的群，不知道这一页该给谁。"
+
+#: windows/control-room/src/project_words.rs:40
+msgid "There is more than one supervisor in this group."
+msgstr "群里不止一个总管。"
+
+#: windows/control-room/src/project_words.rs:41
+msgid "The projects on this computer have not been read yet"
+msgstr "还没读到这台电脑上的项目"
+
+#: windows/control-room/src/project_words.rs:43
+#, rust-format
+msgid "{} — in no group"
+msgstr "{} — 不属于任何群"
+
+#: windows/control-room/src/project_words.rs:44
+#, rust-format
+msgid "{} — group “{}”"
+msgstr "{} — 群「{}」"
+
+#: windows/control-room/src/project_words.rs:45
+msgid "No projects"
+msgstr "没有项目"
+
+#: windows/control-room/src/project_words.rs:47
+#, rust-format
+msgid "Save as the Project of Group “{}”…"
+msgstr "存为群「{}」的项目…"
+
+#: windows/control-room/src/project_words.rs:48
+#, rust-format
+msgid "As the project of group “{}”"
+msgstr "作为群「{}」的项目"
+
+#: windows/control-room/src/project_words.rs:51
+#, rust-format
+msgid "Another project is called “{}”. Rename it “{}” and link?"
+msgstr "已有项目叫「{}」。把它改名为「{}」再关联？"
+
+#: windows/control-room/src/project_words.rs:52
+#, rust-format
+msgid "{} (old)"
+msgstr "{}（旧）"
+
+#: windows/control-room/src/project_words.rs:53
+msgid "Rename and Link"
+msgstr "改名并关联"
+
+#: windows/control-room/src/project_words.rs:55
+msgid "Same-name project"
+msgstr "有同名项目"
+
+#: windows/control-room/src/project_words.rs:56
+msgid "Two projects"
+msgstr "两个项目"
+
+#: windows/control-room/src/project_words.rs:57
+msgid "Project not made"
+msgstr "项目没建成"
+
+#: windows/control-room/src/project_words.rs:60
+#, rust-format
+msgid ""
+"There is already a project “{}” ({}, {} pages), in no group. A group's "
+"project has the group's name: add the supervisor's tab to it, as this "
+"group's project?"
+msgstr "已有项目「{}」（{}存的，{} 页），还不属于任何群。群的项目要和群同名：要把总管的标签页加入它，作为这个群的项目吗？"
+
+#: windows/control-room/src/project_words.rs:62
+msgid ""
+"More than one project says it is this group's. Choose the one it uses; the "
+"others lose the group's name, and no file is deleted."
+msgstr "不止一个项目说是这个群的。选一个给它用；其余的去掉群名，文件不删。"
+
+#: windows/control-room/src/project_words.rs:63
+#, rust-format
+msgid "Open “{}” First"
+msgstr "先打开「{}」看看"
+
+#: windows/control-room/src/project_words.rs:64
+msgid "Use an Existing Project…"
+msgstr "改用已有的项目…"
+
+#: windows/control-room/src/project_words.rs:66
+#, rust-format
+msgid "There is already a project “{}”. Add the supervisor's tab to it?"
+msgstr "已有项目「{}」，要把总管的标签页加入它吗？"
+
+#: windows/control-room/src/project_words.rs:67
+#, rust-format
+msgid ""
+"A group's project has the group's name. “{}” was saved on {}, has {} pages, "
+"and is in no group."
+msgstr "群的项目要和群同名。「{}」是{}存的，{} 页，还不属于任何群。"
+
+#: windows/control-room/src/project_words.rs:69
+msgid ""
+"The supervisor's tab becomes one of its pages; the pages already there stay. "
+"The file is rewritten in the current format, and the old one is kept as the "
+"previous version."
+msgstr "总管的标签页成为它的一页，原来的页不动。文件会按当前格式重写，原文件留作上一版。"
+
+#: windows/control-room/src/project_words.rs:71
+msgid ""
+"The supervisor's tab takes its place. What is there now is kept as the "
+"previous version."
+msgstr "用总管的标签页替换它，现在的内容留作上一版。"
+
+#: windows/control-room/src/project_words.rs:72
+msgid "Not Now"
+msgstr "以后再说"
+
+#: windows/control-room/src/project_words.rs:73
+msgid ""
+"Asked again the next time Polter starts; until then the control room keeps "
+"saying so."
+msgstr "下次启动 Polter 时再问一次；在那之前，总控台会一直提示。"
+
+#: windows/control-room/src/project_words.rs:74
+msgid "Never asked again. To change your mind: right-click the group, Project."
+msgstr "以后不再问。要改主意：右键这个群，选「项目」。"
+
+#: windows/control-room/src/project_words.rs:76
+#, rust-format
+msgid "Replace “{}”?"
+msgstr "替换「{}」？"
+
+#: windows/control-room/src/project_words.rs:78
+#, rust-format
+msgid ""
+"“{}” will be replaced by the tab “{}” ({} panes), and the tab is saved to it "
+"automatically from then on. The layout it replaces is kept as the previous "
+"version."
+msgstr "「{}」会被标签页「{}」（{} 个面板）替换，之后这个标签页会自动保存到它。被替换的布局留作上一版。"
+
+#: windows/control-room/src/project_words.rs:79
+#, rust-format
+msgid ""
+"To get the old page back: Settings › Projects, choose “{}”, Restore Previous "
+"Version."
+msgstr "要找回原来那一页：设置 › 项目，选「{}」，恢复上一版。"
+
+#: windows/control-room/src/project_words.rs:80
+msgid "Replace"
+msgstr "替换"
+
+#: windows/control-room/src/project_words.rs:83
+#, rust-format
+msgid "Stop using “{}” as the project of group “{}”?"
+msgstr "不再把「{}」作为群「{}」的项目？"
+
+#: windows/control-room/src/project_words.rs:84
+msgid ""
+"The tabs stay as they are. The group then has no project until you choose "
+"one."
+msgstr "标签页保持原样。之后这个群没有项目，直到你再选一个。"
+
+#: windows/control-room/src/project_words.rs:85
+msgid "Also move the project file to the Recycle Bin"
+msgstr "同时把项目文件移到回收站"
+
+#: windows/control-room/src/project_words.rs:86
+msgid "Stop Using It"
+msgstr "不再使用"
+
+#: windows/control-room/src/project_words.rs:88
+#, rust-format
+msgid "Saved the supervisor's tab as project “{}”, this group's project."
+msgstr "已把总管的标签页存成项目「{}」，作为这个群的项目。"
+
+#: windows/control-room/src/project_words.rs:89
+#, rust-format
+msgid ""
+"The supervisor's tab was in project “{}”; it was renamed “{}”, this group's "
+"project."
+msgstr "总管的标签页原在项目「{}」里，已把它改名为「{}」，作为这个群的项目。"
+
+#: windows/control-room/src/project_words.rs:90
+#, rust-format
+msgid "Joined project “{}”, which is this group's now."
+msgstr "已加入项目「{}」，归这个群。"
+
+#: windows/control-room/src/project_words.rs:91
+#, rust-format
+msgid "Project “{}”, which the supervisor's tab is in, is this group's now."
+msgstr "总管的标签页所在的项目「{}」，现在归这个群。"
+
+#: windows/control-room/src/project_words.rs:92
+#, rust-format
+msgid ""
+"Replaced project “{}” with the supervisor's tab; the old one is the previous "
+"version. It is this group's now."
+msgstr "已用总管的标签页替换项目「{}」，原来的留作上一版，归这个群。"
+
+#: windows/control-room/src/project_words.rs:93
+#, rust-format
+msgid "Saved as project “{}”, this group's."
+msgstr "已存成项目「{}」，归这个群。"
+
+#: windows/control-room/src/project_words.rs:95
+#, rust-format
+msgid ""
+"Undone: project “{}” is in the Recycle Bin, and this group has no project. "
+"To change that, right-click the group, Project."
+msgstr "已撤销：项目「{}」移到了回收站，这个群不用项目。要改回，在群右键「项目」里选。"
+
+#: windows/control-room/src/project_words.rs:96
+#, rust-format
+msgid ""
+"Undone: the project is called “{}” again, and this group has no project. To "
+"change that, right-click the group, Project."
+msgstr "已撤销：项目改回了名字「{}」，这个群不用项目。要改回，在群右键「项目」里选。"
+
+#: windows/control-room/src/project_words.rs:98
+#, rust-format
+msgid ""
+"Undone: project “{}” is in no group again, and this group has no project. To "
+"change that, right-click the group, Project."
+msgstr "已撤销：项目「{}」又不属于任何群了，这个群不用项目。要改回，在群右键「项目」里选。"
+
+#: windows/control-room/src/project_words.rs:99
+#, rust-format
+msgid ""
+"Undone: project “{}” is back as it was, and this group has no project. To "
+"change that, right-click the group, Project."
+msgstr "已撤销：项目「{}」恢复成了原来的样子，这个群不用项目。要改回，在群右键「项目」里选。"
+
+#: windows/control-room/src/project_words.rs:97
+#, rust-format
+msgid ""
+"Undone: project “{}” is back as it was before the tab joined it, and this "
+"group has no project. To change that, right-click the group, Project."
+msgstr "已撤销：项目「{}」恢复成了加入前的样子，这个群不用项目。要改回，在群右键「项目」里选。"
+
+#: windows/control-room/src/act.rs:415
+msgid ""
+"This group's supervisor already has a project through another group: one "
+"supervisor, one project."
+msgstr "这个群的总管已经通过别的群有了项目：一个总管只管一个项目。"

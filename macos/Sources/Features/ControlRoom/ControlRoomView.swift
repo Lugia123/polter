@@ -47,6 +47,16 @@ struct ControlRoomView: View {
                 caption: bar.caption,
                 focused: model.detailHasKeyboard
             ) {
+                VStack(spacing: 0) {
+                // The group's project, under the title bar and over the
+                // terminal (task 1713): beside the `ZStack`, never round
+                // it, so the terminal's holder is the same view with or
+                // without it.
+                if let group = model.selection, model.detail.terminal != nil, let facts = model.selectedRow?.facts {
+                    ProjectLinkStrip(
+                        group: group, tie: facts.projectTie, why: facts.projectWhy, hands: model.projectHands,
+                        tell: { model.say($0, under: group, delivered: false) })
+                }
                 ZStack {
                     // Always there, so the terminal's view is never
                     // rebuilt by a redraw of this one.
@@ -66,6 +76,7 @@ struct ControlRoomView: View {
                                 model.startSupervisor(for: group, role: role, cwd: cwd, session: session, cli: cli)
                             })
                     }
+                }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

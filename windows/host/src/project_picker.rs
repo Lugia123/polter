@@ -57,6 +57,8 @@ const ID_FIELD: usize = 100;
 const ID_SAVE: usize = 101;
 const ID_CANCEL: usize = 102;
 const ID_LIST: usize = 103;
+/// "As the project of group “X”" (task 1714).
+const ID_TICK: usize = 104;
 
 /// Posted by the list and the field to the picker: the row at `WPARAM` (its
 /// place in the list as shown) was picked. **Posted, not sent**, so the list
@@ -126,6 +128,14 @@ struct Handles {
     font_small: HFONT,
     list_brush: HBRUSH,
     purpose: Purpose,
+    /// "As the project of group “X”", when the tab saved has a group's
+    /// supervisor in it (task 1714); the group is `FOR_GROUP`'s.
+    tick: HWND,
+}
+
+thread_local! {
+    /// The group the tick box names, while the window has one.
+    static FOR_GROUP: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 struct Model {
@@ -371,9 +381,18 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
         }),
     };
 
+    // A group's supervisor in the tab saved: the tick box that saves it as
+    // that group's project, ticked to begin with (task 1714, brief 7). Not on
+    // the save before closing, whose only question is not to lose the tab.
+    let for_group = match purpose {
+        Purpose::Save { tab, close_after: None } => crate::project_link_ui::group_supervised_in(tab),
+        _ => None,
+    };
+    FOR_GROUP.with(|g| *g.borrow_mut() = for_group.clone());
+
     let owner = if owner.0.is_null() { frame } else { owner };
     let dpi = (unsafe { GetDpiForWindow(owner) } as i32).max(96);
-    let (cw, ch) = (pj_scale(picker::WIDTH, dpi), pj_scale(picker::HEIGHT, dpi));
+    let (cw, ch) = (pj_scale(picker::WIDTH, dpi), pj_scale(picker::HEIGHT, dpi) + if for_group.is_some() { picker::tick_extra(dpi) } else { 0 });
     let mut outer = RECT { left: 0, top: 0, right: cw, bottom: ch };
     let _ = unsafe { AdjustWindowRectExForDpi(&mut outer, STYLE, false, EX_STYLE, dpi as u32) };
     let (ow, oh) = (outer.right - outer.left, outer.bottom - outer.top);
@@ -387,7 +406,13 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
         SRect::new(fr.left, fr.top, fr.right, fr.bottom)
     };
     let (x, y) = picker::centred(work, ow, oh);
-    let l = picker::layout(purpose.mode(), cw, ch, dpi);
+    let (l, tick_at) = match &for_group {
+        Some(_) => {
+            let (l, t) = picker::with_tick(picker::layout(purpose.mode(), cw, ch, dpi), dpi);
+            (l, Some(t))
+        }
+        None => (picker::layout(purpose.mode(), cw, ch, dpi), None),
+    };
 
     unsafe {
         register_class();
@@ -441,6 +466,15 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
         // library's lists have it. Set when the window opens: a switch while
         // it is open leaves the old one until it is opened again.
         theme::system().dress_scrollbars(list);
+        let tick = match (&for_group, tick_at) {
+            (Some(group), Some(r)) => {
+                let label = polter_control_room::list::fill(&tr(polter_control_room::project_words::msg::FOR_GROUP_TICK), group);
+                let h = child(w!("BUTTON"), &label, BS_AUTOCHECKBOX as u32 | WS_TABSTOP.0, r, ID_TICK);
+                SendMessageW(h, BM_SETCHECK, Some(WPARAM(1)), Some(LPARAM(0)));
+                h
+            }
+            _ => HWND::default(),
+        };
         let cancel = child(w!("BUTTON"), &tr("Cancel"), BS_PUSHBUTTON as u32 | WS_TABSTOP.0, l.cancel, ID_CANCEL);
         if field.0.is_null() || list.0.is_null() || cancel.0.is_null() {
             let _ = DestroyWindow(hwnd);
@@ -450,13 +484,18 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
 
         let font = crate::projects_ui::make_font(dpi, polter_settings_shell::type_size::BODY, FW_NORMAL.0 as i32);
         let font_small = crate::projects_ui::make_font(dpi, polter_settings_shell::type_size::SMALL, FW_NORMAL.0 as i32);
-        for h in [field, save, cancel, list] {
+        for h in [field, save, cancel, list, tick] {
             if !h.0.is_null() {
                 SendMessageW(h, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
             }
         }
+        // Ticked, the name is the group's.
+        if let Some(group) = &for_group {
+            let t = wide(group);
+            let _ = SetWindowTextW(field, PCWSTR(t.as_ptr()));
+        }
         SendMessageW(list, LB_SETITEMHEIGHT, Some(WPARAM(0)), Some(LPARAM(l.row_h as isize)));
-        for h in [field, list, save, cancel] {
+        for h in [field, list, save, cancel, tick] {
             if !h.0.is_null() {
                 subclass(h);
             }
@@ -476,6 +515,7 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
                 font_small,
                 list_brush: CreateSolidBrush(COLORREF(theme::panel())),
                 purpose,
+                tick,
             }))
         });
         fill_list();
@@ -665,6 +705,12 @@ fn add(item: Item, tab: TabId) {
 /// to change.
 fn save(h: Handles, tab: TabId, close_after: Option<bool>, typed: &str) {
     let frame = h.frame;
+    // Read while the window is up: it is gone by the time the save is done.
+    let for_group = if !h.tick.0.is_null() && unsafe { SendMessageW(h.tick, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))) }.0 == 1 {
+        FOR_GROUP.with(|g| g.borrow().clone())
+    } else {
+        None
+    };
     let Some(dir) = project::resolve_state_dir().map(|s| project::default_dir(&s)) else {
         dismiss();
         wlogf!(frame, "[project] save as project {:?} failed: no state directory (neither XDG_STATE_HOME nor LOCALAPPDATA)", typed);
@@ -695,9 +741,15 @@ fn save(h: Handles, tab: TabId, close_after: Option<bool>, typed: &str) {
     // them in the order of the strip whatever order they are named in.
     let mut chosen = vec![(frame, tab)];
     chosen.extend(SAVING_WITH.with(|w| std::mem::take(&mut *w.borrow_mut())).into_iter().map(|t| (frame, t)));
-    let saved = crate::project_ui::save_tabs_as(&dir, &chosen, name, kind);
+    let saved = crate::project_ui::save_tabs_as(&dir, &chosen, name.clone(), kind);
     match (&saved, close_after) {
-        (Ok(()), None) => wlogf!(frame, "[project] saved as project {:?}", typed),
+        (Ok(()), None) => {
+            wlogf!(frame, "[project] saved as project {:?}", typed);
+            // Ticked: the project is the group's (task 1714).
+            if let Some(group) = for_group {
+                crate::project_link_ui::adopt_saved(&dir, &name, &group);
+            }
+        }
         (Ok(()), Some(whole_window)) => {
             wlogf!(frame, "[project] saved as project {:?}; closing the {}", typed, if whole_window { "window" } else { "tab" });
             if whole_window {

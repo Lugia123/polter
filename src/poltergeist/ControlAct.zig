@@ -131,7 +131,18 @@
 //! {"act":"project_failed","name":"web-app","why":"not_found"|"unreadable"}
 //! {"act":"project_remove","terminal":"0x…"}
 //! {"act":"project_rename","from":"web-app","to":"storefront"}
+//! {"act":"project_decline","group":"notes"}
+//! {"act":"project_undecline","group":"notes"}
+//! {"act":"project_link","group":"notes","project":"scratch"}
+//! {"act":"project_not_now","group":"notes"}
 //! ```
+//!
+//! The last four are the person saying what `group_project use / drop`
+//! lets a supervisor say (task 1713; `project-link-interface.md`): no
+//! project for this group; a project after all; this existing one; and
+//! "Not Now" to the question of joining the project of the group's name
+//! (the group's `project.ask` in the snapshot). They are the person's, so
+//! nobody's standing is asked.
 //!
 //! And one about old records (task 1511): `{"act":"retention_agree"}` -- the
 //! person said OK to the notice that the first sweep would delete
@@ -206,6 +217,12 @@
 //! | project_remove | `NotInAProject` | that terminal is on no page of an open project |
 //! | project_remove | `SupervisorPage` | a group's supervisor is on that page, and the project is that group's |
 //! | project_rename | `BadName`, `GroupExists`, and the rest of a group's rename | the project is a group's, and the group cannot take that name |
+//! | project_decline, project_undecline, project_link, project_not_now | `NoSuchGroup` | the group is not there |
+//! | project_link | `ProjectsUnknown` | the host has stated nothing yet |
+//! | project_link | `NoSuchProject` | no project by that name |
+//! | project_link | `ProjectHasGroup` | its file names another group |
+//! | project_link | `ProjectNameTaken` | another project already has the group's name, and the group's must have it |
+//! | project_link | `SupervisorHasProject` | the group's supervisor already has a project through another group: one supervisor, one project |
 //! | pin, unpin, mute, unmute, archive, unarchive, set_brief, delete_group, ask_supervisor | `NoSuchGroup` | the group is not there |
 //! | rename_group | `NoSuchGroup` | `from` is not there |
 //! | mute | `MuteInThePast` | `until_ms` is not after now |
@@ -258,6 +275,8 @@ pub const Act = union(enum) {
     project_failed: struct { name: []const u8, why: ProjectFailure },
     project_remove: Id,
     project_rename: struct { from: []const u8, to: []const u8 },
+    /// The person's word on a group's project (task 1713).
+    project_say: struct { group: []const u8, say: ProjectSay },
     /// The person agreed to the first sweep of old records the notice told
     /// them about (task 1511).
     retention_agree,
@@ -303,6 +322,18 @@ const ask_words = struct {
 };
 
 /// Why the host could not open a project it was ordered to.
+/// What the person said of a group's project (task 1713).
+pub const ProjectSay = union(enum) {
+    /// No project for this group: `group_project drop`, said by the person.
+    decline,
+    /// A project after all, where it had said none.
+    undecline,
+    /// This existing project, by name.
+    link: []const u8,
+    /// "Not Now" to joining the project of the group's name.
+    not_now,
+};
+
 pub const ProjectFailure = enum {
     /// There is no such project file any more.
     not_found,
@@ -390,6 +421,9 @@ pub const Host = struct {
     projectRemove: *const fn (ctx: *anyopaque, terminal: Id) anyerror!void,
     /// A project is about to be renamed: rename its group, if it has one.
     projectRename: *const fn (ctx: *anyopaque, from: []const u8, to: []const u8) anyerror!void,
+    /// The person's word on `group`'s project; an error named in the table
+    /// above when it cannot be done.
+    projectSay: *const fn (ctx: *anyopaque, group: []const u8, say: ProjectSay) anyerror!void,
     /// The person agreed to the first sweep of old records.
     retentionAgree: *const fn (ctx: *anyopaque) anyerror!void,
     /// Begin taking over `group`'s supervisor (`TakeOver.zig`); refuses
@@ -462,6 +496,10 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
         project_failed,
         project_remove,
         project_rename,
+        project_decline,
+        project_undecline,
+        project_link,
+        project_not_now,
         retention_agree,
         pin,
         unpin,
@@ -527,6 +565,13 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
             .from = try textOf(obj, "from"),
             .to = try textOf(obj, "to"),
         } },
+        .project_decline => .{ .project_say = .{ .group = try textOf(obj, "group"), .say = .decline } },
+        .project_undecline => .{ .project_say = .{ .group = try textOf(obj, "group"), .say = .undecline } },
+        .project_link => .{ .project_say = .{
+            .group = try textOf(obj, "group"),
+            .say = .{ .link = try textOf(obj, "project") },
+        } },
+        .project_not_now => .{ .project_say = .{ .group = try textOf(obj, "group"), .say = .not_now } },
         .retention_agree => .retention_agree,
         .take_over => .{ .take_over = try textOf(obj, "group") },
         .pin => .{ .pin = try textOf(obj, "group") },
@@ -665,6 +710,10 @@ pub fn perform(
         .project_failed => |f| try host.projectFailed(host.ctx, f.name, f.why),
         .project_remove => |terminal| try host.projectRemove(host.ctx, terminal),
         .project_rename => |r| try host.projectRename(host.ctx, r.from, r.to),
+        .project_say => |p| {
+            if (!chat.exists(p.group)) return error.NoSuchGroup;
+            try host.projectSay(host.ctx, p.group, p.say);
+        },
         .retention_agree => try host.retentionAgree(host.ctx),
         .take_over => |group| {
             if (!chat.exists(group)) return error.NoSuchGroup;
@@ -770,6 +819,9 @@ const Recorder = struct {
     project_failed: ?ProjectFailure = null,
     asked_remove: ?Id = null,
     renames: usize = 0,
+    /// The last word on a group's project, and the project it named.
+    said: ?std.meta.Tag(ProjectSay) = null,
+    said_project: ?[]const u8 = null,
     agreed: usize = 0,
     taken_over: usize = 0,
     /// The terminal's agent has exited and left its shell behind.
@@ -804,7 +856,7 @@ const Recorder = struct {
         }
         self.started.deinit(testing.allocator);
         for (self.fix_posts.items) |t| testing.allocator.free(t);
-        inline for (.{ "renamed", "brief", "deleted" }) |f| {
+        inline for (.{ "renamed", "brief", "deleted", "said_project" }) |f| {
             if (@field(self, f)) |v| testing.allocator.free(v);
         }
         self.fix_posts.deinit(testing.allocator);
@@ -829,6 +881,7 @@ const Recorder = struct {
             .projectFailed = projectFailed,
             .projectRemove = projectRemove,
             .projectRename = projectRename,
+            .projectSay = projectSay,
             .retentionAgree = retentionAgree,
             .takeOver = takeOver,
             .fixCard = fixCard,
@@ -944,6 +997,17 @@ const Recorder = struct {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
         if (self.refuse_with) |err| return err;
         self.renames += 1;
+    }
+
+    fn projectSay(ctx: *anyopaque, _: []const u8, say: ProjectSay) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        if (self.refuse_with) |err| return err;
+        self.said = std.meta.activeTag(say);
+        if (self.said_project) |was| testing.allocator.free(was);
+        self.said_project = switch (say) {
+            .link => |name| try testing.allocator.dupe(u8, name),
+            else => null,
+        };
     }
 
     fn createGroup(ctx: *anyopaque, name: []const u8) anyerror!void {
@@ -1417,6 +1481,45 @@ test "ControlRoom act: a terminal in no group is marked seen by its own id" {
         \\{"act":"seen","terminal":"161"}
     , 6_000));
     try testing.expectEqual(@as(?u64, 5_000), b.bus.seenOf(term));
+}
+
+test "Projects: the person's word on a group's project reaches the core, and a group that is not there is refused (#1713)" {
+    var b = try Bench.init();
+    defer b.deinit();
+
+    try b.act(
+        \\{"act":"project_decline","group":"web-app"}
+    , 1_000);
+    try testing.expectEqual(@as(?std.meta.Tag(ProjectSay), .decline), b.rec.said);
+    try b.act(
+        \\{"act":"project_undecline","group":"web-app"}
+    , 1_000);
+    try testing.expectEqual(@as(?std.meta.Tag(ProjectSay), .undecline), b.rec.said);
+    try b.act(
+        \\{"act":"project_not_now","group":"web-app"}
+    , 1_000);
+    try testing.expectEqual(@as(?std.meta.Tag(ProjectSay), .not_now), b.rec.said);
+    try b.act(
+        \\{"act":"project_link","group":"web-app","project":"scratch"}
+    , 1_000);
+    try testing.expectEqual(@as(?std.meta.Tag(ProjectSay), .link), b.rec.said);
+    try testing.expectEqualStrings("scratch", b.rec.said_project.?);
+
+    // Not there: refused before the host is asked.
+    b.rec.said = null;
+    try testing.expectError(error.NoSuchGroup, b.act(
+        \\{"act":"project_decline","group":"nope"}
+    , 1_000));
+    try testing.expect(b.rec.said == null);
+    // A link names its project; without one it is not a request.
+    try testing.expectError(error.BadRequest, b.act(
+        \\{"act":"project_link","group":"web-app"}
+    , 1_000));
+    // The host's refusal is the answer, by its own name.
+    b.rec.refuse_with = error.ProjectNameTaken;
+    try testing.expectError(error.ProjectNameTaken, b.act(
+        \\{"act":"project_link","group":"web-app","project":"scratch"}
+    , 1_000));
 }
 
 test "Projects: what the host says about projects reaches the core whole, and what it asks is the core's to answer" {

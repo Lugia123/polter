@@ -67,6 +67,16 @@ struct ControlRoomActions {
         /// `Stale`, deleting nothing, when they no longer hold.
         case deleteGroup(group: String, members: Int, openTasks: Int)
         case askSupervisor(group: String, ask: Ask)
+        // A group's project, as the person says it (task 1713,
+        // `project-link-interface.md` §1).
+        /// "This group uses no project".
+        case projectDecline(group: String)
+        /// "Use a project for this group", after saying none.
+        case projectUndecline(group: String)
+        /// Make the project `project` the group's.
+        case projectLink(group: String, project: String)
+        /// "Later" on the question whether to join the project in the way.
+        case projectNotNow(group: String)
     }
 
     /// The two things the group row's menu asks a supervisor to do: the
@@ -211,6 +221,16 @@ struct ControlRoomActions {
             case "NoSupervisor":
                 return String(localized: "This group has no supervisor.",
                               comment: "总控台：右侧没有总管时的说明")
+            case "ProjectsUnknown":
+                return String(localized: "The projects are not known yet. Try again in a moment.", comment: "项目：关联时宿主还没向核心报过项目")
+            case "NoSuchProject":
+                return String(localized: "That project is no longer there.", comment: "项目：关联时项目已经不在了")
+            case "ProjectHasGroup":
+                return String(localized: "That project is another group's.", comment: "项目：关联时这个项目写着别的群")
+            case "ProjectNameTaken":
+                return String(localized: "Another project already has this group's name.", comment: "项目：关联时另有一个项目叫群名")
+            case "SupervisorHasProject":
+                return String(localized: "This group's supervisor already has a project through another group. One supervisor, one project.", comment: "项目：关联时这个群的总管已经通过别的群有项目了")
             case "NoExecutable":
                 return String(localized: "Polter could not find its own program to start the role with.",
                               comment: "总控台：启动总管时找不到 Polter 自己的可执行文件")
@@ -293,6 +313,14 @@ struct ControlRoomActions {
             case .closeIdleWorkers: word = "close_idle"
             }
             return ["act": "ask_supervisor", "group": group, "ask": word]
+        case .projectDecline(let group):
+            return ["act": "project_decline", "group": group]
+        case .projectUndecline(let group):
+            return ["act": "project_undecline", "group": group]
+        case .projectLink(let group, let project):
+            return ["act": "project_link", "group": group, "project": project]
+        case .projectNotNow(let group):
+            return ["act": "project_not_now", "group": group]
         }
     }
 

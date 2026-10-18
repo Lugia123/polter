@@ -84,15 +84,15 @@ enum ControlRoomRowMenu {
         case muteHour = "mute_hour"
         case muteTomorrow = "mute_tomorrow"
         case muteForever = "mute_forever"
-        case openProject = "open_project"
-        case saveProject = "save_project"
-        case linkProject = "link_project"
 
-        /// What it opens, for the two that open a submenu.
+        /// What it opens, for the two that open a submenu. The project's is
+        /// empty here: what it holds depends on the group's tie to a project
+        /// and is filled in by each host when the menu is shown, from
+        /// `ProjectLinkRules.menu` and the projects the host has (task 1713).
         var submenu: [Item]? {
             switch self {
             case .mute: return [.muteHour, .muteTomorrow, .muteForever]
-            case .project: return [.openProject, .saveProject, .linkProject]
+            case .project: return []
             default: return nil
             }
         }

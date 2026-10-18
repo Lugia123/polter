@@ -20,11 +20,22 @@ struct ProjectSaveAsView: View {
 
     let tabs: [ProjectPageRules.Tab]
     let store: ProjectStore
-    /// The name, and the ids of the tabs to save, in the order of the tabs.
-    var onSave: (String, [Int]) -> Void
+    /// The group whose supervisor is in the tab this was opened from; nil
+    /// for none (task 1713, §3.5).
+    var group: String?
+    /// The name, the ids of the tabs to save, in the order of the tabs, and
+    /// whether it is saved as the group's project.
+    var onSave: (String, [Int], Bool) -> Void
     var onCancel: () -> Void
 
     @State private var name = ""
+    /// "As group X's project", ticked to begin with.
+    @State private var forGroup = true
+
+    /// What is saved, by name, given the box (`ProjectLinkPlan.groupSave`).
+    private var saving: ProjectLinkPlan.GroupSave {
+        ProjectLinkPlan.groupSave(typed: name, group: group, ticked: forGroup)
+    }
     @State private var checked: Set<Int> = []
     @State private var pendingOverwrite: ProjectStore.Entry?
     @FocusState private var nameFocused: Bool
@@ -33,11 +44,12 @@ struct ProjectSaveAsView: View {
 
     /// The window's content size, known before it is shown so that it can
     /// be centred (see `ProjectPicker`).
-    static func size(rows: Int) -> CGSize {
+    static func size(rows: Int, group: Bool = false) -> CGSize {
         let listed = CGFloat(min(max(rows, 1), Grid.rowsShown)) * Grid.row
-        // pad, name label, field, gap, list label, list, gap, sentence
-        // (two lines), gap, buttons, pad.
-        return CGSize(width: Grid.width, height: Grid.pad + 20 + Grid.gap + Grid.row + 16 + 20 + Grid.gap + listed + 16 + 36 + 16 + Grid.row + Grid.pad)
+        // pad, name label, field, (the group's box), gap, list label,
+        // list, gap, sentence (two lines), gap, buttons, pad.
+        let box = group ? Grid.gap + Grid.row : 0
+        return CGSize(width: Grid.width, height: Grid.pad + 20 + Grid.gap + Grid.row + box + 16 + 20 + Grid.gap + listed + 16 + 36 + 16 + Grid.row + Grid.pad)
     }
 
     var body: some View {
@@ -50,6 +62,15 @@ struct ProjectSaveAsView: View {
                 .onSubmit(save)
                 .frame(height: Grid.row)
                 .padding(.top, Grid.gap)
+                // Ticked, the name is the group's: a group's project has it.
+                .disabled(group != nil && forGroup)
+            if let group {
+                Toggle(ProjectLinkPlan.asGroupsProjectTitle(group), isOn: $forGroup)
+                    .toggleStyle(.checkbox)
+                    .frame(height: Grid.row)
+                    .padding(.top, Grid.gap)
+                    .onChange(of: forGroup) { on in if on { name = group } }
+            }
 
             Text(String(localized: "Tabs of this window to save", comment: "存为项目：下面列出本窗口各页的那一栏标题"))
                 .frame(height: 20)
@@ -76,16 +97,17 @@ struct ProjectSaveAsView: View {
                     .keyboardShortcut(.cancelAction)
                 Button(String(localized: "Save as Project", comment: "项目选择界面标题：另存为项目")) { save() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!ProjectPageRules.canSave(name: name, checked: checked, rows: rows))
+                    .disabled(!ProjectPageRules.canSave(name: saving.name, checked: checked, rows: rows))
             }
             .frame(height: Grid.row)
             .padding(.top, 16)
         }
         .font(SettingsFont.minimum)
         .padding(Grid.pad)
-        .frame(width: Grid.width, height: Self.size(rows: rows.count).height, alignment: .topLeading)
+        .frame(width: Grid.width, height: Self.size(rows: rows.count, group: group != nil).height, alignment: .topLeading)
         .onAppear {
             checked = ProjectPageRules.initiallyChecked(tabs)
+            if let group { name = group }
             nameFocused = true
         }
         .alert(
@@ -95,7 +117,7 @@ struct ProjectSaveAsView: View {
         ) { entry in
             Button(String(localized: "Cancel", comment: "覆盖确认框：取消按钮"), role: .cancel) {}
             Button(String(localized: "Overwrite", comment: "覆盖确认框：覆盖按钮"), role: .destructive) {
-                onSave(entry.name, ProjectPageRules.tabsToSave(checked: checked, rows: rows))
+                onSave(entry.name, ProjectPageRules.tabsToSave(checked: checked, rows: rows), saving.link)
             }
         } message: { entry in
             Text(String(localized: "\"\(entry.name)\" already has \(ProjectPageRules.size(pages: entry.pageCount, panes: entry.totalPaneCount)), saved \(Self.dateFormatter.string(from: entry.savedAt)). The replaced version is kept as the previous version.", comment: "存为项目：覆盖确认框正文，参数依次是项目名、几页几格、保存时间"))
@@ -134,10 +156,11 @@ struct ProjectSaveAsView: View {
     /// replaced: it asks first (#980).
     private func save() {
         let ids = ProjectPageRules.tabsToSave(checked: checked, rows: rows)
-        guard ProjectPageRules.canSave(name: name, checked: checked, rows: rows) else { return }
-        switch ProjectsRules.saveAsStep(store.nameVerdict(current: nil, proposed: name)) {
+        let saving = saving
+        guard ProjectPageRules.canSave(name: saving.name, checked: checked, rows: rows) else { return }
+        switch ProjectsRules.saveAsStep(store.nameVerdict(current: nil, proposed: saving.name)) {
         case .save(let name):
-            onSave(name, ids)
+            onSave(name, ids, saving.link)
         case .confirmOverwrite(let existing):
             pendingOverwrite = store.entry(name: existing)
         case .nothing:

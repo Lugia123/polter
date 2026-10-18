@@ -24,6 +24,7 @@ final class ProjectLinker {
     static func start(_ ghostty: Ghostty.App) {
         guard shared == nil else { return }
         shared = ProjectLinker(ghostty)
+        ProjectLinkDesk.start(ghostty)
     }
 
     private let ghostty: Ghostty.App
@@ -66,6 +67,14 @@ final class ProjectLinker {
             self?.restatePending = false
             self?.restate()
         }
+    }
+
+    /// State the projects now. For a request about a project the host has
+    /// only just written -- a link right after a save (task 1713): sent
+    /// before the restatement, it is refused for a project the core has
+    /// not heard of yet.
+    func restateNow() {
+        restate()
     }
 
     private func stated() -> [ProjectLink.Stated] {
@@ -162,6 +171,9 @@ final class ProjectLinker {
                 guard let session = controller.projectSession else { return }
                 session.setGroup(group)
                 session.makeSupervisor(view)
+                // Made without the person asking: say so, with an undo
+                // (task 1713, v2 A1).
+                ProjectLinkDesk.shared?.made(.created(project: name), for: group)
 
             case .bind(let project, let group, let terminal, let to):
                 guard let (controller, view) = controller(holding: terminal),
@@ -172,6 +184,8 @@ final class ProjectLinker {
                 if let to, let entry = store.entry(name: project) {
                     try store.rename(entry, to: to)
                 }
+                // The name it had is what undoing gives back.
+                ProjectLinkDesk.shared?.made(.bound(project: to ?? project, from: project), for: group)
 
             case .setGroup(let project, let group):
                 if let session = ProjectSession.open(for: project, in: store) {

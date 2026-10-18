@@ -62,9 +62,6 @@ enum ControlRoomRowMenuItems {
         case "mute_hour": return String(localized: "1 Hour", comment: "总控台：静音子菜单，1 小时")
         case "mute_tomorrow": return String(localized: "Until Tomorrow", comment: "总控台：静音子菜单，到明天")
         case "mute_forever": return String(localized: "Until Turned Back On", comment: "总控台：静音子菜单，一直（直到取消静音）")
-        case "open_project": return String(localized: "Open Project", comment: "总控台：项目子菜单，打开这个群的项目")
-        case "save_project": return String(localized: "Save as Project...", comment: "总控台：项目子菜单，把这个群的标签页另存为项目")
-        case "link_project": return String(localized: "Link to a Project…", comment: "总控台：项目子菜单，把这个群关联到一个已有的项目")
         default: return nil
         }
     }
@@ -147,6 +144,46 @@ enum ControlRoomRowMenuItems {
         }
         let menu = build(lines)
         // The target lives as long as the menu does.
+        objc_setAssociatedObject(menu, &Target.key, target, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        return menu
+    }
+
+    /// The "Project ›" submenu of `lines` (task 1713): a header is the
+    /// system's section header, which cannot be chosen.
+    @MainActor
+    static func projectMenu(_ lines: [ProjectLinkMenu.Line], choose: @escaping (String) -> Void) -> NSMenu {
+        let target = Target(choose)
+        func build(_ lines: [ProjectLinkMenu.Line]) -> NSMenu {
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            for line in lines {
+                switch line {
+                case .header(let text):
+                    let item: NSMenuItem
+                    if #available(macOS 14.0, *) {
+                        item = NSMenuItem.sectionHeader(title: text)
+                    } else {
+                        item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+                    }
+                    item.isEnabled = false
+                    menu.addItem(item)
+                case .item(let key, let title, let enabled):
+                    let item = NSMenuItem(title: title, action: #selector(Target.chosen(_:)), keyEquivalent: "")
+                    item.representedObject = key
+                    item.target = target
+                    item.isEnabled = enabled
+                    menu.addItem(item)
+                case .submenu(let key, let title, let inner):
+                    let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                    item.representedObject = key
+                    item.submenu = build(inner)
+                    item.isEnabled = !inner.isEmpty
+                    menu.addItem(item)
+                }
+            }
+            return menu
+        }
+        let menu = build(lines)
         objc_setAssociatedObject(menu, &Target.key, target, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         return menu
     }

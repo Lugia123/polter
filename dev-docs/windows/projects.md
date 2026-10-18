@@ -130,6 +130,25 @@
 | 关闭项目 | 关掉它开着的每一页（页都留在项目里）；有进程在跑时先问一次 |
 | 重命名项目 | 打开设置窗口的项目一节并选中它，在那里改 |
 
+## 4c. 群和项目（任务 #1714，接口 `project-link-interface.md`）
+
+规则不在宿主里：菜单列什么、群行右端写什么、提示条停多久是 `polter-control-room` 的 `project_link`（与 mac 的
+`ProjectLinkRules.swift` 由 hosts-agree 逐行比对）；文案、横幅、确认框、撤销的步骤是 `project_words`；提示条与右栏那一条
+的排版是 `hint_bar` / `project_notice`。宿主只接线：
+
+| 哪里 | 有什么 | 文件 |
+| --- | --- | --- |
+| 群右键「项目 ›」 | 按 `project_link::menu` 生成；说明行灰着不能点；「改用已有的项目 ›」列出每个项目和它属于谁（属于群的灰着）；「这个群不用项目」「这个群改用项目」「改用」发核心的四个 act 之一；别的项目已叫群名时先问「改名为「X（旧）」再关联？」 | `project_link_ui.rs`、`control_room.rs::row_menu` |
+| 群行右端 | 有项目：次要色写项目名；有事要答：attention 图形 + 短词 | `scene.rs::project_note` |
+| 右栏 | 总管终端借在这里时，标题条下、终端上：提示条（有一条在时）或横幅；终端往下让出这条的高度（`tabs::layout` 在拿锁之前问高度） | `control_room.rs::notice_band` |
+| 确认框 | 快照的 `project.ask` 为真、窗口在前台、前台是总控台或总管那一页、这次运行没弹过 → 任务对话框，四个命令链接；Esc 即「以后再说」 | `project_link_ui.rs::consider_asking`、`projects_ui.rs::ask_links` |
+| 提示条 | 核心的 `create` / `bind` 做完、或「加入」「替换」之后出；在总管那一格顶上占 40pt；窗口在前台且看得见时累计 8 秒收起；撤销先发 `project_decline` 再做反向动作 | `pane_frames.rs::paint_hints`、`project_link_ui.rs` |
+| 标签页右键 | 这一页里有某群的总管 → 第一项「存为群「X」的项目…」 | `strip.rs` |
+| 另存为 | 同上时多一个勾选框「作为群「X」的项目」，默认勾上，名字框预填群名 | `project_picker.rs`、`settings-shell::picker::with_tick` |
+
+没做的：群行右端没有悬停提示（总控台的行没有提示框）；提示条出现时没有读屏播报；右栏的横幅只在总管终端借在右栏时画，
+总管在它自己的标签页、右栏显示「在别处」时不画（菜单和群行仍在）。
+
 ## 4b. 已知的缺口与代定
 
 - **「存为项目」没有逐页的勾选框**，是两个选项（只这一页 / 全窗口）。逐页的选择用标签页右键的「加入项目」。原因：

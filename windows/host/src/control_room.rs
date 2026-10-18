@@ -464,6 +464,12 @@ pub fn snapshot_changed() {
     }
 }
 
+/// The control room's panel, when it is open: what a refusal about a
+/// group's project is said under (task 1714).
+pub(crate) fn panel_hwnd() -> Option<HWND> {
+    panel()
+}
+
 /// The animation clock ticked (`control_room_source`).
 pub fn tick() {
     let Some(hwnd) = panel() else { return };
@@ -1174,17 +1180,20 @@ fn row_menu(hwnd: HWND, x: i32, y: i32) {
                 resumable: scene::offers_session(start),
                 clis: if clis.len() > 1 { 2 } else { 1 },
             };
-            Some((id, Some((state, row.muted, clis, last_cli, last_label))))
+            Some((id, Some((state, row.muted, clis, last_cli, last_label, row.clone()))))
         }
         Data::NotYet => None,
         Data::Unreadable(_) => None,
     });
     let Some((group, state)) = found else { return };
-    let Some((state, muted, clis, last_cli, last_label)) = state else {
+    let Some((state, muted, clis, last_cli, last_label, row)) = state else {
         wlogf!(frame, "[control-room] row menu: {:?} is a terminal in no group; no menu", group);
         return;
     };
     let entries = polter_control_room::rowmenu::entries(state);
+    // "Project ›" is the group's tie's to say (task 1714): its lines are
+    // `project_link_ui`'s, built from `project_link::menu`.
+    let project_lines = crate::project_link_ui::submenu(&row);
     // The right-hand column: when a mute would end, and when the one in
     // force does, by this machine's clock.
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
@@ -1240,6 +1249,28 @@ fn row_menu(hwnd: HWND, x: i32, y: i32) {
                     }
                     let _ = AppendMenuW(menu, MF_POPUP | MF_STRING, sub.0 as usize, PCWSTR(label("start_new").as_ptr()));
                 }
+                polter_control_room::rowmenu::Entry::Item { id: "project", submenu: true } => {
+                    let Ok(sub) = CreatePopupMenu() else { continue };
+                    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+                    for line in &project_lines {
+                        if line.sub.is_empty() {
+                            ids.push(line.id.clone());
+                            // A line that says why is there to be read, not
+                            // pressed: greyed and disabled.
+                            let flags = if line.enabled { MF_STRING } else { MF_STRING | MF_GRAYED | MF_DISABLED };
+                            let _ = AppendMenuW(sub, flags, ids.len(), PCWSTR(wide(&line.label).as_ptr()));
+                            continue;
+                        }
+                        let Ok(inner) = CreatePopupMenu() else { continue };
+                        for choice in &line.sub {
+                            ids.push(choice.id.clone());
+                            let flags = if choice.enabled { MF_STRING } else { MF_STRING | MF_GRAYED };
+                            let _ = AppendMenuW(inner, flags, ids.len(), PCWSTR(wide(&choice.label).as_ptr()));
+                        }
+                        let _ = AppendMenuW(sub, MF_POPUP | MF_STRING, inner.0 as usize, PCWSTR(wide(&line.label).as_ptr()));
+                    }
+                    let _ = AppendMenuW(menu, MF_POPUP | MF_STRING, sub.0 as usize, PCWSTR(label("project").as_ptr()));
+                }
                 polter_control_room::rowmenu::Entry::Item { id, submenu: true } => {
                     let Ok(sub) = CreatePopupMenu() else { continue };
                     for &child in polter_control_room::rowmenu::submenu(id) {
@@ -1273,6 +1304,10 @@ fn row_menu(hwnd: HWND, x: i32, y: i32) {
         return;
     };
     wlogf!(frame, "[control-room] row menu on {:?}: {}", group, id);
+    if crate::project_link_ui::owns(id) {
+        crate::project_link_ui::pick(hwnd, &row, id);
+        return;
+    }
     row_item(hwnd, &group, id);
 }
 
@@ -1993,6 +2028,19 @@ fn row_act(hwnd: HWND, group: &str, what: &act::Act) {
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
+/// A refusal of something done to `group`'s project (task 1714), under its
+/// row in red: the core's name for it said in the person's words, or a
+/// sentence of the host's own as it came.
+pub(crate) fn say_refused(hwnd: HWND, group: &str, why: &str) {
+    if hwnd.0.is_null() {
+        crate::plogf!("[project-link] {:?}: refused ({}); the control room is not open to say so", group, why);
+        return;
+    }
+    let words = if why.chars().all(|c| c.is_ascii_alphanumeric()) { refusal_words(why) } else { why.to_string() };
+    say_under(hwnd, group, Some(scene::UnderLine::Refused(words)), Some(std::time::Duration::from_secs_f64(look::group_note::FEEDBACK_SECONDS)));
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
 /// "Fix" on a card that reads "Failed" (task 1560): the core tells the
 /// card's supervisor, and the next list greys the button. A refusal is
 /// kept beside it, and the button stays to be pressed again.
@@ -2462,9 +2510,113 @@ fn take_over(hwnd: HWND, group: &str, question: &str) {
     }
 }
 
+// ------------------------------------------- what is said about a project
+
+/// What the supervisor's frame says about the selected group's project,
+/// between its title bar and its terminal, laid out at the right side's
+/// width (task 1714): the line saying a project was made, or the banner
+/// that asks. None for a group with nothing to say, and off the
+/// supervisor's frame.
+fn notice_band(hwnd: HWND, width: f64, scale: f64, theme: &look::Theme) -> Option<polter_control_room::project_notice::Band> {
+    use polter_control_room::{project_link, project_notice, project_words};
+    if !matches!(detail(), Detail::Terminal(_)) {
+        return None;
+    }
+    let selected = selection()?;
+    let row = source::with(|d| match d {
+        Data::Ready(r) => r.list.row(&selected).cloned(),
+        _ => None,
+    })?;
+    let group = row.name().to_string();
+    let (_, _, w) = scene::notice_origin(width);
+    let dc = unsafe { GetDC(Some(hwnd)) };
+    let style = scene::body_style(theme.text);
+    let measure = |text: &str| unsafe { measure_words(dc, scale, &[(text, style)]) }.first().copied().unwrap_or(0.0);
+    let t = |s: &str| tr(s);
+    let band = if let Some(hint) = crate::project_link_ui::hint_of(&group) {
+        let text = crate::project_link_ui::hint_words(&hint, false);
+        let undo = (!hint.undone).then(|| tr(project_words::msg::UNDO));
+        Some(project_notice::band(project_notice::Notice::Hint { text: &text, undo: undo.as_deref() }, w, theme, &measure))
+    } else {
+        row.project.as_ref().and_then(|p| {
+            let note = project_link::note(&p.tie, &p.why, row.project_name.as_deref());
+            let known = crate::project_session::known();
+            let blocker = known.iter().find(|k| k.name == group).map(|k| project_words::Blocker {
+                name: k.name.clone(),
+                saved: polter_settings_shell::projects::format_time(k.saved_at, crate::projects_ui::local_offset()),
+                pages: k.pages,
+            });
+            let candidates: Vec<String> = known.iter().filter(|k| k.group.as_deref() == Some(group.as_str())).map(|k| k.name.clone()).collect();
+            let banner = project_words::banner(&note, &p.why, blocker.as_ref(), &candidates, &t)?;
+            Some(project_notice::band(project_notice::Notice::Banner(&banner), w, theme, &measure))
+        })
+    };
+    unsafe { ReleaseDC(Some(hwnd), dc) };
+    band
+}
+
+/// How tall the band about the selected group's project is, in points, at
+/// the right side's width as the panel is laid out: where the lent
+/// terminal's window goes (`tabs::layout`, which asks before it takes its
+/// lock), the same number the frame is drawn with.
+pub(crate) fn notice_height() -> f64 {
+    let Some(hwnd) = panel() else { return 0.0 };
+    let g = geometry(hwnd);
+    notice_band(hwnd, g.room.right.w, g.scale, look::theme(dark(hwnd))).map_or(0.0, |b| b.h)
+}
+
+/// The groups whose line saying a project was made is on the supervisor's
+/// frame now: what its clock counts as seen while the control room is in
+/// front.
+pub(crate) fn hint_showing() -> Vec<String> {
+    if panel().is_none() || !matches!(detail(), Detail::Terminal(_)) {
+        return Vec::new();
+    }
+    selection().filter(|g| crate::project_link_ui::hint_of(g).is_some()).into_iter().collect()
+}
+
+/// A line came, went or changed: the frame is drawn again, and the lent
+/// terminal moved to make room for it, or to take the room back.
+pub(crate) fn hint_changed() {
+    let Some(hwnd) = panel() else { return };
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    crate::tabs::layout(frame);
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+/// A press on the band, at (x, y) in the panel's pixels: what it does is
+/// done. Whether it was on it.
+fn notice_press(hwnd: HWND, x: i32, y: i32) -> bool {
+    use polter_control_room::project_notice::Press;
+    let g = geometry(hwnd);
+    let Some(band) = notice_band(hwnd, g.room.right.w, g.scale, look::theme(dark(hwnd))) else { return false };
+    let (ox, oy, _) = scene::notice_origin(g.room.right.w);
+    let at = (x as f64 / g.scale - g.room.right.x - ox, y as f64 / g.scale - g.room.right.y - oy);
+    if at.0 < 0.0 || at.1 < 0.0 || at.1 >= band.h {
+        return false;
+    }
+    let Some(group) = selection() else { return true };
+    let row = source::with(|d| match d {
+        Data::Ready(r) => r.list.row(&group).cloned(),
+        _ => None,
+    });
+    let Some(row) = row else { return true };
+    match band.press_at(at).cloned() {
+        Some(Press::Undo) => crate::project_link_ui::undo(row.name()),
+        Some(Press::Close) => crate::project_link_ui::close(row.name()),
+        Some(Press::Button(item)) => crate::project_link_ui::banner_button(hwnd, &row, &item),
+        Some(Press::Use(name)) => crate::project_link_ui::pick(hwnd, &row, &format!("{}{name}", crate::project_link_ui::USE)),
+        None => {}
+    }
+    true
+}
+
 fn click(hwnd: HWND, x: i32, y: i32) {
     if let Some((group, question)) = take_over_at(hwnd, x, y) {
         take_over(hwnd, &group, &question);
+        return;
+    }
+    if notice_press(hwnd, x, y) {
         return;
     }
     let g = geometry(hwnd);
@@ -2813,7 +2965,8 @@ fn paint(hwnd: HWND) {
                 let under: Vec<(String, scene::UnderLine)> = UNDER.with(|u| u.borrow().iter().map(|(id, line, _)| (id.clone(), line.clone())).collect());
                 let open = ARCHIVED_OPEN.with(|o| o.get());
                 items.extend(scene::build_extras(list, &lay, &view, &under, open, crate::projects_ui::local_offset() * 1000, &translate));
-                (items, scene::build_right(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, &translate))
+                let band = notice_band(hwnd, g.room.right.w, g.scale, theme);
+                (items, scene::build_right_with(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, &translate, band.as_ref()))
             }
             Data::NotYet => (
                 scene::build_message(side::WIDTH, g.room.panel.h, theme, g.scale, tr(scene::msg::NOT_YET)),
@@ -2858,6 +3011,15 @@ fn paint(hwnd: HWND) {
         if g.room.right.w > 0.0 {
             let at = Px { scale: g.scale, ox: (g.room.right.x * g.scale).round() as i32, oy: (g.room.right.y * g.scale).round() as i32 };
             paint_items(mem, at, &right.items, &mut fonts, t);
+            // The cross on the line saying a project was made, drawn as
+            // every cross this host has (task 1714).
+            if let Some(band) = notice_band(hwnd, g.room.right.w, g.scale, theme) {
+                let (ox, oy, _) = scene::notice_origin(g.room.right.w);
+                if let Some((c, _)) = band.presses.iter().find(|(_, p)| *p == polter_control_room::project_notice::Press::Close) {
+                    let r = at.rect(polter_control_room::layout::Rect { x: c.x + ox, y: c.y + oy, ..*c });
+                    crate::strip::draw_cross(mem, r, rgb(theme.text_secondary), g.scale);
+                }
+            }
             // Under the sentence of a group with no supervisor: what
             // starting one offers.
             paint_items(mem, at, &offered.items, &mut fonts, t);
@@ -2900,6 +3062,9 @@ static PRESENCE: Mutex<Option<polter_control_room::alert::Reporter>> = Mutex::ne
 /// into the person's sight or gone out of it. Posted; safe from anywhere on
 /// the window thread, and nothing when there is no panel.
 pub fn presence_may_have_changed() {
+    // The question about a group's project waits for the person to be in
+    // front of it (task 1714).
+    crate::project_link_ui::soon();
     let panel = PANEL.load(Ordering::Acquire);
     if panel != 0 {
         let _ = unsafe { PostMessageW(Some(HWND(panel as *mut c_void)), WM_ROOM_PRESENCE, WPARAM(0), LPARAM(0)) };

@@ -662,6 +662,35 @@ pub fn refusalOf(why: Why) ?ToolRefusal {
     };
 }
 
+/// Why the person may not have `group` use the project `name` (task 1713,
+/// `ControlAct` `project_link`).
+pub const LinkRefusal = error{ ProjectsUnknown, NoSuchProject, ProjectHasGroup, ProjectNameTaken, SupervisorHasProject };
+
+/// Whether `group` may use the project `name`: one the host has stated,
+/// whose file names no other group, and -- since a group's project has the
+/// group's name, and `reconcile` renames it to that -- not while another
+/// project already has that name (the host asks to rename that one first).
+///
+/// And not while the group's supervisor already has a project through
+/// another group: one supervisor, one project (`Why.supervisor_has_project`
+/// is the same rule for `offer`). `groups` is every group's view.
+pub fn mayLink(self: *const Projects, groups: []const GroupView, group: []const u8, name: []const u8) LinkRefusal!void {
+    if (self.stated == null) return error.ProjectsUnknown;
+    for (groups) |g| {
+        if (!std.mem.eql(u8, g.name, group)) continue;
+        const boss = g.steward orelse break;
+        for (groups) |other| {
+            if (std.mem.eql(u8, other.name, group)) continue;
+            if (other.steward == null or other.steward.? != boss) continue;
+            if (other.tie == .bound) return error.SupervisorHasProject;
+        }
+        break;
+    }
+    const p = self.find(name) orelse return error.NoSuchProject;
+    if (p.group) |g| if (!std.mem.eql(u8, g, group)) return error.ProjectHasGroup;
+    if (!std.mem.eql(u8, name, group) and self.find(group) != null) return error.ProjectNameTaken;
+}
+
 pub const RemoveRefusal = error{ ProjectsUnknown, NotInAProject, SupervisorPage };
 
 /// Whether the page `terminal` is on may be taken out of its project.
@@ -780,6 +809,40 @@ test "Projects: a statement is read whole or not at all" {
         ,
     };
     for (bad) |b| try testing.expectError(error.BadRequest, read(aa, b));
+}
+
+test "Projects: the person may have a group use a project that is no other group's, under the group's name (#1713)" {
+    var p: Projects = .init(testing.allocator);
+    defer p.deinit();
+    try testing.expectError(error.ProjectsUnknown, p.mayLink(&.{}, "notes", "scratch"));
+    try stateJson(&p,
+        \\[{"name":"scratch","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"web","group":"web","pages":2,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"notes-old","group":"notes","pages":1,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"polter","group":null,"pages":1,"open":null,"supervisor":null,"workers":[]}]
+    );
+    // One that names no group: yes, and it will be renamed to the group's.
+    try p.mayLink(&.{}, "notes", "scratch");
+    // One that already names this group: yes.
+    try p.mayLink(&.{}, "notes", "notes-old");
+    // The one of the group's own name (joining it): yes.
+    try p.mayLink(&.{}, "polter", "polter");
+    try testing.expectError(error.NoSuchProject, p.mayLink(&.{}, "notes", "nope"));
+    try testing.expectError(error.ProjectHasGroup, p.mayLink(&.{}, "notes", "web"));
+    // Another project has the group's name: renaming this one to it would
+    // clash, so that one is asked about first.
+    try testing.expectError(error.ProjectNameTaken, p.mayLink(&.{}, "polter", "scratch"));
+
+    // One supervisor, one project: its other group is bound already.
+    const groups = [_]GroupView{
+        view("notes", .undecided, 0xa1, null),
+        view("web", .{ .bound = "web" }, 0xa1, null),
+        view("lone", .undecided, 0xb1, null),
+    };
+    try testing.expectError(error.SupervisorHasProject, p.mayLink(&groups, "notes", "scratch"));
+    // Another supervisor's, or none at all: as before.
+    try p.mayLink(&groups, "lone", "scratch");
+    try p.mayLink(&groups, "nobody", "scratch");
 }
 
 test "Projects: before the host has said anything, nothing is known and nothing is done" {

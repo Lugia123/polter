@@ -126,6 +126,10 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         model.askForTerminal = { [weak self] in self?.lend(.askedFor) }
         model.goToSupervisor = { [weak self] in self?.goToSupervisor() }
         model.perform = { try actions.perform($0) }
+        // The group's "Project ›" menu, its banner and its question
+        // (task 1713).
+        ProjectLinkDesk.start(ghostty)
+        model.projectHands = ProjectLinkDesk.shared
         // Selecting the row that is already selected changes nothing the
         // sink above would see, and still means the person is on it now.
         model.onChoose = { [weak self] in

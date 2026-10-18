@@ -52,6 +52,9 @@ pub struct Row {
     pub delete_cost: Option<crate::snapshot::DeleteCost>,
     pub record_dir: Option<String>,
     pub project_name: Option<String>,
+    /// Its tie to a project and why one was not made (task 1714): what the
+    /// "Project ›" menu offers and what the row's right end says.
+    pub project: Option<crate::snapshot::ProjectTie>,
     /// What became of the control room's last ask (task 1671).
     pub ask: Option<crate::snapshot::AskState>,
 }
@@ -247,6 +250,7 @@ impl List {
                 delete_cost: g.delete_cost,
                 record_dir: g.record_dir.clone(),
                 project_name: g.project_name.clone(),
+                project: g.project.clone(),
                 ask: g.ask.clone(),
                 // Always the supervisor's own terminal, as the core wrote
                 // it. Whether the row is about the supervisor or about one
@@ -304,6 +308,7 @@ impl List {
                 delete_cost: None,
                 record_dir: None,
                 project_name: None,
+                project: None,
                 ask: None,
             };
             if one.needs_me {

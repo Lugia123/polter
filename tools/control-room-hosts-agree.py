@@ -192,6 +192,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/Terminal/TabAccessory.swift",
     "macos/Sources/Features/Terminal/PaneColor.swift",
     "macos/Sources/Features/Terminal/TabDots.swift",
+    "macos/Sources/Features/ControlRoom/ProjectLinkRules.swift",
 ]
 # What each terminal of FIXTURE was given as a colour, and the tab-dot cases
 # (task 1699): beside the fixture, which the core writes and a Zig test holds
@@ -652,6 +653,41 @@ for c in paneColors.tab_dots {
         print("tab_dots theme=\(themeName) case=\(c.case) flag=\(flag) dots=\(dots) plus=\(drawn.plus) "
             + "width=\(points(drawn.width)) tip=\(quote(TabDots.tip(drawn, english: true)))")
     }
+}
+
+// Task 1713: the group's "Project ›" menu, the words at the right end of
+// its row, and how long the line saying a project was made stays -- over
+// the cases beside the snapshot (project_link_cases.json).
+struct ProjectLinkCases: Decodable {
+    struct Menu: Decodable { let tie: String; let why: String; let steward: Bool; let name: String? }
+    struct Hint: Decodable { let `case`: String; let steps: [[Double]]; let close_at: Double? }
+    let menu: [Menu]
+    let hint: [Hint]
+}
+let linkCases: ProjectLinkCases = try {
+    // `steps` mixes a number and a flag; read them as JSON values first.
+    let url = URL(fileURLWithPath: args[1]).deletingLastPathComponent().appendingPathComponent("project_link_cases.json")
+    var raw = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+    raw["hint"] = (raw["hint"] as! [[String: Any]]).map { h -> [String: Any] in
+        var h = h
+        h["steps"] = (h["steps"] as! [[Any]]).map { step in [(step[0] as! NSNumber).doubleValue, (step[1] as! Bool) ? 1.0 : 0.0] }
+        return h
+    }
+    return try JSONDecoder().decode(ProjectLinkCases.self, from: JSONSerialization.data(withJSONObject: raw))
+}()
+func seconds(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(v) }
+for c in linkCases.menu {
+    let items = ProjectLinkRules.menu(tie: c.tie, why: c.why, steward: c.steward).map(\.id).joined(separator: ",")
+    print("project_menu tie=\(c.tie) why=\(c.why) steward=\(c.steward ? "yes" : "no") -> \(items)")
+    print("project_note tie=\(c.tie) why=\(c.why) name=\(c.name ?? "-") -> \(ProjectLinkRules.note(tie: c.tie, why: c.why, name: c.name).said)")
+}
+for c in linkCases.hint {
+    var clock = ProjectLinkRules.HintClock()
+    for step in c.steps {
+        clock.look(at: step[0], visible: step[1] != 0)
+        if let at = c.close_at, at == step[0] { clock.close() }
+    }
+    print("hint_clock case=\(c.case) -> \(clock.gone ? "gone" : "remaining=\(seconds(clock.remaining))")")
 }
 
 // Looking at a row: which are marked seen, and after how long. The wait is

@@ -81,7 +81,8 @@
         "pages": null,
         "open": null,
         "start": "directory",
-        "why": "projects_unknown"
+        "why": "projects_unknown",
+        "ask": false
       },
       "attention": {
         "kind": "needs_approval",
@@ -231,7 +232,8 @@
         "pages": null,
         "open": null,
         "start": "directory",
-        "why": "projects_unknown"
+        "why": "projects_unknown",
+        "ask": false
       },
       "attention": {
         "kind": "needs_approval",
@@ -360,7 +362,8 @@
         "pages": null,
         "open": null,
         "start": "directory",
-        "why": "projects_unknown"
+        "why": "projects_unknown",
+        "ask": false
       },
       "attention": {
         "kind": "needs_approval",
@@ -504,7 +507,8 @@
         "pages": null,
         "open": null,
         "start": "directory",
-        "why": "projects_unknown"
+        "why": "projects_unknown",
+        "ask": false
       },
       "attention": {
         "kind": "needs_answer",
@@ -643,7 +647,8 @@
         "pages": null,
         "open": null,
         "start": "directory",
-        "why": "projects_unknown"
+        "why": "projects_unknown",
+        "ask": false
       },
       "attention": {
         "kind": "failed",
@@ -784,7 +789,8 @@
         "pages": null,
         "open": null,
         "start": "project",
-        "why": "none"
+        "why": "none",
+        "ask": false
       },
       "attention": {
         "kind": "done_unseen",
@@ -915,7 +921,8 @@
         "pages": null,
         "open": null,
         "start": "directory",
-        "why": "projects_unknown"
+        "why": "projects_unknown",
+        "ask": false
       },
       "attention": {
         "kind": "working",
@@ -1059,7 +1066,8 @@
         "pages": null,
         "open": null,
         "start": "directory",
-        "why": "projects_unknown"
+        "why": "projects_unknown",
+        "ask": false
       },
       "attention": {
         "kind": "idle",

@@ -139,6 +139,7 @@ mod polterclose;
 mod project;
 mod project_picker;
 mod project_session;
+mod project_link_ui;
 mod project_ui;
 mod projects_ui;
 mod prompt;

@@ -1,0 +1,26 @@
+{
+  "_": "The cases both hosts print the group↔project rules for (task 1713, project-link-interface.md §3, §5). Read by tools/control-room-hosts-agree.py for both dumps, beside control_snapshot.json.",
+  "menu": [
+    { "tie": "bound", "why": "none", "steward": true, "name": "web" },
+    { "tie": "bound", "why": "none", "steward": false, "name": "web" },
+    { "tie": "undecided", "why": "not_taken_up", "steward": false, "name": null },
+    { "tie": "undecided", "why": "not_taken_up", "steward": true, "name": null },
+    { "tie": "undecided", "why": "pending", "steward": true, "name": null },
+    { "tie": "undecided", "why": "none", "steward": true, "name": null },
+    { "tie": "undecided", "why": "project_name_taken", "steward": true, "name": null },
+    { "tie": "undecided", "why": "several_projects", "steward": true, "name": null },
+    { "tie": "undecided", "why": "project_has_group", "steward": true, "name": null },
+    { "tie": "undecided", "why": "supervisor_has_project", "steward": true, "name": null },
+    { "tie": "undecided", "why": "supervisor_of_several", "steward": true, "name": null },
+    { "tie": "undecided", "why": "other_supervisor", "steward": true, "name": null },
+    { "tie": "undecided", "why": "no_supervisor", "steward": false, "name": null },
+    { "tie": "undecided", "why": "projects_unknown", "steward": true, "name": null },
+    { "tie": "declined", "why": "declined", "steward": true, "name": null }
+  ],
+  "hint": [
+    { "case": "seen_throughout", "steps": [[0, true], [3, true], [8, true]], "close_at": null },
+    { "case": "away_in_the_middle", "steps": [[0, true], [3, false], [60, true], [64, true], [66, true]], "close_at": null },
+    { "case": "never_seen", "steps": [[0, false], [100, false]], "close_at": null },
+    { "case": "closed", "steps": [[0, true], [2, true]], "close_at": 2 }
+  ]
+}

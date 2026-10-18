@@ -240,6 +240,26 @@ fn recycle(dir: &Path) -> bool {
     ok
 }
 
+/// A project into the Recycle Bin, as the settings' "Delete" sends one --
+/// stashed, then recycled -- but with nothing to undo it from here: it is
+/// what undoing a project made for a group does (task 1714), and the
+/// Recycle Bin is where it can be got back.
+pub(crate) fn recycle_project(file: &Path) -> Result<(), String> {
+    let dir = file.parent().ok_or("the project file has no directory")?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let st = pj::stash(file, &pj::trash_dir(dir), now).map_err(|e| e.to_string())?;
+    crate::project_session::forget(file);
+    // Left in `.deleted` when this fails, and tried again at the next
+    // start (`recycle`): never deleted past the Recycle Bin.
+    let ok = recycle(&st.held);
+    crate::plogf!("[projects-ui] {:?} -> Recycle Bin ok={ok}", file);
+    if main_hwnd().0.is_null() {
+        return Ok(());
+    }
+    reload();
+    Ok(())
+}
+
 /// Read the selected project whole, for the right-hand side.
 fn load_detail() {
     let sel = with(|s| s.selected.clone());
@@ -621,6 +641,117 @@ pub(crate) fn ask_with_default(owner: HWND, tag: &str, main: &str, body: &str, b
         pressed = Some(if r == IDOK { 0 } else { buttons.len() - 1 });
     }
     crate::plogf!("{tag} answered {:?}", pressed.and_then(|i| buttons.get(i)));
+    let usable = !before.0.is_null() && unsafe { IsWindow(Some(before)) }.as_bool();
+    let to = HWND(polter_settings_shell::focus_after_question(before.0 as isize, usable, owner.0 as isize) as *mut c_void);
+    if !to.0.is_null() {
+        let _ = unsafe { SetFocus(Some(to)) };
+    }
+    pressed
+}
+
+/// A question answered with command links (task 1714, the confirmation
+/// when a project already has a group's name): each answer is a link with
+/// the words under it that say what it does, `links[default]` is what
+/// Return presses, and `cancel` is what Escape, the cross and a dialog that
+/// could not be shown mean. The index pressed; `None` only when nothing
+/// could be shown at all. A message box stands in where the task dialog is
+/// not there, with its two answers: the default, or `cancel`.
+pub(crate) fn ask_links(owner: HWND, tag: &str, main: &str, body: &str, links: &[(String, String)], default: usize, cancel: usize) -> Option<usize> {
+    let before = unsafe { GetFocus() };
+    let (m, b, title) = (wide(main), wide(body), wide(&tr("Polter")));
+    // A command link's words, then a line break, then the note under it.
+    let labels: Vec<Vec<u16>> = links.iter().map(|(l, n)| wide(&format!("{l}\n{n}"))).collect();
+    crate::plogf!("{tag} asking: {main}");
+    let mut pressed = None;
+    let mut shown = false;
+    if let Some(tdi) = task_dialog_indirect() {
+        let specs: Vec<TASKDIALOG_BUTTON> = labels
+            .iter()
+            .enumerate()
+            .map(|(i, l)| TASKDIALOG_BUTTON { nButtonID: 100 + i as i32, pszButtonText: PCWSTR(l.as_ptr()) })
+            .collect();
+        let cfg = TASKDIALOGCONFIG {
+            cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+            hwndParent: owner,
+            dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW | TDF_USE_COMMAND_LINKS,
+            pszWindowTitle: PCWSTR(title.as_ptr()),
+            pszMainInstruction: PCWSTR(m.as_ptr()),
+            pszContent: PCWSTR(b.as_ptr()),
+            cButtons: specs.len() as u32,
+            pButtons: specs.as_ptr(),
+            nDefaultButton: 100 + default.min(links.len().saturating_sub(1)) as i32,
+            ..Default::default()
+        };
+        let mut id = 0i32;
+        let hr = unsafe { tdi(&cfg, &mut id, std::ptr::null_mut(), std::ptr::null_mut()) };
+        if hr.is_ok() {
+            shown = true;
+            pressed = if id == IDCANCEL.0 { Some(cancel) } else { usize::try_from(id - 100).ok() };
+        } else {
+            crate::plogf!("{tag} TaskDialogIndirect failed ({hr:?}); asking with a message box");
+        }
+    }
+    if !shown {
+        let text = wide(&format!("{main}\n\n{body}"));
+        let r = unsafe { MessageBoxW(Some(owner), PCWSTR(text.as_ptr()), PCWSTR(title.as_ptr()), MB_OKCANCEL) };
+        pressed = Some(if r == IDOK { default } else { cancel });
+    }
+    crate::plogf!("{tag} answered {:?}", pressed.and_then(|i| links.get(i)).map(|(l, _)| l));
+    let usable = !before.0.is_null() && unsafe { IsWindow(Some(before)) }.as_bool();
+    let to = HWND(polter_settings_shell::focus_after_question(before.0 as isize, usable, owner.0 as isize) as *mut c_void);
+    if !to.0.is_null() {
+        let _ = unsafe { SetFocus(Some(to)) };
+    }
+    pressed
+}
+
+/// `ask_with_default` with a tick box under the buttons, which starts
+/// unticked (task 1714: "Also move the project file to the Recycle Bin").
+/// The index pressed and whether it was ticked; where the task dialog is
+/// not there, the message box has no tick box, and it is never ticked.
+pub(crate) fn ask_with_check(owner: HWND, tag: &str, main: &str, body: &str, buttons: &[String], default: usize, check: &str) -> Option<(usize, bool)> {
+    let before = unsafe { GetFocus() };
+    let (m, b, title, c) = (wide(main), wide(body), wide(&tr("Polter")), wide(check));
+    let labels: Vec<Vec<u16>> = buttons.iter().map(|l| wide(l)).collect();
+    crate::plogf!("{tag} asking: {main}");
+    let mut pressed = None;
+    let mut shown = false;
+    if let Some(tdi) = task_dialog_indirect() {
+        let specs: Vec<TASKDIALOG_BUTTON> = labels
+            .iter()
+            .enumerate()
+            .map(|(i, l)| TASKDIALOG_BUTTON { nButtonID: 100 + i as i32, pszButtonText: PCWSTR(l.as_ptr()) })
+            .collect();
+        let cfg = TASKDIALOGCONFIG {
+            cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+            hwndParent: owner,
+            dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
+            pszWindowTitle: PCWSTR(title.as_ptr()),
+            pszMainInstruction: PCWSTR(m.as_ptr()),
+            pszContent: PCWSTR(b.as_ptr()),
+            pszVerificationText: PCWSTR(c.as_ptr()),
+            cButtons: specs.len() as u32,
+            pButtons: specs.as_ptr(),
+            nDefaultButton: 100 + default.min(buttons.len().saturating_sub(1)) as i32,
+            ..Default::default()
+        };
+        let mut id = 0i32;
+        let mut ticked = BOOL(0);
+        let hr = unsafe { tdi(&cfg, &mut id, std::ptr::null_mut(), &mut ticked) };
+        if hr.is_ok() {
+            shown = true;
+            let i = if id == IDCANCEL.0 { Some(buttons.len() - 1) } else { usize::try_from(id - 100).ok() };
+            pressed = i.map(|i| (i, ticked.as_bool()));
+        } else {
+            crate::plogf!("{tag} TaskDialogIndirect failed ({hr:?}); asking with a message box");
+        }
+    }
+    if !shown {
+        let text = wide(&format!("{main}\n\n{body}"));
+        let r = unsafe { MessageBoxW(Some(owner), PCWSTR(text.as_ptr()), PCWSTR(title.as_ptr()), MB_OKCANCEL) };
+        pressed = Some((if r == IDOK { 0 } else { buttons.len() - 1 }, false));
+    }
+    crate::plogf!("{tag} answered {:?}", pressed.and_then(|(i, t)| buttons.get(i).map(|b| (b, t))));
     let usable = !before.0.is_null() && unsafe { IsWindow(Some(before)) }.as_bool();
     let to = HWND(polter_settings_shell::focus_after_question(before.0 as isize, usable, owner.0 as isize) as *mut c_void);
     if !to.0.is_null() {

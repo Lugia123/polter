@@ -5736,3 +5736,332 @@ msgstr ""
 #: windows/settings-shell/src/general.rs:727
 msgid "Write Scrollback to a File"
 msgstr ""
+
+#: windows/control-room/src/act.rs:407
+msgid ""
+"The projects on this computer have not been read yet. Try again in a moment."
+msgstr ""
+
+#: windows/control-room/src/act.rs:408
+msgid "That project is not there any more."
+msgstr ""
+
+#: windows/control-room/src/act.rs:409
+msgid "That project is another group's."
+msgstr ""
+
+#: windows/control-room/src/act.rs:410
+msgid "Another project already has this group's name."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:21
+#, rust-format
+msgid "Open Project “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:22
+msgid "Show in Project Settings"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:23
+msgid "Stop Using It as This Group's Project…"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:24
+#, rust-format
+msgid "Save the Supervisor's Tab as Project “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:25
+msgid "Use an Existing Project"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:26
+msgid "This Group Has No Project"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:27
+msgid "Use a Project for This Group"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:28
+msgid "Join and Link"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:29
+#, rust-format
+msgid "Replace “{}”…"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:30
+#, rust-format
+msgid "Open “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:31
+#, rust-format
+msgid "Use “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:33
+#, rust-format
+msgid "There is already a project “{}”, in no group"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:34
+msgid "More than one project says it is this group's"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:35
+msgid "The supervisor's tab is in a project that is another group's."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:37
+msgid ""
+"This supervisor already looks after another group, which has a project. One "
+"supervisor, one project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:39
+msgid ""
+"This supervisor looks after several groups with no project, so it is not "
+"known which one its tab is for."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:40
+msgid "There is more than one supervisor in this group."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:41
+msgid "The projects on this computer have not been read yet"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:43
+#, rust-format
+msgid "{} — in no group"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:44
+#, rust-format
+msgid "{} — group “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:45
+msgid "No projects"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:47
+#, rust-format
+msgid "Save as the Project of Group “{}”…"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:48
+#, rust-format
+msgid "As the project of group “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:51
+#, rust-format
+msgid "Another project is called “{}”. Rename it “{}” and link?"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:52
+#, rust-format
+msgid "{} (old)"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:53
+msgid "Rename and Link"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:55
+msgid "Same-name project"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:56
+msgid "Two projects"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:57
+msgid "Project not made"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:60
+#, rust-format
+msgid ""
+"There is already a project “{}” ({}, {} pages), in no group. A group's "
+"project has the group's name: add the supervisor's tab to it, as this "
+"group's project?"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:62
+msgid ""
+"More than one project says it is this group's. Choose the one it uses; the "
+"others lose the group's name, and no file is deleted."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:63
+#, rust-format
+msgid "Open “{}” First"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:64
+msgid "Use an Existing Project…"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:66
+#, rust-format
+msgid "There is already a project “{}”. Add the supervisor's tab to it?"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:67
+#, rust-format
+msgid ""
+"A group's project has the group's name. “{}” was saved on {}, has {} pages, "
+"and is in no group."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:69
+msgid ""
+"The supervisor's tab becomes one of its pages; the pages already there stay. "
+"The file is rewritten in the current format, and the old one is kept as the "
+"previous version."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:71
+msgid ""
+"The supervisor's tab takes its place. What is there now is kept as the "
+"previous version."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:72
+msgid "Not Now"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:73
+msgid ""
+"Asked again the next time Polter starts; until then the control room keeps "
+"saying so."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:74
+msgid "Never asked again. To change your mind: right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:76
+#, rust-format
+msgid "Replace “{}”?"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:78
+#, rust-format
+msgid ""
+"“{}” will be replaced by the tab “{}” ({} panes), and the tab is saved to it "
+"automatically from then on. The layout it replaces is kept as the previous "
+"version."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:79
+#, rust-format
+msgid ""
+"To get the old page back: Settings › Projects, choose “{}”, Restore Previous "
+"Version."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:80
+msgid "Replace"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:83
+#, rust-format
+msgid "Stop using “{}” as the project of group “{}”?"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:84
+msgid ""
+"The tabs stay as they are. The group then has no project until you choose "
+"one."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:85
+msgid "Also move the project file to the Recycle Bin"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:86
+msgid "Stop Using It"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:88
+#, rust-format
+msgid "Saved the supervisor's tab as project “{}”, this group's project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:89
+#, rust-format
+msgid ""
+"The supervisor's tab was in project “{}”; it was renamed “{}”, this group's "
+"project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:90
+#, rust-format
+msgid "Joined project “{}”, which is this group's now."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:91
+#, rust-format
+msgid "Project “{}”, which the supervisor's tab is in, is this group's now."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:92
+#, rust-format
+msgid ""
+"Replaced project “{}” with the supervisor's tab; the old one is the previous "
+"version. It is this group's now."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:93
+#, rust-format
+msgid "Saved as project “{}”, this group's."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:95
+#, rust-format
+msgid ""
+"Undone: project “{}” is in the Recycle Bin, and this group has no project. "
+"To change that, right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:96
+#, rust-format
+msgid ""
+"Undone: the project is called “{}” again, and this group has no project. To "
+"change that, right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:98
+#, rust-format
+msgid ""
+"Undone: project “{}” is in no group again, and this group has no project. To "
+"change that, right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:99
+#, rust-format
+msgid ""
+"Undone: project “{}” is back as it was, and this group has no project. To "
+"change that, right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:97
+#, rust-format
+msgid ""
+"Undone: project “{}” is back as it was before the tab joined it, and this "
+"group has no project. To change that, right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/act.rs:415
+msgid ""
+"This group's supervisor already has a project through another group: one "
+"supervisor, one project."
+msgstr ""

@@ -133,15 +133,19 @@ extension ControlRoomModel {
         }
     }
 
-    /// Whether an item can be chosen for `row`. Only the project's submenu
-    /// greys anything: open is for a group bound to a project, save and
-    /// link for one that is not. Until the project actions are wired here
-    /// (they are the project store's), all three are grey.
-    func enabled(_ key: String, for row: Row) -> Bool {
-        switch key {
-        case "open_project", "save_project", "link_project": return false
-        default: return true
-        }
+    /// Whether an item can be chosen for `row`. The rule leaves out what
+    /// cannot be used; the project's submenu greys its own
+    /// (`ProjectLinkMenu`).
+    func enabled(_ key: String, for row: Row) -> Bool { true }
+
+    /// The lines of `row`'s "Project ›" submenu (task 1713): the rule's,
+    /// with the projects the app has. Empty with no app to ask.
+    func projectLines(_ row: Row) -> [ProjectLinkMenu.Line] {
+        guard let hands = projectHands, let facts = row.facts else { return [] }
+        return ProjectLinkMenu.lines(
+            group: row.id, tie: facts.projectTie.isEmpty ? (facts.project == nil ? "undecided" : "bound") : facts.projectTie,
+            why: facts.projectWhy, project: facts.project, steward: facts.steward != nil,
+            projects: hands.projects())
     }
 
     /// The menu for `row`.
@@ -153,7 +157,7 @@ extension ControlRoomModel {
             ControlRoomRowMenu.entries(state),
             startNew: state.clis > 1
                 ? ControlRoomRowMenu.cliSubmenu(clis.map(\.key), last: row.start?.last?.lastCli).map(\.id) : nil)
-        return ControlRoomRowMenuItems.menu(
+        let menu = ControlRoomRowMenuItems.menu(
             lines,
             title: { key in
                 ControlRoomRowMenu.cli(of: key).flatMap { cli in
@@ -163,6 +167,15 @@ extension ControlRoomModel {
             trailing: { [weak self] in self?.trailing($0, for: row) },
             enabled: { [weak self] in self?.enabled($0, for: row) ?? false },
             choose: { [weak self] in self?.choose($0, on: row) })
+        // The rule leaves the project's submenu empty: what it holds is
+        // filled in here, as it is shown.
+        if let item = menu.items.first(where: { $0.representedObject as? String == "project" }) {
+            item.submenu = ControlRoomRowMenuItems.projectMenu(projectLines(row)) { [weak self] key in
+                self?.chooseProject(key, on: row)
+            }
+            item.isEnabled = !(item.submenu?.items.isEmpty ?? true)
+        }
+        return menu
     }
 
     /// The menu for a group in "Archived".
@@ -234,6 +247,34 @@ extension ControlRoomModel {
         default:
             break
         }
+    }
+
+    /// One item of the "Project ›" submenu (§3.3); a refusal is said under
+    /// the row.
+    func chooseProject(_ key: String, on row: Row) {
+        guard let hands = projectHands else { return }
+        let group = row.id
+        let project = row.facts?.project
+        var refused: String?
+        switch key {
+        case "open_project": if let project { hands.open(project: project) }
+        case "show_in_settings": hands.showInSettings(project: project)
+        case "unlink_project": if let project { hands.unlink(group: group, project: project) }
+        case "save_supervisor_tab": refused = hands.saveSupervisorTab(group: group)
+        case "decline_project": refused = hands.decline(group: group)
+        case "undecline_project": refused = hands.undecline(group: group)
+        // The project in the way of `project_name_taken` has the group's
+        // name: that is what is in the way.
+        case "join_existing": refused = hands.join(group: group, project: group)
+        case "replace_existing": hands.replace(group: group, project: group)
+        case "open_blocker": hands.open(project: group)
+        case let key where key.hasPrefix("link:"):
+            refused = hands.link(group: group, project: String(key.dropFirst("link:".count)))
+        case let key where key.hasPrefix("use_this:"):
+            refused = hands.link(group: group, project: String(key.dropFirst("use_this:".count)))
+        default: break
+        }
+        if let refused { say(refused, under: group, delivered: false) }
     }
 
     func chooseArchived(_ key: String, _ group: ControlRoomList.ArchivedGroup) {

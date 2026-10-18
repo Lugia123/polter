@@ -270,6 +270,16 @@ private struct PaneFramed: ViewModifier {
                     .padding(outside)
                 }
             }
+            // The line saying a project was made for the group whose
+            // supervisor this is (task 1713): under the title band, over
+            // the top of the terminal, so the terminal is not resized for
+            // the seconds it stands. The same line as the control room's.
+            .overlay(alignment: .top) {
+                ProjectPaneHint(terminal: ControlRoomLender.terminal(of: surfaceView))
+                    .padding(.top, drawn.map { PaneFrameChrome.room(for: $0.wears).top } ?? 0)
+                    .padding(.horizontal, outside)
+                    .padding(.top, outside)
+            }
     }
 
     /// The pointer is over this pane's title, for its close button.

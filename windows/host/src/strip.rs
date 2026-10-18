@@ -2080,10 +2080,15 @@ pub fn paint(frame: HWND) {
     // time.
     let mut below = rc;
     below.top = sh;
-    if below.bottom > below.top && ps.rcPaint.bottom > sh && !crate::pane_frames::paint(frame, hdc, below) {
-        fill(hdc, &below, gdi(crate::termcolor::chrome(frame).ground));
-        // With no frames, a supervisor's pane still has its edge (task 1692).
-        crate::pane_frames::paint_edges(frame, hdc);
+    if below.bottom > below.top && ps.rcPaint.bottom > sh {
+        if !crate::pane_frames::paint(frame, hdc, below) {
+            fill(hdc, &below, gdi(crate::termcolor::chrome(frame).ground));
+            // With no frames, a supervisor's pane still has its edge (task 1692).
+            crate::pane_frames::paint_edges(frame, hdc);
+        }
+        // Framed or not, the line saying a project was made for a group,
+        // over the top of its supervisor's pane (task 1714).
+        crate::pane_frames::paint_hints(frame, hdc);
     }
 
     let _ = unsafe { EndPaint(frame, &ps) };
@@ -2384,6 +2389,10 @@ const TAB_ADD_TO_BASE: usize = 0x5400;
 /// At most this many projects in the submenu; the rest are a click away in
 /// the picker, which the menu bar's «Add to Project…» still opens.
 const TAB_ADD_TO_MAX: usize = 0xFF;
+/// «Save as the Project of Group “X”…», first on the menu of a tab with a
+/// group's supervisor in it (task 1714): clear of the project rows' three
+/// and of «Add to Project ▸»'s.
+const TAB_SAVE_FOR_GROUP: usize = 0x5340;
 const TAB_PROJECT_ACTS: [crate::project_ui::PageAct; 3] =
     [crate::project_ui::PageAct::AddTo, crate::project_ui::PageAct::TakeOut, crate::project_ui::PageAct::CloseProject];
 
@@ -2417,6 +2426,9 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
     // The projects the submenu listed, by id offset: what a pick is matched
     // against, so a list that changed meanwhile cannot name another project.
     let mut add_to: Vec<(String, std::path::PathBuf)> = Vec::new();
+    // The group whose supervisor is in this tab, when «Save as the Project of
+    // Group “X”…» was offered (task 1714).
+    let mut for_group: Option<String> = None;
     // The terminal the agent rows are about: the pane whose title or stack
     // tab was right-clicked, else the tab's own.
     let surface = match pane {
@@ -2484,6 +2496,19 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
             Some(Kind::ControlRoom) => true,
             Some(Kind::Terminal) | None => false,
         };
+        // A group's supervisor in this tab: saving it as that group's project
+        // is the first thing offered (task 1714, design `project-link-v1` C).
+        if !room {
+            if let Some(group) = crate::project_link_ui::group_supervised_in(target.id) {
+                let label = polter_control_room::list::fill(&tr(polter_control_room::project_words::msg::SAVE_FOR_GROUP), &group);
+                let mut wide: Vec<u16> = label.encode_utf16().collect();
+                wide.push(0);
+                let _ = AppendMenuW(menu, MF_STRING, TAB_SAVE_FOR_GROUP, PCWSTR(wide.as_ptr()));
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                items += 1;
+                for_group = Some(group);
+            }
+        }
         for (i, row) in TAB_MENU.iter().enumerate() {
             if room && !row.is_some_and(|cmd| cmd.on_control_room()) {
                 continue;
@@ -2693,6 +2718,16 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
             }
         };
         tid::copy(frame, &text, &what);
+        return;
+    }
+    if chosen == TAB_SAVE_FOR_GROUP {
+        match for_group {
+            Some(group) => {
+                let ok = crate::project_link_ui::save_tab_for_group(frame, target.id, &group);
+                wlogf!(frame, "[tabmenu] save tab {} as the project of group {:?} ok={}", target.index + 1, group, ok);
+            }
+            None => wlogf!(frame, "[tabmenu] save as a group's project: no group was offered; nothing"),
+        }
         return;
     }
     if chosen == PANE_CLOSE_ID {

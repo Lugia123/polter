@@ -181,7 +181,7 @@
 //!                                 supervisor is started in its own pane),
 //!                                 or opens one tab in `supervisor.cwd`.
 //!                                 A host words its button on this
-//!         "why": "none" },        why the tie is as it is, in one word
+//!         "why": "none",          why the tie is as it is, in one word
 //!                                 (`Projects.Why`): none | projects_unknown
 //!                                 | not_taken_up | declined | pending |
 //!                                 no_supervisor | other_supervisor |
@@ -189,6 +189,11 @@
 //!                                 supervisor_has_project |
 //!                                 project_has_group | project_name_taken |
 //!                                 several_projects
+//!         "ask": false },         put the question "join the project of
+//!                                 the group's name?" to the person now
+//!                                 (task 1713, `askFor`): only for
+//!                                 project_name_taken, undecided, and not
+//!                                 after "Not Now" this run or twice ever
 //!       "attention": {
 //!         "kind": "needs_approval",     Attention.Kind
 //!         "under": "needs_approval",    what it is when not snoozed
@@ -1362,7 +1367,19 @@ pub const ProjectOut = struct {
     open: ?bool,
     start: Chat.StartBy,
     why: Projects.Why,
+    /// Put the question to the person now: join the group to the project
+    /// of its name that is in the way (task 1713). The host still waits
+    /// until the person is there to answer it. See `askFor`.
+    ask: bool,
 };
+
+/// Whether the person is to be asked to join a group to the project of its
+/// name (`project-link-interface.md` §2): only while that is what is in the
+/// way, only while nobody has said yes or no, and only while "Not Now" has
+/// not been said in this run nor said twice ever (`Chat.projectAsk`).
+pub fn askFor(why: Projects.Why, tie: Chat.ProjectTie, asked: bool) bool {
+    return why == .project_name_taken and tie == .undecided and asked;
+}
 
 /// One thing the host is to do; `Projects.Order`, with the terminal as
 /// the snapshot writes one.
@@ -2042,9 +2059,10 @@ fn projectOf(arena: Allocator, in: Input, name: []const u8) Allocator.Error!Proj
         .declined => .declined,
         .undecided => .projects_unknown,
     };
+    const ask = askFor(why, tie, in.chat.projectAsk(name));
     return switch (tie) {
-        .undecided => .{ .tie = .undecided, .name = null, .pages = null, .open = null, .start = .directory, .why = why },
-        .declined => .{ .tie = .declined, .name = null, .pages = null, .open = null, .start = .directory, .why = why },
+        .undecided => .{ .tie = .undecided, .name = null, .pages = null, .open = null, .start = .directory, .why = why, .ask = ask },
+        .declined => .{ .tie = .declined, .name = null, .pages = null, .open = null, .start = .directory, .why = why, .ask = ask },
         .bound => |project| bound: {
             const stated = if (in.projects.table) |t| t.find(project) else null;
             break :bound .{
@@ -2054,6 +2072,7 @@ fn projectOf(arena: Allocator, in: Input, name: []const u8) Allocator.Error!Proj
                 .open = if (stated) |p| p.open != null else null,
                 .start = .project,
                 .why = why,
+                .ask = ask,
             };
         },
     };
@@ -3108,6 +3127,20 @@ test "ControlRoom snapshot: the fixture is what the fixture's world comes to" {
     if (!std.mem.eql(u8, want, json)) {
         std.debug.print("\n<<<control_snapshot.json\n{s}\n>>>control_snapshot.json\n", .{json});
         return error.TestFixtureOutOfDate;
+    }
+}
+
+test "ControlRoom: the question of joining the project of the group's name is put only while that is what is in the way (#1713)" {
+    try testing.expect(askFor(.project_name_taken, .undecided, true));
+    // "Not Now" said this run, or twice ever.
+    try testing.expect(!askFor(.project_name_taken, .undecided, false));
+    // Said yes or no already.
+    try testing.expect(!askFor(.project_name_taken, .declined, true));
+    try testing.expect(!askFor(.project_name_taken, .{ .bound = "polter" }, true));
+    // Anything else in the way is not this question.
+    for (std.enums.values(Projects.Why)) |why| {
+        if (why == .project_name_taken) continue;
+        try testing.expect(!askFor(why, .undecided, true));
     }
 }
 
@@ -5502,7 +5535,7 @@ test "Projects: the snapshot says which project each group has, what starting it
         \\{"order":"create","project":"old","group":"old","to":null,"terminal":"0x00000000000000a1"}
     ) != null);
     try testing.expect(std.mem.indexOf(u8, json,
-        \\"project":{"tie":"bound","name":"tied","pages":3,"open":false,"start":"project","why":"none"}
+        \\"project":{"tie":"bound","name":"tied","pages":3,"open":false,"start":"project","why":"none","ask":false}
     ) != null);
 }
 

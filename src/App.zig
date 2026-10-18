@@ -1287,6 +1287,7 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
             .projectFailed = controlActProjectFailed,
             .projectRemove = controlActProjectRemove,
             .projectRename = controlActProjectRename,
+            .projectSay = controlActProjectSay,
             .retentionAgree = controlActRetentionAgree,
             .takeOver = controlActTakeOver,
             .fixCard = controlActFixCard,
@@ -1959,6 +1960,56 @@ fn controlActProjectRename(ctx: *anyopaque, from: []const u8, to: []const u8) an
     const found = poltergeistpkg.Projects.groupOf(views, from) orelse return;
     const group = try arena.allocator().dupe(u8, found);
     try chatRename(ctx, group, to, poltergeistpkg.Chat.user_id);
+}
+
+/// The person's word on a group's project (task 1713,
+/// `project-link-interface.md` §1): what `group_project use / drop` lets a
+/// supervisor say, said by the person -- so no standing is asked. The group
+/// is known to be there (`ControlAct` asked).
+fn controlActProjectSay(ctx: *anyopaque, group: []const u8, say: poltergeistpkg.ControlAct.ProjectSay) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    defer self.controlRoomTouch();
+    switch (say) {
+        .decline => {
+            if (try self.chat.setProject(group, .declined)) {
+                if (self.group_log) |*l| l.project(group, .declined);
+                self.noteGroupProject(group);
+            }
+            self.chat.setProjectClaim(group, null);
+        },
+        .undecline => {
+            if (self.chat.projectOf(group) != .declined) return;
+            _ = try self.chat.setProject(group, .undecided);
+            if (self.group_log) |*l| l.project(group, .undecided);
+            self.noteGroupProject(group);
+            // The group's supervisor, when it has one, is taken as having
+            // said yes: `offer` works the project out again now, rather
+            // than at the next take-up.
+            var arena: std.heap.ArenaAllocator = .init(self.alloc);
+            defer arena.deinit();
+            if (poltergeistpkg.ControlRoom.stewardOfGroup(arena.allocator(), &self.poltergeist, &self.chat, group)) |id| {
+                self.chat.setProjectClaim(group, null);
+                self.chat.setProjectClaim(group, .{ .terminal = id, .said = true });
+            }
+        },
+        .link => |name| {
+            var arena: std.heap.ArenaAllocator = .init(self.alloc);
+            defer arena.deinit();
+            const views = try self.projectViews(arena.allocator(), self.poltergeistElapsedMs());
+            try self.projects.mayLink(views, group, name);
+            if (try self.chat.setProject(group, .{ .bound = name })) {
+                if (self.group_log) |*l| l.project(group, .{ .bound = name });
+                self.noteGroupProject(group);
+            }
+            // Bound: `reconcile` writes the group into the file and renames
+            // the project to the group's name, by orders, as for any group.
+            self.chat.setProjectClaim(group, null);
+        },
+        .not_now => {
+            const times = try self.chat.sayProjectNotNow(group);
+            if (self.group_log) |*l| l.projectNotNow(group, times);
+        },
+    }
 }
 
 /// A supervisor has taken groups up: made one, joined one, been started
@@ -3666,6 +3717,7 @@ fn restoreChatGroups(self: *App) void {
         self.chat.restoreShell(shell.name, shell.brief, shell.last_ms, shell.marks) catch continue;
         _ = self.chat.setLastSupervisor(shell.name, shell.supervisor) catch .same;
         _ = self.chat.setProject(shell.name, shell.project) catch false;
+        self.chat.restoreProjectNotNow(shell.name, shell.project_not_now);
         if (shell.supervisor.dir.len == 0) self.backfillSupervisorDir(alloc, gl, shell.name, &last_night);
         back += 1;
     }

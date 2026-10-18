@@ -1195,3 +1195,80 @@
 
 /* In the hover text over a tab's colour dots, the line of the supervisor's pane (task 1699). */
 "supervisor" = "总管";
+
+/* Group ↔ project (task 1713) */
+"Saved as the project \"%@\", this group's." = "已存成项目「%@」，归这个群。";
+"The supervisor's tab was saved as the project \"%@\", as this group's project." = "已把总管的标签页存成项目「%@」，作为这个群的项目。";
+"Renamed to \"%@\", this group's." = "已改名为「%@」，归这个群。";
+"The supervisor's tab was in the project \"%@\", which was renamed \"%@\", as this group's project." = "总管的标签页原在项目「%@」里，已把它改名为「%@」，作为这个群的项目。";
+"\"%@\" is this group's project now." = "「%@」现在是这个群的项目。";
+"The project \"%@\" the supervisor's tab is in is this group's project now." = "总管的标签页所在的项目「%@」，现在是这个群的项目。";
+"Joined the project \"%@\", this group's." = "已加入项目「%@」，归这个群。";
+"Replaced the project \"%@\", this group's." = "已替换项目「%@」，归这个群。";
+"The project \"%@\" was replaced with the supervisor's tab, as this group's project. The old one is kept as the previous version." = "已用总管的标签页替换项目「%@」，作为这个群的项目。旧的留作上一版。";
+"To change it back, use the group's Project menu." = "要改回，在群右键「项目」里选。";
+"Undone: the project \"%@\" was moved to the Trash, and this group uses no project." = "已撤销：项目「%@」移到了废纸篓，这个群不用项目。";
+"Undone: the project is called \"%@\" again, and this group uses no project." = "已撤销：项目改回了「%@」，这个群不用项目。";
+"Undone: this group uses no project." = "已撤销：这个群不用项目。";
+"Undone: this page was taken out of the project \"%@\", and this group uses no project." = "已撤销：这一页移出了项目「%@」，这个群不用项目。";
+"Undone: the project \"%@\" is back to its previous version, and this group uses no project." = "已撤销：项目「%@」恢复成了上一版，这个群不用项目。";
+"Not all of it was undone: %@" = "撤销没做完：%@";
+"Same-name project" = "有同名项目";
+"Two projects" = "两个项目";
+"Project not made" = "项目没建成";
+"There is already a project \"%@\", and it is the group \"%@\"'s." = "已有项目「%@」，它是群「%@」的。";
+"There is already a project \"%@\", in no group." = "已有项目「%@」，还不属于任何群。";
+"Two projects both say they are this group's." = "两个项目都说是这个群的。";
+"The supervisor's tab is in a project that is another group's." = "总管的标签页属于另一个群的项目。";
+"This supervisor is already the supervisor of another group, which has a project. A supervisor looks after one project." = "这个总管已经是另一个群的总管，那个群有项目。一个总管只管一个项目。";
+"This supervisor looks after several groups with no project, so which this page is for is not known." = "这个总管同时管着几个没项目的群，不知道这一页该给谁。";
+"There is more than one supervisor in the group." = "群里不止一个总管。";
+"Which projects there are is not known yet." = "还不知道有哪些项目。";
+"Open Project \"%@\"" = "打开项目「%@」";
+"Show in Project Settings" = "在项目设置中查看";
+"No Longer This Group's Project…" = "不再作为这个群的项目…";
+"Save the Supervisor's Tab as Project \"%@\"" = "把总管的标签页存成项目「%@」";
+"Use an Existing Project" = "改用已有的项目";
+"This Group Uses No Project" = "这个群不用项目";
+"Use a Project for This Group" = "这个群改用项目";
+"Join and Link" = "加入并关联";
+"Replace \"%@\"…" = "替换「%@」…";
+"Open \"%@\"" = "打开「%@」";
+"This group" = "这个群";
+"Group %@" = "群 %@";
+"No group" = "不属于任何群";
+"%@ (old)" = "%@（旧）";
+"Rename \"%@\" to \"%@\" and then link?" = "把「%@」改名为「%@」再关联？";
+"saved %@, %@ page(s)" = "%@存的，%@ 页";
+"There is already a project \"%@\" (%@), in no group. A group's project has the group's name: add the supervisor's tab to it, as this group's project?" = "已有项目「%@」（%@），还不属于任何群。群的项目要和群同名：要把总管的标签页加入它，作为这个群的项目吗？";
+"There is already a project \"%@\". Add the supervisor's tab to it?" = "已有项目「%@」，要把总管的标签页加入它吗？";
+"A group's project has the group's name. \"%@\" was saved %@, has %@ page(s), and is no group's yet." = "群的项目要和群同名。「%@」是%@存的，%@ 页，还不属于任何群。";
+"Once added it is the group %@'s project: the supervisor's tab becomes its page %@, and the pages it has stay as they are." = "加入后它就是群 %@ 的项目：总管的标签页成为它的第 %@ 页，原来的页不动。";
+"Replace \"%@\"?" = "替换「%@」？";
+"\"%@\" will be replaced with the tab \"%@\" (%@ pane(s)), and the tab is saved to it automatically from then on. The layout replaced is kept as the previous version." = "「%@」会被标签页「%@」（%@ 个面板）替换，之后这个标签页会自动保存到它。被替换的布局留作上一版。";
+"To get the old one back: Settings › Projects, choose \"%@\", Restore Previous Version." = "要找回原来那一页：设置 › 项目，选「%@」，恢复上一版。";
+"Save as Group \"%@\"'s Project…" = "存为群「%@」的项目…";
+"As group \"%@\"'s project" = "作为群「%@」的项目";
+"Open \"%@\" First" = "先打开「%@」看看";
+"Use It" = "用它";
+"Use as This Group's Project" = "用作这个群的项目";
+"Replace…" = "替换…";
+"The projects are not known yet. Try again in a moment." = "还不知道有哪些项目，稍后再试。";
+"That project is no longer there." = "那个项目已经不在了。";
+"That project is another group's." = "那个项目属于别的群。";
+"Another project already has this group's name." = "已有另一个项目叫这个群的名字。";
+"No longer the group %@'s project?" = "不再作为群 %@ 的项目？";
+"The project \"%@\" stays as it is, and its open tabs stay open. The group uses no project from now on." = "项目「%@」原样留着，开着的标签页也不关。这个群从此不用项目。";
+"Also move the project file to the Trash" = "同时把项目文件移到废纸篓";
+"No Longer This Group's Project" = "不再作为这个群的项目";
+"Rename and Link" = "改名并关联";
+"Replace" = "替换";
+
+/* 总控台：没有项目的群右栏底下那句（task 1713） */
+"This group has no project yet, so only the supervisor starts. Once it takes up the group, its tab is saved as a project of the group's name; you are told when it is, and it can be undone." = "这个群还没有项目，只启动总管。总管上岗后，它所在的标签页会存成和群同名的项目，存好时会告诉你，可以撤销。";
+
+/* 撞名确认框：以后再说（Esc）。不用 "Later"：那个键已经译成「稍后」 */
+"Ask Me Later" = "以后再说";
+
+/* 项目：关联时这个群的总管已经通过别的群有项目了（task 1713） */
+"This group's supervisor already has a project through another group. One supervisor, one project." = "这个群的总管已经通过别的群有了项目。一个总管只管一个项目。";

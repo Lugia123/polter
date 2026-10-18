@@ -114,13 +114,12 @@ pub fn entries(state: State) -> Vec<Entry> {
 }
 
 /// The items of the submenu item `id` opens, top to bottom; none for an
-/// item that opens none, and none for `start_new`, whose items are the
-/// CLIs (`cli_submenu`). Which of the project's are greyed is the core's
-/// to say (what project the group has), and is not part of this rule.
+/// item that opens none, none for `start_new`, whose items are the CLIs
+/// (`cli_submenu`), and none for `project`, whose items depend on the
+/// group's tie and are [`crate::project_link::menu`]'s (task 1714).
 pub fn submenu(id: &str) -> &'static [&'static str] {
     match id {
         "mute" => &["mute_hour", "mute_tomorrow", "mute_forever"],
-        "project" => &["open_project", "save_project", "link_project"],
         _ => &[],
     }
 }
@@ -218,9 +217,6 @@ pub fn label(id: &str) -> Option<&'static str> {
         "rename" => n_("Rename Group…"),
         "edit_note" => n_("Edit Group Note…"),
         "project" => n_("Project"),
-        "open_project" => n_("Load Project…"),
-        "save_project" => n_("Save as Project…"),
-        "link_project" => n_("Link to Project…"),
         "archive" => n_("Archive…"),
         "unarchive" => n_("Unarchive"),
         "delete" => n_("Delete Group…"),
@@ -331,6 +327,11 @@ mod tests {
                     // are not a fixed list; with one it opens nothing.
                     if id == "start_new" {
                         assert_eq!(opens, s.clis > 1, "{s:?}");
+                    } else if id == "project" {
+                        // Its items are the group's tie's to say
+                        // (`project_link::menu`, task 1714), never a fixed list.
+                        assert!(opens, "{s:?}");
+                        assert!(submenu(id).is_empty());
                     } else {
                         assert_eq!(opens, !submenu(id).is_empty(), "{id}");
                     }

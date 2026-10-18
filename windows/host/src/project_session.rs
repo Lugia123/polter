@@ -871,6 +871,129 @@ fn everything() -> Vec<(PathBuf, Stated)> {
         .collect()
 }
 
+// ------------------------------------------- a group's project (task 1714)
+
+/// "Save the Supervisor's Tab as Project “X”" (`project_link_ui`): `chosen`
+/// saved as a new project named `group` that names `group` as its group,
+/// with `supervisor`'s pane marked the supervisor's -- what the core's
+/// `create` does, asked by the person. The file written.
+pub fn save_for_group(chosen: &[(HWND, TabId)], group: &str, supervisor: &str) -> Result<PathBuf, String> {
+    let dir = projects_dir().ok_or("there is no projects directory")?;
+    let file = dir.join(project::sanitize_filename(group).map_err(|_| format!("{group:?} names no file"))?);
+    save_as_for(&file, chosen, group.to_string(), WriteKind::Save, Some(Some(group.to_string())))?;
+    mark_supervisor(&file, supervisor)?;
+    state();
+    Ok(file)
+}
+
+/// The project in `file` names `group`, and `supervisor`'s pane in it is
+/// marked the supervisor's when there is one (task 1714: "As the project of
+/// group “X”" ticked in "Save as Project").
+pub fn adopt(file: &Path, group: &str, supervisor: Option<&str>) -> Result<(), String> {
+    set_group(file, Some(group.to_string()))?;
+    if let Some(s) = supervisor {
+        mark_supervisor(file, s)?;
+    }
+    state();
+    Ok(())
+}
+
+/// "Join and Link": `tab` -- the supervisor's -- becomes a page of the
+/// project in `file`, its pane marked the supervisor's. The pages already
+/// there stay. **Written in the current format, and what was there kept as
+/// the previous version**: a page added is a change of layout, which is
+/// what `plan_write` keeps one for (brief 5). The core binds it on its next
+/// look.
+pub fn join(file: &Path, tab: TabId, supervisor: &str) -> Result<(), String> {
+    add_tab(file, tab)?;
+    mark_supervisor(file, supervisor)?;
+    state();
+    Ok(())
+}
+
+/// "Replace…", asked twice: the project in `file` is `chosen` now, under
+/// `name`, what it was kept as the previous version (`Overwrite` keeps it
+/// always), `supervisor`'s pane marked the supervisor's.
+pub fn replace(file: &Path, chosen: &[(HWND, TabId)], name: &str, supervisor: &str) -> Result<(), String> {
+    save_as(file, chosen, name.to_string(), WriteKind::Overwrite)?;
+    mark_supervisor(file, supervisor)?;
+    state();
+    Ok(())
+}
+
+/// The project in `file` is called `to`, as the person said (renaming one
+/// out of a group's way): the core is asked first, as for any rename.
+pub fn rename_project(file: &Path, to: &str) -> Result<(), String> {
+    let from = project::read_file(file).map_err(|e| e.to_string())?.name;
+    match ask_before_renaming(&from, to, None) {
+        Ok(true) => rename_to(file, to)?,
+        Ok(false) => {}
+        Err(why) => return Err(why),
+    }
+    state();
+    Ok(())
+}
+
+/// Undoing the core's `bind`: the project in `file` names no group, and is
+/// called `to` again -- the name it had.
+pub fn unbind(file: &Path, to: &str) -> Result<(), String> {
+    set_group(file, None)?;
+    let name = project::read_file(file).map_err(|e| e.to_string())?.name;
+    if name != to {
+        rename_to(file, to)?;
+    }
+    state();
+    Ok(())
+}
+
+/// Undoing a project made for a group, first step after "no project": its
+/// open tabs stop being its pages and **nothing is written** -- a save now
+/// would put the tabs over the file that is about to be moved or put back.
+/// The tabs stay open.
+pub fn let_go(file: &Path) -> Result<(), String> {
+    forget(file);
+    state();
+    Ok(())
+}
+
+/// Undoing "Join and Link" or "Replace…": the project in `file` is what it
+/// was before, byte for byte -- the previous version the join's or the
+/// replace's own write kept. Its tabs were let go first (`let_go`).
+pub fn restore_previous(file: &Path) -> Result<(), String> {
+    polter_settings_shell::projects::restore_previous(file).map_err(|e| e.to_string())?;
+    state();
+    Ok(())
+}
+
+/// One project as the group's "Project ›" menu, the banner and the
+/// confirmation need it (task 1714): what the core does not say -- whose it
+/// is, how many pages, when it was saved -- read from the same list the core
+/// is told.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Known {
+    pub name: String,
+    pub group: Option<String>,
+    pub pages: usize,
+    pub saved_at: i64,
+    pub path: PathBuf,
+}
+
+/// Every project there is, in the order `project::list` found them.
+pub fn known() -> Vec<Known> {
+    let Some(dir) = projects_dir() else { return Vec::new() };
+    let saved: Vec<(PathBuf, i64)> = project::list(&dir).entries.into_iter().map(|e| (e.path, e.saved_at)).collect();
+    everything()
+        .into_iter()
+        .map(|(path, said)| Known {
+            saved_at: saved.iter().find(|(p, _)| *p == path).map_or(0, |(_, t)| *t),
+            name: said.name,
+            group: said.group,
+            pages: said.pages,
+            path,
+        })
+        .collect()
+}
+
 /// Tell the core what projects there are and which are open: all of it,
 /// every time (contract 3). Said again only when it would say something
 /// else, so it is called wherever anything about a project may have changed
@@ -1041,6 +1164,13 @@ fn obey() {
         };
         // process-wide: a project is tabs of any number of windows
         plogf!("[project] order {:?} for {:?} -> {:?}: {}", order.kind, order.project, step, done.as_ref().map_or_else(|e| format!("FAILED: {e}"), |()| "done".to_string()));
+        // A project made for a group by the core's own doing is said, with
+        // an Undo (task 1714, `project-link-interface.md` §3.2).
+        if done.is_ok() {
+            if let Some((group, made)) = made_by(&step, projects_dir().as_deref()) {
+                crate::project_link_ui::made_for(&group, made);
+            }
+        }
         TRIED.with(|t| {
             if let Ok(mut t) = t.try_borrow_mut() {
                 t.push(order);
@@ -1048,6 +1178,21 @@ fn obey() {
         });
     }
     state();
+}
+
+/// What a `create` or a `bind` that was done made, for the line that says
+/// so: the group, and what undoing it needs. None for any other order.
+fn made_by(step: &Step, dir: Option<&Path>) -> Option<(String, polter_control_room::project_words::Made)> {
+    use polter_control_room::project_words::Made;
+    let path = |name: &str| dir.and_then(|d| project::sanitize_filename(name).ok().map(|f| d.join(f).to_string_lossy().into_owned()));
+    match step {
+        Step::Create { name, group: Some(group), .. } => Some((group.clone(), Made::Created { name: name.clone(), path: path(name)? })),
+        Step::Bind { project, group, to, .. } => {
+            let now = to.clone().unwrap_or_else(|| project.clone());
+            Some((group.clone(), Made::Renamed { from: project.clone(), path: path(&now)?, to: now }))
+        }
+        _ => None,
+    }
 }
 
 /// The file's group becomes `group` (none: it names none). An open project

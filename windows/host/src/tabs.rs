@@ -2201,6 +2201,11 @@ pub fn layout(frame: HWND) {
     // Which terminal each pane is, and whether panes wear frames at all:
     // asked of the core before the lock is taken, not under it.
     let asked = crate::pane_frames::Asked::ask(frame);
+    // How far the lent terminal sits below the supervisor's title bar for
+    // what is said about the group's project (task 1714): asked before the
+    // lock too -- working it out reads the snapshot, the projects and the
+    // panel's geometry, and the panel's geometry is this lock's.
+    let notice_h = crate::control_room::notice_height();
     // The terminals whose being stacked behind another changed, for the
     // core: `(pane, surface, visible)`. Worked out under the lock, said
     // after it.
@@ -2242,7 +2247,9 @@ pub fn layout(frame: HWND) {
             let scale = win.scale.max(0.1);
             // Narrower while the group's brief is open beside it (task 1661).
             let side = Room::new(bounds.w / scale, bounds.h / scale).with_note(crate::control_room::note_open()).right;
-            let t = scene::terminal_rect(side.w, side.h);
+            // Lower by what is said about the group's project, when the
+            // frame says anything (task 1714).
+            let t = scene::terminal_rect_with(side.w, side.h, notice_h);
             let px = |v: f64| (v * scale).round();
             let (w, h) = (px(t.w), px(t.h));
             // A side too narrow for a terminal shows none.
@@ -4638,6 +4645,13 @@ pub fn title_of_tab(id: TabId) -> String {
 // window-free: keyed by a tab's id, which is unique in the process
 pub fn chosen_name_of_tab(id: TabId) -> Option<String> {
     with_windows(|ws| ws.iter().flat_map(|w| w.tabs.iter()).find(|t| t.id == id).and_then(|t| t.title_override.as_ref().map(|p| p.text.clone())))
+}
+
+/// How many panes the tab `id` has, wherever it is; zero for one that is
+/// nowhere any more (task 1714: "Replace…" says how many it replaces with).
+// window-free: keyed by a tab's id, which is unique in the process
+pub fn panes_of_tab(id: TabId) -> usize {
+    with_windows(|ws| ws.iter().flat_map(|w| w.tabs.iter()).find(|t| t.id == id).map_or(0, |t| t.panes().len()))
 }
 
 /// The tab the terminal the core names `key` is in, and its window.

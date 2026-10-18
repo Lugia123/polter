@@ -566,10 +566,28 @@ pub struct Group {
     pub record_dir: Option<String>,
     /// The project it is tied to, by name; none when it has none.
     pub project_name: Option<String>,
+    /// Its tie to a project and why one was not made (task 1714,
+    /// `project-link-interface.md` §2); none from a core before it said.
+    pub project: Option<ProjectTie>,
     /// What became of the control room's last ask of its supervisor (task
     /// 1671); none when none was made since the core started, or from a
     /// core before it said.
     pub ask: Option<AskState>,
+}
+
+/// A group's tie to a project as the core says it (`ControlRoom.ProjectOut`):
+/// the core's own words for the tie and the reason, taken as written by
+/// [`crate::project_link`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTie {
+    /// `undecided`, `bound` or `declined`.
+    pub tie: String,
+    /// Why a tie was not made (`Projects.Why`), `none` when nothing stands
+    /// in the way.
+    pub why: String,
+    /// Whether the host should ask the person now whether to join the
+    /// project with the group's name (§2). False from a core before it said.
+    pub ask: bool,
 }
 
 /// How the control room's last ask of a group's supervisor went (task
@@ -1113,6 +1131,17 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         record_dir: if v.get("record_dir").is_some() { opt_text(v, path, "record_dir")? } else { None },
         project_name: match v.get("project") {
             Some(p) if p.get("name").is_some() => opt_text(p, &format!("{path}.project"), "name")?,
+            _ => None,
+        },
+        project: match v.get("project") {
+            Some(p) if p.get("tie").is_some() => {
+                let at = format!("{path}.project");
+                Some(ProjectTie {
+                    tie: text(p, &at, "tie")?,
+                    why: if p.get("why").is_some() { text(p, &at, "why")? } else { "none".into() },
+                    ask: if p.get("ask").is_some() { boolean(p, &at, "ask")? } else { false },
+                })
+            }
             _ => None,
         },
         name: text(v, path, "name")?,

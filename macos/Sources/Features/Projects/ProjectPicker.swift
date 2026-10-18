@@ -61,8 +61,9 @@ final class ProjectPicker: NSObject {
     /// to save; the sheet closes itself afterward.
     func presentSaveAs(
         tabs: [ProjectPageRules.Tab],
+        group: String? = nil,
         store: ProjectStore = .shared,
-        onSave: @escaping (String, [Int]) -> Void,
+        onSave: @escaping (String, [Int], Bool) -> Void,
         onCancel: @escaping () -> Void = {}
     ) {
         close()
@@ -70,8 +71,9 @@ final class ProjectPicker: NSObject {
         let view = ProjectSaveAsView(
             tabs: tabs,
             store: store,
-            onSave: { [weak self] name, ids in
-                onSave(name, ids)
+            group: group,
+            onSave: { [weak self] name, ids, forGroup in
+                onSave(name, ids, forGroup)
                 self?.close()
             },
             onCancel: { [weak self] in
@@ -85,7 +87,7 @@ final class ProjectPicker: NSObject {
         window.delegate = self
         self.window = window
 
-        window.setContentSize(ProjectSaveAsView.size(rows: tabs.count))
+        window.setContentSize(ProjectSaveAsView.size(rows: tabs.count, group: group != nil))
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

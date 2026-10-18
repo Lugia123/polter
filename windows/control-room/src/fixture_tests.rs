@@ -1783,6 +1783,11 @@ fn every_refusal_is_said_in_chinese() {
             | Refusal::DeleteFailed
             | Refusal::NotStartedByHand
             | Refusal::AlreadyTakingOver
+            | Refusal::ProjectsUnknown
+            | Refusal::NoSuchProject
+            | Refusal::ProjectHasGroup
+            | Refusal::ProjectNameTaken
+            | Refusal::SupervisorHasProject
             | Refusal::Other => r,
         }
     }
@@ -1828,11 +1833,16 @@ fn every_refusal_is_said_in_chinese() {
         Refusal::DeleteFailed,
         Refusal::NotStartedByHand,
         Refusal::AlreadyTakingOver,
+        Refusal::ProjectsUnknown,
+        Refusal::NoSuchProject,
+        Refusal::ProjectHasGroup,
+        Refusal::ProjectNameTaken,
+        Refusal::SupervisorHasProject,
         Refusal::Other,
     ];
     // The list and the match agree on the count: the match alone proves
     // every variant is named, not that every one is in `all`.
-    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 42);
+    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 47);
 
     // msgid and msgstr, with the continuation lines `msgmerge` wraps long
     // ones into joined back up.
@@ -2061,4 +2071,22 @@ fn the_last_ask_of_a_supervisor_is_read_from_the_cores_own_words() {
     assert_ne!(unknown, FIXTURE);
     let l = List::from_snapshot(&snapshot::decode(&unknown).expect("still decodes"));
     assert!(l.rows().all(|r| r.ask.is_none()));
+}
+
+/// Task 1714: a group's tie to a project as the core writes it -- the tie,
+/// why one was not made, and whether to ask now -- read off the core's own
+/// fixture, which has a bound group and the rest not yet known.
+#[test]
+fn a_groups_tie_why_and_ask_are_read_as_the_core_wrote_them() {
+    let s = snapshot::decode(FIXTURE).expect("the fixture decodes");
+    let bound = s.groups.iter().find(|g| g.project.as_ref().is_some_and(|p| p.tie == "bound")).expect("the fixture binds one");
+    let tie = bound.project.clone().unwrap();
+    assert_eq!(tie, snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false });
+    assert_eq!(bound.project_name.as_deref(), Some("infra"));
+    let unknown = s.groups.iter().filter(|g| g.project.as_ref().is_some_and(|p| p.why == "projects_unknown")).count();
+    assert!(unknown > 0);
+    // And onto the row, where the menu and the right end read it.
+    let l = List::from_snapshot(&s);
+    let row = l.rows().find(|r| r.project_name.as_deref() == Some("infra")).expect("its row");
+    assert_eq!(row.project.as_ref().map(|p| p.tie.as_str()), Some("bound"));
 }

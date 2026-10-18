@@ -149,6 +149,8 @@ fn fetch() {
     if let Some(projects) = projects {
         crate::project_session::told(&projects);
     }
+    // Whether the core says to ask about a group's project now (task 1714).
+    crate::project_link_ui::soon();
 }
 
 fn read() -> Data {

@@ -1156,3 +1156,80 @@
 
 /* In the hover text over a tab's colour dots, the line of the supervisor's pane (task 1699). */
 "supervisor" = "supervisor";
+
+/* Group ↔ project (task 1713) */
+"Saved as the project \"%@\", this group's." = "Saved as the project \"%@\", this group's.";
+"The supervisor's tab was saved as the project \"%@\", as this group's project." = "The supervisor's tab was saved as the project \"%@\", as this group's project.";
+"Renamed to \"%@\", this group's." = "Renamed to \"%@\", this group's.";
+"The supervisor's tab was in the project \"%@\", which was renamed \"%@\", as this group's project." = "The supervisor's tab was in the project \"%@\", which was renamed \"%@\", as this group's project.";
+"\"%@\" is this group's project now." = "\"%@\" is this group's project now.";
+"The project \"%@\" the supervisor's tab is in is this group's project now." = "The project \"%@\" the supervisor's tab is in is this group's project now.";
+"Joined the project \"%@\", this group's." = "Joined the project \"%@\", this group's.";
+"Replaced the project \"%@\", this group's." = "Replaced the project \"%@\", this group's.";
+"The project \"%@\" was replaced with the supervisor's tab, as this group's project. The old one is kept as the previous version." = "The project \"%@\" was replaced with the supervisor's tab, as this group's project. The old one is kept as the previous version.";
+"To change it back, use the group's Project menu." = "To change it back, use the group's Project menu.";
+"Undone: the project \"%@\" was moved to the Trash, and this group uses no project." = "Undone: the project \"%@\" was moved to the Trash, and this group uses no project.";
+"Undone: the project is called \"%@\" again, and this group uses no project." = "Undone: the project is called \"%@\" again, and this group uses no project.";
+"Undone: this group uses no project." = "Undone: this group uses no project.";
+"Undone: this page was taken out of the project \"%@\", and this group uses no project." = "Undone: this page was taken out of the project \"%@\", and this group uses no project.";
+"Undone: the project \"%@\" is back to its previous version, and this group uses no project." = "Undone: the project \"%@\" is back to its previous version, and this group uses no project.";
+"Not all of it was undone: %@" = "Not all of it was undone: %@";
+"Same-name project" = "Same-name project";
+"Two projects" = "Two projects";
+"Project not made" = "Project not made";
+"There is already a project \"%@\", and it is the group \"%@\"'s." = "There is already a project \"%@\", and it is the group \"%@\"'s.";
+"There is already a project \"%@\", in no group." = "There is already a project \"%@\", in no group.";
+"Two projects both say they are this group's." = "Two projects both say they are this group's.";
+"The supervisor's tab is in a project that is another group's." = "The supervisor's tab is in a project that is another group's.";
+"This supervisor is already the supervisor of another group, which has a project. A supervisor looks after one project." = "This supervisor is already the supervisor of another group, which has a project. A supervisor looks after one project.";
+"This supervisor looks after several groups with no project, so which this page is for is not known." = "This supervisor looks after several groups with no project, so which this page is for is not known.";
+"There is more than one supervisor in the group." = "There is more than one supervisor in the group.";
+"Which projects there are is not known yet." = "Which projects there are is not known yet.";
+"Open Project \"%@\"" = "Open Project \"%@\"";
+"Show in Project Settings" = "Show in Project Settings";
+"No Longer This Group's Project…" = "No Longer This Group's Project…";
+"Save the Supervisor's Tab as Project \"%@\"" = "Save the Supervisor's Tab as Project \"%@\"";
+"Use an Existing Project" = "Use an Existing Project";
+"This Group Uses No Project" = "This Group Uses No Project";
+"Use a Project for This Group" = "Use a Project for This Group";
+"Join and Link" = "Join and Link";
+"Replace \"%@\"…" = "Replace \"%@\"…";
+"Open \"%@\"" = "Open \"%@\"";
+"This group" = "This group";
+"Group %@" = "Group %@";
+"No group" = "No group";
+"%@ (old)" = "%@ (old)";
+"Rename \"%@\" to \"%@\" and then link?" = "Rename \"%@\" to \"%@\" and then link?";
+"saved %@, %@ page(s)" = "saved %@, %@ page(s)";
+"There is already a project \"%@\" (%@), in no group. A group's project has the group's name: add the supervisor's tab to it, as this group's project?" = "There is already a project \"%@\" (%@), in no group. A group's project has the group's name: add the supervisor's tab to it, as this group's project?";
+"There is already a project \"%@\". Add the supervisor's tab to it?" = "There is already a project \"%@\". Add the supervisor's tab to it?";
+"A group's project has the group's name. \"%@\" was saved %@, has %@ page(s), and is no group's yet." = "A group's project has the group's name. \"%@\" was saved %@, has %@ page(s), and is no group's yet.";
+"Once added it is the group %@'s project: the supervisor's tab becomes its page %@, and the pages it has stay as they are." = "Once added it is the group %@'s project: the supervisor's tab becomes its page %@, and the pages it has stay as they are.";
+"Replace \"%@\"?" = "Replace \"%@\"?";
+"\"%@\" will be replaced with the tab \"%@\" (%@ pane(s)), and the tab is saved to it automatically from then on. The layout replaced is kept as the previous version." = "\"%@\" will be replaced with the tab \"%@\" (%@ pane(s)), and the tab is saved to it automatically from then on. The layout replaced is kept as the previous version.";
+"To get the old one back: Settings › Projects, choose \"%@\", Restore Previous Version." = "To get the old one back: Settings › Projects, choose \"%@\", Restore Previous Version.";
+"Save as Group \"%@\"'s Project…" = "Save as Group \"%@\"'s Project…";
+"As group \"%@\"'s project" = "As group \"%@\"'s project";
+"Open \"%@\" First" = "Open \"%@\" First";
+"Use It" = "Use It";
+"Use as This Group's Project" = "Use as This Group's Project";
+"Replace…" = "Replace…";
+"The projects are not known yet. Try again in a moment." = "The projects are not known yet. Try again in a moment.";
+"That project is no longer there." = "That project is no longer there.";
+"That project is another group's." = "That project is another group's.";
+"Another project already has this group's name." = "Another project already has this group's name.";
+"No longer the group %@'s project?" = "No longer the group %@'s project?";
+"The project \"%@\" stays as it is, and its open tabs stay open. The group uses no project from now on." = "The project \"%@\" stays as it is, and its open tabs stay open. The group uses no project from now on.";
+"Also move the project file to the Trash" = "Also move the project file to the Trash";
+"No Longer This Group's Project" = "No Longer This Group's Project";
+"Rename and Link" = "Rename and Link";
+"Replace" = "Replace";
+
+/* 总控台：没有项目的群右栏底下那句（task 1713） */
+"This group has no project yet, so only the supervisor starts. Once it takes up the group, its tab is saved as a project of the group's name; you are told when it is, and it can be undone." = "This group has no project yet, so only the supervisor starts. Once it takes up the group, its tab is saved as a project of the group's name; you are told when it is, and it can be undone.";
+
+/* 撞名确认框：以后再说（Esc）。不用 "Later"：那个键已经译成「稍后」 */
+"Ask Me Later" = "Ask Me Later";
+
+/* 项目：关联时这个群的总管已经通过别的群有项目了（task 1713） */
+"This group's supervisor already has a project through another group. One supervisor, one project." = "This group's supervisor already has a project through another group. One supervisor, one project.";

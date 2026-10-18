@@ -15,6 +15,7 @@ use polter_control_room::list::{self, List, Row};
 use polter_control_room::json::Value;
 use polter_control_room::pane;
 use polter_control_room::pane_color::Color as PaneColor;
+use polter_control_room::project_link::{self, HintClock};
 use polter_control_room::{panestack, tabmarks};
 use polter_control_room::pulse::{self, Scope};
 use polter_control_room::quota;
@@ -151,6 +152,100 @@ impl PaneColours {
     fn of(&self, id: Option<&str>) -> Option<PaneColor> {
         let id = id?;
         self.colors.iter().find(|(t, _)| t == id).map(|(_, c)| *c)
+    }
+}
+
+/// `project_link_cases.json`, beside the snapshot (`project-link-interface.md`
+/// §5): the group states the "Project ›" menu and the row's words are
+/// printed for, and the hint's clock cases.
+struct ProjectLinkCases {
+    menu: Vec<LinkCase>,
+    hint: Vec<HintCase>,
+}
+
+struct LinkCase {
+    tie: String,
+    why: String,
+    steward: bool,
+    name: Option<String>,
+}
+
+struct HintCase {
+    case: String,
+    steps: Vec<(f64, bool)>,
+    close_at: Option<f64>,
+}
+
+/// A number as the macOS dump writes a `Double`: whole ones without a point.
+fn seconds(v: f64) -> String {
+    if v == v.round() {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
+impl ProjectLinkCases {
+    fn read(snapshot: &str) -> ProjectLinkCases {
+        let path = std::path::Path::new(snapshot).with_file_name("project_link_cases.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let v = polter_control_room::json::parse(&text).expect("project_link_cases.json is JSON");
+        let word = |v: &Value, key: &str| match v.get(key) {
+            Some(Value::Str(s)) => s.clone(),
+            _ => panic!("project_link_cases.json: a {key} is missing"),
+        };
+        let number = |v: &Value| match v {
+            Value::Int(n) => *n as f64,
+            Value::Float(f) => *f,
+            other => panic!("project_link_cases.json: {other:?} is no number"),
+        };
+        let menu = match v.get("menu") {
+            Some(Value::Arr(items)) => items
+                .iter()
+                .map(|c| LinkCase {
+                    tie: word(c, "tie"),
+                    why: word(c, "why"),
+                    steward: match c.get("steward") {
+                        Some(Value::Bool(b)) => *b,
+                        _ => panic!("project_link_cases.json: a steward is missing"),
+                    },
+                    name: match c.get("name") {
+                        Some(Value::Str(s)) => Some(s.clone()),
+                        Some(Value::Null) => None,
+                        _ => panic!("project_link_cases.json: a name is missing"),
+                    },
+                })
+                .collect(),
+            _ => panic!("project_link_cases.json: no menu"),
+        };
+        let hint = match v.get("hint") {
+            Some(Value::Arr(items)) => items
+                .iter()
+                .map(|h| HintCase {
+                    case: word(h, "case"),
+                    steps: match h.get("steps") {
+                        Some(Value::Arr(steps)) => steps
+                            .iter()
+                            .map(|s| match s {
+                                Value::Arr(pair) if pair.len() == 2 => match &pair[1] {
+                                    Value::Bool(b) => (number(&pair[0]), *b),
+                                    _ => panic!("project_link_cases.json: a step's second is not a flag"),
+                                },
+                                _ => panic!("project_link_cases.json: a step is not a pair"),
+                            })
+                            .collect(),
+                        _ => panic!("project_link_cases.json: a case has no steps"),
+                    },
+                    close_at: match h.get("close_at") {
+                        Some(Value::Null) => None,
+                        Some(n) => Some(number(n)),
+                        None => panic!("project_link_cases.json: a close_at is missing"),
+                    },
+                })
+                .collect(),
+            _ => panic!("project_link_cases.json: no hint"),
+        };
+        ProjectLinkCases { menu, hint }
     }
 }
 
@@ -695,6 +790,39 @@ fn main() {
                 quote(&tabmarks::tip(panes, &|m| m.to_string()).unwrap_or_default()),
             );
         }
+    }
+
+    // Task 1714: the group's "Project ›" menu, the words at the right end of
+    // its row, and how long the line saying a project was made stays --
+    // over the cases beside the snapshot (project_link_cases.json).
+    let links = ProjectLinkCases::read(&args[1]);
+    for c in &links.menu {
+        let items: Vec<String> = project_link::menu(&c.tie, &c.why, c.steward).iter().map(project_link::Item::id).collect();
+        println!(
+            "project_menu tie={} why={} steward={} -> {}",
+            c.tie,
+            c.why,
+            if c.steward { "yes" } else { "no" },
+            items.join(",")
+        );
+        println!(
+            "project_note tie={} why={} name={} -> {}",
+            c.tie,
+            c.why,
+            c.name.as_deref().unwrap_or("-"),
+            project_link::note(&c.tie, &c.why, c.name.as_deref()).said()
+        );
+    }
+    for h in &links.hint {
+        let mut clock = HintClock::default();
+        for &(at, visible) in &h.steps {
+            clock.look(at, visible);
+            if h.close_at == Some(at) {
+                clock.close();
+            }
+        }
+        let said = if clock.gone() { "gone".to_string() } else { format!("remaining={}", seconds(clock.remaining())) };
+        println!("hint_clock case={} -> {said}", h.case);
     }
 
     // Looking at a row: which are marked seen, and after how long. The

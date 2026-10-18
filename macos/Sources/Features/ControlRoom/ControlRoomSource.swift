@@ -193,6 +193,10 @@ final class ControlRoomModel: ObservableObject {
     /// two questions asked. Handed in, so the rest runs without AppKit's
     /// side effects (tests replace them).
     var effects = ControlRoomRowMenuState.Effects.system
+    /// What the group's "Project ›" menu, the banner and the question ask
+    /// the app to do (task 1713); nil, and nothing about projects is
+    /// offered.
+    weak var projectHands: ControlRoomProjectHands?
 
     /// Make a group by the name the person typed. Returns what to tell
     /// them when it was not made; nil when it was -- and then it is

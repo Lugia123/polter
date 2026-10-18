@@ -271,6 +271,14 @@ const Group = struct {
     /// an old group a project goes by (`Projects`). This run's only.
     project_claim: ?ProjectClaim = null,
 
+    /// How many times the person answered "Not Now" to joining the group
+    /// to the project of its name (task 1713). Written down; after two the
+    /// question is not put again, and only the banner stays.
+    project_not_now: u8 = 0,
+    /// "Not Now" was said in this run: the question waits for the next
+    /// one. This run's only.
+    project_not_now_said: bool = false,
+
     fn deinit(self: *Group, alloc: Allocator) void {
         for (self.log.items) |m| m.release(alloc);
         self.log.deinit(alloc);
@@ -766,6 +774,34 @@ pub fn peers(self: *const Chat) Bus.Peers {
     return .{ .ctx = self, .shareFn = sharesGroupOpaque };
 }
 
+test "Chat: \"Not Now\" to joining a project holds for the run, and after twice for good (#1713)" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.create("polter", 0x1);
+    try testing.expect(chat.projectAsk("polter"));
+    try testing.expectEqual(@as(u8, 1), try chat.sayProjectNotNow("polter"));
+    try testing.expect(!chat.projectAsk("polter"));
+    // Saying it again in the same run counts once.
+    try testing.expectEqual(@as(u8, 1), try chat.sayProjectNotNow("polter"));
+
+    // The next start: what was written down comes back, and it is asked once more.
+    var next = testChat();
+    defer next.deinit();
+    try next.create("polter", 0x1);
+    next.restoreProjectNotNow("polter", 1);
+    try testing.expect(next.projectAsk("polter"));
+    try testing.expectEqual(@as(u8, 2), try next.sayProjectNotNow("polter"));
+
+    // And the one after: never again.
+    var last = testChat();
+    defer last.deinit();
+    try last.create("polter", 0x1);
+    last.restoreProjectNotNow("polter", 2);
+    try testing.expect(!last.projectAsk("polter"));
+    try testing.expect(!last.projectAsk("nope"));
+    try testing.expectError(error.NoSuchGroup, last.sayProjectNotNow("nope"));
+}
+
 test "#1265: a renamed group is the same group" {
     var chat = testChat();
     defer chat.deinit();
@@ -1117,6 +1153,34 @@ pub fn setProject(self: *Chat, name: []const u8, tie: ProjectTie) Error!bool {
     group.project.free(self.alloc);
     group.project = owned;
     return true;
+}
+
+/// The most times "Not Now" may be said before the question stops being
+/// put: once in a run, and once more at the next start (task 1713).
+pub const project_not_now_most = 2;
+
+/// Whether the person should be asked to join `name` to the project of its
+/// name now, given that one is in the way (`Projects.Why.project_name_taken`):
+/// not when "Not Now" was said in this run, nor after it was said
+/// `project_not_now_most` times. A group that is not there is never asked.
+pub fn projectAsk(self: *const Chat, name: []const u8) bool {
+    const group = self.groups.getPtr(name) orelse return false;
+    return !group.project_not_now_said and group.project_not_now < project_not_now_most;
+}
+
+/// Say "Not Now" for `name`: not again in this run. Returns the count to
+/// write down.
+pub fn sayProjectNotNow(self: *Chat, name: []const u8) Error!u8 {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    if (!group.project_not_now_said) group.project_not_now +|= 1;
+    group.project_not_now_said = true;
+    return group.project_not_now;
+}
+
+/// Put back what was written down (`GroupLog.Shell.project_not_now`).
+pub fn restoreProjectNotNow(self: *Chat, name: []const u8, times: u8) void {
+    const group = self.groups.getPtr(name) orelse return;
+    group.project_not_now = times;
 }
 
 pub fn projectClaimOf(self: *const Chat, name: []const u8) ?ProjectClaim {

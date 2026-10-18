@@ -31,6 +31,7 @@ use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
+use polter_control_room::hint_bar;
 use polter_control_room::look;
 use polter_control_room::pane::{self, Drawn, Place, Px, Title};
 use polter_control_room::pane_color::Color;
@@ -135,6 +136,9 @@ pub struct One {
     /// and the edge is painted round it in this colour (`pane::edged`,
     /// tasks 1692 and 1700).
     pub edged: Option<Color>,
+    /// The line saying a project was made for its group (task 1714): over
+    /// the top of its window, which is that much shorter; with the group.
+    pub hint: Option<(Px, String)>,
 }
 
 /// What a window's content area holds besides its panes.
@@ -159,6 +163,9 @@ pub struct Asked {
     /// is drawn as none: it is the drawing of a moment, and the next
     /// `poltergeist_pane` lays it out again.
     colors: Vec<(PaneId, Option<Color>)>,
+    /// The terminal a line saying a project was made stands over, and its
+    /// group (task 1714): the group's supervisor's, when it is in this tab.
+    hint: Option<(String, String)>,
 }
 
 /// The colours set on the panes of a window's tab in front.
@@ -204,7 +211,16 @@ impl Asked {
                 .collect(),
             None => Vec::new(),
         };
-        Asked { enabled: enabled(), keys, colors }
+        // The supervisors of the groups a line stands for: one of them in
+        // this tab carries it (`project_link_ui`).
+        let hint = crate::project_link_ui::hints().into_iter().find_map(|h| {
+            let steward = crate::control_room_source::with(|d| match d {
+                crate::control_room_source::Data::Ready(r) => r.list.row(&h.group).and_then(|row| row.steward.clone()),
+                _ => None,
+            })?;
+            keys.iter().any(|(_, k)| *k == steward).then_some((steward, h.group))
+        });
+        Asked { enabled: enabled(), keys, colors, hint }
     }
 
     fn key(&self, pane: PaneId) -> Option<&str> {
@@ -276,8 +292,18 @@ impl Asked {
                     }
                 }
             };
+            // The line saying a project was made goes over the top of the
+            // supervisor's window, which gives up its height (task 1714).
+            let (window, hint) = match &self.hint {
+                Some((key, group)) if self.key(*id) == Some(key.as_str()) && window.h > 2.0 * hint_bar::HEIGHT * scale => {
+                    let h = (hint_bar::HEIGHT * scale).round();
+                    let strip = Px { x: window.x as i32, y: window.y as i32, w: window.w as i32, h: h as i32 };
+                    (TreeRect::new(window.x, window.y + h, window.w, window.h - h), Some((strip, group.clone())))
+                }
+                _ => (window, None),
+            };
             windows.push((*id, window));
-            panes.push(One { pane: *id, key: self.key(*id).map(str::to_string), own_name: name.clone(), drawn, rect, stack: stack.clone(), color: self.color(*id), edged });
+            panes.push(One { pane: *id, key: self.key(*id).map(str::to_string), own_name: name.clone(), drawn, rect, stack: stack.clone(), color: self.color(*id), edged, hint });
         }
         (Frames { place: Some(place), ground, panes }, windows)
     }
@@ -410,6 +436,110 @@ pub fn repaint(frame: HWND) {
         }
         rc.top = crate::strip::strip_h(tabs::scale_of(frame));
         let _ = InvalidateRect(Some(frame), Some(&rc), false);
+    }
+}
+
+/// A line saying a project was made came or went, or changed (task 1714):
+/// every window is laid out again, since the pane it stands over gives up
+/// its height, and painted.
+pub fn hints_changed() {
+    let frames: Vec<isize> = tabs::with_windows(|ws| ws.iter().map(|w| w.frame).collect());
+    for raw in frames {
+        let frame = HWND(raw as *mut core::ffi::c_void);
+        tabs::layout(frame);
+        let _ = unsafe { InvalidateRect(Some(frame), None, false) };
+    }
+    crate::project_link_ui::keep_time();
+}
+
+/// Where each line saying a project was made was last painted in a
+/// window, with its parts: what a click on it is asked against.
+struct HintAt {
+    frame: isize,
+    group: String,
+    at: Px,
+    scale: f64,
+    geometry: hint_bar::Geometry,
+}
+
+thread_local! {
+    static HINTS_AT: RefCell<Vec<HintAt>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The groups whose line is painted in `frame`.
+pub fn hints_in(frame: HWND) -> Vec<String> {
+    HINTS_AT.with(|h| h.borrow().iter().filter(|x| x.frame == frame.0 as isize).map(|x| x.group.clone()).collect())
+}
+
+/// Paint the lines saying a project was made in the tab in front of
+/// `frame`, over the tops of the panes they stand over -- framed or not.
+pub fn paint_hints(frame: HWND, hdc: HDC) {
+    let (panes, scale) = match tabs::window(frame) {
+        Some(win) => (win.pane_frames.panes.clone(), win.scale.max(0.1)),
+        None => return,
+    };
+    let theme = look::theme(dark(frame));
+    let mut painted = Vec::new();
+    for one in &panes {
+        let Some((at, group)) = &one.hint else { continue };
+        let Some(hint) = crate::project_link_ui::hint_of(group) else { continue };
+        let w = at.w as f64 / scale;
+        let undo_words = (!hint.undone).then(|| tr(polter_control_room::project_words::msg::UNDO));
+        let undo_w = undo_words.as_ref().map(|words| unsafe {
+            let dc = GetDC(Some(frame));
+            let font = crate::uifont::make((scale * 96.0).round() as i32, look::font::BODY as i32, look::font::WEIGHT_BODY as i32, crate::uifont::ui_face());
+            let px = crate::control_room::text_width(dc, font, words);
+            let _ = DeleteObject(font.into());
+            ReleaseDC(Some(frame), dc);
+            px as f64 / scale + 2.0 * look::space::FRAME_TO_CONTENT
+        });
+        // The short words where the line is narrow: the design's narrow
+        // copy, in the supervisor's own tab.
+        let short = w < 480.0;
+        let rect = polter_control_room::layout::Rect { x: 0.0, y: 0.0, w, h: hint_bar::HEIGHT };
+        let g = hint_bar::geometry(rect, undo_w);
+        let items = hint_bar::build(&g, &crate::project_link_ui::hint_words(&hint, short), undo_words.as_deref(), theme);
+        unsafe {
+            crate::control_room::paint_scene(hdc, scale, at.x, at.y, &items);
+            let c = g.close;
+            let p = |v: f64| (v * scale).round() as i32;
+            let cross = RECT { left: at.x + p(c.x), top: at.y + p(c.y), right: at.x + p(c.x + c.w), bottom: at.y + p(c.y + c.h) };
+            crate::strip::draw_cross(hdc, cross, colorref(theme.text_secondary), scale);
+        }
+        painted.push(HintAt { frame: frame.0 as isize, group: group.clone(), at: *at, scale, geometry: g });
+    }
+    HINTS_AT.with(|h| {
+        let mut h = h.borrow_mut();
+        h.retain(|x| x.frame != frame.0 as isize);
+        h.extend(painted);
+    });
+}
+
+/// A press on a line saying a project was made, at `(x, y)` in the frame
+/// window's pixels: Undo or ✕ does its thing. Whether it was on a line.
+pub fn hint_press(frame: HWND, x: i32, y: i32) -> bool {
+    let hit = HINTS_AT.with(|h| {
+        h.borrow().iter().filter(|s| s.frame == frame.0 as isize).find_map(|s| {
+            let at = ((x - s.at.x) as f64 / s.scale, (y - s.at.y) as f64 / s.scale);
+            match hint_bar::hit(&s.geometry, at) {
+                hint_bar::Hit::Outside => None,
+                hit => Some((s.group.clone(), hit)),
+            }
+        })
+    });
+    match hit {
+        Some((group, hint_bar::Hit::Undo)) => {
+            wlogf!(frame, "[project-link] Undo on the line for {:?}", group);
+            crate::project_link_ui::undo(&group);
+            true
+        }
+        Some((group, hint_bar::Hit::Close)) => {
+            wlogf!(frame, "[project-link] closed the line for {:?}", group);
+            crate::project_link_ui::close(&group);
+            true
+        }
+        Some(_) => true,
+        None => false,
     }
 }
 

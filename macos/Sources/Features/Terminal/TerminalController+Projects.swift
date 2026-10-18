@@ -21,12 +21,22 @@ extension TerminalController {
     }
 
     @IBAction func saveAsProject(_ sender: Any?) {
-        presentSaveAsProject { _ in }
+        presentSaveAsProject(group: ProjectLinkDesk.shared?.supervisorGroup(in: self)) { _ in }
+    }
+
+    /// "Save as Group "X"'s Project…", first on the tab's menu when the tab
+    /// holds a group's supervisor (task 1713): the same dialog, with the
+    /// group's name and its box ticked.
+    @IBAction func saveAsGroupProject(_ sender: Any?) {
+        let group = (sender as? NSMenuItem)?.representedObject as? String
+            ?? ProjectLinkDesk.shared?.supervisorGroup(in: self)
+        presentSaveAsProject(group: group) { _ in }
     }
 
     /// Show "Save as Project" for this tab's window. `done` is told whether
-    /// a save happened and worked.
-    private func presentSaveAsProject(done: @escaping (Bool) -> Void) {
+    /// a save happened and worked. `group`: the group whose supervisor is in
+    /// this tab, which the dialog offers to save it for.
+    private func presentSaveAsProject(group: String? = nil, done: @escaping (Bool) -> Void) {
         let controllers = tabsOfThisWindow
         let tabs = controllers.enumerated().map { index, controller in
             ProjectPageRules.Tab(
@@ -38,7 +48,8 @@ extension TerminalController {
         }
         projectPicker.presentSaveAs(
             tabs: tabs,
-            onSave: { [weak self] name, ids in
+            group: group,
+            onSave: { [weak self] name, ids, forGroup in
                 guard let self else { return }
                 var saved = false
                 // A save that fails is reported and is not a save
@@ -55,6 +66,7 @@ extension TerminalController {
                     },
                     reportFailure: { self.presentProjectError($0) },
                     close: { saved = true })
+                if saved, forGroup, let group { ProjectLinkDesk.shared?.savedAsGroupProject(group) }
                 done(saved)
             },
             onCancel: { done(false) })
@@ -167,6 +179,7 @@ extension TerminalController {
             item.title = ProjectPageRules.menuHeader(project: project)
             return false
         case #selector(saveAsProject(_:)): return ProjectPageRules.offered(.saveAs, pageOf: project)
+        case #selector(saveAsGroupProject(_:)): return true
         case #selector(loadProject(_:)): return ProjectPageRules.offered(.open, pageOf: project)
         case #selector(manageProjects(_:)): return ProjectPageRules.offered(.manage, pageOf: project)
         case #selector(addToProject(_:)): return ProjectPageRules.offered(.addTo, pageOf: project)

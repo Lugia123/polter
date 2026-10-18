@@ -75,6 +75,27 @@ pub fn layout(mode: Mode, width: i32, height: i32, dpi: i32) -> Layout {
     }
 }
 
+/// How much taller a "Save as Project" window is with the tick box under
+/// its caption (task 1714: "As the project of group “X”"): one control's
+/// height and the gap above it.
+pub fn tick_extra(dpi: i32) -> i32 {
+    scale(grid::CONTROL_H, dpi) + scale(grid::ROW_GAP, dpi)
+}
+
+/// `layout` of a window `tick_extra` taller, with the tick box placed under
+/// the caption and the list's top moved down by it: the list keeps the
+/// height it had in the shorter window. The tick box's rectangle.
+pub fn with_tick(l: Layout, dpi: i32) -> (Layout, Rect) {
+    let extra = tick_extra(dpi);
+    let above = l.caption.unwrap_or(l.field);
+    let top = above.bottom + scale(grid::ROW_GAP, dpi);
+    let tick = Rect::new(l.field.left, top, l.save.map_or(l.field.right, |s| s.right), top + scale(grid::CONTROL_H, dpi));
+    // The window is `extra` taller, so the list already reaches the new
+    // bottom: only its top, and the line over it, come down.
+    let down = |r: Rect| Rect::new(r.left, r.top + extra, r.right, r.bottom + extra);
+    (Layout { rule_top: down(l.rule_top), list: Rect::new(l.list.left, l.list.top + extra, l.list.right, l.list.bottom), ..l }, tick)
+}
+
 /// Where the text of a field sits inside the frame drawn at `field`, when
 /// the window draws the frame itself: one line high, in the middle, clear of
 /// the frame's sides. A bare `EDIT` the height of the frame puts its text
@@ -122,6 +143,20 @@ pub fn step(selected: Option<usize>, visible: usize, down: bool) -> Option<usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tick_box_sits_under_the_caption_and_the_list_keeps_its_height() {
+        let dpi = 96;
+        let plain = layout(Mode::SaveAs, 480, 400, dpi);
+        let (l, tick) = with_tick(layout(Mode::SaveAs, 480, 400 + tick_extra(dpi), dpi), dpi);
+        let caption = plain.caption.unwrap();
+        assert_eq!(tick.top, caption.bottom + grid::ROW_GAP);
+        assert_eq!(tick.height(), grid::CONTROL_H);
+        assert_eq!((tick.left, tick.right), (plain.field.left, plain.save.unwrap().right));
+        assert_eq!(l.list.height(), plain.list.height());
+        assert_eq!(l.rule_top.top, tick.bottom + grid::ROW_GAP);
+        assert_eq!(l.cancel, Rect::new(plain.cancel.left, plain.cancel.top + tick_extra(dpi), plain.cancel.right, plain.cancel.bottom + tick_extra(dpi)));
+    }
 
     #[test]
     fn load_has_a_full_width_field_and_no_save() {

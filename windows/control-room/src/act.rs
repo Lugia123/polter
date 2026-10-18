@@ -50,6 +50,17 @@ pub enum Act<'a> {
     Archive { group: &'a str },
     Unarchive { group: &'a str },
     RenameGroup { from: &'a str, to: &'a str },
+    // The person's word on a group's project (task 1714,
+    // `project-link-interface.md` §1): the same as the supervisor's
+    // `group_project`, said by the person, so no standing is asked.
+    /// "This group has no project": its tie becomes `declined`.
+    ProjectDecline { group: &'a str },
+    /// "This group uses a project" again: `declined` becomes `undecided`.
+    ProjectUndecline { group: &'a str },
+    /// Use the project already there by that name.
+    ProjectLink { group: &'a str, project: &'a str },
+    /// "Not now" in the confirmation: not asked again this run.
+    ProjectNotNow { group: &'a str },
     SetBrief { group: &'a str, brief: &'a str },
     /// The two numbers the dialog showed: the core does nothing if they
     /// are not what it would delete now (`Stale`).
@@ -170,6 +181,12 @@ pub fn encode(act: &Act) -> Option<String> {
         Act::Archive { group } => format!("{{\"act\":\"archive\",\"group\":{}}}", quote(group)),
         Act::Unarchive { group } => format!("{{\"act\":\"unarchive\",\"group\":{}}}", quote(group)),
         Act::RenameGroup { from, to } => format!("{{\"act\":\"rename_group\",\"from\":{},\"to\":{}}}", quote(from), quote(to)),
+        Act::ProjectDecline { group } => format!("{{\"act\":\"project_decline\",\"group\":{}}}", quote(group)),
+        Act::ProjectUndecline { group } => format!("{{\"act\":\"project_undecline\",\"group\":{}}}", quote(group)),
+        Act::ProjectLink { group, project } => {
+            format!("{{\"act\":\"project_link\",\"group\":{},\"project\":{}}}", quote(group), quote(project))
+        }
+        Act::ProjectNotNow { group } => format!("{{\"act\":\"project_not_now\",\"group\":{}}}", quote(group)),
         Act::SetBrief { group, brief } => format!("{{\"act\":\"set_brief\",\"group\":{},\"brief\":{}}}", quote(group), quote(brief)),
         Act::DeleteGroup { group, members, open_tasks } => {
             format!("{{\"act\":\"delete_group\",\"group\":{},\"members\":{members},\"open_tasks\":{open_tasks}}}", quote(group))
@@ -279,6 +296,17 @@ pub enum Refusal {
     NotStartedByHand,
     /// A take-over is under way.
     AlreadyTakingOver,
+    // `project_link` (task 1714, `project-link-interface.md` §1).
+    /// The host has not said what projects there are yet.
+    ProjectsUnknown,
+    NoSuchProject,
+    /// The project says it is another group's.
+    ProjectHasGroup,
+    /// Another project already has the group's name.
+    ProjectNameTaken,
+    /// The group's supervisor already has a project through another group:
+    /// one supervisor, one project.
+    SupervisorHasProject,
     /// A name this build does not know. Shown as it came, never dropped.
     Other,
 }
@@ -328,6 +356,11 @@ impl Refusal {
             "DeleteFailed" => Refusal::DeleteFailed,
             "NotStartedByHand" => Refusal::NotStartedByHand,
             "AlreadyTakingOver" => Refusal::AlreadyTakingOver,
+            "ProjectsUnknown" => Refusal::ProjectsUnknown,
+            "NoSuchProject" => Refusal::NoSuchProject,
+            "ProjectHasGroup" => Refusal::ProjectHasGroup,
+            "ProjectNameTaken" => Refusal::ProjectNameTaken,
+            "SupervisorHasProject" => Refusal::SupervisorHasProject,
             _ => Refusal::Other,
         }
     }
@@ -379,6 +412,11 @@ impl Refusal {
             Refusal::DeleteFailed => n_("Deleted from the list, but some of its records could not be deleted."),
             Refusal::NotStartedByHand => n_("There is nothing here the control room can take over."),
             Refusal::AlreadyTakingOver => n_("The control room is already taking over a supervisor."),
+            Refusal::ProjectsUnknown => n_("The projects on this computer have not been read yet. Try again in a moment."),
+            Refusal::NoSuchProject => n_("That project is not there any more."),
+            Refusal::ProjectHasGroup => n_("That project is another group's."),
+            Refusal::ProjectNameTaken => n_("Another project already has this group's name."),
+            Refusal::SupervisorHasProject => n_("This group's supervisor already has a project through another group: one supervisor, one project."),
             Refusal::Other => n_("It was not done ({})."),
         }
     }
@@ -644,6 +682,23 @@ mod menu_tests {
     use super::*;
 
     #[test]
+    fn the_project_links_refusals_are_named_and_not_taken_for_another() {
+        // Task 1714: `project_link`'s four, by the names `ControlAct.zig`
+        // gives them.
+        for (name, r) in [
+            ("ProjectsUnknown", Refusal::ProjectsUnknown),
+            ("NoSuchProject", Refusal::NoSuchProject),
+            ("ProjectHasGroup", Refusal::ProjectHasGroup),
+            ("ProjectNameTaken", Refusal::ProjectNameTaken),
+            ("SupervisorHasProject", Refusal::SupervisorHasProject),
+        ] {
+            assert_eq!(Refusal::parse(name), r, "{name}");
+            let own = r.message() != Refusal::Other.message();
+            assert!(own, "{name}");
+        }
+    }
+
+    #[test]
     fn the_menu_acts_are_the_cores_words() {
         assert_eq!(encode(&Act::Pin { group: "g" }).unwrap(), r#"{"act":"pin","group":"g"}"#);
         assert_eq!(encode(&Act::Unpin { group: "g" }).unwrap(), r#"{"act":"unpin","group":"g"}"#);
@@ -653,6 +708,15 @@ mod menu_tests {
         assert_eq!(encode(&Act::Archive { group: "g" }).unwrap(), r#"{"act":"archive","group":"g"}"#);
         assert_eq!(encode(&Act::Unarchive { group: "g" }).unwrap(), r#"{"act":"unarchive","group":"g"}"#);
         assert_eq!(encode(&Act::RenameGroup { from: "a", to: "b\"" }).unwrap(), r#"{"act":"rename_group","from":"a","to":"b\""}"#);
+        // The person's word on a group's project (task 1714): the core's
+        // `ControlAct` names, field for field.
+        assert_eq!(encode(&Act::ProjectDecline { group: "g" }).unwrap(), r#"{"act":"project_decline","group":"g"}"#);
+        assert_eq!(encode(&Act::ProjectUndecline { group: "g" }).unwrap(), r#"{"act":"project_undecline","group":"g"}"#);
+        assert_eq!(
+            encode(&Act::ProjectLink { group: "g", project: "p\"" }).unwrap(),
+            r#"{"act":"project_link","group":"g","project":"p\""}"#
+        );
+        assert_eq!(encode(&Act::ProjectNotNow { group: "g" }).unwrap(), r#"{"act":"project_not_now","group":"g"}"#);
         assert_eq!(encode(&Act::SetBrief { group: "g", brief: "x\ny" }).unwrap(), r#"{"act":"set_brief","group":"g","brief":"x\ny"}"#);
         assert_eq!(
             encode(&Act::DeleteGroup { group: "g", members: 2, open_tasks: 3 }).unwrap(),

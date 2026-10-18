@@ -633,7 +633,21 @@ struct ControlRoomListView: View {
                         .truncationMode(.tail)
                         .frame(width: max(0, CGFloat(line1.name) - marksWidth), alignment: .leading)
                     marks(row)
-                    Spacer(minLength: 0)
+                    // The group's project in what the line has left between
+                    // the name and who waits (task 1713, §3.4): it takes
+                    // only that room and is cut first, so it never lies on
+                    // the status. `ControlRoomLine1` shares out the rest as
+                    // before.
+                    if let facts = row.facts {
+                        ProjectRowNote(
+                            note: ProjectLinkRules.note(tie: facts.projectTie, why: facts.projectWhy, name: facts.project),
+                            sentence: ProjectLinkPlan.whySentence(facts.projectWhy, group: row.id, blocker: nil))
+                            .padding(.leading, gap)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .layoutPriority(-1)
+                    } else {
+                        Spacer(minLength: 0)
+                    }
                     if let whoText, let room = line1.who {
                         // Cut from its start: the end of a long title is
                         // the part that tells two workers apart.
@@ -768,6 +782,16 @@ struct ControlRoomListView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 0)
+                // The group's project at the right end (task 1713, §3.4):
+                // its name, or what is to be answered about it.
+                if let facts = row.facts {
+                    ProjectRowNote(
+                        note: ProjectLinkRules.note(tie: facts.projectTie, why: facts.projectWhy, name: facts.project),
+                        sentence: ProjectLinkPlan.whySentence(facts.projectWhy, group: row.id, blocker: nil))
+                        // What the group is doing comes first; the project
+                        // gives way (task 1713).
+                        .layoutPriority(-1)
+                }
             }
         }
         .padding(.horizontal, CGFloat(Look.Side.rowPaddingX))
