@@ -64,10 +64,20 @@ pub fn hooksExpectedDetail(at_first_turn: bool) ?[]const u8 {
 /// first turn. Any other word, or none, is the wait from the launch.
 pub fn heardAtFirstTurn(detail: ?[]const u8) bool {
     const d = detail orelse return false;
-    return std.mem.eql(u8, d, first_turn);
+    return std.mem.eql(u8, d, first_turn) or std.mem.eql(u8, d, first_prompt);
+}
+
+/// Whether a `hooks_expected` said Polter is to type the first prompt
+/// (`agent_cli.HooksHeard.first_prompt`, task 1746). Its first hook comes
+/// with that turn as well (`heardAtFirstTurn`).
+pub fn firstPromptOwed(detail: ?[]const u8) bool {
+    const d = detail orelse return false;
+    return std.mem.eql(u8, d, first_prompt);
 }
 
 const first_turn = "first_turn";
+/// The `detail` of a `hooks_expected` whose first prompt Polter types.
+pub const first_prompt = "first_prompt";
 
 /// Why a launch started no CLI, as `+launch` says it in `detail`.
 pub const LaunchFailure = enum {

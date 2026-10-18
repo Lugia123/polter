@@ -105,6 +105,9 @@ def main():
         check("inventory", ask("inventory", {"version": 1, "cwd": None, "home": home}, home)["installed"] is True,
               "~/.local/bin/agy is installed")
 
+        # agy trusts this folder (task 1746): what the -i checks below are about.
+        trust = os.path.join(g, "antigravity-cli", "settings.json")
+        write(trust, json.dumps({"trustedWorkspaces": [cwd]}))
         req = {"version": 1, "cwd": cwd, "home": home, "polter": POLTER, "session": None,
                "role": {"key": "w", "name": "W", "instructions": "Report with task_progress."},
                "cli": {"skills": {"default": True, "except": ["skill:polter-supervising", "skill:deploy"]},
@@ -152,6 +155,44 @@ def main():
               "a plugin switched off in Antigravity: no hooks claimed, and that is said")
         write(config, json.dumps({"plugins": {"polter": {"enabled": True}}}))
         check("launch", ask("launch", req, home).get("hooks") is True, "switched back on: hooks again")
+
+        # A folder agy does not trust yet (task 1746, round two): -i would run
+        # the first turn with the trust question pending and hidden, and the
+        # next return typed would answer it. So no -i; Polter types it.
+        untrusted = os.path.join(root, "fresh")
+        os.makedirs(untrusted)
+        out = ask("launch", dict(req, cwd=untrusted), home)
+        check("trust", "-i" not in out["argv"] and out.get("hooks_heard") == "first_prompt"
+              and "typed once that is answered" in " ".join(out["notes"]),
+              "an untrusted folder: no -i, and Polter is told to type the first prompt (%s)" % out.get("hooks_heard"))
+        sub = os.path.join(cwd, "inside")
+        os.makedirs(sub)
+        out = ask("launch", dict(req, cwd=sub), home)
+        check("trust", "-i" not in out["argv"] and out.get("hooks_heard") == "first_prompt",
+              "a folder inside a trusted one is not trusted (agy asks again)")
+        out = ask("launch", req, home)
+        check("trust", out["argv"][-2] == "-i" and out.get("hooks_heard") == "first_turn",
+              "the trusted folder: -i, heard from the first turn")
+        bare = ask("launch", dict(req, cwd=untrusted, role={"key": "w", "name": "W"}), home)
+        check("trust", bare.get("hooks_heard") == "first_turn", "no instructions: nothing for Polter to type")
+        write(trust, "{not json")
+        out = ask("launch", req, home)
+        check("trust", "-i" not in out["argv"] and out.get("hooks_heard") == "first_prompt",
+              "agy's settings unreadable: taken as not trusted, the side on which the box is drawn")
+        write(trust, json.dumps({"trustedWorkspaces": [cwd]}))
+        # Resuming keeps -i: its conversation was started in a trusted folder.
+        record_dir = os.path.join(g, "antigravity-cli", "conversations")
+        sid0 = "155a398f-db14-4c5f-abbb-1bf03f8120a7"
+        write(os.path.join(record_dir, sid0 + ".db"), "")
+        out = ask("launch", dict(req, cwd=untrusted, session=sid0), home)
+        check("trust", "-i" in out["argv"] and out.get("hooks_heard") == "first_turn",
+              "a conversation picked up again keeps -i")
+        nohooks = os.path.join(root, "home-nohooks")
+        os.makedirs(nohooks)
+        out = ask("launch", dict(req, cwd=untrusted, home=nohooks), nohooks)
+        check("trust", "-i" not in out["argv"] and "hooks" not in out
+              and "nothing says when" in " ".join(out["notes"]),
+              "untrusted and no hooks: the instructions are not passed, and that is said")
 
         # Launch options, from `agy --help`: two lines of it as 1.4.0 prints them.
         check("options", ask("inventory", {"version": 1, "cwd": None, "home": home}, home)["options"] == [],
@@ -231,7 +272,8 @@ def main():
         check("resume", head(out["argv"]) == ["agy", "--model", "gemini-x-flash", "--conversation", sid, "--effort", "low"],
               "a conversation recorded here goes on, before the role's own arguments (%s)" % out["argv"])
         check("resume", out["argv"][-2] == "-i" and out["argv"][-1].startswith("You have been picked up again")
-              and "Report with task_progress." in out["argv"][-1] and "nothing in them is a new task" in out["argv"][-1],
+              and "Report with task_progress." in out["argv"][-1] and "nothing in them is a new task" in out["argv"][-1]
+              and "call no tool at all" in out["argv"][-1] and "Call `me`" not in out["argv"][-1],
               "a conversation that goes on is told it was picked up again, with its instructions inside")
         out = ask("launch", dict(req, session="../../etc/passwd"), home)
         check("resume", "--conversation" not in out["argv"] and "not an Antigravity conversation id" in " ".join(out["notes"]),

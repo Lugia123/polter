@@ -483,6 +483,12 @@ pub const HooksHeard = enum {
     /// typed at says nothing however long it sits there. The wait starts
     /// at the first line submitted (`Bus.noteLineSubmitted`).
     first_turn,
+    /// With its first turn, **and Polter is to type the first prompt**
+    /// (task 1746): Antigravity started in a folder it does not trust yet,
+    /// without `-i`, so that its trust box is drawn and answered by the
+    /// person. Once it is and the CLI's input box shows, Polter types the
+    /// role's instructions (`App.payFirstPrompts`).
+    first_prompt,
 
     fn of(v: ?std.json.Value) HooksHeard {
         const s = switch (v orelse return .startup) {
@@ -1160,6 +1166,21 @@ test "agent_cli: the launch request carries the role and one CLI's choices" {
     try testing.expectEqualStrings("mcp:argus", cli.get("mcp").?.object.get("except").?.array.items[0].string);
     try testing.expectEqualStrings("sonnet", cli.get("model").?.string);
     try testing.expectEqualStrings("--verbose", cli.get("args").?.array.items[0].string);
+}
+
+test "1746: a launch answer can say Polter is to type the first prompt, and the event says so on" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const agy = try parseLaunch(aa, "{\"argv\":[\"agy\"],\"hooks\":true,\"hooks_heard\":\"first_prompt\"}");
+    try testing.expectEqual(HooksHeard.first_prompt, agy.hooks_heard);
+    // What `+launch` sends for it: owed, and heard with the first turn.
+    const AgentEvent = @import("agent_event.zig");
+    try testing.expect(AgentEvent.firstPromptOwed(AgentEvent.first_prompt));
+    try testing.expect(AgentEvent.heardAtFirstTurn(AgentEvent.first_prompt));
+    const first_turn = AgentEvent.hooksExpectedDetail(true);
+    try testing.expect(!AgentEvent.firstPromptOwed(first_turn));
+    try testing.expect(!AgentEvent.firstPromptOwed(null));
 }
 
 test "1668: a launch answer says when the first hook comes, and the wait from the launch is the default" {

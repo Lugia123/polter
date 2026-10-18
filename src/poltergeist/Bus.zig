@@ -338,6 +338,11 @@ pub const AgentNotice = enum {
     /// or built no command, or the CLI was not there. Said once, to whoever
     /// watches the terminal; `detail` has the reason `+launch` gave.
     launch_failed,
+    /// Its CLI is asking the person a question before it starts -- a folder
+    /// trust box, as its plugin declares (`noteStartupQuestion`, task
+    /// 1746). Said to whoever watches it, or else to the supervisor that
+    /// launched it; `note` is the question's text.
+    startup_question,
 };
 
 /// A short string held inside the entry, so an `Entry` stays a value that
@@ -2791,6 +2796,55 @@ pub fn launchExitIsFailure(self: *const Bus, id: Id) bool {
     return !e.agent.connected;
 }
 
+/// What the screen of a terminal with no agent's hooks speaking shows of a
+/// question its CLI asks before it starts (task 1746, round two): `said` is
+/// the declared text of the one that is up, or null when none is.
+///
+/// **Its state says so for as long as the screen does**, the way a title's
+/// approval does (`noteTitle`): `awaiting_input` with `detail`
+/// `startup_question`, said by `screen`, which `terminal_list` and the
+/// control room read as somebody waiting on the person. Once, when it comes
+/// up, a line goes in the box -- to whoever watches the terminal, or else
+/// to the supervisor that launched it (`launcher`), who otherwise sees a
+/// worker that is neither working nor reporting. Its going puts the state
+/// back and takes an unread line back. Any hook event ends it too.
+///
+/// Answers whether anything went in the box.
+pub fn noteStartupQuestion(self: *Bus, id: Id, said: ?[]const u8, launcher: ?Id, now_ms: u64) bool {
+    const e = self.entries.getPtr(id) orelse return false;
+    const a = &e.agent;
+    if (a.hooks == .live) return false;
+    const asking = a.said_by == .screen and a.state == .awaiting_input;
+    const text = said orelse {
+        if (!asking) return false;
+        a.said_by = .hooks;
+        a.state = .idle;
+        a.since_ms = now_ms;
+        a.detail.set(null);
+        a.note.set(null);
+        if (a.pending == .startup_question) {
+            a.pending = null;
+            a.handed = 0;
+        }
+        return false;
+    };
+    if (asking) return false;
+    a.said_by = .screen;
+    a.state = .awaiting_input;
+    a.since_ms = now_ms;
+    a.last_event_ms = now_ms;
+    a.detail.set("startup_question");
+    a.note.set(text);
+
+    const watched = e.role == .watched and e.duty != .off;
+    const by: ?Id = if (launcher) |l| (if (l != id and l != 0 and self.isSupervisor(l)) l else null) else null;
+    if (!watched and by == null) return false;
+    if (!watched) e.launched_by = by;
+    a.pending = .startup_question;
+    a.handed = 0;
+    return true;
+}
+
 /// The CLI a launch started in `id` is asking the person something before
 /// it will start -- Antigravity's folder trust box (`Plugin.StartupSays`,
 /// task 1746) -- so the launch's wait for its agent is counted from
@@ -3137,7 +3191,7 @@ pub fn supervisorCount(self: *const Bus) usize {
 /// ways out are both one call -- `set_watch` to claim it, or `group_add`.
 fn hears(to: Id, id: Id, e: *const Entry, alone: bool, peers: Peers) bool {
     if (e.watched_by) |owner| return owner == to;
-    if (e.launched_by) |by| if (e.agent.pending == .launch_failed) return by == to;
+    if (e.launched_by) |by| if (e.agent.pending == .launch_failed or e.agent.pending == .startup_question) return by == to;
     if (alone) return true;
     return peers.share(to, id);
 }
@@ -3161,7 +3215,7 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers)
 /// approval or an answer it is waiting for.
 fn isWaiting(kind: AgentNotice) bool {
     return switch (kind) {
-        .awaiting_approval, .awaiting_input => true,
+        .awaiting_approval, .awaiting_input, .startup_question => true,
         .turn_ended, .turn_failed, .hooks_silent, .launch_failed => false,
     };
 }
@@ -3750,6 +3804,12 @@ fn writeAgent(
         .awaiting_input => try w.print(
             "{s}0x{x:0>16} awaiting input {s}",
             .{ sep, id, a.detail.get() orelse "" },
+        ),
+        // Task 1746: not the agent's question and not one for an agent to
+        // answer -- the keys that would are refused while it is up.
+        .startup_question => try w.print(
+            "{s}0x{x:0>16} waiting for the person: its CLI asks \"{s}\" before it starts. Nothing can be typed or pressed there until they answer it in that tab -- ask them to",
+            .{ sep, id, a.note.get() orelse "a question" },
         ),
         .hooks_silent => try w.print(
             "{s}0x{x:0>16} hooks expected {d}s ago and nothing heard (no session_started)",
@@ -5828,6 +5888,45 @@ test "hooks: a launch whose CLI is asking the person something is not said to ha
     // No launch waiting: nothing to hold.
     const loose: Id = 0x10d0;
     try testing.expect(!b.holdLaunch(loose, 1_000));
+}
+
+test "hooks: a launch whose CLI asks the person a question says so, to the supervisor that launched it (task 1746)" {
+    var b = try hookedBus();
+    defer b.deinit();
+    // Launched by `boss` (role_launch), not watched yet: its agent has not
+    // connected, so its standing is still held.
+    const fresh_one: Id = 0x10d1;
+    _ = try b.agentEvent(fresh_one, firstTurnExpected(), 0);
+    const boxed = b.noteStartupQuestion(fresh_one, "Do you trust the contents of this project?", boss, 1_000);
+    try testing.expect(boxed);
+    const a = b.agentOf(fresh_one);
+    try testing.expectEqual(AgentState.awaiting_input, a.state);
+    try testing.expectEqual(SaidBy.screen, a.said_by);
+    try testing.expectEqualStrings("startup_question", a.detail.get().?);
+    const known = a.known();
+    try testing.expect(known);
+    // Said once.
+    const again = b.noteStartupQuestion(fresh_one, "Do you trust the contents of this project?", boss, 2_000);
+    try testing.expect(!again);
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 2_000, &buf, .none) orelse return error.TestUnexpectedResult;
+    const said = std.mem.indexOf(u8, line, "waiting for the person") != null and
+        std.mem.indexOf(u8, line, "Do you trust") != null;
+    try testing.expect(said);
+
+    // Answered: the state goes back.
+    _ = b.noteStartupQuestion(fresh_one, null, boss, 3_000);
+    const after = b.agentOf(fresh_one);
+    try testing.expectEqual(AgentState.idle, after.state);
+    try testing.expectEqual(SaidBy.hooks, after.said_by);
+
+    // An agent whose hooks speak says for itself.
+    var live = hookEv(.session_started);
+    live.session_id = "s";
+    _ = try b.agentEvent(worker, live, 4_000);
+    const spoke = b.noteStartupQuestion(worker, "Do you trust the contents of this project?", boss, 5_000);
+    try testing.expect(!spoke);
 }
 
 test "hooks: an agent that connected is never a launch with no agent, watched or not (task 1712)" {

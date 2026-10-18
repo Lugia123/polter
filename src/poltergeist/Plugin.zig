@@ -491,6 +491,15 @@ pub const StartupSays = struct {
         neither,
     };
 
+    /// The declared text of the question that is up, or null when none is.
+    pub fn blockSaid(self: StartupSays, screen: []const u8) ?[]const u8 {
+        const tail = bottomRows(screen, ScreenSays.rows);
+        for (self.blocks) |text| {
+            if (std.mem.indexOf(u8, tail, text) != null) return text;
+        }
+        return null;
+    }
+
     pub fn verdict(self: StartupSays, screen: []const u8) Verdict {
         const tail = bottomRows(screen, ScreenSays.rows);
         for (self.blocks) |text| {
@@ -504,10 +513,12 @@ pub const StartupSays = struct {
 
     /// Whether the CLI's first turn is over, so a line meant for its second
     /// may be typed. `said` is its hooks' word when they speak (the turn
-    /// ended), null when they do not; then its input box showing on the
-    /// screen with nothing blocking it is.
+    /// ended), null when they do not. **Its input box must show as well,
+    /// with nothing blocking it, whatever the hooks say** (task 1746, round
+    /// two): the turn's end was heard and the line typed at once, and once
+    /// in three agy took none of it -- its box was not back yet.
     pub fn firstTurnOver(self: StartupSays, said: ?bool, screen: []const u8) bool {
-        if (said) |over| return over;
+        if (said) |over| if (!over) return false;
         return self.verdict(screen) == .ready;
     }
 };
@@ -3807,9 +3818,12 @@ test "1746: a line meant for agy's second turn waits for its first to be over" {
     const says: StartupSays = .{ .blocks = &.{"Do you trust the contents of this project?"}, .ready_says = &.{"? for shortcuts"}, .ready_without_agent = true, .tools_from_second_turn = true };
     const working = "> You are the supervisor...\n\n  Thinking...\n";
     const box = ">\n────\n? for shortcuts\n";
-    // Its hooks speak: their word, whatever the screen shows.
+    // Its hooks say the turn is still going: not over, whatever the screen.
     try testing.expect(!says.firstTurnOver(false, box));
-    try testing.expect(says.firstTurnOver(true, working));
+    // The hook first, the box later (task 1746, round two): over only once
+    // the box shows.
+    try testing.expect(!says.firstTurnOver(true, working));
+    try testing.expect(says.firstTurnOver(true, box));
     // They do not: its input box, and only that.
     try testing.expect(!says.firstTurnOver(null, working));
     try testing.expect(says.firstTurnOver(null, box));

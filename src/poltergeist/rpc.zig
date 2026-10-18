@@ -3306,6 +3306,52 @@ test "a watched terminal still cannot arrange the work" {
     try testing.expect(list.actions.len > 50);
 }
 
+test "1746: a question the CLI asks before it starts on the screen: no key but ctrl+c, no text, no task typed" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    // The worker's agent is connected and says it is waiting on nothing --
+    // what an agy started with -i in a folder it did not trust yet looked
+    // like (task 1746, seq 32) -- while its trust box is on the screen.
+    fake.startup_question = true;
+
+    // The way round that was measured: terminal_answer_prompt refused, then
+    // `terminal_key enter`, which answered the box for the person.
+    for ([_][]const u8{ "enter", "arrow_down", "arrow_up", "tab" }) |k| {
+        fake.keyed = null;
+        const r = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_key = .{ .id = worker, .key = k } });
+        try testing.expect(r == .failed);
+        try testing.expectEqualStrings("StartupQuestionOnScreen", r.failed.code);
+        try testing.expect(fake.keyed == null);
+    }
+    // ctrl+c answers no question: it goes.
+    const interrupt = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_key = .{ .id = worker, .key = "ctrl+c" } });
+    try testing.expect(interrupt == .text);
+
+    // Nor is anything typed, a line or a task.
+    fake.sent = null;
+    const typed = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_send = .{ .id = worker, .text = "yes", .submit = true } });
+    try testing.expect(typed == .failed);
+    try testing.expectEqualStrings("StartupQuestionOnScreen", typed.failed.code);
+    try testing.expect(fake.sent == null);
+    const id = try panel.create("build", "take the machine", .bug);
+    const assigned = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{ .task = id, .id = worker } });
+    try testing.expect(assigned == .failed);
+    try testing.expectEqualStrings("StartupQuestionOnScreen", assigned.failed.code);
+    try testing.expect(fake.sent == null);
+    try testing.expectEqual(@as(Bus.Id, 0), panel.get(id).?.owner);
+
+    // Answered: the same key goes.
+    fake.startup_question = false;
+    const after = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_key = .{ .id = worker, .key = "enter" } });
+    try testing.expect(after == .text);
+}
+
 test "a key goes to the host as written, and a key that is not one never gets there" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -5443,6 +5489,53 @@ pub const StartupReach = enum {
     none,
 };
 
+/// What to do about the first prompt Polter owes a CLI it started without
+/// one (`agent_cli.HooksHeard.first_prompt`, task 1746), from whether an
+/// agent is connected there and what its screen shows (`StartupReach`).
+pub const FirstPromptStep = enum {
+    /// Its trust box is up, or its input box is not there yet: nothing is
+    /// typed. **Not a byte before the person has answered**: a return typed
+    /// into the box would answer it.
+    wait,
+    /// Its input box shows and nothing blocks it: type the prompt.
+    type,
+    /// An agent is connected already: there is nothing left to owe.
+    drop,
+};
+
+pub fn firstPromptStep(present: bool, reach: StartupReach) FirstPromptStep {
+    if (present) return .drop;
+    return switch (reach) {
+        .ready => .type,
+        .blocked, .none => .wait,
+    };
+}
+
+/// What became of a second message Polter typed (task 1746, round two),
+/// looked at a moment later: whether it reached the CLI, and if not what to
+/// do. It reached it when its first words are on the screen or the agent
+/// has begun a turn since it was typed. Typed again once, at most; then
+/// given up on and said, never typed over and over.
+pub const LineCheck = enum { reached, wait, again, give_up };
+
+/// How long a typed second message has to show before it is taken as lost.
+pub const line_check_ms: u64 = 5_000;
+
+pub fn lineCheck(on_screen: bool, turn_since: bool, waited_ms: u64, tries: u8) LineCheck {
+    if (on_screen or turn_since) return .reached;
+    if (waited_ms < line_check_ms) return .wait;
+    return if (tries < 2) .again else .give_up;
+}
+
+/// What `startupReach` answers for a terminal Polter owes a first prompt:
+/// its input box does not let anybody else's line in until the prompt has
+/// gone -- a mention typed first would be the CLI's first prompt, without
+/// the role's instructions.
+pub fn reachWhileOwed(reach: StartupReach, owed: bool) StartupReach {
+    if (owed and reach == .ready) return .none;
+    return reach;
+}
+
 /// Whether a line may be typed into `id`, and if not, why not -- the gate
 /// a mention and `task_assign` share (#1533).
 ///
@@ -5500,6 +5593,19 @@ pub const Host = struct {
             id: Bus.Id,
             lines: u16,
         ) anyerror![]const u8,
+
+        /// Whether the screen of `id` shows a question its CLI asks before
+        /// it starts -- a folder trust box, a sandbox setup, an update
+        /// offer -- as its plugin declares (`Plugin.StartupSays.blocks`),
+        /// **whatever the agent there says about itself** (task 1746, round
+        /// two). While it does, `sendText` and `sendKey` refuse
+        /// (`StartupQuestionOnScreen`): measured, an agy supervisor whose
+        /// `terminal_answer_prompt` was refused pressed `terminal_key enter`
+        /// instead, and answered a worker's trust box for the person.
+        startupQuestion: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+        ) bool,
 
         /// Type text into a terminal as if the user had.
         sendText: *const fn (
@@ -6310,6 +6416,7 @@ pub const Host = struct {
     }
 
     fn sendText(self: Host, id: Bus.Id, text: []const u8, submit: bool) anyerror!void {
+        if (self.vtable.startupQuestion(self.ctx, id)) return error.StartupQuestionOnScreen;
         return self.vtable.sendText(self.ctx, id, text, submit);
     }
 
@@ -6346,6 +6453,10 @@ pub const Host = struct {
     }
 
     fn sendKey(self: Host, id: Bus.Id, key: []const u8) anyerror!keys.Outcome {
+        // ctrl+c stays: it answers no question, and it is how a stuck
+        // terminal is got back.
+        if (!std.ascii.eqlIgnoreCase(key, "ctrl+c") and self.vtable.startupQuestion(self.ctx, id))
+            return error.StartupQuestionOnScreen;
         return self.vtable.sendKey(self.ctx, id, key);
     }
 
@@ -7447,6 +7558,7 @@ fn dispatchOne(
 
                 error.UserPresent => hostFailure("UserPresent", key_arrived),
                 error.Composing => hostFailure("UserPresent", composing_typed),
+                error.StartupQuestionOnScreen => hostFailure("StartupQuestionOnScreen", startup_question_on_screen),
                 error.ApprovalOnScreen => hostFailure("ApprovalOnScreen", approval_on_screen),
                 error.DraftInLine => hostFailure("DraftInLine", draft_in_line),
                 error.NotSubmitted => hostFailure("NotSubmitted", not_submitted),
@@ -7850,6 +7962,7 @@ fn dispatchOne(
                 // next one.
                 error.UserPresent => hostFailure("UserPresent", key_arrived),
                 error.Composing => hostFailure("UserPresent", composing_typed),
+                error.StartupQuestionOnScreen => hostFailure("StartupQuestionOnScreen", startup_question_on_screen),
                 error.ApprovalOnScreen => hostFailure("ApprovalOnScreen", approval_on_screen),
                 error.DraftInLine => hostFailure("DraftInLine", draft_in_line),
                 error.NotSubmitted => hostFailure("NotSubmitted", not_submitted),
@@ -7900,6 +8013,7 @@ fn dispatchOne(
                 // An input method is composing there (task 1590). Only this,
                 // not the key clock: ctrl+c is how a stuck worker is
                 // rescued, and a key pressed a moment ago does not stop it.
+                error.StartupQuestionOnScreen => hostFailure("StartupQuestionOnScreen", startup_question_on_screen),
                 error.Composing => hostFailure("UserPresent", composing_typed),
 
                 else => hostFailure(
@@ -8091,6 +8205,7 @@ fn dispatchOne(
                             "prompt there to answer. Read it to see what happened.",
                     ),
                     error.Composing => hostFailure("UserPresent", composing_typed),
+                    error.StartupQuestionOnScreen => hostFailure("StartupQuestionOnScreen", startup_question_on_screen),
                     // **Stops where it got to, and says so.** Half a walk
                     // leaves the highlight somewhere the caller did not ask
                     // for, and reporting success would have it believe an
@@ -8114,6 +8229,7 @@ fn dispatchOne(
                     "that terminal's process has already exited, so there is no prompt " ++
                         "there to answer.",
                 ),
+                error.StartupQuestionOnScreen => hostFailure("StartupQuestionOnScreen", startup_question_on_screen),
                 error.Composing => hostFailure("UserPresent", composing_typed),
                 else => hostFailure(
                     "KeyFailed",
@@ -9413,6 +9529,7 @@ fn assignAndTell(
                     "it to a terminal that is working.",
             ),
 
+            error.StartupQuestionOnScreen => hostFailure("StartupQuestionOnScreen", startup_question_on_screen),
             error.ApprovalOnScreen => hostFailure(
                 "ApprovalOnScreen",
                 approval_on_screen ++ " Nothing was said, so nothing was assigned: " ++
@@ -9611,6 +9728,7 @@ fn freshAssign(
 
     // The same refusals as any typing, and nothing assigned after them.
     host.sendText(id, clear.command, true) catch |err| return switch (err) {
+        error.StartupQuestionOnScreen => hostFailure("StartupQuestionOnScreen", startup_question_on_screen),
         error.ApprovalOnScreen => hostFailure("ApprovalOnScreen", approval_on_screen ++
             " Nothing was cleared and nothing was assigned."),
         error.UserPresent => hostFailure("UserPresent", key_arrived ++
@@ -9673,6 +9791,7 @@ fn mentionFailure(err: anyerror) struct { code: []const u8, message: []const u8 
             .code = "ChildExited",
             .message = "that terminal's process has exited; there is nothing in it to read this.",
         },
+        error.StartupQuestionOnScreen => .{ .code = "StartupQuestionOnScreen", .message = startup_question_on_screen },
         error.ApprovalOnScreen => .{ .code = "ApprovalOnScreen", .message = approval_on_screen },
         error.UserPresent => .{ .code = "UserPresent", .message = key_arrived },
         error.Composing => .{ .code = "UserPresent", .message = composing_typed },
@@ -9787,6 +9906,14 @@ const moved_while_keyed =
 /// sentence, because unlike the key clock it does not clear in ten seconds.
 /// A permission box its CLI's hooks do not report is on that terminal's
 /// screen (task 1682, `Surface.mayType`).
+/// A question the terminal's CLI asks before it starts is on its screen
+/// (`Host.startupQuestion`, task 1746).
+const startup_question_on_screen = "that terminal's CLI is asking a question of its own before it starts " ++
+    "-- whether to trust the folder, how to sandbox, whether to update -- and it is on the screen now, so " ++
+    "nothing was typed and no key was pressed: a return or an arrow key would answer it. That answer is " ++
+    "the person's, not yours, whatever the agent there says about itself: ask them to answer it in that " ++
+    "tab (notify_user, or say so in the group), then try again.";
+
 const approval_on_screen =
     "that terminal's agent CLI has a permission box on its screen -- it is asking " ++
     "whether to run a command or a tool -- so nothing was typed: the return would " ++
@@ -9967,6 +10094,7 @@ fn taskFailure(err: anyerror) wire.Response {
         // A key reached that terminal a moment ago, so nothing was typed
         // into it -- the same guard every other write to a terminal keeps.
         // The task is untouched, and asking again in a moment works.
+        error.StartupQuestionOnScreen => hostFailure("StartupQuestionOnScreen", startup_question_on_screen),
         error.ApprovalOnScreen => hostFailure(
             "NotTold",
             approval_on_screen ++ " It was not told, and the task is still open.",
@@ -10640,6 +10768,8 @@ const FakeHost = struct {
     agent_absent: []const Bus.Id = &.{},
     /// What `startupReach` answers for a terminal with no agent.
     startup: StartupReach = .none,
+    /// What `startupQuestion` answers, for every terminal.
+    startup_question: bool = false,
 
     /// The one slot this terminal's persona wants, for the slot tests.
     slot_wanted: ?[]const u8 = null,
@@ -10715,6 +10845,7 @@ const FakeHost = struct {
             .parkAssign = parkAssign,
             .agentPresent = agentPresent,
             .startupReach = startupReach,
+            .startupQuestion = startupQuestion,
             .personaFace = personaFace,
             .terminalCapabilities = terminalCapabilities,
             .agentArrived = agentArrived,
@@ -11322,6 +11453,11 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (std.mem.indexOfScalar(Bus.Id, self.agent_absent, id) != null) return false;
         return self.agent_present;
+    }
+
+    fn startupQuestion(ctx: *anyopaque, _: Bus.Id) bool {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.startup_question;
     }
 
     fn startupReach(ctx: *anyopaque, _: Bus.Id) StartupReach {
@@ -15610,6 +15746,35 @@ test "launched standing: the launcher saying hooks are expected is not the agent
     try testing.expectEqual(@as(?persona.Capabilities.PendingStanding, null), late.persona.pending_standing);
     const supervisor_at_the_end = bus.isSupervisor(fresh);
     try testing.expect(!supervisor_at_the_end);
+}
+
+test "1746: a second message that did not show is typed again once, then given up on" {
+    // Its words on the screen, or a turn begun since: it reached the CLI.
+    try testing.expectEqual(LineCheck.reached, lineCheck(true, false, 0, 1));
+    try testing.expectEqual(LineCheck.reached, lineCheck(false, true, 9_000, 2));
+    // Neither yet, inside the wait: wait.
+    try testing.expectEqual(LineCheck.wait, lineCheck(false, false, line_check_ms - 1, 1));
+    // Neither, the wait over: again, the first time only.
+    try testing.expectEqual(LineCheck.again, lineCheck(false, false, line_check_ms, 1));
+    try testing.expectEqual(LineCheck.give_up, lineCheck(false, false, line_check_ms, 2));
+}
+
+test "1746: the first prompt Polter owes waits for the person, then goes, and is never typed into a box" {
+    // Trust box up: wait, whatever else.
+    try testing.expectEqual(FirstPromptStep.wait, firstPromptStep(false, .blocked));
+    // Still starting, or not this CLI's screen at all: wait.
+    try testing.expectEqual(FirstPromptStep.wait, firstPromptStep(false, .none));
+    // Answered, its input box shows: type.
+    try testing.expectEqual(FirstPromptStep.type, firstPromptStep(false, .ready));
+    // Connected already: nothing owed.
+    try testing.expectEqual(FirstPromptStep.drop, firstPromptStep(true, .ready));
+    try testing.expectEqual(FirstPromptStep.drop, firstPromptStep(true, .blocked));
+
+    // While it is owed, nobody else's line gets in through the input box;
+    // a box that blocks is said as it is.
+    try testing.expectEqual(StartupReach.none, reachWhileOwed(.ready, true));
+    try testing.expectEqual(StartupReach.blocked, reachWhileOwed(.blocked, true));
+    try testing.expectEqual(StartupReach.ready, reachWhileOwed(.ready, false));
 }
 
 test "launched standing: kept past its minute while the CLI asks the person something (task 1746)" {

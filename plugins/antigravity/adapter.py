@@ -379,7 +379,10 @@ def launch(req):
     if session:
         opts += ["--conversation", session]
 
-    argv = ["agy"] + opts + extra + first_prompt(role.get("instructions"), session, extra, notes)
+    hooks = hooks_installed(home, req.get("polter"), notes)
+    trusted = folder_trusted(home, req.get("cwd"))
+    prompt = first_prompt(role.get("instructions"), session, extra, notes, trusted, hooks)
+    argv = ["agy"] + opts + extra + prompt
     answer = {
         "version": CONTRACT_VERSION,
         "argv": argv,
@@ -388,13 +391,15 @@ def launch(req):
         else "%d skill(s) and %d MCP server(s) left on" % (off["skill"], off["mcp"]),
         "notes": notes,
     }
-    if hooks_installed(home, req.get("polter"), notes):
+    if hooks:
         answer["hooks"] = True
         # Whether `SessionStart` comes when the program starts or with the
         # first turn is not documented. Waiting for the first turn is the
         # side on which a hook that comes early costs nothing, and one that
-        # comes late is not reported missing.
-        answer["hooks_heard"] = "first_turn"
+        # comes late is not reported missing. `first_prompt`: the same, and
+        # Polter is to type the first prompt itself (see `first_prompt`).
+        answer["hooks_heard"] = "first_prompt" if owed_to_polter(role.get("instructions"), session, extra, trusted) \
+            else "first_turn"
     return answer
 
 
@@ -420,8 +425,11 @@ def launch(req):
 # (`StartupSays.tools_from_second_turn`, `App.startLineTry`).
 #
 # A conversation picked up again is told it is that, lest it start the
-# instructions over as new work. Whether a picked-up conversation has the
-# tools in its first turn is not measured yet.
+# instructions over as new work -- and it is held to the same first turn:
+# its first turn had none of Polter's tools either, and asked to call `me`
+# there it went round by Python (measured in the test session, task 1746
+# round two). So it too answers in a word, and Polter's second message
+# starts it.
 PROMPT_WORDS = ("-i", "--prompt-interactive", "-p", "--print", "--prompt")
 FIRST_PROMPT_END = ("This message is how you are given your instructions; it is not a task. "
                     "Polter's tools are not loaded yet in this turn, so do not try to reach them: "
@@ -430,17 +438,68 @@ FIRST_PROMPT_END = ("This message is how you are given your instructions; it is 
 PICKED_UP = ("You have been picked up again in a Polter terminal, and this conversation goes on "
              "from where it was. Below are the instructions you were started with, given again; "
              "nothing in them is a new task, and nothing you were doing is to be started over.")
-PICKED_UP_END = ("Call `me` and read what the instructions tell you to read, to see where things "
-                 "stand now; then stop and wait for the person to ask you something.")
+PICKED_UP_END = ("Polter's tools are not loaded yet in this turn, so do not try to reach them: "
+                 "answer with the one word \"Ready\" and call no tool at all. "
+                 "The next message says when to go on.")
 
 
-def first_prompt(instructions, session, extra, notes):
+# **Not in a folder agy does not trust yet** (task 1746, round two). Given
+# `-i`, agy runs the first turn as soon as it has signed in, with the trust
+# question still pending and no longer drawn: nothing on the screen says it
+# is waiting, and the next return typed into the terminal answers it "yes"
+# (measured on agy 1.4.2 in the test session: Polter's second message did,
+# and was lost with it). So there `-i` is left out, agy draws its trust box,
+# Polter reads it as a question for the person, and once it is answered and
+# agy's input box shows, Polter types the instructions itself
+# (`hooks_heard: first_prompt`, `App.payFirstPrompts`). Without Polter's
+# hooks nothing would say when, so then they are not passed at all.
+TRUST_FILE = os.path.join(".gemini", "antigravity-cli", "settings.json")
+
+
+def folder_trusted(home, cwd):
+    """Whether agy trusts `cwd`: it is in `trustedWorkspaces` of agy's
+    settings (measured on 1.4.2: answering the box writes the folder's path
+    there). A folder inside a trusted one is asked about again (measured in
+    the test session), so only the folder itself counts. Anything that
+    cannot be read is "no" -- the side on which agy's box is drawn and
+    answered by the person, never hidden."""
+    if not isinstance(cwd, str) or not cwd:
+        return False
+    listed = read_json(os.path.join(home, TRUST_FILE), [], "agy's settings").get("trustedWorkspaces")
+    if not isinstance(listed, list):
+        return False
+    try:
+        here = os.path.normcase(os.path.realpath(cwd))
+        return any(isinstance(p, str) and os.path.normcase(os.path.realpath(p)) == here for p in listed)
+    except (OSError, ValueError):
+        return False
+
+
+def gives_prompt(extra):
+    return any(a in PROMPT_WORDS or a.split("=", 1)[0] in PROMPT_WORDS for a in extra)
+
+
+def owed_to_polter(instructions, session, extra, trusted):
+    """Whether Polter is to type the instructions as the first prompt."""
+    return bool(instructions) and not session and not trusted and not gives_prompt(extra)
+
+
+def first_prompt(instructions, session, extra, notes, trusted, hooks):
     """`-i` and the role's instructions as agy's first prompt, or [] when
-    there are none or the role's own arguments already give a prompt."""
+    there are none, the role's own arguments already give a prompt, or the
+    folder is not trusted yet (then Polter types them, given its hooks)."""
     if not instructions:
         return []
-    if any(a in PROMPT_WORDS or a.split("=", 1)[0] in PROMPT_WORDS for a in extra):
+    if gives_prompt(extra):
         notes.append("The role's own arguments give agy a prompt, so the role's instructions were not passed.")
+        return []
+    if not session and not trusted:
+        if hooks:
+            notes.append("agy does not trust this folder yet and asks first; the role's instructions are "
+                         "typed once that is answered.")
+        else:
+            notes.append("agy does not trust this folder yet and asks first; without Polter's hooks nothing "
+                         "says when that is answered, so the role's instructions were not passed.")
         return []
     if session:
         return ["-i", "%s\n\n%s\n\n%s" % (PICKED_UP, instructions, PICKED_UP_END)]

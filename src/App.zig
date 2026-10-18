@@ -453,6 +453,17 @@ owed_tells: poltergeistpkg.OwedTells = undefined,
 /// after that first turn is over (`startLineTry`).
 start_lines: poltergeistpkg.OwedTells = undefined,
 
+/// Terminals whose CLI was started without its first prompt because the
+/// folder was not trusted yet (`agent_cli.HooksHeard.first_prompt`, task
+/// 1746): Polter types the role's instructions once the person has answered
+/// the trust box and the CLI's input box shows (`payFirstPrompts`).
+first_prompts: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty,
+
+/// Second messages typed and not yet seen to have reached their CLI
+/// (`checkStartLines`, task 1746 round two): the line, when it was typed,
+/// and how many times.
+start_checks: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, StartCheck) = .empty,
+
 /// `task_assign` with `fresh`, held between the /clear and the CLI saying
 /// it has cleared (#64). Each holds a reference to its request.
 fresh_assigns: poltergeistpkg.fresh_assign.Waits(*poltergeistpkg.Server.Pending) = .{},
@@ -757,6 +768,12 @@ pub fn deinit(self: *App) void {
     self.mention_retries.deinit();
     self.owed_tells.deinit();
     self.start_lines.deinit();
+    self.first_prompts.deinit(self.alloc);
+    {
+        var it = self.start_checks.valueIterator();
+        while (it.next()) |c| self.alloc.free(c.line);
+        self.start_checks.deinit(self.alloc);
+    }
     // Answered by the server shutting down, like the waits around it.
     for (self.fresh_assigns.entries.items) |e| e.held.release();
     self.fresh_assigns.deinit(self.alloc);
@@ -843,6 +860,11 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
             self.payOwedTells();
             // A started supervisor's second message (task 1746).
             self.payStartLines();
+            // A question a starting CLI asks the person, come up or gone
+            // (task 1746): looked at again while a launch waits.
+            if (self.holdStartupQuestions(self.poltergeistElapsedMs())) self.controlRoomTouch();
+            // And the first prompt of a CLI that waited on the person.
+            self.payFirstPrompts();
             // A fresh assignment whose clear was never confirmed.
             self.sweepFreshAssigns();
             // And the groups: a message that arrived while its reader had
@@ -1087,6 +1109,8 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     const take_over_wake = self.takeOverStep(now_ms);
     // In this snapshot: a start whose CLI is asking, or has stopped asking.
     _ = self.holdStartupQuestions(now_ms);
+    // A trust box answered since: the first prompt it was holding back.
+    self.payFirstPrompts();
     var terminals: std.ArrayListUnmanaged(poltergeistpkg.ControlRoom.Terminal) = .empty;
     for (self.surfaces.items) |v| {
         const surface: *Surface = v.core();
@@ -1741,7 +1765,6 @@ fn controlStartConnected(self: *App, id: poltergeistpkg.Bus.Id) void {
     const now_ms = self.poltergeistElapsedMs();
     const group = self.chat.startingIn(id, now_ms) orelse return;
     if (!self.poltergeist.isSupervisor(id)) return;
-    const resuming = self.chat.startOf(group, now_ms).resuming;
 
     chatAdd(self, group, id, .all) catch |err| {
         log.warn("control room: could not put the supervisor it started in its group err={}", .{err});
@@ -1756,9 +1779,8 @@ fn controlStartConnected(self: *App, id: poltergeistpkg.Bus.Id) void {
     // **Its CLI had none of Polter's tools in its first turn** (task 1746):
     // the role's instructions went in as that turn and told it to answer in
     // a word and wait. What to do first is said now, as a second message,
-    // once that turn is over. Not for a session picked up again, whose
-    // instructions said it already.
-    if (resuming) return;
+    // once that turn is over -- a session picked up again too: its first
+    // turn has no tools either (measured, round two).
     const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else return;
     self.ensurePlugins();
     const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse return;
@@ -1793,10 +1815,80 @@ const start_line_look_ms: u64 = 2_000;
 /// Type the second messages owed (`start_lines`) whose first turn is over,
 /// each once.
 fn payStartLines(self: *App) void {
-    if (self.start_lines.lines.count() == 0) return;
-    self.start_lines.pay(self, startLineTry);
-    if (self.start_lines.lines.count() > 0) self.noticeRetryIn(start_line_look_ms);
+    if (self.start_lines.lines.count() > 0) self.start_lines.pay(self, startLineTry);
+    self.checkStartLines();
+    if (self.start_lines.lines.count() > 0 or self.start_checks.count() > 0) self.noticeRetryIn(start_line_look_ms);
 }
+
+const StartCheck = struct { line: []u8, typed_ms: u64, tries: u8 };
+
+/// A second message was typed into `id`: looked at again a moment later
+/// (`checkStartLines`).
+fn noteStartLineTyped(self: *App, id: poltergeistpkg.Bus.Id, line: []const u8) void {
+    const now_ms = self.poltergeistElapsedMs();
+    const got = self.start_checks.getOrPut(self.alloc, id) catch return;
+    if (got.found_existing) {
+        got.value_ptr.typed_ms = now_ms;
+        got.value_ptr.tries +|= 1;
+        return;
+    }
+    const copy = self.alloc.dupe(u8, line) catch {
+        _ = self.start_checks.remove(id);
+        return;
+    };
+    got.value_ptr.* = .{ .line = copy, .typed_ms = now_ms, .tries = 1 };
+}
+
+/// Whether each second message typed has reached its CLI (task 1746, round
+/// two; `rpc.lineCheck`): its first words on the screen, or a turn begun
+/// since. One that has not is typed again once -- through `startLineTry`,
+/// so again only with the turn over and the input box showing -- and one
+/// that has not after that is said in the log and given up on.
+fn checkStartLines(self: *App) void {
+    if (self.start_checks.count() == 0) return;
+    const now_ms = self.poltergeistElapsedMs();
+    var done: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+    defer done.deinit(self.alloc);
+    var it = self.start_checks.iterator();
+    while (it.next()) |kv| {
+        const id = kv.key_ptr.*;
+        const c = kv.value_ptr.*;
+        if (self.findSurfaceByID(id) == null or !self.agentPresent(id)) {
+            done.append(self.alloc, id) catch break;
+            continue;
+        }
+        const agent = self.poltergeist.agentOf(id);
+        const turn_since = agent.known() and agent.state == .in_turn and agent.since_ms >= c.typed_ms;
+        const head = c.line[0..@min(c.line.len, start_line_head)];
+        const on_screen = on: {
+            const screen = poltergeistRead(self, self.alloc, id, 0) catch break :on false;
+            defer self.alloc.free(screen);
+            break :on std.mem.indexOf(u8, screen, head) != null;
+        };
+        switch (poltergeistpkg.rpc.lineCheck(on_screen, turn_since, now_ms -| c.typed_ms, c.tries)) {
+            .reached => {
+                log.info("control room: the started supervisor's second message reached it id={x} tries={d}", .{ id, c.tries });
+                done.append(self.alloc, id) catch break;
+            },
+            .wait => {},
+            .again => {
+                log.warn("control room: the started supervisor's second message did not show; typing it again id={x}", .{id});
+                self.start_lines.owe(id, c.line) catch {};
+            },
+            .give_up => {
+                log.warn("control room: the started supervisor's second message did not reach it after {d} tries; not typed again -- it waits at its first answer id={x}", .{ c.tries, id });
+                done.append(self.alloc, id) catch break;
+            },
+        }
+    }
+    for (done.items) |id| {
+        if (self.start_checks.fetchRemove(id)) |kv| self.alloc.free(kv.value.line);
+    }
+}
+
+/// How much of a second message's start is looked for on the screen: its
+/// first words, which fit on one row of any terminal it is typed into.
+const start_line_head = 24;
 
 /// One owed second message: kept while its CLI's first turn is still going
 /// (`Plugin.StartupSays.firstTurnOver`) or while the terminal refuses a
@@ -1816,9 +1908,71 @@ fn startLineTry(self: *App, id: poltergeistpkg.Bus.Id, line: []const u8) polterg
     const typed = surface.typePoltergeistNotice(line) catch return .gone;
     if (typed) {
         log.info("control room: the started supervisor's second message is typed id={x}", .{id});
+        self.noteStartLineTyped(id, line);
         return .typed;
     }
     return if (surface.poltergeist_notice_refused) .refused else .gone;
+}
+
+/// How a first prompt Polter types ends: the same words `-i` carries
+/// (`plugins/antigravity/adapter.py`, `FIRST_PROMPT_END`), for the same
+/// reason -- the CLI's first turn has none of Polter's tools
+/// (`Plugin.StartupSays.tools_from_second_turn`).
+const first_prompt_end = "This message is how you are given your instructions; it is not a task. " ++
+    "Polter's tools are not loaded yet in this turn, so do not try to reach them: " ++
+    "answer with the one word \"Ready\" and call no tool at all. " ++
+    "The next message says when to start.";
+
+/// Type the first prompts owed (`first_prompts`) whose terminal is ready
+/// for one, each once, and forget the ones nothing is left to owe.
+fn payFirstPrompts(self: *App) void {
+    if (self.first_prompts.count() == 0) return;
+    var done: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+    defer done.deinit(self.alloc);
+    var it = self.first_prompts.keyIterator();
+    while (it.next()) |id| {
+        if (self.firstPromptTry(id.*)) done.append(self.alloc, id.*) catch break;
+    }
+    for (done.items) |id| _ = self.first_prompts.remove(id);
+    if (self.first_prompts.count() > 0) self.noticeRetryIn(start_line_look_ms);
+}
+
+/// One owed first prompt. Answers whether it is settled: typed, or nothing
+/// left to owe. **Not a byte while the trust box is up**
+/// (`rpc.firstPromptStep`): its return would answer it.
+fn firstPromptTry(self: *App, id: poltergeistpkg.Bus.Id) bool {
+    if (self.findSurfaceByID(id) == null) return true;
+    switch (poltergeistpkg.rpc.firstPromptStep(self.agentPresent(id), self.startupReachRaw(id))) {
+        .wait => return false,
+        .drop => return true,
+        .type => {},
+    }
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const text = self.firstPromptText(arena.allocator(), id) orelse {
+        log.warn("poltergeist: 0x{x} owes a first prompt and its role has no instructions any more; nothing typed", .{id});
+        return true;
+    };
+    poltergeistSendAs(self, id, text, true, .agent) catch |err| switch (err) {
+        // The person is at it, a draft, a box: the next look tries again.
+        error.UserPresent, error.Composing, error.DraftInLine, error.ApprovalOnScreen => return false,
+        else => {
+            log.warn("poltergeist: could not type the first prompt into 0x{x} err={}", .{ id, err });
+            return true;
+        },
+    };
+    log.info("poltergeist: the first prompt is typed into 0x{x}", .{id});
+    return true;
+}
+
+/// The role's instructions as `+launch` would have passed them -- with the
+/// group a control-room start is for -- and how a first prompt ends.
+fn firstPromptText(self: *App, aa: Allocator, id: poltergeistpkg.Bus.Id) ?[]const u8 {
+    const launch = self.personas.launchOf(id) orelse return null;
+    const p = self.personas.set.find(launch.role) orelse return null;
+    const group = self.chat.startingIn(id, self.poltergeistElapsedMs());
+    const own = (poltergeistpkg.persona.launchInstructions(aa, p, group) catch return null) orelse return null;
+    return std.mem.concat(aa, u8, &.{ own, "\n\n", first_prompt_end }) catch null;
 }
 
 /// How long a start waits for the host to open the group's project and
@@ -4672,6 +4826,16 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
         if (caller.terminalId()) |id| self.noteAgentSession(id, pending.request.agent_event);
         // A clear a `task_assign` is waiting on (#64).
         if (caller.terminalId()) |id| self.finishFreshAssigns(id, pending.request.agent_event);
+        // `+launch` started the CLI without its first prompt (task 1746).
+        if (caller.terminalId()) |id| {
+            const ev = pending.request.agent_event;
+            if (ev.event == .hooks_expected and poltergeistpkg.agent_event.firstPromptOwed(ev.detail)) {
+                self.first_prompts.put(self.alloc, id, {}) catch |err| {
+                    log.warn("poltergeist: could not keep a first prompt owed err={}", .{err});
+                };
+                log.info("poltergeist: 0x{x} was started without its first prompt; it is typed once its input box shows", .{id});
+            }
+        }
         _ = self.poltergeist.considerAgents(now_ms);
         self.deliverPoltergeistNotices(now_ms);
         // A turn that ended may be the first one a started supervisor's
@@ -5613,6 +5777,8 @@ fn poltergeistLaunchFailed(
 fn holdStartupQuestions(self: *App, now_ms: u64) bool {
     const Store = poltergeistpkg.PersonaStore;
     var changed = false;
+    var any_waiting = false;
+    var boxed = false;
     for (self.surfaces.items) |v| {
         const id = v.core().id;
         if (self.isChatSurface(id)) continue;
@@ -5620,8 +5786,20 @@ fn holdStartupQuestions(self: *App, now_ms: u64) bool {
         const waiting = group != null or
             self.personas.heldStanding(id, now_ms) != null or
             self.poltergeist.launchExitIsFailure(id);
-        if (!waiting) continue;
-        const asking = !self.agentPresent(id) and self.startupQuestionUp(id);
+        // One whose state still says it is asking is looked at too, so that
+        // the state goes when the question does.
+        const said_asking = blk: {
+            const a = self.poltergeist.agentOf(id);
+            break :blk a.said_by == .screen and a.state == .awaiting_input;
+        };
+        if (!waiting and !said_asking) continue;
+        any_waiting = any_waiting or waiting;
+        const said = if (self.agentPresent(id)) null else self.startupQuestionText(id);
+        const asking = said != null;
+        // Its state, and a line for whoever is minding it or launched it
+        // (`Bus.noteStartupQuestion`): a worker a supervisor started in a
+        // folder its CLI does not trust yet is otherwise just silent.
+        if (self.poltergeist.noteStartupQuestion(id, said, self.personas.launcherOf(id), now_ms)) boxed = true;
         if (asking) {
             _ = self.personas.extendStanding(id, now_ms + Store.standing_wait_ms, now_ms);
             _ = self.poltergeist.holdLaunch(id, now_ms);
@@ -5633,25 +5811,38 @@ fn holdStartupQuestions(self: *App, now_ms: u64) bool {
             }
         }
     }
+    if (boxed) {
+        self.deliverPoltergeistNotices(now_ms);
+        changed = true;
+    }
+    // A question on a screen says nothing when it comes up: while a launch
+    // waits for its agent, its screen is looked at again soon.
+    if (any_waiting) self.noticeRetryIn(start_line_look_ms);
     return changed;
 }
 
 /// Whether the CLI started in `id` shows a question its plugin says must
 /// not be typed into (`Plugin.StartupSays.blocks`). The CLI is the one the
 /// role launch recorded, or else the one its hooks named.
-fn startupQuestionUp(self: *App, id: poltergeistpkg.Bus.Id) bool {
+pub fn startupQuestionUp(self: *App, id: poltergeistpkg.Bus.Id) bool {
+    return self.startupQuestionText(id) != null;
+}
+
+/// The declared text of the question `startupQuestionUp` sees, or null.
+/// It lives as long as the plugins' declarations do.
+fn startupQuestionText(self: *App, id: poltergeistpkg.Bus.Id) ?[]const u8 {
     // A copy, kept for as long as the name read out of it is used.
     const agent = self.poltergeist.agentOf(id);
-    const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else agent.cli.get() orelse return false;
+    const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else agent.cli.get() orelse return null;
     self.ensurePlugins();
-    const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse return false;
-    if (says.blocks.len == 0) return false;
+    const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse return null;
+    if (says.blocks.len == 0) return null;
     const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
         log.debug("poltergeist: could not read a starting CLI for a question id={x} err={}", .{ id, err });
-        return false;
+        return null;
     };
     defer self.alloc.free(screen);
-    return says.verdict(screen) == .blocked;
+    return says.blockSaid(screen);
 }
 
 /// Every launch that has waited `Bus.launch_agent_wait_ms` with no agent
@@ -5667,6 +5858,7 @@ fn startupQuestionUp(self: *App, id: poltergeistpkg.Bus.Id) bool {
 fn considerLaunches(self: *App, now_ms: u64) bool {
     // A launch whose CLI is waiting on the person is not one that failed.
     if (self.holdStartupQuestions(now_ms)) self.controlRoomTouch();
+    self.payFirstPrompts();
     var any = false;
     // Each one answered takes its expectation back, so this ends; the
     // bound is for a bus that, by some fault, did not.
@@ -6263,6 +6455,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .parkAssign = poltergeistParkAssign,
         .agentPresent = poltergeistAgentPresent,
         .startupReach = poltergeistStartupReach,
+        .startupQuestion = poltergeistStartupQuestion,
         .personaFace = poltergeistPersonaFace,
         .terminalCapabilities = poltergeistTerminalCapabilities,
         .agentArrived = poltergeistAgentArrived,
@@ -7960,6 +8153,13 @@ fn poltergeistStoodDown(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) void {
 /// declares `startup_says`; the screen is read the way terminal_read reads
 /// it. Anything else is `none`, which keeps the rule as it was: no agent,
 /// nothing typed.
+/// Whether a question its CLI asks before it starts is on `id`'s screen,
+/// whatever the agent there says (`rpc.Host.startupQuestion`, task 1746).
+fn poltergeistStartupQuestion(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.startupQuestionUp(id);
+}
+
 fn poltergeistStartupReach(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) poltergeistpkg.rpc.StartupReach {
     const self: *App = @ptrCast(@alignCast(ctx));
     return self.startupReachOf(id);
@@ -7999,6 +8199,13 @@ pub fn approvalOnScreen(self: *App, id: poltergeistpkg.Bus.Id) bool {
 }
 
 fn startupReachOf(self: *App, id: poltergeistpkg.Bus.Id) poltergeistpkg.rpc.StartupReach {
+    // Nobody's line before the first prompt Polter owes it (task 1746).
+    return poltergeistpkg.rpc.reachWhileOwed(self.startupReachRaw(id), self.first_prompts.contains(id));
+}
+
+/// What the screen of a terminal with no agent says, before whether Polter
+/// owes it a first prompt is asked (`startupReachOf`).
+fn startupReachRaw(self: *App, id: poltergeistpkg.Bus.Id) poltergeistpkg.rpc.StartupReach {
     // A copy, kept for as long as the name read out of it is used.
     const agent = self.poltergeist.agentOf(id);
     if (agent.hooks != .expected) return .none;

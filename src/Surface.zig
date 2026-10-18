@@ -5020,6 +5020,13 @@ pub fn mayTypeAs(self: *Surface, who: Typist) !void {
         last.durationTo(.now(global.io(), .boot)).toMilliseconds()
     else
         null;
+    // A question the CLI asks before it starts, on the screen (task 1746):
+    // whatever the agent there says, nothing an agent asked for goes in --
+    // a return would answer it, and that answer is the person's.
+    if (who != .person and self.app.startupQuestionUp(self.id)) {
+        log.info("poltergeist: text refused, a question the CLI asks before it starts is on this terminal's screen", .{});
+        return error.StartupQuestionOnScreen;
+    }
     const approval_box = who != .person and self.app.approvalOnScreen(self.id);
     mayType(who, self.child_exited, since_key_ms, self.polterComposing(), self.draftFor(who), approval_box) catch |err| {
         switch (err) {

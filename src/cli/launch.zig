@@ -423,7 +423,11 @@ fn expectHooks(
     var ev: AgentEvent.Event = .none;
     ev.event = .hooks_expected;
     ev.cli = cli;
-    ev.detail = AgentEvent.hooksExpectedDetail(heard == .first_turn);
+    ev.detail = switch (heard) {
+        .startup => AgentEvent.hooksExpectedDetail(false),
+        .first_turn => AgentEvent.hooksExpectedDetail(true),
+        .first_prompt => AgentEvent.first_prompt,
+    };
     hook.deliver(io, socket_path, token, ev) catch |err| {
         std.log.scoped(.launch).warn("could not say hooks are expected err={t}", .{err});
     };
