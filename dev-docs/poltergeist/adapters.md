@@ -456,13 +456,15 @@ abort 时先 idle，再 `session.error`，再 idle 两次。所以插件在 idle
 identify 认 provision 写进去的标记；会话是「本目录、根会话、在这个 opencode 启动之后建的」恰好一个时才给。
 `quit` 为空：还没读过 opencode 的屏幕，不知道什么时候打 `/exit` 是安全的。
 最低版本 1.2.10，低于它或读不出版本时不注入 hook。
-⚠️ 还没有 `adapter.ps1`，所以 Windows 上的角色选不到 opencode（加载时会说 `.py` 在这个系统上起不来）。
+**Windows**（task 1781）：`adapter.ps1` 逐项移植 `adapter.py`，`test/opencode-adapter/compare.py` 拿同一组请求和同一份文件喂给两边，逐字节比对输出（mac 上用 pwsh 跑）。PowerShell 读不了 SQLite，所以 ps1 通过 Add-Type 用 P/Invoke 调系统自带的 `winsqlite3.dll`（Windows 10 1607 起随系统带），以只读方式打开 `opencode.db`；mac 上同一段代码换成 `libsqlite3`。库不在或者打不开，就不给 id，绝不盲传 `-s`。**不走 `opencode session list`**：实测（临时 HOME、替身插件、只记录 CONNECT 的假代理），它会执行用户的插件、连 npm、改写用户的 `opencode.json` 和 config 目录下的 `package.json`、写数据库，开关全关以后仍然连 npm 6 次。`adapter.py` 唯一调用的 `opencode --version` 也量过：不执行插件、不改配置，但会连一次 models.dev；所以带 `OPENCODE_DISABLE_MODELS_FETCH=1` 去调，HOME 已热时既不联网也不写文件。npm 装的 `opencode.cmd` 不直接起：起的是 `node.exe` 加 `node_modules\opencode-ai\bin\opencode`，它自己会挑对的 `opencode.exe`，角色说明也就不经过 `cmd.exe`。Windows 上 identify 拿不到 agent 的 pid，「这个 opencode 何时启动」就用它起的 Polter server（`sidecar_pid`）的启动时间代替，`adapter.py` 在没有 pid 时也一样。
 
 **provision**：`environment` 里写 `POLTER_AGENT_CLI=opencode`；skills 装到
 `~/.config/opencode/skills`；规则写进 `~/.config/opencode/AGENTS.md`，但只在它已经存在、
 或者没有 `~/.claude/CLAUDE.md` 时才写。见 [provisioning.md](provisioning.md)。
 
 **fresh**：`/clear`（`/new` 的别名），确认方式是 `next_turn`，理由同 codex。
+
+**代答**：opencode 的权限框选项是横排的，←→ 移动。插件声明 `screen_says.awaiting_approval.next_option: arrow_right`，所以 `terminal_answer_prompt` 的 choice 2、3 按 → 走过去（D 期）。其余三家没有声明，照旧按 ↓。选 `Allow always` 时 opencode 还会再弹一个确认框，那一步要另外答。
 
 ## 未决问题
 

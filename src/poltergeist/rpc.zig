@@ -3495,6 +3495,45 @@ test "a prompt answered with a return that never arrived is a failure, not an ok
     try testing.expect(std.mem.indexOf(u8, lost.failed.message, "moved the highlight") != null);
 }
 
+test "1777: a box is walked with the key its CLI's plugin declares, and with down for the others" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const screens = [_]Plugin.Manifest{
+        .{ .key = "opencode", .exec = "p", .screen_says = .{
+            .awaiting_approval = &.{"Permission required"},
+            .next_option = .arrow_right,
+        } },
+        .{ .key = "claude-code", .exec = "p", .screen_says = .{
+            .awaiting_approval = &.{"Do you want to proceed?"},
+            .next_option = .arrow_down,
+        } },
+    };
+    for ([_]struct { cli: []const u8, key: []const u8 }{
+        .{ .cli = "opencode", .key = "arrow_right" },
+        .{ .cli = "claude-code", .key = "arrow_down" },
+        // Its plugin not loaded: down, as every box was walked before.
+        .{ .cli = "codex", .key = "arrow_down" },
+    }) |c| {
+        var b = try testBus(testing.allocator);
+        defer b.deinit();
+        var fake: FakeHost = .{ .prompt_screens = &screens, .key_outcome = .written };
+        try b.setMayAuthorise(worker, true, .user);
+        var ev = hookEvent(.awaiting_approval);
+        ev.cli = c.cli;
+        _ = try dispatch(alloc, &b, fake.host(), term(worker), .{ .agent_event = ev });
+
+        const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{
+            .terminal_answer_prompt = .{ .id = worker, .choice = 3 },
+        });
+        try testing.expect(taken == .ok);
+        try testing.expectEqual(@as(usize, 3), fake.keys_n);
+        try testing.expectEqualStrings(c.key, fake.keys_pressed[0]);
+        try testing.expectEqualStrings(c.key, fake.keys_pressed[1]);
+        try testing.expectEqualStrings("enter", fake.keys_pressed[2]);
+    }
+}
+
 test "pressing a key is not typing text, and the two do not share a pipe" {
     // The distinction the tool exists for. `terminal_send` goes through
     // the paste path, which replaces 0x03 and ESC with spaces -- xterm's
@@ -8220,7 +8259,8 @@ fn dispatchOne(
             if (p.choice == 0 or p.choice > 9) return hostFailure(
                 "BadParams",
                 "choice counts the options from the highlighted one, starting at 1. " ++
-                    "Read the terminal first: this walks down with the arrow keys, so " ++
+                    "Read the terminal first: this walks to it with the arrow keys -- down, or " ++
+                    "right for a CLI whose box lists its options in a row -- so " ++
                     "the number has to match what is on the screen.",
             );
 
@@ -8249,9 +8289,12 @@ fn dispatchOne(
                 );
             } else if (try blindRefusal(alloc, bus, host, p.id)) |refused| return refused;
 
+            // Down, or whatever its plugin says moves to the next option
+            // (task 1777: opencode's box is a row).
+            const next = Plugin.nextOptionKey(host.promptScreens(), bus.agentOf(p.id).cli.get());
             var step: u8 = 1;
             while (step < p.choice) : (step += 1) {
-                _ = host.sendKey(p.id, "arrow_down") catch |err| return switch (err) {
+                _ = host.sendKey(p.id, next) catch |err| return switch (err) {
                     error.UnknownTerminal,
                     error.NoSuchTerminal,
                     => failure(error.UnknownTerminal),
@@ -10650,6 +10693,9 @@ const FakeHost = struct {
     screen: []const u8 = "screen contents",
     /// What `promptScreens` answers.
     prompt_screens: []const Plugin.Manifest = &.{},
+    /// Every key `sendKey` was handed, in order (task 1777), up to eight.
+    keys_pressed: [8][]const u8 = undefined,
+    keys_n: usize = 0,
 
     /// What `layout` was last handed, how often, and how it answers.
     laid_out: ?LayoutCall = null,
@@ -11850,6 +11896,10 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.key_error) |err| return err;
         self.keyed = .{ .id = id, .key = k };
+        if (self.keys_n < self.keys_pressed.len) {
+            self.keys_pressed[self.keys_n] = k;
+            self.keys_n += 1;
+        }
         return self.key_outcome;
     }
 
@@ -18168,7 +18218,7 @@ test "1668: answer_prompt without moments reads the screen by what the CLI's plu
     const codex: Plugin.Manifest = .{
         .key = "codex",
         .exec = "provision.sh",
-        .screen_says = .{ .awaiting_approval = &.{" to run tool \""} },
+        .screen_says = .{ .awaiting_approval = &.{" to run tool \""}, .next_option = .arrow_down },
     };
     var fake: FakeHost = .{ .now_ms = 1_000, .prompt_screens = &.{codex} };
     fake.key_outcome = .written;

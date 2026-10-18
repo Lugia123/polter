@@ -1750,6 +1750,7 @@ mod shipped_manifest_tests {
     const CLAUDE_CODE: &str = include_str!("../../../plugins/claude-code/plugin.json");
     const CODEX: &str = include_str!("../../../plugins/codex/plugin.json");
     const KIMI: &str = include_str!("../../../plugins/kimi/plugin.json");
+    const OPENCODE: &str = include_str!("../../../plugins/opencode/plugin.json");
 
     fn parse(key: &str, text: &str) -> Plugin {
         parse_manifest(key, std::path::Path::new("."), text).expect("a shipped manifest parses")
@@ -1785,6 +1786,7 @@ mod shipped_manifest_tests {
             // And one that really does declare none, so a parser that answered
             // "two" to everything would not pass either.
             names("kimi", KIMI),
+            names("opencode", OPENCODE),
         ];
         let expected: Vec<(String, Vec<String>)> = [
             ("antigravity", &["hooks", "rules", "skills"][..]),
@@ -1792,6 +1794,7 @@ mod shipped_manifest_tests {
             ("claude-code", &["rules", "scope", "skills"][..]),
             ("codex", &["approve_tools", "manual_out_of_daemon", "rules", "skills"][..]),
             ("kimi", &[][..]),
+            ("opencode", &["rules", "skills"][..]),
         ]
         .iter()
         .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))

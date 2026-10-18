@@ -414,7 +414,17 @@ pub const ScreenSays = struct {
     /// A screen whose bottom rows contain any of these: a box is up.
     awaiting_approval: []const []const u8,
 
-    pub const none: ScreenSays = .{ .awaiting_approval = &.{} };
+    /// The key that moves a box's highlight to the next option
+    /// (`next_option`, task 1777): `terminal_answer_prompt` walks to the
+    /// option it is asked for with it. Claude Code's, Codex's and
+    /// Antigravity's boxes list their options one under another, so down;
+    /// opencode's puts them in a row (`Allow once  Allow always  Reject`,
+    /// `routes/session/permission.tsx` at v1.2.10: left and right move it),
+    /// and a down there moves nothing -- the return then takes the first
+    /// option whatever was asked for, and says it took that one.
+    next_option: NextOption,
+
+    pub const none: ScreenSays = .{ .awaiting_approval = &.{}, .next_option = .arrow_down };
 
     pub const max_texts = 8;
     pub const max_text_bytes = 64;
@@ -440,6 +450,30 @@ pub const ScreenSays = struct {
         return null;
     }
 };
+
+/// What `ScreenSays.next_option` may name: the two arrows a list of
+/// options is walked with. Each is a key `terminal_key` takes by the same
+/// name.
+pub const NextOption = enum {
+    arrow_down,
+    arrow_right,
+
+    pub fn key(self: NextOption) []const u8 {
+        return @tagName(self);
+    }
+};
+
+/// The key that walks a box to its next option in a terminal whose CLI is
+/// `cli`: what its plugin declares, and down for a CLI that declares none
+/// or is not known -- which is what every box was walked with before
+/// (task 1777).
+pub fn nextOptionKey(manifests: []const Manifest, cli: ?[]const u8) []const u8 {
+    const c = cli orelse return NextOption.arrow_down.key();
+    for (manifests) |m| {
+        if (std.mem.eql(u8, m.key, c)) return m.screen_says.next_option.key();
+    }
+    return NextOption.arrow_down.key();
+}
 
 /// What a CLI shows on its screen between being started and an agent
 /// being reachable in it (task 1682).
@@ -636,7 +670,18 @@ fn screenSaysOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Allo
         }
         try out.append(arena, text);
     }
-    return .{ .awaiting_approval = out.items };
+    const next: NextOption = switch (approval.get("next_option") orelse .null) {
+        .null => .arrow_down,
+        .string => |v| std.meta.stringToEnum(NextOption, v) orelse blk: {
+            log.warn("plugin {s}: screen_says.awaiting_approval.next_option {s} is neither arrow_down nor arrow_right; arrow_down", .{ key, v });
+            break :blk .arrow_down;
+        },
+        else => blk: {
+            log.warn("plugin {s}: screen_says.awaiting_approval.next_option is not a string; arrow_down", .{key});
+            break :blk .arrow_down;
+        },
+    };
+    return .{ .awaiting_approval = out.items, .next_option = next };
 }
 
 /// What the manifest declares under `title_says`. Like `agent_cli`, a
@@ -3697,6 +3742,38 @@ test "1682: only a CLI whose hooks report no approval has its screen read while 
     try testing.expect(!hooksReportApprovalOf("x", off.object));
 }
 
+test "1777: each shipped CLI's box is walked with its own key, and down unless it says otherwise" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const all = [_]Manifest{
+        try shippedSays(a, "claude-code", @embedFile("plugin_claude_code_json")),
+        try shippedSays(a, "codex", @embedFile("plugin_codex_json")),
+        try shippedSays(a, "antigravity", @embedFile("plugin_antigravity_json")),
+        try shippedSays(a, "opencode", @embedFile("plugin_opencode_json")),
+    };
+    // The three whose boxes list options one under another: what every box
+    // was walked with before.
+    try testing.expectEqualStrings("arrow_down", nextOptionKey(&all, "claude-code"));
+    try testing.expectEqualStrings("arrow_down", nextOptionKey(&all, "codex"));
+    try testing.expectEqualStrings("arrow_down", nextOptionKey(&all, "antigravity"));
+    // opencode's is a row.
+    try testing.expectEqualStrings("arrow_right", nextOptionKey(&all, "opencode"));
+    // A CLI nobody knows, or no CLI at all: down, as before.
+    try testing.expectEqualStrings("arrow_down", nextOptionKey(&all, "nobody"));
+    try testing.expectEqualStrings("arrow_down", nextOptionKey(&all, null));
+
+    // A word it does not know is down, not a key nobody declared.
+    const odd = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"screen_says":{"awaiting_approval":{"contains":["Permission required"],"next_option":"tab"}}}
+    , .{});
+    try testing.expectEqual(NextOption.arrow_down, (try screenSaysOf(a, "x", odd.object)).next_option);
+    const wrong = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"screen_says":{"awaiting_approval":{"contains":["Permission required"],"next_option":1}}}
+    , .{});
+    try testing.expectEqual(NextOption.arrow_down, (try screenSaysOf(a, "x", wrong.object)).next_option);
+}
+
 test "1777: the shipped opencode manifest declares the box opencode 1.2.10 draws" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -3857,7 +3934,7 @@ test "1746: a line meant for agy's second turn waits for its first to be over" {
 }
 
 test "1668: a declared screen text says a box is up only in the bottom rows" {
-    const says: ScreenSays = .{ .awaiting_approval = &.{"Do you want to proceed?"} };
+    const says: ScreenSays = .{ .awaiting_approval = &.{"Do you want to proceed?"}, .next_option = .arrow_down };
     try testing.expect(says.awaitsApproval(" Bash command\n   rm -rf dist/\n Do you want to proceed?\n ❯ 1. Yes\n\n\n"));
     try testing.expect(!says.awaitsApproval("$ ls\nREADME.md\n"));
 
@@ -3870,7 +3947,7 @@ test "1668: a declared screen text says a box is up only in the bottom rows" {
 }
 
 test "1668: which CLI it is decides whose screen texts are read, and silence is not a no" {
-    const codex: Manifest = .{ .key = "codex", .exec = "p", .screen_says = .{ .awaiting_approval = &.{" to run tool \""} } };
+    const codex: Manifest = .{ .key = "codex", .exec = "p", .screen_says = .{ .awaiting_approval = &.{" to run tool \""}, .next_option = .arrow_down } };
     const qwen: Manifest = .{ .key = "qwen-code", .exec = "p" };
     const all = [_]Manifest{ qwen, codex };
     const box = "  Allow the polter MCP server to run tool \"me\"?\n  › 1. Allow\n";

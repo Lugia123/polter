@@ -78,7 +78,8 @@ Three things it does not do, each checkable by reading:
   * **It never reads a value out of an `environment` table**: a server is
     described by its type and its command's file name or URL host.
   * **It never starts a session of `opencode`**, which would start every MCP
-    server it has. It runs `opencode --version`, which starts none.
+    server it has. It runs `opencode --version`, which starts none, with
+    the models fetch off (`version_of` says why).
 
 The request is the second argument (stdin when it is absent, for trying it by
 hand). One JSON object on stdout; a reason on stderr and a non-zero exit when
@@ -388,8 +389,17 @@ def tool_prefix(server):
 
 def version_of(exe):
     """`opencode --version` as a tuple, or None."""
+    # **Not as harmless as it reads** (task 1781, measured on 1.2.10 against
+    # a proxy that wrote down every connection): `opencode --version` loads
+    # the models list from models.dev before it answers. With the fetch off
+    # it makes no connection and, once opencode's directories exist, writes
+    # nothing; it never loads a plugin or touches the person's
+    # configuration either way. (`opencode session list`, by contrast, runs
+    # the person's plugins, installs packages and rewrites their config, so
+    # nothing here runs it.)
+    env = dict(os.environ, OPENCODE_DISABLE_MODELS_FETCH="1", OPENCODE_DISABLE_AUTOUPDATE="1")
     try:
-        p = subprocess.run([exe, "--version"], capture_output=True, text=True,
+        p = subprocess.run([exe, "--version"], capture_output=True, text=True, env=env,
                            stdin=subprocess.DEVNULL, timeout=VERSION_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -604,15 +614,21 @@ def identify(req):
         return {"version": 1, "me": False, "session": None, "session_written_ms": None,
                 "quit": None, "notes": []}
 
+    # When this opencode started: its own process when Polter names it, else
+    # the Polter server it started (`sidecar_pid`), which is all Windows has
+    # (task 1781). The server starts with opencode or with its first message
+    # -- either way not after the session it serves, give or take
+    # `STARTED_SLACK_MS`.
+    sidecar = req.get("sidecar_pid") if isinstance(req.get("sidecar_pid"), int) and req.get("sidecar_pid") > 0 else None
     notes = []
     session = written = None
-    if pid is None:
+    if pid is None and sidecar is None:
         notes.append("No process to look at, so its session is not known.")
     elif cwd is None:
         notes.append("No directory to look for its session in, so it is not known.")
     else:
         now_ms = int(time.time() * 1000)
-        since = started_ms(pid, now_ms)
+        since = started_ms(pid if pid is not None else sidecar, now_ms)
         if since is None:
             notes.append("When this opencode started could not be read, so its session is not named.")
         else:

@@ -7,7 +7,8 @@
     "awaiting_approval": {
       "contains": [
         "Permission required"
-      ]
+      ],
+      "next_option": "arrow_right"
     }
   },
   "exec": "provision.sh",
@@ -17,6 +18,7 @@
     "label": "opencode",
     "bin": "opencode",
     "adapter": "adapter.py",
+    "adapter_windows": "adapter.ps1",
     "identify_env": [
       "POLTER_AGENT_CLI",
       "POLTER_REGISTERED"

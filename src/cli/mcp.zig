@@ -1394,7 +1394,8 @@ const tools = [_]Tool{
             "terminal. The notice that told you about the prompt already says which " ++
             "it will be: `answer=allowed`, `answer=off` or `answer=shielded`. `choice` " ++
             "counts the options from the highlighted one, starting at 1, and defaults " ++
-            "to 1: it walks down with the arrow keys and presses return, so **read the " ++
+            "to 1: it walks to it with the arrow keys -- down, or right for a CLI whose " ++
+            "box lists its options in a row (opencode) -- and presses return, so **read the " ++
             "terminal first** -- a wrong count takes a different option and reports " ++
             "success. **And read what you are approving, all of it, first**: " ++
             "terminal_turn's `pending_tool` is the whole tool call; the notice's note " ++

@@ -60,7 +60,11 @@ class Rig:
         self.version(version)
 
     def version(self, said):
-        write(os.path.join(self.bin, "opencode"), "#!/bin/sh\n[ \"$1\" = --version ] && echo '%s'\nexit 0\n" % said)
+        # It writes down what it was run with: the version is asked with
+        # the models fetch off (task 1781).
+        write(os.path.join(self.bin, "opencode"),
+              "#!/bin/sh\nprintf '%%s %%s\\n' \"$*\" \"${OPENCODE_DISABLE_MODELS_FETCH:-}\" >> '%s'\n"
+              "[ \"$1\" = --version ] && echo '%s'\nexit 0\n" % (os.path.join(self.base, "ran"), said))
         os.chmod(os.path.join(self.bin, "opencode"), 0o755)
 
     def ask(self, question, req):
@@ -176,6 +180,10 @@ def main():
         r.version("1.19.3")
         newer = r.ask("launch", {"polter": POLTER, "session": None, "role": {}, "cli": {}})
         check("launch", newer.get("hooks") is True, "a newer one has them")
+        with open(os.path.join(r.base, "ran")) as f:
+            ran = [line.rstrip("\n") for line in f]
+        check("launch", ran and all(line == "--version 1" for line in ran),
+              "opencode is only ever asked its version, with the models fetch off: %s" % ran)
     finally:
         r.close()
 
@@ -227,6 +235,12 @@ def main():
         one = ask({"POLTER_AGENT_CLI": "opencode"})
         check("identify", one["session"] == "ses_new" and one["session_written_ms"] == now + 5,
               "this directory's one top-level session begun since it started: %s" % one["session"])
+        by_sidecar = r.ask("identify", {"pid": None, "sidecar_pid": pid, "env": {"POLTER_AGENT_CLI": "opencode"}})
+        check("identify", by_sidecar["session"] == "ses_new",
+              "with no process named, the Polter server's start stands in, as on Windows: %s" % by_sidecar["session"])
+        none = r.ask("identify", {"pid": None, "env": {"POLTER_AGENT_CLI": "opencode"}})
+        check("identify", none["session"] is None and any("No process" in n for n in none["notes"]),
+              "neither: no session, and why")
         r.sessions([("ses_second", None, r.cwd, now + 10, now + 10)])
         two = ask({"POLTER_AGENT_CLI": "opencode"})
         check("identify", two["session"] is None and any("which is this one is not known" in n for n in two["notes"]),
