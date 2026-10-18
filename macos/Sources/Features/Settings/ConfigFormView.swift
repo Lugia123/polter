@@ -169,29 +169,7 @@ struct ConfigFormRow: View {
     /// with no name of its own shows only the sentence: its key is already
     /// the label.
     private var help: some View {
-        let line = helpLine(ConfigFormRules.sentence(item))
-        // "More…" is the last run of the same text, not a button beside
-        // it: beside it, a long key squeezed the sentence into a column at
-        // the window's narrowest. As a link it wraps with the words.
-        let more: Text? = ConfigFormRules.hasMore(item) ? Text(Self.moreLink(showingMore)).font(SettingsFont.minimum) : nil
-        return (more.map { line + Text(verbatim: "  ") + $0 } ?? line)
-            .lineLimit(showingMore ? nil : 3)
-            .fixedSize(horizontal: false, vertical: true)
-            .environment(\.openURL, OpenURLAction { url in
-                guard url == Self.moreURL else { return .systemAction }
-                showingMore.toggle()
-                return .handled
-            })
-    }
-
-    private static let moreURL = URL(string: "polter-settings:more")!
-
-    private static func moreLink(_ showing: Bool) -> AttributedString {
-        var text = AttributedString(showing
-            ? String(localized: "Less", comment: "设置窗口·通用：收起 Ghostty 原文说明")
-            : String(localized: "More…", comment: "设置窗口·通用：展开 Ghostty 原文说明"))
-        text.link = moreURL
-        return text
+        MoreLinkText(line: helpLine(ConfigFormRules.sentence(item)), hasMore: ConfigFormRules.hasMore(item), showingMore: $showingMore)
     }
 
     private func helpLine(_ sentence: String?) -> Text {
