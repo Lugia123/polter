@@ -81,6 +81,22 @@ supervising — `src/poltergeist/`, the MCP tools, the group chat, the task pane
    测试进程」采样、存盘、当失败退出（3），不会杀还在用 CPU 的慢测试。**直接跑
    `zig build test` 的人得不到这层保护。**
 
+8. **多个 agent 一起干活时，大构建只归真机测试 worker**（用户 2026-10-18 定）。
+   几个 worker 各在自己的树里冷编，整台机器负载到 29、交换区用满，所有人的构建
+   都慢下来，用户的界面也卡。所以：
+   - **开发 worker** 只在自己的树里跑点名测试（带 filter 的 zig 测试、纯 crate 的
+     `cargo test`），地板照做；不跑带 app 的 `zig build`、不跑 WINCROSS 出包、
+     不跑不带 filter 的全树 `zig build test`，也不为一个小补丁新开 worktree 冷编，
+     返工就在原来那棵树上做。交付时写清楚哪些只证到了点名测试。
+   - **mac 测试 worker** 在一棵固定的树里，对总管合好的主线提交跑：带 app 的
+     `zig build`、不带 filter 的全树 `zig build test`（编过即停）、mac-logic，再拿
+     这个 app 上真机。**「全树编得过」由它来证。**
+   - **Windows 测试 worker** 在自己固定的树里做 WINCROSS（zig 和 cargo）、出包、
+     跑测试 exe。
+   - **总管**合并时只跑点名测试、闸和 hosts-agree。
+   ⇒ 整台机器上同时最多两个大构建：mac 一个、Windows 一个。只有一个 agent 在干活
+   时不受这条限制。
+
 ## libghostty-vt
 
 - Build: `zig build -Demit-lib-vt`
