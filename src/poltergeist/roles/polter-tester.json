@@ -4,7 +4,8 @@
   "description": "A test worker: checks what was built against what was asked for, with evidence, and changes nothing.",
   "clis": {
     "claude-code": {},
-    "codex": {}
+    "codex": {},
+    "antigravity": {}
   },
   "cli_skills": {
     "default": false,

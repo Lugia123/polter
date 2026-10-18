@@ -21,6 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 ADAPTER = os.path.join(ROOT, "plugins", "antigravity", "adapter.py")
 POLTER = "/Applications/Polter.app/Contents/MacOS/polter"
+ROLES = os.path.join(ROOT, "src", "poltergeist", "roles")
 
 failures = []
 
@@ -44,6 +45,11 @@ def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write(text)
+
+
+def read_text(path):
+    with open(path) as f:
+        return f.read()
 
 
 def skill(path, name, description):
@@ -154,6 +160,47 @@ def main():
         check("options", out["argv"].count("--mode") == 0 and "--mode=plan" in out["argv"]
               and "already give" in " ".join(out["notes"]),
               "a mode the extra arguments already give is theirs")
+        # Not offered above, where the help has no line for it; 1.4.2's has.
+        agy = os.path.join(home, ".local", "bin", "agy")
+        no_skip = read_text(agy)
+        write(agy, "#!/bin/sh\n[ \"$1\" = --help ] || exit 3\ncat >&2 <<'EOF'\n"
+              "Usage of agy:\n"
+              "  --dangerously-skip-permissions  Auto-approve all tool permission requests without prompting\n"
+              "  --mode                          Set the agent execution mode for this session (accept-edits, auto, plan)\nEOF\n")
+        opts = ask("inventory", {"version": 1, "cwd": None, "home": home}, home)["options"]
+        skip = next((o for o in opts if o["key"] == "skip_permissions"), None)
+        check("options", [o["key"] for o in opts] == ["mode", "skip_permissions"] and skip is not None
+              and skip["values"] == [{"value": "skip-all", "args": ["--dangerously-skip-permissions"]},
+                                     {"value": "ask", "args": []}]
+              and skip.get("default") == "skip-all" and "shell" in skip["label"],
+              "--dangerously-skip-permissions is offered on by default, with ask beside it, "
+              "and its label says shell commands too (%s)" % opts)
+        # The criterion (task 1682): a role that says nothing gets it; ask takes it out.
+        check("options", ask("launch", req, home)["argv"] == ["agy", "--model", "gemini-x-flash",
+                                                               "--dangerously-skip-permissions", "--effort", "low"],
+              "a role that picks nothing starts agy with --dangerously-skip-permissions")
+        off = dict(req, cli=dict(req["cli"], options={"skip_permissions": "ask"}))
+        check("options", ask("launch", off, home)["argv"] == ["agy", "--model", "gemini-x-flash", "--effort", "low"],
+              "skip_permissions=ask starts it without")
+        given = ask("launch", dict(req, cli=dict(req["cli"], args=["--dangerously-skip-permissions"])), home)
+        check("options", given["argv"].count("--dangerously-skip-permissions") == 1
+              and not any("already give" in n for n in given["notes"]),
+              "the role's own arguments giving it already: once, and no note about a default")
+        both = dict(req, cli=dict(req["cli"], options={"mode": "plan"}))
+        check("options", ask("launch", both, home)["argv"] == ["agy", "--model", "gemini-x-flash", "--mode", "plan",
+                                                                "--dangerously-skip-permissions", "--effort", "low"],
+              "a picked mode, and the default beside it")
+        # Each official role that starts in Antigravity picks nothing, so gets it.
+        for name in sorted(os.listdir(ROLES)):
+            if not name.endswith(".json"):
+                continue
+            role = json.load(open(os.path.join(ROLES, name)))
+            ag = (role.get("clis") or {}).get("antigravity")
+            check("official", ag is not None, "%s starts in Antigravity" % role["key"])
+            r = dict(req, role=dict(req.get("role") or {}, key=role["key"]), cli=dict(ag or {}))
+            check("official", "--dangerously-skip-permissions" in ask("launch", r, home)["argv"],
+                  "%s's agy is started with --dangerously-skip-permissions" % role["key"])
+        write(agy, no_skip)
 
         # Resume: only a conversation whose record is on this machine.
         sid = "055a398f-db14-4c5f-abbb-1bf03f8120a7"

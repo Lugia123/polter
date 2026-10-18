@@ -1219,28 +1219,35 @@ struct RoleCliStartEditor: View {
     /// the flags the value adds.
     private func optionRow(_ option: AgentCliOption) -> some View {
         let picked = choice?.options[option.key]
-        let args = option.values.first { $0.value == picked }?.args ?? []
+        let args = option.values.first { $0.value == (picked ?? option.defaultValue) }?.args ?? []
         return formRow(option.title) {
-            HStack(alignment: .firstTextBaseline, spacing: SettingsLayout.rowGap) {
-                Picker("", selection: Binding(
-                    get: { picked ?? "" },
-                    set: { value in editor.updateChoice(cliKey) { $0.options[option.key] = value.isEmpty ? nil : value } })) {
-                    Text(String(localized: "The CLI's default", comment: "角色库：模型字段占位，留空用 CLI 默认")).tag("")
-                    ForEach(option.values, id: \.value) { v in
-                        Text(v.value).font(.body.monospaced()).tag(v.value)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: SettingsLayout.rowGap) {
+                    Picker("", selection: Binding(
+                        get: { picked ?? "" },
+                        set: { value in editor.updateChoice(cliKey) { $0.options[option.key] = value.isEmpty ? nil : value } })) {
+                        if let d = option.defaultValue {
+                            Text(String(format: String(localized: "Polter's default (%@)", comment: "角色库：启动选项下拉第一项，%@ 是 Polter 替没选的角色定的值"), d)).tag("")
+                        } else {
+                            Text(String(localized: "The CLI's default", comment: "角色库：模型字段占位，留空用 CLI 默认")).tag("")
+                        }
+                        ForEach(option.values, id: \.value) { v in
+                            Text(v.value).font(.body.monospaced()).tag(v.value)
+                        }
+                    }
+                    .labelsHidden()
+                    // As wide as its words and at the control column's left
+                    // edge, like every other control of the form (04B: x=626);
+                    // a frame wider than the pop-up centred it.
+                    .fixedSize()
+                    if !args.isEmpty {
+                        Text(args.joined(separator: " "))
+                            .font(.body.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
                     }
                 }
-                .labelsHidden()
-                // As wide as its words and at the control column's left
-                // edge, like every other control of the form (04B: x=626);
-                // a frame wider than the pop-up centred it.
-                .fixedSize()
-                if !args.isEmpty {
-                    Text(args.joined(separator: " "))
-                        .font(.body.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
+                if let n = option.note { note(n) }
             }
         }
     }

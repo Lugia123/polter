@@ -175,7 +175,7 @@ host_settings_apply() {
   agy_manifest || return 1
   agy_rules_tidy
   agy_hooks_apply || return 1
-  agy_approve_apply
+  agy_approve_tidy
 }
 
 agy_hooks_apply() {
@@ -240,88 +240,40 @@ else:
   return 0
 }
 
-# --- Polter's tools without asking (approve_tools) ---------------------------
+# --- no hook says yes for Polter's tools --------------------------------------
 #
-# **agy asks before every MCP tool call**, Polter's included, and a worker
-# nobody is watching stops at its first `me`, before it can report anything.
-# The way to say yes for one server only is a `PreToolUse` hook answering
-# `{"decision":"allow"}` -- in this plugin's own `hooks.json`, under a name of
-# its own (`polter-approve`), so nothing of the person's settings is touched.
+# **agy asks before every call to one of Polter's tools, and nothing this
+# plugin can write stops it** (task 1682, measured on agy 1.4.2):
+# - a `PreToolUse` hook answering `{"decision": "allow"}` for a call to
+#   `polter_polter` was run, read that call, answered allow -- and agy put
+#   its box up a millisecond later, with Polter's other hook taken out too;
+# - `{"permissions": {"allow": ["mcp(polter_polter/me)"]}}`, the rule agy
+#   itself writes for "always allow ... (Persist to settings.json)", does
+#   nothing in this plugin's directory, nor does `mcp(polter_polter/*)`.
+# What works is the person's own choice: "always allow" in the box, which
+# agy writes into their own settings.json, or `--dangerously-skip-permissions`
+# (every tool, shell commands included), offered as a launch option.
 #
-# Measured on agy 1.4.2: every MCP call is the tool `call_mcp_tool`, and
-# which server it is for is in its arguments -- `"ServerName":
-# "polter_polter"` for this plugin's server `polter`. The arguments are
-# read by a script, parsed as JSON rather than searched as text: a key
-# called `ServerName` can sit inside a call's own arguments.
-#
-# **The matcher is `*`, and the script decides everything.** Measured: with
-# `"matcher": "call_mcp_tool"` this hook was never run for an MCP call --
-# its own log stayed empty while agy put up the box -- where Polter's other
-# hook, matched by `*`, is run for the same call. So the name is not what a
-# matcher is matched against for an MCP call, and the script, which reads
-# `toolCall.name` from the payload itself, is the one place that tells.
-# The script says yes to exactly that server and nothing at all otherwise --
-# no opinion, which leaves agy's own box in place (H1, measured).
-#
-# Not `+hook`: that never decides for the CLI (adapters.md 3.3). This is a
-# separate handler that decides only this.
+# A build before this one could write such a hook (`polter-approve`, running
+# `approve.py`) when asked to. It did nothing but run on every tool call, so
+# it is taken out wherever it is found.
 POLTER_AGY_APPROVE_KEY=polter-approve
-POLTER_AGY_SERVER=polter_polter
 
-agy_approve_script() {
-  printf '%s/approve.py' "$(agy_plugin_dir)"
-}
-
-agy_approve_apply() {
+agy_approve_tidy() {
   f=$(agy_hooks_file)
-  script=$(agy_approve_script)
-  # Off unless asked for (task 1682): measured on agy 1.4.2, the box still
-  # came up for a call to Polter's server with this hook in place, so it
-  # is not known to work yet.
-  if [ "$(polter_param approve_tools no)" = yes ]; then want=yes; else want=no; fi
-
-  if [ "$want" = no ]; then
-    [ -f "$script" ] && rm -f "$script" && wrote=yes
-    [ -f "$f" ] || return 0
-  else
-    _py=$(command -v python3) || { say "approve_tools: no python3 on PATH, so Polter's tools will be asked about"; return 0; }
-    _body=$(cat <<PY
-# Written by Polter's antigravity plugin: says yes to calls to Polter's own
-# MCP server ($POLTER_AGY_SERVER) and nothing to anything else.
-import json, sys
-try:
-    call = json.load(sys.stdin).get("toolCall") or {}
-    args = call.get("args") or {}
-    if call.get("name") == "call_mcp_tool" and args.get("ServerName") == "$POLTER_AGY_SERVER":
-        sys.stdout.write('{"decision": "allow"}')
-except Exception:
-    pass
-PY
-)
-    if [ ! -f "$script" ] || [ "$(cat "$script")" != "$_body" ]; then
-      printf '%s\n' "$_body" >"$script" || return 0
-      wrote=yes
-    fi
-  fi
-
-  _before=
-  [ -f "$f" ] && _before=$(cksum <"$f")
-  POLTER_WANT=$want POLTER_KEY=$POLTER_AGY_APPROVE_KEY POLTER_PY=${_py:-} POLTER_SCRIPT=$script \
-  POLTER_TIMEOUT=$POLTER_AGY_HOOK_TIMEOUT \
+  script="$(agy_plugin_dir)/approve.py"
+  [ -f "$script" ] && rm -f "$script" && wrote=yes
+  [ -f "$f" ] || return 0
+  grep -q "\"$POLTER_AGY_APPROVE_KEY\"" "$f" || return 0
+  _before=$(cksum <"$f")
+  POLTER_KEY=$POLTER_AGY_APPROVE_KEY \
   polter_json_edit "$f" \
-    'import os, shlex
+    'import os
 key = os.environ["POLTER_KEY"]
-if os.environ["POLTER_WANT"] == "yes":
-    cmd = "%s %s" % (shlex.quote(os.environ["POLTER_PY"]), shlex.quote(os.environ["POLTER_SCRIPT"]))
-    mine = {"PreToolUse": [{"matcher": "*", "hooks": [
-        {"type": "command", "command": cmd, "timeout": int(os.environ["POLTER_TIMEOUT"])}]}]}
-    if d.get(key) != mine:
-        d[key] = mine
-else:
-    have = d.get(key)
-    if isinstance(have, dict) and "approve.py" in json.dumps(have):
-        del d[key]' || return 0
-  if [ "$want" = no ] && [ -f "$f" ] && [ "$(tr -d ' \n\t' <"$f")" = "{}" ]; then
+have = d.get(key)
+if isinstance(have, dict) and "approve.py" in json.dumps(have):
+    del d[key]' || return 0
+  if [ "$(tr -d ' \n\t' <"$f")" = "{}" ]; then
     rm -f "$f"
   fi
   _after=

@@ -1,6 +1,6 @@
 {
   "name": "Antigravity CLI",
-  "description": "给 Google 的 Antigravity CLI（agy）装一个 Polter 自己的 Antigravity 插件：~/.gemini/config/plugins/polter。Polter 的 MCP 服务、skill、规则说明和 hook 全在这一个目录里。~/.gemini 下你自己的文件一个都不改，属于 Gemini CLI 的文件也不动。",
+  "description": "给 Google 的 Antigravity CLI（agy）装一个 Polter 自己的 Antigravity 插件：~/.gemini/config/plugins/polter。Polter 的 MCP 服务、skill、规则说明和 hook 全在这一个目录里。~/.gemini 下你自己的文件一个都不改，属于 Gemini CLI 的文件也不动。Antigravity 每调一次 Polter 的工具都会先弹一次确认，Polter 往它的插件里写什么都拦不住，所以角色默认用 --dangerously-skip-permissions 起 agy：所有工具（含 shell 命令）都不再询问。要逐个确认，就在角色里把启动选项「跳过权限确认」改成 ask；之后在框里对 Polter 的工具选 always allow，Antigravity 会把它写进你自己的 settings.json，以后就不再问。",
   "params": {
     "skills": {
       "title": "安装 skill",
@@ -16,14 +16,6 @@
       "choices": {
         "yes": "写入",
         "no": "不写"
-      }
-    },
-    "approve_tools": {
-      "title": "让 Antigravity 调 Polter 的工具时不用问（实验性）",
-      "description": "实验性，默认关：在 agy 1.4.2 上实测，装了这个 hook 之后 Antigravity 调 Polter 的工具时仍然会问，所以还不知道它是否管用。选「放行」会在 Polter 自己的 Antigravity 插件里加一个 hook：只对调 Polter 的 MCP 服务说「允许」，别的一概不管。不然 Antigravity 每调一次 Polter 的工具都要问，没人看着的 worker 会停在第一次调用上，连汇报都发不出来。你的其他 MCP 服务和你自己的批准设置都不动。选「询问」会把这个 hook 删掉，Antigravity 又会每次都问。",
-      "choices": {
-        "yes": "放行",
-        "no": "询问"
       }
     },
     "hooks": {

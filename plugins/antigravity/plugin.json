@@ -2,7 +2,7 @@
   "key": "antigravity",
   "name": "Antigravity CLI",
   "version": "1.0.0",
-  "description": "Gives Google's Antigravity CLI (agy) an Antigravity plugin of Polter's own, ~/.gemini/config/plugins/polter: Polter's MCP server, its skills, its rules note and its hooks, all inside that one directory. None of your own files under ~/.gemini is edited, and Gemini CLI's are not touched.",
+  "description": "Gives Google's Antigravity CLI (agy) an Antigravity plugin of Polter's own, ~/.gemini/config/plugins/polter: Polter's MCP server, its skills, its rules note and its hooks, all inside that one directory. None of your own files under ~/.gemini is edited, and Gemini CLI's are not touched. Antigravity asks before every call to one of Polter's tools, and nothing Polter can write into its plugin stops that, so a role starts agy with --dangerously-skip-permissions unless it says otherwise: no tool asks any more, shell commands included. To confirm each one, set the role's \"Skip permissions\" launch option to ask; then choose \"always allow\" in the box for Polter's tools, and Antigravity writes that into your own settings.json and does not ask again.",
   "exec": "provision.sh",
   "hooks_report_approval": false,
   "startup_says": {
@@ -66,16 +66,6 @@
           "no"
         ],
         "default": "yes"
-      },
-      "approve_tools": {
-        "type": "string",
-        "title": "Let Antigravity call Polter's tools without asking (experimental)",
-        "description": "Experimental, and off by default: on agy 1.4.2 Antigravity was measured asking about a call to Polter's tool with this hook in place, so it is not yet known to work. yes adds a hook to Polter's own Antigravity plugin that says yes to calls to Polter's MCP server, and to nothing else. Antigravity otherwise asks before every call to one of Polter's tools, and a worker nobody is watching stops at the first one, before it can report anything. Your other MCP servers and your own approval settings are not touched. no takes the hook back out, and Antigravity asks again.",
-        "enum": [
-          "yes",
-          "no"
-        ],
-        "default": "no"
       },
       "hooks": {
         "type": "string",

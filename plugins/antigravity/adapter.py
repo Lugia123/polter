@@ -415,6 +415,19 @@ def launch(req):
 # `agy --help` starts no session and no MCP server, and writes nothing
 # (measured on 1.4.0: no `~/.gemini` was made by it in a home without one).
 OPTION_FLAGS = [("mode", "Execution mode", "--mode")]
+# A flag that takes no value, offered as two values: one adds the flag, the
+# other leaves it out. `default` is the value a role that picked neither
+# gets -- Polter's default, not the CLI's, so the inventory says it.
+#
+# `--dangerously-skip-permissions` is the one setting measured (agy 1.4.2,
+# task 1682) to stop the box agy puts up before every call to one of
+# Polter's tools -- a hook answering allow, and an allow rule in this
+# plugin's directory, both left it up. Without it a supervisor or a worker
+# nobody is watching stops at its first `me`. It stops every other prompt
+# with it, shell commands included, so a role that wants each one confirmed
+# picks `ask` (the person's decision, 2026-10-18: on unless turned off).
+SWITCH_FLAGS = [("skip_permissions", "Skip permissions (all tools, shell too)",
+                 "--dangerously-skip-permissions", "skip-all", "ask", "skip-all")]
 HELP_TIMEOUT = 10
 
 
@@ -453,7 +466,17 @@ def launch_options(text):
         if values:
             out.append({"key": key, "label": label, "flag": flag, "aliases": [],
                         "values": [{"value": v, "args": [flag, v]} for v in values]})
+    for key, label, flag, on, off, default in SWITCH_FLAGS:
+        if has_flag(text, flag):
+            out.append({"key": key, "label": label, "flag": flag, "aliases": [],
+                        "values": [{"value": on, "args": [flag]}, {"value": off, "args": []}],
+                        "default": default})
     return out
+
+
+def has_flag(text, flag):
+    """Whether `--help` has a line for `flag`."""
+    return any(re.match(r"\s*%s\s" % re.escape(flag), line) for line in (text or "").splitlines())
 
 
 def apply_options(cli, extra, notes):
@@ -461,9 +484,15 @@ def apply_options(cli, extra, notes):
     not list is left out with a note; so is an option whose flag the role's
     extra arguments already give, because those are the role's words too."""
     picked = cli.get("options") or {}
-    if not isinstance(picked, dict) or not picked:
-        return []
+    if not isinstance(picked, dict):
+        picked = {}
     offered = {o["key"]: o for o in launch_options(help_text())}
+    # An option with a default stands for it when the role picked nothing
+    # (this asks `agy --help` at every launch, which starts no session).
+    defaulted = {k: o["default"] for k, o in offered.items() if "default" in o and k not in picked}
+    picked = dict(picked, **defaulted)
+    if not picked:
+        return []
     args = []
     for key, value in picked.items():
         o = offered.get(key)
@@ -471,7 +500,8 @@ def apply_options(cli, extra, notes):
             notes.append('Launch option "%s" is not one this version offers; left out.' % key)
             continue
         if any(a == o["flag"] or a.startswith(o["flag"] + "=") for a in extra):
-            notes.append('Launch option "%s" left out: the extra arguments already give %s.' % (key, o["flag"]))
+            if key not in defaulted:
+                notes.append('Launch option "%s" left out: the extra arguments already give %s.' % (key, o["flag"]))
             continue
         hit = next((v for v in o["values"] if v["value"] == value), None)
         if hit is None:

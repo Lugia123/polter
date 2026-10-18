@@ -339,6 +339,9 @@
 "Starting %@" = "Starting %@";
 "Model" = "Model";
 "The CLI's default" = "The CLI's default";
+"Skip Permissions" = "Skip Permissions";
+"No tool asks before it runs, shell commands included. To confirm each one, choose ask." = "No tool asks before it runs, shell commands included. To confirm each one, choose ask.";
+"Polter's default (%@)" = "Polter's default (%@)";
 "Extra Arguments" = "Extra Arguments";
 "Added to the command line as typed. Quote anything with a space in it." = "Added to the command line as typed. Quote anything with a space in it.";
 "Read what's installed again" = "Read what's installed again";

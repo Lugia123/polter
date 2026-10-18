@@ -1787,7 +1787,7 @@ mod shipped_manifest_tests {
             names("kimi", KIMI),
         ];
         let expected: Vec<(String, Vec<String>)> = [
-            ("antigravity", &["approve_tools", "hooks", "rules", "skills"][..]),
+            ("antigravity", &["hooks", "rules", "skills"][..]),
             ("archive", &["dir", "sign_key"][..]),
             ("claude-code", &["rules", "scope", "skills"][..]),
             ("codex", &["approve_tools", "manual_out_of_daemon", "rules", "skills"][..]),

@@ -461,6 +461,9 @@ struct AgentCliOption: Equatable, Identifiable {
     var key: String
     var label: String
     var values: [Value]
+    /// The value a role that picked none gets, when the adapter has one --
+    /// Polter's default, not the CLI's (Antigravity's `skip_permissions`).
+    var defaultValue: String?
 
     var id: String { key }
 
@@ -468,6 +471,7 @@ struct AgentCliOption: Equatable, Identifiable {
         guard let key = obj["key"] as? String else { return nil }
         self.key = key
         label = (obj["label"] as? String) ?? key
+        defaultValue = obj["default"] as? String
         values = ((obj["values"] as? [[String: Any]]) ?? []).compactMap { v in
             guard let value = v["value"] as? String else { return nil }
             return Value(value: value, args: (v["args"] as? [String]) ?? [])
@@ -481,7 +485,18 @@ struct AgentCliOption: Equatable, Identifiable {
         case "permission_mode": return String(localized: "Permission Mode", comment: "角色库：Claude Code 的无人值守下拉，--permission-mode")
         case "approval": return String(localized: "Approval", comment: "角色库：Codex 的无人值守下拉，--ask-for-approval")
         case "sandbox": return String(localized: "Sandbox", comment: "角色库：Codex 的无人值守下拉，--sandbox")
+        case "skip_permissions": return String(localized: "Skip Permissions", comment: "角色库：Antigravity 的无人值守下拉，--dangerously-skip-permissions")
         default: return label
+        }
+    }
+
+    /// What it does, said under it, for the ones whose name does not.
+    var note: String? {
+        switch key {
+        case "skip_permissions":
+            return String(localized: "No tool asks before it runs, shell commands included. To confirm each one, choose ask.",
+                          comment: "角色库：Antigravity「跳过权限确认」下拉下面的说明")
+        default: return nil
         }
     }
 }

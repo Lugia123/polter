@@ -355,6 +355,9 @@
 "Starting %@" = "启动 %@";
 "Model" = "模型";
 "The CLI's default" = "CLI 默认";
+"Skip Permissions" = "跳过权限确认";
+"No tool asks before it runs, shell commands included. To confirm each one, choose ask." = "所有工具（含 shell 命令）都不再询问。要逐个确认，就选 ask。";
+"Polter's default (%@)" = "Polter 默认（%@）";
 "Extra Arguments" = "额外参数";
 "Added to the command line as typed. Quote anything with a space in it." = "按原样追加到命令行。含空格的参数请加引号。";
 "Read what's installed again" = "重新读取已安装的内容";

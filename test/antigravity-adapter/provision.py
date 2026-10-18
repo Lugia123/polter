@@ -30,9 +30,10 @@ Cases, each against a fresh HOME unless it says otherwise:
      splits, the way a shell would, back into that path and `+hook`.
   7. No `agy` on PATH: `status=absent`, and `~/.gemini` is not made.
   8. `rules=no`: the rules file and its directory go; the manifest stays.
-  9. approve_tools (off by default, so asked for): the script says yes to a call to Polter's server and to
-     nothing else -- another server, a `ServerName` hidden in a call's own
-     arguments, a shell command; `approve_tools=no` takes it and its hook out.
+  9. What a build before this one wrote when asked to approve Polter's tools
+     (`approve.py` and its `polter-approve` hook, measured to do nothing on
+     agy 1.4.2) is taken out; Polter's own hooks stay, and a
+     `polter-approve` entry that is not that one is kept.
 
 Exit 0 when every case holds.
 """
@@ -163,7 +164,7 @@ def main():
               "the plugin's rules file has one block")
         made = sorted(os.path.relpath(os.path.join(d, n), home)
                       for d, dirs, names in os.walk(os.path.join(home, ".gemini")) for n in names)
-        check("1", read(f["approve"]) is None, "approve_tools is off unless asked for: no approve.py")
+        check("1", read(f["approve"]) is None, "no approve.py is written")
         check("1", made == sorted(os.path.relpath(v, home) for k, v in f.items() if k != "approve"),
               "nothing outside the plugin directory was made (%s)" % made)
 
@@ -197,15 +198,15 @@ def main():
               "and nothing of theirs was copied into Polter's")
 
         # 4. The same home: hooks off.
-        home, err, acks = run(root, {"hooks": "no", "approve_tools": "no"})
+        home, err, acks = run(root, {"hooks": "no"})
         check("4", read(f["hooks"]) is None, "Polter's hooks file is gone")
         check("4", "status=provisioned" in err, "taking it out is a write")
         check("4", read(t["hooks"]) == before["hooks"], "the person's global hooks.json did not move")
         root = fresh(); roots.append(root)
         home, _, _ = run(root, {})
-        home, err, _ = run(root, {"hooks": "no", "approve_tools": "no"})
+        home, err, _ = run(root, {"hooks": "no"})
         check("4", read(files(home)["hooks"]) is None, "a hooks.json that held only Polter's is gone")
-        home, err, _ = run(root, {"hooks": "no", "approve_tools": "no"})
+        home, err, _ = run(root, {"hooks": "no"})
         check("4", "status=unchanged" in err, "and with nothing to take out, nothing is written")
 
         # 5.
@@ -216,7 +217,7 @@ def main():
         theirs = {"polter": {"Stop": [{"type": "command", "command": "/usr/local/bin/notify"}]}}
         with open(f["hooks"], "w") as h:
             json.dump(theirs, h)
-        run(root, {"hooks": "no", "approve_tools": "no"})
+        run(root, {"hooks": "no"})
         got = read(f["hooks"])
         check("5", got is not None and json.loads(got) == theirs, "a polter entry that is not Polter's is kept")
 
@@ -248,33 +249,33 @@ def main():
         check("8", read(f["manifest"]) is not None and read(f["mcp"]) is not None, "the rest of the plugin stays")
         check("8", "status=provisioned" in err, "taking it out is a write")
 
-        # 9. (approve_tools is off by default: asked for here.)
+        # 9. A plugin directory as an earlier build left it with its approve hook.
         root = fresh(); roots.append(root)
-        home, _, _ = run(root, {"approve_tools": "yes"})
+        home, _, _ = run(root, {})
         f = files(home)
-        hook = (jload(read(f["hooks"])) or {}).get("polter-approve") or {}
-        group = (hook.get("PreToolUse") or [{}])[0]
-        # Every tool: `call_mcp_tool` as a matcher was measured never to run it
-        # for an MCP call. The script tells MCP calls from the rest (below).
-        check("9", group.get("matcher") == "*", "the hook sees every tool call")
-        cmd = shlex.split(group.get("hooks", [{}])[0].get("command", "x"))
-        def answer(payload):
-            r = subprocess.run(cmd, input=json.dumps(payload), capture_output=True, text=True, timeout=30)
-            return r.returncode, r.stdout
-        polter = {"toolCall": {"name": "call_mcp_tool", "args": {"ServerName": "polter_polter", "ToolName": "me", "Arguments": {}}}}
-        check("9", answer(polter) == (0, '{"decision": "allow"}'), "a call to Polter's server is allowed (%s)" % (answer(polter),))
-        other = {"toolCall": {"name": "call_mcp_tool", "args": {"ServerName": "github_github", "ToolName": "push"}}}
-        check("9", answer(other) == (0, ""), "another server's is left to agy")
-        hidden = {"toolCall": {"name": "call_mcp_tool", "args": {"ServerName": "evil_evil", "Arguments": {"ServerName": "polter_polter"}}}}
-        check("9", answer(hidden) == (0, ""), "a ServerName inside the call's own arguments is not the server")
-        shell = {"toolCall": {"name": "run_command", "args": {"CommandLine": "rm -rf /", "ServerName": "polter_polter"}}}
-        check("9", answer(shell) == (0, ""), "a tool that is not an MCP call is not allowed")
-        bad = subprocess.run(cmd, input="not json", capture_output=True, text=True, timeout=30)
-        check("9", (bad.returncode, bad.stdout) == (0, ""), "a payload that does not parse is no opinion")
-        home, err, _ = run(root, {"approve_tools": "no"})
+        old_cmd = "/usr/bin/python3 %s" % shlex.quote(f["approve"])
+        hooks = jload(read(f["hooks"]))
+        hooks["polter-approve"] = {"PreToolUse": [{"matcher": "*", "hooks": [
+            {"type": "command", "command": old_cmd, "timeout": 3}]}]}
+        with open(f["hooks"], "w") as h:
+            json.dump(hooks, h)
+        with open(f["approve"], "w") as h:
+            h.write("import sys\nsys.stdout.write('{\"decision\": \"allow\"}')\n")
+        home, err, _ = run(root, {})
         hooks = jload(read(f["hooks"])) or {}
-        check("9", "polter-approve" not in hooks and "polter" in hooks and read(f["approve"]) is None,
-              "approve_tools=no takes the hook and the script out, and leaves Polter's other hooks")
+        check("9", "polter-approve" not in hooks, "the old approve hook is taken out")
+        check("9", read(f["approve"]) is None, "and its script")
+        check("9", set(hooks.get("polter") or ()) == EVENTS, "Polter's own hooks stay")
+        check("9", "status=provisioned" in err, "taking them out is a write")
+        home, err, _ = run(root, {})
+        check("9", "status=unchanged" in err, "and once they are gone, nothing is written")
+        theirs = {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "/usr/local/bin/ask"}]}]}
+        hooks["polter-approve"] = theirs
+        with open(f["hooks"], "w") as h:
+            json.dump(hooks, h)
+        run(root, {})
+        check("9", (jload(read(f["hooks"])) or {}).get("polter-approve") == theirs,
+              "a polter-approve entry that is not the old one is kept")
     finally:
         for r in roots:
             shutil.rmtree(r, ignore_errors=True)

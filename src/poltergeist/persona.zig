@@ -1769,7 +1769,10 @@ test "persona: every set starts with the official roles" {
     try testing.expect(!boss.cli_skills.default);
     try testing.expect(!boss.cli_mcp.default);
     try testing.expectEqual(@as(usize, 3), boss.cli_skills.except.len);
-    try testing.expectEqual(@as(usize, 2), boss.clis.len);
+    // Claude Code, Codex and Antigravity (task 1682): the role starts in
+    // whichever of them this machine has.
+    try testing.expectEqual(@as(usize, 3), boss.clis.len);
+    try testing.expect(boss.cli("antigravity") != null);
     try testing.expect(empty.find(tester_key).?.official != null);
     // With no file at all, the same.
     const none = try official.assemble(aa, null, &official.sources, .absent);
