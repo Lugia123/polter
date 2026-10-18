@@ -470,7 +470,7 @@ struct PaneFrameBar: View {
     /// beginning and an end to recognise it by.
     static let nameFloor: CGFloat = {
         let font = NSFont.monospacedSystemFont(ofSize: CGFloat(Look.Font.body), weight: .regular)
-        return ceil(("MMMM" as NSString).size(withAttributes: [.font: font]).width)
+        return ceil(SafeTextMeasure.width("MMMM", font: font))
     }()
 
     /// One way of laying out the bar. `nameCut`: the name asks only for

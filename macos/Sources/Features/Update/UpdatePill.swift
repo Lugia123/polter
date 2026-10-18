@@ -74,8 +74,6 @@ struct UpdatePill: View {
 
     /// Calculated width for the text to prevent resizing during progress updates
     private var textWidth: CGFloat? {
-        let attributes: [NSAttributedString.Key: Any] = [.font: textFont]
-        let size = (model.maxWidthText as NSString).size(withAttributes: attributes)
-        return size.width
+        SafeTextMeasure.width(model.maxWidthText, font: textFont)
     }
 }

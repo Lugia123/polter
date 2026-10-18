@@ -69,12 +69,16 @@ import PackageDescription
 
 // Written by tools/mac-logic-tests. The module is called Ghostty so that the
 // tests' `@testable import Ghostty` is the line the app's test target has.
+// The Objective-C the app reaches through its bridging header is a target
+// of its own here, and its headers are imported into the Swift the same way.
 let package = Package(
     name: "Ghostty",
     platforms: [.macOS(.v13)],
     targets: [
-        .target(name: "Ghostty", path: "Sources/Ghostty",
-                swiftSettings: [.enableUpcomingFeature("BareSlashRegexLiterals")]),
+        .target(name: "GhosttyObjC", path: "Sources/GhosttyObjC", publicHeadersPath: "include"),
+        .target(name: "Ghostty", dependencies: ["GhosttyObjC"], path: "Sources/Ghostty",
+                swiftSettings: [.enableUpcomingFeature("BareSlashRegexLiterals"),
+                                .unsafeFlags(["-import-objc-header", "Sources/GhosttyObjC/include/Bridging.h"])]),
         .testTarget(name: "GhosttyTests", dependencies: ["Ghostty"], path: "Tests/GhosttyTests"),
     ]
 )
@@ -116,6 +120,11 @@ def check(data, root=ROOT):
     for p in data.get("stubs", []):
         if not os.path.isfile(os.path.join(root, p)):
             problems.append("the stand-in %s is not in the tree" % p)
+    for p in data.get("objc", []):
+        if not os.path.isfile(os.path.join(root, p)):
+            problems.append("the Objective-C file %s is not in the tree" % p)
+        elif not p.endswith((".h", ".m")):
+            problems.append("the Objective-C file %s is neither a .h nor a .m" % p)
 
     seen = 0
     for directory in data["watched"]:
@@ -167,8 +176,29 @@ def build(data, work):
     tst = os.path.join(work, "Tests", "GhosttyTests")
     os.makedirs(src)
     os.makedirs(tst)
+    objc = os.path.join(work, "Sources", "GhosttyObjC")
+    include = os.path.join(objc, "include")
+    os.makedirs(include)
+    headers = []
+    for p in data.get("objc", []):
+        name = os.path.basename(p)
+        into = include if name.endswith(".h") else objc
+        if os.path.exists(os.path.join(into, name)):
+            raise Disagreement("two Objective-C files are called %s; the package is flat" % name)
+        os.symlink(os.path.join(ROOT, p), os.path.join(into, name))
+        if name.endswith(".h"):
+            headers.append(name)
+    with open(os.path.join(include, "Bridging.h"), "w") as f:
+        f.write("// Written by tools/mac-logic-tests: what the app's bridging header imports of `objc`.\n")
+        for name in headers:
+            f.write('#import "%s"\n' % name)
+    if not any(n.endswith(".m") for n in os.listdir(objc)):
+        # A target with no source is an error to SwiftPM; an empty list is not.
+        with open(os.path.join(objc, "Empty.m"), "w") as f:
+            f.write("// Written by tools/mac-logic-tests so that the target has a source.\n")
     with open(os.path.join(work, "Package.swift"), "w") as f:
-        f.write(PACKAGE)
+        # The header by its whole path: swiftc is not run from the package.
+        f.write(PACKAGE.replace('"Sources/GhosttyObjC/', '"%s/Sources/GhosttyObjC/' % work))
 
     names = {}
 

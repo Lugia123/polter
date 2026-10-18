@@ -54,3 +54,39 @@ BOOL GhosttyShowWindowSafely(
         return NO;
     }
 }
+
+BOOL GhosttyMeasureTextSafely(
+    NSAttributedString *text,
+    CGFloat wrapWidth,
+    BOOL failForTesting,
+    CGSize *size,
+    NSError * _Nullable * _Nullable error
+) {
+    // CoreText once threw from TAttributes::ApplyFont while measuring a
+    // terminal's title for the control room ("attempt to insert nil object
+    // from objects[0]"), on the main thread in the middle of a SwiftUI
+    // layout, which aborted the app (task 1718). Why is not known; the same
+    // call measured fifteen thousand kinds of string without it. So every
+    // measurement is made here, where the exception can be caught.
+    @try {
+        if (failForTesting) {
+            // The same exception from the same class: a dictionary given nil.
+            id objects[1] = { nil };
+            id keys[1] = { NSFontAttributeName };
+            (void)[[NSDictionary alloc] initWithObjects:objects forKeys:keys count:1];
+        }
+        if (wrapWidth > 0) {
+            *size = [text boundingRectWithSize:NSMakeSize(wrapWidth, CGFLOAT_MAX)
+                                       options:NSStringDrawingUsesLineFragmentOrigin].size;
+        } else {
+            *size = [text size];
+        }
+        return YES;
+    } @catch (NSException *exception) {
+        if (error != NULL) {
+            *error = GhosttyErrorFromException(exception, 3);
+        }
+
+        return NO;
+    }
+}

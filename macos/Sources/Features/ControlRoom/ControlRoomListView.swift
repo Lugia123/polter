@@ -466,11 +466,8 @@ struct ControlRoomListView: View {
     /// How high the note is with these words in it: its lines, and the
     /// row's padding above and below.
     static func noteHeight(_ text: String) -> CGFloat {
-        let font = NSFont.systemFont(ofSize: CGFloat(Look.Font.body))
-        let box = (text as NSString).boundingRect(
-            with: CGSize(width: noteWidth, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin], attributes: [.font: font])
-        return ceil(box.height) + 2 * CGFloat(Look.Side.rowPaddingY)
+        let height = SafeTextMeasure.height(text, font: ControlRoomAskText.face(code: false), wrappingAt: noteWidth)
+        return ceil(height) + 2 * CGFloat(Look.Side.rowPaddingY)
     }
 
     private func submitName() {
@@ -607,10 +604,8 @@ struct ControlRoomListView: View {
         // Who gets how much of the first line is the rule's
         // (`ControlRoomLine1`); what is measured here is only how wide each
         // would be alone.
-        let nameFont = NSFont.monospacedSystemFont(
-            ofSize: CGFloat(Look.Font.groupName),
-            weight: Self.weight(selected ? Look.Font.weightStrong : Look.Font.weightGroupName))
-        let wordFont = NSFont.systemFont(ofSize: CGFloat(Look.Font.body), weight: Self.weight(Look.Font.weightEmphasis))
+        let nameFont = selected ? Self.nameFontStrong : Self.nameFont
+        let wordFont = Self.wordFont
         let whoText = who(row.waiter)
         // The marks after the name take its room on the line: they are
         // measured with it, and the name is cut before they are.
@@ -709,25 +704,36 @@ struct ControlRoomListView: View {
         }
     }
 
+    /// The faces a waiting row is measured in, made once rather than on
+    /// every render (task 1718).
+    private static let nameFont = NSFont.monospacedSystemFont(
+        ofSize: CGFloat(Look.Font.groupName), weight: weight(Look.Font.weightGroupName))
+    private static let nameFontStrong = NSFont.monospacedSystemFont(
+        ofSize: CGFloat(Look.Font.groupName), weight: weight(Look.Font.weightStrong))
+    private static let wordFont = NSFont.systemFont(
+        ofSize: CGFloat(Look.Font.body), weight: weight(Look.Font.weightEmphasis))
+    private static let whoFont = NSFont.systemFont(ofSize: CGFloat(Look.Font.body))
+    private static let whoNameFont = NSFont.monospacedSystemFont(ofSize: CGFloat(Look.Font.body), weight: .regular)
+
     /// How wide `text` is on one line, rounded up so that a text that fits
-    /// exactly is not cut by a fraction of a point.
+    /// exactly is not cut by a fraction of a point. Measured through
+    /// `SafeTextMeasure`, which a throw from CoreText cannot get past (task 1718).
     static func width(of text: String, font: NSFont) -> CGFloat {
-        ceil((text as NSString).size(withAttributes: [.font: font]).width) + 1
+        ceil(SafeTextMeasure.width(text, font: font)) + 1
     }
 
     /// How wide who is waiting would be alone: the worker's name in the
     /// terminal's face, the rest in the interface's, as `who` sets them.
     static func whoWidth(_ waiter: ControlRoomList.Waiter) -> CGFloat {
         guard let said = ControlRoomList.waiterText(waiter) else { return 0 }
-        let size = CGFloat(Look.Font.body)
-        let text = NSMutableAttributedString(string: said, attributes: [.font: NSFont.systemFont(ofSize: size)])
+        let text = NSMutableAttributedString(string: said, attributes: [.font: whoFont])
         if !waiter.name.isEmpty {
             let range = (said as NSString).range(of: waiter.name)
             if range.location != NSNotFound {
-                text.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: size, weight: .regular), range: range)
+                text.addAttribute(.font, value: whoNameFont, range: range)
             }
         }
-        return ceil(text.size().width) + 1
+        return ceil(SafeTextMeasure.width(text)) + 1
     }
 
     /// A group that needs nothing: the glyph in the same column, the name,
@@ -819,9 +825,12 @@ struct ControlRoomAskText: View {
     @Environment(\.colorScheme) private var scheme
 
     static func face(code: Bool) -> NSFont {
-        let size = CGFloat(Look.Font.body)
-        return code ? .monospacedSystemFont(ofSize: size, weight: .regular) : .systemFont(ofSize: size)
+        code ? codeFace : textFace
     }
+
+    /// Made once rather than on every render (task 1718).
+    private static let textFace = NSFont.systemFont(ofSize: CGFloat(Look.Font.body))
+    private static let codeFace = NSFont.monospacedSystemFont(ofSize: CGFloat(Look.Font.body), weight: .regular)
 
     /// What one line of `font` is high when nothing is added between lines.
     static func natural(_ font: NSFont) -> CGFloat {
@@ -832,11 +841,8 @@ struct ControlRoomAskText: View {
     static func needed(_ text: String, code: Bool) -> Int {
         guard !text.isEmpty else { return 1 }
         let font = face(code: code)
-        let box = (text as NSString).boundingRect(
-            with: CGSize(width: ControlRoomListLayout.askWidth, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin],
-            attributes: [.font: font])
-        return max(1, Int((box.height / natural(font)).rounded()))
+        let height = SafeTextMeasure.height(text, font: font, wrappingAt: ControlRoomListLayout.askWidth)
+        return max(1, Int((height / natural(font)).rounded()))
     }
 
     var body: some View {

@@ -105,13 +105,18 @@ struct PaneStackStripView: View {
     // MARK: Measuring
 
     static func nameFont(current: Bool) -> NSFont {
-        .monospacedSystemFont(ofSize: CGFloat(Look.Font.body),
-                              weight: current ? .semibold : .regular)
+        current ? nameFontCurrent : nameFontBehind
     }
 
     static func roleFont() -> NSFont {
-        .systemFont(ofSize: CGFloat(Look.Font.body))
+        roleFace
     }
+
+    // Made once rather than on every render (task 1718).
+    private static let nameFontCurrent = NSFont.monospacedSystemFont(ofSize: CGFloat(Look.Font.body), weight: .semibold)
+    private static let nameFontBehind = NSFont.monospacedSystemFont(ofSize: CGFloat(Look.Font.body), weight: .regular)
+    private static let roleFace = NSFont.systemFont(ofSize: CGFloat(Look.Font.body))
+    private static let statusFont = NSFont.systemFont(ofSize: CGFloat(Look.Font.body), weight: .semibold)
 
     /// How wide a tab's body wants to be: its name at the heavier of its
     /// two weights and the word for what it is, and room for a glyph
@@ -122,13 +127,13 @@ struct PaneStackStripView: View {
     /// A supervisor's tab has its mark before the name (task 1692).
     static func wanted(_ member: PaneStack.Member) -> CGFloat {
         let t = Look.StackTab.self
-        var name = (member.name as NSString).size(withAttributes: [.font: nameFont(current: true)]).width.rounded(.up)
+        var name = SafeTextMeasure.width(member.name, font: nameFont(current: true)).rounded(.up)
         if member.marked {
             name += CGFloat(Look.Side.glyph) + CGFloat(t.gap)
         }
         if let role = member.role {
             name += CGFloat(Look.Pane.nameRoleGap)
-                + (role as NSString).size(withAttributes: [.font: roleFont()]).width.rounded(.up)
+                + SafeTextMeasure.width(role, font: roleFont()).rounded(.up)
         }
         return 2 * CGFloat(t.paddingX) + name + CGFloat(t.gap) + CGFloat(Look.Side.glyph)
     }
@@ -136,8 +141,7 @@ struct PaneStackStripView: View {
     /// How wide the status at the right end is: the glyph, the gap, the word.
     static func statusWidth(_ title: PaneFrame.Title?) -> CGFloat {
         guard let title, title.shown != .none || !title.word.isEmpty else { return 0 }
-        let font = NSFont.systemFont(ofSize: CGFloat(Look.Font.body), weight: .semibold)
-        let word = (title.word as NSString).size(withAttributes: [.font: font]).width.rounded(.up)
+        let word = SafeTextMeasure.width(title.word, font: statusFont).rounded(.up)
         return CGFloat(Look.Side.glyph) + CGFloat(Look.Side.statusWordGap) + word
     }
 

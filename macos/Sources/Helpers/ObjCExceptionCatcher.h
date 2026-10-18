@@ -18,3 +18,15 @@ FOUNDATION_EXPORT BOOL GhosttyShowWindowSafely(
     id _Nullable sender,
     NSError * _Nullable * _Nullable error
 );
+
+/// -[NSAttributedString size] / -boundingRectWithSize:options: wrapper.
+/// `wrapWidth` > 0 measures the text wrapped at that width, otherwise on
+/// one line. `failForTesting` raises the exception CoreText raised in the
+/// crash of task 1718, inside the guard, instead of measuring.
+FOUNDATION_EXPORT BOOL GhosttyMeasureTextSafely(
+    NSAttributedString * _Nonnull text,
+    CGFloat wrapWidth,
+    BOOL failForTesting,
+    CGSize * _Nonnull size,
+    NSError * _Nullable * _Nullable error
+);
