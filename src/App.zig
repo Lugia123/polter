@@ -6960,15 +6960,17 @@ fn parseHighlightApplied(
     } else .unknown;
     const timer: Answer.Timer = if (v.timer) |w| std.meta.stringToEnum(Answer.Timer, w) orelse .waiting else .waiting;
     const sw: @TypeOf(v.switched.?) = v.switched orelse .{};
-    return .{ .shown = .{
-        .switched = .{ .window = sw.window, .tab = sw.tab, .stack = sw.stack },
-        .front = front,
-        .timer = timer,
-        // A handle that no longer names a surface was closed in between;
-        // there is no id left to give.
-        .replaced = if (v.replaced == 0) null else lookup(ctx, v.replaced),
-        .until_ms = now_ms + @as(i64, seconds) * std.time.ms_per_s,
-    } };
+    return .{
+        .shown = .{
+            .switched = .{ .window = sw.window, .tab = sw.tab, .stack = sw.stack },
+            .front = front,
+            .timer = timer,
+            // A handle that no longer names a surface was closed in between;
+            // there is no id left to give.
+            .replaced = if (v.replaced == 0) null else lookup(ctx, v.replaced),
+            .until_ms = now_ms + @as(i64, seconds) * std.time.ms_per_s,
+        },
+    };
 }
 
 test "a highlight answer with a front word the core does not know is unknown, not refused" {

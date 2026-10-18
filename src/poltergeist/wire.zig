@@ -156,14 +156,16 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .lines = try optionalU16(params, "lines", 0),
         } },
 
-        .terminal_highlight => .{ .terminal_highlight = .{
-            .id = try requireId(params),
-            // Out of range is the dispatcher's to refuse by name
-            // (`BadSeconds`), so a number too big for the field is kept too
-            // big rather than wrapped into one that is allowed.
-            .seconds = std.math.cast(u32, try optionalU64(params, "seconds", rpc.highlight_seconds_default)) orelse std.math.maxInt(u32),
-            .label = try optionalString(aa, params, "label"),
-        } },
+        .terminal_highlight => .{
+            .terminal_highlight = .{
+                .id = try requireId(params),
+                // Out of range is the dispatcher's to refuse by name
+                // (`BadSeconds`), so a number too big for the field is kept too
+                // big rather than wrapped into one that is allowed.
+                .seconds = std.math.cast(u32, try optionalU64(params, "seconds", rpc.highlight_seconds_default)) orelse std.math.maxInt(u32),
+                .label = try optionalString(aa, params, "label"),
+            },
+        },
 
         .terminal_send => .{ .terminal_send = .{
             .id = try requireId(params),
