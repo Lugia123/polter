@@ -304,9 +304,11 @@ export fn ghostty_config_keybind(self: *Config, idx: u32) Keybind {
 /// command that is exactly what the bare tag runs, out of this config's
 /// command list and already translated, as the palette shows it --
 /// `copy_to_clipboard` runs `copy_to_clipboard:mixed`, so it is "Copy to
-/// Clipboard". Null when the bare tag runs no command of the list: a tag that
-/// needs a parameter (`goto_tab`), or one the list has nothing for. The
-/// pointer lives as long as the config.
+/// Clipboard". A tag that needs a parameter (`increase_font_size`,
+/// `goto_tab`) runs nothing bare, and is named by the first command that
+/// carries it -- what both hosts named every tag by before. Null only when
+/// no command of the list carries the tag at all; the hosts then look in
+/// their own table of names. The pointer lives as long as the config.
 ///
 /// **Matched by what the tag runs, not by the tag.** Both hosts used to take
 /// the first command carrying the tag, and the list is sorted by English
@@ -319,11 +321,17 @@ export fn ghostty_config_action_title(self: *Config, tag: [*]const u8, len: usiz
 }
 
 fn actionTitle(self: *const Config, tag: []const u8) ?[*:0]const u8 {
-    const parsed = inputpkg.Binding.Action.parse(tag) catch return null;
-    const want = parsed.hash();
     const list = &self.@"command-palette-entry";
+    if (inputpkg.Binding.Action.parse(tag)) |parsed| {
+        const want = parsed.hash();
+        for (list.value.items, list.value_c.items) |cmd, c| {
+            if (cmd.action.hash() == want) return c.title;
+        }
+    } else |_| {}
+    // Not runnable bare, or run by no command: the first that carries it.
+    const key = std.meta.stringToEnum(inputpkg.Binding.Action.Key, tag) orelse return null;
     for (list.value.items, list.value_c.items) |cmd, c| {
-        if (cmd.action.hash() == want) return c.title;
+        if (std.meta.activeTag(cmd.action) == key) return c.title;
     }
     return null;
 }
@@ -660,7 +668,27 @@ test "ghostty_config_action_title: a tag is named by the command it runs (1750)"
     const reload = std.mem.span(actionTitle(&cfg, "reload_config").?);
     try testing.expectEqualStrings("Reload Config", reload);
 
-    // A tag that needs a parameter runs nothing on its own.
-    try testing.expect(actionTitle(&cfg, "goto_split") == null);
+    // Null for a tag only when no command carries it at all: every action
+    // the list has a command for gets a title.
+    var untitled: usize = 0;
+    inline for (@typeInfo(inputpkg.Binding.Action.Key).@"enum".fields) |f| {
+        const carried = for (cfg.@"command-palette-entry".value.items) |cmd| {
+            if (std.meta.activeTag(cmd.action) == @field(inputpkg.Binding.Action.Key, f.name)) break true;
+        } else false;
+        if (carried and actionTitle(&cfg, f.name) == null) {
+            std.log.err("{s} has a command and no title", .{f.name});
+            untitled += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), untitled);
+
+    // A tag that needs a parameter runs nothing on its own, and is named by
+    // the first command carrying it -- not left untitled (0x1b95 on
+    // 59dcb1462: increase_font_size showed no title).
+    const bigger = std.mem.span(actionTitle(&cfg, "increase_font_size").?);
+    try testing.expectEqualStrings("Increase Font Size", bigger);
+    const smaller = std.mem.span(actionTitle(&cfg, "decrease_font_size").?);
+    try testing.expectEqualStrings("Decrease Font Size", smaller);
+    try testing.expect(actionTitle(&cfg, "write_screen_file") != null);
     try testing.expect(actionTitle(&cfg, "no_such_action") == null);
 }
