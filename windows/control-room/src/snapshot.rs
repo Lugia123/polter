@@ -600,6 +600,11 @@ pub struct ProjectTie {
     /// Whether the host should ask the person now whether to join the
     /// project with the group's name (§2). False from a core before it said.
     pub ask: bool,
+    /// Whether starting the group opens its project (`start` is `project`)
+    /// rather than a tab in a directory (`directory`). False when the core
+    /// says anything else, or nothing: the macOS host then has no project
+    /// for the group at all (`ProjectLink.told`) and says "Start Supervisor".
+    pub opens_project: bool,
 }
 
 /// How the control room's last ask of a group's supervisor went (task
@@ -1155,6 +1160,7 @@ fn group(v: &Value, path: &str) -> Res<Group> {
                     tie: text(p, &at, "tie")?,
                     why: if p.get("why").is_some() { text(p, &at, "why")? } else { "none".into() },
                     ask: if p.get("ask").is_some() { boolean(p, &at, "ask")? } else { false },
+                    opens_project: matches!(p.get("start"), Some(crate::json::Value::Str(s)) if s == "project"),
                 })
             }
             _ => None,

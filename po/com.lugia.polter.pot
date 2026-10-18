@@ -3672,7 +3672,7 @@ msgstr ""
 msgid "Overwrite with Current Tab"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1420
+#: windows/control-room/src/scene.rs:85 windows/host/src/projects_ui.rs:1420
 msgid "Open"
 msgstr ""
 

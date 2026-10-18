@@ -87,6 +87,18 @@ enum ProjectLinkRules {
         }
     }
 
+    /// What the button that starts a group says: "Open" when the core says
+    /// starting opens the group's project, "Start Supervisor" otherwise --
+    /// which is also what it says when the core has said nothing of a
+    /// project. Here rather than in `ProjectLink` so that the Windows host's
+    /// `scene::start_title` is compared with it (task 1756).
+    static func startTitle(opensProject: Bool) -> String {
+        if opensProject {
+            return String(localized: "Open", comment: "总控台：有项目的群，右栏上打开它的项目的主按钮")
+        }
+        return String(localized: "Start Supervisor", comment: "总控台：没有总管的群，右栏上启动一个总管的主按钮")
+    }
+
     static func note(tie: String, why: String, name: String?) -> Note {
         if tie == "bound", let name { return .name(name) }
         if tie != "undecided" { return .none }

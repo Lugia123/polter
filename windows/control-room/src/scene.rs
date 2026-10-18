@@ -80,6 +80,9 @@ pub mod msg {
     pub const DIRECTORY: &str = n_("Directory");
     pub const CHOOSE: &str = n_("Choose…");
     pub const START_SUPERVISOR: &str = n_("Start Supervisor");
+    /// The same button for a group whose start opens its project (task
+    /// 1756): the macOS host's word (`ProjectLink.startTitle`).
+    pub const OPEN: &str = n_("Open");
     // What the group's last supervisor was. The sentences are the macOS
     // host's, word for word (`ControlRoomStartChoice.lastSupervisorText`).
     /// The first `{}` is the directory, the second the agent CLI.
@@ -1860,7 +1863,7 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
     out.items.push(Item::Round { rect: button, radius: radius::ROW, color: theme.terminal_background, edge: Some(ink) });
     out.items.push(Item::Text {
         rect: button,
-        text: tr(msg::START_SUPERVISOR),
+        text: tr(start_title(row.and_then(|r| r.project.as_ref()))),
         style: Style { weight: font::WEIGHT_EMPHASIS, ..body(ink) },
         align: Align::Centre,
     });
@@ -1877,6 +1880,18 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
         });
     }
     out
+}
+
+/// What the button that starts a group says (task 1756): "Open" when the
+/// core says starting opens the group's project, "Start Supervisor"
+/// otherwise -- which is also what it says when the core has said nothing
+/// of a project. The macOS host's rule (`ProjectLinkRules.startTitle`).
+pub fn start_title(project: Option<&crate::snapshot::ProjectTie>) -> &'static str {
+    if project.is_some_and(|p| p.opens_project) {
+        msg::OPEN
+    } else {
+        msg::START_SUPERVISOR
+    }
 }
 
 /// Where the terminal sits inside the right-hand side when it is shown:
@@ -2157,7 +2172,7 @@ mod tests {
         let trailing = |tie: &str, why: &str, name: Option<&str>| -> Vec<Part> {
             let mut l = list();
             let row = &mut l.quiet[0];
-            row.project = Some(snapshot::ProjectTie { tie: tie.into(), why: why.into(), ask: false });
+            row.project = Some(snapshot::ProjectTie { tie: tie.into(), why: why.into(), ask: false, opens_project: false });
             row.project_name = name.map(str::to_string);
             let who = row.name().to_string();
             let items = scene(&l, None, false, 1.0, None);
@@ -2189,7 +2204,7 @@ mod tests {
     fn a_projects_name_gives_way_to_what_the_group_is_doing() {
         let mut l = list();
         let row = l.quiet.iter_mut().find(|r| !quiet_text(r).is_empty()).expect("a quiet row that says something");
-        row.project = Some(snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false });
+        row.project = Some(snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false, opens_project: false });
         row.project_name = Some("a-long-project-name".into());
         let who = row.name().to_string();
         let said = quiet_text(row);
@@ -3504,6 +3519,9 @@ mod tests {
     fn start_row(state: crate::snapshot::SupervisorState, can_start: bool, failed: crate::snapshot::StartFailure) -> Row {
         let mut row = list().quiet[0].clone();
         row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, terminal: None, asking: false, clis_read: true, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into(), last: None, hookless: None });
+        // A group with no project: the fixture's first quiet group is bound
+        // to one, and its start would open it ("Open", task 1756).
+        row.project = None;
         row
     }
 
@@ -3536,6 +3554,30 @@ mod tests {
         let detail = Detail_::NoSupervisor { group: row.id.clone() };
         let right = build_right(&detail, Some(&row), 600.0, 600.0, look::theme(false), 1.0, false, &same);
         assert!(all_text(&right.items).contains(&msg::CLOSED_FIRST));
+    }
+
+    #[test]
+    fn a_group_whose_start_opens_its_project_says_open_on_the_same_button() {
+        use crate::snapshot::{StartFailure as F, SupervisorState as S};
+        let all = roles();
+        let view = StartView { roles: &all, choose_role: false, home: "/Users/me", ..Default::default() };
+        let theme = look::theme(false);
+        let tie = |opens_project| crate::snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false, opens_project };
+        let mut row = start_row(S::Absent, true, F::None);
+        let detail = Detail_::NoSupervisor { group: row.id.clone() };
+        let plain = build_start(&detail, Some(&row), 600.0, theme, &view, &same);
+        row.project = Some(tie(true));
+        let opens = build_start(&detail, Some(&row), 600.0, theme, &view, &same);
+        let said = all_text(&opens.items);
+        assert!(said.contains(&msg::OPEN), "{said:?}");
+        assert!(!said.contains(&msg::START_SUPERVISOR), "{said:?}");
+        // Only the word: the button is where it was, and pressed the same.
+        assert_eq!(opens.button, plain.button);
+        assert_eq!(opens.start, plain.start);
+        // A project whose start is a directory, and no project at all.
+        row.project = Some(tie(false));
+        assert!(all_text(&build_start(&detail, Some(&row), 600.0, theme, &view, &same).items).contains(&msg::START_SUPERVISOR));
+        assert_eq!(start_title(None), msg::START_SUPERVISOR);
     }
 
     #[test]

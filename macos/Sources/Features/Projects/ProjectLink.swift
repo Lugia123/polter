@@ -368,10 +368,7 @@ enum ProjectLink {
     /// supervisor in a directory otherwise -- which is also what it says
     /// when the core has said nothing of a project.
     static func startTitle(_ project: GroupProject?) -> String {
-        if project?.start == .project {
-            return String(localized: "Open", comment: "总控台：有项目的群，右栏上打开它的项目的主按钮")
-        }
-        return String(localized: "Start Supervisor", comment: "总控台：没有总管的群，右栏上启动一个总管的主按钮")
+        ProjectLinkRules.startTitle(opensProject: project?.start == .project)
     }
 
     /// The sentence under a group that has a project and no supervisor

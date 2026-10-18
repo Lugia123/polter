@@ -491,6 +491,8 @@ fn main() {
             ),
             None => println!("start_last id={} -", r.id),
         }
+        // What the start button says (task 1756).
+        println!("start_title id={} says={}", r.id, quote(polter_control_room::scene::start_title(r.project.as_ref())));
     }
     for why in polter_control_room::snapshot::ResumeWhy::ALL {
         println!("resume_why {}", why.name());

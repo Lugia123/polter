@@ -52,7 +52,9 @@ supervisor (its state, whether one can be started, why the last try made
 none, the role and the directory), what it says of the supervisor each
 group last had (the CLI a start uses, the role and the CLI the last one
 was, when it was last heard from) and whether a start goes on with its
-session and why not -- with every one of the eight reasons the core can
+session and why not, and what the button that starts it says ("Open"
+when starting opens the group's project, task 1756) -- with every one of
+the eight reasons the core can
 give, as each side spells it; who the core says is working in every
 terminal (which of its three answers, each as each side spells it; the role,
 the CLI and the session as written, with "not said" told from empty; and the
@@ -280,6 +282,16 @@ do {
 // that breathes are compared with them in. What each of those rows is on
 // its own is compared again below (`lone`).
 let whole = snapshot
+// Which groups' start opens their project, as `ProjectLink.told` decodes it.
+let opensProject: [String: Bool] = {
+    let top = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    var out: [String: Bool] = [:]
+    for row in top?["groups"] as? [[String: Any]] ?? [] {
+        guard let name = row["name"] as? String, let project = row["project"] as? [String: Any] else { continue }
+        out[name] = project["start"] as? String == "project"
+    }
+    return out
+}()
 let list = ControlRoomList(snapshot: snapshot)
 
 print("count waiting=\(list.waitingCount) quiet=\(list.quietCount)")
@@ -415,6 +427,9 @@ for r in list.rows {
     } else {
         print("start_last id=\(r.id) -")
     }
+    // What the start button says (task 1756): the core's `project.start`,
+    // read the way `ProjectLink.told` reads it -- that file needs the app.
+    print("start_title id=\(r.id) says=\(quote(ProjectLinkRules.startTitle(opensProject: opensProject[r.id] ?? false)))")
 }
 for why in ControlRoomList.SupervisorStart.ResumeWhy.allCases {
     print("resume_why \(why.rawValue)")

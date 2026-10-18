@@ -2085,10 +2085,13 @@ fn a_groups_tie_why_and_ask_are_read_as_the_core_wrote_them() {
     let s = snapshot::decode(FIXTURE).expect("the fixture decodes");
     let bound = s.groups.iter().find(|g| g.project.as_ref().is_some_and(|p| p.tie == "bound")).expect("the fixture binds one");
     let tie = bound.project.clone().unwrap();
-    assert_eq!(tie, snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false });
+    assert_eq!(tie, snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false, opens_project: true });
     assert_eq!(bound.project_name.as_deref(), Some("infra"));
     let unknown = s.groups.iter().filter(|g| g.project.as_ref().is_some_and(|p| p.why == "projects_unknown")).count();
     assert!(unknown > 0);
+    // Starting the bound one opens its project; the rest, a directory
+    // (task 1756).
+    assert!(s.groups.iter().filter(|g| g.project.as_ref().is_some_and(|p| p.why == "projects_unknown")).all(|g| !g.project.as_ref().unwrap().opens_project));
     // And onto the row, where the menu and the right end read it.
     let l = List::from_snapshot(&s);
     let row = l.rows().find(|r| r.project_name.as_deref() == Some("infra")).expect("its row");
