@@ -67,12 +67,24 @@ def sh_quote(s):
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+def ps_quote(s):
+    """`s` as one single-quoted PowerShell string: nothing in it is expanded
+    -- not `$`, not a backtick -- and a quote is written twice."""
+    return "'" + s.replace("'", "''") + "'"
+
+
 def hook_command(polter, event, windows):
     """The command line one hook runs."""
     if windows:
-        # `cmd.exe /C "<line>"` (`build_command`); a path with spaces is
-        # quoted inside it, which `/C` keeps.
-        return '"%s" +hook --cli codex %s' % (polter, event)
+        # **PowerShell, not `cmd.exe`** (task 1748, measured on the Windows
+        # machine, Codex 0.154): Codex runs a hook as
+        # `powershell.exe -NoProfile -Command "<line>"`. A line that starts
+        # with a quoted path is a string to PowerShell, and the `+` after it
+        # an operator: `"<polter>" +hook ...` is a ParserError, exit 1, and
+        # Polter never runs -- every hook of every Codex on Windows failed so.
+        # The call operator makes the path a command, and single quotes keep
+        # every character of it as it is.
+        return "& %s +hook --cli codex %s" % (ps_quote(polter), event)
     return "%s +hook --cli codex %s" % (sh_quote(polter), event)
 
 

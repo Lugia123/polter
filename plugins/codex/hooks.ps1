@@ -43,8 +43,11 @@ function ConvertTo-CodexJsonString([string]$s) {
     return $sb.ToString()
 }
 
+# On Windows Codex runs the line with `powershell.exe -NoProfile -Command`
+# (task 1748): the call operator and a single-quoted path, which hooks.py's
+# `hook_command` says why.
 function Get-CodexHookCommand([string]$Polter, [string]$Hook, [bool]$Windows) {
-    if ($Windows) { return ('"{0}" +hook --cli codex {1}' -f $Polter, $Hook) }
+    if ($Windows) { return ("& '{0}' +hook --cli codex {1}" -f $Polter.Replace("'", "''"), $Hook) }
     return ("'{0}' +hook --cli codex {1}" -f $Polter.Replace("'", "'\''"), $Hook)
 }
 

@@ -338,7 +338,7 @@ hooks `live` 后就不再看标题）。
 
 **注入**：adapter 的 launch 把 `plugins/codex/hooks.py`（PowerShell 版是 `hooks.ps1`，两份逐字节一致）给出的 `-c` 参数接到 codex 命令行上：
 每个事件一条 `hooks.<Event>=[{hooks=[{type="command",command="'<polter>' +hook --cli codex <Event>",timeout=3}]}]`。
-codex 在 unix 上用 `$SHELL -lc` 跑 command，在 Windows 上用 `cmd /C`，所以路径分别按 sh 和 cmd 的规矩加引号。
+codex 在 unix 上用 `$SHELL -lc` 跑 command，在 Windows 上用 `powershell.exe -NoProfile -Command`（#1748 在测试机上实测，Codex 0.154；以前这里写的 `cmd /C` 是读源码推的，不对）。所以 unix 上按 sh 的规矩给路径加单引号；Windows 上写成 `& '<polter>' +hook --cli codex <Event>`：开头不加调用运算符 `&` 的话，带引号的路径在 PowerShell 里是个字符串，后面的 `+` 被当成运算符，整行 ParserError、exit 1，Polter 根本没被起起来。单引号让路径里的 `$`、反引号原样保留，路径里的 `'` 写成两个。由 `test/codex-adapter/hook-command-parses.py` 守住（要有 pwsh）：它拿 PowerShell 自己的解析器去读生成的那一行，断言 0 个错误、用 `&` 调用、程序名和路径逐字相同、参数正好是 `+hook --cli codex <Event>`；同时核对 hooks.py 和 hooks.ps1 写出的行和 trusted_hash 一致。旧写法必须解析失败，作为这把尺子的对照。
 timeout 取 3，因为 codex 把 `Interrupt` 的超时钳在 3 秒以内，而信任哈希算的是钳过之后的值，各事件取同一个数就不会对不上。
 
 **信任**：用户层和 `-c` 层的 hook 只有在被信任之后才跑；没被信任的不跑，TUI 启动时还会弹出审核框，挡在提示符前面。
