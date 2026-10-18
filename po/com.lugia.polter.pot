@@ -5072,7 +5072,14 @@ msgid ""
 "project first."
 msgstr ""
 
-#: windows/projects/src/page_rules.rs:337
+#: windows/control-room/src/scene.rs:88
+msgid ""
+"This group has no project yet, so only the supervisor starts. Once it takes "
+"up the group, its tab is saved as a project of the group's name; you are "
+"told when it is, and it can be undone."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:90
 #, rust-format
 msgid ""
 "All {} page(s) of its project come back and the supervisor starts in its own "
@@ -5080,7 +5087,7 @@ msgid ""
 "the supervisor's to decide."
 msgstr ""
 
-#: windows/projects/src/page_rules.rs:341
+#: windows/control-room/src/scene.rs:91
 msgid ""
 "Every page of its project comes back and the supervisor starts in its own "
 "pane. The workers' panes come back as terminals only; who is called back is "

@@ -172,7 +172,7 @@ struct ControlRoomStartSupervisor: View {
                     .fixedSize()
                 }
             }
-            if project?.start != .project {
+            if ProjectLinkRules.asksDirectory(opensProject: project?.start == .project) {
             HStack(spacing: gap) {
                 Text(String(localized: "Directory", comment: "总控台：启动总管时，总管在哪个目录里启动"))
                     .foregroundStyle(theme.textSecondary.color)

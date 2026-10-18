@@ -337,21 +337,3 @@ pub fn open_elsewhere_words(name: &str) -> Words {
 pub fn page_of_another_words(tab_title: &str, project: &str) -> Words {
     Words::of(n_("The tab \"{}\" is already a page of the project \"{}\". Take it out of that project first."), &[tab_title, project])
 }
-
-// ---- The start button of a group in the control room
-
-/// What stands under "Start" for a group whose supervisor starts in its
-/// project (`groups[].project.start` is `project`): with the count when the
-/// core knows it.
-pub fn start_in_project_words(pages: Option<u64>) -> Words {
-    match pages {
-        Some(n) => Words::of(
-            n_("All {} page(s) of its project come back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide."),
-            &[&n.to_string()],
-        ),
-        None => Words::of(
-            n_("Every page of its project comes back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide."),
-            &[],
-        ),
-    }
-}

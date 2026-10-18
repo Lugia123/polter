@@ -53,7 +53,10 @@ none, the role and the directory), what it says of the supervisor each
 group last had (the CLI a start uses, the role and the CLI the last one
 was, when it was last heard from) and whether a start goes on with its
 session and why not, and what the button that starts it says ("Open"
-when starting opens the group's project, task 1756) -- with every one of
+when starting opens the group's project, task 1756), whether the start
+asks for a directory and the sentence under the button, for every group
+and for nine mixes of the project's start, tie, reason and page count --
+with every one of
 the eight reasons the core can
 give, as each side spells it; who the core says is working in every
 terminal (which of its three answers, each as each side spells it; the role,
@@ -282,16 +285,26 @@ do {
 // that breathes are compared with them in. What each of those rows is on
 // its own is compared again below (`lone`).
 let whole = snapshot
-// Which groups' start opens their project, as `ProjectLink.told` decodes it.
-let opensProject: [String: Bool] = {
+// What the core says of each group's project that its start reads, as
+// `ProjectLink.told` decodes it: a group whose `start` is neither word has
+// none.
+struct StartOfProject { let opens: Bool; let tie: String; let why: String; let pages: Int? }
+let startOf: [String: StartOfProject] = {
     let top = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    var out: [String: Bool] = [:]
+    var out: [String: StartOfProject] = [:]
     for row in top?["groups"] as? [[String: Any]] ?? [] {
-        guard let name = row["name"] as? String, let project = row["project"] as? [String: Any] else { continue }
-        out[name] = project["start"] as? String == "project"
+        guard let name = row["name"] as? String, let project = row["project"] as? [String: Any],
+              let start = project["start"] as? String, ["project", "directory"].contains(start)
+        else { continue }
+        out[name] = StartOfProject(opens: start == "project", tie: project["tie"] as? String ?? "", why: project["why"] as? String ?? "",
+                                   pages: project["pages"] as? Int)
     }
     return out
 }()
+func startNoteSaid(_ p: StartOfProject?) -> String {
+    guard let p else { return "-" }
+    return ProjectLinkRules.startNote(opensProject: p.opens, tie: p.tie, why: p.why, pages: p.pages).map(quote) ?? "-"
+}
 let list = ControlRoomList(snapshot: snapshot)
 
 print("count waiting=\(list.waitingCount) quiet=\(list.quietCount)")
@@ -429,7 +442,19 @@ for r in list.rows {
     }
     // What the start button says (task 1756): the core's `project.start`,
     // read the way `ProjectLink.told` reads it -- that file needs the app.
-    print("start_title id=\(r.id) says=\(quote(ProjectLinkRules.startTitle(opensProject: opensProject[r.id] ?? false)))")
+    print("start_title id=\(r.id) says=\(quote(ProjectLinkRules.startTitle(opensProject: startOf[r.id]?.opens ?? false)))")
+    // Whether it asks where to start, and the sentence under the button.
+    print("start_dir id=\(r.id) asks=\(ProjectLinkRules.asksDirectory(opensProject: startOf[r.id]?.opens ?? false))")
+    print("start_note id=\(r.id) says=\(startNoteSaid(startOf[r.id]))")
+}
+// The same over every mix the rule tells apart (the fixture has two).
+for (opens, tie, why, pages) in [(true, "bound", "none", nil), (true, "bound", "none", 3), (true, "bound", "none", 1),
+                                 (false, "undecided", "not_taken_up", nil), (false, "undecided", "none", nil),
+                                 (false, "undecided", "pending", nil), (false, "undecided", "projects_unknown", nil),
+                                 (false, "declined", "none", nil), (false, "bound", "none", nil)] as [(Bool, String, String, Int?)] {
+    let p = StartOfProject(opens: opens, tie: tie, why: why, pages: pages)
+    print("start_note_case opens=\(opens) tie=\(tie) why=\(why) pages=\(pages.map { String($0) } ?? "-") "
+        + "asks_dir=\(ProjectLinkRules.asksDirectory(opensProject: opens)) says=\(startNoteSaid(p))")
 }
 for why in ControlRoomList.SupervisorStart.ResumeWhy.allCases {
     print("resume_why \(why.rawValue)")

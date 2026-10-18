@@ -5151,7 +5151,16 @@ msgid ""
 "project first."
 msgstr "标签页“{}”已经是项目“{}”的一页。先把它从那个项目里移出。"
 
-#: windows/projects/src/page_rules.rs:337
+#: windows/control-room/src/scene.rs:88
+msgid ""
+"This group has no project yet, so only the supervisor starts. Once it takes "
+"up the group, its tab is saved as a project of the group's name; you are "
+"told when it is, and it can be undone."
+msgstr ""
+"这个群还没有项目，只启动总管。总管上岗后，它所在的标签页会存成和群同名的项目，存"
+"好时会告诉你，可以撤销。"
+
+#: windows/control-room/src/scene.rs:90
 #, rust-format
 msgid ""
 "All {} page(s) of its project come back and the supervisor starts in its own "
@@ -5161,7 +5170,7 @@ msgstr ""
 "项目的 {} 页都还原，总管在它那一格启动；worker 的格子只还原终端，叫谁回来由总"
 "管决定。"
 
-#: windows/projects/src/page_rules.rs:341
+#: windows/control-room/src/scene.rs:91
 msgid ""
 "Every page of its project comes back and the supervisor starts in its own "
 "pane. The workers' panes come back as terminals only; who is called back is "

@@ -377,16 +377,6 @@ enum ProjectLink {
     /// the core does not know it.
     static func startNote(_ project: GroupProject?) -> String? {
         guard let project else { return nil }
-        // No project yet, and the supervisor will be offered one when it
-        // takes the group up (`Projects.offer`): say so, and that it can be
-        // undone (project-link-v2 D, 01 b; task 1713).
-        if project.start == .directory, project.tie == "undecided", ["not_taken_up", "none", "pending"].contains(project.why) {
-            return String(localized: "This group has no project yet, so only the supervisor starts. Once it takes up the group, its tab is saved as a project of the group's name; you are told when it is, and it can be undone.", comment: "总控台：没有项目的群右栏底下那句（总管上岗后会自动存成项目，可撤销）")
-        }
-        guard project.start == .project else { return nil }
-        guard let pages = project.pages else {
-            return String(localized: "Every page of its project comes back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide.", comment: "总控台：有项目的群右栏底下那句，不知道页数时")
-        }
-        return String(localized: "All \(String(pages)) page(s) of its project come back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide.", comment: "总控台：有项目的群右栏底下那句，参数是项目的页数")
+        return ProjectLinkRules.startNote(opensProject: project.start == .project, tie: project.tie, why: project.why, pages: project.pages)
     }
 }

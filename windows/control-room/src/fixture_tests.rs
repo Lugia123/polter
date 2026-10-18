@@ -2085,7 +2085,7 @@ fn a_groups_tie_why_and_ask_are_read_as_the_core_wrote_them() {
     let s = snapshot::decode(FIXTURE).expect("the fixture decodes");
     let bound = s.groups.iter().find(|g| g.project.as_ref().is_some_and(|p| p.tie == "bound")).expect("the fixture binds one");
     let tie = bound.project.clone().unwrap();
-    assert_eq!(tie, snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false, opens_project: true });
+    assert_eq!(tie, snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false, opens_project: true, pages: None });
     assert_eq!(bound.project_name.as_deref(), Some("infra"));
     let unknown = s.groups.iter().filter(|g| g.project.as_ref().is_some_and(|p| p.why == "projects_unknown")).count();
     assert!(unknown > 0);

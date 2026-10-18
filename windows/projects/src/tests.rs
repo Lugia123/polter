@@ -1112,15 +1112,6 @@ fn saving_over_a_project_never_writes_under_tabs_that_would_write_back() {
     assert_eq!(rules::save_over("p", &[1], &[free(3)]), SaveOver::OpenElsewhere);
 }
 
-#[test]
-fn the_start_button_says_how_many_pages_come_back_when_that_is_known() {
-    assert_eq!(rules::start_in_project_words(Some(3)).args, ["3"]);
-    assert!(rules::start_in_project_words(Some(3)).msgid.starts_with("All {} page(s)"));
-    // Not known is not "0 pages".
-    assert!(rules::start_in_project_words(None).args.is_empty());
-    assert!(rules::start_in_project_words(None).msgid.starts_with("Every page"));
-}
-
 /// **What this crate writes is what the core reads**: the lines of this
 /// file are fed to the core by its own test (`ControlAct.zig`, "the core
 /// takes what the Windows host writes"), and are these bytes here.

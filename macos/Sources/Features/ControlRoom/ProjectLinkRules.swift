@@ -99,6 +99,33 @@ enum ProjectLinkRules {
         return String(localized: "Start Supervisor", comment: "总控台：没有总管的群，右栏上启动一个总管的主按钮")
     }
 
+    /// Whether the start asks where the supervisor starts: not when it
+    /// opens the group's project, whose supervisor's pane has its own
+    /// directory (task 1756, so that the Windows host's `scene::asks_directory`
+    /// is compared with it).
+    static func asksDirectory(opensProject: Bool) -> Bool {
+        !opensProject
+    }
+
+    /// The sentence under a group's start button: how many pages come back
+    /// when it opens the group's project, and what happens to them -- the
+    /// count left out when the core does not know it; or, for a group with
+    /// no project yet whose supervisor will be offered one when it takes the
+    /// group up (`Projects.offer`), that its tab will be saved as one and
+    /// that this can be undone (project-link-v2 D, 01 b; task 1713). Nil
+    /// otherwise. Here rather than in `ProjectLink` for the same reason as
+    /// `startTitle` (task 1756).
+    static func startNote(opensProject: Bool, tie: String, why: String, pages: Int?) -> String? {
+        if !opensProject, tie == "undecided", ["not_taken_up", "none", "pending"].contains(why) {
+            return String(localized: "This group has no project yet, so only the supervisor starts. Once it takes up the group, its tab is saved as a project of the group's name; you are told when it is, and it can be undone.", comment: "总控台：没有项目的群右栏底下那句（总管上岗后会自动存成项目，可撤销）")
+        }
+        guard opensProject else { return nil }
+        guard let pages else {
+            return String(localized: "Every page of its project comes back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide.", comment: "总控台：有项目的群右栏底下那句，不知道页数时")
+        }
+        return String(localized: "All \(String(pages)) page(s) of its project come back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide.", comment: "总控台：有项目的群右栏底下那句，参数是项目的页数")
+    }
+
     static func note(tie: String, why: String, name: String?) -> Note {
         if tie == "bound", let name { return .name(name) }
         if tie != "undecided" { return .none }

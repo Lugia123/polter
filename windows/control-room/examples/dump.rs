@@ -493,6 +493,29 @@ fn main() {
         }
         // What the start button says (task 1756).
         println!("start_title id={} says={}", r.id, quote(polter_control_room::scene::start_title(r.project.as_ref())));
+        // Whether it asks where to start, and the sentence under the button.
+        println!("start_dir id={} asks={}", r.id, polter_control_room::scene::asks_directory(r.project.as_ref()));
+        println!("start_note id={} says={}", r.id, start_note_said(r.project.as_ref()));
+    }
+    // The same over every mix the rule tells apart (the fixture has two).
+    for (opens, tie, why, pages) in [
+        (true, "bound", "none", None),
+        (true, "bound", "none", Some(3)),
+        (true, "bound", "none", Some(1)),
+        (false, "undecided", "not_taken_up", None),
+        (false, "undecided", "none", None),
+        (false, "undecided", "pending", None),
+        (false, "undecided", "projects_unknown", None),
+        (false, "declined", "none", None),
+        (false, "bound", "none", None),
+    ] {
+        let p = polter_control_room::snapshot::ProjectTie { tie: tie.into(), why: why.into(), ask: false, opens_project: opens, pages };
+        println!(
+            "start_note_case opens={opens} tie={tie} why={why} pages={} asks_dir={} says={}",
+            pages.map_or("-".to_string(), |n: u64| n.to_string()),
+            polter_control_room::scene::asks_directory(Some(&p)),
+            start_note_said(Some(&p))
+        );
     }
     for why in polter_control_room::snapshot::ResumeWhy::ALL {
         println!("resume_why {}", why.name());
@@ -1332,4 +1355,13 @@ fn quota_samples() -> Vec<(&'static str, quota::Quota)> {
             },
         ),
     ]
+}
+
+/// The sentence under a group's start button in English, filled, as the
+/// macOS dump prints it; "-" for none.
+fn start_note_said(project: Option<&polter_control_room::snapshot::ProjectTie>) -> String {
+    match polter_control_room::scene::start_note(project) {
+        Some((template, args)) => quote(&args.iter().fold(template.to_string(), |said, arg| polter_control_room::list::fill(&said, arg))),
+        None => "-".to_string(),
+    }
 }

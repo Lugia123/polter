@@ -83,6 +83,12 @@ pub mod msg {
     /// The same button for a group whose start opens its project (task
     /// 1756): the macOS host's word (`ProjectLink.startTitle`).
     pub const OPEN: &str = n_("Open");
+    // The sentence under it (task 1756): the macOS host's words
+    // (`ProjectLinkRules.startNote`).
+    pub const NO_PROJECT_YET: &str = n_("This group has no project yet, so only the supervisor starts. Once it takes up the group, its tab is saved as a project of the group's name; you are told when it is, and it can be undone.");
+    /// `{}` is how many pages its project has.
+    pub const ALL_PAGES_BACK: &str = n_("All {} page(s) of its project come back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide.");
+    pub const EVERY_PAGE_BACK: &str = n_("Every page of its project comes back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide.");
     // What the group's last supervisor was. The sentences are the macOS
     // host's, word for word (`ControlRoomStartChoice.lastSupervisorText`).
     /// The first `{}` is the directory, the second the agent CLI.
@@ -1719,22 +1725,27 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
         y += line_h;
     }
 
-    let rect = Rect { x: pad, y, w, h: line_h };
-    out.items.push(Item::Line {
-        rect,
-        parts: vec![
-            label(msg::DIRECTORY),
-            words(
-                shown_directory(view.cwd.unwrap_or(&start.cwd), view.home, tr),
-                Style { face: Face::Mono, ..body(theme.terminal_text) },
-                Side::Rest,
-                side::ROW_ITEM_GAP,
-            ),
-            words(tr(msg::CHOOSE), body(theme.attention_text), Side::Trail, side::ROW_ITEM_GAP),
-        ],
-    });
-    out.directory = Some(rect);
-    y += line_h;
+    // Where it starts -- not asked when it opens the group's project, whose
+    // supervisor's pane has its own (task 1756, as on macOS).
+    let project = row.and_then(|r| r.project.as_ref());
+    if asks_directory(project) {
+        let rect = Rect { x: pad, y, w, h: line_h };
+        out.items.push(Item::Line {
+            rect,
+            parts: vec![
+                label(msg::DIRECTORY),
+                words(
+                    shown_directory(view.cwd.unwrap_or(&start.cwd), view.home, tr),
+                    Style { face: Face::Mono, ..body(theme.terminal_text) },
+                    Side::Rest,
+                    side::ROW_ITEM_GAP,
+                ),
+                words(tr(msg::CHOOSE), body(theme.attention_text), Side::Trail, side::ROW_ITEM_GAP),
+            ],
+        });
+        out.directory = Some(rect);
+        y += line_h;
+    }
 
     // What the last supervisor was, when the core has a record of one.
     let mut sentence = |out: &mut Start, y: &mut f64, text: String| {
@@ -1863,13 +1874,18 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
     out.items.push(Item::Round { rect: button, radius: radius::ROW, color: theme.terminal_background, edge: Some(ink) });
     out.items.push(Item::Text {
         rect: button,
-        text: tr(start_title(row.and_then(|r| r.project.as_ref()))),
+        text: tr(start_title(project)),
         style: Style { weight: font::WEIGHT_EMPHASIS, ..body(ink) },
         align: Align::Centre,
     });
     out.button = Some(button);
     out.start = can_press.then_some(button);
     y += line_h + side::ROW_GAP;
+    // What starting it brings back, or that it has no project yet.
+    if let Some((template, args)) = start_note(project) {
+        let said = args.iter().fold(tr(template), |said, arg| list::fill(&said, arg));
+        sentence(&mut out, &mut y, said);
+    }
 
     if let Some(why) = view.refusal.filter(|w| draws(w)) {
         out.items.push(Item::Block {
@@ -1892,6 +1908,33 @@ pub fn start_title(project: Option<&crate::snapshot::ProjectTie>) -> &'static st
     } else {
         msg::START_SUPERVISOR
     }
+}
+
+/// Whether a start asks where the supervisor starts (task 1756): not when
+/// it opens the group's project, whose supervisor's pane has its own. The
+/// macOS host's rule (`ProjectLinkRules.asksDirectory`).
+pub fn asks_directory(project: Option<&crate::snapshot::ProjectTie>) -> bool {
+    !project.is_some_and(|p| p.opens_project)
+}
+
+/// The sentence under a group's start button (task 1756), as a template and
+/// what fills it: how many pages come back when it opens the group's
+/// project -- the count left out when the core does not know it -- or, for a
+/// group with no project yet whose supervisor will be offered one, that its
+/// tab will be saved as one and that this can be undone. `None` otherwise.
+/// The macOS host's rule (`ProjectLinkRules.startNote`).
+pub fn start_note(project: Option<&crate::snapshot::ProjectTie>) -> Option<(&'static str, Vec<String>)> {
+    let p = project?;
+    if !p.opens_project && p.tie == "undecided" && ["not_taken_up", "none", "pending"].contains(&p.why.as_str()) {
+        return Some((msg::NO_PROJECT_YET, Vec::new()));
+    }
+    if !p.opens_project {
+        return None;
+    }
+    Some(match p.pages {
+        Some(n) => (msg::ALL_PAGES_BACK, vec![n.to_string()]),
+        None => (msg::EVERY_PAGE_BACK, Vec::new()),
+    })
 }
 
 /// Where the terminal sits inside the right-hand side when it is shown:
@@ -2172,7 +2215,7 @@ mod tests {
         let trailing = |tie: &str, why: &str, name: Option<&str>| -> Vec<Part> {
             let mut l = list();
             let row = &mut l.quiet[0];
-            row.project = Some(snapshot::ProjectTie { tie: tie.into(), why: why.into(), ask: false, opens_project: false });
+            row.project = Some(snapshot::ProjectTie { tie: tie.into(), why: why.into(), ask: false, opens_project: false, pages: None });
             row.project_name = name.map(str::to_string);
             let who = row.name().to_string();
             let items = scene(&l, None, false, 1.0, None);
@@ -2204,7 +2247,7 @@ mod tests {
     fn a_projects_name_gives_way_to_what_the_group_is_doing() {
         let mut l = list();
         let row = l.quiet.iter_mut().find(|r| !quiet_text(r).is_empty()).expect("a quiet row that says something");
-        row.project = Some(snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false, opens_project: false });
+        row.project = Some(snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false, opens_project: false, pages: None });
         row.project_name = Some("a-long-project-name".into());
         let who = row.name().to_string();
         let said = quiet_text(row);
@@ -3562,7 +3605,7 @@ mod tests {
         let all = roles();
         let view = StartView { roles: &all, choose_role: false, home: "/Users/me", ..Default::default() };
         let theme = look::theme(false);
-        let tie = |opens_project| crate::snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false, opens_project };
+        let tie = |opens_project| crate::snapshot::ProjectTie { tie: "bound".into(), why: "none".into(), ask: false, opens_project, pages: None };
         let mut row = start_row(S::Absent, true, F::None);
         let detail = Detail_::NoSupervisor { group: row.id.clone() };
         let plain = build_start(&detail, Some(&row), 600.0, theme, &view, &same);
@@ -3571,13 +3614,65 @@ mod tests {
         let said = all_text(&opens.items);
         assert!(said.contains(&msg::OPEN), "{said:?}");
         assert!(!said.contains(&msg::START_SUPERVISOR), "{said:?}");
-        // Only the word: the button is where it was, and pressed the same.
-        assert_eq!(opens.button, plain.button);
-        assert_eq!(opens.start, plain.start);
+        // The same button, pressed the same; one line higher, for the
+        // directory is not asked (as on macOS).
+        assert_eq!(opens.start.is_some(), plain.start.is_some());
+        let (b, p) = (opens.button.unwrap(), plain.button.unwrap());
+        assert_eq!((b.x, b.w, b.h), (p.x, p.w, p.h));
+        assert_eq!(b.y, p.y - side::HEADER_HEIGHT);
         // A project whose start is a directory, and no project at all.
         row.project = Some(tie(false));
         assert!(all_text(&build_start(&detail, Some(&row), 600.0, theme, &view, &same).items).contains(&msg::START_SUPERVISOR));
         assert_eq!(start_title(None), msg::START_SUPERVISOR);
+    }
+
+    /// Task 1756, the macOS start page's two other things: a start that opens
+    /// the group's project does not ask where to start, and the button has
+    /// the sentence under it that macOS has (`ProjectLinkRules.startNote`).
+    #[test]
+    fn a_start_that_opens_the_project_asks_no_directory_and_says_what_comes_back() {
+        use crate::snapshot::{StartFailure as F, SupervisorState as S};
+        let all = roles();
+        let view = StartView { roles: &all, choose_role: false, home: "/Users/me", ..Default::default() };
+        let theme = look::theme(false);
+        let tie = |t: &str, why: &str, opens_project, pages| crate::snapshot::ProjectTie { tie: t.into(), why: why.into(), ask: false, opens_project, pages };
+        let mut row = start_row(S::Absent, true, F::None);
+        let detail = Detail_::NoSupervisor { group: row.id.clone() };
+        let drawn = |row: &Row| build_start(&detail, Some(row), 600.0, theme, &view, &same);
+
+        row.project = Some(tie("bound", "none", true, Some(3)));
+        let opens = drawn(&row);
+        assert_eq!(opens.directory, None);
+        let said = all_text(&opens.items);
+        assert!(!said.contains(&msg::DIRECTORY), "{said:?}");
+        let note = list::fill(msg::ALL_PAGES_BACK, "3");
+        assert!(said.contains(&note.as_str()), "{said:?}");
+        // Under the button, not over it.
+        let b = opens.button.unwrap();
+        let under = opens.items.iter().find_map(|i| match i {
+            Item::Block { rect, text, .. } if *text == note => Some(*rect),
+            _ => None,
+        });
+        assert!(under.is_some_and(|r| r.y >= b.y + b.h), "{under:?} {b:?}");
+        // The count not known: the sentence without it.
+        row.project = Some(tie("bound", "none", true, None));
+        assert!(all_text(&drawn(&row).items).contains(&msg::EVERY_PAGE_BACK));
+
+        // No project yet, and one is offered when the supervisor takes the
+        // group up: the directory is asked, and the sentence says so.
+        row.project = Some(tie("undecided", "not_taken_up", false, None));
+        let fresh = drawn(&row);
+        assert!(fresh.directory.is_some());
+        assert!(all_text(&fresh.items).contains(&msg::NO_PROJECT_YET));
+        // Projects not known yet, declined, or no project said at all: no
+        // sentence.
+        for project in [Some(tie("undecided", "projects_unknown", false, None)), Some(tie("declined", "none", false, None)), None] {
+            row.project = project.clone();
+            let shown = drawn(&row);
+            assert!(shown.directory.is_some(), "{project:?}");
+            let said = all_text(&shown.items);
+            assert!(![msg::NO_PROJECT_YET, msg::EVERY_PAGE_BACK].iter().any(|m| said.contains(m)), "{project:?}: {said:?}");
+        }
     }
 
     #[test]

@@ -605,6 +605,10 @@ pub struct ProjectTie {
     /// says anything else, or nothing: the macOS host then has no project
     /// for the group at all (`ProjectLink.told`) and says "Start Supervisor".
     pub opens_project: bool,
+    /// How many pages the group's project has; `None` when the core does
+    /// not know (the app has not stated its projects): **not known is not
+    /// zero**, as on macOS.
+    pub pages: Option<u64>,
 }
 
 /// How the control room's last ask of a group's supervisor went (task
@@ -1161,6 +1165,7 @@ fn group(v: &Value, path: &str) -> Res<Group> {
                     why: if p.get("why").is_some() { text(p, &at, "why")? } else { "none".into() },
                     ask: if p.get("ask").is_some() { boolean(p, &at, "ask")? } else { false },
                     opens_project: matches!(p.get("start"), Some(crate::json::Value::Str(s)) if s == "project"),
+                    pages: if p.get("pages").is_some() { opt_int(p, &at, "pages")? } else { None },
                 })
             }
             _ => None,
