@@ -550,23 +550,6 @@ fn windows() -> Option<Windows> {
 /// mean editing a file another line of work is in. The DLL is already loaded
 /// by the time this runs, so resolving the one symbol here costs nothing and
 /// keeps this feature to one file.
-/// The human title for an action tag, for anything that lists actions rather
-/// than commands: the first command's title for each tag, the macOS page's
-/// rule (`general::first_titles`, #1750).
-///
-/// It used to name only a tag with exactly one command, so that `goto_tab`
-/// would not be labelled "Go to Tab 1"; but `goto_tab` has no command at all
-/// (it is named by the tag table), and the rule left `copy_to_clipboard` and
-/// `open_config` -- whose first command is what the bare tag runs -- showing
-/// as tags beside rows in Chinese.
-///
-/// Built on `load_commands` rather than beside it: a second reader of the
-/// same config value is a second thing to keep in step.
-pub fn action_titles(config: Config) -> Vec<(String, String)> {
-    let cmds: Vec<(String, String)> = load_commands(config).into_iter().map(|c| (c.action, c.title)).collect();
-    polter_settings_shell::general::first_titles(&cmds)
-}
-
 fn load_commands(config: Config) -> Vec<Command> {
     #[repr(C)]
     struct CommandC {

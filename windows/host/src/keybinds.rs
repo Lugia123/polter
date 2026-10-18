@@ -204,13 +204,16 @@ pub fn rows() -> Vec<Row> {
     }
     let mut rows = group(&flat);
 
-    // A human title where the action names exactly one command. 63 of the
-    // core's 93 actions are commands at all, and the parameterised ones name
-    // several, so most rows keep their tag -- which is why the tag is the
-    // column that is always there and the title is the one that is not.
-    for (tag, title) in crate::palette::action_titles(cfg) {
-        if let Some(r) = rows.iter_mut().find(|r| r.action == tag) {
-            r.title = Some(title);
+    // A human title: the core's, for the command the bare tag runs
+    // (`ghostty_config_action_title`, translated already). Taking the first
+    // command carrying the tag named `copy_to_clipboard` after its ANSI
+    // variant, because the list is sorted by title (#1750).
+    for r in rows.iter_mut() {
+        // SAFETY: the config handle the host owns; the title lives as long
+        // as that config, and is copied out at once.
+        let p = unsafe { (api.config_action_title)(cfg, r.action.as_ptr(), r.action.len()) };
+        if !p.is_null() {
+            r.title = Some(unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned());
         }
     }
     // Then the actions the core gives no command for, from the table the

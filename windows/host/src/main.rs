@@ -5687,6 +5687,7 @@ fn load_api() -> Option<Api> {
             config_get_diagnostic: sym!(internal, "ghostty_config_get_diagnostic"),
             config_keybind_count: sym!(internal, "ghostty_config_keybind_count"),
             config_keybind: sym!(internal, "ghostty_config_keybind"),
+            config_action_title: sym!(internal, "ghostty_config_action_title"),
             config_get: sym!(internal, "ghostty_config_get"),
             app_update_config: sym!(internal, "ghostty_app_update_config"),
             surface_update_config: sym!(internal, "ghostty_surface_update_config"),

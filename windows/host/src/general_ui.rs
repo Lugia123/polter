@@ -2534,16 +2534,19 @@ fn kb_paint(win: HWND) {
                 let tr_ = RECT { left: 0, top: nr.bottom, right: name_w, bottom: nr.bottom + line };
                 draw_text(hdc, &row.action, &tr_, mono(), theme::dim(), DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             }
-            // Two lines, as the name and its tag have: the second key of
-            // `copy_to_clipboard` used to be cut at one ("Copy  Ctrl+Inser…",
-            // #1750). Broken between keys only (`keys_for_wrapping`), as the
-            // macOS column is.
-            // Top-aligned to wrap, so pushed down by what centring in one
-            // line gave: the first line stays on the name's baseline.
-            let pad = (line - metrics(mono())).max(0) / 2;
-            let kr = RECT { left: name_w + gap, top: r.top + pad, right: name_w + gap + keys_w, bottom: r.top + 2 * line };
-            let keys = rules::keys_for_wrapping(&row.keys);
-            draw_text(hdc, &keys, &kr, mono(), if unbound.get(i).copied().unwrap_or(false) { theme::dim() } else { theme::text() }, DT_WORDBREAK | DT_END_ELLIPSIS);
+            // Two lines, as the name and its tag have, each in its own line
+            // box like theirs: the second key of `copy_to_clipboard` used to
+            // be cut at one ("Copy  Ctrl+Inser…"). The lines are made by
+            // `pack_keys`, whole keys only, and each is drawn on its own --
+            // left to `DT_WORDBREAK`, a line started with the gap's spaces
+            // and a stray third one appeared (#1750).
+            let colour = if unbound.get(i).copied().unwrap_or(false) { theme::dim() } else { theme::text() };
+            let lines = rules::pack_keys(&row.keys, |t| text_width(t, mono()) <= keys_w, 2);
+            for (k, l) in lines.iter().enumerate() {
+                let top = r.top + k as i32 * line;
+                let kr = RECT { left: name_w + gap, top, right: name_w + gap + keys_w, bottom: top + line };
+                draw_text(hdc, l, &kr, mono(), colour, DT_SINGLELINE | DT_VCENTER);
+            }
             if !row.note.is_empty() {
                 let colour = if hidden.get(i).copied().unwrap_or(false) { theme::warn() } else { theme::dim() };
                 let note = tr(&row.note);

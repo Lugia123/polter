@@ -683,32 +683,40 @@ fn form_area_plain(editor: Rect, dpi: i32, with_filter: bool) -> (Option<Rect>, 
 
 // ------------------------------------------------------ keyboard shortcuts
 
-/// The core's title for each action, keyed by its tag, out of the command
-/// list (`(action with any argument, title)`, in the core's order): **the
-/// first command's title wins**, as on the macOS page
-/// (`KeybindsModel.titles`). `copy_to_clipboard` is four commands and
-/// `open_config` two; the first is the one the bare tag runs, and the page
-/// used to show those rows by their tag alone (#1750, 1742's W4).
-pub fn first_titles(commands: &[(String, String)]) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    for (action, title) in commands {
-        let tag = action.split(':').next().unwrap_or(action);
-        if !out.iter().any(|(t, _)| t == tag) {
-            out.push((tag.to_string(), title.clone()));
+/// The keys column as lines: whole keys, `KEY_GAP` apart, packed into at
+/// most `max_lines` lines; the last ends in "…" when the rest does not fit.
+/// Never a break inside a key ("Page" / "Down"), as the macOS column
+/// (`KeybindsModel.keysLabel`). `label` is `keys_label`'s text, keys
+/// separated by `KEY_GAP`.
+///
+/// **Broken here rather than by `DrawText`** (#1750): drawn with
+/// `DT_WORDBREAK`, a row of three-space gaps came out with a line that
+/// started with the gap's leftover spaces ("  Ctrl+Shift+V", indented) and a
+/// stray third line under "Ctrl+Shift+C". What `DrawText` makes of a run of
+/// spaces at a break is its own business; lines made here are drawn one at a
+/// time with `DT_SINGLELINE`, and there is nothing left for it to decide.
+pub fn pack_keys(label: &str, fits: impl Fn(&str) -> bool, max_lines: usize) -> Vec<String> {
+    let keys: Vec<&str> = label.split(KEY_GAP).filter(|k| !k.is_empty()).collect();
+    let mut lines: Vec<String> = Vec::new();
+    let mut at = 0;
+    while at < keys.len() && max_lines > 0 {
+        if lines.len() + 1 == max_lines {
+            lines.push(elide_end(&keys[at..].join(KEY_GAP), &fits));
+            return lines;
         }
+        let mut line = keys[at].to_string();
+        at += 1;
+        while at < keys.len() && fits(&format!("{line}{KEY_GAP}{}", keys[at])) {
+            line = format!("{line}{KEY_GAP}{}", keys[at]);
+            at += 1;
+        }
+        lines.push(if fits(&line) { line } else { elide_end(&line, &fits) });
     }
-    out
+    lines
 }
 
-/// The keys column as it is drawn: each key's own spaces made unbreakable,
-/// so a line ends between two keys and never inside one ("Page" / "Down") --
-/// the macOS page's `KeybindsModel.keysLabel`. `label` is `keys_label`'s
-/// three-space-separated text; only what is painted changes, not what a
-/// screen reader or the search is handed (#1750, 1742's W4: "Copy
-/// Ctrl+Inser…" cut at one line).
-pub fn keys_for_wrapping(label: &str) -> String {
-    label.split("   ").map(|k| k.replace(' ', "\u{00A0}")).collect::<Vec<_>>().join("   ")
-}
+/// Between two keys in the keys column, as the macOS page writes it.
+pub const KEY_GAP: &str = "   ";
 
 /// The table's English name for an action the core gives no command for;
 /// None when it has none, and the tag is what shows.
@@ -1512,35 +1520,27 @@ mod tests {
     }
 
     #[test]
-    fn a_keybind_row_is_named_by_its_first_command_then_by_the_table() {
-        // #1750 (1742's W4): `copy_to_clipboard` and `open_config` are
-        // several commands each, and the page showed them by tag.
-        let cmds: Vec<(String, String)> = [
-            ("copy_to_clipboard:mixed", "Copy to Clipboard"),
-            ("copy_to_clipboard:plain", "Copy Selection as Plain Text to Clipboard"),
-            ("open_config:os_open", "Open Config Using OS editor"),
-            ("open_config:new_window", "Open Config in New Terminal Window"),
-            ("reload_config", "Reload Config"),
-        ]
-        .iter()
-        .map(|(a, t)| (a.to_string(), t.to_string()))
-        .collect();
-        let titles = first_titles(&cmds);
-        let copy = titles.iter().find(|(t, _)| t == "copy_to_clipboard").map(|(_, n)| n.as_str());
-        assert_eq!(copy, Some("Copy to Clipboard"));
-        let open = titles.iter().find(|(t, _)| t == "open_config").map(|(_, n)| n.as_str());
-        assert_eq!(open, Some("Open Config Using OS editor"));
-        assert_eq!(titles.len(), 3, "one name per tag");
-
+    fn an_action_with_no_command_is_named_by_the_table() {
         assert_eq!(name_by_tag("goto_tab"), Some("Go to Tab"));
         assert_eq!(name_by_tag("copy_to_clipboard"), None, "a command's tag is named by the core");
     }
 
     #[test]
-    fn a_key_is_never_broken_inside_and_two_keys_can_be() {
-        let shown = keys_for_wrapping("Copy   Ctrl+Insert   Shift+Page Down");
-        assert_eq!(shown, "Copy   Ctrl+Insert   Shift+Page\u{00A0}Down");
-        assert_eq!(keys_for_wrapping("—"), "—");
+    fn keys_are_packed_whole_and_no_line_starts_with_a_gap() {
+        // Twenty characters a line, standing in for the column's width.
+        let fits = |s: &str| s.chars().count() <= 20;
+        let lines = pack_keys("Copy   Ctrl+Insert   Ctrl+Shift+C", fits, 2);
+        assert_eq!(lines, ["Copy   Ctrl+Insert", "Ctrl+Shift+C"]);
+        for l in &lines {
+            assert!(!l.starts_with(' ') && !l.ends_with(' '), "no line carries the gap: {l:?}");
+        }
+        // A key with a space in it is never split.
+        assert_eq!(pack_keys("Shift+Page Down   Shift+Home", fits, 2), ["Shift+Page Down", "Shift+Home"]);
+        // More than two lines' worth: the second ends in the mark.
+        let lines = pack_keys("Ctrl+1   Ctrl+2   Ctrl+3   Ctrl+4   Ctrl+5   Ctrl+6", fits, 2);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].ends_with('\u{2026}'));
+        assert_eq!(pack_keys("\u{2014}", fits, 2), ["\u{2014}"]);
     }
 
     #[test]

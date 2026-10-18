@@ -1695,6 +1695,7 @@ GHOSTTY_API bool ghostty_config_key_is_binding(ghostty_config_t, ghostty_input_k
 // none does.
 GHOSTTY_API uint32_t ghostty_config_keybind_count(ghostty_config_t);
 GHOSTTY_API ghostty_keybind_s ghostty_config_keybind(ghostty_config_t, uint32_t);
+GHOSTTY_API const char* ghostty_config_action_title(ghostty_config_t, const char*, size_t);
 GHOSTTY_API uint32_t ghostty_config_diagnostics_count(ghostty_config_t);
 GHOSTTY_API ghostty_diagnostic_s ghostty_config_get_diagnostic(ghostty_config_t, uint32_t);
 GHOSTTY_API ghostty_string_s ghostty_config_open_path(void);

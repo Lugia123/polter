@@ -106,11 +106,10 @@ enum KeybindsModel {
                 performable: flags.contains(.performable)))
         }
 
-        let names = titles(config: cfg)
         return fold(bindings).map { row in
             KeybindRow(
                 action: row.action,
-                name: names[row.action] ?? namedByTag(row.action),
+                name: title(config: cfg, row.action) ?? namedByTag(row.action),
                 keys: row.keys,
                 hiddenFromMenu: row.hiddenFromMenu)
         }
@@ -189,26 +188,18 @@ enum KeybindsModel {
         return name == tag ? nil : name
     }
 
-    /// The core's own name for each action, keyed by the action's tag.
+    /// The core's own name for an action: the title of the command the bare
+    /// tag runs, translated already (`ghostty_config_action_title`).
     ///
-    /// **Read from the command list rather than written here.** The names
-    /// already exist -- the command palette shows them and `po/` translates
-    /// them -- so a table in this file would be a second set of names for
-    /// the same actions, going stale in a different direction from the
-    /// first. Several commands can share a tag (`goto_tab:1`, `goto_tab:2`);
-    /// the first one's title wins, which is the one the core lists first.
-    private static func titles(config: ghostty_config_t) -> [String: String] {
-        var v: ghostty_config_command_list_s = .init()
-        let key = "command-palette-entry"
-        guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))),
-              v.len > 0 else { return [:] }
-
-        var out: [String: String] = [:]
-        for c in UnsafeBufferPointer(start: v.commands, count: v.len) {
-            let command = Ghostty.Command(cValue: c)
-            if out[command.actionKey] == nil { out[command.actionKey] = command.title }
-        }
-        return out
+    /// **Not the first command carrying the tag.** The command list is
+    /// sorted by English title, so that named `copy_to_clipboard` "Copy
+    /// Selection as ANSI Sequences to Clipboard" and `open_config` "Open
+    /// Config in New Terminal Window" -- measured on this page, and the
+    /// Windows page took the same rule from here (#1750). Which command a
+    /// tag runs is the core's parser's answer, so the core gives it.
+    private static func title(config: ghostty_config_t, _ tag: String) -> String? {
+        let p = tag.withCString { ghostty_config_action_title(config, $0, Int(strlen($0))) }
+        return p.map { String(cString: $0) }
     }
 
     /// A trigger, written the way macOS writes keys.

@@ -1606,6 +1606,9 @@ pub struct Api {
     /// `config_trigger` is not.** See `Keybind`.
     pub config_keybind_count: unsafe extern "C" fn(Config) -> u32,
     pub config_keybind: unsafe extern "C" fn(Config, u32) -> Keybind,
+    /// `ghostty_config_action_title`: the translated title of the command a
+    /// bare action tag runs, or null. Owned by the config.
+    pub config_action_title: unsafe extern "C" fn(Config, *const u8, usize) -> *const c_char,
     /// Read one config value by key. **The return value is the answer to "did
     /// the user set this"**, not just an error code: `c_get.zig`'s optional
     /// arm returns false for a field that is null, so

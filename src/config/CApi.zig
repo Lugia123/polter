@@ -300,6 +300,34 @@ export fn ghostty_config_keybind(self: *Config, idx: u32) Keybind {
     };
 }
 
+/// The name a keybind listing row shows for action `tag`: the title of the
+/// command that is exactly what the bare tag runs, out of this config's
+/// command list and already translated, as the palette shows it --
+/// `copy_to_clipboard` runs `copy_to_clipboard:mixed`, so it is "Copy to
+/// Clipboard". Null when the bare tag runs no command of the list: a tag that
+/// needs a parameter (`goto_tab`), or one the list has nothing for. The
+/// pointer lives as long as the config.
+///
+/// **Matched by what the tag runs, not by the tag.** Both hosts used to take
+/// the first command carrying the tag, and the list is sorted by English
+/// title, so `copy_to_clipboard` was named after its ANSI variant and
+/// `open_config` after "in New Terminal Window" -- on macOS and Windows alike
+/// (#1750). Parsed with the core's own parser, the way `command.zig`'s
+/// `titleFor` matches a menu row.
+export fn ghostty_config_action_title(self: *Config, tag: [*]const u8, len: usize) ?[*:0]const u8 {
+    return actionTitle(self, tag[0..len]);
+}
+
+fn actionTitle(self: *const Config, tag: []const u8) ?[*:0]const u8 {
+    const parsed = inputpkg.Binding.Action.parse(tag) catch return null;
+    const want = parsed.hash();
+    const list = &self.@"command-palette-entry";
+    for (list.value.items, list.value_c.items) |cmd, c| {
+        if (cmd.action.hash() == want) return c.title;
+    }
+    return null;
+}
+
 export fn ghostty_config_diagnostics_count(self: *Config) u32 {
     return @intCast(self._diagnostics.items().len);
 }
@@ -616,4 +644,23 @@ test "ghostty_config_load_file and _load_cli_args record how the config was load
 
     ghostty_config_load_cli_args(&cfg);
     try testing.expect(cfg._origin.cli);
+}
+
+test "ghostty_config_action_title: a tag is named by the command it runs (1750)" {
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+
+    // Not the first command with the tag: the list is sorted by title, and
+    // that is "Copy Selection as ANSI Sequences to Clipboard".
+    const copy = std.mem.span(actionTitle(&cfg, "copy_to_clipboard").?);
+    try testing.expectEqualStrings("Copy to Clipboard", copy);
+    const open = std.mem.span(actionTitle(&cfg, "open_config").?);
+    try testing.expectEqualStrings("Open Config Using OS editor", open);
+    const reload = std.mem.span(actionTitle(&cfg, "reload_config").?);
+    try testing.expectEqualStrings("Reload Config", reload);
+
+    // A tag that needs a parameter runs nothing on its own.
+    try testing.expect(actionTitle(&cfg, "goto_split") == null);
+    try testing.expect(actionTitle(&cfg, "no_such_action") == null);
 }
