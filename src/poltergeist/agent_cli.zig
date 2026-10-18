@@ -46,6 +46,7 @@ const Allocator = std.mem.Allocator;
 const Plugin = @import("Plugin.zig");
 const persona = @import("persona.zig");
 const login_path = @import("login_path.zig");
+const reap = @import("reap.zig");
 const global = @import("../global.zig");
 
 const log = std.log.scoped(.poltergeist);
@@ -224,22 +225,26 @@ pub fn ask(
     const argv = try std.mem.concat(arena, []const u8, &.{ base, &.{ @tagName(question), request } });
 
     internal_os.windows.spawnTrace("agent_cli run", .begin, 0);
-    const ran = std.process.run(arena, io, .{
-        .argv = argv,
-        .environ_map = environ_map,
-        .stdout_limit = .limited(max_answer),
-        .stderr_limit = .limited(64 * 1024),
-        .timeout = .{ .duration = .{
-            .raw = .fromMilliseconds(timeout_ms),
-            .clock = .awake,
-        } },
-    });
+    const ran = try run(arena, io, environ_map, argv, timeout_ms);
     internal_os.windows.spawnTrace("agent_cli run", .end, 0);
-    const result = ran catch |err| return .{ .failed = try std.fmt.allocPrint(
-        arena,
-        "{s} could not be run ({t})",
-        .{ adapter.adapter, err },
-    ) };
+    const result = switch (ran) {
+        .finished => |f| f,
+        .could_not => |err| return .{ .failed = try std.fmt.allocPrint(
+            arena,
+            "{s} could not be run ({t})",
+            .{ adapter.adapter, err },
+        ) },
+        .out_of_time => return .{ .failed = try std.fmt.allocPrint(
+            arena,
+            "{s} did not answer within {d}s, so it was stopped",
+            .{ adapter.key, timeout_ms / std.time.ms_per_s },
+        ) },
+        .too_long => return .{ .failed = try std.fmt.allocPrint(
+            arena,
+            "{s} answered more than this build reads",
+            .{adapter.key},
+        ) },
+    };
 
     const said = std.mem.trim(u8, result.stderr, " \t\r\n");
     switch (result.term) {
@@ -267,6 +272,118 @@ pub fn ask(
         .{adapter.key},
     ) };
     return .{ .ok = out };
+}
+
+/// Longest complaint read from an adapter's stderr.
+const max_complaint = 64 * 1024;
+
+/// What running an adapter came to, before what it said is looked at.
+const Ran = union(enum) {
+    finished: struct {
+        stdout: []const u8,
+        stderr: []const u8,
+        term: std.process.Child.Term,
+    },
+
+    /// It could not be started, or what it wrote could not be read.
+    could_not: anyerror,
+
+    /// `ms` went by before both its pipes had closed. It has been stopped
+    /// and the pipes cut.
+    out_of_time,
+
+    /// It wrote more than `max_answer` or `max_complaint`. Stopped and cut,
+    /// like `out_of_time`.
+    too_long,
+};
+
+/// Run `argv` and read its stdout and stderr to their ends, for no longer
+/// than `ms` in all. Not `std.process.run`, for three reasons, all #1745:
+///
+/// **It takes `spawn_lock`.** `std.process.spawn` makes the child's ends of
+/// its pipes inheritable and calls `CreateProcessW` with
+/// `bInheritHandles = TRUE`. An inventory refreshed while a plugin was being
+/// started (the plugin spawn holds the lock; this did not) handed the
+/// plugin's `provision.ps1` a copy of the adapter's stdout, the adapter
+/// exited in under a second, and its pipe stayed open for as long as the
+/// provision lived. Measured on Windows: `agent_cli run begin` 64 µs before
+/// `plugin spawn begin`, `run end` 241.8 s later, at the moment the
+/// provision was ended by hand.
+///
+/// **What runs out of time is stopped and its pipes are cut before anything
+/// waits on them.** `run` returns `Timeout` through its `defer`s, and in
+/// 0.16 those wait in the wrong order for this: the reader's `deinit`
+/// (`Threaded.batchCancel`) first sleeps alertably with no deadline until
+/// some read completes, and only after that does `child.kill` run. A read
+/// whose far end somebody else holds completes when that somebody exits.
+/// So the timeout is what reported the hang, not what ended it -- read out
+/// of the 0.16 source, not measured on its own. Here the child is killed
+/// and both pipes are disconnected from our side (`reap.sever`) first, so
+/// every read in flight completes at once whoever holds the far end.
+///
+/// **One deadline for the whole run.** `run` gives each wait for more
+/// output the full timeout again, so an adapter that writes a byte now and
+/// then is never out of time at all.
+fn run(
+    arena: Allocator,
+    io: std.Io,
+    environ_map: ?*const std.process.Environ.Map,
+    argv: []const []const u8,
+    ms: u64,
+) Allocator.Error!Ran {
+    internal_os.windows.lockSpawn(io);
+    internal_os.windows.spawnTrace("agent_cli spawn", .begin, 0);
+    const spawned = std.process.spawn(io, .{
+        .argv = argv,
+        .environ_map = environ_map,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    internal_os.windows.spawnTrace("agent_cli spawn", .end, 0);
+    internal_os.windows.unlockSpawn(io);
+    var child = spawned catch |err| return .{ .could_not = err };
+
+    // Reaps, and closes what is still open. Last, after the reader is gone.
+    defer child.kill(io);
+
+    const deadline = (std.Io.Timeout{ .duration = .{
+        .raw = .fromMilliseconds(@intCast(ms)),
+        .clock = .awake,
+    } }).toDeadline(io);
+
+    var buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var reader: std.Io.File.MultiReader = undefined;
+    reader.init(arena, io, buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+
+    const cut_short: ?Ran = while (reader.fill(4096, deadline)) |_| {
+        if (reader.reader(0).buffered().len > max_answer or
+            reader.reader(1).buffered().len > max_complaint) break .too_long;
+    } else |err| switch (err) {
+        error.EndOfStream => null,
+        error.Timeout => .out_of_time,
+        else => |e| .{ .could_not = e },
+    };
+
+    if (cut_short) |why| {
+        // Not `child.kill`: on Windows that also closes the pipes, under
+        // reads still in flight. Stop it, then end those reads from our
+        // side, and only then let the reader wait for them to finish.
+        if (child.id) |id| reap.kill(id) catch {};
+        reap.sever(.{ .read = child.stdout.?.handle });
+        reap.sever(.{ .read = child.stderr.?.handle });
+        reader.deinit();
+        return why;
+    }
+    defer reader.deinit();
+
+    reader.checkAnyError() catch |err| return .{ .could_not = err };
+    const term = child.wait(io) catch |err| return .{ .could_not = err };
+    return .{ .finished = .{
+        .stdout = try reader.toOwnedSlice(0),
+        .stderr = try reader.toOwnedSlice(1),
+        .term = term,
+    } };
 }
 
 // ------------------------------------------------------------------ launch
@@ -2775,4 +2892,116 @@ test "agent_cli survey: a plugin switched off and one nothing here can run are t
         }
     }
     try testing.expectEqual(@as(usize, 1), on);
+}
+
+/// Milliseconds since `since`, for the tests below.
+fn tookMs(io: std.Io, since: std.Io.Timestamp) i64 {
+    return since.durationTo(.now(io, .awake)).toMilliseconds();
+}
+
+test "agent_cli run (1745): an adapter that writes now and then is still out of time when the time is up" {
+    // `std.process.run` gave every wait for more output the whole timeout
+    // again, so this one -- a byte every 100ms for four seconds -- was
+    // never out of time and held the refresh for all four.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const started: std.Io.Timestamp = .now(io, .awake);
+    const ran = try run(arena.allocator(), io, null, &.{
+        "/bin/sh", "-c", "i=0; while [ $i -lt 40 ]; do printf x; sleep 0.1; i=$((i+1)); done",
+    }, 500);
+    const took = tookMs(io, started);
+
+    try testing.expectEqual(std.meta.Tag(Ran).out_of_time, std.meta.activeTag(ran));
+    try testing.expect(took < 2500);
+}
+
+/// A child that will not end by itself for half a minute.
+fn neverEnds() []const []const u8 {
+    return switch (@import("builtin").os.tag) {
+        .windows => &.{ "ping.exe", "-n", "31", "127.0.0.1" },
+        else => &.{ "/bin/sh", "-c", "sleep 30" },
+    };
+}
+
+test "agent_cli run (1745): an adapter that never ends is stopped at its time, not when it ends" {
+    // **The Windows half is the one that matters, and it has not been run.**
+    // There 0.16's `std.process.run` waited in its reader's `deinit` for a
+    // read to complete before it killed the child, so this took the full
+    // thirty seconds. On POSIX the reader polls and has nothing in flight,
+    // so this is green either way here.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const started: std.Io.Timestamp = .now(io, .awake);
+    const ran = try run(arena.allocator(), io, null, neverEnds(), 500);
+    const took = tookMs(io, started);
+
+    try testing.expectEqual(std.meta.Tag(Ran).out_of_time, std.meta.activeTag(ran));
+    try testing.expect(took < 5000);
+}
+
+test "agent_cli run (1745): a pipe somebody else still holds is cut at the time" {
+    // The shape that was measured: the adapter is done in no time, and
+    // something else -- there a plugin's provision, here a child of its own
+    // -- keeps a copy of its stdout open for a long while after.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const argv: []const []const u8 = switch (@import("builtin").os.tag) {
+        .windows => &.{ "cmd.exe", "/c", "start /b ping -n 31 127.0.0.1 & echo {}" },
+        else => &.{ "/bin/sh", "-c", "sleep 10 & echo {}" },
+    };
+
+    const started: std.Io.Timestamp = .now(io, .awake);
+    const ran = try run(arena.allocator(), io, null, argv, 500);
+    const took = tookMs(io, started);
+
+    try testing.expectEqual(std.meta.Tag(Ran).out_of_time, std.meta.activeTag(ran));
+    try testing.expect(took < 5000);
+}
+
+test "agent_cli run (1745): an adapter is not started while another spawn holds the lock" {
+    // Windows only: off it the lock is a no-op, because there `spawn` makes
+    // its pipes close-on-exec. Not run on a Windows machine.
+    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const Asker = struct {
+        arena: Allocator,
+        io: std.Io,
+        done: std.atomic.Value(bool) = .init(false),
+        ran: ?Ran = null,
+
+        fn go(self: *@This()) void {
+            self.ran = run(self.arena, self.io, null, &.{ "cmd.exe", "/c", "echo {}" }, 10_000) catch null;
+            self.done.store(true, .release);
+        }
+    };
+
+    internal_os.windows.lockSpawn(io);
+    var asker: Asker = .{ .arena = arena.allocator(), .io = io };
+    const thread = try std.Thread.spawn(.{}, Asker.go, .{&asker});
+
+    try std.Io.sleep(io, .fromMilliseconds(500), .awake);
+    const went_ahead = asker.done.load(.acquire);
+    internal_os.windows.unlockSpawn(io);
+    thread.join();
+
+    try testing.expect(!went_ahead);
+    try testing.expectEqual(std.meta.Tag(Ran).finished, std.meta.activeTag(asker.ran.?));
 }

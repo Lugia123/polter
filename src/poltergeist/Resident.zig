@@ -2059,7 +2059,16 @@ fn main(self: *Resident) void {
     reader = null;
     self.collect(&child, &keeper, &drain, &errs);
 
-    self.note(.info, "Polter is stopping, so it is stopped too", .{});
+    // Not "Polter is stopping": `stop` is also how a plugin is switched off
+    // or restarted with new settings (`App.stopResident`), and a log that
+    // says Polter quit while it plainly did not sends the reader the wrong
+    // way (#1745).
+    self.note(
+        .info,
+        "told to stop (switched off, restarted with new settings, or Polter is exiting), " ++
+            "so its process is stopped",
+        .{},
+    );
 
     // Nothing is written down on the way out. There is no file that says
     // where this plugin got to, because there is nothing for such a file
