@@ -54,7 +54,7 @@ def identify(cmd, home, cwd, sidecar):
     req = {"version": 1, "cwd": cwd, "home": home, "pid": None, "sidecar_pid": sidecar,
            "env": {"POLTER_AGENT_CLI": "codex"}}
     env = {k: v for k, v in os.environ.items() if k != "CODEX_HOME"}
-    p = subprocess.run(cmd + ["identify", json.dumps(req)], capture_output=True, text=True, timeout=60, env=env)
+    p = subprocess.run(cmd + ["identify", json.dumps(req)], capture_output=True, text=True, encoding="utf-8", timeout=60, env=env)
     if p.returncode != 0:
         raise SystemExit("identify exited %d: %s" % (p.returncode, p.stderr))
     return json.loads(p.stdout)

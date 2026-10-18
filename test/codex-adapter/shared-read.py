@@ -104,7 +104,7 @@ def live():
                    "env": {"POLTER_AGENT_CLI": "codex"}}
             env = dict(os.environ, CODEX_HOME=chome)
             p = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-File", ADAPTER, "identify", json.dumps(req)],
-                               capture_output=True, text=True, timeout=60, env=env)
+                               capture_output=True, text=True, encoding="utf-8", timeout=60, env=env)
             got = json.loads(p.stdout) if p.returncode == 0 else {}
             check("live", got.get("session") == sid,
                   "a rollout held open for writing is read and its session named (%s)" % got.get("notes"))

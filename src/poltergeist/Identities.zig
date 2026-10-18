@@ -229,7 +229,12 @@ const Job = struct {
         const a = job.arena.allocator();
         const env = try a.alloc([2][]const u8, sighting.env.len);
         for (sighting.env, env) |kv, *o| o.* = .{ try a.dupe(u8, kv[0]), try a.dupe(u8, kv[1]) };
-        job.sighting = .{ .pid = sighting.pid, .env = env };
+        // The whole sighting, and only what it points into copied: picking
+        // fields out once dropped `sidecar` (task 1749), and on Windows,
+        // where `pid` is never read, that left nothing to tell two Codex
+        // in one directory apart.
+        job.sighting = sighting;
+        job.sighting.env = env;
         job.cwd = if (cwd) |c| try a.dupe(u8, c) else null;
         return job;
     }
@@ -288,6 +293,22 @@ fn writeAnswer(w: *std.Io.Writer, i: agent_cli.Identified) std.Io.Writer.Error!v
 // ------------------------------------------------------------------- tests
 
 const testing = std.testing;
+
+test "Identities: what an ask sends identify carries the sidecar's pid it was given (task 1749)" {
+    var ids: Identities = .init(testing.allocator);
+    defer ids.deinit(testing.io);
+    // Windows: no parent pid, only the sidecar's own.
+    const given: agent_cli.Sighting = .{ .pid = null, .sidecar = 5544, .env = &.{.{ "POLTER_AGENT_CLI", "codex" }} };
+    const job = try Job.create(&ids, 1, 1, given, "D:\\polter\\w5");
+    defer job.destroy();
+
+    const codex: agent_cli.Adapter = .{ .key = "codex", .label = "Codex", .bin = "codex", .adapter = "adapter", .identify_env = &.{"POLTER_AGENT_CLI"} };
+    var line: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer line.deinit();
+    try agent_cli.writeIdentifyRequest(&line.writer, codex, job.sighting, job.cwd, null);
+    const carries_sidecar = std.mem.indexOf(u8, line.written(), "\"sidecar_pid\":5544") != null;
+    try testing.expect(carries_sidecar);
+}
 
 test "Identities: an answer is kept, round-trips, and a forgotten ask is not overwritten" {
     var ids: Identities = .init(testing.allocator);
