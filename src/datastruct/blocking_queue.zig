@@ -196,7 +196,13 @@ pub fn BlockingQueue(
                     // If we're not waiting, then we failed to write.
                     .instant => return 0,
 
-                    .forever => {
+                    // **Until there is room, not once** (task 1685). A wake
+                    // is not a slot: another producer can take the one that
+                    // was freed before this thread gets the lock back, and a
+                    // condition variable may wake for nothing. Taking one
+                    // wake as room made "forever" come back 0 -- a message
+                    // its caller had been promised would not be lost.
+                    .forever => while (self.full()) {
                         if (self.waker) |w| w.wake();
                         self.not_full_waiters += 1;
                         defer self.not_full_waiters -= 1;
@@ -533,4 +539,68 @@ test "a lowered ceiling makes the queue full early, on the ordinary path" {
     // Popping one lets exactly one more in.
     _ = q.pop(io);
     try testing.expectEqual(@as(Q.Size, 2), q.push(io, 4, .{ .instant = {} }));
+}
+
+test "an unbounded push that is woken while the queue is still full goes on waiting" {
+    // Task 1685. **A wake is not a slot.** The one that freed it can be
+    // beaten to it by any other producer -- the app mailbox has a dozen,
+    // every terminal's IO thread pushing `.instant` reports -- and a
+    // condition variable may wake for nothing at all. An unbounded push
+    // that took one wake as "there is room" came back 0, and the agent
+    // request it carried was dropped with nobody to answer it: the
+    // connection thread waited on `pending.done` for ever
+    // (`Server.serveOne`).
+    //
+    // The wake without room is made by hand: the queue is full, the waiter
+    // is asleep, and the condition is signalled with nothing popped.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    const Q = BlockingQueue(u64, 1);
+    const q = try Q.create(alloc);
+    defer q.destroy(alloc);
+
+    const Pusher = struct {
+        result: std.atomic.Value(Q.Size) = .init(999),
+        done: std.atomic.Value(bool) = .init(false),
+
+        fn run(self: *@This(), qq: *Q, iio: std.Io) void {
+            self.result.store(qq.push(iio, 2, .{ .forever = {} }), .release);
+            self.done.store(true, .release);
+        }
+    };
+    var pusher: Pusher = .{};
+
+    try testing.expect(q.push(io, 1, .{ .instant = {} }) != 0);
+    const th = try std.Thread.spawn(.{}, Pusher.run, .{ &pusher, q, io });
+    defer th.join();
+
+    // Asleep on the full queue.
+    var waited: usize = 0;
+    while (waited < 2_000) : (waited += 10) {
+        q.mutex.lockUncancelable(io);
+        const asleep = q.not_full_waiters == 1;
+        q.mutex.unlock(io);
+        if (asleep) break;
+        try std.Io.sleep(io, .fromMilliseconds(10), .awake);
+    }
+
+    // Woken, with nothing taken out.
+    q.mutex.lockUncancelable(io);
+    q.cond_not_full.signal(io);
+    q.mutex.unlock(io);
+    try std.Io.sleep(io, .fromMilliseconds(100), .awake);
+    const gave_up = pusher.done.load(.acquire);
+
+    // Room now, so the pusher is let go whatever the verdict, and joined.
+    try testing.expectEqual(@as(?u64, 1), q.pop(io));
+    var drain: usize = 0;
+    while (drain < 2_000 and !pusher.done.load(.acquire)) : (drain += 10) {
+        try std.Io.sleep(io, .fromMilliseconds(10), .awake);
+    }
+
+    try testing.expect(!gave_up);
+    try testing.expect(pusher.result.load(.acquire) != 0);
+    try testing.expectEqual(@as(?u64, 2), q.pop(io));
 }

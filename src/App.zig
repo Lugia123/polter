@@ -4174,6 +4174,13 @@ fn submitPoltergeistRequest(
         .{ .forever = {} },
     ) == 0) {
         log.warn("poltergeist: could not queue an agent request", .{});
+        // **Answered before it is let go** (task 1685): the connection
+        // thread is waiting on `done`, and a reference dropped without an
+        // answer left it waiting for ever (`Server.serveOne`).
+        pending.complete(global.io(), .{ .failed = .{
+            .code = "Busy",
+            .message = "Polter could not take the request; try again",
+        } });
         pending.release();
         return;
     }
