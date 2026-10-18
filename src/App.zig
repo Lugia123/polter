@@ -3087,13 +3087,23 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
     }
 }
 
-/// Tell the bus, for every watched terminal, whether an agent is connected
-/// from it (`Server.agentPresent`) -- see `Bus.Entry.agent_here`.
+/// Tell the bus, for every watched terminal and every supervisor, whether
+/// an agent is connected from it (`Server.agentPresent`) -- see
+/// `Bus.Entry.agent_here`.
+///
+/// **Supervisors too** (task 1762): this is the only road by which the bus
+/// learns that an agent has gone (`Bus.considerLinks`), and a supervisor's
+/// agent is the one nobody else is watching. Left out, an agy supervisor
+/// ended in the middle of a turn stayed `in_turn` and its group's
+/// supervisor for good.
 fn notePoltergeistAgentsHere(self: *App) void {
     const now_ms = self.poltergeistElapsedMs();
     var it = self.poltergeist.entries.iterator();
     while (it.next()) |kv| {
-        if (kv.value_ptr.role != .watched) continue;
+        switch (kv.value_ptr.role) {
+            .watched, .supervisor => {},
+            .none => continue,
+        }
         const id = kv.key_ptr.*;
         const here = self.agentPresent(id);
         const pid: ?u64 = if (!here) null else if (self.poltergeist_server) |*srv| srv.agentPid(id) else null;
@@ -3114,11 +3124,17 @@ fn notePoltergeistAgentsHere(self: *App) void {
 /// process has exited and is a zombie nobody has collected; or the number
 /// now belongs to a process that started at another time. A process that
 /// cannot be read is taken as not running: this report is only worth
-/// making when it is certain. Never asked on Windows, where no pid is read
-/// (`agent_cli.Sighting.pid`).
-fn poltergeistProgramRuns(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, program: poltergeistpkg.Bus.Program) bool {
+/// making when it is certain.
+///
+/// **With no program to look at** -- every agent on Windows, where no pid
+/// is read (`agent_cli.Sighting.pid`), and one that never said -- only the
+/// shell can answer, and only "no": back at its prompt is gone, anything
+/// else is not known to have gone, and is answered as still running so
+/// that nothing is concluded from it (task 1762).
+fn poltergeistProgramRuns(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, maybe: ?poltergeistpkg.Bus.Program) bool {
     const self: *App = @ptrCast(@alignCast(ctx));
     if (self.findSurfaceByID(id)) |surface| if (surface.shellIdle()) return false;
+    const program = maybe orelse return true;
     const info = poltergeistpkg.process_info.of(program.pid) orelse return false;
     if (info.zombie) return false;
     if (program.started) |started| if (info.started != started) return false;

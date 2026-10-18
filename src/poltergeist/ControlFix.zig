@@ -56,6 +56,7 @@ pub fn offered(word: Attention.Word) bool {
         .working,
         .quiet_unknown,
         .screen_unreadable,
+        .agent_left,
         .unattended,
         .snoozed,
         .off_duty,

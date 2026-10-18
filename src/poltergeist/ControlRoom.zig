@@ -1912,6 +1912,9 @@ fn reasonOf(
         },
         .quiet_unknown => {
             if (s.source == .screen_unreadable) return .none;
+            // The word says it (task 1762); how long a shell's screen has
+            // been still says nothing about the agent that left it.
+            if (s.source == .agent_left) return .none;
             return clocks(arena, in, s, wake);
         },
         .done_unseen => {
@@ -2047,13 +2050,23 @@ fn stewardOf(in: Input, name: []const u8, members: []const Id) ?Id {
 
 fn stewardAmong(bus: *const Bus, chat: *const Chat, name: []const u8, members: []const Id) ?Id {
     const by = chat.createdBy(name) catch Chat.user_id;
-    if (by != Chat.user_id and bus.isSupervisor(by) and
+    if (by != Chat.user_id and minds(bus, by) and
         std.mem.indexOfScalar(Id, members, by) != null) return by;
     // Nobody who made it is minding it: whoever in it is a supervisor.
     for (members) |id| {
-        if (id != Chat.user_id and bus.isSupervisor(id)) return id;
+        if (id != Chat.user_id and minds(bus, id)) return id;
     }
     return null;
+}
+
+/// A supervisor whose agent is still there (task 1762). One whose agent
+/// has left keeps its standing -- an agent started in that terminal again
+/// is its supervisor again at its first hook (`Bus.agentHasLeft`) -- but
+/// minds nothing meanwhile: the group shows no supervisor, so one can be
+/// started for it and its last session gone on with, which
+/// `start_supervisor` used to refuse as `HasSupervisor`.
+fn minds(bus: *const Bus, id: Id) bool {
+    return bus.isSupervisor(id) and !bus.agentHasLeft(id);
 }
 
 /// The terminal that is `name`'s supervisor, by the rule the snapshot
@@ -4722,6 +4735,44 @@ fn lastIn(dir: []const u8, from: Chat.LastSupervisor.DirFrom) Chat.LastSuperviso
     last.dir = dir;
     last.dir_from = from;
     return last;
+}
+
+fn noRuns(_: *anyopaque, _: Id, _: ?Bus.Program) bool {
+    return false;
+}
+
+test "1762: a supervisor whose agent has left minds nothing, so one can be started; back with its next hook" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    // In the middle of a turn, its connection seen.
+    try w.hook(0xa1, .turn_started, null, 100);
+    w.bus.noteAgentHere(0xa1, true, .{ .pid = 91, .started = 50 }, 200);
+    var s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    try testing.expectEqual(SupervisorOut.State.present, (try rowNamed(s, "web-app")).supervisor.state);
+    try testing.expectEqual(@as(?Id, 0xa1), stewardOfGroup(arena.allocator(), &w.bus, &w.chat, "web-app"));
+
+    // Ended: its connection and its program gone.
+    w.bus.noteAgentHere(0xa1, false, null, 1_000);
+    var ctx: u8 = 0;
+    _ = w.bus.considerLinks(1_000 + Bus.link_grace_ms, &ctx, noRuns);
+    s = (try room.compute(arena.allocator(), w.input(10_000))).snapshot;
+    const absent = (try rowNamed(s, "web-app")).supervisor;
+    try testing.expectEqual(SupervisorOut.State.absent, absent.state);
+    try testing.expect(absent.can_start);
+    // What `start_supervisor` asks before it opens anything.
+    try testing.expectEqual(@as(?Id, null), stewardOfGroup(arena.allocator(), &w.bus, &w.chat, "web-app"));
+
+    // An agent started again in it: its first hook makes it the supervisor again.
+    try w.hook(0xa1, .session_started, null, 20_000);
+    s = (try room.compute(arena.allocator(), w.input(21_000))).snapshot;
+    try testing.expectEqual(SupervisorOut.State.present, (try rowNamed(s, "web-app")).supervisor.state);
+    try testing.expectEqual(@as(?Id, 0xa1), stewardOfGroup(arena.allocator(), &w.bus, &w.chat, "web-app"));
 }
 
 test "ControlRoom start: a group with no supervisor says one can be started, in which role and where" {

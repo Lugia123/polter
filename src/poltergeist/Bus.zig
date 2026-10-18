@@ -1397,6 +1397,12 @@ pub fn noteAgentHere(self: *Bus, id: Id, here: bool, program: ?Program, now_ms: 
     e.agent_here = here;
     if (here) {
         if (program) |p| e.agent_program = p;
+        // An agent connected from here is here (task 1762). Only the
+        // guess is taken back: a terminal whose process failed is not
+        // un-failed by a connection still closing.
+        if (e.left) |l| if (l.why == .unknown) {
+            e.left = null;
+        };
         // The launch being waited on got its agent (task 1712).
         if (e.agent.hooks == .expected) e.agent.connected = true;
         // Back: whatever was about to be said, or was said and not yet
@@ -1407,8 +1413,14 @@ pub fn noteAgentHere(self: *Bus, id: Id, here: bool, program: ?Program, now_ms: 
         return;
     }
     // Gone, this time: from here, whether its program is still running
-    // decides whether that is news (`considerLinks`).
-    if (was == true) e.link_lost = .{ .at_ms = now_ms, .program = e.agent_program };
+    // decides whether that is news (`considerLinks`). **Or never seen
+    // here by a sweep, with hooks that have spoken** (task 1762): the
+    // sweeps run when a connection closes or a notice is due, so a quiet
+    // supervisor's agent can come and go between two of them -- and an
+    // agent whose hooks spoke was here. Which program is not known, so
+    // only its shell can say it has gone.
+    if (was == true or (was == null and e.agent.hooks == .live and e.left == null))
+        e.link_lost = .{ .at_ms = now_ms, .program = e.agent_program };
     e.agent_program = null;
     // An agent whose hooks were still awaited has gone (c1669-04: `/exit`
     // before a first turn): nothing more is due from it, and a wait left
@@ -1435,7 +1447,7 @@ pub fn considerLinks(
     self: *Bus,
     now_ms: u64,
     ctx: *anyopaque,
-    runs: *const fn (ctx: *anyopaque, id: Id, program: Program) bool,
+    runs: *const fn (ctx: *anyopaque, id: Id, program: ?Program) bool,
 ) bool {
     var raised = false;
     var it = self.entries.iterator();
@@ -1443,7 +1455,7 @@ pub fn considerLinks(
         const e = kv.value_ptr;
         const id = kv.key_ptr.*;
         if (e.link_pending) |said| {
-            const still = if (said.program) |p| runs(ctx, id, p) else false;
+            const still = if (said.program != null) runs(ctx, id, said.program) else false;
             if (!still) {
                 e.link_pending = null;
                 e.link_handed = 0;
@@ -1453,9 +1465,23 @@ pub fn considerLinks(
         if (now_ms -| lost.at_ms < link_grace_ms) continue;
         // Looked at once, whatever comes of it.
         e.link_lost = null;
+        // **Its program went with it: the agent has left** (task 1762),
+        // whoever's terminal this is -- a supervisor's above all, whose
+        // agent nothing else watches. Written down here because nothing
+        // else would: the screen does not overrule what the hooks last
+        // said, so an agent ended in the middle of a turn read `in_turn`
+        // for ever, and its terminal stayed its group's supervisor.
+        // Undone by its next hook event (`agentEvent`) or connection
+        // (`noteAgentHere`). `runs` answers false only when it knows: with
+        // no program to look at, a shell back at its prompt is the one
+        // thing that says so.
+        if (!runs(ctx, id, lost.program)) {
+            self.noteLeft(id, .unknown, lost.at_ms);
+            continue;
+        }
         if (e.role != .watched or e.duty == .off) continue;
-        const program = lost.program orelse continue;
-        if (!runs(ctx, id, program)) continue;
+        // Nobody named to say is still running: not news.
+        if (lost.program == null) continue;
         e.link_pending = lost;
         e.link_handed = 0;
         raised = true;
@@ -1605,6 +1631,16 @@ pub fn roleOf(self: *const Bus, id: Id) Role {
 }
 
 /// Whether this terminal is minding others.
+/// Whether this terminal's agent has left it and nothing has come back
+/// since (task 1762): `left` written down, and no agent connected from it
+/// now. A supervisor that answers yes minds nothing -- see
+/// `ControlRoom.stewardAmong`.
+pub fn agentHasLeft(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    if (e.left == null) return false;
+    return e.agent_here != true;
+}
+
 pub fn isSupervisor(self: *const Bus, id: Id) bool {
     const e = self.entries.get(id) orelse return false;
     return e.role == .supervisor;
@@ -1648,7 +1684,12 @@ pub fn watch(self: *Bus, id: Id, by: ?Id) WatchError!void {
     // hears about it.
     if (by) |claimant| {
         if (e.watched_by) |owner| {
-            if (owner != claimant) return error.AlreadyWatched;
+            // **Except from a supervisor whose agent has left** (task
+            // 1762): nobody there is waiting on anything, and the one
+            // started to go on with its group's work has to be able to
+            // take its workers back. It comes back as their minder only by
+            // watching them again.
+            if (owner != claimant and !self.agentHasLeft(owner)) return error.AlreadyWatched;
         }
         e.watched_by = claimant;
     }
@@ -6684,10 +6725,116 @@ test "1668: a title that never said it waits does not keep a moving box standing
     try testing.expect(!b.promptStanding(worker, 1_000, 1_000, 14_000, null));
 }
 
-fn aliveYes(_: *anyopaque, _: Id, _: Program) bool {
+test "1762: a supervisor whose connection went with its program has left, and is back with its next hook" {
+    var b = try hookedBus();
+    defer b.deinit();
+    // An agy supervisor in the middle of a turn: its hooks said so.
+    _ = try b.agentEvent(boss, hookEv(.turn_started), 1_000);
+    b.noteAgentHere(boss, true, .{ .pid = 91, .started = 500 }, 1_500);
+    try testing.expect(!b.agentHasLeft(boss));
+
+    // Ended: its connection closes, and after the grace its program is not
+    // running (the shell is back at its prompt).
+    b.noteAgentHere(boss, false, null, 2_000);
+    _ = b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveNo);
+    try testing.expect(b.agentHasLeft(boss));
+    // When the connection went, not when it was looked at.
+    try testing.expectEqual(Attention.Process{ .agent_left = 2_000 }, b.facts(boss, 9_000, .none).process);
+    // Whatever its hooks last said is still kept; it is the process that
+    // overrules it.
+    try testing.expectEqual(AgentState.in_turn, b.agentOf(boss).state);
+
+    // Started again in the same terminal: its first hook is the agent back.
+    _ = try b.agentEvent(boss, hookEv(.session_started), 20_000);
+    try testing.expect(!b.agentHasLeft(boss));
+    try testing.expectEqual(Attention.Process.running, b.facts(boss, 21_000, .none).process);
+}
+
+test "1762: a connection back is the agent back; a failure is not undone by it" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(boss, hookEv(.turn_started), 1_000);
+    b.noteAgentHere(boss, true, .{ .pid = 91, .started = 500 }, 1_500);
+    b.noteAgentHere(boss, false, null, 2_000);
+    _ = b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveNo);
+    try testing.expect(b.agentHasLeft(boss));
+    b.noteAgentHere(boss, true, .{ .pid = 92, .started = 600 }, 10_000);
+    try testing.expect(!b.agentHasLeft(boss));
+    // And what is said of it is what its hooks say again, not that it left.
+    try testing.expectEqual(Attention.Process.running, b.facts(boss, 10_500, .none).process);
+
+    // A terminal whose process failed stays failed whoever connects.
+    b.noteLeft(boss, .failed, 11_000);
+    b.noteAgentHere(boss, true, .{ .pid = 92, .started = 600 }, 12_000);
+    try testing.expectEqual(Attention.Process{ .agent_exited = 11_000 }, b.facts(boss, 13_000, .none).process);
+}
+
+test "1762: a program still running, or nothing that says it went, is not an agent that left" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(boss, hookEv(.turn_started), 1_000);
+    b.noteAgentHere(boss, true, .{ .pid = 91, .started = 500 }, 1_500);
+    b.noteAgentHere(boss, false, null, 2_000);
+    // Still running: a lost connection, not a departure.
+    _ = b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveYes);
+    try testing.expect(!b.agentHasLeft(boss));
+
+    // No program named: `runs` is asked with none, and only its "no" counts
+    // -- the host says no only when the shell is back at its prompt.
+    var c = try hookedBus();
+    defer c.deinit();
+    _ = try c.agentEvent(boss, hookEv(.turn_started), 1_000);
+    c.noteAgentHere(boss, true, null, 1_500);
+    c.noteAgentHere(boss, false, null, 2_000);
+    var r: Runner = .{ .runs = true };
+    _ = c.considerLinks(2_000 + link_grace_ms, &r, Runner.ask);
+    try testing.expect(r.asked == null);
+    try testing.expect(!c.agentHasLeft(boss));
+
+    c.noteAgentHere(boss, true, null, 3_000);
+    c.noteAgentHere(boss, false, null, 4_000);
+    r.runs = false;
+    _ = c.considerLinks(4_000 + link_grace_ms, &r, Runner.ask);
+    try testing.expect(c.agentHasLeft(boss));
+}
+
+test "1762: an agent no sweep ever saw connected, whose hooks spoke, is looked for when it is found gone" {
+    var b = try hookedBus();
+    defer b.deinit();
+    // Its hooks spoke; the sweeps never caught its connection.
+    _ = try b.agentEvent(boss, hookEv(.turn_started), 1_000);
+    b.noteAgentHere(boss, false, null, 2_000);
+    _ = b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveNo);
+    try testing.expect(b.agentHasLeft(boss));
+
+    // One whose hooks never spoke is not looked for: nothing says it was here.
+    var c = testBus();
+    defer c.deinit();
+    try c.addSupervisor(boss);
+    c.noteAgentHere(boss, false, null, 2_000);
+    _ = c.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveNo);
+    try testing.expect(!c.agentHasLeft(boss));
+}
+
+test "1762: the workers of a supervisor whose agent left can be taken by another, and not before" {
+    var b = try hookedBus();
+    defer b.deinit();
+    const next: Id = 0x3333;
+    try b.addSupervisor(next);
+    _ = try b.agentEvent(boss, hookEv(.turn_started), 1_000);
+    b.noteAgentHere(boss, true, .{ .pid = 91, .started = 500 }, 1_500);
+    try testing.expectError(error.AlreadyWatched, b.watch(worker, next));
+
+    b.noteAgentHere(boss, false, null, 2_000);
+    _ = b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveNo);
+    try b.watch(worker, next);
+    try testing.expectEqual(@as(?Id, next), b.entries.get(worker).?.watched_by);
+}
+
+fn aliveYes(_: *anyopaque, _: Id, _: ?Program) bool {
     return true;
 }
-fn aliveNo(_: *anyopaque, _: Id, _: Program) bool {
+fn aliveNo(_: *anyopaque, _: Id, _: ?Program) bool {
     return false;
 }
 var alive_ctx: u8 = 0;
@@ -6697,7 +6844,7 @@ var alive_ctx: u8 = 0;
 const Runner = struct {
     runs: bool = true,
     asked: ?Program = null,
-    fn ask(ctx: *anyopaque, _: Id, p: Program) bool {
+    fn ask(ctx: *anyopaque, _: Id, p: ?Program) bool {
         const self: *Runner = @ptrCast(@alignCast(ctx));
         self.asked = p;
         return self.runs;

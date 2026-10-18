@@ -1005,6 +1005,7 @@
 "Working" = "Working";
 "Stopped, cause unknown" = "Stopped, cause unknown";
 "Screen unreadable" = "Screen unreadable";
+"Agent left" = "Agent left";
 "Unattended" = "Unattended";
 "Set aside" = "Set aside";
 "Off duty" = "Off duty";

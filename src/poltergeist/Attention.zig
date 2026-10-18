@@ -102,6 +102,10 @@ pub const Source = enum {
     /// The sampler failed: the kind was decided without a screen reading.
     screen_unreadable,
     process,
+    /// Its agent left the terminal and nothing has come back (task 1762):
+    /// whatever its hooks last said no longer holds, and neither does
+    /// anything the screen says -- a shell is drawing there now.
+    agent_left,
     self_report,
     off_duty,
     none,
@@ -252,7 +256,17 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
     var c: Core = decided: {
         // A process that is gone overrules whatever the hooks last said.
         switch (f.process) {
-            .running, .agent_left => {},
+            .running => {},
+            // **Said as what it is** (task 1762), never worked out from the
+            // screen: a shell drawing where an agent was is not an agent
+            // working, nor one stuck. Listed for the person until they have
+            // looked, then nothing more.
+            .agent_left => |at| break :decided .{
+                .kind = if (seenSince(f.seen_ms, at)) .idle else .quiet_unknown,
+                .since_ms = at,
+                .source = .agent_left,
+                .age_ms = now_ms -| at,
+            },
             .agent_exited => |at| break :decided .{
                 .kind = .failed,
                 .since_ms = at,
@@ -412,8 +426,8 @@ pub fn nextChange(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
     const at: u64 = at: {
         switch (f.process) {
             .running => {},
-            .agent_left => break :at stillAt(f, t, now_ms) orelse return null,
-            .agent_exited, .gone => return null,
+            // Only an event changes it: the person looking, or an agent.
+            .agent_left, .agent_exited, .gone => return null,
         }
         if (Bus.Agent.spoke(f.hooks, f.said_by)) {
             if (f.state == .retrying) break :at f.state_since_ms +| t.screen_still_ms;
@@ -640,6 +654,7 @@ pub const Word = enum {
     working,
     quiet_unknown,
     screen_unreadable,
+    agent_left,
     unattended,
     snoozed,
     off_duty,
@@ -663,6 +678,7 @@ pub const Word = enum {
             .working => i18n.N_("Working"),
             .quiet_unknown => i18n.N_("Stopped, cause unknown"), // 暂定
             .screen_unreadable => i18n.N_("Screen unreadable"), // 暂定
+            .agent_left => i18n.N_("Agent left"),
             .unattended => i18n.N_("Unattended"), // 暂定
             .snoozed => i18n.N_("Set aside"), // 暂定
             .off_duty => i18n.N_("Off duty"), // 暂定
@@ -706,6 +722,8 @@ pub fn display(s: Status) Display {
     if (s.duty == .off) return .{ .shown = .none, .word = .off_duty }; // 暂定
     var d = displayOf(s.kind);
     if (s.source == .screen_unreadable) d.word = .screen_unreadable; // 暂定
+    // Seen or not, it says what happened (task 1762).
+    if (s.source == .agent_left) d.word = .agent_left;
     return d;
 }
 
@@ -812,15 +830,38 @@ test "Attention: an agent that exited is a failure whatever its hooks last said"
 test "Attention: an agent that left for no known reason is not called a failure" {
     var f = hooked(1, .awaiting_approval, 40 * min);
     f.process = .{ .agent_left = 90 * min };
-    // The approval it was waiting on went with it; nothing measures the screen.
+    // The approval it was waiting on went with it.
     const s = classify(f, T, now);
-    try testing.expectEqual(Kind.idle, s.kind);
+    try testing.expect(s.kind != .failed and s.kind != .needs_approval);
+    try testing.expectEqual(Source.agent_left, s.source);
     try testing.expect(s.alive);
+}
 
-    f.screen = .{ .still_ms = 1 * min };
-    try testing.expectEqual(Kind.working, classify(f, T, now).kind);
-    f.screen = .{ .still_ms = 9 * min };
-    try testing.expectEqual(Kind.quiet_unknown, classify(f, T, now).kind);
+test "1762: an agent that left is said to have left, whatever its hooks or its screen say" {
+    // In the middle of a turn when it went, the case that read "Working"
+    // for good.
+    var f = hooked(1, .in_turn, 40 * min);
+    f.process = .{ .agent_left = 90 * min };
+    // A shell drawing, a still screen, no tool call for an hour: none of it
+    // is an agent working or stuck.
+    for ([_]Screen{ .unmeasured, .{ .still_ms = 0 }, .{ .still_ms = 1 * min }, .{ .still_ms = 60 * min } }) |screen| {
+        f.screen = screen;
+        f.call_silent_ms = 60 * min;
+        const s = classify(f, T, now);
+        try testing.expectEqual(Kind.quiet_unknown, s.kind);
+        try testing.expectEqual(Source.agent_left, s.source);
+        try testing.expectEqual(@as(u64, 90 * min), s.since_ms);
+        const d = display(s);
+        try testing.expectEqual(Word.agent_left, d.word);
+    }
+    // Looked at since it went: nothing more to say but what happened.
+    f.seen_ms = 91 * min;
+    const seen = classify(f, T, now);
+    try testing.expectEqual(Kind.idle, seen.kind);
+    try testing.expectEqual(Word.agent_left, display(seen).word);
+    try testing.expectEqualStrings("Agent left", display(seen).word.text());
+    // And only an event changes it.
+    try testing.expectEqual(@as(?u64, null), nextChange(f, T, now));
 }
 
 /// The same facts `dt` later, with no event in between.
@@ -846,15 +887,10 @@ test "Attention: the next change is the threshold, and nothing changes before it
     promised.hooks = .expected;
     promised.expected_ms = now - 1000;
 
-    var left = hooked(2, .in_turn, 90 * min);
-    left.process = .{ .agent_left = 95 * min };
-    left.screen = .{ .still_ms = 2 * min };
-
     const cases = [_]struct { Facts, u64 }{
         .{ turn, now + 10 * min }, // T2 is the later of the two clocks
         .{ plain, now + 2 * min },
         .{ promised, now - 1000 + Bus.hooks_expected_timeout_ms },
-        .{ left, now + 1 * min },
     };
     for (cases) |c| {
         const f, const want = c;

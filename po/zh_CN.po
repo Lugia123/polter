@@ -2403,6 +2403,10 @@ msgstr "停了，原因不明"
 msgid "Screen unreadable"
 msgstr "读不到屏幕"
 
+#: src/poltergeist/Attention.zig:681
+msgid "Agent left"
+msgstr "智能体走了"
+
 #: src/poltergeist/Attention.zig:639
 msgid "Unattended"
 msgstr "无人看管"

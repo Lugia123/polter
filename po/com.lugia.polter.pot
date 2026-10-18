@@ -2389,6 +2389,10 @@ msgstr ""
 msgid "Screen unreadable"
 msgstr ""
 
+#: src/poltergeist/Attention.zig:681
+msgid "Agent left"
+msgstr ""
+
 #: src/poltergeist/Attention.zig:639
 msgid "Unattended"
 msgstr ""
