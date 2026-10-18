@@ -2432,6 +2432,17 @@ static KB_FIT: AtomicUsize = AtomicUsize::new(1);
 static KB_DPI: AtomicI32 = AtomicI32::new(96);
 static KB_WIDTH: AtomicI32 = AtomicI32::new(0);
 static KB_BELOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Each row's keys as the lines they are drawn on (`pack_keys`, no limit):
+/// a row is as tall as these (#1750). Made where the page is published, at
+/// its width and DPI, so the painter, the click and the provider all lay the
+/// rows out from the same count.
+static KB_KEY_LINES: std::sync::Mutex<Vec<Vec<String>>> = std::sync::Mutex::new(Vec::new());
+/// The last row the list can be scrolled to start at (`kb_last_top`).
+static KB_LAST: AtomicUsize = AtomicUsize::new(0);
+
+fn kb_line_counts() -> Vec<usize> {
+    KB_KEY_LINES.lock().map(|l| l.iter().map(Vec::len).collect()).unwrap_or_default()
+}
 
 /// Row `index`'s rectangle in the page's own client area, as it is now.
 pub fn kb_row_rect(index: usize) -> Option<RECT> {
@@ -2441,6 +2452,7 @@ pub fn kb_row_rect(index: usize) -> Option<RECT> {
         KB_DPI.load(Ordering::Acquire),
         KB_WIDTH.load(Ordering::Acquire),
         KB_BELOW.load(Ordering::Acquire),
+        &kb_line_counts(),
         index,
     )
     .map(to_rect)
@@ -2463,7 +2475,6 @@ fn kb_publish(showing: bool) {
     }
     let dpi = if h.0.is_null() { 96 } else { dpi_of(h) };
     let below = rules::keybind_note_below(rc.right, dpi);
-    let fit = rules::kb_fit(rc.bottom, dpi, below);
     let top = ST.with(|c| {
         let s = c.borrow();
         if let Ok(mut rows) = KB_SNAPSHOT.lock() {
@@ -2474,12 +2485,23 @@ fn kb_publish(showing: bool) {
         }
         KB_TOP.load(Ordering::Acquire)
     });
-    KB_FIT.store(fit, Ordering::Release);
+    // The keys' lines at this width and DPI: what each row's height is.
+    let keys_w = shell::scale(rules::KB_KEYS_W, dpi);
+    let packed: Vec<Vec<String>> = KB_SNAPSHOT
+        .lock()
+        .map(|rows| rows.iter().map(|r| rules::pack_keys(&r.keys, |t| text_width(t, mono()) <= keys_w, usize::MAX)).collect())
+        .unwrap_or_default();
+    let lines: Vec<usize> = packed.iter().map(Vec::len).collect();
+    if let Ok(mut l) = KB_KEY_LINES.lock() {
+        *l = packed;
+    }
+    let last = rules::kb_last_top(rc.bottom, dpi, below, &lines);
+    let top = if showing { if top == usize::MAX { 0 } else { rules::kb_scroll(top, 0, last) } } else { usize::MAX };
+    KB_LAST.store(last, Ordering::Release);
+    KB_FIT.store(rules::kb_fit(rc.bottom, dpi, below, &lines, if top == usize::MAX { 0 } else { top }), Ordering::Release);
     KB_DPI.store(dpi, Ordering::Release);
     KB_WIDTH.store(rc.right, Ordering::Release);
     KB_BELOW.store(below, Ordering::Release);
-    let n = kb_row_count();
-    let top = if showing { if top == usize::MAX { 0 } else { rules::kb_scroll(top, 0, n, fit) } } else { usize::MAX };
     KB_TOP.store(top, Ordering::Release);
 }
 
@@ -2488,8 +2510,13 @@ fn kb_scroll(by: i32) {
     if top == usize::MAX {
         return;
     }
-    let next = rules::kb_scroll(top, by, kb_row_count(), KB_FIT.load(Ordering::Acquire));
+    let next = rules::kb_scroll(top, by, KB_LAST.load(Ordering::Acquire));
     if next != top {
+        // How many fit depends on which rows are shown now (#1750).
+        let mut rc = RECT::default();
+        let _ = unsafe { GetClientRect(kb_hwnd(), &mut rc) };
+        let (dpi, below) = (KB_DPI.load(Ordering::Acquire), KB_BELOW.load(Ordering::Acquire));
+        KB_FIT.store(rules::kb_fit(rc.bottom, dpi, below, &kb_line_counts(), next), Ordering::Release);
         KB_TOP.store(next, Ordering::Release);
         let _ = unsafe { InvalidateRect(Some(kb_hwnd()), None, true) };
     }
@@ -2504,6 +2531,7 @@ fn kb_paint(win: HWND) {
     let dpi = dpi_of(win);
     let s = |v: i32| shell::scale(v, dpi);
     let rows = KB_SNAPSHOT.lock().map(|r| r.clone()).unwrap_or_default();
+    let key_lines = KB_KEY_LINES.lock().map(|l| l.clone()).unwrap_or_default();
     let hidden: Vec<bool> = ST.with(|c| c.borrow().keybinds.iter().map(|r| r.hidden_from_menu).collect());
     let unbound: Vec<bool> = ST.with(|c| c.borrow().keybinds.iter().map(|r| r.triggers.is_empty()).collect());
     let top = KB_TOP.load(Ordering::Acquire);
@@ -2533,14 +2561,14 @@ fn kb_paint(win: HWND) {
                 let tr_ = RECT { left: 0, top: nr.bottom, right: name_w, bottom: nr.bottom + line };
                 draw_text(hdc, &row.action, &tr_, mono(), theme::dim(), DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             }
-            // Two lines, as the name and its tag have, each in its own line
-            // box like theirs: the second key of `copy_to_clipboard` used to
-            // be cut at one ("Copy  Ctrl+Inser…"). The lines are made by
-            // `pack_keys`, whole keys only, and each is drawn on its own --
-            // left to `DT_WORDBREAK`, a line started with the gap's spaces
-            // and a stray third one appeared (#1750).
+            // Each line in its own line box, as the name's and its tag's: as
+            // many as the keys take, the row as tall as they are (#1750; at
+            // two lines and a "…", `copy` lost Ctrl+C). The lines are made by
+            // `pack_keys`, whole keys only, where the page is published, and
+            // each is drawn on its own -- left to `DT_WORDBREAK`, a line
+            // started with the gap's spaces and a stray one appeared.
             let colour = if unbound.get(i).copied().unwrap_or(false) { theme::dim() } else { theme::text() };
-            let lines = rules::pack_keys(&row.keys, |t| text_width(t, mono()) <= keys_w, 2);
+            let lines = key_lines.get(i).map(Vec::as_slice).unwrap_or_default();
             for (k, l) in lines.iter().enumerate() {
                 let top = r.top + k as i32 * line;
                 let kr = RECT { left: name_w + gap, top, right: name_w + gap + keys_w, bottom: top + line };
@@ -2553,7 +2581,7 @@ fn kb_paint(win: HWND) {
                 // The note wraps in the room it has, as the macOS one does,
                 // rather than being cut at one line.
                 let nr = if below {
-                    RECT { left: name_w + gap, top: r.top + 2 * line, right: rc.right, bottom: r.bottom }
+                    RECT { left: name_w + gap, top: r.top + lines.len().max(2) as i32 * line, right: rc.right, bottom: r.bottom }
                 } else {
                     RECT { left: name_w + gap + keys_w + gap, top: r.top, right: rc.right, bottom: r.bottom }
                 };

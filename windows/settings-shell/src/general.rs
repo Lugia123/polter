@@ -830,7 +830,9 @@ pub const KB_GAP: i32 = 12;
 pub const KB_MIN_NOTE: i32 = 160;
 /// A row -- the name, and the action's tag under it in the fixed-width face,
 /// as the macOS page (task 1550; the tag is what a config file is written
-/// in) -- and one with the note under those as well.
+/// in) -- and one with the note under those as well. Each is the height of
+/// a row whose keys take two lines; one whose keys take more is taller by a
+/// line for each (`kb_row_h`).
 pub const KB_ROW_H: i32 = 44;
 pub const KB_ROW_H_TALL: i32 = 64;
 /// One line of a row: the name's, the keys', the tag's.
@@ -842,33 +844,66 @@ pub fn keybind_note_below(content_w: i32, dpi: i32) -> bool {
     content_w < scale(KB_NAME_W + KB_GAP + KB_KEYS_W + KB_GAP + KB_MIN_NOTE, dpi)
 }
 
-/// How many rows fit in a list `h` pixels tall.
-pub fn kb_fit(h: i32, dpi: i32, note_below: bool) -> usize {
-    let row = scale(if note_below { KB_ROW_H_TALL } else { KB_ROW_H }, dpi);
-    ((h - scale(KB_HEADER, dpi)).max(0) / row.max(1)).max(1) as usize
+/// How tall a row is whose keys take `lines` lines (`pack_keys` with no
+/// limit): **as tall as its keys**, as a macOS row is (#1750). The page used
+/// to give every row two lines and cut the rest with "…": `copy` lost
+/// Ctrl+C, `paste` Ctrl+V, and `adjust_selection` showed four of its eight.
+pub fn kb_row_h(lines: usize, dpi: i32, note_below: bool) -> i32 {
+    let base = if note_below { KB_ROW_H_TALL } else { KB_ROW_H };
+    scale(base + lines.saturating_sub(2) as i32 * KB_LINE_H, dpi)
+}
+
+/// How many rows, from `top` on, fit whole in a list `h` pixels tall;
+/// `lines` is each row's lines of keys. At least one, so that a row taller
+/// than the list is still shown (cut at the bottom) rather than none.
+pub fn kb_fit(h: i32, dpi: i32, note_below: bool, lines: &[usize], top: usize) -> usize {
+    let mut room = h - scale(KB_HEADER, dpi);
+    let mut n = 0;
+    for &l in lines.iter().skip(top) {
+        room -= kb_row_h(l, dpi, note_below);
+        if room < 0 {
+            break;
+        }
+        n += 1;
+    }
+    n.max(1)
+}
+
+/// The last row the list can be scrolled to start at: the one from which
+/// every row to the end fits, so that the end is reached and no further.
+pub fn kb_last_top(h: i32, dpi: i32, note_below: bool, lines: &[usize]) -> usize {
+    let mut room = h - scale(KB_HEADER, dpi);
+    let mut top = lines.len();
+    while top > 0 {
+        room -= kb_row_h(lines[top - 1], dpi, note_below);
+        if room < 0 {
+            break;
+        }
+        top -= 1;
+    }
+    top.min(lines.len().saturating_sub(1))
 }
 
 /// Row `index`'s rectangle in a list `w` wide, scrolled so `top` is first,
-/// showing `fit` rows. **One function for the painter, the click and the UI
-/// Automation provider** (`one-place-decides-where-a-row-is.py`). `None`
-/// off the view in either direction, and when the list is not showing
-/// (`top == usize::MAX`).
-pub fn kb_row_rect_at(top: usize, fit: usize, dpi: i32, w: i32, note_below: bool, index: usize) -> Option<Rect> {
+/// showing `fit` rows, each as tall as `lines` says. **One function for the
+/// painter, the click and the UI Automation provider**
+/// (`one-place-decides-where-a-row-is.py`). `None` off the view in either
+/// direction, and when the list is not showing (`top == usize::MAX`).
+pub fn kb_row_rect_at(top: usize, fit: usize, dpi: i32, w: i32, note_below: bool, lines: &[usize], index: usize) -> Option<Rect> {
     if top == usize::MAX {
         return None;
     }
     let n = index.checked_sub(top)?;
-    if n >= fit {
+    if n >= fit || index >= lines.len() {
         return None;
     }
-    let row = scale(if note_below { KB_ROW_H_TALL } else { KB_ROW_H }, dpi);
-    let y = scale(KB_HEADER, dpi) + n as i32 * row;
-    Some(Rect::new(0, y, w, y + row))
+    let y = scale(KB_HEADER, dpi) + lines[top..index].iter().map(|&l| kb_row_h(l, dpi, note_below)).sum::<i32>();
+    Some(Rect::new(0, y, w, y + kb_row_h(lines[index], dpi, note_below)))
 }
 
-/// The first row shown after scrolling by `by` rows, held inside the list.
-pub fn kb_scroll(top: usize, by: i32, len: usize, fit: usize) -> usize {
-    let last = len.saturating_sub(fit);
+/// The first row shown after scrolling by `by` rows, held between the first
+/// and `last` (`kb_last_top`).
+pub fn kb_scroll(top: usize, by: i32, last: usize) -> usize {
     (top as i32 + by).clamp(0, last as i32) as usize
 }
 
@@ -1659,23 +1694,52 @@ mod tests {
     #[test]
     fn keybind_rows_do_not_overlap_and_scroll_into_the_same_slots() {
         let (dpi, w) = (96, 800);
-        let fit = kb_fit(500, dpi, false);
+        let lines = vec![1; 100];
+        let fit = kb_fit(500, dpi, false, &lines, 0);
         assert_eq!(fit, ((500 - KB_HEADER) / KB_ROW_H) as usize);
         let mut prev: Option<Rect> = None;
         for i in 0..fit {
-            let r = kb_row_rect_at(0, fit, dpi, w, false, i).expect("visible");
+            let r = kb_row_rect_at(0, fit, dpi, w, false, &lines, i).expect("visible");
             if let Some(p) = prev {
                 assert!(r.top >= p.bottom, "row {i} overlaps");
             }
             prev = Some(r);
         }
-        assert_eq!(kb_row_rect_at(0, fit, dpi, w, false, 0), kb_row_rect_at(40, fit, dpi, w, false, 40));
-        assert!(kb_row_rect_at(40, fit, dpi, w, false, 39).is_none());
-        assert!(kb_row_rect_at(40, fit, dpi, w, false, 40 + fit).is_none());
-        assert!(kb_row_rect_at(usize::MAX, fit, dpi, w, false, 0).is_none());
-        let at192 = kb_row_rect_at(0, fit, 192, 2 * w, false, 3).unwrap();
-        let at96 = kb_row_rect_at(0, fit, 96, w, false, 3).unwrap();
+        assert_eq!(kb_row_rect_at(0, fit, dpi, w, false, &lines, 0), kb_row_rect_at(40, fit, dpi, w, false, &lines, 40));
+        assert!(kb_row_rect_at(40, fit, dpi, w, false, &lines, 39).is_none());
+        assert!(kb_row_rect_at(40, fit, dpi, w, false, &lines, 40 + fit).is_none());
+        assert!(kb_row_rect_at(usize::MAX, fit, dpi, w, false, &lines, 0).is_none());
+        let at192 = kb_row_rect_at(0, fit, 192, 2 * w, false, &lines, 3).unwrap();
+        let at96 = kb_row_rect_at(0, fit, 96, w, false, &lines, 3).unwrap();
         assert_eq!(at192.top, at96.top * 2);
+    }
+
+    /// #1750, 0x1b95 on 59dcb1462: at a 1152-wide window `adjust_selection`
+    /// showed four of its eight keys and `copy` lost Ctrl+C. A row is now as
+    /// tall as its keys, and the rows under it move down by as much.
+    #[test]
+    fn a_row_is_as_tall_as_its_keys_and_the_next_starts_under_it() {
+        let (dpi, w) = (96, 800);
+        // A key column that holds two keys a line: eight keys, four lines.
+        let fits = |t: &str| t.split(KEY_GAP).count() <= 2;
+        let eight = "Shift+Left   Shift+Right   Shift+Up   Shift+Down   Shift+Page Up   Shift+Page Down   Shift+Home   Shift+End";
+        let packed = pack_keys(eight, fits, usize::MAX);
+        assert_eq!(packed.len(), 4);
+        assert_eq!(packed.join(KEY_GAP), eight, "every key, none cut");
+        let lines = [1, packed.len(), 2, 1];
+        let rows: Vec<Rect> = (0..4).map(|i| kb_row_rect_at(0, 4, dpi, w, false, &lines, i).expect("shown")).collect();
+        assert_eq!(rows[0].height(), KB_ROW_H);
+        assert_eq!(rows[1].height(), KB_ROW_H + 2 * KB_LINE_H);
+        assert_eq!(rows[2].height(), KB_ROW_H);
+        assert_eq!(rows[2].top, rows[1].bottom);
+        assert_eq!(rows[3].top, KB_HEADER + 3 * KB_ROW_H + 2 * KB_LINE_H);
+        // With the note under the keys, the same two extra lines.
+        assert_eq!(kb_row_h(4, dpi, true), KB_ROW_H_TALL + 2 * KB_LINE_H);
+        // Fewer rows fit when one is tall.
+        let h = KB_HEADER + 3 * KB_ROW_H;
+        assert_eq!(kb_fit(h, dpi, false, &[1, 1, 1], 0), 3);
+        assert_eq!(kb_fit(h, dpi, false, &[1, 4, 1], 0), 2);
+        assert_eq!(kb_fit(h, dpi, false, &[1, 4, 1], 1), 2);
     }
 
     #[test]
@@ -1683,14 +1747,24 @@ mod tests {
         // The minimum window's editor (418 at 96 DPI on the macOS side).
         assert!(keybind_note_below(418, 96));
         assert!(!keybind_note_below(KB_NAME_W + KB_GAP + KB_KEYS_W + KB_GAP + KB_MIN_NOTE, 96));
-        assert!(kb_fit(500, 96, true) < kb_fit(500, 96, false));
+        let lines = vec![2; 30];
+        assert!(kb_fit(500, 96, true, &lines, 0) < kb_fit(500, 96, false, &lines, 0));
     }
 
     #[test]
     fn keybind_scrolling_holds_at_the_ends() {
-        assert_eq!(kb_scroll(0, -3, 100, 18), 0);
-        assert_eq!(kb_scroll(80, 30, 100, 18), 82);
-        assert_eq!(kb_scroll(5, 1, 10, 18), 0);
+        assert_eq!(kb_scroll(0, -3, 82), 0);
+        assert_eq!(kb_scroll(80, 30, 82), 82);
+        assert_eq!(kb_scroll(5, 1, 0), 0);
+        // The last top is the one from which the rest fits: the end is
+        // reached, a tall last row whole.
+        let h = KB_HEADER + 3 * KB_ROW_H;
+        assert_eq!(kb_last_top(h, 96, false, &[1; 10]), 7);
+        assert_eq!(kb_last_top(h, 96, false, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 4]), 8);
+        assert_eq!(kb_last_top(h, 96, false, &[1, 1]), 0);
+        assert_eq!(kb_last_top(h, 96, false, &[]), 0);
+        // A row taller than the list: it can still be scrolled to.
+        assert_eq!(kb_last_top(h, 96, false, &[1, 1, 9]), 2);
     }
 
     #[test]
