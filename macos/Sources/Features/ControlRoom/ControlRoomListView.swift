@@ -466,7 +466,7 @@ struct ControlRoomListView: View {
     /// How high the note is with these words in it: its lines, and the
     /// row's padding above and below.
     static func noteHeight(_ text: String) -> CGFloat {
-        let height = SafeTextMeasure.height(text, font: ControlRoomAskText.face(code: false), wrappingAt: noteWidth)
+        let height = SafeTextMeasure.height(text, in: ControlRoomAskText.face(code: false), wrappingAt: noteWidth)
         return ceil(height) + 2 * CGFloat(Look.Side.rowPaddingY)
     }
 
@@ -718,33 +718,35 @@ struct ControlRoomListView: View {
         }
     }
 
-    /// The faces a waiting row is measured in, made once rather than on
-    /// every render (task 1718).
-    private static let nameFont = NSFont.monospacedSystemFont(
-        ofSize: CGFloat(Look.Font.groupName), weight: weight(Look.Font.weightGroupName))
-    private static let nameFontStrong = NSFont.monospacedSystemFont(
-        ofSize: CGFloat(Look.Font.groupName), weight: weight(Look.Font.weightStrong))
-    private static let wordFont = NSFont.systemFont(
-        ofSize: CGFloat(Look.Font.body), weight: weight(Look.Font.weightEmphasis))
-    private static let whoFont = NSFont.systemFont(ofSize: CGFloat(Look.Font.body))
-    private static let whoNameFont = NSFont.monospacedSystemFont(ofSize: CGFloat(Look.Font.body), weight: .regular)
+    /// The faces a waiting row is measured in, kept rather than made on
+    /// every render (task 1718), and never kept as nil (task 1753).
+    private static let nameFont = SafeFace(
+        size: CGFloat(Look.Font.groupName), weight: weight(Look.Font.weightGroupName), design: .monospaced)
+    private static let nameFontStrong = SafeFace(
+        size: CGFloat(Look.Font.groupName), weight: weight(Look.Font.weightStrong), design: .monospaced)
+    private static let wordFont = SafeFace(size: CGFloat(Look.Font.body), weight: weight(Look.Font.weightEmphasis))
+    private static let whoFont = SafeFace(size: CGFloat(Look.Font.body))
+    private static let whoNameFont = SafeFace(size: CGFloat(Look.Font.body), design: .monospaced)
 
     /// How wide `text` is on one line, rounded up so that a text that fits
     /// exactly is not cut by a fraction of a point. Measured through
     /// `SafeTextMeasure`, which a throw from CoreText cannot get past (task 1718).
-    static func width(of text: String, font: NSFont) -> CGFloat {
-        ceil(SafeTextMeasure.width(text, font: font)) + 1
+    static func width(of text: String, font: SafeFace) -> CGFloat {
+        ceil(SafeTextMeasure.width(text, in: font)) + 1
     }
 
     /// How wide who is waiting would be alone: the worker's name in the
     /// terminal's face, the rest in the interface's, as `who` sets them.
     static func whoWidth(_ waiter: ControlRoomList.Waiter) -> CGFloat {
         guard let said = ControlRoomList.waiterText(waiter) else { return 0 }
-        let text = NSMutableAttributedString(string: said, attributes: [.font: whoFont])
-        if !waiter.name.isEmpty {
+        guard let face = whoFont.font else {
+            return ceil(SafeTextMeasure.width(said, in: whoFont)) + 1
+        }
+        let text = NSMutableAttributedString(string: said, attributes: [.font: face])
+        if !waiter.name.isEmpty, let nameFace = whoNameFont.font {
             let range = (said as NSString).range(of: waiter.name)
             if range.location != NSNotFound {
-                text.addAttribute(.font, value: whoNameFont, range: range)
+                text.addAttribute(.font, value: nameFace, range: range)
             }
         }
         return ceil(SafeTextMeasure.width(text)) + 1
@@ -848,33 +850,36 @@ struct ControlRoomAskText: View {
 
     @Environment(\.colorScheme) private var scheme
 
-    static func face(code: Bool) -> NSFont {
+    static func face(code: Bool) -> SafeFace {
         code ? codeFace : textFace
     }
 
-    /// Made once rather than on every render (task 1718).
-    private static let textFace = NSFont.systemFont(ofSize: CGFloat(Look.Font.body))
-    private static let codeFace = NSFont.monospacedSystemFont(ofSize: CGFloat(Look.Font.body), weight: .regular)
+    /// Kept rather than made on every render (task 1718), and never kept as
+    /// nil (task 1753).
+    private static let textFace = SafeFace(size: CGFloat(Look.Font.body))
+    private static let codeFace = SafeFace(size: CGFloat(Look.Font.body), design: .monospaced)
 
-    /// What one line of `font` is high when nothing is added between lines.
-    static func natural(_ font: NSFont) -> CGFloat {
-        NSLayoutManager().defaultLineHeight(for: font)
+    /// What one line of `face` is high when nothing is added between lines;
+    /// the face's size while the system has no font for it.
+    static func natural(_ face: SafeFace) -> CGFloat {
+        guard let font = face.font else { return face.size }
+        return NSLayoutManager().defaultLineHeight(for: font)
     }
 
     /// How many lines `text` takes at the width a row gives it.
     static func needed(_ text: String, code: Bool) -> Int {
         guard !text.isEmpty else { return 1 }
-        let font = face(code: code)
-        let height = SafeTextMeasure.height(text, font: font, wrappingAt: ControlRoomListLayout.askWidth)
-        return max(1, Int((height / natural(font)).rounded()))
+        let face = face(code: code)
+        let height = SafeTextMeasure.height(text, in: face, wrappingAt: ControlRoomListLayout.askWidth)
+        return SafeTextMeasure.lines(height: height, lineHeight: natural(face))
     }
 
     var body: some View {
-        let font = Self.face(code: code)
+        let face = Self.face(code: code)
         let lineH = CGFloat(Look.Side.askLineHeight)
-        let extra = max(0, lineH - Self.natural(font))
+        let extra = max(0, lineH - Self.natural(face))
         Text(text)
-            .font(Font(font))
+            .font(face.swiftUI)
             .lineSpacing(extra)
             .lineLimit(lines)
             .truncationMode(.tail)

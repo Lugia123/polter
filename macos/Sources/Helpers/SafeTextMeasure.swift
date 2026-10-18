@@ -8,10 +8,19 @@ import OSLog
 /// `NSInvalidArgumentException` from inside CoreText, on the main thread in
 /// the middle of a SwiftUI layout, and the app aborted (task 1718). An
 /// Objective-C exception cannot be caught in Swift, so every measurement goes
-/// through `GhosttyMeasureTextSafely`, which catches it; when it does, the
-/// size is guessed from the number of characters (`estimate`) and the
-/// failure is logged. A guess makes a name cut a little early or late on one
-/// render; an abort loses every terminal.
+/// through `GhosttyMeasureTextSafely`, which catches what it can; when it
+/// does, the size is guessed from the number of characters (`estimate`) and
+/// the failure is logged.
+///
+/// ⚠️ **That guard does not catch the throw of task 1718.** The cause was a
+/// nil font (task 1753), and the exception it makes comes out of CoreText,
+/// where an `@try` around the measurement does not stop it: measured in a
+/// plain Objective-C program, the same `@try` catches a throw made directly
+/// and the process still aborts on this one. What prevents that crash is
+/// `SafeFace`, which keeps a nil font from reaching CoreText, and the
+/// `in: SafeFace` measurements below, which estimate instead of measuring
+/// when there is no font. The guard's own test throws inside the guard, not
+/// from CoreText, which is why it passed.
 enum SafeTextMeasure {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "polter",
@@ -21,6 +30,35 @@ enum SafeTextMeasure {
     /// How wide `text` is in `font` on one line.
     static func width(_ text: String, font: NSFont) -> CGFloat {
         size(NSAttributedString(string: text, attributes: [.font: font])).width
+    }
+
+    /// How wide `text` is in `face` on one line; estimated at the face's
+    /// size while the system has no font for it (task 1753).
+    static func width(_ text: String, in face: SafeFace) -> CGFloat {
+        guard let font = face.font else {
+            return estimate(NSAttributedString(string: text), em: face.size).width
+        }
+        return width(text, font: font)
+    }
+
+    /// How high `text` is in `face` when it wraps at `width`; estimated at
+    /// the face's size while the system has no font for it (task 1753).
+    static func height(_ text: String, in face: SafeFace, wrappingAt width: CGFloat) -> CGFloat {
+        guard let font = face.font else {
+            return estimate(NSAttributedString(string: text), wrappingAt: width, em: face.size).height
+        }
+        return height(text, font: font, wrappingAt: width)
+    }
+
+    /// `height` in lines of `lineHeight`, at least one. A line height that
+    /// is not a positive number counts as one line rather than reaching
+    /// `Int(_:)` as an infinity, which traps: a nil font's line height
+    /// reads as zero (task 1753).
+    static func lines(height: CGFloat, lineHeight: CGFloat) -> Int {
+        guard lineHeight > 0, height.isFinite else { return 1 }
+        let count = (height / lineHeight).rounded()
+        guard count.isFinite, count < CGFloat(Int.max) else { return 1 }
+        return max(1, Int(count))
     }
 
     /// How wide `text` is on one line, in the fonts it carries.
@@ -62,13 +100,13 @@ enum SafeTextMeasure {
     /// A size made up from the characters alone, touching no layout: an
     /// em for a wide character (CJK, emoji), six tenths of one for the
     /// rest -- what SF Mono advances, and at least what the system face
-    /// does for most Latin text.
-    static func estimate(_ text: NSAttributedString, wrappingAt: CGFloat? = nil) -> CGSize {
+    /// does for most Latin text. `em` is the size to assume when the text carries no font.
+    static func estimate(_ text: NSAttributedString, wrappingAt: CGFloat? = nil, em fallbackEm: CGFloat? = nil) -> CGSize {
         let string = text.string
         let font = text.length > 0
             ? (text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
             : nil
-        let em = font?.pointSize ?? NSFont.systemFontSize
+        let em = font?.pointSize ?? fallbackEm ?? NSFont.systemFontSize
         let lineHeight = ceil((font?.ascender ?? em) - (font?.descender ?? 0) + (font?.leading ?? 0))
         var lines: [CGFloat] = [0]
         for character in string {

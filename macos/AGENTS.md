@@ -24,6 +24,21 @@ baseline" is what you get whether your own files are clean or broken, and it
 looks exactly like having verified something. Type-check the directory you
 touched, on its own, where the count starts at zero and can move.
 
+**The whole tree does start at zero, with the right flags** (measured for
+task 1753): add `-enable-bare-slash-regex` (the project's Swift language
+mode needs it to parse the `/…/` literal in `Ghostty.Shell.swift`), the
+bridging header in `Sources/App`, the main tree's `GhosttyKit` headers, and
+`-F` pointing at the Sparkle framework in DerivedData's Debug products.
+Then all of `macos/Sources` type-checks with 0 errors, and a floor can be
+read. **Plant one error per run**: with three planted at once the compiler
+reported one of them, so counting errors against the number you planted
+does not work.
+
+A narrower run is not a lighter version of this. When a file the
+directory depends on fails at the declaration level (a missing `Ghostty`
+namespace, say), the compiler does not check function bodies at all: an
+error planted in a body leaves the count unchanged.
+
 `swiftc -typecheck` passing is also not the app building. Only `zig build`
 (with the app bundle, i.e. without `-Demit-macos-app=false`) compiles the
 Swift the way the app does; a change can type-check, pass tests, and still

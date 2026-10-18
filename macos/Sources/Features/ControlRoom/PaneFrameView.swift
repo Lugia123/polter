@@ -478,8 +478,7 @@ struct PaneFrameBar: View {
     /// four characters of the name's face, which with the ellipsis is a
     /// beginning and an end to recognise it by.
     static let nameFloor: CGFloat = {
-        let font = NSFont.monospacedSystemFont(ofSize: CGFloat(Look.Font.body), weight: .regular)
-        return ceil(SafeTextMeasure.width("MMMM", font: font))
+        ceil(SafeTextMeasure.width("MMMM", in: SafeFace(size: CGFloat(Look.Font.body), design: .monospaced)))
     }()
 
     /// One way of laying out the bar. `nameCut`: the name asks only for

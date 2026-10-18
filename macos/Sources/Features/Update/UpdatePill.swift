@@ -12,7 +12,7 @@ struct UpdatePill: View {
     @State private var resetTask: Task<Void, Never>?
 
     /// The font used for the pill text
-    private let textFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+    private static let textFont = SafeFace(size: 11, weight: .medium)
 
     var body: some View {
         if !model.state.isHidden {
@@ -53,7 +53,7 @@ struct UpdatePill: View {
                     .frame(width: 14, height: 14)
 
                 Text(model.text)
-                    .font(Font(textFont))
+                    .font(Self.textFont.swiftUI)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(width: textWidth)
@@ -74,6 +74,6 @@ struct UpdatePill: View {
 
     /// Calculated width for the text to prevent resizing during progress updates
     private var textWidth: CGFloat? {
-        SafeTextMeasure.width(model.maxWidthText, font: textFont)
+        SafeTextMeasure.width(model.maxWidthText, in: Self.textFont)
     }
 }

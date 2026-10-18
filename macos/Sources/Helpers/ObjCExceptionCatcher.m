@@ -65,9 +65,14 @@ BOOL GhosttyMeasureTextSafely(
     // CoreText once threw from TAttributes::ApplyFont while measuring a
     // terminal's title for the control room ("attempt to insert nil object
     // from objects[0]"), on the main thread in the middle of a SwiftUI
-    // layout, which aborted the app (task 1718). Why is not known; the same
-    // call measured fifteen thousand kinds of string without it. So every
-    // measurement is made here, where the exception can be caught.
+    // layout, which aborted the app (task 1718). The font was nil: CoreText
+    // copies the attributes when it finds no font in them, and the nil value
+    // cannot go into the copy (task 1753, reproduced frame for frame).
+    // ⚠️ This @try does NOT catch that throw: it comes out of CoreText, and
+    // in a plain Objective-C program the same @try catches a direct throw
+    // and still aborts on this one (measured, task 1753). `SafeFace` is what
+    // keeps a nil font from getting here. This stays for throws it can
+    // catch.
     @try {
         if (failForTesting) {
             // The same exception from the same class: a dictionary given nil.
@@ -89,4 +94,10 @@ BOOL GhosttyMeasureTextSafely(
 
         return NO;
     }
+}
+
+NSFont * _Nullable GhosttySystemFontOrNil(CGFloat size, CGFloat weight, BOOL monospaced) {
+    return monospaced
+        ? [NSFont monospacedSystemFontOfSize:size weight:weight]
+        : [NSFont systemFontOfSize:size weight:weight];
 }

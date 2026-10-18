@@ -106,19 +106,20 @@ struct PaneStackStripView: View {
 
     // MARK: Measuring
 
-    static func nameFont(current: Bool) -> NSFont {
+    static func nameFont(current: Bool) -> SafeFace {
         current ? nameFontCurrent : nameFontBehind
     }
 
-    static func roleFont() -> NSFont {
+    static func roleFont() -> SafeFace {
         roleFace
     }
 
-    // Made once rather than on every render (task 1718).
-    private static let nameFontCurrent = NSFont.monospacedSystemFont(ofSize: CGFloat(Look.Font.body), weight: .semibold)
-    private static let nameFontBehind = NSFont.monospacedSystemFont(ofSize: CGFloat(Look.Font.body), weight: .regular)
-    private static let roleFace = NSFont.systemFont(ofSize: CGFloat(Look.Font.body))
-    private static let statusFont = NSFont.systemFont(ofSize: CGFloat(Look.Font.body), weight: .semibold)
+    // Kept rather than made on every render (task 1718), and never kept as
+    // nil (task 1753).
+    private static let nameFontCurrent = SafeFace(size: CGFloat(Look.Font.body), weight: .semibold, design: .monospaced)
+    private static let nameFontBehind = SafeFace(size: CGFloat(Look.Font.body), design: .monospaced)
+    private static let roleFace = SafeFace(size: CGFloat(Look.Font.body))
+    private static let statusFont = SafeFace(size: CGFloat(Look.Font.body), weight: .semibold)
 
     /// How wide a tab's body wants to be: its name at the heavier of its
     /// two weights and the word for what it is, and room for a glyph
@@ -129,13 +130,13 @@ struct PaneStackStripView: View {
     /// A supervisor's tab has its mark before the name (task 1692).
     static func wanted(_ member: PaneStack.Member) -> CGFloat {
         let t = Look.StackTab.self
-        var name = SafeTextMeasure.width(member.name, font: nameFont(current: true)).rounded(.up)
+        var name = SafeTextMeasure.width(member.name, in: nameFont(current: true)).rounded(.up)
         if member.marked {
             name += CGFloat(Look.Side.glyph) + CGFloat(t.gap)
         }
         if let role = member.role {
             name += CGFloat(Look.Pane.nameRoleGap)
-                + SafeTextMeasure.width(role, font: roleFont()).rounded(.up)
+                + SafeTextMeasure.width(role, in: roleFont()).rounded(.up)
         }
         return 2 * CGFloat(t.paddingX) + name + CGFloat(t.gap) + CGFloat(Look.Side.glyph)
     }
@@ -143,7 +144,7 @@ struct PaneStackStripView: View {
     /// How wide the status at the right end is: the glyph, the gap, the word.
     static func statusWidth(_ title: PaneFrame.Title?) -> CGFloat {
         guard let title, title.shown != .none || !title.word.isEmpty else { return 0 }
-        let word = SafeTextMeasure.width(title.word, font: statusFont).rounded(.up)
+        let word = SafeTextMeasure.width(title.word, in: statusFont).rounded(.up)
         return CGFloat(Look.Side.glyph) + CGFloat(Look.Side.statusWordGap) + word
     }
 
@@ -337,14 +338,14 @@ struct PaneStackStripView: View {
                         PolterHighlightDot()
                     }
                     Text(member.name)
-                        .font(Font(Self.nameFont(current: current)))
+                        .font(Self.nameFont(current: current).swiftUI)
                         .foregroundStyle(current ? currentInk : otherInk)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .layoutPriority(1)
                     if let role = member.role {
                         Text(role)
-                            .font(Font(Self.roleFont()))
+                            .font(Self.roleFont().swiftUI)
                             .foregroundStyle(otherInk)
                             .lineLimit(1)
                     }
