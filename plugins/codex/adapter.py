@@ -924,8 +924,13 @@ def by_directory(chome, cwd, sidecar_started, now_ms):
     sidecar started is this one. Exactly one such record, or no session. A
     session gone on with by hand (`codex resume`) started long before its
     sidecar and is not named -- a new session, which the take-over says.
-    Without a time for the sidecar (Windows today), a directory with one
-    record in it is the only answer given.
+
+    **Without a time for the sidecar, none** (task 1749). This used to name
+    the one record when a directory had exactly one -- and before this
+    session's own record exists (Codex writes it with the first turn), the
+    one record there is another Codex's, which a take-over would have gone
+    on with. Polter sends the sidecar's pid on every system now, so this is
+    a sidecar that could not be timed, not a platform.
     """
     root = os.path.join(chome, "sessions")
     cutoff = now_ms - BY_DIRECTORY_DAYS * 24 * 3600 * 1000
@@ -945,11 +950,8 @@ def by_directory(chome, cwd, sidecar_started, now_ms):
     if not found:
         return None, None, "No Codex session record in this directory was written in the last day."
     if sidecar_started is None:
-        if len(found) == 1:
-            return found[0][1], found[0][0], ("Named by directory: the only Codex session record "
-                                              "written here in the last day.")
-        return None, None, ("%d Codex sessions in this directory and nothing to tell which is this one, "
-                            "so none is named." % len(found))
+        return None, None, ("%d Codex session record(s) in this directory and no start of this Codex's "
+                            "Polter server to match one to, so none is named." % len(found))
     near = [f for f in found if f[2] is not None and abs(f[2] - sidecar_started) <= STARTED_TOGETHER_MS]
     if len(near) == 1:
         return near[0][1], near[0][0], ("Named by directory and start: the Codex session here that "

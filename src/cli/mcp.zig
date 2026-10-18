@@ -427,11 +427,11 @@ fn identityField(arena: Allocator, io: std.Io, env: *const std.process.Environ.M
     if (ppid) |p| w.print("{d}", .{p}) catch return "" else w.writeAll("null") catch return "";
     // Its own pid as well (task 1667): when this sidecar started is when
     // the CLI's session started it, which the adapter matches to the
-    // session's record.
-    const me: ?u64 = if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi)
-        null
-    else
-        @intCast(std.posix.system.getpid());
+    // session's record. **On Windows too** (task 1749): without it Codex's
+    // adapter could only name a session by directory alone -- none when the
+    // directory had two, and before this session's record existed, the one
+    // record there, which was another Codex's.
+    const me = ownPid();
     w.writeAll(",\"self\":") catch return "";
     if (me) |p| w.print("{d}", .{p}) catch return "" else w.writeAll("null") catch return "";
     w.writeAll(",\"env\":{") catch return "";
@@ -447,8 +447,17 @@ fn identityField(arena: Allocator, io: std.Io, env: *const std.process.Environ.M
         n += 1;
     };
     w.writeAll("}}") catch return "";
-    if (n == 0 and ppid == null) return "";
+    if (n == 0 and ppid == null and me == null) return "";
     return out.written();
+}
+
+/// This process's pid, or null where there is none to read.
+fn ownPid() ?u64 {
+    return switch (comptime builtin.os.tag) {
+        .wasi => null,
+        .windows => std.os.windows.GetCurrentProcessId(),
+        else => @intCast(std.posix.system.getpid()),
+    };
 }
 
 /// Say why this will not start, where whoever ran it will see it.
@@ -2382,6 +2391,21 @@ test "mcp: a sidecar whose parent is gone sees it (task 1667)" {
     try std.testing.expect(parentLeft(4242, 1));
     // Still its own.
     try std.testing.expect(!parentLeft(4242, 4242));
+}
+
+test "mcp: the identity carries this sidecar's own pid, Windows included (task 1749)" {
+    // What Codex's adapter matches a session's start to. Null on Windows
+    // left it naming a session by directory alone.
+    const pid = ownPid() orelse return error.TestNoOwnPid;
+    try std.testing.expect(pid > 0);
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var env: std.process.Environ.Map = .init(arena.allocator());
+    const field = identityField(arena.allocator(), std.testing.io, &env);
+    const want = try std.fmt.allocPrint(arena.allocator(), "\"self\":{d}", .{pid});
+    const said = std.mem.indexOf(u8, field, want) != null;
+    try std.testing.expect(said);
 }
 
 test "mcp: a sidecar started by Codex's app-server daemon is told apart from a terminal's (task 1674)" {

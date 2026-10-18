@@ -29,8 +29,10 @@
 #     and `launch` refuses with the reason when nothing runnable is behind it.
 #   * **`identify` on Windows has no process to read.** Polter does not send
 #     a sidecar's parent there yet (`pid` is null), so the session is only
-#     ever found by directory (`Get-ByDirectory`, `by_directory` in
-#     adapter.py), with the same rule and the same refusal to guess.
+#     ever found by directory and by when the sidecar started -- its own pid,
+#     which Polter sends there since task 1749 (`Get-ByDirectory`,
+#     `by_directory` in adapter.py), with the same rule and the same refusal
+#     to guess.
 #   * **No `HOME`.** `USERPROFILE`, as roles.md 11.8 records.
 #
 # **ASCII only**, for the reason the Claude Code adapter gives: Windows
@@ -1334,11 +1336,9 @@ function Get-ByDirectory([string]$CodexHome, [string]$Cwd, $SidecarStarted, [lon
     if ($found.Count -eq 0) {
         return @($null, $null, 'No Codex session record in this directory was written in the last day.')
     }
+    # Without a time for the sidecar, none (task 1749): see `by_directory`.
     if ($null -eq $SidecarStarted) {
-        if ($found.Count -eq 1) {
-            return @($found[0][1], $found[0][0], 'Named by directory: the only Codex session record written here in the last day.')
-        }
-        return @($null, $null, "$($found.Count) Codex sessions in this directory and nothing to tell which is this one, so none is named.")
+        return @($null, $null, "$($found.Count) Codex session record(s) in this directory and no start of this Codex's Polter server to match one to, so none is named.")
     }
     $near = New-List
     foreach ($f in $found) {

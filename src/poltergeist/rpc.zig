@@ -7090,6 +7090,19 @@ fn dispatchOne(
     switch (req) {
         .me => {
             var info = describe(bus, host, caller);
+            // Where it is working and what its tab says, from where
+            // terminal_list has them (task 1749): `describe` gives neither,
+            // so `me` said an empty directory for every terminal there was.
+            if (host.openTerminals(alloc)) |places| {
+                defer alloc.free(places);
+                for (places) |place| if (place.id == caller) {
+                    info.cwd = place.cwd;
+                    info.title = place.title;
+                    break;
+                };
+            } else |err| {
+                log.warn("poltergeist: could not list terminals for me err={}", .{err});
+            }
             // Its own standing with the groups, which only it is told. A
             // host that cannot say leaves it out; what it does say is all
             // three (`wire.Membership`).
@@ -18267,6 +18280,20 @@ test "1746: terminal_list says which terminal's CLI is asking the person a quest
         defer testing.allocator.free(again.terminals);
         for (again.terminals) |info| try testing.expect(!info.startup_question);
     }
+}
+
+test "1749: me says where its terminal is working and what its tab says, as terminal_list does" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    const open = [_]Place{ .{ .id = boss, .cwd = "/work", .title = "supervisor" }, .{ .id = worker, .cwd = "D:\\polter\\r3", .title = "codex" } };
+    var fake: FakeHost = .{ .open = &open };
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(worker), .me);
+    try testing.expectEqualStrings("D:\\polter\\r3", res.me.cwd);
+    try testing.expectEqualStrings("codex", res.me.title);
+    // A host that lists no such terminal: nothing invented.
+    var none: FakeHost = .{ .open = &.{} };
+    const bare = try dispatch(testing.allocator, &b, none.host(), term(worker), .me);
+    try testing.expectEqualStrings("", bare.me.cwd);
 }
 
 test "#63: terminal_list says whether an agent is connected from each terminal" {
