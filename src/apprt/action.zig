@@ -773,7 +773,9 @@ pub const Action = union(Key) {
                 /// A missing file fails rather than skips, for the reason the
                 /// action-tag floor above states.
                 fn read(i: std.Io, a: std.mem.Allocator, path: []const u8) ![]const u8 {
-                    return std.Io.Dir.cwd().readFileAlloc(i, path, a, .limited(512 * 1024)) catch |err| {
+                    // src/App.zig is past 512 KiB; this is a ceiling for a
+                    // runaway read, not a size any of these files should be.
+                    return std.Io.Dir.cwd().readFileAlloc(i, path, a, .limited(8 * 1024 * 1024)) catch |err| {
                         std.debug.print(
                             "cannot read {s} ({t}). Run `zig build test` from the repository root.\n",
                             .{ path, err },

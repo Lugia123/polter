@@ -2642,7 +2642,7 @@ test "codex adapter: identify names the session whose rollout the Codex process 
     try testing.expect(found.session_written_ms != null);
 }
 
-test "codex adapter: a session no process holds open is named by its directory, and not when two are at work there (task 1667)" {
+test "codex adapter: a session no process holds open is not named by its directory without the sidecar's start (tasks 1667, 1749)" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -2655,14 +2655,17 @@ test "codex adapter: a session no process holds open is named by its directory, 
     defer std.Io.Dir.cwd().deleteTree(io, rig.root) catch {};
 
     // Codex in its app-server daemon: nothing names the session but the
-    // marker and the terminal's directory. No pid, as on Windows.
+    // marker and the terminal's directory, and no sidecar to time. The one
+    // record in the directory is not named (task 1749): before this
+    // session's first turn its own record does not exist yet, so the one
+    // there may be another Codex's. Naming by start is the next test's.
     const sighting: Sighting = .{ .pid = null, .env = &.{.{ "POLTER_AGENT_CLI", "codex" }} };
     var req: std.Io.Writer.Allocating = .init(aa);
     try writeIdentifyRequest(&req.writer, rig.adapter, sighting, rig.project, rig.home);
     const one = try parseIdentify(aa, try askCodex(aa, io, rig, .identify, req.written()));
     try testing.expect(one.me);
-    try testing.expectEqualStrings(codex_session, one.session orelse "(none)");
-    try testing.expect(one.session_written_ms != null);
+    const unnamed = one.session == null;
+    try testing.expect(unnamed);
 
     // Another directory has none of it.
     var elsewhere: std.Io.Writer.Allocating = .init(aa);
