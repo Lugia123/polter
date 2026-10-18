@@ -174,7 +174,7 @@ struct ProjectAutosaveTests {
     }
 
     private func leaf(_ cwd: String, _ title: String = "") -> ProjectNode {
-        .leaf(cwd: cwd, title: title, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
+        .leaf(cwd: cwd, title: title, titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
     }
 
     /// `.prev` is the file from before the *last* layout change -- one
@@ -264,7 +264,7 @@ struct ProjectAutosaveTests {
         func project(_ windows: [[ProjectNode]], group: String? = "g", savedAt: Int = 1) -> ProjectFile {
             ProjectFile(
                 name: "p", savedAt: savedAt, group: group,
-                windows: windows.map { ProjectWindow(frame: nil, front: 0, tabs: $0.map(ProjectTab.init)) },
+                windows: windows.map { ProjectWindow(frame: nil, front: 0, tabs: $0.map { ProjectTab(root: $0, title: "") }) },
                 nextScrollback: nil)
         }
         let was = project([[leaf("/first"), leaf("/second")], [leaf("/other window")]])

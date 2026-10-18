@@ -10,7 +10,7 @@ struct ProjectPagesTests {
     private typealias Live = ProjectPages.Live
 
     private func leaf(_ cwd: String, _ scrollback: String = "", _ agent: ProjectAgent = .none) -> ProjectNode {
-        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: agent)
+        .leaf(cwd: cwd, title: "", titleChosen: false, history: "", scrollback: scrollback, bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: agent)
     }
 
     private func frame(_ x: Double) -> ProjectFrame {
@@ -24,11 +24,11 @@ struct ProjectPagesTests {
             name: "p", savedAt: 1, group: "g",
             windows: [
                 ProjectWindow(frame: frame(10), front: 1, tabs: [
-                    ProjectTab(root: leaf("/a", "0.snap")),
-                    ProjectTab(root: leaf("/b", "1.snap")),
-                    ProjectTab(root: leaf("/c", "2.snap")),
+                    ProjectTab(root: leaf("/a", "0.snap"), title: ""),
+                    ProjectTab(root: leaf("/b", "1.snap"), title: ""),
+                    ProjectTab(root: leaf("/c", "2.snap"), title: ""),
                 ]),
-                ProjectWindow(frame: frame(20), front: 0, tabs: [ProjectTab(root: leaf("/d", "3.snap"))]),
+                ProjectWindow(frame: frame(20), front: 0, tabs: [ProjectTab(root: leaf("/d", "3.snap"), title: "")]),
             ],
             nextScrollback: 4))
     }
@@ -38,14 +38,14 @@ struct ProjectPagesTests {
     private func cwds(_ pages: ProjectPages) -> [[String]] {
         pages.fileWindows.map { window in
             window.tabs.map { tab -> String in
-                if case .leaf(let cwd, _, _, _, _, _, _, _, _, _) = tab.root { return cwd }
+                if case .leaf(let cwd, _, _, _, _, _, _, _, _, _, _) = tab.root { return cwd }
                 return "split"
             }
         }
     }
 
     private func live(_ id: Int, window: Int, index: Int, selected: Bool = false, _ cwd: String) -> Live {
-        Live(id: id, window: window, index: index, selected: selected, root: leaf(cwd))
+        Live(id: id, window: window, index: index, selected: selected, root: leaf(cwd), title: "")
     }
 
     // MARK: Reading
@@ -54,8 +54,8 @@ struct ProjectPagesTests {
         let file = ProjectFile(
             name: "p", savedAt: 1, group: nil,
             windows: [
-                ProjectWindow(frame: frame(10), front: 1, tabs: [ProjectTab(root: leaf("/a")), ProjectTab(root: leaf("/b"))]),
-                ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf("/c"))]),
+                ProjectWindow(frame: frame(10), front: 1, tabs: [ProjectTab(root: leaf("/a"), title: ""), ProjectTab(root: leaf("/b"), title: "")]),
+                ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf("/c"), title: "")]),
             ],
             nextScrollback: nil)
         let pages = ProjectPages(file: file)
@@ -136,7 +136,7 @@ struct ProjectPagesTests {
         let closing = project.updated(
             live: [
                 live(0, window: 7, index: 0, selected: true, "/a"),
-                Live(id: 1, window: nil, index: 0, selected: false, root: split),
+                Live(id: 1, window: nil, index: 0, selected: false, root: split, title: ""),
                 live(2, window: 7, index: 1, "/c"),
             ],
             frames: [7: frame(77)], keepingFront: true)
@@ -153,7 +153,7 @@ struct ProjectPagesTests {
         let asked = project.updated(
             live: [
                 live(0, window: 7, index: 0, selected: true, "/a"),
-                Live(id: 1, window: 99, index: 0, selected: true, root: split),
+                Live(id: 1, window: 99, index: 0, selected: true, root: split, title: ""),
                 live(2, window: 7, index: 1, "/c"),
             ],
             frames: [7: frame(77)], keepingFront: true)
@@ -162,14 +162,14 @@ struct ProjectPagesTests {
         // The last open page of a window closing: the window is as it was,
         // frame included, with the page as its tab left it.
         let last = project.updated(
-            live: [Live(id: 3, window: nil, index: 0, selected: false, root: leaf("/d2", "3.snap"))],
+            live: [Live(id: 3, window: nil, index: 0, selected: false, root: leaf("/d2", "3.snap"), title: "")],
             frames: [:], keepingFront: true)
-        #expect(last.fileWindows[1] == ProjectWindow(frame: frame(20), front: 0, tabs: [ProjectTab(root: leaf("/d2", "3.snap"))]))
+        #expect(last.fileWindows[1] == ProjectWindow(frame: frame(20), front: 0, tabs: [ProjectTab(root: leaf("/d2", "3.snap"), title: "")]))
         #expect(last.fileWindows[0] == project.fileWindows[0])
 
         // A tab the project has no page for is not added by closing.
         let stranger = project.updated(
-            live: [Live(id: 42, window: nil, index: 0, selected: false, root: leaf("/x"))], frames: [:], keepingFront: true)
+            live: [Live(id: 42, window: nil, index: 0, selected: false, root: leaf("/x"), title: "")], frames: [:], keepingFront: true)
         #expect(stranger == project)
     }
 
@@ -338,8 +338,10 @@ struct ProjectPagesTests {
             nextScrollback: 2))
         let known = pages.known
         #expect(known == [
-            "0.snap": ProjectPages.Known(cwd: "/a", agent: worker, bySupervisor: false, supervisorSeat: false, marks: .none),
-            "1.snap": ProjectPages.Known(cwd: "/b", agent: .none, bySupervisor: false, supervisorSeat: false, marks: .none),
+            "0.snap": ProjectPages.Known(cwd: "/a", agent: worker, bySupervisor: false, supervisorSeat: false, marks: .none,
+                                        title: ProjectPaneTitle(title: "", chosen: false)),
+            "1.snap": ProjectPages.Known(cwd: "/b", agent: .none, bySupervisor: false, supervisorSeat: false, marks: .none,
+                                        title: ProjectPaneTitle(title: "", chosen: false)),
         ])
 
         // The save cannot tell about either pane.
@@ -366,7 +368,7 @@ struct ProjectPagesTests {
         let file = ProjectFile(
             name: "p", savedAt: 1, group: nil,
             windows: [ProjectWindow(frame: nil, front: 0, tabs: [
-                ProjectTab(root: leaf("/a", "0.snap", .none)), ProjectTab(root: leaf("/b", "1.snap", worker)),
+                ProjectTab(root: leaf("/a", "0.snap", .none), title: ""), ProjectTab(root: leaf("/b", "1.snap", worker), title: ""),
             ])],
             nextScrollback: 2)
         let known = ProjectPages(file: file).known
@@ -377,7 +379,7 @@ struct ProjectPagesTests {
     /// every save after a restart -- does not make it a pane the supervisor
     /// did not open. And a save that can tell says so.
     @Test func aPaneTheSupervisorOpenedStaysOne() {
-        let opened = ProjectNode.leaf(cwd: "/w", title: "", history: "", scrollback: "0.snap", bySupervisor: true, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
+        let opened = ProjectNode.leaf(cwd: "/w", title: "", titleChosen: false, history: "", scrollback: "0.snap", bySupervisor: true, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
         let known = ProjectPages(file: .oneTab(name: "p", savedAt: 1, root: opened, nextScrollback: 1)).known
         #expect(known["0.snap"]?.bySupervisor == true)
         #expect(leaf("/w", "0.snap", .none).keepingWhatTheFileKnew(known) == opened)
@@ -406,10 +408,10 @@ struct ProjectPagesTests {
             name: "p", savedAt: 1, group: "g",
             windows: [
                 ProjectWindow(frame: frame(10), front: 0, tabs: [
-                    ProjectTab(root: leaf("/a", "0.snap", worker)),
-                    ProjectTab(root: leaf("/b", "1.snap", .none)),
+                    ProjectTab(root: leaf("/a", "0.snap", worker), title: ""),
+                    ProjectTab(root: leaf("/b", "1.snap", .none), title: ""),
                 ]),
-                ProjectWindow(frame: frame(20), front: 0, tabs: [ProjectTab(root: leaf("/d", "3.snap", worker))]),
+                ProjectWindow(frame: frame(20), front: 0, tabs: [ProjectTab(root: leaf("/d", "3.snap", worker), title: "")]),
             ],
             nextScrollback: 4)
         let pages = ProjectPages(file: file)
@@ -417,22 +419,22 @@ struct ProjectPagesTests {
             name: "p", savedAt: 9, group: "g", nextScrollback: 5,
             screen: .init(live: [
                 // Just opened: no directory yet, and nobody can say who.
-                Live(id: 0, window: 7, index: 0, selected: false, root: leaf("", "0.snap", .unknown)),
+                Live(id: 0, window: 7, index: 0, selected: false, root: leaf("", "0.snap", .unknown), title: ""),
                 // A split made since, in the second page.
                 Live(id: 1, window: 7, index: 1, selected: true, root: .split(
-                    direction: .vertical, ratio: 0.5, left: leaf("/b2", "1.snap", .unknown), right: leaf("/new", "4.snap", .unknown))),
+                    direction: .vertical, ratio: 0.5, left: leaf("/b2", "1.snap", .unknown), right: leaf("/new", "4.snap", .unknown)), title: ""),
             ], frames: [7: frame(77)], keepingFront: false))
 
         #expect(written == ProjectFile(
             name: "p", savedAt: 9, group: "g",
             windows: [
                 ProjectWindow(frame: frame(77), front: 1, tabs: [
-                    ProjectTab(root: leaf("/a", "0.snap", worker)),
+                    ProjectTab(root: leaf("/a", "0.snap", worker), title: ""),
                     ProjectTab(root: .split(
-                        direction: .vertical, ratio: 0.5, left: leaf("/b2", "1.snap", .none), right: leaf("/new", "4.snap", .unknown))),
+                        direction: .vertical, ratio: 0.5, left: leaf("/b2", "1.snap", .none), right: leaf("/new", "4.snap", .unknown)), title: ""),
                 ]),
                 // Not open: exactly as it was.
-                ProjectWindow(frame: frame(20), front: 0, tabs: [ProjectTab(root: leaf("/d", "3.snap", worker))]),
+                ProjectWindow(frame: frame(20), front: 0, tabs: [ProjectTab(root: leaf("/d", "3.snap", worker), title: "")]),
             ],
             nextScrollback: 5))
         #expect(after.fileWindows == written.windows)
@@ -542,7 +544,7 @@ struct ProjectPaneMarksSavingTests {
     private typealias Live = ProjectPages.Live
 
     private static func leaf(_ cwd: String, _ scrollback: String, seat: Bool = false, color: PaneColor = .none) -> ProjectNode {
-        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, supervisorSeat: seat,
+        .leaf(cwd: cwd, title: "", titleChosen: false, history: "", scrollback: scrollback, bySupervisor: false, supervisorSeat: seat,
               color: color, workersRefused: false, shielded: false, agent: .none)
     }
 
@@ -594,16 +596,16 @@ struct ProjectPaneMarksSavingTests {
             name: "p", savedAt: 1, group: "g",
             windows: [ProjectWindow(frame: nil, front: 0, tabs: [
                 ProjectTab(root: .split(direction: .horizontal, ratio: 0.5,
-                                        left: Self.leaf("/a", "0.snap"), right: Self.leaf("/b", "1.snap", color: .blue))),
+                                        left: Self.leaf("/a", "0.snap"), right: Self.leaf("/b", "1.snap", color: .blue)), title: ""),
                 // Not open at the save below; the file's seat is here.
-                ProjectTab(root: Self.leaf("/c", "2.snap", seat: true)),
+                ProjectTab(root: Self.leaf("/c", "2.snap", seat: true), title: ""),
             ])],
             nextScrollback: 3))
     }
 
     private func saved(_ pages: ProjectPages, _ root: ProjectNode) -> ProjectFile {
         pages.saving(name: "p", savedAt: 2, group: "g", nextScrollback: 3, screen: .init(
-            live: [Live(id: 0, window: 1, index: 0, selected: true, root: root)],
+            live: [Live(id: 0, window: 1, index: 0, selected: true, root: root, title: "")],
             frames: [:], keepingFront: true)).file
     }
 
@@ -641,8 +643,102 @@ struct ProjectPaneMarksSavingTests {
     /// back as it is handed.
     @Test func theFilesMarksAreKnownByThePanesName() {
         let pages = ProjectPages(file: .oneTab(name: "p", savedAt: 1, root: .leaf(
-            cwd: "/a", title: "", history: "", scrollback: "0.snap", bySupervisor: false, supervisorSeat: false,
+            cwd: "/a", title: "", titleChosen: false, history: "", scrollback: "0.snap", bySupervisor: false, supervisorSeat: false,
             color: .orange, workersRefused: true, shielded: true, agent: .none), nextScrollback: 1))
         #expect(pages.known["0.snap"]?.marks == set)
+    }
+}
+
+// MARK: - Names somebody chose, captured and given back (task 1722)
+
+@Suite
+struct ProjectChosenTitleTests {
+    private typealias Live = ProjectPages.Live
+
+    private static func leaf(_ scrollback: String, _ title: String, chosen: Bool) -> ProjectNode {
+        .leaf(cwd: "/w", title: title, titleChosen: chosen, history: "", scrollback: scrollback, bySupervisor: false,
+              supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
+    }
+
+    /// A pinned title is captured as chosen and given back through the core
+    /// as `set_surface_title:`; a program's title is captured unchosen and
+    /// gives back nothing.
+    @Test func aChosenTitleIsGivenBackAndAProgramsIsNot() {
+        let chosen = ProjectPaneTitle.live(title: "dev server", pinned: true)
+        #expect(chosen == ProjectPaneTitle(title: "dev server", chosen: true))
+        #expect(chosen.handBack == "set_surface_title:dev server")
+
+        let program = ProjectPaneTitle.live(title: "vim app.js", pinned: false)
+        #expect(program == ProjectPaneTitle(title: "vim app.js", chosen: false))
+        #expect(program.handBack == nil)
+
+        // Pinned to nothing is not a name.
+        #expect(ProjectPaneTitle.live(title: "", pinned: true).chosen == false)
+        #expect(ProjectPaneTitle(title: "", chosen: true).handBack == nil)
+        // The name goes as it is: the core takes everything after the colon.
+        #expect(ProjectPaneTitle(title: "a: b", chosen: true).handBack == "set_surface_title:a: b")
+    }
+
+    /// The whole way: written, read back, and what a new terminal is told.
+    @Test func whatTheFileSaysIsWhatTheTerminalIsGiven() throws {
+        let file = ProjectFile.oneTab(name: "p", savedAt: 1, root: .split(
+            direction: .horizontal, ratio: 0.5,
+            left: Self.leaf("0.snap", "dev server", chosen: true),
+            right: Self.leaf("1.snap", "vim app.js", chosen: false)), nextScrollback: 2)
+        let known = ProjectPages(file: try ProjectFile.decode(from: try file.encoded())).known
+        #expect(known["0.snap"]?.title.handBack == "set_surface_title:dev server")
+        #expect(known["1.snap"]?.title == ProjectPaneTitle(title: "vim app.js", chosen: false))
+        #expect(known["1.snap"]?.title.handBack == nil)
+    }
+
+    /// Until the terminal says it has the name, a save writes the file's.
+    @Test func aSaveBeforeTheNameLandedWritesTheFiles() {
+        let file = ProjectPaneTitle(title: "dev server", chosen: true)
+        let handBack = ProjectTitleHandBack(file: file)
+        let notYet = ProjectPaneTitle.live(title: "zsh", pinned: false)
+        #expect(!handBack.settled(notYet))
+        #expect(handBack.saved(notYet) == file)
+        let landed = ProjectPaneTitle.live(title: "dev server", pinned: true)
+        #expect(handBack.settled(landed))
+        #expect(handBack.saved(landed) == landed)
+    }
+
+    @Test func afterARestartTheHostsNameThenTheFilesThenNothing() {
+        let host = ProjectPaneTitle.live(title: "mine", pinned: true)
+        let file = ProjectPaneTitle(title: "saved", chosen: true)
+        let program = ProjectPaneTitle.live(title: "zsh", pinned: false)
+        #expect(ProjectPaneTitle.afterRestart(host: host, file: file) == host)
+        #expect(ProjectPaneTitle.afterRestart(host: program, file: file) == file)
+        #expect(ProjectPaneTitle.afterRestart(host: program, file: ProjectPaneTitle(title: "vim", chosen: false)) == nil)
+        #expect(ProjectPaneTitle.afterRestart(host: program, file: nil) == nil)
+    }
+
+    /// A tab's name goes into its page at a save -- open, closing, or with
+    /// the seat moved -- and comes back as the tab's `titleOverride`.
+    @Test func aTabsNameIsSavedWithItsPage() throws {
+        let pages = ProjectPages(file: ProjectFile(
+            name: "p", savedAt: 1, group: nil,
+            windows: [ProjectWindow(frame: nil, front: 0, tabs: [
+                ProjectTab(root: Self.leaf("0.snap", "", chosen: false), title: "old"),
+                ProjectTab(root: Self.leaf("1.snap", "", chosen: false), title: "kept"),
+            ])],
+            nextScrollback: 2))
+        let saved = pages.saving(name: "p", savedAt: 2, group: nil, nextScrollback: 2, screen: .init(
+            live: [Live(id: 0, window: 1, index: 0, selected: true, root: Self.leaf("0.snap", "", chosen: false), title: "web")],
+            frames: [:], keepingFront: false))
+        #expect(saved.file.windows[0].tabs.map(\.title) == ["web", "kept"])
+        let read = try ProjectFile.decode(from: try saved.file.encoded())
+        #expect(read.windows[0].tabs.map(\.titleOverride) == ["web", "kept"])
+
+        // A tab that closes keeps the name it had as it closed.
+        let closing = saved.pages.updated(
+            live: [Live(id: 0, window: nil, index: 0, selected: false, root: Self.leaf("0.snap", "", chosen: false), title: "")],
+            frames: [:], keepingFront: true)
+        #expect(closing.fileWindows[0].tabs.map(\.title) == ["", "kept"])
+
+        // Moving the seat does not take a tab's name.
+        var seated = saved.pages
+        seated.makeSupervisor(pane: "1.snap")
+        #expect(seated.fileWindows[0].tabs.map(\.title) == ["web", "kept"])
     }
 }

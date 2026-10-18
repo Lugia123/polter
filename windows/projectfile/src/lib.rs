@@ -129,7 +129,15 @@ pub enum Workers {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SavedLeaf {
     pub cwd: String,
+    /// What the pane showed: the program's title, or a name somebody chose
+    /// for this pane (`title_chosen`).
     pub title: String,
+    /// `title` is a name somebody chose for this pane rather than the last
+    /// title the program in it reported (format 3, task 1722;
+    /// `Project.zig`'s `Leaf.title_chosen`). Only a chosen name is put back
+    /// when a project opens; a program's title is the program's to say
+    /// again. Written only when true and `title` is not empty.
+    pub title_chosen: bool,
     /// Opaque; see `Project.zig`'s `Leaf.history` doc comment. Never a path
     /// to open directly.
     pub history: String,
@@ -170,6 +178,7 @@ impl SavedLeaf {
         SavedLeaf {
             cwd: cwd.to_string(),
             title: String::new(),
+            title_chosen: false,
             history: String::new(),
             scrollback: String::new(),
             by_supervisor: false,
@@ -196,10 +205,24 @@ pub enum SavedNode {
     Split { axis: Axis, ratio: f64, left: Box<SavedNode>, right: Box<SavedNode> },
 }
 
-/// One tab: a tree of panes.
+/// One tab: a tree of panes, and the name somebody gave it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tab {
     pub root: SavedNode,
+    /// The name somebody gave the tab -- renamed by hand, or `set_tab_title`
+    /// -- or `None` for none (format 3, task 1722; `Project.zig`'s
+    /// `Tab.title`). Never `Some("")` in anything `parse_snapshot` returns,
+    /// and `Some("")` is written as none. **Not a title a program
+    /// reported**: that is the program's to say again, and a pane's
+    /// `title` already records it.
+    pub title: Option<String>,
+}
+
+impl Tab {
+    /// A tab nobody named.
+    pub fn unnamed(root: SavedNode) -> Tab {
+        Tab { root, title: None }
+    }
 }
 
 /// Which corner of the screen a `Frame` is measured from: Win32 measures
@@ -452,6 +475,9 @@ pub fn emit(snapshot: &Snapshot) -> Result<String, EmitError> {
             }
             out.push_str("{\"root\":");
             node(&mut out, &tab.root)?;
+            if let Some(title) = tab.title.as_deref() {
+                field(&mut out, "title", title);
+            }
             out.push('}');
         }
         out.push_str("]}");
@@ -495,6 +521,11 @@ fn leaf_out(out: &mut String, leaf: &SavedLeaf) {
     out.push_str("{\"kind\":\"leaf\"");
     field(out, "cwd", &leaf.cwd);
     field(out, "title", &leaf.title);
+    // A chosen name with no name is not a thing (`Project.zig`): an empty
+    // name is the person giving the program its title back.
+    if leaf.title_chosen && !leaf.title.is_empty() {
+        out.push_str(",\"title_chosen\":true");
+    }
     field(out, "history", &leaf.history);
     field(out, "scrollback", &leaf.scrollback);
     if leaf.by_supervisor {
@@ -621,7 +652,7 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ReadError> {
         // One tab is one window with that tab in it; no `root` is a project
         // with nothing in it.
         match obj.get("root") {
-            Some(r) => vec![Window { frame: None, front: 0, tabs: vec![Tab { root: json_to_node(r, format, &mut fixups)? }] }],
+            Some(r) => vec![Window { frame: None, front: 0, tabs: vec![Tab::unnamed(json_to_node(r, format, &mut fixups)?)] }],
             None => Vec::new(),
         }
     } else {
@@ -690,8 +721,19 @@ fn json_to_windows(v: &serde_json::Value, format: i64, fixups: &mut Fixups) -> R
         }
         let mut tabs = Vec::with_capacity(tab_items.len());
         for tab in tab_items {
-            let root = tab.as_object().and_then(|t| t.get("root")).ok_or(ReadError::Corrupt)?;
-            tabs.push(Tab { root: json_to_node(root, format, fixups)? });
+            let tab = tab.as_object().ok_or(ReadError::Corrupt)?;
+            let root = tab.get("root").ok_or(ReadError::Corrupt)?;
+            let root = json_to_node(root, format, fixups)?;
+            // New with format 3: absent is none; an empty name is never
+            // written, so one read is a damaged file, as is a name that is
+            // not text. Before format 3 the key meant nothing.
+            let title = match tab.get("title") {
+                _ if format < 3 => None,
+                None => None,
+                Some(serde_json::Value::String(t)) if !t.is_empty() => Some(t.clone()),
+                Some(_) => return Err(ReadError::Corrupt),
+            };
+            tabs.push(Tab { root, title });
         }
 
         let front = obj.get("front").filter(|n| n.is_u64()).and_then(|n| n.as_u64()).ok_or(ReadError::Corrupt)? as usize;
@@ -779,8 +821,9 @@ fn json_to_leaf(obj: &Object, format: i64, fixups: &mut Fixups) -> Result<SavedL
     // Anything else is a damaged file, never quietly the default. Before
     // format 3 the keys meant nothing and are not read; the seat was the
     // agent's being the supervisor.
-    let (supervisor_seat, color, workers, shielded) = if format < 3 {
-        (matches!(&agent, Agent::Agent(who) if who.supervisor), PaneColor::None, Workers::Allowed, false)
+    let title = opt_str(obj.get("title"));
+    let (title_chosen, supervisor_seat, color, workers, shielded) = if format < 3 {
+        (false, matches!(&agent, Agent::Agent(who) if who.supervisor), PaneColor::None, Workers::Allowed, false)
     } else {
         let only_true = |key: &str| match obj.get(key) {
             None => Ok(false),
@@ -797,14 +840,20 @@ fn json_to_leaf(obj: &Object, format: i64, fixups: &mut Fixups) -> Result<SavedL
             Some(serde_json::Value::String(s)) if s == "refused" => Workers::Refused,
             Some(_) => return Err(ReadError::Corrupt),
         };
-        (only_true("supervisor_seat")?, color, workers, only_true("shielded")?)
+        // Chosen, and nothing chosen: written by no build.
+        let title_chosen = only_true("title_chosen")?;
+        if title_chosen && title.is_empty() {
+            return Err(ReadError::Corrupt);
+        }
+        (title_chosen, only_true("supervisor_seat")?, color, workers, only_true("shielded")?)
     };
     if supervisor_seat {
         fixups.seats += 1;
     }
     Ok(SavedLeaf {
         cwd: opt_str(obj.get("cwd")),
-        title: opt_str(obj.get("title")),
+        title,
+        title_chosen,
         history: opt_str(obj.get("history")),
         scrollback,
         by_supervisor,

@@ -131,6 +131,8 @@ struct ProjectPages: Equatable {
         /// Whether it is the tab showing in its window.
         let selected: Bool
         let root: ProjectNode
+        /// The tab's chosen name (`ProjectTab.title`), empty for none.
+        let title: String
     }
 
     /// The pages after a save: every open tab as it is now and where it is
@@ -166,13 +168,14 @@ struct ProjectPages: Equatable {
         // The tabs that are closing first: each page as its tab leaves it,
         // in the place it has. After this they are pages that are not open.
         let leaving = Dictionary(
-            live.filter { $0.window == nil }.map { ($0.id, $0.root) }, uniquingKeysWith: { first, _ in first })
+            live.filter { $0.window == nil }.map { ($0.id, ProjectTab(root: $0.root, title: $0.title)) },
+            uniquingKeysWith: { first, _ in first })
         guard leaving.isEmpty else {
             var settled = self
             for w in settled.windows.indices {
                 for p in settled.windows[w].pages.indices {
-                    if let root = leaving[settled.windows[w].pages[p].id] {
-                        settled.windows[w].pages[p].tab = ProjectTab(root: root)
+                    if let tab = leaving[settled.windows[w].pages[p].id] {
+                        settled.windows[w].pages[p].tab = tab
                     }
                 }
             }
@@ -185,9 +188,12 @@ struct ProjectPages: Equatable {
             let index: Int
             let selected: Bool
             let root: ProjectNode
+            let title: String
         }
         let placed = live.compactMap { tab in
-            tab.window.map { Placed(id: tab.id, window: $0, index: tab.index, selected: tab.selected, root: tab.root) }
+            tab.window.map {
+                Placed(id: tab.id, window: $0, index: tab.index, selected: tab.selected, root: tab.root, title: tab.title)
+            }
         }
         let liveByID = Dictionary(placed.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let tabs = liveByID.values.sorted { ($0.window, $0.index, $0.id) < ($1.window, $1.index, $1.id) }
@@ -212,7 +218,7 @@ struct ProjectPages: Equatable {
         }
 
         func pages(in token: Int) -> [Page] {
-            tabs.filter { $0.window == token }.map { Page(id: $0.id, tab: ProjectTab(root: $0.root)) }
+            tabs.filter { $0.window == token }.map { Page(id: $0.id, tab: ProjectTab(root: $0.root, title: $0.title)) }
         }
         func front(in token: Int, of pages: [Page], was: Int?) -> Int {
             if !keepingFront, let showing = tabs.first(where: { $0.window == token && $0.selected }) { return showing.id }
@@ -319,7 +325,7 @@ struct ProjectPages: Equatable {
         }
         let told = live.map {
             Live(id: $0.id, window: $0.window, index: $0.index, selected: $0.selected,
-                 root: $0.root.keepingWhatTheFileKnew(known))
+                 root: $0.root.keepingWhatTheFileKnew(known), title: $0.title)
         }
         let pages = base.updated(live: told, frames: frames, keepingFront: keepingFront)
         return (pages, ProjectFile(
@@ -381,7 +387,8 @@ struct ProjectPages: Equatable {
         guard !name.isEmpty else { return }
         for w in windows.indices {
             for p in windows[w].pages.indices {
-                windows[w].pages[p].tab = ProjectTab(root: windows[w].pages[p].tab.root.markingSupervisor(name))
+                let tab = windows[w].pages[p].tab
+                windows[w].pages[p].tab = ProjectTab(root: tab.root.markingSupervisor(name), title: tab.title)
             }
         }
     }
@@ -390,7 +397,8 @@ struct ProjectPages: Equatable {
     private mutating func unseatEveryPane() {
         for w in windows.indices {
             for p in windows[w].pages.indices {
-                windows[w].pages[p].tab = ProjectTab(root: windows[w].pages[p].tab.root.unseated)
+                let tab = windows[w].pages[p].tab
+                windows[w].pages[p].tab = ProjectTab(root: tab.root.unseated, title: tab.title)
             }
         }
     }
@@ -411,6 +419,9 @@ struct ProjectPages: Equatable {
         /// The user's colour, workers and shield: what a terminal that
         /// comes back as this pane is handed back (`ProjectSession.restore`).
         var marks: ProjectPaneMarks
+        /// Its title, and whether somebody chose it: what a terminal that
+        /// comes back as this pane is given, when chosen (task 1722).
+        var title: ProjectPaneTitle
     }
 
     /// What the file says of each of its panes, by the pane's snapshot
@@ -429,7 +440,7 @@ struct ProjectPages: Equatable {
 extension ProjectNode {
     fileprivate var supervisorPane: String? {
         switch self {
-        case .leaf(_, _, _, let scrollback, _, let seat, _, _, _, _):
+        case .leaf(_, _, _, _, let scrollback, _, let seat, _, _, _, _):
             return seat && !scrollback.isEmpty ? scrollback : nil
         case .stack(_, let members):
             return members.lazy.compactMap(\.supervisorPane).first
@@ -440,7 +451,7 @@ extension ProjectNode {
 
     fileprivate var workerPanes: [String] {
         switch self {
-        case .leaf(_, _, _, let scrollback, let bySupervisor, _, _, _, _, _):
+        case .leaf(_, _, _, _, let scrollback, let bySupervisor, _, _, _, _, _):
             return bySupervisor && !scrollback.isEmpty ? [scrollback] : []
         case .stack(_, let members):
             return members.flatMap(\.workerPanes)
@@ -452,7 +463,7 @@ extension ProjectNode {
     fileprivate func markingSupervisor(_ name: String) -> ProjectNode {
         switch self {
         case .leaf(
-            let cwd, let title, let history, let scrollback, let bySupervisor,
+            let cwd, let title, let titleChosen, let history, let scrollback, let bySupervisor,
             _, let color, let workersRefused, let shielded, let agent):
             let isIt = scrollback == name
             let marked: ProjectAgent
@@ -463,7 +474,7 @@ extension ProjectNode {
                 marked = isIt ? .agent(role: "", cli: "", session: "", supervisor: true) : agent
             }
             return .leaf(
-                cwd: cwd, title: title, history: history, scrollback: scrollback,
+                cwd: cwd, title: title, titleChosen: titleChosen, history: history, scrollback: scrollback,
                 bySupervisor: bySupervisor, supervisorSeat: isIt,
                 color: color, workersRefused: workersRefused, shielded: shielded, agent: marked)
         case .stack(let shown, let members):
@@ -479,10 +490,10 @@ extension ProjectNode {
     fileprivate var unseated: ProjectNode {
         switch self {
         case .leaf(
-            let cwd, let title, let history, let scrollback, let bySupervisor,
+            let cwd, let title, let titleChosen, let history, let scrollback, let bySupervisor,
             _, let color, let workersRefused, let shielded, let agent):
             return .leaf(
-                cwd: cwd, title: title, history: history, scrollback: scrollback,
+                cwd: cwd, title: title, titleChosen: titleChosen, history: history, scrollback: scrollback,
                 bySupervisor: bySupervisor, supervisorSeat: false,
                 color: color, workersRefused: workersRefused, shielded: shielded, agent: agent)
         case .stack(let shown, let members):
@@ -494,11 +505,14 @@ extension ProjectNode {
 
     fileprivate func collectKnown(into known: inout [String: ProjectPages.Known]) {
         switch self {
-        case .leaf(let cwd, _, _, let scrollback, let bySupervisor, let seat, let color, let refused, let shielded, let agent):
+        case .leaf(
+            let cwd, let title, let titleChosen, _, let scrollback, let bySupervisor, let seat, let color, let refused,
+            let shielded, let agent):
             if !scrollback.isEmpty, known[scrollback] == nil {
                 known[scrollback] = ProjectPages.Known(
                     cwd: cwd, agent: agent, bySupervisor: bySupervisor, supervisorSeat: seat,
-                    marks: ProjectPaneMarks(color: color, workersRefused: refused, shielded: shielded))
+                    marks: ProjectPaneMarks(color: color, workersRefused: refused, shielded: shielded),
+                    title: ProjectPaneTitle(title: title, chosen: titleChosen))
             }
         case .stack(_, let members):
             for member in members { member.collectKnown(into: &known) }
@@ -567,12 +581,12 @@ extension ProjectNode {
     func keepingWhatTheFileKnew(_ known: [String: ProjectPages.Known]) -> ProjectNode {
         switch self {
         case .leaf(
-            let cwd, let title, let history, let scrollback, let bySupervisor,
+            let cwd, let title, let titleChosen, let history, let scrollback, let bySupervisor,
             let supervisorSeat, let color, let workersRefused, let shielded, let agent):
             guard let was = known[scrollback] else { return self }
             return .leaf(
                 cwd: cwd.isEmpty ? was.cwd : cwd,
-                title: title, history: history, scrollback: scrollback,
+                title: title, titleChosen: titleChosen, history: history, scrollback: scrollback,
                 bySupervisor: bySupervisor || was.bySupervisor,
                 supervisorSeat: supervisorSeat || was.supervisorSeat,
                 color: color, workersRefused: workersRefused, shielded: shielded,
@@ -666,6 +680,64 @@ struct ProjectMarksHandBack: Equatable {
             workersRefused: after.paneKnown ? live.workersRefused : file.workersRefused,
             shielded: after.shieldKnown ? live.shielded : file.shielded)
     }
+}
+
+// MARK: - A name somebody chose (task 1722)
+
+/// A pane's title and whether it is a name somebody chose for it
+/// ("Change Terminal Title…", `set_surface_title`) rather than the last one
+/// the program reported (`src/apprt/title.zig`, issue #9).
+///
+/// **Only a chosen name is given back** when a project opens: a program's
+/// title is the program's to say again, and restored as a title it was the
+/// one thing that a chosen name had to outrank -- so a project's names came
+/// back as whatever the program printed next.
+///
+/// It goes back **through the core** (`set_surface_title:`), the way the
+/// marks do: the core keeps its own record of each terminal's title, which
+/// is what `terminal_list` and the chat read, and pins it; the host is told
+/// in the same call, as an explicit title.
+struct ProjectPaneTitle: Equatable {
+    var title: String
+    /// Never true with an empty title in anything `live` makes.
+    var chosen: Bool
+
+    /// What a terminal says of its title now: `pinned` is the host's word
+    /// that somebody chose it (on macOS `titleFromTerminal != nil`).
+    static func live(title: String, pinned: Bool) -> ProjectPaneTitle {
+        ProjectPaneTitle(title: title, chosen: pinned && !title.isEmpty)
+    }
+
+    /// The binding action that gives a new terminal this name, nil for a
+    /// title nobody chose.
+    var handBack: String? {
+        chosen && !title.isEmpty ? "set_surface_title:" + title : nil
+    }
+
+    /// What a terminal that came back from a restart is given: its own
+    /// name when window restoration brought one back (the host shows it,
+    /// but the core started without it), else the file's when the file
+    /// says one was chosen, else nothing.
+    static func afterRestart(host: ProjectPaneTitle, file: ProjectPaneTitle?) -> ProjectPaneTitle? {
+        if host.chosen { return host }
+        if let file, file.chosen { return file }
+        return nil
+    }
+}
+
+/// A terminal opened from a file that said its pane's name was chosen, from
+/// the hand-back until the terminal says it has it. The hand-back is
+/// answered in the same call; this is for when it was not -- an action the
+/// core refused -- so a save does not write "nobody chose it" over the
+/// name the file had.
+struct ProjectTitleHandBack: Equatable {
+    let file: ProjectPaneTitle
+
+    /// Whether the terminal's own word is good now.
+    func settled(_ live: ProjectPaneTitle) -> Bool { live.chosen }
+
+    /// What a save writes of the pane's title.
+    func saved(_ live: ProjectPaneTitle) -> ProjectPaneTitle { settled(live) ? live : file }
 }
 
 // MARK: - Where a window goes

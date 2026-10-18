@@ -212,6 +212,9 @@ final class ProjectStore {
         /// autosave, which runs whenever a title changes, leaves the
         /// writing to the journal.
         let capturingScrollback: Bool
+        /// The tab's chosen name (`BaseTerminalController.titleOverride`),
+        /// empty for none -- never the title the program reports.
+        let title: String
     }
 
     /// What a save is handed of the screen: the open tabs, the frame of
@@ -306,7 +309,8 @@ final class ProjectStore {
                 return snapshot.filename
             }, who: who)
             return ProjectPages.Live(
-                id: page.id, window: page.window, index: page.index, selected: page.selected, root: root)
+                id: page.id, window: page.window, index: page.index, selected: page.selected, root: root,
+                title: page.title)
         }
 
         // Everything a save decides is decided there, without a terminal:
@@ -352,7 +356,10 @@ final class ProjectStore {
             group: group(name: name),
             pages: pages,
             tabs: OpenTabs(
-                open: [OpenPage(id: id, tree: tree, window: 0, index: 0, selected: true, capturingScrollback: capturingScrollback)],
+                // A tree has no tab, so no tab name.
+                open: [OpenPage(
+                    id: id, tree: tree, window: 0, index: 0, selected: true,
+                    capturingScrollback: capturingScrollback, title: "")],
                 frames: [:],
                 keepingFront: false),
             who: { _ in (.unknown, false) },

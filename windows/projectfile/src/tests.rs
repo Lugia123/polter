@@ -9,7 +9,7 @@ fn one_tab(name: &str, root: SavedNode) -> Snapshot {
         name: name.to_string(),
         saved_at: 1,
         group: None,
-        windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root }] }],
+        windows: vec![Window { frame: None, front: 0, tabs: vec![Tab::unnamed(root)] }],
         next_scrollback: None,
     }
 }
@@ -155,9 +155,11 @@ fn a_format_1_file_reads_as_one_window_with_one_tab_and_nobody_knows_who_was_in_
                 frame: None,
                 front: 0,
                 tabs: vec![Tab {
+                    title: None,
                     root: SavedNode::Leaf(SavedLeaf {
                         cwd: "/a".to_string(),
                         title: String::new(),
+                        title_chosen: false,
                         history: String::new(),
                         scrollback: "1.snap".to_string(),
                         by_supervisor: false,
@@ -300,6 +302,7 @@ fn a_file_with_fields_this_build_does_not_know_still_reads() {
             left: Box::new(SavedNode::Leaf(SavedLeaf {
                 cwd: "/a".to_string(),
                 title: "t".to_string(),
+                title_chosen: false,
                 history: "h.history".to_string(),
                 scrollback: "0.snap".to_string(),
                 by_supervisor: false,
@@ -386,9 +389,9 @@ fn three_tabs() -> Snapshot {
             Window {
                 frame: Some(Frame { origin: Origin::TopLeft, x: 1.0, y: 2.0, width: 3.0, height: 4.0 }),
                 front: 1,
-                tabs: vec![Tab { root: leaf("/first") }, Tab { root: leaf("/second") }],
+                tabs: vec![Tab::unnamed(leaf("/first")), Tab::unnamed(leaf("/second"))],
             },
-            Window { frame: None, front: 0, tabs: vec![Tab { root: leaf("/other window") }] },
+            Window { frame: None, front: 0, tabs: vec![Tab::unnamed(leaf("/other window"))] },
         ],
         next_scrollback: Some(5),
     }
@@ -618,4 +621,73 @@ fn two_seats_are_none() {
 #[test]
 fn a_format_4_file_is_refused_as_too_new() {
     assert_eq!(parse_snapshot(one_leaf_file(4, "", r#"{"kind":"none"}"#).as_bytes()), Err(ReadError::TooNew { found: 4 }));
+}
+
+// ---------------------------------------------------------------------------
+// Titles somebody chose (format 3, task 1722)
+// ---------------------------------------------------------------------------
+
+/// A file of one tab, whose tab object is `{"root":<leaf with extra>}` and
+/// then `tab_extra` (with its leading comma) -- for the tab's own keys.
+fn one_tab_file(format: i64, leaf_extra: &str, tab_extra: &str) -> String {
+    let sep = if leaf_extra.is_empty() { "" } else { "," };
+    format!(
+        r#"{{"format":{format},"name":"p","saved_at":1,"root":{{"kind":"moved-to-windows"}},"windows":[{{"front":0,"tabs":[{{"root":{{"kind":"leaf","cwd":"/a"{sep}{leaf_extra},"agent":{{"kind":"none"}}}}{tab_extra}}}]}}]}}"#
+    )
+}
+
+#[test]
+fn a_chosen_title_is_written_right_after_the_title_and_a_tab_name_after_the_root() {
+    let chosen = SavedLeaf { title: "dev server".into(), title_chosen: true, history: "h".into(), ..SavedLeaf::plain("/a", Agent::None) };
+    let snap = Snapshot {
+        windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root: SavedNode::Leaf(chosen.clone()), title: Some("web".into()) }] }],
+        ..one_tab("p", leaf("/a"))
+    };
+    let bytes = emit(&snap).unwrap();
+    assert!(bytes.contains(r#""title":"dev server","title_chosen":true,"history":"h","agent""#), "{bytes}");
+    assert!(bytes.contains(r#"{"kind":"none"}},"title":"web"}]"#), "{bytes}");
+    assert_eq!(parse_snapshot(bytes.as_bytes()).unwrap(), snap);
+}
+
+#[test]
+fn nothing_chosen_writes_no_key() {
+    // A program's title is written as what the pane showed, unchosen.
+    let program = SavedLeaf { title: "vim app.js".into(), ..SavedLeaf::plain("/a", Agent::None) };
+    let bytes = emit(&one_tab("p", SavedNode::Leaf(program))).unwrap();
+    assert!(!bytes.contains("title_chosen"), "{bytes}");
+    assert!(bytes.contains(r#""title":"vim app.js""#), "{bytes}");
+    // Chosen with no name, and a tab named "", are written as nothing.
+    let empty = SavedLeaf { title_chosen: true, ..SavedLeaf::plain("/a", Agent::None) };
+    let snap = Snapshot {
+        windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root: SavedNode::Leaf(empty), title: Some(String::new()) }] }],
+        ..one_tab("p", leaf("/a"))
+    };
+    assert_eq!(emit(&snap).unwrap(), emit(&one_tab("p", leaf("/a"))).unwrap());
+}
+
+#[test]
+fn a_title_key_a_writer_never_writes_is_corrupt() {
+    for (why, leaf_extra, tab_extra) in [
+        ("chosen written false", r#""title":"t","title_chosen":false"#, ""),
+        ("chosen as a word", r#""title":"t","title_chosen":"yes""#, ""),
+        ("chosen with no title", r#""title_chosen":true"#, ""),
+        ("chosen with an empty title", r#""title":"","title_chosen":true"#, ""),
+        ("a tab named the empty string", "", r#","title":"""#),
+        ("a tab name that is a number", "", r#","title":1"#),
+        ("a tab name that is null", "", r#","title":null"#),
+    ] {
+        assert_eq!(parse_snapshot(one_tab_file(3, leaf_extra, tab_extra).as_bytes()), Err(ReadError::Corrupt), "{why}");
+        // Before format 3 neither key meant anything: read, and not read as chosen.
+        let two = parse_snapshot(one_tab_file(2, leaf_extra, tab_extra).as_bytes()).unwrap_or_else(|e| panic!("{why}, in format 2: {e:?}"));
+        assert_eq!(two.windows[0].tabs[0].title, None, "{why}, in format 2");
+        assert!(!the_leaf(&two).title_chosen, "{why}, in format 2");
+    }
+    // The control: each said the way it is written reads.
+    let ok = parse_snapshot(one_tab_file(3, r#""title":"t","title_chosen":true"#, r#","title":"web""#).as_bytes()).unwrap();
+    assert!(the_leaf(&ok).title_chosen);
+    assert_eq!(ok.windows[0].tabs[0].title.as_deref(), Some("web"));
+    // And a format 2 file's true is not the user's either.
+    let two = parse_snapshot(one_tab_file(2, r#""title":"t","title_chosen":true"#, r#","title":"web""#).as_bytes()).unwrap();
+    assert!(!the_leaf(&two).title_chosen);
+    assert_eq!(two.windows[0].tabs[0].title, None);
 }

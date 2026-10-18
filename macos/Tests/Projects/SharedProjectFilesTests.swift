@@ -105,7 +105,7 @@ struct SharedProjectFilesTests {
         let reading = try SharedProjectFiles.read(SharedProjectFiles.directory)
         #expect(reading.problems.isEmpty, "\n\(reading.problems.joined(separator: "\n"))")
         // A reader that found nothing passed every row it found.
-        #expect(reading.rows >= 14, "index.txt has \(reading.rows) rows; there were 14 when this was written")
+        #expect(reading.rows >= 15, "index.txt has \(reading.rows) rows; there were 15 when this was written")
     }
 
     /// The rules for a string and a number, said here as well as in the
@@ -136,7 +136,7 @@ struct SharedProjectFilesTests {
         }
         for bad in [Double.nan, .infinity, -.infinity] {
             #expect(throws: ProjectFileError.notFinite) { try Writing.number(bad) }
-            let leaf = ProjectNode.leaf(cwd: "", title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
+            let leaf = ProjectNode.leaf(cwd: "", title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
             let root = ProjectNode.split(direction: .horizontal, ratio: bad, left: leaf, right: leaf)
             #expect(throws: ProjectFileError.notFinite) {
                 try ProjectFile.oneTab(name: "n", savedAt: 1, root: root, nextScrollback: nil).encoded()
@@ -151,10 +151,10 @@ struct SharedProjectFilesTests {
         """#
         let file = try ProjectFile.decode(from: Data(json.utf8))
         // Not `.none`, and not the agent the stray key describes.
-        let leaf = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "1.snap", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
+        let leaf = ProjectNode.leaf(cwd: "/a", title: "", titleChosen: false, history: "", scrollback: "1.snap", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
         #expect(file == ProjectFile(
             name: "old", savedAt: 7, group: nil,
-            windows: [ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf)])],
+            windows: [ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf, title: "")])],
             nextScrollback: 2))
         #expect(try ProjectFile.format(of: Data(json.utf8)) == 1)
 
@@ -231,7 +231,7 @@ struct SharedProjectFilesTests {
         }
         // The control: the same shape, whole, reads.
         let whole = Data("{\"format\":2,\"name\":\"n\",\"saved_at\":1,\"windows\":[{\"front\":0,\"tabs\":[{\"root\":\(leaf)}]}]}".utf8)
-        #expect(try ProjectFile.decode(from: whole).firstTab == .leaf(cwd: "", title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none))
+        #expect(try ProjectFile.decode(from: whole).firstTab == .leaf(cwd: "", title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none))
     }
 
     // MARK: A stack
@@ -287,7 +287,7 @@ struct SharedProjectFilesTests {
     // MARK: The whole project
 
     private func leaf(_ cwd: String, _ scrollback: String = "") -> ProjectNode {
-        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
+        .leaf(cwd: cwd, title: "", titleChosen: false, history: "", scrollback: scrollback, bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
     }
 
     private var threeTabs: ProjectFile {
@@ -297,8 +297,8 @@ struct SharedProjectFilesTests {
                 ProjectWindow(
                     frame: ProjectFrame(origin: .bottomLeft, x: 1, y: 2, width: 3, height: 4),
                     front: 1,
-                    tabs: [ProjectTab(root: leaf("/first", "0.snap")), ProjectTab(root: leaf("/second", "4.snap"))]),
-                ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf("/other window", "2.snap"))]),
+                    tabs: [ProjectTab(root: leaf("/first", "0.snap"), title: ""), ProjectTab(root: leaf("/second", "4.snap"), title: "")]),
+                ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf("/other window", "2.snap"), title: "")]),
             ],
             nextScrollback: 5)
     }

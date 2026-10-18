@@ -244,7 +244,10 @@ fn screen_of(bound: &[(TabId, PageId)], snaps: &Path, alloc: &mut project::Alloc
         crate::project_ui::name_leaves(frame, &mut root, &panes, snaps, alloc, capture);
         terminals.push((*page, panes.iter().filter_map(crate::project_ui::LeafPane::terminal).collect()));
         let token = frame.0 as isize;
-        live.push(Live { id: *page, window: token, index, selected, root });
+        // The tab's chosen name, whoever chose it; none is "none said",
+        // which keeps the file's (`Live::title`). Never the program's title.
+        let title = tabs::chosen_name_of_tab(*tab);
+        live.push(Live { id: *page, window: token, index, selected, root, title });
         if let std::collections::btree_map::Entry::Vacant(slot) = frames.entry(token) {
             if let Some(f) = frame_of(frame) {
                 slot.insert(f);
@@ -589,6 +592,18 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
         for page in missing {
             match crate::project_ui::open_page_in_new_tab(target, app, hinst, &page.tab.root, &snaps, tucked) {
                 Ok(tab) => {
+                    // The name somebody gave it, back as one (task 1722):
+                    // pinned, so the shell's first title does not replace
+                    // it -- the same as reopening a closed tab. **Before
+                    // the tab is a page** (`bound`, and `OPEN` after the
+                    // loop), so no save sees it unnamed; one that did would
+                    // keep the file's name anyway (`Live::title`). A
+                    // program's title is not put back: it is the program's
+                    // to say again, and pinned it would outrank it.
+                    if let Some(name) = polter_projects::pages::restored_name(&page.tab) {
+                        tabs::rename_tab(target, tab, name.clone(), tabs::NamedBy::Restored);
+                        wlogf!(target, "[project] page {} of {:?} is named {:?} again", page.id, snapshot.name, name);
+                    }
                     bound.push((tab, page.id));
                     opened += 1;
                     first.get_or_insert((target, tab));

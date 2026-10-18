@@ -20,7 +20,7 @@ struct ProjectStackTests {
     }
 
     private static func leaf(_ n: Int) -> ProjectNode {
-        .leaf(cwd: "/\(n)", title: "t\(n)", history: "", scrollback: "\(n).snap", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
+        .leaf(cwd: "/\(n)", title: "t\(n)", titleChosen: false, history: "", scrollback: "\(n).snap", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
     }
 
     /// 1 | 3, the right pane holding 2, 3, 4 with 3 in front.
@@ -102,7 +102,7 @@ struct ProjectStackTests {
         var made: [String] = []
         var byCwd: [String: MockView] = [:]
         let tree: Tree = root.building { leaf in
-            guard case .leaf(let cwd, _, _, _, _, _, _, _, _, _) = leaf else { return MockView() }
+            guard case .leaf(let cwd, _, _, _, _, _, _, _, _, _, _) = leaf else { return MockView() }
             made.append(cwd)
             let view = MockView()
             byCwd[cwd] = view
@@ -123,7 +123,7 @@ struct ProjectStackTests {
         let back = try ProjectFile.decode(from: try file.encoded())
         let u = Terminals()
         let opened: Tree = try #require(back.firstTab).building { leaf in
-            guard case .leaf(let cwd, _, _, _, _, _, _, _, _, _) = leaf, let n = Int(cwd.dropFirst()) else { return MockView() }
+            guard case .leaf(let cwd, _, _, _, _, _, _, _, _, _, _) = leaf, let n = Int(cwd.dropFirst()) else { return MockView() }
             return u.view(n)
         }
         #expect(try Self.capture(opened, u) == file.firstTab)

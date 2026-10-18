@@ -92,7 +92,21 @@ pub(crate) fn tab_tree(frame: HWND, id: TabId) -> Option<(SavedNode, Vec<LeafPan
                     (
                         SavedLeaf {
                             cwd: p.cwd.clone().unwrap_or_default(),
+                            // What the pane showed: the program's title,
+                            // written as that and never put back (issue #9).
                             title: p.title.clone().unwrap_or_default(),
+                            // **Always false here.** This host has no name
+                            // per pane: an explicit `set_surface_title`
+                            // pins the pane's whole *tab*
+                            // (`tabs::Op::SetTabTitle`, `NamedBy::Tool`),
+                            // so a chosen name is the tab's and is written
+                            // as the tab's (`project_session::screen_of`).
+                            // A pane title macOS chose comes back on this
+                            // host as its tab's name when it is the only one
+                            // in the tab (`polter_projects::pages::
+                            // restored_name`); the next save here writes it
+                            // there, not on the pane.
+                            title_chosen: false,
                             history: p.history.clone().unwrap_or_default(),
                             // Named by `name_leaves`, from the pane's own
                             // slot; empty until then.
@@ -725,6 +739,7 @@ mod tests {
                         left: Box::new(SavedNode::Leaf(SavedLeaf::plain("/a", Agent::Unknown))),
                         right: Box::new(SavedNode::Leaf(SavedLeaf::plain("/b", Agent::Unknown))),
                     },
+                    title: None,
                 }],
             }],
             next_scrollback: None,
@@ -840,7 +855,7 @@ mod tests {
             name: "three panes three dirs".to_string(),
             saved_at: 42,
             group: None,
-            windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root: saved }] }],
+            windows: vec![Window { frame: None, front: 0, tabs: vec![Tab::unnamed(saved)] }],
             next_scrollback: None,
         };
 

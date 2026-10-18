@@ -11,4 +11,5 @@ from	stack_put_right
 from	format_2
 same	pane_marks
 from	two_seats
+same	titles
 refused	too_new

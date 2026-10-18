@@ -408,13 +408,15 @@ pub struct Listing {
 /// Turn a saved tree into the JSON `layout::parse` already understands, so
 /// restoring a project reuses `poltergeist_layout`'s own pipeline
 /// (`layout::perform` / `tabs::Op::ApplyLayout`) rather than a second way to
-/// build a tab. **Still lossy for `title`**: `layout::Shape::New` carries
-/// `cwd` and (since task 533's history wiring) `history`, but not title --
-/// the caller applies that per pane *after* the shape comes back and hands
-/// over which surface is which leaf (`layout::describe`'s output), via the
-/// existing `set_tab_title` path. That follow-up step is not wired yet;
-/// this function only answers "what shape, with what cwd, what history
-/// handle and what scrollback snapshot".
+/// build a tab. **No title in it, on purpose** (task 1722): a leaf's
+/// `title` is what the program in the pane last reported, and that is never
+/// put back -- the program says its own again (`apprt/title.zig`, issue
+/// #9). The one name that is put back is one somebody chose, and on this
+/// host that is the *tab's* (`title_override`): `project_session::open`
+/// renames the tab, `NamedBy::Restored`, right after it is built, from
+/// `polter_projects::pages::restored_name` (the tab's `title`, or the one
+/// pane in it with `title_chosen`). This function only answers "what shape,
+/// with what cwd, what history handle and what scrollback snapshot".
 ///
 /// `snaps` is `scrollback_dir` of the file this snapshot was read from; a
 /// leaf's relative `scrollback` name becomes an absolute path under it
@@ -544,6 +546,10 @@ pub fn write_fixture(path: &str) -> bool {
     let right_leaf = SavedNode::Leaf(SavedLeaf {
         cwd: "C:\\work\\repo".to_string(),
         title: "a \"quoted\" title, a backslash \\, and 中文".to_string(),
+        // Chosen, so a reader that drops the key is caught. This host never
+        // writes it in a save (`project_ui::tab_tree`), but the bytes are
+        // the format's.
+        title_chosen: true,
         history: "a1b2c3.history".to_string(),
         scrollback: "1.snap".to_string(),
         by_supervisor: false,
@@ -565,7 +571,8 @@ pub fn write_fixture(path: &str) -> bool {
         name: "fixture project".to_string(),
         saved_at: 1_757_000_000,
         group: None,
-        windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root }] }],
+        // And a tab name, for the same reason.
+        windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root, title: Some("fixture tab".to_string()) }] }],
         next_scrollback: None,
     };
 
@@ -746,7 +753,7 @@ mod tests {
             name: name.to_string(),
             saved_at,
             group: None,
-            windows: root.map(|root| Window { frame: None, front: 0, tabs: vec![Tab { root }] }).into_iter().collect(),
+            windows: root.map(|root| Window { frame: None, front: 0, tabs: vec![Tab::unnamed(root)] }).into_iter().collect(),
             next_scrollback,
         }
     }
@@ -755,6 +762,7 @@ mod tests {
         let left = SavedNode::Leaf(SavedLeaf {
             cwd: "/work/repo".to_string(),
             title: "retry.py".to_string(),
+            title_chosen: false,
             history: "a1b2c3.history".to_string(),
             scrollback: "0.snap".to_string(),
             by_supervisor: false,
@@ -1025,7 +1033,7 @@ mod tests {
             name: "stacked".to_string(),
             saved_at: 1,
             group: None,
-            windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root: saved.clone() }] }],
+            windows: vec![Window { frame: None, front: 0, tabs: vec![Tab::unnamed(saved.clone())] }],
             next_scrollback: None,
         };
         let bytes = emit(&snapshot).expect("a stack is written");

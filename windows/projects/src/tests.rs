@@ -29,7 +29,7 @@ fn leaf(cwd: &str, scrollback: &str) -> SavedNode {
 }
 
 fn tab(root: SavedNode) -> Tab {
-    Tab { root }
+    Tab::unnamed(root)
 }
 
 fn frame(x: f64) -> Frame {
@@ -83,7 +83,7 @@ fn says(windows: &[&[&str]]) -> Vec<Vec<String>> {
 }
 
 fn live(id: usize, window: isize, index: usize, selected: bool, cwd: &str) -> Live {
-    Live { id, window, index, selected, root: leaf(cwd, "") }
+    Live { id, window, index, selected, root: leaf(cwd, ""), title: None }
 }
 
 fn fronts(pages: &Pages) -> Vec<usize> {
@@ -384,7 +384,7 @@ fn a_save_writes_the_open_tabs_as_they_are_and_the_rest_as_they_were() {
     let screen = Screen {
         live: vec![
             // Just opened: no directory yet, and nobody can say who.
-            Live { id: 0, window: 7, index: 0, selected: false, root: leaf_of("", "0.snap", Agent::Unknown) },
+            Live { id: 0, window: 7, index: 0, selected: false, root: leaf_of("", "0.snap", Agent::Unknown), title: None },
             // A split made since, in the second page.
             Live {
                 id: 1,
@@ -392,6 +392,7 @@ fn a_save_writes_the_open_tabs_as_they_are_and_the_rest_as_they_were() {
                 index: 1,
                 selected: true,
                 root: split(leaf_of("/b2", "1.snap", Agent::Unknown), leaf_of("/new", "4.snap", Agent::Unknown), Axis::Vertical),
+                title: None,
             },
         ],
         frames: frames(&[(7, 77.0)]),
@@ -959,7 +960,7 @@ fn one_pane_of_a_project_is_its_supervisors() {
 
     // The next save sees the tab and cannot say who is in its panes.
     let unknown = split(leaf_of("/a", "0.snap", Agent::Unknown), leaf_of("/b", "1.snap", Agent::Unknown), Axis::Horizontal);
-    let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: unknown }], frames: BTreeMap::new(), keeping_front: false };
+    let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: unknown, title: None }], frames: BTreeMap::new(), keeping_front: false };
     let (after, _) = pages.saving("web-app", 2, None, Some(3), &screen);
     assert_eq!(supervisors(&after), ["1.snap"]);
 }
@@ -1149,7 +1150,7 @@ fn a_save_before_the_marks_are_taken_back_writes_what_the_file_had() {
     );
     let pages = Pages::from_file(&file);
     let not_yet = split(marked("/a", "0.snap", None, None, None, None), marked("/b", "1.snap", None, None, None, None), Axis::Horizontal);
-    let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: not_yet }], frames: BTreeMap::new(), keeping_front: false };
+    let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: not_yet, title: None }], frames: BTreeMap::new(), keeping_front: false };
     let (_, written) = pages.saving("p", 2, None, Some(2), &screen);
     assert_eq!(written.windows[0].tabs[0].root, file.windows[0].tabs[0].root);
     // And it is the bytes: the file says the marks it said.
@@ -1164,7 +1165,7 @@ fn a_save_before_the_marks_are_taken_back_writes_what_the_file_had() {
         marked("/b", "1.snap", None, Some(PaneColor::Pink), Some(Workers::Allowed), Some(false)),
         Axis::Horizontal,
     );
-    let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: told }], frames: BTreeMap::new(), keeping_front: false };
+    let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: told, title: None }], frames: BTreeMap::new(), keeping_front: false };
     let (_, written) = pages.saving("p", 3, None, Some(2), &screen);
     let got: Vec<(Option<PaneColor>, Option<Workers>, Option<bool>)> =
         polter_projectfile::leaves(&written.windows[0].tabs[0].root).iter().map(|l| (l.color, l.workers, l.shielded)).collect();
@@ -1178,7 +1179,7 @@ fn the_seat_moves_to_where_the_supervisor_is_and_stays_put_while_there_is_none()
     let file = one_tab(split(marked("/a", "0.snap", Some(true), Some(PaneColor::None), None, None), leaf("/b", "1.snap"), Axis::Horizontal), 2);
     let pages = Pages::from_file(&file);
     let seats = |root: SavedNode| -> Vec<Option<bool>> {
-        let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root }], frames: BTreeMap::new(), keeping_front: false };
+        let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root, title: None }], frames: BTreeMap::new(), keeping_front: false };
         let (_, written) = pages.saving("p", 2, None, Some(2), &screen);
         polter_projectfile::leaves(&written.windows[0].tabs[0].root).iter().map(|l| l.supervisor_seat).collect()
     };
@@ -1187,4 +1188,100 @@ fn the_seat_moves_to_where_the_supervisor_is_and_stays_put_while_there_is_none()
     assert_eq!(seats(split(nobody("/a", "0.snap"), nobody("/b", "1.snap"), Axis::Horizontal)), vec![Some(true), Some(false)], "no supervisor: the file's seat");
     assert_eq!(seats(split(nobody("/a", "0.snap"), here("/b", "1.snap"), Axis::Horizontal)), vec![Some(false), Some(true)], "it moved");
     assert_eq!(seats(split(here("/a", "0.snap"), nobody("/b", "1.snap"), Axis::Horizontal)), vec![Some(true), Some(false)], "where it was");
+}
+
+// ---------------------------------------------------------------------------
+// Names somebody chose (task 1722)
+// ---------------------------------------------------------------------------
+
+fn titled(title: &str, chosen: bool) -> SavedLeaf {
+    SavedLeaf { title: title.into(), title_chosen: chosen, ..SavedLeaf::plain("/a", Agent::None) }
+}
+
+/// One window of these tabs, each with its tab name.
+fn named_project(tabs: Vec<(SavedNode, Option<&str>)>) -> Pages {
+    Pages::from_file(&Snapshot {
+        name: "p".into(),
+        saved_at: 1,
+        group: None,
+        windows: vec![Window { frame: None, front: 0, tabs: tabs.into_iter().map(|(root, t)| Tab { root, title: t.map(str::to_string) }).collect() }],
+        next_scrollback: None,
+    })
+}
+
+fn tab_names(file: &Snapshot) -> Vec<Option<String>> {
+    file.windows.iter().flat_map(|w| w.tabs.iter().map(|t| t.title.clone())).collect()
+}
+
+#[test]
+fn a_save_writes_the_name_somebody_gave_the_tab() {
+    let pages = named_project(vec![(leaf("/a", "0.snap"), None), (leaf("/b", "1.snap"), None)]);
+    let screen = Screen {
+        live: vec![
+            Live { title: Some("web".into()), ..live(0, 1, 0, true, "/a") },
+            Live { root: leaf("/b", "1.snap"), ..live(1, 1, 1, false, "/b") },
+        ],
+        frames: BTreeMap::new(),
+        keeping_front: false,
+    };
+    let (_, file) = pages.saving("p", 2, None, None, &screen);
+    assert_eq!(tab_names(&file), vec![Some("web".to_string()), None]);
+    // And it is in the bytes, where the format puts it.
+    assert!(emit(&file).unwrap().contains(r#""agent":{"kind":"none"}},"title":"web"}"#));
+}
+
+/// The save right after opening (and any save before the tab is named
+/// back) finds a tab that has no name yet: that is not the person taking
+/// the name off, and the file's name is written again.
+#[test]
+fn a_save_before_the_name_is_put_back_writes_what_the_file_had() {
+    let mac_pane = SavedNode::Leaf(SavedLeaf { scrollback: "1.snap".into(), ..titled("dev server", true) });
+    let pages = named_project(vec![(leaf("/a", "0.snap"), Some("web")), (mac_pane, None), (leaf("/c", "2.snap"), None)]);
+    let screen = Screen {
+        live: vec![
+            Live { root: leaf("/a", "0.snap"), ..live(0, 1, 0, true, "/a") },
+            Live { root: leaf("/b", "1.snap"), ..live(1, 1, 1, false, "/b") },
+            Live { root: leaf("/c", "2.snap"), ..live(2, 1, 2, false, "/c") },
+        ],
+        frames: BTreeMap::new(),
+        keeping_front: false,
+    };
+    let (after, file) = pages.saving("p", 2, None, None, &screen);
+    // The tab's own name; a pane's chosen name in a tab that had none (what
+    // Windows makes of it); and nothing for a tab nobody named.
+    assert_eq!(tab_names(&file), vec![Some("web".to_string()), Some("dev server".to_string()), None]);
+    // A name said now beats the file's.
+    let renamed = Screen { live: vec![Live { title: Some("api".into()), ..screen.live[0].clone() }], ..screen.clone() };
+    let (_, file) = after.saving("p", 3, None, None, &renamed);
+    assert_eq!(tab_names(&file)[0].as_deref(), Some("api"));
+}
+
+#[test]
+fn a_page_that_is_not_open_keeps_its_name() {
+    let pages = named_project(vec![(leaf("/a", "0.snap"), Some("web")), (leaf("/b", "1.snap"), None)]);
+    let screen = Screen { live: vec![Live { root: leaf("/b", "1.snap"), ..live(1, 1, 0, true, "/b") }], frames: BTreeMap::new(), keeping_front: false };
+    let (_, file) = pages.saving("p", 2, None, None, &screen);
+    assert_eq!(tab_names(&file), vec![Some("web".to_string()), None]);
+}
+
+#[test]
+fn only_a_chosen_name_is_put_back_and_never_a_programs_title() {
+    use crate::pages::restored_name;
+    let one = |l: SavedLeaf| SavedNode::Leaf(l);
+    // The tab's own name first, whatever its panes say.
+    assert_eq!(restored_name(&Tab { root: one(titled("dev server", true)), title: Some("web".into()) }).as_deref(), Some("web"));
+    // A program's title -- what the pane showed -- is not a name to put back.
+    assert_eq!(restored_name(&Tab::unnamed(one(titled("vim app.js", false)))), None);
+    assert_eq!(restored_name(&Tab::unnamed(split(one(titled("vim", false)), one(titled("zsh", false)), Axis::Horizontal))), None);
+    // One chosen pane name names the tab, as `set_surface_title` would here.
+    assert_eq!(
+        restored_name(&Tab::unnamed(split(one(titled("dev server", true)), one(titled("vim app.js", false)), Axis::Horizontal))).as_deref(),
+        Some("dev server")
+    );
+    // Two do not: which it would be is not to be guessed.
+    assert_eq!(restored_name(&Tab::unnamed(split(one(titled("a", true)), one(titled("b", true)), Axis::Horizontal))), None);
+    // The shared file, as macOS writes it: its tab is "web".
+    let file = parse_snapshot(include_bytes!("../../../test/project-format/titles.json")).unwrap();
+    let names: Vec<Option<String>> = file.windows[0].tabs.iter().map(restored_name).collect();
+    assert_eq!(names, vec![Some("web".to_string()), None]);
 }

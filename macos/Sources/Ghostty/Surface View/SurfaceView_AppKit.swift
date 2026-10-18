@@ -290,7 +290,7 @@ extension Ghostty {
         // This is the title from the terminal. This is nil if we're currently using
         // the terminal title as the main title property. If the title is set manually
         // by the user, this is set to the prior value (which may be empty, but non-nil).
-        private var titleFromTerminal: String?
+        private(set) var titleFromTerminal: String?
 
         /// The command-history file this surface's captured commands are
         /// being appended to, as the core named it (`GHOSTTY_ACTION_HISTORY_FILENAME`,

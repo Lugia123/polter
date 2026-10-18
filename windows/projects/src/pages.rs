@@ -60,6 +60,19 @@ pub struct Live {
     /// Whether it is the tab showing in its window.
     pub selected: bool,
     pub root: SavedNode,
+    /// The name somebody gave the tab on this host (`title_override` on
+    /// Windows, whoever pinned it), or `None` for none said. **Not the
+    /// program's title**: that is written per pane, as what it showed, and
+    /// is never put back (`apprt/title.zig`, issue #9).
+    ///
+    /// `None` does not overwrite the name the file has for the page
+    /// (`saving`): a page opened from the file is named back right after its
+    /// tab is made (`restored_name`), and a save that came first must not
+    /// write "no name" over the one it is about to get. This host has no way
+    /// to take a chosen name off a tab, so "said none" never has to beat
+    /// the file's word; **a host that adds one must make this a third
+    /// state** rather than let `None` mean both.
+    pub title: Option<String>,
 }
 
 /// What a save finds on screen: the open tabs, the frame of each window
@@ -235,7 +248,7 @@ impl Pages {
             .collect();
 
         let pages_in = |token: WindowToken| -> Vec<Page> {
-            tabs.iter().filter(|t| t.window == token).map(|t| Page { id: t.id, tab: Tab { root: t.root.clone() } }).collect()
+            tabs.iter().filter(|t| t.window == token).map(|t| Page { id: t.id, tab: Tab { root: t.root.clone(), title: t.title.clone() } }).collect()
         };
         let front_in = |token: WindowToken, pages: &[Page], was: Option<PageId>| -> PageId {
             if !keeping_front {
@@ -296,7 +309,12 @@ impl Pages {
         let mut told: Vec<Live> = screen
             .live
             .iter()
-            .map(|l| Live { root: keeping_what_the_file_knew(&l.root, &known), ..l.clone() })
+            .map(|l| Live {
+                root: keeping_what_the_file_knew(&l.root, &known),
+                // Not said is not "no name" (`Live::title`).
+                title: l.title.clone().or_else(|| self.page(l.id).and_then(|p| restored_name(&p.tab))),
+                ..l.clone()
+            })
             .collect();
         one_seat(&screen.live, &mut told);
         let pages = self.updated(&told, &screen.frames, screen.keeping_front);
@@ -389,6 +407,30 @@ impl Pages {
             }
         }
         known
+    }
+}
+
+/// The name a tab opened from `tab` is given back, as a name somebody chose
+/// (Windows: `NamedBy::Restored`): the tab's own, or else -- for a file
+/// whose tab has none -- the one pane name in it somebody chose, when there
+/// is exactly one. `None` for neither, and then nothing is named: **a
+/// program's title is never put back** (`apprt/title.zig`, issue #9), since
+/// the program says its own again and the restored one would outrank it.
+///
+/// Why a pane's chosen name can name the tab: a host with a chosen name per
+/// tab and not per pane (Windows) takes `set_surface_title` as naming the
+/// pane's tab, so one chosen pane name in a tab is what that would have
+/// done live. Two or more name the tab nothing -- which one it would be is
+/// not something to guess.
+pub fn restored_name(tab: &Tab) -> Option<String> {
+    if let Some(title) = tab.title.as_deref().filter(|t| !t.is_empty()) {
+        return Some(title.to_string());
+    }
+    let all = leaves(&tab.root);
+    let mut chosen = all.iter().filter(|l| l.title_chosen && !l.title.is_empty());
+    match (chosen.next(), chosen.next()) {
+        (Some(one), None) => Some(one.title.clone()),
+        _ => None,
     }
 }
 

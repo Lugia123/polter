@@ -226,7 +226,7 @@ struct ProjectLinkTests {
     /// The seat is where the supervisor's agent is, as in every file a
     /// build before format 3 wrote and every one `makeSupervisor` leaves.
     private func leaf(_ cwd: String, _ scrollback: String, _ agent: ProjectAgent, bySupervisor: Bool = false) -> ProjectNode {
-        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: bySupervisor, supervisorSeat: agent.isSupervisor, color: .none, workersRefused: false, shielded: false, agent: agent)
+        .leaf(cwd: cwd, title: "", titleChosen: false, history: "", scrollback: scrollback, bySupervisor: bySupervisor, supervisorSeat: agent.isSupervisor, color: .none, workersRefused: false, shielded: false, agent: agent)
     }
 
     /// **One pane is the supervisor's, and marking another unmarks the
@@ -236,8 +236,8 @@ struct ProjectLinkTests {
         var pages = ProjectPages(file: ProjectFile(
             name: "p", savedAt: 1, group: "g",
             windows: [ProjectWindow(frame: nil, front: 0, tabs: [
-                ProjectTab(root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/a", "0.snap", old), right: leaf("/b", "1.snap", .none, bySupervisor: true))),
-                ProjectTab(root: leaf("/c", "2.snap", .unknown)),
+                ProjectTab(root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/a", "0.snap", old), right: leaf("/b", "1.snap", .none, bySupervisor: true)), title: ""),
+                ProjectTab(root: leaf("/c", "2.snap", .unknown), title: ""),
             ])],
             nextScrollback: 3))
         #expect(pages.supervisorPane == "0.snap")

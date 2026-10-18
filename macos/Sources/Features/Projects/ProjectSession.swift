@@ -227,7 +227,8 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
             if closing && capturing {
                 return ProjectStore.OpenPage(
                     id: member.page, tree: member.controller.surfaceTree,
-                    window: nil, index: 0, selected: false, capturingScrollback: true)
+                    window: nil, index: 0, selected: false, capturingScrollback: true,
+                    title: member.controller.titleOverride ?? "")
             }
             let tabs = window.tabGroup
             let token = tabs.map { ObjectIdentifier($0).hashValue } ?? ObjectIdentifier(window).hashValue
@@ -246,7 +247,10 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
                 window: token,
                 index: tabs?.windows.firstIndex(of: window) ?? 0,
                 selected: tabs?.selectedWindow.map { $0 === window } ?? true,
-                capturingScrollback: capturing)
+                capturingScrollback: capturing,
+                // The name somebody gave the tab, and nothing else: the
+                // window's title is the program's (task 1722).
+                title: member.controller.titleOverride ?? "")
         }
         let taken = ProjectPages.taken(frames: frames, closing: closing, opening: opening > 0)
         pages = try store.save(
@@ -459,6 +463,13 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
                 }
                 let tree = store.materialize(page.tab, of: entry, app: app, area: area)
                 let controller = TerminalController(ghostty, withSurfaceTree: tree)
+                // The tab's chosen name, set on the tab itself rather than
+                // sent as `set_tab_title`: the core keeps no record of a
+                // tab's name (that action only forwards to the host, which
+                // finds the tab by the terminal's window -- and these
+                // terminals have none yet), so this is the same field the
+                // action would have reached (task 1722).
+                if let name = page.tab.titleOverride { controller.titleOverride = name }
                 guard let tab = controller.window else { continue }
                 if let previous {
                     previous.addTabbedWindowSafely(tab, ordered: .above)
@@ -588,6 +599,21 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
                 guard let snapshot = view.projectSnapshot, snapshot.project == key,
                       let was = known[snapshot.filename] else { continue }
                 view.handBackProjectMarks(was.marks)
+            }
+            // The same for a name somebody chose (task 1722): window
+            // restoration put it back on screen, pinned, but the core
+            // started the terminal with no title of its own -- and its
+            // record is what `terminal_list` and the chat read. The tab's
+            // own name came back with window restoration
+            // (`TerminalRestorableState.titleOverride`), which the core
+            // keeps no record of.
+            for view in controller.surfaceTree {
+                let file = view.projectSnapshot.flatMap { snapshot in
+                    snapshot.project == key ? known[snapshot.filename]?.title : nil
+                }
+                if let chosen = ProjectPaneTitle.afterRestart(host: view.projectTitleLive, file: file) {
+                    view.handBackProjectTitle(chosen)
+                }
             }
         } catch {
             logger.warning("a restored tab was not put back in project '\(name, privacy: .public)': \(error.localizedDescription, privacy: .public)")

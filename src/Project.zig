@@ -52,12 +52,14 @@
 //!     {"format":3,"name":S,"saved_at":I,"root":{"kind":"moved-to-windows"},
 //!      "group":S,"next_scrollback":I,"windows":[WINDOW,...]}
 //!     WINDOW  {"frame":{"origin":"top_left"|"bottom_left","x":N,"y":N,
-//!              "width":N,"height":N},"front":I,"tabs":[{"root":NODE},...]}
+//!              "width":N,"height":N},"front":I,"tabs":[TAB,...]}
+//!     TAB     {"root":NODE,"title":S}
 //!     NODE    {"kind":"split","direction":"horizontal"|"vertical","ratio":N,
 //!              "left":NODE,"right":NODE}
 //!           | LEAF
 //!           | {"kind":"stack","shown":I,"members":[LEAF,LEAF,...]}
-//!     LEAF    {"kind":"leaf","cwd":S,"title":S,"history":S,"scrollback":S,
+//!     LEAF    {"kind":"leaf","cwd":S,"title":S,"title_chosen":true,
+//!              "history":S,"scrollback":S,
 //!              "by_supervisor":true,"supervisor_seat":true,"color":COLOR,
 //!              "workers":"refused","shielded":true,"agent":AGENT}
 //!     COLOR   "blue"|"purple"|"pink"|"red"|"orange"|"yellow"|"green"
@@ -67,7 +69,8 @@
 //!
 //! `group`, `next_scrollback` and `frame` are left out when there is none;
 //! so is any string of a leaf or an agent that is empty, `by_supervisor`,
-//! `supervisor_seat` and `shielded` when they are not true, `color` when
+//! `title_chosen`, `supervisor_seat` and `shielded` when they are not true,
+//! a tab's `title` when it has none, `color` when
 //! there is none and `workers` when they are allowed. Any of those four
 //! written another way -- a colour this build does not name, `false` --
 //! is `Corrupt`: read as the default, the next save would write the
@@ -151,6 +154,15 @@ pub const Leaf = struct {
 
     /// What the pane's tab/title said.
     title: []const u8,
+
+    /// `title` is a name somebody chose for this pane -- "Change Terminal
+    /// Title...", or `set_surface_title` -- rather than the last one the
+    /// program in it reported (format 3, task 1722). Only a chosen name is
+    /// put back when the project opens, and it is put back chosen: the
+    /// program's next title does not replace it (`apprt/title.zig`, issue
+    /// #9). A program's title is still written, as what the pane showed,
+    /// and is the program's to say again.
+    title_chosen: bool,
 
     /// An opaque handle to this pane's history, or empty if it never ran a
     /// command that got captured. What it means is shell-dependent, which
@@ -325,6 +337,10 @@ pub const Node = union(enum) {
 /// One tab: a tree of panes.
 pub const Tab = struct {
     root: *const Node,
+    /// The name somebody gave the tab -- renamed by hand, or `set_tab_title`
+    /// -- or empty for none (format 3, task 1722). A name the program in a
+    /// terminal reported is not this: it is the program's to say again.
+    title: []const u8,
 };
 
 /// Which corner of the screen a `Frame` is measured from. The hosts do not
@@ -667,6 +683,7 @@ pub fn emit(w: *std.Io.Writer, snapshot: Snapshot) EmitError!void {
             if (j > 0) try w.writeByte(',');
             try w.writeAll("{\"root\":");
             try emitNode(w, tab.root.*);
+            try emitField(w, "title", tab.title);
             try w.writeByte('}');
         }
         try w.writeAll("]}");
@@ -708,6 +725,9 @@ fn emitLeaf(w: *std.Io.Writer, leaf: Leaf) EmitError!void {
     try w.writeAll("{\"kind\":\"leaf\"");
     try emitField(w, "cwd", leaf.cwd);
     try emitField(w, "title", leaf.title);
+    // A chosen name with no name is not a thing: an empty name is the
+    // person giving the program its title back.
+    if (leaf.title_chosen and leaf.title.len > 0) try w.writeAll(",\"title_chosen\":true");
     try emitField(w, "history", leaf.history);
     try emitField(w, "scrollback", leaf.scrollback);
     if (leaf.by_supervisor) try w.writeAll(",\"by_supervisor\":true");
@@ -840,7 +860,7 @@ pub fn parse(arena: Allocator, bytes: []const u8) ReadError!Snapshot {
         // project with nothing in it.
         const root = try parseNode(arena, obj.get("root") orelse break :one &.{}, format, &fixups);
         const tabs = try arena.alloc(Tab, 1);
-        tabs[0] = .{ .root = root };
+        tabs[0] = .{ .root = root, .title = "" };
         const windows = try arena.alloc(Window, 1);
         windows[0] = .{ .frame = null, .front = 0, .tabs = tabs };
         break :one windows;
@@ -916,7 +936,16 @@ fn parseWindows(arena: Allocator, value: std.json.Value, format: u32, fixups: *F
                 .object => |o| o,
                 else => return error.Corrupt,
             };
-            tab.* = .{ .root = try parseNode(arena, tab_obj.get("root") orelse return error.Corrupt, format, fixups) };
+            tab.* = .{
+                .root = try parseNode(arena, tab_obj.get("root") orelse return error.Corrupt, format, fixups),
+                // New with format 3: absent is none; an empty name is never
+                // written, so one read is a damaged file, as is a name that
+                // is not text.
+                .title = if (format < 3) "" else if (tab_obj.get("title")) |v| switch (v) {
+                    .string => |t| if (t.len > 0) t else return error.Corrupt,
+                    else => return error.Corrupt,
+                } else "",
+            };
         }
 
         const front: usize = switch (obj.get("front") orelse return error.Corrupt) {
@@ -1046,6 +1075,13 @@ fn parseLeaf(arena: Allocator, obj: std.json.ObjectMap, format: u32, fixups: *Fi
         // does not write is a damaged file, never read as the default --
         // which the next save would then write over what was there.
         // Before format 3 the seat was the supervisor's agent's (below).
+        .title_chosen = if (format < 3) false else chosen: {
+            const chosen = try onlyTrue(obj.get("title_chosen"));
+            // Chosen, and nothing chosen: written by no build.
+            const title: []const u8 = optionalStr(obj.get("title")) orelse "";
+            if (chosen and title.len == 0) return error.Corrupt;
+            break :chosen chosen;
+        },
         .supervisor_seat = if (format < 3) false else try onlyTrue(obj.get("supervisor_seat")),
         .color = if (format < 3) .none else if (obj.get("color")) |v| switch (v) {
             .string => |str| std.meta.stringToEnum(Color, str) orelse return error.Corrupt,
@@ -1229,7 +1265,7 @@ fn tmpDir(alloc: Allocator, io: std.Io) ![]const u8 {
 fn oneTab(arena: Allocator, name: []const u8, saved_at: i64, root: ?*const Node, next_scrollback: ?u64) !Snapshot {
     const windows: []const Window = if (root) |r| windows: {
         const tabs = try arena.alloc(Tab, 1);
-        tabs[0] = .{ .root = r };
+        tabs[0] = .{ .root = r, .title = "" };
         const windows = try arena.alloc(Window, 1);
         windows[0] = .{ .frame = null, .front = 0, .tabs = tabs };
         break :windows windows;
@@ -1242,6 +1278,7 @@ fn expectLeavesEqual(al: Leaf, bl: Leaf) !void {
     try testing.expectEqualStrings(al.title, bl.title);
     try testing.expectEqualStrings(al.history, bl.history);
     try testing.expectEqualStrings(al.scrollback, bl.scrollback);
+    try testing.expectEqual(al.title_chosen, bl.title_chosen);
     try testing.expectEqual(al.by_supervisor, bl.by_supervisor);
     try testing.expectEqual(al.supervisor_seat, bl.supervisor_seat);
     try testing.expectEqual(al.color, bl.color);
@@ -1293,8 +1330,8 @@ test "what is written comes back exactly" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const left: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "✳ retry.py", .history = "a1b2c3.history", .scrollback = "0.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
-    const right: Node = .{ .leaf = .{ .cwd = "/work/repo/tests", .title = "✳ tests", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const left: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "✳ retry.py", .history = "a1b2c3.history", .scrollback = "0.snap", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const right: Node = .{ .leaf = .{ .cwd = "/work/repo/tests", .title = "✳ tests", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
     const root: Node = .{ .split = .{
         .direction = .horizontal,
         .ratio = 0.62,
@@ -1343,9 +1380,9 @@ test "a nested tree round-trips" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const a: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
-    const b: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
-    const c: Node = .{ .leaf = .{ .cwd = "/c", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const a: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const b: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const c: Node = .{ .leaf = .{ .cwd = "/c", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
     const inner: Node = .{ .split = .{ .direction = .vertical, .ratio = 0.5, .left = &b, .right = &c } };
     const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.3, .left = &a, .right = &inner } };
 
@@ -1397,8 +1434,8 @@ test "a truncated file does not read out half a tree" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const left: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
-    const right: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const left: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const right: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
     const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.5, .left = &left, .right = &right } };
     try write(alloc, io, dir, try oneTab(alloc, "cutoff", 3, &root, null));
 
@@ -1529,7 +1566,7 @@ test "rename keeps the tree and moves the name" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const leaf: Node = .{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const leaf: Node = .{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
     try write(alloc, io, dir, try oneTab(alloc, "old name", 6, &leaf, 3));
 
     try rename(alloc, io, dir, "old name", "new name");
@@ -1870,6 +1907,8 @@ test "a format 3 mark this build does not write is corrupt, never read as the de
         .{ .what = "a shield that is not yes", .keys = "\"shielded\":1" },
         .{ .what = "a seat written false", .keys = "\"supervisor_seat\":false" },
         .{ .what = "a seat that is not yes", .keys = "\"supervisor_seat\":\"yes\"" },
+        .{ .what = "a title chosen written false", .keys = "\"title\":\"t\",\"title_chosen\":false" },
+        .{ .what = "a title chosen with no title", .keys = "\"title_chosen\":true" },
     };
     for (cases) |c| {
         const bytes = try std.fmt.allocPrint(alloc, "{{\"format\":3,\"name\":\"n\",\"saved_at\":1,\"windows\":[{{\"front\":0,\"tabs\":[{{\"root\":{{\"kind\":\"leaf\",{s},\"agent\":{{\"kind\":\"none\"}}}}}}]}}]}}", .{c.keys});
@@ -1886,6 +1925,16 @@ test "a format 3 mark this build does not write is corrupt, never read as the de
     try testing.expectEqual(Color.yellow, leaf.color);
     try testing.expectEqual(Workers.refused, leaf.workers);
     try testing.expect(leaf.shielded);
+
+    // A tab's name: none is written as nothing, so an empty one or one
+    // that is not text is a damaged file.
+    for ([_][]const u8{ "\"\"", "1", "null" }) |bad| {
+        const bytes = try std.fmt.allocPrint(alloc, "{{\"format\":3,\"name\":\"n\",\"saved_at\":1,\"windows\":[{{\"front\":0,\"tabs\":[{{\"root\":{{\"kind\":\"leaf\",\"agent\":{{\"kind\":\"none\"}}}},\"title\":{s}}}]}}]}}", .{bad});
+        testing.expectError(error.Corrupt, parse(alloc, bytes)) catch |err| {
+            std.debug.print("a tab title of {s}: read without complaint\n", .{bad});
+            return err;
+        };
+    }
 
     // And a format 2 file that happens to carry the keys never reads them:
     // no build wrote them there, so they are not the user's.
@@ -1909,7 +1958,7 @@ test "a stack is at least two panes with one of them showing, to write as to rea
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const pane: Leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none };
+    const pane: Leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none };
     const bad = [_]Stack{
         // One terminal in a pane is a leaf, and it is not this that turns
         // it into one.
@@ -1935,7 +1984,7 @@ test "a ratio that is not a finite number cannot be written" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const leaf: Node = .{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } };
+    const leaf: Node = .{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } };
     for ([_]f64{ std.math.nan(f64), std.math.inf(f64), -std.math.inf(f64) }) |bad| {
         const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = bad, .left = &leaf, .right = &leaf } };
         var buf: std.Io.Writer.Allocating = .init(alloc);
@@ -1983,7 +2032,7 @@ const Shared = struct {
     value: Snapshot,
 
     fn leaf(comptime cwd: []const u8, comptime scrollback: []const u8, comptime agent: Agent) *const Node {
-        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = scrollback, .by_supervisor = false, .supervisor_seat = seated(agent), .color = .none, .workers = .allowed, .shielded = false, .agent = agent } };
+        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = scrollback, .title_chosen = false, .by_supervisor = false, .supervisor_seat = seated(agent), .color = .none, .workers = .allowed, .shielded = false, .agent = agent } };
     }
 
     /// The seat is where the supervisor's agent is, in every file here
@@ -1997,7 +2046,7 @@ const Shared = struct {
 
     /// A pane the project's supervisor opened.
     fn opened(comptime cwd: []const u8, comptime agent: Agent) *const Node {
-        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = "", .by_supervisor = true, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = agent } };
+        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = true, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = agent } };
     }
 
     fn split(comptime direction: Direction, comptime ratio: f64, comptime left: *const Node, comptime right: *const Node) *const Node {
@@ -2025,9 +2074,9 @@ const Shared = struct {
             .windows = &.{.{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(
                 .vertical,
                 0.25,
-                &.{ .leaf = .{ .cwd = "/work/left", .title = "left title", .history = "left.history", .scrollback = "3.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } },
-                &.{ .leaf = .{ .cwd = "/work/right", .title = "right title", .history = "right.history", .scrollback = "8.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } },
-            ) }} }},
+                &.{ .leaf = .{ .cwd = "/work/left", .title = "left title", .history = "left.history", .scrollback = "3.snap", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } },
+                &.{ .leaf = .{ .cwd = "/work/right", .title = "right title", .history = "right.history", .scrollback = "8.snap", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } },
+            ), .title = "" }} }},
         } },
         // A format 1 file with no tab in it.
         .{ .kind = .from, .stem = "format_1_empty", .value = .{
@@ -2046,7 +2095,7 @@ const Shared = struct {
             .windows = &.{.{
                 .frame = .{ .origin = .bottom_left, .x = 120, .y = 80, .width = 1280, .height = 800 },
                 .front = 0,
-                .tabs = &.{.{ .root = &.{ .leaf = .{ .cwd = "/work", .title = "zsh", .history = "a1b2c3.history", .scrollback = "0.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } } }},
+                .tabs = &.{.{ .root = &.{ .leaf = .{ .cwd = "/work", .title = "zsh", .history = "a1b2c3.history", .scrollback = "0.snap", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } }, .title = "" }},
             }},
         } },
         // Several windows, several tabs, and every way a string or a number
@@ -2069,27 +2118,27 @@ const Shared = struct {
                                 .title = "a \"quoted\" title, a backslash \\, a tab\t, a line\n, 中文, ✳ and 🧪",
                                 .history = "a1b2c3.history",
                                 .scrollback = "0.snap",
-                                .by_supervisor = false,
+                                .title_chosen = false, .by_supervisor = false,
                                 .supervisor_seat = false,
                                 .color = .none,
                                 .workers = .allowed,
                                 .shielded = false,
                                 .agent = .none,
                             } },
-                            &.{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } },
-                        ) },
+                            &.{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } },
+                        ), .title = "" },
                         .{ .root = &.{ .leaf = .{
                             .cwd = "/a/b",
                             .title = "\x01\x1f\x7f</script>\u{2028}",
                             .history = "",
                             .scrollback = "12345678901234567890.snap",
-                            .by_supervisor = false,
+                            .title_chosen = false, .by_supervisor = false,
                             .supervisor_seat = false,
                             .color = .none,
                             .workers = .allowed,
                             .shielded = false,
                             .agent = worker(false),
-                        } } },
+                        } }, .title = "" },
                         .{ .root = split(
                             .vertical,
                             0.30000000000000004,
@@ -2100,13 +2149,13 @@ const Shared = struct {
                                 split(.horizontal, 0.3333333333333333, leaf("/p", "7.snap", .none), leaf("/q", "", .none)),
                                 split(.horizontal, 5e-324, leaf("/r", "", .none), split(.vertical, 123456789.125, leaf("/s", "", .none), leaf("/t", "", .none))),
                             ),
-                        ) },
+                        ), .title = "" },
                     },
                 },
                 .{
                     .frame = null,
                     .front = 0,
-                    .tabs = &.{.{ .root = leaf("/tmp", "8.snap", .unknown) }},
+                    .tabs = &.{.{ .root = leaf("/tmp", "8.snap", .unknown), .title = "" }},
                 },
             },
         } },
@@ -2129,11 +2178,11 @@ const Shared = struct {
                         // the quick way gets wrong by one in the last place
                         // (measured: serde_json without `float_roundtrip` reads
                         // it as ...696), and then writes back different digits.
-                        .{ .root = split(.horizontal, 0.9856906946328695, leaf("/work/repo", "", supervisor), opened("/work/repo", worker(false))) },
+                        .{ .root = split(.horizontal, 0.9856906946328695, leaf("/work/repo", "", supervisor), opened("/work/repo", worker(false))), .title = "" },
                         // The second pane is one the supervisor opened and
                         // whose agent has since left: nobody's, and still
                         // the supervisor's to use again.
-                        .{ .root = split(.vertical, 0.5, opened("/work/repo", .none), leaf("", "", .unknown)) },
+                        .{ .root = split(.vertical, 0.5, opened("/work/repo", .none), leaf("", "", .unknown)), .title = "" },
                     },
                 }},
             },
@@ -2147,7 +2196,7 @@ const Shared = struct {
             .windows = &.{.{
                 .frame = null,
                 .front = 0,
-                .tabs = &.{.{ .root = leaf("/work/repo", "1.snap", supervisor) }},
+                .tabs = &.{.{ .root = leaf("/work/repo", "1.snap", supervisor), .title = "" }},
             }},
         } },
         // Three panes each say they are the supervisor: none of them is,
@@ -2159,21 +2208,21 @@ const Shared = struct {
             .next_scrollback = null,
             .windows = &.{
                 .{ .frame = null, .front = 0, .tabs = &.{
-                    .{ .root = split(.horizontal, 0.5, leaf("/a", "", worker(false)), leaf("/b", "", .none)) },
-                    .{ .root = leaf("/c", "", worker(false)) },
+                    .{ .root = split(.horizontal, 0.5, leaf("/a", "", worker(false)), leaf("/b", "", .none)), .title = "" },
+                    .{ .root = leaf("/c", "", worker(false)), .title = "" },
                 } },
                 .{ .frame = null, .front = 0, .tabs = &.{.{ .root = &.{ .leaf = .{
                     .cwd = "/d",
                     .title = "",
                     .history = "",
                     .scrollback = "",
-                    .by_supervisor = false,
+                    .title_chosen = false, .by_supervisor = false,
                     .supervisor_seat = false,
                     .color = .none,
                     .workers = .allowed,
                     .shielded = false,
                     .agent = .{ .agent = .{ .role = "polter-supervisor", .cli = "claude-code", .session = "s-2", .supervisor = false } },
-                } } }} },
+                } }, .title = "" }} },
             },
         } },
         // One snapshot name on three panes, in two tabs and two windows:
@@ -2185,10 +2234,10 @@ const Shared = struct {
             .next_scrollback = 4,
             .windows = &.{
                 .{ .frame = null, .front = 1, .tabs = &.{
-                    .{ .root = split(.horizontal, 0.5, leaf("/a", "3.snap", .none), leaf("/b", "", .none)) },
-                    .{ .root = leaf("/c", "", .none) },
+                    .{ .root = split(.horizontal, 0.5, leaf("/a", "3.snap", .none), leaf("/b", "", .none)), .title = "" },
+                    .{ .root = leaf("/c", "", .none), .title = "" },
                 } },
-                .{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(.vertical, 0.5, leaf("/d", "", .none), leaf("/e", "2.snap", .none)) }} },
+                .{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(.vertical, 0.5, leaf("/d", "", .none), leaf("/e", "2.snap", .none)), .title = "" }} },
             },
         } },
         // A pane that holds three terminals, the second showing, beside a
@@ -2208,16 +2257,16 @@ const Shared = struct {
                         .horizontal,
                         0.5,
                         &.{ .stack = .{ .shown = 1, .members = &.{
-                            .{ .cwd = "/work/repo", .title = "supervisor", .history = "s.history", .scrollback = "0.snap", .by_supervisor = false, .supervisor_seat = true, .color = .none, .workers = .allowed, .shielded = false, .agent = supervisor },
-                            .{ .cwd = "/work/repo/a", .title = "", .history = "", .scrollback = "1.snap", .by_supervisor = true, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = worker(false) },
-                            .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown },
+                            .{ .cwd = "/work/repo", .title = "supervisor", .history = "s.history", .scrollback = "0.snap", .title_chosen = false, .by_supervisor = false, .supervisor_seat = true, .color = .none, .workers = .allowed, .shielded = false, .agent = supervisor },
+                            .{ .cwd = "/work/repo/a", .title = "", .history = "", .scrollback = "1.snap", .title_chosen = false, .by_supervisor = true, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = worker(false) },
+                            .{ .cwd = "", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown },
                         } } },
                         leaf("/work/repo/b", "2.snap", .none),
-                    ) },
+                    ), .title = "" },
                     .{ .root = &.{ .stack = .{ .shown = 0, .members = &.{
-                        .{ .cwd = "/x", .title = "", .history = "", .scrollback = "4.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none },
-                        .{ .cwd = "/y", .title = "", .history = "", .scrollback = "5.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none },
-                    } } } },
+                        .{ .cwd = "/x", .title = "", .history = "", .scrollback = "4.snap", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none },
+                        .{ .cwd = "/y", .title = "", .history = "", .scrollback = "5.snap", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none },
+                    } } }, .title = "" },
                 },
             }},
         } },
@@ -2233,11 +2282,11 @@ const Shared = struct {
                 .vertical,
                 0.5,
                 &.{ .stack = .{ .shown = 0, .members = &.{
-                    .{ .cwd = "/a", .title = "", .history = "", .scrollback = "1.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = worker(false) },
-                    .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = worker(false) },
+                    .{ .cwd = "/a", .title = "", .history = "", .scrollback = "1.snap", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = worker(false) },
+                    .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = worker(false) },
                 } } },
                 leaf("/c", "", .none),
-            ) }} }},
+            ), .title = "" }} }},
         } },
         // What a format 2 file reads as now: everything it said, the seat
         // where its supervisor's agent was, and none of the user's marks
@@ -2251,8 +2300,8 @@ const Shared = struct {
                 .frame = .{ .origin = .bottom_left, .x = 0, .y = 0, .width = 1440, .height = 900 },
                 .front = 1,
                 .tabs = &.{
-                    .{ .root = split(.horizontal, 0.9856906946328695, leaf("/work/repo", "", supervisor), opened("/work/repo", worker(false))) },
-                    .{ .root = split(.vertical, 0.5, opened("/work/repo", .none), leaf("", "", .unknown)) },
+                    .{ .root = split(.horizontal, 0.9856906946328695, leaf("/work/repo", "", supervisor), opened("/work/repo", worker(false))), .title = "" },
+                    .{ .root = split(.vertical, 0.5, opened("/work/repo", .none), leaf("", "", .unknown)), .title = "" },
                 },
             }},
         } },
@@ -2271,18 +2320,18 @@ const Shared = struct {
                     .{ .root = split(
                         .horizontal,
                         0.5,
-                        &.{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = true, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } },
+                        &.{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = true, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } },
                         split(
                             .vertical,
                             0.5,
-                            &.{ .leaf = .{ .cwd = "/work/api", .title = "", .history = "", .scrollback = "", .by_supervisor = true, .supervisor_seat = false, .color = .orange, .workers = .allowed, .shielded = false, .agent = worker(false) } },
-                            &.{ .leaf = .{ .cwd = "/work/web", .title = "npm run dev", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .teal, .workers = .refused, .shielded = false, .agent = .none } },
+                            &.{ .leaf = .{ .cwd = "/work/api", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = true, .supervisor_seat = false, .color = .orange, .workers = .allowed, .shielded = false, .agent = worker(false) } },
+                            &.{ .leaf = .{ .cwd = "/work/web", .title = "npm run dev", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .teal, .workers = .refused, .shielded = false, .agent = .none } },
                         ),
-                    ) },
+                    ), .title = "" },
                     .{ .root = &.{ .stack = .{ .shown = 0, .members = &.{
-                        .{ .cwd = "/prod", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .red, .workers = .refused, .shielded = true, .agent = .none },
-                        .{ .cwd = "/x", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .graphite, .workers = .allowed, .shielded = false, .agent = .unknown },
-                    } } } },
+                        .{ .cwd = "/prod", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .red, .workers = .refused, .shielded = true, .agent = .none },
+                        .{ .cwd = "/x", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .graphite, .workers = .allowed, .shielded = false, .agent = .unknown },
+                    } } }, .title = "" },
                 },
             }},
         } },
@@ -2296,9 +2345,31 @@ const Shared = struct {
             .windows = &.{.{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(
                 .horizontal,
                 0.5,
-                &.{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .purple, .workers = .allowed, .shielded = false, .agent = .none } },
-                &.{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } },
-            ) }} }},
+                &.{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .purple, .workers = .allowed, .shielded = false, .agent = .none } },
+                &.{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .title_chosen = false, .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } },
+            ), .title = "" }} }},
+        } },
+        // Names somebody chose (format 3, task 1722): a tab renamed, a
+        // pane given a name on purpose, and beside it a pane whose title is
+        // only what its program last said -- written, and not chosen.
+        .{ .kind = .same, .stem = "titles", .value = .{
+            .name = "titles",
+            .saved_at = 1757000011,
+            .group = null,
+            .next_scrollback = null,
+            .windows = &.{.{
+                .frame = null,
+                .front = 0,
+                .tabs = &.{
+                    .{ .root = split(
+                        .horizontal,
+                        0.5,
+                        &.{ .leaf = .{ .cwd = "/demo/shop-web", .title = "dev server", .title_chosen = true, .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } },
+                        &.{ .leaf = .{ .cwd = "/demo/shop-web", .title = "vim app.js", .title_chosen = false, .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } },
+                    ), .title = "web" },
+                    .{ .root = leaf("/demo/notes", "", .none), .title = "" },
+                },
+            }},
         } },
         .{ .kind = .refused, .stem = "too_new", .value = undefined },
     };
@@ -2315,7 +2386,10 @@ fn expectSnapshotsEqual(want: Snapshot, got: Snapshot) !void {
         try testing.expectEqual(w.frame, g.frame);
         try testing.expectEqual(w.front, g.front);
         try testing.expectEqual(w.tabs.len, g.tabs.len);
-        for (w.tabs, g.tabs) |wt, gt| try expectNodesEqual(wt.root.*, gt.root.*);
+        for (w.tabs, g.tabs) |wt, gt| {
+            try expectNodesEqual(wt.root.*, gt.root.*);
+            try testing.expectEqualStrings(wt.title, gt.title);
+        }
     }
 }
 

@@ -77,7 +77,7 @@ struct ProjectFile: Equatable {
             name: name,
             savedAt: savedAt,
             group: nil,
-            windows: root.map { [ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: $0)])] } ?? [],
+            windows: root.map { [ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: $0, title: "")])] } ?? [],
             nextScrollback: nextScrollback)
     }
 
@@ -129,9 +129,17 @@ struct ProjectWindow: Equatable {
     let tabs: [ProjectTab]
 }
 
-/// One tab: a tree of panes.
+/// One tab: a tree of panes, and the name somebody gave the tab.
 struct ProjectTab: Equatable {
     let root: ProjectNode
+    /// The tab's chosen name -- renamed by hand, "Change Tab Title…", or
+    /// `set_tab_title` (`BaseTerminalController.titleOverride`) -- or empty
+    /// for none (format 3, task 1722). **Not** what the program in the
+    /// terminal calls itself: that is the program's to say again.
+    let title: String
+
+    /// What the tab's `titleOverride` is when the page opens: nil for none.
+    var titleOverride: String? { title.isEmpty ? nil : title }
 }
 
 /// Where a window was and how big, **as its host had it and nothing more**:
@@ -202,8 +210,16 @@ indirect enum ProjectNode: Equatable {
     ///   -- a supervisor's purple is not written.
     /// - `workersRefused`: the user keeps workers out of this pane.
     /// - `shielded`: the user put the pane out of every agent's reach.
+    ///
+    /// And one more of format 3 (task 1722), written right after `title`:
+    ///
+    /// - `titleChosen`: `title` is a name somebody chose for the pane
+    ///   ("Change Terminal Title…", `set_surface_title`), not the last one
+    ///   the program reported. Only a chosen title is given back when the
+    ///   project opens (`ProjectPaneTitle.handBack`); a program's title is
+    ///   the program's to say again. Written only with a title.
     case leaf(
-        cwd: String, title: String, history: String, scrollback: String, bySupervisor: Bool,
+        cwd: String, title: String, titleChosen: Bool, history: String, scrollback: String, bySupervisor: Bool,
         supervisorSeat: Bool, color: PaneColor, workersRefused: Bool, shielded: Bool,
         agent: ProjectAgent)
     /// Several terminals in one pane: one showing, the others behind it,
@@ -252,7 +268,7 @@ indirect enum ProjectNode: Equatable {
 
     var scrollbackFilenames: [String] {
         switch self {
-        case .leaf(_, _, _, let scrollback, _, _, _, _, _, _): return scrollback.isEmpty ? [] : [scrollback]
+        case .leaf(_, _, _, _, let scrollback, _, _, _, _, _, _): return scrollback.isEmpty ? [] : [scrollback]
         case .stack(_, let members): return members.flatMap(\.scrollbackFilenames)
         case .split(_, _, let left, let right): return left.scrollbackFilenames + right.scrollbackFilenames
         }
@@ -329,6 +345,7 @@ extension ProjectFile {
                 if j > 0 { out += "," }
                 out += "{\"root\":"
                 try ProjectFileWriting.node(tab.root, into: &out)
+                ProjectFileWriting.field("title", tab.title, into: &out)
                 out += "}"
             }
             out += "]}"
@@ -344,11 +361,14 @@ enum ProjectFileWriting {
     static func node(_ node: ProjectNode, into out: inout String) throws {
         switch node {
         case .leaf(
-            let cwd, let title, let history, let scrollback, let bySupervisor,
+            let cwd, let title, let titleChosen, let history, let scrollback, let bySupervisor,
             let supervisorSeat, let color, let workersRefused, let shielded, let agent):
             out += "{\"kind\":\"leaf\""
             field("cwd", cwd, into: &out)
             field("title", title, into: &out)
+            // A chosen name only with a name: chosen and empty is written
+            // by no build, and read as a damaged file.
+            if titleChosen && !title.isEmpty { out += ",\"title_chosen\":true" }
             field("history", history, into: &out)
             field("scrollback", scrollback, into: &out)
             if bySupervisor { out += ",\"by_supervisor\":true" }
@@ -502,7 +522,9 @@ extension ProjectFile {
             group: group,
             windows: windows.map { window in
                 ProjectWindow(frame: window.frame, front: window.front, tabs: window.tabs.map {
-                    ProjectTab(root: $0.root.puttingRight(seen: &seen, demoting: supervisors > 1, unseating: seats > 1))
+                    ProjectTab(
+                        root: $0.root.puttingRight(seen: &seen, demoting: supervisors > 1, unseating: seats > 1),
+                        title: $0.title)
                 })
             },
             nextScrollback: nextScrollback)
@@ -512,7 +534,7 @@ extension ProjectFile {
 extension ProjectNode {
     var supervisorCount: Int {
         switch self {
-        case .leaf(_, _, _, _, _, _, _, _, _, let agent): return agent.isSupervisor ? 1 : 0
+        case .leaf(_, _, _, _, _, _, _, _, _, _, let agent): return agent.isSupervisor ? 1 : 0
         case .stack(_, let members): return members.reduce(0) { $0 + $1.supervisorCount }
         case .split(_, _, let left, let right): return left.supervisorCount + right.supervisorCount
         }
@@ -521,7 +543,7 @@ extension ProjectNode {
     /// How many panes say they are the supervisor's seat.
     var seatCount: Int {
         switch self {
-        case .leaf(_, _, _, _, _, let seat, _, _, _, _): return seat ? 1 : 0
+        case .leaf(_, _, _, _, _, _, let seat, _, _, _, _): return seat ? 1 : 0
         case .stack(_, let members): return members.reduce(0) { $0 + $1.seatCount }
         case .split(_, _, let left, let right): return left.seatCount + right.seatCount
         }
@@ -532,14 +554,14 @@ extension ProjectNode {
     fileprivate func puttingRight(seen: inout Set<String>, demoting: Bool, unseating: Bool) -> ProjectNode {
         switch self {
         case .leaf(
-            let cwd, let title, let history, let scrollback, let bySupervisor,
+            let cwd, let title, let titleChosen, let history, let scrollback, let bySupervisor,
             let supervisorSeat, let color, let workersRefused, let shielded, var agent):
             let kept = scrollback.isEmpty || seen.insert(scrollback).inserted
             if demoting, case .agent(let role, let cli, let session, _) = agent {
                 agent = .agent(role: role, cli: cli, session: session, supervisor: false)
             }
             return .leaf(
-                cwd: cwd, title: title, history: history, scrollback: kept ? scrollback : "",
+                cwd: cwd, title: title, titleChosen: titleChosen, history: history, scrollback: kept ? scrollback : "",
                 bySupervisor: bySupervisor, supervisorSeat: supervisorSeat && !unseating,
                 color: color, workersRefused: workersRefused, shielded: shielded, agent: agent)
 
@@ -634,10 +656,11 @@ enum ProjectFileReading {
         let window: ProjectWindow
 
         private enum CodingKeys: String, CodingKey { case frame, front, tabs }
-        private enum TabKeys: String, CodingKey { case root }
+        private enum TabKeys: String, CodingKey { case root, title }
         private enum FrameKeys: String, CodingKey { case origin, x, y, width, height }
 
         init(from decoder: Decoder) throws {
+            let format = try ProjectFileReading.format(decoder)
             let container = try decoder.container(keyedBy: CodingKeys.self)
 
             var frame: ProjectFrame?
@@ -658,7 +681,18 @@ enum ProjectFileReading {
             var tabs: [ProjectTab] = []
             while !list.isAtEnd {
                 let tab = try list.nestedContainer(keyedBy: TabKeys.self)
-                tabs.append(ProjectTab(root: try tab.decode(Node.self, forKey: .root).node))
+                // The tab's chosen name, new with format 3: absent is none;
+                // an empty one is never written, so one read is a damaged
+                // file, as is a name that is not text.
+                var title = ""
+                if format >= 3, tab.contains(.title) {
+                    title = try tab.decode(String.self, forKey: .title)
+                    guard !title.isEmpty else {
+                        throw DecodingError.dataCorruptedError(
+                            forKey: .title, in: tab, debugDescription: "a tab's chosen name is never written empty")
+                    }
+                }
+                tabs.append(ProjectTab(root: try tab.decode(Node.self, forKey: .root).node, title: title))
             }
             let front = try container.decode(Int.self, forKey: .front)
             guard !tabs.isEmpty, front >= 0, front < tabs.count else {
@@ -679,6 +713,7 @@ enum ProjectFileReading {
             case bySupervisor = "by_supervisor"
             case supervisorSeat = "supervisor_seat"
             case color, workers, shielded
+            case titleChosen = "title_chosen"
         }
 
         private enum AgentKeys: String, CodingKey { case kind, role, cli, session, supervisor }
@@ -703,9 +738,19 @@ enum ProjectFileReading {
                 // of an earlier format never has them, whatever keys it
                 // carries; its seat is where the supervisor's agent was.
                 let marks = format >= 3 ? try Self.marks(container) : nil
+                let title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+                // New with format 3 and as strict as the marks: only `true`,
+                // and only with a title -- chosen and nothing chosen is
+                // written by no build.
+                let titleChosen = format >= 3 ? try Self.onlyTrue(container, .titleChosen) : false
+                if titleChosen && title.isEmpty {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .titleChosen, in: container, debugDescription: "'title_chosen' with no title")
+                }
                 node = .leaf(
                     cwd: try container.decodeIfPresent(String.self, forKey: .cwd) ?? "",
-                    title: try container.decodeIfPresent(String.self, forKey: .title) ?? "",
+                    title: title,
+                    titleChosen: titleChosen,
                     history: try container.decodeIfPresent(String.self, forKey: .history) ?? "",
                     scrollback: ProjectScrollback.isSnapshotFilename(scrollback) ? scrollback : "",
                     // New with format 2 and strict as the agent is: absent
@@ -767,14 +812,7 @@ enum ProjectFileReading {
         private static func marks(
             _ leaf: KeyedDecodingContainer<CodingKeys>
         ) throws -> (seat: Bool, marks: ProjectPaneMarks) {
-            func onlyTrue(_ key: CodingKeys) throws -> Bool {
-                guard leaf.contains(key) else { return false }
-                guard try leaf.decode(Bool.self, forKey: key) else {
-                    throw DecodingError.dataCorruptedError(
-                        forKey: key, in: leaf, debugDescription: "'\(key.stringValue)' is written only as true")
-                }
-                return true
-            }
+            func onlyTrue(_ key: CodingKeys) throws -> Bool { try Self.onlyTrue(leaf, key) }
             var color = PaneColor.none
             if leaf.contains(.color) {
                 let name = try leaf.decode(String.self, forKey: .color)
@@ -794,6 +832,17 @@ enum ProjectFileReading {
             }
             return (try onlyTrue(.supervisorSeat),
                     ProjectPaneMarks(color: color, workersRefused: refused, shielded: try onlyTrue(.shielded)))
+        }
+
+        /// A key written only as `true`: absent is false, and anything else
+        /// -- `false`, `null`, a number -- is an error.
+        private static func onlyTrue(_ leaf: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) throws -> Bool {
+            guard leaf.contains(key) else { return false }
+            guard try leaf.decode(Bool.self, forKey: key) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: key, in: leaf, debugDescription: "'\(key.stringValue)' is written only as true")
+            }
+            return true
         }
 
         /// Strict where the rest of a leaf is not: these keys are new with
@@ -973,9 +1022,11 @@ extension ProjectNode {
         capturing(node, in: tree) { view in
             let who = who(view)
             let marks = view.projectMarksToSave
+            let title = view.projectTitleToSave
             return .leaf(
                 cwd: view.pwd ?? "",
-                title: view.title,
+                title: title.title,
+                titleChosen: title.chosen,
                 history: view.historyFilename ?? "",
                 scrollback: scrollback(view),
                 bySupervisor: who.bySupervisor,
@@ -1030,6 +1081,48 @@ extension Ghostty.SurfaceView {
         }
         handBack.observe(projectMarksLive, reports: poltergeistPaneReports)
         projectMarksHandBack = handBack.settled ? nil : handBack
+    }
+
+    /// The title the terminal has now, and whether somebody chose it.
+    var projectTitleLive: ProjectPaneTitle {
+        .live(title: title, pinned: titleFromTerminal != nil)
+    }
+
+    private final class TitleHandBackBox: NSObject {
+        static var key = 0
+        var value: ProjectTitleHandBack
+        init(_ value: ProjectTitleHandBack) { self.value = value }
+    }
+
+    private var projectTitleHandBack: ProjectTitleHandBack? {
+        get { (objc_getAssociatedObject(self, &TitleHandBackBox.key) as? TitleHandBackBox)?.value }
+        set {
+            objc_setAssociatedObject(
+                self, &TitleHandBackBox.key, newValue.map(TitleHandBackBox.init), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+    }
+
+    /// Give the terminal the name the file says somebody chose for its
+    /// pane (task 1722), **through the core**: `set_surface_title:` pins the
+    /// core's own record of the title -- what `terminal_list` reads -- and
+    /// comes back to this host as an explicit title (`setExplicitTitle`).
+    /// A title nobody chose is not given back at all: it is the program's
+    /// to say again.
+    func handBackProjectTitle(_ file: ProjectPaneTitle) {
+        guard let action = file.handBack, let surface else { return }
+        if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
+            Ghostty.logger.warning("project title hand-back failed")
+        }
+        let handBack = ProjectTitleHandBack(file: file)
+        projectTitleHandBack = handBack.settled(projectTitleLive) ? nil : handBack
+    }
+
+    /// What a save writes of this terminal's title (`capturing`).
+    var projectTitleToSave: ProjectPaneTitle {
+        let live = projectTitleLive
+        guard let handBack = projectTitleHandBack else { return live }
+        if handBack.settled(live) { projectTitleHandBack = nil }
+        return handBack.saved(live)
     }
 
     /// What a save writes of this terminal's marks (`capturing`).
@@ -1091,7 +1184,9 @@ extension ProjectNode {
         // Who was in the pane is not acted on here: a restored pane is a
         // terminal in the right place, and starting an agent in it is a
         // decision for whoever opens the project.
-        case .leaf(let cwd, let title, let history, let scrollback, _, _, let color, let workersRefused, let shielded, _):
+        case .leaf(
+            let cwd, let title, let titleChosen, let history, let scrollback, _, _, let color, let workersRefused,
+            let shielded, _):
             var config = Ghostty.SurfaceConfiguration()
             if !cwd.isEmpty { config.workingDirectory = cwd }
             // Passed through opaquely -- see `SurfaceConfiguration.historyRestore`.
@@ -1112,12 +1207,11 @@ extension ProjectNode {
             // is not handed back: it is the project's own mark, which the
             // core is told through `ProjectLinker`.
             view.handBackProjectMarks(ProjectPaneMarks(color: color, workersRefused: workersRefused, shielded: shielded))
-            // Not forced into the "explicitly named" tier (see
-            // `titleFromTerminal` in `SurfaceView_AppKit.swift`): a saved
-            // title is a snapshot of what the pane showed, not necessarily
-            // something a person chose, so it's free to be replaced once
-            // the shell reports its own title.
-            if !title.isEmpty { view.setTitle(title) }
+            // A name somebody chose goes back pinned, through the core
+            // (task 1722, issue #9). A title the program reported is **not**
+            // given back: it is the program's to say again, and given back
+            // as the pane's title it was what a chosen one had to outrank.
+            view.handBackProjectTitle(ProjectPaneTitle(title: title, chosen: titleChosen))
             // The pane keeps the snapshot name it was saved under, so its
             // next save writes the same file wherever the pane has moved to --
             // and from now on the core keeps that file up to date. This is

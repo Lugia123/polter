@@ -31,7 +31,7 @@
 | 页的增减与次序 | 同上；打开项目之后 | 3 秒 |
 | 哪页在前 | `tabs::set_active` | 3 秒 |
 | 窗口位置大小 | `WM_SIZE` / `WM_MOVE` | 10 秒 |
-| 标题、目录 | `Op::SetTabTitle`、`set_cwd_for_surface` | 30 秒 |
+| 标题、目录 | `Op::SetTabTitle`、`tabs::rename_tab`（标签条上改名不经过 `run_ops`）、`set_cwd_for_surface` | 30 秒 |
 
 安静 1 秒就写；一直不安静，到「最晚」也写。数值与 mac 一致。「哪个项目变了」不问——每个开着的项目都记一笔，
 只会改时间的写盘本来就不落盘（`project::write_file`）。
@@ -62,6 +62,29 @@
   `a_save_before_the_marks_are_taken_back_writes_what_the_file_had`。
 - 旧版本（只读到 format 2）遇到 format 3 报 `TooNew` 拒读；新版本存一次 format 2 文件就把它升成 3
   （`found_on_disk` 把升格式当布局变化，留 `.prev`）。
+
+### 2.2 有人取的名字（format 3，任务 #1722）
+
+规则（issue #9，`src/apprt/title.zig`）：有人取的名字压过程序报的标题（OSC 0/2）并且钉住；**程序的标题不从项目里恢复**。
+格式：`Project.zig` 模块注释——标签页 `{"root":…,"title":S}`（没有就不写），叶子 `"title"` 之后紧跟
+`"title_chosen":true`（只在为真且标题非空时写）。夹具 `test/project-format/titles.json`。
+
+- **这个宿主没有「每格一个取的名字」**：显式的 `set_surface_title` 钉的是那一格所在的整个**标签页**
+  （`Op::SetTabTitle` → `rename_tab(NamedBy::Tool)`）。所以：
+  - **存**：标签页的 `title` = `title_override.text`（谁钉的都算：User / Tool / Restored），没有就不写
+    （`tabs::chosen_name_of_tab` → `Live::title`）；叶子的 `title` 仍是那一格程序报的标题，`title_chosen`
+    在 Windows 上恒为 false（`project_ui::tab_tree` 的注释）。
+  - **开**：标签页建好之后、成为页之前，`polter_projects::pages::restored_name` 给出名字就
+    `rename_tab(…, NamedBy::Restored)`（与重开关掉的标签页同一做法）。名字取标签页自己的 `title`；没有时，
+    这个标签页里**恰好一格** `title_chosen`（mac 写的）就用它——这正是 Windows 上 `set_surface_title`
+    当场会做的事；两格以上不猜。程序的标题什么也不做。
+- **竞态**：改名在 `open_page_in_new_tab` 返回之后立刻做，早于这一页进 `bound`（以及循环之后的 `OPEN`），
+  所以打开后那次立即保存看到的已经是改过名的标签页。万一有一次保存先看到没名字的标签页：`Live::title`
+  为 `None` 时 `Pages::saving` 取文件里这一页的 `restored_name`，不写「没有名字」。判据：`polter-projects` 的
+  `a_save_before_the_name_is_put_back_writes_what_the_file_had`。⚠️ 这条成立是因为这个宿主**没有办法把取的名字拿掉**；
+  将来加了「恢复程序标题」，`Live::title` 必须变成三态。
+- **已知的损失**：mac 在同一个标签页里给两格以上各取了名字、标签页本身没名字——Windows 打开时不改名，
+  下一次保存把这些格写成 `title_chosen` 缺省，名字只剩作为「程序标题」的那份文字，mac 再打开不会恢复。
 
 ## 3. 整个打开
 

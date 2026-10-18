@@ -4630,6 +4630,16 @@ pub fn title_of_tab(id: TabId) -> String {
     with_windows(|ws| ws.iter().flat_map(|w| w.tabs.iter()).find(|t| t.id == id).map(|t| t.title.clone())).unwrap_or_default()
 }
 
+/// The name somebody gave a tab -- by hand, through `set_tab_title` or
+/// `set_surface_title`, or put back -- wherever it is; `None` for a tab
+/// nobody named, or one that is nowhere any more. **Not the title the strip
+/// shows**, which for a tab nobody named is the program's: that is not a
+/// name a project puts back (task 1722).
+// window-free: keyed by a tab's id, which is unique in the process
+pub fn chosen_name_of_tab(id: TabId) -> Option<String> {
+    with_windows(|ws| ws.iter().flat_map(|w| w.tabs.iter()).find(|t| t.id == id).and_then(|t| t.title_override.as_ref().map(|p| p.text.clone())))
+}
+
 /// The tab the terminal the core names `key` is in, and its window.
 // window-free: keyed by a terminal's id, which is unique in the process
 pub fn tab_of_terminal(key: &str) -> Option<(HWND, TabId)> {
@@ -5377,6 +5387,9 @@ pub fn rename_tab(frame: HWND, id: TabId, title: String, by: NamedBy) {
     if renamed {
         crate::uia::tab_renamed(frame, id, &title);
         sync_caption(frame);
+        // A project page's name is in its file (task 1722). The strip's
+        // rename box comes straight here, not through `run_ops`'s note.
+        crate::project_session::note(polter_projects::autosave::Change::PaneDetail);
     }
 }
 

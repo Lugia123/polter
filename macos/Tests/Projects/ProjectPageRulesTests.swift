@@ -102,15 +102,15 @@ struct ProjectPageRulesTests {
     // MARK: How big a project is
 
     @Test func aProjectIsCountedWhole() {
-        func leaf(_ cwd: String) -> ProjectNode { .leaf(cwd: cwd, title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none) }
+        func leaf(_ cwd: String) -> ProjectNode { .leaf(cwd: cwd, title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none) }
         let file = ProjectFile(
             name: "p", savedAt: 1, group: nil,
             windows: [
                 ProjectWindow(frame: nil, front: 0, tabs: [
-                    ProjectTab(root: leaf("/a")),
-                    ProjectTab(root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/b"), right: leaf("/c"))),
+                    ProjectTab(root: leaf("/a"), title: ""),
+                    ProjectTab(root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/b"), right: leaf("/c")), title: ""),
                 ]),
-                ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf("/d"))]),
+                ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf("/d"), title: "")]),
             ],
             nextScrollback: nil)
         #expect(file.pageCount == 3)

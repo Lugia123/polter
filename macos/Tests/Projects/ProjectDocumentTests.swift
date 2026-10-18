@@ -11,8 +11,8 @@ struct ProjectDocumentTests {
     /// the ratio to when a split is first created) would pass any test
     /// that only checks pane count or directories. This one doesn't.
     @Test func roundTripPreservesRatioNotJustShape() throws {
-        let left = ProjectNode.leaf(cwd: "/work/repo", title: "left pane", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
-        let right = ProjectNode.leaf(cwd: "/work/repo/tests", title: "right pane", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
+        let left = ProjectNode.leaf(cwd: "/work/repo", title: "left pane", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
+        let right = ProjectNode.leaf(cwd: "/work/repo/tests", title: "right pane", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
         let root = ProjectNode.split(direction: .horizontal, ratio: 0.37, left: left, right: right)
         let file = ProjectFile.oneTab(name: "two panes", savedAt: 1_757_000_000, root: root, nextScrollback: nil)
 
@@ -39,9 +39,9 @@ struct ProjectDocumentTests {
     }
 
     @Test func paneCountCountsAllLeavesInNestedSplits() {
-        let a: ProjectNode = .leaf(cwd: "/a", title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
-        let b: ProjectNode = .leaf(cwd: "/b", title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
-        let c: ProjectNode = .leaf(cwd: "/c", title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
+        let a: ProjectNode = .leaf(cwd: "/a", title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
+        let b: ProjectNode = .leaf(cwd: "/b", title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
+        let c: ProjectNode = .leaf(cwd: "/c", title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
         let inner: ProjectNode = .split(direction: .vertical, ratio: 0.5, left: b, right: c)
         let root: ProjectNode = .split(direction: .horizontal, ratio: 0.3, left: a, right: inner)
         #expect(root.leafCount == 3)
@@ -89,8 +89,8 @@ struct ProjectDocumentTests {
         }
         #expect(direction == .horizontal)
         #expect(ratio == 0.62)
-        #expect(left == .leaf(cwd: "/work/repo", title: "✳ retry.py", history: "a1b2c3.history", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown))
-        #expect(right == .leaf(cwd: "/work/repo/tests", title: "✳ tests", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown))
+        #expect(left == .leaf(cwd: "/work/repo", title: "✳ retry.py", titleChosen: false, history: "a1b2c3.history", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown))
+        #expect(right == .leaf(cwd: "/work/repo/tests", title: "✳ tests", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown))
     }
 
     /// `saved_at` must be a JSON integer: `Project.zig`'s reader rejects a
@@ -162,8 +162,8 @@ struct ProjectDocumentTests {
         #expect(file.firstTab == .split(
             direction: .vertical,
             ratio: 0.25,
-            left: .leaf(cwd: "/a", title: "", history: "h.history", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown),
-            right: .leaf(cwd: "/b", title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)))
+            left: .leaf(cwd: "/a", title: "", titleChosen: false, history: "h.history", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown),
+            right: .leaf(cwd: "/b", title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)))
     }
 
     // MARK: - Scrollback
@@ -172,7 +172,7 @@ struct ProjectDocumentTests {
     /// a writer that forgot to emit `scrollback` would still decode every
     /// fixture fine and quietly save projects that restore empty screens.
     @Test func scrollbackIsWrittenAndReadBack() throws {
-        let leaf = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "3.snap", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
+        let leaf = ProjectNode.leaf(cwd: "/a", title: "", titleChosen: false, history: "", scrollback: "3.snap", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
         let file = ProjectFile.oneTab(name: "x", savedAt: 0, root: leaf, nextScrollback: nil)
         let data = try file.encoded()
 
@@ -185,7 +185,7 @@ struct ProjectDocumentTests {
     /// same as `cwd`/`title`/`history` -- so a project saved with the
     /// feature off is byte-for-byte what it was before the field existed.
     @Test func emptyScrollbackIsOmitted() throws {
-        let file = ProjectFile.oneTab(name: "x", savedAt: 0, root: .leaf(cwd: "/a", title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown), nextScrollback: nil)
+        let file = ProjectFile.oneTab(name: "x", savedAt: 0, root: .leaf(cwd: "/a", title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown), nextScrollback: nil)
         let text = try #require(String(bytes: try file.encoded(), encoding: .utf8))
         #expect(!text.contains("scrollback"))
     }
@@ -200,7 +200,7 @@ struct ProjectDocumentTests {
             {"name": "x", "saved_at": 0, "root": {"kind": "leaf", "cwd": "/a", "scrollback": \(String(reflecting: hostile))}}
             """
             let file = try ProjectFile.decode(from: Data(json.utf8))
-            #expect(file.firstTab == .leaf(cwd: "/a", title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown), "\(hostile)")
+            #expect(file.firstTab == .leaf(cwd: "/a", title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown), "\(hostile)")
         }
     }
 
@@ -265,7 +265,7 @@ struct ProjectPaneMarksFileTests {
         _ cwd: String, seat: Bool = false, color: PaneColor = .none, refused: Bool = false, shielded: Bool = false,
         agent: ProjectAgent = .none
     ) -> ProjectNode {
-        .leaf(cwd: cwd, title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: seat,
+        .leaf(cwd: cwd, title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: seat,
               color: color, workersRefused: refused, shielded: shielded, agent: agent)
     }
 
@@ -301,7 +301,7 @@ struct ProjectPaneMarksFileTests {
     /// left out when it is the default.
     @Test func theMarksAreWrittenAfterBySupervisorInTheirOrder() throws {
         let all = ProjectNode.leaf(
-            cwd: "/w", title: "t", history: "", scrollback: "0.snap", bySupervisor: true, supervisorSeat: true,
+            cwd: "/w", title: "t", titleChosen: false, history: "", scrollback: "0.snap", bySupervisor: true, supervisorSeat: true,
             color: .graphite, workersRefused: true, shielded: true, agent: .none)
         var out = ""
         try ProjectFileWriting.node(all, into: &out)
@@ -345,5 +345,86 @@ struct ProjectPaneMarksFileTests {
         // One seat is kept.
         let one = ProjectFile.oneTab(name: "n", savedAt: 1, root: Self.leaf("/a", seat: true), nextScrollback: nil)
         #expect(try ProjectFile.decode(from: one.encoded()) == one)
+    }
+}
+
+// MARK: - Format 3: names somebody chose (task 1722)
+
+@Suite
+struct ProjectChosenTitleFileTests {
+    private static func file(format: Int, leaf keys: String, tab: String = "") -> Data {
+        Data("{\"format\":\(format),\"name\":\"n\",\"saved_at\":1,\"windows\":[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\(keys)\"agent\":{\"kind\":\"none\"}}\(tab)}]}]}".utf8)
+    }
+
+    private static func leaf(_ title: String, chosen: Bool) -> ProjectNode {
+        .leaf(cwd: "/w", title: title, titleChosen: chosen, history: "", scrollback: "", bySupervisor: false,
+              supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
+    }
+
+    /// Right after `title`, only when true, and only with a title.
+    @Test func aChosenTitleIsWrittenRightAfterTheTitle() throws {
+        var out = ""
+        try ProjectFileWriting.node(Self.leaf("dev server", chosen: true), into: &out)
+        #expect(out == #"{"kind":"leaf","cwd":"/w","title":"dev server","title_chosen":true,"agent":{"kind":"none"}}"#)
+        out = ""
+        try ProjectFileWriting.node(Self.leaf("vim app.js", chosen: false), into: &out)
+        #expect(out == #"{"kind":"leaf","cwd":"/w","title":"vim app.js","agent":{"kind":"none"}}"#)
+        // Chosen and nothing chosen is never written.
+        out = ""
+        try ProjectFileWriting.node(Self.leaf("", chosen: true), into: &out)
+        #expect(out == #"{"kind":"leaf","cwd":"/w","agent":{"kind":"none"}}"#)
+    }
+
+    @Test func aChosenTitleReadsBackChosenAndAProgramsTitleDoesNot() throws {
+        let chosen = try ProjectFile.decode(from: Self.file(format: 3, leaf: #""cwd":"/w","title":"dev server","title_chosen":true,"#))
+        #expect(chosen.firstTab == Self.leaf("dev server", chosen: true))
+        let program = try ProjectFile.decode(from: Self.file(format: 3, leaf: #""cwd":"/w","title":"vim","#))
+        #expect(program.firstTab == Self.leaf("vim", chosen: false))
+        // A format 2 file never said, whatever keys it carries.
+        let two = try ProjectFile.decode(from: Self.file(format: 2, leaf: #""cwd":"/w","title":"t","title_chosen":true,"#))
+        #expect(two.firstTab == Self.leaf("t", chosen: false))
+    }
+
+    @Test func aChosenTitleWrittenAnyOtherWayIsAnError() {
+        let cases: [(String, String)] = [
+            ("written false", #""title":"t","title_chosen":false,"#),
+            ("not a boolean", #""title":"t","title_chosen":"yes","#),
+            ("a number", #""title":"t","title_chosen":1,"#),
+            ("null", #""title":"t","title_chosen":null,"#),
+            ("with no title", #""title_chosen":true,"#),
+            ("with an empty title", #""title":"","title_chosen":true,"#),
+        ]
+        for (what, keys) in cases {
+            #expect(throws: (any Error).self, "a chosen title \(what): read without complaint") {
+                try ProjectFile.decode(from: Self.file(format: 3, leaf: keys))
+            }
+        }
+    }
+
+    /// A tab's chosen name: after its root, left out when it has none.
+    @Test func aTabsNameIsWrittenAfterItsRootAndReadBack() throws {
+        let named = ProjectFile(
+            name: "n", savedAt: 1, group: nil,
+            windows: [ProjectWindow(frame: nil, front: 0, tabs: [
+                ProjectTab(root: Self.leaf("", chosen: false), title: "web"),
+                ProjectTab(root: Self.leaf("", chosen: false), title: ""),
+            ])],
+            nextScrollback: nil)
+        let bytes = try #require(String(bytes: try named.encoded(), encoding: .utf8))
+        #expect(bytes.contains(#"{"root":{"kind":"leaf","cwd":"/w","agent":{"kind":"none"}},"title":"web"},{"root":{"kind":"leaf","cwd":"/w","agent":{"kind":"none"}}}]"#))
+        let read = try ProjectFile.decode(from: try named.encoded())
+        #expect(read == named)
+        #expect(read.windows[0].tabs.map(\.titleOverride) == ["web", nil])
+        // Before format 3 a tab had no name, whatever the file carries.
+        let two = try ProjectFile.decode(from: Self.file(format: 2, leaf: "", tab: #","title":"web""#))
+        #expect(two.windows[0].tabs[0].title == "")
+    }
+
+    @Test func aTabsNameWrittenAnyOtherWayIsAnError() {
+        for bad in [#""""#, "5", "null", "true", #"["web"]"#] {
+            #expect(throws: (any Error).self, "a tab name of \(bad): read without complaint") {
+                try ProjectFile.decode(from: Self.file(format: 3, leaf: "", tab: ",\"title\":\(bad)"))
+            }
+        }
     }
 }

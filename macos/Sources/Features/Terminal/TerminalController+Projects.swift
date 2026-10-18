@@ -414,6 +414,12 @@ extension TerminalController {
             .dropFirst()
             .sink { [weak self] _ in self?.projectSession?.poke(.paneDetail) }
             .store(in: &projectAutosaveCancellables)
+        // The tab's chosen name is saved with its page (task 1722).
+        $titleOverride
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.projectSession?.poke(.paneDetail) }
+            .store(in: &projectAutosaveCancellables)
         // The user's marks on a pane are part of what is saved (format 3,
         // task 1699): a colour, the workers mark or the shield changed is
         // a pane changed.
