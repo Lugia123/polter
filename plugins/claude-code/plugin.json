@@ -51,7 +51,7 @@
       "skills": {
         "type": "string",
         "title": "Install skills as well",
-        "description": "yes mirrors Polter's skills into ~/.claude/skills/polter-*. Claude Code matches its own skills against what the user asked for; Polter's skill_read has to be thought of first, which is why a supervisor told to mind some terminals reaches for a subagent instead. no registers the MCP server and nothing else.",
+        "description": "yes mirrors Polter's skills into ~/.claude/skills/polter-*. Claude Code matches its own skills against what the user asked for; Polter's skill_read has to be thought of first, which is why a supervisor told to mind some terminals reaches for a subagent instead. no registers the MCP server and takes back the polter-* skills an earlier yes installed; skills you wrote yourself are never touched.",
         "enum": [
           "yes",
           "no"

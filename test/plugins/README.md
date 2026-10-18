@@ -23,6 +23,7 @@ only `.md`, so anything dropped into `plugins/` ships to users.
 | `mutate.ps1` | The floor under the suite: six injections, each run against `provtest.ps1`, each reverted afterwards. |
 | `probe.ps1` | For when an injection survives — runs a plugin by hand and prints its raw stdout and stderr instead of an assertion's verdict. |
 | `archivetest.ps1` | `plugins/archive/archive.ps1` over batches of one, two, none, `null`, missing, and an object that is not a list. **Not Windows-only**: it starts the plugin under whichever PowerShell runs it, so `pwsh -NoProfile -File test/plugins/archivetest.ps1` works on macOS (7.x) and `powershell -File` on the test machine (5.1). The batch of one is the case that was lost (#1696). |
+| `skills-off.py` | `skills = no` takes back the `polter-*` skills the `claude-code` plugin installed and nothing of the user's: yes→no, never installed, a directory of the user's own skills, an unknown value (#1698). Drives `provision.sh` and, when a PowerShell is there, `provision.ps1` through the real protocol. **POSIX only** (its stub `claude` is a shell script): `python3 test/plugins/skills-off.py` on macOS. |
 
 ## Deploying
 

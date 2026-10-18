@@ -461,7 +461,20 @@ polter_provision() {
     fi
   fi
 
-  [ "$want_skills" = yes ] || { polter_provision_done; return $?; }
+  # Switched off, the skills this plugin installed are taken back (task
+  # 1698): "no" used to mean "install nothing more", and every `polter-*`
+  # skill an earlier launch had written stayed where it was, still matched
+  # against what the user asked for. Only on the word `no` -- a value nobody
+  # recognises is not a request to delete anything -- and only what
+  # `polter_skills_prune` can tell is ours.
+  if [ "$want_skills" != yes ]; then
+    if [ "$want_skills" = no ]; then
+      skills_dir=$(host_skills_dir)
+      [ -z "$skills_dir" ] || polter_skills_prune "$skills_dir" "" ", because skills is set to no"
+    fi
+    polter_provision_done
+    return $?
+  fi
 
   skills_dir=$(host_skills_dir)
   if [ -z "$skills_dir" ]; then
@@ -603,12 +616,26 @@ polter_provision() {
 
   [ -n "$shipped" ] || { polter_provision_done; return $?; }
 
-  for dir in "$skills_dir"/polter-*; do
+  polter_skills_prune "$skills_dir" "$shipped" ", which Polter no longer ships"
+
+  polter_provision_done
+  return $?
+}
+
+# Remove every `polter-*` skill under directory $1 whose name is not in the
+# newline-separated list $2, ending the log line with $3 (the reason). An empty $2 removes all
+# of them: that is what `skills = no` asks for, and the caller is the one
+# that knows it asked -- the install pass never calls this with an empty list.
+#
+# **The `polter-` prefix is treated as this plugin's namespace**, narrowed by
+# the checks below to what this plugin actually writes.
+polter_skills_prune() {
+  for dir in "$1"/polter-*; do
     [ -d "$dir" ] || continue
 
     base=${dir##*/}
 
-    printf '%s\n' "$shipped" | grep -qxF "$base" && continue
+    printf '%s\n' "$2" | grep -qxF "$base" && continue
 
     # Exactly one entry, and it is the file this plugin writes. A skill that
     # grew a `references/` or a script is not one of ours.
@@ -627,15 +654,14 @@ polter_provision() {
     # is what it already was; taking the user's whole tool surface down over
     # it would be the worse trade.
     if rm -rf "$dir"; then
-      say "removed $base, which Polter no longer ships"
+      say "removed $base$3"
       wrote=yes
     else
-      say "could not remove the stale skill $base"
+      say "could not remove the skill $base$3"
     fi
   done
 
-  polter_provision_done
-  return $?
+  return 0
 }
 
 # One line per launch, always, and it used to be one line only when something

@@ -52,7 +52,7 @@
       "skills": {
         "type": "string",
         "title": "Install skills as well",
-        "description": "yes mirrors Polter's skills into this host's skills directory. Polter's skill_read has to be thought of first; a host's own skills are matched against what the user asked for, which is the whole difference. no registers the MCP server and nothing else.",
+        "description": "yes mirrors Polter's skills into this host's skills directory. Polter's skill_read has to be thought of first; a host's own skills are matched against what the user asked for, which is the whole difference. no registers the MCP server and takes back the polter-* skills an earlier yes installed; skills you wrote yourself are never touched.",
         "enum": [
           "yes",
           "no"

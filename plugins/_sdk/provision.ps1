@@ -595,7 +595,15 @@ function Invoke-PolterProvision {
         }
     }
 
+    # Switched off, the skills this plugin installed are taken back (task
+    # 1698; see provision.sh). Only on the word `no`, and only what
+    # `Remove-PolterSkills` can tell is ours.
     if ($script:PolterWantSkills -ne 'yes') {
+        if ($script:PolterWantSkills -eq 'no') {
+            $offDir = ''
+            try { $offDir = ((Get-HostSkillsDir | Out-String).Trim()) } catch { $offDir = '' }
+            if ($offDir) { Remove-PolterSkills -SkillsDir $offDir -Keep @() -Why ', because skills is set to no' }
+        }
         return (Write-PolterProvisionDone)
     }
 
@@ -689,9 +697,20 @@ function Invoke-PolterProvision {
     # acting on it would delete every skill on the machine.
     $shipped = @($skills | ForEach-Object { 'polter-' + (Get-PolterProp $_ 'name' '') })
 
-    if (Test-Path -LiteralPath $skillsDir) {
-        foreach ($d in @(Get-ChildItem -LiteralPath $skillsDir -Directory -Filter 'polter-*' -ErrorAction SilentlyContinue)) {
-            if ($shipped -contains $d.Name) { continue }
+    Remove-PolterSkills -SkillsDir $skillsDir -Keep $shipped -Why ', which Polter no longer ships'
+
+    return (Write-PolterProvisionDone)
+}
+
+# Remove every `polter-*` skill under -SkillsDir whose name is not in -Keep,
+# ending the log line with -Why. An empty -Keep removes all of them: that is
+# what `skills = no` asks for, and only that caller passes one -- the install
+# pass never does. The same checks as `polter_skills_prune` in provision.sh.
+function Remove-PolterSkills {
+    param([string]$SkillsDir, [string[]]$Keep, [string]$Why)
+    if (Test-Path -LiteralPath $SkillsDir) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $SkillsDir -Directory -Filter 'polter-*' -ErrorAction SilentlyContinue)) {
+            if ($Keep -contains $d.Name) { continue }
 
             # Exactly one entry, and it is the file this plugin writes. A
             # skill that grew a `references/` or a script is not one of ours.
@@ -707,15 +726,13 @@ function Invoke-PolterProvision {
             # tool surface down over it would be the worse trade.
             try {
                 Remove-Item -LiteralPath $d.FullName -Recurse -Force
-                Write-PolterLog "removed $($d.Name), which Polter no longer ships"
+                Write-PolterLog "removed $($d.Name)$Why"
                 $script:PolterWrote = $true
             } catch {
-                Write-PolterLog "could not remove the stale skill $($d.Name)"
+                Write-PolterLog "could not remove the skill $($d.Name)$Why"
             }
         }
     }
-
-    return (Write-PolterProvisionDone)
 }
 
 # The `awk` program from `provision.sh`, line for line.

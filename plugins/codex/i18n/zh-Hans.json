@@ -4,7 +4,7 @@
   "params": {
     "skills": {
       "title": "安装 skill",
-      "description": "选「装」会把 Polter 的 skill 同步到这个 CLI 的 skill 目录。CLI 只拿自己的 skill 去匹配用户的请求，而 Polter 的 skill_read 得先想到才会用，差别就在这里。选「不装」就只注册 MCP 服务。",
+      "description": "选「装」会把 Polter 的 skill 同步到这个 CLI 的 skill 目录。CLI 只拿自己的 skill 去匹配用户的请求，而 Polter 的 skill_read 得先想到才会用，差别就在这里。选「不装」只注册 MCP 服务，并删掉之前装过的 polter-* skill；你自己写的 skill 不会动。",
       "choices": {
         "yes": "装",
         "no": "不装"

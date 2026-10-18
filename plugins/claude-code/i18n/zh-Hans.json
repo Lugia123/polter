@@ -12,7 +12,7 @@
     },
     "skills": {
       "title": "安装 skill",
-      "description": "选「装」会把 Polter 的 skill 同步到 ~/.claude/skills/polter-*。Claude Code 只拿自己的 skill 去匹配用户的请求，Polter 的 skill_read 得先想到才会用——所以总管被叫去盯几个终端时，常常转手去派子 agent。选「不装」就只注册 MCP 服务。",
+      "description": "选「装」会把 Polter 的 skill 同步到 ~/.claude/skills/polter-*。Claude Code 只拿自己的 skill 去匹配用户的请求，Polter 的 skill_read 得先想到才会用——所以总管被叫去盯几个终端时，常常转手去派子 agent。选「不装」只注册 MCP 服务，并删掉之前装过的 polter-* skill；你自己写的 skill 不会动。",
       "choices": {
         "yes": "装",
         "no": "不装"
