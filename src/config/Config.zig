@@ -7484,6 +7484,15 @@ pub fn keyEventIsBinding(
     return self.keybind.set.getEvent(event) != null;
 }
 
+/// Whether "reopen a closed tab" is offered by default (task 1708). **Hidden,
+/// not removed**: with projects it has stopped earning its place, so the
+/// entry points are switched off and everything behind them is kept. This
+/// one decides the core's default key (`shift+cmd+t` on macOS); the menus
+/// that show the entry have their own switch on each host --
+/// `ReopenTabEntry.offered` (macOS) and `reopen::OFFERED` (Windows) -- and
+/// turning the feature back on is setting all three to `true`.
+const reopen_closed_tab_offered = false;
+
 /// Stores a set of keybinds.
 pub const Keybinds = struct {
     set: inputpkg.Binding.Set = .{},
@@ -8509,7 +8518,12 @@ pub const Keybinds = struct {
             );
 
             // Undo/redo
-            try self.set.putFlags(
+            //
+            // `shift+cmd+t` is the browser's "reopen closed tab", so it goes
+            // with that entry point: unbound while it is hidden
+            // (`reopen_closed_tab_offered`). A user who binds it to `undo` in
+            // their own config still gets `undo`.
+            if (reopen_closed_tab_offered) try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .unicode = 't' }, .mods = .{ .super = true, .shift = true } },
                 .{ .undo = {} },
@@ -9159,6 +9173,40 @@ pub const Keybinds = struct {
         // The search family is left alone: still performable-only, still
         // off the menu.
         try testing.expect(keybinds.set.getTrigger(.start_search) == null);
+    }
+
+    // **Task 1708: no default key reopens a closed tab while the entry is
+    // hidden.** A key that still works with nothing on screen to say so is
+    // the thing hiding must not leave behind. Asked of both chords, so the
+    // test means the same on every platform: `shift+cmd+t` is macOS's (and
+    // was `undo`), `ctrl+shift+t` is everywhere else's (and is `new_tab`).
+    test "Keybinds: the browser's reopen-tab chord is not a default undo" {
+        const testing = std.testing;
+        var arena = ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var keybinds: Keybinds = .{};
+        try keybinds.init(alloc);
+
+        const chords = [_]inputpkg.Binding.Trigger{
+            .{ .key = .{ .unicode = 't' }, .mods = .{ .super = true, .shift = true } },
+            .{ .key = .{ .unicode = 't' }, .mods = .{ .ctrl = true, .shift = true } },
+        };
+        for (chords) |chord| {
+            const entry = keybinds.set.get(chord) orelse continue;
+            const is_undo = switch (entry.value_ptr.*) {
+                .leaf => |leaf| leaf.action == .undo,
+                else => false,
+            };
+            try testing.expect(!is_undo);
+        }
+
+        // Edit › Undo keeps its own key: only the reopen chord went.
+        if (comptime builtin.target.os.tag.isDarwin()) {
+            const undo = keybinds.set.getTrigger(.undo).?;
+            try testing.expectEqual(@as(u21, 'z'), undo.key.unicode);
+        }
     }
 
     // **Polter's five on macOS (task 1551), and through `getTrigger`** --

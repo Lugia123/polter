@@ -683,6 +683,15 @@ fn load_commands(config: Config) -> Vec<Command> {
             );
             continue;
         }
+        // **Not `UNAVAILABLE`**: these work, they are only not offered
+        // (task 1708). On this host `undo` and `redo` are reopening a closed
+        // tab and closing it again -- see `reopen::OFFERED`.
+        if !crate::reopen::offers(&key) {
+            hidden += 1;
+            // process-wide: the command list is read once for the process
+            plogf!("[palette] hiding {:?} ({}): reopening closed tabs is not offered (task 1708)", title, key);
+            continue;
+        }
         let haystack = title.to_lowercase();
         let mut aliases = synonyms_for(&title);
         aliases.push(action_alias(&action));

@@ -1283,11 +1283,43 @@ pub fn max_static_id() -> usize {
 /// `§3.4.3` says greyed rather than hidden, and that rule is about a row that
 /// exists for this terminal and cannot be used **now**. This one does not
 /// exist for a worker at all -- see `Flag::WorkerMentions`.
+///
+/// «Reopen Closed Tab» is the other row left out rather than greyed (task
+/// 1708): hidden while `reopen::OFFERED` says so, and kept in the table so
+/// that turning it back on is that constant and nothing else.
 fn row_visible(r: &Row, supervisor: bool) -> bool {
+    if r.action == Some(REOPEN_TAB) && !crate::reopen::OFFERED {
+        return false;
+    }
     match r.check {
         Some(Flag::WorkerMentions) => supervisor,
         _ => true,
     }
+}
+
+/// The host action of the «Reopen Closed Tab» row.
+const REOPEN_TAB: &str = "__polter_reopen_tab";
+
+/// The rows of one popup as it is drawn: the visible ones, without a
+/// separator that a hidden row left doubled.
+///
+/// **Ids are not affected**: they are handed out to rows with an action, in
+/// `flatten`'s order, and a separator has none -- so dropping one here
+/// cannot shift what a click runs.
+fn shown(rows: &[Row], supervisor: bool) -> Vec<&Row> {
+    let mut out: Vec<&Row> = Vec::with_capacity(rows.len());
+    for r in rows.iter().filter(|r| row_visible(r, supervisor)) {
+        if is_separator(r) && out.last().is_some_and(|p| is_separator(p)) {
+            continue;
+        }
+        out.push(r);
+    }
+    out
+}
+
+/// `sep()`: no label, and not the persona row, which has none either.
+fn is_separator(r: &Row) -> bool {
+    r.label.is_empty() && !r.personas && r.sub.is_none()
 }
 
 /// Whether the surface the root menu acts on is a supervisor.
@@ -1344,12 +1376,10 @@ fn build(
                 return None;
             }
         };
-        for r in rows {
-            // **The same question `flatten` asked, and asked of the same
-            // value.** These two walks are what pairs an id with a command.
-            if !row_visible(r, supervisor) {
-                continue;
-            }
+        // **The same question `flatten` asked, and asked of the same
+        // value** (`shown` asks `row_visible`). These two walks are what
+        // pairs an id with a command.
+        for r in shown(rows, supervisor) {
             if r.personas {
                 // **The surface, not the window.** A persona belongs to one
                 // terminal, and this menu hangs off a frame that may hold
@@ -1563,7 +1593,9 @@ fn host_commands_where(live: impl Fn(&Row) -> bool) -> Vec<HostCommand> {
             if let Some(s) = r.sub {
                 walk(s, live, out);
             } else if let Some(action) = r.action {
-                if crate::keys::is_host_action(action) && live(r) {
+                // A row the menu leaves out is not offered here either: the
+                // palette is the menu's rows, searched.
+                if crate::keys::is_host_action(action) && row_visible(r, true) && live(r) {
                     out.push(HostCommand { action, label: r.label });
                 }
             }
@@ -1925,7 +1957,14 @@ mod tests {
     #[test]
     fn the_palette_is_offered_every_host_row() {
         let offered: Vec<&str> = host_commands_where(|_| true).iter().map(|c| c.action).collect();
-        let table: Vec<&str> = all_rows().iter().filter_map(|r| r.action).filter(|a| crate::keys::is_host_action(a)).collect();
+        // Every row **the menu shows**: one it leaves out (task 1708's
+        // «Reopen Closed Tab») is left out of the palette too.
+        let table: Vec<&str> = all_rows()
+            .iter()
+            .filter(|r| row_visible(r, true))
+            .filter_map(|r| r.action)
+            .filter(|a| crate::keys::is_host_action(a))
+            .collect();
         assert_eq!(offered, table);
         for a in [
             "__polter_save_project",
@@ -1938,6 +1977,27 @@ mod tests {
         ] {
             assert!(offered.contains(&a), "{a} is not offered to the palette");
         }
+    }
+
+    /// **Task 1708: «Reopen Closed Tab» is hidden, not greyed and not gone.**
+    /// It stays in the table -- turning it back on is `reopen::OFFERED` --
+    /// and the File menu as drawn has neither it nor the doubled separator
+    /// its absence would leave.
+    #[test]
+    fn the_reopen_row_is_hidden_and_leaves_no_doubled_separator() {
+        assert!(!crate::reopen::OFFERED);
+        assert_eq!(all_rows().iter().filter(|r| r.action == Some(REOPEN_TAB)).count(), 1);
+
+        let file = shown(FILE_ROWS, false);
+        assert!(!file.iter().any(|r| r.action == Some(REOPEN_TAB)));
+        for pair in file.windows(2) {
+            assert!(!(is_separator(pair[0]) && is_separator(pair[1])), "two separators in a row");
+        }
+        // Exactly one row went: the separator pair around it became one.
+        assert_eq!(file.len(), FILE_ROWS.len() - 2);
+
+        let palette: Vec<&str> = host_commands_where(|_| true).iter().map(|c| c.action).collect();
+        assert!(!palette.contains(&REOPEN_TAB));
     }
 
     /// A row this menu would grey is not offered: the palette asks the same

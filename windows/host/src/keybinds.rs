@@ -170,6 +170,19 @@ pub fn keys_label(row: &Row) -> String {
 /// Returns an empty vector when the API is not loaded yet, which is the same
 /// answer a caller would get before startup finishes; it is not an error
 /// worth a dialog.
+/// The rows the Keyboard Shortcuts page lists: `rows`, less an action whose
+/// entry points are hidden (`reopen::offers`, task 1708) **unless the person
+/// bound it themselves** -- a key they set has to be findable on the page
+/// that lists keys, and it still works.
+pub fn listed() -> Vec<Row> {
+    listed_from(rows(), crate::reopen::offers)
+}
+
+fn listed_from(mut rows: Vec<Row>, offers: impl Fn(&str) -> bool) -> Vec<Row> {
+    rows.retain(|r| offers(r.action) || !r.triggers.is_empty());
+    rows
+}
+
 pub fn rows() -> Vec<Row> {
     let Some(api) = crate::api_opt() else {
         return Vec::new();
@@ -254,6 +267,22 @@ mod tests {
         ]);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].hidden_from_menu);
+    }
+
+    /// Task 1708: an unbound `undo` -- which on this host reopens a closed
+    /// tab -- is not listed while that is hidden; one the person bound is.
+    #[test]
+    fn a_hidden_entry_is_listed_only_when_the_person_bound_it() {
+        let names = |rows: Vec<Row>| rows.iter().map(|r| r.action).collect::<Vec<_>>();
+        let page = || vec![row("new_tab", 1, false), row("undo", 0, false), row("redo", 0, false)];
+        assert_eq!(names(listed_from(page(), crate::reopen::offers)), vec!["new_tab"]);
+
+        let mut bound = page();
+        bound[1].triggers.push(Trigger::default());
+        assert_eq!(names(listed_from(bound, crate::reopen::offers)), vec!["new_tab", "undo"]);
+
+        // Offered again, everything comes back.
+        assert_eq!(names(listed_from(page(), |_| true)), vec!["new_tab", "undo", "redo"]);
     }
 
     fn row(action: &'static str, keys: usize, hidden: bool) -> Row {

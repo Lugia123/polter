@@ -2762,6 +2762,16 @@ const STRIP_MENU: &[(&str, &str, bool)] = &[
     (n_("Command Palette"), "toggle_command_palette", true),
 ];
 
+/// The blank-strip rows that are drawn, each with its index in
+/// `STRIP_MENU`. «Reopen Closed Tab» is left out while `reopen::OFFERED` is
+/// off (task 1708) and stays in the table.
+fn strip_rows() -> impl Iterator<Item = (usize, &'static (&'static str, &'static str, bool))> {
+    STRIP_MENU
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, action, _))| *action != "host:reopen_closed_tab" || crate::reopen::OFFERED)
+}
+
 fn show_strip_menu(frame: HWND, x: i32, y: i32) {
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else {
@@ -2773,7 +2783,10 @@ fn show_strip_menu(frame: HWND, x: i32, y: i32) {
         // today and another reason tomorrow has to say which, and the log
         // line below is where it says it.
         let can_reopen = crate::reopen::can_reopen();
-        for (i, (label, action, _)) in STRIP_MENU.iter().enumerate() {
+        // **By its index in the table**, so a row left out shifts no id.
+        let mut items = 0;
+        for (i, (label, action, _)) in strip_rows() {
+            items += 1;
             let mut wide: Vec<u16> = tr(label).encode_utf16().collect();
             wide.push(0);
             let live = *action != "host:reopen_closed_tab" || can_reopen;
@@ -2784,7 +2797,7 @@ fn show_strip_menu(frame: HWND, x: i32, y: i32) {
             "[stripmenu] shown at {},{} items={}",
             x,
             y,
-            STRIP_MENU.len()
+            items
         );
         let mut pt = POINT { x, y };
         let _ = ClientToScreen(frame, &mut pt);
@@ -3791,6 +3804,17 @@ mod menu_inset_tests {
                 "unexpected characters in the core action {action}",
             );
         }
+    }
+
+    /// Task 1708: the blank strip's «Reopen Closed Tab» is hidden, kept in
+    /// the table, and the rows drawn keep their table index -- the id a
+    /// pick comes back with.
+    #[test]
+    fn the_blank_strip_hides_reopen_and_keeps_its_ids() {
+        assert!(!crate::reopen::OFFERED);
+        assert!(STRIP_MENU.iter().any(|(_, a, _)| *a == "host:reopen_closed_tab"));
+        let drawn: Vec<(usize, &str)> = strip_rows().map(|(i, (_, a, _))| (i, *a)).collect();
+        assert_eq!(drawn, vec![(0, "new_tab"), (2, "toggle_command_palette")]);
     }
 }
 

@@ -835,7 +835,7 @@ pub(crate) fn form_value(key: &str) -> Option<String> {
 
 fn reload_form() {
     let form = read_form();
-    let keybinds = crate::keybinds::rows();
+    let keybinds = crate::keybinds::listed();
     ST.with(|c| {
         let s = &mut *c.borrow_mut();
         match form {
@@ -1799,7 +1799,7 @@ fn refresh_values(read: FormRead) {
             }
         });
     }
-    let keybinds = crate::keybinds::rows();
+    let keybinds = crate::keybinds::listed();
     ST.with(|c| c.borrow_mut().keybinds = keybinds);
     kb_publish(current() == Group::Keybinds);
     let _ = unsafe { InvalidateRect(Some(kb_hwnd()), None, false) };

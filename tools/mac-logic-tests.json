@@ -59,6 +59,7 @@
       "macos/Sources/Features/ControlRoom/TerminalPresence.swift",
       "macos/Sources/Features/Highlight/PolterHighlightRules.swift",
       "macos/Sources/Features/Highlight/PolterHighlightViews.swift",
+      "macos/Sources/Features/ReopenTab/ReopenTabEntry.swift",
       "macos/Sources/Features/Splits/SplitTree.swift",
       "macos/Sources/Features/Splits/PolterArrangePlan.swift",
       "macos/Sources/Features/Splits/PolterPaneTabRules.swift",
@@ -210,7 +211,8 @@
       "macos/Tests/CommandPaletteHostMenuTests.swift",
       "macos/Tests/Projects/ProjectPaneSizesTests.swift",
       "macos/Tests/Personas/RoleCliOfferTests.swift",
-      "macos/Tests/Terminal/PolterHighlightRulesTests.swift"
+      "macos/Tests/Terminal/PolterHighlightRulesTests.swift",
+      "macos/Tests/Terminal/ReopenTabEntryTests.swift"
     ],
     "out": [
       {

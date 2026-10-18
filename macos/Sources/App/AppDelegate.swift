@@ -399,6 +399,12 @@ class AppDelegate: NSObject,
         // names `ShotStore` gives them. A fixed week here as well would
         // overrule a setting of more.
 
+        // File › Reopen Closed Tab is hidden, with its ⇧⌘T (task 1708);
+        // `ReopenTabEntry.offered` is the switch.
+        if let file = menuReopenTab?.menu {
+            ReopenTabEntry.apply(to: file, action: #selector(reopenClosedTab(_:)))
+        }
+
         // The Language submenu is built from AppLanguage rather than the nib.
         setupLanguageMenu()
 
@@ -1692,8 +1698,10 @@ extension AppDelegate: NSMenuItemValidation {
         switch item.action {
         // Greyed out when nothing is left to come back, so the item says
         // whether there is anything rather than doing nothing when pressed.
+        // Never live while the entry is hidden (task 1708), whatever the
+        // stack holds.
         case #selector(reopenClosedTab(_:)):
-            return ClosedTabs.shared.canReopen
+            return ReopenTabEntry.offered && ClosedTabs.shared.canReopen
 
         case #selector(setAsDefaultTerminal(_:)):
             return NSWorkspace.shared.defaultTerminal != Bundle.main.bundleURL

@@ -34,6 +34,40 @@ use windows::Win32::Foundation::HWND;
 use crate::tabs::TabId;
 use crate::{plogf, wlogf};
 
+/// **Whether reopening a closed tab is offered anywhere** (task 1708).
+///
+/// Hidden, not removed: with projects the feature has stopped earning its
+/// place, so its entry points are switched off and this stack, the opener
+/// and every handler are kept. While this is `false`:
+///
+///  * the File menu's «Reopen Closed Tab» row and the blank strip's are left
+///    out (`menu::row_visible`, `strip::STRIP_MENU`), and so is the palette's
+///    copy of the row (`menu::host_commands_where`);
+///  * the core's `undo` and `redo` -- which on this host mean "put back the
+///    tab you closed" and "close it again" (`main.rs`) -- are left out of the
+///    palette, and out of the Keyboard Shortcuts page unless the person has
+///    bound one of them themselves.
+///
+/// **Nothing is unbound here, because nothing was bound**: this host gives
+/// `undo` no default key. A key the person binds to `undo` in their config
+/// still reopens, and the shortcuts page still lists it.
+///
+/// Turning it back on is this, `ReopenTabEntry.offered` on macOS and
+/// `reopen_closed_tab_offered` in `Config.zig` (the macOS default key).
+pub const OFFERED: bool = false;
+
+/// The core actions that, on this host, are the reopen feature.
+pub const CORE_ACTIONS: &[&str] = &["undo", "redo"];
+
+/// Whether an entry point for the core action `tag` (no parameters) is shown.
+pub fn offers(tag: &str) -> bool {
+    offers_when(OFFERED, tag)
+}
+
+fn offers_when(offered: bool, tag: &str) -> bool {
+    offered || !CORE_ACTIONS.contains(&tag)
+}
+
 /// One tab worth reopening.
 pub struct Entry {
     /// **The name the person chose, or empty.** Not the tab's displayed
