@@ -815,6 +815,14 @@ pub fn init(
         // configuration had not been read.
         app.ensurePoltergeistConfigText(config);
 
+        // The worktree Polter made that this terminal starts in (task
+        // 1702), so what runs here can keep its build in its own tree.
+        // By directory, not by who opened it: a tab the person opens in the
+        // tree gets it too.
+        if (config.@"working-directory") |wd| if (wd.value()) |dir| if (app.worktreePathAt(dir)) |tree| {
+            try env.put("POLTER_WORKTREE", tree);
+        };
+
         if (app.poltergeist_server) |*srv| {
             if (srv.issueToken(self.id)) |token| {
                 try env.put("GHOSTTY_POLTER_SOCKET", srv.path);

@@ -283,6 +283,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 .cwd = (try optionalString(aa, params, "cwd")) orelse "",
                 .watch = optionalBool(params, "watch", false),
                 .place = try placeParam(aa, params),
+                .worktree = (try optionalString(aa, params, "worktree")) orelse "",
             },
         },
 
@@ -320,8 +321,17 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 .in = try optionalIdParam(params, "in"),
                 // A terminal whose tab the new one is opened in (task 1571).
                 .beside = try optionalIdParam(params, "beside"),
+                .worktree = (try optionalString(aa, params, "worktree")) orelse "",
             },
         },
+        .worktree_status => .{ .worktree_status = .{
+            .name = (try optionalString(aa, params, "name")) orelse "",
+            .repo = (try optionalString(aa, params, "repo")) orelse "",
+        } },
+        .worktree_remove => .{ .worktree_remove = .{
+            .name = try requireString(aa, params, "name"),
+            .repo = (try optionalString(aa, params, "repo")) orelse "",
+        } },
 
         .terminal_action => .{ .terminal_action = .{
             .id = try requireId(params),
@@ -1014,6 +1024,9 @@ pub const TerminalInfo = struct {
     tab_index: ?u32 = null,
     tab_title: ?[]const u8 = null,
 
+    /// The Polter-made worktree it stands in (task 1702); absent when none.
+    worktree: ?rpc.worktree.Tag = null,
+
     /// What the agent CLI in it has said through its hooks. See `Bus.Agent`.
     ///
     /// ⚠️ **Always there, and no default** (task 880). It used to be left out
@@ -1210,6 +1223,10 @@ pub const Response = union(enum) {
         /// why (`rpc.PassedOver`). No default: both replies that carry a
         /// terminal pass on what they were given.
         passed_over: ?rpc.PassedOver,
+
+        /// The worktree asked for (task 1702). Null is "none was asked
+        /// for", so it is left out of the reply.
+        worktree: ?rpc.OpenedWorktree = null,
     },
     /// A task's number, answering `task_create`.
     task: u64,
@@ -1553,6 +1570,8 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.write(@tagName(over.why));
                 try s.endObject();
             }
+
+            if (v.worktree) |w| try writeOpenedWorktree(&s, w);
         },
         .actions => |list| {
             try s.objectField("ok");
@@ -1738,6 +1757,44 @@ fn writeRawOnOneLine(writer: *std.Io.Writer, raw: []const u8) std.Io.Writer.Erro
 /// what an agent reads from `GHOSTTY_SURFACE_ID` and what it sees here are
 /// the same string. A JSON number would also lose precision in clients that
 /// treat every number as a double.
+/// `used` is the first field and always there: the one a caller must not
+/// skip, because `false` is a terminal that is not isolated (§4.3-3).
+fn writeOpenedWorktree(s: *std.json.Stringify, w: rpc.OpenedWorktree) std.Io.Writer.Error!void {
+    try s.objectField("worktree");
+    try s.beginObject();
+    switch (w) {
+        .used => |u| {
+            try s.objectField("used");
+            try s.write(true);
+            try s.objectField("name");
+            try s.write(u.entry.name);
+            try s.objectField("path");
+            try s.write(u.entry.path);
+            try s.objectField("branch");
+            try s.write(u.entry.branch);
+            try s.objectField("base");
+            try s.write(u.entry.base);
+            try s.objectField("repo");
+            try s.write(u.entry.repo);
+            try s.objectField("reused");
+            try s.write(u.reused);
+        },
+        .not_git => |n| {
+            try s.objectField("used");
+            try s.write(false);
+            try s.objectField("name");
+            try s.write(n.name);
+            try s.objectField("dir");
+            try s.write(n.dir);
+            try s.objectField("reason");
+            try s.write("not_a_git_repo");
+            try s.objectField("note");
+            try s.write(n.note);
+        },
+    }
+    try s.endObject();
+}
+
 fn writeId(s: *std.json.Stringify, id: Bus.Id) std.Io.Writer.Error!void {
     var buf: [18]u8 = undefined;
     try s.write(std.fmt.bufPrint(&buf, "0x{x:0>16}", .{id}) catch unreachable);
@@ -1991,6 +2048,19 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
     try s.write(info.cwd);
     try s.objectField("title");
     try s.write(info.title);
+
+    // Only when it stands in one: most terminals do not.
+    if (info.worktree) |w| {
+        try s.objectField("worktree");
+        try s.beginObject();
+        try s.objectField("name");
+        try s.write(w.name);
+        try s.objectField("branch");
+        try s.write(w.branch);
+        try s.objectField("path");
+        try s.write(w.path);
+        try s.endObject();
+    }
 
     // Left out entirely rather than sent as null. A field that is absent
     // reads as "not measured"; a field that is present and null invites

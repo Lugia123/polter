@@ -881,6 +881,37 @@ tabs does not end it, and the lit terminal's tab keeps breathing. Read `front`
 back before you say "look": `refused` means Polter is not in front, so tell
 them to switch back to it.
 
+### Workers changing the same code at once: a worktree each
+
+When two or more workers will **change code in the same repository at the same
+time**, give each its own git worktree: pass `worktree: "<name>"` to
+`terminal_open` or `role_launch`, and Polter makes the tree (branch
+`wt/<name>`, at the HEAD of `cwd`), opens the terminal in it and writes down
+whose it is — so after a restart or a compaction `worktree_status` still tells
+you, and you do not have to remember. Read the reply's `worktree`:
+`used: false` means the directory is not a git repository, nothing is isolated,
+and you must not tell the worker otherwise.
+
+- **When not to:** read-only research, and work on a test machine, need no tree.
+  A tree is a checkout and a build cache's worth of disk.
+- **Workers do not commit and do not touch the index** (no `git add`, `reset`,
+  `stash`). You merge, all of it, yourself.
+- **Each tree builds in its own directory.** The terminal has
+  `POLTER_WORKTREE` set to its tree; a worker builds and tests there, never in
+  the repository you merge into.
+- **Before you merge**, check which commit a worker's readings were taken on —
+  the tree's `base` and the build it actually ran, not the tree as it is now.
+  After the merge, run every gate yourself on the merged tree; the worker's
+  green was for its own tree.
+- **Polter does not merge.** `worktree_status` shows `dirty`, `ahead` and
+  `merged` against the repository's checked-out branch; the merge is yours,
+  with git.
+- **When to take a tree down:** when it will not be needed again — not when its
+  task is closed. `task_close` reminds you a tree is still there; it does not
+  remove it. `worktree_remove` does, and only for a tree that is clean and
+  merged: dirty or unmerged, it refuses and says why, and that refusal is the
+  point — the uncommitted work in it may be the only copy.
+
 ### Building a shape by hand, and the one thing that makes it hard
 
 ⚠️ **`terminal_action` never tells you what it made.** A `new_split` answers

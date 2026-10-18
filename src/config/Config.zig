@@ -1701,6 +1701,22 @@ command: ?Command = null,
 /// top only, and no frame has a shadow.
 @"poltergeist-pane-frames": bool = true,
 
+/// Where a worktree goes when a supervisor opens a terminal with one
+/// (`terminal_open` or `role_launch` with `worktree`).
+///
+///   * `beside` (the default): next to the repository, in a directory named
+///     after it -- for a repository at `~/src/proj`, the tree `fix-1` is
+///     `~/src/proj-wt/fix-1`, on a new branch `wt/fix-1`.
+///
+///   * `inside`: in the repository, under `.polter-worktrees/`. Polter adds
+///     that directory to the repository's own `.git/info/exclude` so that it
+///     cannot be committed; your `.gitignore` is not changed.
+///
+/// Only new trees go where this says; one already made stays where it is.
+/// A directory that is not a git repository gets no tree either way: the
+/// terminal opens there, and the supervisor is told it is not isolated.
+@"poltergeist-worktree-location": PoltergeistWorktreeLocation = .beside,
+
 /// Open the control room when Polter starts.
 ///
 /// Only when the application starts: a new window, or a new tab, never
@@ -6412,6 +6428,9 @@ pub const LinkPreviews = enum {
 };
 
 /// See working-directory
+/// See `poltergeist-worktree-location`.
+pub const PoltergeistWorktreeLocation = enum { beside, inside };
+
 pub const WorkingDirectory = union(enum) {
     const Self = @This();
 

@@ -1064,9 +1064,20 @@ const tools = [_]Tool{
             "will want on its own -- you have to ask for `tab`, and asking for it is a " ++
             "guarantee rather than a preference. `here` is the opposite request: a " ++
             "split in your own tab, which falls back to a tab when there is no room " ++
-            "and says so in the log.",
+            "and says so in the log.\n\n" ++
+            "**`worktree` (a name) opens it in a git worktree of `cwd`'s repository**: " ++
+            "made if it is not there yet -- on a new branch `wt/<name>` at that " ++
+            "directory's HEAD, beside the repository in `<repo>-wt/<name>` or inside it, " ++
+            "as the person set -- and the same tree again if it is. The reply's " ++
+            "`worktree` says which: `used: true` with path, branch, base and reused, or " ++
+            "**`used: false` -- the directory is not a git repository, the terminal " ++
+            "opened there and is not isolated**; say so to whoever you were isolating it " ++
+            "for. A directory or branch Polter did not make is refused (WorktreeExists, " ++
+            "BranchExists), never taken over. The terminal's environment has " ++
+            "POLTER_WORKTREE. worktree_status says how the trees stand, worktree_remove " ++
+            "takes one down.",
         .schema =
-        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here","stack"],"description":"Defaults to auto: beside you while there is room -- three in a column, three more beside those -- a new tab once there is not. tab is a guarantee of its own tab; here asks for a split in your tab, and the reply says when it could not. stack is not built yet and is refused with NotBuiltYet. Terminals in your tab that are not your workers are left alone and not counted, under auto and here alike."}},"required":["cwd"]}
+        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here","stack"],"description":"Defaults to auto: beside you while there is room -- three in a column, three more beside those -- a new tab once there is not. tab is a guarantee of its own tab; here asks for a split in your tab, and the reply says when it could not. stack is not built yet and is refused with NotBuiltYet. Terminals in your tab that are not your workers are left alone and not counted, under auto and here alike."},"worktree":{"type":"string","description":"A worktree name: letters, digits, '.', '_', '-'. Opens the terminal in that tree of cwd's repository, making it (branch wt/<name>) if needed."}},"required":["cwd"]}
         ,
     },
     .{
@@ -1204,9 +1215,39 @@ const tools = [_]Tool{
             "`auto` uses, and **never as a new tab**: where that rule would open one, the " ++
             "pane goes beside the terminal you named, and if no pane can be made there you " ++
             "get NoRoomBeside and nothing is opened. Not with `in` or `place`. " ++
+            "`worktree` is terminal_open's: the role's terminal opens in that tree, and the " ++
+            "reply says whether it did (`worktree.used`). Not with `in`. " ++
             "Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"key":{"type":"string"},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."},"beside":{"type":"string","description":"The id of a terminal whose tab the new one goes in, as a new pane -- never a new tab. Not with in or place."}},"required":["key"],"additionalProperties":false}
+        \\{"type":"object","properties":{"key":{"type":"string"},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."},"beside":{"type":"string","description":"The id of a terminal whose tab the new one goes in, as a new pane -- never a new tab. Not with in or place."},"worktree":{"type":"string","description":"As terminal_open's: the role's terminal opens in that git worktree, made if needed. Not with in."}},"required":["key"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "worktree_status",
+        .description = "**Before you merge a worker's tree, and before you take one down**: how " ++
+            "every worktree Polter made stands (or the one you `name`). Each has name, " ++
+            "path, branch, base (the commit it was made at), repo, task (the task tied to " ++
+            "it when it was assigned to a terminal in it), terminal, and what git says now: " ++
+            "`dirty` (uncommitted and untracked files; ignored build output is not counted), " ++
+            "`ahead` (commits on its branch that `mainline` -- the branch the repository " ++
+            "itself has checked out -- does not have) and `merged`. `exists: false` is a " ++
+            "tree whose directory is gone. It never merges anything: that is yours to do " ++
+            "with git. Kept on disk, so it is the same after a restart. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"name":{"type":"string","description":"One tree; leave out for all of them."},"repo":{"type":"string","description":"The repository, when two have a tree of that name."}},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "worktree_remove",
+        .description = "Take down a worktree Polter made: the directory, its build output with it, " ++
+            "and its branch. **Only when it is clean and merged** -- otherwise refused, " ++
+            "saying why and by how much (WorktreeDirty: uncommitted changes; " ++
+            "WorktreeNotMerged: commits the repository's branch does not have), and nothing " ++
+            "is touched. Never forced and never automatic. Remove a tree when it will not " ++
+            "be needed again, not merely because its task is closed. A tree whose directory " ++
+            "is already gone is just forgotten. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string","description":"The repository, when two have a tree of that name."}},"required":["name"],"additionalProperties":false}
         ,
     },
     .{

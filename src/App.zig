@@ -470,6 +470,17 @@ stall_watch: poltergeistpkg.StallWatch = .{},
 stall_watch_stop: std.atomic.Value(bool) = .init(false),
 stall_watch_thread: ?std.Thread = null,
 
+/// The worktrees Polter made, kept in `<state>/worktrees.json` (task 1702).
+/// Null until the state directory is known or a request needs it.
+poltergeist_worktrees: ?poltergeistpkg.worktree.Ledger = null,
+
+/// `poltergeist-worktree-location`.
+poltergeist_worktree_location: poltergeistpkg.worktree.Location = .beside,
+
+/// Trees being made on a thread of their own, each with the request it
+/// parked (`poltergeistWorktreePrepare`). App thread only.
+poltergeist_worktree_jobs: std.ArrayListUnmanaged(WorktreeWait) = .empty,
+
 /// Whether the resident plugins have been looked for. Testing the list
 /// instead would not do: with none installed it stays empty for ever,
 /// and every config reload would re-read every plugin's settings file to
@@ -694,6 +705,13 @@ pub fn deinit(self: *App) void {
     if (self.group_log) |*l| l.deinit();
     if (self.poltergeist_session_path) |p| self.alloc.free(p);
     if (self.poltergeist_state_dir) |p| self.alloc.free(p);
+    for (self.poltergeist_worktree_jobs.items) |w| {
+        // Waits for git, at quit, rather than free what its thread reads.
+        w.job.destroy();
+        w.held.release();
+    }
+    self.poltergeist_worktree_jobs.deinit(self.alloc);
+    if (self.poltergeist_worktrees) |*w| w.deinit();
     if (self.poltergeist_log_problem) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
@@ -2248,6 +2266,10 @@ pub fn applyPoltergeistSettings(self: *App, config: *const Config) void {
         @intCast(config.@"poltergeist-stall-warn-after".duration),
         .monotonic,
     );
+    self.poltergeist_worktree_location = switch (config.@"poltergeist-worktree-location") {
+        .beside => .beside,
+        .inside => .inside,
+    };
     self.sweep_limits = SweepLimits.from(config);
     self.configureSweeper();
 
@@ -3340,6 +3362,14 @@ pub fn ensureChatLog(self: *App, want: bool) void {
     };
     self.clearLogProblem();
     self.poltergeist_state_dir = self.alloc.dupe(u8, state_dir) catch null;
+    if (self.poltergeist_worktrees == null) {
+        const file = std.fs.path.join(self.alloc, &.{ state_dir, "worktrees.json" }) catch null;
+        defer if (file) |f| self.alloc.free(f);
+        if (file) |f| if (poltergeistpkg.worktree.Ledger.init(self.alloc, f)) |ledger| {
+            self.poltergeist_worktrees = ledger;
+            self.poltergeist_worktrees.?.load(io);
+        } else |_| {};
+    }
 
     // Same directory, and the log having opened means it exists.
     if (self.poltergeist_session_path == null) {
@@ -5980,6 +6010,13 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .nowMs = poltergeistNow,
         .openTerminals = poltergeistOpenTerminals,
         .openTerminal = poltergeistOpenTerminal,
+        .worktreePrepare = poltergeistWorktreePrepare,
+        .worktreeOpened = poltergeistWorktreeOpened,
+        .worktreeAt = poltergeistWorktreeAt,
+        .worktreeStatus = poltergeistWorktreeStatus,
+        .worktreeRemove = poltergeistWorktreeRemove,
+        .worktreeTieTask = poltergeistWorktreeTieTask,
+        .worktreeForTask = poltergeistWorktreeForTask,
         .configText = poltergeistConfigText,
         .setWatching = poltergeistSetWatching,
         .stoodDown = poltergeistStoodDown,
@@ -8550,6 +8587,213 @@ fn poltergeistPlaceWorker(
             }
         },
     }
+}
+
+// -- worktrees (task 1702) ---------------------------------------------------
+//
+// The rules are `poltergeist/worktree.zig`'s and are tested there, on
+// repositories made under /tmp; these only find the ledger, the directory and
+// the clock.
+//
+// **No git checkout on the app thread.** It is every terminal's thread and
+// the person's window waits on it, and making a tree of this repository
+// checks out six thousand files. So a request for a tree starts a
+// `worktree.Job`, parks the request -- as a screenshot does -- and is
+// dispatched again, the same request, when the job's thread hands it back;
+// the second time round the tree is there and the terminal is opened as for
+// any other directory. `worktree_status` and `worktree_remove` still run
+// git here: a few `rev-parse`s and a `status`, not a checkout.
+
+const WorktreeWait = struct {
+    job: *poltergeistpkg.worktree.Job,
+    /// The request it parked, with a reference of its own.
+    held: *poltergeistpkg.Server.Pending,
+};
+
+/// The job's thread: give the parked request back to the app thread, where
+/// it is dispatched again and finds its tree made. Reads nothing of the job
+/// but which request it was for.
+fn worktreeJobDone(ctx: *anyopaque, job: *poltergeistpkg.worktree.Job) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const pending: *poltergeistpkg.Server.Pending = @ptrCast(@alignCast(job.user.?));
+    // A reference for the mailbox, which `poltergeistRequest` releases as it
+    // does every request's; the one the wait holds is released when the
+    // wait is taken. A push that failed leaves the wait to be freed at quit.
+    pending.retain();
+    if (self.mailbox.push(global.io(), .{ .poltergeist_request = pending }, .{ .forever = {} }) == 0) {
+        log.warn("worktree: could not hand a finished worktree back to the app thread", .{});
+        pending.release();
+        return;
+    }
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
+/// The ledger, made in memory when no state directory was ever known.
+fn worktreeLedger(self: *App) ?*poltergeistpkg.worktree.Ledger {
+    if (self.poltergeist_worktrees == null) {
+        self.poltergeist_worktrees = poltergeistpkg.worktree.Ledger.init(self.alloc, null) catch return null;
+    }
+    return &self.poltergeist_worktrees.?;
+}
+
+/// The tree `cwd` is in, for a terminal's environment (`POLTER_WORKTREE`).
+/// Never makes the ledger: a terminal opened before the state directory is
+/// known is in no tree Polter knows of.
+pub fn worktreePathAt(self: *App, cwd: []const u8) ?[]const u8 {
+    const ledger = if (self.poltergeist_worktrees) |*l| l else return null;
+    const i = ledger.containing(cwd) orelse return null;
+    return ledger.entries.items[i].path;
+}
+
+fn poltergeistWorktreePrepare(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    by: poltergeistpkg.Bus.Id,
+    cwd: []const u8,
+    name: []const u8,
+) anyerror!poltergeistpkg.worktree.Prepared {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const io = global.io();
+    const dir = if (cwd.len > 0) cwd else self.terminalCwd(alloc, by) orelse return error.NoDirectory;
+    if (!std.fs.path.isAbsolute(dir)) return error.NotAbsolute;
+    // The same check a terminal opened there is put through, so a tree is
+    // never asked of a directory the terminal could not then be opened in.
+    _ = try poltergeistpkg.workdir.check(alloc, io, dir);
+    const ledger = self.worktreeLedger() orelse return error.OutOfMemory;
+    // Nothing to park it on means nothing to answer it later with.
+    const pending = self.poltergeist_dispatching orelse return error.CannotWait;
+
+    // The second time round: its job has finished. Written down here, on
+    // the ledger's thread, and copied out of the job before it goes.
+    for (self.poltergeist_worktree_jobs.items, 0..) |w, i| {
+        if (w.held != pending) continue;
+        if (!w.job.finished.load(.acquire)) {
+            // Dispatched again before its tree was made -- which nothing
+            // does -- so it waits again rather than open in the wrong place.
+            self.poltergeist_parked = true;
+            return error.WorktreePending;
+        }
+        _ = self.poltergeist_worktree_jobs.swapRemove(i);
+        defer {
+            w.job.destroy();
+            w.held.release();
+        }
+        const done = try poltergeistpkg.worktree.commit(io, ledger, w.job.result.?);
+        return try done.dupe(alloc);
+    }
+
+    // The first time: start it, and park the request.
+    const now: std.Io.Timestamp = .now(io, .real);
+    const job = try poltergeistpkg.worktree.Job.create(std.heap.smp_allocator, .{ .io = io }, .{
+        .dir = dir,
+        .name = name,
+        .location = self.poltergeist_worktree_location,
+        .by = by,
+        .now_ms = @intCast(@divFloor(now.nanoseconds, std.time.ns_per_ms)),
+    }, ledger.entries.items, worktreeJobDone, self);
+    job.user = pending;
+    self.poltergeist_worktree_jobs.append(self.alloc, .{ .job = job, .held = pending }) catch |err| {
+        job.destroy();
+        return err;
+    };
+    pending.retain();
+    job.start() catch |err| {
+        _ = self.poltergeist_worktree_jobs.pop();
+        pending.release();
+        job.destroy();
+        return err;
+    };
+    self.poltergeist_parked = true;
+    log.info("worktree: making {s} off the app thread; the request waits", .{name});
+    return error.WorktreePending;
+}
+
+fn poltergeistWorktreeOpened(ctx: *anyopaque, path: []const u8, id: poltergeistpkg.Bus.Id) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const ledger = self.worktreeLedger() orelse return;
+    for (ledger.entries.items) |*e| if (std.mem.eql(u8, e.path, path)) {
+        e.terminal = id;
+        ledger.save(global.io()) catch |err| log.warn("worktree: could not save the ledger err={}", .{err});
+        return;
+    };
+}
+
+fn poltergeistWorktreeAt(ctx: *anyopaque, alloc: Allocator, cwd: []const u8) ?poltergeistpkg.worktree.Tag {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const ledger = if (self.poltergeist_worktrees) |*l| l else return null;
+    const tag = ledger.tagAt(cwd) orelse return null;
+    return .{
+        .name = alloc.dupe(u8, tag.name) catch return null,
+        .branch = alloc.dupe(u8, tag.branch) catch return null,
+        .path = alloc.dupe(u8, tag.path) catch return null,
+    };
+}
+
+fn poltergeistWorktreeStatus(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    name: []const u8,
+    repo: []const u8,
+) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const wt = poltergeistpkg.worktree;
+    const ledger = self.worktreeLedger() orelse return error.OutOfMemory;
+    const git: wt.Git = .{ .io = global.io() };
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    var w: std.json.Stringify = .{ .writer = &out.writer };
+    if (name.len > 0) {
+        const i = switch (ledger.lookup(name, repo)) {
+            .none => return error.NoSuchWorktree,
+            .ambiguous => return error.Ambiguous,
+            .one => |i| i,
+        };
+        try wt.writeStatus(&w, try wt.status(git, alloc, ledger.entries.items[i]));
+        return out.written();
+    }
+    try w.beginArray();
+    for (ledger.entries.items) |e| {
+        if (repo.len > 0 and !std.mem.eql(u8, e.repo, repo)) continue;
+        try wt.writeStatus(&w, try wt.status(git, alloc, e));
+    }
+    try w.endArray();
+    return out.written();
+}
+
+fn poltergeistWorktreeRemove(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    name: []const u8,
+    repo: []const u8,
+) anyerror!poltergeistpkg.worktree.Removed {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const ledger = self.worktreeLedger() orelse return error.OutOfMemory;
+    return poltergeistpkg.worktree.remove(.{ .io = global.io() }, alloc, ledger, name, repo);
+}
+
+fn poltergeistWorktreeTieTask(ctx: *anyopaque, task: u64, id: poltergeistpkg.Bus.Id) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const ledger = if (self.poltergeist_worktrees) |*l| l else return;
+    var buf: [4096]u8 = undefined;
+    var fba: std.heap.FixedBufferAllocator = .init(&buf);
+    const cwd = self.terminalCwd(fba.allocator(), id) orelse "";
+    if (ledger.tieTask(task, id, cwd)) {
+        ledger.save(global.io()) catch |err| log.warn("worktree: could not save the ledger err={}", .{err});
+    }
+}
+
+fn poltergeistWorktreeForTask(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    task: u64,
+    owner: poltergeistpkg.Bus.Id,
+) ?poltergeistpkg.worktree.Tag {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const ledger = if (self.poltergeist_worktrees) |*l| l else return null;
+    const cwd = if (owner != 0) self.terminalCwd(alloc, owner) orelse "" else "";
+    const i = ledger.forTask(task, cwd) orelse return null;
+    const e = ledger.entries.items[i];
+    return .{ .name = e.name, .branch = e.branch, .path = e.path };
 }
 
 fn poltergeistOpenTerminal(

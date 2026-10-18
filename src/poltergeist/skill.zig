@@ -440,6 +440,12 @@ test "the supervising skill names the tools it tells you to use" {
         // Task 1689: the user asks "which one is it?", and the answer is to
         // show them rather than describe it.
         "terminal_highlight",
+
+        // Task 1702: parallel workers each in a tree, and taking a tree down
+        // is a decision with its own tool, never a side effect of closing.
+        "worktree_status",
+        "worktree_remove",
+        "POLTER_WORKTREE",
     }) |tool| {
         if (std.mem.indexOf(u8, supervising, tool) == null) {
             std.debug.print("\nsupervising never mentions {s}\n", .{tool});
