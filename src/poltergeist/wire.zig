@@ -1852,6 +1852,10 @@ fn writePlugin(s: *std.json.Stringify, v: rpc.PluginView) std.Io.Writer.Error!vo
     try s.write(v.name);
     try s.objectField("enabled");
     try s.write(v.enabled);
+    if (v.stray) {
+        try s.objectField("stray");
+        try s.write(true);
+    }
 
     // Written back exactly as the manifest declared it, so an agent can
     // tell the user what it is about to switch on rather than describing
@@ -2776,6 +2780,21 @@ test "a plugin's note for a person is written only where one was set" {
     try testing.expectEqual(@as(usize, 1), count(out, "\"note_say\""));
     try testing.expect(std.mem.indexOf(u8, out, "\"note_say\":{\"key\":\"dormant\",\"template\":\"It failed to start {1} time(s)") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"args\":[\"3\"]}") != null);
+}
+
+test "a plugin this release did not ship is listed as stray, and only that one" {
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const list = [_]rpc.PluginView{
+        .{ .key = "gemini", .name = "Gemini CLI", .stray = true, .note = "gemini is in the bundled plugins directory but is not part of this release" },
+        .{ .key = "codex", .name = "Codex CLI" },
+    };
+    try writeResponse(&w, .{ .plugins = &list });
+    const out = w.buffered();
+    // Written once, for the stray, and never as `false`: absent is "not one".
+    try testing.expectEqual(@as(usize, 1), count(out, "\"stray\""));
+    try testing.expect(std.mem.indexOf(u8, out, "\"key\":\"gemini\",\"name\":\"Gemini CLI\",\"enabled\":false,\"stray\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"stray\":false") == null);
 }
 
 test "a plugin listing round-trips" {

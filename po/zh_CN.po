@@ -2585,6 +2585,10 @@ msgstr "启动失败 {1} 次，稍后会再试。它说了什么见 Polter 的�
 msgid "It failed to start {1} time(s) and is now tried every fifteen minutes. Polter's log says why."
 msgstr "启动失败 {1} 次，现在每 15 分钟试一次。原因见 Polter 的日志。"
 
+#: src/poltergeist/report.zig:150
+msgid "Not part of this release: probably left over from an older one unpacked over it. It is loaded all the same; delete {1} to remove it."
+msgstr "不是这一版发的插件：多半是旧版本解压覆盖时留下的。它照样被加载了；删掉 {1} 即可。"
+
 #: src/poltergeist/report.zig:129
 msgid "Stopped. It starts again when Polter does."
 msgstr "已停止，下次启动 Polter 时才会再运行。"

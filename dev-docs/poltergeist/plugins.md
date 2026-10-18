@@ -816,7 +816,7 @@ plugins/
     settings.json
 ```
 
-**两处查找，近的赢**（`App.pluginSearchPath`）：
+**两处查找，近的赢**（`Plugin.searchBases`；`Plugin.searchPath` 是它去掉标志的版本）：
 
 1. 用户自己的：`$XDG_CONFIG_HOME/polter/plugins/`
 2. 随 Polter 安装的：`<resources>/ghostty/polter/plugins/`
@@ -830,6 +830,19 @@ plugins/
 那个目录的东西会没人决定就发出去，而一个不再发布的插件只能靠删目录来实现。写名单
 让这两件事都变成一行 diff，而且漏加一行的后果是响的——新插件装不出去，找的人第一
 时间就发现。
+
+**名单也装出去一份**：`<resources>/ghostty/polter/plugins/SHIPPED`，一行一个目录名，
+由同一个 `shipped` 数组写出（是文件，不是目录，所以几处扫目录的都不会把它当插件）。
+它回答「这个目录是不是这一版放进来的」：Windows 发的是 zip，新包解压覆盖旧包**只增
+不删**，旧版发过、新版不再发的插件（实测：0.9 的 `gemini`，`D:\polter\t1686`）会
+留在目录里、照样被加载。核心扫 bundle 目录时读它（`Plugin.Shipped`）：
+
+- 文件不存在 → **不知道**，什么都不标（旧包、没装过名单的开发树）；
+- 存在而没列某个目录 → 这个目录标 `stray`：启动时 warn 一行（每个进程一次），
+  `plugin_list` 带 `stray: true` 和一句 `note`（见 [mcp.md](mcp.md)）；**仍然加载**；
+- 用户配置目录里的永远不标——那是用户自己放的。
+
+只报不改：要不要因此不加载，是另一个决定，没做。
 
 > **删掉一个插件目录，装出去的那份不会跟着消失。** `addInstallDirectory` 只拷贝，
 > 从不删除。所以一次增量构建之后，日志里照样会出现

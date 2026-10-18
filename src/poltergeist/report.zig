@@ -48,6 +48,13 @@ pub const ResidentFacts = struct {
 
     /// The running copy, when there is one.
     status: ?Resident.Status = null,
+
+    /// Its directory, when it sits in the bundle's plugin directory and the
+    /// release's `SHIPPED` does not name it (task 1683): left over from
+    /// another release. Null otherwise -- including when the bundle has no
+    /// list, which is "cannot tell", not "shipped". **No default**: every
+    /// caller says which, so a listing cannot leave it out by not knowing.
+    stray: ?[]const u8,
 };
 
 /// Said after every branch of `residentStatus`, and after none of
@@ -65,7 +72,23 @@ const nothing_started =
 /// instead. So the answer to "does it work" is the running copy's own
 /// account of itself.
 pub fn residentStatus(alloc: Allocator, facts: ResidentFacts) Allocator.Error![]const u8 {
-    return sentence(alloc, facts, nothing_started);
+    return strayFirst(alloc, facts, try sentence(alloc, facts, nothing_started));
+}
+
+/// `why`, with what is said of a plugin this release did not ship put in
+/// front of it when it is one (task 1683): that holds however the plugin is
+/// doing, and it is loaded all the same. Takes `why` over: it is freed here
+/// when a longer sentence takes its place.
+fn strayFirst(alloc: Allocator, facts: ResidentFacts, why: []const u8) Allocator.Error![]const u8 {
+    const path = facts.stray orelse return why;
+    defer alloc.free(why);
+    return std.fmt.allocPrint(
+        alloc,
+        "{s} is in the bundled plugins directory but is not part of this release " ++
+            "-- probably left over from an older one unpacked over it. It is loaded " ++
+            "all the same; delete {s} to remove it.{s}{s}",
+        .{ facts.key, path, if (why.len > 0) " " else "", why },
+    );
 }
 
 /// The short form of the same, for `plugin_list`'s `note`.
@@ -74,14 +97,17 @@ pub fn residentStatus(alloc: Allocator, facts: ResidentFacts) Allocator.Error![]
 /// otherwise. Same branches in the same order as `residentStatus`, so the
 /// listing and the test can never disagree about why nothing is happening.
 pub fn residentNote(alloc: Allocator, facts: ResidentFacts) Allocator.Error![]const u8 {
-    if (facts.status) |st| switch (st.state) {
+    const running = if (facts.status) |st| switch (st.state) {
         // Nothing is wrong in these two, and a note saying so would be a
         // line of noise on every plugin that is working.
-        .feeding, .starting => return alloc.dupe(u8, ""),
-        .backing_off, .dormant, .stopped => {},
-    };
+        .feeding, .starting => true,
+        .backing_off, .dormant, .stopped => false,
+    } else false;
+    const why = if (running) try alloc.dupe(u8, "") else try sentence(alloc, facts, "");
 
-    return sentence(alloc, facts, "");
+    // A plugin this release did not ship is said first, whether or not it is
+    // working: it is loaded, and the person did not choose that (task 1683).
+    return strayFirst(alloc, facts, why);
 }
 
 /// `residentNote` for a person rather than an agent (#1644): the settings
@@ -105,6 +131,7 @@ pub const NoteSay = struct {
     args: []const []const u8,
 
     pub const Key = enum {
+        stray,
         switched_off,
         subscribes_to_nothing,
         no_groups,
@@ -120,6 +147,7 @@ pub const NoteSay = struct {
     /// argument the agent's sentence carries.
     pub fn templateOf(key: Key) [:0]const u8 {
         return switch (key) {
+            .stray => i18n.N_("Not part of this release: probably left over from an older one unpacked over it. It is loaded all the same; delete {1} to remove it."),
             .switched_off => i18n.N_("Switched off, so nothing is handed to it. Turn it on with the switch on its page."),
             .subscribes_to_nothing => i18n.N_("Its plugin.json subscribes to nothing, so it was not started. That is the plugin's own file to change."),
             .no_groups => i18n.N_("It subscribes to chat but names no groups, so it is running and will be handed nothing."),
@@ -141,6 +169,10 @@ pub fn residentNoteSay(alloc: Allocator, facts: ResidentFacts) Allocator.Error!?
         }
     }.of;
 
+    // First, as in `residentNote`: the one reason that holds however the
+    // plugin is doing. The person's note says one thing; the agent's says
+    // the rest after it.
+    if (facts.stray) |path| return try say(alloc, .stray, &.{path});
     if (!facts.enabled) return try say(alloc, .switched_off, &.{});
     if (!facts.declares_events) return try say(alloc, .subscribes_to_nothing, &.{});
     if (facts.groupless) return try say(alloc, .no_groups, &.{});
@@ -773,7 +805,7 @@ test "the hover says the same branch as the note, in a person's words, and only 
     defer arena.deinit();
     const a = arena.allocator();
 
-    const base: ResidentFacts = .{ .key = "codex", .enabled = true, .declares_events = true, .log_open = true };
+    const base: ResidentFacts = .{ .key = "codex", .enabled = true, .declares_events = true, .log_open = true, .stray = null };
 
     // Off: a sentence for the switch, and no tool in it.
     var facts = base;
@@ -814,6 +846,55 @@ test "the hover says the same branch as the note, in a person's words, and only 
     try testing.expectEqual(NoteSay.Key.stopped, (try residentNoteSay(a, facts)).?.key);
 }
 
+test "a plugin this release did not ship is said first, working or not, with its path" {
+    const alloc = testing.allocator;
+    const path = "/Applications/Polter.app/Contents/Resources/ghostty/polter/plugins/gemini";
+
+    // Running and well, yet stray: the note is not empty, and says where.
+    var facts: ResidentFacts = .{
+        .key = "gemini",
+        .enabled = true,
+        .declares_events = true,
+        .log_open = true,
+        .status = .{ .state = .feeding, .cursor = 4, .failures = 0 },
+        .stray = path,
+    };
+    const running = try residentNote(alloc, facts);
+    defer alloc.free(running);
+    try testing.expect(std.mem.startsWith(u8, running, "gemini is in the bundled plugins directory but is not part of this release"));
+    try testing.expect(std.mem.indexOf(u8, running, path) != null);
+    try testing.expect(std.mem.indexOf(u8, running, "loaded all the same") != null);
+
+    // Off as well: both reasons, the stray first.
+    facts.enabled = false;
+    facts.status = null;
+    const off = try residentNote(alloc, facts);
+    defer alloc.free(off);
+    const stray_at = std.mem.indexOf(u8, off, "not part of this release").?;
+    const off_at = std.mem.indexOf(u8, off, "switched off").?;
+    try testing.expect(stray_at < off_at);
+
+    // The person's hover says the stray, with the path as its argument.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const say = (try residentNoteSay(arena.allocator(), facts)).?;
+    try testing.expectEqual(NoteSay.Key.stray, say.key);
+    try testing.expectEqual(@as(usize, 1), say.args.len);
+    try testing.expectEqualStrings(path, say.args[0]);
+
+    // `plugin_test` says it first too: the listing and the test cannot
+    // disagree about it.
+    const test_said = try residentStatus(alloc, facts);
+    defer alloc.free(test_said);
+    try testing.expect(std.mem.startsWith(u8, test_said, "gemini is in the bundled plugins directory but is not part of this release"));
+
+    // Not stray: nothing of the kind is said.
+    facts.stray = null;
+    const plain = try residentNote(alloc, facts);
+    defer alloc.free(plain);
+    try testing.expect(std.mem.indexOf(u8, plain, "not part of this release") == null);
+}
+
 test "a plugin is never started to test it" {
     const alloc = testing.allocator;
 
@@ -822,15 +903,16 @@ test "a plugin is never started to test it" {
     // whole answer to "why did you not just run it": it has to survive an
     // edit to any single branch.
     const shapes = [_]ResidentFacts{
-        .{ .key = "chat-archive", .enabled = false, .declares_events = true, .log_open = true },
-        .{ .key = "chat-archive", .enabled = true, .declares_events = false, .log_open = true },
-        .{ .key = "chat-archive", .enabled = true, .declares_events = true, .log_open = false },
-        .{ .key = "chat-archive", .enabled = true, .declares_events = true, .log_open = true },
+        .{ .key = "chat-archive", .enabled = false, .declares_events = true, .log_open = true, .stray = null },
+        .{ .key = "chat-archive", .enabled = true, .declares_events = false, .log_open = true, .stray = null },
+        .{ .key = "chat-archive", .enabled = true, .declares_events = true, .log_open = false, .stray = null },
+        .{ .key = "chat-archive", .enabled = true, .declares_events = true, .log_open = true, .stray = null },
         .{
             .key = "chat-archive",
             .enabled = true,
             .declares_events = true,
             .log_open = true,
+            .stray = null,
             .status = .{ .state = .feeding, .cursor = 1049, .failures = 0 },
         },
         .{
@@ -838,6 +920,7 @@ test "a plugin is never started to test it" {
             .enabled = true,
             .declares_events = true,
             .log_open = true,
+            .stray = null,
             .status = .{ .state = .starting, .cursor = 0, .failures = 0 },
         },
         .{
@@ -845,6 +928,7 @@ test "a plugin is never started to test it" {
             .enabled = true,
             .declares_events = true,
             .log_open = true,
+            .stray = null,
             .status = .{ .state = .backing_off, .cursor = 12, .failures = 2 },
         },
         .{
@@ -852,6 +936,7 @@ test "a plugin is never started to test it" {
             .enabled = true,
             .declares_events = true,
             .log_open = true,
+            .stray = null,
             .status = .{ .state = .dormant, .cursor = 0, .failures = 9 },
         },
         .{
@@ -859,6 +944,7 @@ test "a plugin is never started to test it" {
             .enabled = true,
             .declares_events = true,
             .log_open = true,
+            .stray = null,
             .status = .{ .state = .stopped, .cursor = 5, .failures = 0 },
         },
     };
@@ -892,6 +978,7 @@ test "a plugin that is switched off is reported as switched off" {
         .enabled = false,
         .declares_events = false,
         .log_open = false,
+        .stray = null,
     };
 
     const said = try residentStatus(alloc, facts);
@@ -920,6 +1007,7 @@ test "a plugin that would not start is not reported as running" {
         .enabled = true,
         .declares_events = true,
         .log_open = true,
+        .stray = null,
         .status = null,
     };
 
@@ -936,6 +1024,7 @@ test "a plugin that would not start is not reported as running" {
             .enabled = true,
             .declares_events = true,
             .log_open = true,
+            .stray = null,
             .status = .{ .state = state, .cursor = 3, .failures = 0 },
         });
         defer alloc.free(quiet);
@@ -950,6 +1039,7 @@ test "a plugin that would not start is not reported as running" {
             .enabled = true,
             .declares_events = true,
             .log_open = true,
+            .stray = null,
             .status = .{ .state = state, .cursor = 3, .failures = 4 },
         });
         defer alloc.free(said);

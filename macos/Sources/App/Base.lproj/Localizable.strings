@@ -1033,6 +1033,7 @@
 "Switched on, but it would not start. Polter's log says why." = "Switched on, but it would not start. Polter's log says why.";
 "It failed to start {1} time(s) and will be tried again shortly. Polter's log has what it said." = "It failed to start {1} time(s) and will be tried again shortly. Polter's log has what it said.";
 "It failed to start {1} time(s) and is now tried every fifteen minutes. Polter's log says why." = "It failed to start {1} time(s) and is now tried every fifteen minutes. Polter's log says why.";
+"Not part of this release: probably left over from an older one unpacked over it. It is loaded all the same; delete {1} to remove it." = "Not part of this release: probably left over from an older one unpacked over it. It is loaded all the same; delete {1} to remove it.";
 "Stopped. It starts again when Polter does." = "Stopped. It starts again when Polter does.";
 "Fix" = "Fix";
 "Supervisor notified" = "Supervisor notified";

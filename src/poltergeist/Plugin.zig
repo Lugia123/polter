@@ -951,7 +951,30 @@ pub fn searchPath(
     io: std.Io,
     environ_map: *const std.process.Environ.Map,
 ) []const []const u8 {
-    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    const bases = searchBases(alloc, io, environ_map);
+    const out = alloc.alloc([]const u8, bases.len) catch return &.{};
+    for (bases, out) |b, *o| o.* = b.path;
+    return out;
+}
+
+/// One directory of the search path, and whether it is the one a release
+/// installs into (task 1683). Only that one has a `SHIPPED` list to be
+/// held to; a directory the user put a plugin into by hand is theirs, and
+/// nothing in it is ever called a stray.
+pub const Base = struct {
+    path: []const u8,
+    bundled: bool,
+};
+
+/// `searchPath`, saying which entry is the bundle's. **The one place the
+/// two directories are worked out**: `searchPath` is this with the flags
+/// dropped, so the two cannot come to name different directories.
+pub fn searchBases(
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+) []const Base {
+    var out: std.ArrayListUnmanaged(Base) = .empty;
 
     if (internal_os.xdg.config(
         io,
@@ -959,7 +982,7 @@ pub fn searchPath(
         environ_map,
         .{ .subdir = "polter/plugins" },
     )) |base| {
-        out.append(alloc, base) catch {};
+        out.append(alloc, .{ .path = base, .bundled = false }) catch {};
     } else |_| {}
 
     if (internal_os.resourcesDir(alloc)) |resources| {
@@ -969,13 +992,89 @@ pub fn searchPath(
                 "{s}/polter/plugins",
                 .{app_path},
             )) |base| {
-                out.append(alloc, base) catch {};
+                out.append(alloc, .{ .path = base, .bundled = true }) catch {};
             } else |_| {}
         }
     } else |_| {}
 
     return out.items;
 }
+
+/// The file in the bundle's plugin directory that names, one per line,
+/// every directory this release installs there (task 1683). Written by the
+/// build from the same list that installs them
+/// (`src/build/GhosttyResources.zig`, `shipped`).
+///
+/// **Why it exists.** A Windows release is a zip, and unpacking a new one
+/// over an old one adds and replaces files but never removes any: a plugin
+/// an older release shipped and this one dropped stays in the directory,
+/// and is found and loaded as if this release had shipped it
+/// (`D:\polter\t1686`, a `gemini` left behind by 0.9). Nothing on disk said
+/// which directories a release put there, so nothing could tell.
+pub const shipped_list = "SHIPPED";
+
+/// What the bundle's `SHIPPED` says, read once per scan.
+///
+/// **Two answers that must not look alike** (CLAUDE.md, 验证 5): no list at
+/// all -- an older release, or a build tree that never installed one -- is
+/// "cannot tell", and nothing is called a stray; a list that does not name
+/// a directory is "this release did not ship it". `names == null` is the
+/// first and only the first.
+pub const Shipped = struct {
+    names: ?[]const []const u8,
+
+    /// No list was found: nothing is held against it.
+    pub const unknown: Shipped = .{ .names = null };
+
+    /// Where one plugin directory stands.
+    pub const Verdict = enum {
+        /// In the user's own directory: theirs, whatever it is called.
+        user,
+        /// The bundle has no list to hold it to.
+        unknown,
+        /// The list names it.
+        shipped,
+        /// The list is there and does not name it: left over from another
+        /// release, most likely one unpacked over this one.
+        stray,
+    };
+
+    /// The list, a name per line; blank lines and surrounding blanks are
+    /// not names. `\r` is a blank, so a file that went through a Windows
+    /// tool still reads.
+    pub fn parse(arena: Allocator, bytes: []const u8) Allocator.Error!Shipped {
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        var lines = std.mem.splitScalar(u8, bytes, '\n');
+        while (lines.next()) |line| {
+            const name = std.mem.trim(u8, line, " \t\r");
+            if (name.len == 0) continue;
+            try names.append(arena, try arena.dupe(u8, name));
+        }
+        return .{ .names = names.items };
+    }
+
+    /// `<dir>/SHIPPED`, or `unknown` when there is none. A list that is
+    /// there and will not read is said and taken as unknown: calling every
+    /// plugin a stray because one file is unreadable would be the loud
+    /// mistake in the wrong direction.
+    pub fn read(arena: Allocator, io: std.Io, dir: []const u8) Shipped {
+        const path = std.fmt.allocPrint(arena, "{s}/" ++ shipped_list, .{dir}) catch return unknown;
+        const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch |err| {
+            if (err != error.FileNotFound) log.warn("plugin: could not read {s} err={}", .{ path, err });
+            return unknown;
+        };
+        return parse(arena, bytes) catch unknown;
+    }
+
+    /// Where the directory `name` stands, found in a directory that is or
+    /// is not the bundle's.
+    pub fn of(self: Shipped, bundled: bool, name: []const u8) Verdict {
+        if (!bundled) return .user;
+        const names = self.names orelse return .unknown;
+        for (names) |n| if (std.mem.eql(u8, n, name)) return .shipped;
+        return .stray;
+    }
+};
 
 /// One plugin's settings, nearest first: the user's
 /// `<config>/polter/plugins/<key>.json`, then a `settings.json` inside the
@@ -1887,6 +1986,74 @@ test "a manifest is read, and its exec made absolute" {
     // Absolute, so running it never depends on where Polter happens to be.
     const want = try std.fmt.allocPrint(alloc, "{s}/send.sh", .{dir});
     try testing.expectEqualStrings(want, m.exec);
+}
+
+// The four cells of task 1683: no list, named in the list, not named in it,
+// and a user's directory of the same name as a stray.
+test "a bundled plugin directory with no SHIPPED list is not called anything" {
+    try testing.expectEqual(Shipped.Verdict.unknown, Shipped.unknown.of(true, "gemini"));
+    try testing.expectEqual(Shipped.Verdict.unknown, Shipped.unknown.of(true, "codex"));
+}
+
+test "a bundled plugin directory the SHIPPED list names was shipped" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const list = try Shipped.parse(arena.allocator(), "_sdk\narchive\r\ncodex\n\n  kimi  \n");
+    try testing.expectEqual(@as(usize, 4), list.names.?.len);
+    for ([_][]const u8{ "_sdk", "archive", "codex", "kimi" }) |name| {
+        try testing.expectEqual(Shipped.Verdict.shipped, list.of(true, name));
+    }
+}
+
+test "a bundled plugin directory the SHIPPED list does not name is a stray" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const list = try Shipped.parse(arena.allocator(), "archive\ncodex\n");
+    try testing.expectEqual(Shipped.Verdict.stray, list.of(true, "gemini"));
+    // A prefix of a name is not the name.
+    try testing.expectEqual(Shipped.Verdict.stray, list.of(true, "code"));
+    // An empty list is a list: everything in the bundle is then a stray,
+    // which is not the same answer as no list at all.
+    const empty = try Shipped.parse(arena.allocator(), "");
+    try testing.expectEqual(Shipped.Verdict.stray, empty.of(true, "codex"));
+    try testing.expectEqual(Shipped.Verdict.unknown, Shipped.unknown.of(true, "codex"));
+}
+
+test "a plugin in the user's own directory is never a stray, whatever its name" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const list = try Shipped.parse(arena.allocator(), "archive\ncodex\n");
+    try testing.expectEqual(Shipped.Verdict.user, list.of(false, "gemini"));
+    try testing.expectEqual(Shipped.Verdict.user, list.of(false, "codex"));
+    try testing.expectEqual(Shipped.Verdict.user, Shipped.unknown.of(false, "gemini"));
+}
+
+test "SHIPPED is read from the directory, and its absence is not an empty list" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-shipped-{x}", .{&raw});
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    try testing.expectEqual(@as(?[]const []const u8, null), Shipped.read(alloc, io, dir).names);
+
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var f = try d.createFile(io, shipped_list, .{});
+    try f.writeStreamingAll(io, "codex\n");
+    f.close(io);
+
+    const read = Shipped.read(alloc, io, dir);
+    try testing.expectEqual(Shipped.Verdict.shipped, read.of(true, "codex"));
+    try testing.expectEqual(Shipped.Verdict.stray, read.of(true, "gemini"));
 }
 
 test "settings with the same parameters in another order are the same" {

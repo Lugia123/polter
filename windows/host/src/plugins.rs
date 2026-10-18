@@ -180,8 +180,15 @@ pub fn shipped_dir() -> Option<PathBuf> {
 pub fn shipped_note() -> String {
     match shipped() {
         Shipped::Found(d) => {
-            let n = std::fs::read_dir(&d).map(|e| e.flatten().count()).unwrap_or(0);
-            format!("shipped plugins: {} entries in {}", n, d.display())
+            // **Directories only.** The release also puts a file there,
+            // `SHIPPED` (task 1683), and counting every entry made the same
+            // eight plugins read as nine the day it arrived -- a reading that
+            // changes by itself is worse than none. `_sdk` is a directory and
+            // is counted, as it is in `SHIPPED`.
+            let n = std::fs::read_dir(&d)
+                .map(|e| e.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).count())
+                .unwrap_or(0);
+            format!("shipped plugins: {} directories in {}", n, d.display())
         }
         Shipped::NoResourcesDir => {
             "shipped plugins: POLTER_RESOURCES_DIR is not set, so the bundled \

@@ -4537,6 +4537,13 @@ pub const PluginView = struct {
 
     enabled: bool = false,
 
+    /// Found in the bundle's plugin directory and not named by its
+    /// `SHIPPED` (task 1683, `Plugin.Shipped`): left over from another
+    /// release, most likely one unpacked over this one. Loaded all the same;
+    /// `note` says where it is and that deleting it is the fix. Written only
+    /// when true.
+    stray: bool = false,
+
     /// Exactly what the manifest declared. Handed over unread so an agent
     /// can tell the user what it is about to switch on.
     ///

@@ -287,6 +287,12 @@ poltergeist_plugin_arena: ?std.heap.ArenaAllocator = null,
 /// it on. In `plugin_arena`, with the rest.
 poltergeist_says: []const poltergeistpkg.Plugin.Manifest = &.{},
 
+/// Whether the plugin directories a release did not ship (task 1683,
+/// `Plugin.Shipped`) have been said in the log. Once per process, at the
+/// first `ensurePlugins`: the leftover is a fact about the install, and a
+/// line on every reload or listing would only repeat it.
+poltergeist_strays_said: bool = false,
+
 /// Where last night's arrangement is written down. Null until the state
 /// directory is known. Owned.
 poltergeist_session_path: ?[]const u8 = null,
@@ -2778,6 +2784,8 @@ pub fn ensurePlugins(self: *App) void {
     defer environ_map.deinit();
 
     const found = self.scanPlugins(alloc, io, &environ_map, false);
+    // The first walk has said any strays; the walks after it do not.
+    self.poltergeist_strays_said = true;
 
     // The manifests alone are kept. The settings are read again where they
     // are used -- `ensureResidents` at the moment it starts a child, the
@@ -2838,6 +2846,12 @@ pub fn ensurePlugins(self: *App) void {
 const Installed = struct {
     manifest: poltergeistpkg.Plugin.Manifest,
     settings: poltergeistpkg.Plugin.Settings,
+    /// Its directory, when it is in the bundle's plugin directory and that
+    /// directory's `SHIPPED` does not name it (task 1683): left over from
+    /// another release. Null for a shipped plugin, for one in the user's
+    /// own directory, and for any in a bundle with no list to hold it to.
+    /// It is loaded all the same; `plugin_list` says so.
+    stray: ?[]const u8,
 };
 
 /// Every plugin in the search path, nearest first.
@@ -2870,9 +2884,18 @@ fn scanPlugins(
     // each storing every message -- see `dev-docs/poltergeist/plugins.md`.
     var keys: std.StringHashMapUnmanaged([]const u8) = .empty;
 
-    for (self.pluginSearchPath(arena, io, environ_map)) |base| {
+    for (poltergeistpkg.Plugin.searchBases(arena, io, environ_map)) |b| {
+        const base = b.path;
         var dir = std.Io.Dir.cwd().openDir(io, base, .{ .iterate = true }) catch continue;
         defer dir.close(io);
+
+        // What this release says it put here, read once per directory: only
+        // the bundle's has a list, and a bundle with none (an older release,
+        // a build tree) holds nothing to it.
+        const shipped: poltergeistpkg.Plugin.Shipped = if (b.bundled)
+            poltergeistpkg.Plugin.Shipped.read(arena, io, base)
+        else
+            .unknown;
 
         var it = dir.iterate();
         while (it.next(io) catch null) |entry| {
@@ -2891,6 +2914,21 @@ fn scanPlugins(
             dirs.put(arena, name, {}) catch {};
 
             const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ base, name }) catch continue;
+
+            // Not one this release shipped: said, once per process, and
+            // loaded all the same -- refusing it would be a behaviour change
+            // the person did not ask for, and the line says how to undo it.
+            const stray: ?[]const u8 = switch (shipped.of(b.bundled, name)) {
+                .stray => path,
+                .user, .unknown, .shipped => null,
+            };
+            if (stray != null and !self.poltergeist_strays_said) log.warn(
+                "plugin {s} in the bundled plugins directory is not part of this " ++
+                    "release (probably left over from an older one unpacked over it); " ++
+                    "delete {s}",
+                .{ name, path },
+            );
+
             const manifest = poltergeistpkg.Plugin.load(arena, io, path) catch |err| {
                 log.warn("poltergeist: plugin {s} would not load err={}", .{ name, err });
                 continue;
@@ -2934,6 +2972,7 @@ fn scanPlugins(
             found.append(arena, .{
                 .manifest = manifest,
                 .settings = settings,
+                .stray = stray,
             }) catch continue;
         }
     }
@@ -2991,17 +3030,6 @@ pub fn poltergeistTitle(self: *App, id: poltergeistpkg.Bus.Id, title: []const u8
         log.info("poltergeist: {x} title says it awaits approval ({s})", .{ id, waits_for orelse "" });
         self.deliverPoltergeistNotices(now_ms);
     }
-}
-
-/// Where plugins live, nearest first.
-fn pluginSearchPath(
-    self: *App,
-    alloc: Allocator,
-    io: std.Io,
-    environ_map: *const std.process.Environ.Map,
-) []const []const u8 {
-    _ = self;
-    return poltergeistpkg.Plugin.searchPath(alloc, io, environ_map);
 }
 
 /// One plugin's own settings file, nearest first.
@@ -6056,6 +6084,7 @@ fn pluginListFor(
             .key = manifest.key,
             .name = manifest.name,
             .enabled = installed.settings.enabled,
+            .stray = installed.stray != null,
             .events = events,
             .calls = manifest.wants.calls,
             .groups = manifest.wants.groups,
@@ -6097,6 +6126,7 @@ fn pluginListFor(
             .groupless = manifest.wants.groupless(),
             .log_open = self.chat_log != null,
             .status = status,
+            .stray = installed.stray,
         };
         view.note = try poltergeistpkg.report.residentNote(alloc, facts);
         if (for_person) view.note_say = try poltergeistpkg.report.residentNoteSay(alloc, facts);
@@ -6350,6 +6380,7 @@ pub fn configurePlugin(
         .groupless = manifest.wants.groupless(),
         .log_open = self.chat_log != null,
         .status = null,
+        .stray = installed.stray,
     });
     if (note.len == 0) return .{ .said = said, .started = started };
 
@@ -6528,6 +6559,7 @@ fn pluginTest(
             .groupless = installed.manifest.wants.groupless(),
             .log_open = self.chat_log != null,
             .status = if (self.residentFor(installed.manifest.key)) |a| a.status() else null,
+            .stray = installed.stray,
         });
     }
 

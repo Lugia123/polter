@@ -154,7 +154,7 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | `session_recall()`          | 无         | 上次关机前写下的现场材料，只读，没有任何东西照它接线 | 总管     |
 | `skill_read(name)`          | skill 名   | 那份 skill 的正文                                  | 全部     |
 | `config_get(key?)`          | 配置键，省略为全部 | 用户配了什么，只读                        | 总管     |
-| `plugin_list(key?)`         | 插件名，省略为全部 | 每插件一行：装没装、开没开、**订阅了什么**、声明调什么、参数以什么形式配着；有实例在跑的另带 `state` / `cursor` / `failures` / `restart_pending`（在跑的那份是用另一套设置起的，重启后才生效） | 总管 |
+| `plugin_list(key?)`         | 插件名，省略为全部 | 每插件一行：装没装、开没开、**订阅了什么**、声明调什么、参数以什么形式配着；有实例在跑的另带 `state` / `cursor` / `failures` / `restart_pending`（在跑的那份是用另一套设置起的，重启后才生效）；这一版没发却留在 bundle 里的带 `stray: true` | 总管 |
 
 **`plugin_list` 的脱敏规则，三条，穷尽：**
 
@@ -173,6 +173,22 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 **列表**——一个插件可以同时订阅两种事件，那在 `kind` 的世界里根本表达不出来。
 读的人要问「这是不是一条通知渠道」，就看 `terminal.quiet` 在不在里面。
 （macOS 设置界面手抄那个枚举、抄漏两次的经过见 [plugins.md](plugins.md) 第一节。）
+
+**`stray: true`：这一版没发、却躺在随 app 装的插件目录里**（任务 #1683）。只在
+为真时出现，缺席就是「不是」。判据是 bundle 插件目录里的 `SHIPPED`（构建时由
+`GhosttyResources.zig` 的 `shipped` 名单写出，一行一个目录名）：
+
+| 情形 | 标不标 |
+| --- | --- |
+| `SHIPPED` 不存在（旧包、开发树） | 不标——**不知道**，不是「都是发的」 |
+| 存在、列了这个目录 | 不标 |
+| 存在、没列 | **标**：多半是新包解压覆盖旧包时留下的 |
+| 用户配置目录 `<config>/polter/plugins` 里的，叫什么都一样 | 永远不标 |
+
+**仍然加载**，行为不变；`note` 打头说它不是这一版的、在哪个目录、删掉即可，
+`note_say` 是同一句给人看的模板（键 `stray`，`{1}` 是目录）。`plugin_test` 的回答
+同样先说这一句。启动时日志另有一行 warn（每个进程一次）：
+`plugin <dir> in the bundled plugins directory is not part of this release (probably left over from an older one unpacked over it); delete <path>`。
 
 **字段缺席的约定与 `terminal_list` 同一条**：没有实例在跑的插件，
 `state` / `cursor` / `failures` / `restart_pending` **整个不出现**，而不是出现一个 0。理由和

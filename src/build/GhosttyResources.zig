@@ -184,6 +184,27 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
             });
             try steps.append(b.allocator, &install_step.step);
         }
+
+        // **The same list, as a file beside the plugins it names**
+        // (`polter/plugins/SHIPPED`, task 1683). A Windows release is a
+        // zip, and unpacking a new one over an old one never removes a
+        // plugin the new one dropped; the core reads this to tell such a
+        // leftover from one this release put there (`Plugin.Shipped`).
+        // Written from `shipped` itself, so the file and the directories
+        // installed cannot name two different sets.
+        var list: std.ArrayListUnmanaged(u8) = .empty;
+        for (shipped) |key| {
+            try list.appendSlice(b.allocator, key);
+            try list.append(b.allocator, '\n');
+        }
+        const wf = b.addWriteFiles();
+        const file = wf.add("SHIPPED", list.items);
+        const install_list = b.addInstallFileWithDir(
+            file,
+            .{ .custom = "share" },
+            b.pathJoin(&.{ "ghostty", "polter", "plugins", "SHIPPED" }),
+        );
+        try steps.append(b.allocator, &install_list.step);
     }
 
     // The font the screenshot tool draws its annotations with, and its

@@ -2571,6 +2571,10 @@ msgstr ""
 msgid "It failed to start {1} time(s) and is now tried every fifteen minutes. Polter's log says why."
 msgstr ""
 
+#: src/poltergeist/report.zig:150
+msgid "Not part of this release: probably left over from an older one unpacked over it. It is loaded all the same; delete {1} to remove it."
+msgstr ""
+
 #: src/poltergeist/report.zig:129
 msgid "Stopped. It starts again when Polter does."
 msgstr ""

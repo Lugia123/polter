@@ -949,7 +949,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "plugin_list",
-        .description = "What plugins are installed, whether each is switched on, what parameters it takes, and -- for the chat archive, which runs all the time -- how far it has got and whether it is healthy. Configured values are not handed back in the clear: a reference (env:, file:, keychain:, cmd:) is shown as the user wrote it, because where a secret lives is not the secret; a value typed in plainly is reported as being set and nothing more. Supervisor only.",
+        .description = "What plugins are installed, whether each is switched on, what parameters it takes, and -- for the chat archive, which runs all the time -- how far it has got and whether it is healthy. A plugin marked `stray` sits in the bundled plugins directory without this release having shipped it -- most likely left there when a newer release was unpacked over an older one; it is still loaded, and its note names the directory to delete. Configured values are not handed back in the clear: a reference (env:, file:, keychain:, cmd:) is shown as the user wrote it, because where a secret lives is not the secret; a value typed in plainly is reported as being set and nothing more. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"key":{"type":"string","description":"Just this one; omit for all of them"}},"additionalProperties":false}
         ,
