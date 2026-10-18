@@ -1333,6 +1333,7 @@ fn controlActFixPost(
     group: []const u8,
     text: []const u8,
     to: []poltergeistpkg.ControlFix.Target,
+    who: poltergeistpkg.rpc.Typist,
 ) anyerror!void {
     var deliveries: [poltergeistpkg.Chat.max_mentions]poltergeistpkg.rpc.Delivery = undefined;
     if (to.len > deliveries.len) return error.TooManyMentions;
@@ -1340,6 +1341,7 @@ fn controlActFixPost(
     _ = try chatPost(ctx, group, poltergeistpkg.Chat.user_id, text, .{
         .from_title = "you",
         .to = deliveries[0..to.len],
+        .typist = who,
     });
     for (to, 0..) |*t, i| t.err = deliveries[i].err;
     log.info("control room: fix posted in group={s} typed={d}", .{ group, to.len });
@@ -1353,6 +1355,7 @@ fn controlActAskPost(
     group: []const u8,
     text: []const u8,
     to: []poltergeistpkg.ControlFix.Target,
+    who: poltergeistpkg.rpc.Typist,
 ) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     if (to.len != 1) return error.BadRequest;
@@ -1360,6 +1363,7 @@ fn controlActAskPost(
     const posted = try chatPost(ctx, group, poltergeistpkg.Chat.user_id, text, .{
         .from_title = "you",
         .to = &deliveries,
+        .typist = who,
     });
     to[0].err = deliveries[0].err;
     const pending = deliveries[0].err != null and self.mention_retries.pending(group, posted.seq, to[0].to);
@@ -1371,8 +1375,8 @@ fn controlActAskPost(
 
 /// "Fix" on a lone terminal's card: typed into it, by `terminal_send`'s
 /// road. There is no group to keep it in.
-fn controlActFixSend(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, text: []const u8) anyerror!void {
-    try poltergeistSend(ctx, id, text, true);
+fn controlActFixSend(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, text: []const u8, who: poltergeistpkg.rpc.Typist) anyerror!void {
+    try poltergeistSendAs(ctx, id, text, true, who);
 }
 
 fn controlActFixSent(ctx: *anyopaque, stamp: u64) anyerror!void {
@@ -7394,10 +7398,22 @@ fn poltergeistSend(
     text: []const u8,
     submit: bool,
 ) anyerror!void {
+    try poltergeistSendAs(ctx, id, text, submit, .agent);
+}
+
+/// `poltergeistSend`, typed as `who` (task 1738: a group post the person
+/// made from the control room).
+fn poltergeistSendAs(
+    ctx: *anyopaque,
+    id: poltergeistpkg.Bus.Id,
+    text: []const u8,
+    submit: bool,
+    who: poltergeistpkg.rpc.Typist,
+) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
     self.noteAnswerSwitchNotConsulted(id, "terminal_send", text.len, submit, poltergeistpkg.prompts.couldAnswer(text));
-    try surface.typePoltergeistText(text, submit);
+    try surface.typePoltergeistTextAs(text, submit, who);
 }
 
 /// Record a write into a terminal that the answer switch did **not** stop.
@@ -10020,11 +10036,11 @@ fn chatPost(
 
         const now_ms = self.poltergeistElapsedMs();
         for (mentions.to) |*d| {
-            poltergeistSend(self, d.to, line, true) catch |err| {
+            poltergeistSendAs(self, d.to, line, true, mentions.typist) catch |err| {
                 d.err = err;
                 // Typed again later when the refusal clears by itself
                 // (#60); `group_post`'s row says so from the same rule.
-                const queued = self.mention_retries.add(group, seq, from, d.to, line, err, now_ms) catch |e| q: {
+                const queued = self.mention_retries.add(group, seq, from, d.to, mentions.typist, line, err, now_ms) catch |e| q: {
                     log.warn("poltergeist: mention to {x} not queued for retry err={}", .{ d.to, e });
                     break :q null;
                 };
@@ -10062,7 +10078,7 @@ fn retryMentions(self: *App, now_ms: u64) void {
             .{ .gave_up = "StartupPrompt" }
         else if (reach == .none)
             .{ .gave_up = "NoAgent" }
-        else if (poltergeistSend(self, e.to, e.line, true)) |_| {
+        else if (poltergeistSendAs(self, e.to, e.line, true, e.typist)) |_| {
             self.chat.markTold(e.group, e.to, now_ms);
             log.info("poltergeist: mention delivered on retry group={s} seq={d} to={x}", .{ e.group, e.seq, e.to });
             // The control room's ask, if it was one, says so (task 1671).

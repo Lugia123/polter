@@ -24,6 +24,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Bus = @import("Bus.zig");
+const Typist = @import("rpc.zig").Typist;
 const Id = Bus.Id;
 
 /// How many more times a refused mention is typed, after the refusal that
@@ -69,6 +70,9 @@ pub const Entry = struct {
     seq: u64,
     from: Id,
     to: Id,
+    /// Who it is typed as, every try the same as the first: the person's
+    /// ask stays the person's (task 1738).
+    typist: Typist,
     /// The line exactly as it was first typed (`Chat.formatDelivery`). Owned.
     line: []u8,
     /// Tries still to come, counting the one at `due_ms`.
@@ -108,6 +112,7 @@ pub fn add(
     seq: u64,
     from: Id,
     to: Id,
+    typist: Typist,
     line: []const u8,
     err: anyerror,
     now_ms: u64,
@@ -122,6 +127,7 @@ pub fn add(
         .seq = seq,
         .from = from,
         .to = to,
+        .typist = typist,
         .line = l,
         .left = attempts,
         .due_ms = now_ms +| delay,
@@ -233,7 +239,7 @@ test "mention retry: only the refusals that clear by themselves are tried again"
 test "mention retry: a refusal that does not clear queues nothing" {
     var r: MentionRetry = .{ .alloc = testing.allocator };
     defer r.deinit();
-    try testing.expectEqual(@as(?u64, null), try r.add("g", 1, 1, 2, "line", error.ChildExited, 0));
+    try testing.expectEqual(@as(?u64, null), try r.add("g", 1, 1, 2, .agent, "line", error.ChildExited, 0));
     try testing.expectEqual(@as(usize, 0), r.items.items.len);
     try testing.expectEqual(@as(?u64, null), r.nextDueMs());
 }
@@ -245,7 +251,7 @@ test "mention retry: three more tries, then it gives up with the last refusal's 
     defer due.deinit(testing.allocator);
 
     var now: u64 = 1_000;
-    try testing.expectEqual(@as(?u64, user_present_delay_ms), try r.add("build", 7, 0xa, 0xb, "the line", error.UserPresent, now));
+    try testing.expectEqual(@as(?u64, user_present_delay_ms), try r.add("build", 7, 0xa, 0xb, .agent, "the line", error.UserPresent, now));
     try testing.expectEqual(@as(?u64, now + user_present_delay_ms), r.nextDueMs());
 
     // Not due yet: nothing is handed out.
@@ -278,7 +284,7 @@ test "1682: a permission box spends no try: the mention waits for as long as it 
     defer due.deinit(testing.allocator);
 
     var now: u64 = 1_000;
-    try testing.expectEqual(@as(?u64, draft_delay_ms), try r.add("build", 7, 0xa, 0xb, "the line", error.ApprovalOnScreen, now));
+    try testing.expectEqual(@as(?u64, draft_delay_ms), try r.add("build", 7, 0xa, 0xb, .agent, "the line", error.ApprovalOnScreen, now));
     // Ten times the tries anything else gets, and still waiting.
     for (0..attempts * 10) |_| {
         now = r.nextDueMs().?;
@@ -306,7 +312,7 @@ test "mention retry: a retry refused for a reason that does not clear stops at o
     defer r.deinit();
     var due: std.ArrayListUnmanaged(Entry) = .empty;
     defer due.deinit(testing.allocator);
-    _ = try r.add("g", 1, 1, 2, "x", error.DraftInLine, 0);
+    _ = try r.add("g", 1, 1, 2, .agent, "x", error.DraftInLine, 0);
     try r.takeDue(draft_delay_ms, &due);
     const out = r.requeue(due.items[0], error.NoSuchTerminal, draft_delay_ms);
     r.free(due.items[0]);
@@ -317,8 +323,8 @@ test "mention retry: a retry refused for a reason that does not clear stops at o
 test "mention retry: a renamed group's waiting mentions follow it" {
     var r: MentionRetry = .{ .alloc = testing.allocator };
     defer r.deinit();
-    _ = try r.add("old", 1, 1, 2, "x", error.UserPresent, 0);
-    _ = try r.add("other", 2, 1, 3, "y", error.UserPresent, 0);
+    _ = try r.add("old", 1, 1, 2, .agent, "x", error.UserPresent, 0);
+    _ = try r.add("other", 2, 1, 3, .agent, "y", error.UserPresent, 0);
     try r.renameGroup("old", "new");
     try testing.expectEqualStrings("new", r.items.items[0].group);
     try testing.expectEqualStrings("other", r.items.items[1].group);
@@ -332,4 +338,27 @@ test "mention retry: the line the author is told names who, where, and why" {
     try testing.expect(std.mem.indexOf(u8, s, "0x00000000000000ab") != null);
     try testing.expect(std.mem.indexOf(u8, s, "\"build\" (message 12)") != null);
     try testing.expect(std.mem.indexOf(u8, s, "UserPresent") != null);
+}
+
+test "1738: a retry is typed as the first try was, the person's ask as the person's" {
+    var r: MentionRetry = .{ .alloc = testing.allocator };
+    defer r.deinit();
+    _ = try r.add("build", 7, 0xa, 0xb, .person_elsewhere, "the ask", error.DraftInLine, 0);
+    _ = try r.add("build", 8, 0xc, 0xb, .agent, "a post", error.UserPresent, 0);
+    var due: std.ArrayListUnmanaged(Entry) = .empty;
+    defer due.deinit(testing.allocator);
+    try r.takeDue(std.math.maxInt(u64) / 2, &due);
+    try testing.expectEqual(@as(usize, 2), due.items.len);
+    const ask = due.items[0];
+    const post = due.items[1];
+    try testing.expectEqual(Typist.person_elsewhere, ask.typist);
+    try testing.expectEqual(Typist.agent, post.typist);
+    // Refused again, queued again: still the person's.
+    _ = r.requeue(ask, error.DraftInLine, 0);
+    r.free(post);
+    due.clearRetainingCapacity();
+    try r.takeDue(std.math.maxInt(u64) / 2, &due);
+    const again = due.items[0];
+    defer r.free(again);
+    try testing.expectEqual(Typist.person_elsewhere, again.typist);
 }

@@ -74,7 +74,11 @@
 //! `ask_supervisor` types a fixed line into the group's supervisor (`[Polter
 //! ask]`, then the request in the person's language), kept in the group as
 //! the person's, by the road a `group_post` mention takes. Done means it was
-//! typed, not that the supervisor did it.
+//! typed, not that the supervisor did it. Typed as the person's, from
+//! elsewhere (`rpc.Typist.person_elsewhere`, task 1738): not held back
+//! because a key reached that terminal a moment ago, as an agent's post is,
+//! and held back by everything the person cannot see from the control room
+//! -- half a line typed there, a permission box, a word being composed.
 //!
 //! `take_over` is "Let the control room take over?" on the frame of a
 //! supervisor somebody started by hand (`TakeOver.zig`): its CLI is told to
@@ -211,7 +215,7 @@
 //! | delete_group | `DeleteFailed` | a directory of its record could not be deleted: it is out of the list and out of memory, and what was not deleted is still on disk |
 //! | delete_group | `Stale` | `members` or `open_tasks` are not what they are now |
 //! | ask_supervisor | `NoSupervisor` | the group has none |
-//! | ask_supervisor | `NoAgent`, `UserPresent`, `DraftInLine`, `ChildExited`, ... | a mention's refusals: kept in the group, not typed; the two that clear by themselves are tried again (#60) |
+//! | ask_supervisor | `NoAgent`, `DraftInLine`, `ApprovalOnScreen`, `ChildExited`, ... | a mention's refusals, less `UserPresent` (task 1738): kept in the group, not typed; the ones that clear are tried again (#60) |
 //!
 //! The last four are the terminal's own, from the path every agent's text
 //! takes; they are not decided here.
@@ -224,6 +228,7 @@ const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const Projects = @import("Projects.zig");
 const ControlFix = @import("ControlFix.zig");
+const Typist = @import("rpc.zig").Typist;
 const i18n = @import("../os/i18n.zig");
 
 pub const Id = Bus.Id;
@@ -395,11 +400,13 @@ pub const Host = struct {
     fixCard: *const fn (ctx: *anyopaque, key: ControlFix.Key) ?ControlFix.Card,
     /// `ControlFix.Port.post` and `.send`: a group post from the person
     /// naming `to`, typed into each; a line typed into a lone terminal.
-    fixPost: *const fn (ctx: *anyopaque, group: []const u8, text: []const u8, to: []ControlFix.Target) anyerror!void,
+    fixPost: *const fn (ctx: *anyopaque, group: []const u8, text: []const u8, to: []ControlFix.Target, who: Typist) anyerror!void,
     /// `fixPost`, for `ask_supervisor`: the same road, and the ask kept so
-    /// the snapshot can say what became of a retry (task 1671).
-    askPost: *const fn (ctx: *anyopaque, group: []const u8, text: []const u8, to: []ControlFix.Target) anyerror!void,
-    fixSend: *const fn (ctx: *anyopaque, id: Id, text: []const u8) anyerror!void,
+    /// the snapshot can say what became of a retry (task 1671). Typed as
+    /// `who` -- the person's ask is not held back by the keyboard clock an
+    /// agent's post is (task 1738).
+    askPost: *const fn (ctx: *anyopaque, group: []const u8, text: []const u8, to: []ControlFix.Target, who: Typist) anyerror!void,
+    fixSend: *const fn (ctx: *anyopaque, id: Id, text: []const u8, who: Typist) anyerror!void,
     /// Remember the press (`ControlFix.Sent`, `ControlFix.stampOf`).
     fixSent: *const fn (ctx: *anyopaque, stamp: u64) anyerror!void,
     /// How the paragraph is written: its moments, and its language.
@@ -721,7 +728,8 @@ pub fn perform(
             var buf: [1024]u8 = undefined;
             const text = std.fmt.bufPrint(&buf, "{s} {s}", .{ ask_tag, host.voice.tr(a.ask.words()) }) catch return error.BadRequest;
             var to = [_]ControlFix.Target{.{ .to = steward }};
-            try host.askPost(host.ctx, a.group, text, &to);
+            // The person clicked it: typed as theirs, from elsewhere.
+            try host.askPost(host.ctx, a.group, text, &to, .person_elsewhere);
             if (to[0].err) |err| return err;
         },
     }
@@ -770,6 +778,8 @@ const Recorder = struct {
     fix_card: ?ControlFix.Card = null,
     fix_posts: std.ArrayListUnmanaged([]const u8) = .empty,
     fix_typed: usize = 0,
+    /// Who the last ask was to be typed as.
+    ask_typist: ?Typist = null,
     fix_marked: ?u64 = null,
     /// What `readScreen` answers.
     screen: []const u8 = "",
@@ -823,7 +833,7 @@ const Recorder = struct {
             .takeOver = takeOver,
             .fixCard = fixCard,
             .fixPost = fixPost,
-            .askPost = fixPost,
+            .askPost = askPost,
             .fixSend = fixSend,
             .fixSent = fixSent,
             .voice = .{ .clock = clock, .tr = ControlFix.english },
@@ -866,7 +876,7 @@ const Recorder = struct {
         return self.fix_card;
     }
 
-    fn fixPost(ctx: *anyopaque, _: []const u8, text: []const u8, to: []ControlFix.Target) anyerror!void {
+    fn fixPost(ctx: *anyopaque, _: []const u8, text: []const u8, to: []ControlFix.Target, _: Typist) anyerror!void {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
         try self.fix_posts.append(testing.allocator, try testing.allocator.dupe(u8, text));
         for (to) |*t| {
@@ -874,7 +884,13 @@ const Recorder = struct {
         }
     }
 
-    fn fixSend(ctx: *anyopaque, _: Id, _: []const u8) anyerror!void {
+    fn askPost(ctx: *anyopaque, group: []const u8, text: []const u8, to: []ControlFix.Target, who: Typist) anyerror!void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        self.ask_typist = who;
+        try fixPost(ctx, group, text, to, who);
+    }
+
+    fn fixSend(ctx: *anyopaque, _: Id, _: []const u8, _: Typist) anyerror!void {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
         if (self.refuse_with) |err| return err;
         self.fix_typed += 1;
@@ -1738,6 +1754,10 @@ test "ControlRoom act: asking the supervisor types the tagged line into it, and 
     , 1_000);
     try testing.expectEqual(@as(usize, 2), b.rec.fix_posts.items.len);
     try testing.expect(std.mem.startsWith(u8, b.rec.fix_posts.items[0], ask_tag ++ " The person asked from the control room: please report"));
+    // The person's, from elsewhere: not held back by the keyboard clock an
+    // agent's post is, held back by a draft (task 1738).
+    const asked_as = b.rec.ask_typist;
+    try testing.expectEqual(@as(?Typist, .person_elsewhere), asked_as);
     try testing.expect(std.mem.indexOf(u8, b.rec.fix_posts.items[1], "close the workers in this group that are idle") != null);
 
     // Kept in the group, and not typed: the mention's own refusal, by name.

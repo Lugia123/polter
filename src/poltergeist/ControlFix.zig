@@ -28,6 +28,7 @@ const Attention = @import("Attention.zig");
 const Bus = @import("Bus.zig");
 const ControlRoom = @import("ControlRoom.zig");
 const i18n = @import("../os/i18n.zig");
+const Typist = @import("rpc.zig").Typist;
 
 pub const Id = Bus.Id;
 
@@ -289,11 +290,12 @@ pub const Port = struct {
     /// Whether an agent is connected from that terminal right now.
     agentPresent: *const fn (ctx: *anyopaque, id: Id) bool,
     /// Keep `text` in `group` from the person, naming `to`, and type it
-    /// into each of `to` with a return -- `group_post`'s road, which fills
-    /// in each one's `err`.
-    post: *const fn (ctx: *anyopaque, group: []const u8, text: []const u8, to: []Target) anyerror!void,
-    /// Type `text` into a terminal that is in no group, with a return.
-    send: *const fn (ctx: *anyopaque, id: Id, text: []const u8) anyerror!void,
+    /// into each of `to` with a return, as `typist` -- `group_post`'s road,
+    /// which fills in each one's `err`.
+    post: *const fn (ctx: *anyopaque, group: []const u8, text: []const u8, to: []Target, typist: Typist) anyerror!void,
+    /// Type `text` into a terminal that is in no group, with a return, as
+    /// `typist`.
+    send: *const fn (ctx: *anyopaque, id: Id, text: []const u8, typist: Typist) anyerror!void,
 };
 
 pub const Target = struct {
@@ -309,6 +311,11 @@ pub const Target = struct {
 /// is a bare shell, and a paragraph typed there with a return is run as a
 /// command. `NoAgent`, the same gate a mention has.
 pub fn deliver(key: Key, deliveries: []const Delivery, port: Port) anyerror!void {
+    // **Typed as the person, from elsewhere** (task 1738): they pressed
+    // "Fix" in the control room, so a key that reached the terminal a
+    // moment ago -- most likely their own -- does not hold it back. Half a
+    // line there, a permission box, a word being composed still do.
+    const typist: Typist = .person_elsewhere;
     var first: ?anyerror = null;
     for (deliveries) |d| {
         const present = port.agentPresent(port.ctx, d.to);
@@ -316,7 +323,7 @@ pub fn deliver(key: Key, deliveries: []const Delivery, port: Port) anyerror!void
             .group => |group| {
                 var one = [_]Target{.{ .to = d.to }};
                 const to: []Target = if (present) &one else &.{};
-                try port.post(port.ctx, group, d.text, to);
+                try port.post(port.ctx, group, d.text, to, typist);
                 if (!present) {
                     if (first == null) first = error.NoAgent;
                 } else if (one[0].err) |err| {
@@ -328,7 +335,7 @@ pub fn deliver(key: Key, deliveries: []const Delivery, port: Port) anyerror!void
                     if (first == null) first = error.NoAgent;
                     continue;
                 }
-                port.send(port.ctx, d.to, d.text) catch |err| {
+                port.send(port.ctx, d.to, d.text, typist) catch |err| {
                     if (first == null) first = err;
                 };
             },
@@ -525,6 +532,9 @@ const Recorder = struct {
     refuse: ?anyerror = null,
     posts: std.ArrayListUnmanaged(Post) = .empty,
     sends: std.ArrayListUnmanaged(Id) = .empty,
+    /// Who the last post and the last send were to be typed as.
+    post_who: ?Typist = null,
+    send_who: ?Typist = null,
 
     const Post = struct { group: []const u8, text: []const u8, typed: ?Id };
 
@@ -542,8 +552,9 @@ const Recorder = struct {
         return std.mem.indexOfScalar(Id, self.absent, id) == null;
     }
 
-    fn post(ctx: *anyopaque, group: []const u8, text: []const u8, to: []Target) anyerror!void {
+    fn post(ctx: *anyopaque, group: []const u8, text: []const u8, to: []Target, typist: Typist) anyerror!void {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
+        self.post_who = typist;
         for (to) |*t| t.err = self.refuse;
         try self.posts.append(testing.allocator, .{
             .group = group,
@@ -552,8 +563,9 @@ const Recorder = struct {
         });
     }
 
-    fn send(ctx: *anyopaque, id: Id, _: []const u8) anyerror!void {
+    fn send(ctx: *anyopaque, id: Id, _: []const u8, typist: Typist) anyerror!void {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
+        self.send_who = typist;
         if (self.refuse) |err| return err;
         try self.sends.append(testing.allocator, id);
     }
@@ -568,6 +580,9 @@ test "ControlFix: a group's fix is kept in the group and typed into the supervis
     try testing.expectEqualStrings("x", r.posts.items[0].text);
     try testing.expectEqual(@as(?Id, boss), r.posts.items[0].typed);
     try testing.expectEqual(@as(usize, 0), r.sends.items.len);
+    // The person pressed it: not held back by the keyboard clock (task 1738).
+    const posted_as = r.post_who;
+    try testing.expectEqual(@as(?Typist, .person_elsewhere), posted_as);
 }
 
 test "ControlFix: a refused typing is said by its name, and the paragraph is still kept" {
@@ -598,6 +613,9 @@ test "ControlFix: a terminal in no group is typed into, and nothing is posted" {
     try deliver(.{ .terminal = w1 }, &.{.{ .to = w1, .text = "x" }}, r.port());
     try testing.expectEqual(@as(usize, 0), r.posts.items.len);
     try testing.expectEqualSlices(Id, &.{w1}, r.sends.items);
+    // The person pressed it here too (task 1738).
+    const sent_as = r.send_who;
+    try testing.expectEqual(@as(?Typist, .person_elsewhere), sent_as);
 }
 
 test "ControlFix: several to tell: every one is tried, and the first refusal is the answer" {

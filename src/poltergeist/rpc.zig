@@ -4961,6 +4961,27 @@ pub const ChatMember = struct {
     title: []const u8,
 };
 
+/// Who is asking to put characters into a terminal's line. Each is held
+/// back by different things (`Surface.mayType`).
+pub const Typist = enum {
+    /// An agent, through a tool. Keeps out of the way of a person: not
+    /// while a key reached that terminal in the last ten seconds.
+    agent,
+    /// The person, at that terminal: their own menu click on it is not an
+    /// agent intruding, and must not be held back by their own keystrokes
+    /// (#1202: a role picked from the menu of a tab opened seconds ago was
+    /// refused as `UserPresent` -- by the keys that opened and used the tab
+    /// -- and the only trace was an info line).
+    person,
+    /// The person, from somewhere else: the control room's "Ask the
+    /// Supervisor" (task 1738). Not held back by the keyboard clock -- the
+    /// keys it counts are most likely their own, and they did ask -- but
+    /// by everything they cannot see from where they clicked: half a line
+    /// in that terminal, a permission box its return would answer, a word
+    /// being composed.
+    person_elsewhere,
+};
+
 /// Who a group post is to be typed into, handed to `Host.chatPost`.
 pub const Mentions = struct {
     /// The author's title as the stored text names it, so the line typed
@@ -4971,7 +4992,12 @@ pub const Mentions = struct {
     /// One per terminal to type into. The host fills in `err`.
     to: []Delivery = &.{},
 
-    pub const none: Mentions = .{};
+    /// Who types the line into each of `to`. **No default**: every post
+    /// says, so one that types as the person is a choice somebody wrote
+    /// (task 1738).
+    typist: Typist,
+
+    pub const none: Mentions = .{ .typist = .agent };
 };
 
 pub const Delivery = struct {
@@ -9124,6 +9150,8 @@ fn postMentioning(
     const posted = host.chatPost(p.group, caller, body.written(), .{
         .from_title = from_title,
         .to = targets.items,
+        // `group_post` is an agent's, the supervisor's included.
+        .typist = .agent,
     }) catch |err| return chatFailure(err);
 
     for (rows) |*row| {
@@ -10401,6 +10429,8 @@ const FakeHost = struct {
     /// How many posts reached the host at all -- zero is what a refused
     /// post has to leave behind.
     post_count: usize = 0,
+    /// Who the last post's mentions were to be typed as.
+    posted_typist: ?Typist = null,
 
     /// The lines a post typed into named terminals, in order, and which
     /// terminals refuse to be typed into and how.
@@ -11045,6 +11075,7 @@ const FakeHost = struct {
         if (self.refuse) return error.NoSuchGroup;
         self.posted = .{ .group = group, .from = from, .text = text };
         self.post_count += 1;
+        self.posted_typist = mentions.typist;
 
         // Typed the way the real host types it: one line, the same
         // `Chat.formatDelivery`, through `send` so its refusals apply.
@@ -16488,6 +16519,11 @@ test "mention: the named terminal is typed the message, one line, names frozen i
         typedInto(&fake, worker).?,
     );
     try testing.expectEqual(@as(usize, 1), fake.typed_count);
+
+    // A supervisor's post is an agent's: held back by the keyboard clock,
+    // as before task 1738 gave the person's ask its own way in.
+    const typed_as = fake.posted_typist;
+    try testing.expectEqual(@as(?Typist, .agent), typed_as);
 }
 
 test "1682: a mention to a terminal with a permission box up is not typed, and will be tried again" {

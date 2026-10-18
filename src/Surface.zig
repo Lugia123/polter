@@ -1405,7 +1405,9 @@ pub fn activeText(self: *Surface, alloc: Allocator) ![]const u8 {
 pub fn draftFor(self: *Surface, who: Typist) bool {
     if (!self.poltergeist_draft.outstanding) return false;
     return switch (who) {
-        .agent => true,
+        // The person asking from elsewhere cannot see this line: the flag,
+        // which errs towards "yes", as for an agent (task 1738).
+        .agent, .person_elsewhere => true,
         .person => self.inputLineHoldsText(),
     };
 }
@@ -4749,13 +4751,9 @@ pub fn poltergeistMayType(self: *Surface) !void {
     return self.mayTypeAs(.agent);
 }
 
-/// Who is asking to put characters into the line. An agent's text keeps out
-/// of the way of a person; the person's own menu click is not an agent
-/// intruding, and must not be held back by the person's own keystrokes
-/// (#1202: a role picked from the menu of a tab opened seconds ago was
-/// refused as `UserPresent` -- by the keys that opened and used the tab --
-/// and the only trace was an info line).
-pub const Typist = enum { agent, person };
+/// Who is asking to put characters into the line (`rpc.Typist`, where the
+/// three are argued).
+pub const Typist = poltergeistpkg.rpc.Typist;
 
 /// The judgement, without a `Surface` (one cannot be built in a test).
 /// A person is refused only for what is really in the way: the child gone,
@@ -4806,12 +4804,14 @@ fn mayType(who: Typist, child_exited: bool, since_key_ms: ?i64, composing: bool,
     // going to happen, which is the state task 572 was filed about: the
     // sentence said "try again shortly" and no amount of shortly helped.
     if (child_exited) return error.ChildExited;
-    if (who == .agent) {
+    if (who != .person) {
         // A permission box its CLI's hooks do not report, on the screen
         // (task 1682, `App.approvalOnScreen`): a return typed now answers
         // it with whatever option is highlighted -- measured, a set_watch
         // notice approved a shell command in Antigravity that way. Nothing
         // is typed while it is up; it clears when somebody answers it.
+        // The person asking from elsewhere is held to it too: they cannot
+        // see that box from where they clicked (task 1738).
         if (approval_box) return error.ApprovalOnScreen;
         // An input method composing here (task 1590): the half-made word is
         // in the candidate box, not the line, so neither the clock (it can
@@ -4820,9 +4820,28 @@ fn mayType(who: Typist, child_exited: bool, since_key_ms: ?i64, composing: bool,
         // judgement a move is refused by (`presenceForMove`), five-minute
         // guard included, so the two cannot disagree about who is here.
         if (composing) return error.Composing;
+    }
+    // The keyboard clock is for agents alone. The person asking from the
+    // control room is not held back by keys that are, most likely, their
+    // own (task 1738: "close idle workers" refused as `UserPresent`).
+    if (who == .agent) {
         if (since_key_ms) |ms| if (ms < notice_quiet_keyboard_ms) return error.UserPresent;
     }
     if (draft_outstanding) return error.DraftInLine;
+}
+
+test "1738: the person asking from elsewhere is not held back by the keyboard clock, and is by everything else" {
+    const testing = std.testing;
+    // A key a moment ago: an agent waits, the person asking does not.
+    try testing.expectError(error.UserPresent, mayType(.agent, false, 2000, false, false, false));
+    try mayType(.person_elsewhere, false, 2000, false, false, false);
+    // Half a line in front of the supervisor: nothing is typed into it.
+    try testing.expectError(error.DraftInLine, mayType(.person_elsewhere, false, 2000, false, true, false));
+    // A permission box the return would answer, a word being composed, a
+    // child gone: refused as an agent is.
+    try testing.expectError(error.ApprovalOnScreen, mayType(.person_elsewhere, false, null, false, false, true));
+    try testing.expectError(error.Composing, mayType(.person_elsewhere, false, null, true, false, false));
+    try testing.expectError(error.ChildExited, mayType(.person_elsewhere, true, null, false, false, false));
 }
 
 test "1682: an agent's text is refused while a permission box it would answer is on the screen" {
@@ -5001,7 +5020,7 @@ pub fn mayTypeAs(self: *Surface, who: Typist) !void {
         last.durationTo(.now(global.io(), .boot)).toMilliseconds()
     else
         null;
-    const approval_box = who == .agent and self.app.approvalOnScreen(self.id);
+    const approval_box = who != .person and self.app.approvalOnScreen(self.id);
     mayType(who, self.child_exited, since_key_ms, self.polterComposing(), self.draftFor(who), approval_box) catch |err| {
         switch (err) {
             error.ApprovalOnScreen => log.info("poltergeist: text deferred, a permission box is on this terminal's screen", .{}),
