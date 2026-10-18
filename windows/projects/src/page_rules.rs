@@ -70,6 +70,18 @@ pub fn tabs_to_save(checked: &BTreeSet<u64>, rows: &[Row]) -> Vec<u64> {
     rows.iter().filter(|r| r.can_check && checked.contains(&r.id)).map(|r| r.id).collect()
 }
 
+/// What is checked after a press on `row` -- a click on it, or Space: its
+/// tick turned over, when it can be checked. A row that cannot be (a page
+/// of a project already) is left as it is, as the macOS sheet's row
+/// ignores a tap on it.
+pub fn toggled(checked: &BTreeSet<u64>, row: &Row) -> BTreeSet<u64> {
+    let mut out = checked.clone();
+    if row.can_check && !out.remove(&row.id) {
+        out.insert(row.id);
+    }
+    out
+}
+
 /// Whether "Save as Project" can be pressed: there is a name, and at least
 /// one tab to save.
 pub fn can_save(name: &str, checked: &BTreeSet<u64>, rows: &[Row]) -> bool {

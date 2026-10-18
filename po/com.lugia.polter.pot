@@ -3404,20 +3404,6 @@ msgstr ""
 msgid "Save as Project"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:270
-#, rust-format
-msgid "All {} Pages of This Window"
-msgstr ""
-
-#: windows/host/src/project_picker.rs:279
-msgid "This Page Only"
-msgstr ""
-
-#: windows/host/src/project_picker.rs:366
-#, rust-format
-msgid "Saves this tab: {} pane(s)"
-msgstr ""
-
 #: windows/host/src/project_picker.rs:650 windows/host/src/projects_ui.rs:716
 msgid "The project could not be opened."
 msgstr ""

@@ -1,13 +1,15 @@
 //! The project picker: the window "Save as Project…" and "Load Project…"
 //! open, and what picking in it does.
 //!
-//! **One window for both, as on macOS** (`ProjectPicker.swift`,
-//! `ProjectPickerView.swift`): a title bar that says which it is, a field on
-//! top, every saved project under it, Cancel at the bottom, in the middle of
-//! the screen. Saving, the field is the new project's name with Save beside
-//! it, and picking a row overwrites that project after asking. Loading, the
-//! field searches the list, and picking a row opens it. "Save as a Project
-//! Before Closing?" opens the same window to save.
+//! **One window for both, as on macOS** (`ProjectPicker.swift`): a title
+//! bar that says which it is, in the middle of the screen. Loading is
+//! `ProjectPickerView.swift`: a search on top, every saved project under it,
+//! Cancel at the bottom, and picking a row opens it. Saving is
+//! `ProjectSaveAsView.swift` (task 1754): the new project's name, a tick box
+//! for each tab of the window -- the one asked from ticked, a page of another
+//! project greyed -- the sentence saying what saving does, then Cancel and
+//! Save as Project. A name that is a project's already is replaced after
+//! asking. "Save as a Project Before Closing?" opens the same window to save.
 //!
 //! **Why this is no longer a popup menu and a one-line box.** Loading used to
 //! be a `TrackPopupMenu` at the pointer and saving a borderless name box
@@ -27,15 +29,17 @@
 //! `HANDLES`, a `Cell`, so a borrow hands out no window to call anything on.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use polter_settings_shell::picker::{self, Mode};
+use polter_projects::page_rules as rules;
+use polter_settings_shell::picker::{self, save_as};
 use polter_settings_shell::projects as pj;
 use polter_settings_shell::Rect as SRect;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Controls::{
     CDDS_PREPAINT, CDIS_DISABLED, CDIS_FOCUS, CDIS_HOT, CDIS_SELECTED, CDRF_SKIPDEFAULT, DRAWITEMSTRUCT, NMCUSTOMDRAW,
@@ -43,7 +47,7 @@ use windows::Win32::UI::Controls::{
 };
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, GetFocus, GetKeyState, SetFocus, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_TAB, VK_UP,
+    EnableWindow, GetFocus, GetKeyState, SetFocus, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -85,11 +89,8 @@ enum Purpose {
 }
 
 impl Purpose {
-    fn mode(self) -> Mode {
-        match self {
-            Purpose::Load | Purpose::AddTo { .. } => Mode::Load,
-            Purpose::Save { .. } => Mode::SaveAs,
-        }
+    fn saving(self) -> bool {
+        matches!(self, Purpose::Save { .. })
     }
 
     /// **No ellipsis**: macOS spells the *menu row* `Save as Project...`;
@@ -142,8 +143,11 @@ struct Model {
     items: Vec<Item>,
     /// Indices into `items`, as the list shows them now.
     shown: Vec<usize>,
-    /// "Saves this tab: N pane(s)", when saving.
-    caption: Option<String>,
+    /// Saving: one row per tab of the window, in the order of the tabs
+    /// (`page_rules::save_as_rows`). What the list shows instead of `items`.
+    pages: Vec<rules::Row>,
+    /// Saving: the tabs ticked.
+    checked: BTreeSet<u64>,
 }
 
 thread_local! {
@@ -152,9 +156,6 @@ thread_local! {
     /// A pick is being acted on: the overwrite question runs a message loop
     /// of its own, and a second pick arriving in it would ask twice.
     static ACTING: Cell<bool> = const { Cell::new(false) };
-    /// The other tabs of the window that are saved with the one a save was
-    /// asked from (`open_save`'s question); empty for that tab alone.
-    static SAVING_WITH: RefCell<Vec<TabId>> = const { RefCell::new(Vec::new()) };
 }
 
 fn handles() -> Option<Handles> {
@@ -199,16 +200,7 @@ unsafe extern "system" fn load_timer(_: HWND, _: u32, id: usize, _: u32) {
 /// Open the window to save tab `tab` of `frame` as a project. **Main thread
 /// only** -- it makes windows.
 pub fn open_save(frame: HWND, tab: TabId) {
-    let Some(with) = which_tabs(frame, frame, tab) else { return };
-    saving_with(with);
     open(frame, frame, Purpose::Save { tab, close_after: None });
-}
-
-/// The tabs a save takes besides the one it was asked from. Set here, in a
-/// function of its own, so that the cell is let go of before the window is
-/// made (`windows/tools/borrow-across-dispatch.py`).
-fn saving_with(tabs: Vec<TabId>) {
-    SAVING_WITH.with(|w| *w.borrow_mut() = tabs);
 }
 
 /// Open the window to put tab `tab` of `frame` into a project that exists.
@@ -238,61 +230,13 @@ pub fn add_tab_to(frame: HWND, tab: TabId, name: &str, path: &std::path::Path) -
     }
 }
 
-/// Which tabs of `frame` a save asked from `tab` takes besides it, or
-/// `None` for no save at all (`page_rules::save_as_rows`, the macOS sheet's
-/// rule): a tab that is a page of a project already cannot be saved into
-/// another, and is said so; a window with other tabs that can be is asked
-/// whether they come too.
-///
-/// **Not the list of tick boxes the macOS sheet has.** Two answers: this
-/// page, which is what is ticked there to begin with, or every page of the
-/// window that is in no project. A page by itself is added afterwards from
-/// its tab's menu ("Add to Project").
-fn which_tabs(owner: HWND, frame: HWND, tab: TabId) -> Option<Vec<TabId>> {
-    use polter_projects::page_rules as rules;
-    let tabs: Vec<rules::Tab> = crate::tabs::terminal_tabs_of(frame)
+/// The tabs of `frame` as "Save as Project" lists them, `tab` the one it was
+/// asked from (`ProjectSaveAsView`'s `tabs`).
+fn tabs_for_save(frame: HWND, tab: TabId) -> Vec<rules::Tab> {
+    crate::tabs::terminal_tabs_of(frame)
         .into_iter()
         .map(|(id, title, panes, _)| rules::Tab { id: id.0, title, panes, project: crate::project_session::project_of_tab(id), is_current: id == tab })
-        .collect();
-    let rows = rules::save_as_rows(&tabs);
-    if rules::initially_checked(&tabs).is_empty() {
-        // The tab asked from is a page already.
-        if let Some(rules::Row { title, note: rules::Note::InProject(project), .. }) = rows.iter().find(|r| r.id == tab.0) {
-            let w = rules::page_of_another_words(title, project);
-            wlogf!(frame, "[project] save as project: tab {:?} is already a page of {:?}; not offered", tab, project);
-            tell(owner, n_("Save as Project"), &w.filled(&tr(w.msgid)), MB_ICONINFORMATION);
-        }
-        return None;
-    }
-    let others: Vec<&rules::Row> = rows.iter().filter(|r| r.can_check && r.id != tab.0).collect();
-    if others.is_empty() {
-        return Some(Vec::new());
-    }
-    let every: std::collections::BTreeSet<u64> = rows.iter().map(|r| r.id).collect();
-    let all = rules::tabs_to_save(&every, &rows);
-    let listed: Vec<String> = others
-        .iter()
-        .map(|r| {
-            let w = rules::note_words(&r.note);
-            format!("{}  ({})", r.title, w.filled(&tr(w.msgid)))
-        })
-        .collect();
-    let all_label = tr("All {} Pages of This Window").replacen("{}", &all.len().to_string(), 1);
-    let pressed = crate::projects_ui::ask(
-        owner,
-        "[project]",
-        &tr(rules::TABS_TO_SAVE),
-        &format!("{}
-
-{}", listed.join("
-"), tr(rules::SAVED_FROM_NOW_ON)),
-        &[tr("This Page Only"), all_label, tr("Cancel")],
-    );
-    match pressed {
-        Some(0) => Some(Vec::new()),
-        Some(1) => Some(all.into_iter().filter(|id| *id != tab.0).map(TabId).collect()),
-        _ => None,
-    }
+        .collect()
 }
 
 /// The same, asked for from another window -- the settings window's "+".
@@ -301,8 +245,6 @@ fn which_tabs(owner: HWND, frame: HWND, tab: TabId) -> Option<Vec<TabId>> {
 /// behind that window with nothing to say it was still there. What is saved
 /// is still `frame`'s tab.
 pub fn open_save_over(owner: HWND, frame: HWND, tab: TabId) {
-    let Some(with) = which_tabs(owner, frame, tab) else { return };
-    saving_with(with);
     open(owner, frame, Purpose::Save { tab, close_after: None });
 }
 
@@ -310,8 +252,6 @@ pub fn open_save_over(owner: HWND, frame: HWND, tab: TabId) {
 /// the tab -- or, with `whole_window`, its window -- closes once the save has
 /// worked, and only then (`ProjectSaveBeforeClose.saveThenClose`).
 pub fn open_save_then_close(frame: HWND, tab: TabId, whole_window: bool) {
-    // The tab that is closing, and no other: that is what was asked about.
-    saving_with(Vec::new());
     open(frame, frame, Purpose::Save { tab, close_after: Some(whole_window) });
 }
 
@@ -345,12 +285,6 @@ fn read_items(frame: HWND) -> Vec<Item> {
     items
 }
 
-/// How many panes the tab being saved has, for the line under the name.
-fn panes_of(frame: HWND, tab: TabId) -> Option<usize> {
-    let index = crate::tabs::strip_snapshot(frame).0.iter().position(|(t, _)| *t == tab)?;
-    crate::tabs::tab_pane_count(frame, index).filter(|(t, _)| *t == tab).map(|(_, n)| n)
-}
-
 /// `owner` is the window this one stays in front of and opens on the
 /// monitor of; `frame` is the terminal window it loads into or saves from.
 fn open(owner: HWND, frame: HWND, purpose: Purpose) {
@@ -364,21 +298,18 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
         crate::plogf!("[project] no frame window; {} window not shown", purpose.title());
         return;
     }
-    let items = read_items(frame);
-    let caption = match purpose {
-        Purpose::Load | Purpose::AddTo { .. } => None,
-        Purpose::Save { tab, .. } => Some({
-            // Every tab that is saved, counted whole: the one asked from,
-            // and the others of its window that were chosen with it.
-            let with: Vec<TabId> = SAVING_WITH.with(|w| w.borrow().clone());
-            let panes: usize = std::iter::once(tab).chain(with.iter().copied()).filter_map(|t| panes_of(frame, t)).sum();
-            if with.is_empty() {
-                tr("Saves this tab: {} pane(s)").replacen("{}", &panes.to_string(), 1)
-            } else {
-                let w = polter_projects::page_rules::size(with.len() + 1, panes);
-                w.filled(&tr(w.msgid))
-            }
-        }),
+    // Saving lists the window's tabs, not the projects: a name that is a
+    // project's already is found when Save as Project is pressed.
+    let items = if purpose.saving() { Vec::new() } else { read_items(frame) };
+    // Saving: every tab of the window, the one asked from ticked
+    // (`ProjectSaveAsView`, task 1754). A page of another project is listed
+    // greyed, as there, rather than refused before anything opens.
+    let (pages, checked) = match purpose {
+        Purpose::Save { tab, .. } => {
+            let tabs = tabs_for_save(frame, tab);
+            (rules::save_as_rows(&tabs), rules::initially_checked(&tabs))
+        }
+        Purpose::Load | Purpose::AddTo { .. } => (Vec::new(), BTreeSet::new()),
     };
 
     // A group's supervisor in the tab saved: the tick box that saves it as
@@ -392,7 +323,19 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
 
     let owner = if owner.0.is_null() { frame } else { owner };
     let dpi = (unsafe { GetDpiForWindow(owner) } as i32).max(96);
-    let (cw, ch) = (pj_scale(picker::WIDTH, dpi), pj_scale(picker::HEIGHT, dpi) + if for_group.is_some() { picker::tick_extra(dpi) } else { 0 });
+    let font = crate::projects_ui::make_font(dpi, polter_settings_shell::type_size::BODY, FW_NORMAL.0 as i32);
+    let font_small = crate::projects_ui::make_font(dpi, polter_settings_shell::type_size::SMALL, FW_NORMAL.0 as i32);
+    let placed = if purpose.saving() {
+        // The button as wide as its words and the padding either side.
+        let save_w = text_width(font, &tr("Save as Project")) + 2 * pj_scale(polter_settings_shell::grid::PAD, dpi);
+        Placed::Save(save_as::layout(pj_scale(save_as::WIDTH, dpi), pages.len(), for_group.is_some(), save_w, dpi))
+    } else {
+        Placed::Load(picker::layout(pj_scale(picker::WIDTH, dpi), pj_scale(picker::HEIGHT, dpi), dpi))
+    };
+    let (cw, ch) = match &placed {
+        Placed::Save(l) => (pj_scale(save_as::WIDTH, dpi), l.height),
+        Placed::Load(_) => (pj_scale(picker::WIDTH, dpi), pj_scale(picker::HEIGHT, dpi)),
+    };
     let mut outer = RECT { left: 0, top: 0, right: cw, bottom: ch };
     let _ = unsafe { AdjustWindowRectExForDpi(&mut outer, STYLE, false, EX_STYLE, dpi as u32) };
     let (ow, oh) = (outer.right - outer.left, outer.bottom - outer.top);
@@ -406,12 +349,13 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
         SRect::new(fr.left, fr.top, fr.right, fr.bottom)
     };
     let (x, y) = picker::centred(work, ow, oh);
-    let (l, tick_at) = match &for_group {
-        Some(_) => {
-            let (l, t) = picker::with_tick(picker::layout(purpose.mode(), cw, ch, dpi), dpi);
-            (l, Some(t))
-        }
-        None => (picker::layout(purpose.mode(), cw, ch, dpi), None),
+    let (field_r, list_r, cancel_r, save_r, tick_r, row_h) = match &placed {
+        Placed::Load(l) => (l.field, l.list, l.cancel, None, None, l.row_h),
+        Placed::Save(l) => (l.field, l.list, l.cancel, Some(l.save), l.tick, l.row_h),
+    };
+    let delete_fonts = || unsafe {
+        let _ = DeleteObject(HGDIOBJ(font.0));
+        let _ = DeleteObject(HGDIOBJ(font_small.0));
     };
 
     unsafe {
@@ -421,6 +365,7 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
         let title = wide(&tr(purpose.title()));
         let hwnd = CreateWindowExW(EX_STYLE, w!("PolterProjectPicker"), PCWSTR(title.as_ptr()), STYLE, x, y, ow, oh, Some(owner), None, None, None);
         let Ok(hwnd) = hwnd else {
+            delete_fonts();
             wlogf!(frame, "[project] CreateWindowExW failed; {} window not shown", purpose.title());
             return;
         };
@@ -448,25 +393,14 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
         // **No `WS_BORDER` while this window draws itself**, for the reason
         // `prompt.rs` gives: the themed border takes no colour from
         // `WM_CTLCOLOR*`. The field's own darker ground marks it out.
-        // Drawing itself, the window paints the field's frame at `l.field`
+        // Drawing itself, the window paints the field's frame at `field_r`
         // and the `EDIT` is the line of text inside it.
-        let (border, field_at) = if theme::custom_drawing() { (0, picker::field_text(l.field, dpi)) } else { (WS_BORDER.0, l.field) };
+        let (border, field_at) = if theme::custom_drawing() { (0, picker::field_text(field_r, dpi)) } else { (WS_BORDER.0, field_r) };
+        // **Made in the order Tab goes through them**, which is the order
+        // they were made in: the field, the group's box, the list, then the
+        // buttons left to right.
         let field = child(w!("EDIT"), "", ES_AUTOHSCROLL as u32 | WS_TABSTOP.0 | border, field_at, ID_FIELD);
-        let save = match l.save {
-            Some(r) => child(w!("BUTTON"), &tr("Save"), BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0 | WS_DISABLED.0, r, ID_SAVE),
-            None => HWND::default(),
-        };
-        // `LBS_HASSTRINGS` with owner drawing: each row's string is the
-        // project's name, which is what a UI Automation client reads.
-        // **Made before Cancel**: Tab goes through the controls in the order
-        // they were made, and the list is above Cancel on screen.
-        let list_style = (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32 | WS_VSCROLL.0 | WS_TABSTOP.0;
-        let list = child(w!("LISTBOX"), "", list_style, l.list, ID_LIST);
-        // The list's scrollbar in the window's light or dark, as the role
-        // library's lists have it. Set when the window opens: a switch while
-        // it is open leaves the old one until it is opened again.
-        theme::system().dress_scrollbars(list);
-        let tick = match (&for_group, tick_at) {
+        let tick = match (&for_group, tick_r) {
             (Some(group), Some(r)) => {
                 let label = polter_control_room::list::fill(&tr(polter_control_room::project_words::msg::FOR_GROUP_TICK), group);
                 let h = child(w!("BUTTON"), &label, BS_AUTOCHECKBOX as u32 | WS_TABSTOP.0, r, ID_TICK);
@@ -475,15 +409,28 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
             }
             _ => HWND::default(),
         };
-        let cancel = child(w!("BUTTON"), &tr("Cancel"), BS_PUSHBUTTON as u32 | WS_TABSTOP.0, l.cancel, ID_CANCEL);
-        if field.0.is_null() || list.0.is_null() || cancel.0.is_null() {
+        // `LBS_HASSTRINGS` with owner drawing: each row's string is the
+        // project's name, or the tab's title, which is what a UI Automation
+        // client reads.
+        let list_style = (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32 | WS_VSCROLL.0 | WS_TABSTOP.0;
+        let list = child(w!("LISTBOX"), "", list_style, list_r, ID_LIST);
+        // The list's scrollbar in the window's light or dark, as the role
+        // library's lists have it. Set when the window opens: a switch while
+        // it is open leaves the old one until it is opened again.
+        theme::system().dress_scrollbars(list);
+        let cancel = child(w!("BUTTON"), &tr("Cancel"), BS_PUSHBUTTON as u32 | WS_TABSTOP.0, cancel_r, ID_CANCEL);
+        // Greyed until there is a name and a tab ticked (`field_changed`).
+        let save = match save_r {
+            Some(r) => child(w!("BUTTON"), &tr("Save as Project"), BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0 | WS_DISABLED.0, r, ID_SAVE),
+            None => HWND::default(),
+        };
+        if field.0.is_null() || list.0.is_null() || cancel.0.is_null() || (save_r.is_some() && save.0.is_null()) {
             let _ = DestroyWindow(hwnd);
+            delete_fonts();
             wlogf!(frame, "[project] a control could not be made; {} window not shown", purpose.title());
             return;
         }
 
-        let font = crate::projects_ui::make_font(dpi, polter_settings_shell::type_size::BODY, FW_NORMAL.0 as i32);
-        let font_small = crate::projects_ui::make_font(dpi, polter_settings_shell::type_size::SMALL, FW_NORMAL.0 as i32);
         for h in [field, save, cancel, list, tick] {
             if !h.0.is_null() {
                 SendMessageW(h, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
@@ -494,7 +441,7 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
             let t = wide(group);
             let _ = SetWindowTextW(field, PCWSTR(t.as_ptr()));
         }
-        SendMessageW(list, LB_SETITEMHEIGHT, Some(WPARAM(0)), Some(LPARAM(l.row_h as isize)));
+        SendMessageW(list, LB_SETITEMHEIGHT, Some(WPARAM(0)), Some(LPARAM(row_h as isize)));
         for h in [field, list, save, cancel, tick] {
             if !h.0.is_null() {
                 subclass(h);
@@ -502,7 +449,7 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
         }
 
         let shown: Vec<usize> = (0..items.len()).collect();
-        MODEL.with(|c| *c.borrow_mut() = Some(Model { items, shown, caption }));
+        MODEL.with(|c| *c.borrow_mut() = Some(Model { items, shown, pages, checked }));
         HANDLES.with(|c| {
             c.set(Some(Handles {
                 hwnd,
@@ -519,6 +466,9 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
             }))
         });
         fill_list();
+        if let Some(h) = handles() {
+            save_enabled(h);
+        }
 
         let _ = ShowWindow(hwnd, SW_SHOW);
         // The shared contract, not a private copy of it: the terminal's TSF
@@ -533,7 +483,7 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
         let _ = GetWindowRect(hwnd, &mut got);
         wlogf!(
             frame,
-            "[project] {} window shown at {},{} {}x{} visible={} rows={} work={},{} {}x{} dpi={}",
+            "[project] {} window shown at {},{} {}x{} visible={} rows={} ticked={} work={},{} {}x{} dpi={}",
             purpose.title(),
             got.left,
             got.top,
@@ -541,6 +491,7 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
             got.bottom - got.top,
             IsWindowVisible(hwnd).as_bool() as u8,
             row_count(),
+            ticked_count(),
             work.left,
             work.top,
             work.width(),
@@ -550,26 +501,62 @@ fn open(owner: HWND, frame: HWND, purpose: Purpose) {
     }
 }
 
+/// Where the parts went: the load window's or the save window's.
+enum Placed {
+    Load(picker::Layout),
+    Save(save_as::Layout),
+}
+
+/// How wide `text` is in `font`, in pixels.
+fn text_width(font: HFONT, text: &str) -> i32 {
+    let t: Vec<u16> = text.encode_utf16().collect();
+    let mut size = SIZE::default();
+    unsafe {
+        let dc = GetDC(None);
+        let old = SelectObject(dc, HGDIOBJ(font.0));
+        let _ = GetTextExtentPoint32W(dc, &t, &mut size);
+        SelectObject(dc, old);
+        ReleaseDC(None, dc);
+    }
+    size.cx
+}
+
 fn pj_scale(v: i32, dpi: i32) -> i32 {
     polter_settings_shell::scale(v, dpi)
 }
 
+/// How many rows the list shows: the tabs when saving, else the projects
+/// the search leaves.
 fn row_count() -> usize {
-    MODEL.with(|c| c.borrow().as_ref().map_or(0, |m| m.shown.len()))
+    let saving = handles().is_some_and(|h| h.purpose.saving());
+    MODEL.with(|c| c.borrow().as_ref().map_or(0, |m| if saving { m.pages.len() } else { m.shown.len() }))
 }
 
-/// The rows the search leaves, put into the list. With none, the list is
-/// hidden and the window says why in its place.
+/// The tabs ticked, when saving, in the order of the strip
+/// (`page_rules::tabs_to_save`). A function of its own so that the borrow
+/// has ended before its caller sends anything
+/// (`windows/tools/borrow-across-dispatch.py`).
+fn ticked_tabs() -> Vec<u64> {
+    MODEL.with(|c| c.borrow().as_ref().map_or_else(Vec::new, |m| rules::tabs_to_save(&m.checked, &m.pages)))
+}
+
+fn ticked_count() -> usize {
+    ticked_tabs().len()
+}
+
+/// The rows the search leaves, put into the list -- or, saving, the tabs of
+/// the window. With none, the list is hidden and the window says why in its
+/// place.
 fn fill_list() {
     let Some(h) = handles() else { return };
-    let needle = match h.purpose {
-        Purpose::Load | Purpose::AddTo { .. } => field_text(h.field),
-        // The name field names a new project; it is not a search.
-        Purpose::Save { .. } => String::new(),
-    };
+    // Saving, the name field names a new project; it is not a search.
+    let needle = if h.purpose.saving() { String::new() } else { field_text(h.field) };
     let names: Vec<String> = MODEL.with(|c| {
         let mut b = c.borrow_mut();
         let Some(m) = b.as_mut() else { return Vec::new() };
+        if h.purpose.saving() {
+            return m.pages.iter().map(|r| r.title.clone()).collect();
+        }
         m.shown = (0..m.items.len()).filter(|&i| polter_settings_shell::matches(&needle, &m.items[i].name)).collect();
         m.shown.iter().map(|&i| m.items[i].name.clone()).collect()
     });
@@ -585,6 +572,14 @@ fn fill_list() {
         // The picker itself is destroyed, not hidden, has the terminal
         // window as its owner, and `dismiss` hands the foreground back.
         let _ = ShowWindow(h.list, if names.is_empty() { SW_HIDE } else { SW_SHOWNA });
+        // Saving, the highlight starts on the tab asked from, so Space with
+        // nothing else done turns that tick over.
+        if let Purpose::Save { tab, .. } = h.purpose {
+            let at = MODEL.with(|c| c.borrow().as_ref().and_then(|m| m.pages.iter().position(|r| r.id == tab.0)));
+            if let Some(at) = at {
+                SendMessageW(h.list, LB_SETCURSEL, Some(WPARAM(at)), Some(LPARAM(0)));
+            }
+        }
         let _ = InvalidateRect(Some(h.hwnd), None, true);
     }
     wlogf!(h.frame, "[project] picker filter {:?} -> {} row(s)", needle, names.len());
@@ -631,10 +626,14 @@ fn cancel() {
 
 // ================================================================== acting
 
-/// Row `row` of the list as shown was picked: open it, or -- saving -- save
-/// onto it, which asks first.
+/// Row `row` of the list as shown was picked: open it, or -- saving -- turn
+/// its tick over.
 fn pick(row: usize) {
     let Some(h) = handles() else { return };
+    if h.purpose.saving() {
+        toggle(h, row);
+        return;
+    }
     let item = MODEL.with(|c| {
         let b = c.borrow();
         let m = b.as_ref()?;
@@ -647,9 +646,49 @@ fn pick(row: usize) {
     };
     match h.purpose {
         Purpose::Load => load(item),
-        Purpose::Save { tab, close_after } => save(h, tab, close_after, &item.name),
+        // Saving, `pick` turned a tick over above.
+        Purpose::Save { .. } => {}
         Purpose::AddTo { tab } => add(item, tab),
     }
+}
+
+/// Turn tab row `row`'s tick over (`page_rules::toggled`): a click on the
+/// row, or Space on it. A page of another project keeps no tick.
+fn toggle(h: Handles, row: usize) {
+    let done = MODEL.with(|c| {
+        let mut b = c.borrow_mut();
+        let m = b.as_mut()?;
+        let r = m.pages.get(row)?.clone();
+        let now = rules::toggled(&m.checked, &r);
+        let on = now.contains(&r.id);
+        let changed = now != m.checked;
+        m.checked = now;
+        Some((r.title, on, changed))
+    });
+    match done {
+        // The row came from a click made before the list last changed.
+        None => wlogf!(h.frame, "[project] save as project: tab row {row}: no such row now; nothing done"),
+        Some((title, _, false)) => wlogf!(h.frame, "[project] save as project: tab {:?} is a page of another project; not ticked", title),
+        Some((title, on, true)) => {
+            wlogf!(h.frame, "[project] save as project: tab {:?} {}; {} ticked", title, if on { "ticked" } else { "unticked" }, ticked_count());
+            let _ = unsafe { InvalidateRect(Some(h.list), None, false) };
+        }
+    }
+    save_enabled(h);
+}
+
+/// Save as Project can be pressed when there is a name and a tab ticked
+/// (`page_rules::can_save`).
+fn save_enabled(h: Handles) {
+    if h.save.0.is_null() {
+        return;
+    }
+    let _ = unsafe { EnableWindow(h.save, can_save(h)) };
+}
+
+fn can_save(h: Handles) -> bool {
+    let name = field_text(h.field);
+    MODEL.with(|c| c.borrow().as_ref().is_some_and(|m| rules::can_save(&name, &m.checked, &m.pages)))
 }
 
 /// Return in the field, or Save.
@@ -664,10 +703,11 @@ fn accept() {
         }
         Purpose::Save { tab, close_after } => {
             let text = field_text(h.field);
-            if text.trim().is_empty() {
-                // Saving under a name nobody chose is a different request
-                // from the one the row makes.
-                wlogf!(h.frame, "[project] {} accepted with an empty name; nothing sent", h.purpose.title());
+            if !can_save(h) {
+                // not-gated: the condition is the event -- Return with the
+                // button greyed, and this line is the only trace.
+                let why = if text.trim().is_empty() { "an empty name" } else { "no tab ticked" };
+                wlogf!(h.frame, "[project] {} accepted with {}; nothing sent", h.purpose.title(), why);
                 return;
             }
             save(h, tab, close_after, &text);
@@ -698,14 +738,15 @@ fn add(item: Item, tab: TabId) {
     add_tab_to(h.frame, tab, &item.name, &item.path);
 }
 
-/// Save `tab` under `typed` -- a new name, or a project's, which overwrites
-/// it after asking (`projects_ui::save_as_plan`, the mac's `saveAsStep`).
+/// Save the tabs ticked under `typed` -- a new name, or a project's, which
+/// overwrites it after asking (`projects_ui::save_as_plan`, the mac's `saveAsStep`).
 /// **The window stays while the question is up and when it is declined**, as
 /// the macOS picker does: nothing was written, and the name is still there
 /// to change.
 fn save(h: Handles, tab: TabId, close_after: Option<bool>, typed: &str) {
     let frame = h.frame;
     // Read while the window is up: it is gone by the time the save is done.
+    let ticked = ticked_tabs();
     let for_group = if !h.tick.0.is_null() && unsafe { SendMessageW(h.tick, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))) }.0 == 1 {
         FOR_GROUP.with(|g| g.borrow().clone())
     } else {
@@ -737,10 +778,9 @@ fn save(h: Handles, tab: TabId, close_after: Option<bool>, typed: &str) {
         wlogf!(frame, "[project] save as project {:?}: the window went away while asking; nothing written", typed);
         return;
     }
-    // The tab asked from, then the ones chosen with it; the project keeps
-    // them in the order of the strip whatever order they are named in.
-    let mut chosen = vec![(frame, tab)];
-    chosen.extend(SAVING_WITH.with(|w| std::mem::take(&mut *w.borrow_mut())).into_iter().map(|t| (frame, t)));
+    // The tabs ticked -- which need not include the one asked from, as on
+    // macOS: what closes after a save before closing is still that one.
+    let chosen: Vec<(HWND, TabId)> = ticked.into_iter().map(|t| (frame, TabId(t))).collect();
     let saved = crate::project_ui::save_tabs_as(&dir, &chosen, name.clone(), kind);
     match (&saved, close_after) {
         (Ok(()), None) => {
@@ -934,10 +974,7 @@ fn field_changed() {
     let Some(h) = handles() else { return };
     match h.purpose {
         Purpose::Load | Purpose::AddTo { .. } => fill_list(),
-        Purpose::Save { .. } => {
-            let named = !field_text(h.field).trim().is_empty();
-            let _ = unsafe { EnableWindow(h.save, named) };
-        }
+        Purpose::Save { .. } => save_enabled(h),
     }
 }
 
@@ -970,9 +1007,11 @@ unsafe extern "system" fn child_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     return LRESULT(0);
                 }
                 if vk == VK_RETURN.0 {
-                    if is_list {
+                    // Saving, the list's rows are tick boxes, and Return is
+                    // Save as Project's, as it is everywhere on the sheet.
+                    if is_list && !h.purpose.saving() {
                         post_selected(h);
-                    } else if is_field {
+                    } else if is_field || is_list {
                         if !ACTING.replace(true) {
                             accept();
                             ACTING.set(false);
@@ -981,6 +1020,12 @@ unsafe extern "system" fn child_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
                         // A button: Return presses it, as Space does.
                         let _ = PostMessageW(Some(hwnd), BM_CLICK, WPARAM(0), LPARAM(0));
                     }
+                    return LRESULT(0);
+                }
+                // Space turns the highlighted tab's tick over, as it does a
+                // tick box's.
+                if is_list && h.purpose.saving() && vk == VK_SPACE.0 {
+                    post_selected(h);
                     return LRESULT(0);
                 }
                 // ↑ and ↓ in the search move the highlight in the list, so
@@ -997,6 +1042,9 @@ unsafe extern "system" fn child_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
             // The characters Return, Escape and Tab leave behind: an `EDIT`
             // that is given them beeps.
             WM_CHAR if is_field && (wp.0 == 0x0d || wp.0 == 0x1b || wp.0 == 0x09) => LRESULT(0),
+            // The Space a tick took: the list would look for a row whose
+            // title starts with one.
+            WM_CHAR if is_list && h.purpose.saving() && wp.0 == 0x20 => LRESULT(0),
             WM_LBUTTONUP if is_list => {
                 let r = call_prev();
                 // Only a release over the highlighted row: one that ends
@@ -1067,8 +1115,23 @@ pub(crate) fn draw_button(cd: &NMCUSTOMDRAW, font: HFONT) {
     let (hot, down, disabled, focus) = (has(CDIS_HOT), has(CDIS_SELECTED), has(CDIS_DISABLED), has(CDIS_FOCUS));
     let label = field_text(cd.hdr.hwndFrom);
     let mut rc = cd.rc;
-    // The default button in the accent, as the settings window's (task 1550).
     let style = unsafe { GetWindowLongPtrW(cd.hdr.hwndFrom, GWL_STYLE) } as u32;
+    // The group's tick box (task 1714): a box and its words, as the role
+    // library's tick boxes are drawn, not a push button with its words.
+    let kind = (style & BS_TYPEMASK as u32) as i32;
+    if kind == BS_AUTOCHECKBOX || kind == BS_CHECKBOX {
+        let dpi = (unsafe { GetDpiForWindow(cd.hdr.hwndFrom) } as i32).max(96);
+        let on = unsafe { SendMessageW(cd.hdr.hwndFrom, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))) }.0 == 1;
+        fill(cd.hdc, &rc, theme::bg());
+        let side = polter_settings_shell::check_box(dpi, rc.bottom - rc.top);
+        let top = rc.top + ((rc.bottom - rc.top) - side) / 2;
+        let b = RECT { left: rc.left, top, right: rc.left + side, bottom: top + side };
+        draw_check(cd.hdc, &b, on, hot && !disabled, focus, disabled, dpi);
+        let t = RECT { left: b.right + pj_scale(polter_settings_shell::grid::CHECK_GAP, dpi), ..rc };
+        draw_text(cd.hdc, &label, &t, font, if disabled { theme::dim() } else { theme::text() }, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        return;
+    }
+    // The default button in the accent, as the settings window's (task 1550).
     if style & BS_TYPEMASK as u32 == BS_DEFPUSHBUTTON as u32 && !disabled {
         if let Some((face, text)) = theme::system().default_button() {
             fill(cd.hdc, &rc, face);
@@ -1105,6 +1168,28 @@ pub(crate) fn draw_button(cd: &NMCUSTOMDRAW, font: HFONT) {
     draw_text(cd.hdc, &label, &rc, font, fg, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 }
 
+/// A tick box's square `b`, and its tick when `on`: the role library's
+/// (`roles_ui::draw_button`).
+fn draw_check(hdc: HDC, b: &RECT, on: bool, hot: bool, focus: bool, disabled: bool, dpi: i32) {
+    fill(hdc, b, if hot { theme::btn_hot() } else { theme::field_bg() });
+    frame_rect(hdc, b, if focus { theme::focus() } else { theme::border() });
+    if !on {
+        return;
+    }
+    let side = b.right - b.left;
+    let ink = if disabled { theme::dim() } else { theme::btn_text() };
+    unsafe {
+        let pen = CreatePen(PS_SOLID, (2 * dpi / 96).max(2), COLORREF(ink));
+        let old = SelectObject(hdc, pen.into());
+        let mut pt = POINT::default();
+        let _ = MoveToEx(hdc, b.left + side / 5, b.top + side / 2, Some(&mut pt));
+        let _ = LineTo(hdc, b.left + side * 2 / 5, b.bottom - side / 4);
+        let _ = LineTo(hdc, b.right - side / 5, b.top + side / 4);
+        SelectObject(hdc, old);
+        let _ = DeleteObject(pen.into());
+    }
+}
+
 fn draw_text(hdc: HDC, s: &str, r: &RECT, font: HFONT, colour: u32, flags: DRAW_TEXT_FORMAT) {
     let mut t: Vec<u16> = s.encode_utf16().collect();
     let mut r = *r;
@@ -1135,6 +1220,10 @@ fn paint_placeholder(h: Handles) {
 /// the line the settings window's list shows for it.
 fn draw_row(d: &DRAWITEMSTRUCT) {
     let Some(h) = handles() else { return };
+    if h.purpose.saving() {
+        draw_tab_row(h, d);
+        return;
+    }
     let item = MODEL.with(|c| {
         let b = c.borrow();
         let m = b.as_ref()?;
@@ -1167,12 +1256,58 @@ fn draw_row(d: &DRAWITEMSTRUCT) {
     draw_text(d.hDC, &line, &sub, h.font_small, dim, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
+/// One tab, saving: its tick box, its title, and at the right "This page"
+/// or how many panes it has -- or, greyed with no tick, which project it is
+/// a page of (`ProjectSaveAsView.pageRow`).
+fn draw_tab_row(h: Handles, d: &DRAWITEMSTRUCT) {
+    let row = MODEL.with(|c| {
+        let b = c.borrow();
+        let m = b.as_ref()?;
+        let r = m.pages.get(d.itemID as usize)?.clone();
+        let on = r.can_check && m.checked.contains(&r.id);
+        Some((r, on))
+    });
+    let Some((row, on)) = row else { return };
+    let dpi = (unsafe { GetDpiForWindow(h.hwnd) } as i32).max(96);
+    let r = d.rcItem;
+    fill(d.hDC, &r, theme::panel());
+    // The highlight shows only while the list has the keyboard: it is where
+    // Space goes, and with the keyboard elsewhere it would read as a choice.
+    let lit = (d.itemState.0 & ODS_SELECTED.0) != 0 && unsafe { GetFocus() } == h.list;
+    if lit {
+        theme::fill_round(d.hDC, &r, pj_scale(polter_settings_shell::grid::SECTION_ROW_RADIUS, dpi), theme::sel());
+    }
+    let words = rules::note_words(&row.note);
+    let note = words.filled(&tr(words.msgid));
+    let parts = save_as::row_parts(SRect::new(r.left, r.top, r.right, r.bottom), measure_in(d.hDC, h.font_small, &note), dpi);
+    draw_check(d.hDC, &rect(parts.check), on, false, lit, !row.can_check, dpi);
+    let (fg, dim) = match (lit, row.can_check) {
+        (true, _) => (theme::sel_text(), theme::sel_text()),
+        (false, true) => (theme::text(), theme::dim()),
+        (false, false) => (theme::dim(), theme::dim()),
+    };
+    draw_text(d.hDC, &row.title, &rect(parts.title), h.font, fg, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS);
+    draw_text(d.hDC, &note, &rect(parts.note), h.font_small, dim, DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+}
+
+/// How wide `text` is in `font` on `hdc`.
+fn measure_in(hdc: HDC, font: HFONT, text: &str) -> i32 {
+    let t: Vec<u16> = text.encode_utf16().collect();
+    let mut size = SIZE::default();
+    unsafe {
+        let old = SelectObject(hdc, HGDIOBJ(font.0));
+        let _ = GetTextExtentPoint32W(hdc, &t, &mut size);
+        SelectObject(hdc, old);
+    }
+    size.cx
+}
+
 fn paint(hwnd: HWND) {
     // Everything is read out first; nothing below borrows.
     let h = handles().filter(|h| h.hwnd == hwnd);
-    let (caption, empty, none_shown) = MODEL.with(|c| {
+    let (empty, none_shown, pages) = MODEL.with(|c| {
         let b = c.borrow();
-        b.as_ref().map_or((None, true, true), |m| (m.caption.clone(), m.items.is_empty(), m.shown.is_empty()))
+        b.as_ref().map_or((true, true, 0), |m| (m.items.is_empty(), m.shown.is_empty(), m.pages.len()))
     });
     unsafe {
         let mut ps = PAINTSTRUCT::default();
@@ -1185,26 +1320,38 @@ fn paint(hwnd: HWND) {
         fill(hdc, &rc, theme::bg());
         if let Some(h) = h {
             let dpi = (GetDpiForWindow(hwnd) as i32).max(96);
-            let l = picker::layout(h.purpose.mode(), rc.right, rc.bottom, dpi);
             // The field's frame, from the rectangle the `EDIT` was placed
             // inside. Only when this window draws: under high contrast the
             // field has `WS_BORDER` and draws its own.
-            if theme::custom_drawing() {
-                fill(hdc, &rect(l.field), theme::field_bg());
-                frame_rect(hdc, &rect(l.field), theme::border());
+            let field_frame = |r: SRect| {
+                if theme::custom_drawing() {
+                    fill(hdc, &rect(r), theme::field_bg());
+                    frame_rect(hdc, &rect(r), theme::border());
+                }
+            };
+            if h.purpose.saving() {
+                // The buttons' places are no business of the paint: 0 for
+                // the width of the one whose words decide it.
+                let l = save_as::layout(rc.right, pages, !h.tick.0.is_null(), 0, dpi);
+                let label = DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS;
+                draw_text(hdc, &tr("Name"), &rect(l.name_label), h.font, theme::text(), label);
+                field_frame(l.field);
+                draw_text(hdc, &tr(rules::TABS_TO_SAVE), &rect(l.pages_label), h.font, theme::text(), label);
+                fill(hdc, &rect(l.list), theme::panel());
+                draw_text(hdc, &tr(rules::SAVED_FROM_NOW_ON), &rect(l.sentence), h.font, theme::dim(), DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+            } else {
+                let l = picker::layout(rc.right, rc.bottom, dpi);
+                field_frame(l.field);
+                // Never a blank list: it says whether there are no projects
+                // or none the search leaves.
+                fill(hdc, &rect(l.list), theme::panel());
+                if none_shown {
+                    let text = if empty { tr("No Saved Projects") } else { tr("No matching projects") };
+                    draw_text(hdc, &text, &rect(l.list), h.font, theme::dim(), DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                }
+                fill(hdc, &rect(l.rule_top), theme::border());
+                fill(hdc, &rect(l.rule_bottom), theme::border());
             }
-            if let (Some(r), Some(text)) = (l.caption, caption.as_ref()) {
-                draw_text(hdc, text, &rect(r), h.font_small, theme::dim(), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-            }
-            // Never a blank list: it says whether there are no projects or
-            // none the search leaves.
-            fill(hdc, &rect(l.list), theme::panel());
-            if none_shown {
-                let text = if empty { tr("No Saved Projects") } else { tr("No matching projects") };
-                draw_text(hdc, &text, &rect(l.list), h.font, theme::dim(), DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-            }
-            fill(hdc, &rect(l.rule_top), theme::border());
-            fill(hdc, &rect(l.rule_bottom), theme::border());
         }
         let _ = EndPaint(hwnd, &ps);
     }

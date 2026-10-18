@@ -3450,20 +3450,6 @@ msgstr "加载项目"
 msgid "Save as Project"
 msgstr "另存为项目"
 
-#: windows/host/src/project_picker.rs:270
-#, rust-format
-msgid "All {} Pages of This Window"
-msgstr "这个窗口的全部 {} 页"
-
-#: windows/host/src/project_picker.rs:279
-msgid "This Page Only"
-msgstr "只存这一页"
-
-#: windows/host/src/project_picker.rs:366
-#, rust-format
-msgid "Saves this tab: {} pane(s)"
-msgstr "将存下当前标签页的 {} 个面板"
-
 #: windows/host/src/project_picker.rs:650 windows/host/src/projects_ui.rs:716
 msgid "The project could not be opened."
 msgstr "这个项目打不开"
@@ -5074,7 +5060,7 @@ msgstr "这一页"
 #: windows/projects/src/page_rules.rs:101
 #, rust-format
 msgid "{} pane(s)"
-msgstr "{} 格"
+msgstr "{} 个面板"
 
 #: windows/projects/src/page_rules.rs:102
 #, rust-format

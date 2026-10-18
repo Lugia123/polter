@@ -1018,6 +1018,26 @@ fn saving_needs_a_name_and_a_tab_that_can_be_taken() {
     assert_eq!(rules::tabs_to_save(&set(&[3, 2, 1]), &rows), [1, 2]);
 }
 
+/// Task 1754: Windows ticks each tab as the macOS sheet does. A press turns
+/// a tick over; on a page of another project it does nothing, and a tick
+/// it could not take is not a way of saving it either.
+#[test]
+fn a_press_turns_a_tick_over_except_on_a_page_of_another_project() {
+    let rows = rules::save_as_rows(&three_tabs());
+    let start = rules::initially_checked(&three_tabs());
+    let more = rules::toggled(&start, &rows[0]);
+    assert_eq!(more, set(&[1, 2]));
+    assert_eq!(rules::tabs_to_save(&more, &rows), [1, 2]);
+    let fewer = rules::toggled(&more, &rows[1]);
+    assert_eq!(fewer, set(&[1]));
+    let none = rules::toggled(&fewer, &rows[0]);
+    assert_eq!(none, set(&[]));
+    assert!(!rules::can_save("new", &none, &rows));
+    // The page of "argus": pressed, nothing changes.
+    assert_eq!(rules::toggled(&start, &rows[2]), start);
+    assert_eq!(rules::toggled(&set(&[3]), &rows[2]), set(&[3]));
+}
+
 #[test]
 fn the_menu_says_which_project_and_offers_what_fits() {
     assert_eq!(rules::menu_header(Some("polter")).filled("This page is in the project \"{}\""), "This page is in the project \"polter\"");

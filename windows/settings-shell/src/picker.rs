@@ -1,7 +1,9 @@
 //! The project picker: the window "Save as Project…" and "Load Project…"
-//! open. The macOS side's `ProjectPickerView.swift`, with the same parts in
-//! the same order -- a field on top (the new project's name with Save beside
-//! it, or the search), the saved projects under it, Cancel at the bottom.
+//! open. Loading is the macOS side's `ProjectPickerView.swift`, with the
+//! same parts in the same order -- the search on top, the saved projects
+//! under it, Cancel at the bottom. Saving is its `ProjectSaveAsView.swift`
+//! (task 1754): a name, a tick box for each tab of the window, the sentence
+//! saying what saving does, Cancel and Save as Project.
 //!
 //! What is here is where each part goes and what a key does; the window
 //! itself is `host/src/project_picker.rs`.
@@ -14,29 +16,15 @@ pub const HEIGHT: i32 = 380;
 
 /// A row: the project's name over when it was saved and how big it is.
 pub const ROW_H: i32 = 44;
-const SAVE_W: i32 = 80;
 const CANCEL_W: i32 = 96;
-const CAPTION_H: i32 = 18;
-const CAPTION_GAP: i32 = 4;
 /// One line of the field's 14-pixel font.
 const FIELD_LINE: i32 = 20;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// The field names a new project; picking a row overwrites that one.
-    SaveAs,
-    /// The field searches; picking a row opens it.
-    Load,
-}
-
-/// Where each part is, in client pixels at the window's DPI.
+/// Where each part of "Load Project" is, in client pixels at the window's
+/// DPI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout {
     pub field: Rect,
-    /// Save, beside the name field. `SaveAs` only.
-    pub save: Option<Rect>,
-    /// "Saves this tab: N pane(s)", under the name field. `SaveAs` only.
-    pub caption: Option<Rect>,
     /// The line between the field and the list.
     pub rule_top: Rect,
     pub list: Rect,
@@ -46,27 +34,16 @@ pub struct Layout {
     pub row_h: i32,
 }
 
-pub fn layout(mode: Mode, width: i32, height: i32, dpi: i32) -> Layout {
+pub fn layout(width: i32, height: i32, dpi: i32) -> Layout {
     let s = |v| scale(v, dpi);
     let (pad, control) = (s(grid::PAD), s(grid::CONTROL_H));
-    let field_top = pad;
-    let (field, save, caption) = match mode {
-        Mode::Load => (Rect::new(pad, field_top, width - pad, field_top + control), None, None),
-        Mode::SaveAs => {
-            let save = Rect::new(width - pad - s(SAVE_W), field_top, width - pad, field_top + control);
-            let field = Rect::new(pad, field_top, save.left - s(grid::ROW_GAP), field_top + control);
-            let top = field.bottom + s(CAPTION_GAP);
-            (field, Some(save), Some(Rect::new(pad, top, width - pad, top + s(CAPTION_H))))
-        }
-    };
+    let field = Rect::new(pad, pad, width - pad, pad + control);
     let line = s(1).max(1);
-    let rule_top_y = caption.map_or(field.bottom, |c| c.bottom) + s(grid::ROW_GAP);
+    let rule_top_y = field.bottom + s(grid::ROW_GAP);
     let rule_bottom_y = height - s(grid::BOTTOM);
     let cancel_top = rule_bottom_y + (s(grid::BOTTOM) - control) / 2;
     Layout {
         field,
-        save,
-        caption,
         rule_top: Rect::new(0, rule_top_y, width, rule_top_y + line),
         list: Rect::new(0, rule_top_y + line, width, rule_bottom_y),
         rule_bottom: Rect::new(0, rule_bottom_y, width, rule_bottom_y + line),
@@ -75,25 +52,103 @@ pub fn layout(mode: Mode, width: i32, height: i32, dpi: i32) -> Layout {
     }
 }
 
-/// How much taller a "Save as Project" window is with the tick box under
-/// its caption (task 1714: "As the project of group “X”"): one control's
-/// height and the gap above it.
-pub fn tick_extra(dpi: i32) -> i32 {
-    scale(grid::CONTROL_H, dpi) + scale(grid::ROW_GAP, dpi)
-}
+/// "Save as Project", laid out as the macOS `ProjectSaveAsView` is (task
+/// 1754), on this window's grid: its parts top to bottom, all of them
+/// starting at `PAD` and the ones at the right ending `PAD` short of the
+/// edge. The macOS sheet's numbers are its structure; the sizes are this
+/// grid's (`grid::PAD`, `grid::CONTROL_H`, `grid::ROW_GAP`).
+pub mod save_as {
+    use super::{field_text, CANCEL_W};
+    use crate::{grid, scale, Rect};
 
-/// `layout` of a window `tick_extra` taller, with the tick box placed under
-/// the caption and the list's top moved down by it: the list keeps the
-/// height it had in the shorter window. The tick box's rectangle.
-pub fn with_tick(l: Layout, dpi: i32) -> (Layout, Rect) {
-    let extra = tick_extra(dpi);
-    let above = l.caption.unwrap_or(l.field);
-    let top = above.bottom + scale(grid::ROW_GAP, dpi);
-    let tick = Rect::new(l.field.left, top, l.save.map_or(l.field.right, |s| s.right), top + scale(grid::CONTROL_H, dpi));
-    // The window is `extra` taller, so the list already reaches the new
-    // bottom: only its top, and the line over it, come down.
-    let down = |r: Rect| Rect::new(r.left, r.top + extra, r.right, r.bottom + extra);
-    (Layout { rule_top: down(l.rule_top), list: Rect::new(l.list.left, l.list.top + extra, l.list.right, l.list.bottom), ..l }, tick)
+    /// The client area's width: `ProjectSaveAsView.Grid.width`.
+    pub const WIDTH: i32 = 460;
+    /// A tab's row: `Grid.row`.
+    pub const ROW_H: i32 = 28;
+    /// As many rows as are shown before the list scrolls: `Grid.rowsShown`.
+    pub const ROWS_SHOWN: usize = 6;
+    /// "Name", "Tabs of this window to save": one line of the body font.
+    pub const LABEL_H: i32 = 20;
+    /// Between one part and the next: the sheet's 16, two of this grid's
+    /// gaps.
+    pub const SECTION_GAP: i32 = 2 * grid::ROW_GAP;
+    /// The sentence under the list: two lines, as the sheet gives it.
+    pub const SENTENCE_H: i32 = 36;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Layout {
+        pub name_label: Rect,
+        /// The frame the name field is drawn in.
+        pub field: Rect,
+        /// "As the project of group “X”", when the tab has a group's
+        /// supervisor in it (task 1714).
+        pub tick: Option<Rect>,
+        pub pages_label: Rect,
+        /// The tabs, one row each, `ROWS_SHOWN` of them before it scrolls.
+        pub list: Rect,
+        pub sentence: Rect,
+        pub cancel: Rect,
+        /// "Save as Project", at the right: the button Return presses.
+        pub save: Rect,
+        pub row_h: i32,
+        /// The client area's height.
+        pub height: i32,
+    }
+
+    /// How many rows the list is high for `rows` tabs: at least one, at
+    /// most `ROWS_SHOWN`.
+    pub fn rows_high(rows: usize) -> i32 {
+        rows.clamp(1, ROWS_SHOWN) as i32
+    }
+
+    /// The parts for `rows` tabs at `dpi`, `width` wide. `save_w`: the Save
+    /// as Project button's width, its words measured by the host; never
+    /// narrower than Cancel.
+    pub fn layout(width: i32, rows: usize, tick: bool, save_w: i32, dpi: i32) -> Layout {
+        let s = |v| scale(v, dpi);
+        let (pad, control, gap) = (s(grid::PAD), s(grid::CONTROL_H), s(grid::ROW_GAP));
+        let (left, right) = (pad, width - pad);
+        let band = |top: i32, h: i32| Rect::new(left, top, right, top + h);
+        let name_label = band(pad, s(LABEL_H));
+        let field = band(name_label.bottom + gap, control);
+        let tick = tick.then(|| band(field.bottom + gap, control));
+        let pages_label = band(tick.unwrap_or(field).bottom + s(SECTION_GAP), s(LABEL_H));
+        let row_h = s(ROW_H);
+        let list = band(pages_label.bottom + gap, rows_high(rows) * row_h);
+        let sentence = band(list.bottom + s(SECTION_GAP), s(SENTENCE_H));
+        let buttons = sentence.bottom + s(SECTION_GAP);
+        let save = Rect::new(right - save_w.max(s(CANCEL_W)), buttons, right, buttons + control);
+        let cancel = Rect::new(save.left - s(grid::BUTTONS_GAP) - s(CANCEL_W), buttons, save.left - s(grid::BUTTONS_GAP), buttons + control);
+        Layout { name_label, field, tick, pages_label, list, sentence, cancel, save, row_h, height: save.bottom + pad }
+    }
+
+    /// Where the name's text sits in its frame, as the load window's.
+    pub fn name_text(l: &Layout, dpi: i32) -> Rect {
+        field_text(l.field, dpi)
+    }
+
+    /// The parts of one tab's row `row`: the tick box at its left, the
+    /// tab's title one box and one gap in, the note ("This page", "2
+    /// pane(s)") ending at its right. `note_w`: the note's width, measured.
+    /// The title gets what the note leaves, less a gap; the note is never
+    /// cut for it.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct RowParts {
+        pub check: Rect,
+        pub title: Rect,
+        pub note: Rect,
+    }
+
+    pub fn row_parts(row: Rect, note_w: i32, dpi: i32) -> RowParts {
+        let side = crate::check_box(dpi, row.height());
+        let top = row.top + (row.height() - side) / 2;
+        let check = Rect::new(row.left, top, row.left + side, top + side);
+        let note_w = note_w.clamp(0, row.width() - side);
+        let note = Rect::new(row.right - note_w, row.top, row.right, row.bottom);
+        let title_left = check.right + scale(grid::CHECK_GAP, dpi);
+        let title = Rect::new(title_left, row.top, (note.left - scale(grid::ROW_GAP, dpi)).max(title_left), row.bottom);
+        RowParts { check, title, note }
+    }
 }
 
 /// Where the text of a field sits inside the frame drawn at `field`, when
@@ -145,69 +200,133 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_tick_box_sits_under_the_caption_and_the_list_keeps_its_height() {
-        let dpi = 96;
-        let plain = layout(Mode::SaveAs, 480, 400, dpi);
-        let (l, tick) = with_tick(layout(Mode::SaveAs, 480, 400 + tick_extra(dpi), dpi), dpi);
-        let caption = plain.caption.unwrap();
-        assert_eq!(tick.top, caption.bottom + grid::ROW_GAP);
-        assert_eq!(tick.height(), grid::CONTROL_H);
-        assert_eq!((tick.left, tick.right), (plain.field.left, plain.save.unwrap().right));
-        assert_eq!(l.list.height(), plain.list.height());
-        assert_eq!(l.rule_top.top, tick.bottom + grid::ROW_GAP);
-        assert_eq!(l.cancel, Rect::new(plain.cancel.left, plain.cancel.top + tick_extra(dpi), plain.cancel.right, plain.cancel.bottom + tick_extra(dpi)));
-    }
-
-    #[test]
-    fn load_has_a_full_width_field_and_no_save() {
-        let l = layout(Mode::Load, WIDTH, HEIGHT, 96);
+    fn load_has_a_full_width_field() {
+        let l = layout(WIDTH, HEIGHT, 96);
         assert_eq!(l.field, Rect::new(16, 16, 404, 44));
-        assert_eq!((l.save, l.caption), (None, None));
         assert_eq!(l.rule_top.top, 52);
         assert_eq!(l.list, Rect::new(0, 53, 420, 328));
         assert_eq!(l.cancel, Rect::new(308, 340, 404, 368));
     }
 
     #[test]
-    fn save_as_puts_save_beside_the_name_and_the_caption_under_it() {
-        let l = layout(Mode::SaveAs, WIDTH, HEIGHT, 96);
-        let (save, caption) = (l.save.unwrap(), l.caption.unwrap());
-        assert_eq!(save, Rect::new(324, 16, 404, 44));
-        assert_eq!(l.field, Rect::new(16, 16, 316, 44));
-        assert_eq!(caption, Rect::new(16, 48, 404, 66));
-        assert_eq!(l.list.top, 75);
-        // The bottom band is the same in both.
-        assert_eq!(l.cancel, layout(Mode::Load, WIDTH, HEIGHT, 96).cancel);
-    }
-
-    #[test]
     fn nothing_overlaps_and_everything_is_inside_at_every_dpi() {
         for dpi in [96, 120, 144, 192] {
-            for mode in [Mode::SaveAs, Mode::Load] {
-                let (w, h) = (scale(WIDTH, dpi), scale(HEIGHT, dpi));
-                let l = layout(mode, w, h, dpi);
-                let mut down = vec![l.field.bottom];
-                down.extend(l.caption.map(|c| c.top));
-                down.extend(l.caption.map(|c| c.bottom));
-                down.extend([l.rule_top.top, l.list.top, l.list.bottom, l.cancel.top, l.cancel.bottom, h]);
-                assert!(down.windows(2).all(|p| p[0] <= p[1]), "{mode:?} at {dpi}: {down:?}");
-                assert!(l.list.height() >= 4 * l.row_h, "{mode:?} at {dpi}: the list shows four rows");
-                if let Some(s) = l.save {
-                    assert!(l.field.right < s.left && s.right <= w);
-                }
-            }
+            let (w, h) = (scale(WIDTH, dpi), scale(HEIGHT, dpi));
+            let l = layout(w, h, dpi);
+            let down = [l.field.bottom, l.rule_top.top, l.list.top, l.list.bottom, l.cancel.top, l.cancel.bottom, h];
+            assert!(down.windows(2).all(|p| p[0] <= p[1]), "at {dpi}: {down:?}");
+            assert!(l.list.height() >= 4 * l.row_h, "at {dpi}: the list shows four rows");
         }
     }
 
     #[test]
     fn the_field_text_is_one_line_in_the_middle_of_its_frame() {
-        let f = layout(Mode::Load, WIDTH, HEIGHT, 96).field;
+        let f = layout(WIDTH, HEIGHT, 96).field;
         assert_eq!(field_text(f, 96), Rect::new(24, 20, 396, 40));
         for dpi in [96, 120, 144, 192] {
-            let f = layout(Mode::SaveAs, scale(WIDTH, dpi), scale(HEIGHT, dpi), dpi).field;
+            let f = save_as::layout(scale(save_as::WIDTH, dpi), 2, false, 0, dpi).field;
             let t = field_text(f, dpi);
             assert!(t.left > f.left && t.right < f.right && t.top >= f.top && t.bottom <= f.bottom, "{dpi}: {t:?} in {f:?}");
             assert!(((t.top - f.top) - (f.bottom - t.bottom)).abs() <= 1, "{dpi}: centred");
+        }
+    }
+
+    // ---- Save as Project (task 1754)
+
+    /// The macOS sheet's order, top to bottom: "Name", the field, (the
+    /// group's box), "Tabs of this window to save", one row per tab, the
+    /// sentence, Cancel and Save as Project side by side at the right.
+    #[test]
+    fn save_as_is_the_macos_sheet_top_to_bottom() {
+        let l = save_as::layout(save_as::WIDTH, 2, false, 120, 96);
+        assert_eq!(l.name_label, Rect::new(16, 16, 444, 36));
+        assert_eq!(l.field, Rect::new(16, 44, 444, 72));
+        assert_eq!(l.tick, None);
+        assert_eq!(l.pages_label, Rect::new(16, 88, 444, 108));
+        assert_eq!(l.list, Rect::new(16, 116, 444, 116 + 2 * 28));
+        assert_eq!(l.sentence, Rect::new(16, 188, 444, 224));
+        assert_eq!(l.save, Rect::new(324, 240, 444, 268));
+        assert_eq!(l.cancel, Rect::new(220, 240, 316, 268));
+        assert_eq!(l.height, 284);
+    }
+
+    #[test]
+    fn the_list_is_one_row_per_tab_up_to_six_then_it_scrolls() {
+        let h = |rows| save_as::layout(save_as::WIDTH, rows, false, 0, 96).list.height();
+        assert_eq!(h(0), 28, "never an empty list: one row high");
+        assert_eq!(h(1), 28);
+        assert_eq!(h(3), 3 * 28);
+        assert_eq!(h(6), 6 * 28);
+        assert_eq!(h(9), 6 * 28);
+        // The window grows with the list and with nothing else.
+        let tall = |rows| save_as::layout(save_as::WIDTH, rows, false, 0, 96).height;
+        assert_eq!(tall(4) - tall(1), 3 * 28);
+        assert_eq!(tall(9), tall(6));
+    }
+
+    #[test]
+    fn the_groups_box_goes_under_the_name_and_moves_the_rest_down_by_itself() {
+        let plain = save_as::layout(save_as::WIDTH, 2, false, 0, 96);
+        let with = save_as::layout(save_as::WIDTH, 2, true, 0, 96);
+        let tick = with.tick.unwrap();
+        assert_eq!(tick, Rect::new(16, plain.field.bottom + 8, 444, plain.field.bottom + 8 + 28));
+        let extra = with.pages_label.top - plain.pages_label.top;
+        assert_eq!(extra, 8 + 28);
+        assert_eq!(with.list.height(), plain.list.height());
+        assert_eq!(with.save.top - plain.save.top, extra);
+        assert_eq!(with.height - plain.height, extra);
+    }
+
+    #[test]
+    fn save_as_project_is_never_narrower_than_cancel_and_both_end_at_the_pad() {
+        let narrow = save_as::layout(save_as::WIDTH, 1, false, 10, 96);
+        assert_eq!(narrow.save.width(), narrow.cancel.width());
+        let wide = save_as::layout(save_as::WIDTH, 1, false, 150, 96);
+        assert_eq!(wide.save.width(), 150);
+        assert_eq!(wide.save.right, save_as::WIDTH - grid::PAD);
+        assert_eq!(wide.save.left - wide.cancel.right, grid::BUTTONS_GAP);
+    }
+
+    #[test]
+    fn save_as_parts_stay_inside_and_in_order_at_every_dpi() {
+        for dpi in [96, 120, 144, 192, 240] {
+            for (rows, tick) in [(1, false), (3, true), (8, true)] {
+                let w = scale(save_as::WIDTH, dpi);
+                let l = save_as::layout(w, rows, tick, scale(130, dpi), dpi);
+                let mut down = vec![l.name_label.top, l.name_label.bottom, l.field.top, l.field.bottom];
+                if let Some(t) = l.tick {
+                    down.extend([t.top, t.bottom]);
+                }
+                down.extend([l.pages_label.top, l.pages_label.bottom, l.list.top, l.list.bottom, l.sentence.top, l.sentence.bottom, l.save.top, l.save.bottom, l.height]);
+                assert!(down.windows(2).all(|p| p[0] <= p[1]), "{dpi} {rows}: {down:?}");
+                assert_eq!(l.list.height(), save_as::rows_high(rows) * l.row_h);
+                assert!(l.cancel.left >= scale(grid::PAD, dpi) && l.cancel.right < l.save.left && l.save.right <= w, "{dpi}");
+                assert_eq!(l.cancel.top, l.save.top);
+            }
+        }
+    }
+
+    /// A row on the sheet's grid: the box at the left edge, the title one
+    /// box and one gap in, the note ending at the right edge and never cut
+    /// for the title.
+    #[test]
+    fn a_rows_box_title_and_note_do_not_overlap() {
+        let row = Rect::new(16, 116, 444, 144);
+        let p = save_as::row_parts(row, 60, 96);
+        assert_eq!(p.check, Rect::new(16, 122, 32, 138));
+        assert_eq!(p.title.left, 32 + grid::CHECK_GAP);
+        assert_eq!(p.note, Rect::new(444 - 60, 116, 444, 144));
+        assert_eq!(p.title.right, p.note.left - grid::ROW_GAP);
+        // A note wider than the row: it takes the row less the box, and
+        // the title is left nothing rather than overlapping.
+        let p = save_as::row_parts(row, 1000, 96);
+        assert_eq!(p.note.left, p.check.right);
+        assert!(p.title.right >= p.title.left);
+        for dpi in [96, 144, 192] {
+            let r = Rect::new(0, 0, scale(428, dpi), scale(save_as::ROW_H, dpi));
+            let p = save_as::row_parts(r, scale(70, dpi), dpi);
+            assert!(p.check.right < p.title.left && p.title.right < p.note.left, "{dpi}: {p:?}");
+            assert!(p.check.top >= r.top && p.check.bottom <= r.bottom, "{dpi}");
         }
     }
 
