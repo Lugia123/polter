@@ -213,6 +213,11 @@ pub fn rows() -> Vec<Row> {
             r.title = Some(title);
         }
     }
+    // Then the actions the core gives no command for, from the table the
+    // macOS page names them from (#1750).
+    for r in rows.iter_mut().filter(|r| r.title.is_none()) {
+        r.title = polter_settings_shell::general::name_by_tag(r.action).map(crate::i18n::tr);
+    }
     rows
 }
 

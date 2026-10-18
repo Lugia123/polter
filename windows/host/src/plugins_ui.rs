@@ -630,7 +630,8 @@ fn laid() -> (shell::SectionGrid, rules::Detail, i32) {
         None => (false, 0),
     };
     let (line_h, _) = metrics(HFONT(FONT_MONO.load(Ordering::Acquire)));
-    let d = rules::detail(g.editor, dpi, rules::DetailInput { banner, head_h, log_line_h: line_h });
+    let switch_text_w = text_width(&tr("Let this plugin run"), font());
+    let d = rules::detail(g.editor, dpi, rules::DetailInput { banner, head_h, log_line_h: line_h, switch_text_w });
     (g, d, dpi)
 }
 
@@ -645,6 +646,25 @@ fn metrics(font: HFONT) -> (i32, i32) {
         ReleaseDC(Some(h), dc);
     }
     (tm.tmHeight, tm.tmAscent)
+}
+
+/// How wide `text` is on one line in `font`.
+fn text_width(text: &str, font: HFONT) -> i32 {
+    // Never an empty string to `DrawTextW`.
+    if text.is_empty() {
+        return 0;
+    }
+    let h = section();
+    let mut r = RECT::default();
+    let mut w: Vec<u16> = text.encode_utf16().collect();
+    unsafe {
+        let dc = GetDC(Some(h));
+        let old = SelectObject(dc, font.into());
+        DrawTextW(dc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
+        SelectObject(dc, old);
+        ReleaseDC(Some(h), dc);
+    }
+    r.right
 }
 
 /// How tall `text` is wrapped to `width` in `font`, capped at `max_lines`

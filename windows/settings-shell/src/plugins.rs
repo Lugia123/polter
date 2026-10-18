@@ -326,7 +326,13 @@ pub struct DetailInput {
     pub head_h: i32,
     /// One line of the log's font, in pixels.
     pub log_line_h: i32,
+    /// The status switch's words, measured in its font, in pixels; 0 when
+    /// not measured, which leaves the switch its old fixed width.
+    pub switch_text_w: i32,
 }
+
+/// Between a check box's square and its words, as Windows draws one.
+pub const CHECK_TEXT_GAP: i32 = 8;
 
 /// How many log lines the log box shows at once. The file's last 20 are in
 /// it (§5.2 item 5); the rest are a scroll away.
@@ -403,7 +409,9 @@ pub fn detail(editor: Rect, dpi: i32, input: DetailInput) -> Detail {
     });
     let head = Rect::new(left, y, right, y + head_h);
     y = head.bottom + s(GROUP_GAP);
-    let switch_w = s(ACTION_W[0]);
+    // As wide as its words, at least a button's width: a fixed 112 cut
+    // 「让这个插件运行」 to 「让这个插件运…」 (#1750, 1742's W2).
+    let switch_w = s(ACTION_W[0]).max(s(CHECK_BOX) + s(CHECK_TEXT_GAP) + input.switch_text_w);
     let switch = Rect::new(control_left, y, (control_left + switch_w).min(right), y + s(CONTROL_H));
     let switch_note = Rect::new((switch.right + s(BUTTONS_GAP)).min(right), y, right, switch.bottom);
     // The tabs belong to the switch's plugin as much as the switch does:
@@ -893,7 +901,7 @@ mod tests {
         for dpi in [96, 120, 144, 192, 240] {
             let (editor, _) = at_min(dpi);
             // The tallest title block, and the banner up.
-            let d = detail(editor, dpi, DetailInput { banner: true, head_h: tallest_head(dpi), log_line_h: scale(16, dpi) });
+            let d = detail(editor, dpi, DetailInput { banner: true, head_h: tallest_head(dpi), log_line_h: scale(16, dpi), switch_text_w: 0 });
             assert!(d.body.height() >= scale(BODY_MIN, dpi), "dpi {dpi}: body {:?}", d.body);
             // Two control rows: what the machine's reading is measured in.
             assert!(d.body.height() >= 2 * scale(CONTROL_H, dpi), "dpi {dpi}: body {:?}", d.body);
@@ -968,12 +976,12 @@ mod tests {
         for dpi in [96, 144] {
             let (editor, _) = at_min(dpi);
             let line = scale(16, dpi);
-            let probe = detail(editor, dpi, DetailInput { banner: true, head_h: 0, log_line_h: line });
+            let probe = detail(editor, dpi, DetailInput { banner: true, head_h: 0, log_line_h: line, switch_text_w: 0 });
             // Room for the block with the log at LOG_MIN, but not at LOG_VISIBLE.
             let spare = probe.body.height() - scale(BODY_MIN, dpi);
             let head = spare + line * (LOG_VISIBLE - LOG_MIN) - 1;
             assert!(spare > 0, "dpi {dpi}: probe leaves {spare}");
-            let d = detail(editor, dpi, DetailInput { banner: true, head_h: head, log_line_h: line });
+            let d = detail(editor, dpi, DetailInput { banner: true, head_h: head, log_line_h: line, switch_text_w: 0 });
             assert_eq!(d.head.height(), head, "dpi {dpi}: the block was cut while the log could give");
             assert!(d.log.height() < line * LOG_VISIBLE + 2, "dpi {dpi}: the log did not give way");
             assert!(d.body.height() >= scale(BODY_MIN, dpi));
@@ -988,17 +996,27 @@ mod tests {
             let (w, h) = crate::content_size(crate::FIRST_W, crate::FIRST_H);
             let g = crate::section_grid(scale(w, dpi), scale(h, dpi), dpi, false);
             let head = scale(4 * 19, dpi);
-            let d = detail(g.editor, dpi, DetailInput { banner: true, head_h: head, log_line_h: scale(16, dpi) });
+            let d = detail(g.editor, dpi, DetailInput { banner: true, head_h: head, log_line_h: scale(16, dpi), switch_text_w: 0 });
             assert_eq!(d.head.height(), head, "dpi {dpi}");
             assert_eq!(d.log.height(), scale(16, dpi) * LOG_VISIBLE + 2, "dpi {dpi}");
         }
     }
 
     #[test]
+    fn the_status_switch_is_as_wide_as_its_words() {
+        let editor = Rect::new(261, 0, 1100, 700);
+        let short = detail(editor, 96, DetailInput { banner: false, head_h: 60, log_line_h: 16, switch_text_w: 40 });
+        assert_eq!(short.switch.width(), ACTION_W[0], "short words keep the old width");
+        let long = detail(editor, 96, DetailInput { banner: false, head_h: 60, log_line_h: 16, switch_text_w: 120 });
+        assert_eq!(long.switch.width(), CHECK_BOX + CHECK_TEXT_GAP + 120);
+        assert!(long.switch_note.left >= long.switch.right, "the state word follows the switch, never under it");
+    }
+
+    #[test]
     fn detail_uses_two_left_edges_only() {
         let dpi = 96;
         let (editor, g) = at_min(dpi);
-        let d = detail(editor, dpi, DetailInput { banner: true, head_h: 60, log_line_h: 16 });
+        let d = detail(editor, dpi, DetailInput { banner: true, head_h: 60, log_line_h: 16, switch_text_w: 0 });
         let left = editor.left + PAD;
         // The editor's margin: the same x as the bottom band's first text.
         assert_eq!(left, g.text_left);
@@ -1121,7 +1139,7 @@ mod tests {
             let base = scale(4 * 19, dpi);
             let mut prev: Option<Detail> = None;
             for lines in 0..=2 {
-                let d = detail(g.editor, dpi, DetailInput { banner: false, head_h: base + lines * line, log_line_h: scale(16, dpi) });
+                let d = detail(g.editor, dpi, DetailInput { banner: false, head_h: base + lines * line, log_line_h: scale(16, dpi), switch_text_w: 0 });
                 assert!(d.head.bottom <= d.switch.top, "dpi {dpi}, {lines} line(s): switch under the head");
                 assert!(d.switch.bottom <= d.tabs.top, "dpi {dpi}, {lines}: tabs under the switch");
                 assert!(d.tabs.bottom <= d.body.top, "dpi {dpi}, {lines}: body under the tabs");

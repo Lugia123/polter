@@ -922,6 +922,16 @@ fn measure(text: &str, width: i32, f: HFONT, max_lines: i32) -> i32 {
     }
 }
 
+/// A row's label as lines when it is a setting's key (`wrap_key_label`);
+/// None for a name, which `DrawText` wraps at its spaces.
+fn key_label_lines(title: &str, width: i32) -> Option<Vec<String>> {
+    // Never an empty string to `DrawTextW` (`text_width`).
+    if title.is_empty() {
+        return None;
+    }
+    rules::wrap_key_label(title, |t| text_width(t, font()) <= width, LABEL_LINES as usize)
+}
+
 fn text_width(text: &str, f: HFONT) -> i32 {
     let h = section();
     let mut r = RECT::default();
@@ -1080,7 +1090,11 @@ fn form_layout(width: i32, dpi: i32) -> (Vec<polter_settings_shell::plugins::For
             // fit (task 1604). A name too long for the label column wraps
             // (task 990) rather than being cut.
             let help = help_flow(&runs, control_w, expanded).lines as i32 * metrics(font());
-            (measure(&title, label_w, font(), LABEL_LINES), help)
+            let label = match key_label_lines(&title, label_w) {
+                Some(lines) => lines.len() as i32 * metrics(font()),
+                None => measure(&title, label_w, font(), LABEL_LINES),
+            };
+            (label, help)
         })
         .collect();
     let (rows, total) = polter_settings_shell::plugins::form_spaced(width, dpi, &rows, polter_settings_shell::plugins::GENERAL_ROW_GAP);
@@ -2327,11 +2341,28 @@ fn paint_form(win: HWND) {
         // Wrapped in the label column (task 990), right-aligned; one line
         // sits on the control's middle as before.
         let title = rules::row_title(it, tr);
-        let one_line = measure(&title, lr.right - lr.left, font(), 0) <= metrics(font());
         let control_h = shell::scale(grid::CONTROL_H, dpi);
+        let key_lines = key_label_lines(&title, lr.right - lr.left);
+        let one_line = match &key_lines {
+            Some(lines) => lines.len() == 1,
+            None => measure(&title, lr.right - lr.left, font(), 0) <= metrics(font()),
+        };
         let lr = if one_line { RECT { bottom: lr.top + control_h, ..lr } } else { lr };
-        let flags = if one_line { DT_RIGHT | DT_SINGLELINE | DT_VCENTER } else { DT_RIGHT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL };
-        draw_text(hdc, &title, &lr, font(), theme::text(), flags);
+        match key_lines {
+            // A key broken after its hyphens, a line at a time and each
+            // right-aligned, as the macOS label wraps (#1750).
+            Some(lines) if !one_line => {
+                let line = metrics(font());
+                for (k, l) in lines.iter().enumerate() {
+                    let at = RECT { top: lr.top + k as i32 * line, bottom: lr.top + (k as i32 + 1) * line, ..lr };
+                    draw_text(hdc, l, &at, font(), theme::text(), DT_RIGHT | DT_SINGLELINE);
+                }
+            }
+            _ => {
+                let flags = if one_line { DT_RIGHT | DT_SINGLELINE | DT_VCENTER } else { DT_RIGHT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL };
+                draw_text(hdc, &title, &lr, font(), theme::text(), flags);
+            }
+        }
         if rules::differs_from_default(it) {
             let d = RECT { left: r.label.left, top: lr.top, right: r.label.left + dot, bottom: lr.top + control_h };
             draw_text(hdc, "\u{2022}", &d, font(), theme::focus(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
@@ -2503,8 +2534,16 @@ fn kb_paint(win: HWND) {
                 let tr_ = RECT { left: 0, top: nr.bottom, right: name_w, bottom: nr.bottom + line };
                 draw_text(hdc, &row.action, &tr_, mono(), theme::dim(), DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             }
-            let kr = RECT { left: name_w + gap, top: r.top, right: name_w + gap + keys_w, bottom: r.top + line };
-            draw_text(hdc, &row.keys, &kr, mono(), if unbound.get(i).copied().unwrap_or(false) { theme::dim() } else { theme::text() }, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            // Two lines, as the name and its tag have: the second key of
+            // `copy_to_clipboard` used to be cut at one ("Copy  Ctrl+Inser…",
+            // #1750). Broken between keys only (`keys_for_wrapping`), as the
+            // macOS column is.
+            // Top-aligned to wrap, so pushed down by what centring in one
+            // line gave: the first line stays on the name's baseline.
+            let pad = (line - metrics(mono())).max(0) / 2;
+            let kr = RECT { left: name_w + gap, top: r.top + pad, right: name_w + gap + keys_w, bottom: r.top + 2 * line };
+            let keys = rules::keys_for_wrapping(&row.keys);
+            draw_text(hdc, &keys, &kr, mono(), if unbound.get(i).copied().unwrap_or(false) { theme::dim() } else { theme::text() }, DT_WORDBREAK | DT_END_ELLIPSIS);
             if !row.note.is_empty() {
                 let colour = if hidden.get(i).copied().unwrap_or(false) { theme::warn() } else { theme::dim() };
                 let note = tr(&row.note);

@@ -5560,3 +5560,179 @@ msgstr ""
 #, rust-format
 msgid "{}, supervisor, {}"
 msgstr ""
+
+#. TRANSLATORS: the badge at the top left of a read-only pane;
+#. short, it sits in a fixed 110-point box.
+#: windows/host/src/hud.rs:1071
+msgid "READ ONLY"
+msgstr ""
+
+#. TRANSLATORS: the badge on a pane where the terminal thinks a
+#. password is being typed; short, it sits in a fixed
+#. 110-point box.
+#: windows/host/src/hud.rs:1172
+msgid "PASSWORD"
+msgstr ""
+
+#: windows/host/src/update.rs:192
+msgid "Update Available"
+msgstr ""
+
+#. TRANSLATORS: the update notification's body; the first {}
+#. is the new version, the second the release page's address.
+#: windows/host/src/update.rs:195
+#, rust-format
+msgid "Polter {} is available: {}"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:689
+msgid "Activate Key Table"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:690
+msgid "Activate Key Table Once"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:691
+msgid "Adjust Selection"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:692
+msgid "Crash (for debugging)"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:693
+msgid "Send CSI Sequence"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:694
+msgid "Send Cursor Key Sequence"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:695
+msgid "Deactivate All Key Tables"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:696
+msgid "Deactivate Key Table"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:697
+msgid "End Key Sequence"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:698
+msgid "Send Escape Sequence"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:699
+msgid "Go to Tab"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:700
+msgid "Do Nothing"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:701
+msgid "Jump to Prompt"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:702
+msgid "Go to Last Tab"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:703
+msgid "Next Tab"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:704
+msgid "Toggle: Let a Supervisor Answer Prompts"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:705
+msgid "Toggle: Let Workers Name Each Other Directly"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:706
+msgid "Set This Terminal's Role"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:707
+msgid "Set: Keep Agents Out of This Terminal"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:708
+msgid "Set This Pane's Colour"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:709
+msgid "Set: Don't Start Workers in This Terminal"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:710
+msgid "Clear This Terminal's Role"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:711
+msgid "Switch One Skill On or Off Here"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:712
+msgid "Switch One MCP Server On or Off Here"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:713
+msgid "Previous Tab"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:715
+msgid "Scroll by a Fraction of a Page"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:716
+msgid "Scroll by Lines"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:717
+msgid "Scroll to Row"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:718
+msgid "Search in Terminal"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:719
+msgid "Set Font Size"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:720
+msgid "Set Terminal Title"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:721
+msgid "Set Tab Title"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:722
+msgid "Set Window Title"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:723
+msgid "Toggle Command Palette"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:724
+msgid "Toggle Quick Terminal"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:725
+msgid "Toggle Polter Visibility"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:726
+msgid "Unbind This Key"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:727
+msgid "Write Scrollback to a File"
+msgstr ""

@@ -189,8 +189,10 @@ fn report(origin: Option<HWND>, outcome: Outcome) {
             notify::on_notification(
                 origin,
                 None,
-                Some("Update Available".to_string()),
-                Some(format!("Polter {version} is available: {html_url}")),
+                Some(crate::i18n::tr("Update Available")),
+                // TRANSLATORS: the update notification's body; the first {}
+                // is the new version, the second the release page's address.
+                Some(crate::i18n::tr("Polter {} is available: {}").replacen("{}", &version, 1).replacen("{}", &html_url, 1)),
             );
         }
         Outcome::UpToDate => {

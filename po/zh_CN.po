@@ -5275,6 +5275,182 @@ msgstr "{} 插件关着，读不到它装了什么；角色里 {} 那边的开�
 msgid "What {} has installed can't be read here; the role's switches for {} stay as they are."
 msgstr "这里读不到 {} 装了什么；角色里 {} 那边的开关原样留着。"
 
+#. TRANSLATORS: the badge at the top left of a read-only pane;
+#. short, it sits in a fixed 110-point box.
+#: windows/host/src/hud.rs:1071
+msgid "READ ONLY"
+msgstr "只读"
+
+#. TRANSLATORS: the badge on a pane where the terminal thinks a
+#. password is being typed; short, it sits in a fixed
+#. 110-point box.
+#: windows/host/src/hud.rs:1172
+msgid "PASSWORD"
+msgstr "输入密码"
+
+#: windows/host/src/update.rs:192
+msgid "Update Available"
+msgstr "有可用更新"
+
+#. TRANSLATORS: the update notification's body; the first {}
+#. is the new version, the second the release page's address.
+#: windows/host/src/update.rs:195
+#, rust-format
+msgid "Polter {} is available: {}"
+msgstr "Polter {} 已发布：{}"
+
+#: windows/settings-shell/src/general.rs:689
+msgid "Activate Key Table"
+msgstr "启用按键表"
+
+#: windows/settings-shell/src/general.rs:690
+msgid "Activate Key Table Once"
+msgstr "启用按键表（只生效一次）"
+
+#: windows/settings-shell/src/general.rs:691
+msgid "Adjust Selection"
+msgstr "调整选区"
+
+#: windows/settings-shell/src/general.rs:692
+msgid "Crash (for debugging)"
+msgstr "制造一次崩溃（调试用）"
+
+#: windows/settings-shell/src/general.rs:693
+msgid "Send CSI Sequence"
+msgstr "发送 CSI 序列"
+
+#: windows/settings-shell/src/general.rs:694
+msgid "Send Cursor Key Sequence"
+msgstr "发送光标键序列"
+
+#: windows/settings-shell/src/general.rs:695
+msgid "Deactivate All Key Tables"
+msgstr "解除全部按键表"
+
+#: windows/settings-shell/src/general.rs:696
+msgid "Deactivate Key Table"
+msgstr "解除按键表"
+
+#: windows/settings-shell/src/general.rs:697
+msgid "End Key Sequence"
+msgstr "结束组合按键序列"
+
+#: windows/settings-shell/src/general.rs:698
+msgid "Send Escape Sequence"
+msgstr "发送 Esc 序列"
+
+#: windows/settings-shell/src/general.rs:699
+msgid "Go to Tab"
+msgstr "跳转到指定标签页"
+
+#: windows/settings-shell/src/general.rs:700
+msgid "Do Nothing"
+msgstr "什么都不做"
+
+#: windows/settings-shell/src/general.rs:701
+msgid "Jump to Prompt"
+msgstr "跳到上一个／下一个提示符"
+
+#: windows/settings-shell/src/general.rs:702
+msgid "Go to Last Tab"
+msgstr "跳到最后一个标签页"
+
+#: windows/settings-shell/src/general.rs:703
+msgid "Next Tab"
+msgstr "下一个标签页"
+
+#: windows/settings-shell/src/general.rs:704
+msgid "Toggle: Let a Supervisor Answer Prompts"
+msgstr "切换：让总管替你回答权限询问"
+
+#: windows/settings-shell/src/general.rs:705
+msgid "Toggle: Let Workers Name Each Other Directly"
+msgstr "切换：允许 worker 之间直接点名"
+
+#: windows/settings-shell/src/general.rs:706
+msgid "Set This Terminal's Role"
+msgstr "把这个终端设成某个角色"
+
+#: windows/settings-shell/src/general.rs:707
+msgid "Set: Keep Agents Out of This Terminal"
+msgstr "设定：不让 agent 碰此终端（开或关）"
+
+#: windows/settings-shell/src/general.rs:708
+msgid "Set This Pane's Colour"
+msgstr "给这一格分屏设颜色"
+
+#: windows/settings-shell/src/general.rs:709
+msgid "Set: Don't Start Workers in This Terminal"
+msgstr "设定：不在此终端开 worker（开或关）"
+
+#: windows/settings-shell/src/general.rs:710
+msgid "Clear This Terminal's Role"
+msgstr "清掉这个终端的角色"
+
+#: windows/settings-shell/src/general.rs:711
+msgid "Switch One Skill On or Off Here"
+msgstr "在这里单独开关一个技能"
+
+#: windows/settings-shell/src/general.rs:712
+msgid "Switch One MCP Server On or Off Here"
+msgstr "在这里单独开关一个 MCP 服务器"
+
+#: windows/settings-shell/src/general.rs:713
+msgid "Previous Tab"
+msgstr "上一个标签页"
+
+#: windows/settings-shell/src/general.rs:715
+msgid "Scroll by a Fraction of a Page"
+msgstr "按页的比例滚动"
+
+#: windows/settings-shell/src/general.rs:716
+msgid "Scroll by Lines"
+msgstr "按行数滚动"
+
+#: windows/settings-shell/src/general.rs:717
+msgid "Scroll to Row"
+msgstr "滚动到指定行"
+
+#: windows/settings-shell/src/general.rs:718
+msgid "Search in Terminal"
+msgstr "在终端内搜索"
+
+#: windows/settings-shell/src/general.rs:719
+msgid "Set Font Size"
+msgstr "设置字号"
+
+#: windows/settings-shell/src/general.rs:720
+msgid "Set Terminal Title"
+msgstr "设置终端标题"
+
+#: windows/settings-shell/src/general.rs:721
+msgid "Set Tab Title"
+msgstr "设置标签页标题"
+
+#: windows/settings-shell/src/general.rs:722
+msgid "Set Window Title"
+msgstr "设置窗口标题"
+
+#: windows/settings-shell/src/general.rs:723
+msgid "Toggle Command Palette"
+msgstr "打开／关闭命令面板"
+
+#: windows/settings-shell/src/general.rs:724
+msgid "Toggle Quick Terminal"
+msgstr "打开／关闭快捷终端"
+
+#: windows/settings-shell/src/general.rs:725
+msgid "Toggle Polter Visibility"
+msgstr "显示／隐藏 Polter"
+
+#: windows/settings-shell/src/general.rs:726
+msgid "Unbind This Key"
+msgstr "解除这个键的绑定"
+
+#: windows/settings-shell/src/general.rs:727
+msgid "Write Scrollback to a File"
+msgstr "把回滚内容写入文件"
+
 #~ msgid "Filter by key"
 #~ msgstr "按键名筛选"
 

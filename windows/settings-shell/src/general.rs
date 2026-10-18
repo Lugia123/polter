@@ -683,6 +683,87 @@ fn form_area_plain(editor: Rect, dpi: i32, with_filter: bool) -> (Option<Rect>, 
 
 // ------------------------------------------------------ keyboard shortcuts
 
+/// The core's title for each action, keyed by its tag, out of the command
+/// list (`(action with any argument, title)`, in the core's order): **the
+/// first command's title wins**, as on the macOS page
+/// (`KeybindsModel.titles`). `copy_to_clipboard` is four commands and
+/// `open_config` two; the first is the one the bare tag runs, and the page
+/// used to show those rows by their tag alone (#1750, 1742's W4).
+pub fn first_titles(commands: &[(String, String)]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (action, title) in commands {
+        let tag = action.split(':').next().unwrap_or(action);
+        if !out.iter().any(|(t, _)| t == tag) {
+            out.push((tag.to_string(), title.clone()));
+        }
+    }
+    out
+}
+
+/// The keys column as it is drawn: each key's own spaces made unbreakable,
+/// so a line ends between two keys and never inside one ("Page" / "Down") --
+/// the macOS page's `KeybindsModel.keysLabel`. `label` is `keys_label`'s
+/// three-space-separated text; only what is painted changes, not what a
+/// screen reader or the search is handed (#1750, 1742's W4: "Copy
+/// Ctrl+Inser…" cut at one line).
+pub fn keys_for_wrapping(label: &str) -> String {
+    label.split("   ").map(|k| k.replace(' ', "\u{00A0}")).collect::<Vec<_>>().join("   ")
+}
+
+/// The table's English name for an action the core gives no command for;
+/// None when it has none, and the tag is what shows.
+pub fn name_by_tag(tag: &str) -> Option<&'static str> {
+    ACTION_NAMES.iter().find(|(t, _)| *t == tag).map(|(_, n)| *n)
+}
+
+/// Names for the actions the core gives no command for, keyed by the action's
+/// tag (#1750): the macOS page's `KeybindsModel.namedByTag` table
+/// (`macos/Sources/App/Base.lproj/Localizable.strings`, "The keybind listing's
+/// names"), word for word, so the two pages call an action the same thing.
+/// English msgids; `tr` translates them where they are shown. A test below
+/// holds this to the macOS table.
+pub const ACTION_NAMES: &[(&str, &str)] = &[
+    ("activate_key_table", n_("Activate Key Table")),
+    ("activate_key_table_once", n_("Activate Key Table Once")),
+    ("adjust_selection", n_("Adjust Selection")),
+    ("crash", n_("Crash (for debugging)")),
+    ("csi", n_("Send CSI Sequence")),
+    ("cursor_key", n_("Send Cursor Key Sequence")),
+    ("deactivate_all_key_tables", n_("Deactivate All Key Tables")),
+    ("deactivate_key_table", n_("Deactivate Key Table")),
+    ("end_key_sequence", n_("End Key Sequence")),
+    ("esc", n_("Send Escape Sequence")),
+    ("goto_tab", n_("Go to Tab")),
+    ("ignore", n_("Do Nothing")),
+    ("jump_to_prompt", n_("Jump to Prompt")),
+    ("last_tab", n_("Go to Last Tab")),
+    ("next_tab", n_("Next Tab")),
+    ("poltergeist_toggle_authorise", n_("Toggle: Let a Supervisor Answer Prompts")),
+    ("poltergeist_toggle_worker_mentions", n_("Toggle: Let Workers Name Each Other Directly")),
+    ("poltergeist_persona_set", n_("Set This Terminal's Role")),
+    ("poltergeist_set_shielded", n_("Set: Keep Agents Out of This Terminal")),
+    ("poltergeist_set_pane_color", n_("Set This Pane's Colour")),
+    ("poltergeist_set_workers", n_("Set: Don't Start Workers in This Terminal")),
+    ("poltergeist_persona_clear", n_("Clear This Terminal's Role")),
+    ("poltergeist_persona_skill", n_("Switch One Skill On or Off Here")),
+    ("poltergeist_persona_mcp", n_("Switch One MCP Server On or Off Here")),
+    ("previous_tab", n_("Previous Tab")),
+    ("resize_split", n_("Resize Split")),
+    ("scroll_page_fractional", n_("Scroll by a Fraction of a Page")),
+    ("scroll_page_lines", n_("Scroll by Lines")),
+    ("scroll_to_row", n_("Scroll to Row")),
+    ("search", n_("Search in Terminal")),
+    ("set_font_size", n_("Set Font Size")),
+    ("set_surface_title", n_("Set Terminal Title")),
+    ("set_tab_title", n_("Set Tab Title")),
+    ("set_window_title", n_("Set Window Title")),
+    ("toggle_command_palette", n_("Toggle Command Palette")),
+    ("toggle_quick_terminal", n_("Toggle Quick Terminal")),
+    ("toggle_visibility", n_("Toggle Polter Visibility")),
+    ("unbind", n_("Unbind This Key")),
+    ("write_scrollback_file", n_("Write Scrollback to a File")),
+];
+
 /// The Keyboard Shortcuts columns: name, keys, note (`GeneralRules.
 /// KeybindColumns`). Where less than `MIN_NOTE` is left for the note, it
 /// goes on a line of its own under the keys rather than one character a
@@ -787,6 +868,53 @@ pub fn about_rows(version: Option<&str>, build: Option<&str>, commit: Option<&st
         .collect()
 }
 
+/// A setting's key in the label column, broken into at most `max_lines`
+/// lines after its hyphens, as the macOS form's label wraps
+/// ("font-family-bold-" / "italic"); the last line ends in "…" when the rest
+/// does not fit. None for a label with a space in it (a name, not a key),
+/// which `DrawText`'s own word break already handles.
+///
+/// #1750 (1742's W3): a key wider than the column was measured as one line
+/// -- `DT_WORDBREAK` does not break inside a word, it widens the box -- and
+/// drawn right-aligned on one line, so its *start* fell off the left edge
+/// (":-family-bold-italic").
+pub fn wrap_key_label(text: &str, fits: impl Fn(&str) -> bool, max_lines: usize) -> Option<Vec<String>> {
+    if text.chars().any(char::is_whitespace) || max_lines == 0 {
+        return None;
+    }
+    if fits(text) {
+        return Some(vec![text.to_string()]);
+    }
+    // The pieces a line may end after: each up to and including a hyphen.
+    let mut pieces: Vec<&str> = Vec::new();
+    let mut start = 0;
+    for (i, c) in text.char_indices() {
+        if c == '-' {
+            pieces.push(&text[start..i + 1]);
+            start = i + 1;
+        }
+    }
+    if start < text.len() {
+        pieces.push(&text[start..]);
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut at = 0;
+    while at < pieces.len() {
+        if lines.len() + 1 == max_lines {
+            lines.push(elide_end(&pieces[at..].concat(), &fits));
+            return Some(lines);
+        }
+        let mut line = pieces[at].to_string();
+        at += 1;
+        while at < pieces.len() && fits(&(line.clone() + pieces[at])) {
+            line.push_str(pieces[at]);
+            at += 1;
+        }
+        lines.push(if fits(&line) { line } else { elide_end(&line, &fits) });
+    }
+    Some(lines)
+}
+
 /// An About value cut to what fits, with the mark where the rest would be:
 /// the longest start of `text` that `fits` once `…` is put after it. The
 /// whole text when it fits as it is, and the mark alone when not even one
@@ -842,6 +970,21 @@ mod tests {
         assert_eq!(tip_max_width(600, 1.0), 240);
         assert_eq!(tip_max_width(250, 1.0), 218);
         assert_eq!(tip_max_width(2880, 2.0), 960);
+    }
+
+    #[test]
+    fn a_key_too_long_for_its_column_wraps_after_a_hyphen_and_keeps_its_start() {
+        // Twelve characters a line, standing in for the column's width.
+        let fits = |s: &str| s.chars().count() <= 12;
+        let lines = wrap_key_label("font-family-bold-italic", fits, 2).unwrap();
+        assert_eq!(lines, ["font-family-", "bold-italic"]);
+        assert!(lines[0].starts_with("font"), "the start is never what is cut");
+        // More than two lines' worth: the second ends in the mark.
+        let lines = wrap_key_label("font-family-bold-italic-extra", fits, 2).unwrap();
+        assert_eq!(lines, ["font-family-", "bold-italic\u{2026}"]);
+        // One that fits stays whole; a name with a space is DrawText's.
+        assert_eq!(wrap_key_label("font-style", fits, 2).unwrap(), ["font-style"]);
+        assert_eq!(wrap_key_label("Font family bold", fits, 2), None);
     }
 
     #[test]
@@ -1366,6 +1509,56 @@ mod tests {
         let (_, none, plain) = form_area_with_banner(editor, dpi, true, None);
         assert!(none.is_none());
         assert_eq!(Some(plain), Some(form_area(editor, dpi, true).1));
+    }
+
+    #[test]
+    fn a_keybind_row_is_named_by_its_first_command_then_by_the_table() {
+        // #1750 (1742's W4): `copy_to_clipboard` and `open_config` are
+        // several commands each, and the page showed them by tag.
+        let cmds: Vec<(String, String)> = [
+            ("copy_to_clipboard:mixed", "Copy to Clipboard"),
+            ("copy_to_clipboard:plain", "Copy Selection as Plain Text to Clipboard"),
+            ("open_config:os_open", "Open Config Using OS editor"),
+            ("open_config:new_window", "Open Config in New Terminal Window"),
+            ("reload_config", "Reload Config"),
+        ]
+        .iter()
+        .map(|(a, t)| (a.to_string(), t.to_string()))
+        .collect();
+        let titles = first_titles(&cmds);
+        let copy = titles.iter().find(|(t, _)| t == "copy_to_clipboard").map(|(_, n)| n.as_str());
+        assert_eq!(copy, Some("Copy to Clipboard"));
+        let open = titles.iter().find(|(t, _)| t == "open_config").map(|(_, n)| n.as_str());
+        assert_eq!(open, Some("Open Config Using OS editor"));
+        assert_eq!(titles.len(), 3, "one name per tag");
+
+        assert_eq!(name_by_tag("goto_tab"), Some("Go to Tab"));
+        assert_eq!(name_by_tag("copy_to_clipboard"), None, "a command's tag is named by the core");
+    }
+
+    #[test]
+    fn a_key_is_never_broken_inside_and_two_keys_can_be() {
+        let shown = keys_for_wrapping("Copy   Ctrl+Insert   Shift+Page Down");
+        assert_eq!(shown, "Copy   Ctrl+Insert   Shift+Page\u{00A0}Down");
+        assert_eq!(keys_for_wrapping("—"), "—");
+    }
+
+    #[test]
+    fn the_tag_names_are_the_macos_table_word_for_word() {
+        // The macOS page names these from its own table; two tables kept
+        // by hand drift, so this one is read against that one.
+        let mac = include_str!("../../../macos/Sources/App/Base.lproj/Localizable.strings");
+        let start = mac.find("The keybind listing's names").expect("the macOS table's header");
+        let section = &mac[start..];
+        let section = &section[..section.find("\n\n").unwrap_or(section.len())];
+        let mut theirs: Vec<(String, String)> = Vec::new();
+        for line in section.lines().filter(|l| l.starts_with('"')) {
+            let parts: Vec<&str> = line.split('"').collect();
+            theirs.push((parts[1].to_string(), parts[3].to_string()));
+        }
+        let ours: Vec<(String, String)> = ACTION_NAMES.iter().map(|(t, n)| (t.to_string(), n.to_string())).collect();
+        assert!(!theirs.is_empty());
+        assert_eq!(ours, theirs);
     }
 
     #[test]

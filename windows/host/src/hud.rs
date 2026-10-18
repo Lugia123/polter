@@ -1066,7 +1066,9 @@ unsafe extern "system" fn ro_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
-                paint(hwnd, "READ ONLY", COL_RO_BG, COL_TEXT);
+                // TRANSLATORS: the badge at the top left of a read-only pane;
+                // short, it sits in a fixed 110-point box.
+                paint(hwnd, &crate::i18n::tr("READ ONLY"), COL_RO_BG, COL_TEXT);
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
@@ -1164,7 +1166,10 @@ unsafe extern "system" fn sec_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 // some system-level protection was engaged, because none was.
                 // See `on_secure_input` for what this host does and does not
                 // do.
-                paint(hwnd, "PASSWORD", COL_SEC_BG, COL_TEXT);
+                // TRANSLATORS: the badge on a pane where the terminal thinks a
+                // password is being typed; short, it sits in a fixed
+                // 110-point box.
+                paint(hwnd, &crate::i18n::tr("PASSWORD"), COL_SEC_BG, COL_TEXT);
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),

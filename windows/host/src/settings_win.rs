@@ -1313,14 +1313,6 @@ fn paint(h: HWND) {
     let right = RECT { left: l.content.left, top: 0, right: rc.right, bottom: rc.bottom };
     fill(hdc, &right, theme::bg());
     let sb = plugin_rules::sidebar_at(&l, dpi, plugin_rows.len(), side_scroll(&l, dpi, plugin_rows.len()));
-    // The words' column is as wide as the widest of the five words in this
-    // font, so none of them is cut ("改了未重启" was, at 144 DPI); the name
-    // gives way instead (task 990).
-    let word_w = plugin_rules::Dot::ALL
-        .iter()
-        .map(|d| text_width(hdc, &crate::plugins_ui::dot_word(*d), font))
-        .max()
-        .unwrap_or(0);
     // The plugins, under their section (§2.3): dot, name, and the dot's word
     // on the right. Only rows above the bottom rule are drawn; a list that
     // runs past it is cut there rather than into the band.
@@ -1342,6 +1334,13 @@ fn paint(h: HWND) {
         let colour = if searching { theme::dim() } else if on { theme::sel_text() } else { theme::text() };
         let dim = if on { theme::sel_text() } else { theme::dim() };
         let word = crate::plugins_ui::dot_word(row.dot);
+        // The word as wide as itself, as the macOS row (`PluginSidebarRows`:
+        // name, spacer, word), so it is never cut ("改了未重启" was, at 144
+        // DPI, task 990) and the name gives way to this row's word only. It
+        // used to be the widest of the five words for every row, which cut
+        // "Antigravity CLI" beside 「已关」 (#1750, 1742's W9).
+        // Never an empty string to `DrawTextW`.
+        let word_w = if word.is_empty() { 0 } else { text_width(hdc, &word, font) };
         let (name_r, word_r) = plugin_rules::plugin_columns(to_rect(r), sb.plugin_text_left, word_w, dpi);
         // The dot in its own colour in a box a section's icon wide, then the
         // name, as the macOS row (`SettingsPluginsView`, task 1550).
