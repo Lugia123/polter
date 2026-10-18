@@ -28,6 +28,7 @@ pub const draft = @import("draft.zig");
 pub const prompts = @import("prompts.zig");
 pub const login_path = @import("login_path.zig");
 pub const workdir = @import("workdir.zig");
+pub const StallWatch = @import("StallWatch.zig");
 pub const ChatLog = @import("ChatLog.zig");
 pub const MentionRetry = @import("MentionRetry.zig");
 pub const fresh_assign = @import("fresh_assign.zig");
@@ -100,6 +101,7 @@ test {
     _ = prompts;
     _ = login_path;
     _ = workdir;
+    _ = StallWatch;
     _ = Resident;
     _ = Bus;
     _ = agent_event;

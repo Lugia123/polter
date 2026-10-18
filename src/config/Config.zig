@@ -1590,6 +1590,20 @@ command: ?Command = null,
 /// line and the tab.
 @"poltergeist-calls-silent-after": Duration = .{ .duration = 15 * std.time.ns_per_min },
 
+/// How long Polter's app thread may spend on one thing before it is written
+/// in the log.
+///
+/// The app thread is the one every terminal's events, every agent's tool
+/// call and the window itself go through; while one thing holds it, nothing
+/// else is answered. When that has lasted this long, another thread writes a
+/// warning naming what it is -- which kind of message and, for an agent's
+/// tool call, the tool and the terminal it came from -- and, when it ends,
+/// a second line with how long it took. Once per stall, however long.
+///
+/// Watching costs the app thread nothing it would notice: no lock and no
+/// log of its own. Two seconds by default; zero switches it off.
+@"poltergeist-stall-warn-after": Duration = .{ .duration = 2 * std.time.ns_per_s },
+
 /// How much uncompacted conversation a group may carry before the
 /// supervisor is reminded to tidy it.
 ///

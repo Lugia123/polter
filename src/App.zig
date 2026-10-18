@@ -457,6 +457,13 @@ poltergeist_parked: bool = false,
 /// `screenshot-agent-access`.
 poltergeist_screenshot_allowed: bool = true,
 
+/// What the app thread has in hand, for the thread that says when it has
+/// had it too long (task 1729). Written by the app thread, read by
+/// `stall_watch_thread`; see `poltergeist/StallWatch.zig`.
+stall_watch: poltergeistpkg.StallWatch = .{},
+stall_watch_stop: std.atomic.Value(bool) = .init(false),
+stall_watch_thread: ?std.Thread = null,
+
 /// Whether the resident plugins have been looked for. Testing the list
 /// instead would not do: with none installed it stays empty for ever,
 /// and every config reload would re-read every plugin's settings file to
@@ -711,6 +718,10 @@ pub fn deinit(self: *App) void {
     for (self.poltergeist_screenshot_waits.entries.items) |e| e.held.release();
     self.poltergeist_screenshot_waits.deinit(self.alloc);
 
+    self.stall_watch_stop.store(true, .release);
+    if (self.stall_watch_thread) |t| t.join();
+    self.stall_watch_thread = null;
+
     // Clean up our font group cache
     // We should have zero items in the grid set at this point because
     // destroy only gets called when the app is shutting down and this
@@ -731,8 +742,29 @@ pub fn destroy(self: *App) void {
 /// events. This should be called by the application runtime on every loop
 /// tick.
 pub fn tick(self: *App, rt_app: *apprt.App) !void {
+    // Started here, on the first tick, because `self` has its address by
+    // now and keeps it until `deinit` stops the thread.
+    if (self.stall_watch_thread == null) {
+        self.stall_watch_thread = std.Thread.spawn(.{}, poltergeistpkg.StallWatch.run, .{
+            &self.stall_watch,
+            global.io(),
+            &self.stall_watch_stop,
+            stall_watch_every_ms,
+            poltergeistpkg.StallWatch.logSink,
+            @as(?*anyopaque, null),
+        }) catch |err| thread: {
+            log.warn("app thread: no watch on it; its thread could not start err={}", .{err});
+            break :thread null;
+        };
+    }
+
     // Drain our mailbox
     try self.drainMailbox(rt_app);
+
+    // The rest of the tick is one item of its own: whatever it does after
+    // the mailbox, a stall in it is named `tick`.
+    self.stall_watch.begin(poltergeistpkg.StallWatch.nowNs(global.io()), .{ .kind = "tick" });
+    defer self.stall_watch.end(poltergeistpkg.StallWatch.nowNs(global.io()));
 
     // A notice that was refused in its supervisor's terminal, come back
     // for. Before the snapshot, like everything else that can move it.
@@ -2206,6 +2238,10 @@ pub fn applyPoltergeistSettings(self: *App, config: *const Config) void {
         config.@"poltergeist-worker-nudge-after".duration / std.time.ns_per_ms;
     self.poltergeist_compact_after = config.@"poltergeist-compact-after".value;
     self.poltergeist_screenshot_allowed = config.@"screenshot-agent-access" == .allow;
+    self.stall_watch.threshold_ns.store(
+        @intCast(config.@"poltergeist-stall-warn-after".duration),
+        .monotonic,
+    );
     self.sweep_limits = SweepLimits.from(config);
     self.configureSweeper();
 
@@ -10615,9 +10651,29 @@ pub fn needsConfirmQuit(self: *const App) bool {
     return false;
 }
 
+/// How often the stall watch looks at the app thread.
+const stall_watch_every_ms = 250;
+
+/// What the stall watch calls a mailbox message: its tag, and for an
+/// agent's request the method and the terminal. All static or plain values,
+/// so the app thread copies nothing to say it.
+fn stallLabel(message: Message) poltergeistpkg.StallWatch.Label {
+    return switch (message) {
+        .poltergeist_request => |p| .{
+            .kind = "poltergeist_request",
+            .method = @tagName(p.request),
+            .caller = p.caller.terminalId() orelse 0,
+        },
+        inline else => |_, tag| .{ .kind = @tagName(tag) },
+    };
+}
+
 /// Drain the mailbox.
 fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
     while (self.mailbox.pop(global.io())) |message| {
+        // One message, one item for the stall watch (task 1729).
+        self.stall_watch.begin(poltergeistpkg.StallWatch.nowNs(global.io()), stallLabel(message));
+        defer self.stall_watch.end(poltergeistpkg.StallWatch.nowNs(global.io()));
         // Anything that arrives here may have changed what the control
         // room shows, and working out that it did not is cheaper than a
         // list of which messages can.
