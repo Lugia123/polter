@@ -21,6 +21,7 @@ pub const fn n_(s: &'static str) -> &'static str {
     s
 }
 
+pub mod close_confirm;
 pub mod general;
 pub mod logs;
 pub mod plugins;

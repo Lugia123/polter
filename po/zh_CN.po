@@ -6429,3 +6429,35 @@ msgstr "11月"
 #: windows/control-room/src/quota.rs:255
 msgid "Dec"
 msgstr "12月"
+
+#: windows/settings-shell/src/close_confirm.rs:60
+msgid "Close Terminal?"
+msgstr "关闭终端？"
+
+#: windows/settings-shell/src/close_confirm.rs:61
+msgid "The terminal still has a running process. If you close the terminal the process will be killed."
+msgstr "终端里还有进程在运行。关闭终端会杀掉它。"
+
+#: windows/settings-shell/src/close_confirm.rs:69
+msgid "The terminal still has a running process. If you quit, the process will be killed."
+msgstr "终端里还有进程在运行。退出会杀掉它。"
+
+#: windows/settings-shell/src/close_confirm.rs:70
+msgid "Terminate"
+msgstr "结束进程"
+
+#: windows/settings-shell/src/close_confirm.rs:79
+msgid "Close Other Tabs?"
+msgstr "关闭其他标签页？"
+
+#: windows/settings-shell/src/close_confirm.rs:80
+msgid "At least one other tab still has a running process. If you close the tab the process will be killed."
+msgstr "至少有一个其他标签页里还有进程在运行。关闭会杀掉它。"
+
+#: windows/settings-shell/src/close_confirm.rs:84
+msgid "Close Tabs on the Right?"
+msgstr "关闭右侧的标签页？"
+
+#: windows/settings-shell/src/close_confirm.rs:85
+msgid "At least one tab to the right still has a running process. If you close the tab the process will be killed."
+msgstr "右侧至少有一个标签页里还有进程在运行。关闭会杀掉它。"

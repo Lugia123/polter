@@ -2488,9 +2488,8 @@ fn wide(s: &str) -> Vec<u16> {
 fn take_over(hwnd: HWND, group: &str, question: &str) {
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
     let title = wide(&tr(scene::msg::TAKE_OVER));
-    let body = wide(question);
-    let yes = unsafe { MessageBoxW(Some(frame), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) };
-    if yes != IDYES {
+    // Take Over and Cancel, as macOS asks it (task 1757).
+    if !ask(frame, &polter_control_room::confirm::take_over(question, &|s| tr(s))) {
         wlogf!(frame, "[control-room] take-over of {:?}'s supervisor: not confirmed", group);
         return;
     }

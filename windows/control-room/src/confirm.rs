@@ -2,7 +2,8 @@
 //! 1661, design v21 `06`): archiving, which can be undone and so says yes
 //! on Return, and deleting, which cannot and so says no on Return. What
 //! each says comes from what the core says of the group; the host shows it
-//! in its one question box and sends the act on the first button.
+//! in its one question box and sends the act on the first button. And the
+//! one the title bar's "Let the control room take over?" asks (task 1757).
 //!
 //! The words are the design's, with the product's own word for a group's
 //! brief (「群简介」).
@@ -38,6 +39,7 @@ pub mod msg {
     pub const DELETE_PROJECT: &str = n_("The project {} stays; it just no longer belongs to any group.");
     pub const DELETE_RATHER: &str = n_("If you would rather not delete this much, archive it instead.");
     pub const DELETE: &str = n_("Delete Group");
+    pub const TAKE_OVER: &str = n_("Take Over");
 }
 
 /// Fill the `{}`s of `template` in order.
@@ -94,6 +96,21 @@ pub fn delete(name: &str, cost: DeleteCost, project: Option<&str>, tr: &dyn Fn(&
     }
 }
 
+/// "Let the control room take over?" on a supervisor somebody started by
+/// hand (task 1635), with the core's `question` under it: macOS's words and
+/// its buttons, Take Over and Cancel, rather than Yes and No (task 1757).
+/// **Return cancels**, as it did here when it was No: what the core does on
+/// yes is not taken back by a second press.
+pub fn take_over(question: &str, tr: &dyn Fn(&str) -> String) -> Question {
+    Question {
+        main: tr(crate::scene::msg::TAKE_OVER),
+        body: question.to_string(),
+        buttons: vec![tr(msg::TAKE_OVER), tr(msg::CANCEL)],
+        default: 1,
+        warning: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +133,21 @@ mod tests {
         assert!(busy.body.ends_with("The project web-app stays; it just no longer belongs to any group. If you would rather not delete this much, archive it instead."));
         assert!(delete("x", DeleteCost { members: 2, open_tasks: 0 }, None, &same).body.starts_with("\u{26a0} This group still has 2 members."));
         assert!(delete("x", DeleteCost { members: 0, open_tasks: 5 }, None, &same).body.starts_with("\u{26a0} This group still has 5 unfinished tasks."));
+    }
+
+    /// Task 1757: the macOS sheet's words and buttons (`ControlRoomSource
+    /// .takeOver`), not the system's Yes and No.
+    #[test]
+    fn taking_over_asks_with_take_over_and_cancel() {
+        const MAC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../macos/Sources/App/Base.lproj/Localizable.strings"));
+        let q = take_over("Close the supervisor “web” started by hand and start it again here?", &same);
+        assert_eq!(q.main, "Let the control room take over?");
+        assert_eq!(q.body, "Close the supervisor “web” started by hand and start it again here?");
+        assert_eq!(q.buttons, vec!["Take Over", "Cancel"]);
+        assert_eq!((q.default, q.warning), (1, false));
+        for word in [q.main.as_str(), q.buttons[0].as_str(), q.buttons[1].as_str()] {
+            assert!(MAC.contains(&format!("\"{word}\" = ")), "{word:?} is not a macOS string");
+        }
     }
 
     #[test]

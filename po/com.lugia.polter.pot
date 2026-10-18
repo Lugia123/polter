@@ -6201,3 +6201,35 @@ msgstr ""
 #: windows/control-room/src/quota.rs:255
 msgid "Dec"
 msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:60
+msgid "Close Terminal?"
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:61
+msgid "The terminal still has a running process. If you close the terminal the process will be killed."
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:69
+msgid "The terminal still has a running process. If you quit, the process will be killed."
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:70
+msgid "Terminate"
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:79
+msgid "Close Other Tabs?"
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:80
+msgid "At least one other tab still has a running process. If you close the tab the process will be killed."
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:84
+msgid "Close Tabs on the Right?"
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:85
+msgid "At least one tab to the right still has a running process. If you close the tab the process will be killed."
+msgstr ""

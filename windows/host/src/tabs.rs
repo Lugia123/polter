@@ -35,10 +35,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use polter_control_room::rules::{self, Kind};
+// What is being closed, and what the box says about it: macOS's words and
+// buttons (task 1757).
+use polter_settings_shell::close_confirm::{self, Subject};
 use polter_split_tree::{Focus, NewSplit, PaneId, Placement, Rect as TreeRect, Side, Tree};
 
 use crate::ffi::*;
-use crate::i18n::{n_, tr};
+use crate::i18n::tr;
 use crate::{api, logf, plogf, wlogf};
 
 /// Posted to the frame window when the action queue has something in it.
@@ -4219,109 +4222,20 @@ fn window_confirm_flags(frame: HWND) -> Vec<bool> {
         .collect()
 }
 
-/// Put the question in front of the person. `true` means go ahead.
+/// Put the question in front of the person: the question, the sentence
+/// under it, and a button that says what it does beside Cancel -- not the
+/// system's Yes and No (task 1757). `true` means go ahead.
 ///
 /// ⚠️ **Called from a window procedure, never from the op queue.** A modal box
 /// runs its own message loop; raising one while draining ops would stop the
 /// pump in the middle of a queue this host has already deadlocked once by
 /// other means. Every caller below is a user gesture or a posted message, and
 /// what reaches the queue is an op that has **already been decided**.
-/// What is being closed. **Two different jobs, kept apart on purpose.**
-///
-/// The words on the box are a sentence a person reads, so they are
-/// translated. The word in the log line is an identifier somebody greps for,
-/// so it is not: a log whose nouns change with the machine's locale cannot be
-/// searched for by a second person, and that is the whole reason a log line
-/// exists.
-///
-/// Before this, one Chinese fragment did both -- it was interpolated into the
-/// box's sentence *and* printed in the log. The box's half of that is the
-/// classic i18n defect: English wants "in this tab" where Chinese wants the
-/// noun in front, and a sentence assembled from a fragment can only be right
-/// in the language it was written in.
-#[derive(Clone, Copy)]
-enum Subject {
-    /// Every window: the core's `quit` (task 1551).
-    App,
-    Tab,
-    Window,
-    Pane,
-    OtherTabs,
-    RightTabs,
-}
-
-impl Subject {
-    /// **Not newly worded.** `src/apprt/gtk/class/close_confirmation_dialog.zig`
-    /// asks this exact question for the exact same three targets, and its
-    /// msgids are already in `po/` with translations in every language the
-    /// project ships -- `po/zh_CN.po:333` and `:341` are two of them. Writing
-    /// a fresh English sentence here would have put a second wording of one
-    /// question into the catalogue and asked 30-odd translators to do work
-    /// that is already done.
-    ///
-    /// The `surface` row there is spelled "split" rather than "pane", which
-    /// is the word this host uses internally; the user-facing word follows
-    /// the other two platforms, not this file's type names.
-    fn title(self) -> &'static str {
-        match self {
-            // Not gtk's "Quit Ghostty?": this is Polter, and macOS asks
-            // "Quit Polter?" (`Localizable.strings`).
-            Subject::App => n_("Quit Polter?"),
-            Subject::Tab => n_("Close Tab?"),
-            Subject::Window => n_("Close Window?"),
-            Subject::Pane => n_("Close Split?"),
-            Subject::OtherTabs => n_("Close Other Tabs"),
-            Subject::RightTabs => n_("Close Tabs to the Right"),
-        }
-    }
-
-    fn body(self) -> &'static str {
-        match self {
-            Subject::App => n_("All terminal sessions will be terminated."),
-            Subject::Tab => n_("All terminal sessions in this tab will be terminated."),
-            Subject::Window => n_("All terminal sessions in this window will be terminated."),
-            Subject::Pane => n_("The currently running process in this split will be terminated."),
-            // ⚠️ **These two say what goes, not that a process dies with it.**
-            // They are the command palette's descriptions of the same two
-            // commands (`src/input/command.zig`), already translated in every
-            // shipped language; a sentence that also warned about running
-            // processes -- macOS has one -- is not in `po/` yet, and a new
-            // msgid here would render in English everywhere until it is.
-            // The box only appears when something in those tabs is running.
-            Subject::OtherTabs => n_("Close all tabs in this window except the current one."),
-            Subject::RightTabs => n_("Close all tabs to the right of the current one."),
-        }
-    }
-
-    /// ⚠️ **Never translated, and that is the point.** This is what
-    /// `[close] asked about ...` prints, and a reader searching a log from
-    /// somebody else's machine has to be able to type the word.
-    fn log_key(self) -> &'static str {
-        match self {
-            Subject::App => "app",
-            Subject::Tab => "tab",
-            Subject::Window => "window",
-            Subject::Pane => "pane",
-            Subject::OtherTabs => "other_tabs",
-            Subject::RightTabs => "right_tabs",
-        }
-    }
-}
-
 fn ask(frame: HWND, what: Subject) -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO,
-    };
-    let body: Vec<u16> = tr(what.body()).encode_utf16().chain(Some(0)).collect();
-    let title: Vec<u16> = tr(what.title()).encode_utf16().chain(Some(0)).collect();
-    let yes = unsafe {
-        MessageBoxW(
-            Some(frame),
-            windows::core::PCWSTR(body.as_ptr()),
-            windows::core::PCWSTR(title.as_ptr()),
-            MB_YESNO | MB_ICONWARNING,
-        ) == IDYES
-    };
+    let w = close_confirm::words(what);
+    let buttons = close_confirm::buttons(what, &|s| tr(s));
+    let pressed = crate::projects_ui::ask_with_default(frame, "[close]", &tr(w.main), &tr(w.body), &buttons, close_confirm::DEFAULT, true);
+    let yes = close_confirm::confirmed(pressed);
     wlogf!(frame, "[close] asked about {} -> {}", what.log_key(), if yes { "yes" } else { "no" });
     yes
 }
@@ -9685,7 +9599,7 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
 
 #[cfg(test)]
 mod close_confirmation_tests {
-    use super::{dialogs_for, Subject};
+    use super::dialogs_for;
 
     /// ⚠️ **The rule that is easy to get wrong and impossible to see wrong.**
     /// A tab with four busy panes must raise **one** box, not four -- and a
@@ -9711,44 +9625,5 @@ mod close_confirmation_tests {
     #[test]
     fn nothing_at_all_asks_nothing() {
         assert_eq!(dialogs_for(&[]), 0);
-    }
-
-    /// **The floor under the claim that this box reuses the core's wording.**
-    ///
-    /// `Subject` says in a comment that its six phrases are
-    /// `close_confirmation_dialog.zig`'s, word for word, and that is the
-    /// whole reason they are already translated. A comment cannot keep that
-    /// true: somebody tidying the English on either side, in either file,
-    /// breaks the match and **nothing else notices** -- the box keeps
-    /// working, in English, and the 30-odd translations quietly stop being
-    /// found. That is the failure this pins, and it is invisible from a
-    /// screenshot taken on an English machine.
-    ///
-    /// Read at compile time rather than from disk, because the test binary
-    /// runs on a Windows machine that has no checkout on it.
-    #[test]
-    fn the_close_question_is_the_cores_own_wording() {
-        const GTK: &str =
-            include_str!("../../../src/apprt/gtk/class/close_confirmation_dialog.zig");
-
-        // The floor's own floor: if the path ever stops pointing at that
-        // dialog, every `contains` below would fail for the wrong reason, or
-        // -- worse -- an empty file would make a lax check pass.
-        assert!(
-            GTK.contains("pub fn title(self: Target)") && GTK.contains("pub fn body(self: Target)"),
-            "the included file is not the close-confirmation dialog any more"
-        );
-
-        for subject in [Subject::Tab, Subject::Window, Subject::Pane] {
-            for msgid in [subject.title(), subject.body()] {
-                let call = format!("i18n._(\"{}\")", msgid);
-                assert!(
-                    GTK.contains(&call),
-                    "{:?} is not a msgid the core asks for; \
-                     a new wording here means a new entry in every catalogue",
-                    msgid
-                );
-            }
-        }
     }
 }
