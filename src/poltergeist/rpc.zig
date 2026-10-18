@@ -2621,6 +2621,7 @@ test "only what changes the arrangement needs the supervisor" {
             // terminal these may be pointed at is decided by what that
             // terminal is marked as, not by the caller's standing.
             .terminal_read,
+            .terminal_highlight,
             .terminal_send,
             .terminal_action,
             .terminal_actions,
@@ -2702,6 +2703,11 @@ test "only what changes the arrangement needs the supervisor" {
             // Rearranging a window is arranging, not operating.
             .terminal_layout,
             .terminal_tab_move,
+
+            // Which worktrees there are, and taking one away, are the
+            // supervisor's books (task 1702).
+            .worktree_status,
+            .worktree_remove,
 
             // Another terminal's capabilities: a supervisor's question
             // (`requiresSupervisor` says why).
