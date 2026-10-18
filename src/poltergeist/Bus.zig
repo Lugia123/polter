@@ -2702,9 +2702,15 @@ pub fn turnOf(self: *const Bus, id: Id) ?Turn {
 
 /// What the bus knows of this terminal's agent. `none` for one it has
 /// never heard of.
-pub fn agentOf(self: *const Bus, id: Id) Agent {
-    const e = self.entries.get(id) orelse return .none;
-    return e.agent;
+/// The bus's own record of `id`'s agent, **by pointer, not a copy**
+/// (task 1732). Its strings are `Small`s, held inside the record: a copy's
+/// `.cli.get()` is a slice into the copy, and a copy made inside a function
+/// dies with it -- which is how a session log came to write a terminal's
+/// CLI as eleven bytes of somebody's stack. Valid until the bus next
+/// changes; read what is needed from it before then.
+pub fn agentOf(self: *const Bus, id: Id) *const Agent {
+    const e = self.entries.getPtr(id) orelse return &Agent.none;
+    return &e.agent;
 }
 
 /// A line was submitted in this terminal -- a return, typed by anybody.
@@ -5911,7 +5917,7 @@ test "1668: a line in a terminal whose hooks are heard at startup, or are live, 
     try testing.expectEqual(@as(?u64, 1_000), b.agentOf(worker).expected_ms);
 
     _ = try b.agentEvent(worker, hookEv(.session_started), 21_000);
-    const live = b.agentOf(worker);
+    const live = b.agentOf(worker).*;
     b.noteLineSubmitted(worker, 22_000);
     try testing.expectEqual(live.expected_ms, b.agentOf(worker).expected_ms);
     try testing.expectEqual(Hooks.live, b.agentOf(worker).hooks);
@@ -6134,7 +6140,7 @@ test "hooks: an approval answered, then the tool finishing, is back in the turn 
     // Approved; the command ran and its `PostToolUse` is heard.
     const boxed = try b.agentEvent(worker, toolDone("Bash"), 900_000);
     try testing.expect(!boxed);
-    const a = b.agentOf(worker);
+    const a = b.agentOf(worker).*;
     try testing.expectEqual(AgentState.in_turn, a.state);
     try testing.expectEqual(@as(u64, 900_000), a.since_ms);
     // What was to be approved, and the line saying so, are gone with it.
@@ -6159,7 +6165,7 @@ test "hooks: a question answered inside the turn resumes it on the next tool cal
     try testing.expectEqual(AgentState.awaiting_input, b.agentOf(worker).state);
 
     _ = try b.agentEvent(worker, toolDone("mcp__tracker__create_issue"), 60_000);
-    const a = b.agentOf(worker);
+    const a = b.agentOf(worker).*;
     try testing.expectEqual(AgentState.in_turn, a.state);
     try testing.expect(a.pending == null);
     try testing.expect(b.askOf(worker) == null);
@@ -6192,10 +6198,10 @@ test "hooks: a tool call finishing moves nobody who was not waiting" {
             ev.detail = c.detail;
             _ = try t.agentEvent(worker, ev, 1_000 * (i + 1));
         }
-        const before = t.agentOf(worker);
+        const before = t.agentOf(worker).*;
         const pending = t.get(worker).?.agent.pending;
         try testing.expect(!try t.agentEvent(worker, toolDone("Read"), 500_000));
-        const after = t.agentOf(worker);
+        const after = t.agentOf(worker).*;
         try testing.expectEqual(before.state, after.state);
         try testing.expectEqual(before.since_ms, after.since_ms);
         try testing.expectEqual(before.last_event_ms, after.last_event_ms);
@@ -6217,7 +6223,7 @@ test "hooks: a subagent's tool finishing does not take the main agent's approval
     var sub = toolDone("Bash");
     sub.agent_id = "a36a9e16d5b37235e";
     try testing.expect(!try b.agentEvent(worker, sub, 3_000));
-    const a = b.agentOf(worker);
+    const a = b.agentOf(worker).*;
     try testing.expectEqual(AgentState.awaiting_approval, a.state);
     try testing.expectEqual(@as(?u64, 2_000), a.last_event_ms);
     try testing.expect(b.promptStanding(worker, 2_000, 2_000, 3_000, null));
@@ -6931,12 +6937,12 @@ test "hooks: the status line saying it wrote the allowance changes nothing the b
     var ask = hookEv(.awaiting_approval);
     ask.detail = "Bash";
     _ = try b.agentEvent(worker, ask, 10_000);
-    const before = b.agentOf(worker);
+    const before = b.agentOf(worker).*;
     try testing.expect(b.promptStanding(worker, 10_000, 10_000, 11_000, null));
 
     // Its status line refreshes a second later and says a file was written.
     try testing.expect(!try b.agentEvent(worker, hookEv(.allowance_written), 11_000));
-    const after = b.agentOf(worker);
+    const after = b.agentOf(worker).*;
     try testing.expectEqual(before.state, after.state);
     try testing.expectEqual(before.since_ms, after.since_ms);
     // Not "heard from": the prompt on screen is still the one asked about.
@@ -7306,7 +7312,7 @@ test "1656: a title that says it waits puts awaiting approval in the box, said a
     var buf: [255]u8 = undefined;
 
     try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 4_000));
-    const a = b.agentOf(worker);
+    const a = b.agentOf(worker).*;
     try testing.expectEqual(SaidBy.title, a.said_by);
     try testing.expectEqual(AgentState.awaiting_approval, a.state);
     try testing.expectEqual(Hooks.none, a.hooks);
@@ -7341,7 +7347,7 @@ test "1656: a title that stops saying it ends the wait, and takes back a line no
 
     try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 4_000));
     try testing.expect(!try b.noteTitle(worker, null, "\u{2827} t1653-w", 7_000));
-    const a = b.agentOf(worker);
+    const a = b.agentOf(worker).*;
     try testing.expectEqual(AgentState.idle, a.state);
     try testing.expectEqual(SaidBy.hooks, a.said_by);
     try testing.expect(a.detail.get() == null);
@@ -7504,4 +7510,29 @@ test "1656: an unwatched terminal's title is noted, and put in nobody's box" {
     // And a title nobody declared is no reason to keep an entry.
     try testing.expect(!try b.noteTitle(0x3333, null, "zsh", 1_000));
     try testing.expect(b.entries.get(0x3333) == null);
+}
+
+/// Fill this much stack with something else: what a dangling slice into a
+/// returned frame would then be reading.
+fn scribbleStack() void {
+    var junk: [4096]u8 = undefined;
+    @memset(&junk, 0xA5);
+    std.mem.doNotOptimizeAway(&junk);
+}
+
+/// `cli` as a caller reads it: through `agentOf`, inside a function of its
+/// own that returns what it read -- `App.memberOf`'s shape.
+fn cliReadIn(b: *const Bus, id: Id) []const u8 {
+    const a = b.agentOf(id);
+    return a.cli.get() orelse "";
+}
+
+test "1732: a CLI read through agentOf is still its name after the function that read it returns" {
+    var b = try hookedBus();
+    defer b.deinit();
+    b.entries.getPtr(worker).?.agent.cli.set("claude-code");
+
+    const cli = cliReadIn(&b, worker);
+    scribbleStack();
+    try testing.expectEqualStrings("claude-code", cli);
 }

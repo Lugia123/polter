@@ -7298,7 +7298,7 @@ fn dispatchOne(
             } else null;
             const turn = bus.turnOf(p.id) orelse return .{ .turn = .{
                 .id = p.id,
-                .agent = bus.agentOf(p.id),
+                .agent = bus.agentOf(p.id).*,
                 .turn = null,
                 .ago_ms = 0,
                 .pending_tool = pending,
@@ -7307,7 +7307,7 @@ fn dispatchOne(
             return .{
                 .turn = .{
                     .id = p.id,
-                    .agent = bus.agentOf(p.id),
+                    .agent = bus.agentOf(p.id).*,
                     .pending_tool = pending,
                     .now_ms = host.nowMs(),
                     // Copied: the bus may free it before the reply is written.
@@ -14212,7 +14212,7 @@ test "1668: codex is cleared with /clear, held only to settle, and the reply say
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
     freshAgent(&b, .ended, "codex");
-    try testing.expect(freshRefusal(b.agentOf(worker)) == null);
+    try testing.expect(freshRefusal(b.agentOf(worker).*) == null);
 
     const id = try panel.create("build", "take the machine", .bug);
     _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{
@@ -14233,7 +14233,7 @@ test "1668: codex is cleared with /clear, held only to settle, and the reply say
 
     // Busy is busy for codex too.
     freshAgent(&b, .in_turn, "codex");
-    try testing.expectEqualStrings("AgentBusy", freshRefusal(b.agentOf(worker)).?.code);
+    try testing.expectEqualStrings("AgentBusy", freshRefusal(b.agentOf(worker).*).?.code);
 }
 
 test "1682: antigravity is cleared with /clear and confirmed only by its next turn" {
@@ -14245,7 +14245,7 @@ test "1682: antigravity is cleared with /clear and confirmed only by its next tu
     defer arena.deinit();
     var fake = panelFixture(&panel);
     freshAgent(&b, .idle, "antigravity");
-    try testing.expect(freshRefusal(b.agentOf(worker)) == null);
+    try testing.expect(freshRefusal(b.agentOf(worker).*) == null);
 
     const id = try panel.create("build", "t", .bug);
     _ = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .task_assign = .{

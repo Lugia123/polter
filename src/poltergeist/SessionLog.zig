@@ -726,3 +726,34 @@ test "a leave read while another group's stint is open ends the right one" {
     try testing.expectEqual(@as(?i64, 2), stints.items[0].to_ms);
     try testing.expectEqual(@as(?i64, null), stints.items[1].to_ms);
 }
+
+test "1732: a member's cli read off the bus is written as a string, not as bytes" {
+    const Bus = @import("Bus.zig");
+    var bus: Bus = .init(testing.allocator, .{});
+    defer bus.deinit();
+    try bus.register(0x11);
+    bus.entries.getPtr(0x11).?.agent.cli.set("claude-code");
+    bus.entries.getPtr(0x11).?.agent.session_id.set("s-1");
+
+    // A member built in a function of its own, from what `agentOf` hands
+    // back, returned by value to whoever writes it. (`App.memberOf` copies
+    // instead, for the bus moving under it: see `heldMember` in App.zig.)
+    const member = struct {
+        fn of(b: *const Bus, id: Bus.Id) Member {
+            const said = b.agentOf(id);
+            return .{ .cli = said.cli.get() orelse "", .session_id = said.session_id.get() orelse "" };
+        }
+    }.of(&bus, 0x11);
+    // What else ran on that stack before the line was written.
+    var junk: [4096]u8 = undefined;
+    @memset(&junk, 0xA5);
+    std.mem.doNotOptimizeAway(&junk);
+
+    var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf.deinit();
+    var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
+    try render(&s, "build", 1, .{ .joined = .{ .terminal = 0x11, .member = member, .inferred = false } });
+    const line = buf.written();
+    try testing.expect(std.mem.indexOf(u8, line, "\"cli\":\"claude-code\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"session_id\":\"s-1\"") != null);
+}

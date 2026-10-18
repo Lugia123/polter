@@ -9200,6 +9200,7 @@ fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) any
     var buf: [2048]u8 = undefined;
     var fixed: std.heap.FixedBufferAllocator = .init(&buf);
     const footing = self.footingOf(fixed.allocator(), by);
+    var held: poltergeistpkg.Bus.Agent = undefined;
     try createGroup(
         &self.chat,
         if (self.session_log) |*l| l else null,
@@ -9207,7 +9208,7 @@ fn chatCreate(ctx: *anyopaque, group: []const u8, by: poltergeistpkg.Bus.Id) any
         by,
         footing,
         self.poltergeistWallMs(),
-        self.memberOf(by, footing),
+        self.memberOf(by, footing, &held),
     );
 
     // Written down now rather than when something is first said in it: a
@@ -9721,25 +9722,94 @@ fn footingOf(
 /// (task 1511). The footing is the one `Chat.add` was just given.
 fn noteJoined(self: *App, group: []const u8, id: poltergeistpkg.Bus.Id, footing: poltergeistpkg.Chat.Footing) void {
     const l = if (self.session_log) |*v| v else return;
-    l.joined(group, self.poltergeistWallMs(), id, self.memberOf(id, footing), false);
+    var held: poltergeistpkg.Bus.Agent = undefined;
+    l.joined(group, self.poltergeistWallMs(), id, self.memberOf(id, footing, &held), false);
 }
 
-/// What is known of `id` now, as a group's record keeps it.
-fn memberOf(self: *App, id: poltergeistpkg.Bus.Id, footing: poltergeistpkg.Chat.Footing) poltergeistpkg.SessionLog.Member {
-    const agent = self.poltergeist.agentOf(id);
+/// What is known of `id` now, as a group's record keeps it. The agent's
+/// strings are copied into `held`, which the caller keeps until the line is
+/// written -- see `heldMember`.
+fn memberOf(self: *App, id: poltergeistpkg.Bus.Id, footing: poltergeistpkg.Chat.Footing, held: *poltergeistpkg.Bus.Agent) poltergeistpkg.SessionLog.Member {
     const role: []const u8 = if (self.personas.launchOf(id)) |launch| launch.role else switch (self.poltergeist.roleOf(id)) {
         .supervisor => "supervisor",
         .watched => "worker",
         else => "",
     };
+    const transcript_path = if (self.terminal_meta) |*m| m.transcriptPathOf(id) else "";
+    return heldMember(&self.poltergeist, id, role, footing, transcript_path, held);
+}
+
+/// A member whose CLI and session are copied into `held` rather than
+/// borrowed from the bus (task 1732). The bus keeps its agents in a hash
+/// map, and a map that grows moves them: a slice into the bus is only as
+/// good as the bus staying still until the line is written, which nothing
+/// here promises. The copy is the caller's, and lives as long as it says.
+fn heldMember(
+    bus: *const poltergeistpkg.Bus,
+    id: poltergeistpkg.Bus.Id,
+    role: []const u8,
+    footing: poltergeistpkg.Chat.Footing,
+    transcript_path: []const u8,
+    held: *poltergeistpkg.Bus.Agent,
+) poltergeistpkg.SessionLog.Member {
+    held.* = bus.agentOf(id).*;
     return .{
         .role = role,
-        .cli = agent.cli.get() orelse "",
+        .cli = held.cli.get() orelse "",
         .cwd = footing.cwd,
         .title = footing.title,
-        .session_id = agent.session_id.get() orelse "",
-        .transcript_path = if (self.terminal_meta) |*m| m.transcriptPathOf(id) else "",
+        .session_id = held.session_id.get() orelse "",
+        .transcript_path = transcript_path,
     };
+}
+
+test "1732: a member's cli is still its name when the bus has grown before the join is written" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-heldmember-{x}", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    // The bus on an arena: what its map lets go of when it grows is
+    // scribbled over (`Allocator.free`) but stays mapped, so a slice left
+    // pointing there reads garbage instead of faulting.
+    var bus_arena: std.heap.ArenaAllocator = .init(alloc);
+    defer bus_arena.deinit();
+    var bus: poltergeistpkg.Bus = .init(bus_arena.allocator(), .{});
+    defer bus.deinit();
+    try bus.register(0x11);
+    bus.entries.getPtr(0x11).?.agent.cli.set("claude-code");
+
+    var held: poltergeistpkg.Bus.Agent = undefined;
+    const member = heldMember(&bus, 0x11, "worker", .{ .cwd = "/work/repo" }, "", &held);
+
+    // Other terminals arrive before the line is written, enough of them
+    // that the bus's map has to grow and move what it held.
+    const before = bus.entries.capacity();
+    var id: poltergeistpkg.Bus.Id = 0x1000;
+    while (bus.entries.capacity() == before) : (id += 1) try bus.register(id);
+
+    const at: i64 = 1_700_000_000_000;
+    {
+        var l = try poltergeistpkg.SessionLog.open(alloc, io, dir);
+        defer l.deinit();
+        l.joined("build", at, 0x11, member, false);
+    }
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const r = try poltergeistpkg.SessionLog.read(arena.allocator(), io, dir);
+    try testing.expectEqual(@as(usize, 1), r.stints.len);
+    try testing.expectEqualStrings("claude-code", r.stints[0].cli);
 }
 
 /// Make a group, with its creator in it and written down as having joined.
