@@ -130,7 +130,8 @@
       },
       "macos/Sources/Features/Projects/ProjectPaneSizes.swift",
       "macos/Sources/Features/Personas/RoleCliOffer.swift",
-      "macos/Sources/Features/Roles/RoleModels.swift"
+      "macos/Sources/Features/Roles/RoleModels.swift",
+      "macos/Sources/Ghostty/Surface View/SurfaceTitleState.swift"
     ],
     "out": [
       {
@@ -214,6 +215,7 @@
       "macos/Tests/Projects/ProjectPaneSizesTests.swift",
       "macos/Tests/Personas/RoleCliOfferTests.swift",
       "macos/Tests/Terminal/PolterHighlightRulesTests.swift",
+      "macos/Tests/Terminal/SurfaceTitleStateTests.swift",
       "macos/Tests/Terminal/ReopenTabEntryTests.swift",
       "macos/Tests/Terminal/TabDotsTests.swift"
     ],

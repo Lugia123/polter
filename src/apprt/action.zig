@@ -2044,6 +2044,14 @@ pub const SetTitle = struct {
     /// as it always has without having to name itself one by one.
     explicit: bool = false,
 
+    /// A name somebody chose: `set_surface_title`, which is also what both
+    /// hosts' "Change Terminal Title..." box sends (task 1735). The one
+    /// place that says a chosen name is explicit, so the menu, an agent and
+    /// a project's hand-back cannot come to disagree about it.
+    pub fn chosen(title: [:0]const u8) SetTitle {
+        return .{ .title = title, .explicit = true };
+    }
+
     // Sync with: ghostty_action_set_title_s
     pub const C = extern struct {
         title: [*:0]const u8,

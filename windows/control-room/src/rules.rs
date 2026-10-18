@@ -303,9 +303,63 @@ pub fn project_tab(front: Kind, lent: bool) -> ProjectTab {
     }
 }
 
+/// What a title box sends the core for what was typed (task 1735): the
+/// binding `action` with the text, or None to send nothing.
+///
+/// **Empty is a request only the terminal's own box makes**: clear the name
+/// somebody chose and give the title back to the program
+/// (`set_surface_title:`, which `src/apprt/title.zig` unpins on). A tab's or
+/// a window's box has no program title under it to give back to, so an
+/// empty one there sends nothing, as before.
+pub fn rename_binding(action: &str, typed: &str) -> Option<String> {
+    if typed.trim().is_empty() {
+        return (action == "set_surface_title").then(|| format!("{action}:"));
+    }
+    Some(format!("{action}:{typed}"))
+}
+
+/// What a title the core sends as chosen (`set_title` with `is_explicit`:
+/// `set_surface_title`, the terminal's own title box) does to the tab it
+/// lands in (task 1735).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ChosenTitle<'a> {
+    /// Name the tab, against whatever the program says next.
+    Pin(&'a str),
+    /// An empty name: the tab follows the program's title again. It used to
+    /// be pinned as an empty name.
+    Unpin,
+}
+
+pub fn chosen_title(title: &str) -> ChosenTitle<'_> {
+    if title.is_empty() {
+        ChosenTitle::Unpin
+    } else {
+        ChosenTitle::Pin(title)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 1735: the terminal's box sends an empty name as a request to
+    /// unpin; the tab's and the window's send nothing for it.
+    #[test]
+    fn a_title_box_sends_the_core_what_was_typed() {
+        assert_eq!(rename_binding("set_surface_title", "build: A=1").as_deref(), Some("set_surface_title:build: A=1"));
+        assert_eq!(rename_binding("set_surface_title", "").as_deref(), Some("set_surface_title:"));
+        assert_eq!(rename_binding("set_surface_title", "   ").as_deref(), Some("set_surface_title:"));
+        assert_eq!(rename_binding("set_tab_title", "").as_deref(), None);
+        assert_eq!(rename_binding("set_window_title", " ").as_deref(), None);
+        assert_eq!(rename_binding("set_tab_title", "api").as_deref(), Some("set_tab_title:api"));
+    }
+
+    /// Task 1735: an empty chosen title unpins rather than naming the tab "".
+    #[test]
+    fn an_empty_chosen_title_unpins() {
+        assert_eq!(chosen_title(""), ChosenTitle::Unpin);
+        assert_eq!(chosen_title("builder"), ChosenTitle::Pin("builder"));
+    }
 
     /// Task 1581's table, the same rows as the macOS host's
     /// `ControlRoomAtLaunchTests`.

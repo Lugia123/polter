@@ -713,19 +713,16 @@ extension Ghostty {
                 // Check if the user clicked "OK"
                 guard response == .alertFirstButtonReturn  else { return }
 
-                // Get the input text
-                let newTitle = textField.stringValue
-                if newTitle.isEmpty {
-                    // Empty means that user wants the title to be set automatically
-                    // We also need to reload the config for the "title" property to be
-                    // used again by this tab.
-                    let prevTitle = titleFromTerminal ?? "🪄"
-                    titleFromTerminal = nil
-                    setTitle(prevTitle)
-                } else {
-                    // Set the title and prevent it from being changed automatically
-                    titleFromTerminal = title
-                    title = newTitle
+                // **Through the core** (task 1735): the same
+                // `set_surface_title` an agent sends, so the core's record --
+                // what `terminal_list` reads -- has the name, and pins it
+                // against the program's titles. The view changes when the
+                // core answers (`setExplicitTitle`), not here. Empty asks
+                // for the program's title back.
+                guard let surface = self.surface else { return }
+                let action = SurfaceTitleState.renameBinding(textField.stringValue)
+                if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
+                    Ghostty.logger.warning("change terminal title: the core refused the rename")
                 }
             }
 
@@ -750,12 +747,11 @@ extension Ghostty {
                 withTimeInterval: 0.075,
                 repeats: false
             ) { [weak self] _ in
-                // Set the title if it wasn't manually set.
-                guard self?.titleFromTerminal == nil else {
-                    self?.titleFromTerminal = title
-                    return
-                }
-                self?.title = title
+                // Shown unless a chosen name is; remembered either way.
+                guard let self else { return }
+                var state = SurfaceTitleState(title: self.title, fromTerminal: self.titleFromTerminal)
+                state.reported(title)
+                self.apply(state)
             }
         }
 
@@ -766,9 +762,18 @@ extension Ghostty {
         /// showing, then show the chosen title instead. Without this,
         /// `setTitle(_:)` treats every caller alike, and the very next OSC
         /// title update (any prompt, any `cd`) silently takes the name back.
+        ///
+        /// Empty ends a chosen name: the program's title comes back (task
+        /// 1735). It used to be pinned as an empty title.
         func setExplicitTitle(_ newTitle: String) {
-            titleFromTerminal = title
-            title = newTitle
+            var state = SurfaceTitleState(title: title, fromTerminal: titleFromTerminal)
+            state.chosen(newTitle)
+            apply(state)
+        }
+
+        private func apply(_ state: SurfaceTitleState) {
+            titleFromTerminal = state.fromTerminal
+            if title != state.title { title = state.title }
         }
 
         // MARK: Local Events

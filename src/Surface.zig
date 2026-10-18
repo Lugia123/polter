@@ -7272,11 +7272,13 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             defer self.alloc.free(title);
             // Explicit: this is a caller choosing a name, not the program
             // reporting one, and an apprt is expected to protect it the
-            // same way it protects a person's own rename.
+            // same way it protects a person's own rename. Both hosts' rename
+            // boxes come through here too (task 1735), so the title the
+            // core keeps -- what `terminal_list` reads -- is the one shown.
             return try self.rt_app.performAction(
                 .{ .surface = self },
                 .set_title,
-                .{ .title = title, .explicit = true },
+                apprt.action.SetTitle.chosen(title),
             );
         },
 

@@ -5393,6 +5393,43 @@ pub fn rename_tab(frame: HWND, id: TabId, title: String, by: NamedBy) {
     }
 }
 
+/// Take a tab's chosen name back (task 1735): it shows the title the
+/// program in `surface` said last, and follows the program from here on --
+/// the other half of `rename_tab`, which the core asks for with an empty
+/// `set_surface_title` (the terminal's own title box, cleared).
+pub fn clear_tab_name(frame: HWND, id: TabId, surface: usize) {
+    let cleared = {
+        if let Some(mut w) = window(frame) {
+            match w.tabs.iter_mut().find(|t| t.id == id) {
+                Some(tab) if tab.title_override.is_some() => {
+                    tab.title_override = None;
+                    let said = tab.panes().iter().find(|p| p.surface == surface).and_then(|p| p.title.clone());
+                    if let Some(said) = said {
+                        tab.title = said;
+                    }
+                    Some(tab.title.clone())
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    };
+    unsafe {
+        let _ = InvalidateRect(Some(frame), None, false);
+    }
+    match cleared {
+        Some(title) => {
+            wlogf!(frame, "[tab] chosen name cleared on {:?}; it shows the program's {:?} again", id, title);
+            crate::uia::tab_renamed(frame, id, &title);
+            sync_caption(frame);
+            crate::project_session::note(polter_projects::autosave::Change::PaneDetail);
+        }
+        // not-gated: the condition is the event.
+        None => wlogf!(frame, "[tab] clear of {:?}'s name: it had none, or the tab is gone; nothing changed", id),
+    }
+}
+
 /// What the window's caption says of the tab in front of `tabs`
 /// (`active`): the name somebody gave it, or else the title of the terminal
 /// it has the keyboard on -- in a stack, the member shown. None for the
@@ -8454,6 +8491,12 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 // 0/2 from the shell silently overwrote it.
                 if explicit {
                     match tab_of_surface(surface as Surface) {
+                        // Empty: the name somebody chose ends, and the tab
+                        // follows the program again (task 1735).
+                        Some((owner, id)) if rules::chosen_title(&title) == rules::ChosenTitle::Unpin => {
+                            clear_tab_name(owner, id, surface);
+                            continue;
+                        }
                         Some((owner, id)) => {
                             rename_tab(owner, id, title.clone(), NamedBy::Tool);
                             wlogf!(owner, "[tab] set_tab_title {:?} pinned; the program's own title will not replace it", title);

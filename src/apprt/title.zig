@@ -144,3 +144,41 @@ test "unpinning before the program has said anything leaves no title" {
     try t.set(testing.allocator, "", true);
     try expectCurrent(t, null);
 }
+
+test "a name typed into a host's rename box is what terminal_list reads, until it is cleared (task 1735)" {
+    // The bytes the mac and Windows "Change Terminal Title..." boxes send on
+    // OK (`ghostty_surface_binding_action`), the same binding an agent's
+    // `set_surface_title` and a project's hand-back send. Parsed as the core
+    // parses them, made into the `SetTitle` the core's `set_surface_title`
+    // arm makes (`SetTitle.chosen`), and kept as the embedded apprt keeps it.
+    // `current` is what `getTitle` -- and so `terminal_list` -- answers.
+    const Binding = @import("../input/Binding.zig");
+    const SetTitle = @import("action.zig").SetTitle;
+    const alloc = testing.allocator;
+    var t: Title = .{};
+    defer t.deinit(alloc);
+
+    try t.set(alloc, "~/work", false);
+
+    const named = try Binding.Action.parse("set_surface_title:build: A=1 构建");
+    const name = try alloc.dupeZ(u8, named.set_surface_title);
+    defer alloc.free(name);
+    const rename = SetTitle.chosen(name);
+    try t.set(alloc, rename.title, rename.explicit);
+    try expectCurrent(t, "build: A=1 构建");
+
+    // A program's title (OSC 0/2, every prompt) does not take it back.
+    try t.set(alloc, "vim notes.md", false);
+    try expectCurrent(t, "build: A=1 构建");
+
+    // Cleared in the box: the same binding with nothing after the colon
+    // gives the title back to the program, as it last said it.
+    const cleared = try Binding.Action.parse("set_surface_title:");
+    const empty = try alloc.dupeZ(u8, cleared.set_surface_title);
+    defer alloc.free(empty);
+    const clear = SetTitle.chosen(empty);
+    try t.set(alloc, clear.title, clear.explicit);
+    try expectCurrent(t, "vim notes.md");
+    try t.set(alloc, "~/elsewhere", false);
+    try expectCurrent(t, "~/elsewhere");
+}

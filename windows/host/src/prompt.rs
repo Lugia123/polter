@@ -559,16 +559,23 @@ fn close(accept: bool) {
         wlogf!(frame, "[prompt] {} cancelled", open.label);
         return;
     }
-    if text.trim().is_empty() && !matches!(open.completion, Completion::RenameProject(_)) {
-        // An empty name would clear the title -- a different request from
-        // the one the menu row makes.
-        wlogf!(frame, "[prompt] {} accepted with an empty name; nothing sent", open.label);
-        return;
-    }
+    // An empty name: the terminal's box sends it, to give the title back to
+    // the program (task 1735, `rules::rename_binding`); the tab's and the
+    // window's have nothing to give back to and send nothing.
+    let binding = match &open.completion {
+        Completion::Binding(action) => match polter_control_room::rules::rename_binding(action, &text) {
+            Some(b) => Some(b),
+            None => {
+                wlogf!(frame, "[prompt] {} accepted with an empty name; nothing sent", open.label);
+                return;
+            }
+        },
+        Completion::RenameProject(_) => None,
+    };
 
     match open.completion {
-        Completion::Binding(action) => {
-            let binding = format!("{action}:{text}");
+        Completion::Binding(_) => {
+            let binding = binding.unwrap_or_default();
             let ok = if open.surface != 0 {
                 crate::binding_on(open.surface as crate::ffi::Surface, &binding)
             } else {
