@@ -2790,6 +2790,16 @@ msgstr "恢复默认"
 msgid "The settings could not be read: {}"
 msgstr "无法读取设置：{}"
 
+#. TRANSLATORS: Settings > General, over the rows when this Polter was
+#. started on a config file of its own. The first {} is that file, the
+#. second the one the form would otherwise write.
+#: windows/host/src/general_ui.rs:1970
+#, rust-format
+msgid ""
+"This Polter reads {}, but the form would write {}. The settings are shown "
+"read-only."
+msgstr "这个 Polter 读的是 {}，而表单会写到 {}。所以这里只读显示。"
+
 #: windows/host/src/general_ui.rs:1963
 #, rust-format
 msgid ""

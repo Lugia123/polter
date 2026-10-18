@@ -76,10 +76,10 @@ final class GeneralModel: ObservableObject {
     /// Write one key (nil = restore the default), then reload the app's
     /// configuration and the table (§7.2 rule 7). A refusal is shown under
     /// the control and the control goes back to the value on disk.
-    /// See `ConfigFormRules.formWritesAllowed`.
+    /// See `ConfigFormRules.readOnlyFiles`.
     var writesAllowed: Bool {
         guard let form else { return false }
-        return ConfigFormRules.formWritesAllowed(hostConfigPath: ghostty?.configPath, formMain: form.main)
+        return ConfigFormRules.readOnlyFiles(form, hostConfigPath: ghostty?.configPath) == nil
     }
 
     func set(_ key: String, _ value: String?) {

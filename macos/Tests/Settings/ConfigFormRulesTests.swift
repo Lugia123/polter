@@ -170,6 +170,23 @@ struct ConfigFormRulesTests {
         #expect(ConfigFormRules.formWritesAllowed(hostConfigPath: link.path, formMain: real.path))
     }
 
+    /// #1743: a process started with `--config-file` reads that file, and
+    /// only the core can see the command line, so its `writable` decides --
+    /// and the banner names the file the core says, not the host's.
+    @Test func theCoresWordOnWritingComesFirst() throws {
+        let json = #"{"main":"/a/config.polter","backup":null,"writable":false,"reads":"/t/t.conf","errors":[],"sections":[],"items":[]}"#
+        let form = try JSONDecoder().decode(ConfigForm.self, from: Data(json.utf8))
+        let files = try #require(ConfigFormRules.readOnlyFiles(form, hostConfigPath: nil))
+        #expect(files.reads == "/t/t.conf")
+        #expect(files.writes == "/a/config.polter")
+
+        // A core that predates the field, and one that says yes: the host's
+        // own check is all there is.
+        let old = try JSONDecoder().decode(ConfigForm.self, from: Data(#"{"main":"/a/config.polter","backup":null,"errors":[],"sections":[],"items":[]}"#.utf8))
+        #expect(ConfigFormRules.readOnlyFiles(old, hostConfigPath: nil) == nil)
+        #expect(ConfigFormRules.readOnlyFiles(old, hostConfigPath: "/tmp/test/isolated.polter")?.reads == "/tmp/test/isolated.polter")
+    }
+
     // MARK: Names (#973)
 
     private var zhHans: Bundle? {

@@ -559,6 +559,10 @@ pub const Scan = struct {
     layers: []const Layer,
     /// The layer that is the main file, if the loader reads it.
     main: ?usize,
+    /// The file the command line named with `--config-file`, when the host
+    /// did not load one of its own (`Context.explicit`). Non-null means the
+    /// form writes nothing (#1745 #1743): see `namedInstead`.
+    instead: ?[]const u8 = null,
     /// Every key's last hit and how many lines set it, across all layers.
     hits: std.StringHashMapUnmanaged(Tally),
 
@@ -712,6 +716,8 @@ pub fn gather(arena: Allocator, io: std.Io, ctx: Context) !Scan {
         }
     }
 
+    const instead = try namedInstead(arena, ctx);
+
     try layers.append(arena, .{ .path = null, .args = ctx.args });
     for (ctx.args) |arg| {
         const k, const v = splitArg(arg) orelse continue;
@@ -746,7 +752,39 @@ pub fn gather(arena: Allocator, io: std.Io, ctx: Context) !Scan {
         while (it.next()) |line| try tally(arena, &hits, line.key, .{ .layer = li, .line = line.number });
     }
 
-    return .{ .layers = layers.items, .main = main, .hits = hits };
+    return .{ .layers = layers.items, .main = main, .hits = hits, .instead = instead };
+}
+
+/// The first file `--config-file` names on the command line, made absolute
+/// the way the loader makes it; null when there is none, or when the host
+/// loaded a file of its own in place of the default ones.
+///
+/// **Such a process is not one the form may write for.** The form writes the
+/// main file (`Context.main_path`), and a process started on a file of its
+/// own -- a test instance, a second copy pointed at an experiment -- is not
+/// about that file: a change made in its window lands in the person's own
+/// configuration, which is what #1743 measured on Windows
+/// (`--config-file=t.conf`, the form writing `config.polter` under AppData).
+/// The mac host has refused the same thing since its test instances were
+/// given a file of their own (`ConfigFormRules.formWritesAllowed`); this is
+/// that rule where both hosts read it.
+fn namedInstead(arena: Allocator, ctx: Context) Allocator.Error!?[]const u8 {
+    if (ctx.explicit) return null;
+    var named: RepeatablePath = .{};
+    for (ctx.args) |arg| {
+        const k, const v = splitArg(arg) orelse continue;
+        if (!std.mem.eql(u8, k, "config-file")) continue;
+        named.parseCLI(arena, v) catch continue;
+    }
+    var diags: cli.DiagnosticList = .{};
+    named.expand(arena, ctx.cwd, &diags) catch {};
+    for (named.value.items) |item| {
+        const path = switch (item) {
+            .optional, .required => |p| p,
+        };
+        if (path.len > 0) return path;
+    }
+    return null;
 }
 
 fn tally(arena: Allocator, hits: *std.StringHashMapUnmanaged(Scan.Tally), key: []const u8, hit: Hit) !void {
@@ -800,6 +838,9 @@ pub const Reason = enum {
     cli,
     /// A file other than the main one has the last word (rule 4).
     file,
+    /// This process was started on a file of its own, and the form would
+    /// write another (`Scan.instead`).
+    elsewhere,
 };
 
 pub const Resolved = struct {
@@ -842,7 +883,8 @@ fn writeSource(w: *std.Io.Writer, scan: *const Scan, t: ?Scan.Tally) !void {
 /// The whole table as JSON (§7.2 "read"). `cfg` is the effective config,
 /// loaded the way the host loads it (`loadLike`); `def` is the default one.
 ///
-///     {"main": path, "backup": path|null, "errors": [string],
+///     {"main": path, "backup": path|null, "reads": path|null, "writable": bool,
+///      "errors": [string],
 ///      "sections": [{"group": g, "keys": [key],
 ///                    "shortcuts": [{"action", "label", "summary", "aliases": [s]}]}],
 ///      "items": [{"key", "group": g|null, "control", "choices": [s]|null,
@@ -851,6 +893,10 @@ fn writeSource(w: *std.Io.Writer, scan: *const Scan, t: ?Scan.Tally) !void {
 ///                 "min"|null, "max"|null, "default", "value", "doc"|null,
 ///                 "source": {"kind": "default"|"main"|"file"|"cli", ...},
 ///                 "readonly": null|"repeatable"|"multiple"|"cli"|"file"}]}
+///
+/// `writable` false means the form writes nothing at all, and `reads` is the
+/// file this process was started on instead (`namedInstead`); a host shows
+/// every row read-only and says which two files those are.
 ///
 /// `value` and `default` are written the way the config file writes them;
 /// a repeatable key's lines are joined with `\n`. `items` is every key --
@@ -867,6 +913,11 @@ pub fn writeJson(
     @setEvalBranchQuota(100_000);
     try w.print("{{\"main\":{f},\"backup\":", .{std.json.fmt(main_path, .{})});
     if (backup) |b| try w.print("{f}", .{std.json.fmt(b, .{})}) else try w.writeAll("null");
+    // Two fields for one fact, so that a host reads "may I write" as the
+    // boolean it is and never has to infer it from a path being there.
+    try w.writeAll(",\"reads\":");
+    if (scan.instead) |p| try w.print("{f}", .{std.json.fmt(p, .{})}) else try w.writeAll("null");
+    try w.print(",\"writable\":{}", .{scan.instead == null});
 
     try w.writeAll(",\"errors\":[");
     for (cfg._diagnostics.items(), 0..) |*d, i| {
@@ -1431,6 +1482,7 @@ pub fn setIn(
     var attempt: u8 = 0;
     while (attempt < 5) : (attempt += 1) {
         const scan = try gather(arena, io, ctx);
+        if (scan.instead != null) return .{ .read_only = .{ .reason = .elsewhere, .tally = null, .scan = scan } };
         const r = switch (k) {
             inline else => |kk| resolve(&scan, kk),
         };
@@ -2603,4 +2655,60 @@ test "config form: the screenshot group's names are translated wherever the host
     // Four rows with a name and a sentence, one template, one shortcut row.
     try testing.expectEqual(@as(usize, 11), msgids.items.len);
     try @import("../input/screenshot.zig").expectEverywhere(msgids.items);
+}
+
+test "config form (1743): a process started on a file of its own writes nothing, and the table says so" {
+    var fx: Fixture = try .init();
+    defer fx.deinit();
+    try fx.write("config", "font-size = 10\n");
+    try fx.write("t.conf", "title = t\n");
+    const args: []const []const u8 = &.{"--config-file=t.conf"};
+
+    // A key neither file sets: the one the form would otherwise have
+    // written into the main file without a word.
+    var st: State = .{};
+    const out = try fx.set(&st, args, "font-size", "11");
+    try testing.expect(out == .read_only);
+    try testing.expectEqual(Reason.elsewhere, out.read_only.reason);
+    try testing.expectEqualStrings("font-size = 10\n", try fx.read("config"));
+    try testing.expectEqualStrings("title = t\n", try fx.read("t.conf"));
+
+    const scan = try gather(fx.arena.allocator(), testing.io, fx.ctx(args));
+    try testing.expectEqualStrings(fx.path("t.conf"), scan.instead.?);
+
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+    var def = try Config.default(testing.allocator);
+    defer def.deinit();
+    var json: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer json.deinit();
+    try writeJson(testing.allocator, &json.writer, &scan, fx.path("config"), null, &cfg, &def);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json.written(), .{});
+    defer parsed.deinit();
+    const writable = parsed.value.object.get("writable").?.bool;
+    try testing.expect(!writable);
+    const reads = parsed.value.object.get("reads").?.string;
+    try testing.expectEqualStrings(fx.path("t.conf"), reads);
+}
+
+test "config form (1743): without a file of its own on the command line, the form writes as before" {
+    var fx: Fixture = try .init();
+    defer fx.deinit();
+    try fx.write("config", "font-size = 10\n");
+
+    const scan = try gather(fx.arena.allocator(), testing.io, fx.ctx(&.{"--font-family=x"}));
+    try testing.expectEqual(@as(?[]const u8, null), scan.instead);
+
+    var st: State = .{};
+    const out = try fx.set(&st, &.{}, "font-size", "11");
+    try testing.expect(out == .ok);
+    try testing.expectEqualStrings("font-size = 11\n", try fx.read("config"));
+
+    // A host that loaded one file in place of the defaults writes that file
+    // (#984); a `--config-file` beside it is an include of that file, not a
+    // second file of its own.
+    var explicit = fx.ctx(&.{"--config-file=t.conf"});
+    explicit.explicit = true;
+    const scan2 = try gather(fx.arena.allocator(), testing.io, explicit);
+    try testing.expectEqual(@as(?[]const u8, null), scan2.instead);
 }

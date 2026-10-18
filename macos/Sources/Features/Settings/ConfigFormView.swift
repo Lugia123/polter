@@ -21,8 +21,8 @@ struct ConfigFormPage: View {
                     .padding(.vertical, L.rowGap)
                 Divider()
             }
-            if let form = model.form, !model.writesAllowed {
-                Label(String(format: String(localized: "This Polter reads %@, but the form would write %@. The settings are shown read-only.", comment: "设置窗口·通用：进程读的配置文件与表单要写的不是同一个，参数依次是两个路径"), ((model.ghostty?.configPath ?? "") as NSString).abbreviatingWithTildeInPath, (form.main as NSString).abbreviatingWithTildeInPath), systemImage: "exclamationmark.triangle.fill")
+            if let form = model.form, let files = ConfigFormRules.readOnlyFiles(form, hostConfigPath: model.ghostty?.configPath) {
+                Label(String(format: String(localized: "This Polter reads %@, but the form would write %@. The settings are shown read-only.", comment: "设置窗口·通用：进程读的配置文件与表单要写的不是同一个，参数依次是两个路径"), (files.reads as NSString).abbreviatingWithTildeInPath, (files.writes as NSString).abbreviatingWithTildeInPath), systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .font(SettingsFont.minimum)
                     .frame(maxWidth: .infinity, alignment: .leading)

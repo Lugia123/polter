@@ -12,6 +12,11 @@ struct ConfigForm: Decodable, Equatable {
     var main: String
     /// The copy taken before this run's first write, once there is one.
     var backup: String?
+    /// False when the core will not write for this process at all: it was
+    /// started on a file of its own (`--config-file`), named in `reads`.
+    /// Nil from a core that predates the field (#1743).
+    var writable: Bool?
+    var reads: String?
     var errors: [String]
     var sections: [Section]
     var items: [Item]
@@ -207,6 +212,21 @@ enum ConfigFormRules {
     /// a file this process does not read -- the person's own, in the case
     /// of a test instance. So an override writes only when it is that same
     /// file.
+    /// Why the form is shown read-only, as the two files the banner names:
+    /// the one this process reads and the one the form would write. Nil when
+    /// it may write. The core's word comes first (`writable`, which covers a
+    /// `--config-file` on the command line on both hosts, #1743); the host's
+    /// own check below is for a core that predates it.
+    static func readOnlyFiles(_ form: ConfigForm, hostConfigPath: String?) -> (reads: String, writes: String)? {
+        if form.writable == false {
+            return (form.reads ?? hostConfigPath ?? "", form.main)
+        }
+        if !formWritesAllowed(hostConfigPath: hostConfigPath, formMain: form.main) {
+            return (hostConfigPath ?? "", form.main)
+        }
+        return nil
+    }
+
     static func formWritesAllowed(hostConfigPath: String?, formMain: String) -> Bool {
         guard let hostConfigPath else { return true }
         func canonical(_ p: String) -> String {

@@ -79,6 +79,10 @@ static FONT_MONO: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 struct Form {
     main: String,
     backup: Option<String>,
+    /// The file this process reads and the one the form would write, when
+    /// the core writes nothing for it (#1743): every key row is then
+    /// read-only and the banner over the rows names the two.
+    read_only: Option<(String, String)>,
     errors: Vec<String>,
     sections: rules::Sections,
     items: Vec<Item>,
@@ -401,8 +405,14 @@ fn parse_form(text: &str, binding: impl Fn(&str) -> String) -> Option<Form> {
             }
         }
     }
+    let main = v.get("main").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let read_only = rules::read_only_files(v.get("writable").and_then(|w| w.as_bool()), v.get("reads").and_then(|r| r.as_str()), &main);
+    if read_only.is_some() {
+        rules::hold_every_key(&mut items);
+    }
     Some(Form {
-        main: v.get("main").and_then(|m| m.as_str()).unwrap_or("").to_string(),
+        main,
+        read_only,
         backup: v.get("backup").and_then(|b| b.as_str()).map(str::to_string),
         errors: strs(v.get("errors")),
         sections,
@@ -1479,7 +1489,7 @@ fn relayout() {
         );
     };
     let searching = is_searching();
-    let (filter, body) = rules::form_area(g.editor, dpi, group == Group::All && !searching);
+    let (filter, _, body) = form_area(&g, dpi, group, searching);
     if let Some(f) = fixed() {
         // A search is across every group: the band is the form's own.
         let buttons = band_buttons(&g, dpi, if searching { Group::All } else { group });
@@ -1950,6 +1960,26 @@ pub(crate) fn draw_text(hdc: HDC, s: &str, r: &RECT, f: HFONT, colour: u32, flag
     }
 }
 
+/// The banner a form the core will not write for shows over its rows, in
+/// the person's language (#1743; the macOS page's sentence).
+fn banner_text() -> Option<String> {
+    let (reads, writes) = ST.with(|c| c.borrow().form.as_ref().and_then(|f| f.read_only.clone()))?;
+    // TRANSLATORS: Settings > General, over the rows when this Polter was
+    // started on a config file of its own. The first {} is that file, the
+    // second the one the form would otherwise write.
+    Some(tr("This Polter reads {}, but the form would write {}. The settings are shown read-only.").replacen("{}", &reads, 1).replacen("{}", &writes, 1))
+}
+
+/// Where the filter, the banner and the rows go, on a form page.
+fn form_area(g: &shell::SectionGrid, dpi: i32, group: Group, searching: bool) -> (Option<Rect>, Option<(Rect, String)>, Rect) {
+    let with_filter = group == Group::All && !searching;
+    let (_, plain) = rules::form_area(g.editor, dpi, with_filter);
+    let text = if group.is_form() || searching { banner_text() } else { None };
+    let h = text.as_ref().map(|t| measure(t, plain.width(), font(), 0));
+    let (filter, banner, body) = rules::form_area_with_banner(g.editor, dpi, with_filter, h);
+    (filter, banner.zip(text), body)
+}
+
 fn paint(win: HWND) {
     let (g, dpi) = laid();
     let s = |v: i32| shell::scale(v, dpi);
@@ -1997,6 +2027,9 @@ fn paint(win: HWND) {
     let pad = s(grid::PAD);
     let ed = g.editor;
     let area = RECT { left: ed.left + pad, top: ed.top + pad, right: ed.right - pad, bottom: ed.bottom - pad };
+    if let (_, Some((r, t)), _) = form_area(&g, dpi, group, searching) {
+        draw_text(hdc, &t, &to_rect(r), font(), theme::warn(), DT_WORDBREAK);
+    }
     match group {
         _ if group.is_form() || searching => {
             if let Some(e) = form_error {

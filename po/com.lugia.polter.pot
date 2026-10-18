@@ -2772,6 +2772,16 @@ msgstr ""
 msgid "The settings could not be read: {}"
 msgstr ""
 
+#. TRANSLATORS: Settings > General, over the rows when this Polter was
+#. started on a config file of its own. The first {} is that file, the
+#. second the one the form would otherwise write.
+#: windows/host/src/general_ui.rs:1970
+#, rust-format
+msgid ""
+"This Polter reads {}, but the form would write {}. The settings are shown "
+"read-only."
+msgstr ""
+
 #: windows/host/src/general_ui.rs:1963
 #, rust-format
 msgid ""

@@ -250,6 +250,27 @@ pub fn is_writable(it: &Item) -> bool {
     it.kind == Kind::Key && it.readonly.is_none() && it.control != Control::ReadOnly
 }
 
+/// The two files the read-only banner names -- the one this process reads,
+/// the one the form would write -- when the core writes nothing for it
+/// (`form.zig`'s `"writable": false`, #1743: a process started with
+/// `--config-file`). None when the form may write, and from a core that
+/// predates the field. The mac host's `ConfigFormRules.readOnlyFiles`.
+pub fn read_only_files(writable: Option<bool>, reads: Option<&str>, main: &str) -> Option<(String, String)> {
+    (writable == Some(false)).then(|| (reads.unwrap_or_default().to_string(), main.to_string()))
+}
+
+/// Every key row read-only, for a form the core writes nothing for. The
+/// rows say nothing of their own about it (`readonly_note`): the banner over
+/// them says it once.
+pub fn hold_every_key(items: &mut [Item]) {
+    for it in items.iter_mut().filter(|it| it.kind == Kind::Key && it.readonly.is_none()) {
+        it.readonly = Some(ELSEWHERE.to_string());
+    }
+}
+
+/// `form.zig`'s `Reason.elsewhere`.
+pub const ELSEWHERE: &str = "elsewhere";
+
 /// What a row draws. The form never writes a read-only one; in All Options
 /// every other key is one line of text, checked by the core against the
 /// key's type (§7.1).
@@ -425,7 +446,7 @@ pub enum ReadOnlyNote {
 pub fn readonly_note(it: &Item) -> Option<ReadOnlyNote> {
     // A shortcut row or a result that jumps is not a key somebody set
     // somewhere: there is nothing of that kind to explain.
-    if it.kind != Kind::Key || is_writable(it) {
+    if it.kind != Kind::Key || is_writable(it) || it.readonly.as_deref() == Some(ELSEWHERE) {
         return None;
     }
     Some(match (&it.readonly.as_deref(), &it.source) {
@@ -632,6 +653,22 @@ pub fn group_at(list: Rect, dpi: i32, x: i32, y: i32) -> Option<Group> {
 /// The filter box All Options has above its form, and the form's body
 /// under it; the other form groups' body is the editor less `PAD`.
 pub fn form_area(editor: Rect, dpi: i32, with_filter: bool) -> (Option<Rect>, Rect) {
+    let (filter, _, body) = form_area_with_banner(editor, dpi, with_filter, None);
+    (filter, body)
+}
+
+/// `form_area` with the read-only banner (#1743) between the filter and the
+/// rows, as the macOS page puts it: `banner_h` is its text's height, already
+/// measured in the width it is given.
+pub fn form_area_with_banner(editor: Rect, dpi: i32, with_filter: bool, banner_h: Option<i32>) -> (Option<Rect>, Option<Rect>, Rect) {
+    let (filter, body) = form_area_plain(editor, dpi, with_filter);
+    let Some(h) = banner_h else { return (filter, None, body) };
+    let banner = Rect::new(body.left, body.top, body.right, body.top + h);
+    let top = banner.bottom + scale(ROW_GAP, dpi);
+    (filter, Some(banner), Rect::new(body.left, top, body.right, body.bottom.max(top)))
+}
+
+fn form_area_plain(editor: Rect, dpi: i32, with_filter: bool) -> (Option<Rect>, Rect) {
     let s = |v| scale(v, dpi);
     let left = editor.left + s(PAD);
     let right = editor.right - s(PAD);
@@ -1294,6 +1331,41 @@ mod tests {
         let (none, b2) = form_area(editor, dpi, false);
         assert!(none.is_none());
         assert_eq!(b2.top, editor.top + PAD);
+    }
+
+    #[test]
+    fn a_form_the_core_will_not_write_holds_every_key_and_names_both_files() {
+        // #1743: `--config-file=t.conf` on Windows. The core says so; the
+        // host must not let a row write into the person's own file.
+        let files = read_only_files(Some(false), Some("C:/t/t.conf"), "C:/u/config.polter");
+        assert_eq!(files, Some(("C:/t/t.conf".to_string(), "C:/u/config.polter".to_string())));
+        assert_eq!(read_only_files(Some(true), None, "C:/u/config.polter"), None);
+        assert_eq!(read_only_files(None, None, "C:/u/config.polter"), None, "a core that predates the field");
+
+        let mut items = vec![item("font-size", Some("font"), Control::Number, "13", "13"), item("title", None, Control::Text, "", "")];
+        items[1].readonly = Some("file".into());
+        hold_every_key(&mut items);
+        assert!(!is_writable(&items[0]));
+        assert!(!is_writable(&items[1]));
+        // The banner says why, once; a row the core already explains keeps
+        // its own reason.
+        assert_eq!(readonly_note(&items[0]), None);
+        assert_eq!(items[1].readonly.as_deref(), Some("file"));
+    }
+
+    #[test]
+    fn the_banner_sits_between_the_filter_and_the_rows() {
+        let dpi = 96;
+        let editor = Rect::new(261, 0, 900, 500);
+        let (f, banner, body) = form_area_with_banner(editor, dpi, true, Some(40));
+        let (f, banner) = (f.unwrap(), banner.unwrap());
+        assert_eq!(banner.top, f.bottom + ROW_GAP);
+        assert_eq!(banner.height(), 40);
+        assert_eq!(body.top, banner.bottom + ROW_GAP);
+        assert_eq!((banner.left, banner.right), (body.left, body.right));
+        let (_, none, plain) = form_area_with_banner(editor, dpi, true, None);
+        assert!(none.is_none());
+        assert_eq!(Some(plain), Some(form_area(editor, dpi, true).1));
     }
 
     #[test]
