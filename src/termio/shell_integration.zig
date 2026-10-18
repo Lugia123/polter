@@ -404,7 +404,7 @@ test "setup features" {
         defer env.deinit();
 
         try setupFeatures(&env, .{}, true);
-        try testing.expectEqualStrings("cursor:blink,history,path,title", env.get("GHOSTTY_SHELL_FEATURES").?);
+        try testing.expectEqualStrings("cursor:blink,history,path,ssh-env,ssh-terminfo,title", env.get("GHOSTTY_SHELL_FEATURES").?);
     }
 
     // Test: all features disabled

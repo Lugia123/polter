@@ -297,10 +297,7 @@ pub const StreamHandler = struct {
             .cursor_style => self.terminal.setCursorStyle(value),
             .erase_display_below => self.terminal.eraseDisplay(.below, value),
             .erase_display_above => self.terminal.eraseDisplay(.above, value),
-            .erase_display_complete => {
-                self.terminal.scrollViewport(.{ .bottom = {} });
-                self.terminal.eraseDisplay(.complete, value);
-            },
+            .erase_display_complete => eraseDisplayComplete(self.terminal, value),
             .erase_display_scrollback => self.terminal.eraseDisplay(.scrollback, value),
             .erase_display_scroll_complete => self.terminal.eraseDisplay(.scroll_complete, value),
             .erase_line_right => self.terminal.eraseLine(.right, value),
@@ -2028,6 +2025,121 @@ pub const StreamHandler = struct {
         self.surfaceMessageWriter(.{ .progress_report = report });
     }
 };
+
+/// `ESC [ 2 J`, as a pane runs it.
+///
+/// **A deliberate departure from upstream (task 1776).** Upstream scrolls
+/// the viewport to the bottom before every complete erase, unconditionally.
+/// For someone who has scrolled up to read, that means every `2J` the
+/// program sends -- `clear`, or a TUI that repaints with it -- yanks them
+/// back to the bottom, although the history they were reading is still
+/// there: a complete erase only clears the active area (and may push it
+/// into history first, see `Terminal.clearWouldScroll`). So when the
+/// viewport is in history (`.pin` or `.top`) it is left where it is.
+///
+/// When the viewport is already on the active area the scroll was a no-op
+/// and the behaviour is exactly upstream's; the tests below hold that.
+/// Erases that really remove what the viewport shows -- `3J`, a full
+/// reset, scrollback pruning -- still move it, inside `PageList`, because
+/// there is nothing left where it was.
+fn eraseDisplayComplete(t: *terminal.Terminal, protected: bool) void {
+    switch (t.screens.active.pages.viewport) {
+        .active => t.scrollViewport(.{ .bottom = {} }),
+        .top, .pin => {},
+    }
+    t.eraseDisplay(.complete, protected);
+}
+
+fn testEraseTerminal(alloc: Allocator) !terminal.Terminal {
+    var t: terminal.Terminal = try .init(testing.io, alloc, .{
+        .cols = 40,
+        .rows = 10,
+        .max_scrollback_bytes = null,
+    });
+    errdefer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    for (0..60) |i| {
+        var b: [16]u8 = undefined;
+        s.nextSlice(try std.fmt.bufPrint(&b, "L{d}\r\n", .{i}));
+    }
+    return t;
+}
+
+fn testFirstLine(alloc: Allocator, t: *terminal.Terminal) ![]const u8 {
+    const all = try t.plainString(alloc);
+    defer alloc.free(all);
+    const end = std.mem.indexOfScalar(u8, all, '\n') orelse all.len;
+    return try alloc.dupe(u8, all[0..end]);
+}
+
+test "ED2 with the viewport scrolled up into history leaves it where it is (task 1776)" {
+    const alloc = testing.allocator;
+    var t = try testEraseTerminal(alloc);
+    defer t.deinit(alloc);
+    t.scrollViewport(.{ .delta = -20 });
+    try testing.expect(t.screens.active.pages.viewport == .pin);
+    const before = try testFirstLine(alloc, &t);
+    defer alloc.free(before);
+    // The fixture is the reading: the viewport shows history, not the
+    // active area, or this is not the case being tested.
+    try testing.expectEqualStrings("L31", before);
+
+    eraseDisplayComplete(&t, false);
+
+    const after = try testFirstLine(alloc, &t);
+    defer alloc.free(after);
+    try testing.expectEqualStrings(before, after);
+    try testing.expect(t.screens.active.pages.viewport != .active);
+}
+
+test "ED2 with the viewport at the top of history leaves it at the top (task 1776)" {
+    const alloc = testing.allocator;
+    var t = try testEraseTerminal(alloc);
+    defer t.deinit(alloc);
+    t.scrollViewport(.{ .top = {} });
+    try testing.expect(t.screens.active.pages.viewport == .top);
+
+    eraseDisplayComplete(&t, false);
+
+    const after = try testFirstLine(alloc, &t);
+    defer alloc.free(after);
+    try testing.expectEqualStrings("L0", after);
+    try testing.expect(t.screens.active.pages.viewport == .top);
+}
+
+test "ED2 with the viewport on the active area is byte-for-byte upstream's (task 1776)" {
+    // Two cases: plain output (the active area is discarded) and a marked
+    // prompt (it is scrolled into history first). Each runs the upstream
+    // sequence on one terminal and ours on a twin, and the whole screen,
+    // the viewport and the cursor must agree.
+    const alloc = testing.allocator;
+    for ([_]bool{ false, true }) |at_prompt| {
+        var ours = try testEraseTerminal(alloc);
+        defer ours.deinit(alloc);
+        var theirs = try testEraseTerminal(alloc);
+        defer theirs.deinit(alloc);
+        if (at_prompt) for ([_]*terminal.Terminal{ &ours, &theirs }) |t| {
+            var s = t.vtStream();
+            defer s.deinit();
+            s.nextSlice("\x1b]133;A\x07$ ");
+        };
+        try testing.expect(ours.screens.active.pages.viewport == .active);
+
+        eraseDisplayComplete(&ours, false);
+        theirs.scrollViewport(.{ .bottom = {} });
+        theirs.eraseDisplay(.complete, false);
+
+        const a = try ours.screens.active.dumpStringAlloc(alloc, .{ .screen = .{} });
+        defer alloc.free(a);
+        const b = try theirs.screens.active.dumpStringAlloc(alloc, .{ .screen = .{} });
+        defer alloc.free(b);
+        try testing.expectEqualStrings(b, a);
+        try testing.expect(ours.screens.active.pages.viewport == .active);
+        try testing.expectEqual(theirs.screens.active.cursor.x, ours.screens.active.cursor.x);
+        try testing.expectEqual(theirs.screens.active.cursor.y, ours.screens.active.cursor.y);
+    }
+}
 
 // -- OSC 60 capture: end-to-end tests -------------------------------------
 //

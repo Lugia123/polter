@@ -3734,6 +3734,8 @@ keybind: Keybinds = .{},
 ///     remote hosts and propagates COLORTERM, TERM_PROGRAM, and TERM_PROGRAM_VERSION.
 ///     Whether or not these variables will be accepted by the remote host(s) will
 ///     depend on whether or not the variables are allowed in their sshd_config.
+///     On by default in Polter (upstream Ghostty leaves it off); turn it off
+///     with `shell-integration-features = no-ssh-env`.
 ///     (Available since: 1.2.0)
 ///
 ///   * `ssh-terminfo` - Enable automatic terminfo installation on remote hosts.
@@ -3741,7 +3743,9 @@ keybind: Keybinds = .{},
 ///     cache misses. Requires `tic` to be available on remote hosts. Successful
 ///     installations are cached locally to avoid repeat installations.
 ///     If desired, the `+ssh-cache` CLI action can be used to manage the installation
-///     cache manually using various arguments.
+///     cache manually using various arguments. On by default in Polter
+///     (upstream Ghostty leaves it off); turn it off with
+///     `shell-integration-features = no-ssh-terminfo`.
 ///     (Available since: 1.2.0)
 ///
 ///   * `path` - Add Ghostty's binary directory to PATH. This ensures the `ghostty`
@@ -10563,8 +10567,10 @@ pub const ShellIntegrationFeatures = packed struct {
     cursor: bool = true,
     sudo: bool = false,
     title: bool = true,
-    @"ssh-env": bool = false,
-    @"ssh-terminfo": bool = false,
+    // On in Polter, off upstream (task 1776). Safe only since the
+    // scripts find the binary through `GHOSTTY_EXE`; see `termio/Exec.zig`.
+    @"ssh-env": bool = true,
+    @"ssh-terminfo": bool = true,
     path: bool = true,
     history: bool = true,
 };

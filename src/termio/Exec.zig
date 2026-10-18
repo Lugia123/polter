@@ -840,6 +840,14 @@ const Subprocess = struct {
             // running in Ghostty.
             try env.put("GHOSTTY_BIN_DIR", exe_dir);
 
+            // And the binary itself, because its name is not `ghostty`
+            // (`src/build/exe_name.zig`). The shell scripts' `ssh` wrapper
+            // ran `$GHOSTTY_BIN_DIR/ghostty +ssh`, a file this app does not
+            // ship, so turning on `ssh-env` or `ssh-terminfo` broke every
+            // `ssh` (task 1776). They use this now and keep the old name
+            // only as a fallback.
+            try env.put("GHOSTTY_EXE", exe_bin_path);
+
             // Append if we have a path. We want to append so that ghostty is
             // the last priority in the path. If we don't have a path set
             // then we just set it to the directory of the binary.

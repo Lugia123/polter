@@ -16763,3 +16763,134 @@ test "eraseDisplay complete: an empty screen is not scrolled into history" {
     s.nextSlice("\x1b[H\x1b[2J");
     try testing.expectEqual(@as(usize, 0), testHistoryRows(&t));
 }
+
+// Agent CLIs on the primary screen, replayed against a reader who has
+// scrolled up (task 1776). The byte shapes are taken from real sessions
+// recorded through a pty -- Claude Code 2.1.302 with its alternate screen
+// off, Codex 0.163.0 with `--no-alt-screen` -- and rewritten here by hand,
+// because the recordings carry account banners that do not belong in the
+// repository. What is kept is every control sequence that moves the cursor,
+// sets a margin or scrolls; the text is replaced.
+//
+// Both hold on the code before task 1776: these programs never send
+// `ESC [ 2 J` (counted in the recordings: zero, alongside zero `3J` and
+// zero `ESC c`), and nothing else they send moves a viewport that is in
+// history. They are here to keep it that way. The one sequence that did
+// move it is `2J`, tested where it is handled, in `termio/stream_handler`.
+
+fn testAgentReplayTerminal(alloc: Allocator) !Terminal {
+    var t = try init(testing.io, alloc, .{ .cols = 100, .rows = 30, .max_scrollback_bytes = null });
+    errdefer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    for (0..200) |i| {
+        var b: [16]u8 = undefined;
+        s.nextSlice(try std.fmt.bufPrint(&b, "HIST{d}\r\n", .{i}));
+    }
+    return t;
+}
+
+fn testViewportFirstLine(alloc: Allocator, t: *Terminal) ![]const u8 {
+    const all = try t.plainString(alloc);
+    defer alloc.free(all);
+    const end = std.mem.indexOfScalar(u8, all, '\n') orelse all.len;
+    return try alloc.dupe(u8, all[0..end]);
+}
+
+test "agent replay: Claude Code's inline redraw does not move a scrolled-up viewport (task 1776)" {
+    const alloc = testing.allocator;
+    var t = try testAgentReplayTerminal(alloc);
+    defer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    t.scrollViewport(.{ .delta = -100 });
+    const before = try testViewportFirstLine(alloc, &t);
+    defer alloc.free(before);
+    try testing.expectEqualStrings("HIST71", before);
+    const history_before = testHistoryRows(&t);
+
+    // Each frame: synchronized update, cursor up over the five-row footer,
+    // the new output line written over its top row, the footer redrawn
+    // under it with `\r\r\n` (the pty's onlcr) so the bottom row scrolls.
+    // Between frames, the spinner: up six, rewrite one cell, back down.
+    const footer =
+        "\r\x1b[38;2;136;136;136m----------\x1b[39m\x1b[K\r\r\n" ++
+        "\x1b[38;2;153;153;153m> \x1b[39m\x1b[K\r\r\n" ++
+        "\x1b[38;2;136;136;136m----------\x1b[39m\x1b[K\r\r\n" ++
+        "\x1b[3Gauto mode on\x1b[K\r\r\n" ++
+        "\x1b[K";
+    for (0..120) |i| {
+        var b: [64]u8 = undefined;
+        s.nextSlice("\x1b[?2026h\x1b[?25l\x1b[4A\r");
+        s.nextSlice(try std.fmt.bufPrint(&b, "\x1b[3G{d}\x1b[K\r\r\n", .{i}));
+        s.nextSlice(footer);
+        s.nextSlice("\x1b[2C\x1b[3A\x1b[?25h\x1b[?2026l");
+        s.nextSlice("\x1b[?25l\x1b[2D\x1b[3B\r\x1b[6A\x1b[38;2;215;119;87m*\x1b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\x1b[2C\x1b[3A\x1b[?25h");
+    }
+    // A resize-style repaint: every row cleared with `2K`, then home.
+    for (0..30) |_| s.nextSlice("\x1b[2K\x1b[1B");
+    s.nextSlice("\x1b[H\x1b[3Grepainted\r\r\n");
+
+    // The replay really wrote history, or the viewport had no reason to move.
+    try testing.expect(testHistoryRows(&t) > history_before);
+    const after = try testViewportFirstLine(alloc, &t);
+    defer alloc.free(after);
+    try testing.expectEqualStrings(before, after);
+    try testing.expect(t.screens.active.pages.viewport != .active);
+}
+
+test "agent replay: Codex's history insertion does not move a scrolled-up viewport (task 1776)" {
+    const alloc = testing.allocator;
+    var t = try testAgentReplayTerminal(alloc);
+    defer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    t.scrollViewport(.{ .delta = -100 });
+    const before = try testViewportFirstLine(alloc, &t);
+    defer alloc.free(before);
+    const history_before = testHistoryRows(&t);
+
+    // Codex keeps a live area at the bottom (rows 25-30 here) and inserts
+    // finished lines above it: a margin that starts at row 1, a line feed
+    // at its bottom so the region scrolls, then the margin reset. Before
+    // that it opens room with a margin over the live area and reverse
+    // index. `CSI J` clears the live area for the redraw.
+    for (0..120) |i| {
+        var b: [64]u8 = undefined;
+        s.nextSlice("\x1b[?2026h\x1b[25;30r\x1b[25;1H\x1bM\x1b[r");
+        s.nextSlice("\x1b[1;24r\x1b[24;1H\r\n");
+        s.nextSlice(try std.fmt.bufPrint(&b, "\x1b[39;49m\x1b[Kline {d}\x1b[r", .{i}));
+        s.nextSlice("\x1b[25;1H\x1b[J\x1b[27;1H\x1b[1m>\x1b[22m Ask\x1b[30;3H?\x1b[27;3H\x1b[?25h\x1b[?2026l");
+    }
+
+    try testing.expect(testHistoryRows(&t) > history_before);
+    const after = try testViewportFirstLine(alloc, &t);
+    defer alloc.free(after);
+    try testing.expectEqualStrings(before, after);
+    try testing.expect(t.screens.active.pages.viewport != .active);
+}
+
+test "synchronized output (DEC 2026) is a recognised mode that DECRQM reports as set and reset (task 1776)" {
+    // Off until a program turns it on, per frame: that is the protocol, so
+    // "on by default" means recognised, not set. The renderer skips frames
+    // while it is set (`renderer/generic.zig`, `updateFrame`) and termio
+    // clears it after `sync_reset_ms` if the program never does.
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 3 });
+    defer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    const tag: modespkg.Report.Tag = .fromMode(.synchronized_output);
+    try testing.expectEqual(@as(u16, 2026), tag.value);
+    try testing.expect(!tag.ansi);
+    try testing.expect(!t.modes.get(.synchronized_output));
+    try testing.expectEqual(modespkg.Report.State.reset, t.modes.getReport(tag).state);
+
+    s.nextSlice("\x1b[?2026h");
+    try testing.expect(t.modes.get(.synchronized_output));
+    try testing.expectEqual(modespkg.Report.State.set, t.modes.getReport(tag).state);
+
+    s.nextSlice("\x1b[?2026l");
+    try testing.expect(!t.modes.get(.synchronized_output));
+    try testing.expectEqual(modespkg.Report.State.reset, t.modes.getReport(tag).state);
+}
