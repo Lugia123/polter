@@ -2417,15 +2417,9 @@ fn paint_form(win: HWND) {
 
 // ====================================================== keyboard shortcuts
 
-/// What a UI Automation client is shown for one row -- the struct the
-/// provider in `uia.rs` reads, moved here with the page.
-#[derive(Clone, Default)]
-pub struct KbSnapshotRow {
-    pub action: String,
-    pub name: String,
-    pub keys: String,
-    pub note: String,
-}
+/// What a UI Automation client is shown for one row, and what is painted:
+/// one value (`KbShown`, #1750).
+pub use polter_settings_shell::general::KbShown as KbSnapshotRow;
 
 /// The page as another thread may read it: the provider does not run on
 /// the window's thread, and `ST` is thread-local (the reason the old page
@@ -2475,12 +2469,7 @@ fn kb_publish(showing: bool) {
         if let Ok(mut rows) = KB_SNAPSHOT.lock() {
             rows.clear();
             for r in &s.keybinds {
-                rows.push(KbSnapshotRow {
-                    action: r.action.to_string(),
-                    name: r.title.clone().unwrap_or_else(|| r.action.to_string()),
-                    keys: crate::keybinds::keys_label(r),
-                    note: crate::keybinds::note(r).to_string(),
-                });
+                rows.push(KbSnapshotRow::new(r.action, r.title.as_deref(), crate::keybinds::keys_label(r), crate::keybinds::note(r), &tr));
             }
         }
         KB_TOP.load(Ordering::Acquire)
@@ -2559,7 +2548,8 @@ fn kb_paint(win: HWND) {
             }
             if !row.note.is_empty() {
                 let colour = if hidden.get(i).copied().unwrap_or(false) { theme::warn() } else { theme::dim() };
-                let note = tr(&row.note);
+                // Translated already, as a screen reader is told it.
+                let note = &row.note;
                 // The note wraps in the room it has, as the macOS one does,
                 // rather than being cut at one line.
                 let nr = if below {
@@ -2567,7 +2557,7 @@ fn kb_paint(win: HWND) {
                 } else {
                     RECT { left: name_w + gap + keys_w + gap, top: r.top, right: rc.right, bottom: r.bottom }
                 };
-                draw_text(hdc, &note, &nr, font(), colour, DT_WORDBREAK | DT_END_ELLIPSIS);
+                draw_text(hdc, note, &nr, font(), colour, DT_WORDBREAK | DT_END_ELLIPSIS);
             }
         }
     }

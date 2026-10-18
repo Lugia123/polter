@@ -692,6 +692,45 @@ fn form_area_plain(editor: Rect, dpi: i32, with_filter: bool) -> (Option<Rect>, 
 
 // ------------------------------------------------------ keyboard shortcuts
 
+/// One row of the Keyboard Shortcuts page as it is shown: what is painted
+/// and what a UI Automation client reads are this one value, so the two
+/// cannot say different things.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub struct KbShown {
+    /// The action's tag.
+    pub action: String,
+    /// Its title, translated already; the tag when it has none.
+    pub name: String,
+    /// `keys_label`'s text.
+    pub keys: String,
+    /// The note, translated; empty when there is none.
+    pub note: String,
+}
+
+impl KbShown {
+    /// The row as shown. **The note is translated here, once** (#1750): the
+    /// page used to keep the English and translate it when painting, so the
+    /// screen said it in Chinese and a screen reader in English.
+    pub fn new(action: &str, title: Option<&str>, keys: String, note: &str, tr: &dyn Fn(&str) -> String) -> Self {
+        KbShown {
+            action: action.to_string(),
+            name: title.map_or_else(|| action.to_string(), str::to_string),
+            keys,
+            note: if note.is_empty() { String::new() } else { tr(note) },
+        }
+    }
+
+    /// What a UI Automation client is told the row is: all three columns,
+    /// as the page shows them.
+    pub fn spoken(&self) -> String {
+        if self.note.is_empty() {
+            format!("{}  {}", self.name, self.keys)
+        } else {
+            format!("{}  {}  {}", self.name, self.keys, self.note)
+        }
+    }
+}
+
 /// The keys column as lines: whole keys, `KEY_GAP` apart, packed into at
 /// most `max_lines` lines; the last ends in "…" when the rest does not fit.
 /// Never a break inside a key ("Page" / "Down"), as the macOS column
@@ -978,6 +1017,17 @@ pub fn tip_max_width(work_w: i32, scale: f64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rows_note_is_read_aloud_in_the_words_it_is_shown_in() {
+        let zh = |t: &str| if t == "The menu does not show this shortcut (the key still works)." { "菜单里不显示这个快捷键（按键仍然有效）。".to_string() } else { t.to_string() };
+        let row = KbShown::new("paste_from_selection", Some("从选区粘贴"), "Shift+Insert".into(), "The menu does not show this shortcut (the key still works).", &zh);
+        assert_eq!(row.note, "菜单里不显示这个快捷键（按键仍然有效）。");
+        assert_eq!(row.spoken(), "从选区粘贴  Shift+Insert  菜单里不显示这个快捷键（按键仍然有效）。");
+        // No note: no trailing gap, and nothing handed to the translator.
+        let bare = KbShown::new("copy", None, "Ctrl+C".into(), "", &|_| panic!("an empty note is not translated"));
+        assert_eq!(bare.spoken(), "copy  Ctrl+C");
+    }
 
     #[test]
     fn the_about_tooltip_wraps_inside_the_screen() {

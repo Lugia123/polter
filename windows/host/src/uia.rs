@@ -2396,12 +2396,7 @@ impl IRawElementProviderSimple_Impl for KeybindsItem_Impl {
             // column would make "not bound" and "the provider had nothing to
             // say" the same reading.
             UIA_NamePropertyId => {
-                let text = if row.note.is_empty() {
-                    format!("{}  {}", row.name, row.keys)
-                } else {
-                    format!("{}  {}  {}", row.name, row.keys, row.note)
-                };
-                variant_bstr(&text)
+                variant_bstr(&row.spoken())
             }
 
             // The action's tag: the one handle that does not change with the
