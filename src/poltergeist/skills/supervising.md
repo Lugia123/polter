@@ -1317,6 +1317,31 @@ so and ask; do not guess.
 Quiet times and round counts are deliberately absent: they describe a moment
 that has passed, and your counting starts from zero.
 
+### A resumed worker brings its whole history with it
+
+Starting a worker again in its old session (`--resume`) puts back everything
+it said and read, and every call it makes from then on reads all of it again.
+A worker that had run for a day carries hundreds of thousands of tokens into
+each step, so a handful of resumed workers can spend the person's allowance
+in an hour while doing little. Measured: eight resumed sessions read about
+470M cached tokens in the first hour after a restart, one of them about
+700K per call; a freshly started worker read a seventh of that.
+
+So decide, for each worker you bring back, what its history is still worth:
+
+- **It is in the middle of something, and what it read is the work** -- a
+  fix half made, a test half run. Let it finish the turn, then `/compact`
+  it; never compact a turn in progress, because the half-done part is what
+  would be summarised away.
+- **Its old work is delivered, and what you give it next is unrelated.**
+  Clear it: `task_assign` with `fresh: true`, or `/clear` then the task.
+- **Its CLI has no `/compact`** (check the plugin, or try it once and read
+  the screen). Clear it, or start a new worker from the role instead of
+  resuming the old session at all.
+
+Say in the group which you did and why: "compacted after its delivery" is
+something the next supervisor can check; "resumed" alone is not.
+
 ## Looking back through what your workers did
 
 `session_recall` says how things were arranged. What a terminal actually
