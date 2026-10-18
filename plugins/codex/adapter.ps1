@@ -308,7 +308,8 @@ function Read-JsonFile([string]$Path) {
 function Read-TextFile([string]$Path) {
     try {
         if (-not [System.IO.File]::Exists($Path)) { return $null }
-        $fs = [System.IO.File]::OpenRead($Path)
+        # Sharing writing, like every other read here (`Open-SharedRead`).
+        $fs = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
         try {
             $n = [int][Math]::Min($fs.Length, [long]($TextLimit * 8))
             $buf = New-Object byte[] $n
@@ -1259,10 +1260,23 @@ function Get-UuidMs([string]$Session) {
     return [long][System.Convert]::ToInt64($hex.Substring(0, 12), 16)
 }
 
+# A rollout opened for reading **while Codex may be writing it** (task 1749).
+# A running Codex keeps its own rollout open for writing, and on Windows a
+# reader that does not share writing is refused: `StreamReader($Path)` threw
+# "being used by another process" for the very session a take-over is for,
+# the catch below swallowed it, and every live Codex read as "its session
+# was not found" (measured on codex 0.154). So: read access, sharing read
+# and write -- what `Get-Content` does. Every read of a rollout goes through
+# here (`test/codex-adapter/shared-read.py` holds that).
+function Open-SharedRead([string]$Path) {
+    $fs = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    return New-Object System.IO.StreamReader($fs, $script:Utf8)
+}
+
 # `@(cwd, started_ms)` from a rollout's first line.
 function Get-SessionMeta([string]$Path) {
     try {
-        $reader = New-Object System.IO.StreamReader($Path, $script:Utf8)
+        $reader = Open-SharedRead $Path
         try { $first = $reader.ReadLine() } finally { $reader.Dispose() }
         if ($null -eq $first) { return @($null, $null) }
         $meta = Get-JValue (Read-JsonText $first)
