@@ -272,6 +272,13 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
                 .awaiting_approval => .{ .needs_approval, f.state_since_ms },
                 .awaiting_input => .{ .needs_answer, f.state_since_ms },
                 .failed => .{ .failed, f.state_since_ms },
+                // Working, for as long as a screen may be still before it
+                // is asked about; past that, the same "stuck?" -- a retry
+                // nobody ends goes on for ever (task 1777, #734).
+                .retrying => if (now_ms -| f.state_since_ms >= t.screen_still_ms)
+                    .{ .suspect_stuck, f.state_since_ms +| t.screen_still_ms }
+                else
+                    .{ .working, f.state_since_ms },
                 .in_turn => if (stuckSince(f, t, now_ms)) |at|
                     .{ .suspect_stuck, at }
                 else
@@ -409,6 +416,7 @@ pub fn nextChange(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
             .agent_exited, .gone => return null,
         }
         if (Bus.Agent.spoke(f.hooks, f.said_by)) {
+            if (f.state == .retrying) break :at f.state_since_ms +| t.screen_still_ms;
             if (f.state != .in_turn) return null;
             var at = stillAt(f, t, now_ms) orelse return null;
             if (t.calls_silent_ms != 0) if (f.call_silent_ms) |silent| {
@@ -1323,6 +1331,27 @@ test "Attention: a window tab does not draw working" {
     try testing.expectEqual(Top.none, top(&.{working}, .window_tab));
     try testing.expectEqual(Shown.working, top(&.{working}, .elsewhere).shown);
     try testing.expectEqual(Shown.done_unseen, top(&.{ working, done }, .window_tab).shown);
+}
+
+test "1777: retrying is working until a screen would have been asked about, then stuck" {
+    var f: Facts = .none;
+    f.hooks = .live;
+    f.state = .retrying;
+    f.state_since_ms = 10_000;
+    f.last_event_ms = 10_000;
+    // A retry's screen moves -- its countdown -- so nothing else would say.
+    f.screen = .{ .still_ms = 300 };
+    const t: Thresholds = .defaults;
+
+    const early = classify(f, t, 10_000 + t.screen_still_ms - 1);
+    try testing.expectEqual(Kind.working, early.kind);
+    try testing.expectEqual(Source.hook, early.source);
+    // And the classification is looked at again when it would change.
+    try testing.expectEqual(@as(?u64, 10_000 + t.screen_still_ms), nextChange(f, t, 10_000 + t.screen_still_ms - 1));
+
+    const late = classify(f, t, 10_000 + t.screen_still_ms);
+    try testing.expectEqual(Kind.suspect_stuck, late.kind);
+    try testing.expectEqual(@as(u64, 10_000 + t.screen_still_ms), late.since_ms);
 }
 
 test "1656: a title that says it waits is a card waiting on approval, said to come from the title" {

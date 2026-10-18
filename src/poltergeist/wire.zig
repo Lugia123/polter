@@ -149,6 +149,15 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         },
 
         .agent_event => .{ .agent_event = try parseAgentEvent(aa, params) },
+        .hook_context => .{
+            .hook_context = .{
+                // One of two words; a third is a mistake, not one of them.
+                .moment = std.meta.stringToEnum(
+                    rpc.HookMoment,
+                    try requireString(aa, params, "moment"),
+                ) orelse return error.BadParams,
+            },
+        },
         .terminal_turn => .{ .terminal_turn = .{ .id = try requireId(params) } },
 
         .terminal_read => .{ .terminal_read = .{
@@ -683,6 +692,21 @@ fn parseAgentEvent(aa: Allocator, params: ?std.json.ObjectMap) ParseError!AgentE
         .input = if (input) |t| AgentEvent.cutBytes(t, AgentEvent.max_input_bytes) else null,
         .input_bytes = try optionalU64(params, "input_bytes", if (input) |t| t.len else 0),
         .waiting_on_background = optionalBool(params, "waiting_on_background", false),
+        .context_used = try contextUsed(params),
+    };
+}
+
+/// `context_used` of an `agent_event`: whole percent, 0-100, or absent --
+/// which for `context_reported` is the CLI having no number yet, and is
+/// never read as 0. Anything else is a mistake, refused rather than kept
+/// as a number nobody said.
+fn contextUsed(params: ?std.json.ObjectMap) ParseError!?u8 {
+    const p = params orelse return null;
+    const v = p.get("context_used") orelse return null;
+    return switch (v) {
+        .null => null,
+        .integer => |i| if (i < 0 or i > 100) error.BadParams else @intCast(i),
+        else => error.BadParams,
     };
 }
 
@@ -1073,9 +1097,12 @@ pub const AgentView = struct {
     /// nothing -- as `since_ms` is for the state (task 1625). Null when the
     /// agent does not report its tools.
     tool_for_ms: ?u64,
+    /// How long ago `agent.context` was said (task 1779). Null when nothing
+    /// has said it, or where the caller has no clock reading to give.
+    context_age_ms: ?u64,
 
     /// A terminal whose agent has never said anything through hooks.
-    pub const none: AgentView = .{ .agent = .none, .since_ms = null, .state_at_ms = null, .event_at_ms = null, .tool_for_ms = null };
+    pub const none: AgentView = .{ .agent = .none, .since_ms = null, .state_at_ms = null, .event_at_ms = null, .tool_for_ms = null, .context_age_ms = null };
 };
 
 /// What `terminal_turn` answers.
@@ -1348,7 +1375,7 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.objectField("id");
             try writeId(&s, t.id);
             try s.objectField("agent");
-            try writeAgent(&s, .{ .agent = t.agent, .since_ms = null, .state_at_ms = null, .event_at_ms = null, .tool_for_ms = null });
+            try writeAgent(&s, .{ .agent = t.agent, .since_ms = null, .state_at_ms = null, .event_at_ms = null, .tool_for_ms = null, .context_age_ms = null });
 
             // `null` rather than absent: this tool was asked for exactly
             // this, and "there is none" is its answer.
@@ -2209,6 +2236,33 @@ fn writeAgent(s: *std.json.Stringify, view: AgentView) std.Io.Writer.Error!void 
             try s.objectField("tool_for_ms");
             try s.write(ms);
         }
+    }
+    try writeContext(s, a.context, view.context_age_ms);
+    try s.endObject();
+}
+
+/// How full the context window is (`Bus.Context`, task 1779). Absent when
+/// nothing has said, on `quiet_ms`'s terms; when the CLI said it has no
+/// number, `used_percent` is `null` and `said` says so, so that it cannot
+/// be read as 0.
+fn writeContext(s: *std.json.Stringify, c: Bus.Context, age_ms: ?u64) std.Io.Writer.Error!void {
+    if (c == .not_reported) return;
+    try s.objectField("context");
+    try s.beginObject();
+    try s.objectField("said");
+    try s.write(switch (c) {
+        .not_reported => unreachable,
+        .no_number => "no_number_yet",
+        .used => "used",
+    });
+    try s.objectField("used_percent");
+    switch (c) {
+        .used => |u| try s.write(u.percent),
+        .not_reported, .no_number => try s.write(null),
+    }
+    if (age_ms) |ms| {
+        try s.objectField("age_ms");
+        try s.write(ms);
     }
     try s.endObject();
 }

@@ -134,6 +134,14 @@ pub fn runWith(
         }
     }
 
+    // How full the window is, said to the Polter this terminal is in
+    // (task 1779). Every time the status line runs, because this process
+    // cannot know what it said last time and the bus keeps only the last
+    // reading; one request, as `tell` is. Not said when the input has no
+    // `context_window` at all -- a CLI that does not report one has not
+    // said "no number", it has said nothing.
+    if (polter) |p| if (contextOf(aa, payload)) |c| tellContext(io, p, c);
+
     if (child) |*c| {
         const term = c.wait(io) catch return 1;
         return switch (term) {
@@ -191,6 +199,53 @@ fn keep(aa: Allocator, io: std.Io, dir: []const u8, payload: []const u8, now_ms:
     const windows = quota.fromClaudeStatus(aa, payload) orelse return false;
     try QuotaWatch.writeDrop(aa, io, dir, .claude, windows, now_ms);
     return true;
+}
+
+/// What the status line input says of the context window (task 1779).
+pub const ContextSaid = union(enum) {
+    /// `context_window` is there and its `used_percentage` is null or
+    /// missing: Claude Code before the session's first answer.
+    no_number,
+    /// Whole percent, 0-100.
+    used: u8,
+};
+
+/// `context_window.used_percentage` of a Claude Code status line input:
+/// null when there is no `context_window` object, which is a CLI saying
+/// nothing about it rather than a CLI saying it has no number. A fraction
+/// is rounded; anything outside 0-100 is held to it.
+pub fn contextOf(arena: Allocator, stdin: []const u8) ?ContextSaid {
+    const root = std.json.parseFromSliceLeaky(std.json.Value, arena, stdin, .{}) catch return null;
+    const obj = switch (root) {
+        .object => |o| o,
+        else => return null,
+    };
+    const window = switch (obj.get("context_window") orelse return null) {
+        .object => |o| o,
+        else => return null,
+    };
+    const v = window.get("used_percentage") orelse return .no_number;
+    const f: f64 = switch (v) {
+        .integer => |i| @floatFromInt(i),
+        .float => |x| x,
+        .number_string => |t| std.fmt.parseFloat(f64, t) catch return .no_number,
+        else => return .no_number,
+    };
+    if (std.math.isNan(f)) return .no_number;
+    return .{ .used = @intFromFloat(@round(std.math.clamp(f, 0, 100))) };
+}
+
+fn tellContext(io: std.Io, polter: Polter, said: ContextSaid) void {
+    var ev: AgentEvent.Event = .none;
+    ev.event = .context_reported;
+    ev.cli = "claude-code";
+    ev.context_used = switch (said) {
+        .no_number => null,
+        .used => |p| p,
+    };
+    hook.deliver(io, polter.socket, polter.token, ev) catch |err| {
+        log.warn("+statusline: Polter was not told how full the context is err={t}", .{err});
+    };
 }
 
 fn tell(io: std.Io, polter: Polter) void {
@@ -389,4 +444,34 @@ test "+statusline: input that says nothing of the allowance leaves the last numb
     try testing.expectEqual(quota.Reading.State.have, state);
     const used = got.windows[0].?.used;
     try testing.expectEqual(@as(u8, 61), used);
+}
+
+test "1779: the status line's context_window is a percentage, or no number, or not said at all" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // What Claude Code 2.1.302 sends, cut down.
+    const said = contextOf(aa,
+        \\{"session_id":"s1","context_window":{"total_input_tokens":15234,"context_window_size":200000,
+        \\ "used_percentage":8,"remaining_percentage":92}}
+    );
+    try testing.expectEqual(ContextSaid{ .used = 8 }, said.?);
+
+    // A fraction is rounded, and nothing leaves 0-100.
+    const fraction = contextOf(aa, "{\"context_window\":{\"used_percentage\":72.6}}");
+    try testing.expectEqual(ContextSaid{ .used = 73 }, fraction.?);
+    const over = contextOf(aa, "{\"context_window\":{\"used_percentage\":130}}");
+    try testing.expectEqual(ContextSaid{ .used = 100 }, over.?);
+
+    // Before the first answer the CLI has no number: said, and not 0.
+    const before = contextOf(aa, "{\"context_window\":{\"used_percentage\":null,\"context_window_size\":200000}}");
+    try testing.expectEqual(ContextSaid.no_number, before.?);
+    const missing = contextOf(aa, "{\"context_window\":{\"context_window_size\":200000}}");
+    try testing.expectEqual(ContextSaid.no_number, missing.?);
+
+    // No `context_window` at all is not "no number": nothing was said.
+    try testing.expect(contextOf(aa, status_input) == null);
+    try testing.expect(contextOf(aa, "{\"context_window\":3}") == null);
+    try testing.expect(contextOf(aa, "not json") == null);
 }

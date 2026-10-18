@@ -27,6 +27,13 @@ pub const Kind = enum {
     turn_started,
     turn_ended,
     turn_failed,
+    /// An API error the CLI is trying again after, without ending the turn:
+    /// opencode's `session.status` `retry` (task 1777). **Not `turn_failed`**
+    /// -- the turn has not ended and may yet finish -- and not `in_turn`
+    /// either: the one thing it is doing is waiting on the provider, which
+    /// can go on without end, behind a screen that never stops moving
+    /// (#734). `detail` is the CLI's word for the error, `note` the attempt.
+    turn_retrying,
     awaiting_approval,
     awaiting_input,
     /// A tool call finished: the agent is working, whatever it was waiting
@@ -51,6 +58,13 @@ pub const Kind = enum {
     /// here because it comes from the same place by the same road, and a
     /// request of its own would be that road built twice.
     allowance_written,
+    /// Not a hook either: `polter +statusline` saying how full the
+    /// session's context window is, as the CLI's status line input said it
+    /// (`context_used`, task 1779). Like `allowance_written` it says nothing
+    /// about what the agent is doing: it moves no state, no clock and
+    /// nothing in the box, and only the reading kept beside the agent
+    /// (`Bus.Agent.context`).
+    context_reported,
 };
 
 /// The `detail` of a `hooks_expected` whose CLI says nothing until its first
@@ -205,6 +219,13 @@ pub const Event = struct {
     /// screen is waiting, not finished.
     waiting_on_background: bool,
 
+    /// For `context_reported` only: how much of the context window the CLI
+    /// said is used, in whole percent. **Null there is the CLI saying it
+    /// has no number yet** -- a session before its first answer -- which is
+    /// not 0, and is kept as "said, no number" (`Bus.Context`). Every other
+    /// kind carries null and nothing reads it.
+    context_used: ?u8,
+
     pub const none: Event = .{
         .event = .hooks_expected,
         .cli = "",
@@ -218,6 +239,7 @@ pub const Event = struct {
         .input = null,
         .input_bytes = 0,
         .waiting_on_background = false,
+        .context_used = null,
     };
 };
 
@@ -265,6 +287,7 @@ pub fn translate(
     if (std.mem.eql(u8, cli, "claude-code")) return claudeCode(arena, hook, obj);
     if (std.mem.eql(u8, cli, "codex")) return codex(arena, hook, obj);
     if (std.mem.eql(u8, cli, "antigravity")) return antigravity(arena, hook, obj);
+    if (std.mem.eql(u8, cli, "opencode")) return opencode(arena, hook, obj);
     return error.UnknownCli;
 }
 
@@ -592,6 +615,181 @@ fn errorText(arena: Allocator, obj: std.json.ObjectMap) Error!?[]const u8 {
 /// The one line that says what an approval is for. A shell tool's command is
 /// the case that matters -- `Bash`, or `PowerShell` on Windows (#888); other
 /// tools say which file when they have one.
+/// opencode, 1.2.10 and later (task 1777). opencode has no command hooks;
+/// what calls `+hook` is Polter's own opencode plugin,
+/// `plugins/opencode/polter-hooks.js`, from inside opencode's process. It
+/// hands on opencode's events as they came -- `{"type", "properties"}`,
+/// the field names opencode's (`packages/opencode/src` at v1.2.10) -- and
+/// adds one object of its own, `polter`, with what only a plugin can read:
+/// the answer a turn ended on, the error its last message carries, and
+/// whether the event came from a subagent's session. The names `+hook` is
+/// given are opencode's too, but for `session.status`, which is two events
+/// to Polter and is named for its `status.type`: `session.idle`,
+/// `session.retry` (`busy` is not passed on; `chat.message` says a turn
+/// began).
+///
+/// Every payload below was read off opencode 1.2.10 driven through its
+/// `serve` API against a stand-in model (task 1777).
+///
+/// What it has that the others do not:
+/// - **`session.retry`**: an API error opencode will try again after --
+///   a rate limit, an overload -- does not end the turn, it retries without
+///   end (`session/retry.ts`). That is `turn_retrying`, which no other table
+///   says, and the case a still-moving screen hid for an hour (#734).
+/// - `question.asked`: the agent asking the person something.
+/// What it does not: an answer on the event that ends a turn (the plugin
+/// reads it), or background work that outlives one.
+///
+/// ⚠️ **An idle is not always a turn that ended.** After an API error
+/// opencode says `session.error` and then goes idle twice; an abort goes
+/// idle, says `session.error`, and goes idle twice more (measured). The
+/// plugin reads the error off the turn's last message and says it in
+/// `polter.error`; an idle that carries one is `Ignored`, because the
+/// `session.error` is what says how the turn ended.
+fn opencode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error!Event {
+    const kind = try requireString(obj, "type");
+    const status_event = std.mem.eql(u8, hook, "session.idle") or std.mem.eql(u8, hook, "session.retry");
+    if (!std.mem.eql(u8, kind, if (status_event) "session.status" else hook)) return error.UnknownEvent;
+
+    const props = try requireObject(obj, "properties");
+    const polter: ?std.json.ObjectMap = switch (obj.get("polter") orelse .null) {
+        .null => null,
+        .object => |o| o,
+        else => return error.MissingField,
+    };
+    const child = if (polter) |p| switch (p.get("child") orelse .null) {
+        .null => false,
+        .bool => |b| b,
+        else => return error.MissingField,
+    } else false;
+
+    var ev: Event = .none;
+    ev.cli = "opencode";
+    const sid = if (std.mem.eql(u8, hook, "session.created"))
+        try requireString(try requireObject(props, "info"), "id")
+    else
+        try requireString(props, "sessionID");
+    // A subagent's session is not the terminal's session: it is said as
+    // the agent that asked, the way Claude Code's `agent_id` is, and the
+    // session stays the one it was.
+    if (child) {
+        ev.agent_id = sid;
+    } else {
+        ev.session_id = sid;
+    }
+
+    if (std.mem.eql(u8, hook, "session.created")) {
+        ev.event = .session_started;
+    } else if (std.mem.eql(u8, hook, "chat.message")) {
+        ev.event = .turn_started;
+    } else if (std.mem.eql(u8, hook, "session.idle")) {
+        const p = polter orelse return error.MissingField;
+        if (try optionalString(p, "error")) |_| return error.Ignored;
+        ev.event = .turn_ended;
+        if (try optionalString(p, "answer")) |text| {
+            ev.text = cutBytes(text, max_text_bytes);
+            ev.text_bytes = text.len;
+        }
+        ev.waiting_on_background = false;
+    } else if (std.mem.eql(u8, hook, "session.retry")) {
+        const status = try requireObject(props, "status");
+        ev.event = .turn_retrying;
+        ev.detail = try oneLine(arena, prefixChars(try requireString(status, "message"), summary_chars));
+        ev.note = switch (status.get("attempt") orelse .null) {
+            .integer => |n| try std.fmt.allocPrint(arena, "attempt {d}", .{n}),
+            .null => null,
+            else => return error.MissingField,
+        };
+    } else if (std.mem.eql(u8, hook, "session.error")) {
+        ev.event = .turn_failed;
+        const err = try requireObject(props, "error");
+        const data: ?std.json.ObjectMap = switch (err.get("data") orelse .null) {
+            .null => null,
+            .object => |o| o,
+            else => return error.MissingField,
+        };
+        ev.detail = opencodeError(try requireString(err, "name"), data);
+        ev.note = if (data) |d| try oneLine(arena, if (try optionalString(d, "message")) |m| prefixChars(m, summary_chars) else null) else null;
+    } else if (std.mem.eql(u8, hook, "permission.asked")) {
+        ev.event = .awaiting_approval;
+        ev.detail = try requireString(props, "permission");
+        const patterns = switch (props.get("patterns") orelse .null) {
+            .array => |a| a.items,
+            .null => &.{},
+            else => return error.MissingField,
+        };
+        // What is asked about: a command, for `bash`; a path, for an
+        // edit; a server's tool, for an MCP one. One per line in `text`,
+        // the first in the summary.
+        var whole: std.Io.Writer.Allocating = .init(arena);
+        for (patterns, 0..) |pat, i| switch (pat) {
+            .string => |str| {
+                if (i > 0) whole.writer.writeByte('\n') catch return error.OutOfMemory;
+                whole.writer.writeAll(str) catch return error.OutOfMemory;
+            },
+            else => return error.MissingField,
+        };
+        const all = whole.written();
+        if (all.len > 0) {
+            ev.note = try oneLine(arena, prefixChars(all, summary_chars));
+            ev.text = cutBytes(all, max_text_bytes);
+            ev.text_bytes = all.len;
+        }
+        // And the request itself, for a supervisor deciding (task 1651).
+        const json = try std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = props }, .{});
+        ev.input = cutBytes(json, max_input_bytes);
+        ev.input_bytes = json.len;
+    } else if (std.mem.eql(u8, hook, "question.asked")) {
+        ev.event = .awaiting_input;
+        ev.detail = "question";
+        const questions = switch (props.get("questions") orelse .null) {
+            .array => |a| a.items,
+            else => return error.MissingField,
+        };
+        if (questions.len > 0) switch (questions[0]) {
+            .object => |q| if (try optionalString(q, "question")) |text| {
+                ev.note = try oneLine(arena, prefixChars(text, summary_chars));
+                ev.text = cutBytes(text, max_text_bytes);
+                ev.text_bytes = text.len;
+            },
+            else => return error.MissingField,
+        };
+    } else if (std.mem.eql(u8, hook, "permission.replied") or
+        std.mem.eql(u8, hook, "question.replied") or
+        std.mem.eql(u8, hook, "question.rejected"))
+    {
+        // Answered, whichever way: the box is gone and the turn goes on
+        // (or stops, which its own events will say).
+        ev.event = .turn_resumed;
+    } else if (std.mem.eql(u8, hook, "tool.execute.before")) {
+        ev.event = .tool_started;
+        ev.detail = try requireString(props, "tool");
+    } else if (std.mem.eql(u8, hook, "tool.execute.after")) {
+        ev.event = .turn_resumed;
+        ev.detail = try requireString(props, "tool");
+    } else return error.UnknownEvent;
+
+    return ev;
+}
+
+/// An opencode error's name (`session/message-v2.ts`), in the words Claude
+/// Code's `StopFailure` uses where there is one: a stopped turn is
+/// `interrupted`, as Codex's `Interrupt` is.
+fn opencodeError(name: []const u8, data: ?std.json.ObjectMap) []const u8 {
+    if (std.mem.eql(u8, name, "MessageAbortedError")) return "interrupted";
+    if (std.mem.eql(u8, name, "ProviderAuthError")) return "authentication_failed";
+    if (std.mem.eql(u8, name, "ContextOverflowError")) return "context_overflow";
+    if (std.mem.eql(u8, name, "MessageOutputLengthError")) return "max_output_tokens";
+    if (std.mem.eql(u8, name, "APIError")) {
+        const code = if (data) |d| switch (d.get("statusCode") orelse .null) {
+            .integer => |n| n,
+            else => 0,
+        } else 0;
+        return if (code == 429) "rate_limit" else "api_error";
+    }
+    return name;
+}
+
 fn approvalSummary(obj: std.json.ObjectMap, tool: []const u8) Error!?[]const u8 {
     const input = switch (obj.get("tool_input") orelse return null) {
         .object => |o| o,
@@ -681,6 +879,13 @@ pub fn toolKind(tool: ?[]const u8) ToolKind {
 
 fn requireString(obj: std.json.ObjectMap, key: []const u8) Error![]const u8 {
     return (try optionalString(obj, key)) orelse error.MissingField;
+}
+
+fn requireObject(obj: std.json.ObjectMap, key: []const u8) Error!std.json.ObjectMap {
+    return switch (obj.get(key) orelse return error.MissingField) {
+        .object => |o| o,
+        else => error.MissingField,
+    };
 }
 
 fn optionalString(obj: std.json.ObjectMap, key: []const u8) Error!?[]const u8 {
@@ -1437,4 +1642,183 @@ test "cutBytes never ends inside a character" {
     try testing.expectEqualStrings("中", cutBytes("中文", 4));
     try testing.expectEqualStrings("中文", cutBytes("中文", 6));
     try testing.expectEqualStrings("", cutBytes("中", 2));
+}
+
+fn trOpencode(hook: []const u8, payload: []const u8) Error!Event {
+    return translate(test_arena.allocator(), "opencode", hook, payload);
+}
+
+// opencode payloads below are what `plugins/opencode/polter-hooks.js` handed
+// a stand-in `+hook` from opencode 1.2.10, driven through `opencode serve`
+// against a stand-in model (task 1777), with long fields shortened.
+
+test "1777: opencode session.created, chat.message and an idle are a session and a turn, with the answer" {
+    setup();
+    defer teardown();
+    const started = try trOpencode("session.created",
+        \\{"type":"session.created","properties":{"info":{"id":"ses_eaf78a39fffemulCprSxgCXVmz",
+        \\ "slug":"crisp-mountain","version":"1.2.10","projectID":"global","directory":"/w",
+        \\ "parentID":null,"title":"New session - 2026-10-18T19:40:10.720Z"}},"polter":{}}
+    );
+    try testing.expectEqual(Kind.session_started, started.event);
+    try testing.expectEqualStrings("opencode", started.cli);
+    try testing.expectEqualStrings("ses_eaf78a39fffemulCprSxgCXVmz", started.session_id.?);
+    try testing.expect(started.agent_id == null);
+
+    const turn = try trOpencode("chat.message",
+        \\{"type":"chat.message","properties":{"sessionID":"ses_eaf78a39fffemulCprSxgCXVmz"},"polter":{}}
+    );
+    try testing.expectEqual(Kind.turn_started, turn.event);
+
+    const ended = try trOpencode("session.idle",
+        \\{"type":"session.status","properties":{"sessionID":"ses_eaf78a39fffemulCprSxgCXVmz",
+        \\ "status":{"type":"idle"}},"polter":{"answer":"pong from the fake model","error":null}}
+    );
+    try testing.expectEqual(Kind.turn_ended, ended.event);
+    try testing.expectEqualStrings("pong from the fake model", ended.text.?);
+    try testing.expectEqual(@as(u64, 24), ended.text_bytes);
+    try testing.expect(!ended.waiting_on_background);
+}
+
+test "1777: an opencode idle after an error is not a second end, and an idle needs what the plugin adds" {
+    setup();
+    defer teardown();
+    // Measured: an API error is `session.error` and then two idles, an
+    // abort an idle and then the error -- the plugin reads the error off
+    // the last message either way.
+    try testing.expectError(error.Ignored, trOpencode("session.idle",
+        \\{"type":"session.status","properties":{"sessionID":"s","status":{"type":"idle"}},
+        \\ "polter":{"answer":"","error":"APIError"}}
+    ));
+    try testing.expectError(error.Ignored, trOpencode("session.idle",
+        \\{"type":"session.status","properties":{"sessionID":"s","status":{"type":"idle"}},
+        \\ "polter":{"answer":"","error":"MessageAbortedError"}}
+    ));
+    // An idle the plugin said nothing about cannot be told from either.
+    try testing.expectError(error.MissingField, trOpencode("session.idle",
+        \\{"type":"session.status","properties":{"sessionID":"s","status":{"type":"idle"}}}
+    ));
+    // The name `+hook` was given has to be the event it was handed.
+    try testing.expectError(error.UnknownEvent, trOpencode("session.idle",
+        \\{"type":"session.error","properties":{"sessionID":"s","error":{"name":"APIError"}},"polter":{}}
+    ));
+    try testing.expectError(error.UnknownEvent, trOpencode("session.updated",
+        \\{"type":"session.updated","properties":{"sessionID":"s"},"polter":{}}
+    ));
+    try testing.expectError(error.MissingField, trOpencode("chat.message",
+        \\{"type":"chat.message","properties":{},"polter":{}}
+    ));
+}
+
+test "1777: opencode retrying an API error is its own state, with the provider's words and the attempt" {
+    setup();
+    defer teardown();
+    const ev = try trOpencode("session.retry",
+        \\{"type":"session.status","properties":{"sessionID":"ses_eaf78a39fffemulCprSxgCXVmz",
+        \\ "status":{"type":"retry","attempt":1,"message":"slow down","next":1792352414030}},"polter":{}}
+    );
+    try testing.expectEqual(Kind.turn_retrying, ev.event);
+    try testing.expectEqualStrings("slow down", ev.detail.?);
+    try testing.expectEqualStrings("attempt 1", ev.note.?);
+    try testing.expectEqualStrings("ses_eaf78a39fffemulCprSxgCXVmz", ev.session_id.?);
+}
+
+test "1777: opencode errors in Claude Code's words where there is one" {
+    setup();
+    defer teardown();
+    const api = try trOpencode("session.error",
+        \\{"type":"session.error","properties":{"sessionID":"s","error":{"name":"APIError","data":{
+        \\ "message":"bad request probe","statusCode":400,"isRetryable":false,
+        \\ "responseHeaders":{"content-type":"application/json"},
+        \\ "responseBody":"{\"error\":{\"message\":\"bad request probe\"}}","metadata":{"url":"http://127.0.0.1:47917/v1/chat/completions"}}}},
+        \\ "polter":{}}
+    );
+    try testing.expectEqual(Kind.turn_failed, api.event);
+    try testing.expectEqualStrings("api_error", api.detail.?);
+    try testing.expectEqualStrings("bad request probe", api.note.?);
+
+    const limit = try trOpencode("session.error",
+        \\{"type":"session.error","properties":{"sessionID":"s","error":{"name":"APIError","data":{
+        \\ "message":"Too Many Requests","statusCode":429,"isRetryable":false}}},"polter":{}}
+    );
+    try testing.expectEqualStrings("rate_limit", limit.detail.?);
+
+    const stopped = try trOpencode("session.error",
+        \\{"type":"session.error","properties":{"sessionID":"s","error":{"name":"MessageAbortedError",
+        \\ "data":{"message":"The operation was aborted."}}},"polter":{}}
+    );
+    try testing.expectEqual(Kind.turn_failed, stopped.event);
+    try testing.expectEqualStrings("interrupted", stopped.detail.?);
+
+    const auth = try trOpencode("session.error",
+        \\{"type":"session.error","properties":{"sessionID":"s","error":{"name":"ProviderAuthError",
+        \\ "data":{"providerID":"x","message":"no key"}}},"polter":{}}
+    );
+    try testing.expectEqualStrings("authentication_failed", auth.detail.?);
+}
+
+test "1777: an opencode permission is an approval naming what it asks about, and its reply resumes" {
+    setup();
+    defer teardown();
+    const asked = try trOpencode("permission.asked",
+        \\{"type":"permission.asked","properties":{"id":"per_150875de4001NWrDRObCR5s1LM",
+        \\ "sessionID":"ses_eaf78a39fffemulCprSxgCXVmz","permission":"bash","patterns":["echo oc-probe"],
+        \\ "metadata":{},"always":["echo *"],"tool":{"messageID":"msg_150875dd1001WXEf0q5dpn8F7j","callID":"call_1"}},
+        \\ "polter":{}}
+    );
+    try testing.expectEqual(Kind.awaiting_approval, asked.event);
+    try testing.expectEqualStrings("bash", asked.detail.?);
+    try testing.expectEqualStrings("echo oc-probe", asked.note.?);
+    try testing.expectEqualStrings("echo oc-probe", asked.text.?);
+    try testing.expect(std.mem.indexOf(u8, asked.input.?, "\"patterns\":[\"echo oc-probe\"]") != null);
+    try testing.expectEqual(@as(u64, asked.input.?.len), asked.input_bytes);
+    try testing.expect(asked.agent_id == null);
+
+    const replied = try trOpencode("permission.replied",
+        \\{"type":"permission.replied","properties":{"sessionID":"ses_eaf78a39fffemulCprSxgCXVmz",
+        \\ "requestID":"per_150875de4001NWrDRObCR5s1LM","reply":"once"},"polter":{}}
+    );
+    try testing.expectEqual(Kind.turn_resumed, replied.event);
+
+    const before = try trOpencode("tool.execute.before",
+        \\{"type":"tool.execute.before","properties":{"sessionID":"s","tool":"bash","callID":"call_1"},"polter":{}}
+    );
+    try testing.expectEqual(Kind.tool_started, before.event);
+    try testing.expectEqualStrings("bash", before.detail.?);
+    const after = try trOpencode("tool.execute.after",
+        \\{"type":"tool.execute.after","properties":{"sessionID":"s","tool":"bash","callID":"call_1"},"polter":{}}
+    );
+    try testing.expectEqual(Kind.turn_resumed, after.event);
+    try testing.expectEqualStrings("bash", after.detail.?);
+}
+
+test "1777: a subagent's opencode permission is said as that agent, and leaves the session alone" {
+    setup();
+    defer teardown();
+    const asked = try trOpencode("permission.asked",
+        \\{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_child","permission":"edit",
+        \\ "patterns":["src/a.zig","src/b.zig"],"metadata":{},"always":[]},"polter":{"child":true}}
+    );
+    try testing.expectEqualStrings("ses_child", asked.agent_id.?);
+    try testing.expect(asked.session_id == null);
+    try testing.expectEqualStrings("src/a.zig src/b.zig", asked.note.?);
+    try testing.expectEqualStrings("src/a.zig\nsrc/b.zig", asked.text.?);
+    const replied = try trOpencode("permission.replied",
+        \\{"type":"permission.replied","properties":{"sessionID":"ses_child","requestID":"per_1","reply":"reject"},
+        \\ "polter":{"child":true}}
+    );
+    try testing.expectEqualStrings("ses_child", replied.agent_id.?);
+}
+
+test "1777: an opencode question is the agent waiting on an answer, with the question" {
+    setup();
+    defer teardown();
+    const ev = try trOpencode("question.asked",
+        \\{"type":"question.asked","properties":{"id":"que_1","sessionID":"s","questions":[
+        \\ {"question":"Which branch?","header":"Branch","options":[{"label":"main","description":"m"}]}]},
+        \\ "polter":{}}
+    );
+    try testing.expectEqual(Kind.awaiting_input, ev.event);
+    try testing.expectEqualStrings("question", ev.detail.?);
+    try testing.expectEqualStrings("Which branch?", ev.note.?);
 }

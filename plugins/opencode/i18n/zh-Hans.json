@@ -1,4 +1,22 @@
 {
   "name": "opencode",
-  "description": "通过编辑 ~/.config/opencode/opencode.json 把 Polter 的 MCP 服务注册到 opencode——opencode 没有 `mcp add`，只能改配置文件，现有内容看不懂就直接拒绝。这一步需要 python3。不装 skill：skill 目录还没确认。"
+  "description": "通过编辑 ~/.config/opencode/opencode.json 把 Polter 的 MCP 服务注册到 opencode——`opencode mcp add` 是交互向导，只能改配置文件，现有内容看不懂就直接拒绝。这一步需要 python3。并把 Polter 的 skill 同步到 ~/.config/opencode/skills/polter-*；opencode 也会读 ~/.claude/skills，同名时以这里的为准。",
+  "params": {
+    "skills": {
+      "title": "安装 skill",
+      "description": "选「装」会把 Polter 的 skill 同步到这个 CLI 的 skill 目录。CLI 只拿自己的 skill 去匹配用户的请求，而 Polter 的 skill_read 得先想到才会用，差别就在这里。选「不装」只注册 MCP 服务，并删掉之前装过的 polter-* skill；你自己写的 skill 不会动。",
+      "choices": {
+        "yes": "装",
+        "no": "不装"
+      }
+    },
+    "rules": {
+      "title": "写进规则文件",
+      "description": "选「写入」会在用户级规则文件里（从不碰项目级的）加一段带标记的说明：agent 打印的东西没人看得到，并指向 operating-a-terminal 这个 skill。之所以要写，是因为 skill 只按用户的请求去匹配，没有哪个请求叫「你刚做完一件事」：实测 71 个任务只有 15 个报了完成。标记以外的内容一概不动；选「不写」会把这段删掉。opencode 只读 ~/.config/opencode/AGENTS.md 和 ~/.claude/CLAUDE.md 里先找到的那一个：它没有 AGENTS.md、又在读你的 CLAUDE.md 时，不会新建 AGENTS.md，否则你的 CLAUDE.md 就到不了它那里了。",
+      "choices": {
+        "yes": "写入",
+        "no": "不写"
+      }
+    }
+  }
 }

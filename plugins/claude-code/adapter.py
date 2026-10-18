@@ -67,7 +67,8 @@ Three things it deliberately does not do, and each is checkable by reading:
 
 Hooks (`dev-docs/poltergeist/adapters.md` 3.1-3.2): from Claude Code
 2.1.145 on, `launch` puts nine hooks into the one `--settings` it passes, each
-running `<polter> +hook --cli claude-code <event>` in exec form -- `command`
+running `<polter> +hook --cli claude-code <event>` in exec form, and two more
+around a compaction running `+hook-context` (`CONTEXT_HOOKS`) -- `command`
 is the Polter executable and `args` the rest, so no shell reads it: on
 Windows without Git Bash the shell is PowerShell, which read the sh-quoted
 string as a syntax error and said so only in Claude Code's debug log (#888)
@@ -189,6 +190,18 @@ HOOK_EVENTS = (
     # own end and leave a tool counted as running.
     ("PreToolUse", None),
     ("PostToolUseFailure", None),
+)
+
+# The two hooks whose stdout Claude Code puts into the session's context,
+# around a compaction (task 1779): `PreCompact` adds it to what the summary
+# keeps, `SessionStart` for `source: compact` hands it to the session that
+# starts from the summary. They run `+hook-context`, which asks Polter who
+# this terminal is to it and prints a few lines saying so and what to read
+# again -- or prints nothing, when it cannot. Separate from `HOOK_EVENTS`
+# because `+hook` never writes to stdout, and these exist to.
+CONTEXT_HOOKS = (
+    ("PreCompact", None),
+    ("SessionStart", "compact"),
 )
 
 # How the person's own status line command reaches `polter +statusline`
@@ -909,16 +922,19 @@ def hooks_for(req, settings_file, notes):
                      % (".".join(map(str, version)), ".".join(map(str, HOOKS_SINCE)), screen))
         return None
     out = {}
-    for event, matcher in HOOK_EVENTS:
-        entry = {"hooks": [{
-            "type": "command",
-            "command": polter,
-            "args": ["+hook", "--cli", "claude-code", event],
-            "timeout": HOOK_TIMEOUT,
-        }]}
-        if matcher:
-            entry = {"matcher": matcher, "hooks": entry["hooks"]}
-        out[event] = [entry]
+    # The context hooks first, so that within an event Polter's `+hook`
+    # entry stays the last one -- the one a role's own entries come before.
+    for action, events in (("+hook-context", CONTEXT_HOOKS), ("+hook", HOOK_EVENTS)):
+        for event, matcher in events:
+            entry = {"hooks": [{
+                "type": "command",
+                "command": polter,
+                "args": [action, "--cli", "claude-code", event],
+                "timeout": HOOK_TIMEOUT,
+            }]}
+            if matcher:
+                entry = {"matcher": matcher, "hooks": entry["hooks"]}
+            out.setdefault(event, []).append(entry)
     return out
 
 

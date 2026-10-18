@@ -263,6 +263,11 @@ pub const AgentState = enum {
     in_turn,
     ended,
     failed,
+    /// In a turn that is trying an API call again after an error, without
+    /// end if the error does not clear (`AgentEvent.Kind.turn_retrying`,
+    /// task 1777). Apart from `in_turn` because the two read the same on a
+    /// screen -- it moves either way -- and only one of them is working.
+    retrying,
     awaiting_approval,
     awaiting_input,
 };
@@ -330,6 +335,9 @@ pub fn boxPrint(screen: []const u8, volatile_rows: []const []const u8) ?u64 {
 pub const AgentNotice = enum {
     turn_ended,
     turn_failed,
+    /// Its turn is retrying an API error (task 1777). Said once when it
+    /// begins; the next attempt is the same state and says nothing more.
+    turn_retrying,
     awaiting_approval,
     awaiting_input,
     /// Hooks were expected and nothing has come.
@@ -392,6 +400,39 @@ pub const SaidBy = enum {
     /// `title`, the state stands only while the screen shows it
     /// (`noteScreenApproval`), and any hook event takes it back.
     screen,
+};
+
+/// How full a terminal's agent's context window is, as its CLI's status
+/// line last said (task 1779). **Three answers, not a number with a zero
+/// in it**: nothing has said -- no status line here at all, which is every
+/// Windows terminal and every CLI but Claude Code, or none yet in this
+/// session -- is not the CLI saying it has no number yet, and neither is
+/// 0%. A reading that stood for 0 would tell a supervisor at 95% that it
+/// had the whole window left.
+pub const Context = union(enum) {
+    /// Nothing has said, in this session.
+    not_reported,
+    /// The status line said, and said it has no number yet: a session
+    /// before its first answer. When, on the bus's clock.
+    no_number: u64,
+    /// The status line said this much is used.
+    used: Used,
+
+    pub const Used = struct {
+        /// Whole percent of the window, 0-100.
+        percent: u8,
+        /// When, on the bus's clock.
+        at_ms: u64,
+    };
+
+    /// When it was said, or null when nothing has.
+    pub fn atMs(self: Context) ?u64 {
+        return switch (self) {
+            .not_reported => null,
+            .no_number => |ms| ms,
+            .used => |u| u.at_ms,
+        };
+    }
 };
 
 /// Everything the bus knows about a terminal's agent from its hooks.
@@ -489,6 +530,12 @@ pub const Agent = struct {
     /// task 1668).
     title_waits: bool,
 
+    /// How full its context window is (`Context`). Kept whoever owns
+    /// `state`, and moved only by `context_reported`; a new session starts
+    /// it again, because the last one's reading is about a window that is
+    /// gone (a compaction is a new `SessionStart`).
+    context: Context,
+
     pending: ?AgentNotice,
     handed: u8,
 
@@ -546,6 +593,7 @@ pub const Agent = struct {
         .tool_ms = 0,
         .box = null,
         .title_waits = false,
+        .context = .not_reported,
         .pending = null,
         .handed = 0,
         .handed_ms = 0,
@@ -2177,6 +2225,20 @@ pub fn agentEvent(
     // screen is still the one that was asked about.
     if (ev.event == .allowance_written) return false;
 
+    // **How full the window is: kept, and nothing else moves** (task 1779).
+    // Said by the status line, which the CLI runs on its own schedule,
+    // between turns as well as in them: it is no news of the agent, so not
+    // the state, not "when it was last heard from", not the box, and not a
+    // terminal the bus has never seen -- its hooks register it.
+    if (ev.event == .context_reported) {
+        const e = self.entries.getPtr(id) orelse return false;
+        e.agent.context = if (ev.context_used) |p|
+            .{ .used = .{ .percent = @min(p, 100), .at_ms = now_ms } }
+        else
+            .{ .no_number = now_ms };
+        return false;
+    }
+
     // **A tool call started, or one ended: counted, and nothing else
     // moves** (task 1625). Both are said around every tool call in a turn;
     // what they add is whether something is running now, which the `no
@@ -2206,7 +2268,7 @@ pub fn agentEvent(
     if (ev.session_id) |sid| a.session_id.set(sid);
 
     const state: AgentState, const notice: ?AgentNotice = switch (ev.event) {
-        .launch_failed, .tool_started => unreachable,
+        .launch_failed, .tool_started, .context_reported => unreachable,
         .hooks_expected => {
             // A second launch in the same terminal starts the wait again;
             // a terminal already live stays live -- it has proved its
@@ -2227,6 +2289,7 @@ pub fn agentEvent(
         .turn_started, .turn_resumed => .{ .in_turn, null },
         .turn_ended => .{ .ended, .turn_ended },
         .turn_failed => .{ .failed, .turn_failed },
+        .turn_retrying => .{ .retrying, .turn_retrying },
         .awaiting_approval => .{ .awaiting_approval, .awaiting_approval },
         .awaiting_input => .{ .awaiting_input, .awaiting_input },
     };
@@ -2275,6 +2338,7 @@ pub fn agentEvent(
         .session_started => {
             a.tools = null;
             a.tool.set(null);
+            a.context = .not_reported;
         },
         else => {},
     }
@@ -2391,6 +2455,9 @@ pub fn noteTitle(self: *Bus, id: Id, waits_for: ?[]const u8, title: []const u8, 
 /// A question it actually asks (`elicitation_dialog`) is news.
 fn saysSomethingNew(was: Agent, is: Agent, kind: AgentNotice) bool {
     if (isWaiting(kind) and sameState(was, is)) return false;
+    // The next attempt of a retry that is already in the box, or was
+    // handed over, is the same news (task 1777).
+    if (kind == .turn_retrying and was.state == .retrying) return false;
     if (kind == .awaiting_input and was.hooks == .live and
         (was.state == .ended or was.state == .failed) and
         sameText(is.detail.get(), idle_prompt)) return false;
@@ -2423,7 +2490,7 @@ fn resumes(a: Agent, ev: AgentEvent.Event) bool {
     return switch (a.state) {
         .awaiting_approval => sameText(a.agent_id.get(), ev.agent_id),
         .awaiting_input => !sameText(a.detail.get(), idle_prompt),
-        .idle, .in_turn, .ended, .failed => false,
+        .idle, .in_turn, .ended, .failed, .retrying => false,
     };
 }
 
@@ -2457,7 +2524,9 @@ fn sameState(was: Agent, is: Agent) bool {
     return switch (is.state) {
         .awaiting_approval, .awaiting_input => sameText(was.detail.get(), is.detail.get()) and
             sameText(was.note.get(), is.note.get()),
-        .idle, .in_turn, .ended, .failed => true,
+        // Another attempt is the same retry, not a new one: its clock
+        // stays where the retrying began.
+        .idle, .in_turn, .ended, .failed, .retrying => true,
     };
 }
 
@@ -3216,7 +3285,7 @@ pub fn take(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers)
 fn isWaiting(kind: AgentNotice) bool {
     return switch (kind) {
         .awaiting_approval, .awaiting_input, .startup_question => true,
-        .turn_ended, .turn_failed, .hooks_silent, .launch_failed => false,
+        .turn_ended, .turn_failed, .turn_retrying, .hooks_silent, .launch_failed => false,
     };
 }
 
@@ -3711,7 +3780,7 @@ fn writeTurn(w: *std.Io.Writer, a: Agent, now_ms: u64) std.Io.Writer.Error!void 
 
 fn stateExplains(state: AgentState) bool {
     return switch (state) {
-        .ended, .failed, .awaiting_approval, .awaiting_input => true,
+        .ended, .failed, .retrying, .awaiting_approval, .awaiting_input => true,
         .idle, .in_turn => false,
     };
 }
@@ -3723,6 +3792,7 @@ fn stateWords(state: AgentState) []const u8 {
         .in_turn => "turn started",
         .ended => "turn ended",
         .failed => "turn failed",
+        .retrying => "retrying",
         .awaiting_approval => "awaiting approval",
         .awaiting_input => "awaiting input",
     };
@@ -3760,6 +3830,15 @@ fn writeAgent(
             "{s}0x{x:0>16} failed {s}",
             .{ sep, id, a.detail.get() orelse "(no error type)" },
         ),
+        // Not over, and not working either: what it waits on is the
+        // provider, and nothing says when that ends (task 1777).
+        .turn_retrying => {
+            try w.print(
+                "{s}0x{x:0>16} retrying an API error for {d}s: {s}",
+                .{ sep, id, (now_ms -| a.since_ms) / std.time.ms_per_s, a.detail.get() orelse "(no error text)" },
+            );
+            if (a.note.get()) |note| try w.print(" ({s})", .{note});
+        },
         .awaiting_approval => {
             // **The two moments and the switch, before the note.** They are
             // what `terminal_answer_prompt` takes as its guard, written with
@@ -6147,6 +6226,36 @@ test "hooks: failed and awaiting approval read as themselves" {
     );
 }
 
+test "1777: retrying is its own state, said once, its clock where the retrying began" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 0);
+    var retry = hookEv(.turn_retrying);
+    retry.cli = "opencode";
+    retry.detail = "Rate Limited";
+    retry.note = "attempt 1";
+    try testing.expect(try b.agentEvent(worker, retry, 1_000));
+    try testing.expectEqual(AgentState.retrying, b.agentOf(worker).state);
+    const one = b.drain(boss, 31_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 retrying an API error for 30s: Rate Limited (attempt 1)",
+        one,
+    );
+
+    // The next attempt: the same retry, nothing new in the box.
+    retry.note = "attempt 2";
+    try testing.expect(!try b.agentEvent(worker, retry, 40_000));
+    try testing.expectEqual(@as(u64, 1_000), b.agentOf(worker).since_ms);
+    try testing.expectEqualStrings("attempt 2", b.agentOf(worker).note.get().?);
+    try testing.expect(b.drain(boss, 41_000, &buf, .none) == null);
+
+    // It ends like any turn.
+    _ = try b.agentEvent(worker, hookEv(.turn_ended), 50_000);
+    try testing.expectEqual(AgentState.ended, b.agentOf(worker).state);
+}
+
 test "hooks: a worker stopped on a question is handed over at once, inside the interval, and on its own" {
     var b = try hookedBus();
     defer b.deinit();
@@ -7089,6 +7198,54 @@ test "hooks: the status line saying it wrote the allowance changes nothing the b
     // a status line is not an agent's hook.
     const stranger: Id = 0x7777;
     try testing.expect(!try b.agentEvent(stranger, hookEv(.allowance_written), 12_000));
+    try testing.expect(b.get(stranger) == null);
+}
+
+fn contextEv(used: ?u8) AgentEvent.Event {
+    var ev = hookEv(.context_reported);
+    ev.context_used = used;
+    return ev;
+}
+
+test "1779: how full the context is, kept as three answers and nothing else moved" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    _ = try b.agentEvent(worker, ask, 10_000);
+    const before = b.agentOf(worker).*;
+    // Nothing has said: not 0, not "no number".
+    try testing.expect(before.context == .not_reported);
+
+    // The status line, before the session's first answer.
+    try testing.expect(!try b.agentEvent(worker, contextEv(null), 11_000));
+    const no_number = b.agentOf(worker).context;
+    try testing.expectEqual(Context{ .no_number = 11_000 }, no_number);
+
+    // And after it.
+    try testing.expect(!try b.agentEvent(worker, contextEv(73), 12_000));
+    const used = b.agentOf(worker).context;
+    try testing.expectEqual(Context{ .used = .{ .percent = 73, .at_ms = 12_000 } }, used);
+
+    // Nothing the agent is doing moved: on `allowance_written`'s terms.
+    const after = b.agentOf(worker).*;
+    try testing.expectEqual(before.state, after.state);
+    try testing.expectEqual(before.since_ms, after.since_ms);
+    try testing.expectEqual(before.last_event_ms, after.last_event_ms);
+    try testing.expectEqual(before.pending, after.pending);
+    try testing.expect(b.promptStanding(worker, 10_000, 10_000, 13_000, null));
+
+    // A new session -- a compaction is one -- is a window nobody has
+    // measured yet.
+    var compacted = hookEv(.session_started);
+    compacted.detail = "compact";
+    _ = try b.agentEvent(worker, compacted, 14_000);
+    try testing.expect(b.agentOf(worker).context == .not_reported);
+
+    // From a terminal the bus has never heard of it makes no entry.
+    const stranger: Id = 0x7777;
+    try testing.expect(!try b.agentEvent(stranger, contextEv(50), 15_000));
     try testing.expect(b.get(stranger) == null);
 }
 

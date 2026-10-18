@@ -1063,6 +1063,13 @@ $script:HookEvents = @(
     @('PreToolUse', $null),
     @('PostToolUseFailure', $null)
 )
+# The two hooks whose stdout Claude Code puts into the session's context,
+# around a compaction (task 1779), running `+hook-context`: see
+# `CONTEXT_HOOKS` in adapter.py.
+$script:ContextHooks = @(
+    @('PreCompact', $null),
+    @('SessionStart', 'compact')
+)
 $script:HookTimeout = 5
 # How the person's own status line command reaches `polter +statusline`.
 $script:StatusLineChainEnv = 'POLTER_STATUSLINE_CHAIN'
@@ -1176,22 +1183,25 @@ function Get-Hooks($Req, [bool]$SettingsFile, $Notes) {
         return $null
     }
     $out = New-Map
-    foreach ($ev in $script:HookEvents) {
-        $hook = New-Map
-        $hook['type'] = 'command'
-        $hook['command'] = $polter
-        $hookArgs = New-List
-        foreach ($a in @('+hook', '--cli', 'claude-code', $ev[0])) { $hookArgs.Add($a) }
-        $hook['args'] = $hookArgs
-        $hook['timeout'] = $script:HookTimeout
-        $list = New-List
-        $list.Add($hook)
-        $entry = New-Map
-        if ($null -ne $ev[1]) { $entry['matcher'] = $ev[1] }
-        $entry['hooks'] = $list
-        $entries = New-List
-        $entries.Add($entry)
-        $out[$ev[0]] = $entries
+    # The context hooks first, so that within an event Polter's `+hook`
+    # entry stays the last one, as in adapter.py.
+    foreach ($set in @(@('+hook-context', $script:ContextHooks), @('+hook', $script:HookEvents))) {
+        foreach ($ev in $set[1]) {
+            $hook = New-Map
+            $hook['type'] = 'command'
+            $hook['command'] = $polter
+            $hookArgs = New-List
+            foreach ($a in @($set[0], '--cli', 'claude-code', $ev[0])) { $hookArgs.Add($a) }
+            $hook['args'] = $hookArgs
+            $hook['timeout'] = $script:HookTimeout
+            $list = New-List
+            $list.Add($hook)
+            $entry = New-Map
+            if ($null -ne $ev[1]) { $entry['matcher'] = $ev[1] }
+            $entry['hooks'] = $list
+            if (-not $out.Contains($ev[0])) { $out[$ev[0]] = New-List }
+            $out[$ev[0]].Add($entry)
+        }
     }
     return , $out
 }

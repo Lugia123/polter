@@ -1673,6 +1673,38 @@ fn expectAllHooks(settings: std.json.ObjectMap, polter: []const u8) !void {
             try testing.expect(ours.get("matcher") == null);
         }
     }
+    try expectContextHooks(hooks, polter);
+}
+
+/// The two around a compaction (task 1779), running `+hook-context`:
+/// `PreCompact` for every trigger, and `SessionStart` only for `source:
+/// compact` -- just before the `+hook` entry, which stays the last.
+fn expectContextHooks(hooks: std.json.ObjectMap, polter: []const u8) !void {
+    const Want = struct { event: []const u8, matcher: ?[]const u8, from_end: usize };
+    for ([_]Want{
+        .{ .event = "PreCompact", .matcher = null, .from_end = 1 },
+        .{ .event = "SessionStart", .matcher = "compact", .from_end = 2 },
+    }) |want| {
+        const entries = (hooks.get(want.event) orelse {
+            std.debug.print("no {s} hook\n", .{want.event});
+            return error.TestExpectedHooks;
+        }).array.items;
+        try testing.expect(entries.len >= want.from_end);
+        const entry = entries[entries.len - want.from_end].object;
+        if (want.matcher) |m| {
+            const got = entry.get("matcher") orelse return error.TestExpectedMatcher;
+            try testing.expectEqualStrings(m, got.string);
+        } else {
+            try testing.expect(entry.get("matcher") == null);
+        }
+        const hook = entry.get("hooks").?.array.items[0].object;
+        try testing.expectEqualStrings("command", hook.get("type").?.string);
+        try testing.expectEqualStrings(polter, hook.get("command").?.string);
+        const args = (hook.get("args") orelse return error.TestExpectedExecForm).array.items;
+        const argv = [_][]const u8{ "+hook-context", "--cli", "claude-code", want.event };
+        try testing.expectEqual(argv.len, args.len);
+        for (argv, args) |w, a| try testing.expectEqualStrings(w, a.string);
+    }
 }
 
 /// Unquoted: exec form hands it over as one argument, apostrophe and space

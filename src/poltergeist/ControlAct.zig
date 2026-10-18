@@ -662,7 +662,8 @@ pub fn perform(
                 .awaiting_input, .ended, .failed => true,
                 // A permission box takes keys, not a sentence, and a turn
                 // in progress is not waiting to be told anything.
-                .awaiting_approval, .in_turn, .idle => false,
+                // Retrying is a turn in progress (task 1777).
+                .awaiting_approval, .in_turn, .retrying, .idle => false,
             };
             if (!open) return error.NothingToReplyTo;
             if (a.since_ms != r.since_ms) return error.Stale;

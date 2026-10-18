@@ -82,7 +82,7 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 | `codex` | OpenAI Codex CLI | A | `~/.codex/config.toml` | `mcp_servers` **(TOML，下划线)** | `~/.codex/skills/` |
 | `qwen-code` | 阿里 Qwen Code | A | `~/.qwen/settings.json` | `mcpServers` | 待核 |
 | `kimi` | 月之暗面 Kimi CLI | A | TOML | 待核 | 待核 |
-| `opencode` | opencode | B | `~/.config/opencode/opencode.json` | `mcp` **(嵌套，不是 mcpServers)** | 待核 |
+| `opencode` | opencode | B | `~/.config/opencode/opencode.json` | `mcp` **(嵌套，不是 mcpServers)** | `~/.config/opencode/skills/`（#1777 核过，见下） |
 | `deepseek` | DeepSeek-TUI | B | `~/.deepseek/mcp.json` | 待核 | 待核 |
 | `antigravity` | Google Antigravity CLI（`agy`） | B（见下） | `~/.gemini/config/plugins/polter/mcp_config.json` | `mcpServers` | `~/.gemini/config/plugins/polter/skills/` |
 
@@ -563,8 +563,16 @@ C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但
    「我写的那个特征串在不在里面」**：跑 `claude-code` 那次真配置的 sha 确实变了，
    而定案靠的是「本次的版本戳和假 exe 路径一个都不在里面」，变化来自另外两个
    活着的 `claude` 会话进程。**「变了吗」分辨不了方向，「我写的东西在里面吗」才可以。**
-2. **四家的 skill 目录仍然是空的**（`qwen-code` `kimi` `opencode`
-   `deepseek`）。`host_skills_dir` 返回空串，那一步整个跳过。这是可接受的降级，
+2. **三家的 skill 目录仍然是空的**（`qwen-code` `kimi` `deepseek`）。
+   `opencode` 在 #1777 补上了：`~/.config/opencode/skills/`（opencode 1.2.10
+   `skill/skill.ts`）。⚠️ 它**也读 `~/.claude/skills/**`**，所以 Claude Code 插件
+   装的 polter-* 它本来就看得到；在假 `$HOME` 里两处各放一个同名 skill，
+   `opencode debug skill` 只列一个、是 opencode 目录那个，日志一条
+   `duplicate skill name` WARN，不报错。所以照装。它的规则文件只取
+   `~/.config/opencode/AGENTS.md` 和 `~/.claude/CLAUDE.md` 里**先存在的那一个**，
+   新建 AGENTS.md 会让用户的 CLAUDE.md 对 opencode 失效，所以只在 AGENTS.md
+   已存在、或没有 CLAUDE.md 时才写（`test/plugins/opencode-provision.py`）。
+   其余三家：`host_skills_dir` 返回空串，那一步整个跳过。这是可接受的降级，
    补法是核实一家填一家，**不要猜**：写进猜出来的目录是留在别人机器上的垃圾。
 3. **第六节那条「探测到就提示一次」还没做。** 没有它，默认关就意味着装了 Codex
    的人永远不知道这里有东西。这是目前最大的一个缺口，而且它和插件本身无关——它

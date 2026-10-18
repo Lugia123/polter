@@ -1342,6 +1342,49 @@ So decide, for each worker you bring back, what its history is still worth:
 Say in the group which you did and why: "compacted after its delivery" is
 something the next supervisor can check; "resumed" alone is not.
 
+### Your own context is filling up
+
+Your context runs out the way a worker's does, and when it does Claude Code
+compacts it: what you knew becomes a summary of it. The group, the panel and
+the screens survive that; what was only in your head does not. So the work
+is to get it out of your head before the compaction, and to read the record
+again after it.
+
+**Where the number comes from.** `me` has it under `agent.context`, from
+your CLI's status line (task 1779):
+
+- `said: "used"` with `used_percent` -- how much of the window is used, and
+  `age_ms` how long ago the status line said so.
+- `said: "no_number_yet"` with `used_percent: null` -- the CLI has no number
+  before its first answer. **Not 0.**
+- No `context` at all -- nothing reports it here: Claude Code on Windows has
+  no status line Polter can read, and no other CLI is read yet. You do not
+  know; `/context` on your own screen is the person's to type, not yours.
+
+**What to do, and when.**
+
+- **Around 70%:** stop starting things you cannot finish before it fills.
+- **By 85%, between turns:** write down what only you know. Each task's
+  state goes on the panel -- `task_edit` a title that has stopped being
+  true. Then one post in the group: what each worker was last told and still
+  owes, the decisions waiting on the person, what you are waiting for, and
+  what you meant to do next. Change the brief only if what the group *is* has
+  changed; the brief is not a log.
+- **Then the compaction.** You cannot type `/compact` into your own
+  terminal -- `terminal_send` refuses your own id -- and you do not have to:
+  Claude Code compacts by itself near the limit. Writing the record down
+  first is what makes that safe. If the person is there, you may ask them to
+  type `/compact` once you have.
+
+**After it.** A Claude Code started from a role with hooks gets a few lines
+from Polter at the top of the compacted session, starting `[From Polter`:
+which terminal it is, which groups it is in and supervises, and what to read
+again. Read it in this order whether those lines came or not -- `me`,
+`group_list` for the brief, `task_list`, `group_read`, `terminal_list` --
+and where the summary and the record disagree, the record is right. Before
+the compaction the same hook asked the summary to keep those things, so it
+should know them; it is still a summary.
+
 ## Looking back through what your workers did
 
 `session_recall` says how things were arranged. What a terminal actually

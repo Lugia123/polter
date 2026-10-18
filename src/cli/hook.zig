@@ -49,7 +49,7 @@ pub fn run(alloc: Allocator) !u8 {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    const argv = argsAfterHook(aa) catch |err| {
+    const argv = argsAfter(aa, "+hook") catch |err| {
         log.warn("+hook: could not read the command line err={t}", .{err});
         return 0;
     };
@@ -145,15 +145,16 @@ fn fillAnswer(aa: Allocator, io: std.Io, ev: *AgentEvent.Event) void {
     ev.text_bytes = text.len;
 }
 
-/// The arguments after our own `+hook` token. Read by hand for the reason
-/// `+launch` gives: the shared iterator takes no positionals.
-fn argsAfterHook(aa: Allocator) ![]const []const u8 {
+/// The arguments after our own `+hook` token (or `+hook-context`'s, which
+/// takes the same ones). Read by hand for the reason `+launch` gives: the
+/// shared iterator takes no positionals.
+pub fn argsAfter(aa: Allocator, action: []const u8) ![]const []const u8 {
     var iter: std.process.Args.Iterator = try .initAllocator(global.args(), aa);
     defer iter.deinit();
 
     _ = iter.next(); // argv0
     while (iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "+hook")) break;
+        if (std.mem.eql(u8, arg, action)) break;
     } else return error.NoEvent;
 
     var out: std.ArrayList([]const u8) = .empty;
@@ -161,13 +162,13 @@ fn argsAfterHook(aa: Allocator) ![]const []const u8 {
     return out.items;
 }
 
-const Args = struct {
+pub const Args = struct {
     cli: []const u8,
     event: []const u8,
 };
 
 /// `--cli <cli> <event>`.
-fn parseArgs(argv: []const []const u8) !Args {
+pub fn parseArgs(argv: []const []const u8) !Args {
     var cli: ?[]const u8 = null;
     var event: ?[]const u8 = null;
     var i: usize = 0;
@@ -237,7 +238,7 @@ pub fn deliver(
     }
 }
 
-fn sendAuth(w: *std.Io.Writer, token: []const u8) std.Io.Writer.Error!void {
+pub fn sendAuth(w: *std.Io.Writer, token: []const u8) std.Io.Writer.Error!void {
     var s: std.json.Stringify = .{ .writer = w };
     try s.beginObject();
     try s.objectField("method");
@@ -328,6 +329,12 @@ pub fn writeRequest(w: *std.Io.Writer, ev: AgentEvent.Event) std.Io.Writer.Error
         try s.objectField("waiting_on_background");
         try s.write(true);
     }
+    // Left out when null, which for `context_reported` is the CLI having
+    // no number yet (`wire.contextUsed` reads absence that way).
+    if (ev.context_used) |p| {
+        try s.objectField("context_used");
+        try s.write(p);
+    }
     try s.endObject();
     try s.endObject();
 }
@@ -362,6 +369,29 @@ test "the request +hook writes is the one the host parses back" {
     try testing.expect(got.waiting_on_background);
     try testing.expect(got.detail == null);
     try testing.expect(got.note == null);
+}
+
+test "1779: how full the context is reaches the host as said, and no number as no number" {
+    for ([_]?u8{ 0, 73, 100, null }) |used| {
+        var buf: [4096]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        var ev: AgentEvent.Event = .none;
+        ev.event = .context_reported;
+        ev.cli = "claude-code";
+        ev.context_used = used;
+        try writeRequest(&w, ev);
+
+        var p = try wire.parseRequest(testing.allocator, w.buffered());
+        defer p.deinit();
+        const got = p.value.agent_event;
+        try testing.expectEqual(AgentEvent.Kind.context_reported, got.event);
+        try testing.expectEqual(used, got.context_used);
+    }
+
+    // A number that is not a percentage is refused, not kept.
+    try testing.expectError(error.BadParams, wire.parseRequest(testing.allocator,
+        \\{"method":"agent_event","params":{"event":"context_reported","cli":"claude-code","context_used":101}}
+    ));
 }
 
 test "an approval's whole tool call reaches the host, and is cut to fit when it would not (task 1651)" {

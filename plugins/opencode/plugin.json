@@ -2,10 +2,26 @@
   "key": "opencode",
   "name": "opencode",
   "version": "1.0.0",
-  "description": "Registers Polter's MCP server with opencode by editing ~/.config/opencode/opencode.json -- opencode has no `mcp add`, so this one edits a config file, refusing outright if it cannot parse what is there. Needs python3 for that. Skills are not installed: the directory has not been confirmed.",
+  "description": "Registers Polter's MCP server with opencode by editing ~/.config/opencode/opencode.json -- `opencode mcp add` is an interactive wizard, so this one edits a config file, refusing outright if it cannot parse what is there. Needs python3 for that. Mirrors Polter's skills into ~/.config/opencode/skills/polter-*, which wins over a copy under ~/.claude/skills that opencode would also read.",
+  "screen_says": {
+    "awaiting_approval": {
+      "contains": [
+        "Permission required"
+      ]
+    }
+  },
   "exec": "provision.sh",
   "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
+  "agent_cli": {
+    "label": "opencode",
+    "bin": "opencode",
+    "adapter": "adapter.py",
+    "identify_env": [
+      "POLTER_AGENT_CLI",
+      "POLTER_REGISTERED"
+    ]
+  },
   "wants": {
     "events": [
       "provision"
@@ -17,5 +33,30 @@
       "opencode",
       "python3"
     ]
+  },
+  "params": {
+    "type": "object",
+    "properties": {
+      "skills": {
+        "type": "string",
+        "title": "Install skills as well",
+        "description": "yes mirrors Polter's skills into this host's skills directory. Polter's skill_read has to be thought of first; a host's own skills are matched against what the user asked for, which is the whole difference. no registers the MCP server and takes back the polter-* skills an earlier yes installed; skills you wrote yourself are never touched.",
+        "enum": [
+          "yes",
+          "no"
+        ],
+        "default": "yes"
+      },
+      "rules": {
+        "type": "string",
+        "title": "Write Polter's note into this CLI's rules file",
+        "description": "yes writes a marked block into the user-level rules file (never a project one) saying that what an agent prints reaches nobody, and pointing at the operating-a-terminal skill. It is there because a skill is matched against what the user asked for and nothing matches \"you have just finished a task\": on real records, 71 tasks produced 15 done reports. Everything outside the markers is left untouched, and no takes the block back out. opencode reads only the first of ~/.config/opencode/AGENTS.md and ~/.claude/CLAUDE.md that exists, so when it has no AGENTS.md and does read your CLAUDE.md, none is made: making one would stop your CLAUDE.md reaching it.",
+        "enum": [
+          "yes",
+          "no"
+        ],
+        "default": "yes"
+      }
+    }
   }
 }

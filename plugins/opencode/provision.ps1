@@ -42,14 +42,27 @@ function Get-PolterOpencodeConfig {
     Join-Path $script:PolterHome '.config\opencode\opencode.json'
 }
 
+# **Which CLI started the server** (task 1777): the entry's `environment`
+# carries it for `identify`, as the Codex and Antigravity entries do. Kept in
+# step with `provision.sh`, which has the reasons.
+$script:PolterOpencodeMarker = 'POLTER_AGENT_CLI'
+
 function Get-HostMcpCurrent {
     Read-PolterJson (Get-PolterOpencodeConfig) {
         param($d)
         $entry = Get-PolterIn $d @('mcp', 'polter')
         $command = Get-PolterIn $entry @('command')
         $env = Get-PolterIn $entry @('environment', 'POLTER_REGISTERED')
-        "$env " + (@($command) -join ' ')
+        $mark = Get-PolterIn $entry @('environment', $script:PolterOpencodeMarker)
+        "$env $mark " + (@($command) -join ' ')
     }
+}
+
+# An entry this build wrote before it carried the marker is this build's, at
+# this version, and cannot say which CLI it serves.
+function Test-HostMcpComplete {
+    param([string]$Current)
+    return $Current.Contains(' opencode ')
 }
 
 function Register-HostMcp {
@@ -62,22 +75,29 @@ function Register-HostMcp {
             type = 'local'
             command = @($Exe, '+mcp')
             enabled = $true
-            environment = [ordered]@{ $VersionKey = $Version }
+            environment = [ordered]@{
+                $VersionKey = $Version
+                $script:PolterOpencodeMarker = 'opencode'
+            }
         }
         $d
     }
 }
 
-# **Unverified.** opencode is listed among the agents that took the Agent
-# Skills standard, but its user-level directory was not confirmed. Nothing
-# rather than a guess: MCP only is a degradation, files written into the wrong
-# directory are litter on somebody's machine.
-function Get-HostSkillsDir { '' }
+# **Confirmed** (task 1777, opencode 1.2.10): `~/.config/opencode/skills`.
+# opencode reads `~/.claude/skills` too; a skill under both names is listed
+# once, the copy here winning -- `provision.sh` has the measurement.
+function Get-HostSkillsDir { Join-Path $script:PolterHome '.config\opencode\skills' }
 
-# **Nothing, on purpose.** Which rules file this CLI reads is a convention
-# nobody here has checked, and writing into the wrong file in somebody's
-# home directory is worse than not writing. The sentence it would have
-# carried stays reachable through `skill_read`.
-function Get-HostRulesFile { '' }
+# **The first of `~/.config/opencode/AGENTS.md` and `~/.claude/CLAUDE.md` that
+# exists, and only that one** (`session/instruction.ts`). Creating the
+# AGENTS.md would hide the person's CLAUDE.md from opencode, so it is written
+# only when it is already there or there is no CLAUDE.md to hide.
+# `provision.sh` has the reasons.
+function Get-HostRulesFile {
+    $agents = Join-Path $script:PolterHome '.config\opencode\AGENTS.md'
+    $claude = Join-Path $script:PolterHome '.claude\CLAUDE.md'
+    if ((Test-Path -LiteralPath $agents) -or -not (Test-Path -LiteralPath $claude)) { $agents } else { '' }
+}
 
 Invoke-PolterProvisionMain

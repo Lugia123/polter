@@ -146,7 +146,26 @@ exec form 下 `command` 可以是带空格的绝对路径，`args` 每项就是�
 的启动，并且不在 Windows 上，`statusLine` 被设成 `'<polter>' +statusline --cli claude-code`，为的是读
 Claude Code 交给状态栏命令的额度。用户原来的状态栏命令经环境变量 `POLTER_STATUSLINE_CHAIN` 串接，输出
 逐字节不变；`launch` 回复里的 `env` 从这一条起不再恒为空。它不是 hook：没有 exec 形式，是交给 shell 的
-一行，所以 polter 的路径按 `sh` 的规矩加单引号；也不经 socket，`+statusline` 只写一个文件。
+一行，所以 polter 的路径按 `sh` 的规矩加单引号。额度写进一个文件，写了就经 socket 发一个
+`allowance_written` 告诉 Polter 去读。
+
+**它还读上下文用量**（task 1779）：输入里有 `context_window` 对象时，取 `used_percentage`，经 socket
+发 `agent_event: context_reported`，`context_used` 是取整后的百分比；`used_percentage` 为 null 或缺失时
+不带 `context_used`，意思是「CLI 说它还没有数」（第一次应答之前），**不是 0**。没有 `context_window`
+就什么都不发。bus 把它存进 `Bus.Agent.context`（三态：没人报过 / 还没有数 / 百分比），不动 state、
+时钟和信箱；`session_started`（含压缩）把它清回「没人报过」。`me`、`terminal_list` 的 agent 块里
+写成 `"context":{"said":"used","used_percent":73,"age_ms":…}` 或 `{"said":"no_number_yet","used_percent":null,…}`，
+没人报过时不写这一项。Windows 不设 statusLine，所以那里永远没有这一项。
+
+**压缩前后两条 hook 跑 `+hook-context`**（task 1779，adapter 的 `CONTEXT_HOOKS`）：`PreCompact`（不带
+matcher）和 `SessionStart` matcher `compact`，同样是 exec form，`args` 为
+`["+hook-context","--cli","claude-code","<event>"]`。在同一事件里排在 `+hook` 那条之前，`+hook` 那条仍是最后一条。
+`+hook-context` 是**唯一写 stdout 的 Polter hook**：它经 socket 发 `hook_context`（`moment` 为
+`before_compact` / `after_compact`；不是工具、不算工具调用、插件不可调），拿回 Polter 拼好的几行
+（以 `[From Polter` 开头：这是哪个终端、在哪些群、是哪些群的总管、该重新读什么），然后
+`PreCompact` 原样打印（Claude Code 把它追加进压缩指令），`SessionStart` 打印
+`{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":…}}`。`source` 不是
+`compact`、没有 Polter、被拒绝、读不懂输入：一律什么都不打印、退出 0，压缩照常。
 
 ### 3.3 `polter +hook`：底层唯一的入口
 
@@ -311,7 +330,7 @@ hook 的沉默有三种来源，其中两种 hook 自己报不出来：
 | Qwen Code | hooks | 0.14.4 | `Stop` 带答案 | `StopFailure` | ✓ | `idle_prompt` | command / http |
 | Copilot CLI | hooks | 1.0.18 | `agentStop` 无答案 | `errorOccurred` | ✓ | ✓ | command / http；直接读 `.claude/settings.json` |
 | Kimi | hooks（Beta） | 1.28.0 | `Stop` 无答案 | `StopFailure` | ✗（文档示例匹配不到） | ✗ | 仅 command |
-| opencode | JS 插件 | 待定 | `session.status` idle 无答案 | `session.error` | `permission.asked` | `question.asked` | 进程内 JS，要单写 |
+| opencode | JS 插件 | 1.2.10 | `session.status` idle，答案由插件读 | `session.error`；可重试的走 `retry` 状态 | `permission.asked` | `question.asked` | 进程内 JS。**已接入，见第十节** |
 | DeepSeek-TUI（现名 Codewhale） | hooks | 0.8.54 | `turn_end` 无答案 | `on_error` | ✓ | ✓ | 仅 command |
 
 没有跨家的 hook 标准（Agent Plugins 规范 v1 明确把 hook 排除在外），但 Copilot、Gemini、Qwen、Codex
@@ -382,6 +401,68 @@ timeout 取 3，因为 codex 把 `Interrupt` 的超时钳在 3 秒以内，而�
 和别的 SessionStart 一样，要等下一轮开始才发，而下一轮正是任务那一行开启的，所以在那一行之前没有任何东西可等。
 `fresh_clis` 给每个 CLI 标上确认方式（`fresh_assign.Confirm`）：claude-code 是 `session_start`，最多等 10 秒；codex 是 `next_turn`，打完 `/clear`
 只等 2 秒（`settle_ms`）让它把命令吃下去，然后打任务那一行，回复写 `cleared: pending`。`session_id` 变了就是清过了，terminal_list 看得到。
+
+## 十、opencode（task 1777，opencode 1.2.10）
+
+事实取自 anomalyco/opencode 的 `v1.2.10` 源码（`packages/opencode/src/` 下），
+并在临时 `HOME` 里对本机 1.2.10 实测：`opencode serve` 加一个替身模型（127.0.0.1 上的假
+OpenAI 兼容服务）加一个替身 polter。实测由 `test/opencode-adapter/hooks-against-opencode.py`
+复现，没装 opencode 时它会跳过。
+
+**hook 是一个插件**。opencode 没有 command hook，只有在它自己进程里跑的 JS 插件。
+`plugins/opencode/polter-hooks.js` 就是这个插件：对 Polter 关心的每个事件，它跑一次
+`<polter> +hook --cli opencode <name>`，stdin 是 `{"type","properties","polter"}`。
+`type` 和 `properties` 是 opencode 的原样；`polter` 是插件唯一加上去的东西：
+`answer`、`error`、`child`。事件的含义一律在 `agent_event.zig` 的 `opencode()` 里翻译，
+插件不做判断。
+
+插件只在 Polter 起的会话里加载：adapter 的 launch 通过 `OPENCODE_CONFIG_CONTENT`
+（`"plugin": ["file:///…/polter-hooks.js"]`）把它加进去，并用 `POLTER_HOOK_EXE`
+告诉它跑哪个 Polter。没有这个变量时，插件的每个处理函数什么都不做。用户的配置文件一个字都不写。
+opencode 会 await `chat.message` 和工具的 hook，所以插件只负责把事件排进队列就返回；
+队列一次只跑一个 `+hook`，顺序也就和 opencode 发出的顺序一致。
+
+| opencode 事件（`+hook` 的名字） | → AgentEvent | 说明 |
+|---|---|---|
+| `session.created` | `session_started` | **第一条消息发出时才建会话**，所以 `hooks_heard: first_turn` |
+| `chat.message`（hook） | `turn_started` | |
+| `session.status` idle（`session.idle`） | `turn_ended` | 答案由插件读最后一条 assistant 消息；带 `polter.error` 的回 `Ignored`，见下 |
+| `session.status` retry（`session.retry`） | **`turn_retrying`** | 新加的状态 `retrying`，见下 |
+| `session.error` | `turn_failed` | `MessageAbortedError`→`interrupted`，APIError 429→`rate_limit`，其它→`api_error`，`ProviderAuthError`→`authentication_failed` |
+| `permission.asked` | `awaiting_approval` | `permission` 做 detail；`patterns` 一行一个，放进 text，第一行做摘要；整条请求放进 `input` |
+| `question.asked` | `awaiting_input` | detail 是 `question`，note 是问题原文 |
+| `permission.replied` / `question.replied` / `question.rejected` | `turn_resumed` | |
+| `tool.execute.before` / `.after` | `tool_started` / `turn_resumed` | |
+
+**idle 不一定是一轮结束**（实测）：API 出错时，opencode 先发 `session.error`，再连发两次 idle；
+abort 时先 idle，再 `session.error`，再 idle 两次。所以插件在 idle 之后等 300ms
+（`SETTLE_MS`），读最后一条 assistant 消息上的 `info.error`，并且只认 idle 那一刻之前创建的消息。
+实测过：不这样限定的话，下一轮刚建出来、还是空的那条消息会被当成这一轮的答案。
+
+**`turn_retrying` / `retrying`**：opencode 遇到可重试的错误（限流、过载）时不结束这一轮，
+而是无限重试（`session/retry.ts`），屏幕一直在动。这正是 #734 那种情况。它是一个独立的状态，
+既不是 `failed`（这一轮没结束），也不是 `in_turn`（它没在干活）：
+- 进入时往盒子里送一行 `retrying an API error for Ns: <原话> (attempt N)`；同一次重试的后续尝试不再送，`since` 也不动。
+- Attention 的分类：T1 之内算 `working`，过了 T1 归到 `suspect_stuck`。
+- fresh 派单和回复框都把它当作一轮还在进行。
+
+**adapter**（`plugins/opencode/adapter.py`）：角色的开关全部写进同一个 `OPENCODE_CONFIG_CONTENT`：
+- 关掉一个 skill：`permission.skill.<name> = deny`，它会从模型拿到的列表里消失；
+- 关掉一个 MCP server：`permission["<server>_*"] = deny`，它的工具不会出现在模型的工具里，但 server 本身照样启动。不能写 `mcp.<name>.enabled=false`，因为每个配置来源都要单独过 schema，只有 `enabled` 的条目会让整份配置无效；
+- `polter_*` 一律 `allow`。
+
+另外两个变量：`OPENCODE_DISABLE_AUTOUPDATE=1`；角色说明走 `--prompt`，作为第一条提示，续会话时不再发。
+续会话用 `-s ses_…`，前提是只读打开 `~/.local/share/opencode/opencode.db` 能查到这个 id。
+identify 认 provision 写进去的标记；会话是「本目录、根会话、在这个 opencode 启动之后建的」恰好一个时才给。
+`quit` 为空：还没读过 opencode 的屏幕，不知道什么时候打 `/exit` 是安全的。
+最低版本 1.2.10，低于它或读不出版本时不注入 hook。
+⚠️ 还没有 `adapter.ps1`，所以 Windows 上的角色选不到 opencode（加载时会说 `.py` 在这个系统上起不来）。
+
+**provision**：`environment` 里写 `POLTER_AGENT_CLI=opencode`；skills 装到
+`~/.config/opencode/skills`；规则写进 `~/.config/opencode/AGENTS.md`，但只在它已经存在、
+或者没有 `~/.claude/CLAUDE.md` 时才写。见 [provisioning.md](provisioning.md)。
+
+**fresh**：`/clear`（`/new` 的别名），确认方式是 `next_turn`，理由同 codex。
 
 ## 未决问题
 

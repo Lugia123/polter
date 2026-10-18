@@ -27,6 +27,7 @@ const chat = @import("chat.zig");
 const mcp = @import("mcp.zig");
 const hook = @import("hook.zig");
 const statusline = @import("statusline.zig");
+const hook_context = @import("hook_context.zig");
 const mcp_slot = @import("mcp_slot.zig");
 const launch = @import("launch.zig");
 const global = @import("../global.zig");
@@ -113,6 +114,11 @@ pub const Action = enum {
     // the account's allowance. Run by the CLI, never by hand. See
     // `cli/statusline.zig`.
     statusline,
+
+    // Put a few lines from Polter into the agent CLI's context around a
+    // compaction. Run by the CLI's hooks, never by hand. See
+    // `cli/hook_context.zig`.
+    @"hook-context",
 
     pub fn detectSpecialCase(arg: []const u8) ?SpecialCase(Action) {
         // If we see a "-e" and we haven't seen a command yet, then
@@ -320,6 +326,7 @@ pub const Action = enum {
             .launch => try launch.run(alloc),
             .hook => try hook.run(alloc),
             .statusline => try statusline.run(alloc),
+            .@"hook-context" => try hook_context.run(alloc),
         };
     }
 
@@ -369,6 +376,7 @@ pub const Action = enum {
                 .launch => launch.Options,
                 .hook => hook.Options,
                 .statusline => statusline.Options,
+                .@"hook-context" => hook_context.Options,
             };
         }
     }

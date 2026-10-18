@@ -3697,6 +3697,32 @@ test "1682: only a CLI whose hooks report no approval has its screen read while 
     try testing.expect(!hooksReportApprovalOf("x", off.object));
 }
 
+test "1777: the shipped opencode manifest declares the box opencode 1.2.10 draws" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const all = [_]Manifest{try shippedSays(a, "opencode", @embedFile("plugin_opencode_json"))};
+    // Its hooks will say approvals (`permission.asked`), so its screen is
+    // not read for one while they are live -- only for a blind answer.
+    try testing.expect(screenApprovalFor(&all, "opencode") == null);
+
+    // Put together from `routes/session/permission.tsx` at v1.2.10 -- a
+    // header row `△ Permission required`, the request, and the three
+    // options in one row -- **not read off a screen**: no opencode here has
+    // a model to ask for a command with.
+    const box =
+        \\△ Permission required
+        \\  # Shell command
+        \\  $ echo oc-probe
+        \\
+        \\  Allow once   Allow always   Reject
+        \\  ⇆ select  enter confirm
+        \\
+    ;
+    try testing.expectEqualStrings("Permission required", all[0].screen_says.approvalSaid(box).?);
+    try testing.expect(all[0].screen_says.approvalSaid("┃  Ask anything...\n  Build  local-vllm\n") == null);
+}
+
 test "1682: what agy shows before it connects: the trust box blocks, its input box lets the first line in" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();

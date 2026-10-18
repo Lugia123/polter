@@ -463,6 +463,17 @@ pub const Method = enum {
     /// report.
     agent_event,
 
+    /// What to put into the context of the agent in the asking terminal
+    /// around a compaction (task 1779): sent by `polter +hook-context`,
+    /// which Claude Code runs as its `PreCompact` hook and as its
+    /// `SessionStart` hook for `source: compact`, and which prints the
+    /// answer where the CLI reads it. A few lines saying who this terminal
+    /// is to Polter and what to read again.
+    ///
+    /// **Not a tool call and not a tool**, on `agent_event`'s terms, and
+    /// closed to plugins: it is about the asking terminal and nobody else.
+    hook_context,
+
     /// The last finished turn of a terminal's agent, in full: what its
     /// `turn_ended` hook carried, when, and in which session. The notices
     /// quote the start of it; this is the rest, up to 16 KB.
@@ -765,6 +776,7 @@ pub const Request = union(Method) {
     task_history: struct { group: []const u8, before_seq: u64 = 0, limit: u64 = 0 },
 
     agent_event: AgentEvent.Event,
+    hook_context: struct { moment: HookMoment },
     terminal_turn: struct { id: Bus.Id },
 
     // The screenshot tools. Every parameter is carried as its raw JSON text
@@ -1069,6 +1081,10 @@ pub fn callableByPlugin(method: Method) bool {
         // finished, failed or waiting.
         .agent_event,
 
+        // **Closed to plugins**, for the same reason: what it answers is
+        // put into the context of the agent in the terminal that asked.
+        .hook_context,
+
         // **Closed to plugins, for now.** It reads what an agent answered,
         // which is more than a screen's bookkeeping; nothing has asked for
         // a plugin to have it, and widening is easy.
@@ -1248,6 +1264,10 @@ pub fn offeredAsTool(method: Method) bool {
         // is there to make unnecessary -- and could be wrong.
         .agent_event => false,
 
+        // Asked by `polter +hook-context` on the CLI's behalf, and
+        // answered into the CLI's own context. An agent has `me`.
+        .hook_context => false,
+
         else => true,
     };
 }
@@ -1285,6 +1305,10 @@ pub fn requiresSupervisor(method: Method) bool {
         // A terminal's hooks reporting on that terminal. Whoever it is --
         // a worker most of all -- it is saying something about itself.
         .agent_event => false,
+
+        // Asked by `polter +hook-context` about the terminal it runs in,
+        // and only that one: whoever it is, it is asking about itself.
+        .hook_context => false,
 
         // Reading, on `terminal_read`'s terms: the target's mark decides.
         .terminal_turn => false,
@@ -1523,6 +1547,7 @@ pub fn requiresSupervisor(method: Method) bool {
 pub fn targetsTerminal(method: Method) bool {
     return switch (method) {
         .agent_event,
+        .hook_context,
         .me,
         .terminal_list,
         .notices,
@@ -1651,6 +1676,7 @@ pub fn targetsTerminal(method: Method) bool {
 pub fn target(req: Request) ?Bus.Id {
     return switch (req) {
         .agent_event,
+        .hook_context,
         .me,
         .terminal_list,
         .notices,
@@ -1765,6 +1791,7 @@ pub fn selfPermitted(req: Request) bool {
         // fall in unnoticed: it will not compile until somebody puts it
         // on one of the sides below.
         .agent_event,
+        .hook_context,
         .me,
         .terminal_list,
         .notices,
@@ -2018,6 +2045,7 @@ pub fn promptReach(method: Method) enum {
         .terminal_tab_move,
 
         .agent_event,
+        .hook_context,
         .terminal_turn,
         .me,
         .terminal_list,
@@ -2661,6 +2689,7 @@ test "only what changes the arrangement needs the supervisor" {
             // agent answered on `terminal_read`'s terms. Neither changes
             // the arrangement.
             .agent_event,
+            .hook_context,
             .terminal_turn,
 
             // Looking back through records: what may be seen is decided
@@ -6984,12 +7013,15 @@ pub fn showsAnAgent(req: Request) bool {
             .tool_started,
             .turn_ended,
             .turn_failed,
+            .turn_retrying,
             .awaiting_approval,
             .awaiting_input,
             // The status line saying it wrote the allowance file. Not a
             // hook, and the bus does nothing with it -- but only a CLI
             // that is running calls its status line, so it is there.
             .allowance_written,
+            // The same status line, saying how full the window is.
+            .context_reported,
             => true,
         },
         else => true,
@@ -7034,6 +7066,11 @@ pub fn isAgentCall(method: Method) bool {
         //   a turn ends or fails, so counted, a CLI stuck in its retry loop
         //   would refresh its own call clock every time it gave up.
         .agent_event,
+        // - `hook_context`: asked by `polter +hook-context` on the CLI's
+        //   behalf, around a compaction -- the agent is not calling
+        //   anything, and a hook that refreshed the clock would hide the
+        //   silence it is for, as `agent_event` would.
+        .hook_context,
         => false,
 
         .terminal_turn,
@@ -7219,6 +7256,25 @@ fn dispatchOne(
             // three (`wire.Membership`).
             info.membership = host.membership(alloc, caller) catch null;
             return .{ .me = info };
+        },
+
+        .hook_context => |p| {
+            // `authorize` has refused a plugin already; refused again here
+            // because the answer is about a terminal, and there is none.
+            if (who.terminalId() == null) return failure(error.NotATerminal);
+            var info = describe(bus, host, caller);
+            if (host.openTerminals(alloc)) |places| {
+                defer alloc.free(places);
+                for (places) |place| if (place.id == caller) {
+                    info.title = place.title;
+                    break;
+                };
+            } else |err| {
+                log.warn("poltergeist: could not list terminals for hook_context err={}", .{err});
+            }
+            // Null when the host cannot say, and the text says so.
+            info.membership = host.membership(alloc, caller) catch null;
+            return .{ .text = try hookContextText(alloc, p.moment, info) };
         },
 
         .persona_slot => |p| {
@@ -9160,6 +9216,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
             .state_at_ms = null,
             .event_at_ms = null,
             .tool_for_ms = null,
+            .context_age_ms = null,
         } else .{
             .agent = e.agent,
             .since_ms = host.nowMs() -| e.agent.since_ms,
@@ -9168,6 +9225,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
             .state_at_ms = e.agent.since_ms,
             .event_at_ms = e.agent.eventMs(),
             .tool_for_ms = if (e.agent.tools != null) host.nowMs() -| e.agent.tool_ms else null,
+            .context_age_ms = if (e.agent.context.atMs()) |ms| host.nowMs() -| ms else null,
         },
 
         // #63: what `agent` cannot say -- that the agent it describes is
@@ -9641,11 +9699,19 @@ fn blindRefusal(alloc: std.mem.Allocator, bus: *const Bus, host: Host, id: Bus.I
 /// waits for a turn to begin like any other. Antigravity's the same way
 /// (task 1682, measured on agy 1.4.0): after `/clear` no `SessionStart`
 /// comes until the next prompt, and that one names a new conversation.
+/// opencode's is `/new`, with `/clear` as its alias (`slash.aliases` in
+/// opencode 1.2.10 `tui/app.tsx`); it only goes back to the start page, says
+/// nothing, and the next session is created with the next message (task
+/// 1777). `/clear` is what is typed, so every reply that says "/clear sent"
+/// stays true. ⚠️ Read off the source, not off a screen: the alias is matched
+/// by the prompt's fuzzy completion (`autocomplete.tsx`), which a test
+/// machine has to confirm picks "New session" for it.
 const FreshCli = struct { cli: []const u8, command: []const u8, confirm: fresh_assign.Confirm };
 const fresh_clis = [_]FreshCli{
     .{ .cli = "claude-code", .command = "/clear", .confirm = .session_start },
     .{ .cli = "codex", .command = "/clear", .confirm = .next_turn },
     .{ .cli = "antigravity", .command = "/clear", .confirm = .next_turn },
+    .{ .cli = "opencode", .command = "/clear", .confirm = .next_turn },
 };
 
 /// The clear for this agent's CLI, or null for one with none.
@@ -9679,13 +9745,14 @@ pub fn freshRefusal(agent: ?Bus.Agent) ?struct { code: []const u8, message: []co
     };
     if (freshCli(a) == null) return .{
         .code = "FreshUnsupported",
-        .message = "only claude-code and codex (/clear) can be cleared; that terminal's CLI " ++
+        .message = "only claude-code, codex, antigravity and opencode (/clear) can be cleared; that terminal's CLI " ++
             "is another. Nothing was typed and nothing was assigned; assign without fresh, " ++
             "or start a new worker for the task.",
     };
     return switch (a.state) {
         .idle, .ended, .failed, .awaiting_input => null,
-        .in_turn => .{
+        // Retrying is a turn too, one that has not ended (task 1777).
+        .in_turn, .retrying => .{
             .code = "AgentBusy",
             .message = "that agent is in a turn: a clear typed now would wait behind its " ++
                 "work, or end it. Nothing was typed and nothing was assigned; try again " ++
@@ -10376,6 +10443,90 @@ fn screenshotUnsupported() wire.Response {
 }
 
 pub const ProjectAction = enum { use, drop };
+
+/// When `hook_context` is asked (task 1779).
+pub const HookMoment = enum {
+    /// Claude Code's `PreCompact`: the answer is added to what the summary
+    /// is told to keep.
+    before_compact,
+    /// Claude Code's `SessionStart` with `source: compact`: the answer goes
+    /// into the context the compacted session starts with.
+    after_compact,
+};
+
+/// What `hook_context` answers: a few lines, in the agent's own working
+/// language of tool names, that start by saying they are Polter's -- the
+/// agent reads them as part of its context and has to be able to tell
+/// where they came from.
+///
+/// **Short on purpose.** It is put into the context of an agent whose
+/// context has just run out; everything it names is something to read,
+/// not something said here. A terminal Polter can say nothing about is
+/// still told what to read, because that is the part that matters.
+pub fn hookContextText(
+    alloc: std.mem.Allocator,
+    moment: HookMoment,
+    info: wire.TerminalInfo,
+) std.mem.Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
+    hookContextWrite(w, moment, info) catch return error.OutOfMemory;
+    return out.toOwnedSlice();
+}
+
+fn hookContextWrite(w: *std.Io.Writer, moment: HookMoment, info: wire.TerminalInfo) std.Io.Writer.Error!void {
+    const m = info.membership;
+    const supervising = if (m) |x| x.supervisor_of.len > 0 else false;
+
+    switch (moment) {
+        .before_compact => try w.writeAll("[From Polter, the terminal this session runs in] Keep in the summary: "),
+        .after_compact => try w.writeAll("[From Polter, the terminal this session runs in] This session's context was just compacted. "),
+    }
+    try w.print("This is Polter terminal 0x{x:0>16}", .{info.id});
+    if (info.title.len > 0) try w.print(" (\"{s}\")", .{info.title});
+    try w.writeAll(". ");
+
+    if (m) |x| {
+        if (x.groups.len == 0) {
+            try w.writeAll("It is in no group. ");
+        } else {
+            try w.writeAll("Groups it is in: ");
+            try writeNames(w, x.groups);
+            try w.writeAll(". ");
+            if (supervising) {
+                try w.writeAll("It is the supervisor of: ");
+                try writeNames(w, x.supervisor_of);
+                try w.writeAll(". ");
+            }
+        }
+    } else {
+        try w.writeAll("Polter could not say which groups it is in; `me` will. ");
+    }
+
+    switch (moment) {
+        .before_compact => {
+            try w.writeAll("Also keep the task numbers it holds and where each stands");
+            if (supervising) try w.writeAll(", what each worker was last told and still owes, the decisions waiting on the person");
+            try w.writeAll(", and what it was waiting for.");
+        },
+        .after_compact => {
+            try w.writeAll("The summary is not the record: before acting, read it again -- `me`, ");
+            if (supervising)
+                try w.writeAll("`group_list` for the brief, `task_list`, `group_read`, and `terminal_list` for the workers")
+            else
+                try w.writeAll("`task_list` for your own tasks and `group_read`");
+            try w.writeAll(". Where the summary and the record disagree, the record is right.");
+        },
+    }
+}
+
+fn writeNames(w: *std.Io.Writer, names: []const []const u8) std.Io.Writer.Error!void {
+    for (names, 0..) |n, i| {
+        if (i > 0) try w.writeAll(", ");
+        try w.writeAll(n);
+    }
+}
 
 /// Why `group_project` changed nothing, in words for the agent that
 /// asked. By the error's name, so that one this file has never heard of
@@ -14447,6 +14598,27 @@ test "1682: antigravity is cleared with /clear and confirmed only by its next tu
     try testing.expectEqual(fresh_assign.Confirm.next_turn, fake.parked_assign.?.confirm);
 }
 
+test "1777: opencode is cleared with /clear and confirmed only by its next turn" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+    freshAgent(&b, .idle, "opencode");
+    try testing.expect(freshRefusal(b.agentOf(worker).*) == null);
+
+    const id = try panel.create("build", "t", .bug);
+    _ = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+        .fresh = true,
+    } });
+    try testing.expectEqualStrings("/clear", fake.sent.?.text);
+    try testing.expectEqual(fresh_assign.Confirm.next_turn, fake.parked_assign.?.confirm);
+}
+
 test "1668: a host that cannot hold a codex clear finishes it at once, pending" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -17100,6 +17272,116 @@ test "hooks: terminal_list carries the agent state, and leaves it out with no ho
     try testing.expect(std.mem.indexOf(u8, w.buffered(),
         \\"agent":{"hooks":"live","state":"awaiting_approval","since_ms":3000,"state_at_ms":1000,"event_at_ms":1000,"session_id":"sess-1","cli":"claude-code","detail":"Bash","note":"zig build test","waiting_on_background":false}
     ) != null);
+}
+
+test "1779: terminal_list says how full the context is, and says no number as no number" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .now_ms = 1_000 };
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = hookEvent(.session_started) });
+
+    // Nothing said yet: no `context` at all, on `quiet_ms`'s terms.
+    var out: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    try wire.writeResponse(&w, try dispatch(testing.allocator, &b, fake.host(), term(worker), .me));
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"context\"") == null);
+
+    // Said, with no number: `null`, never 0.
+    var none = hookEvent(.context_reported);
+    none.context_used = null;
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = none });
+    fake.now_ms = 1_500;
+    w = .fixed(&out);
+    try wire.writeResponse(&w, try dispatch(testing.allocator, &b, fake.host(), term(worker), .me));
+    try testing.expect(std.mem.indexOf(u8, w.buffered(),
+        \\"context":{"said":"no_number_yet","used_percent":null,"age_ms":500}
+    ) != null);
+
+    // Said, with one.
+    var used = hookEvent(.context_reported);
+    used.context_used = 73;
+    _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = used });
+    fake.now_ms = 3_500;
+    w = .fixed(&out);
+    try wire.writeResponse(&w, try dispatch(testing.allocator, &b, fake.host(), term(worker), .me));
+    try testing.expect(std.mem.indexOf(u8, w.buffered(),
+        \\"context":{"said":"used","used_percent":73,"age_ms":2000}
+    ) != null);
+}
+
+test "1779: hook_context is the asking terminal's, for its hooks: no tool, no call, no plugin" {
+    try testing.expect(!offeredAsTool(.hook_context));
+    try testing.expect(!isAgentCall(.hook_context));
+    try testing.expect(!callableByPlugin(.hook_context));
+    try testing.expect(!requiresSupervisor(.hook_context));
+
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try testing.expectError(error.NotATerminal, authorize(
+        &b,
+        plug(&.{"hook_context"}),
+        .{ .hook_context = .{ .moment = .after_compact } },
+    ));
+}
+
+test "1779: after a compaction a supervisor is told who it is and to read the record again" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .membership_is = .{
+        .groups = &.{ "web-app", "billing" },
+        .supervisor_of = &.{"web-app"},
+        .started_for = null,
+        .projects = &.{},
+    } };
+
+    const res = try dispatch(aa, &b, fake.host(), term(worker), .{ .hook_context = .{ .moment = .after_compact } });
+    const text = res.text;
+    // Says whose it is, first.
+    try testing.expect(std.mem.startsWith(u8, text, "[From Polter"));
+    const id = try std.fmt.allocPrint(aa, "0x{x:0>16}", .{worker});
+    try testing.expect(std.mem.indexOf(u8, text, id) != null);
+    try testing.expect(std.mem.indexOf(u8, text, "Groups it is in: web-app, billing.") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "supervisor of: web-app.") != null);
+    // What to read, a supervisor's whole list.
+    for ([_][]const u8{ "`me`", "`group_list`", "`task_list`", "`group_read`", "`terminal_list`" }) |tool| {
+        try testing.expect(std.mem.indexOf(u8, text, tool) != null);
+    }
+
+    // Before one, what the summary is to keep -- the workers among it.
+    const before = (try dispatch(aa, &b, fake.host(), term(worker), .{ .hook_context = .{ .moment = .before_compact } })).text;
+    try testing.expect(std.mem.indexOf(u8, before, "Keep in the summary") != null);
+    try testing.expect(std.mem.indexOf(u8, before, "what each worker was last told") != null);
+}
+
+test "1779: a worker is pointed at its own tasks, and a terminal Polter cannot place is still told what to read" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    var fake: FakeHost = .{ .membership_is = .{
+        .groups = &.{"web-app"},
+        .supervisor_of = &.{},
+        .started_for = null,
+        .projects = &.{},
+    } };
+    const worker_text = (try dispatch(aa, &b, fake.host(), term(worker), .{ .hook_context = .{ .moment = .after_compact } })).text;
+    try testing.expect(std.mem.indexOf(u8, worker_text, "Groups it is in: web-app.") != null);
+    try testing.expect(std.mem.indexOf(u8, worker_text, "supervisor of") == null);
+    try testing.expect(std.mem.indexOf(u8, worker_text, "`task_list` for your own tasks") != null);
+    try testing.expect(std.mem.indexOf(u8, worker_text, "`terminal_list`") == null);
+    const worker_before = (try dispatch(aa, &b, fake.host(), term(worker), .{ .hook_context = .{ .moment = .before_compact } })).text;
+    try testing.expect(std.mem.indexOf(u8, worker_before, "what each worker") == null);
+
+    // No membership to be had: said so, and the reading list stays.
+    var lost: FakeHost = .{};
+    const lost_text = (try dispatch(aa, &b, lost.host(), term(worker), .{ .hook_context = .{ .moment = .after_compact } })).text;
+    try testing.expect(std.mem.indexOf(u8, lost_text, "could not say which groups") != null);
+    try testing.expect(std.mem.indexOf(u8, lost_text, "`task_list`") != null);
 }
 
 test "1656: a title's wait shows in terminal_list as awaiting_approval with detail title, and its moments" {

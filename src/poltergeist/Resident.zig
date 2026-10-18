@@ -4824,7 +4824,9 @@ test "the hosts that edit a config file, and the four properties they promise" {
             .bin = "opencode",
             .cfg = ".config/opencode/opencode.json",
             .src = @embedFile("plugin_opencode_sh"),
-            .shape = "\"type\": \"local\"",
+            // Its `type` and the marker in its `environment` (task 1777):
+            // without the marker the sidecar cannot say which CLI started it.
+            .shape = "\"POLTER_AGENT_CLI\": \"opencode\"",
         },
         .{
             .key = "deepseek",

@@ -268,6 +268,10 @@ pub fn add(
     step.root_module.addAnonymousImport("plugin_antigravity_json", .{
         .root_source_file = b.path("plugins/antigravity/plugin.json"),
     });
+    // And opencode's, for the box it declares (task 1777).
+    step.root_module.addAnonymousImport("plugin_opencode_json", .{
+        .root_source_file = b.path("plugins/opencode/plugin.json"),
+    });
 
     // And `qwen-code`, for one property that has nothing to do with skills:
     // **the command line it builds for `qwen mcp add`.** That argument order
