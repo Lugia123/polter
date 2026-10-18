@@ -5012,6 +5012,8 @@ pub const MentionRow = struct {
 
 /// See `MentionRow.retry` and `MentionRetry`.
 pub const MentionRetryPlan = struct {
+    /// How many more tries; 0 is no count -- tried until the refusal
+    /// clears (a permission box being answered, task 1682).
     attempts: u8,
     every_ms: u64,
 };
@@ -5402,6 +5404,44 @@ pub const Place = struct {
     tab_title: ?[]const u8 = null,
 };
 
+/// What a terminal with no agent connected shows of a CLI started in it
+/// (`Host.startupReach`, task 1682).
+pub const StartupReach = enum {
+    /// Its input box is up: a CLI that connects only once asked, waiting.
+    ready,
+    /// A question it asks before anything else is up -- the folder trust
+    /// box -- that only the person may answer.
+    blocked,
+    /// Nothing to go by: a shell, a CLI that declares nothing, or one
+    /// still starting.
+    none,
+};
+
+/// Whether a line may be typed into `id`, and if not, why not -- the gate
+/// a mention and `task_assign` share (#1533).
+///
+/// **An agent connected, or a CLI that will connect once asked and is
+/// showing its input box** (task 1682). The second is asked only when the
+/// first is false, and holds only on the screen's word that this is the
+/// CLI's box and not a shell: `ready_says` is declared text, and a line
+/// typed at a shell is the defect #1533 closed.
+const Typable = enum { yes, no_agent, startup_prompt };
+
+fn mayType(host: Host, id: Bus.Id) Typable {
+    if (host.agentPresent(id)) return .yes;
+    return switch (host.startupReach(id)) {
+        .ready => .yes,
+        .blocked => .startup_prompt,
+        .none => .no_agent,
+    };
+}
+
+/// The words for a terminal whose CLI is asking the person something first.
+const startup_prompt_message = "that terminal's agent CLI is asking a question of its own before it " ++
+    "starts -- whether to trust the folder it was started in -- so nothing was typed: the " ++
+    "return would answer it. That is the person's decision, not yours: ask them to answer it " ++
+    "there (notify_user, or say so in the group), then send this again.";
+
 pub const Host = struct {
     ctx: *anyopaque,
     vtable: *const VTable,
@@ -5540,6 +5580,16 @@ pub const Host = struct {
             ctx: *anyopaque,
             id: Bus.Id,
         ) bool,
+
+        /// For a terminal with no agent connected (`agentPresent` false):
+        /// what its screen says about a CLI that was started there and
+        /// connects only once it is asked something (task 1682,
+        /// `Plugin.StartupSays`). Also a fact: whether that lets a line in
+        /// is decided here (`mayType`).
+        startupReach: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+        ) StartupReach,
 
         /// The configuration as text, or the lines for one key.
         ///
@@ -6243,6 +6293,10 @@ pub const Host = struct {
 
     fn agentPresent(self: Host, id: Bus.Id) bool {
         return self.vtable.agentPresent(self.ctx, id);
+    }
+
+    fn startupReach(self: Host, id: Bus.Id) StartupReach {
+        return self.vtable.startupReach(self.ctx, id);
     }
 
     fn personaSlot(self: Host, id: Bus.Id, slot: []const u8) anyerror!PersonaSlot {
@@ -7354,6 +7408,7 @@ fn dispatchOne(
 
                 error.UserPresent => hostFailure("UserPresent", key_arrived),
                 error.Composing => hostFailure("UserPresent", composing_typed),
+                error.ApprovalOnScreen => hostFailure("ApprovalOnScreen", approval_on_screen),
                 error.DraftInLine => hostFailure("DraftInLine", draft_in_line),
                 error.NotSubmitted => hostFailure("NotSubmitted", not_submitted),
 
@@ -7750,6 +7805,7 @@ fn dispatchOne(
                 // next one.
                 error.UserPresent => hostFailure("UserPresent", key_arrived),
                 error.Composing => hostFailure("UserPresent", composing_typed),
+                error.ApprovalOnScreen => hostFailure("ApprovalOnScreen", approval_on_screen),
                 error.DraftInLine => hostFailure("DraftInLine", draft_in_line),
                 error.NotSubmitted => hostFailure("NotSubmitted", not_submitted),
 
@@ -8934,7 +8990,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         // one.
         // A title saying it waits (task 1656) has its moments like a hook
         // does: they are what `terminal_answer_prompt` is handed back.
-        .agent = if (e.agent.hooks == .none and e.agent.said_by != .title) .{
+        .agent = if (!Bus.Agent.spoke(e.agent.hooks, e.agent.said_by) and e.agent.hooks == .none) .{
             .agent = e.agent,
             .since_ms = null,
             .state_at_ms = null,
@@ -9045,7 +9101,13 @@ fn postMentioning(
     for (rows) |*row| {
         const to = row.to orelse continue;
         if (row.code != null) continue;
-        if (!host.agentPresent(to)) {
+        const typable = mayType(host, to);
+        if (typable == .startup_prompt) {
+            row.code = "StartupPrompt";
+            row.message = startup_prompt_message ++ " The message itself is in the group and counted unread.";
+            continue;
+        }
+        if (typable == .no_agent) {
             row.code = "NoAgent";
             row.message = "there is no agent in that terminal (no live MCP connection), " ++
                 "so nothing was typed: typed at a bare shell, the message would be run " ++
@@ -9075,15 +9137,28 @@ fn postMentioning(
                 // **Tried again, and the end is told** (#60): the host
                 // queues the same line when the refusal is one that clears.
                 if (MentionRetry.delayMs(err)) |every| {
-                    row.retry = .{ .attempts = MentionRetry.attempts, .every_ms = every };
-                    row.message = try std.fmt.allocPrint(
-                        alloc,
-                        "{s} The message itself is in the group and counted unread. It " ++
-                            "will be typed again up to {d} times, {d}s apart; if the last " ++
-                            "try is refused too, a line saying so is typed into your own " ++
-                            "terminal.",
-                        .{ why.message, MentionRetry.attempts, every / std.time.ms_per_s },
-                    );
+                    if (err == error.ApprovalOnScreen) {
+                        // No count: typed once the box has been answered
+                        // (`MentionRetry.requeue`), however long that takes.
+                        row.retry = .{ .attempts = 0, .every_ms = every };
+                        row.message = try std.fmt.allocPrint(
+                            alloc,
+                            "{s} The message itself is in the group and counted unread. It " ++
+                                "will be typed once the box has been answered, looked for every " ++
+                                "{d}s, and not before.",
+                            .{ why.message, every / std.time.ms_per_s },
+                        );
+                    } else {
+                        row.retry = .{ .attempts = MentionRetry.attempts, .every_ms = every };
+                        row.message = try std.fmt.allocPrint(
+                            alloc,
+                            "{s} The message itself is in the group and counted unread. It " ++
+                                "will be typed again up to {d} times, {d}s apart; if the last " ++
+                                "try is refused too, a line saying so is typed into your own " ++
+                                "terminal.",
+                            .{ why.message, MentionRetry.attempts, every / std.time.ms_per_s },
+                        );
+                    }
                 } else row.message = try std.fmt.allocPrint(
                     alloc,
                     "{s} The message itself is in the group and counted unread; only " ++
@@ -9223,7 +9298,12 @@ fn assignAndTell(
         // exactly like a working assignment on the panel, and the
         // supervisor would wait on work nobody has. A failure is at
         // least seen.
-        if (!host.agentPresent(id)) return .{ .failed = .{
+        const typable = mayType(host, id);
+        if (typable == .startup_prompt) return .{ .failed = .{
+            .code = "StartupPrompt",
+            .message = startup_prompt_message ++ " The task was not handed over.",
+        } };
+        if (typable == .no_agent) return .{ .failed = .{
             .code = "NoAgentThere",
             .message = "there is no agent in that terminal (no live " ++
                 "MCP connection), so nobody can take this task -- " ++
@@ -9282,6 +9362,11 @@ fn assignAndTell(
                     "it to a terminal that is working.",
             ),
 
+            error.ApprovalOnScreen => hostFailure(
+                "ApprovalOnScreen",
+                approval_on_screen ++ " Nothing was said, so nothing was assigned: " ++
+                    "the panel is unchanged.",
+            ),
             error.UserPresent => hostFailure(
                 "UserPresent",
                 key_arrived ++ " Nothing was said, so nothing was assigned: " ++
@@ -9385,11 +9470,14 @@ fn blindRefusal(alloc: std.mem.Allocator, bus: *const Bus, host: Host, id: Bus.I
 /// has happened (#64). Claude Code's hooks say so at once (`SessionStart`
 /// with `source: clear`). Codex's say so only with its next turn (task
 /// 1668): `/clear` there is `InitialHistory::Cleared`, whose `SessionStart`
-/// waits for a turn to begin like any other.
+/// waits for a turn to begin like any other. Antigravity's the same way
+/// (task 1682, measured on agy 1.4.0): after `/clear` no `SessionStart`
+/// comes until the next prompt, and that one names a new conversation.
 const FreshCli = struct { cli: []const u8, command: []const u8, confirm: fresh_assign.Confirm };
 const fresh_clis = [_]FreshCli{
     .{ .cli = "claude-code", .command = "/clear", .confirm = .session_start },
     .{ .cli = "codex", .command = "/clear", .confirm = .next_turn },
+    .{ .cli = "antigravity", .command = "/clear", .confirm = .next_turn },
 };
 
 /// The clear for this agent's CLI, or null for one with none.
@@ -9472,6 +9560,8 @@ fn freshAssign(
 
     // The same refusals as any typing, and nothing assigned after them.
     host.sendText(id, clear.command, true) catch |err| return switch (err) {
+        error.ApprovalOnScreen => hostFailure("ApprovalOnScreen", approval_on_screen ++
+            " Nothing was cleared and nothing was assigned."),
         error.UserPresent => hostFailure("UserPresent", key_arrived ++
             " Nothing was cleared and nothing was assigned."),
         error.Composing => hostFailure("UserPresent", composing_typed ++
@@ -9532,6 +9622,7 @@ fn mentionFailure(err: anyerror) struct { code: []const u8, message: []const u8 
             .code = "ChildExited",
             .message = "that terminal's process has exited; there is nothing in it to read this.",
         },
+        error.ApprovalOnScreen => .{ .code = "ApprovalOnScreen", .message = approval_on_screen },
         error.UserPresent => .{ .code = "UserPresent", .message = key_arrived },
         error.Composing => .{ .code = "UserPresent", .message = composing_typed },
         error.DraftInLine => .{ .code = "DraftInLine", .message = draft_in_line },
@@ -9643,6 +9734,15 @@ const moved_while_keyed =
 /// method is composing in that terminal. Code `UserPresent` -- it is a
 /// person at the keyboard, the fact the code already names -- and its own
 /// sentence, because unlike the key clock it does not clear in ten seconds.
+/// A permission box its CLI's hooks do not report is on that terminal's
+/// screen (task 1682, `Surface.mayType`).
+const approval_on_screen =
+    "that terminal's agent CLI has a permission box on its screen -- it is asking " ++
+    "whether to run a command or a tool -- so nothing was typed: the return would " ++
+    "answer it with whichever option is highlighted. Answering it is the person's " ++
+    "or terminal_answer_prompt's to do; this clears when it has been answered, so " ++
+    "try again after that.";
+
 const composing_typed =
     "an input method is composing in that terminal -- a word is in its " ++
     "candidate box and has not reached the line yet -- so nothing was typed: " ++
@@ -9816,6 +9916,10 @@ fn taskFailure(err: anyerror) wire.Response {
         // A key reached that terminal a moment ago, so nothing was typed
         // into it -- the same guard every other write to a terminal keeps.
         // The task is untouched, and asking again in a moment works.
+        error.ApprovalOnScreen => hostFailure(
+            "NotTold",
+            approval_on_screen ++ " It was not told, and the task is still open.",
+        ),
         error.UserPresent => hostFailure(
             "NotTold",
             key_arrived ++ " It was not told, and the task is still open.",
@@ -10481,6 +10585,8 @@ const FakeHost = struct {
     /// Terminals with no agent in them whatever `agent_present` says, for
     /// the tests where one named terminal has one and another does not.
     agent_absent: []const Bus.Id = &.{},
+    /// What `startupReach` answers for a terminal with no agent.
+    startup: StartupReach = .none,
 
     /// The one slot this terminal's persona wants, for the slot tests.
     slot_wanted: ?[]const u8 = null,
@@ -10555,6 +10661,7 @@ const FakeHost = struct {
             .sendText = send,
             .parkAssign = parkAssign,
             .agentPresent = agentPresent,
+            .startupReach = startupReach,
             .personaFace = personaFace,
             .terminalCapabilities = terminalCapabilities,
             .agentArrived = agentArrived,
@@ -11161,6 +11268,11 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (std.mem.indexOfScalar(Bus.Id, self.agent_absent, id) != null) return false;
         return self.agent_present;
+    }
+
+    fn startupReach(ctx: *anyopaque, _: Bus.Id) StartupReach {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.startup;
     }
 
     fn personaSlot(ctx: *anyopaque, _: Bus.Id, slot: []const u8) anyerror!Host.PersonaSlot {
@@ -14124,6 +14236,27 @@ test "1668: codex is cleared with /clear, held only to settle, and the reply say
     try testing.expectEqualStrings("AgentBusy", freshRefusal(b.agentOf(worker)).?.code);
 }
 
+test "1682: antigravity is cleared with /clear and confirmed only by its next turn" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+    freshAgent(&b, .idle, "antigravity");
+    try testing.expect(freshRefusal(b.agentOf(worker)) == null);
+
+    const id = try panel.create("build", "t", .bug);
+    _ = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+        .fresh = true,
+    } });
+    try testing.expectEqualStrings("/clear", fake.sent.?.text);
+    try testing.expectEqual(fresh_assign.Confirm.next_turn, fake.parked_assign.?.confirm);
+}
+
 test "1668: a host that cannot hold a codex clear finishes it at once, pending" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -14187,6 +14320,7 @@ test "fresh: a refused clear assigns nothing and types nothing more" {
         .{ .state = .idle, .cli = "gemini", .send_err = null, .code = "FreshUnsupported" },
         .{ .state = .idle, .cli = "claude-code", .send_err = error.DraftInLine, .code = "DraftInLine" },
         .{ .state = .idle, .cli = "claude-code", .send_err = error.UserPresent, .code = "UserPresent" },
+        .{ .state = .idle, .cli = "claude-code", .send_err = error.ApprovalOnScreen, .code = "ApprovalOnScreen" },
     }) |c| {
         var b = try testBus(testing.allocator);
         defer b.deinit();
@@ -14242,6 +14376,41 @@ test "fresh: absent is the ordinary assignment, with no clear typed" {
 // is easy; refusing **without leaving an owner behind** is the point. An
 // assignment pointing at a terminal that will never read it is
 // indistinguishable on the panel from one that worked.
+test "1682: a CLI showing its input box before it connects is given the work; one asking the person is not" {
+    for ([_]struct { reach: StartupReach, code: ?[]const u8 }{
+        .{ .reach = .ready, .code = null },
+        .{ .reach = .blocked, .code = "StartupPrompt" },
+        .{ .reach = .none, .code = "NoAgentThere" },
+    }) |c| {
+        var b = try testBus(testing.allocator);
+        defer b.deinit();
+        var panel: Tasks = .init(testing.allocator, .{});
+        defer panel.deinit();
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        var fake = panelFixture(&panel);
+        fake.agent_present = false;
+        fake.startup = c.reach;
+
+        const id = try panel.create("build", "take the machine", .bug);
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .task_assign = .{
+            .task = id,
+            .id = worker,
+        } });
+        // Which arm came back is asserted before anything is read out of it:
+        // a refusal that went through is a failed assertion, not a panic.
+        try testing.expectEqual(c.code != null, res == .failed);
+        if (c.code) |code| {
+            try testing.expectEqualStrings(code, res.failed.code);
+            try testing.expect(fake.sent == null);
+            try testing.expectEqual(@as(Bus.Id, 0), panel.get(id).?.owner);
+        } else {
+            try testing.expect(fake.sent != null);
+            try testing.expectEqual(worker, panel.get(id).?.owner);
+        }
+    }
+}
+
 test "a terminal with no agent listening is not given the work" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -15087,6 +15256,8 @@ test "each reason a send can fail says which one it was" {
         .{ .err = error.UnsafeText, .code = "UnsafeText" },
         .{ .err = error.ChildExited, .code = "ChildExited" },
         .{ .err = error.UserPresent, .code = "UserPresent" },
+        // A permission box its hooks do not report is on the screen (task 1682).
+        .{ .err = error.ApprovalOnScreen, .code = "ApprovalOnScreen" },
 
         // ⚠️ **The row that would have been missing.** `DraftInLine` and
         // `UserPresent` were one error with one sentence, and that is task
@@ -16319,6 +16490,44 @@ test "mention: the named terminal is typed the message, one line, names frozen i
     try testing.expectEqual(@as(usize, 1), fake.typed_count);
 }
 
+test "1682: a mention to a terminal with a permission box up is not typed, and will be tried again" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{
+        .open = &.{},
+        .members = &mention_members,
+        .send_errors = &.{.{ .id = worker, .err = error.ApprovalOnScreen }},
+    };
+    const res = try postNaming(arena.allocator(), &b, &fake, boss, &.{worker});
+    try testing.expectEqual(@as(usize, 1), fake.post_count);
+    const rows = res.posted.deliveries;
+    try testing.expectEqualStrings("ApprovalOnScreen", rows[0].code orelse "(typed)");
+    try testing.expect(std.mem.indexOf(u8, rows[0].message.?, "permission box") != null);
+    try testing.expectEqual(MentionRetryPlan{ .attempts = 0, .every_ms = MentionRetry.draft_delay_ms }, rows[0].retry.?);
+    try testing.expect(std.mem.indexOf(u8, rows[0].message.?, "once the box has been answered") != null);
+}
+
+test "1682: a terminal with a permission box up is not given the work, and nothing is owned" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+    fake.send_error = error.ApprovalOnScreen;
+    const id = try panel.create("build", "take the machine", .bug);
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+    } });
+    try testing.expect(res == .failed);
+    try testing.expectEqualStrings("ApprovalOnScreen", res.failed.code);
+    try testing.expectEqual(@as(Bus.Id, 0), panel.get(id).?.owner);
+}
+
 test "mention: a terminal with a draft is not typed into, and the post stands" {
     var b = try mentionBus();
     defer b.deinit();
@@ -16402,6 +16611,32 @@ test "mention: nobody who was not named is typed into" {
     } });
     _ = plain;
     try testing.expectEqual(@as(usize, 0), fake.typed_count);
+}
+
+test "1682: a mention reaches a CLI showing its input box before it connects, and not one asking the person" {
+    for ([_]struct { reach: StartupReach, code: ?[]const u8 }{
+        .{ .reach = .ready, .code = null },
+        .{ .reach = .blocked, .code = "StartupPrompt" },
+        .{ .reach = .none, .code = "NoAgent" },
+    }) |c| {
+        var b = try mentionBus();
+        defer b.deinit();
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .agent_absent = &.{worker}, .startup = c.reach };
+
+        const res = try postNaming(arena.allocator(), &b, &fake, boss, &.{worker});
+        try testing.expectEqual(@as(usize, 1), fake.post_count);
+        const rows = res.posted.deliveries;
+        try testing.expectEqual(@as(usize, 1), rows.len);
+        if (c.code) |code| {
+            try testing.expectEqualStrings(code, rows[0].code orelse "(typed)");
+            try testing.expect(typedInto(&fake, worker) == null);
+        } else {
+            try testing.expect(rows[0].code == null);
+            try testing.expect(typedInto(&fake, worker) != null);
+        }
+    }
 }
 
 test "mention: a terminal whose agent has gone is not typed into, and the post stands (#1533)" {

@@ -1128,7 +1128,13 @@ top of the reply counts those rows; **read it every time**. A row refused with
 `UserPresent` or `DraftInLine` also has `retry`: the same line is typed again
 up to 3 times (10s apart for `UserPresent`, 15s for `DraftInLine`), and if the
 last try is refused too, a `[polter] Your mention of … was not delivered`
-line is typed into your own terminal. Other codes are not retried. A worker naming
+line is typed into your own terminal. `ApprovalOnScreen` is that agent sitting
+at a permission box — its hooks or its title said so, or its screen shows one —
+where the return would answer the box for it; its `retry` has `attempts: 0`:
+the line waits, and is typed once the box has been answered. The same refusal
+stops `task_assign` and the notices Polter types itself, so a worker at a box
+is told nothing until it has been answered — answer it with
+`terminal_answer_prompt`, or leave it to the person. Other codes are not retried. A worker naming
 another worker reaches you instead, rewritten so the record shows who it was
 for; that is by design, and the switch is the user's. The contract is
 `dev-docs/poltergeist/mentions.md`.

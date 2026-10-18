@@ -267,7 +267,7 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
             },
         }
 
-        if ((f.hooks == .live or f.said_by == .title) and f.process == .running) {
+        if (Bus.Agent.spoke(f.hooks, f.said_by) and f.process == .running) {
             const kind: Kind, const since: u64 = switch (f.state) {
                 .awaiting_approval => .{ .needs_approval, f.state_since_ms },
                 .awaiting_input => .{ .needs_answer, f.state_since_ms },
@@ -408,7 +408,7 @@ pub fn nextChange(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
             .agent_left => break :at stillAt(f, t, now_ms) orelse return null,
             .agent_exited, .gone => return null,
         }
-        if (f.hooks == .live or f.said_by == .title) {
+        if (Bus.Agent.spoke(f.hooks, f.said_by)) {
             if (f.state != .in_turn) return null;
             var at = stillAt(f, t, now_ms) orelse return null;
             if (t.calls_silent_ms != 0) if (f.call_silent_ms) |silent| {

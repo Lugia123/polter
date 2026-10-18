@@ -259,6 +259,16 @@ pub fn add(
         .root_source_file = b.path("plugins/codex/plugin.json"),
     });
 
+    // And the Claude Code and Antigravity manifests, for whether a CLI's
+    // screen is read for an approval while its hooks are live (task 1682):
+    // only Antigravity's says its hooks report none.
+    step.root_module.addAnonymousImport("plugin_claude_code_json", .{
+        .root_source_file = b.path("plugins/claude-code/plugin.json"),
+    });
+    step.root_module.addAnonymousImport("plugin_antigravity_json", .{
+        .root_source_file = b.path("plugins/antigravity/plugin.json"),
+    });
+
     // And `qwen-code`, for one property that has nothing to do with skills:
     // **the command line it builds for `qwen mcp add`.** That argument order
     // was wrong from the day the file was written -- `-e` is an array option
@@ -286,6 +296,13 @@ pub fn add(
     });
     step.root_module.addAnonymousImport("plugin_deepseek_sh", .{
         .root_source_file = b.path("plugins/deepseek/provision.sh"),
+    });
+
+    // And `antigravity`, the third of them (task 1682): the same `mcpServers`
+    // shape as `deepseek`, in a file of its own under `~/.gemini`, with the
+    // marker that says which CLI the entry serves.
+    step.root_module.addAnonymousImport("plugin_antigravity_sh", .{
+        .root_source_file = b.path("plugins/antigravity/provision.sh"),
     });
 
     // And the library it sources. A host plugin is a declaration now -- the

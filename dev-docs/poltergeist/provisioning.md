@@ -55,7 +55,7 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 | 族 | 怎么注册 | 谁 |
 | --- | --- | --- |
 | **A. 有 `x mcp add` 子命令** | 调命令，不碰文件 | claude, codex, qwen, kimi |
-| **B. 只能改 JSON 配置** | 读→合并→写 | opencode, deepseek |
+| **B. 只能改 JSON 配置** | 读→合并→写 | opencode, deepseek, antigravity |
 
 > **B 族的判据是「能不能非交互地调用」，不是「有没有那个子命令」。**
 > `opencode mcp add` **是存在的**（2026-09-01 实测 opencode 1.2.10），但它是一个
@@ -71,7 +71,7 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 更全部变成我们的债。B 族要做，但它是**另一种东西**，不能和 A 族用同一份代码假装
 一样。
 
-## 四、六个宿主
+## 四、七个宿主
 
 已核实的部分来自各家官方文档（2026-08-30 查）。**没有一条是我实机跑过的**，
 这一点在实现时必须重新验。
@@ -84,6 +84,7 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 | `kimi` | 月之暗面 Kimi CLI | A | TOML | 待核 | 待核 |
 | `opencode` | opencode | B | `~/.config/opencode/opencode.json` | `mcp` **(嵌套，不是 mcpServers)** | 待核 |
 | `deepseek` | DeepSeek-TUI | B | `~/.deepseek/mcp.json` | 待核 | 待核 |
+| `antigravity` | Google Antigravity CLI（`agy`） | B（见下） | `~/.gemini/config/plugins/polter/mcp_config.json` | `mcpServers` | `~/.gemini/config/plugins/polter/skills/` |
 
 三点要记住：
 
@@ -118,6 +119,26 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
   游。这一系原本还有两家，插件都已删除：iFlow CLI 2026-04-17 停止服务；
   Gemini CLI 2026-06-18 起不再服务个人账号（#1681），它在上表里那一行是
   `A`、`~/.gemini/settings.json`、`mcpServers`、`~/.gemini/skills/`。
+- **Antigravity CLI（`agy`）和 Gemini CLI 共用 `~/.gemini`，但不共用文件**（#1682）。
+  **Polter 只写一个目录：它自己的 Antigravity 插件 `~/.gemini/config/plugins/polter/`**，
+  里面是 `plugin.json`（清单，没有它整个目录不被加载）、`mcp_config.json`、`hooks.json`
+  （顶层键 `polter`）、`rules/AGENTS.md`（规则块）、`skills/polter-*`。用户自己的
+  `~/.gemini/config/mcp_config.json`、`hooks.json`、`~/.gemini/GEMINI.md`，以及 Gemini CLI
+  的 `settings.json`、`skills/`，一个字节都不碰；卸载就是删这个目录。
+  依据（2026-10-18，agy 1.4.0）：它随包带的定制指南
+  （`~/.gemini/antigravity-cli/builtin/skills/agy-customizations/`）写全局根是
+  `~/.gemini/config/`、插件是其下 `plugins/<名字>/` 里带 `plugin.json` 的目录；在隔离 HOME
+  里跑 provision 后，`agy plugin list --json` 列出 `polter` 及其 skill、rule、MCP、hook
+  各一项，去掉 `plugin.json` 就一个都不列。⚠️ `agy plugin validate` 的 `findings` 在
+  hooks.json 写坏时也是空的，只有 `components.hooks` 从 1 变 0，别拿 `findings` 当判据。
+  用户在 agy 里关掉插件（`agy plugin disable polter`）写的是
+  `~/.gemini/config/config.json` 的 `plugins.polter.enabled`，adapter 据此不再答 hooks。
+  `agy mcp add` 其实存在（写用户的全局 `mcp_config.json`），故意不用，所以仍算 B 族。
+  官网写的 skill 目录 `~/.gemini/antigravity-cli/skills/` 和全局规则 `~/.gemini/GEMINI.md`
+  指南里都没有；旧 gemini 插件留在 `GEMINI.md` 的块归 #1681 处理，本插件不接管。
+  **还没量的**：会话里这些是否真被加载（skill 斜杠命令、规则进上下文、MCP 连上），
+  `+mcp` 能不能从 agy 拿到终端的 `GHOSTTY_POLTER_SOCKET/TOKEN`（TEST-CASES L0-06），
+  hook 空 stdout 的含义（H1）。
 
 ### DeepSeek 是个例外，要单独说
 

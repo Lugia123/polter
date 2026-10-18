@@ -22,7 +22,7 @@
 //!     are what a person needs to recognise a server; the secrets are not,
 //!     and a list that carried them would end up on a screen, in a log, and
 //!     in an agent's context. Only key *names* leave this file.
-//!   * **It does not guess a path.** Four of the six hosts have no
+//!   * **It does not guess a path.** Four of the seven hosts have no
 //!     confirmed skills directory (see `provisioning.md` section four, and
 //!     the `printf ''` in their `provision.sh`). Those report
 //!     `unknown_location`, which is not the same answer as `absent`.
@@ -68,6 +68,7 @@ pub const Host = enum {
     opencode,
     deepseek,
     kimi,
+    antigravity,
 
     /// What `plugins/<host>/provision.sh` calls `POLTER_HOST_LABEL`.
     pub fn label(self: Host) []const u8 {
@@ -78,6 +79,7 @@ pub const Host = enum {
             .opencode => "opencode",
             .deepseek => "DeepSeek-TUI",
             .kimi => "Kimi CLI",
+            .antigravity => "Antigravity CLI",
         };
     }
 
@@ -91,6 +93,7 @@ pub const Host = enum {
             .opencode => "opencode",
             .deepseek => "deepseek",
             .kimi => "kimi",
+            .antigravity => "agy",
         };
     }
 
@@ -140,11 +143,16 @@ fn mcpFile(host: Host) ?McpFile {
         .opencode => .{ .rel_path = ".config/opencode/opencode.json", .key = "mcp", .shape = .json_object },
         .deepseek => .{ .rel_path = ".deepseek/mcp.json", .key = "mcpServers", .shape = .json_object },
         .kimi => null,
+        // Not Gemini CLI's `settings.json` beside it: Antigravity reads its
+        // servers from a file of their own (task 1682, "docs/mcp"). Polter's
+        // own entry is not here but in its plugin's file, so nothing in this
+        // one is `ours`.
+        .antigravity => .{ .rel_path = ".gemini/config/mcp_config.json", .key = "mcpServers", .shape = .json_object },
     };
 }
 
 /// The user-level skills directory, or `null` where `host_skills_dir`
-/// returns the empty string. Four of the six do, and the comment beside
+/// returns the empty string. Four of the seven do, and the comment beside
 /// each of them says why: *"写文件进一个猜出来的目录，比一个都不写更糟"*.
 /// Reading has the milder version of the same problem -- a guess that finds
 /// nothing reports "no skills" and looks like an answer.
@@ -152,6 +160,10 @@ fn skillsDir(host: Host) ?[]const u8 {
     return switch (host) {
         .claude_code => ".claude/skills",
         .codex => ".codex/skills",
+        // The global customization root's, which is where the guide `agy`
+        // ships puts a person's own skills (task 1682). Not where Polter's
+        // go: those are in its own Antigravity plugin, beside this.
+        .antigravity => ".gemini/config/skills",
         .qwen_code, .opencode, .deepseek, .kimi => null,
     };
 }
@@ -364,7 +376,7 @@ fn countSlots(sec: Section) usize {
 ///
 /// Looked up rather than run. Running a host binary to ask its version
 /// would be a side effect on somebody's machine from something that
-/// advertises itself as read-only, and it would be slow six times over.
+/// advertises itself as read-only, and it would be slow seven times over.
 fn onPath(io: std.Io, path_env: []const u8, name: []const u8) bool {
     const sep = if (@import("builtin").os.tag == .windows) ';' else ':';
     var it = std.mem.tokenizeScalar(u8, path_env, sep);
@@ -1201,7 +1213,8 @@ test "inventory: the four states survive serialization" {
     // exactly the sort of thing to get wrong.
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, s, .{});
     defer parsed.deinit();
-    try testing.expectEqual(@as(usize, 6), parsed.value.object.get("hosts").?.array.items.len);
+    // One row per host, whatever the number of hosts is today.
+    try testing.expectEqual(std.enums.values(Host).len, parsed.value.object.get("hosts").?.array.items.len);
 }
 
 test "inventory: the slot budget is the biggest host, not every host added up" {

@@ -1,0 +1,38 @@
+{
+  "name": "Antigravity CLI",
+  "description": "给 Google 的 Antigravity CLI（agy）装一个 Polter 自己的 Antigravity 插件：~/.gemini/config/plugins/polter。Polter 的 MCP 服务、skill、规则说明和 hook 全在这一个目录里。~/.gemini 下你自己的文件一个都不改，属于 Gemini CLI 的文件也不动。",
+  "params": {
+    "skills": {
+      "title": "安装 skill",
+      "description": "选「装」会把 Polter 的 skill 同步到这个 CLI 的 skill 目录。CLI 只拿自己的 skill 去匹配用户的请求，而 Polter 的 skill_read 得先想到才会用，差别就在这里。选「不装」就只注册 MCP 服务。",
+      "choices": {
+        "yes": "装",
+        "no": "不装"
+      }
+    },
+    "rules": {
+      "title": "写进规则文件",
+      "description": "选「写入」会在 Polter 的 Antigravity 插件的规则文件里（从不碰你自己的或项目的文件）加一段带标记的说明：agent 打印的东西没人看得到，并指向 operating-a-terminal 这个 skill。之所以要写，是因为 skill 只按用户的请求去匹配，没有哪个请求叫「你刚做完一件事」：实测 71 个任务只有 15 个报了完成。选「不写」会把这段连同那个文件一起删掉。",
+      "choices": {
+        "yes": "写入",
+        "no": "不写"
+      }
+    },
+    "approve_tools": {
+      "title": "让 Antigravity 调 Polter 的工具时不用问（实验性）",
+      "description": "实验性，默认关：在 agy 1.4.2 上实测，装了这个 hook 之后 Antigravity 调 Polter 的工具时仍然会问，所以还不知道它是否管用。选「放行」会在 Polter 自己的 Antigravity 插件里加一个 hook：只对调 Polter 的 MCP 服务说「允许」，别的一概不管。不然 Antigravity 每调一次 Polter 的工具都要问，没人看着的 worker 会停在第一次调用上，连汇报都发不出来。你的其他 MCP 服务和你自己的批准设置都不动。选「询问」会把这个 hook 删掉，Antigravity 又会每次都问。",
+      "choices": {
+        "yes": "放行",
+        "no": "询问"
+      }
+    },
+    "hooks": {
+      "title": "让 Polter 知道 Antigravity 在做什么",
+      "description": "选「写入」会把 Polter 的 hook 写进它自己的 Antigravity 插件（~/.gemini/config/plugins/polter/hooks.json）。这些 hook 会在会话开始、一轮开始和结束、工具运行时告诉 Polter，总管不用等屏幕静下来就知道这一轮做完了。Antigravity 每个会话都会加载它的插件，所以你自己手动起的 agy 里它们也会运行；在 Polter 之外它们什么都不做。选「不写」会把它们删掉。",
+      "choices": {
+        "yes": "写入",
+        "no": "不写"
+      }
+    }
+  }
+}

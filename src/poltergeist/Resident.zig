@@ -4773,9 +4773,10 @@ test "the hosts that edit a config file, and the four properties they promise" {
     // at all on the platform it ships to: the PowerShell port had five
     // assertions over the same ground and the `sh` original had none.
     //
-    // They are also the only two plugins that override a **fourth** hook,
-    // `config()`. The two write to different paths and disagree about the
-    // shape of the entry, so the test runs both and checks each one's own
+    // They are also the plugins that override a **fourth** hook, `config()`
+    // -- `antigravity` the third of them since task 1682. They write to
+    // different paths and disagree about the shape of the entry, so the
+    // test runs every one and checks each one's own
     // shape -- an assertion that only proved the SDK would let exactly the
     // difference that makes them separate plugins drift unnoticed.
     //
@@ -4822,6 +4823,18 @@ test "the hosts that edit a config file, and the four properties they promise" {
             .cfg = ".deepseek/mcp.json",
             .src = @embedFile("plugin_deepseek_sh"),
             .shape = "\"args\": [",
+        },
+        // `deepseek`'s shape, and the marker only this one writes into the
+        // entry's `env` (task 1682): without it the sidecar cannot say
+        // which CLI started it.
+        .{
+            .key = "antigravity",
+            .bin = "agy",
+            // Its own plugin's file, not the person's global one beside
+            // `plugins/` (`plugins/antigravity/provision.sh`).
+            .cfg = ".gemini/config/plugins/polter/mcp_config.json",
+            .src = @embedFile("plugin_antigravity_sh"),
+            .shape = "\"POLTER_AGENT_CLI\": \"antigravity\"",
         },
     };
 

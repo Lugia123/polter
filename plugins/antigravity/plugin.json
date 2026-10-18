@@ -1,0 +1,92 @@
+{
+  "key": "antigravity",
+  "name": "Antigravity CLI",
+  "version": "1.0.0",
+  "description": "Gives Google's Antigravity CLI (agy) an Antigravity plugin of Polter's own, ~/.gemini/config/plugins/polter: Polter's MCP server, its skills, its rules note and its hooks, all inside that one directory. None of your own files under ~/.gemini is edited, and Gemini CLI's are not touched.",
+  "exec": "provision.sh",
+  "hooks_report_approval": false,
+  "startup_says": {
+    "blocks": [
+      "Do you trust the contents of this project?"
+    ],
+    "ready_says": [
+      "? for shortcuts"
+    ],
+    "ready_without_agent": true
+  },
+  "screen_says": {
+    "awaiting_approval": {
+      "contains": [
+        "Requesting permission for:",
+        "Run this command?",
+        "Allow calling this tool?"
+      ]
+    }
+  },
+  "timeout_ms": 20000,
+  "agent_cli": {
+    "label": "Antigravity",
+    "bin": "agy",
+    "adapter": "adapter.py",
+    "identify_env": [
+      "POLTER_AGENT_CLI",
+      "POLTER_REGISTERED"
+    ]
+  },
+  "wants": {
+    "events": [
+      "provision"
+    ],
+    "calls": [],
+    "groups": [],
+    "network": false,
+    "exec": [
+      "agy"
+    ]
+  },
+  "params": {
+    "type": "object",
+    "properties": {
+      "skills": {
+        "type": "string",
+        "title": "Install skills as well",
+        "description": "yes mirrors Polter's skills into this host's skills directory. Polter's skill_read has to be thought of first; a host's own skills are matched against what the user asked for, which is the whole difference. no registers the MCP server and nothing else.",
+        "enum": [
+          "yes",
+          "no"
+        ],
+        "default": "yes"
+      },
+      "rules": {
+        "type": "string",
+        "title": "Write Polter's note into this CLI's rules file",
+        "description": "yes writes a marked block into the rules file of Polter's Antigravity plugin (never a file of yours or a project's) saying that what an agent prints reaches nobody, and pointing at the operating-a-terminal skill. It is there because a skill is matched against what the user asked for and nothing matches \"you have just finished a task\": on real records, 71 tasks produced 15 done reports. no takes the block, and the file, back out.",
+        "enum": [
+          "yes",
+          "no"
+        ],
+        "default": "yes"
+      },
+      "approve_tools": {
+        "type": "string",
+        "title": "Let Antigravity call Polter's tools without asking (experimental)",
+        "description": "Experimental, and off by default: on agy 1.4.2 Antigravity was measured asking about a call to Polter's tool with this hook in place, so it is not yet known to work. yes adds a hook to Polter's own Antigravity plugin that says yes to calls to Polter's MCP server, and to nothing else. Antigravity otherwise asks before every call to one of Polter's tools, and a worker nobody is watching stops at the first one, before it can report anything. Your other MCP servers and your own approval settings are not touched. no takes the hook back out, and Antigravity asks again.",
+        "enum": [
+          "yes",
+          "no"
+        ],
+        "default": "no"
+      },
+      "hooks": {
+        "type": "string",
+        "title": "Let Polter hear what Antigravity is doing",
+        "description": "yes writes Polter's hooks into its Antigravity plugin (~/.gemini/config/plugins/polter/hooks.json): they tell Polter when a session starts, a turn begins and ends, and a tool runs, so a supervisor sees a finished turn without waiting for the screen to go still. Antigravity loads its plugins for every session, so they also run in an agy you start yourself; outside Polter they do nothing. no takes them back out.",
+        "enum": [
+          "yes",
+          "no"
+        ],
+        "default": "yes"
+      }
+    }
+  }
+}

@@ -99,12 +99,13 @@ fn handle(
     const payload = try reader.interface.allocRemaining(aa, .limited(max_stdin_bytes));
 
     const args = try parseArgs(argv);
-    const ev = AgentEvent.translate(aa, args.cli, args.event, payload) catch |err| {
+    var ev = AgentEvent.translate(aa, args.cli, args.event, payload) catch |err| {
         // `Ignored` is a table choosing not to pass something on, not a
         // fault.
         if (err == error.Ignored) return;
         return err;
     };
+    fillAnswer(aa, io, &ev);
 
     try deliver(
         io,
@@ -112,6 +113,36 @@ fn handle(
         token orelse return error.NoToken,
         ev,
     );
+}
+
+/// How much of a transcript's end is read for an answer. One step is one
+/// line, and the answer is the last of them; this is room for a long one,
+/// and bounds what the transcript of a long day costs to look at.
+const max_transcript_tail = 256 * 1024;
+
+/// A finished turn's answer, for a CLI whose `Stop` does not carry it but
+/// whose transcript does (task 1682: Antigravity, `AgentEvent.agyAnswer`).
+/// Read here rather than in `translate`, so that one stays a pure function
+/// of the payload. Anything that goes wrong -- no path, no file, nothing
+/// that reads as an answer -- leaves the turn without text, which is what
+/// it had before; it is never a reason not to deliver the turn.
+fn fillAnswer(aa: Allocator, io: std.Io, ev: *AgentEvent.Event) void {
+    if (ev.event != .turn_ended or ev.text != null) return;
+    if (!std.mem.eql(u8, ev.cli, "antigravity")) return;
+    const path = ev.transcript_path orelse return;
+    if (!std.fs.path.isAbsolute(path)) return;
+
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return;
+    defer file.close(io);
+    const size = (file.stat(io) catch return).size;
+    if (size == 0) return;
+    const want: usize = @intCast(@min(size, max_transcript_tail));
+    const buf = aa.alloc(u8, want) catch return;
+    const n = file.readPositionalAll(io, buf, size - want) catch return;
+
+    const text = AgentEvent.agyAnswer(aa, buf[0..n], want == size) orelse return;
+    ev.text = AgentEvent.cutBytes(text, AgentEvent.max_text_bytes);
+    ev.text_bytes = text.len;
 }
 
 /// The arguments after our own `+hook` token. Read by hand for the reason
@@ -379,6 +410,62 @@ test "an event with nothing optional still parses" {
     try testing.expectEqual(AgentEvent.Kind.hooks_expected, p.value.agent_event.event);
     try testing.expect(p.value.agent_event.text == null);
     try testing.expect(!p.value.agent_event.waiting_on_background);
+}
+
+test "1682: an antigravity turn's answer is read from its transcript, and nothing else's is" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const path = try std.fmt.allocPrint(aa, "/tmp/pgh-transcript-{x}.jsonl", .{&raw});
+    {
+        var file = try std.Io.Dir.createFileAbsolute(io, path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io,
+            \\{"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "content": "say done"}
+            \\{"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "content": "done"}
+            \\
+        );
+    }
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    const stop = try std.fmt.allocPrint(aa,
+        \\{{"conversationId":"c","terminationReason":"NO_TOOL_CALL","error":"","fullyIdle":true,"transcriptPath":"{s}"}}
+    , .{path});
+    var ev = try AgentEvent.translate(aa, "antigravity", "Stop", stop);
+    try testing.expect(ev.text == null);
+    fillAnswer(aa, io, &ev);
+    try testing.expectEqualStrings("done", ev.text.?);
+    try testing.expectEqual(@as(u64, 4), ev.text_bytes);
+
+    // Only a finished turn: a tool starting reads nothing.
+    const pre = try std.fmt.allocPrint(aa,
+        \\{{"conversationId":"c","toolCall":{{"name":"run_command"}},"transcriptPath":"{s}"}}
+    , .{path});
+    var tool = try AgentEvent.translate(aa, "antigravity", "PreToolUse", pre);
+    fillAnswer(aa, io, &tool);
+    try testing.expect(tool.text == null);
+
+    // A file that is not there leaves the turn as it was.
+    const gone = try std.fmt.allocPrint(aa,
+        \\{{"conversationId":"c","terminationReason":"NO_TOOL_CALL","transcriptPath":"{s}.gone"}}
+    , .{path});
+    var missing = try AgentEvent.translate(aa, "antigravity", "Stop", gone);
+    fillAnswer(aa, io, &missing);
+    try testing.expect(missing.text == null);
+
+    // Another CLI's transcript is not this reader's to read.
+    var other = try AgentEvent.translate(aa, "claude-code", "Stop", try std.fmt.allocPrint(aa,
+        \\{{"session_id":"s","hook_event_name":"Stop","transcript_path":"{s}"}}
+    , .{path}));
+    fillAnswer(aa, io, &other);
+    try testing.expect(other.text == null);
 }
 
 // -- the process: exit code and stdout --------------------------------------

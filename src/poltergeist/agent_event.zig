@@ -254,6 +254,7 @@ pub fn translate(
 
     if (std.mem.eql(u8, cli, "claude-code")) return claudeCode(arena, hook, obj);
     if (std.mem.eql(u8, cli, "codex")) return codex(arena, hook, obj);
+    if (std.mem.eql(u8, cli, "antigravity")) return antigravity(arena, hook, obj);
     return error.UnknownCli;
 }
 
@@ -416,6 +417,166 @@ fn codex(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error!Even
     } else return error.UnknownEvent;
 
     return ev;
+}
+
+/// Antigravity CLI, `agy` (task 1682). From its hooks documentation --
+/// antigravity.google/docs/hooks, and the copy `agy` 1.4.0 ships in
+/// `builtin/skills/agy-customizations/docs/hooks.md`, which wins where they
+/// differ -- **and from one turn of 1.4.0 read off a stand-in hook**
+/// (2026-10-18): `SessionStart` comes with the first prompt, not at launch,
+/// and not again after `/clear` until the next prompt; `Stop` said
+/// `terminationReason: "NO_TOOL_CALL"`, `error: ""`, `fullyIdle: true`. Its names are its own, camelCase:
+/// every event carries `conversationId`, `transcriptPath` and a few more;
+/// the tool events a `toolCall` object with the tool's `name`.
+///
+/// Six events, five taken. `PostInvocation` is a step inside a turn, said
+/// before `Stop`, and says nothing `Stop` does not (`Ignored`).
+///
+/// What it does not have, and so what still falls to the screen: **no
+/// event for waiting on an approval or on an answer**, and no answer text
+/// on `Stop` -- the last thing it said is in `transcriptPath`, one step per
+/// line, the answer the last `"source":"MODEL","type":"PLANNER_RESPONSE"`
+/// step's `content` (read off 1.4.0). `+hook` reads it (`agyAnswer`); this
+/// translation stays a pure function of the payload.
+///
+/// ⚠️ `PreInvocation` is taken as a turn starting, and it is said once per
+/// model call, not once per prompt: one prompt that ran one command gave
+/// `invocationNum` 0 and then 1. The second comes after the tool's
+/// `PostToolUse`, so starting the turn again costs a tool count that is
+/// zero by then anyway. Whether `invocationNum` starts again at 0 on the
+/// next prompt was not measured, so it is not used to tell them apart.
+fn antigravity(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error!Event {
+    var ev: Event = .none;
+    ev.cli = "antigravity";
+    ev.session_id = try requireString(obj, "conversationId");
+    ev.transcript_path = try optionalString(obj, "transcriptPath");
+
+    if (std.mem.eql(u8, hook, "SessionStart")) {
+        ev.event = .session_started;
+    } else if (std.mem.eql(u8, hook, "PreInvocation")) {
+        ev.event = .turn_started;
+    } else if (std.mem.eql(u8, hook, "PostInvocation")) {
+        return error.Ignored;
+    } else if (std.mem.eql(u8, hook, "Stop")) {
+        // The reason is `ExecutorTerminationReason` without its prefix, in
+        // capitals: the hooks guide `agy` 1.4.0 carries with it
+        // (`builtin/skills/agy-customizations/docs/hooks.md`). The web page
+        // read first said `model_stop` and `error` instead; those are still
+        // taken, so whichever the running CLI says is understood.
+        //
+        // `NO_TOOL_CALL` is an ordinary end of turn, and so are the three
+        // that end one on purpose (`agyFinished`). `USER_CANCELED` is a turn
+        // somebody stopped -- what Codex's `Interrupt` is; `ERROR`, or any
+        // `error` text, one that failed. Anything else -- the `MAX_*` limits,
+        // or a word nobody has listed -- stopped short, in its own word, so
+        // it is not read as an API error.
+        const reason = try optionalString(obj, "terminationReason");
+        const err = try errorText(arena, obj);
+        const finished = if (reason) |r| agyFinished(r) else true;
+        if (err != null or !finished) {
+            ev.event = .turn_failed;
+            const r = reason orelse "error";
+            ev.detail = if (std.mem.eql(u8, r, "USER_CANCELED"))
+                "interrupted"
+            else if (finished or std.ascii.eqlIgnoreCase(r, "error"))
+                // A turn that says it finished and carries an error failed
+                // with that error.
+                "error"
+            else
+                r;
+            ev.note = try oneLine(arena, if (err) |e| prefixChars(e, summary_chars) else null);
+        } else {
+            ev.event = .turn_ended;
+        }
+        // `fullyIdle` false: background commands or tasks are still running.
+        ev.waiting_on_background = switch (obj.get("fullyIdle") orelse .null) {
+            .null => false,
+            .bool => |idle| !idle and ev.event == .turn_ended,
+            else => return error.MissingField,
+        };
+    } else if (std.mem.eql(u8, hook, "PreToolUse")) {
+        ev.event = .tool_started;
+        ev.detail = try toolCallName(obj);
+    } else if (std.mem.eql(u8, hook, "PostToolUse")) {
+        // A tool that failed (`error`) has ended as surely as one that worked.
+        ev.event = .turn_resumed;
+        ev.detail = try toolCallName(obj);
+    } else return error.UnknownEvent;
+
+    return ev;
+}
+
+/// Whether an Antigravity `Stop` reason is a turn that ended as meant to.
+fn agyFinished(reason: []const u8) bool {
+    const finished = [_][]const u8{
+        "NO_TOOL_CALL",
+        "TERMINAL_STEP_TYPE",
+        "TERMINAL_CUSTOM_HOOK",
+        "INJECTED_RESPONSE",
+        "model_stop",
+    };
+    for (finished) |f| if (std.mem.eql(u8, reason, f)) return true;
+    return false;
+}
+
+/// The last thing an Antigravity turn said, out of the end of its
+/// transcript, or null when that cannot be told. `Stop` carries no answer
+/// (`antigravity`), so `+hook` reads the file and hands its tail here.
+///
+/// The transcript is one JSON step per line (read off agy 1.4.0): the
+/// answer is the `content` of the last `"source":"MODEL"`,
+/// `"type":"PLANNER_RESPONSE"` step. **Only one after the last
+/// `USER_INPUT`**: a turn that said nothing is not given the turn before's
+/// answer. `tail` may begin mid-line -- it is the file's last bytes -- so
+/// its first line is never trusted unless it is the whole file (`whole`).
+/// A line that does not parse is passed over.
+pub fn agyAnswer(arena: Allocator, tail: []const u8, whole: bool) ?[]const u8 {
+    var end = tail.len;
+    while (end > 0) {
+        const start = if (std.mem.lastIndexOfScalar(u8, tail[0..end], '\n')) |nl| nl + 1 else 0;
+        const line = std.mem.trim(u8, tail[start..end], " \r\t");
+        end = if (start == 0) 0 else start - 1;
+        if (start == 0 and !whole) break;
+        if (line.len == 0) continue;
+        const v = std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{}) catch continue;
+        const obj = switch (v) {
+            .object => |o| o,
+            else => continue,
+        };
+        const kind = switch (obj.get("type") orelse continue) {
+            .string => |t| t,
+            else => continue,
+        };
+        if (std.mem.eql(u8, kind, "USER_INPUT")) return null;
+        if (!std.mem.eql(u8, kind, "PLANNER_RESPONSE")) continue;
+        const source = obj.get("source") orelse continue;
+        if (source != .string or !std.mem.eql(u8, source.string, "MODEL")) continue;
+        const content = obj.get("content") orelse continue;
+        if (content != .string or content.string.len == 0) continue;
+        return content.string;
+    }
+    return null;
+}
+
+/// Antigravity's `toolCall.name`.
+fn toolCallName(obj: std.json.ObjectMap) Error![]const u8 {
+    const call = switch (obj.get("toolCall") orelse return error.MissingField) {
+        .object => |o| o,
+        else => return error.MissingField,
+    };
+    return requireString(call, "name");
+}
+
+/// An `error` field as text: itself when it is a string, compact JSON when it
+/// is anything else, null when it is absent, null or empty. Its shape is not
+/// documented, and an error that cannot be read is still an error.
+fn errorText(arena: Allocator, obj: std.json.ObjectMap) Error!?[]const u8 {
+    const v = obj.get("error") orelse return null;
+    return switch (v) {
+        .null => null,
+        .string => |s| if (s.len == 0) null else s,
+        else => try std.json.Stringify.valueAlloc(arena, v, .{}),
+    };
 }
 
 /// The one line that says what an approval is for. A shell tool's command is
@@ -957,6 +1118,234 @@ test "1668: codex PreToolUse and PostToolUse start and end a tool; what it lacks
     // Without a session, nothing it says can be put anywhere.
     try testing.expectError(error.MissingField, trCodex("Stop",
         \\{"turn_id":"t","hook_event_name":"Stop","last_assistant_message":"x"}
+    ));
+}
+
+fn trAgy(hook: []const u8, payload: []const u8) Error!Event {
+    return translate(test_arena.allocator(), "antigravity", hook, payload);
+}
+
+// Antigravity payloads below have the fields its hooks documentation gives
+// each event: the common five, and the event's own.
+
+test "1682: antigravity SessionStart, PreInvocation and Stop are a session and a turn" {
+    setup();
+    defer teardown();
+    const started = try trAgy("SessionStart",
+        \\{"conversationId":"055a398f-db14-4c5f-abbb-1bf03f8120a7","workspacePaths":["/w"],
+        \\ "transcriptPath":"/h/.gemini/t.jsonl","artifactDirectoryPath":"/h/a","modelName":"m"}
+    );
+    try testing.expectEqual(Kind.session_started, started.event);
+    try testing.expectEqualStrings("antigravity", started.cli);
+    try testing.expectEqualStrings("055a398f-db14-4c5f-abbb-1bf03f8120a7", started.session_id.?);
+    try testing.expectEqualStrings("/h/.gemini/t.jsonl", started.transcript_path.?);
+
+    const turn = try trAgy("PreInvocation",
+        \\{"conversationId":"c","workspacePaths":["/w"],"transcriptPath":null,
+        \\ "artifactDirectoryPath":"/h/a","modelName":"m","invocationNum":0,"initialNumSteps":0}
+    );
+    try testing.expectEqual(Kind.turn_started, turn.event);
+
+    const ended = try trAgy("Stop",
+        \\{"conversationId":"c","workspacePaths":["/w"],"transcriptPath":null,"artifactDirectoryPath":"/h/a",
+        \\ "modelName":"m","executionNum":1,"terminationReason":"NO_TOOL_CALL","fullyIdle":true}
+    );
+    try testing.expectEqual(Kind.turn_ended, ended.event);
+    try testing.expect(!ended.waiting_on_background);
+    // No answer on `Stop`: nothing is made up for it.
+    try testing.expect(ended.text == null);
+
+    // The other words for a turn that ended as meant to, and the web page's.
+    for ([_][]const u8{
+        \\{"conversationId":"c","terminationReason":"TERMINAL_STEP_TYPE"}
+        ,
+        \\{"conversationId":"c","terminationReason":"TERMINAL_CUSTOM_HOOK"}
+        ,
+        \\{"conversationId":"c","terminationReason":"INJECTED_RESPONSE"}
+        ,
+        \\{"conversationId":"c","terminationReason":"model_stop"}
+        ,
+        \\{"conversationId":"c","terminationReason":"NO_TOOL_CALL","error":""}
+        ,
+    }) |payload| {
+        const ev = try trAgy("Stop", payload);
+        try testing.expectEqual(Kind.turn_ended, ev.event);
+    }
+
+    // Finished, with background work still going: waiting, not done.
+    const busy = try trAgy("Stop",
+        \\{"conversationId":"c","executionNum":2,"terminationReason":"NO_TOOL_CALL","fullyIdle":false}
+    );
+    try testing.expectEqual(Kind.turn_ended, busy.event);
+    try testing.expect(busy.waiting_on_background);
+
+    // `PostInvocation` is known and not passed on.
+    try testing.expectError(error.Ignored, trAgy("PostInvocation",
+        \\{"conversationId":"c","invocationNum":0,"initialNumSteps":3}
+    ));
+}
+
+// Read off agy 1.4.0 (2026-10-18), one prompt that ran one command: each
+// payload as a stand-in hook saved it, the paths made neutral.
+test "1682: antigravity payloads as agy 1.4.0 sends them" {
+    setup();
+    defer teardown();
+    const started = try trAgy("SessionStart",
+        \\{"artifactDirectoryPath":"/h/.gemini/antigravity-cli/brain/23a7d182-b130-49f4-a813-d507d314b125",
+        \\ "conversationId":"23a7d182-b130-49f4-a813-d507d314b125","modelName":"gemini-3.8-flash-low",
+        \\ "transcriptPath":"/h/.gemini/antigravity-cli/brain/23a7d182-b130-49f4-a813-d507d314b125/.system_generated/logs/transcript_full.jsonl",
+        \\ "workspacePaths":["/h/w"]}
+    );
+    try testing.expectEqual(Kind.session_started, started.event);
+    try testing.expectEqualStrings("23a7d182-b130-49f4-a813-d507d314b125", started.session_id.?);
+
+    const tool = try trAgy("PreToolUse",
+        \\{"conversationId":"23a7d182-b130-49f4-a813-d507d314b125","modelName":"gemini-3.8-flash-low","stepIdx":2,
+        \\ "toolCall":{"args":{"CommandLine":"echo agy-probe","Cwd":"/h/w","WaitMsBeforeAsync":5000,
+        \\ "toolAction":"Running echo agy-probe","toolSummary":"Echo agy probe"},"name":"run_command"},
+        \\ "workspacePaths":["/h/w"]}
+    );
+    try testing.expectEqual(Kind.tool_started, tool.event);
+    try testing.expectEqualStrings("run_command", tool.detail.?);
+
+    // `error` is there and empty when the tool worked.
+    const done = try trAgy("PostToolUse",
+        \\{"conversationId":"23a7d182-b130-49f4-a813-d507d314b125","error":"","stepIdx":2,
+        \\ "toolCall":{"args":{"CommandLine":"echo agy-probe"},"name":"run_command"},"workspacePaths":["/h/w"]}
+    );
+    try testing.expectEqual(Kind.turn_resumed, done.event);
+
+    const ended = try trAgy("Stop",
+        \\{"conversationId":"23a7d182-b130-49f4-a813-d507d314b125","error":"","executionNum":0,"fullyIdle":true,
+        \\ "modelName":"gemini-3.8-flash-low","terminationReason":"NO_TOOL_CALL","workspacePaths":["/h/w"]}
+    );
+    try testing.expectEqual(Kind.turn_ended, ended.event);
+    try testing.expect(!ended.waiting_on_background);
+    try testing.expect(ended.detail == null);
+}
+
+// Four steps as agy 1.4.0 wrote them for one prompt that ran one command,
+// shortened; the last is the answer.
+const agy_transcript =
+    \\{"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "<USER_REQUEST>\nRun echo agy-probe, then say done.\n</USER_REQUEST>"}
+    \\{"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "output_tokens": 68, "tool_calls": [{"name": "run_command", "args": {"CommandLine": "echo agy-probe"}}]}
+    \\{"step_index": 2, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": "The command exited with code 0.\nOutput:\nagy-probe\r\n"}
+    \\{"step_index": 3, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "output_tokens": 1, "content": "done"}
+    \\
+;
+
+test "1682: an antigravity answer is the last model response after the last prompt" {
+    setup();
+    defer teardown();
+    const a = test_arena.allocator();
+    try testing.expectEqualStrings("done", agyAnswer(a, agy_transcript, true).?);
+
+    // A step that only called a tool says nothing: the one before it, if
+    // any, is not taken for the answer.
+    const tool_only = agy_transcript[0..std.mem.indexOf(u8, agy_transcript, "{\"step_index\": 2").?];
+    try testing.expect(agyAnswer(a, tool_only, true) == null);
+
+    // A new prompt with no answer yet: not the last turn's answer.
+    const next = agy_transcript ++
+        \\{"step_index": 4, "source": "USER_EXPLICIT", "type": "USER_INPUT", "content": "and again"}
+        \\
+    ;
+    try testing.expect(agyAnswer(a, next, true) == null);
+
+    // A tail cut mid-line: its first line is not read, the rest is.
+    const cut = agy_transcript[20..];
+    try testing.expectEqualStrings("done", agyAnswer(a, cut, false).?);
+    const only_cut = agy_transcript[std.mem.lastIndexOf(u8, agy_transcript, "\"content\": \"done\"").?..];
+    try testing.expect(agyAnswer(a, only_cut, false) == null);
+
+    // A line that does not parse is passed over, not taken as the end.
+    const torn = agy_transcript ++ "{\"step_index\": 4, \"sou\n";
+    try testing.expectEqualStrings("done", agyAnswer(a, torn, true).?);
+    try testing.expect(agyAnswer(a, "", true) == null);
+}
+
+test "1682: antigravity Stop for an error, a cancel or a limit is a failed turn" {
+    setup();
+    defer teardown();
+    const err = try trAgy("Stop",
+        \\{"conversationId":"c","executionNum":1,"terminationReason":"ERROR",
+        \\ "error":"429 RESOURCE_EXHAUSTED\nquota","fullyIdle":true}
+    );
+    try testing.expectEqual(Kind.turn_failed, err.event);
+    try testing.expectEqualStrings("error", err.detail.?);
+    try testing.expectEqualStrings("429 RESOURCE_EXHAUSTED quota", err.note.?);
+    try testing.expect(!err.waiting_on_background);
+
+    // The web page's word for it.
+    const lower = try trAgy("Stop",
+        \\{"conversationId":"c","terminationReason":"error"}
+    );
+    try testing.expectEqual(Kind.turn_failed, lower.event);
+    try testing.expectEqualStrings("error", lower.detail.?);
+
+    // Stopped by the person: Codex's `Interrupt`, in the same word.
+    const cancel = try trAgy("Stop",
+        \\{"conversationId":"c","terminationReason":"USER_CANCELED","fullyIdle":false}
+    );
+    try testing.expectEqual(Kind.turn_failed, cancel.event);
+    try testing.expectEqualStrings("interrupted", cancel.detail.?);
+    try testing.expect(!cancel.waiting_on_background);
+
+    const steps = try trAgy("Stop",
+        \\{"conversationId":"c","executionNum":1,"terminationReason":"MAX_INVOCATIONS","fullyIdle":true}
+    );
+    try testing.expectEqual(Kind.turn_failed, steps.event);
+    try testing.expectEqualStrings("MAX_INVOCATIONS", steps.detail.?);
+    try testing.expect(steps.note == null);
+
+    // An error of a shape nobody documented is still an error.
+    const odd = try trAgy("Stop",
+        \\{"conversationId":"c","terminationReason":"NO_TOOL_CALL","error":{"code":7}}
+    );
+    try testing.expectEqual(Kind.turn_failed, odd.event);
+    try testing.expectEqualStrings("{\"code\":7}", odd.note.?);
+    try testing.expectEqualStrings("error", odd.detail.?);
+
+    try testing.expectError(error.MissingField, trAgy("Stop",
+        \\{"conversationId":"c","terminationReason":"NO_TOOL_CALL","fullyIdle":"no"}
+    ));
+}
+
+test "1682: antigravity PreToolUse and PostToolUse start and end a tool; what it lacks is refused" {
+    setup();
+    defer teardown();
+    const pre = try trAgy("PreToolUse",
+        \\{"conversationId":"c","toolCall":{"name":"run_command","args":{"CommandLine":"ls"}},"stepIdx":3}
+    );
+    try testing.expectEqual(Kind.tool_started, pre.event);
+    try testing.expectEqualStrings("run_command", pre.detail.?);
+    // Nothing of what the tool was asked to do is carried.
+    try testing.expect(pre.note == null);
+    try testing.expect(pre.input == null);
+
+    const post = try trAgy("PostToolUse",
+        \\{"conversationId":"c","toolCall":{"name":"run_command","args":{}},"stepIdx":3,"error":"exit 1"}
+    );
+    try testing.expectEqual(Kind.turn_resumed, post.event);
+    try testing.expectEqualStrings("run_command", post.detail.?);
+
+    try testing.expectError(error.MissingField, trAgy("PreToolUse",
+        \\{"conversationId":"c","stepIdx":3}
+    ));
+    try testing.expectError(error.MissingField, trAgy("PostToolUse",
+        \\{"conversationId":"c","toolCall":"run_command"}
+    ));
+    // Without a conversation, nothing it says can be put anywhere -- and
+    // Claude Code's `session_id` is not taken for one.
+    try testing.expectError(error.MissingField, trAgy("Stop",
+        \\{"session_id":"s","terminationReason":"model_stop"}
+    ));
+    // The words other CLIs say and this one does not are not taken from it.
+    try testing.expectError(error.UnknownEvent, trAgy("UserPromptSubmit",
+        \\{"conversationId":"c"}
+    ));
+    try testing.expectError(error.UnknownEvent, trAgy("PermissionRequest",
+        \\{"conversationId":"c","tool_name":"Bash","tool_input":{}}
     ));
 }
 

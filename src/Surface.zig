@@ -4332,7 +4332,7 @@ test "the binding's pane colours are the bus's, name for name" {
 /// multi-line pastes. So the newline is sent afterwards as its own key
 /// event, which is what a real return keypress looks like.
 /// True when the line was typed and its return reached the program.
-fn typePoltergeistNotice(self: *Surface, text: []const u8) !bool {
+pub fn typePoltergeistNotice(self: *Surface, text: []const u8) !bool {
     // Whatever becomes of this one, it is no longer the refusal that was
     // waiting; a new refusal below says so again.
     self.poltergeist_notice_refused = false;
@@ -4370,6 +4370,7 @@ fn typePoltergeistNotice(self: *Surface, text: []const u8) !bool {
         error.UserPresent,
         error.Composing,
         error.DraftInLine,
+        error.ApprovalOnScreen,
         => {
             self.app.poltergeist.deliveryRefused(self.id, self.app.chat.peers());
             // The same for a group's "N new messages": not typed, so not told.
@@ -4443,6 +4444,10 @@ fn noticeRetryDelayMs(err: anyerror, since_key_ms: ?i64) ?u64 {
         // asked again a quiet window on, and again after that, until it is
         // committed or cancelled or the five-minute guard lets it go.
         error.Composing => notice_quiet_keyboard_ms + notice_retry_margin_ms,
+        // A permission box goes when somebody answers it, at no moment known
+        // in advance (task 1682): asked again a quiet window on, like a
+        // composition, until it has.
+        error.ApprovalOnScreen => notice_quiet_keyboard_ms + notice_retry_margin_ms,
         else => null,
     };
 }
@@ -4756,7 +4761,7 @@ pub const Typist = enum { agent, person };
 /// A person is refused only for what is really in the way: the child gone,
 /// or half a line in front of them that the text would be typed into the
 /// middle of. The keyboard clock is for agents.
-fn mayType(who: Typist, child_exited: bool, since_key_ms: ?i64, composing: bool, draft_outstanding: bool) !void {
+fn mayType(who: Typist, child_exited: bool, since_key_ms: ?i64, composing: bool, draft_outstanding: bool, approval_box: bool) !void {
     // Why each refusal exists (moved here from the one function that used
     // to hold them all):
     // Never interrupt someone who is currently using this terminal. A
@@ -4802,6 +4807,12 @@ fn mayType(who: Typist, child_exited: bool, since_key_ms: ?i64, composing: bool,
     // sentence said "try again shortly" and no amount of shortly helped.
     if (child_exited) return error.ChildExited;
     if (who == .agent) {
+        // A permission box its CLI's hooks do not report, on the screen
+        // (task 1682, `App.approvalOnScreen`): a return typed now answers
+        // it with whatever option is highlighted -- measured, a set_watch
+        // notice approved a shell command in Antigravity that way. Nothing
+        // is typed while it is up; it clears when somebody answers it.
+        if (approval_box) return error.ApprovalOnScreen;
         // An input method composing here (task 1590): the half-made word is
         // in the candidate box, not the line, so neither the clock (it can
         // be long past) nor the draft (nothing has reached the line) sees
@@ -4814,25 +4825,37 @@ fn mayType(who: Typist, child_exited: bool, since_key_ms: ?i64, composing: bool,
     if (draft_outstanding) return error.DraftInLine;
 }
 
+test "1682: an agent's text is refused while a permission box it would answer is on the screen" {
+    const testing = std.testing;
+    // Long past the key clock, nothing in the line: the box is what stops it.
+    try testing.expectError(error.ApprovalOnScreen, mayType(.agent, false, 60_000, false, false, true));
+    try testing.expectError(error.ApprovalOnScreen, mayType(.agent, false, null, false, false, true));
+    // A person's own launch is theirs to type.
+    try mayType(.person, false, null, false, false, true);
+    // A child that has gone is still said first.
+    try testing.expectError(error.ChildExited, mayType(.agent, true, null, false, false, true));
+    try testing.expectEqual(@as(?u64, notice_quiet_keyboard_ms + notice_retry_margin_ms), noticeRetryDelayMs(error.ApprovalOnScreen, 60_000));
+}
+
 test "a role picked from the menu is not refused for the keys that opened the tab (#1202)" {
     const testing = std.testing;
-    try testing.expectError(error.UserPresent, mayType(.agent, false, 2000, false, false));
-    try mayType(.person, false, 2000, false, false);
-    try mayType(.person, false, null, false, false);
-    try testing.expectError(error.DraftInLine, mayType(.person, false, null, false, true));
-    try testing.expectError(error.DraftInLine, mayType(.agent, false, null, false, true));
-    try testing.expectError(error.ChildExited, mayType(.person, true, null, false, false));
-    try mayType(.agent, false, notice_quiet_keyboard_ms, false, false);
-    try mayType(.agent, false, null, false, false);
+    try testing.expectError(error.UserPresent, mayType(.agent, false, 2000, false, false, false));
+    try mayType(.person, false, 2000, false, false, false);
+    try mayType(.person, false, null, false, false, false);
+    try testing.expectError(error.DraftInLine, mayType(.person, false, null, false, true, false));
+    try testing.expectError(error.DraftInLine, mayType(.agent, false, null, false, true, false));
+    try testing.expectError(error.ChildExited, mayType(.person, true, null, false, false, false));
+    try mayType(.agent, false, notice_quiet_keyboard_ms, false, false, false);
+    try mayType(.agent, false, null, false, false, false);
 }
 
 test "presence: an agent's text is refused while an input method is composing, however long ago the last key (task 1590)" {
     const testing = std.testing;
     // Long past the key clock, nothing in the line: composing is what stops it.
-    try testing.expectError(error.Composing, mayType(.agent, false, 42_000, true, false));
-    try testing.expectError(error.Composing, mayType(.agent, false, null, true, false));
+    try testing.expectError(error.Composing, mayType(.agent, false, 42_000, true, false, false));
+    try testing.expectError(error.Composing, mayType(.agent, false, null, true, false, false));
     // A person's own text is theirs to type into their own composition.
-    try mayType(.person, false, null, true, false);
+    try mayType(.person, false, null, true, false, false);
     // The same judgement a move uses, five-minute guard and all: a
     // composition open that long with no change no longer counts.
     try testing.expect(composingNow(composition_stale_ms - 1));
@@ -4978,8 +5001,10 @@ pub fn mayTypeAs(self: *Surface, who: Typist) !void {
         last.durationTo(.now(global.io(), .boot)).toMilliseconds()
     else
         null;
-    mayType(who, self.child_exited, since_key_ms, self.polterComposing(), self.draftFor(who)) catch |err| {
+    const approval_box = who == .agent and self.app.approvalOnScreen(self.id);
+    mayType(who, self.child_exited, since_key_ms, self.polterComposing(), self.draftFor(who), approval_box) catch |err| {
         switch (err) {
+            error.ApprovalOnScreen => log.info("poltergeist: text deferred, a permission box is on this terminal's screen", .{}),
             error.ChildExited => log.info("poltergeist: text dropped, the child process has exited", .{}),
             error.Composing => log.info("polter: text deferred, an input method is composing in this terminal", .{}),
             error.UserPresent => log.info(

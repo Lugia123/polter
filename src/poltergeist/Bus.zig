@@ -369,8 +369,8 @@ pub fn Small(comptime n: usize) type {
 
 /// What put an agent's `state` there.
 ///
-/// **Two answers, because "the hooks said so" and "the title says so" are
-/// held to different rules.** A hook event is something that happened, and
+/// **Three answers, because "the hooks said so" and "the title (or the
+/// screen) says so" are held to different rules.** A hook event is something that happened, and
 /// `state` stands until the next one; a title is something being shown,
 /// and `state` stands only while it is (task 1656). Rules that ask whether
 /// a state is known at all -- `known` -- take either; rules about what a
@@ -381,6 +381,12 @@ pub const SaidBy = enum {
     /// Its terminal's title matches one its plugin declared
     /// (`Plugin.TitleSays`). The CLI has no hooks to say it with.
     title,
+    /// Its screen shows a box its plugin declared (`Plugin.ScreenSays`),
+    /// read while its hooks are live because they have no event for an
+    /// approval (`Plugin.Manifest.hooks_report_approval`, task 1682). Like
+    /// `title`, the state stands only while the screen shows it
+    /// (`noteScreenApproval`), and any hook event takes it back.
+    screen,
 };
 
 /// Everything the bus knows about a terminal's agent from its hooks.
@@ -501,7 +507,16 @@ pub const Agent = struct {
     /// its hooks, or through a title its plugin declared -- rather than
     /// the default of a terminal nothing has spoken for.
     pub fn known(self: Agent) bool {
-        return self.hooks == .live or self.said_by == .title;
+        return spoke(self.hooks, self.said_by);
+    }
+
+    /// `known` for a terminal described by these two alone -- what
+    /// `Attention`'s facts carry -- so the rule has one place.
+    pub fn spoke(hooks: Hooks, said_by: SaidBy) bool {
+        return switch (said_by) {
+            .hooks => hooks == .live,
+            .title, .screen => true,
+        };
     }
 
     pub const none: Agent = .{
@@ -2318,7 +2333,11 @@ pub fn noteTitle(self: *Bus, id: Id, waits_for: ?[]const u8, title: []const u8, 
     const cli = waits_for orelse {
         const e = self.entries.getPtr(id) orelse return false;
         const a = &e.agent;
-        if (a.said_by != .title) return false;
+        switch (a.said_by) {
+            .title => {},
+            // Not the title's to take back.
+            .hooks, .screen => return false,
+        }
         a.said_by = .hooks;
         a.state = .idle;
         a.since_ms = now_ms;
@@ -2472,9 +2491,12 @@ pub fn promptStanding(self: *const Bus, id: Id, since_ms: u64, event_ms: u64, no
     // `noteTitle` ends it the moment the title changes. The screen is no
     // help here: Codex keeps redrawing under its box, which is the reason
     // the title is read at all.
-    if (a.said_by == .title) {
-        return a.state == .awaiting_approval and a.since_ms == since_ms and
-            a.last_event_ms != null and a.last_event_ms.? == event_ms;
+    switch (a.said_by) {
+        // A screen's wait is the same: `noteScreenApproval` ends it the
+        // moment the box is no longer on the screen.
+        .title, .screen => return a.state == .awaiting_approval and a.since_ms == since_ms and
+            a.last_event_ms != null and a.last_event_ms.? == event_ms,
+        .hooks => {},
     }
     if (a.hooks != .live or a.state != .awaiting_approval) return false;
     if (a.since_ms != since_ms) return false;
@@ -2503,6 +2525,77 @@ pub fn promptNeedsScreen(self: *const Bus, id: Id) bool {
 /// rows redraw (task 1655). Asked on each heartbeat -- which is the only
 /// thing that runs while a screen keeps moving, and so exactly while it
 /// matters.
+/// Whether this terminal's screen is to be read for an approval box, for
+/// a CLI whose hooks are live and say nothing about approvals (task 1682,
+/// `Plugin.screenApprovalFor` is the caller's half). Only while a tool is
+/// running -- a box is asked for a tool, and between tools there is none to
+/// look for -- or while the screen is already what says it waits, so that
+/// its going is seen.
+pub fn wantsScreenApproval(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    const a = e.agent;
+    if (a.hooks != .live) return false;
+    return switch (a.said_by) {
+        .screen => a.state == .awaiting_approval,
+        .hooks => a.state == .in_turn and (a.tools orelse 0) > 0,
+        .title => false,
+    };
+}
+
+/// What the screen of a terminal `wantsScreenApproval` picked shows now:
+/// `said` is the declared text of a box that is up (`ScreenSays.approvalSaid`),
+/// or null when none is (task 1682).
+///
+/// **The state lasts as long as the screen shows the box**, as a title's
+/// does (`noteTitle`): entering puts `awaiting_approval` in place with the
+/// text as its note and the same line in the box a hook's would; a box
+/// still there is the same wait; a screen without it ends it -- back to the
+/// turn, with a line still waiting to be read taken back. Any hook event
+/// ends it too, since it puts `said_by` back to `hooks` (`agentEvent`).
+///
+/// Answers whether anything went in the box.
+pub fn noteScreenApproval(self: *Bus, id: Id, said: ?[]const u8, now_ms: u64) bool {
+    const e = self.entries.getPtr(id) orelse return false;
+    const a = &e.agent;
+    if (a.hooks != .live) return false;
+
+    const text = said orelse {
+        switch (a.said_by) {
+            .screen => {},
+            .hooks, .title => return false,
+        }
+        a.said_by = .hooks;
+        a.state = .in_turn;
+        a.since_ms = now_ms;
+        a.last_event_ms = now_ms;
+        a.detail.set(null);
+        a.note.set(null);
+        if (a.pending) |kind| if (isWaiting(kind)) {
+            a.pending = null;
+            a.handed = 0;
+        };
+        return false;
+    };
+
+    switch (a.said_by) {
+        .screen => return false,
+        .title => return false,
+        .hooks => if (a.state != .in_turn or (a.tools orelse 0) == 0) return false,
+    }
+    a.said_by = .screen;
+    a.state = .awaiting_approval;
+    a.since_ms = now_ms;
+    a.last_event_ms = now_ms;
+    a.detail.set("screen");
+    a.note.set(text);
+    a.box = null;
+
+    if (e.role != .watched or e.duty == .off) return false;
+    a.pending = .awaiting_approval;
+    a.handed = 0;
+    return true;
+}
+
 pub fn wantsBoxPrint(self: *const Bus, id: Id, now_ms: u64) bool {
     const e = self.entries.get(id) orelse return false;
     const a = e.agent;
@@ -3452,7 +3545,10 @@ fn quietExplained(self: *const Bus, id: Id, now_ms: u64) bool {
     const a = e.agent;
     // A title saying it waits explains the stillness for as long as it says
     // so; it stops saying so the moment the box goes (`noteTitle`).
-    if (a.said_by == .title) return a.state == .awaiting_approval;
+    switch (a.said_by) {
+        .title, .screen => return a.state == .awaiting_approval,
+        .hooks => {},
+    }
     if (a.hooks != .live or !stateExplains(a.state)) return false;
     if (!self.observed(id)) return true;
     // **A turn that ended or failed, or a question being waited on, holds
@@ -3600,13 +3696,21 @@ fn writeAgent(
             // line is full.
             // A title names no tool: what it says is that the CLI waits,
             // and the title itself goes where a hook's note would.
-            if (a.said_by == .title) try w.print(
-                "{s}0x{x:0>16} awaiting approval (title says so) [state_at_ms={d} event_at_ms={d} answer={s}]",
-                .{ sep, id, a.since_ms, a.eventMs(), may.word() },
-            ) else try w.print(
-                "{s}0x{x:0>16} awaiting approval {s} [state_at_ms={d} event_at_ms={d} answer={s}]",
-                .{ sep, id, a.detail.get() orelse "(no tool name)", a.since_ms, a.eventMs(), may.word() },
-            );
+            switch (a.said_by) {
+                .title => try w.print(
+                    "{s}0x{x:0>16} awaiting approval (title says so) [state_at_ms={d} event_at_ms={d} answer={s}]",
+                    .{ sep, id, a.since_ms, a.eventMs(), may.word() },
+                ),
+                // A screen names no tool either; what it showed is the note.
+                .screen => try w.print(
+                    "{s}0x{x:0>16} awaiting approval (screen says so) [state_at_ms={d} event_at_ms={d} answer={s}]",
+                    .{ sep, id, a.since_ms, a.eventMs(), may.word() },
+                ),
+                .hooks => try w.print(
+                    "{s}0x{x:0>16} awaiting approval {s} [state_at_ms={d} event_at_ms={d} answer={s}]",
+                    .{ sep, id, a.detail.get() orelse "(no tool name)", a.since_ms, a.eventMs(), may.word() },
+                ),
+            }
             // **A cut note says it was cut, and by how much** (task 1651):
             // a command stopped at `; S` read as a command that ended
             // there. The rest is terminal_turn's `pending_tool`.
@@ -7246,6 +7350,111 @@ test "1656: a title that stops saying it ends the wait, and takes back a line no
     // And a new box is a new wait.
     try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 9_000));
     try testing.expectEqual(@as(u64, 9_000), b.agentOf(worker).since_ms);
+}
+
+fn agyEv(kind: AgentEvent.Kind) AgentEvent.Event {
+    var ev = hookEv(kind);
+    ev.cli = "antigravity";
+    return ev;
+}
+
+const agy_box = "Requesting permission for:";
+
+test "1682: a box on the screen, read while a tool runs, is a wait said as the screen's" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+
+    // Not read until a tool is running: between tools there is no box.
+    _ = try b.agentEvent(worker, agyEv(.turn_started), 1_000);
+    try testing.expect(!b.wantsScreenApproval(worker));
+    try testing.expect(!b.noteScreenApproval(worker, agy_box, 1_500));
+    try testing.expectEqual(AgentState.in_turn, b.agentOf(worker).state);
+
+    var tool = agyEv(.tool_started);
+    tool.detail = "run_command";
+    _ = try b.agentEvent(worker, tool, 2_000);
+    try testing.expect(b.wantsScreenApproval(worker));
+    // No box yet: nothing moves.
+    try testing.expect(!b.noteScreenApproval(worker, null, 3_000));
+    try testing.expectEqual(AgentState.in_turn, b.agentOf(worker).state);
+
+    try testing.expect(b.noteScreenApproval(worker, agy_box, 4_000));
+    const a = b.agentOf(worker);
+    try testing.expectEqual(SaidBy.screen, a.said_by);
+    try testing.expectEqual(AgentState.awaiting_approval, a.state);
+    try testing.expectEqual(Hooks.live, a.hooks);
+    try testing.expectEqualStrings("screen", a.detail.get().?);
+    try testing.expect(a.known());
+    // Still read, so that its going is seen.
+    try testing.expect(b.wantsScreenApproval(worker));
+
+    const line = b.drain(boss, 5_000, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expectEqualStrings(
+        "[poltergeist] 0x0000000000002222 awaiting approval (screen says so) [state_at_ms=4000 event_at_ms=4000 answer=allowed]: " ++ agy_box,
+        line,
+    );
+
+    // The same box a heartbeat later is the same wait.
+    try testing.expect(!b.noteScreenApproval(worker, agy_box, 9_000));
+    try testing.expectEqual(@as(u64, 4_000), b.agentOf(worker).since_ms);
+    try testing.expect(b.drain(boss, 9_000, &buf, .none) == null);
+}
+
+test "1682: a box gone from the screen ends the wait, and takes back a line nobody read" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [255]u8 = undefined;
+
+    _ = try b.agentEvent(worker, agyEv(.turn_started), 1_000);
+    _ = try b.agentEvent(worker, agyEv(.tool_started), 2_000);
+    try testing.expect(b.noteScreenApproval(worker, agy_box, 4_000));
+    try testing.expect(!b.noteScreenApproval(worker, null, 7_000));
+    const a = b.agentOf(worker);
+    try testing.expectEqual(AgentState.in_turn, a.state);
+    try testing.expectEqual(SaidBy.hooks, a.said_by);
+    try testing.expect(a.detail.get() == null);
+    try testing.expect(b.drain(boss, 7_000, &buf, .none) == null);
+
+    // The tool still running, a new box is a new wait.
+    try testing.expect(b.noteScreenApproval(worker, agy_box, 9_000));
+    try testing.expectEqual(@as(u64, 9_000), b.agentOf(worker).since_ms);
+}
+
+test "1682: a hook after a box the screen said ends that wait in the hook's word" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, agyEv(.turn_started), 1_000);
+    _ = try b.agentEvent(worker, agyEv(.tool_started), 2_000);
+    try testing.expect(b.noteScreenApproval(worker, agy_box, 4_000));
+    // Approved: the tool's `PostToolUse`.
+    _ = try b.agentEvent(worker, agyEv(.turn_resumed), 6_000);
+    var a = b.agentOf(worker);
+    try testing.expectEqual(AgentState.in_turn, a.state);
+    try testing.expectEqual(SaidBy.hooks, a.said_by);
+    try testing.expect(!b.wantsScreenApproval(worker));
+
+    // Or the turn ending while it was up.
+    _ = try b.agentEvent(worker, agyEv(.tool_started), 7_000);
+    try testing.expect(b.noteScreenApproval(worker, agy_box, 8_000));
+    _ = try b.agentEvent(worker, agyEv(.turn_ended), 9_000);
+    a = b.agentOf(worker);
+    try testing.expectEqual(AgentState.ended, a.state);
+    try testing.expectEqual(SaidBy.hooks, a.said_by);
+}
+
+test "1682: the screen is not read for a terminal whose hooks are not live, or whose title speaks" {
+    var b = try hookedBus();
+    defer b.deinit();
+    // Nothing heard at all.
+    try testing.expect(!b.wantsScreenApproval(worker));
+    try testing.expect(!b.noteScreenApproval(worker, agy_box, 1_000));
+    // A title's wait is the title's.
+    try testing.expect(try b.noteTitle(worker, "codex", codex_wait, 2_000));
+    try testing.expect(!b.wantsScreenApproval(worker));
+    try testing.expect(!b.noteScreenApproval(worker, null, 3_000));
+    try testing.expectEqual(SaidBy.title, b.agentOf(worker).said_by);
 }
 
 test "1656: live hooks outrank the title, both ways" {

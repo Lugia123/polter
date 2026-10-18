@@ -443,6 +443,10 @@ poltergeist_persona_waits: poltergeistpkg.PersonaWaits = undefined,
 /// again (#60). Woken by the same retry as refused notices (`noticeRetryIn`).
 mention_retries: poltergeistpkg.MentionRetry = undefined,
 
+/// Standing lines (`tellSurface`) refused for a reason that clears, typed
+/// once it has (task 1682). Woken by the same retry as refused notices.
+owed_tells: poltergeistpkg.OwedTells = undefined,
+
 /// `task_assign` with `fresh`, held between the /clear and the CLI saying
 /// it has cleared (#64). Each holds a reference to its request.
 fresh_assigns: poltergeistpkg.fresh_assign.Waits(*poltergeistpkg.Server.Pending) = .{},
@@ -632,6 +636,7 @@ pub fn init(
         .identities = .init(alloc),
         .poltergeist_persona_waits = .{ .alloc = alloc, .io = global.io() },
         .mention_retries = .{ .alloc = alloc },
+        .owed_tells = .{ .alloc = alloc },
         .poltergeist_feed = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
         .projects = .init(alloc),
@@ -734,6 +739,7 @@ pub fn deinit(self: *App) void {
     self.poltergeist_agent_clis.deinit(global.io());
     self.poltergeist_persona_waits.deinit();
     self.mention_retries.deinit();
+    self.owed_tells.deinit();
     // Answered by the server shutting down, like the waits around it.
     for (self.fresh_assigns.entries.items) |e| e.held.release();
     self.fresh_assigns.deinit(self.alloc);
@@ -812,6 +818,8 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
             // typed now is marked as told, so the sweep does not add a
             // notice behind it.
             self.retryMentions(self.poltergeistElapsedMs());
+            // Standing lines refused a moment ago (task 1682).
+            self.payOwedTells();
             // A fresh assignment whose clear was never confirmed.
             self.sweepFreshAssigns();
             // And the groups: a message that arrived while its reader had
@@ -2442,6 +2450,7 @@ fn poltergeistHeartbeat(
     const now_ms = self.poltergeistElapsedMs();
     self.poltergeist.noteQuiet(from, quiet_ms, now_ms);
     self.capturePermissionBox(from, now_ms);
+    self.considerScreenApproval(from, now_ms);
     self.notePoltergeistAgentsHere();
     _ = self.considerLaunches(now_ms);
     _ = self.poltergeist.considerCalls(now_ms);
@@ -2466,6 +2475,36 @@ fn capturePermissionBox(self: *App, id: poltergeistpkg.Bus.Id, now_ms: u64) void
     defer self.alloc.free(screen);
     const kept = self.poltergeist.noteBoxPrint(id, event_ms, screen);
     log.info("poltergeist: permission box captured id={x} event_ms={d} kept={}", .{ id, event_ms, kept });
+}
+
+/// Read an approval box off the screen, for a CLI whose hooks are live and
+/// have no event for one (task 1682: Antigravity). Here for the reason
+/// `capturePermissionBox` is: a heartbeat comes every few seconds until a
+/// screen has been reported still (`Sampler.heartbeat`), still or not, so
+/// a box that has just been drawn is read within one of them -- where the
+/// quiet report would wait `poltergeist-quiescence-after`.
+///
+/// Read only when all three hold: the bus wants it (hooks live, and a tool
+/// running or a wait the screen already said), and the CLI's plugin
+/// declares `hooks_report_approval: false` with a box to look for. A
+/// Claude Code or Codex terminal is never read here.
+fn considerScreenApproval(self: *App, id: poltergeistpkg.Bus.Id, now_ms: u64) void {
+    if (!self.poltergeist.wantsScreenApproval(id)) return;
+    // A copy, kept for as long as the name read out of it is used.
+    const agent = self.poltergeist.agentOf(id);
+    const cli = agent.cli.get() orelse return;
+    self.ensurePlugins();
+    const says = poltergeistpkg.Plugin.screenApprovalFor(self.poltergeist_says, cli) orelse return;
+    const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+        log.debug("poltergeist: could not read for a box id={x} err={}", .{ id, err });
+        return;
+    };
+    defer self.alloc.free(screen);
+    const said = says.approvalSaid(screen);
+    // Kept in the bus before `screen` is freed: its note is copied there.
+    if (self.poltergeist.noteScreenApproval(id, said, now_ms)) {
+        log.info("poltergeist: approval box on screen id={x}", .{id});
+    }
 }
 
 /// Remind one worker that printing is not reporting, once, when it stops.
@@ -2826,7 +2865,8 @@ pub fn ensurePlugins(self: *App) void {
     var says: std.ArrayListUnmanaged(poltergeistpkg.Plugin.Manifest) = .empty;
     for (self.scanPlugins(alloc, io, &environ_map, true)) |f| {
         if (f.manifest.title_says.awaiting_approval.len == 0 and
-            !f.manifest.screen_says.declared()) continue;
+            !f.manifest.screen_says.declared() and
+            !f.manifest.startup_says.declared()) continue;
         says.append(alloc, f.manifest) catch break;
     }
 
@@ -5991,6 +6031,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .sendText = poltergeistSend,
         .parkAssign = poltergeistParkAssign,
         .agentPresent = poltergeistAgentPresent,
+        .startupReach = poltergeistStartupReach,
         .personaFace = poltergeistPersonaFace,
         .terminalCapabilities = poltergeistTerminalCapabilities,
         .agentArrived = poltergeistAgentArrived,
@@ -7647,6 +7688,69 @@ fn poltergeistStoodDown(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) void {
     _ = id;
     self.refreshPoltergeistTabs();
     self.saveSession();
+}
+
+/// What a terminal with no agent connected shows of the CLI started in it
+/// (task 1682, `rpc.Host.startupReach`). Only for a terminal a launch said
+/// to expect an agent in (`hooks == .expected`) whose CLI's plugin
+/// declares `startup_says`; the screen is read the way terminal_read reads
+/// it. Anything else is `none`, which keeps the rule as it was: no agent,
+/// nothing typed.
+fn poltergeistStartupReach(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) poltergeistpkg.rpc.StartupReach {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.startupReachOf(id);
+}
+
+/// Whether this terminal's agent is at a permission box now (task 1682):
+/// the question every agent's write asks before typing (`Surface.mayTypeAs`),
+/// since a return typed into a box answers it -- at best as a no, at worst
+/// as the person's yes (measured: a set_watch notice approved a shell
+/// command in Antigravity). Two ways it can be known:
+///
+/// - **the agent said so**: `awaiting_approval`, by its hooks (Claude Code's
+///   `PermissionRequest`, Codex's) or by the title its plugin declares --
+///   for every CLI, which is the change to Claude Code and Codex: a mention
+///   or a notice waits until the box is answered, where it was typed into
+///   it before;
+/// - **the screen shows one** its CLI's plugin declares, for a CLI whose
+///   hooks are live and say nothing about approvals
+///   (`hooks_report_approval: false`) -- read the way terminal_read reads.
+///
+/// `awaiting_input` is not a box and is not counted. The keys that answer a
+/// box (terminal_key, terminal_answer_prompt) do not ask this.
+pub fn approvalOnScreen(self: *App, id: poltergeistpkg.Bus.Id) bool {
+    // A copy, kept for as long as the name read out of it is used.
+    const agent = self.poltergeist.agentOf(id);
+    if (agent.known() and agent.state == .awaiting_approval) return true;
+    if (agent.hooks != .live) return false;
+    const cli = agent.cli.get() orelse return false;
+    self.ensurePlugins();
+    const says = poltergeistpkg.Plugin.screenApprovalFor(self.poltergeist_says, cli) orelse return false;
+    const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+        log.debug("poltergeist: could not read for a box before typing id={x} err={}", .{ id, err });
+        return false;
+    };
+    defer self.alloc.free(screen);
+    return says.approvalSaid(screen) != null;
+}
+
+fn startupReachOf(self: *App, id: poltergeistpkg.Bus.Id) poltergeistpkg.rpc.StartupReach {
+    // A copy, kept for as long as the name read out of it is used.
+    const agent = self.poltergeist.agentOf(id);
+    if (agent.hooks != .expected) return .none;
+    const cli = agent.cli.get() orelse return .none;
+    self.ensurePlugins();
+    const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse return .none;
+    const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+        log.debug("poltergeist: could not read a starting CLI id={x} err={}", .{ id, err });
+        return .none;
+    };
+    defer self.alloc.free(screen);
+    return switch (says.verdict(screen)) {
+        .blocked => .blocked,
+        .ready => if (says.ready_without_agent) .ready else .none,
+        .neither => .none,
+    };
 }
 
 fn poltergeistAgentPresent(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
@@ -9881,7 +9985,12 @@ fn retryMentions(self: *App, now_ms: u64) void {
         // asked when the mention was made (#1533), asked again: an agent
         // that has exited since leaves a shell that would run the line.
         var refused: anyerror = error.NoAgent;
-        const outcome: poltergeistpkg.MentionRetry.Outcome = if (!self.agentPresent(e.to))
+        // The CLI started there and not yet connected counts as `group_post`
+        // counts it (task 1682, `rpc.mayType`): its input box showing.
+        const reach: poltergeistpkg.rpc.StartupReach = if (self.agentPresent(e.to)) .ready else self.startupReachOf(e.to);
+        const outcome: poltergeistpkg.MentionRetry.Outcome = if (reach == .blocked)
+            .{ .gave_up = "StartupPrompt" }
+        else if (reach == .none)
             .{ .gave_up = "NoAgent" }
         else if (poltergeistSend(self, e.to, e.line, true)) |_| {
             self.chat.markTold(e.group, e.to, now_ms);
@@ -10724,9 +10833,34 @@ pub fn tellSurface(self: *App, id: poltergeistpkg.Bus.Id, text: []const u8) void
     @memcpy(buf[0..text.len], text);
     buf[text.len] = 0;
 
-    self.surfaceMessage(surface, self.noticeFor(id, buf)) catch |err| {
+    const msg = self.noticeFor(id, buf);
+    self.surfaceMessage(surface, msg) catch |err| {
         log.warn("poltergeist: could not tell a terminal its standing err={}", .{err});
     };
+    // Refused for a reason that clears -- a key, a draft, a permission box
+    // (`Surface.typePoltergeistNotice` sets the flag only then): said once
+    // it has, rather than never (task 1682). The refusal set its own wake.
+    if (msg == .poltergeist_notice and surface.poltergeist_notice_refused) {
+        self.owed_tells.owe(id, text) catch |err| {
+            log.warn("poltergeist: could not keep a refused standing line err={}", .{err});
+        };
+    }
+}
+
+/// Type the standing lines that were refused (`owed_tells`), each once.
+fn payOwedTells(self: *App) void {
+    self.owed_tells.pay(self, owedTellTry);
+}
+
+fn owedTellTry(self: *App, id: poltergeistpkg.Bus.Id, line: []const u8) poltergeistpkg.OwedTells.Outcome {
+    const surface = self.findSurfaceByID(id) orelse return .gone;
+    if (!self.agentPresent(id)) return .gone;
+    const typed = surface.typePoltergeistNotice(line) catch return .gone;
+    if (typed) {
+        log.info("poltergeist: standing line typed on retry id={x}", .{id});
+        return .typed;
+    }
+    return if (surface.poltergeist_notice_refused) .refused else .gone;
 }
 
 /// Whether an agent is listening in this terminal right now.

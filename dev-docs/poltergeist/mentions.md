@@ -51,6 +51,7 @@ agent 退出后终端里是裸 shell，打字加回车会被当命令执行—�
 | --- | --- | --- |
 | `UserPresent` | 十秒内有真实键盘输入到过 | 会 |
 | `DraftInLine` | 输入框里有没提交的半行字 | **不会**，要有人按键 |
+| `ApprovalOnScreen` | 那个 agent 停在批准框上：hook 或标题说了，或屏幕上有插件声明的框（#1682）。回车会替人回答它 | 框被答掉就好 |
 
 ⇒ `group_post` 的返回要**逐个**说清谁送到了、谁没有、为什么。
 ⇒ ⚠️ **消息本身照常入群、照常算未读**。直投失败不等于消息没发出——
@@ -64,6 +65,13 @@ agent 退出后终端里是裸 shell，打字加回车会被当命令执行—�
 的终端**打一行 `[polter] Your mention of 0x… in "<群>" (message N) was not
 delivered after 3 more tries: <code>. …`；这一行也被拒，就只记 `log.warn`，
 不再追。其余 code 不重投。
+⇒ `ApprovalOnScreen` **不计次数**（`retry.attempts` 写 0）：每 15s 看一次，
+框答掉后才敲、只敲一次；终端里 agent 没了就按 `NoAgent` 结束。同一道门
+（`App.approvalOnScreen` → `Surface.mayType`）也挡 `task_assign` 的通知、fresh
+的 `/clear` 和 Polter 自己打的通知（set_watch 那句也在内）。⚠️ 这对 Claude Code /
+Codex 是行为变化：以前它们等批准时 mention 照样带回车打进去，现在等框答掉。
+答框的路（`terminal_key`、`terminal_answer_prompt`）不经过这道门；
+`awaiting_input` 不是批准框，不挡。
 
 ## 四、`Chat.waking` 加一条覆盖
 

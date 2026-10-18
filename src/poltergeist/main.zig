@@ -32,6 +32,7 @@ pub const StallWatch = @import("StallWatch.zig");
 pub const worktree = @import("worktree.zig");
 pub const ChatLog = @import("ChatLog.zig");
 pub const MentionRetry = @import("MentionRetry.zig");
+pub const OwedTells = @import("OwedTells.zig");
 pub const fresh_assign = @import("fresh_assign.zig");
 pub const process_info = @import("process_info.zig");
 pub const Feed = @import("Feed.zig");
@@ -118,6 +119,7 @@ test {
     _ = ShellSteps;
     _ = ChatLog;
     _ = MentionRetry;
+    _ = OwedTells;
     _ = fresh_assign;
     _ = process_info;
     _ = Feed;

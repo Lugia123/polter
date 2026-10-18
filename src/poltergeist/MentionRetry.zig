@@ -47,6 +47,9 @@ pub fn delayMs(err: anyerror) ?u64 {
     return switch (err) {
         error.UserPresent, error.Composing => user_present_delay_ms,
         error.DraftInLine => draft_delay_ms,
+        // A permission box goes when it is answered (task 1682); a guess at
+        // that, like a draft's.
+        error.ApprovalOnScreen => draft_delay_ms,
         else => null,
     };
 }
@@ -161,9 +164,14 @@ pub fn takeDue(self: *MentionRetry, now_ms: u64, out: *std.ArrayListUnmanaged(En
 pub fn requeue(self: *MentionRetry, e: Entry, err: anyerror, now_ms: u64) Outcome {
     const code = codeOf(err);
     const delay = delayMs(err) orelse return .{ .gave_up = code };
-    if (e.left <= 1) return .{ .gave_up = code };
+    // **A permission box spends no try** (task 1682): it goes when somebody
+    // answers it, which may be long after three tries, and the mention is
+    // to be typed once it has -- not given up on. A terminal whose agent
+    // has gone ends the wait another way (`NoAgent`, asked before typing).
+    const spends = err != error.ApprovalOnScreen;
+    if (spends and e.left <= 1) return .{ .gave_up = code };
     var next = e;
-    next.left -= 1;
+    if (spends) next.left -= 1;
     next.due_ms = now_ms +| delay;
     self.items.append(self.alloc, next) catch return .{ .gave_up = code };
     return .{ .again = delay };
@@ -261,6 +269,36 @@ test "mention retry: three more tries, then it gives up with the last refusal's 
     try testing.expectEqual(@as(usize, attempts), tries);
     try testing.expectEqualStrings("DraftInLine", last.gave_up);
     try testing.expectEqual(@as(usize, 0), r.items.items.len);
+}
+
+test "1682: a permission box spends no try: the mention waits for as long as it is up" {
+    var r: MentionRetry = .{ .alloc = testing.allocator };
+    defer r.deinit();
+    var due: std.ArrayListUnmanaged(Entry) = .empty;
+    defer due.deinit(testing.allocator);
+
+    var now: u64 = 1_000;
+    try testing.expectEqual(@as(?u64, draft_delay_ms), try r.add("build", 7, 0xa, 0xb, "the line", error.ApprovalOnScreen, now));
+    // Ten times the tries anything else gets, and still waiting.
+    for (0..attempts * 10) |_| {
+        now = r.nextDueMs().?;
+        due.clearRetainingCapacity();
+        try r.takeDue(now, &due);
+        try testing.expectEqual(@as(usize, 1), due.items.len);
+        const o = r.requeue(due.items[0], error.ApprovalOnScreen, now);
+        try testing.expect(o == .again);
+    }
+    // Answered: the next refusal is an ordinary one, and its tries are all there.
+    var tries: usize = 0;
+    while (r.nextDueMs()) |at| {
+        now = at;
+        due.clearRetainingCapacity();
+        try r.takeDue(now, &due);
+        tries += 1;
+        const o = r.requeue(due.items[0], error.UserPresent, now);
+        if (o == .gave_up) r.free(due.items[0]);
+    }
+    try testing.expectEqual(@as(usize, attempts), tries);
 }
 
 test "mention retry: a retry refused for a reason that does not clear stops at once" {

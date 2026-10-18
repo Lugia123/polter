@@ -326,6 +326,19 @@ pub const Manifest = struct {
     /// up -- see `ScreenSays`. Empty for a plugin that declares nothing.
     screen_says: ScreenSays = .none,
 
+    /// Whether this plugin's CLI says through its hooks that it is waiting
+    /// on an approval (task 1682). `"hooks_report_approval": false` is a
+    /// CLI whose hooks are live and have no event for it -- Antigravity's
+    /// six have none -- so its `screen_says` is read while its hooks are
+    /// live, which for every other CLI it is not (`screenApprovalFor`).
+    /// True when the manifest says nothing: a CLI with an approval hook
+    /// (Claude Code's `PermissionRequest`, Codex's) or with no hooks at all.
+    hooks_report_approval: bool = true,
+
+    /// What this plugin's CLI shows before an agent is reachable in it --
+    /// see `StartupSays`. Empty for a plugin that declares nothing.
+    startup_says: StartupSays = .none,
+
     /// The parameter by that name, if the manifest declares one.
     pub fn param(self: Manifest, name: []const u8) ?ParamSpec {
         for (self.params) |p| if (std.mem.eql(u8, p.name, name)) return p;
@@ -415,13 +428,83 @@ pub const ScreenSays = struct {
     }
 
     pub fn awaitsApproval(self: ScreenSays, screen: []const u8) bool {
+        return self.approvalSaid(screen) != null;
+    }
+
+    /// The declared text that says a box is up on `screen`, or null.
+    pub fn approvalSaid(self: ScreenSays, screen: []const u8) ?[]const u8 {
         const tail = bottomRows(screen, rows);
         for (self.awaiting_approval) |text| {
-            if (std.mem.indexOf(u8, tail, text) != null) return true;
+            if (std.mem.indexOf(u8, tail, text) != null) return text;
         }
-        return false;
+        return null;
     }
 };
+
+/// What a CLI shows on its screen between being started and an agent
+/// being reachable in it (task 1682).
+///
+/// ```json
+/// "startup_says": { "blocks": ["Do you trust the contents of this project?"],
+///                   "ready_says": ["? for shortcuts"], "ready_without_agent": true }
+/// ```
+///
+/// **For a CLI that connects to Polter only once it is asked something.**
+/// A line is typed into a terminal only when an agent is connected from it
+/// (`agentPresent`), because at a bare shell the shell would run it.
+/// Antigravity starts its MCP servers -- Polter's among them -- with the
+/// first prompt, not before (measured on agy 1.4.0), so by that rule the
+/// first line it is sent can never be typed. `ready_without_agent` says
+/// so, and `ready_says` is how its input box is known on the screen: the
+/// two together let the first line in.
+///
+/// `blocks` is a question the CLI asks before anything else -- the folder
+/// trust box -- whose answer is a security decision that belongs to the
+/// person: **a line is never typed while it is up**, since its return would
+/// choose the box's default.
+pub const StartupSays = struct {
+    blocks: []const []const u8,
+    ready_says: []const []const u8,
+    ready_without_agent: bool,
+
+    pub const none: StartupSays = .{ .blocks = &.{}, .ready_says = &.{}, .ready_without_agent = false };
+
+    pub fn declared(self: StartupSays) bool {
+        return self.blocks.len > 0 or self.ready_says.len > 0;
+    }
+
+    pub const Verdict = enum {
+        /// A box that must not be typed into is up.
+        blocked,
+        /// The CLI's input box is showing and nothing blocks it.
+        ready,
+        /// Neither: starting, or not this CLI any more.
+        neither,
+    };
+
+    pub fn verdict(self: StartupSays, screen: []const u8) Verdict {
+        const tail = bottomRows(screen, ScreenSays.rows);
+        for (self.blocks) |text| {
+            if (std.mem.indexOf(u8, tail, text) != null) return .blocked;
+        }
+        for (self.ready_says) |text| {
+            if (std.mem.indexOf(u8, tail, text) != null) return .ready;
+        }
+        return .neither;
+    }
+};
+
+/// What `cli` shows on its way up, for a terminal with no agent connected
+/// yet, or null when it declares nothing to go by -- in which case such a
+/// terminal is not typed into, as before.
+pub fn startupFor(manifests: []const Manifest, cli: []const u8) ?StartupSays {
+    for (manifests) |m| {
+        if (!std.mem.eql(u8, m.key, cli)) continue;
+        if (!m.startup_says.declared()) return null;
+        return m.startup_says;
+    }
+    return null;
+}
 
 /// The last `n` rows of `screen` that end at its last row with anything
 /// on it.
@@ -449,6 +532,20 @@ pub const ScreenVerdict = enum {
     /// is showing, or the CLI is known and declares nothing.
     unknown,
 };
+
+/// What says a box is up on the screen of a terminal whose CLI is `cli`
+/// and whose hooks are live, or null when the screen is not to be read for
+/// it: its hooks say so themselves, or it declares nothing to look for.
+/// **Only a CLI that declares `hooks_report_approval: false`** -- so a
+/// Claude Code or Codex terminal is never read for this (task 1682).
+pub fn screenApprovalFor(manifests: []const Manifest, cli: []const u8) ?ScreenSays {
+    for (manifests) |m| {
+        if (!std.mem.eql(u8, m.key, cli)) continue;
+        if (m.hooks_report_approval or !m.screen_says.declared()) return null;
+        return m.screen_says;
+    }
+    return null;
+}
 
 pub fn screenVerdict(manifests: []const Manifest, cli: ?[]const u8, screen: []const u8) ScreenVerdict {
     if (cli) |c| {
@@ -836,6 +933,70 @@ pub fn load(
         .agent_cli = try agentCliOf(arena, key, dir, obj),
         .title_says = try titleSaysOf(arena, key, obj),
         .screen_says = try screenSaysOf(arena, key, obj),
+        .hooks_report_approval = hooksReportApprovalOf(key, obj),
+        .startup_says = try startupSaysOf(arena, key, obj),
+    };
+}
+
+/// `startup_says`, or `.none` with a warning for a section that does not
+/// read. A list whose items are not all short strings costs the list.
+fn startupSaysOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Allocator.Error!StartupSays {
+    const section = switch (obj.get("startup_says") orelse return .none) {
+        .object => |o| o,
+        else => {
+            log.warn("plugin {s}: startup_says is not an object; ignored", .{key});
+            return .none;
+        },
+    };
+    return .{
+        .blocks = try startupTexts(arena, key, section, "blocks"),
+        .ready_says = try startupTexts(arena, key, section, "ready_says"),
+        .ready_without_agent = switch (section.get("ready_without_agent") orelse std.json.Value{ .bool = false }) {
+            .bool => |b| b,
+            else => b: {
+                log.warn("plugin {s}: startup_says.ready_without_agent is not true or false; taken as false", .{key});
+                break :b false;
+            },
+        },
+    };
+}
+
+fn startupTexts(arena: Allocator, key: []const u8, section: std.json.ObjectMap, name: []const u8) Allocator.Error![]const []const u8 {
+    const list = switch (section.get(name) orelse return &.{}) {
+        .array => |a| a.items,
+        else => {
+            log.warn("plugin {s}: startup_says.{s} is not a list; ignored", .{ key, name });
+            return &.{};
+        },
+    };
+    if (list.len > ScreenSays.max_texts) {
+        log.warn("plugin {s}: startup_says.{s} has more than {d}; ignored", .{ key, name, ScreenSays.max_texts });
+        return &.{};
+    }
+    const out = try arena.alloc([]const u8, list.len);
+    for (list, out) |v, *o| {
+        const t = switch (v) {
+            .string => |t| t,
+            else => "",
+        };
+        if (t.len == 0 or t.len > ScreenSays.max_text_bytes) {
+            log.warn("plugin {s}: startup_says.{s} has an empty, long or non-text item; ignored", .{ key, name });
+            return &.{};
+        }
+        o.* = try arena.dupe(u8, t);
+    }
+    return out;
+}
+
+/// `hooks_report_approval`, true when the manifest says nothing -- or says
+/// something that is not true or false, which is logged.
+fn hooksReportApprovalOf(key: []const u8, obj: std.json.ObjectMap) bool {
+    return switch (obj.get("hooks_report_approval") orelse return true) {
+        .bool => |b| b,
+        else => {
+            log.warn("plugin {s}: hooks_report_approval is not true or false; taken as true", .{key});
+            return true;
+        },
     };
 }
 
@@ -3439,6 +3600,123 @@ test "1656: the shipped Codex manifest declares the titles Codex 0.163 was measu
     try testing.expect(says.awaitsApproval("[ . ] Action Required | t1653-w"));
     // What it writes while working is not a wait.
     try testing.expect(!says.awaitsApproval("\u{2827} t1653-w"));
+}
+
+fn shippedSays(a: Allocator, key: []const u8, json: []const u8) !Manifest {
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, json, .{});
+    return .{
+        .key = key,
+        .exec = "p",
+        .screen_says = try screenSaysOf(a, key, parsed.object),
+        .hooks_report_approval = hooksReportApprovalOf(key, parsed.object),
+    };
+}
+
+test "1682: only a CLI whose hooks report no approval has its screen read while they are live" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The three shipped manifests. Codex declares screen texts too -- for
+    // `terminal_answer_prompt` -- and its hooks say approvals, so they are
+    // never read for this.
+    const all = [_]Manifest{
+        try shippedSays(a, "claude-code", @embedFile("plugin_claude_code_json")),
+        try shippedSays(a, "codex", @embedFile("plugin_codex_json")),
+        try shippedSays(a, "antigravity", @embedFile("plugin_antigravity_json")),
+    };
+    try testing.expect(all[1].screen_says.declared());
+    try testing.expect(screenApprovalFor(&all, "codex") == null);
+    try testing.expect(screenApprovalFor(&all, "claude-code") == null);
+    try testing.expect(screenApprovalFor(&all, "nobody") == null);
+
+    // Antigravity's box, as agy 1.4.0 drew it (task 1682).
+    const says = screenApprovalFor(&all, "antigravity").?;
+    const box =
+        \\● Ran
+        \\
+        \\Requesting permission for:
+        \\   echo agy-probe
+        \\
+        \\Run this command?
+        \\> 1. Yes, run command
+        \\  2. Yes, and always allow in this conversation for commands that start with 'echo'
+        \\  4. No, cancel
+        \\
+    ;
+    try testing.expectEqualStrings("Requesting permission for:", says.approvalSaid(box).?);
+    try testing.expect(says.approvalSaid("> Run the shell command: echo agy-probe\n  Generating...\n") == null);
+    // An MCP tool's box words it differently (agy 1.4.2).
+    const mcp_box =
+        \\polter_polter/me
+        \\
+        \\Allow calling this tool?
+        \\> 1. Yes, allow tool call
+        \\  2. Yes, and always allow tool 'polter_polter/me' in this conversation
+        \\
+    ;
+    try testing.expectEqualStrings("Allow calling this tool?", says.approvalSaid(mcp_box).?);
+
+    // Anything but true or false is the default.
+    const odd = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"hooks_report_approval\":\"no\"}", .{});
+    try testing.expect(hooksReportApprovalOf("x", odd.object));
+    const off = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"hooks_report_approval\":false}", .{});
+    try testing.expect(!hooksReportApprovalOf("x", off.object));
+}
+
+test "1682: what agy shows before it connects: the trust box blocks, its input box lets the first line in" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const agy = try std.json.parseFromSliceLeaky(std.json.Value, a, @embedFile("plugin_antigravity_json"), .{});
+    const all = [_]Manifest{
+        .{ .key = "antigravity", .exec = "p", .startup_says = try startupSaysOf(a, "antigravity", agy.object) },
+        .{ .key = "codex", .exec = "p" },
+    };
+    try testing.expect(startupFor(&all, "codex") == null);
+    try testing.expect(startupFor(&all, "claude-code") == null);
+    const says = startupFor(&all, "antigravity").?;
+    try testing.expect(says.ready_without_agent);
+
+    // The three screens agy 1.4.0 showed on the way up (task 1682).
+    try testing.expectEqual(StartupSays.Verdict.blocked, says.verdict(
+        \\Accessing workspace:
+        \\
+        \\/h/project
+        \\
+        \\Do you trust the contents of this project?
+        \\
+        \\Antigravity CLI requires permission to read, edit, and execute files here.
+        \\
+        \\> Yes, I trust this folder
+        \\  No, exit
+        \\
+        \\  ↑/↓ Navigate · enter Confirm
+    ));
+    try testing.expectEqual(StartupSays.Verdict.ready, says.verdict(
+        \\            Antigravity CLI 1.4.0
+        \\              Gemini 3.8 Flash (Low)
+        \\────────────────────────────────
+        \\>
+        \\────────────────────────────────
+        \\? for shortcuts
+    ));
+    try testing.expectEqual(StartupSays.Verdict.neither, says.verdict(
+        \\ Welcome to the Antigravity CLI. You are currently not signed in.
+        \\
+        \\ Select login method:
+        \\ > 1. Google OAuth
+        \\2. Use a Google Cloud project
+    ));
+    // A shell is neither, whatever it printed long ago.
+    try testing.expectEqual(StartupSays.Verdict.neither, says.verdict("$ ls\nREADME.md\n$ "));
+
+    // Malformed sections are nothing, not half of something.
+    const bad = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"startup_says":{"blocks":["", "x"],"ready_says":"? for shortcuts","ready_without_agent":"yes"}}
+    , .{});
+    const got = try startupSaysOf(a, "x", bad.object);
+    try testing.expect(!got.declared());
+    try testing.expect(!got.ready_without_agent);
 }
 
 test "1668: a declared screen text says a box is up only in the bottom rows" {

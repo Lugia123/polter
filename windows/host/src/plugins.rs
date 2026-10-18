@@ -1745,6 +1745,7 @@ mod shipped_manifest_tests {
     // have had a `schema` key and passed. These four files are somebody
     // else's, they are what ships, and they are the only thing in reach that
     // can say the reader is looking in the wrong place.
+    const ANTIGRAVITY: &str = include_str!("../../../plugins/antigravity/plugin.json");
     const ARCHIVE: &str = include_str!("../../../plugins/archive/plugin.json");
     const CLAUDE_CODE: &str = include_str!("../../../plugins/claude-code/plugin.json");
     const CODEX: &str = include_str!("../../../plugins/codex/plugin.json");
@@ -1777,6 +1778,7 @@ mod shipped_manifest_tests {
             (k.to_string(), v)
         };
         let found = vec![
+            names("antigravity", ANTIGRAVITY),
             names("archive", ARCHIVE),
             names("claude-code", CLAUDE_CODE),
             names("codex", CODEX),
@@ -1785,6 +1787,7 @@ mod shipped_manifest_tests {
             names("kimi", KIMI),
         ];
         let expected: Vec<(String, Vec<String>)> = [
+            ("antigravity", &["approve_tools", "hooks", "rules", "skills"][..]),
             ("archive", &["dir", "sign_key"][..]),
             ("claude-code", &["rules", "scope", "skills"][..]),
             ("codex", &["approve_tools", "manual_out_of_daemon", "rules", "skills"][..]),
