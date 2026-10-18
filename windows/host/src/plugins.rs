@@ -988,45 +988,8 @@ pub fn write_fixture(path: &str) -> bool {
 }
 
 
-// ------------------------------------------------ what the core says, and
-// what the running copies were started with (settings.md §5.1)
-
-/// A plugin's saved settings as the status rule compares them.
-pub fn settings_of(p: &Plugin) -> polter_settings_shell::plugins::Settings {
-    (p.enabled, p.values.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-}
-
-/// What each plugin's running copy was started with, by key: the settings
-/// at startup, and again after a save made while no copy was running (the
-/// core starts one then, with what was saved). **The core keeps no copy of
-/// this** (settings.md §5.1), so the host takes it.
-static RUNNING_WITH: std::sync::Mutex<BTreeMap<String, polter_settings_shell::plugins::Settings>> =
-    std::sync::Mutex::new(BTreeMap::new());
-
-/// Take the startup snapshot. Once, early in `main`, before the settings
-/// window can save anything.
-pub fn snapshot_at_startup() {
-    let cat = catalog();
-    if let Ok(mut m) = RUNNING_WITH.lock() {
-        for p in &cat {
-            m.insert(p.key.clone(), settings_of(p));
-        }
-    }
-    // process-wide: the plugin catalog at startup, one per process
-    plogf!("[plug] startup snapshot of {} plugins' settings", cat.len());
-}
-
-pub fn running_with(key: &str) -> Option<polter_settings_shell::plugins::Settings> {
-    RUNNING_WITH.lock().ok()?.get(key).cloned()
-}
-
-/// A save happened while no copy was running: the core starts one with
-/// what was saved, so that is what it runs with now.
-pub fn started_with(key: &str, s: polter_settings_shell::plugins::Settings) {
-    if let Ok(mut m) = RUNNING_WITH.lock() {
-        m.insert(key.to_string(), s);
-    }
-}
+// ------------------------------------------------ what the core says
+// (settings.md §5.1)
 
 /// Ask the core by the persona buffer rule (`roles::ask_json`).
 fn ask_json(mut call: impl FnMut(*mut u8, usize) -> usize) -> Option<String> {
@@ -1071,6 +1034,7 @@ pub fn parse_runtimes(text: &str) -> Option<BTreeMap<String, polter_settings_she
             polter_settings_shell::plugins::Runtime {
                 running: !state.is_empty(),
                 failures: r.get("failures").and_then(|f| f.as_u64()).unwrap_or(0) as u32,
+                restart_pending: r.get("restart_pending").and_then(|b| b.as_bool()).unwrap_or(false),
                 note: r.get("note").and_then(|n| n.as_str()).unwrap_or("").to_string(),
                 note_say: r.get("note_say").and_then(|s| {
                     let template = s.get("template")?.as_str()?.to_string();
@@ -1866,12 +1830,13 @@ mod runtime_tests {
     #[test]
     fn plugin_list_rows_become_running_states() {
         let doc = r#"{"ok":true,"plugins":[
-            {"key":"feishu","enabled":true,"state":"running","cursor":3,"failures":2,"note":""},
+            {"key":"feishu","enabled":true,"state":"running","cursor":3,"failures":2,"restart_pending":true,"note":""},
             {"key":"slack","enabled":false,"note":"installed but switched off"}
         ]}"#;
         let m = parse_runtimes(doc).expect("parses");
-        assert_eq!(m["feishu"], polter_settings_shell::plugins::Runtime { running: true, failures: 2, note: String::new(), note_say: None });
+        assert_eq!(m["feishu"], polter_settings_shell::plugins::Runtime { running: true, failures: 2, restart_pending: true, note: String::new(), note_say: None });
         assert!(!m["slack"].running);
+        assert!(!m["slack"].restart_pending, "absent with no copy running");
         assert_eq!(m["slack"].note, "installed but switched off");
         // #1644: the settings window's document carries the reason to say.
         let said = parse_runtimes(

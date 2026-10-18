@@ -113,7 +113,7 @@ final class PluginsPane: ObservableObject, SettingsPane {
     func dot(for plugin: Plugin) -> PluginDot {
         let settings = PluginSettings.load(for: plugin)
         return SettingsRules.pluginDot(
-            restartPending: PluginLaunch.shared.restartPending(plugin, now: settings),
+            restartPending: statuses?[plugin.key]?.waitsForRestart ?? false,
             enabled: settings.enabled,
             missing: settings.missing(for: plugin),
             status: statuses?[plugin.key])
@@ -122,7 +122,7 @@ final class PluginsPane: ObservableObject, SettingsPane {
     /// The shown plugin still runs with the settings it started with.
     var restartPending: Bool {
         guard let plugin else { return false }
-        return PluginLaunch.shared.restartPending(plugin, now: PluginSettings.load(for: plugin))
+        return statuses?[plugin.key]?.waitsForRestart ?? false
     }
 
     func listing(query: String) -> SettingsRules.Listing {

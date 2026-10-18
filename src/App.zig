@@ -6036,12 +6036,22 @@ fn pluginListFor(
         // zero. `wire.writePlugin` leaves the whole group out then, and
         // an absent `cursor` reads as "not being measured" where a `0`
         // would read as "measured, and it is nothing".
-        const status = if (self.residentFor(manifest.key)) |a| a.status() else null;
+        const resident = self.residentFor(manifest.key);
+        const status = if (resident) |a| a.status() else null;
         if (status) |st| {
             view.state = @tagName(st.state);
             view.cursor = st.cursor;
             view.failures = st.failures;
         }
+
+        // Against the running copy's own parameters, which it was started
+        // with and keeps through every restart of its child: the one record
+        // of "what is running" that a save by anybody -- the window, a
+        // plugin's page, an agent -- cannot leave behind (#1697).
+        view.restart_pending = poltergeistpkg.report.restartPending(
+            if (resident) |r| r.params else null,
+            installed.settings,
+        );
 
         const facts: poltergeistpkg.report.ResidentFacts = .{
             .key = manifest.key,

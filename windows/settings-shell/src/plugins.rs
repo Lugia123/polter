@@ -74,12 +74,18 @@ impl Dot {
 }
 
 /// What the core says about a plugin's running copy -- `plugin_list`'s
-/// `state` / `failures` / `note`, the same data MCP hands an agent.
+/// `state` / `failures` / `restart_pending` / `note`, the same data MCP
+/// hands an agent.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Runtime {
     /// `state` was present: a copy is running. Absent means none is.
     pub running: bool,
     pub failures: u32,
+    /// The running copy was started with other settings than are saved now
+    /// (`report.restartPending` in the core, #1697). Only the core can say:
+    /// it holds the copy's own parameters, and it sees every save -- this
+    /// window's, a plugin page's, an agent's `plugin_configure`.
+    pub restart_pending: bool,
     /// English and addressed to an agent: `plugin_list`'s own note.
     pub note: String,
     /// The same reason for a person (`report.NoteSay`, #1644): a template
@@ -143,37 +149,17 @@ pub fn dot(f: &Facts) -> Dot {
     }
 }
 
-/// A plugin's saved settings: on or off, and every parameter value, sorted
-/// by name. What the running copy was started with is one of these; what is
-/// on disk now is another.
-pub type Settings = (bool, Vec<(String, String)>);
-
-/// Whether ↻ holds: a copy is running, and it was started with settings
-/// other than the ones saved now.
+/// Whether ↻ holds: the core says a copy is running on settings other than
+/// the ones saved now.
 ///
-/// `running_with` is what the host recorded -- the settings at startup, and
-/// again after every save made while no copy was running (the core starts
-/// one then, with what was saved: settings.md §5.2). `running` is `None`
-/// when the core gave no running state, and then the answer leans towards
-/// saying so: a difference nobody can rule out is shown, not hidden.
-pub fn restart_pending(running_with: Option<&Settings>, now: &Settings, running: Option<bool>) -> bool {
-    if running == Some(false) {
-        return false;
-    }
-    match running_with {
-        Some(w) => normalised(w) != normalised(now),
-        // Installed after the copy that is running was started, or never
-        // seen: whatever is running is not this.
-        None => running == Some(true),
-    }
-}
-
-/// Empty values dropped and the rest sorted, so "a field left blank" and "a
-/// field never written" compare equal -- the host saves neither.
-fn normalised(s: &Settings) -> Settings {
-    let mut v: Vec<(String, String)> = s.1.iter().filter(|(_, val)| !val.is_empty()).cloned().collect();
-    v.sort();
-    (s.0, v)
+/// **The core's answer and nothing else.** This used to compare a snapshot
+/// the host took at startup -- updated only by its own saves -- with the
+/// file: a plugin switched on through MCP was started by the core with what
+/// was saved, and still showed ↻ until this window saved it again (#1697).
+/// With no runtime to read (`None`), nothing is claimed: the detail already
+/// says the core gave no running state.
+pub fn restart_pending(runtime: Option<&Runtime>) -> bool {
+    runtime.is_some_and(|r| r.running && r.restart_pending)
 }
 
 /// The required parameters still empty, by title, in the manifest's order.
@@ -726,11 +712,12 @@ mod tests {
         let said = super::Runtime {
             running: true,
             failures: 7,
+            restart_pending: false,
             note: "kimi is dormant".into(),
             note_say: Some(("It failed to start {1} time(s)".into(), vec!["7".into()])),
         };
         assert_eq!(said.shown_note(translate, fill), "启动失败 7 次");
-        let agent_only = super::Runtime { running: false, failures: 0, note: "codex is installed but switched off".into(), note_say: None };
+        let agent_only = super::Runtime { running: false, failures: 0, restart_pending: false, note: "codex is installed but switched off".into(), note_say: None };
         assert_eq!(agent_only.shown_note(translate, fill), "codex is installed but switched off", "no note_say: the note as it came");
     }
 
@@ -750,7 +737,7 @@ mod tests {
     use super::*;
 
     fn rt(running: bool, failures: u32, note: &str) -> Option<Runtime> {
-        Some(Runtime { running, failures, note: note.into(), note_say: None })
+        Some(Runtime { running, failures, restart_pending: false, note: note.into(), note_say: None })
     }
 
     /// **The table the macOS side's `SettingsRules` tests too** (settings.md
@@ -791,36 +778,18 @@ mod tests {
         }
     }
 
-    fn st(on: bool, kv: &[(&str, &str)]) -> Settings {
-        (on, kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())
-    }
-
     #[test]
-    fn restart_pending_only_when_a_running_copy_has_other_settings() {
-        let a = st(true, &[("url", "x")]);
-        let b = st(true, &[("url", "y")]);
-        // Running, started with a, now b: pending.
-        assert!(restart_pending(Some(&a), &b, Some(true)));
-        // Running with what is saved: not pending.
-        assert!(!restart_pending(Some(&a), &a, Some(true)));
-        // Not running: the core starts it with what was saved, nothing to
-        // restart (settings.md §5.2 item 6).
-        assert!(!restart_pending(Some(&a), &b, Some(false)));
-        // Nothing to ask: a difference is shown, not hidden.
-        assert!(restart_pending(Some(&a), &b, None));
-        assert!(!restart_pending(Some(&a), &a, None));
-        // Blank and absent are the same thing; order does not matter.
-        let c = st(true, &[("a", "1"), ("b", "")]);
-        let d = st(true, &[("a", "1")]);
-        assert!(!restart_pending(Some(&c), &d, Some(true)));
-        let e = st(true, &[("b", "2"), ("a", "1")]);
-        let f = st(true, &[("a", "1"), ("b", "2")]);
-        assert!(!restart_pending(Some(&e), &f, Some(true)));
-        // Switching off is a change too.
-        assert!(restart_pending(Some(&a), &st(false, &[("url", "x")]), Some(true)));
-        // Never seen: running means it runs with something else.
-        assert!(restart_pending(None, &a, Some(true)));
-        assert!(!restart_pending(None, &a, None));
+    fn restart_pending_is_what_the_core_says() {
+        let on = |running: bool, pending: bool| Runtime { running, failures: 0, restart_pending: pending, note: String::new(), note_say: None };
+        // #1697: switched on through MCP, the core started it with what was
+        // saved and says nothing waits -- no ↻, whatever the window last saved.
+        assert!(!restart_pending(Some(&on(true, false))));
+        // The core says the running copy has other settings: ↻.
+        assert!(restart_pending(Some(&on(true, true))));
+        // Not running: nothing to restart, even if a field says otherwise.
+        assert!(!restart_pending(Some(&on(false, true))));
+        // The core gave no answer: nothing is claimed.
+        assert!(!restart_pending(None));
     }
 
     #[test]

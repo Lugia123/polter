@@ -650,10 +650,7 @@ fn write(key: &str, arg: &serde_json::Value) -> Result<serde_json::Value, String
             }
         }
     }
-    if plugins::configure(key, enabled, &values)? == plugins::Saved::Applied {
-        let kept = values.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
-        plugins::started_with(key, (enabled, kept));
-    }
+    plugins::configure(key, enabled, &values)?;
     post_section(1);
     describe(key).map_err(|e| e.to_string())
 }

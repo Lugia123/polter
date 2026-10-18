@@ -4563,6 +4563,13 @@ pub const PluginView = struct {
     cursor: u64 = 0,
     failures: u32 = 0,
 
+    /// The running copy was started with other settings than are saved now
+    /// -- switched off since, or a parameter changed -- so what was saved
+    /// takes hold when Polter restarts (`report.restartPending`, #1697).
+    /// Only ever true while `state` is set: with no copy running there is
+    /// nothing to restart. The settings windows' ↻ is this and nothing else.
+    restart_pending: bool = false,
+
     /// Why nothing is happening, when nothing is. Empty when it is fine.
     note: []const u8 = "",
 

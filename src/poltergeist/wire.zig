@@ -1926,6 +1926,8 @@ fn writePlugin(s: *std.json.Stringify, v: rpc.PluginView) std.Io.Writer.Error!vo
         try s.write(v.cursor);
         try s.objectField("failures");
         try s.write(v.failures);
+        try s.objectField("restart_pending");
+        try s.write(v.restart_pending);
     }
     if (v.note.len > 0) {
         try s.objectField("note");
@@ -2818,6 +2820,7 @@ test "a plugin listing round-trips" {
             .state = "feeding",
             .cursor = 1049,
             .failures = 0,
+            .restart_pending = true,
             .note = "nothing is wrong",
         },
         .{
@@ -2841,6 +2844,11 @@ test "a plugin listing round-trips" {
     try testing.expectEqual(@as(usize, 1), count(out, "\"failures\""));
     try testing.expect(std.mem.indexOf(u8, out, "\"cursor\":1049") != null);
     try testing.expectEqual(@as(usize, 1), count(out, "\"note\""));
+
+    // With the running group, because only a running copy can be waiting
+    // for a restart; both settings windows read their ↻ from here (#1697).
+    try testing.expectEqual(@as(usize, 1), count(out, "\"restart_pending\""));
+    try testing.expect(std.mem.indexOf(u8, out, "\"failures\":0,\"restart_pending\":true") != null);
 
     // `holds` for every parameter, since it is what says a value is there
     // at all.

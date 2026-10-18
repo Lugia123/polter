@@ -55,21 +55,6 @@ struct SettingsPluginRulesTests {
         #expect(reached.count == PluginDot.allCases.count)
     }
 
-    // MARK: Restart to apply
-
-    @Test func onlyASaveWhileRunningWaitsForARestart() {
-        #expect(!SettingsRules.pluginRestartPending(savedWhileRunning: false, atLaunch: 1, now: 2))
-        #expect(SettingsRules.pluginRestartPending(savedWhileRunning: true, atLaunch: 1, now: 2))
-    }
-
-    @Test func savingTheLaunchValuesBackClearsIt() {
-        #expect(!SettingsRules.pluginRestartPending(savedWhileRunning: true, atLaunch: 1, now: 1))
-    }
-
-    @Test func aPluginNotThereAtLaunchDiffersFromAnything() {
-        #expect(SettingsRules.pluginRestartPending(savedWhileRunning: true, atLaunch: nil as Int?, now: 1))
-    }
-
     // MARK: Missing
 
     static let requirements: [PluginRequirement] = [

@@ -176,11 +176,7 @@ fn facts(p: &Plugin, runtimes: &Option<BTreeMap<String, rules::Runtime>>) -> rul
     rules::Facts {
         enabled: p.enabled,
         missing: rules::missing_required(&params_of(p), &values).len(),
-        restart_pending: rules::restart_pending(
-            plugins::running_with(&p.key).as_ref(),
-            &plugins::settings_of(p),
-            runtime.as_ref().map(|r| r.running),
-        ),
+        restart_pending: rules::restart_pending(runtime.as_ref()),
         runtime,
     }
 }
@@ -1143,14 +1139,10 @@ pub fn save_now() -> Result<(), String> {
     let (enabled, values) = draft();
     let all: BTreeMap<String, String> = values.iter().cloned().collect();
     match plugins::configure(&key, enabled, &all) {
-        Ok(saved) => {
+        // Whether anything now waits for a restart is the core's to say
+        // (`restart_pending`), read again below (#1697).
+        Ok(_) => {
             let kept: BTreeMap<String, String> = all.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
-            let settings = (enabled, kept.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
-            // The core started a copy with these, or none runs: either way
-            // nothing waits. Only `already_running` leaves ↻ (§5.2 item 6).
-            if saved == plugins::Saved::Applied {
-                plugins::started_with(&key, settings);
-            }
             ST.with(|c| {
                 let s = &mut *c.borrow_mut();
                 if let Some(p) = s.selected.and_then(|i| s.plugins.get_mut(i)) {

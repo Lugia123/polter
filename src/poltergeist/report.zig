@@ -322,6 +322,40 @@ pub fn restartsForSettings(provisions: bool, enabled: bool, same_params: bool) b
     return provisions and enabled and !same_params;
 }
 
+/// Whether a plugin waits for Polter to restart: a copy is running, and
+/// what is saved now is not what it was started with -- switched off since,
+/// or a parameter other than it was (#1697).
+///
+/// `running` is the running copy's own parameters (`Resident.params`), null
+/// when no copy runs. **Asked of the core because only the core knows.**
+/// Each host used to keep its own copy of "the settings at launch", and
+/// learned of a save only when it made the save itself: a plugin switched
+/// on through `plugin_configure` was started with what was saved and still
+/// showed "restart to apply" on Windows until the window saved it again,
+/// and a change an agent made under a running copy never showed on macOS.
+///
+/// A value left empty and a value never written are the same thing --
+/// `merge` writes neither, and a hand-written file may hold either.
+pub fn restartPending(running: ?[]const Plugin.Param, now: Plugin.Settings) bool {
+    const started_with = running orelse return false;
+    if (!now.enabled) return true;
+    return !sameValues(started_with, now.params) or !sameValues(now.params, started_with);
+}
+
+/// Every non-empty value in `a` is in `b` with the same value.
+fn sameValues(a: []const Plugin.Param, b: []const Plugin.Param) bool {
+    outer: for (a) |mine| {
+        if (mine.value.len == 0) continue;
+        for (b) |theirs| {
+            if (!std.mem.eql(u8, mine.name, theirs.name)) continue;
+            if (!std.mem.eql(u8, mine.value, theirs.value)) return false;
+            continue :outer;
+        }
+        return false;
+    }
+    return true;
+}
+
 /// What `plugin_configure` says about when a change takes hold -- §2.6.
 ///
 /// There is no `kind` to branch on any more, and the three sentences it
@@ -944,6 +978,34 @@ test "only a provisioning plugin whose parameters changed is restarted" {
     try testing.expect(!restartsForSettings(true, false, false));
     // An archive keeps its queue and its "next time Polter starts".
     try testing.expect(!restartsForSettings(false, true, false));
+}
+
+test "a restart is pending only when the running copy has other settings than are saved" {
+    const x: []const Plugin.Param = &.{.{ .name = "url", .value = "x" }};
+    const y: []const Plugin.Param = &.{.{ .name = "url", .value = "y" }};
+
+    // #1697: switched on through `plugin_configure` and started with what
+    // was saved -- the running copy has exactly that, nothing waits.
+    try testing.expect(!restartPending(x, .{ .enabled = true, .params = x }));
+    // No copy running: whatever starts next reads what is saved.
+    try testing.expect(!restartPending(null, .{ .enabled = true, .params = y }));
+    try testing.expect(!restartPending(null, .{ .enabled = false, .params = x }));
+
+    // Changed under a running copy, by anybody: it waits.
+    try testing.expect(restartPending(x, .{ .enabled = true, .params = y }));
+    // Switched off under a running copy: it is still running.
+    try testing.expect(restartPending(x, .{ .enabled = false, .params = x }));
+    // A parameter added or removed is a change, in either direction.
+    const xz: []const Plugin.Param = &.{ .{ .name = "url", .value = "x" }, .{ .name = "z", .value = "1" } };
+    try testing.expect(restartPending(x, .{ .enabled = true, .params = xz }));
+    try testing.expect(restartPending(xz, .{ .enabled = true, .params = x }));
+
+    // Order does not matter, and blank is the same as absent.
+    const zx: []const Plugin.Param = &.{ .{ .name = "z", .value = "1" }, .{ .name = "url", .value = "x" } };
+    try testing.expect(!restartPending(xz, .{ .enabled = true, .params = zx }));
+    const x_blank: []const Plugin.Param = &.{ .{ .name = "url", .value = "x" }, .{ .name = "z", .value = "" } };
+    try testing.expect(!restartPending(x, .{ .enabled = true, .params = x_blank }));
+    try testing.expect(!restartPending(x_blank, .{ .enabled = true, .params = x }));
 }
 
 test "a provisioning plugin started now is never told it is being fed as things happen" {

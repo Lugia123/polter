@@ -253,15 +253,18 @@ Save / Revert、Launch），**功能原样搬进来**，本轮不改功能；**�
 | ◐ 黄 | 缺配置 | 必填参数没填齐（此时开关不可打开） |
 | ○ 灰 | 已关 | `enabled == false` |
 | ▲ 红 | 出错 | 核心报告该插件在跑且 `failures > 0`，或有 `note` |
-| ↻ | 改了未重启 | 保存后的设置与本次启动时读到的不同 |
+| ↻ | 改了未重启 | 核心 `plugin_list` 的 `restart_pending`：在跑的那份是用另一套设置起的 |
 
 数据与 MCP 的 `plugin_list` 同源（`src/poltergeist/Plugin.zig`），宿主不自己猜。
 
 **判定顺序**（2026-10-01 定，先命中者胜）：↻ > ○ 已关 > ◐ 缺必填 > ▲（在跑且 `failures > 0`，
 或已开且 `note` 非空）> ● 已开。理由：核心对已关的插件 `note` 恒非空（"installed but switched
 off…"），对刚打开未重启的也非空（"no copy of it is running"），照表字面判 ▲ 会把它们全画红。
-「本次启动读到的设置」由宿主在 app 启动时给每个插件拍快照，核心不留这份。两边的纯规则层
-（mac `SettingsRules`、Windows `settings-shell`）用同一张判定用例表测试。
+↻ 只读核心给的 `restart_pending`（`report.restartPending`：常驻副本自己的 `params` 对比现在存盘的设置，
+关掉也算），宿主不留快照。#1697 之前两边各在启动时拍一份快照、只在自己保存时更新：用 MCP 打开一个
+插件，核心已经用新设置把它起来了，Windows 却一直挂着「需重启」直到在设置页再存一次；mac 反过来，
+agent 在插件运行中改了参数，它从不显示 ↻。两边的纯规则层（mac `SettingsRules`、Windows
+`settings-shell`）用同一张判定用例表测试。
 
 **宿主取数**：核心加两个 C 接口，两个宿主共用，不各加一份——`ghostty_app_plugin_list(app, buf, cap)`
 返回与 MCP `plugin_list` 同一份 JSON；`ghostty_app_plugin_configure(app, key, len, settings_json, len, out, cap)`

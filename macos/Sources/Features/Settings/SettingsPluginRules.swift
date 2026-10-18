@@ -15,6 +15,10 @@ struct PluginCoreStatus: Equatable {
     /// when no copy is running (the core leaves the field out then).
     var state: String = ""
     var failures: Int = 0
+    /// The running copy was started with other settings than are saved now
+    /// (`report.restartPending` in the core, #1697). The core leaves it out
+    /// when no copy runs.
+    var restartPending: Bool = false
     /// Why nothing is happening, when nothing is. Empty when it is fine.
     /// English and addressed to an agent: it is `plugin_list`'s own note.
     var note: String = ""
@@ -29,6 +33,19 @@ struct PluginCoreStatus: Equatable {
     }
 
     var running: Bool { !state.isEmpty }
+
+    /// Whether the plugin waits for a restart -- the settings window's ↻ and
+    /// its banner: the core says a copy is running on settings other than
+    /// the ones saved now.
+    ///
+    /// **The core's answer and nothing else** (#1697). This used to be a
+    /// snapshot this app took at launch, updated only by its own saves, so
+    /// a change an agent made through `plugin_configure` under a running
+    /// copy never showed ↻ here -- and the Windows host, which kept the same
+    /// kind of snapshot, showed ↻ for a plugin the core had already started
+    /// with what was saved. With no answer from the core (no status at
+    /// all), nothing is claimed.
+    var waitsForRestart: Bool { running && restartPending }
 
     /// What the window shows for `note`: the core's reason said in the
     /// person's language when it sent one to say, else the note as it came.
@@ -60,6 +77,7 @@ struct PluginCoreStatus: Equatable {
                 enabled: plugin["enabled"] as? Bool ?? false,
                 state: plugin["state"] as? String ?? "",
                 failures: plugin["failures"] as? Int ?? 0,
+                restartPending: plugin["restart_pending"] as? Bool ?? false,
                 note: plugin["note"] as? String ?? "",
                 noteSay: say)
         }
@@ -139,17 +157,6 @@ extension SettingsRules {
             if !status.note.isEmpty { return .failing }
         }
         return .on
-    }
-
-    /// Whether a plugin still waits for a restart: it was saved while its
-    /// resident copy was running (the core said `already_running`), and
-    /// what is saved now differs from what this launch read. Saving the
-    /// old values back clears it; a plugin that was not there at launch
-    /// (`atLaunch` nil) differs from anything.
-    static func pluginRestartPending<S: Equatable>(savedWhileRunning: Bool, atLaunch: S?, now: S) -> Bool {
-        guard savedWhileRunning else { return false }
-        guard let atLaunch else { return true }
-        return atLaunch != now
     }
 
     /// The titles of the required parameters that have nothing in them, in

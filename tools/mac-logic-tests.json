@@ -206,6 +206,7 @@
       "macos/Tests/PluginChoiceLabelTests.swift",
       "macos/Tests/PluginInterfaceLanguageTests.swift",
       "macos/Tests/PluginNoteSayTests.swift",
+      "macos/Tests/PluginRestartPendingTests.swift",
       "macos/Tests/CommandPaletteHostMenuTests.swift",
       "macos/Tests/Projects/ProjectPaneSizesTests.swift",
       "macos/Tests/Personas/RoleCliOfferTests.swift",

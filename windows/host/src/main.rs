@@ -7741,9 +7741,6 @@ fn main() {
     divider::init(hinst);
     panedrag::init(hinst);
     highlight::init(hinst);
-    // What each plugin's running copy starts with: the status dots' ↻
-    // (settings.md §5.1) compares against it, and the core keeps no copy.
-    plugins::snapshot_at_startup();
     settings_win::init(hinst);
     // **After the API is loaded**, because the provider asks it questions the
     // moment a menu is built.

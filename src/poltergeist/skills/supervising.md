@@ -1174,6 +1174,9 @@ Reading `plugin_list`:
   switching something on.
 - **`state`, `cursor`, `failures` are absent** unless a resident plugin is
   running — absent, not zero, the convention `quiet_ms` follows.
+- **`restart_pending: true`** (only beside `state`) means the running copy was
+  started with other settings than are saved now; what was saved takes hold
+  when Polter restarts. A configure that answered `started_now` never leaves it.
 - **`note` appears when something is wrong.** Read it before theorising.
 - Values are never returned in the clear.
 

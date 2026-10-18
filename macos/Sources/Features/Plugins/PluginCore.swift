@@ -67,8 +67,7 @@ enum PluginCore {
 
     /// Save one plugin's settings through the core's writer, as the person.
     /// `enabled` nil keeps what is there; a parameter left out is kept, and
-    /// an empty value unsets one. Records a save made while the resident
-    /// copy was running, for the restart dot and banner.
+    /// an empty value unsets one.
     @discardableResult
     static func configure(_ key: String, enabled: Bool?, params: [String: String]) -> Result<PluginStarted, Failure> {
         guard let app else { return .failure(.noCore) }
@@ -93,55 +92,10 @@ enum PluginCore {
         logger.info("plugin configure \(key, privacy: .public) ok=\(ok) said=\(said, privacy: .public)")
         guard ok else { return .failure(.refused(said)) }
 
-        // A name this build has not heard of is still a save that worked;
-        // it is only the restart dot that cannot be told anything.
-        let started = PluginStarted(rawValue: said) ?? .notStarted
-        // Anything but `already_running` means no copy runs on older
-        // settings: the core started one with these (a provisioning plugin
-        // is restarted when they change, #1673), or none runs. What runs is
-        // what is saved now -- the Windows host's `started_with`.
-        if started == .alreadyRunning {
-            PluginLaunch.shared.savedWhileRunning.insert(key)
-        } else {
-            PluginLaunch.shared.startedWithSaved(key)
-        }
-        return .success(started)
-    }
-}
-
-/// What this launch read about each plugin, and which were saved while
-/// their resident copy was running. The core keeps neither: a resident copy
-/// reads its settings when it starts, so "what is running" is "what was
-/// there then" (settings.md §5.1, ↻).
-@MainActor
-final class PluginLaunch {
-    static let shared = PluginLaunch()
-
-    private(set) var atLaunch: [String: PluginSettings] = [:]
-    var savedWhileRunning: Set<String> = []
-
-    /// Once, as the app finishes launching.
-    func snapshot() {
-        var out: [String: PluginSettings] = [:]
-        for plugin in PluginCatalog.installed() {
-            out[plugin.key] = PluginSettings.load(for: plugin)
-        }
-        atLaunch = out
-    }
-
-    /// The core started this plugin with what is saved now, or runs none:
-    /// nothing waits for a restart, and a later save of the same values
-    /// must not raise ↻ against what was read at launch.
-    func startedWithSaved(_ key: String) {
-        savedWhileRunning.remove(key)
-        guard let plugin = PluginCatalog.installed().first(where: { $0.key == key }) else { return }
-        atLaunch[key] = PluginSettings.load(for: plugin)
-    }
-
-    func restartPending(_ plugin: Plugin, now: PluginSettings) -> Bool {
-        SettingsRules.pluginRestartPending(
-            savedWhileRunning: savedWhileRunning.contains(plugin.key),
-            atLaunch: atLaunch[plugin.key],
-            now: now)
+        // A name this build has not heard of is still a save that worked.
+        // Whether anything now waits for a restart is not decided here: the
+        // core says so in `plugin_list` (`restart_pending`, #1697), for
+        // every save, this app's or an agent's.
+        return .success(PluginStarted(rawValue: said) ?? .notStarted)
     }
 }
