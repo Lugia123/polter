@@ -2791,6 +2791,20 @@ pub fn launchExitIsFailure(self: *const Bus, id: Id) bool {
     return !e.agent.connected;
 }
 
+/// The CLI a launch started in `id` is asking the person something before
+/// it will start -- Antigravity's folder trust box (`Plugin.StartupSays`,
+/// task 1746) -- so the launch's wait for its agent is counted from
+/// `now_ms` instead: the answer is the person's to give, in their own time,
+/// and an agent that connects after it is still the launch's. Answers
+/// whether there was a launch here still waiting for its agent.
+pub fn holdLaunch(self: *Bus, id: Id, now_ms: u64) bool {
+    const e = self.entries.getPtr(id) orelse return false;
+    if (e.agent.hooks != .expected or e.agent.connected) return false;
+    const began = e.agent.launched_ms orelse return false;
+    e.agent.launched_ms = @max(began, now_ms);
+    return true;
+}
+
 /// A terminal whose launch has waited `launch_agent_wait_ms` with no agent
 /// connecting from it, or null (task 1712). The caller says so the way
 /// `+launch` says a failure (`LaunchFailure.no_agent`), which takes the
@@ -5792,6 +5806,28 @@ test "hooks: a launch no agent came from is said to have failed at the minute, o
     // Not "at its shell": that is not known of a CLI that may still run.
     const no_shell_claim = std.mem.indexOf(u8, line, "at its shell") == null;
     try testing.expect(no_shell_claim);
+}
+
+test "hooks: a launch whose CLI is asking the person something is not said to have failed (task 1746)" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, firstTurnExpected(), 0);
+    // The trust box is seen up at 50 s and at 100 s: the minute runs from
+    // the last sighting.
+    const held = b.holdLaunch(worker, 50_000);
+    try testing.expect(held);
+    _ = b.holdLaunch(worker, 100_000);
+    const at_old_minute = b.launchWithNoAgent(launch_agent_wait_ms, &Presence.ctx, Presence.no);
+    try testing.expect(at_old_minute == null);
+    const before = b.launchWithNoAgent(100_000 + launch_agent_wait_ms - 1, &Presence.ctx, Presence.no);
+    try testing.expect(before == null);
+    const due = b.launchWithNoAgent(100_000 + launch_agent_wait_ms, &Presence.ctx, Presence.no);
+    try testing.expectEqual(@as(?Id, worker), due);
+
+    // No launch waiting: nothing to hold.
+    const loose: Id = 0x10d0;
+    try testing.expect(!b.holdLaunch(loose, 1_000));
 }
 
 test "hooks: an agent that connected is never a launch with no agent, watched or not (task 1712)" {

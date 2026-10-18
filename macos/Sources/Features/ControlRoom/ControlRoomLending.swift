@@ -217,6 +217,9 @@ extension ControlRoomLending {
         case .noSupervisor:
             // Which of these it is is the core's word (`state`, `failed`).
             switch (start?.state, start?.failed) {
+            case (.starting, _) where start?.asking == true:
+                return String(localized: "The supervisor is waiting in its tab for you to answer a question.",
+                              comment: "总控台：启动总管时，它的 CLI 在自己的标签页里弹了一个只能由用户回答的问题（例如是否信任这个文件夹），Polter 不会替用户回答")
             case (.starting, _):
                 return String(localized: "Starting the supervisor…", comment: "总控台：点了启动总管以后，总管还没连上的那一段，右栏的说明")
             case (.failed, .terminalNeverOpened):

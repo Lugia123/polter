@@ -4876,6 +4876,16 @@ msgstr ""
 msgid "Starting the supervisor…"
 msgstr ""
 
+#: windows/control-room/src/scene.rs:70
+#. Starting, and its CLI asks the person something in its tab (task
+#. 1746), with the button that goes there.
+msgid "The supervisor is waiting in its tab for you to answer a question."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:71
+msgid "Go to Its Tab"
+msgstr ""
+
 #: windows/control-room/src/scene.rs:51
 msgid "The supervisor did not start: its tab never opened."
 msgstr ""

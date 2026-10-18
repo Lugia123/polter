@@ -447,6 +447,12 @@ mention_retries: poltergeistpkg.MentionRetry = undefined,
 /// once it has (task 1682). Woken by the same retry as refused notices.
 owed_tells: poltergeistpkg.OwedTells = undefined,
 
+/// The second message a supervisor started from the control room is owed,
+/// in a CLI whose first turn has none of Polter's tools
+/// (`Plugin.StartupSays.tools_from_second_turn`, task 1746): typed once,
+/// after that first turn is over (`startLineTry`).
+start_lines: poltergeistpkg.OwedTells = undefined,
+
 /// `task_assign` with `fresh`, held between the /clear and the CLI saying
 /// it has cleared (#64). Each holds a reference to its request.
 fresh_assigns: poltergeistpkg.fresh_assign.Waits(*poltergeistpkg.Server.Pending) = .{},
@@ -646,6 +652,7 @@ pub fn init(
         .poltergeist_persona_waits = .{ .alloc = alloc, .io = global.io() },
         .mention_retries = .{ .alloc = alloc },
         .owed_tells = .{ .alloc = alloc },
+        .start_lines = .{ .alloc = alloc },
         .poltergeist_feed = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
         .projects = .init(alloc),
@@ -749,6 +756,7 @@ pub fn deinit(self: *App) void {
     self.poltergeist_persona_waits.deinit();
     self.mention_retries.deinit();
     self.owed_tells.deinit();
+    self.start_lines.deinit();
     // Answered by the server shutting down, like the waits around it.
     for (self.fresh_assigns.entries.items) |e| e.held.release();
     self.fresh_assigns.deinit(self.alloc);
@@ -833,6 +841,8 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
             self.retryMentions(self.poltergeistElapsedMs());
             // Standing lines refused a moment ago (task 1682).
             self.payOwedTells();
+            // A started supervisor's second message (task 1746).
+            self.payStartLines();
             // A fresh assignment whose clear was never confirmed.
             self.sweepFreshAssigns();
             // And the groups: a message that arrived while its reader had
@@ -1075,6 +1085,8 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     const now_ms = self.poltergeistElapsedMs();
     // Before the snapshot: a step that settles a take-over is in this one.
     const take_over_wake = self.takeOverStep(now_ms);
+    // In this snapshot: a start whose CLI is asking, or has stopped asking.
+    _ = self.holdStartupQuestions(now_ms);
     var terminals: std.ArrayListUnmanaged(poltergeistpkg.ControlRoom.Terminal) = .empty;
     for (self.surfaces.items) |v| {
         const surface: *Surface = v.core();
@@ -1726,8 +1738,10 @@ fn controlStartOpened(self: *App, id: poltergeistpkg.Bus.Id) void {
 /// leaves the start to fail by its own deadline rather than putting a
 /// plain agent in charge of a group.
 fn controlStartConnected(self: *App, id: poltergeistpkg.Bus.Id) void {
-    const group = self.chat.startingIn(id, self.poltergeistElapsedMs()) orelse return;
+    const now_ms = self.poltergeistElapsedMs();
+    const group = self.chat.startingIn(id, now_ms) orelse return;
     if (!self.poltergeist.isSupervisor(id)) return;
+    const resuming = self.chat.startOf(group, now_ms).resuming;
 
     chatAdd(self, group, id, .all) catch |err| {
         log.warn("control room: could not put the supervisor it started in its group err={}", .{err});
@@ -1738,6 +1752,73 @@ fn controlStartConnected(self: *App, id: poltergeistpkg.Bus.Id) void {
     self.chat.startMade(group, id);
     log.info("control room: the supervisor it started connected and is in its group", .{});
     self.controlRoomTouch();
+
+    // **Its CLI had none of Polter's tools in its first turn** (task 1746):
+    // the role's instructions went in as that turn and told it to answer in
+    // a word and wait. What to do first is said now, as a second message,
+    // once that turn is over. Not for a session picked up again, whose
+    // instructions said it already.
+    if (resuming) return;
+    const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else return;
+    self.ensurePlugins();
+    const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse return;
+    if (!says.tools_from_second_turn) return;
+    var buf: [poltergeistpkg.OwedTells.max_line + 1]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, start_line_fmt, .{group}) catch {
+        log.warn("control room: the group's name is too long for the started supervisor's second message; not sent", .{});
+        return;
+    };
+    self.start_lines.owe(id, line) catch |err| {
+        log.warn("control room: could not keep the started supervisor's second message err={}", .{err});
+        return;
+    };
+    self.payStartLines();
+}
+
+/// The second message (`start_lines`): what the role's instructions said to
+/// do first, now that Polter's tools are there.
+///
+/// It names the tools, because a first turn that reached Polter some other
+/// way is copied in the turns after it: an agy supervisor whose first turn
+/// started `polter +mcp` from Python still did so in its second (task 1740,
+/// seq 51). Only Antigravity declares a second turn, so the names are its.
+const start_line_fmt = "Start now. Polter's tools are loaded: call them directly (in Antigravity " ++
+    "their names begin polter_polter/), never by starting polter from a shell. Call me, read " ++
+    "the group `{s}`, then wait for the person.";
+
+/// How often an owed second message is looked at again while its CLI's
+/// first turn is still going and nothing else comes round.
+const start_line_look_ms: u64 = 2_000;
+
+/// Type the second messages owed (`start_lines`) whose first turn is over,
+/// each once.
+fn payStartLines(self: *App) void {
+    if (self.start_lines.lines.count() == 0) return;
+    self.start_lines.pay(self, startLineTry);
+    if (self.start_lines.lines.count() > 0) self.noticeRetryIn(start_line_look_ms);
+}
+
+/// One owed second message: kept while its CLI's first turn is still going
+/// (`Plugin.StartupSays.firstTurnOver`) or while the terminal refuses a
+/// line -- the person typing, a draft, a box (`Surface.mayType`) -- and
+/// typed once, after.
+fn startLineTry(self: *App, id: poltergeistpkg.Bus.Id, line: []const u8) poltergeistpkg.OwedTells.Outcome {
+    const surface = self.findSurfaceByID(id) orelse return .gone;
+    if (!self.agentPresent(id)) return .gone;
+    // A copy, kept for as long as the name read out of it is used.
+    const agent = self.poltergeist.agentOf(id);
+    const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else return .gone;
+    const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse return .gone;
+    const said: ?bool = if (agent.hooks == .live) agent.state == .ended else null;
+    const screen = poltergeistRead(self, self.alloc, id, 0) catch return .refused;
+    defer self.alloc.free(screen);
+    if (!says.firstTurnOver(said, screen)) return .refused;
+    const typed = surface.typePoltergeistNotice(line) catch return .gone;
+    if (typed) {
+        log.info("control room: the started supervisor's second message is typed id={x}", .{id});
+        return .typed;
+    }
+    return if (surface.poltergeist_notice_refused) .refused else .gone;
 }
 
 /// How long a start waits for the host to open the group's project and
@@ -4593,6 +4674,9 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
         if (caller.terminalId()) |id| self.finishFreshAssigns(id, pending.request.agent_event);
         _ = self.poltergeist.considerAgents(now_ms);
         self.deliverPoltergeistNotices(now_ms);
+        // A turn that ended may be the first one a started supervisor's
+        // second message waits for (task 1746).
+        self.payStartLines();
 
         // The status line has written a new allowance: read it now. It is
         // the only thing that will ever say so -- the file is not watched,
@@ -5516,6 +5600,60 @@ fn poltergeistLaunchFailed(
     self.controlRoomTouch();
 }
 
+/// Every terminal still waiting for the agent a launch started in it, whose
+/// CLI is asking the person a question before it will start -- Antigravity's
+/// folder trust box, as its plugin declares it (`Plugin.StartupSays.blocks`)
+/// -- has its waits held while the question is up (task 1746): the
+/// standing held for its agent, the bus's minute for the launch
+/// (`considerLaunches`), and a control-room start, which also says it is
+/// asking so the person is told to go and answer it. **Nothing is typed
+/// and nothing is answered**: whether to trust a folder is the person's
+/// decision. Each wait runs again, a whole minute, once the question has
+/// gone. Answers whether what the control room shows changed.
+fn holdStartupQuestions(self: *App, now_ms: u64) bool {
+    const Store = poltergeistpkg.PersonaStore;
+    var changed = false;
+    for (self.surfaces.items) |v| {
+        const id = v.core().id;
+        if (self.isChatSurface(id)) continue;
+        const group = self.chat.startingIn(id, now_ms);
+        const waiting = group != null or
+            self.personas.heldStanding(id, now_ms) != null or
+            self.poltergeist.launchExitIsFailure(id);
+        if (!waiting) continue;
+        const asking = !self.agentPresent(id) and self.startupQuestionUp(id);
+        if (asking) {
+            _ = self.personas.extendStanding(id, now_ms + Store.standing_wait_ms, now_ms);
+            _ = self.poltergeist.holdLaunch(id, now_ms);
+        }
+        if (group) |g| {
+            if (self.chat.startAsking(g, asking, now_ms + Store.standing_wait_ms, now_ms)) {
+                log.info("control room: the supervisor being started {s} asking the person a question in its tab", .{if (asking) "is" else "is no longer"});
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+/// Whether the CLI started in `id` shows a question its plugin says must
+/// not be typed into (`Plugin.StartupSays.blocks`). The CLI is the one the
+/// role launch recorded, or else the one its hooks named.
+fn startupQuestionUp(self: *App, id: poltergeistpkg.Bus.Id) bool {
+    // A copy, kept for as long as the name read out of it is used.
+    const agent = self.poltergeist.agentOf(id);
+    const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else agent.cli.get() orelse return false;
+    self.ensurePlugins();
+    const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse return false;
+    if (says.blocks.len == 0) return false;
+    const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+        log.debug("poltergeist: could not read a starting CLI for a question id={x} err={}", .{ id, err });
+        return false;
+    };
+    defer self.alloc.free(screen);
+    return says.verdict(screen) == .blocked;
+}
+
 /// Every launch that has waited `Bus.launch_agent_wait_ms` with no agent
 /// connecting from its terminal is said to have failed, the way `+launch`
 /// says a failure (task 1712): the bus takes back what it expected, the
@@ -5527,6 +5665,8 @@ fn poltergeistLaunchFailed(
 /// and nobody told. `notePoltergeistAgentsHere` should have run first, so
 /// an agent that is there has been seen to be.
 fn considerLaunches(self: *App, now_ms: u64) bool {
+    // A launch whose CLI is waiting on the person is not one that failed.
+    if (self.holdStartupQuestions(now_ms)) self.controlRoomTouch();
     var any = false;
     // Each one answered takes its expectation back, so this ends; the
     // bound is for a bus that, by some fault, did not.

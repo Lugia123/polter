@@ -461,13 +461,22 @@ pub const ScreenSays = struct {
 /// `blocks` is a question the CLI asks before anything else -- the folder
 /// trust box -- whose answer is a security decision that belongs to the
 /// person: **a line is never typed while it is up**, since its return would
-/// choose the box's default.
+/// choose the box's default. Any CLI may declare its own (task 1746): while
+/// one is up, a launch's wait for its agent does not run out, and the
+/// control room and `terminal_list` say the person has a question to answer.
+///
+/// `tools_from_second_turn` says the CLI's first turn has none of Polter's
+/// tools: Antigravity starts its MCP servers with the first prompt and lists
+/// their tools from the turn after (measured on agy 1.4.2, task 1740). So
+/// what a supervisor started from the control room is to do first is typed
+/// as a second message, once the first turn is over (`firstTurnOver`).
 pub const StartupSays = struct {
     blocks: []const []const u8,
     ready_says: []const []const u8,
     ready_without_agent: bool,
+    tools_from_second_turn: bool,
 
-    pub const none: StartupSays = .{ .blocks = &.{}, .ready_says = &.{}, .ready_without_agent = false };
+    pub const none: StartupSays = .{ .blocks = &.{}, .ready_says = &.{}, .ready_without_agent = false, .tools_from_second_turn = false };
 
     pub fn declared(self: StartupSays) bool {
         return self.blocks.len > 0 or self.ready_says.len > 0;
@@ -491,6 +500,15 @@ pub const StartupSays = struct {
             if (std.mem.indexOf(u8, tail, text) != null) return .ready;
         }
         return .neither;
+    }
+
+    /// Whether the CLI's first turn is over, so a line meant for its second
+    /// may be typed. `said` is its hooks' word when they speak (the turn
+    /// ended), null when they do not; then its input box showing on the
+    /// screen with nothing blocking it is.
+    pub fn firstTurnOver(self: StartupSays, said: ?bool, screen: []const u8) bool {
+        if (said) |over| return over;
+        return self.verdict(screen) == .ready;
     }
 };
 
@@ -951,12 +969,17 @@ fn startupSaysOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) All
     return .{
         .blocks = try startupTexts(arena, key, section, "blocks"),
         .ready_says = try startupTexts(arena, key, section, "ready_says"),
-        .ready_without_agent = switch (section.get("ready_without_agent") orelse std.json.Value{ .bool = false }) {
-            .bool => |b| b,
-            else => b: {
-                log.warn("plugin {s}: startup_says.ready_without_agent is not true or false; taken as false", .{key});
-                break :b false;
-            },
+        .ready_without_agent = startupFlag(key, section, "ready_without_agent"),
+        .tools_from_second_turn = startupFlag(key, section, "tools_from_second_turn"),
+    };
+}
+
+fn startupFlag(key: []const u8, section: std.json.ObjectMap, name: []const u8) bool {
+    return switch (section.get(name) orelse return false) {
+        .bool => |b| b,
+        else => {
+            log.warn("plugin {s}: startup_says.{s} is not true or false; taken as false", .{ key, name });
+            return false;
         },
     };
 }
@@ -3676,6 +3699,7 @@ test "1682: what agy shows before it connects: the trust box blocks, its input b
     try testing.expect(startupFor(&all, "claude-code") == null);
     const says = startupFor(&all, "antigravity").?;
     try testing.expect(says.ready_without_agent);
+    try testing.expect(says.tools_from_second_turn);
 
     // The three screens agy 1.4.0 showed on the way up (task 1682).
     try testing.expectEqual(StartupSays.Verdict.blocked, says.verdict(
@@ -3717,6 +3741,79 @@ test "1682: what agy shows before it connects: the trust box blocks, its input b
     const got = try startupSaysOf(a, "x", bad.object);
     try testing.expect(!got.declared());
     try testing.expect(!got.ready_without_agent);
+}
+
+test "1746: the shipped Codex manifest knows the boxes codex 0.154 asks before it starts" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, @embedFile("plugin_codex_json"), .{});
+    const says = try startupSaysOf(a, "codex", parsed.object);
+    try testing.expectEqual(@as(usize, 3), says.blocks.len);
+    // A question to wait on, never a box whose input box lets a line in.
+    try testing.expect(!says.ready_without_agent);
+    try testing.expect(!says.tools_from_second_turn);
+
+    // **One machine, one version**: codex-cli 0.154.0 on Windows 11, a
+    // terminal about 109 columns wide, read with terminal_read on
+    // 2026-10-18 (task 1686 r3). Copied verbatim, leading spaces kept. Only
+    // the question is matched: what follows it on its line wraps with the
+    // width, and the last line differs between a first start and a later
+    // one ("Press enter to continue" with or without "and create a
+    // sandbox..."). The sandbox sentence is matched by its first words: the
+    // whole of it is longer than a declared text may be, and wraps sooner.
+    try testing.expectEqual(StartupSays.Verdict.blocked, says.verdict(
+        \\  Welcome to Codex, OpenAI's command-line coding agent
+        \\
+        \\> You are in D:\polter\t1686\r3\work
+        \\
+        \\  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of
+        \\  prompt injection. Trusting the directory allows project-local config, hooks, and exec policies to load.
+        \\
+        \\› 1. Yes, continue
+        \\  2. No, quit
+        \\
+        \\  Press enter to continue and create a sandbox...
+    ));
+    try testing.expectEqual(StartupSays.Verdict.blocked, says.verdict(
+        \\  Tip: New Build faster with Codex.
+        \\
+        \\
+        \\  Set up the Codex agent sandbox to protect your files and control network access. Learn more
+        \\  <https://developers.openai.com/codex/windows>
+        \\
+        \\› 1. Set up default sandbox (requires Administrator permissions)
+        \\  2. Use non-admin sandbox (higher risk if prompt injected)
+        \\  3. Quit
+        \\
+        \\  Press enter to confirm or esc to go back
+    ));
+    // Seen for a codex started by hand and for one started by role_launch
+    // alike (task 1748). Its default runs `npm install -g`, so a return
+    // typed into it would change the machine's codex.
+    try testing.expectEqual(StartupSays.Verdict.blocked, says.verdict(
+        \\  ✨ Update available! 0.154.0 -> 0.163.0
+        \\  Release notes: https://github.com/openai/codex/releases/latest
+        \\
+        \\› 1. Update now (runs `npm install -g @openai/codex`)
+        \\  2. Skip
+        \\  3. Skip until next version
+        \\  Press enter to continue
+    ));
+    try testing.expectEqual(StartupSays.Verdict.neither, says.verdict("› Ask Codex to do anything\n"));
+}
+
+test "1746: a line meant for agy's second turn waits for its first to be over" {
+    const says: StartupSays = .{ .blocks = &.{"Do you trust the contents of this project?"}, .ready_says = &.{"? for shortcuts"}, .ready_without_agent = true, .tools_from_second_turn = true };
+    const working = "> You are the supervisor...\n\n  Thinking...\n";
+    const box = ">\n────\n? for shortcuts\n";
+    // Its hooks speak: their word, whatever the screen shows.
+    try testing.expect(!says.firstTurnOver(false, box));
+    try testing.expect(says.firstTurnOver(true, working));
+    // They do not: its input box, and only that.
+    try testing.expect(!says.firstTurnOver(null, working));
+    try testing.expect(says.firstTurnOver(null, box));
+    try testing.expect(!says.firstTurnOver(null, "Do you trust the contents of this project?\n> Yes\n? for shortcuts\n"));
 }
 
 test "1668: a declared screen text says a box is up only in the bottom rows" {

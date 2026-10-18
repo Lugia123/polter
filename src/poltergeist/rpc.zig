@@ -8988,7 +8988,10 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
     // A terminal with no entry is one nobody has put under watch. It gets
     // its identity and nothing else: quiet time is not measured for it, and
     // saying `0` would claim it was busy this instant.
-    const e = bus.get(id) orelse return .{ .id = id, .agent = .none, .agent_present = host.agentPresent(id) };
+    const present = host.agentPresent(id);
+    // Asked only of a terminal with no agent: one with an agent is past it.
+    const question = !present and host.startupReach(id) == .blocked;
+    const e = bus.get(id) orelse return .{ .id = id, .agent = .none, .agent_present = present, .startup_question = question };
 
     return .{
         .id = id,
@@ -9040,7 +9043,8 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
 
         // #63: what `agent` cannot say -- that the agent it describes is
         // still there. See `wire.TerminalInfo.agent_present`.
-        .agent_present = host.agentPresent(id),
+        .agent_present = present,
+        .startup_question = question,
     };
 }
 
@@ -15595,6 +15599,30 @@ test "launched standing: the launcher saying hooks are expected is not the agent
     try testing.expect(!supervisor_at_the_end);
 }
 
+test "launched standing: kept past its minute while the CLI asks the person something (task 1746)" {
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+
+    try store.holdStanding(fresh, fresh, standing_roles[0].polter, 0);
+    // Antigravity's trust box, last seen up at 50 s.
+    const kept = store.extendStanding(fresh, 50_000 + PersonaStore.standing_wait_ms, 50_000);
+    try testing.expect(kept);
+    // The person answers, and the agent connects after the first minute.
+    const applied = store.claimStanding(&bus, fresh, PersonaStore.standing_wait_ms + 1);
+    try testing.expect(applied != null);
+    const supervisor = bus.isSupervisor(fresh);
+    try testing.expect(supervisor);
+
+    // One that has already run out is not brought back.
+    try store.holdStanding(other, other, standing_roles[0].polter, 0);
+    const late = store.extendStanding(other, 999_000, PersonaStore.standing_wait_ms + 1);
+    try testing.expect(!late);
+    const none = store.claimStanding(&bus, other, PersonaStore.standing_wait_ms + 1);
+    try testing.expect(none == null);
+}
+
 test "launched standing: a hook from the CLI is the agent, after the launcher's word was not" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -18206,6 +18234,39 @@ test "tidying: text and keys are refused while an input method composes, and say
     } });
     try testing.expectEqualStrings("UserPresent", keyed.failed.code);
     try testing.expect(std.mem.startsWith(u8, keyed.failed.message, "an input method is composing"));
+}
+
+test "1746: terminal_list says which terminal's CLI is asking the person a question before it starts" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.watch(worker, boss);
+
+    const open = [_]Place{ .{ .id = boss }, .{ .id = worker } };
+    // The worker's CLI shows its trust box; the supervisor has its agent.
+    var fake: FakeHost = .{ .open = &open, .agent_absent = &.{worker}, .startup = .blocked };
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .terminal_list);
+    defer testing.allocator.free(res.terminals);
+    var seen: usize = 0;
+    for (res.terminals) |info| {
+        if (info.id == worker) {
+            seen += 1;
+            try testing.expect(info.startup_question);
+        }
+        if (info.id == boss) {
+            seen += 1;
+            // An agent is here: past any such question.
+            try testing.expect(!info.startup_question);
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), seen);
+
+    // Its input box, or nothing to go by: no question.
+    for ([_]StartupReach{ .ready, .none }) |reach| {
+        fake.startup = reach;
+        const again = try dispatch(testing.allocator, &b, fake.host(), term(boss), .terminal_list);
+        defer testing.allocator.free(again.terminals);
+        for (again.terminals) |info| try testing.expect(!info.startup_question);
+    }
 }
 
 test "#63: terminal_list says whether an agent is connected from each terminal" {

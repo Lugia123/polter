@@ -22,6 +22,13 @@
       ]
     }
   },
+  "startup_says": {
+    "blocks": [
+      "Do you trust the contents of this directory?",
+      "Set up the Codex agent sandbox",
+      "Update available!"
+    ]
+  },
   "exec": "provision.sh",
   "exec_windows": "provision.ps1",
   "timeout_ms": 20000,

@@ -409,6 +409,14 @@ pub struct SupervisorStart {
     /// nothing out from `state`.
     pub can_start: bool,
     pub failed: StartFailure,
+    /// The terminal one is being started in (`"0x…"`), while starting or
+    /// after it failed.
+    pub terminal: Option<String>,
+    /// Starting, and the CLI in its tab is waiting for the person to answer
+    /// a question there -- Antigravity's folder trust box (task 1746).
+    /// Polter never answers it: the right side says so and offers to go to
+    /// that tab. False from a core before it said.
+    pub asking: bool,
     /// The role it is started in unless the person picks another.
     pub role: Option<String>,
     /// Where it is started unless the person picks elsewhere.
@@ -1054,6 +1062,8 @@ fn group(v: &Value, path: &str) -> Res<Group> {
                 state: SupervisorState::parse(&state).ok_or(DecodeError::UnknownValue(format!("{sp}.state={state}")))?,
                 can_start: boolean(s, &sp, "can_start")?,
                 failed: StartFailure::parse(&failed).ok_or(DecodeError::UnknownValue(format!("{sp}.failed={failed}")))?,
+                terminal: opt_text(s, &sp, "terminal")?,
+                asking: if s.get("asking").is_some() { boolean(s, &sp, "asking")? } else { false },
                 role: opt_text(s, &sp, "role")?,
                 cwd: text(s, &sp, "cwd")?,
                 // All of it or none: a core that says `resume` says the

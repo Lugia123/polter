@@ -72,6 +72,13 @@
 //!                                 it in. A host shows the button on this
 //!                                 and on nothing else
 //!         "terminal": "0x…"|null, the terminal one is being started in
+//!         "asking": false,        starting, and the CLI in its tab is
+//!                                 waiting for the person to answer a
+//!                                 question there (Antigravity's folder
+//!                                 trust box). The wait does not run out
+//!                                 while it is up, and Polter never
+//!                                 answers it: a host says so and offers
+//!                                 to go to that tab
 //!         "failed": "none",       none | terminal_never_opened |
 //!                                 agent_never_connected | terminal_closed |
 //!                                 cli_not_found | cli_did_not_start
@@ -1273,6 +1280,9 @@ pub const SupervisorOut = struct {
     can_start: bool,
     terminal: ?Hex,
     failed: Chat.StartFailure,
+    /// The CLI being started is waiting for the person to answer a question
+    /// in its tab (`Chat.Start.asking`); only ever with `starting`.
+    asking: bool,
     role: ?[]const u8,
     cli: ?[]const u8,
     cli_label: ?[]const u8,
@@ -2078,11 +2088,20 @@ fn projectOf(arena: Allocator, in: Input, name: []const u8) Allocator.Error!Proj
     };
 }
 
+/// How often the tab of a start waiting for its agent is looked at, to see
+/// a question its CLI asks the person come up or go (task 1746).
+pub const asking_look_ms: u64 = 2 * std.time.ms_per_s;
+
 fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wake: *Wake) Allocator.Error!SupervisorOut {
     const start = in.chat.startOf(name, in.now_ms);
     // Past its deadline a start reads as failed, and nothing else happens
     // at that moment to say so.
     if (start.deadline_ms) |at| wake.consider(at +| 1);
+    // A question on a screen says nothing when it comes up or when it is
+    // answered: while its agent is waited for, the tab is looked at this
+    // often (`App.holdStartupQuestions`), for a minute at most when nothing
+    // asks.
+    if (start.state == .starting and start.terminal != null) wake.consider(in.now_ms + asking_look_ms);
 
     const state: SupervisorOut.State = if (steward != null) .present else switch (start.state) {
         .none => .absent,
@@ -2144,6 +2163,7 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
         .can_start = (state == .absent or state == .failed) and in.supervisor_roles.len > 0,
         .terminal = if (state == .starting or state == .failed) .opt(start.terminal) else null,
         .failed = if (state == .failed) start.failed else .none,
+        .asking = state == .starting and start.asking,
         .role = if (role) |r| try arena.dupe(u8, r.key) else null,
         .cli = if (cli) |c| try arena.dupe(u8, c) else null,
         .cli_label = if (cliLabelOf(in.cli_names, cli)) |l| try arena.dupe(u8, l) else null,
@@ -4758,6 +4778,56 @@ test "ControlRoom start: a group with no supervisor says one can be started, in 
     try testing.expectEqual(SupervisorOut.CwdFrom.none, none.cwd_from);
 }
 
+test "ControlRoom start: a CLI asking the person something reads as asking, and is looked at again soon (task 1746)" {
+    var w: World = .init();
+    defer w.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.chat.restoreShell("nightly", "", 0, .none);
+    try w.chat.beginStart("nightly", 2_000, 11_000, false, .directory);
+    try w.terminal(0xa9, "agy", 0x29);
+    w.chat.startOpened("nightly", 0xa9, 61_000);
+    var out = try room.refresh(w.input(3_000), .event);
+    {
+        const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+        defer read.deinit();
+        const sup = (try rowNamed(read.value, "nightly")).supervisor;
+        try testing.expect(!sup.asking);
+    }
+
+    // The trust box is up.
+    _ = w.chat.startAsking("nightly", true, 4_000 + 60_000, 4_000);
+    out = try room.refresh(w.input(4_000), .event);
+    try testing.expect(out.notify != null);
+    try testing.expectEqual(@as(?u64, 4_000 + asking_look_ms), out.wake_ms);
+    {
+        const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+        defer read.deinit();
+        const sup = (try rowNamed(read.value, "nightly")).supervisor;
+        try testing.expectEqual(SupervisorOut.State.starting, sup.state);
+        try testing.expect(sup.asking);
+        try testing.expect(!sup.can_start);
+        try testing.expectEqual(@as(u64, 0xa9), sup.terminal.?.id);
+    }
+
+    // Answered: no longer asking; still looked at while the agent is
+    // waited for.
+    _ = w.chat.startAsking("nightly", false, 0, 5_000);
+    out = try room.refresh(w.input(5_000), .event);
+    try testing.expectEqual(@as(?u64, 5_000 + asking_look_ms), out.wake_ms);
+    {
+        const s = w.chat.startOf("nightly", 5_000);
+        try testing.expectEqual(@as(?u64, 64_000), s.deadline_ms);
+    }
+    {
+        const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
+        defer read.deinit();
+        const sup = (try rowNamed(read.value, "nightly")).supervisor;
+        try testing.expect(!sup.asking);
+    }
+}
+
 test "ControlRoom start: one on its way is not offered again, and the snapshot wakes itself to say it failed" {
     var w: World = .init();
     defer w.deinit();
@@ -4781,11 +4851,12 @@ test "ControlRoom start: one on its way is not offered again, and the snapshot w
     // Nothing will happen at the deadline but the deadline: woken for it.
     try testing.expectEqual(@as(?u64, 11_001), out.wake_ms);
 
-    // The tab came; now the agent is waited for.
+    // The tab came; now the agent is waited for, and the tab is looked at
+    // every little while for a question its CLI may ask (task 1746).
     try w.terminal(0xa9, "zsh", 0x29);
     w.chat.startOpened("nightly", 0xa9, 61_000);
     out = try room.refresh(w.input(3_000), .event);
-    try testing.expectEqual(@as(?u64, 61_001), out.wake_ms);
+    try testing.expectEqual(@as(?u64, 3_000 + asking_look_ms), out.wake_ms);
     {
         const read = try std.json.parseFromSlice(Snapshot, testing.allocator, room.json, .{});
         defer read.deinit();
@@ -4837,8 +4908,9 @@ test "ControlRoom start: a launcher that says its CLI did not start fails the st
     try w.terminal(0xa9, "zsh", 0x29);
     w.chat.startOpened("nightly", 0xa9, 61_000);
     var out = try room.refresh(w.input(3_000), .event);
-    // Waiting for the agent, and woken for nothing sooner than the minute.
-    try testing.expectEqual(@as(?u64, 61_001), out.wake_ms);
+    // Waiting for the agent: woken only to look at its tab for a question
+    // (task 1746), not for anything about the start itself.
+    try testing.expectEqual(@as(?u64, 3_000 + asking_look_ms), out.wake_ms);
 
     // One second in, `+launch` says the CLI is not there to run. What the
     // app does with that (`App.poltergeistLaunchFailed`): the group that
@@ -5094,7 +5166,7 @@ test "ControlRoom start: closing the tab fails the start in the very next snapsh
     try w.chat.beginStart("nightly", 1_000, 11_000, false, .directory);
     w.chat.startOpened("nightly", 0xa9, 61_000);
     var out = try room.refresh(w.input(2_000), .event);
-    try testing.expectEqual(@as(?u64, 61_001), out.wake_ms);
+    try testing.expectEqual(@as(?u64, 2_000 + asking_look_ms), out.wake_ms);
 
     // The tab is closed three seconds in. The terminal is still open as
     // far as the core can tell -- it is in `terminals` below.

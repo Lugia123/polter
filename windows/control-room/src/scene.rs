@@ -65,6 +65,10 @@ pub mod msg {
     /// What the right side says of a group with no supervisor, by what the
     /// core says became of starting one. The macOS host's sentences.
     pub const STARTING: &str = n_("Starting the supervisor…");
+    /// Starting, and its CLI asks the person something in its tab (task
+    /// 1746), with the button that goes there.
+    pub const ASKING: &str = n_("The supervisor is waiting in its tab for you to answer a question.");
+    pub const GO_TO_ITS_TAB: &str = n_("Go to Its Tab");
     pub const NEVER_OPENED: &str = n_("The supervisor did not start: its tab never opened.");
     #[rustfmt::skip]
     pub const NEVER_CONNECTED: &str = n_("The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.");
@@ -1186,6 +1190,9 @@ pub struct Start {
     pub directory: Option<Rect>,
     /// "Start Supervisor".
     pub start: Option<Rect>,
+    /// "Go to Its Tab", and the terminal it goes to: while a supervisor
+    /// being started waits in its tab for the person (task 1746).
+    pub go_to_tab: Option<(String, Rect)>,
     /// The two sessions' lines, when the core says the last one can be
     /// gone on with: pressing one picks it. Empty otherwise. **Not one
     /// whose line is greyed**: pressing that picks nothing.
@@ -1435,6 +1442,7 @@ fn sentence_lines(text: &str, width: f64) -> usize {
 pub fn no_supervisor_words(start: Option<&crate::snapshot::SupervisorStart>) -> &'static str {
     use crate::snapshot::{StartFailure as F, SupervisorState as S};
     match start.map(|s| (s.state, s.failed)) {
+        Some((S::Starting, _)) if start.is_some_and(|s| s.asking) => msg::ASKING,
         Some((S::Starting, _)) => msg::STARTING,
         Some((S::Failed, F::TerminalNeverOpened)) => msg::NEVER_OPENED,
         Some((S::Failed, F::AgentNeverConnected)) => msg::NEVER_CONNECTED,
@@ -1487,11 +1495,26 @@ fn start_top() -> f64 {
 pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Theme, view: &StartView, tr: &dyn Fn(&str) -> String) -> Start {
     let Detail_::NoSupervisor { .. } = detail else { return Start::default() };
     let Some(start) = row.and_then(|r| r.start.as_ref()) else { return Start::default() };
+    let pad = space::FRAME_TO_CONTENT;
+    let line_h = side::HEADER_HEIGHT;
+    if let (crate::snapshot::SupervisorState::Starting, true, Some(terminal)) = (start.state, start.asking, start.terminal.as_ref()) {
+        // Where "Start Supervisor" would be: the one thing to do is go
+        // and answer it. Polter never does.
+        let button = Rect { x: pad, y: start_top(), w: side::WIDTH / 2.0, h: line_h };
+        let mut out = Start::default();
+        out.items.push(Item::Round { rect: button, radius: radius::ROW, color: theme.terminal_background, edge: Some(theme.attention_text) });
+        out.items.push(Item::Text {
+            rect: button,
+            text: tr(msg::GO_TO_ITS_TAB),
+            style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.attention_text) },
+            align: Align::Centre,
+        });
+        out.go_to_tab = Some((terminal.clone(), button));
+        return out;
+    }
     if !start.can_start {
         return Start::default();
     }
-    let pad = space::FRAME_TO_CONTENT;
-    let line_h = side::HEADER_HEIGHT;
     let w = (width - 2.0 * pad).min(side::WIDTH * 1.5).max(0.0);
     let mut y = start_top();
     let mut out = Start::default();
@@ -3156,7 +3179,7 @@ mod tests {
 
     fn start_row(state: crate::snapshot::SupervisorState, can_start: bool, failed: crate::snapshot::StartFailure) -> Row {
         let mut row = list().quiet[0].clone();
-        row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into(), last: None, hookless: None });
+        row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, terminal: None, asking: false, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into(), last: None, hookless: None });
         row
     }
 
@@ -3217,6 +3240,42 @@ mod tests {
         assert_eq!(offered(None, &detail), Start::default());
         assert_eq!(offered(Some(&row), &Detail_::NothingSelected), Start::default());
         assert_eq!(offered(Some(&row), &Detail_::SupervisorGone { group: row.id.clone() }), Start::default());
+    }
+
+    /// Task 1746: a supervisor being started whose CLI asks the person a
+    /// question in its tab -- Antigravity's trust box -- is said to be
+    /// waiting for them, with a button that goes to that tab and nothing
+    /// that starts another.
+    #[test]
+    fn a_start_waiting_on_a_question_says_so_and_offers_its_tab() {
+        use crate::snapshot::{StartFailure as F, SupervisorState as S};
+        let all = roles();
+        let view = StartView { roles: &all, choose_role: false, home: "/Users/me", ..Default::default() };
+        let theme = look::theme(false);
+        let mut row = start_row(S::Starting, false, F::None);
+        let detail = Detail_::NoSupervisor { group: row.id.clone() };
+        // Starting, not asking: the plain sentence, and nothing to press.
+        assert_eq!(no_supervisor_words(row.start.as_ref()), msg::STARTING);
+        assert_eq!(build_start(&detail, Some(&row), 600.0, theme, &view, &same), Start::default());
+
+        if let Some(s) = row.start.as_mut() {
+            s.asking = true;
+            s.terminal = Some("0x00000000000000a9".into());
+        }
+        assert_eq!(no_supervisor_words(row.start.as_ref()), msg::ASKING);
+        let shown = build_start(&detail, Some(&row), 600.0, theme, &view, &same);
+        let (terminal, _) = shown.go_to_tab.clone().expect("a button to its tab");
+        assert_eq!(terminal, "0x00000000000000a9");
+        assert!(all_text(&shown.items).contains(&msg::GO_TO_ITS_TAB));
+        assert!(shown.start.is_none() && shown.directory.is_none());
+        // And the right side draws the sentence.
+        let right = build_right(&detail, Some(&row), 600.0, 600.0, theme, 1.0, false, &same);
+        assert!(all_text(&right.items).contains(&msg::ASKING));
+        // Asking with no terminal named: nothing to go to.
+        if let Some(s) = row.start.as_mut() {
+            s.terminal = None;
+        }
+        assert_eq!(build_start(&detail, Some(&row), 600.0, theme, &view, &same).go_to_tab, None);
     }
 
     /// A role is shown under the name the core sent, the official

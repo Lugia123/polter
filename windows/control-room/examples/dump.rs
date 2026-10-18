@@ -565,7 +565,7 @@ fn main() {
             ("cli-empty", Some(1), "/Users/me/work", true, Some(""), Some("Claude Code"), Some("/srv/other"), false),
             ("never-recorded", None, "/Users/me/work", true, Some("claude-code"), Some("Claude Code"), Some("/srv/other"), false),
         ];
-        let start = |cwd: &str, last| SupervisorStart { state: SupervisorState::Absent, can_start: true, failed: StartFailure::None, role: None, cwd: cwd.to_string(), last, hookless: None };
+        let start = |cwd: &str, last| SupervisorStart { state: SupervisorState::Absent, can_start: true, failed: StartFailure::None, terminal: None, asking: false, role: None, cwd: cwd.to_string(), last, hookless: None };
         for (name, heard, cwd, is_last, cli, label, picked, can) in cases {
             let s = start(
                 cwd,
@@ -602,7 +602,7 @@ fn main() {
     {
         use polter_control_room::scene::no_supervisor_words;
         use polter_control_room::snapshot::{StartFailure, SupervisorStart, SupervisorState};
-        let start = |state, failed, can_start| SupervisorStart { state, can_start, failed, role: None, cwd: String::new(), last: None, hookless: None };
+        let start = |state, failed, can_start| SupervisorStart { state, can_start, failed, terminal: None, asking: false, role: None, cwd: String::new(), last: None, hookless: None };
         for failed in StartFailure::ALL {
             println!(
                 "start_says state=failed failed={} says={}",
@@ -617,6 +617,9 @@ fn main() {
                 quote(no_supervisor_words(Some(&start(state, StartFailure::None, false))))
             );
         }
+        // Its CLI asking the person a question in its tab (task 1746).
+        let asking = SupervisorStart { asking: true, terminal: Some("0x00000000000000a9".into()), ..start(SupervisorState::Starting, StartFailure::None, false) };
+        println!("start_says state=starting failed=none asking=true says={}", quote(no_supervisor_words(Some(&asking))));
     }
     println!("start_roles choose={}", l.choose_supervisor_role);
     for role in &l.supervisor_roles {

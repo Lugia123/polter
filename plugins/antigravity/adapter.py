@@ -37,7 +37,8 @@ not know it leaves out rather than guesses:
     `disabled` and `disabledTools` in `mcp_config.json` -- are in the
     person's global file, which a role must not rewrite for everybody's
     sessions. So the role's model is passed (`--model`, documented) and its
-    own arguments, and everything else is said in a note.
+    own arguments, and everything else is said in a note. Its instructions
+    go in as agy's first prompt (`-i`, task 1746; see `first_prompt`).
   * **No quit in `identify`**: no screen has been read yet to say when
     typing `/exit` is safe. Its session is the conversation record the
     process holds open, when it holds exactly one (not measured: `None`
@@ -368,10 +369,6 @@ def launch(req):
         notes.append("The role switches off %d skill(s) and %d MCP server(s); %s"
                      % (off["skill"], off["mcp"], NO_SWITCHES))
 
-    if role.get("instructions"):
-        notes.append("Antigravity CLI takes no instructions on its command line, so the role's were not passed.")
-
-
     extra = [a for a in (cli.get("args") or []) if isinstance(a, str)]
     opts = []
     model = cli.get("model") or role.get("model")
@@ -382,7 +379,7 @@ def launch(req):
     if session:
         opts += ["--conversation", session]
 
-    argv = ["agy"] + opts + extra
+    argv = ["agy"] + opts + extra + first_prompt(role.get("instructions"), session, extra, notes)
     answer = {
         "version": CONTRACT_VERSION,
         "argv": argv,
@@ -399,6 +396,55 @@ def launch(req):
         # comes late is not reported missing.
         answer["hooks_heard"] = "first_turn"
     return answer
+
+
+# --- the role's instructions (task 1746) --------------------------------------
+#
+# Antigravity has no flag for a system prompt, so the role's instructions go
+# in as the first prompt: `-i` / `--prompt-interactive`, "Run an initial
+# prompt interactively and continue the session" (agy 1.4.2's --help). It is
+# also what makes the agent reachable at all: agy starts its MCP servers --
+# Polter's among them -- and sends its first hook with the first prompt, not
+# when it starts (measured on 1.4.0), so a supervisor started with nothing
+# typed into it never connected and its start failed after a minute.
+#
+# **But not Polter's tools, that first turn.** agy starts the server with
+# the first prompt, and the tools it brings are in the model's list only
+# from the second turn on (measured on 1.4.2, task 1740: the first turn had
+# no `call_mcp_tool` and the model wrote Python to run `polter +mcp` by
+# hand, 146 s; the second turn called `polter_polter/me` itself). #1682 did
+# not meet this because its scripts sent a warm-up message first. So the
+# first prompt is the instructions, put in the context, closed with: answer
+# in one line and call nothing. When there is a next step -- a supervisor
+# started from the control room -- Polter types it once the turn is over
+# (`StartupSays.tools_from_second_turn`, `App.startLineTry`).
+#
+# A conversation picked up again is told it is that, lest it start the
+# instructions over as new work. Whether a picked-up conversation has the
+# tools in its first turn is not measured yet.
+PROMPT_WORDS = ("-i", "--prompt-interactive", "-p", "--print", "--prompt")
+FIRST_PROMPT_END = ("This message is how you are given your instructions; it is not a task. "
+                    "Polter's tools are not loaded yet in this turn, so do not try to reach them: "
+                    "answer with the one word \"Ready\" and call no tool at all. "
+                    "The next message says when to start.")
+PICKED_UP = ("You have been picked up again in a Polter terminal, and this conversation goes on "
+             "from where it was. Below are the instructions you were started with, given again; "
+             "nothing in them is a new task, and nothing you were doing is to be started over.")
+PICKED_UP_END = ("Call `me` and read what the instructions tell you to read, to see where things "
+                 "stand now; then stop and wait for the person to ask you something.")
+
+
+def first_prompt(instructions, session, extra, notes):
+    """`-i` and the role's instructions as agy's first prompt, or [] when
+    there are none or the role's own arguments already give a prompt."""
+    if not instructions:
+        return []
+    if any(a in PROMPT_WORDS or a.split("=", 1)[0] in PROMPT_WORDS for a in extra):
+        notes.append("The role's own arguments give agy a prompt, so the role's instructions were not passed.")
+        return []
+    if session:
+        return ["-i", "%s\n\n%s\n\n%s" % (PICKED_UP, instructions, PICKED_UP_END)]
+    return ["-i", "%s\n\n%s" % (instructions, FIRST_PROMPT_END)]
 
 
 # --- launch options (task 1677) ----------------------------------------------

@@ -245,6 +245,14 @@ struct ControlRoomList: Equatable {
         var state: State
         var canStart: Bool
         var failed: Failure
+        /// The terminal one is being started in, while starting or after it
+        /// failed; nil otherwise.
+        var terminal: String? = nil
+        /// Starting, and the CLI in its tab is waiting for the person to
+        /// answer a question there -- Antigravity's folder trust box (task
+        /// 1746). Polter never answers it: the right-hand side says so and
+        /// offers to go to that tab.
+        var asking: Bool = false
         /// The role it is started in unless the person picks another.
         var role: String?
         /// Where it is started unless the person picks elsewhere.
@@ -744,6 +752,10 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var state: ControlRoomList.SupervisorStart.State
         var can_start: Bool
         var failed: ControlRoomList.SupervisorStart.Failure
+        /// The terminal one is being started in (`"0x…"`).
+        var terminal: String?
+        /// Nil from a core before it said (task 1746).
+        var asking: Bool?
         var role: String?
         var cwd: String
         /// The three the core added together; absent together in a
@@ -1160,6 +1172,7 @@ extension ControlRoomList {
                 },
                 start: group.supervisor.map {
                     SupervisorStart(state: $0.state, canStart: $0.can_start, failed: $0.failed,
+                                    terminal: $0.terminal, asking: $0.asking ?? false,
                                     role: $0.role, cwd: $0.cwd, last: $0.startLast)
                 },
                 fix: group.fix ?? .none,

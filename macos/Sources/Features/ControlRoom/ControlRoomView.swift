@@ -74,7 +74,8 @@ struct ControlRoomView: View {
                             onStart: { role, cwd, session, cli in
                                 guard let group = model.selection else { return }
                                 model.startSupervisor(for: group, role: role, cwd: cwd, session: session, cli: cli)
-                            })
+                            },
+                            goToTerminal: model.goToTerminal)
                     }
                 }
                 }

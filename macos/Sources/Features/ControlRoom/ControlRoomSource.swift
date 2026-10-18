@@ -158,6 +158,9 @@ final class ControlRoomModel: ObservableObject {
     /// tab, with the keyboard -- what Return does on Windows' list
     /// (`control_room.rs::go_to_supervisor`), task 1551.
     var goToSupervisor: () -> Void = {}
+    /// Bring the tab of terminal `id` forward with the keyboard: where a
+    /// supervisor being started is waiting for the person (task 1746).
+    var goToTerminal: (String) -> Void = { _ in }
 
     /// Sends what the person does about a group. Handed in by whoever has
     /// the core (`ControlRoomController`); without it nothing is done and

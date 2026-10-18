@@ -41,6 +41,11 @@ def ask(question, req, home):
     return json.loads(p.stdout)
 
 
+def head(argv):
+    """argv without the first prompt the role's instructions add at its end."""
+    return argv[:-2] if len(argv) >= 2 and argv[-2] == "-i" else argv
+
+
 def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -105,13 +110,26 @@ def main():
                "cli": {"skills": {"default": True, "except": ["skill:polter-supervising", "skill:deploy"]},
                        "mcp": {"default": False, "except": []}, "model": "gemini-x-flash", "args": ["--effort", "low"]}}
         out = ask("launch", req, home)
-        check("launch", out["argv"] == ["agy", "--model", "gemini-x-flash", "--effort", "low"],
+        check("launch", head(out["argv"]) == ["agy", "--model", "gemini-x-flash", "--effort", "low"],
               "agy, the model, then the role's own arguments (%s)" % out["argv"])
         notes = " ".join(out["notes"])
         # polter-supervising off (deploy is the project's and is kept); argus
         # and docs off (polter is locked).
         check("launch", "1 skill(s) and 2 MCP server(s)" in notes, "the note counts what was not switched off")
-        check("launch", "instructions" in notes, "the instructions not passed are said")
+        check("launch", "instructions" not in notes, "the instructions are passed, so no note says they were not")
+        prompt = out["argv"][-1]
+        check("launch", out["argv"][-2] == "-i" and prompt.startswith("Report with task_progress.\n\n")
+              and prompt.endswith("The next message says when to start.") and "call no tool at all" in prompt
+              and "picked up again" not in prompt,
+              "the instructions are agy's first prompt (-i), last, closed with: answer Ready and call no tool "
+              "(Polter's tools come only from the second turn, task 1746)")
+        bare = ask("launch", dict(req, role={"key": "w", "name": "W"}), home)
+        check("launch", "-i" not in bare["argv"], "a role with no instructions gives no first prompt")
+        for theirs in (["-p", "x"], ["--prompt-interactive=x"], ["-i", "x"]):
+            own = ask("launch", dict(req, cli=dict(req["cli"], args=theirs)), home)
+            check("launch", own["argv"][-len(theirs):] == theirs and own["argv"].count(theirs[0]) == 1
+                  and "own arguments give agy a prompt" in " ".join(own["notes"]),
+                  "the role's own %s is its prompt; the instructions are not added, and that is said" % theirs[0])
         check("launch", "hooks" not in out, "no hooks file: no hooks claimed")
 
         plugin = os.path.join(g, "config", "plugins", "polter")
@@ -149,7 +167,7 @@ def main():
               and opts[0]["values"][1]["args"] == ["--mode", "auto"],
               "--mode is offered with the three values this agy lists (%s)" % opts)
         picked = dict(req, cli=dict(req["cli"], options={"mode": "auto"}))
-        check("options", ask("launch", picked, home)["argv"] == ["agy", "--model", "gemini-x-flash", "--mode", "auto",
+        check("options", head(ask("launch", picked, home)["argv"]) == ["agy", "--model", "gemini-x-flash", "--mode", "auto",
                                                                   "--effort", "low"],
               "a picked mode becomes its flag, before the role's own arguments")
         bad = ask("launch", dict(req, cli=dict(req["cli"], options={"mode": "yolo"})), home)
@@ -176,18 +194,18 @@ def main():
               "--dangerously-skip-permissions is offered on by default, with ask beside it, "
               "and its label says shell commands too (%s)" % opts)
         # The criterion (task 1682): a role that says nothing gets it; ask takes it out.
-        check("options", ask("launch", req, home)["argv"] == ["agy", "--model", "gemini-x-flash",
+        check("options", head(ask("launch", req, home)["argv"]) == ["agy", "--model", "gemini-x-flash",
                                                                "--dangerously-skip-permissions", "--effort", "low"],
               "a role that picks nothing starts agy with --dangerously-skip-permissions")
         off = dict(req, cli=dict(req["cli"], options={"skip_permissions": "ask"}))
-        check("options", ask("launch", off, home)["argv"] == ["agy", "--model", "gemini-x-flash", "--effort", "low"],
+        check("options", head(ask("launch", off, home)["argv"]) == ["agy", "--model", "gemini-x-flash", "--effort", "low"],
               "skip_permissions=ask starts it without")
         given = ask("launch", dict(req, cli=dict(req["cli"], args=["--dangerously-skip-permissions"])), home)
         check("options", given["argv"].count("--dangerously-skip-permissions") == 1
               and not any("already give" in n for n in given["notes"]),
               "the role's own arguments giving it already: once, and no note about a default")
         both = dict(req, cli=dict(req["cli"], options={"mode": "plan"}))
-        check("options", ask("launch", both, home)["argv"] == ["agy", "--model", "gemini-x-flash", "--mode", "plan",
+        check("options", head(ask("launch", both, home)["argv"]) == ["agy", "--model", "gemini-x-flash", "--mode", "plan",
                                                                 "--dangerously-skip-permissions", "--effort", "low"],
               "a picked mode, and the default beside it")
         # Each official role that starts in Antigravity picks nothing, so gets it.
@@ -210,8 +228,11 @@ def main():
         record = os.path.join(g, "antigravity-cli", "conversations", sid + ".db")
         write(record, "")
         out = ask("launch", dict(req, session=sid), home)
-        check("resume", out["argv"] == ["agy", "--model", "gemini-x-flash", "--conversation", sid, "--effort", "low"],
+        check("resume", head(out["argv"]) == ["agy", "--model", "gemini-x-flash", "--conversation", sid, "--effort", "low"],
               "a conversation recorded here goes on, before the role's own arguments (%s)" % out["argv"])
+        check("resume", out["argv"][-2] == "-i" and out["argv"][-1].startswith("You have been picked up again")
+              and "Report with task_progress." in out["argv"][-1] and "nothing in them is a new task" in out["argv"][-1],
+              "a conversation that goes on is told it was picked up again, with its instructions inside")
         out = ask("launch", dict(req, session="../../etc/passwd"), home)
         check("resume", "--conversation" not in out["argv"] and "not an Antigravity conversation id" in " ".join(out["notes"]),
               "an id of the wrong shape is not passed on")

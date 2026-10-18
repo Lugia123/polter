@@ -842,6 +842,19 @@ pub fn dropStanding(self: *PersonaStore, id: Bus.Id) bool {
     return self.standings.remove(id);
 }
 
+/// The CLI the launch started in `id` is asking the person something
+/// before it will start (task 1746): what is held for its agent is kept
+/// until `deadline_ms` at least, so an agent that connects once the person
+/// has answered still gets the standing it was started with. Nothing
+/// happens for a standing that has already run out. Answers whether one is
+/// held.
+pub fn extendStanding(self: *PersonaStore, id: Bus.Id, deadline_ms: u64, now_ms: u64) bool {
+    const s = self.standings.getPtr(id) orelse return false;
+    if (now_ms > s.deadline_ms) return false;
+    s.deadline_ms = @max(s.deadline_ms, deadline_ms);
+    return true;
+}
+
 /// What is held for `id` and still able to be claimed, or null.
 pub fn heldStanding(self: *const PersonaStore, id: Bus.Id, now_ms: u64) ?PendingStanding {
     const s = self.standings.get(id) orelse return null;

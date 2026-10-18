@@ -46,6 +46,8 @@ struct ControlRoomDetailMessage: View {
     /// back; nil when it has not been drawn here.
     var lastFrame: CGImage?
     var onStart: (_ role: String?, _ cwd: String?, _ session: ControlRoomStartChoice.Session?, _ cli: String?) -> Void = { _, _, _, _ in }
+    /// Go to the tab of the terminal a supervisor is being started in.
+    var goToTerminal: (String) -> Void = { _ in }
 
     @Environment(\.colorScheme) private var scheme
 
@@ -87,6 +89,12 @@ struct ControlRoomDetailMessage: View {
         return VStack(spacing: CGFloat(Look.Side.rowGap)) {
             Text(Self.words(for: detail, start: start, alone: alone))
                 .foregroundStyle(theme.textSecondary.color)
+            if case .noSupervisor = detail, let start, start.state == .starting, start.asking,
+               let terminal = start.terminal {
+                Button(String(localized: "Go to Its Tab", comment: "总控台：总管在自己的标签页里等用户回答问题时，右栏的按钮：跳到那个标签页")) {
+                    goToTerminal(terminal)
+                }
+            }
             if case let .noSupervisor(group) = detail, let start, start.canStart {
                 ControlRoomStartSupervisor(
                     start: start, project: ProjectLink.latest?.groups[group],

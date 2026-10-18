@@ -927,6 +927,11 @@ pub const Start = struct {
     /// How its terminal comes to be: a tab asked for, or the group's
     /// project opened by the host (`Projects`, the `open` order).
     by: StartBy,
+    /// The CLI in its tab is asking the person a question before it will
+    /// start -- Antigravity's folder trust box (`Plugin.StartupSays`).
+    /// While it is, the wait does not run out (`startAsking`): the answer
+    /// is the person's, and nobody else may give it (task 1746).
+    asking: bool,
 };
 
 pub const StartBy = enum { directory, project };
@@ -974,15 +979,18 @@ pub const StartView = struct {
     resuming: bool,
     /// How its terminal comes to be; null when there is no start.
     by: ?StartBy,
+    /// Its CLI is waiting for the person to answer a question in its tab
+    /// (`Start.asking`). Only ever with `starting`.
+    asking: bool,
 
-    pub const none: StartView = .{ .state = .none, .failed = .none, .terminal = null, .deadline_ms = null, .resuming = false, .by = null };
+    pub const none: StartView = .{ .state = .none, .failed = .none, .terminal = null, .deadline_ms = null, .resuming = false, .by = null, .asking = false };
 };
 
 /// Where `name`'s start stands at `now_ms`.
 pub fn startOf(self: *const Chat, name: []const u8, now_ms: u64) StartView {
     const group = self.groups.getPtr(name) orelse return .none;
     const s = group.start orelse return .none;
-    if (s.failed != .none) return .{ .state = .failed, .failed = s.failed, .terminal = s.terminal, .deadline_ms = null, .resuming = s.resuming, .by = s.by };
+    if (s.failed != .none) return .{ .state = .failed, .failed = s.failed, .terminal = s.terminal, .deadline_ms = null, .resuming = s.resuming, .by = s.by, .asking = false };
     if (now_ms > s.deadline_ms) return .{
         .state = .failed,
         .failed = if (s.terminal == null) .terminal_never_opened else .agent_never_connected,
@@ -990,8 +998,9 @@ pub fn startOf(self: *const Chat, name: []const u8, now_ms: u64) StartView {
         .deadline_ms = null,
         .resuming = s.resuming,
         .by = s.by,
+        .asking = false,
     };
-    return .{ .state = .starting, .failed = .none, .terminal = s.terminal, .deadline_ms = s.deadline_ms, .resuming = s.resuming, .by = s.by };
+    return .{ .state = .starting, .failed = .none, .terminal = s.terminal, .deadline_ms = s.deadline_ms, .resuming = s.resuming, .by = s.by, .asking = s.asking };
 }
 
 /// Begin a start: the tab has been asked for and is waited for until
@@ -1004,7 +1013,7 @@ pub fn startOf(self: *const Chat, name: []const u8, now_ms: u64) StartView {
 pub fn beginStart(self: *Chat, name: []const u8, now_ms: u64, deadline_ms: u64, resuming: bool, by: StartBy) Error!void {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     if (self.startOf(name, now_ms).state == .starting) return error.AlreadyStarting;
-    group.start = .{ .terminal = null, .deadline_ms = deadline_ms, .resuming = resuming, .by = by };
+    group.start = .{ .terminal = null, .deadline_ms = deadline_ms, .resuming = resuming, .by = by, .asking = false };
 }
 
 /// The tab exists: it is `terminal`, and its agent is waited for until
@@ -1015,6 +1024,23 @@ pub fn startOpened(self: *Chat, name: []const u8, terminal: Id, deadline_ms: u64
     if (s.failed != .none) return;
     s.terminal = terminal;
     s.deadline_ms = deadline_ms;
+}
+
+/// Whether the CLI in a start's tab is asking the person something now
+/// (`Start.asking`). While it is, the wait for its agent is held at
+/// `deadline_ms` or later -- the same minute again, counted from the last
+/// time the question was seen up, so a person who takes their time over it
+/// is not told the start failed, and the wait runs again once it is gone.
+/// Only a start that has its tab and is still waiting is touched. Answers
+/// whether what the control room shows of it changed.
+pub fn startAsking(self: *Chat, name: []const u8, asking: bool, deadline_ms: u64, now_ms: u64) bool {
+    const group = self.groups.getPtr(name) orelse return false;
+    const s = if (group.start) |*v| v else return false;
+    if (s.terminal == null or s.failed != .none or now_ms > s.deadline_ms) return false;
+    if (asking) s.deadline_ms = @max(s.deadline_ms, deadline_ms);
+    const changed = s.asking != asking;
+    s.asking = asking;
+    return changed;
 }
 
 /// The group whose start is still waiting for its tab, if there is one.
@@ -3602,6 +3628,39 @@ test "ControlRoom marks: marks that came back off disk have seen nothing in this
     try testing.expectEqual(@as(?u64, 1_700_000_000_000), (try chat.marksOf("build")).seen_ms);
     try testing.expectEqual(@as(?u64, null), chat.seenRunMs("build"));
     try testing.expectEqual(Attention.Snooze{ .until_change = 0 }, chat.snoozeOf("build", 9_000, 1_700_000_100_000));
+}
+
+test "ControlRoom start: while its CLI asks the person a question, the wait for its agent does not run out" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.restoreShell("build", "", 0, .none);
+
+    try chat.beginStart("build", 1_000, 11_000, false, .directory);
+    // No tab yet: nothing to be asking in.
+    try testing.expect(!chat.startAsking("build", true, 999_000, 2_000));
+    try testing.expect(!chat.startOf("build", 2_000).asking);
+
+    chat.startOpened("build", 0xA, 2_000 + 60_000);
+    // The trust box is up, seen again and again: each sighting holds the
+    // wait a minute past it.
+    try testing.expect(chat.startAsking("build", true, 50_000 + 60_000, 50_000));
+    try testing.expect(!chat.startAsking("build", true, 100_000 + 60_000, 100_000));
+    const held = chat.startOf("build", 150_000);
+    try testing.expect(held.state == .starting);
+    try testing.expect(held.asking);
+    try testing.expectEqual(@as(?u64, 160_000), held.deadline_ms);
+
+    // Answered: the wait runs again from the last sighting, and runs out.
+    try testing.expect(chat.startAsking("build", false, 155_000 + 60_000, 155_000));
+    const answered = chat.startOf("build", 160_000);
+    try testing.expect(answered.state == .starting);
+    try testing.expect(!answered.asking);
+    const silent = chat.startOf("build", 160_001);
+    try testing.expectEqual(StartFailure.agent_never_connected, silent.failed);
+    try testing.expect(!silent.asking);
+    // A start that has run out is not brought back by a box seen late.
+    try testing.expect(!chat.startAsking("build", true, 999_000, 160_001));
+    try testing.expect(chat.startOf("build", 160_001).state == .failed);
 }
 
 test "ControlRoom start: a supervisor on its way waits for its tab, then for its agent, and each wait can run out" {

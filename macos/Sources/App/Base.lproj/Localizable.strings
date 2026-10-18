@@ -745,6 +745,8 @@
 "No tab could be opened for it." = "No tab could be opened for it.";
 "Polter could not find its own program to start the role with." = "Polter could not find its own program to start the role with.";
 "Starting the supervisor…" = "Starting the supervisor…";
+"The supervisor is waiting in its tab for you to answer a question." = "The supervisor is waiting in its tab for you to answer a question.";
+"Go to Its Tab" = "Go to Its Tab";
 "The supervisor did not start: its tab never opened." = "The supervisor did not start: its tab never opened.";
 "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why." = "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.";
 "The supervisor did not start: its tab was closed first." = "The supervisor did not start: its tab was closed first.";

@@ -2715,6 +2715,11 @@ fn click(hwnd: HWND, x: i32, y: i32) {
     // What starting a supervisor offers, when the core says one can be.
     let offered = start_scene(&g, theme);
     let (rx, ry) = (px - g.room.right.x, py - g.room.right.y);
+    if let Some((terminal, _)) = offered.go_to_tab.as_ref().filter(|(_, r)| inside(*r, rx, ry)) {
+        let went = crate::tabs::go_to_terminal(terminal);
+        wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] go to the tab of the supervisor being started {} -> {}", terminal, went);
+        return;
+    }
     if let Some(group) = selected.clone() {
         if offered.start.is_some_and(|r| inside(r, rx, ry)) {
             start_supervisor(hwnd, &group);

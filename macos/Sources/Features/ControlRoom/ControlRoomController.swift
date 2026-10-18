@@ -125,6 +125,11 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         }
         model.askForTerminal = { [weak self] in self?.lend(.askedFor) }
         model.goToSupervisor = { [weak self] in self?.goToSupervisor() }
+        model.goToTerminal = { id in
+            guard let view = ControlRoomLender.surface(for: id) else { return }
+            view.window?.makeKeyAndOrderFront(nil)
+            Ghostty.moveFocus(to: view)
+        }
         model.perform = { try actions.perform($0) }
         // The group's "Project ›" menu, its banner and its question
         // (task 1713).

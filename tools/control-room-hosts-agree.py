@@ -501,6 +501,13 @@ for state in [ControlRoomList.SupervisorStart.State.starting, .absent] {
     print("start_says state=\(state.rawValue) failed=none "
         + "says=\(quote(ControlRoomLending.words(for: .noSupervisor(group: "g"), start: start)))")
 }
+// Its CLI asking the person a question in its tab (task 1746).
+do {
+    let start = ControlRoomList.SupervisorStart(state: .starting, canStart: false, failed: .none,
+                                                terminal: "0x00000000000000a9", asking: true, role: nil, cwd: "")
+    print("start_says state=starting failed=none asking=true "
+        + "says=\(quote(ControlRoomLending.words(for: .noSupervisor(group: "g"), start: start)))")
+}
 print("start_roles choose=\(list.chooseSupervisorRole)")
 for role in list.supervisorRoles {
     print("start_role key=\(role.key) name=\(quote(role.name))")

@@ -12,7 +12,8 @@
     "ready_says": [
       "? for shortcuts"
     ],
-    "ready_without_agent": true
+    "ready_without_agent": true,
+    "tools_from_second_turn": true
   },
   "screen_says": {
     "awaiting_approval": {
