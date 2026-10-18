@@ -59,6 +59,14 @@ enum ControlRoomStartChoice {
         var clis: [ControlRoomList.SupervisorRole.Cli]
         /// The "Agent CLI" row is drawn: more than one to choose from.
         var shown: Bool
+        /// How many CLIs the "Agent CLI" row has room for, drawn or not:
+        /// the ones in `clis` and the ones held back only because their
+        /// program is not here -- which are in `clis` until the adapters
+        /// are read, so the number is the same before and after (task
+        /// 1741). 0 for no row: one or none. Above `clis.count`, the rest
+        /// is kept empty, so the button under it does not move when the
+        /// read takes a CLI away. `scene::CliChoice::room`.
+        var room: Int
         /// The CLI the start uses; nil when the core names none.
         var picked: String?
         var resume: Resume
@@ -102,8 +110,12 @@ enum ControlRoomStartChoice {
             ?? last?.lastCli.flatMap { listed($0) ? $0 : nil }
             ?? clis.first?.key
         let shown = clis.count > 1
+        let gone = key.flatMap { k in roles.first { $0.key == k } }?.heldBack
+            .filter { $0.why == .notInstalled }.count ?? 0
+        let room = clis.count + gone > 1 ? clis.count + gone : 0
         guard let last else {
-            return CliChoice(clis: clis, shown: shown, picked: chosen, resume: .hidden, why: .noRecord, lastGone: nil)
+            return CliChoice(clis: clis, shown: shown, room: room, picked: chosen, resume: .hidden, why: .noRecord,
+                             lastGone: nil)
         }
         // The last supervisor's CLI, held back because it is not installed here.
         let held = key.flatMap { k in roles.first { $0.key == k } }?.heldBack
@@ -123,7 +135,7 @@ enum ControlRoomStartChoice {
         } else {
             state = .hidden
         }
-        return CliChoice(clis: clis, shown: shown, picked: chosen, resume: state, why: can ? .none : why,
+        return CliChoice(clis: clis, shown: shown, room: room, picked: chosen, resume: state, why: can ? .none : why,
                          lastGone: lastGone)
     }
 

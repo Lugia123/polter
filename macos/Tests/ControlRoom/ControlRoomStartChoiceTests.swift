@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import Ghostty
 
@@ -341,5 +343,79 @@ struct ControlRoomStartChoiceTests {
         #expect(parts.after == ".")
         let keyless = !(parts.before + parts.after).contains("claude-code")
         #expect(keyless)
+    }
+}
+
+/// Where the start button is drawn while the last session is looked for and
+/// once it is found (task 1741): in a real hosting view, in a real window
+/// that is never shown, read from what the view tells a screen reader.
+@MainActor struct ControlRoomStartLayoutTests {
+    typealias Start = ControlRoomList.SupervisorStart
+    typealias Role = ControlRoomList.SupervisorRole
+
+    private final class Seen {
+        var button: CGRect?
+        var all: CGRect?
+    }
+
+    /// The button's frame and the whole start's in `start` with `roles`,
+    /// on a right-hand side `width` wide, laid out as the side lays it out
+    /// (`ControlRoomStartSupervisor.ButtonFrame`, `.Frame`).
+    private func laid(_ start: Start, _ roles: [Role], width: CGFloat) throws -> (button: CGRect, all: CGRect) {
+        let seen = Seen()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: true)
+        window.contentView = NSHostingView(rootView: ControlRoomDetailMessage(
+            detail: .noSupervisor(group: "billing"), askFor: {}, start: start, roles: roles)
+            .onPreferenceChange(ControlRoomStartSupervisor.ButtonFrame.self) { seen.button = $0 }
+            .onPreferenceChange(ControlRoomStartSupervisor.Frame.self) { seen.all = $0 })
+        window.setContentSize(NSSize(width: width, height: 600))
+        window.layoutIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        window.layoutIfNeeded()
+        return (try #require(seen.button), try #require(seen.all))
+    }
+
+    /// As the macOS test machine had it: the role is set up for Claude Code
+    /// and Antigravity, and only Antigravity is installed. While the
+    /// adapters are read both are offered, as two bars; the read holds
+    /// Claude Code back, and one CLI is no row. Its room stays, so the
+    /// button does not move -- nor when Claude Code is installed after --
+    /// on a wide side and on the 230 points the side is in a window of the
+    /// size it opens at, where nothing is wider than the side either.
+    @Test(arguments: [600, 230] as [CGFloat])
+    func aCliTheReadTakesAwayLeavesItsRoomAndTheButtonStays(width: CGFloat) throws {
+        let found = Start(state: .absent, canStart: true, failed: .none, role: "polter-supervisor", cwd: "/Users/me/work",
+                          last: .init(cli: "agy", role: "polter-supervisor", lastCli: "agy", heardMs: 1_700_000_000_000,
+                                      canResume: true, why: .none, cliLabel: "Antigravity", lastCliLabel: "Antigravity",
+                                      byCli: [.init(cli: "agy", can: true, why: .none)]))
+        var looking = found
+        looking.clisRead = false
+        looking.last?.canResume = false
+        looking.last?.why = .clisUnread
+        looking.last?.byCli = [.init(cli: "claude-code", can: false, why: .clisUnread),
+                               .init(cli: "agy", can: false, why: .clisUnread)]
+        let both = [Role(key: "polter-supervisor", name: "Polter Supervisor",
+                         clis: [.init(key: "claude-code", label: "Claude Code"), .init(key: "agy", label: "Antigravity")])]
+        let one = [Role(key: "polter-supervisor", name: "Polter Supervisor",
+                        clis: [.init(key: "agy", label: "Antigravity")],
+                        heldBack: [.init(key: "claude-code", label: "Claude Code", why: .notInstalled)])]
+        // The case itself: two to choose from while looking, none once read.
+        let whileLooking = ControlRoomStartChoice.cliChoice(looking, roles: both, role: nil, picked: nil)
+        let once = ControlRoomStartChoice.cliChoice(found, roles: one, role: nil, picked: nil)
+        #expect(whileLooking.shown && whileLooking.resume == .checking)
+        #expect(!once.shown && once.resume == .live)
+
+        let wait = try laid(looking, both, width: width)
+        let gone = try laid(found, one, width: width)
+        let installed = try laid(found, both, width: width)
+        let foundAt = gone.button
+        #expect(foundAt == wait.button)
+        #expect(installed.button == foundAt)
+        // Nothing wider than the side, in any of the three.
+        for drawn in [wait.all, gone.all, installed.all] {
+            let inside = drawn.minX >= 0 && drawn.maxX <= width
+            #expect(inside, "\(drawn) on a side \(width) wide")
+        }
     }
 }

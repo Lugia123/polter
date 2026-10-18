@@ -586,7 +586,7 @@ for r in list.rows where r.alone == nil {
                 let c = ControlRoomStartChoice.cliChoice(start, roles: list.supervisorRoles, role: role.key, picked: picked)
                 let says = ControlRoomStartChoice.resumeSaid(c, last: start.last)
                 let tip = ControlRoomStartChoice.resumeTooltip(c, last: start.last)
-                print("\(tag) group=\(r.id) role=\(role.key) picked=\(picked ?? "-") shown=\(c.shown ? 1 : 0) "
+                print("\(tag) group=\(r.id) role=\(role.key) picked=\(picked ?? "-") shown=\(c.shown ? 1 : 0) room=\(c.room) "
                     + "on=\(c.picked ?? "-") resume=\(c.resume.rawValue) why=\(c.why.rawValue) "
                     + "gone=\(c.lastGone.map(quote) ?? "-") "
                     + "says=\(says.map(quote) ?? "-") tip=\(tip.map(quote) ?? "-") sends_cli=\(c.picked ?? "-") "
@@ -596,6 +596,21 @@ for r in list.rows where r.alone == nil {
                     + "enabled_new=\(ControlRoomStartChoice.startEnabled(c, picked: .new) ? 1 : 0)")
             }
         }
+    }
+}
+// A CLI the read of the adapters finds not installed (task 1741): each
+// role's last CLI held back for it. The "Agent CLI" row keeps its room.
+let gone = list.supervisorRoles.map { role -> ControlRoomList.SupervisorRole in
+    var g = role
+    if let last = g.clis.popLast() { g.heldBack.append(.init(key: last.key, label: last.label, why: .notInstalled)) }
+    return g
+}
+for r in list.rows where r.alone == nil {
+    guard let start = r.start else { continue }
+    for role in gone {
+        let c = ControlRoomStartChoice.cliChoice(start, roles: gone, role: role.key, picked: nil)
+        print("start_room group=\(r.id) role=\(role.key) shown=\(c.shown ? 1 : 0) room=\(c.room) "
+            + "on=\(c.picked ?? "-") resume=\(c.resume.rawValue)")
     }
 }
 for awaited in ["billing", "not-yet", nil] as [String?] {

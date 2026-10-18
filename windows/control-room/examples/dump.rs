@@ -693,12 +693,13 @@ fn main() {
                         let says = fill(scene::resume_said(&c, start.last.as_ref()));
                         let tip = fill(scene::resume_tooltip(&c, start.last.as_ref()));
                         println!(
-                            "{} group={} role={} picked={} shown={} on={} resume={} why={} gone={} says={} tip={} sends_cli={} sends_session={} sends_new={} enabled={} enabled_new={}",
+                            "{} group={} role={} picked={} shown={} room={} on={} resume={} why={} gone={} says={} tip={} sends_cli={} sends_session={} sends_new={} enabled={} enabled_new={}",
                             tag,
                             r.id,
                             role.key,
                             picked.unwrap_or("-"),
                             u8::from(c.shown),
+                            c.room,
                             c.picked.as_deref().unwrap_or("-"),
                             c.resume.name(),
                             c.why.name(),
@@ -713,6 +714,27 @@ fn main() {
                         );
                     }
                 }
+            }
+        }
+        // A CLI the read of the adapters finds not installed (task 1741):
+        // each role's last CLI held back for it. The "Agent CLI" line
+        // keeps its room.
+        let gone: Vec<_> = l
+            .supervisor_roles
+            .iter()
+            .map(|role| {
+                let mut g = role.clone();
+                if let Some(last) = g.clis.pop() {
+                    g.held_back.push(polter_control_room::snapshot::HeldBack { key: last.key, label: last.label, why: polter_control_room::snapshot::HeldWhy::NotInstalled });
+                }
+                g
+            })
+            .collect();
+        for r in l.rows() {
+            let Some(start) = r.start.as_ref().filter(|_| r.alone.is_none()) else { continue };
+            for role in &gone {
+                let c = scene::cli_choice(start, &gone, Some(&role.key), None);
+                println!("start_room group={} role={} shown={} room={} on={} resume={}", r.id, role.key, u8::from(c.shown), c.room, c.picked.as_deref().unwrap_or("-"), c.resume.name());
             }
         }
     }

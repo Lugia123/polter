@@ -205,21 +205,23 @@ struct ControlRoomStartSupervisor: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             let choice = Choice.cliChoice(start, roles: roles, role: role, picked: cli)
-            if choice.shown {
-                // One grid, so the CLI rings and the session rings share a
-                // left edge (01a/01b): picking another CLI greys a ring and
-                // moves none.
-                Grid(alignment: .leading, horizontalSpacing: gap, verticalSpacing: 0) {
-                    GridRow {
-                        Text(Choice.cliRowText)
-                            .foregroundStyle(theme.textSecondary.color)
-                        cliRings(choice, theme)
-                    }
+            if choice.room > 0 {
+                // The CLIs one to a line, as on Windows, their rings on the
+                // sessions' left edge (01a/01b): picking another CLI greys a
+                // ring and moves none. How tall it is never hangs on how
+                // wide the side is or how long a name is, and its room is
+                // kept for a CLI the read of the adapters takes away
+                // (`room`, task 1741): the button under it stays put.
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(Choice.cliRowText)
+                        .foregroundStyle(theme.textSecondary.color)
+                        .lineLimit(1)
+                        .frame(height: CGFloat(Look.Side.quietRowHeight))
+                        .opacity(choice.shown ? 1 : 0)
+                        .accessibilityHidden(!choice.shown)
+                    cliRings(choice, theme)
                     if choice.resume != .hidden {
-                        GridRow {
-                            Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
-                            sessionSlot(choice, theme)
-                        }
+                        sessionSlot(choice, theme)
                     }
                 }
             } else if choice.resume != .hidden {
@@ -252,6 +254,9 @@ struct ControlRoomStartSupervisor: View {
             })
             .buttonStyle(.plain)
             .disabled(!canPress)
+            .background(GeometryReader { place in
+                Color.clear.preference(key: ButtonFrame.self, value: place.frame(in: .global))
+            })
             if let note = ProjectLink.startNote(project) {
                 Text(note)
                     .foregroundStyle(theme.textSecondary.color)
@@ -261,6 +266,29 @@ struct ControlRoomStartSupervisor: View {
                 Text(refusal)
                     .foregroundStyle(theme.problemTextOnSupervisorBar.color)
             }
+        }
+        .background(GeometryReader { place in
+            Color.clear.preference(key: Frame.self, value: place.frame(in: .global))
+        })
+    }
+
+    /// Where the start button is, in the window: what says it stays put
+    /// while the last session is looked for and once it is found (task
+    /// 1741, `ControlRoomStartLayoutTests`). Nothing in the app reads it.
+    struct ButtonFrame: PreferenceKey {
+        static var defaultValue: CGRect? { nil }
+        static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+            value = value ?? nextValue()
+        }
+    }
+
+    /// Where all of it is, in the window: what says nothing in it is wider
+    /// than the side it is on, so nothing is cut off (task 1741). Nothing
+    /// in the app reads it.
+    struct Frame: PreferenceKey {
+        static var defaultValue: CGRect? { nil }
+        static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+            value = value ?? nextValue()
         }
     }
 
@@ -284,8 +312,10 @@ struct ControlRoomStartSupervisor: View {
                     } else {
                         Color.clear.frame(width: mark, height: mark)
                     }
+                    // Too long for a narrow side: cut short, never cut off.
                     Text(looking ? Choice.lookingText : Choice.missingText)
                         .foregroundStyle(theme.textSecondary.color)
+                        .lineLimit(1)
                 }
                 .frame(height: row)
                 .help(Choice.resumeTooltip(choice, last: start.last) ?? "")
@@ -325,14 +355,22 @@ struct ControlRoomStartSupervisor: View {
         }
     }
 
-    /// One ring per CLI the role can start in (01a), the same rings as the
+    /// One ring per CLI the role can start in (01a), one to a line, the same rings as the
     /// sessions below, so the two read as one group.
+    /// With one CLI, none drawn; the room of the ones not drawn kept empty,
+    /// as wide as it was while their names were bars (`room`, task 1741).
     private func cliRings(_ choice: Choice.CliChoice, _ theme: Look.Theme) -> some View {
-        HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
-            ForEach(choice.clis, id: \.key) { one in
+        let drawn = choice.shown ? choice.clis : []
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(drawn, id: \.key) { one in
                 // Its name not read yet (task 1741): a bar, never the key.
                 radio(Choice.cliName(key: one.key, label: one.label) ?? one.key,
                       on: one.key == choice.picked, off: false, theme, pending: !start.clisRead) { cli = one.key }
+            }
+            ForEach(0..<max(choice.room - drawn.count, 0), id: \.self) { _ in
+                radio("", on: false, off: true, theme, pending: true) {}
+                    .hidden()
+                    .accessibilityHidden(true)
             }
         }
     }
@@ -354,8 +392,10 @@ struct ControlRoomStartSupervisor: View {
                 if pending {
                     nameBar(theme, width: 56)
                 } else {
+                    // Too long for a narrow side: cut short, never cut off.
                     Text(text)
                         .foregroundStyle(off ? theme.textTertiary.color : theme.text.color)
+                        .lineLimit(1)
                 }
             }
             .frame(height: CGFloat(Look.Side.quietRowHeight))

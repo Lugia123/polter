@@ -1361,6 +1361,13 @@ pub struct CliChoice {
     pub clis: Vec<crate::snapshot::RoleCli>,
     /// The "Agent CLI" line is drawn: only for more than one (01c).
     pub shown: bool,
+    /// How many CLIs the "Agent CLI" line has room for, drawn or not: the
+    /// ones in `clis` and the ones held back only because their program is
+    /// not here -- which are in `clis` until the adapters are read, so the
+    /// number is the same before and after (task 1741). 0 for no line: one
+    /// or none. Above `clis.len()`, the rest is kept empty, so the button
+    /// under it does not move when the read takes a CLI away.
+    pub room: usize,
     /// The CLI the start uses; none when the core names none.
     pub picked: Option<String>,
     pub resume: Resume,
@@ -1413,8 +1420,10 @@ pub fn cli_choice(
         .or_else(|| last.and_then(|l| l.last_cli.clone()).filter(|c| listed(c)))
         .or_else(|| clis.first().map(|c| c.key.clone()));
     let shown = clis.len() > 1;
+    let gone = key.and_then(|k| roles.iter().find(|r| r.key == k)).map_or(0, |r| r.held_back.iter().filter(|h| h.why == crate::snapshot::HeldWhy::NotInstalled).count());
+    let room = if clis.len() + gone > 1 { clis.len() + gone } else { 0 };
     let Some(last) = last else {
-        return CliChoice { clis, shown, picked: chosen, resume: Resume::Hidden, why: ResumeWhy::NoRecord, last_gone: None };
+        return CliChoice { clis, shown, room, picked: chosen, resume: Resume::Hidden, why: ResumeWhy::NoRecord, last_gone: None };
     };
     // The last supervisor's CLI, held back because it is not installed here.
     let last_gone = last.last_cli.as_deref().and_then(|was| {
@@ -1436,7 +1445,7 @@ pub fn cli_choice(
     } else {
         Resume::Hidden
     };
-    CliChoice { clis, shown, picked: chosen, resume, why: if can { ResumeWhy::None } else { why }, last_gone }
+    CliChoice { clis, shown, room, picked: chosen, resume, why: if can { ResumeWhy::None } else { why }, last_gone }
 }
 
 /// What the start sends for its session (`act::session_sent`): the one
@@ -1803,6 +1812,7 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
     // Which agent CLI (#1678): only when the role can be started in more
     // than one. Its rings stand on the same left edge as the sessions'.
     let choice = cli_choice(start, view.roles, view.role, view.cli);
+    let top = y;
     if choice.shown {
         out.items.push(Item::Line { rect: Rect { x: pad, y, w, h: line_h }, parts: vec![label(msg::AGENT_CLI)] });
         y += line_h;
@@ -1818,6 +1828,11 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
             out.clis.push((c.key.clone(), rect));
             y += side::QUIET_ROW_HEIGHT;
         }
+    }
+    // Its room, whatever of it is drawn (`CliChoice::room`, task 1741): a
+    // CLI the read of the adapters takes away leaves its place empty.
+    if choice.room > 0 {
+        y = y.max(top + line_h + choice.room as f64 * side::QUIET_ROW_HEIGHT);
     }
 
     // Go on with its session or start a new one -- only when the core says
@@ -4292,6 +4307,52 @@ mod tests {
         assert_eq!(none.start, none.button);
         let none_text = all_text(&none.items);
         assert!(none_text.contains(&msg::DIDNT_FIND) && !none_text.contains(&msg::LOOKING), "{none_text:?}");
+    }
+
+    /// Task 1741, as the macOS test machine had it: the role is set up for
+    /// Claude Code and Antigravity, and only Antigravity is installed. While
+    /// the adapters are read both are offered, as two bars; the read holds
+    /// Claude Code back, and one CLI is no line. Its room stays, so the
+    /// button does not move -- nor when Claude Code is installed after.
+    #[test]
+    fn task_1741_a_cli_the_read_takes_away_leaves_its_room_and_the_button_stays() {
+        use crate::snapshot::{CliResume, HeldBack, HeldWhy, ResumeWhy as W, SupervisorRole};
+        let theme = look::theme(false);
+        let same = |s: &str| s.to_string();
+        let mut row = last_row(Some(1), Some("agy"), true, true, W::None);
+        row.start.as_mut().unwrap().last.as_mut().unwrap().cli = Some("agy".into());
+        row.start.as_mut().unwrap().last.as_mut().unwrap().by_cli = vec![CliResume { cli: "agy".into(), can: true, why: W::None }];
+        let mut looking = row.clone();
+        {
+            let st = looking.start.as_mut().unwrap();
+            st.clis_read = false;
+            let l = st.last.as_mut().unwrap();
+            l.can_resume = false;
+            l.why = W::ClisUnread;
+            l.by_cli = vec![CliResume { cli: "claude-code".into(), can: false, why: W::ClisUnread }, CliResume { cli: "agy".into(), can: false, why: W::ClisUnread }];
+        }
+        let role = |clis: Vec<crate::snapshot::RoleCli>, held_back: Vec<HeldBack>| vec![SupervisorRole { key: "polter-supervisor".into(), name: "Polter Supervisor".into(), clis, held_back }];
+        let both = role(vec![rc("claude-code", "Claude Code"), rc("agy", "Antigravity")], Vec::new());
+        let one = role(vec![rc("agy", "Antigravity")], vec![HeldBack { key: "claude-code".into(), label: Some("Claude Code".into()), why: HeldWhy::NotInstalled }]);
+        let built = |r: &Row, roles: &[SupervisorRole]| {
+            let view = StartView { roles, home: "", ..Default::default() };
+            build_start(&Detail_::NoSupervisor { group: r.id.clone() }, Some(r), 600.0, theme, &view, &same)
+        };
+        let wait = built(&looking, &both);
+        let found = built(&row, &one);
+        let installed = built(&row, &both);
+        // The case itself: two bars while looking, no line once read.
+        assert_eq!(wait.clis.len(), 2);
+        assert!(found.clis.is_empty());
+        assert_eq!(installed.clis.len(), 2);
+
+        let wait_at = wait.button.unwrap();
+        let found_at = found.button.unwrap();
+        let installed_at = installed.button.unwrap();
+        assert_eq!(found_at, wait_at);
+        assert_eq!(installed_at, found_at);
+        // The sessions stay too.
+        assert_eq!(found.sessions.last().unwrap().1, wait.sessions.last().unwrap().1);
     }
 
     #[test]
