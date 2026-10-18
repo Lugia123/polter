@@ -1,5 +1,6 @@
-//! The Chinese for the first paragraph of each setting's help -- the line
-//! under a row of Settings > All Options (task 1751, phase A).
+//! The Chinese for each setting's help in Settings > All Options (task 1751):
+//! the first paragraph, the line under a row (phase A), and the whole text
+//! behind "More..." (phase B, `full_en`/`full_zh`, in batches).
 //!
 //! The English is Ghostty's own, generated from the `///` comments in
 //! `Config.zig` (`help_strings`); it is not a msgid anywhere, so `xgettext`
@@ -20,23 +21,573 @@ pub const Entry = struct {
     key: Key,
     en: []const u8,
     zh: []const u8,
+    /// The whole help text, as `help_strings` has it, and its Chinese with
+    /// the same paragraphs and the same sample lines (phase B). Empty for a
+    /// key whose help is one paragraph (`zh` is all of it) and for a key not
+    /// translated in full yet; the hosts then show the English.
+    full_en: []const u8 = "",
+    full_zh: []const u8 = "",
 };
 
 pub const entries = [_]Entry{
-    .{ .key = .language, .en = "Set Ghostty's graphical user interface language to a language other than the system default language. For example:", .zh = "把 Ghostty 图形界面的语言设成系统默认语言以外的语言。例如：" },
-    .{ .key = .@"font-family", .en = "The font families to use.", .zh = "使用的字体族。" },
-    .{ .key = .@"font-style", .en = "The named font style to use for each of the requested terminal font styles. This looks up the style based on the font style string advertised by the font itself. For example, \"Iosevka Heavy\" has a style of \"Heavy\".", .zh = "为终端请求的每种字体样式指定要用的命名字体样式。它按字体自己声明的样式名称查找。例如，“Iosevka Heavy”的样式是“Heavy”。" },
-    .{ .key = .@"font-synthetic-style", .en = "Control whether Ghostty should synthesize a style if the requested style is not available in the specified font-family.", .zh = "当指定的 font-family 没有所请求的样式时，是否由 Ghostty 合成该样式。" },
-    .{ .key = .@"font-feature", .en = "Apply a font feature. To enable multiple font features you can repeat this multiple times or use a comma-separated list of feature settings.", .zh = "启用一项字体特性。要启用多项，可重复写多次，或用逗号分隔的特性列表。" },
-    .{ .key = .@"font-size", .en = "Font size in points. This value can be a non-integer and the nearest integer pixel size will be selected. If you have a high dpi display where 1pt = 2px then you can get an odd numbered pixel size by specifying a half point.", .zh = "字号，单位为点（pt）。可以不是整数，实际会选用最接近的整数像素大小。如果你的高 DPI 显示器上 1pt = 2px，指定半个点就能得到奇数的像素大小。" },
-    .{ .key = .@"font-variation", .en = "A repeatable configuration to set one or more font variations values for a variable font. A variable font is a single font, usually with a filename ending in `-VF.ttf` or `-VF.otf` that contains one or more configurable axes for things such as weight, slant, etc. Not all fonts support variations; only fonts that explicitly state they are variable fonts will work.", .zh = "可重复的配置，为可变字体设置一个或多个字体变体值。可变字体是单个字体文件，文件名通常以 `-VF.ttf` 或 `-VF.otf` 结尾，含有一个或多个可调的轴，如字重、倾斜等。并非所有字体都支持变体；只有明确声明自己是可变字体的才有效。" },
-    .{ .key = .@"font-codepoint-map", .en = "Force one or a range of Unicode codepoints to map to a specific named font. This is useful if you want to support special symbols or if you want to use specific glyphs that render better for your specific font.", .zh = "强制把一个或一段 Unicode 码位映射到指定名称的字体。想支持特殊符号，或想用在你的字体里显示更好的某些字形时，这很有用。" },
-    .{ .key = .@"clipboard-codepoint-map", .en = "Map specific Unicode codepoints to replacement values when copying text to clipboard.", .zh = "复制文本到剪贴板时，把指定的 Unicode 码位映射为替换值。" },
+    .{
+        .key = .language,
+        .en = "Set Ghostty's graphical user interface language to a language other than the system default language. For example:",
+        .zh = "把 Ghostty 图形界面的语言设成系统默认语言以外的语言。例如：",
+        .full_en =
+        \\Set Ghostty's graphical user interface language to a language other than the
+        \\system default language. For example:
+        \\
+        \\    language = de
+        \\
+        \\will force the strings in Ghostty's graphical user interface to be in German
+        \\rather than the system default.
+        \\
+        \\This will not affect the language used by programs run _within_ Ghostty.
+        \\Those will continue to use the default system language. There are also many
+        \\non-GUI elements in Ghostty that are not translated - this setting will have
+        \\no effect on those.
+        \\
+        \\Warning: This setting cannot be reloaded at runtime. To change the language
+        \\you must fully restart Ghostty.
+        \\
+        \\GTK only.
+        \\Available since 1.3.0.
+        ,
+        .full_zh =
+        \\把 Ghostty 图形界面的语言设成系统默认语言以外的语言。例如：
+        \\
+        \\    language = de
+        \\
+        \\会强制 Ghostty 图形界面里的文字使用德语，而不是系统默认语言。
+        \\
+        \\这不会影响在 Ghostty 里运行的程序所用的语言，它们仍使用系统默认语言。Ghostty 里也有许多非图形界面的内容没有翻译，这项设置对它们没有效果。
+        \\
+        \\警告：这项设置不能在运行时重新加载。要更改语言，必须完全重启 Ghostty。
+        \\
+        \\仅 GTK。
+        \\自 1.3.0 起可用。
+        ,
+    },
+    .{
+        .key = .@"font-family",
+        .en = "The font families to use.",
+        .zh = "使用的字体族。",
+        .full_en =
+        \\The font families to use.
+        \\
+        \\You can generate the list of valid values using the CLI:
+        \\
+        \\    ghostty +list-fonts
+        \\
+        \\This configuration can be repeated multiple times to specify preferred
+        \\fallback fonts when the requested codepoint is not available in the primary
+        \\font. This is particularly useful for multiple languages, symbolic fonts,
+        \\etc.
+        \\
+        \\Notes on emoji specifically: On macOS, Ghostty by default will always use
+        \\Apple Color Emoji and on Linux will always use Noto Emoji. You can
+        \\override this behavior by specifying a font family here that contains
+        \\emoji glyphs.
+        \\
+        \\The specific styles (bold, italic, bold italic) do not need to be
+        \\explicitly set. If a style is not set, then the regular style (font-family)
+        \\will be searched for stylistic variants. If a stylistic variant is not
+        \\found, Ghostty will use the regular style. This prevents falling back to a
+        \\different font family just to get a style such as bold. This also applies
+        \\if you explicitly specify a font family for a style. For example, if you
+        \\set `font-family-bold = FooBar` and "FooBar" cannot be found, Ghostty will
+        \\use whatever font is set for `font-family` for the bold style.
+        \\
+        \\Finally, some styles may be synthesized if they are not supported.
+        \\For example, if a font does not have an italic style and no alternative
+        \\italic font is specified, Ghostty will synthesize an italic style by
+        \\applying a slant to the regular style. If you want to disable these
+        \\synthesized styles then you can use the `font-style` configurations
+        \\as documented below.
+        \\
+        \\You can disable styles completely by using the `font-style` set of
+        \\configurations. See the documentation for `font-style` for more information.
+        \\
+        \\If you want to overwrite a previous set value rather than append a fallback,
+        \\specify the value as `""` (empty string) to reset the list and then set the
+        \\new values. For example:
+        \\
+        \\    font-family = ""
+        \\    font-family = "My Favorite Font"
+        \\
+        \\Setting any of these as CLI arguments will automatically clear the
+        \\values set in configuration files so you don't need to specify
+        \\`--font-family=""` before setting a new value. You only need to specify
+        \\this within config files if you want to clear previously set values in
+        \\configuration files or on the CLI if you want to clear values set on the
+        \\CLI.
+        ,
+        .full_zh =
+        \\使用的字体族。
+        \\
+        \\可以用命令行生成有效值的列表：
+        \\
+        \\    ghostty +list-fonts
+        \\
+        \\这项配置可以重复多次，用来指定备用字体：当主字体里没有所请求的码位时，会依次尝试这些字体。这对多语言、符号字体等特别有用。
+        \\
+        \\关于 emoji：在 macOS 上，Ghostty 默认始终使用 Apple Color Emoji；在 Linux 上始终使用 Noto Emoji。要改变这一行为，可以在这里指定一个含有 emoji 字形的字体族。
+        \\
+        \\具体的样式（粗体、斜体、粗斜体）不需要单独设置。某个样式没有设置时，会在常规样式（font-family）里查找它的样式变体；找不到样式变体，Ghostty 就使用常规样式。这样不会为了得到粗体之类的样式而改用另一个字体族。如果你为某个样式明确指定了字体族，这一点同样适用。例如，设置了 `font-family-bold = FooBar` 而找不到“FooBar”，Ghostty 会让粗体样式使用 `font-family` 所设的字体。
+        \\
+        \\最后，不受支持的样式可能会被合成。例如，字体没有斜体样式、又没有指定替代的斜体字体时，Ghostty 会给常规样式加上倾斜，合成出斜体样式。如果想禁用这些合成样式，可以使用下文所述的 `font-style` 配置。
+        \\
+        \\用 `font-style` 这组配置可以完全禁用某些样式。详见 `font-style` 的说明。
+        \\
+        \\如果想覆盖之前设置的值，而不是追加一个备用字体，就把值写成 `""`（空字符串）来重置列表，再设置新值。例如：
+        \\
+        \\    font-family = ""
+        \\    font-family = "My Favorite Font"
+        \\
+        \\在命令行参数里设置这些项时，会自动清除配置文件里设置的值，所以在设置新值前不必先写 `--font-family=""`。只有在配置文件里想清除之前设置的值，或在命令行里想清除命令行上已设置的值时，才需要这样指定。
+        ,
+    },
+    .{
+        .key = .@"font-style",
+        .en = "The named font style to use for each of the requested terminal font styles. This looks up the style based on the font style string advertised by the font itself. For example, \"Iosevka Heavy\" has a style of \"Heavy\".",
+        .zh = "为终端请求的每种字体样式指定要用的命名字体样式。它按字体自己声明的样式名称查找。例如，“Iosevka Heavy”的样式是“Heavy”。",
+        .full_en =
+        \\The named font style to use for each of the requested terminal font styles.
+        \\This looks up the style based on the font style string advertised by the
+        \\font itself. For example, "Iosevka Heavy" has a style of "Heavy".
+        \\
+        \\You can also use these fields to completely disable a font style. If you set
+        \\the value of the configuration below to literal `false` then that font style
+        \\will be disabled. If the running program in the terminal requests a disabled
+        \\font style, the regular font style will be used instead.
+        \\
+        \\These are only valid if its corresponding font-family is also specified. If
+        \\no font-family is specified, then the font-style is ignored unless you're
+        \\disabling the font style.
+        ,
+        .full_zh =
+        \\为终端请求的每种字体样式指定要用的命名字体样式。它按字体自己声明的样式名称查找。例如，“Iosevka Heavy”的样式是“Heavy”。
+        \\
+        \\你也可以用这些项完全禁用某种字体样式：把下面的配置设成字面值 `false`，该字体样式就被禁用。终端里运行的程序请求被禁用的字体样式时，会改用常规字体样式。
+        \\
+        \\只有同时指定了对应的 font-family 才有效。没有指定 font-family 时，font-style 会被忽略，除非你是在禁用字体样式。
+        ,
+    },
+    .{
+        .key = .@"font-synthetic-style",
+        .en = "Control whether Ghostty should synthesize a style if the requested style is not available in the specified font-family.",
+        .zh = "当指定的 font-family 没有所请求的样式时，是否由 Ghostty 合成该样式。",
+        .full_en =
+        \\Control whether Ghostty should synthesize a style if the requested style is
+        \\not available in the specified font-family.
+        \\
+        \\Ghostty can synthesize bold, italic, and bold italic styles if the font
+        \\does not have a specific style. For bold, this is done by drawing an
+        \\outline around the glyph of varying thickness. For italic, this is done by
+        \\applying a slant to the glyph. For bold italic, both of these are applied.
+        \\
+        \\Synthetic styles are not perfect and will generally not look as good
+        \\as a font that has the style natively. However, they are useful to
+        \\provide styled text when the font does not have the style.
+        \\
+        \\Set this to "false" or "true" to disable or enable synthetic styles
+        \\completely. You can disable specific styles using "no-bold", "no-italic",
+        \\and "no-bold-italic". You can disable multiple styles by separating them
+        \\with a comma. For example, "no-bold,no-italic".
+        \\
+        \\Available style keys are: `bold`, `italic`, `bold-italic`.
+        \\
+        \\If synthetic styles are disabled, then the regular style will be used
+        \\instead if the requested style is not available. If the font has the
+        \\requested style, then the font will be used as-is since the style is
+        \\not synthetic.
+        \\
+        \\Warning: An easy mistake is to disable `bold` or `italic` but not
+        \\`bold-italic`. Disabling only `bold` or `italic` will NOT disable either
+        \\in the `bold-italic` style. If you want to disable `bold-italic`, you must
+        \\explicitly disable it. You cannot partially disable `bold-italic`.
+        \\
+        \\By default, synthetic styles are enabled.
+        ,
+        .full_zh =
+        \\当指定的 font-family 没有所请求的样式时，是否由 Ghostty 合成该样式。
+        \\
+        \\字体没有某个具体样式时，Ghostty 可以合成粗体、斜体和粗斜体。粗体是在字形外围描一圈粗细不等的轮廓；斜体是给字形加上倾斜；粗斜体则两者都用。
+        \\
+        \\合成的样式并不完美，通常不如字体自带的样式好看。但在字体没有该样式时，它们能提供带样式的文字。
+        \\
+        \\设成 "false" 或 "true"，可以完全禁用或启用合成样式。也可以用 "no-bold"、"no-italic" 和 "no-bold-italic" 禁用具体的样式，用逗号分隔可同时禁用多个，例如 "no-bold,no-italic"。
+        \\
+        \\可用的样式键有：`bold`、`italic`、`bold-italic`。
+        \\
+        \\禁用合成样式后，若所请求的样式不可用，就改用常规样式。字体自带所请求的样式时，会照常使用该字体，因为那不是合成样式。
+        \\
+        \\警告：一个容易犯的错误是只禁用了 `bold` 或 `italic`，却没有禁用 `bold-italic`。只禁用 `bold` 或 `italic`，并不会在 `bold-italic` 样式里禁用它们。要禁用 `bold-italic`，必须明确禁用它，不能只禁用它的一部分。
+        \\
+        \\默认启用合成样式。
+        ,
+    },
+    .{
+        .key = .@"font-feature",
+        .en = "Apply a font feature. To enable multiple font features you can repeat this multiple times or use a comma-separated list of feature settings.",
+        .zh = "启用一项字体特性。要启用多项，可重复写多次，或用逗号分隔的特性列表。",
+        .full_en =
+        \\Apply a font feature. To enable multiple font features you can repeat
+        \\this multiple times or use a comma-separated list of feature settings.
+        \\
+        \\The syntax for feature settings is as follows, where `feat` is a feature:
+        \\
+        \\  * Enable features with e.g. `feat`, `+feat`, `feat on`, `feat=1`.
+        \\  * Disabled features with e.g. `-feat`, `feat off`, `feat=0`.
+        \\  * Set a feature value with e.g. `feat=2`, `feat = 3`, `feat 4`.
+        \\  * Feature names may be wrapped in quotes, meaning this config should be
+        \\    syntactically compatible with the `font-feature-settings` CSS property.
+        \\
+        \\The syntax is fairly loose, but invalid settings will be silently ignored.
+        \\
+        \\The font feature will apply to all fonts rendered by Ghostty. A future
+        \\enhancement will allow targeting specific faces.
+        \\
+        \\To disable programming ligatures, use `-calt` since this is the typical
+        \\feature name for programming ligatures. To look into what font features
+        \\your font has and what they do, use a font inspection tool such as
+        \\[fontdrop.info](https://fontdrop.info).
+        \\
+        \\To generally disable most ligatures, use `-calt, -liga, -dlig`.
+        ,
+        .full_zh =
+        \\启用一项字体特性。要启用多项，可重复写多次，或用逗号分隔的特性列表。
+        \\
+        \\特性设置的语法如下，其中 `feat` 是某项特性：
+        \\
+        \\  * 启用特性，如 `feat`、`+feat`、`feat on`、`feat=1`。
+        \\  * 禁用特性，如 `-feat`、`feat off`、`feat=0`。
+        \\  * 设置特性的值，如 `feat=2`、`feat = 3`、`feat 4`。
+        \\  * 特性名可以用引号括起来，也就是说这项配置在语法上应当与 CSS 的 `font-feature-settings` 属性兼容。
+        \\
+        \\语法相当宽松，但无效的设置会被悄悄忽略。
+        \\
+        \\这项字体特性会作用于 Ghostty 渲染的所有字体。以后会增加针对具体字面的能力。
+        \\
+        \\要禁用编程连字，用 `-calt`，因为这是编程连字的常见特性名。要了解你的字体有哪些特性、各有什么作用，可以用字体检查工具，如 [fontdrop.info](https://fontdrop.info)。
+        \\
+        \\要一般性地禁用大多数连字，用 `-calt, -liga, -dlig`。
+        ,
+    },
+    .{
+        .key = .@"font-size",
+        .en = "Font size in points. This value can be a non-integer and the nearest integer pixel size will be selected. If you have a high dpi display where 1pt = 2px then you can get an odd numbered pixel size by specifying a half point.",
+        .zh = "字号，单位为点（pt）。可以不是整数，实际会选用最接近的整数像素大小。如果你的高 DPI 显示器上 1pt = 2px，指定半个点就能得到奇数的像素大小。",
+        .full_en =
+        \\Font size in points. This value can be a non-integer and the nearest integer
+        \\pixel size will be selected. If you have a high dpi display where 1pt = 2px
+        \\then you can get an odd numbered pixel size by specifying a half point.
+        \\
+        \\For example, 13.5pt @ 2px/pt = 27px
+        \\
+        \\Changing this configuration at runtime will only affect existing
+        \\terminals that have NOT manually adjusted their font size in some way
+        \\(e.g. increased or decreased the font size). Terminals that have manually
+        \\adjusted their font size will retain their manually adjusted size.
+        \\Otherwise, the font size of existing terminals will be updated on
+        \\reload.
+        \\
+        \\On Linux with GTK, font size is scaled according to both display-wide and
+        \\text-specific scaling factors, which are often managed by your desktop
+        \\environment (e.g. the GNOME display scale and large text settings).
+        ,
+        .full_zh =
+        \\字号，单位为点（pt）。可以不是整数，实际会选用最接近的整数像素大小。如果你的高 DPI 显示器上 1pt = 2px，指定半个点就能得到奇数的像素大小。
+        \\
+        \\例如，13.5pt @ 2px/pt = 27px
+        \\
+        \\在运行时更改这项配置，只会影响没有手动调整过字号（例如放大或缩小）的现有终端。手动调整过字号的终端会保留它们手动调整后的大小。其余现有终端的字号会在重新加载时更新。
+        \\
+        \\在使用 GTK 的 Linux 上，字号会按显示器整体缩放和文字专用缩放两个系数缩放，它们通常由你的桌面环境管理（例如 GNOME 的显示缩放和大号文字设置）。
+        ,
+    },
+    .{
+        .key = .@"font-variation",
+        .en = "A repeatable configuration to set one or more font variations values for a variable font. A variable font is a single font, usually with a filename ending in `-VF.ttf` or `-VF.otf` that contains one or more configurable axes for things such as weight, slant, etc. Not all fonts support variations; only fonts that explicitly state they are variable fonts will work.",
+        .zh = "可重复的配置，为可变字体设置一个或多个字体变体值。可变字体是单个字体文件，文件名通常以 `-VF.ttf` 或 `-VF.otf` 结尾，含有一个或多个可调的轴，如字重、倾斜等。并非所有字体都支持变体；只有明确声明自己是可变字体的才有效。",
+        .full_en =
+        \\A repeatable configuration to set one or more font variations values for
+        \\a variable font. A variable font is a single font, usually with a filename
+        \\ending in `-VF.ttf` or `-VF.otf` that contains one or more configurable axes
+        \\for things such as weight, slant, etc. Not all fonts support variations;
+        \\only fonts that explicitly state they are variable fonts will work.
+        \\
+        \\The format of this is `id=value` where `id` is the axis identifier. An axis
+        \\identifier is always a 4 character string, such as `wght`. To get the list
+        \\of supported axes, look at your font documentation or use a font inspection
+        \\tool.
+        \\
+        \\Invalid ids and values are usually ignored. For example, if a font only
+        \\supports weights from 100 to 700, setting `wght=800` will do nothing (it
+        \\will not be clamped to 700). You must consult your font's documentation to
+        \\see what values are supported.
+        \\
+        \\Common axes are: `wght` (weight), `slnt` (slant), `ital` (italic), `opsz`
+        \\(optical size), `wdth` (width), `GRAD` (gradient), etc.
+        ,
+        .full_zh =
+        \\可重复的配置，为可变字体设置一个或多个字体变体值。可变字体是单个字体文件，文件名通常以 `-VF.ttf` 或 `-VF.otf` 结尾，含有一个或多个可调的轴，如字重、倾斜等。并非所有字体都支持变体；只有明确声明自己是可变字体的才有效。
+        \\
+        \\格式是 `id=value`，其中 `id` 是轴标识符。轴标识符总是 4 个字符的字符串，如 `wght`。要获得支持的轴列表，请查看字体文档或使用字体检查工具。
+        \\
+        \\无效的 id 和值通常会被忽略。例如，某个字体只支持 100 到 700 的字重，设置 `wght=800` 不会有任何效果（不会被限制到 700）。你必须查阅字体的文档，了解它支持哪些值。
+        \\
+        \\常见的轴有：`wght`（字重）、`slnt`（倾斜）、`ital`（斜体）、`opsz`（光学尺寸）、`wdth`（宽度）、`GRAD`（渐变）等。
+        ,
+    },
+    .{
+        .key = .@"font-codepoint-map",
+        .en = "Force one or a range of Unicode codepoints to map to a specific named font. This is useful if you want to support special symbols or if you want to use specific glyphs that render better for your specific font.",
+        .zh = "强制把一个或一段 Unicode 码位映射到指定名称的字体。想支持特殊符号，或想用在你的字体里显示更好的某些字形时，这很有用。",
+        .full_en =
+        \\Force one or a range of Unicode codepoints to map to a specific named font.
+        \\This is useful if you want to support special symbols or if you want to use
+        \\specific glyphs that render better for your specific font.
+        \\
+        \\The syntax is `codepoint=fontname` where `codepoint` is either a single
+        \\codepoint or a range. Codepoints must be specified as full Unicode
+        \\hex values, such as `U+ABCD`. Codepoints ranges are specified as
+        \\`U+ABCD-U+DEFG`. You can specify multiple ranges for the same font separated
+        \\by commas, such as `U+ABCD-U+DEFG,U+1234-U+5678=fontname`. The font name is
+        \\the same value as you would use for `font-family`.
+        \\
+        \\This configuration can be repeated multiple times to specify multiple
+        \\codepoint mappings.
+        \\
+        \\Changing this configuration at runtime will only affect new terminals,
+        \\i.e. new windows, tabs, etc.
+        ,
+        .full_zh =
+        \\强制把一个或一段 Unicode 码位映射到指定名称的字体。想支持特殊符号，或想用在你的字体里显示更好的某些字形时，这很有用。
+        \\
+        \\语法是 `codepoint=fontname`，其中 `codepoint` 是单个码位或一个范围。码位必须写成完整的 Unicode 十六进制值，如 `U+ABCD`。码位范围写成 `U+ABCD-U+DEFG`。同一个字体可以指定多个范围，用逗号分隔，如 `U+ABCD-U+DEFG,U+1234-U+5678=fontname`。字体名与 `font-family` 所用的值相同。
+        \\
+        \\这项配置可以重复多次，用来指定多组码位映射。
+        \\
+        \\在运行时更改这项配置，只会影响新的终端，即新的窗口、标签页等。
+        ,
+    },
+    .{
+        .key = .@"clipboard-codepoint-map",
+        .en = "Map specific Unicode codepoints to replacement values when copying text to clipboard.",
+        .zh = "复制文本到剪贴板时，把指定的 Unicode 码位映射为替换值。",
+        .full_en =
+        \\Map specific Unicode codepoints to replacement values when copying text
+        \\to clipboard.
+        \\
+        \\This configuration allows you to replace specific Unicode characters with
+        \\other characters or strings when copying terminal content to the clipboard.
+        \\This is useful for converting special terminal symbols to more compatible
+        \\characters for pasting into other applications.
+        \\
+        \\The syntax is similar to `font-codepoint-map`:
+        \\- Single codepoint: `U+1234=U+ABCD` or `U+1234=replacement_text`
+        \\- Codepoint range: `U+1234-U+5678=U+ABCD`
+        \\
+        \\Examples:
+        \\- `clipboard-codepoint-map = U+2500=U+002D` (box drawing horizontal → hyphen)
+        \\- `clipboard-codepoint-map = U+2502=U+007C` (box drawing vertical → pipe)
+        \\- `clipboard-codepoint-map = U+03A3=SUM` (Greek sigma → "SUM")
+        \\
+        \\This configuration can be repeated multiple times to specify multiple
+        \\mappings. Later entries take priority over earlier ones for overlapping
+        \\ranges.
+        \\
+        \\Note: This only applies to text copying operations, not URL copying.
+        ,
+        .full_zh =
+        \\复制文本到剪贴板时，把指定的 Unicode 码位映射为替换值。
+        \\
+        \\这项配置可以在复制终端内容到剪贴板时，把指定的 Unicode 字符替换成别的字符或字符串。这对把终端里的特殊符号转换成兼容性更好的字符、以便粘贴到其他应用里很有用。
+        \\
+        \\语法与 `font-codepoint-map` 类似：
+        \\- 单个码位：`U+1234=U+ABCD` 或 `U+1234=replacement_text`
+        \\- 码位范围：`U+1234-U+5678=U+ABCD`
+        \\
+        \\示例：
+        \\- `clipboard-codepoint-map = U+2500=U+002D`（制表符横线 → 连字符）
+        \\- `clipboard-codepoint-map = U+2502=U+007C`（制表符竖线 → 竖线符）
+        \\- `clipboard-codepoint-map = U+03A3=SUM`（希腊字母西格玛 → "SUM"）
+        \\
+        \\这项配置可以重复多次，用来指定多组映射。范围重叠时，后面的条目优先于前面的。
+        \\
+        \\注意：这只作用于复制文本，不作用于复制 URL。
+        ,
+    },
     .{ .key = .@"font-thicken", .en = "Draw fonts with a thicker stroke, if supported. This is currently only supported on macOS.", .zh = "用更粗的笔画绘制字体（若支持）。目前只有 macOS 支持。" },
-    .{ .key = .@"font-thicken-strength", .en = "Strength of thickening when `font-thicken` is enabled.", .zh = "启用 `font-thicken` 时的加粗强度。" },
-    .{ .key = .@"font-shaping-break", .en = "Locations to break font shaping into multiple runs.", .zh = "把字体整形拆成多段处理的位置。" },
-    .{ .key = .@"alpha-blending", .en = "What color space to use when performing alpha blending.", .zh = "做 alpha 混合时使用的色彩空间。" },
-    .{ .key = .@"adjust-cell-width", .en = "All of the configurations behavior adjust various metrics determined by the font. The values can be integers (1, -1, etc.) or a percentage (20%, -15%, etc.). In each case, the values represent the amount to change the original value.", .zh = "这组配置都用来调整由字体决定的各项度量。值可以是整数（1、-1 等）或百分比（20%、-15% 等）。两种情况下，值都表示在原值上改变的量。" },
+    .{
+        .key = .@"font-thicken-strength",
+        .en = "Strength of thickening when `font-thicken` is enabled.",
+        .zh = "启用 `font-thicken` 时的加粗强度。",
+        .full_en =
+        \\Strength of thickening when `font-thicken` is enabled.
+        \\
+        \\Valid values are integers between `0` and `255`. `0` does not correspond to
+        \\*no* thickening, rather it corresponds to the lightest available thickening.
+        \\
+        \\Has no effect when `font-thicken` is set to `false`.
+        \\
+        \\This is currently only supported on macOS.
+        ,
+        .full_zh =
+        \\启用 `font-thicken` 时的加粗强度。
+        \\
+        \\有效值是 `0` 到 `255` 之间的整数。`0` 并不表示不加粗，而是表示可用的最轻的加粗。
+        \\
+        \\当 `font-thicken` 设为 `false` 时无效。
+        \\
+        \\目前只有 macOS 支持。
+        ,
+    },
+    .{
+        .key = .@"font-shaping-break",
+        .en = "Locations to break font shaping into multiple runs.",
+        .zh = "把字体整形拆成多段处理的位置。",
+        .full_en =
+        \\Locations to break font shaping into multiple runs.
+        \\
+        \\A "run" is a contiguous segment of text that is shaped together. "Shaping"
+        \\is the process of converting text (codepoints) into glyphs (renderable
+        \\characters). This is how ligatures are formed, among other things.
+        \\For example, if a coding font turns "!=" into a single glyph, then it
+        \\must see "!" and "=" next to each other in a single run. When a run
+        \\is broken, the text is shaped separately. To continue our example, if
+        \\"!" is at the end of one run and "=" is at the start of the next run,
+        \\then the ligature will not be formed.
+        \\
+        \\Ghostty breaks runs at certain points to improve readability or usability.
+        \\For example, Ghostty by default will break runs under the cursor so that
+        \\text editing can see the individual characters rather than a ligature.
+        \\This configuration lets you configure this behavior.
+        \\
+        \\Combine values with a comma to set multiple options. Prefix an
+        \\option with "no-" to disable it. Enabling and disabling options
+        \\can be done at the same time.
+        \\
+        \\Available options:
+        \\
+        \\  * `cursor` - Break runs under the cursor.
+        \\
+        \\Available since: 1.2.0
+        ,
+        .full_zh =
+        \\把字体整形拆成多段处理的位置。
+        \\
+        \\“段”是一起整形的连续文本。“整形”是把文本（码位）转换成字形（可渲染的字符）的过程，连字就是这样形成的。例如，编程字体把 "!=" 变成一个字形，它就必须在同一段里同时看到相邻的 "!" 和 "="。段被拆开时，文本会分别整形。接着上面的例子，如果 "!" 在一段的末尾、"=" 在下一段的开头，连字就不会形成。
+        \\
+        \\Ghostty 会在某些位置拆段，以提高可读性或可用性。例如，Ghostty 默认在光标下方拆段，这样编辑文本时看到的是单个字符，而不是连字。这项配置可以设置这一行为。
+        \\
+        \\多个值用逗号连接可同时设置多个选项。在选项前加 "no-" 前缀可以禁用它。启用和禁用可以同时进行。
+        \\
+        \\可用的选项：
+        \\
+        \\  * `cursor` - 在光标下方拆段。
+        \\
+        \\自 1.2.0 起可用
+        ,
+    },
+    .{
+        .key = .@"alpha-blending",
+        .en = "What color space to use when performing alpha blending.",
+        .zh = "做 alpha 混合时使用的色彩空间。",
+        .full_en =
+        \\What color space to use when performing alpha blending.
+        \\
+        \\This affects the appearance of text and of any images with transparency.
+        \\Additionally, custom shaders will receive colors in the configured space.
+        \\
+        \\On macOS the default is `native`, on all other platforms the default is
+        \\`linear-corrected`.
+        \\
+        \\Valid values:
+        \\
+        \\* `native` - Perform alpha blending in the native color space for the OS.
+        \\  On macOS this corresponds to Display P3, and on Linux it's sRGB.
+        \\
+        \\* `linear` - Perform alpha blending in linear space. This will eliminate
+        \\  the darkening artifacts around the edges of text that are very visible
+        \\  when certain color combinations are used (e.g. red / green), but makes
+        \\  dark text look much thinner than normal and light text much thicker.
+        \\  This is also sometimes known as "gamma correction".
+        \\
+        \\* `linear-corrected` - Same as `linear`, but with a correction step applied
+        \\  for text that makes it look nearly or completely identical to `native`,
+        \\  but without any of the darkening artifacts.
+        \\
+        \\Available since: 1.1.0
+        ,
+        .full_zh =
+        \\做 alpha 混合时使用的色彩空间。
+        \\
+        \\这会影响文字和所有带透明度的图像的外观。此外，自定义着色器收到的颜色也在所配置的空间里。
+        \\
+        \\在 macOS 上默认是 `native`，其他所有平台默认是 `linear-corrected`。
+        \\
+        \\有效值：
+        \\
+        \\* `native` - 在操作系统的原生色彩空间里做 alpha 混合。在 macOS 上对应 Display P3，在 Linux 上是 sRGB。
+        \\
+        \\* `linear` - 在线性空间里做 alpha 混合。这会消除文字边缘的变暗瑕疵（在某些颜色搭配如红/绿时非常明显），但会让深色文字看起来比正常的细得多、浅色文字粗得多。这有时也叫“伽马校正”。
+        \\
+        \\* `linear-corrected` - 与 `linear` 相同，但对文字多做一步校正，使它看起来几乎或完全与 `native` 一样，同时没有任何变暗瑕疵。
+        \\
+        \\自 1.1.0 起可用
+        ,
+    },
+    .{
+        .key = .@"adjust-cell-width",
+        .en = "All of the configurations behavior adjust various metrics determined by the font. The values can be integers (1, -1, etc.) or a percentage (20%, -15%, etc.). In each case, the values represent the amount to change the original value.",
+        .zh = "这组配置都用来调整由字体决定的各项度量。值可以是整数（1、-1 等）或百分比（20%、-15% 等）。两种情况下，值都表示在原值上改变的量。",
+        .full_en =
+        \\All of the configurations behavior adjust various metrics determined by the
+        \\font. The values can be integers (1, -1, etc.) or a percentage (20%, -15%,
+        \\etc.). In each case, the values represent the amount to change the original
+        \\value.
+        \\
+        \\For example, a value of `1` increases the value by 1; it does not set it to
+        \\literally 1. A value of `20%` increases the value by 20%. And so on.
+        \\
+        \\There is little to no validation on these values so the wrong values (e.g.
+        \\`-100%`) can cause the terminal to be unusable. Use with caution and reason.
+        \\
+        \\Some values are clamped to minimum or maximum values. This can make it
+        \\appear that certain values are ignored. For example, many `*-thickness`
+        \\adjustments cannot go below 1px.
+        \\
+        \\`adjust-cell-height` has some additional behaviors to describe:
+        \\
+        \\  * The font will be centered vertically in the cell.
+        \\
+        \\  * The cursor will remain the same size as the font, but may be
+        \\    adjusted separately with `adjust-cursor-height`.
+        \\
+        \\  * Powerline glyphs will be adjusted along with the cell height so
+        \\    that things like status lines continue to look aligned.
+        ,
+        .full_zh =
+        \\这组配置都用来调整由字体决定的各项度量。值可以是整数（1、-1 等）或百分比（20%、-15% 等）。两种情况下，值都表示在原值上改变的量。
+        \\
+        \\例如，值 `1` 表示把原值加 1，而不是把它设成 1。值 `20%` 表示把原值增加 20%。依此类推。
+        \\
+        \\这些值几乎没有校验，所以错误的值（例如 `-100%`）可能让终端无法使用。请谨慎并合理地使用。
+        \\
+        \\有些值会被限制在最小值或最大值之内，这可能让某些值看起来被忽略了。例如，许多 `*-thickness` 调整不能低于 1px。
+        \\
+        \\`adjust-cell-height` 还有一些额外的行为：
+        \\
+        \\  * 字体会在单元格里垂直居中。
+        \\
+        \\  * 光标的大小仍与字体一致，但可以用 `adjust-cursor-height` 单独调整。
+        \\
+        \\  * Powerline 字形会随单元格高度一起调整，使状态栏之类的内容仍然对得整齐。
+        ,
+    },
     .{ .key = .@"adjust-font-baseline", .en = "Distance in pixels or percentage adjustment from the bottom of the cell to the text baseline. Increase to move baseline UP, decrease to move baseline DOWN. See the notes about adjustments in `adjust-cell-width`.", .zh = "文字基线到单元格底部的距离，单位为像素，或按百分比调整。调大使基线上移，调小使基线下移。关于调整的说明见 `adjust-cell-width`。" },
     .{ .key = .@"adjust-underline-position", .en = "Distance in pixels or percentage adjustment from the top of the cell to the top of the underline. Increase to move underline DOWN, decrease to move underline UP. See the notes about adjustments in `adjust-cell-width`.", .zh = "下划线顶部到单元格顶部的距离，单位为像素，或按百分比调整。调大使下划线下移，调小使下划线上移。关于调整的说明见 `adjust-cell-width`。" },
     .{ .key = .@"adjust-underline-thickness", .en = "Thickness in pixels of the underline. See the notes about adjustments in `adjust-cell-width`.", .zh = "下划线的粗细，单位为像素。关于调整的说明见 `adjust-cell-width`。" },
@@ -47,28 +598,750 @@ pub const entries = [_]Entry{
     .{ .key = .@"adjust-cursor-thickness", .en = "Thickness in pixels or percentage adjustment of the bar cursor and outlined rect cursor. See the notes about adjustments in `adjust-cell-width`.", .zh = "竖线光标和空心矩形光标的粗细，单位为像素，或按百分比调整。关于调整的说明见 `adjust-cell-width`。" },
     .{ .key = .@"adjust-cursor-height", .en = "Height in pixels or percentage adjustment of the cursor. Currently applies to all cursor types: bar, rect, and outlined rect. See the notes about adjustments in `adjust-cell-width`.", .zh = "光标的高度，单位为像素，或按百分比调整。目前对所有光标类型生效：竖线、矩形和空心矩形。关于调整的说明见 `adjust-cell-width`。" },
     .{ .key = .@"adjust-box-thickness", .en = "Thickness in pixels or percentage adjustment of box drawing characters. See the notes about adjustments in `adjust-cell-width`.", .zh = "制表符（方框绘制字符）的粗细，单位为像素，或按百分比调整。关于调整的说明见 `adjust-cell-width`。" },
-    .{ .key = .@"adjust-icon-height", .en = "Height in pixels or percentage adjustment of maximum height for nerd font icons.", .zh = "Nerd Font 图标最大高度的调整，单位为像素，或按百分比调整。" },
-    .{ .key = .@"grapheme-width-method", .en = "The method to use for calculating the cell width of a grapheme cluster. The default value is `unicode` which uses the Unicode standard to determine grapheme width. This results in correct grapheme width but may result in cursor-desync issues with some programs (such as shells) that may use a legacy method such as `wcswidth`.", .zh = "计算字素簇单元格宽度的方法。默认值为 `unicode`，按 Unicode 标准确定字素宽度。这样得到的宽度是对的，但对一些仍用 `wcswidth` 等旧方法的程序（如 shell），可能造成光标错位。" },
-    .{ .key = .@"freetype-load-flags", .en = "FreeType load flags to enable. The format of this is a list of flags to enable separated by commas. If you prefix a flag with `no-` then it is disabled. If you omit a flag, its default value is used, so you must explicitly disable flags you don't want. You can also use `true` or `false` to turn all flags on or off.", .zh = "要启用的 FreeType 加载标志。格式是用逗号分隔的、要启用的标志列表。标志前加 `no-` 表示禁用。省略的标志使用其默认值，所以不想要的标志必须明确禁用。也可以用 `true` 或 `false` 一次打开或关闭所有标志。" },
-    .{ .key = .theme, .en = "A theme to use. This can be a built-in theme name, a custom theme name, or an absolute path to a custom theme file. Ghostty also supports specifying a different theme to use for light and dark mode. Each option is documented below.", .zh = "使用的主题。可以是内置主题名、自定义主题名，或自定义主题文件的绝对路径。Ghostty 也支持为浅色和深色模式分别指定主题。每种写法在下文都有说明。" },
+    .{
+        .key = .@"adjust-icon-height",
+        .en = "Height in pixels or percentage adjustment of maximum height for nerd font icons.",
+        .zh = "Nerd Font 图标最大高度的调整，单位为像素，或按百分比调整。",
+        .full_en =
+        \\Height in pixels or percentage adjustment of maximum height for nerd font icons.
+        \\
+        \\A positive (negative) value will increase (decrease) the maximum icon
+        \\height. This may not affect all icons equally: the effect depends on whether
+        \\the default size of the icon is height-constrained, which in turn depends on
+        \\the aspect ratio of both the icon and your primary font.
+        \\
+        \\Certain icons designed for box drawing and terminal graphics, such as
+        \\Powerline symbols, are not affected by this option.
+        \\
+        \\See the notes about adjustments in `adjust-cell-width`.
+        \\
+        \\Available in: 1.2.0
+        ,
+        .full_zh =
+        \\Nerd Font 图标最大高度的调整，单位为像素，或按百分比调整。
+        \\
+        \\正值（负值）会增大（减小）图标的最大高度。这不一定对所有图标都有同样的效果：效果取决于图标的默认大小是否受高度限制，而这又取决于图标和你的主字体两者的宽高比。
+        \\
+        \\某些为制表符和终端图形设计的图标，如 Powerline 符号，不受这项配置影响。
+        \\
+        \\关于调整的说明见 `adjust-cell-width`。
+        \\
+        \\自 1.2.0 起可用
+        ,
+    },
+    .{
+        .key = .@"grapheme-width-method",
+        .en = "The method to use for calculating the cell width of a grapheme cluster. The default value is `unicode` which uses the Unicode standard to determine grapheme width. This results in correct grapheme width but may result in cursor-desync issues with some programs (such as shells) that may use a legacy method such as `wcswidth`.",
+        .zh = "计算字素簇单元格宽度的方法。默认值为 `unicode`，按 Unicode 标准确定字素宽度。这样得到的宽度是对的，但对一些仍用 `wcswidth` 等旧方法的程序（如 shell），可能造成光标错位。",
+        .full_en =
+        \\The method to use for calculating the cell width of a grapheme cluster.
+        \\The default value is `unicode` which uses the Unicode standard to determine
+        \\grapheme width. This results in correct grapheme width but may result in
+        \\cursor-desync issues with some programs (such as shells) that may use a
+        \\legacy method such as `wcswidth`.
+        \\
+        \\Valid values are:
+        \\
+        \\* `legacy` - Use a legacy method to determine grapheme width, such as
+        \\  wcswidth This maximizes compatibility with legacy programs but may result
+        \\  in incorrect grapheme width for certain graphemes such as skin-tone
+        \\  emoji, non-English characters, etc.
+        \\
+        \\  This is called "legacy" and not something more specific because the
+        \\  behavior is undefined and we want to retain the ability to modify it.
+        \\  For example, we may or may not use libc `wcswidth` now or in the future.
+        \\
+        \\* `unicode` - Use the Unicode standard to determine grapheme width.
+        \\
+        \\If a running program explicitly enables terminal mode 2027, then `unicode`
+        \\width will be forced regardless of this configuration. When mode 2027 is
+        \\reset, this configuration will be used again.
+        \\
+        \\This configuration can be changed at runtime but will not affect existing
+        \\terminals. Only new terminals will use the new configuration.
+        ,
+        .full_zh =
+        \\计算字素簇单元格宽度的方法。默认值为 `unicode`，按 Unicode 标准确定字素宽度。这样得到的宽度是对的，但对一些仍用 `wcswidth` 等旧方法的程序（如 shell），可能造成光标错位。
+        \\
+        \\有效值：
+        \\
+        \\* `legacy` - 用旧方法（如 wcswidth）确定字素宽度。这能最大程度兼容旧程序，但对某些字素（如带肤色的 emoji、非英文字符等）可能得到错误的宽度。
+        \\
+        \\  它叫 “legacy” 而不是更具体的名字，是因为这种行为没有明确定义，我们想保留修改它的余地。例如，我们现在或将来可能用、也可能不用 libc 的 `wcswidth`。
+        \\
+        \\* `unicode` - 按 Unicode 标准确定字素宽度。
+        \\
+        \\如果正在运行的程序明确启用了终端模式 2027，则无论这项配置如何，都会强制使用 `unicode` 宽度。模式 2027 被重置后，会再次使用这项配置。
+        \\
+        \\这项配置可以在运行时更改，但不会影响现有的终端，只有新的终端会使用新配置。
+        ,
+    },
+    .{
+        .key = .@"freetype-load-flags",
+        .en = "FreeType load flags to enable. The format of this is a list of flags to enable separated by commas. If you prefix a flag with `no-` then it is disabled. If you omit a flag, its default value is used, so you must explicitly disable flags you don't want. You can also use `true` or `false` to turn all flags on or off.",
+        .zh = "要启用的 FreeType 加载标志。格式是用逗号分隔的、要启用的标志列表。标志前加 `no-` 表示禁用。省略的标志使用其默认值，所以不想要的标志必须明确禁用。也可以用 `true` 或 `false` 一次打开或关闭所有标志。",
+        .full_en =
+        \\FreeType load flags to enable. The format of this is a list of flags to
+        \\enable separated by commas. If you prefix a flag with `no-` then it is
+        \\disabled. If you omit a flag, its default value is used, so you must
+        \\explicitly disable flags you don't want. You can also use `true` or `false`
+        \\to turn all flags on or off.
+        \\
+        \\This configuration only applies to Ghostty builds that use FreeType.
+        \\This is usually the case only for Linux builds. macOS uses CoreText
+        \\and does not have an equivalent configuration.
+        \\
+        \\Available flags:
+        \\
+        \\  * `hinting` - Enable or disable hinting. Enabled by default.
+        \\
+        \\  * `force-autohint` - Always use the freetype auto-hinter instead of
+        \\    the font's native hinter. Disabled by default.
+        \\
+        \\  * `monochrome` - Instructs renderer to use 1-bit monochrome rendering.
+        \\    This will disable anti-aliasing, and probably not look very good unless
+        \\    you're using a pixel font. Disabled by default.
+        \\
+        \\  * `autohint` - Enable the freetype auto-hinter. Enabled by default.
+        \\
+        \\  * `light` - Use a light hinting style, better preserving glyph shapes.
+        \\    This is the most common setting in GTK apps and therefore also Ghostty's
+        \\    default. This has no effect if `monochrome` is enabled. Enabled by
+        \\    default.
+        \\
+        \\Example: `hinting`, `no-hinting`, `force-autohint`, `no-force-autohint`
+        ,
+        .full_zh =
+        \\要启用的 FreeType 加载标志。格式是用逗号分隔的、要启用的标志列表。标志前加 `no-` 表示禁用。省略的标志使用其默认值，所以不想要的标志必须明确禁用。也可以用 `true` 或 `false` 一次打开或关闭所有标志。
+        \\
+        \\这项配置只作用于使用 FreeType 的 Ghostty 构建，通常只有 Linux 构建是这样。macOS 使用 CoreText，没有对应的配置。
+        \\
+        \\可用的标志：
+        \\
+        \\  * `hinting` - 启用或禁用 hinting（字形微调）。默认启用。
+        \\
+        \\  * `force-autohint` - 始终使用 freetype 的自动微调器，而不是字体自带的微调器。默认禁用。
+        \\
+        \\  * `monochrome` - 让渲染器使用 1 位单色渲染。这会禁用抗锯齿，除非你用的是像素字体，否则大概不会好看。默认禁用。
+        \\
+        \\  * `autohint` - 启用 freetype 自动微调器。默认启用。
+        \\
+        \\  * `light` - 使用轻度微调风格，更好地保留字形形状。这是 GTK 应用里最常见的设置，因此也是 Ghostty 的默认值。启用 `monochrome` 时无效。默认启用。
+        \\
+        \\示例：`hinting`、`no-hinting`、`force-autohint`、`no-force-autohint`
+        ,
+    },
+    .{
+        .key = .theme,
+        .en = "A theme to use. This can be a built-in theme name, a custom theme name, or an absolute path to a custom theme file. Ghostty also supports specifying a different theme to use for light and dark mode. Each option is documented below.",
+        .zh = "使用的主题。可以是内置主题名、自定义主题名，或自定义主题文件的绝对路径。Ghostty 也支持为浅色和深色模式分别指定主题。每种写法在下文都有说明。",
+        .full_en =
+        \\A theme to use. This can be a built-in theme name, a custom theme
+        \\name, or an absolute path to a custom theme file. Ghostty also supports
+        \\specifying a different theme to use for light and dark mode. Each
+        \\option is documented below.
+        \\
+        \\If the theme is an absolute pathname, Ghostty will attempt to load that
+        \\file as a theme. If that file does not exist or is inaccessible, an error
+        \\will be logged and no other directories will be searched.
+        \\
+        \\If the theme is not an absolute pathname, two different directories will be
+        \\searched for a file name that matches the theme. This is case sensitive on
+        \\systems with case-sensitive filesystems. It is an error for a theme name to
+        \\include path separators unless it is an absolute pathname.
+        \\
+        \\The first directory is the `themes` subdirectory of your Ghostty
+        \\configuration directory. This is `$XDG_CONFIG_HOME/ghostty/themes` or
+        \\`~/.config/ghostty/themes`.
+        \\
+        \\The second directory is the `themes` subdirectory of the Ghostty resources
+        \\directory. Ghostty ships with a multitude of themes that will be installed
+        \\into this directory. On macOS, this list is in the
+        \\`Ghostty.app/Contents/Resources/ghostty/themes` directory. On Linux, this
+        \\list is in the `share/ghostty/themes` directory (wherever you installed the
+        \\Ghostty "share" directory.
+        \\
+        \\To see a list of available themes, run `ghostty +list-themes`.
+        \\
+        \\A theme file is simply another Ghostty configuration file. They share
+        \\the same syntax and same configuration options. A theme can set any valid
+        \\configuration option so please do not use a theme file from an untrusted
+        \\source. The built-in themes are audited to only set safe configuration
+        \\options.
+        \\
+        \\Some options cannot be set within theme files. The reason these are not
+        \\supported should be self-evident. A theme file cannot set `theme` or
+        \\`config-file`. At the time of writing this, Ghostty will not show any
+        \\warnings or errors if you set these options in a theme file but they will
+        \\be silently ignored.
+        \\
+        \\Any additional colors specified via background, foreground, palette, etc.
+        \\will override the colors specified in the theme.
+        \\
+        \\To specify a different theme for light and dark mode, use the following
+        \\syntax: `light:theme-name,dark:theme-name`. For example:
+        \\`light:Rose Pine Dawn,dark:Rose Pine`. Whitespace around all values are
+        \\trimmed and order of light and dark does not matter. Both light and dark
+        \\must be specified in this form. In this form, the theme used will be
+        \\based on the current desktop environment theme.
+        \\
+        \\There are some known bugs with light/dark mode theming. These will
+        \\be fixed in a future update:
+        \\
+        \\  - macOS: titlebar tabs style is not updated when switching themes.
+        ,
+        .full_zh =
+        \\使用的主题。可以是内置主题名、自定义主题名，或自定义主题文件的绝对路径。Ghostty 也支持为浅色和深色模式分别指定主题。每种写法在下文都有说明。
+        \\
+        \\如果主题是绝对路径，Ghostty 会尝试把那个文件作为主题加载。如果文件不存在或无法访问，会记录一条错误，且不会再搜索其他目录。
+        \\
+        \\如果主题不是绝对路径，会在两个目录里查找与主题同名的文件。在区分大小写的文件系统上，匹配区分大小写。主题名里含有路径分隔符是错误的，除非它是绝对路径。
+        \\
+        \\第一个目录是 Ghostty 配置目录下的 `themes` 子目录，即 `$XDG_CONFIG_HOME/ghostty/themes` 或 `~/.config/ghostty/themes`。
+        \\
+        \\第二个目录是 Ghostty 资源目录下的 `themes` 子目录。Ghostty 自带大量主题，会安装到这个目录里。在 macOS 上，这个列表在 `Ghostty.app/Contents/Resources/ghostty/themes` 目录里。在 Linux 上，这个列表在 `share/ghostty/themes` 目录里（Ghostty “share” 目录安装在哪里就在哪里）。
+        \\
+        \\要查看可用主题的列表，运行 `ghostty +list-themes`。
+        \\
+        \\主题文件其实就是另一个 Ghostty 配置文件，语法和配置项都相同。主题可以设置任何有效的配置项，所以请不要使用来路不明的主题文件。内置主题经过审核，只设置安全的配置项。
+        \\
+        \\有些配置项不能在主题文件里设置，原因不言自明：主题文件不能设置 `theme` 或 `config-file`。写这段说明时，如果你在主题文件里设置了这些项，Ghostty 不会显示任何警告或错误，但会悄悄忽略它们。
+        \\
+        \\通过 background、foreground、palette 等另外指定的颜色，会覆盖主题里指定的颜色。
+        \\
+        \\要为浅色和深色模式分别指定主题，用这样的语法：`light:theme-name,dark:theme-name`。例如：`light:Rose Pine Dawn,dark:Rose Pine`。所有值两侧的空白都会被去掉，light 和 dark 的先后顺序无关紧要。这种写法必须同时指定 light 和 dark。使用这种写法时，所用的主题取决于当前桌面环境的主题。
+        \\
+        \\浅色/深色模式的主题目前有一些已知的错误，将在以后的更新里修复：
+        \\
+        \\  - macOS：切换主题时，标签页式标题栏的样式不会更新。
+        ,
+    },
     .{ .key = .background, .en = "Background color for the window. Specified as either hex (`#RRGGBB` or `RRGGBB`) or a named X11 color.", .zh = "窗口的背景色。可写成十六进制（`#RRGGBB` 或 `RRGGBB`），或 X11 颜色名。" },
     .{ .key = .foreground, .en = "Foreground color for the window. Specified as either hex (`#RRGGBB` or `RRGGBB`) or a named X11 color.", .zh = "窗口的前景色。可写成十六进制（`#RRGGBB` 或 `RRGGBB`），或 X11 颜色名。" },
-    .{ .key = .@"background-image", .en = "Background image for the terminal.", .zh = "终端的背景图片。" },
-    .{ .key = .@"background-image-opacity", .en = "Background image opacity.", .zh = "背景图片的不透明度。" },
-    .{ .key = .@"background-image-position", .en = "Background image position.", .zh = "背景图片的位置。" },
-    .{ .key = .@"background-image-fit", .en = "Background image fit.", .zh = "背景图片的适应方式。" },
-    .{ .key = .@"background-image-repeat", .en = "Whether to repeat the background image or not.", .zh = "背景图片是否重复平铺。" },
+    .{
+        .key = .@"background-image",
+        .en = "Background image for the terminal.",
+        .zh = "终端的背景图片。",
+        .full_en =
+        \\Background image for the terminal.
+        \\
+        \\This should be a path to a PNG or JPEG file, other image formats are
+        \\not yet supported.
+        \\
+        \\The background image is currently per-terminal, not per-window. If
+        \\you are a heavy split user, the background image will be repeated across
+        \\splits. A future improvement to Ghostty will address this.
+        \\
+        \\WARNING: Background images are currently duplicated in VRAM per-terminal.
+        \\For sufficiently large images, this could lead to a large increase in
+        \\memory usage (specifically VRAM usage). A future Ghostty improvement
+        \\will resolve this by sharing image textures across terminals.
+        \\
+        \\Available since: 1.2.0
+        ,
+        .full_zh =
+        \\终端的背景图片。
+        \\
+        \\应当是 PNG 或 JPEG 文件的路径，暂不支持其他图片格式。
+        \\
+        \\背景图片目前是每个终端各一张，而不是每个窗口一张。如果你大量使用分屏，背景图片会在各个分屏里重复。Ghostty 以后会改进这一点。
+        \\
+        \\警告：背景图片目前在每个终端的显存（VRAM）里各存一份。图片足够大时，可能让内存（具体是显存）用量大幅增加。Ghostty 以后会改进，让各终端共享图片纹理，从而解决这个问题。
+        \\
+        \\自 1.2.0 起可用
+        ,
+    },
+    .{
+        .key = .@"background-image-opacity",
+        .en = "Background image opacity.",
+        .zh = "背景图片的不透明度。",
+        .full_en =
+        \\Background image opacity.
+        \\
+        \\This is relative to the value of `background-opacity`.
+        \\
+        \\A value of `1.0` (the default) will result in the background image being
+        \\placed on top of the general background color, and then the combined result
+        \\will be adjusted to the opacity specified by `background-opacity`.
+        \\
+        \\A value less than `1.0` will result in the background image being mixed
+        \\with the general background color before the combined result is adjusted
+        \\to the configured `background-opacity`.
+        \\
+        \\A value greater than `1.0` will result in the background image having a
+        \\higher opacity than the general background color. For instance, if the
+        \\configured `background-opacity` is `0.5` and `background-image-opacity`
+        \\is set to `1.5`, then the final opacity of the background image will be
+        \\`0.5 * 1.5 = 0.75`.
+        \\
+        \\Available since: 1.2.0
+        ,
+        .full_zh =
+        \\背景图片的不透明度。
+        \\
+        \\它是相对于 `background-opacity` 的值而言的。
+        \\
+        \\值为 `1.0`（默认值）时，背景图片放在一般背景色之上，再把合成的结果调整到 `background-opacity` 指定的不透明度。
+        \\
+        \\值小于 `1.0` 时，背景图片先与一般背景色混合，再把合成的结果调整到所配置的 `background-opacity`。
+        \\
+        \\值大于 `1.0` 时，背景图片的不透明度会比一般背景色更高。例如，所配置的 `background-opacity` 是 `0.5`、`background-image-opacity` 设为 `1.5` 时，背景图片最终的不透明度是 `0.5 * 1.5 = 0.75`。
+        \\
+        \\自 1.2.0 起可用
+        ,
+    },
+    .{
+        .key = .@"background-image-position",
+        .en = "Background image position.",
+        .zh = "背景图片的位置。",
+        .full_en =
+        \\Background image position.
+        \\
+        \\Valid values are:
+        \\  * `top-left`
+        \\  * `top-center`
+        \\  * `top-right`
+        \\  * `center-left`
+        \\  * `center`
+        \\  * `center-right`
+        \\  * `bottom-left`
+        \\  * `bottom-center`
+        \\  * `bottom-right`
+        \\
+        \\The default value is `center`.
+        \\
+        \\Available since: 1.2.0
+        ,
+        .full_zh =
+        \\背景图片的位置。
+        \\
+        \\有效值：
+        \\  * `top-left`
+        \\  * `top-center`
+        \\  * `top-right`
+        \\  * `center-left`
+        \\  * `center`
+        \\  * `center-right`
+        \\  * `bottom-left`
+        \\  * `bottom-center`
+        \\  * `bottom-right`
+        \\
+        \\默认值是 `center`。
+        \\
+        \\自 1.2.0 起可用
+        ,
+    },
+    .{
+        .key = .@"background-image-fit",
+        .en = "Background image fit.",
+        .zh = "背景图片的适应方式。",
+        .full_en =
+        \\Background image fit.
+        \\
+        \\Valid values are:
+        \\
+        \\ * `contain`
+        \\
+        \\   Preserving the aspect ratio, scale the background image to the largest
+        \\   size that can still be contained within the terminal, so that the whole
+        \\   image is visible.
+        \\
+        \\ * `cover`
+        \\
+        \\   Preserving the aspect ratio, scale the background image to the smallest
+        \\   size that can completely cover the terminal. This may result in one or
+        \\   more edges of the image being clipped by the edge of the terminal.
+        \\
+        \\ * `stretch`
+        \\
+        \\   Stretch the background image to the full size of the terminal, without
+        \\   preserving the aspect ratio.
+        \\
+        \\ * `none`
+        \\
+        \\   Don't scale the background image.
+        \\
+        \\The default value is `contain`.
+        \\
+        \\Available since: 1.2.0
+        ,
+        .full_zh =
+        \\背景图片的适应方式。
+        \\
+        \\有效值：
+        \\
+        \\ * `contain`
+        \\
+        \\   保持宽高比，把背景图片缩放到终端仍能容纳的最大尺寸，这样整张图片都可见。
+        \\
+        \\ * `cover`
+        \\
+        \\   保持宽高比，把背景图片缩放到能完全盖住终端的最小尺寸。这可能让图片的一条或多条边被终端边缘裁掉。
+        \\
+        \\ * `stretch`
+        \\
+        \\   把背景图片拉伸到终端的完整大小，不保持宽高比。
+        \\
+        \\ * `none`
+        \\
+        \\   不缩放背景图片。
+        \\
+        \\默认值是 `contain`。
+        \\
+        \\自 1.2.0 起可用
+        ,
+    },
+    .{
+        .key = .@"background-image-repeat",
+        .en = "Whether to repeat the background image or not.",
+        .zh = "背景图片是否重复平铺。",
+        .full_en =
+        \\Whether to repeat the background image or not.
+        \\
+        \\If this is set to true, the background image will be repeated if there
+        \\would otherwise be blank space around it because it doesn't completely
+        \\fill the terminal area.
+        \\
+        \\The default value is `false`.
+        \\
+        \\Available since: 1.2.0
+        ,
+        .full_zh =
+        \\背景图片是否重复平铺。
+        \\
+        \\设为 true 时，如果背景图片没有完全铺满终端区域，周围会出现空白，这时背景图片会重复铺开。
+        \\
+        \\默认值是 `false`。
+        \\
+        \\自 1.2.0 起可用
+        ,
+    },
     .{ .key = .@"selection-foreground", .en = "The foreground and background color for selection. If this is not set, then the selection color is just the inverted window background and foreground (note: not to be confused with the cell bg/fg). Specified as either hex (`#RRGGBB` or `RRGGBB`) or a named X11 color. Since version 1.2.0, this can also be set to `cell-foreground` to match the cell foreground color, or `cell-background` to match the cell background color.", .zh = "选区的前景色和背景色。如果不设置，选区颜色就是窗口背景色和前景色的反色（注意：与单元格的背景/前景色无关）。可写成十六进制（`#RRGGBB` 或 `RRGGBB`），或 X11 颜色名。自 1.2.0 版起，也可设为 `cell-foreground`（与单元格前景色一致）或 `cell-background`（与单元格背景色一致）。" },
-    .{ .key = .@"selection-clear-on-typing", .en = "Whether to clear selected text when typing. This defaults to `true`. This is typical behavior for most terminal emulators as well as text input fields. If you set this to `false`, then the selected text will not be cleared when typing.", .zh = "输入时是否清除已选中的文本。默认为 `true`，这是大多数终端模拟器和文本输入框的常见行为。设为 `false` 后，输入时不会清除选中的文本。" },
-    .{ .key = .@"selection-clear-on-copy", .en = "Whether to clear selected text after copying. This defaults to `false` everywhere except Windows, where it defaults to `true`.", .zh = "复制后是否清除选区。默认为 `false`，只有 Windows 上默认为 `true`。" },
-    .{ .key = .@"selection-word-chars", .en = "Characters that mark word boundaries during text selection operations such as double-clicking. When selecting a word, the selection will stop at any of these characters.", .zh = "在双击等选区操作中，标记单词边界的字符。选中一个单词时，选区会在遇到这些字符时停下。" },
-    .{ .key = .@"minimum-contrast", .en = "The minimum contrast ratio between the foreground and background colors. The contrast ratio is a value between 1 and 21. A value of 1 allows for no contrast (e.g. black on black). This value is the contrast ratio as defined by the [WCAG 2.0 specification](https://www.w3.org/TR/WCAG20/).", .zh = "前景色和背景色之间的最小对比度。对比度是 1 到 21 之间的值，1 表示没有对比（例如黑底黑字）。该值按 [WCAG 2.0 规范](https://www.w3.org/TR/WCAG20/) 定义的对比度计算。" },
-    .{ .key = .palette, .en = "Color palette for the 256 color form that many terminal applications use. The syntax of this configuration is `N=COLOR` where `N` is 0 to 255 (for the 256 colors in the terminal color table) and `COLOR` is a typical RGB color code such as `#AABBCC` or `AABBCC`, or a named X11 color. For example, `palette = 5=#BB78D9` will set the 'purple' color.", .zh = "许多终端程序使用的 256 色调色板。语法是 `N=COLOR`：`N` 为 0 到 255（对应终端色表里的 256 种颜色），`COLOR` 为常见的 RGB 颜色码，如 `#AABBCC` 或 `AABBCC`，或 X11 颜色名。例如 `palette = 5=#BB78D9` 会设置“紫色”。" },
-    .{ .key = .@"palette-generate", .en = "Whether to automatically generate the extended 256 color palette (indices 16–255) from the base 16 ANSI colors.", .zh = "是否根据基础 16 种 ANSI 颜色自动生成扩展的 256 色调色板（索引 16–255）。" },
-    .{ .key = .@"palette-harmonious", .en = "Invert the palette colors generated when `palette-generate` is enabled, so that the colors go in reverse order. This allows palette-based applications to work well in both light and dark mode since the palettes are always relatively good colors.", .zh = "启用 `palette-generate` 时，把生成的调色板颜色反转，使颜色顺序倒过来。这样依赖调色板的程序在浅色和深色模式下都好看，因为调色板总是相对合适的颜色。" },
-    .{ .key = .@"cursor-color", .en = "The color of the cursor. If this is not set, a default will be chosen.", .zh = "光标的颜色。不设置时会选用默认值。" },
+    .{
+        .key = .@"selection-clear-on-typing",
+        .en = "Whether to clear selected text when typing. This defaults to `true`. This is typical behavior for most terminal emulators as well as text input fields. If you set this to `false`, then the selected text will not be cleared when typing.",
+        .zh = "输入时是否清除已选中的文本。默认为 `true`，这是大多数终端模拟器和文本输入框的常见行为。设为 `false` 后，输入时不会清除选中的文本。",
+        .full_en =
+        \\Whether to clear selected text when typing. This defaults to `true`.
+        \\This is typical behavior for most terminal emulators as well as
+        \\text input fields. If you set this to `false`, then the selected text
+        \\will not be cleared when typing.
+        \\
+        \\"Typing" is specifically defined as any non-modifier (shift, control,
+        \\alt, etc.) keypress that produces data to be sent to the application
+        \\running within the terminal (e.g. the shell). Additionally, selection
+        \\is cleared when any preedit or composition state is started (e.g.
+        \\when typing languages such as Japanese).
+        \\
+        \\If this is `false`, then the selection can still be manually
+        \\cleared by clicking once or by pressing `escape`.
+        \\
+        \\Available since: 1.2.0
+        ,
+        .full_zh =
+        \\输入时是否清除已选中的文本。默认为 `true`，这是大多数终端模拟器和文本输入框的常见行为。设为 `false` 后，输入时不会清除选中的文本。
+        \\
+        \\“输入”具体指任何非修饰键（shift、control、alt 等）的按键，只要它产生了要发送给终端里运行的应用（如 shell）的数据。另外，开始任何预编辑或组字状态时（例如输入日语等语言时），选区也会被清除。
+        \\
+        \\如果设为 `false`，仍然可以手动清除选区：单击一次，或按 `escape`。
+        \\
+        \\自 1.2.0 起可用
+        ,
+    },
+    .{
+        .key = .@"selection-clear-on-copy",
+        .en = "Whether to clear selected text after copying. This defaults to `false` everywhere except Windows, where it defaults to `true`.",
+        .zh = "复制后是否清除选区。默认为 `false`，只有 Windows 上默认为 `true`。",
+        .full_en =
+        \\Whether to clear selected text after copying. This defaults to `false`
+        \\everywhere except Windows, where it defaults to `true`.
+        \\
+        \\When set to `true`, the selection will be automatically cleared after
+        \\any copy operation that invokes the `copy_to_clipboard` keyboard binding.
+        \\Importantly, this will not clear the selection if the copy operation
+        \\was invoked via `copy-on-select`.
+        \\
+        \\When set to `false`, the selection remains visible after copying, allowing
+        \\to see what was copied and potentially perform additional operations
+        \\on the same selection.
+        \\
+        \\**The Windows default is a deliberate divergence from upstream, and it is
+        \\one half of a pair.** The other half is the `ctrl+c` binding in
+        \\`Keybinds.init`; read that comment first, because this value on its own
+        \\looks like a taste preference and is not one. On Windows `ctrl+c` copies
+        \\when there is a selection and interrupts when there is not, which is what
+        \\Windows Terminal does and what people arrive expecting. That only works if
+        \\copying also *ends* the selection: leave it standing and the next `ctrl+c`
+        \\copies the same text again instead of interrupting, so the key silently
+        \\stops being an interrupt key until the user thinks to click somewhere.
+        \\With `ctrl+shift+c` -- the binding every other platform uses -- there is no
+        \\such trap, because nothing else is competing for the chord.
+        \\
+        \\Diverging is not the problem; diverging quietly is. Set it explicitly in
+        \\your config to get the old behaviour back on Windows.
+        ,
+        .full_zh =
+        \\复制后是否清除选区。默认为 `false`，只有 Windows 上默认为 `true`。
+        \\
+        \\设为 `true` 时，任何调用 `copy_to_clipboard` 键绑定的复制操作之后，选区会自动清除。要注意，如果复制是通过 `copy-on-select` 触发的，则不会清除选区。
+        \\
+        \\设为 `false` 时，复制后选区仍然可见，这样可以看到复制了什么，还可以对同一选区继续做其他操作。
+        \\
+        \\**Windows 上的默认值是有意与上游不同的，而且是成对的两半之一。** 另一半是 `Keybinds.init` 里的 `ctrl+c` 绑定；请先读那里的注释，因为单看这个值，像是个人口味的偏好，其实不是。在 Windows 上，`ctrl+c` 有选区时复制、没有选区时中断，这是 Windows Terminal 的做法，也是大家来了就期待的行为。这只有在复制同时*结束*选区时才行得通：选区还留着的话，下一次 `ctrl+c` 会再次复制同样的文字而不是中断，于是这个键悄悄不再是中断键，直到用户想到点一下别处。换成 `ctrl+shift+c`（其他所有平台用的绑定）就没有这个陷阱，因为没有别的东西跟这个组合键争用。
+        \\
+        \\问题不在于与上游不同，而在于悄悄地不同。如果想在 Windows 上回到原来的行为，请在你的配置里明确设置它。
+        ,
+    },
+    .{
+        .key = .@"selection-word-chars",
+        .en = "Characters that mark word boundaries during text selection operations such as double-clicking. When selecting a word, the selection will stop at any of these characters.",
+        .zh = "在双击等选区操作中，标记单词边界的字符。选中一个单词时，选区会在遇到这些字符时停下。",
+        .full_en =
+        \\Characters that mark word boundaries during text selection operations such
+        \\as double-clicking. When selecting a word, the selection will stop at any
+        \\of these characters.
+        \\
+        \\This is similar to the `WORDCHARS` environment variable in zsh, except this
+        \\specifies the boundary characters rather than the word characters. The
+        \\default includes common delimiters and punctuation that typically separate
+        \\words in code and prose.
+        \\
+        \\Each character in this string becomes a word boundary. Multi-byte UTF-8
+        \\characters are supported, but only single codepoints can be specified.
+        \\Multi-codepoint sequences (e.g. emoji) are not supported.
+        \\
+        \\The null character (U+0000) is always treated as a boundary and does not
+        \\need to be included in this configuration.
+        \\
+        \\Default: ``\t '"│`|:;,()[]{}<>$``
+        \\
+        \\To add or remove specific characters, you can set this to a custom value.
+        \\For example, to treat semicolons as part of words:
+        \\
+        \\    selection-word-chars = "\t '\"│`|:,()[]{}<>$"
+        \\
+        \\Available since: 1.3.0
+        ,
+        .full_zh =
+        \\在双击等选区操作中，标记单词边界的字符。选中一个单词时，选区会在遇到这些字符时停下。
+        \\
+        \\这与 zsh 的 `WORDCHARS` 环境变量类似，只是这里指定的是边界字符，而不是单词字符。默认值包含常见的分隔符和标点，它们通常用来分隔代码和文章里的单词。
+        \\
+        \\这个字符串里的每个字符都成为一个单词边界。支持多字节的 UTF-8 字符，但只能指定单个码位，不支持多码位序列（如 emoji）。
+        \\
+        \\空字符（U+0000）始终被当作边界，不需要写进这项配置。
+        \\
+        \\默认值：``\t '"│`|:;,()[]{}<>$``
+        \\
+        \\要增加或删除某些字符，可以把它设成自定义的值。例如，要把分号当作单词的一部分：
+        \\
+        \\    selection-word-chars = "\t '\"│`|:,()[]{}<>$"
+        \\
+        \\自 1.3.0 起可用
+        ,
+    },
+    .{
+        .key = .@"minimum-contrast",
+        .en = "The minimum contrast ratio between the foreground and background colors. The contrast ratio is a value between 1 and 21. A value of 1 allows for no contrast (e.g. black on black). This value is the contrast ratio as defined by the [WCAG 2.0 specification](https://www.w3.org/TR/WCAG20/).",
+        .zh = "前景色和背景色之间的最小对比度。对比度是 1 到 21 之间的值，1 表示没有对比（例如黑底黑字）。该值按 [WCAG 2.0 规范](https://www.w3.org/TR/WCAG20/) 定义的对比度计算。",
+        .full_en =
+        \\The minimum contrast ratio between the foreground and background colors.
+        \\The contrast ratio is a value between 1 and 21. A value of 1 allows for no
+        \\contrast (e.g. black on black). This value is the contrast ratio as defined
+        \\by the [WCAG 2.0 specification](https://www.w3.org/TR/WCAG20/).
+        \\
+        \\If you want to avoid invisible text (same color as background), a value of
+        \\1.1 is a good value. If you want to avoid text that is difficult to read, a
+        \\value of 3 or higher is a good value. The higher the value, the more likely
+        \\that text will become black or white.
+        \\
+        \\This value does not apply to Emoji or images.
+        ,
+        .full_zh =
+        \\前景色和背景色之间的最小对比度。对比度是 1 到 21 之间的值，1 表示没有对比（例如黑底黑字）。该值按 [WCAG 2.0 规范](https://www.w3.org/TR/WCAG20/) 定义的对比度计算。
+        \\
+        \\如果想避免文字看不见（颜色与背景相同），1.1 是个不错的值。如果想避免难以阅读的文字，3 或更高是个不错的值。值越高，文字越有可能变成黑色或白色。
+        \\
+        \\这个值不适用于 Emoji 或图像。
+        ,
+    },
+    .{
+        .key = .palette,
+        .en = "Color palette for the 256 color form that many terminal applications use. The syntax of this configuration is `N=COLOR` where `N` is 0 to 255 (for the 256 colors in the terminal color table) and `COLOR` is a typical RGB color code such as `#AABBCC` or `AABBCC`, or a named X11 color. For example, `palette = 5=#BB78D9` will set the 'purple' color.",
+        .zh = "许多终端程序使用的 256 色调色板。语法是 `N=COLOR`：`N` 为 0 到 255（对应终端色表里的 256 种颜色），`COLOR` 为常见的 RGB 颜色码，如 `#AABBCC` 或 `AABBCC`，或 X11 颜色名。例如 `palette = 5=#BB78D9` 会设置“紫色”。",
+        .full_en =
+        \\Color palette for the 256 color form that many terminal applications use.
+        \\The syntax of this configuration is `N=COLOR` where `N` is 0 to 255 (for
+        \\the 256 colors in the terminal color table) and `COLOR` is a typical RGB
+        \\color code such as `#AABBCC` or `AABBCC`, or a named X11 color. For example,
+        \\`palette = 5=#BB78D9` will set the 'purple' color.
+        \\
+        \\The palette index can be in decimal, binary, octal, or hexadecimal.
+        \\Decimal is assumed unless a prefix is used: `0b` for binary, `0o` for octal,
+        \\and `0x` for hexadecimal.
+        \\
+        \\For definitions on the color indices and what they canonically map to,
+        \\[see this cheat sheet](https://www.ditig.com/256-colors-cheat-sheet).
+        \\
+        \\For most themes, you only need to set the first 16 colors (0–15) since the
+        \\rest of the palette (16–255) will be automatically generated by
+        \\default (see `palette-generate` for more details).
+        ,
+        .full_zh =
+        \\许多终端程序使用的 256 色调色板。语法是 `N=COLOR`：`N` 为 0 到 255（对应终端色表里的 256 种颜色），`COLOR` 为常见的 RGB 颜色码，如 `#AABBCC` 或 `AABBCC`，或 X11 颜色名。例如 `palette = 5=#BB78D9` 会设置“紫色”。
+        \\
+        \\调色板索引可以用十进制、二进制、八进制或十六进制。不加前缀时按十进制处理；二进制用 `0b` 前缀，八进制用 `0o`，十六进制用 `0x`。
+        \\
+        \\关于各颜色索引的定义及其通常对应的颜色，[见这份速查表](https://www.ditig.com/256-colors-cheat-sheet)。
+        \\
+        \\对大多数主题，只需要设置前 16 种颜色（0–15），因为调色板的其余部分（16–255）默认会自动生成（详见 `palette-generate`）。
+        ,
+    },
+    .{
+        .key = .@"palette-generate",
+        .en = "Whether to automatically generate the extended 256 color palette (indices 16–255) from the base 16 ANSI colors.",
+        .zh = "是否根据基础 16 种 ANSI 颜色自动生成扩展的 256 色调色板（索引 16–255）。",
+        .full_en =
+        \\Whether to automatically generate the extended 256 color palette
+        \\(indices 16–255) from the base 16 ANSI colors.
+        \\
+        \\This lets theme authors specify only the base 16 colors and have the
+        \\rest of the palette be automatically generated in a consistent and
+        \\aesthetic way.
+        \\
+        \\When enabled, the 6×6×6 color cube and 24-step grayscale ramp are
+        \\derived from interpolations of the base palette, giving a more cohesive
+        \\look. Colors that have been explicitly set via `palette` are never
+        \\overwritten.
+        \\
+        \\The default value is false (disabled), because many legacy programs
+        \\using the 256-color palette hardcode assumptions about what these
+        \\colors are (mostly assuming the xterm 256 color palette). However, this
+        \\is still a very useful tool for theme authors and users who want
+        \\to customize their palette without having to specify all 256 colors.
+        \\
+        \\For more information on how the generation works, see here:
+        \\https://gist.github.com/jake-stewart/0a8ea46159a7da2c808e5be2177e1783
+        \\
+        \\Available since: 1.3.0
+        ,
+        .full_zh =
+        \\是否根据基础 16 种 ANSI 颜色自动生成扩展的 256 色调色板（索引 16–255）。
+        \\
+        \\这样主题作者只需要指定基础的 16 种颜色，其余的调色板会以一致而美观的方式自动生成。
+        \\
+        \\启用后，6×6×6 的色立方和 24 级灰阶由基础调色板插值得出，整体看起来更协调。已通过 `palette` 明确设置的颜色永远不会被覆盖。
+        \\
+        \\默认值是 false（禁用），因为许多使用 256 色调色板的旧程序把这些颜色是什么写死了（多半假定是 xterm 的 256 色调色板）。不过，对想自定义调色板、又不想逐一指定全部 256 种颜色的主题作者和用户，这仍是个很有用的工具。
+        \\
+        \\生成方式的详情见这里：
+        \\https://gist.github.com/jake-stewart/0a8ea46159a7da2c808e5be2177e1783
+        \\
+        \\自 1.3.0 起可用
+        ,
+    },
+    .{
+        .key = .@"palette-harmonious",
+        .en = "Invert the palette colors generated when `palette-generate` is enabled, so that the colors go in reverse order. This allows palette-based applications to work well in both light and dark mode since the palettes are always relatively good colors.",
+        .zh = "启用 `palette-generate` 时，把生成的调色板颜色反转，使颜色顺序倒过来。这样依赖调色板的程序在浅色和深色模式下都好看，因为调色板总是相对合适的颜色。",
+        .full_en =
+        \\Invert the palette colors generated when `palette-generate` is enabled,
+        \\so that the colors go in reverse order. This allows palette-based
+        \\applications to work well in both light and dark mode since the
+        \\palettes are always relatively good colors.
+        \\
+        \\This defaults to off because some legacy terminal applications
+        \\hardcode the assumption that palette indices 16–231 are ordered from
+        \\darkest to lightest, so enabling this would make them unreadable.
+        \\This is not a generally good assumption and we encourage modern
+        \\terminal applications to use the indices in a more semantic way.
+        \\
+        \\This has no effect if `palette-generate` is disabled.
+        \\
+        \\For more information see `palette-generate`.
+        \\
+        \\Available since: 1.3.0
+        ,
+        .full_zh =
+        \\启用 `palette-generate` 时，把生成的调色板颜色反转，使颜色顺序倒过来。这样依赖调色板的程序在浅色和深色模式下都好看，因为调色板总是相对合适的颜色。
+        \\
+        \\默认关闭，因为一些旧的终端应用把“调色板索引 16–231 按从最暗到最亮排列”写成了固定假设，启用后它们会变得无法阅读。这并不是一个普遍成立的好假设，我们鼓励现代终端应用以更有语义的方式使用这些索引。
+        \\
+        \\如果 `palette-generate` 被禁用，这项配置无效。
+        \\
+        \\更多信息见 `palette-generate`。
+        \\
+        \\自 1.3.0 起可用
+        ,
+    },
+    .{
+        .key = .@"cursor-color",
+        .en = "The color of the cursor. If this is not set, a default will be chosen.",
+        .zh = "光标的颜色。不设置时会选用默认值。",
+        .full_en =
+        \\The color of the cursor. If this is not set, a default will be chosen.
+        \\
+        \\Direct colors can be specified as either hex (`#RRGGBB` or `RRGGBB`)
+        \\or a named X11 color.
+        \\
+        \\Additionally, special values can be used to set the color to match
+        \\other colors at runtime:
+        \\
+        \\  * `cell-foreground` - Match the cell foreground color.
+        \\    (Available since: 1.2.0)
+        \\
+        \\  * `cell-background` - Match the cell background color.
+        \\    (Available since: 1.2.0)
+        ,
+        .full_zh =
+        \\光标的颜色。不设置时会选用默认值。
+        \\
+        \\可以直接指定颜色，写成十六进制（`#RRGGBB` 或 `RRGGBB`）或 X11 颜色名。
+        \\
+        \\另外，还可以用一些特殊值，让颜色在运行时与其他颜色保持一致：
+        \\
+        \\  * `cell-foreground` - 与单元格前景色一致。
+        \\    （自 1.2.0 起可用）
+        \\
+        \\  * `cell-background` - 与单元格背景色一致。
+        \\    （自 1.2.0 起可用）
+        ,
+    },
     .{ .key = .@"cursor-opacity", .en = "The opacity level (opposite of transparency) of the cursor. A value of 1 is fully opaque and a value of 0 is fully transparent. A value less than 0 or greater than 1 will be clamped to the nearest valid value. Note that a sufficiently small value such as 0.3 may be effectively invisible and may make it difficult to find the cursor.", .zh = "光标的不透明度（透明度的反面）。1 为完全不透明，0 为完全透明。小于 0 或大于 1 的值会被限制到最近的有效值。注意，像 0.3 这样足够小的值可能几乎看不见，让光标难以找到。" },
-    .{ .key = .@"cursor-style", .en = "The style of the cursor. This sets the default style. A running program can still request an explicit cursor style using escape sequences (such as `CSI q`). Shell configurations will often request specific cursor styles.", .zh = "光标的样式。这里设置的是默认样式；运行中的程序仍可用转义序列（如 `CSI q`）明确请求某种光标样式。Shell 的配置经常会请求特定的光标样式。" },
+    .{
+        .key = .@"cursor-style",
+        .en = "The style of the cursor. This sets the default style. A running program can still request an explicit cursor style using escape sequences (such as `CSI q`). Shell configurations will often request specific cursor styles.",
+        .zh = "光标的样式。这里设置的是默认样式；运行中的程序仍可用转义序列（如 `CSI q`）明确请求某种光标样式。Shell 的配置经常会请求特定的光标样式。",
+        .full_en =
+        \\The style of the cursor. This sets the default style. A running program can
+        \\still request an explicit cursor style using escape sequences (such as `CSI
+        \\q`). Shell configurations will often request specific cursor styles.
+        \\
+        \\Note that shell integration will automatically set the cursor to a bar at
+        \\a prompt, regardless of this configuration. You can disable that behavior
+        \\by specifying `shell-integration-features = no-cursor` or disabling shell
+        \\integration entirely.
+        \\
+        \\Valid values are:
+        \\
+        \\  * `block`
+        \\  * `bar`
+        \\  * `underline`
+        \\  * `block_hollow`
+        ,
+        .full_zh =
+        \\光标的样式。这里设置的是默认样式；运行中的程序仍可用转义序列（如 `CSI q`）明确请求某种光标样式。Shell 的配置经常会请求特定的光标样式。
+        \\
+        \\注意，无论这项配置如何，shell 集成都会在提示符处自动把光标设成竖线。可以通过指定 `shell-integration-features = no-cursor`，或完全禁用 shell 集成，来关闭这一行为。
+        \\
+        \\有效值：
+        \\
+        \\  * `block`
+        \\  * `bar`
+        \\  * `underline`
+        \\  * `block_hollow`
+        ,
+    },
     .{ .key = .@"cursor-style-blink", .en = "Sets the default blinking state of the cursor. This is just the default state; running programs may override the cursor style using `DECSCUSR` (`CSI q`).", .zh = "光标默认是否闪烁。这只是默认状态；运行中的程序可以用 `DECSCUSR`（`CSI q`）改变光标样式。" },
     .{ .key = .@"cursor-text", .en = "The color of the text under the cursor. If this is not set, a default will be chosen. Specified as either hex (`#RRGGBB` or `RRGGBB`) or a named X11 color. Since version 1.2.0, this can also be set to `cell-foreground` to match the cell foreground color, or `cell-background` to match the cell background color.", .zh = "光标下文字的颜色。不设置时会选用默认值。可写成十六进制（`#RRGGBB` 或 `RRGGBB`），或 X11 颜色名。自 1.2.0 版起，也可设为 `cell-foreground`（与单元格前景色一致）或 `cell-background`（与单元格背景色一致）。" },
     .{ .key = .@"cursor-click-to-move", .en = "Enables the ability to move the cursor at prompts by clicking on a location in the prompt text.", .zh = "允许在提示符处点击提示符文本中的某个位置来移动光标。" },

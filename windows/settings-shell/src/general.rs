@@ -222,6 +222,8 @@ pub struct Item {
     /// host fills it only when the interface is Chinese, so its presence is
     /// the whole decision: `None` shows Ghostty's English.
     pub doc_zh: Option<String>,
+    /// The Chinese for the whole of `doc` (phase B), filled on the same terms.
+    pub doc_full_zh: Option<String>,
     /// The form's own name and sentence for it, English msgids the host
     /// translates (#973); `None` for a key only in All Options.
     pub label: Option<String>,
@@ -609,7 +611,7 @@ pub fn has_more(it: &Item) -> bool {
 /// Ghostty's text in full.
 pub fn expanded_help(it: &Item, translate: impl Fn(&str) -> String) -> String {
     let line = row_help(it, &translate);
-    match it.doc.as_deref().map(str::trim) {
+    match it.doc_full_zh.as_deref().or(it.doc.as_deref()).map(str::trim) {
         Some(doc) if !doc.is_empty() => format!("{line}\n\n{doc}"),
         _ => line,
     }
@@ -1029,6 +1031,7 @@ mod tests {
             value: value.into(),
             doc: None,
             doc_zh: None,
+            doc_full_zh: None,
             label: None,
             summary: None,
             source: Source::Default,
@@ -1466,6 +1469,20 @@ mod tests {
         it.label = Some("Thicker".into());
         it.summary = Some("S".into());
         assert_eq!(row_help(&it, zh), "font-thicken  <S>");
+    }
+
+    /// Task 1751 phase B: "More…" opens the core's Chinese for the whole text
+    /// when the host handed it over, else Ghostty's English.
+    #[test]
+    fn more_opens_the_whole_text_in_chinese_when_it_has_it() {
+        let zh = |s: &str| format!("<{s}>");
+        let mut it = item("font-thicken", None, Control::Toggle, "false", "false");
+        it.label = None;
+        it.doc = Some("Draw fonts thicker.\n\nMore.".into());
+        it.doc_zh = Some("用更粗的笔画绘制字体。".into());
+        assert_eq!(expanded_help(&it, zh), "用更粗的笔画绘制字体。\n\nDraw fonts thicker.\n\nMore.");
+        it.doc_full_zh = Some("用更粗的笔画绘制字体。\n\n更多。".into());
+        assert_eq!(expanded_help(&it, zh), "用更粗的笔画绘制字体。\n\n用更粗的笔画绘制字体。\n\n更多。");
     }
 
     #[test]

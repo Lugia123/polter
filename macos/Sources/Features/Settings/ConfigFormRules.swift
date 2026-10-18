@@ -105,6 +105,9 @@ struct ConfigForm: Decodable, Equatable {
         /// The Chinese for the first paragraph of `doc` (task 1751); nil when
         /// there is none or the English has changed since it was made.
         var docZh: String?
+        /// The Chinese for the whole of `doc`, behind "More…" (task 1751, phase B);
+        /// nil when there is none or the English has changed since it was made.
+        var docFullZh: String?
         /// The form's own name and sentence for it, English msgids (#973);
         /// nil for a key that is only in All Options.
         var label: String?
@@ -117,7 +120,7 @@ struct ConfigForm: Decodable, Equatable {
         var id: String { key }
 
         private enum CodingKeys: String, CodingKey {
-            case key, group, control, choices, choiceLabels = "choice_labels", min, max, `default`, value, doc, docZh = "doc_zh", label, summary, source, readonly
+            case key, group, control, choices, choiceLabels = "choice_labels", min, max, `default`, value, doc, docZh = "doc_zh", docFullZh = "doc_full_zh", label, summary, source, readonly
             case choiceTemplate = "choice_template", on, off, aliases
         }
 
@@ -140,6 +143,7 @@ struct ConfigForm: Decodable, Equatable {
             value = try c.decode(String.self, forKey: .value)
             doc = try c.decodeIfPresent(String.self, forKey: .doc)
             docZh = try c.decodeIfPresent(String.self, forKey: .docZh)
+            docFullZh = try c.decodeIfPresent(String.self, forKey: .docFullZh)
             label = try c.decodeIfPresent(String.self, forKey: .label)
             summary = try c.decodeIfPresent(String.self, forKey: .summary)
             source = try c.decode(Source.self, forKey: .source)
@@ -258,6 +262,13 @@ enum ConfigFormRules {
         if let summary = item.summary { return localized(summary, bundle: bundle) }
         if let zh = item.docZh, speaksChinese(bundle) { return zh }
         return firstParagraph(item)
+    }
+
+    /// What "More…" opens: Ghostty's whole help text, in Chinese when the
+    /// interface is and the core has it (task 1751), else in English.
+    static func fullDoc(_ item: ConfigForm.Item, bundle: Bundle = .main) -> String? {
+        if let zh = item.docFullZh, speaksChinese(bundle) { return zh }
+        return item.doc
     }
 
     /// Ghostty's own first paragraph, in English, on one line.

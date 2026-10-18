@@ -892,7 +892,7 @@ fn writeSource(w: *std.Io.Writer, scan: *const Scan, t: ?Scan.Tally) !void {
 ///                 "choice_labels": [s|null]|null, "choice_template": s|null,
 ///                 "on": s|null, "off": s|null, "aliases": [s],
 ///                 "min"|null, "max"|null, "default", "value", "doc"|null,
-///                 "doc_zh"|null,
+///                 "doc_zh"|null, "doc_full_zh"|null,
 ///                 "source": {"kind": "default"|"main"|"file"|"cli", ...},
 ///                 "readonly": null|"repeatable"|"multiple"|"cli"|"file"}]}
 ///
@@ -1097,6 +1097,9 @@ noinline fn writeItem(
     // sends the Chinese and the host picks.
     try w.writeAll(",\"doc_zh\":");
     if (docZh(name)) |zh| try w.print("{f}", .{std.json.fmt(zh, .{})}) else try w.writeAll("null");
+    // ... and the whole text behind "More...", when it has been translated.
+    try w.writeAll(",\"doc_full_zh\":");
+    if (docFullZh(name)) |zh| try w.print("{f}", .{std.json.fmt(zh, .{})}) else try w.writeAll("null");
 
     const r = resolve(scan, key);
     try w.writeAll(",\"source\":");
@@ -1138,6 +1141,21 @@ pub fn docZh(comptime name: []const u8) ?[]const u8 {
         if (comptime std.mem.eql(u8, @tagName(e.key), name)) {
             if (comptime !docMatches(@field(help_strings.Config, name), e.en)) return null;
             return e.zh;
+        }
+    }
+    return null;
+}
+
+/// The Chinese for the whole of `name`'s help, or null when it has none, or
+/// when the English it was made from has since been edited in any way.
+pub fn docFullZh(comptime name: []const u8) ?[]const u8 {
+    @setEvalBranchQuota(20_000_000);
+    if (!@hasDecl(help_strings.Config, name)) return null;
+    inline for (doc_zh.entries) |e| {
+        if (comptime std.mem.eql(u8, @tagName(e.key), name)) {
+            if (comptime e.full_zh.len == 0) return null;
+            if (comptime !std.mem.eql(u8, @field(help_strings.Config, name), e.full_en)) return null;
+            return e.full_zh;
         }
     }
     return null;
@@ -2810,4 +2828,80 @@ test "doc_zh (1751): no entry for a key that is gone, and what is in backticks s
         }
     }
     try testing.expectEqual(@as(usize, 0), bad);
+}
+
+test "doc_zh (1751 B): a full translation is of the English as it is now and keeps its shape" {
+    @setEvalBranchQuota(20_000_000);
+    var bad: usize = 0;
+    inline for (doc_zh.entries) |e| {
+        if (comptime e.full_zh.len != 0 or e.full_en.len != 0) {
+            const name = comptime @tagName(e.key);
+            if (comptime !@hasDecl(help_strings.Config, name) or
+                !std.mem.eql(u8, @field(help_strings.Config, name), e.full_en))
+            {
+                std.debug.print("doc_zh: the help of '{s}' was edited; its full translation was made from older English\n", .{name});
+                bad += 1;
+            } else if (docFullZh(name) == null) {
+                std.debug.print("doc_zh: '{s}' has English but no Chinese for the whole text\n", .{name});
+                bad += 1;
+            } else if (!sameShape(e.full_en, e.full_zh, name)) {
+                bad += 1;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), bad);
+}
+
+/// Whether `zh` is built like `en`: the same number of paragraphs, every
+/// sample line (indented four or more, after a blank line or another sample)
+/// word for word, and everything `en` puts in backticks still in `zh`.
+fn sameShape(en: []const u8, zh: []const u8, name: []const u8) bool {
+    var ok = true;
+    if (std.mem.count(u8, en, "\n\n") != std.mem.count(u8, zh, "\n\n")) {
+        std.debug.print("doc_zh: '{s}' has a different number of paragraphs\n", .{name});
+        ok = false;
+    }
+    var after_blank = false;
+    var lines = std.mem.splitScalar(u8, en, '\n');
+    var in_sample = false;
+    while (lines.next()) |line| {
+        const indented = std.mem.startsWith(u8, line, "    ");
+        in_sample = indented and (after_blank or in_sample);
+        after_blank = line.len == 0;
+        if (in_sample and std.mem.indexOf(u8, zh, line) == null) {
+            std.debug.print("doc_zh: '{s}' changed the sample line `{s}`\n", .{ name, line });
+            ok = false;
+        }
+    }
+    // Backticks: a span may be broken over two lines in the English.
+    var flat: [32768]u8 = undefined;
+    const joined = flatten(&flat, en);
+    var spans = std.mem.splitScalar(u8, joined, '`');
+    var inside = false;
+    while (spans.next()) |s| : (inside = !inside) {
+        if (!inside or s.len == 0) continue;
+        var needle: [160]u8 = undefined;
+        const n = std.fmt.bufPrint(&needle, "`{s}`", .{s}) catch continue;
+        if (std.mem.indexOf(u8, zh, n) == null) {
+            std.debug.print("doc_zh: '{s}' lost `{s}`\n", .{ name, s });
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/// `en` with each newline (and the spaces after it) as one space; cut short
+/// where `buf` ends.
+fn flatten(buf: []u8, en: []const u8) []const u8 {
+    var n: usize = 0;
+    var prev_space = false;
+    for (en) |c| {
+        const sp = c == '\n' or c == ' ';
+        if (sp and prev_space) continue;
+        if (n == buf.len) break;
+        buf[n] = if (sp) ' ' else c;
+        n += 1;
+        prev_space = sp;
+    }
+    return buf[0..n];
 }

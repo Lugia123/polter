@@ -144,7 +144,7 @@ struct ConfigFormRow: View {
                         readonlyNote
                     }
                     help
-                    if showingMore, let doc = item.doc {
+                    if showingMore, let doc = ConfigFormRules.fullDoc(item) {
                         Text(doc)
                             .font(SettingsFont.minimum)
                             .foregroundStyle(.secondary)

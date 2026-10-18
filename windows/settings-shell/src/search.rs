@@ -227,6 +227,7 @@ mod tests {
             value: String::new(),
             doc: None,
             doc_zh: None,
+            doc_full_zh: None,
             label: Some(label.into()),
             summary: None,
             source: Source::Default,

@@ -17,7 +17,7 @@ struct ConfigFormRulesTests {
                  {"group":"window","keys":["window-save-state"]},{"group":"polter","keys":[]}],
      "items":[
       {"key":"theme","group":"appearance","control":"theme","choices":null,"min":null,"max":null,
-       "default":"","value":"light:A,dark:B","doc":"The theme.\n\nMore.","doc_zh":"主题。","source":{"kind":"main","path":"/home/me/.config/polter/config.polter","line":3},"readonly":null},
+       "default":"","value":"light:A,dark:B","doc":"The theme.\n\nMore.","doc_zh":"主题。","doc_full_zh":"主题。\n\n更多。","source":{"kind":"main","path":"/home/me/.config/polter/config.polter","line":3},"readonly":null},
       {"key":"background-opacity","group":"appearance","control":"number","choices":null,"min":0,"max":1,
        "default":"1","value":"0.9","doc":null,"source":{"kind":"file","path":"/home/me/extra","line":7},"readonly":"file"},
       {"key":"font-size","group":"font","control":"number","choices":null,"min":1,"max":null,
@@ -225,6 +225,10 @@ struct ConfigFormRulesTests {
         #expect(ConfigFormRules.sentence(theme, bundle: zh) == "主题。")
         #expect(ConfigFormRules.sentence(theme, bundle: .main) != "主题。" || ConfigFormRules.speaksChinese(.main))
         #expect(ConfigFormRules.hasMore(theme, bundle: zh))
+        // Phase B: "More…" opens the whole text in Chinese, else Ghostty's.
+        #expect(ConfigFormRules.fullDoc(theme, bundle: zh) == "主题。\n\n更多。")
+        #expect(ConfigFormRules.fullDoc(theme, bundle: .main) == theme.doc || ConfigFormRules.speaksChinese(.main))
+        #expect(ConfigFormRules.fullDoc(item("keybind"), bundle: zh) == item("keybind").doc)
         // No Chinese from the core: the English, whatever the interface.
         #expect(ConfigFormRules.sentence(item("keybind"), bundle: zh) == nil)
         #expect(!ConfigFormRules.hasMore(item("keybind")))
