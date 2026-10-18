@@ -6981,7 +6981,28 @@ fn poltergeistRead(
     const sel: terminal.Selection = .init(tl, br, false);
 
     const text = try surface.dumpTextLocked(alloc, sel);
-    return text.text;
+    return screenCopy(alloc, text.text);
+}
+
+/// What a read hands back: the text at exactly its own length, the
+/// selection's own copy freed. The selection's carries a 0 after it
+/// (`[:0]const u8`), and the callers free what they get as `[]const u8`:
+/// handed that one, every free was a byte short of the allocation, which
+/// the debug allocator said on every read (`Allocation size 386 bytes does
+/// not match free size 385`, task 1746, measured on a Debug build).
+fn screenCopy(alloc: Allocator, text: [:0]const u8) Allocator.Error![]const u8 {
+    defer alloc.free(text);
+    return alloc.dupe(u8, text);
+}
+
+test "poltergeistRead: what a read hands back is freed at the size it was allocated" {
+    // `testing.allocator` says a free of the wrong size as an error, which
+    // fails the test.
+    const alloc = std.testing.allocator;
+    const read = try alloc.dupeZ(u8, "$ ls\nREADME.md\n");
+    const screen = try screenCopy(alloc, read);
+    defer alloc.free(screen);
+    try std.testing.expectEqualStrings("$ ls\nREADME.md\n", screen);
 }
 
 /// Ask an apprt to rearrange a tab's panes.
