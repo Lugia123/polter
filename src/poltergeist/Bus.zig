@@ -270,6 +270,14 @@ pub const AgentState = enum {
 /// How long `expected` may wait for `session_started` before it is a fault.
 pub const hooks_expected_timeout_ms: u64 = 30 * std.time.ms_per_s;
 
+/// How long after a launch an agent has to connect from its terminal before
+/// the launch is said to have come to nothing (`launchWithNoAgent`, task
+/// 1712). The same minute a role's standing is held for
+/// (`PersonaStore.standing_wait_ms`): past it, nothing that connects is
+/// taken for the launch's agent anyway, so this only says out loud what
+/// already lapsed in silence.
+pub const launch_agent_wait_ms: u64 = 60 * std.time.ms_per_s;
+
 /// How long after an event the screen may still be drawing that event --
 /// the permission box, the last lines of an answer -- and have that count as
 /// the event's own redraw rather than as the screen moving on.
@@ -412,6 +420,19 @@ pub const Agent = struct {
     /// expected in the year five hundred million. Two facts, two fields.
     expected_said: bool,
 
+    /// When `+launch` said hooks were coming (`hooks_expected`), or null for
+    /// a terminal no launch is waiting on (task 1712). Unlike `expected_ms`
+    /// it is always the launch: what `launchWithNoAgent` counts from, for a
+    /// CLI that speaks at once and one that waits for its first turn alike.
+    launched_ms: ?u64,
+
+    /// An agent has connected from this terminal since `launched_ms`
+    /// (`noteAgentHere`). **What tells a launch that came to nothing from an
+    /// agent that came and went**: a Codex whose hooks wait for a first
+    /// turn is still `expected` after `/exit`, and its exit is not a failed
+    /// launch (`launchExitIsFailure`).
+    connected: bool,
+
     session_id: Small(96),
     /// The subagent the last event came from; empty for the main agent
     /// (`AgentEvent.Event.agent_id`). What a finished tool call is paired
@@ -490,6 +511,8 @@ pub const Agent = struct {
         .since_ms = 0,
         .expected_ms = null,
         .expected_said = false,
+        .launched_ms = null,
+        .connected = false,
         .last_event_ms = null,
         .session_id = .{},
         .agent_id = .{},
@@ -1293,6 +1316,8 @@ pub fn noteAgentHere(self: *Bus, id: Id, here: bool, program: ?Program, now_ms: 
     e.agent_here = here;
     if (here) {
         if (program) |p| e.agent_program = p;
+        // The launch being waited on got its agent (task 1712).
+        if (e.agent.hooks == .expected) e.agent.connected = true;
         // Back: whatever was about to be said, or was said and not yet
         // read, about it being gone is no longer true.
         e.link_lost = null;
@@ -2021,6 +2046,7 @@ pub fn agentEvent(
         e.agent.pending = .launch_failed;
         e.agent.handed = 0;
         e.agent.detail.set(ev.detail);
+        e.agent.note.set(ev.note);
         e.agent.since_ms = now_ms;
         return true;
     }
@@ -2069,6 +2095,7 @@ pub fn agentEvent(
             a.* = .none;
             a.hooks = .expected;
             a.expected_ms = if (AgentEvent.heardAtFirstTurn(ev.detail)) null else now_ms;
+            a.launched_ms = now_ms;
             a.since_ms = now_ms;
             e.left = null;
             if (ev.cli.len > 0) a.cli.set(ev.cli);
@@ -2535,7 +2562,7 @@ pub fn slashCommandLine(row: []const u8) bool {
 /// most needs to hear about.
 ///
 /// Answers whether anything went in the box.
-pub fn tellLaunchFailed(self: *Bus, id: Id, launcher: Id, detail: ?[]const u8, now_ms: u64) Allocator.Error!bool {
+pub fn tellLaunchFailed(self: *Bus, id: Id, launcher: Id, detail: ?[]const u8, note: ?[]const u8, now_ms: u64) Allocator.Error!bool {
     if (launcher == id) return false;
     const minder = self.entries.get(launcher) orelse return false;
     if (minder.role != .supervisor) return false;
@@ -2547,8 +2574,58 @@ pub fn tellLaunchFailed(self: *Bus, id: Id, launcher: Id, detail: ?[]const u8, n
     e.agent.pending = .launch_failed;
     e.agent.handed = 0;
     e.agent.detail.set(detail);
+    e.agent.note.set(note);
     e.agent.since_ms = now_ms;
     return true;
+}
+
+/// Whether a CLI in `id` that exited at once (`LaunchFailure.exited`) was
+/// the launch failing (task 1712): its hooks are still awaited, and no
+/// agent has connected since the launch. **Not when one did** -- that is
+/// an agent that came and left, and its going is said the way any agent's
+/// is; and not in a terminal no launch is waiting on.
+pub fn launchExitIsFailure(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return false;
+    if (e.agent.hooks != .expected) return false;
+    if (e.agent.launched_ms == null) return false;
+    return !e.agent.connected;
+}
+
+/// A terminal whose launch has waited `launch_agent_wait_ms` with no agent
+/// connecting from it, or null (task 1712). The caller says so the way
+/// `+launch` says a failure (`LaunchFailure.no_agent`), which takes the
+/// expectation back -- so each launch is answered once, and the next one
+/// is a new wait. One at a time; the caller asks until there is none.
+///
+/// **It is what covers every way a launch can come to nothing**, including
+/// the ones `+launch` cannot see: on POSIX it becomes the CLI, so a CLI
+/// that exits at once, or one that hangs before Polter hears from it,
+/// used to leave `hooks: expected` standing with nobody told.
+///
+/// `present` is asked, for every launch still waiting, whether an agent is
+/// listening in it now (`Server.agentPresent`), and a yes is remembered as
+/// `connected`. Asked here and not only in `noteAgentHere` because that
+/// runs for watched terminals alone, and a launch nobody watches whose
+/// agent is sitting at its prompt would otherwise be said to have failed.
+pub fn launchWithNoAgent(
+    self: *Bus,
+    now_ms: u64,
+    ctx: *anyopaque,
+    present: *const fn (ctx: *anyopaque, id: Id) bool,
+) ?Id {
+    var it = self.entries.iterator();
+    while (it.next()) |kv| {
+        const a = &kv.value_ptr.agent;
+        if (a.hooks != .expected or a.connected) continue;
+        const began = a.launched_ms orelse continue;
+        if (present(ctx, kv.key_ptr.*)) {
+            a.connected = true;
+            continue;
+        }
+        if (now_ms -| began < launch_agent_wait_ms) continue;
+        return kv.key_ptr.*;
+    }
+    return null;
 }
 
 /// Put a line in the box for every watched terminal whose hooks were
@@ -3435,10 +3512,24 @@ fn writeAgent(
             "{s}0x{x:0>16} hooks expected {d}s ago and nothing heard (no session_started)",
             .{ sep, id, (now_ms -| (a.expected_ms orelse a.eventMs())) / std.time.ms_per_s },
         ),
-        .launch_failed => try w.print(
-            "{s}0x{x:0>16} launch failed {d}s ago ({s}); the terminal is at its shell, terminal_read has the reason",
-            .{ sep, id, ago_s, a.detail.get() orelse "failed" },
-        ),
+        .launch_failed => switch (AgentEvent.LaunchFailure.parse(a.detail.get())) {
+            .not_found, .failed => try w.print(
+                "{s}0x{x:0>16} launch failed {d}s ago ({s}); the terminal is at its shell, terminal_read has the reason",
+                .{ sep, id, ago_s, a.detail.get() orelse "failed" },
+            ),
+            // The CLI ran and was gone at once: its code says it failed,
+            // and its last line on the screen says why (task 1712).
+            .exited => try w.print(
+                "{s}0x{x:0>16} launch failed {d}s ago (exited: {s}); the CLI started and exited at once, terminal_read has its last words",
+                .{ sep, id, ago_s, a.note.get() orelse "a failing code" },
+            ),
+            // Not "at its shell": what is in the terminal is not known,
+            // only that nothing connected from it (task 1712).
+            .no_agent => try w.print(
+                "{s}0x{x:0>16} launch failed {d}s ago (no_agent): no agent connected within {d}s of the launch; terminal_read shows what is there",
+                .{ sep, id, ago_s, launch_agent_wait_ms / std.time.ms_per_s },
+            ),
+        },
     }
 }
 
@@ -5300,7 +5391,7 @@ test "hooks: a launch that failed is told to the supervisor that ran it, watched
     failed.detail = "not_found";
     const by_watch = try b.agentEvent(fresh, failed, 100);
     try testing.expect(!by_watch);
-    const told = try b.tellLaunchFailed(fresh, boss, "not_found", 100);
+    const told = try b.tellLaunchFailed(fresh, boss, "not_found", null, 100);
     try testing.expect(told);
 
     var buf: [255]u8 = undefined;
@@ -5315,10 +5406,10 @@ test "hooks: a launch that failed is told to the supervisor that ran it, watched
     // A later launch that fails is said again once what was said has gone
     // out; while it is still in the box it is not said twice. A launch the
     // person ran is not a supervisor's to hear about.
-    const again = try b.tellLaunchFailed(fresh, boss, "not_found", 300);
+    const again = try b.tellLaunchFailed(fresh, boss, "not_found", null, 300);
     try testing.expect(again);
-    try testing.expect(!(try b.tellLaunchFailed(fresh, boss, "not_found", 301)));
-    const by_person = try b.tellLaunchFailed(0xf2e6, 0x1, "failed", 400);
+    try testing.expect(!(try b.tellLaunchFailed(fresh, boss, "not_found", null, 301)));
+    const by_person = try b.tellLaunchFailed(0xf2e6, 0x1, "failed", null, 400);
     try testing.expect(!by_person);
 }
 
@@ -5330,6 +5421,112 @@ test "hooks: a launch that failed in a terminal nobody watches is not put in the
     _ = try b.agentEvent(loose, hookEv(.hooks_expected), 0);
     const boxed = try b.agentEvent(loose, hookEv(.launch_failed), 10);
     try testing.expect(!boxed);
+}
+
+/// `present` for `launchWithNoAgent`, as the two answers a test needs.
+const Presence = struct {
+    var ctx: u8 = 0;
+    fn yes(_: *anyopaque, _: Id) bool {
+        return true;
+    }
+    fn no(_: *anyopaque, _: Id) bool {
+        return false;
+    }
+};
+
+/// A `hooks_expected` from a CLI whose hooks wait for its first turn
+/// (Codex): the case with no thirty seconds running behind it.
+fn firstTurnExpected() AgentEvent.Event {
+    var ev = hookEv(.hooks_expected);
+    ev.detail = AgentEvent.hooksExpectedDetail(true);
+    return ev;
+}
+
+test "hooks: a CLI gone at once says its exit code to whoever watches it (task 1712)" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    _ = try b.agentEvent(worker, firstTurnExpected(), 0);
+    // Nothing has connected: its going is the launch failing.
+    const counts = b.launchExitIsFailure(worker);
+    try testing.expect(counts);
+
+    var exited = hookEv(.launch_failed);
+    exited.detail = "exited";
+    exited.note = "exit code 2 after 0.3 s";
+    const boxed = try b.agentEvent(worker, exited, 400);
+    try testing.expect(boxed);
+    const hooks = b.agentOf(worker).hooks;
+    try testing.expectEqual(Hooks.none, hooks);
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, 1_000, &buf, .none) orelse return error.TestUnexpectedResult;
+    const failed = std.mem.indexOf(u8, line, "launch failed") != null;
+    try testing.expect(failed);
+    const code = std.mem.indexOf(u8, line, "(exited: exit code 2 after 0.3 s)") != null;
+    try testing.expect(code);
+
+    // And to the supervisor that ran it, when nobody watches it.
+    const loose: Id = 0x10cf;
+    _ = try b.agentEvent(loose, firstTurnExpected(), 0);
+    _ = try b.agentEvent(loose, exited, 400);
+    const told = try b.tellLaunchFailed(loose, boss, "exited", "exit code 2 after 0.3 s", 400);
+    try testing.expect(told);
+    const line2 = b.drain(boss, 1_000, &buf, .none) orelse return error.TestUnexpectedResult;
+    const code2 = std.mem.indexOf(u8, line2, "exit code 2") != null;
+    try testing.expect(code2);
+}
+
+test "hooks: a launch no agent came from is said to have failed at the minute, once (task 1712)" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // Started, and nothing ever connects -- a CLI that hangs before Polter
+    // hears from it, or one that exited where `+launch` could not see.
+    _ = try b.agentEvent(worker, firstTurnExpected(), 0);
+    const early = b.launchWithNoAgent(launch_agent_wait_ms - 1, &Presence.ctx, Presence.no);
+    try testing.expect(early == null);
+    const due = b.launchWithNoAgent(launch_agent_wait_ms, &Presence.ctx, Presence.no);
+    try testing.expectEqual(@as(?Id, worker), due);
+
+    // Said the way `+launch` says a failure, it is answered: once.
+    var none = hookEv(.launch_failed);
+    none.detail = "no_agent";
+    const boxed = try b.agentEvent(worker, none, launch_agent_wait_ms);
+    try testing.expect(boxed);
+    const again = b.launchWithNoAgent(2 * launch_agent_wait_ms, &Presence.ctx, Presence.no);
+    try testing.expect(again == null);
+
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, launch_agent_wait_ms + 1, &buf, .none) orelse return error.TestUnexpectedResult;
+    const said = std.mem.indexOf(u8, line, "no agent connected within 60s of the launch") != null;
+    try testing.expect(said);
+    // Not "at its shell": that is not known of a CLI that may still run.
+    const no_shell_claim = std.mem.indexOf(u8, line, "at its shell") == null;
+    try testing.expect(no_shell_claim);
+}
+
+test "hooks: an agent that connected is never a launch with no agent, watched or not (task 1712)" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    // Nobody watches it, so `noteAgentHere` never runs for it: its agent
+    // is seen by being asked about.
+    const loose: Id = 0x10d0;
+    _ = try b.agentEvent(loose, firstTurnExpected(), 0);
+    const seen = b.launchWithNoAgent(10_000, &Presence.ctx, Presence.yes);
+    try testing.expect(seen == null);
+    // Gone again (`/exit` before a first turn): it still came.
+    const later = b.launchWithNoAgent(2 * launch_agent_wait_ms, &Presence.ctx, Presence.no);
+    try testing.expect(later == null);
+    const exit_counts = b.launchExitIsFailure(loose);
+    try testing.expect(!exit_counts);
+
+    // A watched one, seen by `noteAgentHere`, the same.
+    _ = try b.agentEvent(worker, firstTurnExpected(), 0);
+    b.noteAgentHere(worker, true, null, 5_000);
+    const watched = b.launchWithNoAgent(2 * launch_agent_wait_ms, &Presence.ctx, Presence.no);
+    try testing.expect(watched == null);
 }
 
 test "hooks: expected with no session_started for 30s is put in the box" {

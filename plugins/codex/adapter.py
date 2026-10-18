@@ -450,7 +450,7 @@ def inventory(req):
         "version": CONTRACT_VERSION,
         "installed": on_path("codex") is not None,
         "resume": True,
-        "options": launch_options(help_text(BINARY)),
+        "options": launch_options(codex_help()),
         "items": [public(i) for i in unique],
         "notes": notes,
     }
@@ -482,6 +482,22 @@ def help_text(binary):
     except (OSError, subprocess.SubprocessError):
         return None
     return p.stdout if p.returncode == 0 and p.stdout else None
+
+
+_HELP = []
+
+
+def codex_help():
+    """`help_text(BINARY)`, read once per request: a launch asks it twice
+    (the options and `--no-daemon`), and on Windows each read starts node."""
+    if not _HELP:
+        _HELP.append(help_text(BINARY))
+    return _HELP[0]
+
+
+def takes_flag(text, flag):
+    """Whether `--help` lists `flag` as an option of its own."""
+    return re.search(r"^\s*(-\w, )?%s\b" % re.escape(flag), text or "", re.M) is not None
 
 
 def flag_values(text, flag):
@@ -554,7 +570,7 @@ def apply_options(cli, extra, notes):
     picked = cli.get("options") or {}
     if not isinstance(picked, dict) or not picked:
         return []
-    offered = {o["key"]: o for o in launch_options(help_text(BINARY))}
+    offered = {o["key"]: o for o in launch_options(codex_help())}
     args = []
     for key, value in picked.items():
         o = offered.get(key)
@@ -703,7 +719,21 @@ def launch(req):
     # task 1668); `--no-daemon` says it outright, so a later Codex that
     # changes that rule does not quietly change this. Accepted by `codex` and
     # `codex resume` alike (0.163, checked against an unknown flag).
-    argv = ["codex"] + (["resume", session] if session else []) + ["--no-daemon"] + opts + extra
+    #
+    # **Only when this Codex's `--help` lists it** (task 1712). It came in
+    # with the daemon; 0.154 has neither, refuses the flag as an unexpected
+    # argument and exits, and a role -- a resume too -- never started.
+    # Left out when the help could not be read as well: a flag that kills
+    # the launch is the worse guess than a session that may share a daemon.
+    daemon = []
+    text = codex_help()
+    if takes_flag(text, "--no-daemon"):
+        daemon = ["--no-daemon"]
+    elif text is None:
+        notes.append("Could not read codex --help, so --no-daemon was left out; signed in to a ChatGPT account, this session may run in Codex's shared background server.")
+    else:
+        notes.append("This Codex does not take --no-daemon (its --help does not list it), so it was left out.")
+    argv = ["codex"] + (["resume", session] if session else []) + daemon + opts + extra
 
     answer = {
         "version": CONTRACT_VERSION,

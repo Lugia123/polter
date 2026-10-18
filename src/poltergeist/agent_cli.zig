@@ -2039,7 +2039,7 @@ fn standInClis(aa: Allocator, io: std.Io, env: *std.process.Environ.Map, root: [
             "codex",
             \\#!/bin/sh
             \\case "$1" in
-            \\  --help) printf '%s\n' 'Options:' '  -s, --sandbox <MODE>' '          [possible values: stand-in]' ;;
+            \\  --help) printf '%s\n' 'Options:' '  -s, --sandbox <MODE>' '          [possible values: stand-in]' '      --no-daemon' ;;
             \\  *) exit 1 ;;
             \\esac
             \\

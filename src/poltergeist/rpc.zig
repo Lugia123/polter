@@ -5447,12 +5447,14 @@ pub const Host = struct {
         /// start. Whatever was waiting on an agent from that terminal stops
         /// waiting now and says why: the standing a role launch was holding
         /// (`PersonaStore.dropStanding`), and the group the control room
-        /// was starting a supervisor for.
+        /// was starting a supervisor for. `note` is what goes with `why`
+        /// (an exit code, task 1712), or null.
         launchFailed: *const fn (
             ctx: *anyopaque,
             bus: *Bus,
             id: Bus.Id,
             why: AgentEvent.LaunchFailure,
+            note: ?[]const u8,
         ) void,
 
         /// Whether an agent is listening in this terminal right now.
@@ -7066,11 +7068,18 @@ fn dispatchOne(
             // because this arm, unlike a read, would register the caller:
             // `not_a_terminal` must never become an entry with a state.
             const id = who.terminalId() orelse return failure(error.NotATerminal);
+            // **A CLI that exited at once failed its launch only if no agent
+            // ever came** (task 1712). One that connected and then quit --
+            // a Codex told `/exit` before its first turn, whose hooks are
+            // still awaited -- is an agent that left; nothing is taken back
+            // and nobody is told the launch failed.
+            if (ev.event == .launch_failed and AgentEvent.LaunchFailure.parse(ev.detail) == .exited and
+                !bus.launchExitIsFailure(id)) return .ok;
             _ = try bus.agentEvent(id, ev, host.nowMs());
             // After the bus has taken back what the launch said to expect:
             // whoever was waiting for an agent from here is told now.
             if (ev.event == .launch_failed) {
-                host.vtable.launchFailed(host.ctx, bus, id, AgentEvent.LaunchFailure.parse(ev.detail));
+                host.vtable.launchFailed(host.ctx, bus, id, AgentEvent.LaunchFailure.parse(ev.detail), ev.note);
             }
             // What an agent said, after the bus has it: the same two that
             // do not show an agent are not one being heard.
@@ -9958,7 +9967,7 @@ const FakeHost = struct {
     /// What `membership` answers; null is a host that cannot say.
     membership_is: ?wire.Membership = null,
     /// What `launchFailed` was last told.
-    launch_failed: ?struct { id: Bus.Id, why: AgentEvent.LaunchFailure } = null,
+    launch_failed: ?struct { id: Bus.Id, why: AgentEvent.LaunchFailure, note: ?[]const u8 } = null,
 
     /// The screenshot tools: what the user's switch says, what the apprt
     /// answers to each kind of request, and what it was last asked.
@@ -10933,9 +10942,9 @@ const FakeHost = struct {
         return self.membership_is orelse error.NoSuchGroup;
     }
 
-    fn launchFailed(ctx: *anyopaque, _: *Bus, id: Bus.Id, why: AgentEvent.LaunchFailure) void {
+    fn launchFailed(ctx: *anyopaque, _: *Bus, id: Bus.Id, why: AgentEvent.LaunchFailure, note: ?[]const u8) void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
-        self.launch_failed = .{ .id = id, .why = why };
+        self.launch_failed = .{ .id = id, .why = why, .note = note };
         const store = self.personas orelse return;
         _ = store.dropStanding(id);
     }
@@ -15073,6 +15082,75 @@ test "launched standing: a launcher that says its CLI did not start gives the st
     try testing.expectEqual(Bus.Role.none, try roleIn(try dispatch(alloc, &bus, fake.host(), term(fresh), .me)));
     const supervisor_by_hand = bus.isSupervisor(fresh);
     try testing.expect(!supervisor_by_hand);
+}
+
+fn firstTurnExpectedEvent() AgentEvent.Event {
+    var ev = hookEvent(.hooks_expected);
+    ev.session_id = null;
+    ev.detail = AgentEvent.hooksExpectedDetail(true);
+    return ev;
+}
+
+fn exitedEvent() AgentEvent.Event {
+    var ev = launchFailedEvent("exited");
+    ev.note = "exit code 2 after 0.3 s";
+    return ev;
+}
+
+test "launched standing: a CLI gone at once before any agent came failed its launch, and says its code (task 1712)" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    // Codex 0.154 handed `--no-daemon`: started, refused it, exit 2.
+    try store.setPersona(fresh, "lead");
+    try store.holdStanding(fresh, boss, standing_roles[0].polter, 0);
+    fake.now_ms = 400;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = firstTurnExpectedEvent() });
+    fake.now_ms = 700;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = exitedEvent() });
+
+    const told = fake.launch_failed orelse return error.HostWasNotTold;
+    try testing.expectEqual(AgentEvent.LaunchFailure.exited, told.why);
+    const code = told.note != null and std.mem.indexOf(u8, told.note.?, "exit code 2") != null;
+    try testing.expect(code);
+    // No longer `expected`: what `terminal_list` showed for a minute and more.
+    const hooks = bus.agentOf(fresh).hooks;
+    try testing.expectEqual(Bus.Hooks.none, hooks);
+}
+
+test "launched standing: an agent that connected and then quit is not a failed launch (task 1712)" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bus = try testBus(testing.allocator);
+    defer bus.deinit();
+    var store = standingStore();
+    defer store.deinit();
+    var fake: FakeHost = .{ .personas = &store, .known = &.{ boss, worker, other, fresh } };
+
+    try store.setPersona(fresh, "lead");
+    try store.holdStanding(fresh, boss, standing_roles[0].polter, 0);
+    fake.now_ms = 400;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = firstTurnExpectedEvent() });
+    // Its agent connected -- Codex's hooks still wait for a first turn --
+    // and was told `/exit`, which a CLI may answer with any code.
+    bus.noteAgentHere(fresh, true, null, 2_000);
+    fake.now_ms = 3_000;
+    _ = try dispatch(alloc, &bus, fake.host(), term(fresh), .{ .agent_event = exitedEvent() });
+
+    const not_told = fake.launch_failed == null;
+    try testing.expect(not_told);
+    // Nothing taken back on a failure's account.
+    const hooks = bus.agentOf(fresh).hooks;
+    try testing.expectEqual(Bus.Hooks.expected, hooks);
 }
 
 test "launched standing: a worker's launch that failed is not handed to its supervisor later" {

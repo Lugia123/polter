@@ -695,7 +695,7 @@ function Get-Inventory($Req) {
     $answer['version'] = $ContractVersion
     $answer['installed'] = $null -ne (Resolve-CodexCommand)
     $answer['resume'] = $true
-    $answer['options'] = Get-LaunchOptions (Get-HelpText)
+    $answer['options'] = Get-LaunchOptions (Get-CodexHelp)
     $answer['items'] = $public
     $answer['notes'] = $notes
     return , $answer
@@ -814,6 +814,24 @@ function Get-HelpText {
     }
 }
 
+# `Get-HelpText`, read once per request (see `codex_help` in adapter.py).
+$script:HelpRead = $false
+$script:HelpCache = $null
+function Get-CodexHelp {
+    if (-not $script:HelpRead) {
+        $script:HelpCache = Get-HelpText
+        $script:HelpRead = $true
+    }
+    return $script:HelpCache
+}
+
+# Whether `--help` lists `$Flag` as an option of its own (see `takes_flag`).
+function Test-TakesFlag([string]$Text, [string]$Flag) {
+    if ($null -eq $Text) { return $false }
+    $f = [regex]::Escape($Flag)
+    return [regex]::IsMatch($Text, "(?m)^\s*(-\w, )?$f\b")
+}
+
 # The values `--help` lists for `$Flag`, in its order; none when it lists none.
 function Get-FlagValues([string]$Text, [string]$Flag) {
     $out = New-List
@@ -923,7 +941,7 @@ function Get-AppliedOptions($Cli, $Extra, $Notes) {
     if (-not (Test-Truthy $picked)) { return , $args0 }
     if (-not (Test-JDict $picked)) { return , $args0 }
     $offered = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::Ordinal)
-    foreach ($o in (Get-LaunchOptions (Get-HelpText))) { $offered[[string]$o['key']] = $o }
+    foreach ($o in (Get-LaunchOptions (Get-CodexHelp))) { $offered[[string]$o['key']] = $o }
     foreach ($key in (Get-JKeys $picked)) {
         $value = Get-J $picked $key
         if (-not $offered.ContainsKey($key)) {
@@ -1118,8 +1136,16 @@ function Get-Launch($Req) {
     $argv = New-List
     foreach ($s in $start) { $argv.Add($s) }
     if ($null -ne $session) { $argv.Add('resume'); $argv.Add($session) }
-    # Always in its own process: see `launch` in adapter.py.
-    $argv.Add('--no-daemon')
+    # Always in its own process, when this Codex takes the flag: see `launch`
+    # in adapter.py (tasks 1667, 1712).
+    $text = Get-CodexHelp
+    if (Test-TakesFlag $text '--no-daemon') {
+        $argv.Add('--no-daemon')
+    } elseif ($null -eq $text) {
+        $notes.Add('Could not read codex --help, so --no-daemon was left out; signed in to a ChatGPT account, this session may run in Codex''s shared background server.')
+    } else {
+        $notes.Add('This Codex does not take --no-daemon (its --help does not list it), so it was left out.')
+    }
     foreach ($o in $opts) { $argv.Add($o) }
     foreach ($e in $extra) { $argv.Add($e) }
 

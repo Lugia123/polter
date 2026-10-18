@@ -106,6 +106,9 @@ Options:
 
       --search
           Enable live web search.
+
+      --no-daemon
+          Run without the shared background server, even if it is already running
 """
 
 

@@ -920,6 +920,9 @@ pub fn startFailureOf(why: @import("agent_event.zig").LaunchFailure) StartFailur
     return switch (why) {
         .not_found => .cli_not_found,
         .failed => .cli_did_not_start,
+        // Started and gone, or never heard from: either way no agent
+        // reached Polter (task 1712).
+        .exited, .no_agent => .agent_never_connected,
     };
 }
 

@@ -78,6 +78,20 @@ pub const LaunchFailure = enum {
     /// it, the adapter gave no command, the role is not there, the program
     /// is there and could not be run.
     failed,
+    /// The CLI started and was gone again at once, with a failing code
+    /// (`exitedAtOnce`; task 1712): Codex 0.154 handed a flag it does not
+    /// take prints one line and exits 2. Said by `+launch` where it waits
+    /// for the CLI (Windows); `note` has the code and how long it ran. The
+    /// bus takes it as a failed launch only while no agent has connected
+    /// since the launch (`Bus.launchExitIsFailure`) -- an agent that did
+    /// connect and then quit is an agent that left.
+    exited,
+    /// Nothing connected from the terminal within `Bus.launch_agent_wait_ms`
+    /// of the launch (task 1712). Said by the app, not by `+launch`: on
+    /// POSIX `+launch` becomes the CLI and is not there to see it exit, so
+    /// this is the one report that covers every way a launch can come to
+    /// nothing.
+    no_agent,
 
     /// What `detail` says; `failed` for a word this build does not know,
     /// so that a newer `+launch` is still heard as a failure.
@@ -86,6 +100,20 @@ pub const LaunchFailure = enum {
         return std.meta.stringToEnum(LaunchFailure, d) orelse .failed;
     }
 };
+
+/// How soon a CLI that `+launch` started may exit, with a failing code,
+/// and have that read as the launch failing rather than as the CLI's own
+/// end (task 1712). A refused flag or a missing sign-in exits in well under
+/// a second; fifteen leaves room for a cold Windows machine and stays far
+/// short of a session anybody used.
+pub const exited_at_once_ms: u64 = 15 * std.time.ms_per_s;
+
+/// Whether a CLI that exited with `code` after `ran_ms` came to nothing
+/// (`LaunchFailure.exited`). A code of zero is the CLI's own choice --
+/// `/exit` before a first turn, a `--version` -- and is never one.
+pub fn exitedAtOnce(code: u8, ran_ms: u64) bool {
+    return code != 0 and ran_ms < exited_at_once_ms;
+}
 
 /// The most of a final answer that is carried. `terminal_turn` hands out
 /// no more than this, and the request that carries it has to fit under
@@ -556,6 +584,22 @@ test "launch failure: the word a launcher gives, and any other word is still a f
     try testing.expectEqual(LaunchFailure.failed, LaunchFailure.parse("failed"));
     try testing.expectEqual(LaunchFailure.failed, LaunchFailure.parse("something_newer"));
     try testing.expectEqual(LaunchFailure.failed, LaunchFailure.parse(null));
+    try testing.expectEqual(LaunchFailure.exited, LaunchFailure.parse("exited"));
+    try testing.expectEqual(LaunchFailure.no_agent, LaunchFailure.parse("no_agent"));
+}
+
+test "launch failure: a CLI gone at once with a failing code came to nothing; a clean exit never did (task 1712)" {
+    // Codex 0.154 refusing `--no-daemon`: exit 2, a fraction of a second.
+    const refused = exitedAtOnce(2, 300);
+    try testing.expect(refused);
+    const just_inside = exitedAtOnce(1, exited_at_once_ms - 1);
+    try testing.expect(just_inside);
+    // A session that ran its course and failed on the way out is the CLI's.
+    const later = exitedAtOnce(1, exited_at_once_ms);
+    try testing.expect(!later);
+    // `/exit` before a first turn, `--version`: its own choice, however soon.
+    const clean = exitedAtOnce(0, 100);
+    try testing.expect(!clean);
 }
 
 test "claude-code SessionStart is session_started with its source" {

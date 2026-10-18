@@ -2382,6 +2382,7 @@ fn poltergeistReport(
     self.considerGroupNotes(now_ms);
     // Before `considerCalls`, which asks the same question (#63).
     self.notePoltergeistAgentsHere();
+    _ = self.considerLaunches(now_ms);
     _ = self.poltergeist.considerCalls(now_ms);
     _ = self.poltergeist.considerAgents(now_ms);
     self.considerWorkerNudge(from, event);
@@ -2414,6 +2415,7 @@ fn poltergeistHeartbeat(
     self.poltergeist.noteQuiet(from, quiet_ms, now_ms);
     self.capturePermissionBox(from, now_ms);
     self.notePoltergeistAgentsHere();
+    _ = self.considerLaunches(now_ms);
     _ = self.poltergeist.considerCalls(now_ms);
     _ = self.poltergeist.considerAgents(now_ms);
     self.deliverPoltergeistNotices(now_ms);
@@ -4398,6 +4400,12 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     poltergeistpkg.rpc.noteCall(&self.poltergeist, caller, pending.request, now_ms);
     if (was_silent) self.refreshPoltergeistTabs();
 
+    // A launch that never got its agent, said on the next request from
+    // anybody (task 1712). Here as well as on the screen reports because a
+    // terminal nobody watches sends none, and the supervisor that ran the
+    // launch is asking for things all the time.
+    if (self.considerLaunches(now_ms)) self.deliverPoltergeistNotices(now_ms);
+
     // An agent's hook may have put something in a box (a turn ended, a
     // prompt is up). Offered now rather than on the next screen report,
     // which for a terminal that has just gone still is a whole threshold
@@ -5299,6 +5307,7 @@ fn poltergeistLaunchFailed(
     _: *poltergeistpkg.Bus,
     id: poltergeistpkg.Bus.Id,
     why: poltergeistpkg.agent_event.LaunchFailure,
+    note: ?[]const u8,
 ) void {
     const self: *App = @ptrCast(@alignCast(ctx));
     _ = self.personas.dropStanding(id);
@@ -5308,7 +5317,7 @@ fn poltergeistLaunchFailed(
     // 1667): a role whose watch waits for its agent never gets one when the
     // agent never comes.
     if (self.personas.launcherOf(id)) |by| {
-        const told = self.poltergeist.tellLaunchFailed(id, by, @tagName(why), self.poltergeistElapsedMs()) catch false;
+        const told = self.poltergeist.tellLaunchFailed(id, by, @tagName(why), note, self.poltergeistElapsedMs()) catch false;
         if (told) log.info("poltergeist: told 0x{x} that the launch in 0x{x} started nothing ({t})", .{ by, id, why });
     }
 
@@ -5316,6 +5325,34 @@ fn poltergeistLaunchFailed(
     self.chat.failStart(group, poltergeistpkg.Chat.startFailureOf(why));
     log.info("control room: the supervisor it was starting did not start; its launcher said so ({t})", .{why});
     self.controlRoomTouch();
+}
+
+/// Every launch that has waited `Bus.launch_agent_wait_ms` with no agent
+/// connecting from its terminal is said to have failed, the way `+launch`
+/// says a failure (task 1712): the bus takes back what it expected, the
+/// standing and a control-room start are let go, and whoever ran the launch
+/// is told. Answers whether there was any.
+///
+/// Before it, a CLI that exited at once on POSIX -- where `+launch` becomes
+/// the CLI and is not there to see it -- left `hooks: expected` standing
+/// and nobody told. `notePoltergeistAgentsHere` should have run first, so
+/// an agent that is there has been seen to be.
+fn considerLaunches(self: *App, now_ms: u64) bool {
+    var any = false;
+    // Each one answered takes its expectation back, so this ends; the
+    // bound is for a bus that, by some fault, did not.
+    var left: usize = self.poltergeist.entries.count();
+    while (left > 0) : (left -= 1) {
+        const id = self.poltergeist.launchWithNoAgent(now_ms, self, poltergeistAgentPresent) orelse break;
+        var ev: poltergeistpkg.agent_event.Event = .none;
+        ev.event = .launch_failed;
+        ev.detail = @tagName(poltergeistpkg.agent_event.LaunchFailure.no_agent);
+        _ = self.poltergeist.agentEvent(id, ev, now_ms) catch break;
+        poltergeistLaunchFailed(self, &self.poltergeist, id, .no_agent, null);
+        log.info("poltergeist: no agent connected from 0x{x} within a minute of its launch", .{id});
+        any = true;
+    }
+    return any;
 }
 
 /// Open a terminal for a role and start the role there: a tab or a split,

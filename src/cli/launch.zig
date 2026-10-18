@@ -325,14 +325,29 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
     };
     // The system started it. Whatever it exits with from here is its own.
     progress.started = true;
+    const began: std.Io.Timestamp = .now(io, .awake);
     const term = child.wait(io) catch |err| {
         try err_out.print("Polter: lost track of {s} ({t}).\n", .{ launch.argv[0], err });
         return 1;
     };
-    return switch (term) {
-        .exited => |code| code,
+    const code: u8 = switch (term) {
+        .exited => |c| c,
         else => 1,
     };
+    // **Gone at once, with a failing code: the launch came to nothing**
+    // (task 1712), and Polter is told so with the code -- Codex 0.154
+    // refusing a flag left `hooks: expected` in `terminal_list` and nobody
+    // told. Only here, where the CLI is waited on: on POSIX this process
+    // has become the CLI, and the app's minute without an agent is what
+    // says it there (`Bus.launchWithNoAgent`). Whether it counts is the
+    // bus's to decide -- an agent that connected and then quit is not a
+    // failed launch (`Bus.launchExitIsFailure`).
+    const ran_ms: u64 = @intCast(@max(0, began.durationTo(.now(io, .awake)).toMilliseconds()));
+    if (AgentEvent.exitedAtOnce(code, ran_ms)) {
+        progress.why = .exited;
+        reportExited(io, progress, code, ran_ms);
+    }
+    return code;
 }
 
 /// The executable provisioning registers for `+mcp`, which is also what a
@@ -372,6 +387,28 @@ fn reportFailed(io: std.Io, progress: *const Progress) void {
     ev.detail = @tagName(progress.why);
     hook.deliver(io, socket_path, token, ev) catch |err| {
         std.log.scoped(.launch).warn("could not say the launch failed err={t}", .{err});
+    };
+}
+
+/// Tell this terminal's Polter the CLI was gone at once (`LaunchFailure.exited`),
+/// with its code and how long it ran in `note`. Best effort, like
+/// `reportFailed`.
+fn reportExited(io: std.Io, progress: *const Progress, code: u8, ran_ms: u64) void {
+    var env = global.environMap() catch return;
+    defer env.deinit();
+    const socket_path = env.get("GHOSTTY_POLTER_SOCKET") orelse return;
+    const token = env.get("GHOSTTY_POLTER_TOKEN") orelse return;
+    var note_buf: [64]u8 = undefined;
+    const note = std.fmt.bufPrint(&note_buf, "exit code {d} after {d}.{d} s", .{
+        code, ran_ms / std.time.ms_per_s, ran_ms % std.time.ms_per_s / 100,
+    }) catch null;
+    var ev: AgentEvent.Event = .none;
+    ev.event = .launch_failed;
+    ev.cli = progress.cli[0..progress.cli_len];
+    ev.detail = @tagName(progress.why);
+    ev.note = note;
+    hook.deliver(io, socket_path, token, ev) catch |err| {
+        std.log.scoped(.launch).warn("could not say the CLI exited at once err={t}", .{err});
     };
 }
 
