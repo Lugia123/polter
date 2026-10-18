@@ -986,6 +986,12 @@ pub const Error = error{
     /// narrow: a call has to pass this and the reachability rule both, so
     /// nothing a plugin declares can widen what it may do.
     NotDeclared,
+
+    /// A `terminal_layout` whose shape could not be read for the terminals
+    /// it names: a `pane` that is not an id, or nesting past the limit.
+    /// About the call, not the caller -- see `eachNamed` for why it is not
+    /// `NotPermitted`.
+    BadLayout,
 };
 
 /// Whether a plugin may call this method at all.
@@ -2373,7 +2379,13 @@ fn eachNamed(req: Request, ctx: anytype, comptime visit: fn (@TypeOf(ctx), Bus.I
             // nested past `arrange.max_depth` or a `pane` that is not a
             // number -- and passing either would be passing terminals that
             // were never asked about.
-            while (it.next() catch return error.NotPermitted) |id| try visit(ctx, id);
+            //
+            // **Refused as what it is, `BadLayout`** (task 1705). This was
+            // `NotPermitted`, whose sentence is "only a supervisor may do
+            // this": a supervisor that sent `"pane":""` was told it was not
+            // one, called `me`, read `role: supervisor`, and was left with
+            // two answers that could not both be true.
+            while (it.next() catch return error.BadLayout) |id| try visit(ctx, id);
         },
         .terminal_tab_move => |p| if (p.window != 0) try visit(ctx, p.window),
         .role_launch => |p| if (p.beside) |id| try visit(ctx, id),
@@ -2543,6 +2555,11 @@ pub fn errorMessage(err: Error) []const u8 {
         error.NotDeclared => "this plugin's manifest did not list that call in " ++
             "\"wants\": {\"calls\": [...]}. Add it there and the user will see it before " ++
             "they switch the plugin on; nothing here can grant it at run time",
+        error.BadLayout => std.fmt.comptimePrint("that layout could not be read: every " ++
+            "\"pane\" has to be a terminal id written as a string, such as " ++
+            "\"0x1a2b3c4d5e6f7a8b\" -- an empty one is not -- and a shape may nest at " ++
+            "most {d} levels deep. Nothing was moved. This is about the layout, not about " ++
+            "your standing", .{arrange.max_depth}),
     };
 }
 
@@ -17613,6 +17630,31 @@ test "tidying: moving is a supervisor's, like laying out" {
         .layout = "{\"new\":null}",
         .into = .new_window,
     } }));
+}
+
+test "tidying: a layout that cannot be read is BadLayout, not 'only a supervisor'" {
+    // Task 1705: a supervisor whose script read its panes' ids as empty
+    // strings was told `NotPermitted` -- "only a supervisor may do this" --
+    // on every layout after the first, while `me` went on saying
+    // `role: supervisor`. Its standing never moved; the sentence was wrong.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try testing.expect(b.isSupervisor(boss));
+
+    try testing.expectError(error.BadLayout, authorize(&b, term(boss), .{ .terminal_layout = .{
+        .id = boss,
+        .layout = "{\"split\":\"h\",\"ratio\":0.2,\"left\":{\"pane\":\"0x1111\"}," ++
+            "\"right\":{\"pane\":\"\"}}",
+    } }));
+    try testing.expectError(error.BadLayout, authorize(&b, term(boss), .{ .terminal_layout = .{
+        .id = boss,
+        .layout = "{\"pane\":\"me\"}",
+    } }));
+    try testing.expect(b.isSupervisor(boss));
+
+    const said = failure(error.BadLayout).failed;
+    try testing.expectEqualStrings("BadLayout", said.code);
+    try testing.expect(std.mem.indexOf(u8, said.message, "supervisor") == null);
 }
 
 test "tidying: a key at any terminal a layout names refuses all of it" {

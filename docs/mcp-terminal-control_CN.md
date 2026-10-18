@@ -168,8 +168,9 @@ Polter 是一个内置 MCP server 的终端。跑在某个标签页里的 agent 
 | `TerminalHeld` | 想让一个被用户按住的终端收工 |
 | `AlreadyWatched` | 正被监视的终端想把自己升成总管 |
 | `UnknownTerminal` | 没有这个 id 的终端 |
+| `BadLayout` | `terminal_layout` 里有个 `pane` 不是终端 id（比如空串），或嵌套太深。说的是这次调用，不是调用方的身份 |
 
-这十一个都在 `rpc.zig` 的 `Error` 集合里，各有一段注释说明来由。
+这十二个都在 `rpc.zig` 的 `Error` 集合里，各有一段注释说明来由。
 
 ### 权限过了，字还是可能打不进去
 

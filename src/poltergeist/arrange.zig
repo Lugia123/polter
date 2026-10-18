@@ -38,7 +38,7 @@ pub const Into = union(enum) {
 /// How deep a layout may nest. A split nests one object per level, so this
 /// is a hundred splits inside each other -- far past anything a screen
 /// holds, and a cap is what lets the walk below need no allocation.
-const max_depth = 128;
+pub const max_depth = 128;
 
 /// The terminal ids a layout's `pane` cells name, in the order written.
 ///

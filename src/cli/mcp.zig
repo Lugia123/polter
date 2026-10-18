@@ -286,20 +286,64 @@ fn serveUnclaimed(alloc: Allocator, io: std.Io) !u8 {
     }
 }
 
+/// One line off stdin, read as a JSON-RPC request -- or answered as the
+/// reason it is not one (task 1705).
+///
+/// **A line that is not a request is answered, not dropped.** This used to
+/// `return` on anything it could not read, and the sender then saw exactly
+/// what it sees when Polter hangs: a request that never comes back, with
+/// nothing anywhere saying the line was never run. Task 1705 chased "no
+/// reply" reports that this silence could not be told apart from. JSON-RPC
+/// 2.0 has the two answers: a line that is not JSON is `-32700` and one that
+/// is JSON but not a request is `-32600`, with `id: null` when there is no
+/// id to give back.
+///
+/// Null means there is nothing to answer: a notification (no `id`), which
+/// takes no reply by definition, or the refusal has already been written.
+fn readRequest(
+    out: *std.Io.Writer,
+    aa: Allocator,
+    line: []const u8,
+) !?struct { obj: std.json.ObjectMap, id: std.json.Value, method: []const u8 } {
+    const msg = std.json.parseFromSliceLeaky(std.json.Value, aa, line, .{}) catch {
+        try writeError(out, .null, aa, -32700, unreadable_line);
+        return null;
+    };
+    const obj = switch (msg) {
+        .object => |o| o,
+        else => {
+            try writeError(out, .null, aa, -32600, not_a_request);
+            return null;
+        },
+    };
+    const method = switch (obj.get("method") orelse .null) {
+        .string => |m| m,
+        else => {
+            // No method and no id is a client's reply to something, or
+            // noise; neither has anyone waiting on an answer.
+            const id = obj.get("id") orelse return null;
+            try writeError(out, id, aa, -32600, not_a_request);
+            return null;
+        },
+    };
+    // A notification has no id and takes no reply. `notifications/initialized`
+    // is the common one, and answering it is a protocol error.
+    const id = obj.get("id") orelse return null;
+    return .{ .obj = obj, .id = id, .method = method };
+}
+
+const unreadable_line = "parse error: that line is not JSON, so it was not run. " ++
+    "Nothing was sent to Polter. A common cause is an escape JSON does not have, " ++
+    "such as \\0 or \\e -- write a control character as \\u001b.";
+const not_a_request = "invalid request: a JSON-RPC request is an object with a " ++
+    "string \"method\" and an \"id\". It was not run.";
+
 fn handleUnclaimed(alloc: Allocator, out: *std.Io.Writer, line: []const u8) !void {
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
     const aa = arena.allocator();
-    const msg = std.json.parseFromSliceLeaky(std.json.Value, aa, line, .{}) catch return;
-    const obj = switch (msg) {
-        .object => |o| o,
-        else => return,
-    };
-    const method = switch (obj.get("method") orelse return) {
-        .string => |m| m,
-        else => return,
-    };
-    const id = obj.get("id") orelse return;
+    const req = (try readRequest(out, aa, line)) orelse return;
+    const id, const method = .{ req.id, req.method };
     if (std.mem.eql(u8, method, "initialize")) return writeResult(out, id, aa, initialize_result);
     if (std.mem.eql(u8, method, "ping")) return writeResult(out, id, aa, "{}");
     if (std.mem.eql(u8, method, "tools/list")) {
@@ -1867,23 +1911,8 @@ fn handleOne(
     defer arena.deinit();
     const aa = arena.allocator();
 
-    const msg = std.json.parseFromSliceLeaky(std.json.Value, aa, line, .{}) catch {
-        // No id to answer against, so there is nobody to tell.
-        return;
-    };
-    const obj = switch (msg) {
-        .object => |o| o,
-        else => return,
-    };
-
-    const method = switch (obj.get("method") orelse return) {
-        .string => |s| s,
-        else => return,
-    };
-
-    // A notification has no id and takes no reply. `notifications/initialized`
-    // is the common one, and answering it is a protocol error.
-    const id = obj.get("id") orelse return;
+    const req = (try readRequest(out, aa, line)) orelse return;
+    const obj, const id, const method = .{ req.obj, req.id, req.method };
 
     if (std.mem.eql(u8, method, "initialize")) {
         try writeResult(out, id, aa, initialize_result);
@@ -2385,5 +2414,31 @@ test "mcp: an unclaimed sidecar answers, lists only me, and refuses every call w
     try std.testing.expect(result.get("isError").?.bool);
     const said = result.get("content").?.array.items[0].object.get("text").?.string;
     try std.testing.expect(std.mem.indexOf(u8, said, "--no-daemon") != null);
+    try std.testing.expect(lines.next() == null);
+}
+
+test "mcp: a line that is not a request is answered, not dropped (task 1705)" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var out: std.Io.Writer.Allocating = .init(aa);
+    // `\0` is not a JSON escape: the line is not JSON at all.
+    try handleUnclaimed(aa, &out.writer, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"terminal_send\",\"arguments\":{\"text\":\"\\033]0;x\"}}}");
+    // JSON, but not an object.
+    try handleUnclaimed(aa, &out.writer, "[1,2]");
+    // An object with an id and no method.
+    try handleUnclaimed(aa, &out.writer, "{\"jsonrpc\":\"2.0\",\"id\":9}");
+    // A notification still takes no reply.
+    try handleUnclaimed(aa, &out.writer, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out.written(), "\n"), '\n');
+    const parse = try std.json.parseFromSliceLeaky(std.json.Value, aa, lines.next() orelse return error.NoReply, .{});
+    try std.testing.expect(parse.object.get("id").? == .null);
+    try std.testing.expectEqual(@as(i64, -32700), parse.object.get("error").?.object.get("code").?.integer);
+    const array = try std.json.parseFromSliceLeaky(std.json.Value, aa, lines.next() orelse return error.NoReply, .{});
+    try std.testing.expectEqual(@as(i64, -32600), array.object.get("error").?.object.get("code").?.integer);
+    const no_method = try std.json.parseFromSliceLeaky(std.json.Value, aa, lines.next() orelse return error.NoReply, .{});
+    try std.testing.expectEqual(@as(i64, 9), no_method.object.get("id").?.integer);
+    try std.testing.expectEqual(@as(i64, -32600), no_method.object.get("error").?.object.get("code").?.integer);
     try std.testing.expect(lines.next() == null);
 }

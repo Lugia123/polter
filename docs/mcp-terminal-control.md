@@ -168,8 +168,9 @@ One more rule has nothing to do with standing: most tools can't be aimed at the 
 | `TerminalHeld` | Clocking out a terminal the user is holding |
 | `AlreadyWatched` | A watched terminal tried to make itself a supervisor |
 | `UnknownTerminal` | No terminal by that id |
+| `BadLayout` | A `terminal_layout` names a `pane` that is not a terminal id (an empty string, say), or nests too deep. About the call, not the caller's standing |
 
-All eleven are in the `Error` set in `rpc.zig`, each with a comment saying why it exists.
+All twelve are in the `Error` set in `rpc.zig`, each with a comment saying why it exists.
 
 ### Permission granted, text still refused
 
