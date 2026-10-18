@@ -6303,3 +6303,143 @@ msgid ""
 "This group's supervisor already has a project through another group: one "
 "supervisor, one project."
 msgstr "这个群的总管已经通过别的群有了项目：一个总管只管一个项目。"
+
+#: windows/control-room/src/quota.rs:217
+msgid "5-hour"
+msgstr "5 小时"
+
+#: windows/control-room/src/quota.rs:218
+msgid "7-day"
+msgstr "7 天"
+
+#: windows/control-room/src/quota.rs:219
+msgid "30-day"
+msgstr "30 天"
+
+#: windows/control-room/src/quota.rs:220
+#, rust-format
+msgid "{} h ago"
+msgstr "{} 小时前"
+
+#: windows/control-room/src/quota.rs:221
+#, rust-format
+msgid "{} d ago"
+msgstr "{} 天前"
+
+#: windows/control-room/src/quota.rs:222
+msgid "Allowance used"
+msgstr "额度已用"
+
+#: windows/control-room/src/quota.rs:223
+msgid "Allowance"
+msgstr "额度"
+
+#: windows/control-room/src/quota.rs:224
+msgid "No numbers yet"
+msgstr "还没有数"
+
+#: windows/control-room/src/quota.rs:225
+msgid "reset"
+msgstr "已恢复"
+
+#: windows/control-room/src/quota.rs:226
+msgid "unreadable"
+msgstr "读不到"
+
+#: windows/control-room/src/quota.rs:230
+#, rust-format
+msgid "{} {} {} used"
+msgstr "{} {}已用 {}"
+
+#: windows/control-room/src/quota.rs:231
+#, rust-format
+msgid "{} {} used"
+msgstr "{} 已用 {}"
+
+#: windows/control-room/src/quota.rs:232
+#, rust-format
+msgid "{} {} allowance used up"
+msgstr "{} {}的额度用完了"
+
+#: windows/control-room/src/quota.rs:233
+#, rust-format
+msgid "{} allowance used up"
+msgstr "{} 的额度用完了"
+
+#: windows/control-room/src/quota.rs:234
+#, rust-format
+msgid "back in {} min"
+msgstr "{} 分钟后恢复"
+
+#: windows/control-room/src/quota.rs:235
+#, rust-format
+msgid "back in {} h"
+msgstr "{} 小时后恢复"
+
+#: windows/control-room/src/quota.rs:236
+#, rust-format
+msgid "back in {} d"
+msgstr "{} 天后恢复"
+
+#: windows/control-room/src/quota.rs:237
+#, rust-format
+msgid "back at {}"
+msgstr "{} 恢复"
+
+#: windows/control-room/src/quota.rs:238
+#, rust-format
+msgid "{} has room."
+msgstr "{} 还有余量。"
+
+#: windows/control-room/src/quota.rs:242
+#, rust-format
+msgid "{} {} at {}"
+msgstr "{}{}日 {}"
+
+#: windows/control-room/src/quota.rs:244
+msgid "Jan"
+msgstr "1月"
+
+#: windows/control-room/src/quota.rs:245
+msgid "Feb"
+msgstr "2月"
+
+#: windows/control-room/src/quota.rs:246
+msgid "Mar"
+msgstr "3月"
+
+#: windows/control-room/src/quota.rs:247
+msgid "Apr"
+msgstr "4月"
+
+#: windows/control-room/src/quota.rs:248
+msgid "May"
+msgstr "5月"
+
+#: windows/control-room/src/quota.rs:249
+msgid "Jun"
+msgstr "6月"
+
+#: windows/control-room/src/quota.rs:250
+msgid "Jul"
+msgstr "7月"
+
+#: windows/control-room/src/quota.rs:251
+msgid "Aug"
+msgstr "8月"
+
+#: windows/control-room/src/quota.rs:252
+msgid "Sep"
+msgstr "9月"
+
+#: windows/control-room/src/quota.rs:253
+msgid "Oct"
+msgstr "10月"
+
+#: windows/control-room/src/quota.rs:254
+msgid "Nov"
+msgstr "11月"
+
+#: windows/control-room/src/quota.rs:255
+msgid "Dec"
+msgstr "12月"

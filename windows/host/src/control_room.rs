@@ -2970,6 +2970,8 @@ fn paint(hwnd: HWND) {
                 let under: Vec<(String, scene::UnderLine)> = UNDER.with(|u| u.borrow().iter().map(|(id, line, _)| (id.clone(), line.clone())).collect());
                 let open = ARCHIVED_OPEN.with(|o| o.get());
                 items.extend(scene::build_extras(list, &lay, &view, &under, open, crate::projects_ui::local_offset() * 1000, &translate));
+                // The allowance block at the panel's bottom (task 1755).
+                items.extend(scene::build_quota(list, &lay, &view, crate::projects_ui::local_offset() * 1000, &translate));
                 let band = notice_band(hwnd, g.room.right.w, g.scale, theme);
                 (items, scene::build_right_with(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, &translate, band.as_ref()))
             }

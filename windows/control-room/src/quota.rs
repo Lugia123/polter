@@ -10,8 +10,11 @@
 //! compare one with, on purpose.
 //!
 //! A word this does not know is an error, like every other word in the
-//! snapshot. **Not drawn yet**: this crate reads the block and says how
-//! high it is; the Windows host does not show it.
+//! snapshot. What the block says is here (`alert_title`, `when_text`,
+//! `entry_number`, ...), in the macOS host's words
+//! (`ControlRoomQuota.swift`); where it is drawn is `scene::build_quota`
+//! (task 1755). The macOS host's hover text has no counterpart: this host's
+//! control room has no tooltips.
 
 use crate::json::Value;
 use crate::look;
@@ -203,6 +206,176 @@ pub fn decode(v: &Value, path: &str) -> Res<Quota> {
     Ok(Quota { alerts, line })
 }
 
+// --- what it says (task 1755) -----------------------------------------------
+//
+// The macOS host's sentences, word for word, with `{}` where its `%@` goes:
+// a host passes each through its translation and `list::fill`s it.
+
+pub mod msg {
+    use crate::n_;
+
+    pub const FIVE_HOUR: &str = n_("5-hour");
+    pub const SEVEN_DAY: &str = n_("7-day");
+    pub const MONTH: &str = n_("30-day");
+    pub const HOURS_AGO: &str = n_("{} h ago");
+    pub const DAYS_AGO: &str = n_("{} d ago");
+    pub const USED_LABEL: &str = n_("Allowance used");
+    pub const NONE_YET_LABEL: &str = n_("Allowance");
+    pub const NONE_YET: &str = n_("No numbers yet");
+    pub const RESET: &str = n_("reset");
+    pub const UNREADABLE: &str = n_("unreadable");
+    /// A number that is old, and how old.
+    pub const STALE_NUMBER: &str = n_("{}, {}");
+    /// Who, which window, how much.
+    pub const NEAR_SPAN: &str = n_("{} {} {} used");
+    pub const NEAR: &str = n_("{} {} used");
+    pub const OUT_SPAN: &str = n_("{} {} allowance used up");
+    pub const OUT: &str = n_("{} allowance used up");
+    pub const BACK_IN_MINUTES: &str = n_("back in {} min");
+    pub const BACK_IN_HOURS: &str = n_("back in {} h");
+    pub const BACK_IN_DAYS: &str = n_("back in {} d");
+    pub const BACK_AT: &str = n_("back at {}");
+    pub const WAY_OUT: &str = n_("{} has room.");
+    /// A moment with its day: the month, the day of the month, the time of
+    /// day -- what the macOS host's `MMMdHHmm` gives in English ("Nov 17
+    /// at 12:00", measured by `tools/control-room-hosts-agree.py`).
+    pub const MOMENT_WITH_DAY: &str = n_("{} {} at {}");
+    pub const MONTHS: [&str; 12] = [
+        n_("Jan"),
+        n_("Feb"),
+        n_("Mar"),
+        n_("Apr"),
+        n_("May"),
+        n_("Jun"),
+        n_("Jul"),
+        n_("Aug"),
+        n_("Sep"),
+        n_("Oct"),
+        n_("Nov"),
+        n_("Dec"),
+    ];
+}
+
+type Tr<'a> = &'a dyn Fn(&str) -> String;
+
+fn fill_all(template: &str, args: &[&str]) -> String {
+    args.iter().fold(template.to_string(), |said, arg| crate::list::fill(&said, arg))
+}
+
+/// The products' own names, the same in every language.
+pub fn name(family: Family) -> &'static str {
+    match family {
+        Family::Claude => "Claude",
+        Family::Codex => "Codex",
+    }
+}
+
+/// Which window, as the person calls it; none for one with no name.
+pub fn span_text(span: Span, tr: Tr) -> Option<String> {
+    match span {
+        Span::FiveHour => Some(tr(msg::FIVE_HOUR)),
+        Span::SevenDay => Some(tr(msg::SEVEN_DAY)),
+        Span::Month => Some(tr(msg::MONTH)),
+        Span::Other => None,
+    }
+}
+
+pub fn ago_text(ago: Ago, tr: Tr) -> String {
+    let template = match ago.unit {
+        AgoUnit::Hours => msg::HOURS_AGO,
+        AgoUnit::Days => msg::DAYS_AGO,
+    };
+    crate::list::fill(&tr(template), &ago.n.to_string())
+}
+
+/// The left of the one line.
+pub fn label_text(label: Label, tr: Tr) -> String {
+    tr(match label {
+        Label::Used => msg::USED_LABEL,
+        Label::NoneYet => msg::NONE_YET_LABEL,
+    })
+}
+
+/// What an account says after its name in the one line.
+pub fn entry_value(entry: &Entry, tr: Tr) -> String {
+    match entry.state {
+        State::Fresh | State::Stale => entry.used.map(|u| format!("{u}%")).unwrap_or_default(),
+        State::Recovered => tr(msg::RESET),
+        State::Unreadable => tr(msg::UNREADABLE),
+    }
+}
+
+/// What follows an account's name in the one line: its number, and how
+/// old the number is when the core says it is old.
+pub fn entry_number(entry: &Entry, tr: Tr) -> String {
+    let value = entry_value(entry, tr);
+    match entry.stale {
+        None => value,
+        Some(stale) => fill_all(&tr(msg::STALE_NUMBER), &[&value, &ago_text(stale, tr)]),
+    }
+}
+
+/// The first line of an opened-out account.
+pub fn alert_title(alert: &Alert, tr: Tr) -> String {
+    let who = name(alert.family);
+    // The sign goes in with the number, as on the macOS host.
+    let percent = format!("{}%", alert.used);
+    match (alert.level, span_text(alert.span, tr)) {
+        (Level::Near, Some(span)) => fill_all(&tr(msg::NEAR_SPAN), &[who, &span, &percent]),
+        (Level::Near, None) => fill_all(&tr(msg::NEAR), &[who, &percent]),
+        (Level::Out, Some(span)) => fill_all(&tr(msg::OUT_SPAN), &[who, &span]),
+        (Level::Out, None) => fill_all(&tr(msg::OUT), &[who]),
+    }
+}
+
+/// When an opened-out account comes back, in the form the core chose.
+/// `offset_ms` is the person's clock against UTC.
+pub fn when_text(alert: &Alert, offset_ms: i64, tr: Tr) -> String {
+    let n = alert.when.n.to_string();
+    match alert.when.form {
+        WhenForm::Minutes => crate::list::fill(&tr(msg::BACK_IN_MINUTES), &n),
+        WhenForm::Hours => crate::list::fill(&tr(msg::BACK_IN_HOURS), &n),
+        WhenForm::Days => crate::list::fill(&tr(msg::BACK_IN_DAYS), &n),
+        WhenForm::Clock | WhenForm::Date => {
+            let moment = moment_text(alert.resets_ms, alert.when.form == WhenForm::Date, offset_ms, tr);
+            crate::list::fill(&tr(msg::BACK_AT), &moment)
+        }
+    }
+}
+
+/// The way out, when the core names one.
+pub fn way_out_text(alert: &Alert, tr: Tr) -> Option<String> {
+    alert.way_out.map(|f| crate::list::fill(&tr(msg::WAY_OUT), name(f)))
+}
+
+/// A moment on the person's clock: the time of day, 24-hour, and the day
+/// before it when the core asks for the day.
+pub fn moment_text(ms: u64, with_day: bool, offset_ms: i64, tr: Tr) -> String {
+    let local = ms as i64 + offset_ms;
+    let days = local.div_euclid(86_400_000);
+    let of_day = local.rem_euclid(86_400_000) / 60_000;
+    let time = format!("{:02}:{:02}", of_day / 60, of_day % 60);
+    if !with_day {
+        return time;
+    }
+    let (_, month, day) = civil(days);
+    fill_all(&tr(msg::MOMENT_WITH_DAY), &[&tr(msg::MONTHS[month as usize - 1]), &day.to_string(), &time])
+}
+
+/// The year, month (1-12) and day of `days` since 1970-01-01.
+fn civil(days: i64) -> (i64, u32, u32) {
+    // Howard Hinnant's days-to-civil.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(month <= 2), month, day)
+}
+
 /// How high the block is and where its parts start, top to bottom, in the
 /// block's own points. Sizes are `look::quota`'s; this is only the adding
 /// up, the same as the macOS host's `ControlRoomQuotaLayout`.
@@ -289,6 +462,25 @@ mod tests {
         let cut = FIXTURE.replace("\"quota\": {", "\"not_quota\": {");
         assert_ne!(cut, FIXTURE);
         assert_eq!(crate::snapshot::decode(&cut).expect("still a snapshot").quota, None);
+    }
+
+    #[test]
+    fn a_moment_is_said_on_the_persons_clock_with_its_day_when_asked() {
+        // Task 1755. 2023-11-14 12:00 UTC.
+        let same = |t: &str| t.to_string();
+        let noon: u64 = 1_699_963_200_000;
+        assert_eq!(moment_text(noon, false, 0, &same), "12:00");
+        assert_eq!(moment_text(noon, true, 0, &same), "Nov 14 at 12:00");
+        // Eight hours east is the evening of the same day; a minute before
+        // midnight UTC, five hours east, is the next day.
+        assert_eq!(moment_text(noon, true, 8 * 3_600_000, &same), "Nov 14 at 20:00");
+        assert_eq!(moment_text(1_700_006_340_000, true, 5 * 3_600_000, &same), "Nov 15 at 04:59");
+        // A leap day, and a moment west of UTC that falls on the day before.
+        assert_eq!(moment_text(1_709_164_800_000, true, 0, &same), "Feb 29 at 00:00");
+        assert_eq!(moment_text(1_709_164_800_000, true, -3_600_000, &same), "Feb 28 at 23:00");
+        // The month's name goes through the translation.
+        let zh = |t: &str| if t == "Nov" { "11月".to_string() } else { t.to_string() };
+        assert_eq!(moment_text(noon, true, 0, &zh), "11月 14 at 12:00");
     }
 
     #[test]

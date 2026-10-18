@@ -776,6 +776,26 @@ func windowsText(_ ws: [ControlRoomQuota.Window]) -> String {
     ws.map { "\($0.span.rawValue):\($0.used):\($0.live):\($0.resets_ms)" }.joined(separator: ",")
 }
 func agoText(_ a: ControlRoomQuota.Ago?) -> String { a.map { "\($0.unit.rawValue):\($0.n)" } ?? "-" }
+func quotaWords(_ name: String, _ q: ControlRoomQuota) {
+    let utc = TimeZone(identifier: "UTC")!
+    let en = Locale(identifier: "en_US")
+    for a in q.alerts {
+        print("quota_says \(name) alert title=\(quote(ControlRoomQuota.alertTitle(a))) "
+            + "when=\(quote(ControlRoomQuota.whenText(a, timeZone: utc, locale: en))) "
+            + "way_out=\(ControlRoomQuota.wayOutText(a).map(quote) ?? "-")")
+    }
+    if let line = q.line {
+        print("quota_says \(name) label=\(quote(ControlRoomQuota.labelText(line.label)))")
+        if line.entries.isEmpty {
+            print("quota_says \(name) none_yet=\(quote(ControlRoomQuota.noneYetText))")
+        }
+        for e in line.entries {
+            print("quota_says \(name) entry \(ControlRoomQuota.name(e.family)) \(quote(ControlRoomQuota.entryNumber(e)))")
+        }
+    } else {
+        print("quota_says \(name) no line")
+    }
+}
 if let q = list.quota {
     for a in q.alerts {
         print("quota alert family=\(a.family.rawValue) level=\(a.level.rawValue) span=\(a.span.rawValue) "
@@ -799,8 +819,22 @@ if let q = list.quota {
         print("quota part y=\(f(p.y)) h=\(f(p.height)) note=\(p.note)")
     }
     print("quota height=\(f(ql.height)) line_y=\(ql.lineY.map { f($0) } ?? "-")")
+    quotaWords("fixture", q)
 } else {
     print("quota none")
+}
+// What the block says (task 1755), for the eight made-up states and one
+// with a day in its moment, on UTC and in English.
+for (name, q) in ControlRoomQuota.Sample.all {
+    quotaWords(name, q)
+}
+do {
+    let s = ControlRoomQuota.Sample.self
+    quotaWords("9-date", ControlRoomQuota(
+        alerts: [ControlRoomQuota.Alert(family: .codex, level: .out, span: .other, used: 100,
+                                        resets_ms: s.now + 3 * s.day, when: .init(form: .date, n: 0), stale: nil,
+                                        way_out: nil, at_ms: s.now - s.minute, windows: [])],
+        line: nil))
 }
 
 let stripCases: [([CGFloat], Int, CGFloat, CGFloat)] = [

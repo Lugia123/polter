@@ -133,6 +133,9 @@ pub struct List {
     /// The groups put away (task 1659), newest first: the list's last
     /// section, folded unless the person opened it.
     pub archived: Vec<crate::snapshot::Archived>,
+    /// The allowance block at the panel's bottom (task 1755), as the core
+    /// said it; none from a core that does not, and then there is no block.
+    pub quota: Option<crate::quota::Quota>,
 }
 
 /// The English of what this crate says; a host passes each through its
@@ -329,6 +332,7 @@ impl List {
             choose_supervisor_role: s.choose_supervisor_role,
             retention_waiting_bytes: s.retention_waiting_bytes,
             archived: s.archived.clone(),
+            quota: s.quota.clone(),
         }
     }
 

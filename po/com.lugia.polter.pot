@@ -6075,3 +6075,143 @@ msgid ""
 "This group's supervisor already has a project through another group: one "
 "supervisor, one project."
 msgstr ""
+
+#: windows/control-room/src/quota.rs:217
+msgid "5-hour"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:218
+msgid "7-day"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:219
+msgid "30-day"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:220
+#, rust-format
+msgid "{} h ago"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:221
+#, rust-format
+msgid "{} d ago"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:222
+msgid "Allowance used"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:223
+msgid "Allowance"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:224
+msgid "No numbers yet"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:225
+msgid "reset"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:226
+msgid "unreadable"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:230
+#, rust-format
+msgid "{} {} {} used"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:231
+#, rust-format
+msgid "{} {} used"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:232
+#, rust-format
+msgid "{} {} allowance used up"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:233
+#, rust-format
+msgid "{} allowance used up"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:234
+#, rust-format
+msgid "back in {} min"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:235
+#, rust-format
+msgid "back in {} h"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:236
+#, rust-format
+msgid "back in {} d"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:237
+#, rust-format
+msgid "back at {}"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:238
+#, rust-format
+msgid "{} has room."
+msgstr ""
+
+#: windows/control-room/src/quota.rs:242
+#, rust-format
+msgid "{} {} at {}"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:244
+msgid "Jan"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:245
+msgid "Feb"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:246
+msgid "Mar"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:247
+msgid "Apr"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:248
+msgid "May"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:249
+msgid "Jun"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:250
+msgid "Jul"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:251
+msgid "Aug"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:252
+msgid "Sep"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:253
+msgid "Oct"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:254
+msgid "Nov"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:255
+msgid "Dec"
+msgstr ""

@@ -409,6 +409,90 @@ pub enum UnderLine {
     NotDelivered { why: String, retried: bool, ask: crate::act::Ask, on: Option<u64> },
 }
 
+/// The allowance block at the bottom of the list (task 1755): the macOS
+/// host's `ControlRoomQuotaView`, drawn where the layout left it
+/// (`ListLayout::quota`). The hairline that closes the list; each account
+/// at or past the limit line opened out -- which and how much in the
+/// problem colour, the triangle when it is all gone, when it comes back at
+/// the right, a bar, and the way out under it when the core names one;
+/// then the one line, each account and its number. Every word is
+/// `quota`'s and every size `look::quota`'s; nothing here can be pressed.
+/// Nothing when the list has no block. `offset_ms` is the person's clock
+/// against UTC, for a moment said as a time of day.
+pub fn build_quota(list: &List, at: &ListLayout, view: &View, offset_ms: i64, tr: &dyn Fn(&str) -> String) -> Vec<Item> {
+    use crate::look::quota as q;
+    use crate::quota::{self as qt, Level, State};
+    let Some(quota) = list.quota.as_ref() else { return Vec::new() };
+    if at.quota.h <= 0.0 {
+        return Vec::new();
+    }
+    let theme = view.theme;
+    let panel = panel_color(theme);
+    let shape = qt::layout(quota);
+    let block = at.quota;
+    let x = block.x + q::PADDING_X;
+    let w = (block.w - 2.0 * q::PADDING_X).max(0.0);
+    let mut out = Vec::new();
+
+    let (hair_h, hair_strength) = hairline(view.scale);
+    out.push(fill(Rect { x, y: block.y, w, h: hair_h }, over(panel, theme.line_faint, hair_strength)));
+
+    for (alert, &(y, _, note)) in quota.alerts.iter().zip(shape.parts.iter()) {
+        let top = block.y + y + q::ALERT_PADDING_TOP;
+        let mut parts = Vec::new();
+        if alert.level == Level::Out {
+            parts.push(Part {
+                piece: Piece::Glyph { shown: Shown::Trouble, color: glyph_color(theme, Shown::Trouble), size: side::GLYPH, pulses: false },
+                side: Side::Lead,
+                gap: 0.0,
+            });
+        }
+        let gap = if parts.is_empty() { 0.0 } else { q::ALERT_GLYPH_GAP };
+        parts.push(words(qt::alert_title(alert, tr), Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.problem_text_on_row) }, Side::Rest, gap));
+        parts.push(words(qt::when_text(alert, offset_ms, tr), body(theme.text), Side::Trail, q::LABEL_GAP));
+        out.push(Item::Line { rect: Rect { x, y: top, w, h: q::ALERT_TITLE_HEIGHT }, parts });
+
+        // The bar: a track, and as much of it as is used. An old number's
+        // is an outline the same length and not filled, so that it does
+        // not read as a measurement taken now.
+        let bar_y = top + q::ALERT_TITLE_HEIGHT + q::BAR_SPACE_ABOVE;
+        let track = Rect { x, y: bar_y, w, h: q::BAR_HEIGHT };
+        out.push(Item::Round { rect: track, radius: q::BAR_RADIUS, color: theme.line, edge: None });
+        let filled = Rect { w: (w * alert.used as f64 / 100.0).max(q::BAR_MIN_FILL).min(w), ..track };
+        out.push(match alert.stale {
+            Some(_) => Item::Round { rect: filled, radius: q::BAR_RADIUS, color: theme.line, edge: Some(theme.text_tertiary) },
+            None => Item::Round { rect: filled, radius: q::BAR_RADIUS, color: theme.problem, edge: None },
+        });
+        if note {
+            if let Some(way) = qt::way_out_text(alert, tr) {
+                let note_y = bar_y + q::BAR_HEIGHT + q::BAR_SPACE_BELOW;
+                out.push(Item::Text { rect: Rect { x, y: note_y, w, h: q::NOTE_LINE_HEIGHT }, text: way, style: body(theme.text), align: Align::Left });
+            }
+        }
+    }
+
+    if let (Some(line), Some(line_y)) = (quota.line.as_ref(), shape.line_y) {
+        let mut parts = vec![words(qt::label_text(line.label, tr), body(theme.text_secondary), Side::Lead, 0.0)];
+        if line.entries.is_empty() {
+            parts.push(words(tr(qt::msg::NONE_YET), body(theme.text_secondary), Side::Trail, q::LABEL_GAP));
+        } else {
+            for (i, entry) in line.entries.iter().enumerate() {
+                // The name a step back; the number in the main colour unless
+                // the core says it is old, unreadable or come round again.
+                let ink = match entry.state {
+                    State::Fresh => theme.text,
+                    State::Stale | State::Recovered | State::Unreadable => theme.text_secondary,
+                };
+                let gap = if i == 0 { q::LABEL_GAP } else { q::ENTRY_GAP };
+                parts.push(words(format!("{} ", qt::name(entry.family)), body(theme.text_secondary), Side::Trail, gap));
+                parts.push(words(qt::entry_number(entry, tr), body(ink), Side::Trail, 0.0));
+            }
+        }
+        out.push(Item::Line { rect: Rect { x, y: block.y + line_y, w, h: q::LINE_HEIGHT }, parts });
+    }
+    out
+}
+
 /// The lines under rows, the archived section, and the red line under a
 /// name being typed when it was refused -- what the list draws besides its
 /// rows (task 1661). In the viewport, as the rows are. `archived` is the
@@ -2024,6 +2108,97 @@ mod tests {
         let last = l.quiet.last().unwrap();
         assert!(!words.iter().any(|w| w.contains(first.name())), "{words:?}");
         assert!(words.iter().any(|w| w.contains(last.name())), "{words:?}");
+    }
+
+    /// What a line of parts says, and in which ink, in order.
+    fn said(item: &Item) -> Vec<(String, Rgba)> {
+        match item {
+            Item::Line { parts, .. } => parts
+                .iter()
+                .filter_map(|p| match &p.piece {
+                    Piece::Words { text, style } => Some((text.clone(), style.color)),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Task 1755: the allowance block at the bottom of the list, in the
+    /// macOS host's words and inks (`ControlRoomQuotaView`), inside the room
+    /// the layout left for it.
+    #[test]
+    fn the_allowance_block_is_drawn_in_the_room_the_layout_left_it() {
+        let l = list();
+        let at = ListLayout::measured(&l, 900.0, &|t, _| crate::layout::nominal_lines(t));
+        assert!(at.quota.h > 0.0, "the fixture has a block, so the layout leaves room");
+        let theme = look::theme(false);
+        let view = View { theme, scale: 1.0, selection: None, lit: Lit::Selection, chip: None, lift: 0.0, pulsing: None, naming: None, fix_refusal: None };
+        let items = build_quota(&l, &at, &view, 0, &same);
+
+        // Everything inside the block.
+        for i in &items {
+            let r = match i {
+                Item::Fill { rect, .. } | Item::Round { rect, .. } | Item::Line { rect, .. } | Item::Text { rect, .. } => *rect,
+                _ => continue,
+            };
+            assert!(r.y >= at.quota.y - 0.01 && r.y + r.h <= at.quota.y + at.quota.h + 0.01, "{i:?} is outside {:?}", at.quota);
+        }
+        let lines: Vec<Vec<(String, Rgba)>> = items.iter().filter(|i| matches!(i, Item::Line { .. })).map(said).collect();
+        assert_eq!(lines.len(), 2, "the account opened out, then the one line");
+        // Claude, close: which and how much in the problem ink, and when.
+        assert_eq!(lines[0], [("Claude 5-hour 92% used".to_string(), theme.problem_text_on_row), ("back in 40 min".to_string(), theme.text)]);
+        // The line: the label and the name a step back, the number in the
+        // main ink because it is fresh.
+        assert_eq!(
+            lines[1],
+            [("Allowance used".to_string(), theme.text_secondary), ("Codex ".to_string(), theme.text_secondary), ("20%".to_string(), theme.text)]
+        );
+        // The bar, 92% of the track, filled in the problem colour.
+        let rounds: Vec<(Rect, Rgba, Option<Rgba>)> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Round { rect, color, edge, .. } => Some((*rect, *color, *edge)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rounds.len(), 2);
+        assert_eq!((rounds[0].1, rounds[1].1, rounds[1].2), (theme.line, theme.problem, None));
+        assert!((rounds[1].0.w - rounds[0].0.w * 0.92).abs() < 0.01);
+
+        // No block, nothing drawn.
+        let mut none = list();
+        none.quota = None;
+        let at = ListLayout::measured(&none, 900.0, &|t, _| crate::layout::nominal_lines(t));
+        assert_eq!(at.quota.h, 0.0);
+        assert!(build_quota(&none, &at, &view, 0, &same).is_empty());
+    }
+
+    /// Task 1755: an account whose allowance is all gone leads with the
+    /// trouble glyph; an old number's bar is an outline, not a fill.
+    #[test]
+    fn an_account_used_up_has_the_glyph_and_an_old_number_is_an_outline() {
+        let mut l = list();
+        let q = l.quota.as_mut().unwrap();
+        q.alerts[0].level = crate::quota::Level::Out;
+        q.alerts[0].stale = Some(crate::quota::Ago { unit: crate::quota::AgoUnit::Hours, n: 3 });
+        let at = ListLayout::measured(&l, 900.0, &|t, _| crate::layout::nominal_lines(t));
+        let theme = look::theme(true);
+        let view = View { theme, scale: 1.0, selection: None, lit: Lit::Selection, chip: None, lift: 0.0, pulsing: None, naming: None, fix_refusal: None };
+        let items = build_quota(&l, &at, &view, 0, &same);
+        let first = items.iter().find_map(|i| match i {
+            Item::Line { parts, .. } => Some(parts[0].piece.clone()),
+            _ => None,
+        });
+        assert!(matches!(first, Some(Piece::Glyph { shown: Shown::Trouble, .. })), "{first:?}");
+        let edges: Vec<Option<Rgba>> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Round { edge, .. } => Some(*edge),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(edges, [None, Some(theme.text_tertiary)]);
     }
 
     /// Task 1661 (design v21 `03`, `06`, `07`): the line under a row says

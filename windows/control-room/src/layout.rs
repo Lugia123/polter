@@ -163,9 +163,8 @@ pub struct ListLayout {
     /// person, under the header, when there is one: the rows start below
     /// it. Two lines of text and an OK (`scene::retention_ok_hit`).
     pub notice: Option<Rect>,
-    /// The allowance block, against the panel's bottom: no height while
-    /// this host does not draw it (`quota.rs`), and `with_quota` gives it
-    /// the height it will have once it does.
+    /// The allowance block, against the panel's bottom, as high as
+    /// `quota::layout` says (task 1755); no height when the list has none.
     pub quota: Rect,
     /// Where the rows are seen: from under the header (and the notice)
     /// down to the allowance block, or to the panel's bottom when there is
@@ -380,11 +379,14 @@ impl ListLayout {
             archived_header,
             archived_rows,
         }
+        // The list's allowance block, as the macOS host's layout takes it
+        // (`ControlRoomListLayout`, `quotaH`): the rows' room ends over it.
+        .with_quota(list.quota.as_ref().map_or(0.0, |q| crate::quota::layout(q).height))
     }
 
     /// The same with the allowance block `height` high at the panel's
-    /// bottom, and the rows' room ending where it starts. For the day this
-    /// host draws it, and for holding the rule to the macOS host's now.
+    /// bottom, and the rows' room ending where it starts. `measured_with`
+    /// gives every layout the list's own block this way.
     pub fn with_quota(mut self, height: f64) -> ListLayout {
         let h = height.max(0.0);
         let pad = space::SIDE_PANEL_PADDING;

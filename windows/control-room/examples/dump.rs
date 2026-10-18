@@ -981,8 +981,14 @@ fn main() {
                 println!("quota part y={y:.3} h={h:.3} note={note}");
             }
             println!("quota height={:.3} line_y={}", ql.height, ql.line_y.map_or("-".to_string(), |y| format!("{y:.3}")));
+            quota_words("fixture", q);
         }
         None => println!("quota none"),
+    }
+    // What the block says (task 1755), for the macOS host's eight made-up
+    // states (`ControlRoomQuota.Sample`), on UTC and in English.
+    for (name, q) in quota_samples() {
+        quota_words(name, &q);
     }
 
     for (n, (wants, current, width, status)) in stackstrip::CASES.iter().enumerate() {
@@ -1202,4 +1208,97 @@ fn main() {
     for (on, said) in polter_control_room::act::follow_ask_cases() {
         println!("{}", polter_control_room::act::follow_ask_line(on, said.as_ref()));
     }
+}
+
+/// The words of one allowance block, in English, on UTC.
+fn quota_words(name: &str, q: &quota::Quota) {
+    let same = |t: &str| t.to_string();
+    for a in &q.alerts {
+        println!(
+            "quota_says {name} alert title={} when={} way_out={}",
+            quote(&quota::alert_title(a, &same)),
+            quote(&quota::when_text(a, 0, &same)),
+            quota::way_out_text(a, &same).map_or("-".to_string(), |w| quote(&w))
+        );
+    }
+    match &q.line {
+        Some(line) => {
+            println!("quota_says {name} label={}", quote(&quota::label_text(line.label, &same)));
+            if line.entries.is_empty() {
+                println!("quota_says {name} none_yet={}", quote(quota::msg::NONE_YET));
+            }
+            for e in &line.entries {
+                println!("quota_says {name} entry {} {}", quota::name(e.family), quote(&quota::entry_number(e, &same)));
+            }
+        }
+        None => println!("quota_says {name} no line"),
+    }
+}
+
+/// `ControlRoomQuota.Sample.all`, as far as what is said goes: the same
+/// accounts, numbers and moments.
+fn quota_samples() -> Vec<(&'static str, quota::Quota)> {
+    use quota::*;
+    let now: u64 = 1_699_963_200_000;
+    let minute: u64 = 60_000;
+    let day: u64 = 24 * 60 * minute;
+    let alert = |family, level, span, used, resets_ms, when: When, way_out| Alert {
+        family,
+        level,
+        span,
+        used,
+        resets_ms,
+        when,
+        stale: None,
+        way_out,
+        at_ms: now - minute,
+        windows: Vec::new(),
+    };
+    let entry = |family, state, used, stale| Entry { family, state, used, span: None, stale, at_ms: None, windows: Vec::new() };
+    let fresh = |family, used| entry(family, State::Fresh, Some(used), None);
+    let used = |entries| Some(Line { label: Label::Used, entries });
+    vec![
+        ("1-ordinary", Quota { alerts: vec![], line: used(vec![fresh(Family::Claude, 61), fresh(Family::Codex, 20)]) }),
+        (
+            "2-near",
+            Quota {
+                alerts: vec![alert(Family::Claude, Level::Near, Span::FiveHour, 92, now + 40 * minute, When { form: WhenForm::Minutes, n: 40 }, None)],
+                line: used(vec![fresh(Family::Codex, 20)]),
+            },
+        ),
+        (
+            "3-out-with-room",
+            Quota {
+                alerts: vec![alert(Family::Claude, Level::Out, Span::FiveHour, 100, now + 100 * minute, When { form: WhenForm::Clock, n: 0 }, Some(Family::Codex))],
+                line: used(vec![fresh(Family::Codex, 20)]),
+            },
+        ),
+        (
+            "4-out-both-high",
+            Quota {
+                alerts: vec![
+                    alert(Family::Claude, Level::Out, Span::FiveHour, 100, now + 100 * minute, When { form: WhenForm::Clock, n: 0 }, None),
+                    alert(Family::Codex, Level::Near, Span::SevenDay, 85, now + 3 * day, When { form: WhenForm::Days, n: 3 }, None),
+                ],
+                line: None,
+            },
+        ),
+        (
+            "5-stale",
+            Quota {
+                alerts: vec![],
+                line: used(vec![fresh(Family::Claude, 61), entry(Family::Codex, State::Stale, Some(20), Some(Ago { unit: AgoUnit::Hours, n: 3 }))]),
+            },
+        ),
+        ("6-recovered", Quota { alerts: vec![], line: used(vec![fresh(Family::Claude, 61), entry(Family::Codex, State::Recovered, None, None)]) }),
+        ("7-unreadable", Quota { alerts: vec![], line: used(vec![fresh(Family::Claude, 61), entry(Family::Codex, State::Unreadable, None, None)]) }),
+        ("8-none-yet", Quota { alerts: vec![], line: Some(Line { label: Label::NoneYet, entries: vec![] }) }),
+        (
+            "9-date",
+            Quota {
+                alerts: vec![alert(Family::Codex, Level::Out, Span::Other, 100, now + 3 * day, When { form: WhenForm::Date, n: 0 }, None)],
+                line: None,
+            },
+        ),
+    ]
 }
