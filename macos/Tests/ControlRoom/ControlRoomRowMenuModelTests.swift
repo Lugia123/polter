@@ -69,6 +69,9 @@ struct ControlRoomRowMenuModelTests {
                 },
                 now: { calendar.date(from: DateComponents(year: 2026, month: 10, day: 16, hour: 14, minute: 40))! },
                 calendar: calendar,
+                // A 24-hour one, said here: the machine's own would make the
+                // times below read 6:20 PM on one set to 12 hours (#1684).
+                locale: Locale(identifier: "zh_CN"),
                 after: { [unowned self] seconds, run in self.later.append((seconds, run)) },
                 tell: { [unowned self] in self.told.append($0) },
                 takeOver: { [unowned self] in self.tookOver.append(($0, $1)) })
@@ -107,6 +110,21 @@ struct ControlRoomRowMenuModelTests {
         if #available(macOS 14.0, *) {
             let unmute = menu.items.first { $0.representedObject as? String == "unmute" }
             #expect(unmute?.badge?.stringValue?.contains("18:20") == true)
+        }
+    }
+
+    /// The time is written the way the menu's locale writes one, not the
+    /// machine's: the same mute reads 6:20 PM where times are written in 12
+    /// hours, and 18:20 where in 24 (#1684 -- the test above was red on a
+    /// machine set to 12 hours, because the menu read `Locale.current`).
+    @Test func theTimeIsWrittenInTheMenusOwnLocale() throws {
+        let rig = try Rig()
+        let row = try rig.row("web-app")
+        for (identifier, want, not) in [("en_US", "6:20", "18:20"), ("en_GB", "18:20", "PM"), ("zh_CN", "18:20", "PM")] {
+            rig.model.effects.locale = Locale(identifier: identifier)
+            let said = try #require(rig.model.trailing("unmute", for: row), "\(identifier)")
+            #expect(said.contains(want), "\(identifier): \(said)")
+            #expect(!said.contains(not), "\(identifier): \(said)")
         }
     }
 

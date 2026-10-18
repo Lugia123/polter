@@ -48,6 +48,10 @@ enum ControlRoomRowMenuState {
         var ask: (ControlRoomGroupAlerts.Question, @escaping (Bool) -> Void) -> Void
         var now: () -> Date
         var calendar: Calendar
+        /// How a time is written: 18:20 or 6:20 PM. The person's own
+        /// (`.current`) in the app; a test says which it means, so that what
+        /// it reads does not depend on the machine it runs on (#1684).
+        var locale: Locale
         /// Run this after so many seconds, on the main queue.
         var after: (TimeInterval, @escaping () -> Void) -> Void
         /// Say something that has no row to stand under any more.
@@ -69,6 +73,7 @@ enum ControlRoomRowMenuState {
                 ask: { question, answer in question.ask(on: NSApp.keyWindow, answer) },
                 now: Date.init,
                 calendar: .current,
+                locale: .current,
                 after: { seconds, run in DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: run) },
                 tell: { ControlRoomGroupAlerts.tell($0, on: NSApp.keyWindow) })
         }
@@ -109,7 +114,7 @@ extension ControlRoomModel {
     /// mute would last, or until when it does.
     func trailing(_ key: String, for row: Row) -> String? {
         let now = effects.now()
-        let locale = Locale.current
+        let locale = effects.locale
         // 02A: going on names the CLI it goes on in, and asks nothing; in
         // the submenu of CLIs the last supervisor's says so.
         if let cli = ControlRoomRowMenu.cli(of: key) {
