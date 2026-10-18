@@ -7,6 +7,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 const internal_os = @import("../os/main.zig");
+const process_info = @import("process_info.zig");
 
 const log = std.log.scoped(.poltergeist);
 
@@ -16,6 +17,87 @@ pub const available = net.has_unix_sockets;
 pub const Conn = net.Stream;
 pub const Reader = net.Stream.Reader;
 pub const Writer = net.Stream.Writer;
+
+/// The other end of a connection, as the kernel said when it was first
+/// asked (task 1727).
+pub const Peer = union(enum) {
+    /// A process, and when it started -- so that its number given to a
+    /// later process is not mistaken for it. `started` is null when the
+    /// process could not be read: it had already exited.
+    process: struct { pid: u64, started: ?u64 },
+    /// Already disconnected when asked: the kernel no longer had anybody
+    /// on the other end to name (`ENOTCONN`, measured on macOS for a
+    /// client that had exited; a half-closed one still answers).
+    disconnected,
+};
+
+/// Who connected, or null when this system will not say who. Null is
+/// "cannot tell", and `peerGone` then never calls a connection gone on the
+/// strength of its read side ending.
+pub fn peerOf(conn: Conn) ?Peer {
+    const fd = conn.socket.handle;
+    const pid: u64 = switch (builtin.os.tag) {
+        .macos => pid: {
+            // `SOL_LOCAL`, `LOCAL_PEERPID` from <sys/un.h>.
+            var pid: c_int = 0;
+            var len: std.c.socklen_t = @sizeOf(c_int);
+            const rc = std.c.getsockopt(fd, 0, 0x002, &pid, &len);
+            if (rc != 0) return if (std.c.errno(rc) == .NOTCONN) .disconnected else null;
+            if (pid <= 0) return null;
+            break :pid @intCast(pid);
+        },
+        .linux => pid: {
+            const Ucred = extern struct { pid: i32, uid: u32, gid: u32 };
+            var cred: Ucred = undefined;
+            var len: std.c.socklen_t = @sizeOf(Ucred);
+            const rc = std.c.getsockopt(fd, std.c.SOL.SOCKET, std.c.SO.PEERCRED, &cred, &len);
+            if (rc != 0) return if (std.c.errno(rc) == .NOTCONN) .disconnected else null;
+            if (cred.pid <= 0) return null;
+            break :pid @intCast(cred.pid);
+        },
+        else => return null,
+    };
+    const info = process_info.of(pid);
+    return .{ .process = .{
+        .pid = pid,
+        .started = if (info) |i| (if (i.zombie) null else i.started) else null,
+    } };
+}
+
+/// Whether the client is gone, asked without reading anything it sent
+/// (task 1727).
+///
+/// **The read side ending is not enough, and that was measured.** A shell
+/// plugin calls through `{ auth; request; } | nc -U`, and macOS's `nc`
+/// shuts down its writing half the moment its input ends -- so the request
+/// arrives followed at once by end-of-file -- and then waits and reads the
+/// answer. A half-closed and a closed socket look the same from here (a
+/// peek reads nothing, `poll` says `POLLIN|POLLHUP`, on both). So the end
+/// of the read side only opens the question, and the process answers it:
+/// gone when it has exited (no such process, a zombie, or the number now
+/// belongs to a later one). A reset is gone outright.
+pub fn peerGone(conn: Conn, peer: ?Peer) bool {
+    var byte: [1]u8 = undefined;
+    const n = std.c.recv(conn.socket.handle, &byte, 1, std.c.MSG.PEEK | std.c.MSG.DONTWAIT);
+    if (n > 0) return false;
+    if (n < 0) return switch (std.c.errno(n)) {
+        .AGAIN, .INTR => false,
+        .CONNRESET, .NOTCONN, .PIPE => true,
+        else => false,
+    };
+    const p = switch (peer orelse return false) {
+        .disconnected => return true,
+        .process => |p| p,
+    };
+    const info = process_info.of(p.pid) orelse return true;
+    if (info.zombie) return true;
+    // Running now. Under the number it had when it connected: still there.
+    // Under a later process's, or one that was already gone when it
+    // connected and whose number was given out again since: the number is
+    // somebody else's, and the client is gone.
+    const started = p.started orelse return false;
+    return info.started != started;
+}
 
 pub const BindError = error{PathTooLong} || net.UnixAddress.ListenError;
 pub const ConnectError = error{PathTooLong} || net.UnixAddress.ConnectError;

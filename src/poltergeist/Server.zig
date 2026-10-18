@@ -187,7 +187,12 @@ pub const Pending = struct {
     arena: std.heap.ArenaAllocator,
 
     response: ?wire.Response = null,
-    done: std.Io.Semaphore = .{},
+
+    /// Set once, by whichever `complete` counts. An event rather than a
+    /// semaphore so that it can be waited on with a timeout: the
+    /// connection thread looks up between waits to see whether its client
+    /// is still there (task 1727, `awaitAnswer`).
+    done: std.Io.Event = .unset,
 
     /// Guards against being answered twice. The app thread answers in the
     /// normal case and the server answers on shutdown, and both can happen
@@ -212,9 +217,17 @@ pub const Pending = struct {
     /// Answer this request and wake whoever is waiting on it. Safe to call
     /// from either thread, and safe to call more than once.
     pub fn complete(self: *Pending, io: std.Io, response: wire.Response) void {
-        if (self.settled.cmpxchgStrong(false, true, .acq_rel, .acquire) != null) return;
+        _ = self.settle(io, response);
+    }
+
+    /// `complete`, saying whether this call was the one that counted: false
+    /// when the request had already been answered, and then nothing here
+    /// changed.
+    pub fn settle(self: *Pending, io: std.Io, response: wire.Response) bool {
+        if (self.settled.cmpxchgStrong(false, true, .acq_rel, .acquire) != null) return false;
         self.response = response;
-        self.done.post(io);
+        self.done.set(io);
+        return true;
     }
 
     /// Drop one reference. The last one out frees it.
@@ -420,8 +433,8 @@ pub fn stop(self: *Server) void {
     }
 
     // Answer everything still waiting, then close and join every
-    // connection. Both are needed: answering releases a thread parked on a
-    // semaphore, and closing the socket releases one parked in read.
+    // connection. Both are needed: answering releases a thread waiting for
+    // an answer, and closing the socket releases one parked in read.
     self.failInflight();
     self.stopConnections();
 }
@@ -879,13 +892,17 @@ fn connectionMain(self: *Server, index: usize) void {
         .plugin => {},
     }
 
+    // Who connected, read once: what lets a request's wait tell a client
+    // that has gone from one that only stopped sending (`awaitAnswer`).
+    const peer = transport.peerOf(stream);
+
     while (self.running.load(.acquire)) {
         // `takeDelimiter`, not `takeDelimiterExclusive`: the latter leaves
         // the newline in the buffer, so every call after the first returns
         // an empty slice without advancing and this loop spins forever.
         const line = (reader.interface.takeDelimiter('\n') catch return) orelse return;
         if (line.len == 0) continue;
-        self.serveOne(&writer, caller, line) catch return;
+        self.serveOne(stream, peer, &writer, caller, line) catch return;
     }
 }
 
@@ -1103,6 +1120,8 @@ fn parseAuthToken(alloc: Allocator, line: []const u8) ?[]const u8 {
 
 fn serveOne(
     self: *Server,
+    stream: transport.Conn,
+    peer: ?transport.Peer,
     writer: *transport.Writer,
     caller: Bus.Caller,
     line: []const u8,
@@ -1142,7 +1161,19 @@ fn serveOne(
 
     pending.retain();
     self.submit.call(pending);
-    pending.done.waitUncancelable(self.io);
+    const gone = struct {
+        conn: transport.Conn,
+        peer: ?transport.Peer,
+        pub fn ask(g: @This()) bool {
+            return transport.peerGone(g.conn, g.peer);
+        }
+    }{ .conn = stream, .peer = peer };
+    if (awaitAnswer(self.io, pending, peer_check_ms, gone) == .peer_gone) {
+        switch (caller) {
+            .terminal => |tid| log.info("poltergeist: terminal={x} went away while its request was unanswered; its slot is let go", .{tid}),
+            .plugin => |pl| log.info("poltergeist: plugin {s} went away while its request was unanswered; its slot is let go", .{pl.key}),
+        }
+    }
     self.untrackInflight(pending);
 
     const response = pending.response orelse {
@@ -1152,6 +1183,54 @@ fn serveOne(
 
     try wire.writeResponse(&writer.interface, response);
     try writer.interface.flush();
+}
+
+/// How often a thread waiting for the app's answer looks to see whether its
+/// client is still there. A second: nothing it answers is in a hurry once
+/// the client has gone, and a client that is still there is never kept
+/// waiting by it -- the answer wakes the wait at once.
+const peer_check_ms = 1000;
+
+/// How a wait for the app's answer ended.
+const Waited = enum { answered, peer_gone };
+
+/// Wait for `pending` to be answered, looking every `interval_ms` to see
+/// whether the client is still there (task 1727).
+///
+/// **Before this the wait had no end but the answer**, and an app that
+/// never answered held the connection's slot for good: on the person's own
+/// Polter all 64 were found held, about half by clients long gone (#1685).
+/// A client that has gone is answered here instead -- `complete` with
+/// `PeerGone`, the same early answer `Server.stop` gives -- which ends the
+/// wait and so lets the slot go; the app's answer, when it comes, finds the
+/// request settled and changes nothing (`complete` counts once).
+///
+/// **A client that is there is never cut short, however long the app
+/// takes**: some answers are meant to be slow (`persona_wait`, a
+/// screenshot, `task_assign`), and what decides is the client, never the
+/// clock. `gone.ask()` is `transport.peerGone`, which says yes only when it
+/// is sure.
+fn awaitAnswer(io: std.Io, pending: *Pending, interval_ms: i64, gone: anytype) Waited {
+    var cut = false;
+    while (true) {
+        pending.done.waitTimeout(io, .{ .duration = .{
+            .raw = .fromMilliseconds(interval_ms),
+            .clock = .awake,
+        } }) catch {
+            // Timed out, woken for nothing, or asked to cancel: none of
+            // them is an answer. Look at the client, and wait again -- if
+            // it has gone, answer it here, which sets `done` and so ends
+            // the next wait at once. Whether this answer is the one that
+            // counted is `settle`'s to say: the app may have answered in
+            // between.
+            if (gone.ask() and pending.settle(io, .{ .failed = .{
+                .code = "PeerGone",
+                .message = "the client went away before the answer came",
+            } })) cut = true;
+            continue;
+        };
+        return if (cut) .peer_gone else .answered;
+    }
 }
 
 fn refuse(
@@ -1460,4 +1539,293 @@ test "two socket paths in the same directory do not collide" {
 
     // The one thing both systems owe, and the thing the test is named for.
     try testing.expect(!std.mem.eql(u8, a, b));
+}
+
+// Task 1727: a request's wait lets the slot go when its client has gone,
+// and only then. A real unix socket and a real child process on the other
+// end, so `peerOf` and `peerGone` are the system's answers and not a
+// stand-in's.
+const PeerTest = struct {
+    const Mode = enum {
+        /// Send the request and exit when told: the client has gone.
+        exits,
+        /// Send the request and exit at once, before its connection is
+        /// looked at.
+        exits_at_once,
+        /// Send the request, shut down the writing half as macOS's
+        /// `nc -U` does when its input ends, and wait for the answer.
+        half_closes,
+        /// Send the request and wait for the answer, connection open.
+        waits,
+    };
+
+    listener: transport.Listener,
+    path: [:0]const u8,
+    conn: transport.Conn,
+    child: std.c.pid_t,
+    /// The answer the child read, sent back over this pipe.
+    from_child: std.c.fd_t,
+    /// Closed to let an `.exits` child go: it is alive when its connection
+    /// is looked at, as a client that dies later is.
+    to_child: std.c.fd_t,
+
+    fn start(alloc: Allocator, io: std.Io, mode: Mode) !PeerTest {
+        var raw: [4]u8 = undefined;
+        io.random(&raw);
+        const path = try std.fmt.allocPrintSentinel(alloc, "/tmp/p1727-{x}.sock", .{&raw}, 0);
+        errdefer alloc.free(path);
+        var listener = try transport.bind(alloc, io, path);
+        errdefer listener.deinit(io);
+
+        // Everything the child needs is made before the fork: after it the
+        // child may only make system calls.
+        var addr: std.c.sockaddr.un = .{ .family = std.c.AF.UNIX, .path = undefined };
+        @memset(&addr.path, 0);
+        @memcpy(addr.path[0..path.len], path);
+        var fds: [2]std.c.fd_t = undefined;
+        if (std.c.pipe(&fds) != 0) return error.Pipe;
+        var go: [2]std.c.fd_t = undefined;
+        if (std.c.pipe(&go) != 0) return error.Pipe;
+
+        const pid = std.c.fork();
+        if (pid == 0) {
+            _ = std.c.close(fds[0]);
+            _ = std.c.close(go[1]);
+            const fd = std.c.socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
+            if (fd < 0) std.c._exit(2);
+            if (std.c.connect(fd, @ptrCast(&addr), @sizeOf(std.c.sockaddr.un)) != 0) std.c._exit(3);
+            const req = "{\"method\":\"me\"}\n";
+            _ = std.c.write(fd, req, req.len);
+            switch (mode) {
+                .exits_at_once => std.c._exit(0),
+                .exits => {
+                    var b: [1]u8 = undefined;
+                    _ = std.c.read(go[0], &b, 1);
+                    std.c._exit(0);
+                },
+                .half_closes => _ = std.c.shutdown(fd, std.c.SHUT.WR),
+                .waits => {},
+            }
+            var buf: [256]u8 = undefined;
+            var got: usize = 0;
+            while (got < buf.len) {
+                const n = std.c.read(fd, buf[got..].ptr, buf.len - got);
+                if (n <= 0) break;
+                got += @intCast(n);
+                if (std.mem.indexOfScalar(u8, buf[0..got], '\n') != null) break;
+            }
+            _ = std.c.write(fds[1], &buf, got);
+            std.c._exit(0);
+        }
+        _ = std.c.close(fds[1]);
+        _ = std.c.close(go[0]);
+        if (pid < 0) return error.Fork;
+
+        const conn = try listener.accept(io);
+        // The request, read off the socket as the connection loop would:
+        // what is left to peek at is whatever comes after it.
+        var line: [64]u8 = undefined;
+        var got: usize = 0;
+        while (std.mem.indexOfScalar(u8, line[0..got], '\n') == null) {
+            const n = std.c.recv(conn.socket.handle, line[got..].ptr, line.len - got, 0);
+            if (n <= 0) return error.NoRequest;
+            got += @intCast(n);
+        }
+        return .{ .listener = listener, .path = path, .conn = conn, .child = pid, .from_child = fds[0], .to_child = go[1] };
+    }
+
+    fn stop(t: *PeerTest, alloc: Allocator, io: std.Io) void {
+        t.conn.close(io);
+        t.listener.deinit(io);
+        transport.unlink(io, t.path);
+        alloc.free(t.path);
+        _ = std.c.close(t.from_child);
+        if (t.to_child >= 0) _ = std.c.close(t.to_child);
+        // Never `waitpid(-1)`: that would wait for any child of the test
+        // process at all.
+        if (t.child > 0) _ = std.c.waitpid(t.child, null, 0);
+    }
+
+    fn gone(t: *const PeerTest, peer: ?transport.Peer, io: std.Io, p: *Pending, asks: *usize) Gone {
+        return .{ .conn = t.conn, .peer = peer, .io = io, .pending = p, .asks = asks };
+    }
+
+    /// `transport.peerGone`, and a limit: a wait that has looked 200 times
+    /// (about four seconds at 20 ms) is ended by the test itself, with an
+    /// answer no assertion accepts -- so a wait that would never end is a
+    /// red test and not a hung one.
+    const Gone = struct {
+        conn: transport.Conn,
+        peer: ?transport.Peer,
+        io: std.Io,
+        pending: *Pending,
+        asks: *usize,
+        pub fn ask(g: @This()) bool {
+            g.asks.* += 1;
+            if (g.asks.* > 200) {
+                _ = g.pending.settle(g.io, .{ .failed = .{ .code = "TestGaveUp", .message = "waited too long" } });
+                return false;
+            }
+            return transport.peerGone(g.conn, g.peer);
+        }
+    };
+
+    fn newPending(alloc: Allocator) !*Pending {
+        const p = try alloc.create(Pending);
+        p.* = .{ .alloc = alloc, .caller = .{ .terminal = 1 }, .request = undefined, .arena = .init(alloc) };
+        return p;
+    }
+
+    /// The app's side: answer after `ms`, once, and drop its reference.
+    fn answerLater(io: std.Io, p: *Pending, ms: i64, counted: *std.atomic.Value(bool)) void {
+        std.Io.sleep(io, .fromMilliseconds(ms), .awake) catch {};
+        counted.store(p.settle(io, .{ .failed = .{ .code = "FromApp", .message = "the app's answer" } }), .release);
+        p.release();
+    }
+
+    /// Run `awaitAnswer` on a thread of its own and give it `limit_ms`:
+    /// null when it had not returned by then. A wait that never ends is then
+    /// a red assertion, not a hung test -- it is ended here, with an answer
+    /// no assertion accepts, so its thread can be joined.
+    fn waitAtMost(io: std.Io, p: *Pending, looks: Gone, limit_ms: i64) ?Waited {
+        // 0 while it waits; then 1 + the `Waited` it returned.
+        const Run = struct {
+            fn main(i: std.Io, pend: *Pending, g: Gone, out: *std.atomic.Value(u8)) void {
+                out.store(1 + @as(u8, @intFromEnum(awaitAnswer(i, pend, 20, g))), .release);
+            }
+        };
+        var out: std.atomic.Value(u8) = .init(0);
+        const t = std.Thread.spawn(.{}, Run.main, .{ io, p, looks, &out }) catch return null;
+        var waited_ms: i64 = 0;
+        while (out.load(.acquire) == 0 and waited_ms < limit_ms) : (waited_ms += 10) {
+            std.Io.sleep(io, .fromMilliseconds(10), .awake) catch {};
+        }
+        const ended = out.load(.acquire) != 0;
+        if (!ended) _ = p.settle(io, .{ .failed = .{ .code = "TestGaveUp", .message = "the wait did not end" } });
+        t.join();
+        return if (ended) @enumFromInt(out.load(.acquire) - 1) else null;
+    }
+
+    fn appAnswer(p: *const Pending) ?[]const u8 {
+        const r = p.response orelse return null;
+        return switch (r) {
+            .failed => |f| f.code,
+            else => null,
+        };
+    }
+};
+
+test "1727: a client that has exited lets its slot go, and its request is answered once" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try PeerTest.start(alloc, io, .exits);
+    defer t.stop(alloc, io);
+    const peer = transport.peerOf(t.conn);
+    try testing.expect(peer.? == .process and peer.?.process.started != null);
+    // Now it exits, and is collected: gone from the process table.
+    _ = std.c.close(t.to_child);
+    t.to_child = -1;
+    _ = std.c.waitpid(t.child, null, 0);
+    t.child = -1;
+
+    const p = try PeerTest.newPending(alloc);
+    defer p.release();
+    p.retain();
+    var asks: usize = 0; // the app's, which never answers until after
+
+    // Its client has gone: the wait must end, and soon. Five seconds is
+    // two hundred and fifty looks at 20 ms.
+    const waited = PeerTest.waitAtMost(io, p, t.gone(peer, io, p, &asks), 5000);
+    try testing.expectEqual(@as(?Waited, .peer_gone), waited);
+    try testing.expectEqualStrings("PeerGone", PeerTest.appAnswer(p).?);
+
+    // The app answers late: it does not count, and changes nothing.
+    try testing.expect(!p.settle(io, .{ .failed = .{ .code = "FromApp", .message = "late" } }));
+    try testing.expectEqualStrings("PeerGone", PeerTest.appAnswer(p).?);
+    p.release();
+}
+
+test "1727: a client that only shut down its writing half is waited for, and gets the answer" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try PeerTest.start(alloc, io, .half_closes);
+    defer t.stop(alloc, io);
+    const peer = transport.peerOf(t.conn);
+
+    const p = try PeerTest.newPending(alloc);
+    defer p.release();
+    p.retain();
+    var asks: usize = 0;
+    var counted: std.atomic.Value(bool) = .init(false);
+    // Long enough for the wait to look at a client whose read side has
+    // ended, several times over.
+    const app = try std.Thread.spawn(.{}, PeerTest.answerLater, .{ io, p, 200, &counted });
+    const waited = awaitAnswer(io, p, 20, t.gone(peer, io, p, &asks));
+    app.join();
+    try testing.expectEqual(Waited.answered, waited);
+    try testing.expect(counted.load(.acquire));
+    try testing.expectEqualStrings("FromApp", PeerTest.appAnswer(p).?);
+
+    // And it still reaches the client.
+    const reply = "{\"ok\":true}\n";
+    try testing.expectEqual(@as(isize, reply.len), std.c.write(t.conn.socket.handle, reply, reply.len));
+    var buf: [64]u8 = undefined;
+    const n = std.c.read(t.from_child, &buf, buf.len);
+    try testing.expectEqualStrings(reply, buf[0..@intCast(@max(n, 0))]);
+}
+
+test "1727: a client that is still there is not cut short by a slow answer" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try PeerTest.start(alloc, io, .waits);
+    defer t.stop(alloc, io);
+    const peer = transport.peerOf(t.conn);
+
+    const p = try PeerTest.newPending(alloc);
+    defer p.release();
+    p.retain();
+    var asks: usize = 0;
+    var counted: std.atomic.Value(bool) = .init(false);
+    const app = try std.Thread.spawn(.{}, PeerTest.answerLater, .{ io, p, 200, &counted });
+    const waited = awaitAnswer(io, p, 20, t.gone(peer, io, p, &asks));
+    app.join();
+    try testing.expectEqual(Waited.answered, waited);
+    try testing.expect(counted.load(.acquire));
+    try testing.expectEqualStrings("FromApp", PeerTest.appAnswer(p).?);
+
+    const reply = "{\"ok\":true}\n";
+    _ = std.c.write(t.conn.socket.handle, reply, reply.len);
+    var buf: [64]u8 = undefined;
+    const n = std.c.read(t.from_child, &buf, buf.len);
+    try testing.expectEqualStrings(reply, buf[0..@intCast(@max(n, 0))]);
+}
+
+test "1727: a client that exited before its connection was looked at is gone too" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try PeerTest.start(alloc, io, .exits_at_once);
+    defer t.stop(alloc, io);
+    _ = std.c.waitpid(t.child, null, 0);
+    t.child = -1;
+    // That it had already gone by then is all there is to know of it, and
+    // that is an answer, not "cannot tell".
+    const peer = transport.peerOf(t.conn);
+    try testing.expect(peer != null);
+    try testing.expect(peer.? == .disconnected);
+
+    const p = try PeerTest.newPending(alloc);
+    defer p.release();
+    p.retain();
+    var asks: usize = 0;
+    try testing.expectEqual(@as(?Waited, .peer_gone), PeerTest.waitAtMost(io, p, t.gone(peer, io, p, &asks), 5000));
+    try testing.expect(!p.settle(io, .{ .failed = .{ .code = "FromApp", .message = "late" } }));
+    p.release();
 }

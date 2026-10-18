@@ -73,6 +73,29 @@ pub const Conn = struct {
     }
 };
 
+/// Nothing to keep about the client: a named pipe has no half-close, so
+/// whether it is still there is asked of the pipe alone (`peerGone`).
+pub const Peer = struct {};
+
+pub fn peerOf(conn: Conn) ?Peer {
+    _ = conn;
+    return .{};
+}
+
+/// Whether the client has closed its end (task 1727). A pipe has no
+/// half-close for a client to be in: either it holds the pipe open or it
+/// does not, and when it does not, a peek fails with `ERROR_BROKEN_PIPE`.
+/// Any other failure is not taken as gone -- the cost of being wrong that
+/// way is a thread kept waiting, the cost the other way is an answer lost.
+pub fn peerGone(conn: Conn, peer: ?Peer) bool {
+    _ = peer;
+    if (k32.PeekNamedPipe(conn.file.handle, null, 0, null, null, null) != w.FALSE) return false;
+    return switch (@intFromEnum(w.GetLastError())) {
+        w.ERROR_BROKEN_PIPE, w.ERROR_PIPE_NOT_CONNECTED => true,
+        else => false,
+    };
+}
+
 pub const Listener = struct {
     /// The instance currently sitting in `ConnectNamedPipe`. Each accept
     /// hands this one out and puts a fresh instance here, because a

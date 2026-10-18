@@ -86,6 +86,18 @@ pub const impl = switch (builtin.os.tag) {
 /// anything.
 pub const unlink = impl.unlink;
 
+/// Who is on the other end of an accepted connection, kept so that
+/// `peerGone` can tell a client that has gone from one that has only
+/// stopped sending (task 1727). Null when this platform cannot say.
+pub const Peer = impl.Peer;
+pub const peerOf = impl.peerOf;
+
+/// Whether the client of `conn` has gone, asked without consuming
+/// anything it sent. **False whenever it cannot be told**: being wrong
+/// that way keeps a thread waiting, being wrong the other way drops an
+/// answer somebody is still waiting for.
+pub const peerGone = impl.peerGone;
+
 /// Wake a thread parked in a read on `conn`, from our side.
 ///
 /// Spelled once here because the two platforms need different words for the
