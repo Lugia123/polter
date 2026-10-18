@@ -336,6 +336,11 @@ running: std.atomic.Value(bool) = .init(false),
 slots: []Slot,
 slots_mutex: std.Io.Mutex = .init,
 
+/// Whether the person has been told this time that every slot is taken,
+/// and how often it has happened since (task 1731). The accept loop's alone:
+/// a refusal and a slot claimed both happen there.
+full: FullGate = .{},
+
 /// Whether the listening socket has been closed. `stop` closes it to
 /// unblock accept, and `deinit` closes it when the server never started;
 /// without this flag the two paths close it twice.
@@ -685,18 +690,33 @@ fn listenMain(self: *Server) void {
             // so it has no session to be answered in. One line on the socket
             // before it goes is the whole of the channel.
             self.refuseFull(stream);
-            log.warn(
-                "poltergeist: refusing an agent, all {d} slots are in use",
-                .{self.slots.len},
-            );
             stream.close(self.io);
+
+            // Said once while the slots stay full, and logged at most once a
+            // minute with how many were turned away (task 1731). Every
+            // short-lived client -- a hook event, a status line refresh --
+            // connects afresh, so a full table turns away dozens a minute,
+            // and a line for each filled a terminal and the log with the
+            // same sentence.
+            const said = self.full.refused(self.monotonicMs());
+            if (said.log) |n| log.warn(
+                "poltergeist: refusing an agent, all {d} slots are in use ({d} turned away since the last line)",
+                .{ self.slots.len, n },
+            );
 
             // The person who just started an agent is looking at a terminal
             // that quietly has no tools, and the line above goes to a log
             // almost nobody has turned on.
-            self.submit.callFull(self.slots.len);
+            if (said.alert) self.submit.callFull(self.slots.len);
             continue;
         };
+
+        // A slot was free: whatever ran out before has ended, and running
+        // out again is news again.
+        if (self.full.room()) |n| log.info(
+            "poltergeist: a slot is free again; {d} connection(s) were turned away while all were in use",
+            .{n},
+        );
 
         const thread = std.Thread.spawn(
             .{},
@@ -731,6 +751,59 @@ fn reapFinished(self: *Server) void {
         if (thread) |t| t.join();
     }
 }
+
+fn monotonicMs(self: *Server) i64 {
+    return std.Io.Clock.Timestamp.now(self.io, .awake).raw.toMilliseconds();
+}
+
+/// What to do about a connection turned away because every slot is taken
+/// (task 1731): tell the person once per time it fills, and log at most
+/// once a minute with how many were turned away.
+///
+/// **Once per time it fills, not once a minute.** The person can do the
+/// same thing about the first refusal as about the hundredth -- close a
+/// terminal, raise the setting -- and the hundredth line hides everything
+/// else in the terminal it lands in. It is said again only after a slot
+/// has been free in between (`room`), which is a new time of running out.
+pub const FullGate = struct {
+    said: bool = false,
+    /// Turned away since the last log line.
+    unlogged: u64 = 0,
+    /// Turned away since it last filled, for the line when it empties.
+    since_full: u64 = 0,
+    last_log_ms: ?i64 = null,
+
+    pub const log_every_ms = 60 * 1000;
+
+    pub const Verdict = struct {
+        /// Tell the person: the first refusal since a slot was last free.
+        alert: bool,
+        /// Write the log line, with this many turned away since the last.
+        log: ?u64,
+    };
+
+    pub fn refused(self: *FullGate, now_ms: i64) Verdict {
+        self.unlogged += 1;
+        self.since_full += 1;
+        const alert = !self.said;
+        self.said = true;
+        const due = if (self.last_log_ms) |last| now_ms - last >= log_every_ms else true;
+        if (!due) return .{ .alert = alert, .log = null };
+        const n = self.unlogged;
+        self.unlogged = 0;
+        self.last_log_ms = now_ms;
+        return .{ .alert = alert, .log = n };
+    }
+
+    /// A connection got a slot. How many were turned away while none was
+    /// free, when any were; null when the slots had not filled.
+    pub fn room(self: *FullGate) ?u64 {
+        if (!self.said) return null;
+        const n = self.since_full;
+        self.* = .{};
+        return n;
+    }
+};
 
 fn claimSlot(self: *Server, stream: transport.Conn) ?usize {
     self.slots_mutex.lockUncancelable(self.io);
@@ -1828,4 +1901,30 @@ test "1727: a client that exited before its connection was looked at is gone too
     try testing.expectEqual(@as(?Waited, .peer_gone), PeerTest.waitAtMost(io, p, t.gone(peer, io, p, &asks), 5000));
     try testing.expect(!p.settle(io, .{ .failed = .{ .code = "FromApp", .message = "late" } }));
     p.release();
+}
+
+test "1731: the slots running out is said once, however many are turned away, and again only after one was free" {
+    var g: FullGate = .{};
+    const first = g.refused(1_000);
+    try testing.expect(first.alert);
+    try testing.expectEqual(@as(?u64, 1), first.log);
+    // Fifty more inside the minute: nothing said, nothing logged.
+    var i: usize = 0;
+    while (i < 50) : (i += 1) {
+        const v = g.refused(1_000 + @as(i64, @intCast(i)) * 100);
+        try testing.expect(!v.alert);
+        try testing.expectEqual(@as(?u64, null), v.log);
+    }
+    // A minute on: one line, counting what was turned away since -- and
+    // still nothing said to the person.
+    const later = g.refused(61_000);
+    try testing.expect(!later.alert);
+    try testing.expectEqual(@as(?u64, 51), later.log);
+    // A slot comes free: how many were turned away in all, and the next
+    // time it fills is said again.
+    try testing.expectEqual(@as(?u64, 52), g.room());
+    try testing.expectEqual(@as(?u64, null), g.room());
+    const again = g.refused(62_000);
+    try testing.expect(again.alert);
+    try testing.expectEqual(@as(?u64, 1), again.log);
 }
