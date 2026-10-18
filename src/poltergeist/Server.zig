@@ -158,12 +158,18 @@ pub const Kind = enum {
     notifier,
     /// A `+mcp-slot` process, which asks about its slot and waits.
     slot,
+    /// `+hook`, `+launch` and `+statusline` saying one thing and going
+    /// (task 1747). Not an agent: `+launch` says `hooks_expected` this way
+    /// before its CLI has started, and counted, that one request made the
+    /// launch it announced "connected" from its first millisecond -- the
+    /// minute with no agent (`Bus.launchWithNoAgent`) then never ran out.
+    hook,
 
     /// Not counted by `agentPresent`.
     pub fn listens(self: Kind) bool {
         return switch (self) {
             .agent => false,
-            .notifier, .slot => true,
+            .notifier, .slot, .hook => true,
         };
     }
 
@@ -173,6 +179,7 @@ pub const Kind = enum {
             .agent => "",
             .notifier => ",\"kind\":\"notifier\"",
             .slot => ",\"kind\":\"slot\"",
+            .hook => ",\"kind\":\"hook\"",
         };
     }
 };

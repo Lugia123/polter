@@ -36,6 +36,10 @@ const Fixture = struct {
         /// how a wedged or shutting-down app looks from the socket.
         answer: bool = true,
 
+        /// While true, a request is held before it is answered: the app
+        /// thread busy with it, its connection open and waiting (task 1747).
+        hold: std.atomic.Value(bool) = .init(false),
+
         seen: std.atomic.Value(u32) = .init(0),
 
         fn submit(ctx: *anyopaque, pending: *Server.Pending) void {
@@ -47,6 +51,7 @@ const Fixture = struct {
             defer pending.release();
 
             _ = self.seen.fetchAdd(1, .acq_rel);
+            while (self.hold.load(.acquire)) self.io.sleep(.fromNanoseconds(5 * std.time.ns_per_ms), .awake) catch {};
             if (!self.answer) return;
             pending.complete(self.io, .ok);
         }
@@ -815,9 +820,65 @@ test "+mcp says which of its connections only listens (#1498)" {
     }
 }
 
+// -- a hook is not an agent (task 1747) ---------------------------------------
+
+// `+launch` says `hooks_expected` through `hook.deliver` before its CLI has
+// started, and the app works out whether a launch has its agent while that
+// very request is being answered (`App.poltergeistRequest`, then
+// `considerLaunches`). Counted, the connection saying "an agent is coming"
+// was the agent: the launch was "connected" at once and its minute with no
+// agent never ran out (Windows, #1686: a Codex sat on its trust box 90 s
+// and more, nobody told). So: while a hook's request is open, nobody is here.
+test "1747: the connection +launch says hooks_expected on does not make an agent present" {
+    var f: Fixture = undefined;
+    try f.setup(true);
+    defer f.deinit();
+    const token = try f.server.issueToken(worker);
+
+    // The app busy with it: the hook's connection open, waiting for its answer.
+    f.fake.hold.store(true, .release);
+    const Deliver = struct {
+        fn run(io: std.Io, path: []const u8, tok: []const u8, out: *?anyerror) void {
+            var ev: AgentEvent.Event = .none;
+            ev.event = .hooks_expected;
+            ev.cli = "codex";
+            hook.deliver(io, path, tok, ev) catch |err| {
+                out.* = err;
+            };
+        }
+    };
+    var failed: ?anyerror = null;
+    const t = try std.Thread.spawn(.{}, Deliver.run, .{ f.io, f.path, token, &failed });
+    var waited: u64 = 0;
+    while (f.fake.seen.load(.acquire) == 0 and waited < 2000) : (waited += 5) {
+        f.io.sleep(.fromNanoseconds(5 * std.time.ns_per_ms), .awake) catch {};
+    }
+    const arrived = f.fake.seen.load(.acquire) > 0;
+    try testing.expect(arrived);
+
+    // Its request read, so who it is has been recorded (`roundTrip`): not
+    // an agent.
+    const during_hook = f.server.agentPresent(worker);
+
+    // The control, on the same server at the same moment: a connection
+    // that says no kind -- an agent's, or an older client's -- is one.
+    var agent = try f.connect();
+    defer agent.close();
+    try expectOk(try agent.auth(token));
+    f.fake.hold.store(false, .release);
+    try roundTrip(&agent);
+    const with_agent = f.server.agentPresent(worker);
+
+    t.join();
+    try testing.expect(failed == null);
+    try testing.expect(!during_hook);
+    try testing.expect(with_agent);
+}
+
 // -- full is not refused (task 1736) -----------------------------------------
 
 const hook = @import("../cli/hook.zig");
+const AgentEvent = @import("agent_event.zig");
 
 // Measured on a machine whose every slot was held: ten minutes, 421
 // connections turned away, and the `+hook` and `+statusline` lines for them

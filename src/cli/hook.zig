@@ -246,6 +246,9 @@ fn sendAuth(w: *std.Io.Writer, token: []const u8) std.Io.Writer.Error!void {
     try s.beginObject();
     try s.objectField("token");
     try s.write(token);
+    // Not an agent (task 1747): see `Server.Kind.hook`.
+    try s.objectField("kind");
+    try s.write(@tagName(Server.Kind.hook));
     try s.endObject();
     try s.endObject();
     try w.writeByte('\n');
