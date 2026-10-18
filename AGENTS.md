@@ -100,6 +100,12 @@ supervising — `src/poltergeist/`, the MCP tools, the group chat, the task pane
    - **总管**合并时只跑点名测试、闸和 hosts-agree。
    ⇒ 整台机器上同时最多两个大构建：mac 一个、Windows 一个。只有一个 agent 在干活
    时不受这条限制。
+   - **每个构建和测试命令都以后台优先级、限并发跑**，任何人、任何大小都一样：
+     `taskpolicy -b nice -n 19 <命令>`，zig 加 `-j4`，cargo 设 `CARGO_BUILD_JOBS=4`。
+     zig、cargo、swift 默认把 10 个核全占满，两三个构建一起跑，用户的界面就没有
+     CPU 可用了（2026-10-18 负载 28，用户报「没有空闲 CPU」）。`taskpolicy -b` 让
+     macOS 把它放到效率核上，并降低磁盘 IO 优先级。已经在跑的进程可以用
+     `taskpolicy -b -p <pid>` 降级，不用停。
 
 ## libghostty-vt
 
