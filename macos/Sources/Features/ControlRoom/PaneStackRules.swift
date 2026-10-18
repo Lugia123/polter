@@ -34,6 +34,8 @@ enum PaneStackRules {
         var ownName: String
         /// The colour the user set on it (task 1699).
         var color: PaneColor = .none
+        /// Which view it is (`PaneStack.Member.key`, task 1733).
+        var key: String = ""
     }
 
     /// What a pane holding `members`, showing `shown`, draws.
@@ -63,6 +65,7 @@ enum PaneStackRules {
                 wears: frame?.wears ?? .plain,
                 role: title?.roleWord(in: frame?.wears ?? .plain),
                 terminal: member.terminal,
+                key: member.key,
                 color: member.color)
         }
         let urgent: [Int] = pulses.compactMap { waiting in

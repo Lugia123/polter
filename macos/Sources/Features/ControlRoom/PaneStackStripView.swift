@@ -97,8 +97,10 @@ struct PaneStackStripView: View {
     /// the number of tabs or the strip's width last changed (task 1599).
     @State private var wheeled = false
 
-    /// The tab the pointer is over, for its close button.
-    @State private var hovered: Int?
+    /// The tab the pointer is over, for its close button: by what the tab
+    /// is known by, so that closing one does not hand the pointer to the
+    /// next (task 1733).
+    @State private var hovered: String?
     /// Where a terminal being dragged over the strip would go in.
     @State private var dropAt: Int?
 
@@ -218,7 +220,9 @@ struct PaneStackStripView: View {
                     .fill(well)
                     .allowsHitTesting(false)
             }
-            ForEach(layout.tabs, id: \.member) { tab in
+            // Known by member, not by place (task 1733): see `PaneStack.tabIDs`.
+            ForEach(layout.identified(by: stack.tabIDs)) { item in
+                let tab = item.tab
                 let x = tab.x - CGFloat(Look.StackTab.inset) + shift
                 if tab.separatorBefore {
                     theme.stackTabSeparator.color
@@ -227,7 +231,7 @@ struct PaneStackStripView: View {
                                 y: top + (tabH - CGFloat(Look.StackTab.separatorHeight)) / 2)
                         .allowsHitTesting(false)
                 }
-                self.tab(stack.members[tab.member], index: tab.member, current: tab.current,
+                self.tab(stack.members[tab.member], index: tab.member, id: item.id, current: tab.current,
                          closeSeen: layout.closeSeen(tab.member, offset: offset, at: .leading))
                     .frame(width: tab.width, height: tabH)
                     .offset(x: x, y: top)
@@ -298,9 +302,9 @@ struct PaneStackStripView: View {
     /// right, and its close button over the name's start while the pointer
     /// is on it (task 1642). What it is picked up and right-clicked by lies
     /// behind it (`PaneStackActions.grip`).
-    private func tab(_ member: PaneStack.Member, index: Int, current: Bool, closeSeen: Bool) -> some View {
+    private func tab(_ member: PaneStack.Member, index: Int, id: String, current: Bool, closeSeen: Bool) -> some View {
         let pad = CGFloat(Look.StackTab.paddingX)
-        let closeShows = closeSeen && PolterPaneTabRules.closeShows(hovering: hovered == index)
+        let closeShows = closeSeen && PolterPaneTabRules.closeShows(hovering: hovered == id)
         return ZStack {
             if let grip = actions.grip {
                 grip(index)
@@ -367,7 +371,7 @@ struct PaneStackStripView: View {
             }
         }
         .onHover { inside in
-            if inside { hovered = index } else if hovered == index { hovered = nil }
+            if inside { hovered = id } else if hovered == id { hovered = nil }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(member.name)

@@ -29,6 +29,9 @@ struct PaneStack: Equatable {
         /// while it has none. What a tab is lit by (`terminal_highlight`,
         /// task 1689).
         var terminal: String?
+        /// Which view this is, for as long as it lives (its surface's id):
+        /// what its tab is known by (task 1733). Empty when nobody said.
+        var key: String = ""
 
         /// Its tab carries the supervisor's mark before the name (task
         /// 1692): wherever it is in the stack, in front or behind -- behind,
@@ -84,6 +87,27 @@ struct PaneStack: Equatable {
     /// The member in front; the first when `current` is out of range.
     var showing: Member? {
         members.indices.contains(current) ? members[current] : members.first
+    }
+
+    /// What each tab is known by, in the order of `members` (task 1733).
+    ///
+    /// **The member, not its place.** Known by its index, the tab after one
+    /// that is closed became the closed one's tab -- its view kept, with
+    /// whatever that view was holding, the closed terminal included -- and
+    /// the pointer that had been over the closed tab was over the next one.
+    /// Indices only when the keys cannot tell every member apart.
+    var tabIDs: [String] {
+        let keys = members.map(\.key)
+        guard !keys.contains(""), Set(keys).count == keys.count else {
+            return members.indices.map { "#\($0)" }
+        }
+        return keys
+    }
+
+    /// The member whose tab is known by `id`, if it is still here.
+    func index(ofTab id: String?) -> Int? {
+        guard let id else { return nil }
+        return tabIDs.firstIndex(of: id)
     }
 }
 
@@ -148,6 +172,17 @@ struct PaneStackStripLayout: Equatable {
         var separatorBefore: Bool
         /// Less than the tab wanted: its name ends in an ellipsis.
         var squeezed: Bool
+    }
+
+    /// A tab with what it is known by (`PaneStack.tabIDs`, task 1733).
+    struct IdentifiedTab: Identifiable, Equatable {
+        var id: String
+        var tab: Tab
+    }
+
+    /// The tabs, each known by its member's id rather than its place.
+    func identified(by ids: [String]) -> [IdentifiedTab] {
+        tabs.map { .init(id: ids.indices.contains($0.member) ? ids[$0.member] : "#\($0.member)", tab: $0) }
     }
 
     /// Every tab, in order.

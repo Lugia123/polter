@@ -197,7 +197,8 @@ private struct PaneFramed: ViewModifier {
         let stack = members.map { members in
             PaneStackRules.stack(
                 members: members.members.map {
-                    .init(terminal: ControlRoomLender.terminal(of: $0), ownName: $0.title, color: colourOf($0))
+                    .init(terminal: ControlRoomLender.terminal(of: $0), ownName: $0.title, color: colourOf($0),
+                          key: $0.id.uuidString)
                 },
                 shown: members.members.firstIndex { $0.id == members.shown } ?? 0,
                 terminals: source.terminals, pulses: source.waiting)

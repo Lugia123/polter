@@ -396,3 +396,43 @@ struct PaneStackStripTests {
         }
     }
 }
+
+/// A tab is known by its member, not by its place (task 1733). Known by its
+/// index, closing the middle of three made the third tab take over the
+/// second's view -- and whatever that view was holding, the closed
+/// terminal among it -- and the pointer that was over the closed tab came
+/// to be over the next one.
+struct PaneStackTabIdentityTests {
+    private func member(_ key: String) -> PaneStack.Member {
+        PaneStack.Member(name: key, shown: .none, wears: .worker, key: key)
+    }
+    private func stack(_ keys: [String]) -> PaneStack {
+        PaneStack(members: keys.map(member), current: 0)
+    }
+    private func ids(_ s: PaneStack) -> [String] {
+        PaneStackStripLayout(wants: s.members.map { _ in 110 }, current: s.current, width: 600, status: 50)
+            .identified(by: s.tabIDs).map(\.id)
+    }
+
+    @Test func closingTheMiddleTabLeavesTheNextOneItsOwnName() {
+        let before = stack(["A", "B", "C"])
+        let after = stack(["A", "C"])
+        #expect(ids(before) == ["A", "B", "C"])
+        #expect(ids(after) == ["A", "C"])
+        // The third tab is the same tab before and after: what it is known
+        // by did not move to the place the closed one left.
+        #expect(ids(before)[2] == ids(after)[1])
+    }
+
+    @Test func thePointerOverAClosedTabIsOverNoTab() {
+        let after = stack(["A", "C"])
+        #expect(after.index(ofTab: "B") == nil)
+        #expect(after.index(ofTab: "C") == 1)
+        #expect(after.index(ofTab: nil) == nil)
+    }
+
+    @Test func withoutKeysThatTellEveryoneApartTabsAreKnownByPlace() {
+        #expect(stack(["A", "", "C"]).tabIDs == ["#0", "#1", "#2"])
+        #expect(stack(["A", "A"]).tabIDs == ["#0", "#1"])
+    }
+}
