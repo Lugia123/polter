@@ -88,6 +88,10 @@ supervising — `src/poltergeist/`, the MCP tools, the group chat, the task pane
      `cargo test`），地板照做；不跑带 app 的 `zig build`、不跑 WINCROSS 出包、
      不跑不带 filter 的全树 `zig build test`，也不为一个小补丁新开 worktree 冷编，
      返工就在原来那棵树上做。交付时写清楚哪些只证到了点名测试。
+     ⚠️ **整组闸也是大构建**：`tools/` 和 `windows/tools/` 里有几道闸自己会调
+     `zig build`（如 the-ffi-structs/constants-match-the-header、
+     one-apprt-is-outside-the-fast-floor、pure-crates-pass-their-tests），在一棵新树里
+     跑整组就等于冷编。开发 worker 只跑和改动相关、不调 zig 的闸，整组留给合并时。
    - **mac 测试 worker** 在一棵固定的树里，对总管合好的主线提交跑：带 app 的
      `zig build`、不带 filter 的全树 `zig build test`（编过即停）、mac-logic，再拿
      这个 app 上真机。**「全树编得过」由它来证。**
