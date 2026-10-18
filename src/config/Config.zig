@@ -4664,7 +4664,12 @@ else
 /// features. An option exists in vim to modify this: `:set
 /// keyprotocol=ghostty:kitty`, however a bug in the implementation prevents it
 /// from working properly. https://github.com/vim/vim/pull/13211 fixes this.
-term: []const u8 = "xterm-ghostty",
+///
+/// On Windows the default is `xterm-256color`: no compiled `xterm-ghostty`
+/// terminfo entry ships there, and a program that looks its `TERM` up -- the
+/// vim that comes with Git for Windows -- finds nothing, does not switch to
+/// the alternate screen, and leaves its whole screen behind when it exits.
+term: []const u8 = default_term,
 
 /// String to send when we receive `ENQ` (`0x05`) from the command that we are
 /// running. Defaults to an empty string if not set.
@@ -5625,7 +5630,7 @@ pub fn finalize(self: *Config) !void {
     // Prevent setting TERM to an empty string
     if (self.term.len == 0) {
         // HACK: See comment above at definition
-        self.term = "xterm-ghostty";
+        self.term = default_term;
     }
 
     // The default for the working directory depends on the system.
@@ -12635,6 +12640,58 @@ test "clone preserves conditional set" {
     defer clone1.deinit();
 
     try testing.expect(clone1._conditional_set.contains(.theme));
+}
+
+/// The `TERM` a terminal is given when the config names none (task 1739):
+/// `xterm-ghostty`, except on Windows, where no compiled terminfo entry for
+/// it ships -- the build installs only its source there
+/// (`GhosttyResources.zig`) -- and a program that reads the terminfo
+/// database finds nothing under that name. Measured on the Windows machine:
+/// Git for Windows' vim, with `TERM=xterm-ghostty`, read empty `t_ti`/`t_te`,
+/// never switched to the alternate screen, and left its screen and the
+/// scrollback behind on `:q`; the same package with `xterm-256color` put
+/// everything back. Windows Terminal says `xterm-256color` too.
+pub fn defaultTerm(os: std.Target.Os.Tag) []const u8 {
+    return if (os == .windows) "xterm-256color" else "xterm-ghostty";
+}
+
+const default_term = defaultTerm(builtin.os.tag);
+
+test "1739: TERM is xterm-256color on Windows by default and xterm-ghostty elsewhere" {
+    const testing = std.testing;
+    const windows = defaultTerm(.windows);
+    try testing.expectEqualStrings("xterm-256color", windows);
+    const macos = defaultTerm(.macos);
+    try testing.expectEqualStrings("xterm-ghostty", macos);
+    const linux = defaultTerm(.linux);
+    try testing.expectEqualStrings("xterm-ghostty", linux);
+}
+
+test "1739: a TERM the person set is kept, and an empty one is this system's default" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    {
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        var it: TestIterator = .{ .data = &.{"--term=screen-256color"} };
+        try cfg.loadIter(alloc, &it);
+        try cfg.finalize();
+        try testing.expectEqualStrings("screen-256color", cfg.term);
+    }
+    {
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        var it: TestIterator = .{ .data = &.{"--term="} };
+        try cfg.loadIter(alloc, &it);
+        try cfg.finalize();
+        try testing.expectEqualStrings(defaultTerm(builtin.os.tag), cfg.term);
+    }
+    {
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        try cfg.finalize();
+        try testing.expectEqualStrings(defaultTerm(builtin.os.tag), cfg.term);
+    }
 }
 
 test "working-directory expands tilde" {
