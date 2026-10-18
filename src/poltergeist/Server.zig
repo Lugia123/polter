@@ -66,6 +66,15 @@ const max_sighting_env = 16;
 pub const min_max_connections = 1;
 pub const limit_max_connections = 256;
 
+/// How many connections `init` makes room for when asked for
+/// `max_connections` (`poltergeist-max-agents`): clamped rather than
+/// rejected. **The most agents' requests that can be in flight at once**,
+/// since each connection is lock-step -- which is what the app's queue for
+/// them is sized by (task 1730, `App.poltergeist_requests`).
+pub fn slotCount(max_connections: usize) usize {
+    return std.math.clamp(max_connections, min_max_connections, limit_max_connections);
+}
+
 /// One connection's thread and socket, kept so shutdown can close the
 /// socket -- which is what unblocks a thread parked in read -- and then
 /// join the thread.
@@ -363,11 +372,7 @@ pub fn init(
     // Clamped rather than rejected: a config value out of range should not
     // be the difference between "the agent socket is open" and "it is not",
     // and a user who wrote 0 meant something, but not "refuse everything".
-    const slot_count = std.math.clamp(
-        max_connections,
-        min_max_connections,
-        limit_max_connections,
-    );
+    const slot_count = slotCount(max_connections);
 
     const owned = try alloc.dupe(u8, path);
     errdefer alloc.free(owned);

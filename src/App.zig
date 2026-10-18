@@ -554,6 +554,14 @@ focused_surface: ?*Surface = null,
 /// this is a blocking queue so if it is full you will get errors (or block).
 mailbox: Mailbox.Queue,
 
+/// Agents' requests, waiting for the app thread (task 1730): **a queue of
+/// their own, not slots in `mailbox`.** In the mailbox a role change's burst
+/// -- every sidecar's notifier asking again at once, then every agent
+/// listing its tools -- took every slot, and a terminal setting its title
+/// then had its IO thread stopped until the app came back for it
+/// (`MailboxBurst`). Here a push never waits: see `PoltergeistRequests`.
+poltergeist_requests: PoltergeistRequests,
+
 /// The set of font GroupCache instances shared by surfaces with the
 /// same font configuration.
 font_grid_set: font.SharedGridSet,
@@ -628,6 +636,7 @@ pub fn init(
         .alloc = alloc,
         .surfaces = .empty,
         .mailbox = .{},
+        .poltergeist_requests = .{},
         .font_grid_set = font_grid_set,
         .config_conditional_state = .{},
         .poltergeist = .init(alloc, .{}),
@@ -790,6 +799,10 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
 
     // Drain our mailbox
     try self.drainMailbox(rt_app);
+    // Then the agents' requests (task 1730): after the terminals' messages,
+    // which keep terminals moving, and woken the same way
+    // (`submitPoltergeistRequest`).
+    self.drainPoltergeistRequests();
 
     // The rest of the tick is one item of its own: whatever it does after
     // the mailbox, a stall in it is named `tick`.
@@ -4315,10 +4328,13 @@ fn submitPoltergeistRequest(
 
     // A zero return means the push failed, in which case nothing will ever
     // take the reference off our hands.
-    if (self.mailbox.push(
+    // Instant: the queue has room for every connection there can be
+    // (`PoltergeistRequests`), so a push that finds it full is a broken
+    // count, and is answered rather than left to wait.
+    if (self.poltergeist_requests.push(
         global.io(),
-        .{ .poltergeist_request = pending },
-        .{ .forever = {} },
+        pending,
+        .{ .instant = {} },
     ) == 0) {
         log.warn("poltergeist: could not queue an agent request", .{});
         // **Answered before it is let go** (task 1685): the connection
@@ -8759,7 +8775,7 @@ fn worktreeJobDone(ctx: *anyopaque, job: *poltergeistpkg.worktree.Job) void {
     // does every request's; the one the wait holds is released when the
     // wait is taken. A push that failed leaves the wait to be freed at quit.
     pending.retain();
-    if (self.mailbox.push(global.io(), .{ .poltergeist_request = pending }, .{ .forever = {} }) == 0) {
+    if (self.poltergeist_requests.push(global.io(), pending, .{ .instant = {} }) == 0) {
         log.warn("worktree: could not hand a finished worktree back to the app thread", .{});
         pending.release();
         return;
@@ -11266,13 +11282,49 @@ const stall_watch_every_ms = 250;
 /// so the app thread copies nothing to say it.
 fn stallLabel(message: Message) poltergeistpkg.StallWatch.Label {
     return switch (message) {
-        .poltergeist_request => |p| .{
-            .kind = "poltergeist_request",
-            .method = @tagName(p.request),
-            .caller = p.caller.terminalId() orelse 0,
-        },
         inline else => |_, tag| .{ .kind = @tagName(tag) },
     };
+}
+
+/// What the stall watch calls an agent's request: the method and the
+/// terminal. Its kind is still `poltergeist_request`, the name it had as a
+/// mailbox message, so a log read before and after task 1730 says the same.
+fn requestStallLabel(p: *const poltergeistpkg.Server.Pending) poltergeistpkg.StallWatch.Label {
+    return .{
+        .kind = "poltergeist_request",
+        .method = @tagName(p.request),
+        .caller = p.caller.terminalId() orelse 0,
+    };
+}
+
+/// Drain the agents' requests (task 1730), one item each for the stall watch.
+fn drainPoltergeistRequests(self: *App) void {
+    const Handle = struct {
+        fn handle(app: *App, p: *poltergeistpkg.Server.Pending) void {
+            app.poltergeistRequest(p);
+        }
+    };
+    if (drainRequests(&self.poltergeist_requests, &self.stall_watch, self, Handle.handle)) self.control_dirty = true;
+}
+
+/// The loop `drainPoltergeistRequests` runs, apart from what answering a
+/// request needs of the app -- which a test build cannot compile -- so that
+/// it can be run in one: everything in `queue`, each between `begin` and
+/// `end` on `watch`, handed to `handle`. Whether there was any.
+fn drainRequests(
+    queue: *PoltergeistRequests,
+    watch: *poltergeistpkg.StallWatch,
+    ctx: anytype,
+    comptime handle: fn (@TypeOf(ctx), *poltergeistpkg.Server.Pending) void,
+) bool {
+    var any = false;
+    while (queue.pop(global.io())) |p| {
+        watch.begin(poltergeistpkg.StallWatch.nowNs(global.io()), requestStallLabel(p));
+        defer watch.end(poltergeistpkg.StallWatch.nowNs(global.io()));
+        any = true;
+        handle(ctx, p);
+    }
+    return any;
 }
 
 /// Drain the mailbox.
@@ -11313,7 +11365,6 @@ fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
                 );
                 self.poltergeist.noteSampling(msg.from, msg.started, self.poltergeistElapsedMs());
             },
-            .poltergeist_request => |p| self.poltergeistRequest(p),
             .poltergeist_alert => |line| self.poltergeistAlert(line),
 
             // If we're quitting, then we set the quit flag and stop
@@ -11628,12 +11679,6 @@ pub const Message = union(enum) {
         started: bool,
     },
 
-    /// A request from an agent, waiting on its connection thread for an
-    /// answer. Carrying the pointer is safe because that thread blocks
-    /// until this is answered and the server answers any that are left
-    /// when it shuts down.
-    poltergeist_request: *poltergeistpkg.Server.Pending,
-
     /// A plugin has stopped working, in a sentence meant for the person.
     ///
     /// Routed through the app because the failure happens on a resident's
@@ -11655,6 +11700,33 @@ pub const Message = union(enum) {
 };
 
 /// Mailbox is the way that other threads send the app thread messages.
+/// The queue agents' requests wait in for the app thread (task 1730).
+///
+/// **Room for every connection there can be.** Each connection to the
+/// server is lock-step -- one request, then its answer -- so the live
+/// connections' requests are at most `Server.slotCount` of whatever
+/// `poltergeist-max-agents` says, and the queue holds that many for any
+/// configuration (checked below, at compile time). A request handed back by
+/// a worktree job is one whose connection is still waiting on it, so it is
+/// not one more.
+///
+/// ⚠️ **Not quite never full.** Since task 1727 a connection whose client
+/// has gone stops waiting and gives its slot up while its request may still
+/// be here; a new connection can then take the slot and queue another. Such
+/// leftovers pile up only while the app thread is not draining -- a stall --
+/// and only as fast as clients go away and come back. A push that finds the
+/// queue full anyway does not wait: it is answered `Busy` at once
+/// (`submitPoltergeistRequest`), and no terminal is held up either way.
+pub const PoltergeistRequests = BlockingQueue(*poltergeistpkg.Server.Pending, poltergeist_request_room);
+const poltergeist_request_room = poltergeistpkg.Server.limit_max_connections;
+comptime {
+    // As many as the largest `poltergeist-max-agents` a config can hold
+    // makes slots for -- the setting's own type, through the server's own
+    // clamp, so neither can grow past this without this failing to build.
+    const most = poltergeistpkg.Server.slotCount(std.math.maxInt(@FieldType(configpkg.Config, "poltergeist-max-agents")));
+    if (poltergeist_request_room < most) @compileError("the queue for agents' requests is smaller than the connections there can be");
+}
+
 pub const Mailbox = struct {
     /// The type used for sending messages to the app thread.
     pub const Queue = BlockingQueue(Message, 64);
@@ -11801,5 +11873,393 @@ test "a refusal names terminals, and leaves every other number alone" {
         const got = try rewriteHandles(alloc, "0x and 0X", ctx, Map.lookup);
         defer alloc.free(got);
         try testing.expectEqualStrings("0x and 0X", got);
+    }
+}
+
+/// Task 1730: what a burst of agent requests does to the app mailbox it
+/// shares with every terminal's IO thread. **A measurement, run as a test**
+/// so that it runs against the mailbox as it is built -- the real queue
+/// type, its real capacity, its real messages -- and not against a copy of
+/// its numbers.
+///
+/// The burst is the one a role change makes (`#1685` ②): every sidecar's
+/// notifier has a `persona_wait` parked in the app, which answers all of
+/// them while handling the one message that changed the role. Each notifier
+/// asks again at once -- it has waited longer than its floor
+/// (`mcp.min_wait_ms`) -- and each agent whose tools changed lists them
+/// again, which is one more request on the sidecar's other connection. Each
+/// connection is lock-step, so that is at most two requests a sidecar.
+/// Meanwhile a terminal that sets its title pushes the way `stream_handler`
+/// does: instantly, and when that fails, for ever -- with the IO thread
+/// stopped until it goes in.
+const MailboxBurst = struct {
+    const Q = Mailbox.Queue;
+    const R = PoltergeistRequests;
+
+    /// Where the agents' requests go: into the mailbox, as they did until
+    /// task 1730, or into their own queue, as `submitPoltergeistRequest`
+    /// puts them now.
+    pub const Route = enum { mailbox, own };
+
+    pub const Params = struct {
+        route: Route,
+        sidecars: usize,
+        /// Terminals setting their titles while it happens.
+        titles: usize,
+        title_every_us: u64,
+        /// What the app thread still has to do after answering the waits,
+        /// before it next looks at the mailbox.
+        rest_us: u64,
+        /// What each message then costs it.
+        per_message_us: u64,
+        /// From a notifier's answer to its agent's next request on the
+        /// other connection (`tools/list_changed`, `tools/list`).
+        turnaround_us: u64,
+    };
+
+    pub const Readings = struct {
+        requests: usize = 0,
+        /// The most messages the mailbox held.
+        queued_max: u32 = 0,
+        /// The most requests their own queue held, and pushes it refused.
+        requests_queued_max: u32 = 0,
+        requests_refused: usize = 0,
+        /// Requests whose push had to wait for room, and the longest wait.
+        requests_waited: usize = 0,
+        request_wait_max_us: u64 = 0,
+        title_pushes: usize = 0,
+        /// Title pushes the mailbox had no room for at once: the IO thread
+        /// stopped until it did, for at most this long.
+        titles_blocked: usize = 0,
+        title_block_max_us: u64 = 0,
+    };
+
+    /// A push that took longer than this waited for room.
+    const waited_us: u64 = 200;
+
+    const Shared = struct {
+        q: *Q,
+        r: *R,
+        io: std.Io,
+        p: Params,
+        go_ns: std.atomic.Value(i64) = .init(0),
+        stop: std.atomic.Value(bool) = .init(false),
+        pushed: std.atomic.Value(usize) = .init(0),
+        queued_max: std.atomic.Value(u32) = .init(0),
+        requests_queued_max: std.atomic.Value(u32) = .init(0),
+        requests_refused: std.atomic.Value(usize) = .init(0),
+        requests_waited: std.atomic.Value(usize) = .init(0),
+        request_wait_max_us: std.atomic.Value(u64) = .init(0),
+        title_pushes: std.atomic.Value(usize) = .init(0),
+        titles_blocked: std.atomic.Value(usize) = .init(0),
+        title_block_max_us: std.atomic.Value(u64) = .init(0),
+        titles_done: std.atomic.Value(usize) = .init(0),
+        pending: poltergeistpkg.Server.Pending = undefined,
+
+        fn now(self: *Shared) i64 {
+            return @intCast(std.Io.Timestamp.now(self.io, .awake).nanoseconds);
+        }
+
+        fn spinUntil(self: *Shared, at_ns: i64) void {
+            while (self.now() < at_ns) std.atomic.spinLoopHint();
+        }
+
+        /// A producer's own waiting sleeps: a hundred threads spinning
+        /// would take the cores the app thread's work is measured on.
+        fn sleepUntil(self: *Shared, at_ns: i64) void {
+            while (true) {
+                const left = at_ns - self.now();
+                if (left <= 0) return;
+                std.Io.sleep(self.io, .fromNanoseconds(@intCast(@min(left, 200_000))), .awake) catch return;
+            }
+        }
+
+        fn waitForGo(self: *Shared) i64 {
+            while (true) {
+                const go = self.go_ns.load(.acquire);
+                if (go != 0) return go;
+                std.Io.sleep(self.io, .fromMicroseconds(50), .awake) catch {};
+            }
+        }
+
+        fn noteLen(self: *Shared, len: u32) void {
+            _ = self.queued_max.fetchMax(len, .monotonic);
+        }
+
+        fn request(self: *Shared, delay_us: u64) void {
+            const go = self.waitForGo();
+            self.sleepUntil(go + @as(i64, @intCast(delay_us)) * 1000);
+            const t0 = self.now();
+            switch (self.p.route) {
+                // How it was: a slot in the mailbox, waited for.
+                .mailbox => self.noteLen(self.q.push(self.io, .{ .poltergeist_alert = "" }, .{ .forever = {} })),
+                // How `submitPoltergeistRequest` does it now.
+                .own => {
+                    const len = self.r.push(self.io, &self.pending, .{ .instant = {} });
+                    if (len == 0) _ = self.requests_refused.fetchAdd(1, .monotonic);
+                    _ = self.requests_queued_max.fetchMax(len, .monotonic);
+                },
+            }
+            const us: u64 = @intCast(@divFloor(self.now() - t0, 1000));
+            if (us > waited_us) {
+                _ = self.requests_waited.fetchAdd(1, .monotonic);
+                _ = self.request_wait_max_us.fetchMax(us, .monotonic);
+            }
+            _ = self.pushed.fetchAdd(1, .release);
+        }
+
+        fn title(self: *Shared, k: usize) void {
+            const go = self.waitForGo();
+            // Spread over the period, as terminals with nothing to do with
+            // each other are: one of them sets its title every
+            // `title_every_us / titles`.
+            var at = go + @as(i64, @intCast(k * self.p.title_every_us / @max(self.p.titles, 1))) * 1000;
+            while (!self.stop.load(.acquire)) {
+                self.sleepUntil(at);
+                const msg: Message = .{ .poltergeist_quiet = .{ .from = k, .quiet_ms = 0 } };
+                _ = self.title_pushes.fetchAdd(1, .monotonic);
+                var len = self.q.push(self.io, msg, .{ .instant = {} });
+                if (len == 0) {
+                    const t0 = self.now();
+                    len = self.q.push(self.io, msg, .{ .forever = {} });
+                    const us: u64 = @intCast(@divFloor(self.now() - t0, 1000));
+                    _ = self.titles_blocked.fetchAdd(1, .monotonic);
+                    _ = self.title_block_max_us.fetchMax(us, .monotonic);
+                }
+                self.noteLen(len);
+                at += @as(i64, @intCast(self.p.title_every_us)) * 1000;
+            }
+            _ = self.titles_done.fetchAdd(1, .release);
+        }
+    };
+
+    fn run(alloc: Allocator, io: std.Io, p: Params) !Readings {
+        const q = try Q.create(alloc);
+        defer q.destroy(alloc);
+        const r = try alloc.create(R);
+        defer alloc.destroy(r);
+        r.* = .{};
+        var s: Shared = .{ .q = q, .r = r, .io = io, .p = p };
+
+        var threads: std.ArrayList(std.Thread) = .empty;
+        defer threads.deinit(alloc);
+        for (0..p.sidecars) |_| {
+            // The notifier asks again at once; its agent's next request
+            // follows on the other connection.
+            try threads.append(alloc, try std.Thread.spawn(.{}, Shared.request, .{ &s, 0 }));
+            try threads.append(alloc, try std.Thread.spawn(.{}, Shared.request, .{ &s, p.turnaround_us }));
+        }
+        var titles: std.ArrayList(std.Thread) = .empty;
+        defer titles.deinit(alloc);
+        for (0..p.titles) |k| try titles.append(alloc, try std.Thread.spawn(.{}, Shared.title, .{ &s, k }));
+
+        // The app thread: the waits are answered now, then the rest of
+        // that message, then the mailbox one message at a time.
+        const go = s.now();
+        s.go_ns.store(go, .release);
+        s.spinUntil(go + @as(i64, @intCast(p.rest_us)) * 1000);
+        const want = 2 * p.sidecars;
+        var requests: usize = 0;
+        // Until every request is either taken or was refused: one refused
+        // is never there to take, and waiting for it would spin for ever.
+        while (requests + s.requests_refused.load(.acquire) < want or s.pushed.load(.acquire) < want) {
+            // One tick: the mailbox, then -- on their own route -- the
+            // requests, as `tick` does.
+            var any = false;
+            while (q.pop(io)) |m| {
+                any = true;
+                if (p.route == .mailbox and m == .poltergeist_alert) requests += 1;
+                s.spinUntil(s.now() + @as(i64, @intCast(p.per_message_us)) * 1000);
+            }
+            if (p.route == .own) while (r.pop(io)) |_| {
+                any = true;
+                requests += 1;
+                s.spinUntil(s.now() + @as(i64, @intCast(p.per_message_us)) * 1000);
+            };
+            if (!any) std.atomic.spinLoopHint();
+        }
+        s.stop.store(true, .release);
+        // Drained until every title thread is out: one may be waiting in a
+        // push for room only this loop can make.
+        while (s.titles_done.load(.acquire) < p.titles) {
+            if (q.pop(io) == null) std.atomic.spinLoopHint();
+        }
+        for (titles.items) |th| th.join();
+        while (q.pop(io)) |_| {}
+        while (r.pop(io)) |_| {}
+        for (threads.items) |th| th.join();
+        return .{
+            .requests = requests,
+            .queued_max = s.queued_max.load(.monotonic),
+            .requests_queued_max = s.requests_queued_max.load(.monotonic),
+            .requests_refused = s.requests_refused.load(.monotonic),
+            .requests_waited = s.requests_waited.load(.monotonic),
+            .request_wait_max_us = s.request_wait_max_us.load(.monotonic),
+            .title_pushes = s.title_pushes.load(.monotonic),
+            .titles_blocked = s.titles_blocked.load(.monotonic),
+            .title_block_max_us = s.title_block_max_us.load(.monotonic),
+        };
+    }
+};
+
+test "task 1730: on their own queue, a role change's burst of agent requests stops no terminal" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    // The burst the report describes: forty sidecars, twenty terminals
+    // setting their titles, the app still busy for 50 ms after it answered
+    // the waits. Two requests a sidecar is eighty, more than the mailbox's
+    // sixty-four -- which was the trouble while they went there.
+    const p: MailboxBurst.Params = .{
+        .route = .own,
+        .sidecars = 40,
+        .titles = 20,
+        .title_every_us = 100_000,
+        .rest_us = 50_000,
+        .per_message_us = 200,
+        .turnaround_us = 2_000,
+    };
+    const r = try MailboxBurst.run(alloc, io, p);
+    std.debug.print(
+        "task 1730 own: requests={d} requests_queued_max={d} requests_refused={d} queued_max={d} title_pushes={d} titles_blocked={d} title_block_max_us={d}\n",
+        .{ r.requests, r.requests_queued_max, r.requests_refused, r.queued_max, r.title_pushes, r.titles_blocked, r.title_block_max_us },
+    );
+    try testing.expectEqual(@as(usize, 80), r.requests);
+    // No terminal setting its title waited for room.
+    try testing.expectEqual(@as(usize, 0), r.titles_blocked);
+    // Every request went in at once, the queue never full.
+    try testing.expectEqual(@as(usize, 0), r.requests_refused);
+    const room = r.requests_queued_max <= 2 * p.sidecars;
+    try testing.expect(room);
+    // What the mailbox held is the terminals' own: one message each at most.
+    const own_only = r.queued_max <= p.titles;
+    try testing.expect(own_only);
+}
+
+test "task 1730: an agent's request alone, with the mailbox empty, is queued on its own and the app woken" {
+    // The other half of being "taken promptly": a request is not left
+    // until some unrelated message wakes the app loop
+    // (`submitPoltergeistRequest`'s wake), and it does not take a slot of
+    // the mailbox.
+    const testing = std.testing;
+
+    // Only what the hand-over touches: the two queues and the runtime it
+    // wakes. A whole `App` in a test build would want the runtime's
+    // surfaces, which `apprt.none` does not have.
+    var app: App = undefined;
+    app.mailbox = .{};
+    app.poltergeist_requests = .{};
+    var rt: apprt.App = .{};
+    app.poltergeist_rt_app = &rt;
+
+    var pending: poltergeistpkg.Server.Pending = undefined;
+    submitPoltergeistRequest(&app, &pending);
+
+    const woken = rt.wakeups;
+    try testing.expectEqual(@as(usize, 1), woken);
+    const in_mailbox = app.mailbox.pop(global.io());
+    try testing.expect(in_mailbox == null);
+    const queued = app.poltergeist_requests.pop(global.io());
+    try testing.expect(queued == &pending);
+}
+
+test "task 1730: draining the requests' queue answers what is queued, with nothing in the mailbox" {
+    // The other half of "taken promptly": woken is not answered. The loop
+    // `tick` runs after the mailbox (`drainPoltergeistRequests`), with a
+    // stand-in for answering -- the app's own needs the runtime's surfaces,
+    // which a test build has none of; the next test holds `tick` to it.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const queue = try alloc.create(PoltergeistRequests);
+    defer alloc.destroy(queue);
+    queue.* = .{};
+    var watch: poltergeistpkg.StallWatch = .{};
+
+    const Answer = struct {
+        answered: usize = 0,
+        fn handle(self: *@This(), p: *poltergeistpkg.Server.Pending) void {
+            p.complete(global.io(), .{ .failed = .{ .code = "Test", .message = "answered" } });
+            self.answered += 1;
+            p.release();
+        }
+    };
+    var answer: Answer = .{};
+
+    // Requests the way the server makes them: ours, and one more for the
+    // app, which drops it when it has answered.
+    var pendings: [3]*poltergeistpkg.Server.Pending = undefined;
+    for (&pendings, 0..) |*slot, k| {
+        const p = try alloc.create(poltergeistpkg.Server.Pending);
+        p.* = .{ .alloc = alloc, .caller = .{ .terminal = 0x1730 + k }, .request = .me, .arena = .init(alloc) };
+        p.retain();
+        const queued = queue.push(global.io(), p, .{ .instant = {} });
+        try testing.expect(queued != 0);
+        slot.* = p;
+    }
+    defer for (pendings) |p| p.release();
+
+    const any = drainRequests(queue, &watch, &answer, Answer.handle);
+    try testing.expect(any);
+    try testing.expectEqual(@as(usize, 3), answer.answered);
+    for (pendings) |p| {
+        const settled = p.settled.load(.acquire);
+        try testing.expect(settled);
+    }
+    const left = queue.pop(global.io());
+    try testing.expect(left == null);
+    // Nothing queued: nothing done, and said so.
+    const none = drainRequests(queue, &watch, &answer, Answer.handle);
+    try testing.expect(!none);
+}
+
+test "task 1730: tick drains the requests' queue after the mailbox" {
+    // **Read off the source, because `tick` cannot run in a test build**:
+    // it reaches the runtime's surfaces, and `apprt.none` has none of their
+    // methods. A tick that drained the mailbox and forgot the requests
+    // would leave every agent waiting for ever while every other test
+    // here passed, so the call is looked for where it has to be.
+    const testing = std.testing;
+    const src = @embedFile("App.zig");
+    const start = std.mem.indexOf(u8, src, "\npub fn tick(") orelse return error.NoTick;
+    const end = start + (std.mem.indexOf(u8, src[start..], "\n}\n") orelse return error.NoEnd);
+    const body = src[start..end];
+    const mailbox = std.mem.indexOf(u8, body, "try self.drainMailbox(rt_app);") orelse return error.NoMailboxDrain;
+    const requests = std.mem.indexOf(u8, body, "\n    self.drainPoltergeistRequests();");
+    const drained = requests != null;
+    try testing.expect(drained);
+    const after = requests.? > mailbox;
+    try testing.expect(after);
+}
+
+test "task 1730: the burst, measured over the sizes and costs it can have" {
+    // Not a check: the table the change was argued from, both ways. Each
+    // line one run; see `MailboxBurst.Readings`.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+    for ([_]MailboxBurst.Route{ .mailbox, .own }) |route| {
+        // None at all first: the terminals alone, to see what they do by
+        // themselves.
+        for ([_]usize{ 0, 10, 20, 32, 40 }) |sidecars| {
+            for ([_]u64{ 0, 5_000, 50_000 }) |rest_us| {
+                for ([_]u64{ 50, 500 }) |per_message_us| {
+                    const r = try MailboxBurst.run(alloc, io, .{
+                        .route = route,
+                        .sidecars = sidecars,
+                        .titles = 20,
+                        .title_every_us = 100_000,
+                        .rest_us = rest_us,
+                        .per_message_us = per_message_us,
+                        .turnaround_us = 2_000,
+                    });
+                    std.debug.print(
+                        "task 1730 table: route={t} sidecars={d} rest_us={d} per_message_us={d} -> queued_max={d} requests_queued_max={d} requests_refused={d} requests_waited={d} request_wait_max_us={d} title_pushes={d} titles_blocked={d} title_block_max_us={d}\n",
+                        .{ route, sidecars, rest_us, per_message_us, r.queued_max, r.requests_queued_max, r.requests_refused, r.requests_waited, r.request_wait_max_us, r.title_pushes, r.titles_blocked, r.title_block_max_us },
+                    );
+                }
+            }
+        }
     }
 }
