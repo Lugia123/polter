@@ -192,6 +192,9 @@ final class RoleLibrary: ObservableObject {
         case "CliUnavailable":
             return String(localized: "That agent CLI can't be started on this machine.",
                           comment: "启动失败：这台机器上起不了这个 CLI（没有插件管理它，或插件的 adapter 在这里跑不起来），打开插件也没用")
+        case "CliNotInstalled":
+            return String(localized: "That agent CLI isn't installed on this machine.",
+                          comment: "启动失败：这个 CLI 的插件开着，但它的程序没装在这台机器上（登录 shell 的 PATH 里找不到），要先装上")
         case "NoCli":
             return String(localized: "This role isn't set up for any agent CLI yet. Pick one in the role library.", comment: "用角色启动：角色还没选任何 CLI")
         case "ChooseCli":

@@ -547,7 +547,7 @@ fn main() {
                     let c = scene::cli_choice(start, &l.supervisor_roles, Some(&role.key), picked);
                     let says = scene::resume_said(&c, start.last.as_ref()).map(|(t, args)| args.iter().fold(same(t), |said, a| list::fill(&said, a)));
                     println!(
-                        "start_cli group={} role={} picked={} shown={} on={} resume={} why={} says={} sends_cli={} sends_session={}",
+                        "start_cli group={} role={} picked={} shown={} on={} resume={} why={} gone={} says={} sends_cli={} sends_session={}",
                         r.id,
                         role.key,
                         picked.unwrap_or("-"),
@@ -555,6 +555,7 @@ fn main() {
                         c.picked.as_deref().unwrap_or("-"),
                         c.resume.name(),
                         c.why.name(),
+                        c.last_gone.as_deref().map_or("-".to_string(), quote),
                         says.map_or("-".to_string(), |s| quote(&s)),
                         c.picked.as_deref().unwrap_or("-"),
                         scene::session_for(&c, None).map_or("-", |s| s.name())
@@ -609,7 +610,7 @@ fn main() {
     for name in [
         "BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
         "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable",
-        "NotStartedByHand", "AlreadyTakingOver", "NotSetUpForCli", "CliOff", "CliUnavailable",
+        "NotStartedByHand", "AlreadyTakingOver", "NotSetUpForCli", "CliOff", "CliUnavailable", "CliNotInstalled",
     ] {
         println!("refusal {name} says={}", quote(Refusal::parse(name).message()));
     }

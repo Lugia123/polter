@@ -5173,6 +5173,11 @@ msgstr "Agent CLI"
 msgid "The last session was {}'s; {} can't go on with it."
 msgstr "上次的会话是 {} 的，{} 接不上。"
 
+#: windows/control-room/src/scene.rs:105
+#, rust-format
+msgid "{}, which the last supervisor used, is not installed on this machine."
+msgstr "上次用的 {} 不在这台机器上。"
+
 #: windows/control-room/src/rowmenu.rs:205
 msgid "Last used"
 msgstr "上次用的"
@@ -5188,6 +5193,10 @@ msgstr "这个 Agent CLI 的插件关着，请在「插件」里打开。"
 #: windows/control-room/src/act.rs:361
 msgid "That agent CLI can't be started on this machine."
 msgstr "这个 Agent CLI 在这台机器上起不来。"
+
+#: windows/control-room/src/act.rs:364
+msgid "That agent CLI isn't installed on this machine."
+msgstr "这个 agent CLI 没装在这台机器上。"
 
 #: windows/host/src/roles.rs:771
 #, rust-format

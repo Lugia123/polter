@@ -592,25 +592,25 @@
         "cwd": "/Users/me",
         "cwd_from": "home",
         "last": {
-          "role": null,
-          "cli": null,
-          "cli_label": null,
-          "heard_ms": null
+          "role": "polter-supervisor",
+          "cli": "kimi",
+          "cli_label": "Kimi",
+          "heard_ms": 1699900000000
         },
         "resume": {
           "can": false,
-          "why": "no_record"
+          "why": "cli_differs"
         },
         "resume_by_cli": [
           {
             "cli": "claude-code",
             "can": false,
-            "why": "no_record"
+            "why": "cli_differs"
           },
           {
             "cli": "codex",
             "can": false,
-            "why": "no_record"
+            "why": "cli_differs"
           }
         ],
         "hookless": {
@@ -1610,6 +1610,11 @@
           "key": "other-cli",
           "label": null,
           "why": "plugin_off"
+        },
+        {
+          "key": "kimi",
+          "label": "Kimi",
+          "why": "not_installed"
         }
       ]
     }

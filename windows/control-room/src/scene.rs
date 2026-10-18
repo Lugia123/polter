@@ -100,6 +100,9 @@ pub mod msg {
     /// than the one that session was in. The first `{}` is that session's
     /// CLI, the second the one picked.
     pub const LAST_SESSION_WAS: &str = n_("The last session was {}'s; {} can't go on with it.");
+    /// The CLI the last supervisor used is held back because its program
+    /// is not on this machine (task 1744). The `{}` is that CLI.
+    pub const LAST_CLI_NOT_HERE: &str = n_("{}, which the last supervisor used, is not installed on this machine.");
     /// The directory, when the core names none: the new tab's own.
     pub const WHERE_THE_TAB_STARTS: &str = n_("Where the tab starts");
     /// The right side, for a row that is a terminal in no group: it is
@@ -1204,6 +1207,9 @@ pub struct CliChoice {
     /// Why the picked CLI does not go on with the last session; `None` (the
     /// reason) when it does.
     pub why: crate::snapshot::ResumeWhy,
+    /// The CLI the last supervisor used, by name, when the role holds it
+    /// back because its program is not here (task 1744); none otherwise.
+    pub last_gone: Option<String>,
 }
 
 /// Whether a start in `cli` goes on with the last session, and why not:
@@ -1248,8 +1254,16 @@ pub fn cli_choice(
         .or_else(|| clis.first().map(|c| c.key.clone()));
     let shown = clis.len() > 1;
     let Some(last) = last else {
-        return CliChoice { clis, shown, picked: chosen, resume: Resume::Hidden, why: ResumeWhy::NoRecord };
+        return CliChoice { clis, shown, picked: chosen, resume: Resume::Hidden, why: ResumeWhy::NoRecord, last_gone: None };
     };
+    // The last supervisor's CLI, held back because it is not installed here.
+    let last_gone = last.last_cli.as_deref().and_then(|was| {
+        let held = key.and_then(|k| roles.iter().find(|r| r.key == k))?.held_back.iter().find(|h| h.key == was)?;
+        if held.why != crate::snapshot::HeldWhy::NotInstalled {
+            return None;
+        }
+        cli_name(Some(was), held.label.as_deref().or(last.last_cli_label.as_deref()))
+    });
     let (can, why) = resume_for(last, chosen.as_deref());
     let resume = if can {
         Resume::Live
@@ -1258,7 +1272,7 @@ pub fn cli_choice(
     } else {
         Resume::Hidden
     };
-    CliChoice { clis, shown, picked: chosen, resume, why: if can { ResumeWhy::None } else { why } }
+    CliChoice { clis, shown, picked: chosen, resume, why: if can { ResumeWhy::None } else { why }, last_gone }
 }
 
 /// What the start sends for its session (`act::session_sent`): the one
@@ -1276,6 +1290,10 @@ pub fn resume_said(choice: &CliChoice, last: Option<&crate::snapshot::Supervisor
     use crate::snapshot::ResumeWhy;
     if choice.resume == Resume::Live {
         return None;
+    }
+    // Its CLI is not on this machine: that, before which session it was.
+    if let Some(gone) = &choice.last_gone {
+        return Some((msg::LAST_CLI_NOT_HERE, vec![gone.clone()]));
     }
     if choice.resume == Resume::Greyed && choice.why == ResumeWhy::CliDiffers {
         let last = last?;

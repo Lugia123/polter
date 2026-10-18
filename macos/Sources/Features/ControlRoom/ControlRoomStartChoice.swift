@@ -60,6 +60,10 @@ enum ControlRoomStartChoice {
         /// Why the picked CLI does not go on with the last session; `none`
         /// when it does.
         var why: Start.ResumeWhy
+        /// The CLI the last supervisor used, by name, when the role holds
+        /// it back because its program is not here (task 1744); nil
+        /// otherwise. `scene::CliChoice::last_gone`.
+        var lastGone: String?
     }
 
     /// Whether a start in `cli` goes on with the last session, and why not:
@@ -94,8 +98,13 @@ enum ControlRoomStartChoice {
             ?? clis.first?.key
         let shown = clis.count > 1
         guard let last else {
-            return CliChoice(clis: clis, shown: shown, picked: chosen, resume: .hidden, why: .noRecord)
+            return CliChoice(clis: clis, shown: shown, picked: chosen, resume: .hidden, why: .noRecord, lastGone: nil)
         }
+        // The last supervisor's CLI, held back because it is not installed here.
+        let held = key.flatMap { k in roles.first { $0.key == k } }?.heldBack
+            .first { $0.key == last.lastCli }
+        let lastGone = held?.why == .notInstalled
+            ? cliName(key: last.lastCli, label: held?.label ?? last.lastCliLabel) : nil
         let (can, why) = resume(last, for: chosen)
         let state: Resume
         if can {
@@ -105,7 +114,8 @@ enum ControlRoomStartChoice {
         } else {
             state = .hidden
         }
-        return CliChoice(clis: clis, shown: shown, picked: chosen, resume: state, why: can ? .none : why)
+        return CliChoice(clis: clis, shown: shown, picked: chosen, resume: state, why: can ? .none : why,
+                         lastGone: lastGone)
     }
 
     /// What the start sends for its session: the one picked while "Go on"
@@ -121,6 +131,11 @@ enum ControlRoomStartChoice {
     /// (`resumeNote`). `scene::resume_said`.
     static func resumeSaid(_ choice: CliChoice, last: Start.Last?) -> String? {
         if choice.resume == .live { return nil }
+        // Its CLI is not on this machine: that, before which session it was.
+        if let gone = choice.lastGone {
+            return String(localized: "\(gone), which the last supervisor used, is not installed on this machine.",
+                          comment: "总控台：启动总管时，上次总管用的 CLI 在这台机器上找不到（没装），所以不再默认选它。%@ 是那个 CLI")
+        }
         if choice.resume == .greyed, choice.why == .cliDiffers, let last,
            let was = cliName(key: last.lastCli, label: last.lastCliLabel),
            let picked = choice.picked,

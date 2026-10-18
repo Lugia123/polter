@@ -241,6 +241,8 @@ pub enum Refusal {
     /// A start named a CLI whose plugin is on but whose adapter cannot run
     /// on this machine: turning the plugin on would not help.
     CliUnavailable,
+    /// Its adapter says the CLI's program is not on this machine (task 1744).
+    CliNotInstalled,
     /// The directory to start in is not there, or is not one.
     NoSuchDirectory,
     /// No tab could be opened for it.
@@ -309,6 +311,7 @@ impl Refusal {
             "NotSetUpForCli" => Refusal::NotSetUpForCli,
             "CliOff" => Refusal::CliOff,
             "CliUnavailable" => Refusal::CliUnavailable,
+            "CliNotInstalled" => Refusal::CliNotInstalled,
             "NotAbsolute" | "NoSuchDirectory" | "NotADirectory" => Refusal::NoSuchDirectory,
             "OpenFailed" | "NoRuntime" => Refusal::OpenFailed,
             "NoExecutable" => Refusal::NoExecutable,
@@ -359,6 +362,7 @@ impl Refusal {
             Refusal::NotSetUpForCli => n_("That role isn't set up for that agent CLI."),
             Refusal::CliOff => n_("That agent CLI's plugin is off. Turn it on in Plugins."),
             Refusal::CliUnavailable => n_("That agent CLI can't be started on this machine."),
+            Refusal::CliNotInstalled => n_("That agent CLI isn't installed on this machine."),
             Refusal::NoSuchDirectory => n_("That directory is not there."),
             Refusal::OpenFailed => n_("No tab could be opened for it."),
             Refusal::NoExecutable => n_("Polter could not find its own program to start the role with."),

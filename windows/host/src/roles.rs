@@ -791,9 +791,11 @@ impl CliSnapshot {
 
     /// The keys of the CLIs the core found adapters for, or `None` while it
     /// has never been read -- which is not "none" (#1670). An adapter whose
-    /// inventory failed was still found, so it is in.
+    /// inventory failed was still found, so it is in. One whose adapter
+    /// said its program is not on this machine (`installed: false`, task
+    /// 1744) is not: not known is not "missing", said is.
     pub fn available(&self) -> Option<Vec<String>> {
-        (!self.stale).then(|| self.clis.iter().map(|c| c.key.clone()).collect())
+        (!self.stale).then(|| self.clis.iter().filter(|c| c.installed != Some(false)).map(|c| c.key.clone()).collect())
     }
 }
 
@@ -1427,6 +1429,22 @@ mod tests {
         assert_eq!(bare.error.as_deref(), Some("boom"));
         assert_eq!(s.label("nobody"), "nobody");
         assert!(CliSnapshot::default().stale);
+    }
+
+    /// Task 1744: a CLI whose adapter says its program is not here is not
+    /// offered; one that did not say, or failed, is.
+    #[test]
+    fn a_cli_whose_program_is_missing_is_not_available() {
+        let s = CliSnapshot::parse(
+            r#"{"stale":false,"refreshing":false,"clis":[
+                {"key":"antigravity","label":"Antigravity","bin":"agy","inventory":{"installed":true}},
+                {"key":"claude-code","label":"Claude Code","bin":"claude","inventory":{"installed":false}},
+                {"key":"silent","inventory":{}},
+                {"key":"bare","error":"boom"}]}"#,
+        )
+        .unwrap();
+        let offered = s.available();
+        assert_eq!(offered, Some(ids(&["antigravity", "silent", "bare"])));
     }
 
     /// The adapter's unattended options (#1677, B): only the values it

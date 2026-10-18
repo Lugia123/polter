@@ -52,6 +52,19 @@ struct RoleCliOfferTests {
         #expect(RoleCliOffer.available(read) == ["claude-code", "codex"])
     }
 
+    /// Task 1744: a CLI whose adapter says its program is not here is not
+    /// offered; one that did not say is.
+    @Test func aCliWhoseProgramIsMissingIsNotOffered() throws {
+        let read = try #require(AgentCliSnapshot(json: """
+            {"stale":false,"refreshing":false,"clis":[
+              {"key":"antigravity","label":"Antigravity","bin":"agy","error":null,"inventory":{"installed":true}},
+              {"key":"claude-code","label":"Claude Code","bin":"claude","error":null,"inventory":{"installed":false}},
+              {"key":"silent","label":"Silent","bin":"s","error":null,"inventory":{}}]}
+            """))
+        let offered = RoleCliOffer.available(read)
+        #expect(offered == ["antigravity", "silent"])
+    }
+
     // MARK: - The row
 
     private final class Target: NSObject {

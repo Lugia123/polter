@@ -1052,11 +1052,20 @@ fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
         [("claude-code", Some("Claude Code")), ("codex", Some("Codex"))]
     );
     // A CLI the role is set up for whose plugin is off is held back, and
-    // said to be off -- not "cannot run" (#1677).
+    // said to be off -- not "cannot run" (#1677). One whose program is not
+    // on this machine is held back as that (task 1744).
     assert_eq!(
         role.held_back.iter().map(|h| (h.key.as_str(), h.why)).collect::<Vec<_>>(),
-        [("other-cli", crate::snapshot::HeldWhy::PluginOff)]
+        [("other-cli", crate::snapshot::HeldWhy::PluginOff), ("kimi", crate::snapshot::HeldWhy::NotInstalled)]
     );
+    // docs-site's last supervisor was in it: the start says so, and is in
+    // a CLI that is here.
+    let docs = s.groups.iter().find(|g| g.name == "docs-site").unwrap().supervisor.clone().unwrap();
+    let choice = crate::scene::cli_choice(&docs, &s.supervisor_roles, None, None);
+    assert_eq!(choice.last_gone.as_deref(), Some("Kimi"));
+    assert_eq!(choice.picked.as_deref(), Some("claude-code"));
+    let said = crate::scene::resume_said(&choice, docs.last.as_ref());
+    assert_eq!(said, Some((crate::scene::msg::LAST_CLI_NOT_HERE, vec!["Kimi".to_string()])));
     assert_eq!((billing.cli_label.as_deref(), billing.last_cli_label.as_deref()), (Some("Claude Code"), Some("Claude Code")));
     // A core that gives no name -- null, or from before it said -- is read
     // as no name, not as the key.
@@ -1757,6 +1766,7 @@ fn every_refusal_is_said_in_chinese() {
             | Refusal::NotSetUpForCli
             | Refusal::CliOff
             | Refusal::CliUnavailable
+            | Refusal::CliNotInstalled
             | Refusal::NoSuchDirectory
             | Refusal::OpenFailed
             | Refusal::NoExecutable
@@ -1801,6 +1811,7 @@ fn every_refusal_is_said_in_chinese() {
         Refusal::NotSetUpForCli,
         Refusal::CliOff,
         Refusal::CliUnavailable,
+        Refusal::CliNotInstalled,
         Refusal::NoSuchDirectory,
         Refusal::OpenFailed,
         Refusal::NoExecutable,
@@ -1821,7 +1832,7 @@ fn every_refusal_is_said_in_chinese() {
     ];
     // The list and the match agree on the count: the match alone proves
     // every variant is named, not that every one is in `all`.
-    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 41);
+    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 42);
 
     // msgid and msgstr, with the continuation lines `msgmerge` wraps long
     // ones into joined back up.

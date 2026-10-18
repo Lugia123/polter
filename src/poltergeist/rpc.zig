@@ -7658,6 +7658,12 @@ fn dispatchOne(
                         "nothing here can run its plugin's adapter. Turning a plugin on does " ++
                         "not change that. Nothing was opened.",
                 ),
+                error.CliNotInstalled => hostFailure(
+                    "CliNotInstalled",
+                    "that CLI's program is not installed on this machine: its plugin's adapter " ++
+                        "did not find it on the login shell's PATH. The person installs it; no " ++
+                        "switch changes that. Nothing was opened.",
+                ),
                 error.ChooseCli => hostFailure(
                     "ChooseCli",
                     "this role is set up for more than one CLI that can start here, and none " ++

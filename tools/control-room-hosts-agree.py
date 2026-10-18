@@ -521,6 +521,7 @@ for r in list.rows where r.alone == nil {
             let says = ControlRoomStartChoice.resumeSaid(c, last: start.last)
             print("start_cli group=\(r.id) role=\(role.key) picked=\(picked ?? "-") shown=\(c.shown ? 1 : 0) "
                 + "on=\(c.picked ?? "-") resume=\(c.resume.rawValue) why=\(c.why.rawValue) "
+                + "gone=\(c.lastGone.map(quote) ?? "-") "
                 + "says=\(says.map(quote) ?? "-") sends_cli=\(c.picked ?? "-") "
                 + "sends_session=\(ControlRoomStartChoice.sessionSent(c, picked: nil)?.rawValue ?? "-")")
         }
@@ -564,7 +565,7 @@ for bits in 0..<8 {
 }
 for name in ["BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
              "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable",
-             "NotStartedByHand", "AlreadyTakingOver", "NotSetUpForCli", "CliOff", "CliUnavailable"] {
+             "NotStartedByHand", "AlreadyTakingOver", "NotSetUpForCli", "CliOff", "CliUnavailable", "CliNotInstalled"] {
     print("refusal \(name) says=\(quote(ControlRoomActions.Refusal(name: name).message))")
 }
 

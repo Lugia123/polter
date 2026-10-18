@@ -1260,7 +1260,8 @@ const tools = [_]Tool{
             "and it is chosen for you**: the role's only CLI whose plugin is on, else " ++
             "the CLI you are running in when the role is set up for it, else ChooseCli; " ++
             "a `cli` whose plugin is off is CliOff, one that cannot start on this " ++
-            "machine at all CliUnavailable, and nothing is opened. `cwd` defaults to where you are " ++
+            "machine at all CliUnavailable, one whose program is not installed here CliNotInstalled, " ++
+            "and nothing is opened. `cwd` defaults to where you are " ++
             "standing and must be an absolute path when given. The reply carries the new " ++
             "terminal's `id` -- **except when it does not exist yet, which is every split, " ++
             "and on Windows every tab too**: then there is no `id` and no `watching`, the " ++

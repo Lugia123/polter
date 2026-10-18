@@ -1129,7 +1129,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .retention_waiting = if (self.sweeper) |*w| w.waitingBytes() else null,
         .supervisor_roles = roles,
         .cli_resume = cli_resume,
-        .cli_standings = self.controlCliStandings(),
+        .cli_standings = self.controlCliStandings(alloc) catch return,
         .projects = projects,
         .cli_names = self.controlCliNames(alloc) catch return,
         .home = self.controlHome(),
@@ -1580,7 +1580,7 @@ fn controlActStartSupervisor(
         const cli_keys = try alloc.alloc([]const u8, p.clis.len);
         for (p.clis, cli_keys) |c, *k| k.* = c.cli;
         const role: ControlRoom.StartRole = .{ .key = p.key, .name = p.name, .clis = cli_keys };
-        const here = try ControlRoom.startClisOf(alloc, role, self.controlCliStandings());
+        const here = try ControlRoom.startClisOf(alloc, role, try self.controlCliStandings(alloc));
         // None of the role's can start: `resolveLaunch` says which reason,
         // asked of its first.
         break :cli ControlRoom.startCliOf(here, last) orelse p.clis[0].cli;
@@ -2060,18 +2060,25 @@ fn controlCliNames(self: *App, alloc: Allocator) Allocator.Error![]const polterg
 /// are (`ensurePlugins`, again by `reloadPlugins` when one is switched on
 /// or off), so that drawing the snapshot walks no directory and starts
 /// nothing. Null when the plugins could not be read.
-fn controlCliStandings(self: *App) ?[]const poltergeistpkg.ControlRoom.CliStanding {
+///
+/// **And whether its program is here** (task 1744): one an adapter's last
+/// inventory said is not on the login shell's PATH stands `not_installed`
+/// (`ControlRoom.installedHere`). Before a read nobody knows, and it is
+/// offered as before. The same answer for the snapshot, the control
+/// room's start and `resolveLaunch`.
+fn controlCliStandings(self: *App, alloc: Allocator) Allocator.Error!?[]const poltergeistpkg.ControlRoom.CliStanding {
     self.ensurePlugins();
     if (self.poltergeist_plugin_arena == null) return null;
-    return self.poltergeist_cli_standings;
+    const missing = try self.poltergeist_agent_clis.notInstalled(global.io(), alloc);
+    return try poltergeistpkg.ControlRoom.installedHere(alloc, self.poltergeist_cli_standings, missing);
 }
 
 fn controlCliResume(self: *App, alloc: Allocator) Allocator.Error!poltergeistpkg.ControlRoom.CliResume {
     const io = global.io();
     if (try self.poltergeist_agent_clis.resumable(io, alloc)) |keys| return .{ .read = keys };
-    if (!self.poltergeist_agent_clis.askedFor(io) and self.chat.anySessionKept()) {
-        self.poltergeist_agent_clis.refresh(io);
-    }
+    // Started whether or not a session was kept: the same read says which
+    // CLIs' programs are here at all (task 1744).
+    if (!self.poltergeist_agent_clis.askedFor(io)) self.poltergeist_agent_clis.refresh(io);
     return .unread;
 }
 
@@ -4892,6 +4899,9 @@ pub const LaunchPersonaError = error{
     NotSetUpForCli,
     CliOff,
     CliUnavailable,
+    /// Its adapter says the CLI's program is not on this machine (task
+    /// 1744): installing it is what the person does, not a switch.
+    CliNotInstalled,
     NoCli,
     ChooseCli,
     NoExecutable,
@@ -4929,8 +4939,12 @@ fn resolveLaunch(
     var env = try global.environMap();
     defer env.deinit();
     const surveyed = poltergeistpkg.agent_cli.survey(alloc, global.io(), &env);
+    // And whose program the last inventory found missing (task 1744): not
+    // a default, and refused by name when asked for. Nothing read yet is
+    // not "missing".
+    const missing: []const []const u8 = (try self.poltergeist_agent_clis.notInstalled(global.io(), alloc)) orelse &.{};
     var ok: std.ArrayListUnmanaged([]const u8) = .empty;
-    for (surveyed) |f| if (f.standing == .ok) try ok.append(alloc, f.adapter.key);
+    for (surveyed) |f| if (f.standing == .ok and !isAnyOf(missing, f.adapter.key)) try ok.append(alloc, f.adapter.key);
     const keys = ok.items;
 
     const own: ?[]const u8 = if (by) |id|
@@ -4944,13 +4958,18 @@ fn resolveLaunch(
     for (surveyed) |f| {
         if (!std.mem.eql(u8, f.adapter.key, chosen)) continue;
         switch (f.standing) {
-            .ok => {},
+            .ok => if (isAnyOf(missing, chosen)) return error.CliNotInstalled,
             .off => return error.CliOff,
             .cannot_run => return error.CliUnavailable,
         }
         break;
     } else return error.CliUnavailable;
     return .{ .key = try alloc.dupe(u8, p.key), .cli = try alloc.dupe(u8, chosen) };
+}
+
+fn isAnyOf(keys: []const []const u8, key: []const u8) bool {
+    for (keys) |k| if (std.mem.eql(u8, k, key)) return true;
+    return false;
 }
 
 /// The line typed into a terminal to start a role there:

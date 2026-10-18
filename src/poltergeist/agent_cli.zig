@@ -580,6 +580,12 @@ pub const Cache = struct {
     /// inventory `clis` was made from, each owned by `alloc`. Null exactly
     /// when `clis` is.
     resume_keys: ?[][]u8 = null,
+    /// The keys of the CLIs whose adapter said `"installed": false` -- its
+    /// program is not on the PATH the read had, the login shell's (task
+    /// 1744). Null exactly when `clis` is: nothing read is not "all there".
+    /// An adapter that did not say, or failed, is not here: not known is
+    /// not "missing".
+    missing_keys: ?[][]u8 = null,
     refreshing: bool = false,
     thread: ?std.Thread = null,
 
@@ -596,6 +602,8 @@ pub const Cache = struct {
         self.clis = null;
         if (self.resume_keys) |keys| freeKeys(self.alloc, keys);
         self.resume_keys = null;
+        if (self.missing_keys) |keys| freeKeys(self.alloc, keys);
+        self.missing_keys = null;
     }
 
     fn freeKeys(alloc: Allocator, keys: [][]u8) void {
@@ -612,6 +620,20 @@ pub const Cache = struct {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         const keys = self.resume_keys orelse return null;
+        const out = try alloc.alloc([]const u8, keys.len);
+        for (keys, out) |k, *o| o.* = try alloc.dupe(u8, k);
+        return out;
+    }
+
+    /// Which CLIs' programs are not on this machine, as last read (task
+    /// 1744): null when nothing has been read yet -- which is not "all are
+    /// here" -- and otherwise their keys, copied into `alloc`.
+    ///
+    /// Does not start a read.
+    pub fn notInstalled(self: *Cache, io: std.Io, alloc: Allocator) Allocator.Error!?[]const []const u8 {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const keys = self.missing_keys orelse return null;
         const out = try alloc.alloc([]const u8, keys.len);
         for (keys, out) |k, *o| o.* = try alloc.dupe(u8, k);
         return out;
@@ -716,11 +738,13 @@ pub const Cache = struct {
             self.clis = f.clis;
             if (self.resume_keys) |old| freeKeys(self.alloc, old);
             self.resume_keys = f.resume_keys;
+            if (self.missing_keys) |old| freeKeys(self.alloc, old);
+            self.missing_keys = f.missing_keys;
         }
         self.refreshing = false;
     }
 
-    const Read = struct { clis: []u8, resume_keys: [][]u8 };
+    const Read = struct { clis: []u8, resume_keys: [][]u8, missing_keys: [][]u8 };
 
     /// Ask every adapter for its inventory. The `clis` array and the keys
     /// of those that can go on with a session, owned by `alloc`.
@@ -750,6 +774,11 @@ pub const Cache = struct {
             for (can.items) |k| alloc.free(k);
             can.deinit(alloc);
         }
+        var gone: std.ArrayListUnmanaged([]u8) = .empty;
+        errdefer {
+            for (gone.items) |k| alloc.free(k);
+            gone.deinit(alloc);
+        }
 
         try w.writeAll("[");
         for (discover(aa, io, &environ_map), 0..) |a, i| {
@@ -767,6 +796,11 @@ pub const Cache = struct {
                         errdefer alloc.free(key);
                         try can.append(alloc, key);
                     }
+                    if (saysNotInstalled(aa, json)) {
+                        const key = try alloc.dupe(u8, a.key);
+                        errdefer alloc.free(key);
+                        try gone.append(alloc, key);
+                    }
                 },
                 .failed => |why| {
                     log.warn("agent cli {s}: inventory failed: {s}", .{ a.key, why });
@@ -777,7 +811,9 @@ pub const Cache = struct {
         try w.writeAll("]");
         const clis = try out.toOwnedSlice();
         errdefer alloc.free(clis);
-        return .{ .clis = clis, .resume_keys = try can.toOwnedSlice(alloc) };
+        const resume_keys = try can.toOwnedSlice(alloc);
+        errdefer freeKeys(alloc, resume_keys);
+        return .{ .clis = clis, .resume_keys = resume_keys, .missing_keys = try gone.toOwnedSlice(alloc) };
     }
 };
 
@@ -1054,7 +1090,35 @@ pub fn saysResume(arena: Allocator, inventory_json: []const u8) bool {
     return v == .bool and v.bool;
 }
 
+/// Whether an inventory answer says its CLI's program is not here: the
+/// JSON `false` and nothing else (task 1744). A key not there, or not a
+/// bool, is an adapter that did not say -- not known, and offered as before.
+pub fn saysNotInstalled(arena: Allocator, inventory_json: []const u8) bool {
+    const root = std.json.parseFromSliceLeaky(std.json.Value, arena, inventory_json, .{}) catch
+        return false;
+    if (root != .object) return false;
+    const v = root.object.get("installed") orelse return false;
+    return v == .bool and !v.bool;
+}
+
 // ------------------------------------------------------------------- tests
+
+test "1744: an inventory says its program is missing with false and nothing else" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const missing = saysNotInstalled(aa, "{\"version\":1,\"installed\":false}");
+    try testing.expect(missing);
+    const there = saysNotInstalled(aa, "{\"version\":1,\"installed\":true}");
+    try testing.expect(!there);
+    // Not said, said some other way, or no answer at all: not known.
+    const unsaid = saysNotInstalled(aa, "{\"version\":1}");
+    try testing.expect(!unsaid);
+    const word = saysNotInstalled(aa, "{\"installed\":\"false\"}");
+    try testing.expect(!word);
+    const garbled = saysNotInstalled(aa, "not json");
+    try testing.expect(!garbled);
+}
 
 const testing = std.testing;
 

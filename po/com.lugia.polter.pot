@@ -5430,6 +5430,11 @@ msgstr ""
 msgid "The last session was {}'s; {} can't go on with it."
 msgstr ""
 
+#: windows/control-room/src/scene.rs:105
+#, rust-format
+msgid "{}, which the last supervisor used, is not installed on this machine."
+msgstr ""
+
 #: windows/control-room/src/rowmenu.rs:205
 msgid "Last used"
 msgstr ""
@@ -5444,6 +5449,10 @@ msgstr ""
 
 #: windows/control-room/src/act.rs:361
 msgid "That agent CLI can't be started on this machine."
+msgstr ""
+
+#: windows/control-room/src/act.rs:364
+msgid "That agent CLI isn't installed on this machine."
 msgstr ""
 
 #: windows/host/src/roles.rs:771

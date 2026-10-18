@@ -158,6 +158,9 @@ struct ControlRoomActions {
             case "CliUnavailable":
                 return String(localized: "That agent CLI can't be started on this machine.",
                               comment: "启动失败：这台机器上起不了这个 CLI（没有插件管理它，或插件的 adapter 在这里跑不起来），打开插件也没用")
+            case "CliNotInstalled":
+                return String(localized: "That agent CLI isn't installed on this machine.",
+                              comment: "启动失败：这个 CLI 的插件开着，但它的程序没装在这台机器上（登录 shell 的 PATH 里找不到），要先装上")
             case "NotAbsolute", "NoSuchDirectory", "NotADirectory":
                 return String(localized: "That directory is not there.",
                               comment: "总控台：启动总管时选的目录不存在")

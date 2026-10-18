@@ -194,7 +194,7 @@
 //! | start_supervisor | `AlreadyStarting` | one is on its way |
 //! | start_supervisor | `NoSupervisorRole` | no role was named and there is none to default to |
 //! | start_supervisor | `NoSuchPersona`, `NotASupervisorRole`, `NoCli` | the role named is not there, does not make a supervisor, or has no CLI to start |
-//! | start_supervisor | `NotSetUpForCli`, `CliOff`, `CliUnavailable` | the CLI picked is not one the role is set up for; its plugin is off; or it cannot start on this machine (no plugin, or an adapter nothing here can run). With none picked and none of the role's able to start, the reason is its first CLI's |
+//! | start_supervisor | `NotSetUpForCli`, `CliOff`, `CliUnavailable`, `CliNotInstalled` | the CLI picked is not one the role is set up for; its plugin is off; it cannot start on this machine (no plugin, or an adapter nothing here can run); or its adapter says its program is not installed (task 1744). With none picked and none of the role's able to start, the reason is its first CLI's |
 //! | start_supervisor | `NotAbsolute`, `NoSuchDirectory`, `NotADirectory` | the directory |
 //! | start_supervisor | `OpenFailed` | no tab could be opened |
 //! | take_over | `NoSuchGroup` | the group is not there |

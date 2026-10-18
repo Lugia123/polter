@@ -317,10 +317,12 @@
 //!                             the start is then refused, with the reason.
 //!                             More than one is the "Agent CLI" row.
 //!       "held_back":[{"key":"other-cli","label":…|null,
-//!         "why":"plugin_off"|"cannot_run"|"no_plugin"}]
+//!         "why":"plugin_off"|"cannot_run"|"no_plugin"|"not_installed"}]
 //!                             set up in the role and not in `clis`, and
 //!                             why: a switch in Plugins, an adapter nothing
-//!                             here can run, no plugin at all
+//!                             here can run, no plugin at all, or its
+//!                             adapter says the program is not on this
+//!                             machine (task 1744)
 //!   "choose_supervisor_role": false,
 //!                             whether there is a choice to offer: more
 //!                             than one. A host does not count them
@@ -755,6 +757,11 @@ pub const CliStanding = struct {
         /// Switched on, and nothing here can run its adapter: no switch
         /// does.
         cannot_run,
+        /// Switched on, its adapter runs, and its adapter says the CLI's
+        /// program is not on the login shell's PATH (`"installed": false`,
+        /// task 1744): installing it does. Only ever from an inventory
+        /// read (`installedHere`); before one, nobody knows, and it is `ok`.
+        not_installed,
     };
 };
 
@@ -765,7 +772,7 @@ pub const HeldBackOut = struct {
     label: ?[]const u8,
     why: Why,
 
-    pub const Why = enum { plugin_off, cannot_run, no_plugin };
+    pub const Why = enum { plugin_off, cannot_run, no_plugin, not_installed };
 };
 
 /// Whether a start in this CLI goes on with the last session: `resumeOf`,
@@ -840,8 +847,33 @@ pub fn standingOf(standings: []const CliStanding, cli: []const u8) ?HeldBackOut.
         .ok => null,
         .plugin_off => .plugin_off,
         .cannot_run => .cannot_run,
+        .not_installed => .not_installed,
     };
     return .no_plugin;
+}
+
+/// `standings` with what an inventory read found missing (task 1744): a
+/// CLI that stands `ok` and whose adapter said its program is not here
+/// stands `not_installed`. `missing` null -- nothing read yet -- changes
+/// nothing: not known is not "missing", and the CLI is offered as before.
+/// Null standings stay null. In `arena` when anything changes.
+pub fn installedHere(
+    arena: Allocator,
+    standings: ?[]const CliStanding,
+    missing: ?[]const []const u8,
+) Allocator.Error!?[]const CliStanding {
+    const all = standings orelse return null;
+    const gone = missing orelse return all;
+    if (gone.len == 0) return all;
+    const out = try arena.dupe(CliStanding, all);
+    for (out) |*o| {
+        if (o.standing != .ok) continue;
+        for (gone) |g| if (std.mem.eql(u8, g, o.key)) {
+            o.standing = .not_installed;
+            break;
+        };
+    }
+    return out;
 }
 
 /// The CLI a role is started in, of those it can be here (`startClisOf`):
@@ -2219,6 +2251,11 @@ fn terminalBefore(_: void, a: Terminal, b: Terminal) bool {
 /// Work the whole snapshot out. Everything in the result lives in `arena`.
 fn build(arena: Allocator, in: Input) Allocator.Error!Built {
     var wake: Wake = .{ .now_ms = in.now_ms, .at = null };
+    // The adapters not read yet: which CLIs can start here is still the
+    // plugins' word alone, and a read changes it (task 1744) -- with
+    // nothing else happening when it ends, the snapshot asks to be made
+    // again shortly, as `clis_unread` does for a group's session.
+    if (in.cli_resume == .unread) wake.consider(in.now_ms + 1_000);
 
     var names: std.ArrayListUnmanaged([]const u8) = .empty;
     var it = in.chat.groups.keyIterator();
@@ -2976,6 +3013,16 @@ fn fixtureWorld() !World {
         .session = "s",
         .heard_ms = 1_699_999_340_000,
     });
+    // Its last supervisor was in a CLI that is not installed here (task
+    // 1744): a host says so, and the start is in one that is.
+    _ = try w.chat.setLastSupervisor("docs-site", .{
+        .dir = "",
+        .dir_from = .none,
+        .role = "polter-supervisor",
+        .cli = "kimi",
+        .session = "s-kimi",
+        .heard_ms = 1_699_900_000_000,
+    });
     _ = try w.chat.setLastSupervisor("notes", .{
         .dir = "",
         .dir_from = .none,
@@ -2991,14 +3038,17 @@ fn fixtureWorld() !World {
     // the other one for, each way round.
     // And a third the role is set up for whose plugin is off, which the
     // snapshot says rather than drops.
-    w.roles = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{ "claude-code", "codex", "other-cli" } }};
+    // And a fourth whose adapter says its program is not on this machine
+    // (task 1744), which `legacy`'s last supervisor was in.
+    w.roles = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{ "claude-code", "codex", "other-cli", "kimi" } }};
     w.cli_standings = &.{
         .{ .key = "claude-code", .standing = .ok },
         .{ .key = "codex", .standing = .ok },
         .{ .key = "other-cli", .standing = .plugin_off },
+        .{ .key = "kimi", .standing = .not_installed },
     };
-    w.cli_resume = .{ .read = &.{ "claude-code", "codex" } };
-    w.cli_names = &.{ .{ .key = "claude-code", .label = "Claude Code" }, .{ .key = "codex", .label = "Codex" } };
+    w.cli_resume = .{ .read = &.{ "claude-code", "codex", "kimi" } };
+    w.cli_names = &.{ .{ .key = "claude-code", .label = "Claude Code" }, .{ .key = "codex", .label = "Codex" }, .{ .key = "kimi", .label = "Kimi" } };
 
     // The control room asked web-app's supervisor for a report, and the
     // input line had a draft in it: being tried again (task 1671).
@@ -5297,6 +5347,81 @@ test "ControlRoom resume: the snapshot says what a group's last supervisor was a
     try w.chat.beginStart("nightly", 12_000, 21_000, false, .directory);
     s = (try room.compute(arena.allocator(), w.input(21_001))).snapshot;
     try testing.expect((try rowNamed(s, "nightly")).supervisor.@"resume".can);
+}
+
+test "1744: a CLI whose program an inventory found missing stands not_installed, and nothing else changes it" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const plugins = [_]CliStanding{
+        .{ .key = "antigravity", .standing = .ok },
+        .{ .key = "claude-code", .standing = .ok },
+        .{ .key = "codex", .standing = .plugin_off },
+    };
+    const both_missing = [_][]const u8{ "claude-code", "codex" };
+    const merged = (try installedHere(aa, &plugins, &both_missing)).?;
+    const claude = standingOf(merged, "claude-code");
+    try testing.expectEqual(@as(?HeldBackOut.Why, .not_installed), claude);
+    // Here: still offered.
+    const agy = standingOf(merged, "antigravity");
+    try testing.expectEqual(@as(?HeldBackOut.Why, null), agy);
+    // A plugin that is off keeps its own reason: its switch is still what
+    // the person reaches for first.
+    const codex = standingOf(merged, "codex");
+    try testing.expectEqual(@as(?HeldBackOut.Why, .plugin_off), codex);
+    // Nothing read yet is not "missing": the plugins' word stands.
+    const unread = (try installedHere(aa, &plugins, null)).?;
+    const claude_unread = standingOf(unread, "claude-code");
+    try testing.expectEqual(@as(?HeldBackOut.Why, null), claude_unread);
+    // The plugins not read: still nothing to say.
+    const no_plugins = try installedHere(aa, null, &both_missing);
+    try testing.expect(no_plugins == null);
+}
+
+test "1744: a machine with only agy: the start offers agy, says why Claude Code is not offered, and a failed start does not pick it again" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    // The shipped supervisor role, set up for both; both plugins on.
+    w.roles = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{ "claude-code", "antigravity" } }};
+    const plugins = [_]CliStanding{
+        .{ .key = "antigravity", .standing = .ok },
+        .{ .key = "claude-code", .standing = .ok },
+    };
+    try w.chat.restoreShell("t1740", "", 0, .none);
+    // A start in Claude Code was tried and made no supervisor (0xe644,
+    // #1740: "could not start claude (FileNotFound)").
+    try w.chat.beginStart("t1740", 2_000, 11_000, false, .directory);
+
+    // Before the adapters are read: the plugins' word alone, as before.
+    w.cli_standings = try installedHere(aa, &plugins, null);
+    const before = (try rowNamed((try room.compute(aa, w.input(11_001))).snapshot, "t1740")).supervisor;
+    try testing.expectEqual(SupervisorOut.State.failed, before.state);
+    try testing.expectEqualStrings("claude-code", before.cli.?);
+
+    // Read: claude is not on this machine.
+    w.cli_standings = try installedHere(aa, &plugins, &.{"claude-code"});
+    const s = (try room.compute(aa, w.input(11_002))).snapshot;
+    const after = (try rowNamed(s, "t1740")).supervisor;
+    // The next start does not pick the CLI that failed for want of its
+    // program: the one that is here.
+    const picked = after.cli.?;
+    try testing.expectEqualStrings("antigravity", picked);
+    // Offered: agy alone. Held back: Claude Code, with its reason.
+    const role = s.supervisor_roles[0];
+    try testing.expectEqual(@as(usize, 1), role.clis.len);
+    try testing.expectEqualStrings("antigravity", role.clis[0].key);
+    try testing.expectEqual(@as(usize, 1), role.held_back.len);
+    try testing.expectEqualStrings("claude-code", role.held_back[0].key);
+    const why = role.held_back[0].why;
+    try testing.expectEqual(HeldBackOut.Why.not_installed, why);
+    // And no CLI that is not here is asked whether it goes on with a session.
+    for (after.resume_by_cli) |r| try testing.expect(!std.mem.eql(u8, r.cli, "claude-code"));
 }
 
 test "Projects: the snapshot says which project each group has, what starting it does, and what the host is to do" {

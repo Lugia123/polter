@@ -273,6 +273,9 @@ struct ControlRoomList: Equatable {
                 case cannotRun = "cannot_run"
                 /// No plugin manages it.
                 case noPlugin = "no_plugin"
+                /// On, its adapter runs, and its adapter says the CLI's
+                /// program is not on this machine (task 1744).
+                case notInstalled = "not_installed"
             }
 
             var key: String

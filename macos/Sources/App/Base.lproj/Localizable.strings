@@ -762,6 +762,8 @@
 "A new session will be started: the last supervisor's CLI never said which session it was in." = "A new session will be started: the last supervisor's CLI never said which session it was in.";
 "A new session will be started: going on with the last one did not work the last time it was tried." = "A new session will be started: going on with the last one did not work the last time it was tried.";
 "A new session will be started: the last session was in another CLI." = "A new session will be started: the last session was in another CLI.";
+"%@, which the last supervisor used, is not installed on this machine." = "%@, which the last supervisor used, is not installed on this machine.";
+"That agent CLI isn't installed on this machine." = "That agent CLI isn't installed on this machine.";
 "Checking whether the last session can be gone on with…" = "Checking whether the last session can be gone on with…";
 "A new session will be started: this CLI cannot go on with an earlier session." = "A new session will be started: this CLI cannot go on with an earlier session.";
 "A new session will be started: an open terminal is in the last session now." = "A new session will be started: an open terminal is in the last session now.";

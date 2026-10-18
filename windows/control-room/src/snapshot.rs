@@ -474,16 +474,20 @@ pub enum HeldWhy {
     CannotRun,
     /// No plugin manages it.
     NoPlugin,
+    /// Its plugin is on, its adapter runs, and its adapter says the CLI's
+    /// program is not on this machine (task 1744).
+    NotInstalled,
 }
 
 impl HeldWhy {
-    pub const ALL: [HeldWhy; 3] = [HeldWhy::PluginOff, HeldWhy::CannotRun, HeldWhy::NoPlugin];
+    pub const ALL: [HeldWhy; 4] = [HeldWhy::PluginOff, HeldWhy::CannotRun, HeldWhy::NoPlugin, HeldWhy::NotInstalled];
 
     pub fn name(self) -> &'static str {
         match self {
             HeldWhy::PluginOff => "plugin_off",
             HeldWhy::CannotRun => "cannot_run",
             HeldWhy::NoPlugin => "no_plugin",
+            HeldWhy::NotInstalled => "not_installed",
         }
     }
 

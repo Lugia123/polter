@@ -45,9 +45,13 @@ enum RoleCliOffer: Hashable {
     }
 
     /// The keys `ghostty_app_agent_clis` answered with, or `nil` while it
-    /// has never been read.
+    /// has never been read -- less the ones whose adapter said the CLI's
+    /// program is not on this machine (`installed: false`, task 1744). One
+    /// that did not say, or whose inventory failed, is still offered: not
+    /// known is not "missing". The Windows host's twin is
+    /// `roles::CliSnapshot::available`.
     static func available(_ snapshot: AgentCliSnapshot) -> Set<String>? {
-        snapshot.stale ? nil : Set(snapshot.clis.map(\.key))
+        snapshot.stale ? nil : Set(snapshot.clis.filter { $0.installed != false }.map(\.key))
     }
 
     /// Make `entry` -- the role's row -- act this way.
