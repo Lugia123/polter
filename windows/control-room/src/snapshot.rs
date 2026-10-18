@@ -417,6 +417,10 @@ pub struct SupervisorStart {
     /// Polter never answers it: the right side says so and offers to go to
     /// that tab. False from a core before it said.
     pub asking: bool,
+    /// The agent CLIs' adapters have been read (task 1741): a CLI's name is
+    /// known. Until then the right side draws a place for it rather than a
+    /// key. True from a core before it said.
+    pub clis_read: bool,
     /// The role it is started in unless the person picks another.
     pub role: Option<String>,
     /// Where it is started unless the person picks elsewhere.
@@ -1064,6 +1068,7 @@ fn group(v: &Value, path: &str) -> Res<Group> {
                 failed: StartFailure::parse(&failed).ok_or(DecodeError::UnknownValue(format!("{sp}.failed={failed}")))?,
                 terminal: opt_text(s, &sp, "terminal")?,
                 asking: if s.get("asking").is_some() { boolean(s, &sp, "asking")? } else { false },
+                clis_read: if s.get("clis_read").is_some() { boolean(s, &sp, "clis_read")? } else { true },
                 role: opt_text(s, &sp, "role")?,
                 cwd: text(s, &sp, "cwd")?,
                 // All of it or none: a core that says `resume` says the

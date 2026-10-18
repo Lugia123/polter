@@ -42,10 +42,15 @@ enum ControlRoomStartChoice {
 
     /// "Go on with the last session", for the CLI picked: on and pickable
     /// (`live`), drawn greyed because another CLI could and this one cannot
-    /// (`greyed`), or not drawn (`hidden`). The Windows host's
-    /// `scene::Resume`.
+    /// (`greyed`), still being looked for -- the adapters not read yet
+    /// (`checking`, task 1741) --, looked for and not to be had (`missing`,
+    /// task 1741), or not drawn because there was never a supervisor
+    /// (`hidden`). The Windows host's `scene::Resume`.
+    ///
+    /// `checking` and `missing` take the same two lines `live` does, so the
+    /// button under them does not move when the look ends.
     enum Resume: String, Equatable {
-        case live, greyed, hidden
+        case live, greyed, checking, missing, hidden
     }
 
     /// The CLI row and what it does to the session choice.
@@ -111,6 +116,10 @@ enum ControlRoomStartChoice {
             state = .live
         } else if shown && clis.contains(where: { resume(last, for: $0.key).can }) {
             state = .greyed
+        } else if why == .clisUnread {
+            state = .checking
+        } else if last.heardMs != nil {
+            state = .missing
         } else {
             state = .hidden
         }
@@ -120,16 +129,59 @@ enum ControlRoomStartChoice {
 
     /// What the start sends for its session: the one picked while "Go on"
     /// can be picked, and nothing otherwise -- greyed or not drawn, the
-    /// core starts a new one by itself. `scene::session_for`.
+    /// core starts a new one by itself. While it is still being looked for
+    /// (`checking`) only "New session" can be picked, and then it is said:
+    /// the core would otherwise answer the look with "not yet", which is a
+    /// new session the person did not choose. `scene::session_for`.
     static func sessionSent(_ choice: CliChoice, picked: Session?) -> Session? {
-        sessionSent(offered: choice.resume == .live, picked: picked)
+        if choice.resume == .checking { return picked == .new ? .new : nil }
+        return sessionSent(offered: choice.resume == .live, picked: picked)
     }
 
-    /// The sentence under the sessions; nil when there is nothing to say.
-    /// Greyed because another CLI was picked: whose session it was, and
-    /// which CLI cannot go on with it. Otherwise the core's reason
-    /// (`resumeNote`). `scene::resume_said`.
+    /// Whether "Start Supervisor" (or "Open") can be pressed (task 1741):
+    /// not while the last session is being looked for, unless the person
+    /// picked a new one -- pressed then, the start would go on with nothing
+    /// and quietly drop the session they meant to go on with. The look
+    /// ends by itself within seconds. `scene::start_enabled`.
+    static func startEnabled(_ choice: CliChoice, picked: Session?) -> Bool {
+        choice.resume != .checking || picked == .new
+    }
+
+    /// The sentence under the sessions; nil when there is nothing to say:
+    /// only when "Go on" is greyed because another CLI was picked.
+    /// Not found (`missing`) says why on hover and to a screen reader
+    /// (`resumeTooltip`), not on a line of its own, so nothing moves.
+    /// `scene::resume_said`.
     static func resumeSaid(_ choice: CliChoice, last: Start.Last?) -> String? {
+        choice.resume == .greyed ? resumeWhyText(choice, last: last) : nil
+    }
+
+    /// What hovering "Didn't find the last session" says (task 1741): why,
+    /// in the core's words; that line's own words when there is no more to
+    /// say. Nil in any other state. `scene::resume_tooltip`.
+    static func resumeTooltip(_ choice: CliChoice, last: Start.Last?) -> String? {
+        guard choice.resume == .missing else { return nil }
+        return resumeWhyText(choice, last: last) ?? missingText
+    }
+
+    /// The line where "Go on with the last session" will be, while it is
+    /// looked for (task 1741).
+    static var lookingText: String {
+        String(localized: "Looking for the last session…",
+               comment: "总控台：启动总管时，还在找上次总管的会话（各 CLI 还没读完），找到就换成「接着上次的会话」")
+    }
+
+    /// The line where "Go on with the last session" would be, when it was
+    /// looked for and cannot be gone on with (task 1741).
+    static var missingText: String {
+        String(localized: "Didn't find the last session",
+               comment: "总控台：启动总管时，找过了，接不上上次总管的会话；只剩「新会话」。原因在悬停提示里")
+    }
+
+    /// Why a start does not go on with the last session, in a sentence;
+    /// nil when there is nothing to say. Its CLI not on this machine; the
+    /// session another CLI's; otherwise the core's reason (`resumeNote`).
+    static func resumeWhyText(_ choice: CliChoice, last: Start.Last?) -> String? {
         if choice.resume == .live { return nil }
         // Its CLI is not on this machine: that, before which session it was.
         if let gone = choice.lastGone {
@@ -174,6 +226,24 @@ enum ControlRoomStartChoice {
     /// core says the directory it names is that supervisor's
     /// (`cwd_from: last_supervisor`).
     ///
+    /// The sentence `lastSupervisorText` says, cut where the CLI's name
+    /// goes, while that name is not read yet (task 1741): a host draws a
+    /// bar between the two, never the key. Nil when the names are read, or
+    /// the sentence names no CLI. `scene::last_supervisor_parts`.
+    static func lastSupervisorParts(_ start: Start?, startingIn: String? = nil,
+                                    home: String = NSHomeDirectory()) -> (before: String, after: String)? {
+        guard var start, !start.clisRead, var last = start.last, last.lastCli?.isEmpty == false else { return nil }
+        last.lastCliLabel = namePlace
+        start.last = last
+        guard let said = lastSupervisorText(start, startingIn: startingIn, home: home),
+              let cut = said.range(of: namePlace) else { return nil }
+        return (String(said[..<cut.lowerBound]), String(said[cut.upperBound...]))
+    }
+
+    /// What stands for a name not read yet while a sentence is made, to be
+    /// cut out of it: no translation holds it.
+    static let namePlace = "\u{FFFC}"
+
     /// The CLI is said only when it was written down: by the name the core
     /// gives for it (`cli_label`), and by its key when the core has none.
     static func lastSupervisorText(_ start: Start?, startingIn: String? = nil,

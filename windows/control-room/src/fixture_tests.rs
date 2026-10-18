@@ -1064,8 +1064,12 @@ fn what_the_core_says_of_a_groups_last_supervisor_is_read_and_not_worked_out() {
     let choice = crate::scene::cli_choice(&docs, &s.supervisor_roles, None, None);
     assert_eq!(choice.last_gone.as_deref(), Some("Kimi"));
     assert_eq!(choice.picked.as_deref(), Some("claude-code"));
+    // Not found (task 1741): why on hover, not on a line of its own.
+    assert_eq!(choice.resume, crate::scene::Resume::Missing);
     let said = crate::scene::resume_said(&choice, docs.last.as_ref());
-    assert_eq!(said, Some((crate::scene::msg::LAST_CLI_NOT_HERE, vec!["Kimi".to_string()])));
+    assert_eq!(said, None);
+    let tip = crate::scene::resume_tooltip(&choice, docs.last.as_ref());
+    assert_eq!(tip, Some((crate::scene::msg::LAST_CLI_NOT_HERE, vec!["Kimi".to_string()])));
     assert_eq!((billing.cli_label.as_deref(), billing.last_cli_label.as_deref()), (Some("Claude Code"), Some("Claude Code")));
     // A core that gives no name -- null, or from before it said -- is read
     // as no name, not as the key.

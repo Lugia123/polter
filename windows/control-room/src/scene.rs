@@ -106,6 +106,12 @@ pub mod msg {
     pub const LAST_SESSION_WAS: &str = n_("The last session was {}'s; {} can't go on with it.");
     /// The CLI the last supervisor used is held back because its program
     /// is not on this machine (task 1744). The `{}` is that CLI.
+    /// Where "Go on with the last session" will be, while it is looked for
+    /// (task 1741).
+    pub const LOOKING: &str = n_("Looking for the last session…");
+    /// Where it would be, when it was looked for and cannot be gone on with
+    /// (task 1741). Why is said on hover.
+    pub const DIDNT_FIND: &str = n_("Didn't find the last session");
     pub const LAST_CLI_NOT_HERE: &str = n_("{}, which the last supervisor used, is not installed on this machine.");
     /// The directory, when the core names none: the new tab's own.
     pub const WHERE_THE_TAB_STARTS: &str = n_("Where the tab starts");
@@ -255,6 +261,10 @@ pub enum Piece {
     /// `mark` is the flag for the supervisor and the dot for any other pane
     /// with a colour (task 1700); `text` empty is the mark alone.
     Badge { mark: crate::glyph::Mark, text: String, style: Style, ground: Rgba },
+    /// A place where a name will be, not known yet (task 1741: an agent
+    /// CLI's, before the adapters are read): a rounded bar `width` by
+    /// `height` points, centred on the line. Never the key in its place.
+    Bar { color: Rgba, width: f64, height: f64 },
 }
 
 /// One part of a line. A host measures the words; that is the one thing
@@ -1165,7 +1175,7 @@ pub fn all_text(items: &[Item]) -> Vec<&str> {
                 for part in parts {
                     match &part.piece {
                         Piece::Words { text, .. } | Piece::Badge { text, .. } => out.push(text.as_str()),
-                        Piece::Glyph { .. } => {}
+                        Piece::Glyph { .. } | Piece::Bar { .. } => {}
                         Piece::Held { .. } | Piece::Mark { .. } => {}
                     }
                 }
@@ -1184,7 +1194,7 @@ pub fn moves(items: &[Item]) -> bool {
         Item::Line { parts, .. } => parts.iter().any(|p| match &p.piece {
             Piece::Glyph { shown, pulses, .. } => *pulses || *shown == Shown::Working,
             Piece::Words { .. } => false,
-            Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } => false,
+            Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } | Piece::Bar { .. } => false,
         }),
         Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => false,
     })
@@ -1272,8 +1282,16 @@ pub struct Start {
     pub role: Option<Rect>,
     /// The directory's line: pressing it picks another.
     pub directory: Option<Rect>,
-    /// "Start Supervisor".
+    /// "Start Supervisor", when it can be pressed: not while the last
+    /// session is looked for, unless a new one was picked (task 1741,
+    /// `start_enabled`).
     pub start: Option<Rect>,
+    /// Where the button is drawn, whether or not it can be pressed (task
+    /// 1741): the same place in every state of the session's two lines.
+    pub button: Option<Rect>,
+    /// What hovering a line says, and where (task 1741: "Didn't find the
+    /// last session" -- why). A host puts a tooltip there.
+    pub tip: Option<(Rect, String)>,
     /// "Go to Its Tab", and the terminal it goes to: while a supervisor
     /// being started waits in its tab for the person (task 1746).
     pub go_to_tab: Option<(String, Rect)>,
@@ -1302,8 +1320,14 @@ pub enum Resume {
     /// role could go on with it, the picked one cannot (01b). The layout
     /// does not jump as the CLI changes.
     Greyed,
-    /// Not drawn: no CLI on screen can go on with it, and a sentence says
-    /// why -- as before there was a choice of CLI.
+    /// Still being looked for (task 1741): the adapters not read yet. The
+    /// line says so beside a spinner, over "New session"; "Start" waits
+    /// until the look ends or a new session is picked.
+    Checking,
+    /// Looked for, and not to be had (task 1741): "Didn't find the last
+    /// session" over "New session", on; why, on hover.
+    Missing,
+    /// Not drawn: there never was a supervisor to go on from.
     Hidden,
 }
 
@@ -1312,6 +1336,8 @@ impl Resume {
         match self {
             Resume::Live => "live",
             Resume::Greyed => "greyed",
+            Resume::Checking => "checking",
+            Resume::Missing => "missing",
             Resume::Hidden => "hidden",
         }
     }
@@ -1394,6 +1420,10 @@ pub fn cli_choice(
         Resume::Live
     } else if shown && clis.iter().any(|c| resume_for(last, Some(&c.key)).0) {
         Resume::Greyed
+    } else if why == ResumeWhy::ClisUnread {
+        Resume::Checking
+    } else if last.heard_ms.is_some() {
+        Resume::Missing
     } else {
         Resume::Hidden
     };
@@ -1404,7 +1434,31 @@ pub fn cli_choice(
 /// picked while "Go on" can be picked, and nothing otherwise -- greyed or
 /// not drawn, the core starts a new one by itself.
 pub fn session_for(choice: &CliChoice, picked: Option<crate::act::Session>) -> Option<crate::act::Session> {
+    // While looking, only "New session" can be picked, and then it is said
+    // (task 1741): the core would answer the look with "not yet", a new
+    // session the person did not choose.
+    if choice.resume == Resume::Checking {
+        return picked.filter(|p| *p == crate::act::Session::New);
+    }
     crate::act::session_sent(choice.resume == Resume::Live, picked)
+}
+
+/// Whether "Start Supervisor" can be pressed (task 1741): not while the
+/// last session is being looked for, unless a new one was picked -- the
+/// start would otherwise go on with nothing and quietly drop the session the
+/// person meant. The macOS host's `startEnabled`.
+pub fn start_enabled(choice: &CliChoice, picked: Option<crate::act::Session>) -> bool {
+    choice.resume != Resume::Checking || picked == Some(crate::act::Session::New)
+}
+
+/// What hovering "Didn't find the last session" says (task 1741): why, in
+/// the core's words; that line's own words when there is no more to say.
+/// None in any other state. The macOS host's `resumeTooltip`.
+pub fn resume_tooltip(choice: &CliChoice, last: Option<&crate::snapshot::SupervisorLast>) -> Option<(&'static str, Vec<String>)> {
+    if choice.resume != Resume::Missing {
+        return None;
+    }
+    Some(resume_why(choice, last).unwrap_or((msg::DIDNT_FIND, Vec::new())))
 }
 
 /// The sentence under the sessions, as the English to translate and what
@@ -1412,6 +1466,19 @@ pub fn session_for(choice: &CliChoice, picked: Option<crate::act::Session>) -> O
 /// because another CLI was picked: whose session it was, and which CLI
 /// cannot go on with it. Otherwise the core's reason (`resume_note`).
 pub fn resume_said(choice: &CliChoice, last: Option<&crate::snapshot::SupervisorLast>) -> Option<(&'static str, Vec<String>)> {
+    // Only when "Go on" is greyed; not found says why on hover, so that
+    // nothing moves (task 1741).
+    if choice.resume != Resume::Greyed {
+        return None;
+    }
+    resume_why(choice, last)
+}
+
+/// Why a start does not go on with the last session, as the English to
+/// translate and its arguments; none when there is nothing to say. Its CLI
+/// not on this machine; the session another CLI's; otherwise the core's
+/// reason (`resume_note`). The macOS host's `resumeWhyText`.
+pub fn resume_why(choice: &CliChoice, last: Option<&crate::snapshot::SupervisorLast>) -> Option<(&'static str, Vec<String>)> {
     use crate::snapshot::ResumeWhy;
     if choice.resume == Resume::Live {
         return None;
@@ -1483,6 +1550,37 @@ pub fn cli_name(key: Option<&str>, label: Option<&str>) -> Option<String> {
     let key = key.filter(|k| !k.is_empty())?;
     Some(label.filter(|l| !l.is_empty()).unwrap_or(key).to_string())
 }
+
+/// A name not read yet (task 1741): a bar where it will be, about as wide
+/// as a name.
+fn name_bar(theme: &Theme) -> Piece {
+    Piece::Bar { color: theme.line_faint, width: 56.0, height: font::BODY * 0.8 }
+}
+
+/// The sentence `last_supervisor_words` says, cut where the CLI's name goes,
+/// while that name is not read yet (task 1741): the right side draws a bar
+/// between the two, never the key. None when the names are read, or the
+/// sentence names no CLI. The macOS host's `lastSupervisorParts`.
+pub fn last_supervisor_parts(start: &crate::snapshot::SupervisorStart, cwd: Option<&str>, home: &str, tr: &dyn Fn(&str) -> String) -> Option<(String, String)> {
+    if start.clis_read {
+        return None;
+    }
+    let last = start.last.as_ref()?;
+    if last.last_cli.as_deref().is_none_or(str::is_empty) {
+        return None;
+    }
+    let mut held = start.clone();
+    if let Some(l) = held.last.as_mut() {
+        l.last_cli_label = Some(NAME_PLACE.to_string());
+    }
+    let said = last_supervisor_words(Some(&held), cwd, home, tr)?;
+    let (before, after) = said.split_once(NAME_PLACE)?;
+    Some((before.to_string(), after.to_string()))
+}
+
+/// What stands for a name not read yet while a sentence is made, to be cut
+/// out of it: no translation holds it.
+const NAME_PLACE: &str = "\u{FFFC}";
 
 /// The same sentence, translated and filled.
 pub fn last_supervisor_words(
@@ -1642,7 +1740,19 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
         out.items.push(Item::Block { rect: Rect { x: pad, y: *y + (line_h - side::ASK_LINE_HEIGHT) / 2.0, w, h }, text, style: body(theme.terminal_dim), lines });
         *y += h + (line_h - side::ASK_LINE_HEIGHT);
     };
-    if let Some(said) = last_supervisor_words(Some(start), view.cwd, view.home, tr).filter(|s| draws(s)) {
+    if let Some((before, after)) = last_supervisor_parts(start, view.cwd, view.home, tr) {
+        // The CLI's name not read yet (task 1741): a bar where it will be.
+        let mut parts = Vec::new();
+        if draws(&before) {
+            parts.push(words(before, body(theme.terminal_dim), Side::Lead, 0.0));
+        }
+        parts.push(Part { piece: name_bar(theme), side: Side::Lead, gap: 0.0 });
+        if draws(&after) {
+            parts.push(words(after, body(theme.terminal_dim), Side::Lead, 0.0));
+        }
+        out.items.push(Item::Line { rect: Rect { x: pad, y, w, h: line_h }, parts });
+        y += line_h;
+    } else if let Some(said) = last_supervisor_words(Some(start), view.cwd, view.home, tr).filter(|s| draws(s)) {
         sentence(&mut out, &mut y, said);
     }
     // A ring for each choice: the one in use filled in the attention colour,
@@ -1663,12 +1773,16 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
             });
         }
         let lead = side::GLYPH + side::ROW_ITEM_GAP;
-        out.items.push(Item::Text {
-            rect: Rect { x: pad + lead, y, w: (w - lead).max(0.0), h: side::QUIET_ROW_HEIGHT },
-            text,
-            style: body(if enabled { theme.terminal_text } else { theme.text_tertiary }),
-            align: Align::Left,
-        });
+        // An empty one is never handed to a host (`draws`): a CLI's name
+        // not read yet is a bar drawn on its own (task 1741).
+        if draws(&text) {
+            out.items.push(Item::Text {
+                rect: Rect { x: pad + lead, y, w: (w - lead).max(0.0), h: side::QUIET_ROW_HEIGHT },
+                text,
+                style: body(if enabled { theme.terminal_text } else { theme.text_tertiary }),
+                align: Align::Left,
+            });
+        }
         rect
     };
 
@@ -1680,8 +1794,13 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
         y += line_h;
         for c in &choice.clis {
             let on = choice.picked.as_deref() == Some(c.key.as_str());
-            let name = cli_name(Some(&c.key), c.label.as_deref()).unwrap_or_default();
+            // Its name not read yet (task 1741): a bar, never the key.
+            let name = if start.clis_read { cli_name(Some(&c.key), c.label.as_deref()).unwrap_or_default() } else { String::new() };
             let rect = radio(&mut out, y, on, true, name);
+            if !start.clis_read {
+                let lead = side::GLYPH + side::ROW_ITEM_GAP;
+                out.items.push(Item::Line { rect: Rect { x: pad + lead, y, w: (w - lead).max(0.0), h: side::QUIET_ROW_HEIGHT }, parts: vec![Part { piece: name_bar(theme), side: Side::Lead, gap: 0.0 }] });
+            }
             out.clis.push((c.key.clone(), rect));
             y += side::QUIET_ROW_HEIGHT;
         }
@@ -1690,17 +1809,42 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
     // Go on with its session or start a new one -- only when the core says
     // the first can be done, for some CLI on screen. Greyed when it can for
     // another CLI than the one picked. When it cannot, a sentence says why.
-    if choice.resume != Resume::Hidden {
-        let live = choice.resume == Resume::Live;
-        let picked = session_for(&choice, view.session).unwrap_or(crate::act::Session::New);
-        for one in crate::act::Session::ALL {
-            let enabled = live || one == crate::act::Session::New;
-            let rect = radio(&mut out, y, picked == one, enabled, tr(session_words(one)));
-            if enabled {
-                out.sessions.push((one, rect));
+    // Always two lines high (task 1741), so the button under them is where
+    // it was when the look for the last session ends.
+    match choice.resume {
+        Resume::Live | Resume::Greyed => {
+            let live = choice.resume == Resume::Live;
+            let picked = session_for(&choice, view.session).unwrap_or(crate::act::Session::New);
+            for one in crate::act::Session::ALL {
+                let enabled = live || one == crate::act::Session::New;
+                let rect = radio(&mut out, y, picked == one, enabled, tr(session_words(one)));
+                if enabled {
+                    out.sessions.push((one, rect));
+                }
+                y += side::QUIET_ROW_HEIGHT;
+            }
+        }
+        Resume::Checking | Resume::Missing => {
+            let looking = choice.resume == Resume::Checking;
+            let rect = Rect { x: pad, y, w, h: side::QUIET_ROW_HEIGHT };
+            let text = tr(if looking { msg::LOOKING } else { msg::DIDNT_FIND });
+            let mut parts = Vec::new();
+            if looking {
+                parts.push(Part { piece: Piece::Glyph { shown: Shown::Working, color: theme.working, size: side::GLYPH, pulses: false }, side: Side::Lead, gap: 0.0 });
+            }
+            let gap = if looking { side::ROW_ITEM_GAP } else { side::GLYPH + side::ROW_ITEM_GAP };
+            parts.push(words(text, body(theme.terminal_dim), Side::Lead, gap));
+            out.items.push(Item::Line { rect, parts });
+            if let Some((template, args)) = resume_tooltip(&choice, start.last.as_ref()) {
+                out.tip = Some((rect, args.iter().fold(tr(template), |said, arg| list::fill(&said, arg))));
             }
             y += side::QUIET_ROW_HEIGHT;
+            let on = !looking || view.session == Some(crate::act::Session::New);
+            let rect = radio(&mut out, y, on, true, tr(session_words(crate::act::Session::New)));
+            out.sessions.push((crate::act::Session::New, rect));
+            y += side::QUIET_ROW_HEIGHT;
         }
+        Resume::Hidden => {}
     }
     if let Some((template, args)) = resume_said(&choice, start.last.as_ref()) {
         let said = args.iter().fold(tr(template), |said, arg| list::fill(&said, arg));
@@ -1709,14 +1853,19 @@ pub fn build_start(detail: &Detail_, row: Option<&Row>, width: f64, theme: &Them
     y += side::ROW_GAP;
 
     let button = Rect { x: pad, y, w: side::WIDTH / 2.0, h: line_h };
-    out.items.push(Item::Round { rect: button, radius: radius::ROW, color: theme.terminal_background, edge: Some(theme.attention_text) });
+    // Not while the last session is looked for, unless a new one was picked
+    // (task 1741): greyed, and not pressable.
+    let can_press = start_enabled(&choice, view.session);
+    let ink = if can_press { theme.attention_text } else { theme.text_tertiary };
+    out.items.push(Item::Round { rect: button, radius: radius::ROW, color: theme.terminal_background, edge: Some(ink) });
     out.items.push(Item::Text {
         rect: button,
         text: tr(msg::START_SUPERVISOR),
-        style: Style { weight: font::WEIGHT_EMPHASIS, ..body(theme.attention_text) },
+        style: Style { weight: font::WEIGHT_EMPHASIS, ..body(ink) },
         align: Align::Centre,
     });
-    out.start = Some(button);
+    out.button = Some(button);
+    out.start = can_press.then_some(button);
     y += line_h + side::ROW_GAP;
 
     if let Some(why) = view.refusal.filter(|w| draws(w)) {
@@ -2588,7 +2737,7 @@ mod tests {
             Item::Line { parts, .. } => parts.iter().any(|p| match &p.piece {
                 Piece::Glyph { .. } => true,
                 Piece::Words { .. } => false,
-                Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } => false,
+                Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } | Piece::Bar { .. } => false,
             }),
             Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => false,
         }
@@ -3354,7 +3503,7 @@ mod tests {
 
     fn start_row(state: crate::snapshot::SupervisorState, can_start: bool, failed: crate::snapshot::StartFailure) -> Row {
         let mut row = list().quiet[0].clone();
-        row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, terminal: None, asking: false, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into(), last: None, hookless: None });
+        row.start = Some(crate::snapshot::SupervisorStart { state, can_start, failed, terminal: None, asking: false, clis_read: true, role: Some("polter-supervisor".into()), cwd: "/Users/me/work".into(), last: None, hookless: None });
         row
     }
 
@@ -3588,13 +3737,15 @@ mod tests {
             }
         }
 
-        // When it cannot: no choice, and the reason in its place.
+        // When it cannot (task 1741): "Didn't find the last session" over a
+        // new one, and the reason on hover, not on a line of its own.
         let detail = Detail_::NoSupervisor { group: cannot.id.clone() };
         let drawn = build_start(&detail, Some(&cannot), 600.0, theme, &view, &same);
-        assert!(drawn.sessions.is_empty());
+        assert_eq!(drawn.sessions.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [crate::act::Session::New]);
         let said = all_text(&drawn.items);
-        assert!(said.contains(&msg::WHY_SESSION_IN_USE), "{said:?}");
-        assert!(!said.contains(&msg::GO_ON) && !said.contains(&msg::NEW_SESSION), "{said:?}");
+        assert!(said.contains(&msg::DIDNT_FIND) && said.contains(&msg::NEW_SESSION), "{said:?}");
+        assert!(!said.contains(&msg::WHY_SESSION_IN_USE) && !said.contains(&msg::GO_ON), "{said:?}");
+        assert_eq!(drawn.tip.as_ref().map(|(_, t)| t.as_str()), Some(msg::WHY_SESSION_IN_USE));
 
         // One or the other, never both: whether it can is the core's `can`,
         // and a core that says it can while naming a reason is believed
@@ -3765,7 +3916,7 @@ mod tests {
             .filter_map(|i| match i {
                 Item::Line { parts, .. } => parts.iter().find_map(|p| match &p.piece {
                     Piece::Words { text, style } if text == "zsh — ~/work" => Some(style.weight),
-                    Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } => None,
+                    Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } | Piece::Bar { .. } => None,
                 }),
                 Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => None,
             })
@@ -3787,7 +3938,7 @@ mod tests {
                             .iter()
                             .filter_map(|p| match &p.piece {
                                 Piece::Words { text, .. } => Some(text.clone()),
-                                Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } => None,
+                                Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } | Piece::Bar { .. } => None,
                             })
                             .collect(),
                     ),
@@ -3908,11 +4059,13 @@ mod tests {
         let (row, roles) = duo();
         let start = row.start.as_ref().unwrap();
         // 01c: a role with one CLI draws no line, and Codex cannot go on
-        // with Claude Code's session: hidden, the core's reason said.
+        // with Claude Code's session: not found (task 1741), the core's
+        // reason on hover.
         let solo = cli_choice(start, &roles, Some("solo"), None);
         assert!(!solo.shown);
-        assert_eq!((solo.picked.as_deref(), solo.resume, solo.why), (Some("codex"), Resume::Hidden, W::CliDiffers));
-        assert_eq!(resume_said(&solo, start.last.as_ref()), Some((msg::WHY_CLI_DIFFERS, Vec::new())));
+        assert_eq!((solo.picked.as_deref(), solo.resume, solo.why), (Some("codex"), Resume::Missing, W::CliDiffers));
+        assert_eq!(resume_said(&solo, start.last.as_ref()), None);
+        assert_eq!(resume_tooltip(&solo, start.last.as_ref()), Some((msg::WHY_CLI_DIFFERS, Vec::new())));
         // Another role that lists the last supervisor's CLI starts in it,
         // though it is not that role's first.
         assert_eq!(cli_choice(start, &roles, Some("night-lead"), None).picked.as_deref(), Some("claude-code"));
@@ -3921,7 +4074,7 @@ mod tests {
         nobody.start.as_mut().unwrap().last.as_mut().unwrap().by_cli[0].can = false;
         nobody.start.as_mut().unwrap().last.as_mut().unwrap().by_cli[0].why = W::SessionInUse;
         let n = cli_choice(nobody.start.as_ref().unwrap(), &roles, None, None);
-        assert_eq!((n.resume, n.why), (Resume::Hidden, W::SessionInUse));
+        assert_eq!((n.resume, n.why), (Resume::Missing, W::SessionInUse));
         // A core from before the list of CLIs: the CLI it names, its one
         // answer, no line.
         let (old, _) = duo();
@@ -3929,6 +4082,79 @@ mod tests {
         old.start.as_mut().unwrap().last.as_mut().unwrap().by_cli.clear();
         let o = cli_choice(old.start.as_ref().unwrap(), &[], None, None);
         assert_eq!((o.shown, o.picked.as_deref(), o.resume), (false, Some("claude-code"), Resume::Live));
+    }
+
+    /// Task 1741: while the last session is looked for, the right side says
+    /// so where "Go on" will be, the CLIs' names are bars and never keys,
+    /// "Start" waits until a new session is picked, and nothing under the
+    /// sessions moves when the look ends -- found or not.
+    #[test]
+    fn task_1741_the_look_for_the_last_session_moves_nothing_and_waits_for_a_new_one() {
+        use crate::act::Session;
+        use crate::snapshot::ResumeWhy as W;
+        let (row, roles) = duo();
+        let theme = look::theme(false);
+        let same = |s: &str| s.to_string();
+        let mut looking = row.clone();
+        {
+            let st = looking.start.as_mut().unwrap();
+            st.clis_read = false;
+            let l = st.last.as_mut().unwrap();
+            l.can_resume = false;
+            l.why = W::ClisUnread;
+            for b in l.by_cli.iter_mut() {
+                b.can = false;
+                b.why = W::ClisUnread;
+            }
+        }
+        let mut lost = row.clone();
+        {
+            let l = lost.start.as_mut().unwrap().last.as_mut().unwrap();
+            l.can_resume = false;
+            l.why = W::SessionInUse;
+            for b in l.by_cli.iter_mut() {
+                b.can = false;
+                b.why = W::SessionInUse;
+            }
+        }
+        let built = |r: &Row, session: Option<Session>| {
+            let view = StartView { roles: &roles, session, home: "", ..Default::default() };
+            build_start(&Detail_::NoSupervisor { group: r.id.clone() }, Some(r), 600.0, theme, &view, &same)
+        };
+        let found = built(&row, None);
+        let wait = built(&looking, None);
+        let none = built(&lost, None);
+
+        // Nothing under the sessions moves when the look ends.
+        let found_at = found.button.unwrap().y;
+        let wait_at = wait.button.unwrap().y;
+        let none_at = none.button.unwrap().y;
+        assert_eq!(wait_at, found_at);
+        assert_eq!(none_at, found_at);
+
+        // Looking: said, with the spinner, and "Start" waits.
+        let wait_text = all_text(&wait.items);
+        assert!(wait_text.contains(&msg::LOOKING), "{wait_text:?}");
+        assert!(moves(&wait.items));
+        assert_eq!(wait.start, None);
+        // The names are bars: the sentence's and both rings'; no key, no
+        // empty text handed to a host.
+        let bars = wait.items.iter().filter(|i| matches!(i, Item::Line { parts, .. } if parts.iter().any(|p| matches!(p.piece, Piece::Bar { .. })))).count();
+        assert_eq!(bars, 3);
+        assert!(!wait_text.iter().any(|t| t.contains("claude-code") || t.contains("Claude Code") || t.is_empty()), "{wait_text:?}");
+
+        // A new session picked: pressable, and that is what is said.
+        let picked = built(&looking, Some(Session::New));
+        assert_eq!(picked.start, picked.button);
+        let c = cli_choice(looking.start.as_ref().unwrap(), &roles, None, None);
+        assert_eq!(session_for(&c, Some(Session::New)), Some(Session::New));
+        assert_eq!(session_for(&c, None), None);
+
+        // Found, or not to be had: pressable at once.
+        assert_eq!(found.start, found.button);
+        assert_eq!(none.start, none.button);
+        let none_text = all_text(&none.items);
+        assert!(none_text.contains(&msg::DIDNT_FIND) && !none_text.contains(&msg::LOOKING), "{none_text:?}");
     }
 
     #[test]
@@ -3957,6 +4183,7 @@ mod tests {
         let c = drawn(None, Some("solo"));
         assert!(c.clis.is_empty());
         assert!(!all_text(&c.items).contains(&msg::AGENT_CLI));
-        assert!(c.sessions.is_empty());
+        // Not found (task 1741): only a new session, on.
+        assert_eq!(c.sessions.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [Session::New]);
     }
 }

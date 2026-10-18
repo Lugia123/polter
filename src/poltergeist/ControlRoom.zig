@@ -145,6 +145,14 @@
 //!                                 does not say it can go on with a
 //!                                 session) | session_in_use (an open
 //!                                 terminal is in that session now)
+//!         "clis_read": true,
+//!                                 whether the agent CLIs' adapters have
+//!                                 been read (task 1741). Until they are,
+//!                                 a CLI's name is not known -- `cli_label`
+//!                                 is null -- and whether a session can be
+//!                                 gone on with is `clis_unread`; a host
+//!                                 says it is looking rather than write a
+//!                                 key in place of a name
 //!         "hookless": { "state": "none", "cli_label": null, "session": false,
 //!                       "note": null | {"key":"started_by_hand","template":"…","args":[]},
 //!                       "take_over": { "state": "none", "confirm": null, "status": null } } },
@@ -1294,6 +1302,10 @@ pub const SupervisorOut = struct {
     /// The same for every CLI any supervisor role can be started in here,
     /// in the order they first appear in `supervisor_roles`.
     resume_by_cli: []const CliResumeOut,
+    /// The adapters have been read (task 1741): what the CLIs are called
+    /// and which go on with a session are known. Before, a host draws a
+    /// place where a CLI's name will be, and says it is looking.
+    clis_read: bool,
     hookless: HooklessOut,
 
     pub const State = enum { present, absent, starting, failed };
@@ -2177,6 +2189,7 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
         },
         .@"resume" = go_on,
         .resume_by_cli = by_cli.items,
+        .clis_read = in.cli_resume != .unread,
         .hookless = if (steward) |id| try hooklessOf(arena, in, name, id) else .none,
     };
 }
@@ -5731,4 +5744,24 @@ test "Projects: who is in a terminal is an agent, nobody, or not known -- and no
     try testing.expect(std.mem.indexOf(u8, json,
         \\"who":{"is":"unknown","role":null,"cli":null,"session":null,"worker_of":"0x00000000000000a1"}
     ) != null);
+}
+
+test "1741: the snapshot says whether the adapters have been read, for a host to say it is looking" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+    try w.chat.restoreShell("web", "", 0, .none);
+
+    w.cli_resume = .unread;
+    const before = (try rowNamed((try room.compute(arena.allocator(), w.input(1_000))).snapshot, "web")).supervisor;
+    const read_before = before.clis_read;
+    try testing.expect(!read_before);
+
+    w.cli_resume = .{ .read = &.{"claude-code"} };
+    const after = (try rowNamed((try room.compute(arena.allocator(), w.input(2_000))).snapshot, "web")).supervisor;
+    const read_after = after.clis_read;
+    try testing.expect(read_after);
 }

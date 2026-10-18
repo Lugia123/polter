@@ -764,6 +764,8 @@
 "A new session will be started: the last supervisor's CLI never said which session it was in." = "A new session will be started: the last supervisor's CLI never said which session it was in.";
 "A new session will be started: going on with the last one did not work the last time it was tried." = "A new session will be started: going on with the last one did not work the last time it was tried.";
 "A new session will be started: the last session was in another CLI." = "A new session will be started: the last session was in another CLI.";
+"Looking for the last session…" = "Looking for the last session…";
+"Didn't find the last session" = "Didn't find the last session";
 "%@, which the last supervisor used, is not installed on this machine." = "%@, which the last supervisor used, is not installed on this machine.";
 "That agent CLI isn't installed on this machine." = "That agent CLI isn't installed on this machine.";
 "Checking whether the last session can be gone on with…" = "Checking whether the last session can be gone on with…";

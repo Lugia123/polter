@@ -5184,6 +5184,14 @@ msgstr "上次的会话是 {} 的，{} 接不上。"
 msgid "{}, which the last supervisor used, is not installed on this machine."
 msgstr "上次用的 {} 不在这台机器上。"
 
+#: windows/control-room/src/scene.rs:110
+msgid "Looking for the last session…"
+msgstr "正在找上次的会话…"
+
+#: windows/control-room/src/scene.rs:114
+msgid "Didn't find the last session"
+msgstr "没找到上次的会话"
+
 #: windows/control-room/src/rowmenu.rs:205
 msgid "Last used"
 msgstr "上次用的"

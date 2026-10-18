@@ -5441,6 +5441,14 @@ msgstr ""
 msgid "{}, which the last supervisor used, is not installed on this machine."
 msgstr ""
 
+#: windows/control-room/src/scene.rs:110
+msgid "Looking for the last session…"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:114
+msgid "Didn't find the last session"
+msgstr ""
+
 #: windows/control-room/src/rowmenu.rs:205
 msgid "Last used"
 msgstr ""

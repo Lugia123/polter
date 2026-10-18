@@ -565,7 +565,7 @@ fn main() {
             ("cli-empty", Some(1), "/Users/me/work", true, Some(""), Some("Claude Code"), Some("/srv/other"), false),
             ("never-recorded", None, "/Users/me/work", true, Some("claude-code"), Some("Claude Code"), Some("/srv/other"), false),
         ];
-        let start = |cwd: &str, last| SupervisorStart { state: SupervisorState::Absent, can_start: true, failed: StartFailure::None, terminal: None, asking: false, role: None, cwd: cwd.to_string(), last, hookless: None };
+        let start = |cwd: &str, last| SupervisorStart { state: SupervisorState::Absent, can_start: true, failed: StartFailure::None, terminal: None, asking: false, clis_read: true, role: None, cwd: cwd.to_string(), last, hookless: None };
         for (name, heard, cwd, is_last, cli, label, picked, can) in cases {
             let s = start(
                 cwd,
@@ -602,7 +602,7 @@ fn main() {
     {
         use polter_control_room::scene::no_supervisor_words;
         use polter_control_room::snapshot::{StartFailure, SupervisorStart, SupervisorState};
-        let start = |state, failed, can_start| SupervisorStart { state, can_start, failed, terminal: None, asking: false, role: None, cwd: String::new(), last: None, hookless: None };
+        let start = |state, failed, can_start| SupervisorStart { state, can_start, failed, terminal: None, asking: false, clis_read: true, role: None, cwd: String::new(), last: None, hookless: None };
         for failed in StartFailure::ALL {
             println!(
                 "start_says state=failed failed={} says={}",
@@ -637,27 +637,56 @@ fn main() {
     {
         use polter_control_room::scene;
         let same = |s: &str| s.to_string();
+        // And each the same while the adapters are not read yet (task
+        // 1741): the last session looked for, the CLIs' names not known.
+        let unread = |s: &polter_control_room::snapshot::SupervisorStart| {
+            use polter_control_room::snapshot::ResumeWhy;
+            let mut u = s.clone();
+            u.clis_read = false;
+            if let Some(l) = u.last.as_mut() {
+                l.can_resume = false;
+                l.why = ResumeWhy::ClisUnread;
+                for b in l.by_cli.iter_mut() {
+                    b.can = false;
+                    b.why = ResumeWhy::ClisUnread;
+                }
+            }
+            u
+        };
+        let fill = |said: Option<(&str, Vec<String>)>| said.map(|(t, args)| args.iter().fold(same(t), |said, a| list::fill(&said, a)));
         for r in l.rows() {
-            let Some(start) = r.start.as_ref().filter(|_| r.alone.is_none()) else { continue };
-            for role in &l.supervisor_roles {
-                let picks: Vec<Option<&str>> = std::iter::once(None).chain(role.clis.iter().map(|c| Some(c.key.as_str()))).collect();
-                for picked in picks {
-                    let c = scene::cli_choice(start, &l.supervisor_roles, Some(&role.key), picked);
-                    let says = scene::resume_said(&c, start.last.as_ref()).map(|(t, args)| args.iter().fold(same(t), |said, a| list::fill(&said, a)));
-                    println!(
-                        "start_cli group={} role={} picked={} shown={} on={} resume={} why={} gone={} says={} sends_cli={} sends_session={}",
-                        r.id,
-                        role.key,
-                        picked.unwrap_or("-"),
-                        u8::from(c.shown),
-                        c.picked.as_deref().unwrap_or("-"),
-                        c.resume.name(),
-                        c.why.name(),
-                        c.last_gone.as_deref().map_or("-".to_string(), quote),
-                        says.map_or("-".to_string(), |s| quote(&s)),
-                        c.picked.as_deref().unwrap_or("-"),
-                        scene::session_for(&c, None).map_or("-", |s| s.name())
-                    );
+            let Some(read) = r.start.as_ref().filter(|_| r.alone.is_none()) else { continue };
+            for (tag, start) in [("start_cli", read.clone()), ("start_cli_unread", unread(read))] {
+                if tag == "start_cli_unread" {
+                    let parts = scene::last_supervisor_parts(&start, None, "", &same);
+                    println!("start_parts group={} parts={}", r.id, parts.map_or("-".to_string(), |(b, a)| format!("{}|{}", quote(&b), quote(&a))));
+                }
+                for role in &l.supervisor_roles {
+                    let picks: Vec<Option<&str>> = std::iter::once(None).chain(role.clis.iter().map(|c| Some(c.key.as_str()))).collect();
+                    for picked in picks {
+                        let c = scene::cli_choice(&start, &l.supervisor_roles, Some(&role.key), picked);
+                        let says = fill(scene::resume_said(&c, start.last.as_ref()));
+                        let tip = fill(scene::resume_tooltip(&c, start.last.as_ref()));
+                        println!(
+                            "{} group={} role={} picked={} shown={} on={} resume={} why={} gone={} says={} tip={} sends_cli={} sends_session={} sends_new={} enabled={} enabled_new={}",
+                            tag,
+                            r.id,
+                            role.key,
+                            picked.unwrap_or("-"),
+                            u8::from(c.shown),
+                            c.picked.as_deref().unwrap_or("-"),
+                            c.resume.name(),
+                            c.why.name(),
+                            c.last_gone.as_deref().map_or("-".to_string(), quote),
+                            says.map_or("-".to_string(), |s| quote(&s)),
+                            tip.map_or("-".to_string(), |s| quote(&s)),
+                            c.picked.as_deref().unwrap_or("-"),
+                            scene::session_for(&c, None).map_or("-", |s| s.name()),
+                            scene::session_for(&c, Some(polter_control_room::act::Session::New)).map_or("-", |s| s.name()),
+                            u8::from(scene::start_enabled(&c, None)),
+                            u8::from(scene::start_enabled(&c, Some(polter_control_room::act::Session::New)))
+                        );
+                    }
                 }
             }
         }

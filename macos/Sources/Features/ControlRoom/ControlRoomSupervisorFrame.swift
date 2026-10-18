@@ -189,7 +189,17 @@ struct ControlRoomStartSupervisor: View {
                 .buttonStyle(.plain)
             }
             }
-            if let said = Choice.lastSupervisorText(start, startingIn: cwd ?? start.cwd) {
+            if let parts = Choice.lastSupervisorParts(start, startingIn: cwd ?? start.cwd) {
+                // The CLI's name not read yet (task 1741): a place where it
+                // will be, never its key.
+                HStack(spacing: 0) {
+                    Text(parts.before)
+                    nameBar(theme)
+                    Text(parts.after)
+                }
+                .foregroundStyle(theme.textSecondary.color)
+                .accessibilityElement(children: .combine)
+            } else if let said = Choice.lastSupervisorText(start, startingIn: cwd ?? start.cwd) {
                 Text(said)
                     .foregroundStyle(theme.textSecondary.color)
                     .fixedSize(horizontal: false, vertical: true)
@@ -208,18 +218,22 @@ struct ControlRoomStartSupervisor: View {
                     if choice.resume != .hidden {
                         GridRow {
                             Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
-                            sessionChoice(theme, greyed: choice.resume == .greyed)
+                            sessionSlot(choice, theme)
                         }
                     }
                 }
             } else if choice.resume != .hidden {
-                sessionChoice(theme, greyed: choice.resume == .greyed)
+                sessionSlot(choice, theme)
             }
             if let why = Choice.resumeSaid(choice, last: start.last) {
                 Text(why)
                     .foregroundStyle(theme.textSecondary.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Not while the last session is still looked for, unless a new
+            // one was picked (task 1741): `Choice.startEnabled`.
+            let canPress = Choice.startEnabled(choice, picked: session)
+            let ink = canPress ? theme.attentionText.color : theme.textTertiary.color
             Button(action: {
                 // The CLI the choice has on, whenever it has one: the same
                 // the core would pick when it is the core's, and the
@@ -228,15 +242,16 @@ struct ControlRoomStartSupervisor: View {
             }, label: {
                 Text(ProjectLink.startTitle(project))
                     .fontWeight(Look.weight(Look.Font.weightEmphasis))
-                    .foregroundStyle(theme.attentionText.color)
+                    .foregroundStyle(ink)
                     .padding(.horizontal, CGFloat(Look.Side.rowPaddingX))
                     .padding(.vertical, CGFloat(Look.Side.rowPaddingY))
                     .overlay(
                         RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row), style: .continuous)
-                            .strokeBorder(theme.attentionText.color, lineWidth: CGFloat(Look.Line.hairline)))
+                            .strokeBorder(ink, lineWidth: CGFloat(Look.Line.hairline)))
                     .contentShape(Rectangle())
             })
             .buttonStyle(.plain)
+            .disabled(!canPress)
             if let note = ProjectLink.startNote(project) {
                 Text(note)
                     .foregroundStyle(theme.textSecondary.color)
@@ -247,6 +262,50 @@ struct ControlRoomStartSupervisor: View {
                     .foregroundStyle(theme.problemTextOnSupervisorBar.color)
             }
         }
+    }
+
+    /// Where the sessions are, always two lines high so that nothing under
+    /// it moves when the look for the last one ends (task 1741): the two
+    /// sessions; while looking, a spinner and "Looking for…" over "New
+    /// session"; looked for and not to be had, "Didn't find…" -- why, on
+    /// hover and to a screen reader -- over "New session", on.
+    @ViewBuilder
+    private func sessionSlot(_ choice: Choice.CliChoice, _ theme: Look.Theme) -> some View {
+        let gap = CGFloat(Look.Side.rowItemGap)
+        let mark = CGFloat(Look.Side.glyph)
+        let row = CGFloat(Look.Side.quietRowHeight)
+        switch choice.resume {
+        case .checking, .missing:
+            let looking = choice.resume == .checking
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: gap) {
+                    if looking {
+                        ControlRoomGlyph(shown: .working, size: mark)
+                    } else {
+                        Color.clear.frame(width: mark, height: mark)
+                    }
+                    Text(looking ? Choice.lookingText : Choice.missingText)
+                        .foregroundStyle(theme.textSecondary.color)
+                }
+                .frame(height: row)
+                .help(Choice.resumeTooltip(choice, last: start.last) ?? "")
+                .accessibilityElement(children: .combine)
+                .accessibilityHint(Choice.resumeTooltip(choice, last: start.last) ?? "")
+                radio(Choice.optionText(.new), on: looking ? session == .new : true, off: false, theme) {
+                    session = .new
+                }
+            }
+        default:
+            sessionChoice(theme, greyed: choice.resume == .greyed)
+        }
+    }
+
+    /// A CLI's name not read yet (task 1741): a bar where it will be.
+    private func nameBar(_ theme: Look.Theme, width: CGFloat = 72) -> some View {
+        RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row) / 2, style: .continuous)
+            .fill(theme.lineFaint.color)
+            .frame(width: width, height: CGFloat(Look.Font.body) * 0.8)
+            .accessibilityLabel(Choice.lookingText)
     }
 
     /// The two sessions a start can use, one to a line, the one in use
@@ -271,15 +330,18 @@ struct ControlRoomStartSupervisor: View {
     private func cliRings(_ choice: Choice.CliChoice, _ theme: Look.Theme) -> some View {
         HStack(spacing: CGFloat(Look.Side.rowItemGap)) {
             ForEach(choice.clis, id: \.key) { one in
+                // Its name not read yet (task 1741): a bar, never the key.
                 radio(Choice.cliName(key: one.key, label: one.label) ?? one.key,
-                      on: one.key == choice.picked, off: false, theme) { cli = one.key }
+                      on: one.key == choice.picked, off: false, theme, pending: !start.clisRead) { cli = one.key }
             }
         }
     }
 
     /// One ring and its words: filled in the attention colour when on,
     /// greyed and inert when `off`.
-    private func radio(_ text: String, on: Bool, off: Bool, _ theme: Look.Theme,
+    /// `pending`: the words are a name not read yet (task 1741), drawn as
+    /// a bar where it will be.
+    private func radio(_ text: String, on: Bool, off: Bool, _ theme: Look.Theme, pending: Bool = false,
                        pick: @escaping () -> Void) -> some View {
         let mark = CGFloat(Look.Side.glyph)
         return Button(action: pick, label: {
@@ -289,8 +351,12 @@ struct ControlRoomStartSupervisor: View {
                         on ? theme.attentionText.color : (off ? theme.textTertiary.color : theme.textSecondary.color),
                         lineWidth: on ? mark / 3 : CGFloat(Look.Line.stroke))
                     .frame(width: mark, height: mark)
-                Text(text)
-                    .foregroundStyle(off ? theme.textTertiary.color : theme.text.color)
+                if pending {
+                    nameBar(theme, width: 56)
+                } else {
+                    Text(text)
+                        .foregroundStyle(off ? theme.textTertiary.color : theme.text.color)
+                }
             }
             .frame(height: CGFloat(Look.Side.quietRowHeight))
             .contentShape(Rectangle())

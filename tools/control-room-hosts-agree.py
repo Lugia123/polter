@@ -521,17 +521,40 @@ for role in list.supervisorRoles {
 // Which agent CLI a start uses and what becomes of "Go on with the last
 // session" (task 1677): every group a supervisor can be started for, in
 // every role, with nothing picked and with each of the role's CLIs.
+// And each the same while the adapters are not read yet (task 1741): the
+// last session looked for, the CLIs' names not known.
+func unreadStart(_ s: ControlRoomList.SupervisorStart) -> ControlRoomList.SupervisorStart {
+    var u = s
+    u.clisRead = false
+    if var l = u.last {
+        l.canResume = false
+        l.why = .clisUnread
+        l.byCli = l.byCli.map { .init(cli: $0.cli, can: false, why: .clisUnread) }
+        u.last = l
+    }
+    return u
+}
 for r in list.rows where r.alone == nil {
-    guard let start = r.start else { continue }
-    for role in list.supervisorRoles {
-        for picked in [nil] + role.clis.map { Optional($0.key) } {
-            let c = ControlRoomStartChoice.cliChoice(start, roles: list.supervisorRoles, role: role.key, picked: picked)
-            let says = ControlRoomStartChoice.resumeSaid(c, last: start.last)
-            print("start_cli group=\(r.id) role=\(role.key) picked=\(picked ?? "-") shown=\(c.shown ? 1 : 0) "
-                + "on=\(c.picked ?? "-") resume=\(c.resume.rawValue) why=\(c.why.rawValue) "
-                + "gone=\(c.lastGone.map(quote) ?? "-") "
-                + "says=\(says.map(quote) ?? "-") sends_cli=\(c.picked ?? "-") "
-                + "sends_session=\(ControlRoomStartChoice.sessionSent(c, picked: nil)?.rawValue ?? "-")")
+    guard let read = r.start else { continue }
+    for (tag, start) in [("start_cli", read), ("start_cli_unread", unreadStart(read))] {
+        if tag == "start_cli_unread" {
+            let parts = ControlRoomStartChoice.lastSupervisorParts(start, home: "")
+            print("start_parts group=\(r.id) parts=\(parts.map { quote($0.before) + "|" + quote($0.after) } ?? "-")")
+        }
+        for role in list.supervisorRoles {
+            for picked in [nil] + role.clis.map { Optional($0.key) } {
+                let c = ControlRoomStartChoice.cliChoice(start, roles: list.supervisorRoles, role: role.key, picked: picked)
+                let says = ControlRoomStartChoice.resumeSaid(c, last: start.last)
+                let tip = ControlRoomStartChoice.resumeTooltip(c, last: start.last)
+                print("\(tag) group=\(r.id) role=\(role.key) picked=\(picked ?? "-") shown=\(c.shown ? 1 : 0) "
+                    + "on=\(c.picked ?? "-") resume=\(c.resume.rawValue) why=\(c.why.rawValue) "
+                    + "gone=\(c.lastGone.map(quote) ?? "-") "
+                    + "says=\(says.map(quote) ?? "-") tip=\(tip.map(quote) ?? "-") sends_cli=\(c.picked ?? "-") "
+                    + "sends_session=\(ControlRoomStartChoice.sessionSent(c, picked: nil)?.rawValue ?? "-") "
+                    + "sends_new=\(ControlRoomStartChoice.sessionSent(c, picked: .new)?.rawValue ?? "-") "
+                    + "enabled=\(ControlRoomStartChoice.startEnabled(c, picked: nil) ? 1 : 0) "
+                    + "enabled_new=\(ControlRoomStartChoice.startEnabled(c, picked: .new) ? 1 : 0)")
+            }
         }
     }
 }

@@ -3029,6 +3029,15 @@ fn paint(hwnd: HWND) {
             // Under the sentence of a group with no supervisor: what
             // starting one offers.
             paint_items(mem, at, &offered.items, &mut fonts, t);
+            // While the last session is looked for, its spinner turns
+            // (task 1741).
+            if scene::moves(&offered.items) {
+                source::wants_ticks();
+            }
+            // Why it was not found, on hover (task 1741); none, and the
+            // tooltip that was there goes.
+            let tips: Vec<(RECT, String)> = offered.tip.iter().filter(|(_, text)| scene::draws(text)).map(|(r, text)| (at.rect(*r), text.clone())).collect();
+            crate::strip::set_tips(hwnd, tips);
         }
 
         drop(fonts);
@@ -3319,6 +3328,7 @@ unsafe fn part_width(dc: HDC, at: Px, part: &Part, fonts: &mut Fonts) -> i32 {
         Piece::Words { text, style } => unsafe { text_width(dc, fonts.get(style), text) },
         Piece::Glyph { size, .. } => at.len(*size),
         Piece::Held { size, .. } | Piece::Mark { size, .. } => at.len(*size),
+        Piece::Bar { width, .. } => at.len(*width),
         Piece::Badge { text, style, .. } => badge_widths(at, if text.is_empty() { None } else { Some(unsafe { text_width(dc, fonts.get(style), text) }) }).0,
     }
 }
@@ -3361,6 +3371,13 @@ unsafe fn paint_piece(dc: HDC, at: Px, piece: &Piece, r: RECT, fonts: &mut Fonts
             let side = at.len(*size);
             let top = r.top + (r.bottom - r.top - side) / 2;
             unsafe { draw_shapes(dc, r.left, top, side, &glyph::mark(*mark), *color, 1.0) };
+        }
+        // A name not read yet (task 1741): a bar where it will be.
+        Piece::Bar { color, width, height } => {
+            let (w, h) = (at.len(*width), at.len(*height));
+            let top = r.top + (r.bottom - r.top - h) / 2;
+            let bar = RECT { left: r.left, top, right: r.left + w.min(r.right - r.left), bottom: top + h };
+            unsafe { round(dc, bar, h / 2, *color, None) };
         }
         // A badge (tasks 1692, 1700): the supervisor's flag or a coloured
         // pane's dot, and the word, on the colour's ground, round at both

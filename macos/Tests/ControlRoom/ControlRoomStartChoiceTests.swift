@@ -55,13 +55,16 @@ struct ControlRoomStartChoiceTests {
         #expect(Choice.cliChoice(s, roles: roles, role: nil, picked: "other-cli").picked == "codex")
     }
 
-    /// No CLI can go on with it: hidden, with the core's reason, as before.
-    /// One CLI: no row (01c).
+    /// No CLI can go on with it: "Didn't find the last session" over a new
+    /// one (task 1741), with the core's reason on hover and not on a line of
+    /// its own. One CLI: no row (01c).
     @Test func withNothingToGoOnWithOrOneCliTheScreenIsTodays() throws {
         let (s, roles) = twoClis(byCli: [.init(cli: "claude-code", can: false, why: .cliDiffers),
                                          .init(cli: "codex", can: false, why: .sessionInUse)])
         let c = Choice.cliChoice(s, roles: roles, role: nil, picked: "claude-code")
-        #expect(c.resume == .hidden)
+        #expect(c.resume == .missing)
+        #expect(Choice.resumeSaid(c, last: s.last) == nil)
+        #expect(Choice.resumeTooltip(c, last: s.last) == Choice.resumeNote(.cliDiffers))
         let one = [ControlRoomList.SupervisorRole(key: "polter-supervisor", name: "P", clis: [.init(key: "codex", label: "Codex")])]
         #expect(!Choice.cliChoice(s, roles: one, role: nil, picked: nil).shown)
         // A core from before `resume_by_cli` has one answer, and it is the
@@ -265,5 +268,78 @@ struct ControlRoomStartChoiceTests {
         let settled = try #require(Choice.resumeNote(.sessionInUse))
         #expect(checking.hasSuffix("…"))
         #expect(!settled.hasSuffix("…"))
+    }
+
+    // MARK: Looking for it (task 1741)
+
+    private func unread(_ s: Start) -> Start {
+        var u = s
+        u.clisRead = false
+        u.last?.canResume = false
+        u.last?.why = .clisUnread
+        let byCli = (s.last?.byCli ?? []).map { Start.CliResume(cli: $0.cli, can: false, why: .clisUnread) }
+        u.last?.byCli = byCli
+        return u
+    }
+
+    /// While the adapters are read the session is being looked for: no
+    /// button until the person picks a new session, and then that is sent.
+    @Test func whileLookingTheStartWaitsUnlessANewSessionIsPicked() {
+        let (s, roles) = twoClis(byCli: [.init(cli: "claude-code", can: false, why: .cliDiffers),
+                                         .init(cli: "codex", can: true, why: .none)])
+        let u = unread(s)
+        let c = Choice.cliChoice(u, roles: roles, role: nil, picked: nil)
+        #expect(c.resume == .checking)
+        let waits = Choice.startEnabled(c, picked: nil)
+        #expect(!waits)
+        let goOnIsNotPickable = Choice.startEnabled(c, picked: .last)
+        #expect(!goOnIsNotPickable)
+        let afterNew = Choice.startEnabled(c, picked: .new)
+        #expect(afterNew)
+        #expect(Choice.sessionSent(c, picked: nil) == nil)
+        #expect(Choice.sessionSent(c, picked: .new) == .new)
+        #expect(Choice.resumeSaid(c, last: u.last) == nil)
+        #expect(Choice.resumeTooltip(c, last: u.last) == nil)
+        // Found: the two sessions, the last one on, and the button back.
+        let found = Choice.cliChoice(s, roles: roles, role: nil, picked: nil)
+        #expect(found.resume == .live)
+        #expect(Choice.startEnabled(found, picked: nil))
+    }
+
+    /// The last supervisor's CLI is not installed here (task 1744): not
+    /// found, and the hover says why.
+    @Test func notFoundBecauseItsCliIsGoneSaysSoOnHover() {
+        var (s, roles) = twoClis(last: "kimi", byCli: [.init(cli: "claude-code", can: false, why: .cliDiffers),
+                                                       .init(cli: "codex", can: false, why: .cliDiffers)])
+        s.last?.lastCliLabel = "Kimi"
+        roles[0].heldBack = [.init(key: "kimi", label: "Kimi", why: .notInstalled)]
+        let c = Choice.cliChoice(s, roles: roles, role: nil, picked: nil)
+        #expect(c.resume == .missing)
+        #expect(Choice.startEnabled(c, picked: nil))
+        #expect(Choice.sessionSent(c, picked: nil) == nil)
+        #expect(Choice.resumeTooltip(c, last: s.last) == "Kimi, which the last supervisor used, is not installed on this machine.")
+    }
+
+    /// Never a supervisor: nothing to look for, so nothing waits.
+    @Test func withNoRecordNothingIsLookedForAndNothingWaits() {
+        let (s, roles) = twoClis(byCli: [])
+        var never = unread(s)
+        never.last?.heardMs = nil
+        never.last?.why = .noRecord
+        let c = Choice.cliChoice(never, roles: roles, role: nil, picked: nil)
+        #expect(c.resume == .hidden)
+        #expect(Choice.startEnabled(c, picked: nil))
+    }
+
+    /// The CLI's name not read yet: the sentence is cut where it goes, for
+    /// a bar there and never the key.
+    @Test func aNameNotReadYetIsAPlaceInTheSentence() throws {
+        let read = start(lastCli: "claude-code", label: nil)
+        #expect(Choice.lastSupervisorParts(read) == nil)
+        let parts = try #require(Choice.lastSupervisorParts(unread(read)))
+        #expect(parts.before == "The last supervisor used ")
+        #expect(parts.after == ".")
+        let keyless = !(parts.before + parts.after).contains("claude-code")
+        #expect(keyless)
     }
 }

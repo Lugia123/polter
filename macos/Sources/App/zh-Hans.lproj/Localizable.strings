@@ -780,6 +780,8 @@
 "A new session will be started: the last supervisor's CLI never said which session it was in." = "会开一个新会话：上次那个 CLI 没有报过它在哪个会话里。";
 "A new session will be started: going on with the last one did not work the last time it was tried." = "会开一个新会话：上一次接着旧会话启动没有成功。";
 "A new session will be started: the last session was in another CLI." = "会开一个新会话：上次的会话是另一个 CLI 的。";
+"Looking for the last session…" = "正在找上次的会话…";
+"Didn't find the last session" = "没找到上次的会话";
 "%@, which the last supervisor used, is not installed on this machine." = "上次用的 %@ 不在这台机器上。";
 "Checking whether the last session can be gone on with…" = "正在确认能不能接着上次的会话…";
 "A new session will be started: this CLI cannot go on with an earlier session." = "会开一个新会话：这个 CLI 不能接着以前的会话。";

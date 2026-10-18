@@ -64,6 +64,7 @@
             "why": "no_record"
           }
         ],
+        "clis_read": true,
         "hookless": {
           "state": "none",
           "cli_label": null,
@@ -216,6 +217,7 @@
             "why": "no_record"
           }
         ],
+        "clis_read": true,
         "hookless": {
           "state": "none",
           "cli_label": null,
@@ -347,6 +349,7 @@
             "why": "no_record"
           }
         ],
+        "clis_read": true,
         "hookless": {
           "state": "none",
           "cli_label": null,
@@ -493,6 +496,7 @@
             "why": "cli_differs"
           }
         ],
+        "clis_read": true,
         "hookless": {
           "state": "none",
           "cli_label": null,
@@ -622,6 +626,7 @@
             "why": "cli_differs"
           }
         ],
+        "clis_read": true,
         "hookless": {
           "state": "known",
           "cli_label": "Claude Code",
@@ -777,6 +782,7 @@
             "why": "no_record"
           }
         ],
+        "clis_read": true,
         "hookless": {
           "state": "none",
           "cli_label": null,
@@ -906,6 +912,7 @@
             "why": "no_record"
           }
         ],
+        "clis_read": true,
         "hookless": {
           "state": "unknown",
           "cli_label": null,
@@ -1056,6 +1063,7 @@
             "why": "none"
           }
         ],
+        "clis_read": true,
         "hookless": {
           "state": "none",
           "cli_label": null,

@@ -154,7 +154,10 @@ unsafe fn paint_marks(dc: HDC, m: &Marked, left: i32, sh: i32, scale: f64, theme
 /// `pane-color-interface.md` §4 item 5): one tool per cluster, by its
 /// rectangle, saying which pane each dot is. Set again only when what they
 /// say or where they are changed since the last paint.
-fn set_tips(frame: HWND, tips: Vec<(RECT, String)>) {
+///
+/// Kept per window, so the control room uses it too (task 1741: why the
+/// last session was not found, on hover).
+pub(crate) fn set_tips(frame: HWND, tips: Vec<(RECT, String)>) {
     thread_local! {
         static TIPS: RefCell<Vec<(isize, isize, Vec<(RECT, String)>)>> = const { RefCell::new(Vec::new()) };
     }

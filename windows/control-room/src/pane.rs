@@ -974,7 +974,7 @@ mod tests {
                 .find_map(|i| match i {
                     Item::Line { parts, .. } => parts.iter().find_map(|p| match &p.piece {
                         Piece::Words { text, style } if text == "出错" => Some(style.color),
-                        Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } => None,
+                        Piece::Words { .. } | Piece::Glyph { .. } | Piece::Held { .. } | Piece::Mark { .. } | Piece::Badge { .. } | Piece::Bar { .. } => None,
                     }),
                     Item::Fill { .. } | Item::Round { .. } | Item::Text { .. } | Item::Block { .. } | Item::Clip { .. } => None,
                 })

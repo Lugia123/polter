@@ -253,6 +253,10 @@ struct ControlRoomList: Equatable {
         /// 1746). Polter never answers it: the right-hand side says so and
         /// offers to go to that tab.
         var asking: Bool = false
+        /// The agent CLIs' adapters have been read (task 1741): a CLI's
+        /// name is known. Until then a host draws a place for it rather
+        /// than a key. True from a core before it said.
+        var clisRead: Bool = true
         /// The role it is started in unless the person picks another.
         var role: String?
         /// Where it is started unless the person picks elsewhere.
@@ -756,6 +760,8 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var terminal: String?
         /// Nil from a core before it said (task 1746).
         var asking: Bool?
+        /// Nil from a core before it said (task 1741).
+        var clis_read: Bool?
         var role: String?
         var cwd: String
         /// The three the core added together; absent together in a
@@ -1173,6 +1179,7 @@ extension ControlRoomList {
                 start: group.supervisor.map {
                     SupervisorStart(state: $0.state, canStart: $0.can_start, failed: $0.failed,
                                     terminal: $0.terminal, asking: $0.asking ?? false,
+                                    clisRead: $0.clis_read ?? true,
                                     role: $0.role, cwd: $0.cwd, last: $0.startLast)
                 },
                 fix: group.fix ?? .none,
