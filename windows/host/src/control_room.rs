@@ -3451,14 +3451,20 @@ pub(crate) unsafe fn round(dc: HDC, r: RECT, radius: i32, color: Rgba, edge: Opt
     let d = radius * 2 * SS;
     unsafe {
         if let Some(edge) = edge {
-            // The edge first, as the whole shape; the fill over it, one
-            // device pixel in.
-            blend(dc, r.left, r.top, w, h, edge, 1.0, &|m| {
-                let _ = RoundRect(m, 0, 0, w * SS + 1, h * SS + 1, d, d);
-            });
+            // The fill, one device pixel in; the edge, a ring around it.
+            // **Not the edge as the whole shape with the fill over it**: a
+            // fill that is not opaque -- an old number's allowance bar is
+            // `line`, white at 15% -- let the edge through, and the outline
+            // came out a solid grey bar (0x1b95 on 59dcb1462, #1755).
             let inner = ((radius - 1).max(0)) * 2 * SS;
             blend(dc, r.left, r.top, w, h, color, 1.0, &|m| {
                 let _ = RoundRect(m, SS, SS, (w - 1) * SS + 1, (h - 1) * SS + 1, inner, inner);
+            });
+            blend(dc, r.left, r.top, w, h, edge, 1.0, &|m| {
+                let _ = RoundRect(m, 0, 0, w * SS + 1, h * SS + 1, d, d);
+                let old = SelectObject(m, GetStockObject(BLACK_BRUSH));
+                let _ = RoundRect(m, SS, SS, (w - 1) * SS + 1, (h - 1) * SS + 1, inner, inner);
+                SelectObject(m, old);
             });
         } else {
             blend(dc, r.left, r.top, w, h, color, 1.0, &|m| {
@@ -3629,4 +3635,55 @@ pub unsafe fn draw_tab_glyph(dc: HDC, frame: HWND, tab: u64, showing: Option<u64
         source::wants_ticks();
     }
     left - (look::window_tab::COLUMN_GAP * scale).round() as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `round` leaves on a ground of `ground`, read back pixel by
+    /// pixel: the host's own drawing, through GDI, not the scene's items.
+    fn painted(w: i32, h: i32, radius: i32, ground: (u8, u8, u8), color: Rgba, edge: Option<Rgba>) -> Vec<(u8, u8, u8)> {
+        unsafe {
+            let (bmp, bits) = dib(w, h).expect("a DIB");
+            let px = std::slice::from_raw_parts_mut(bits, (w * h) as usize);
+            px.fill(0xff00_0000 | (ground.0 as u32) << 16 | (ground.1 as u32) << 8 | ground.2 as u32);
+            let dc = CreateCompatibleDC(None);
+            let old = SelectObject(dc, bmp.into());
+            round(dc, RECT { left: 0, top: 0, right: w, bottom: h }, radius, color, edge);
+            let _ = GdiFlush();
+            let out = px.iter().map(|p| ((p >> 16) as u8, (p >> 8) as u8, *p as u8)).collect();
+            SelectObject(dc, old);
+            let _ = DeleteDC(dc);
+            let _ = DeleteObject(bmp.into());
+            out
+        }
+    }
+
+    fn near(a: (u8, u8, u8), b: (u8, u8, u8)) -> bool {
+        [(a.0, b.0), (a.1, b.1), (a.2, b.2)].iter().all(|&(x, y)| (x as i32 - y as i32).abs() <= 3)
+    }
+
+    /// An old number's allowance bar (#1755): the dark theme's track
+    /// (`404244`), a fill of white at 15% and a `95999C` edge. Inside the
+    /// edge the track shows through the fill; it is not the edge's grey.
+    /// 0x1b95 read `A5A8AB` across the middle rows on 59dcb1462 -- the fill
+    /// laid over the edge.
+    #[test]
+    fn an_outline_with_a_clear_fill_shows_the_ground_inside_its_edge() {
+        let (w, h) = (60, 6);
+        let ground = (0x40, 0x42, 0x44);
+        let edge = Rgba { r: 0x95, g: 0x99, b: 0x9c, a: 1.0 };
+        let fill = Rgba { r: 255, g: 255, b: 255, a: 0.15 };
+        let px = painted(w, h, 3, ground, fill, Some(edge));
+        let at = |x: i32, y: i32| px[(y * w + x) as usize];
+        let mix = |g: u8| (g as f64 * 0.85 + 255.0 * 0.15).round() as u8;
+        let inside = (mix(ground.0), mix(ground.1), mix(ground.2));
+        for y in 1..h - 1 {
+            assert!(near(at(w / 2, y), inside), "row {y}: {:02X?}, want {:02X?} (the fill over the ground)", at(w / 2, y), inside);
+        }
+        // The edge, top and bottom.
+        assert!(near(at(w / 2, 0), (0x95, 0x99, 0x9c)), "top {:02X?}", at(w / 2, 0));
+        assert!(near(at(w / 2, h - 1), (0x95, 0x99, 0x9c)), "bottom {:02X?}", at(w / 2, h - 1));
+    }
 }
