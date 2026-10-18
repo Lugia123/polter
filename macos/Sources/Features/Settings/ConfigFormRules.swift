@@ -102,6 +102,9 @@ struct ConfigForm: Decodable, Equatable {
         /// with `\n`.
         var value: String
         var doc: String?
+        /// The Chinese for the first paragraph of `doc` (task 1751); nil when
+        /// there is none or the English has changed since it was made.
+        var docZh: String?
         /// The form's own name and sentence for it, English msgids (#973);
         /// nil for a key that is only in All Options.
         var label: String?
@@ -114,7 +117,7 @@ struct ConfigForm: Decodable, Equatable {
         var id: String { key }
 
         private enum CodingKeys: String, CodingKey {
-            case key, group, control, choices, choiceLabels = "choice_labels", min, max, `default`, value, doc, label, summary, source, readonly
+            case key, group, control, choices, choiceLabels = "choice_labels", min, max, `default`, value, doc, docZh = "doc_zh", label, summary, source, readonly
             case choiceTemplate = "choice_template", on, off, aliases
         }
 
@@ -136,6 +139,7 @@ struct ConfigForm: Decodable, Equatable {
             `default` = try c.decode(String.self, forKey: .default)
             value = try c.decode(String.self, forKey: .value)
             doc = try c.decodeIfPresent(String.self, forKey: .doc)
+            docZh = try c.decodeIfPresent(String.self, forKey: .docZh)
             label = try c.decodeIfPresent(String.self, forKey: .label)
             summary = try c.decodeIfPresent(String.self, forKey: .summary)
             source = try c.decode(Source.self, forKey: .source)
@@ -248,9 +252,16 @@ enum ConfigFormRules {
     }
 
     /// The sentence under the control: the form's own summary, else the
-    /// first paragraph of Ghostty's help. Nil when there is neither.
+    /// first paragraph of Ghostty's help -- in Chinese when the interface
+    /// is, and the core has it (task 1751). Nil when there is neither.
     static func sentence(_ item: ConfigForm.Item, bundle: Bundle = .main) -> String? {
         if let summary = item.summary { return localized(summary, bundle: bundle) }
+        if let zh = item.docZh, speaksChinese(bundle) { return zh }
+        return firstParagraph(item)
+    }
+
+    /// Ghostty's own first paragraph, in English, on one line.
+    private static func firstParagraph(_ item: ConfigForm.Item) -> String? {
         guard let doc = item.doc else { return nil }
         let first = doc.components(separatedBy: "\n\n").first?
             .replacingOccurrences(of: "\n", with: " ")
@@ -258,11 +269,22 @@ enum ConfigFormRules {
         return first.isEmpty ? nil : first
     }
 
+    /// Whether the words this bundle shows are Chinese (the core's
+    /// translation is Simplified). The app's bundle says so through its
+    /// preferred localization; a bundle that is itself a `zh-Hans.lproj`
+    /// folder -- how the tests ask for Chinese -- has none, so its name.
+    static func speaksChinese(_ bundle: Bundle) -> Bool {
+        if bundle.bundleURL.pathExtension == "lproj" { return bundle.bundleURL.lastPathComponent.hasPrefix("zh") }
+        return bundle.preferredLocalizations.first?.hasPrefix("zh") ?? false
+    }
+
     /// Whether "More…" has anything to show: Ghostty's help text, unless
     /// the sentence already is the whole of it.
     static func hasMore(_ item: ConfigForm.Item, bundle: Bundle = .main) -> Bool {
         guard let doc = item.doc?.trimmingCharacters(in: .whitespacesAndNewlines), !doc.isEmpty else { return false }
-        return item.summary != nil || sentence(item, bundle: bundle) != doc.replacingOccurrences(of: "\n", with: " ")
+        // The English paragraph, not the Chinese one: a doc of one paragraph
+        // has nothing more to show in either language.
+        return item.summary != nil || firstParagraph(item) != doc.replacingOccurrences(of: "\n", with: " ")
     }
 
     /// What a value is called in the list: its name from the table,

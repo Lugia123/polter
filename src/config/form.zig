@@ -30,6 +30,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const Config = @import("Config.zig");
 const Key = @import("key.zig").Key;
 const cli = @import("../cli.zig");
+const doc_zh = @import("doc_zh.zig");
 const edit = @import("edit.zig");
 const file_load = @import("file_load.zig");
 const formatter = @import("formatter.zig");
@@ -891,6 +892,7 @@ fn writeSource(w: *std.Io.Writer, scan: *const Scan, t: ?Scan.Tally) !void {
 ///                 "choice_labels": [s|null]|null, "choice_template": s|null,
 ///                 "on": s|null, "off": s|null, "aliases": [s],
 ///                 "min"|null, "max"|null, "default", "value", "doc"|null,
+///                 "doc_zh"|null,
 ///                 "source": {"kind": "default"|"main"|"file"|"cli", ...},
 ///                 "readonly": null|"repeatable"|"multiple"|"cli"|"file"}]}
 ///
@@ -1090,6 +1092,12 @@ noinline fn writeItem(
     else
         try w.writeAll("null");
 
+    // Both hosts ask for this; the core has no interface language of its own
+    // (the macOS app asks its bundle, Windows its catalogue), so it always
+    // sends the Chinese and the host picks.
+    try w.writeAll(",\"doc_zh\":");
+    if (docZh(name)) |zh| try w.print("{f}", .{std.json.fmt(zh, .{})}) else try w.writeAll("null");
+
     const r = resolve(scan, key);
     try w.writeAll(",\"source\":");
     try writeSource(w, scan, r.tally);
@@ -1118,6 +1126,45 @@ fn writeValue(comptime T: type, comptime name: []const u8, alloc: Allocator, w: 
         try joined.appendSlice(alloc, v);
     }
     try w.print("{f}", .{std.json.fmt(joined.items, .{})});
+}
+
+/// The Chinese for the first paragraph of `name`'s help, or null when there is
+/// none or the English it was made from has since been edited (task 1751): a
+/// stale translation is worse than the English, so it is not offered.
+pub fn docZh(comptime name: []const u8) ?[]const u8 {
+    @setEvalBranchQuota(2_000_000);
+    if (!@hasDecl(help_strings.Config, name)) return null;
+    inline for (doc_zh.entries) |e| {
+        if (comptime std.mem.eql(u8, @tagName(e.key), name)) {
+            if (comptime !docMatches(@field(help_strings.Config, name), e.en)) return null;
+            return e.zh;
+        }
+    }
+    return null;
+}
+
+/// Whether `en` is `doc`'s first paragraph, its lines trimmed and joined on
+/// single spaces -- what both hosts show under the control.
+fn docMatches(doc: []const u8, en: []const u8) bool {
+    @setEvalBranchQuota(1_000_000);
+    var rest = en;
+    var started = false;
+    var lines = std.mem.splitScalar(u8, doc, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) {
+            if (!started) continue;
+            break;
+        }
+        if (started) {
+            if (rest.len == 0 or rest[0] != ' ') return false;
+            rest = rest[1..];
+        }
+        started = true;
+        if (!std.mem.startsWith(u8, rest, line)) return false;
+        rest = rest[line.len..];
+    }
+    return started and rest.len == 0;
 }
 
 /// The read, end to end, for the running process: load the config the way
@@ -2711,4 +2758,56 @@ test "config form (1743): without a file of its own on the command line, the for
     explicit.explicit = true;
     const scan2 = try gather(fx.arena.allocator(), testing.io, explicit);
     try testing.expectEqual(@as(?[]const u8, null), scan2.instead);
+}
+
+test "doc_zh (1751): every documented key has a translation of the English as it is now" {
+    @setEvalBranchQuota(2_000_000);
+    var stale: usize = 0;
+    inline for (@typeInfo(help_strings.Config).@"struct".decls) |decl| {
+        var found = false;
+        for (doc_zh.entries) |e| {
+            if (!std.mem.eql(u8, @tagName(e.key), decl.name)) continue;
+            found = true;
+            if (!docMatches(@field(help_strings.Config, decl.name), e.en)) {
+                std.debug.print("doc_zh: the help of '{s}' was edited; its translation was made from older English\n", .{decl.name});
+                stale += 1;
+            }
+        }
+        if (!found) {
+            std.debug.print("doc_zh: no translation for '{s}'\n", .{decl.name});
+            stale += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), stale);
+}
+
+test "doc_zh (1751): no entry for a key that is gone, and what is in backticks survives translation" {
+    var bad: usize = 0;
+    for (doc_zh.entries) |e| {
+        var known = false;
+        inline for (@typeInfo(help_strings.Config).@"struct".decls) |decl| {
+            if (std.mem.eql(u8, @tagName(e.key), decl.name)) known = true;
+        }
+        if (!known) {
+            std.debug.print("doc_zh: '{s}' is not a documented key\n", .{@tagName(e.key)});
+            bad += 1;
+        }
+        if (e.zh.len == 0 or std.mem.eql(u8, e.zh, e.en)) {
+            std.debug.print("doc_zh: '{s}' is not translated\n", .{@tagName(e.key)});
+            bad += 1;
+        }
+        // `font-thicken`, `PATH`, `no-` ...: names and values stay as written.
+        var spans = std.mem.splitScalar(u8, e.en, '`');
+        var inside = false;
+        while (spans.next()) |s| : (inside = !inside) {
+            if (!inside or s.len == 0) continue;
+            var needle: [128]u8 = undefined;
+            const n = std.fmt.bufPrint(&needle, "`{s}`", .{s}) catch continue;
+            if (std.mem.indexOf(u8, e.zh, n) == null) {
+                std.debug.print("doc_zh: '{s}' lost `{s}`\n", .{ @tagName(e.key), s });
+                bad += 1;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), bad);
 }

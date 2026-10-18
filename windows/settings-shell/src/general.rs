@@ -218,6 +218,10 @@ pub struct Item {
     pub default: String,
     pub value: String,
     pub doc: Option<String>,
+    /// The core's Chinese for the first paragraph of `doc` (task 1751). The
+    /// host fills it only when the interface is Chinese, so its presence is
+    /// the whole decision: `None` shows Ghostty's English.
+    pub doc_zh: Option<String>,
     /// The form's own name and sentence for it, English msgids the host
     /// translates (#973); `None` for a key only in All Options.
     pub label: Option<String>,
@@ -482,7 +486,10 @@ pub fn row_help(it: &Item, translate: impl Fn(&str) -> String) -> String {
     match (&it.label, &it.summary) {
         (Some(_), Some(summary)) => format!("{}  {}", it.key, translate(summary)),
         (Some(_), None) => it.key.clone(),
-        _ => it.doc.as_deref().map(doc_summary).unwrap_or_default(),
+        _ => match &it.doc_zh {
+            Some(zh) => zh.clone(),
+            None => it.doc.as_deref().map(doc_summary).unwrap_or_default(),
+        },
     }
 }
 
@@ -1021,6 +1028,7 @@ mod tests {
             default: default.into(),
             value: value.into(),
             doc: None,
+            doc_zh: None,
             label: None,
             summary: None,
             source: Source::Default,
@@ -1438,6 +1446,26 @@ mod tests {
         assert_eq!(error_after(FormRead::AfterOwnWrite, red.clone()), red);
         assert_eq!(error_after(FormRead::Reread, red), None);
         assert_eq!(error_after(FormRead::AfterOwnWrite, None), None);
+    }
+
+    /// Task 1751: an unnamed key's line is the core's Chinese when the host
+    /// handed it over, else Ghostty's English; "More…" does not depend on it.
+    #[test]
+    fn an_unnamed_key_shows_its_chinese_when_it_has_one() {
+        let zh = |s: &str| format!("<{s}>");
+        let mut it = item("font-thicken", None, Control::Toggle, "false", "false");
+        it.label = None;
+        it.doc = Some("Draw fonts thicker.\n\nMore.".into());
+        assert_eq!(row_help(&it, zh), "Draw fonts thicker.");
+        it.doc_zh = Some("用更粗的笔画绘制字体。".into());
+        assert_eq!(row_help(&it, zh), "用更粗的笔画绘制字体。");
+        assert!(has_more(&it));
+        it.doc = Some("Draw fonts thicker.".into());
+        assert!(!has_more(&it), "a one-paragraph doc has nothing more, in either language");
+        // A key the form names keeps its own sentence.
+        it.label = Some("Thicker".into());
+        it.summary = Some("S".into());
+        assert_eq!(row_help(&it, zh), "font-thicken  <S>");
     }
 
     #[test]

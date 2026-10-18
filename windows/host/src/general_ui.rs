@@ -270,7 +270,11 @@ fn read_form() -> Result<Form, String> {
         return Err("NoApp".into());
     }
     let text = ask_json(|b, c| unsafe { (api.app_config_form)(app, b, c) }).ok_or("the core gave no answer")?;
-    parse_form(&text, shortcut_text).ok_or_else(|| "the core's answer would not parse".to_string())
+    // The core always sends the Chinese for a key's first help paragraph
+    // (`doc_zh`, task 1751) and has no language of its own to choose by; the
+    // interface language is the host's to ask.
+    let chinese = crate::plugins::interface_languages().first().is_some_and(|l| l.starts_with("zh"));
+    parse_form(&text, shortcut_text, chinese).ok_or_else(|| "the core's answer would not parse".to_string())
 }
 
 /// The keys bound to `action` now, written as the menus write them, or
@@ -305,6 +309,7 @@ fn jump_item(name: &str, summary: Option<&str>) -> Item {
         default: String::new(),
         value: String::new(),
         doc: None,
+        doc_zh: None,
         label: Some(name.to_string()),
         summary: summary.map(str::to_string),
         source: Source::Default,
@@ -325,7 +330,7 @@ fn source_of(v: &serde_json::Value) -> Source {
 
 /// `writeJson`'s document (`src/config/form.zig`). `binding` says what is
 /// bound to an action now, as the row shows it.
-fn parse_form(text: &str, binding: impl Fn(&str) -> String) -> Option<Form> {
+fn parse_form(text: &str, binding: impl Fn(&str) -> String, chinese: bool) -> Option<Form> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let strs = |x: Option<&serde_json::Value>| -> Vec<String> {
         x.and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default()
@@ -362,6 +367,7 @@ fn parse_form(text: &str, binding: impl Fn(&str) -> String) -> Option<Form> {
                 default: st("default").unwrap_or_default(),
                 value: st("value").unwrap_or_default(),
                 doc: st("doc"),
+                doc_zh: if chinese { st("doc_zh") } else { None },
                 label: st("label"),
                 summary: st("summary"),
                 source: it.get("source").map(source_of).unwrap_or(Source::Default),
@@ -395,6 +401,7 @@ fn parse_form(text: &str, binding: impl Fn(&str) -> String) -> Option<Form> {
                 default: bound.clone(),
                 value: bound,
                 doc: None,
+                doc_zh: None,
                 label: st("label"),
                 summary: st("summary"),
                 source: Source::Default,
