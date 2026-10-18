@@ -43,9 +43,19 @@ pub struct Member {
     /// The word after the name that says what it is; none for an ordinary
     /// terminal. English; a host translates it.
     pub role: Option<&'static str>,
+    /// The colour set on it (task 1700), none being `None`: its tab carries
+    /// a dot of it before the name, or -- the supervisor's -- the flag in it.
+    pub color: Option<crate::pane_color::Color>,
 }
 
 impl Member {
+    /// What its tab draws before the name: the supervisor's flag in its
+    /// shown colour, another coloured member's dot, or nothing.
+    pub fn mark(&self) -> Option<(crate::glyph::Mark, crate::pane_color::Color)> {
+        let shown = crate::pane_color::shown(self.color, self.wears)?;
+        Some((if self.marked() { crate::glyph::Mark::Supervisor } else { crate::glyph::Mark::Dot }, shown))
+    }
+
     /// Its tab carries the supervisor's flag before the name (task 1692):
     /// wherever it is in the stack, in front or behind -- behind, the frame
     /// is the one in front's and says nothing of it. macOS's `marked`.
@@ -78,14 +88,19 @@ impl PaneStack {
 /// member's name, glyph and frame are the core's words for that terminal
 /// ([`pane::drawn`], asked as for a pane that is not alone: in a stack every
 /// member has a name to show). `pulses` is the core's order of who is
-/// waiting. macOS's `PaneStackRules.stack`.
-pub fn stack(members: &[(Option<&str>, &str)], shown: usize, terminals: Option<&[Terminal]>, pulses: &[&str]) -> PaneStack {
+/// waiting. `colors` is the colour set on each member, by position; one
+/// past its end is none. macOS's `PaneStackRules.stack`.
+pub fn stack(members: &[(Option<&str>, &str)], shown: usize, terminals: Option<&[Terminal]>, pulses: &[&str], colors: &[Option<crate::pane_color::Color>]) -> PaneStack {
     let place = Place { enabled: true, quick_terminal: false, alone: false };
     let drawn: Vec<Member> = members
         .iter()
-        .map(|(terminal, own)| match pane::drawn(*terminal, own, place, terminals) {
-            Some(d) => Member { name: d.title.name, shown: d.title.shown, wears: d.wears, role: pane::role_word(d.wears) },
-            None => Member { name: own.to_string(), shown: BarShown::None, wears: Wears::Plain, role: None },
+        .enumerate()
+        .map(|(i, (terminal, own))| {
+            let color = colors.get(i).copied().flatten();
+            match pane::drawn(*terminal, own, place, terminals, color) {
+                Some(d) => Member { name: d.title.name, shown: d.title.shown, wears: d.wears, role: pane::role_word(d.wears), color },
+                None => Member { name: own.to_string(), shown: BarShown::None, wears: Wears::Plain, role: None, color },
+            }
         })
         .collect();
     let urgent = pulses.iter().filter_map(|w| members.iter().position(|(t, _)| *t == Some(*w))).collect();
@@ -480,13 +495,11 @@ pub fn build(g: &Geometry, stack: &PaneStack, wears: Wears, title: &Title, view:
         let mut parts = Vec::new();
         // The supervisor's flag, in its own colour and on no ground of its
         // own, so that it is not read as the tab in front (task 1692, the
-        // design's `supervisor-pane-v1`, situation 1).
-        if member.marked() {
-            parts.push(Part {
-                piece: Piece::Mark { mark: crate::glyph::Mark::Supervisor, color: theme.supervisor_mark, size: side::GLYPH },
-                side: Side::Lead,
-                gap: 0.0,
-            });
+        // design's `supervisor-pane-v1`, situation 1); a coloured member's
+        // dot the same way (task 1700).
+        let mark = member.mark();
+        if let Some((mark, c)) = mark {
+            parts.push(Part { piece: Piece::Mark { mark, color: c.ink(theme), size: side::GLYPH }, side: Side::Lead, gap: 0.0 });
         }
         if scene::draws(&member.name) {
             let weight = if tab.current { font::WEIGHT_EMPHASIS } else { font::WEIGHT_BODY };
@@ -494,7 +507,7 @@ pub fn build(g: &Geometry, stack: &PaneStack, wears: Wears, title: &Title, view:
             parts.push(Part {
                 piece: Piece::Words { text: member.name.clone(), style: Style { size: font::BODY, weight, face: Face::Mono, color: ink } },
                 side: Side::Rest,
-                gap: if member.marked() { t::GAP } else { 0.0 },
+                gap: if mark.is_some() { t::GAP } else { 0.0 },
             });
         }
         if let Some(role) = member.role {
@@ -585,26 +598,26 @@ mod tests {
     #[test]
     fn every_member_says_what_its_title_would_and_the_frame_follows_the_one_in_front() {
         let all = terminals();
-        let s = stack(&[(Some(SHELL), "x"), (Some(WORKER), "y"), (None, "own")], 1, Some(&all), &[]);
-        assert_eq!(s.members[0], Member { name: "zsh".into(), shown: BarShown::None, wears: Wears::Plain, role: None });
+        let s = stack(&[(Some(SHELL), "x"), (Some(WORKER), "y"), (None, "own")], 1, Some(&all), &[], &[]);
+        assert_eq!(s.members[0], Member { name: "zsh".into(), shown: BarShown::None, wears: Wears::Plain, role: None, color: None });
         assert_eq!(s.members[1].name, "web-app worker");
         assert_eq!(s.members[1].shown, BarShown::NeedsYou);
         assert_eq!(s.members[1].role, Some(pane::msg::WORKER));
         // One the core has not listed: an ordinary terminal under its own name.
-        assert_eq!(s.members[2], Member { name: "own".into(), shown: BarShown::None, wears: Wears::Plain, role: None });
+        assert_eq!(s.members[2], Member { name: "own".into(), shown: BarShown::None, wears: Wears::Plain, role: None, color: None });
         assert_eq!(wears(&s), Wears::Worker);
-        let front = stack(&[(Some(SUPERVISOR), ""), (Some(SHELL), "")], 0, Some(&all), &[]);
+        let front = stack(&[(Some(SUPERVISOR), ""), (Some(SHELL), "")], 0, Some(&all), &[], &[]);
         assert_eq!(wears(&front), Wears::Supervisor);
         // An ordinary terminal's stack is still framed.
-        assert_eq!(wears(&stack(&[(Some(SHELL), ""), (None, "b")], 1, Some(&all), &[])), Wears::Plain);
+        assert_eq!(wears(&stack(&[(Some(SHELL), ""), (None, "b")], 1, Some(&all), &[], &[])), Wears::Plain);
     }
 
     #[test]
     fn who_is_waiting_is_the_cores_order_kept_to_this_stack() {
-        let s = stack(&[(Some("a"), ""), (Some("b"), ""), (Some("c"), "")], 0, None, &["z", "c", "a"]);
+        let s = stack(&[(Some("a"), ""), (Some("b"), ""), (Some("c"), "")], 0, None, &["z", "c", "a"], &[]);
         assert_eq!(s.urgent, [2, 0]);
         // A current out of range is the first.
-        assert_eq!(stack(&[(None, "a"), (None, "b")], 9, None, &[]).current, 0);
+        assert_eq!(stack(&[(None, "a"), (None, "b")], 9, None, &[], &[]).current, 0);
     }
 
     // ---- rules (PolterPaneTabRulesTests)
@@ -766,7 +779,7 @@ mod tests {
 
     fn named(names: &[&str]) -> PaneStack {
         PaneStack {
-            members: names.iter().map(|n| Member { name: n.to_string(), shown: BarShown::None, wears: Wears::Worker, role: None }).collect(),
+            members: names.iter().map(|n| Member { name: n.to_string(), shown: BarShown::None, wears: Wears::Worker, role: None, color: None }).collect(),
             current: 1,
             urgent: Vec::new(),
         }
@@ -826,7 +839,7 @@ mod tests {
                 assert_eq!(s.members.iter().map(Member::marked).collect::<Vec<_>>(), [false, true, false]);
                 let geo = g(&[160.0; 3], current, 600.0, 0.0);
                 let d = build(&geo, &s, wears(&s), &status_title(&s, ""), &view(theme, None), &|x| x.to_string());
-                assert_eq!(flags(&d), [(1, theme.supervisor_mark)], "dark={dark} current={current}");
+                assert_eq!(flags(&d), [(1, theme.pane_purple)], "dark={dark} current={current}");
             }
             let s = named(&["frontend", "api", "e2e"]);
             let d = build(&g(&[160.0; 3], 1, 600.0, 0.0), &s, Wears::Worker, &status_title(&s, ""), &view(theme, None), &|x| x.to_string());
@@ -966,5 +979,29 @@ mod tests {
         assert!(!d.over.iter().chain(&d.row).any(|i| matches!(i, Item::Round { color, rect, .. } if *color == theme.worker_band && rect.w > 2.0 * t::REVERSE_ARC_RADIUS)));
         let w = build(&geo, &s, Wears::Worker, &status_title(&s, ""), &view(theme, None), &|x| x.to_string());
         assert!(w.under.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod colour_tests {
+    use super::*;
+    use crate::glyph::Mark;
+    use crate::pane_color::Color;
+
+    fn m(wears: Wears, color: Option<Color>) -> Member {
+        Member { name: "n".into(), shown: BarShown::None, wears, role: None, color }
+    }
+
+    /// A stack's tab carries the supervisor's flag in its shown colour and a
+    /// coloured member's dot; nothing for a member without a colour.
+    #[test]
+    fn a_member_s_tab_carries_its_flag_or_its_dot_in_its_shown_colour() {
+        assert_eq!(m(Wears::Supervisor, None).mark(), Some((Mark::Supervisor, Color::Purple)));
+        assert_eq!(m(Wears::Supervisor, Some(Color::Red)).mark(), Some((Mark::Supervisor, Color::Red)));
+        assert_eq!(m(Wears::Worker, Some(Color::Teal)).mark(), Some((Mark::Dot, Color::Teal)));
+        assert_eq!(m(Wears::Plain, None).mark(), None);
+        // Given by position, one past the end being none.
+        let s = stack(&[(None, "a"), (None, "b")], 0, None, &[], &[Some(Color::Green)]);
+        assert_eq!(s.members.iter().map(|x| x.color).collect::<Vec<_>>(), [Some(Color::Green), None]);
     }
 }

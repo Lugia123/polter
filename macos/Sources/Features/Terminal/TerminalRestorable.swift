@@ -70,9 +70,6 @@ final class TerminalRestorableState: TerminalRestorable {
     var effectiveFullscreenMode: FullscreenMode? {
         internalState.effectiveFullscreenMode
     }
-    var tabColor: TerminalTabColor? {
-        internalState.tabColor
-    }
     var titleOverride: String? {
         internalState.titleOverride
     }
@@ -164,11 +161,6 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
         guard let window = c.window else {
             completionHandler(nil, TerminalRestoreError.windowDidNotLoad)
             return
-        }
-
-        // Restore our tab color and avoid unnecessary `invalidateRestorableState` calls
-        if let tabColor = state.tabColor {
-            (window as? TerminalWindow)?.tabColor = tabColor
         }
 
         // Restore the tab title override

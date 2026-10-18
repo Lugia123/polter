@@ -841,6 +841,8 @@ pub const Application = extern struct {
             // this is picked up. `terminal_list` answers per surface in
             // the meantime.
             .poltergeist_mark,
+            // The pane half of the mark (task 1699), for the same reason.
+            .poltergeist_pane,
 
             // Closing a tab or window for the tool surface without the
             // dialog, and saying which happened. Unimplemented here rather

@@ -337,7 +337,13 @@ Reach is decided by the terminal you point at, not by your relation to it.
 | your own id | `SelfTarget` for the few that come back to you | — |
 
 `Shielded` is the user putting a terminal out of reach; nothing here lifts it,
-so ask the person. `NotPermitted` is different again: the tool is not yours to
+so ask the person. `workers: "refused"` is not on this table on purpose: it
+takes nothing out of reach, it only keeps agents from being started there.
+
+`color` in `terminal_list` is the colour the user gave the pane, as it is
+shown (a supervisor given none is `purple`). It is the user's own mark and
+there is no tool to change it; use it to find the pane they mean when they
+say "the orange one". `NotPermitted` is different again: the tool is not yours to
 call at all.
 
 There can be several supervisors, and **you may reach another supervisor's
@@ -735,7 +741,13 @@ like one that went right from inside a tool reply. What to expect today:
   (`terminal_open` never does this: it is asked for a terminal, not a role.)
   When a pane of yours was there and not free, the reply of the pane that
   was opened instead says which and why: `passed_over: {id, why}`, `why`
-  one of `agent`, `not_at_prompt`, `draft`, `other_directory`.
+  one of `shielded`, `workers_refused`, `agent`, `not_at_prompt`, `draft`,
+  `other_directory`.
+- **A terminal marked `workers: "refused"` in `terminal_list` is one the user
+  keeps for their own commands** — a dev server, a shell they type in. Read it
+  and send to it as you would any other, but do not start an agent in it:
+  `role_launch` refuses `in` and `beside` naming it with `WorkersRefused`, and
+  `auto` never reuses it. Only the user sets or lifts it, from the menu.
 - Workers 1–3: beside you, top to bottom, with you on the left — the first
   splits your own pane to the right, the next two go under the one before.
   The person's own panes in that tab stay as they were and are not counted.

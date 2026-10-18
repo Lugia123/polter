@@ -17,8 +17,11 @@
 //! | [`slide`] | the selection chip's move from one place to the next, a frame at a time, and when it is over |
 //! | [`chrome`] | light or dark for a terminal window, from its terminal's background; the strip's ground |
 //! | [`tabstrip`] | the window tab strip's track and the chip on the selected tab, in whole pixels |
+//! | [`swatch`] | the two rows of colour dots in a pane's menu: where each dot is, which one a click or a key means |
+//! | [`tabmarks`] | the flag and the dots a window tab carries for its coloured panes, in whole pixels |
 //! | [`scene`] | everything the panel draws, as a list of rectangles, words and glyphs for a host to paint |
 //! | [`pane`] | which frame a pane of a split terminal tab wears, where it and the terminal in it go, and what it draws |
+//! | [`pane_color`] | the colour a person gives a pane: its value in the core's enum, its name, its three looks |
 //! | [`glyph`] | the four status glyphs as shapes on the design's artboard |
 //! | [`json`] | just enough JSON for the above |
 //!
@@ -53,6 +56,7 @@ pub mod list;
 pub mod lone;
 pub mod look;
 pub mod pane;
+pub mod pane_color;
 pub mod panestack;
 pub mod pulse;
 pub mod quota;
@@ -63,6 +67,8 @@ pub mod scene;
 pub mod slide;
 pub mod snapshot;
 pub mod stackstrip;
+pub mod swatch;
+pub mod tabmarks;
 pub mod tabstrip;
 pub mod toast;
 

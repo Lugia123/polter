@@ -1123,7 +1123,6 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         let focusedSurface: UUID?
         let tabIndex: Int?
         weak var tabGroup: NSWindowTabGroup?
-        let tabColor: TerminalTabColor
     }
 
     convenience init(_ ghostty: Ghostty.App, with undoState: UndoState) {
@@ -1133,9 +1132,6 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         showWindow(nil)
         if let window {
             window.setFrame(undoState.frame, display: true)
-            if let terminalWindow = window as? TerminalWindow {
-                terminalWindow.tabColor = undoState.tabColor
-            }
 
             // If we have a tab group and index, restore the tab to its original position
             if let tabGroup = undoState.tabGroup,
@@ -1178,8 +1174,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             surfaceTree: surfaceTree,
             focusedSurface: focusedSurface?.id,
             tabIndex: window.tabGroup?.windows.firstIndex(of: window),
-            tabGroup: window.tabGroup,
-            tabColor: (window as? TerminalWindow)?.tabColor ?? .none)
+            tabGroup: window.tabGroup)
     }
 
     // MARK: - NSWindowController
@@ -1820,6 +1815,20 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         ghostty.poltergeistAction(surface: surface, "poltergeist_toggle_shielded")
     }
 
+    /// Keep workers out of the focused terminal, or let them in again
+    /// (task 1699). Only the person sets it; the core refuses it from an
+    /// agent.
+    @IBAction func poltergeistToggleWorkersRefused(_ sender: Any?) {
+        guard let surface = focusedSurface?.surface else { return }
+        ghostty.poltergeistAction(surface: surface, "poltergeist_toggle_workers_refused")
+    }
+
+    /// Give the focused pane a colour, or take it away (task 1699).
+    func setPaneColor(_ color: PaneColor) {
+        guard let surface = focusedSurface?.surface else { return }
+        ghostty.poltergeistAction(surface: surface, color.bindingAction)
+    }
+
     @IBAction func poltergeistToggleAuthorise(_ sender: Any?) {
         guard let surface = focusedSurface?.surface else { return }
         ghostty.poltergeistAction(surface: surface, "poltergeist_toggle_authorise")
@@ -2072,6 +2081,10 @@ extension TerminalController {
 
         case #selector(poltergeistToggleShielded(_:)):
             item.state = (focusedSurface?.poltergeistShielded ?? false) ? .on : .off
+            return true
+
+        case #selector(poltergeistToggleWorkersRefused(_:)):
+            item.state = (focusedSurface?.poltergeistWorkersRefused ?? false) ? .on : .off
             return true
 
         case #selector(poltergeistToggleAuthorise(_:)):

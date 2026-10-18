@@ -222,6 +222,19 @@ GTK 侧进了 `performAction` 的 unimplemented 分支（`src/apprt/gtk/class/ap
 `Tab` 汇总、blp 声明式绑定。**不要把旧的拼标题做法留给 GTK 当降级路径** —— 那正是
 这一节推翻掉的东西。在那之前 GTK 侧 per-surface 的准确答案在 `terminal_list` 里。
 
+### #1699 起：前缀只剩护盾，旗进了点阵
+
+> 下面「七个标记」一节是 #1699 之前的样子，留作记录。
+
+#1699（分屏颜色）之后，`PoltergeistMark.prefix` 只剩护盾 `🔒 `（或空串）：
+
+- tab 上每个上了色的分屏画一个彩色小点（两行），黑/白的 ● ○ ◉ ◎ 挨着彩色点会被读成又一个点，所以退出标题；
+- 总管的 ⚑/⚐ 原来在标题前，点阵里又要有一面，会出现两次；现在只在点阵最前出现一次，由新 action `poltergeist_pane` 的 `flag`（none / raised / lowered，取自 `TabMark.flag()`）带给宿主；
+- 「在岗 / 安静 / 休息 / 被按住」在 tab 上不再有字形：tab 右端的状态图形和分屏标题条右端的图形已经在说。
+
+`Bus.TabMark` 和 `tabMark()` 没有删：核心还在用（App.zig 判 `supervisor_silent`，推出 `flag`）。
+`TabMark.prefix()` 不再被任何一端读到。接口全文见 #1699 的 `pane-color-interface.md`。
+
 ### 七个标记
 
 `Bus.TabMark`（`src/poltergeist/Bus.zig`）的七个值，逐个对上：

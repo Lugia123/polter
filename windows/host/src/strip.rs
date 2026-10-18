@@ -44,6 +44,190 @@ use polter_control_room::{slide, tabstrip};
 pub const STRIP_H: i32 = 30;
 
 /// A colour as GDI writes it (blue high).
+/// What one tab carries for its coloured panes: the cluster, laid out at
+/// the strip's scale, and its tooltip.
+struct Marked {
+    cluster: polter_control_room::tabmarks::Cluster<polter_control_room::pane_color::Color>,
+    flag: Option<polter_control_room::tabmarks::Flag>,
+    tip: Option<String>,
+}
+
+/// The cluster of tab `id` of `frame` (`polter_control_room::tabmarks`):
+/// its panes in reading order, each with the colour set on it and the flag
+/// the core gave it.
+fn marked(frame: HWND, id: TabId) -> Marked {
+    use polter_control_room::tabmarks::{self, Flag, Seen};
+    let seen: Vec<Seen> = tabs::pane_marks_of_tab(frame, id)
+        .into_iter()
+        .map(|(m, name)| Seen {
+            name,
+            color: crate::pane_frames::colour(m.color),
+            flag: match m.flag {
+                tabs::Flag::None => None,
+                tabs::Flag::Raised => Some(Flag::Raised),
+                tabs::Flag::Lowered => Some(Flag::Lowered),
+            },
+        })
+        .collect();
+    let (flag, dots) = tabmarks::of_panes(&seen);
+    let scale = tabs::scale_of(frame);
+    let (_, more) = tabmarks::shown(dots.len());
+    // The count's words, measured in the strip's own font.
+    let more_w = if more > 0 {
+        let hdc = unsafe { GetDC(Some(frame)) };
+        let old = unsafe { SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT)) };
+        let w = unsafe { crate::control_room::text_width(hdc, HFONT(GetStockObject(DEFAULT_GUI_FONT).0), &format!("+{more}")) };
+        unsafe {
+            SelectObject(hdc, old);
+            ReleaseDC(Some(frame), hdc);
+        }
+        w as f64
+    } else {
+        0.0
+    };
+    let cluster = tabmarks::cluster(flag.map(|(_, c)| c), &dots, scale, |_| more_w);
+    Marked { cluster, flag: flag.map(|(f, _)| f), tip: tabmarks::tip(&seen, &|m| tr(m)) }
+}
+
+/// Paint `m` with its left edge at `left`, in the middle of a strip `sh`
+/// high, and the highlight's ring round it when `ring` is its colour. How
+/// wide it was, in pixels: 0 for an empty cluster with no ring.
+unsafe fn paint_marks(dc: HDC, m: &Marked, left: i32, sh: i32, scale: f64, theme: &look::Theme, ring: Option<Rgba>) -> i32 {
+    use polter_control_room::look::tab_dots;
+    use polter_control_room::tabmarks::Flag;
+    let c = &m.cluster;
+    // An empty cluster that is lit stands for one dot's room, which the
+    // ring goes round.
+    let (w, h) = if c.is_empty() {
+        if ring.is_none() {
+            return 0;
+        }
+        let d = (tab_dots::DOT * scale).round().max(2.0);
+        (d, d)
+    } else {
+        (c.w, c.h)
+    };
+    let top = (sh as f64 - h) / 2.0;
+    let at = |r: polter_control_room::layout::Rect| RECT {
+        left: left + r.x as i32,
+        top: (top + r.y) as i32,
+        right: left + (r.x + r.w) as i32,
+        bottom: (top + r.y + r.h) as i32,
+    };
+    unsafe {
+        if let Some((r, color)) = c.flag {
+            let shape = match m.flag {
+                Some(Flag::Lowered) => polter_control_room::glyph::Mark::SupervisorLowered,
+                Some(Flag::Raised) | None => polter_control_room::glyph::Mark::Supervisor,
+            };
+            let r = at(r);
+            crate::control_room::draw_shapes(dc, r.left, r.top, r.right - r.left, &polter_control_room::glyph::mark(shape), color.ink(theme), 1.0);
+        }
+        for (r, color) in &c.dots {
+            let r = at(*r);
+            crate::control_room::round(dc, r, (r.right - r.left) / 2, color.ink(theme), None);
+        }
+        if let Some((r, n)) = c.more {
+            let mut r = at(r);
+            let mut words: Vec<u16> = format!("+{n}").encode_utf16().collect();
+            SetTextColor(dc, COLORREF(gdi(theme.text_secondary)));
+            DrawTextW(dc, &mut words, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOCLIP);
+        }
+        if let Some(accent) = ring {
+            let gap = (tab_dots::RING_GAP * scale).round() as i32;
+            let pen_w = (tab_dots::RING * scale).round().max(1.0) as i32;
+            let outer = RECT { left: left - gap, top: top as i32 - gap, right: left + w as i32 + gap, bottom: (top + h) as i32 + gap };
+            let pen = CreatePen(PS_SOLID, pen_w, COLORREF(gdi(accent)));
+            let old_pen = SelectObject(dc, pen.into());
+            let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            let d = outer.bottom - outer.top;
+            let _ = RoundRect(dc, outer.left, outer.top, outer.right, outer.bottom, d, d);
+            SelectObject(dc, old_pen);
+            SelectObject(dc, old_brush);
+            let _ = DeleteObject(pen.into());
+        }
+    }
+    w as i32
+}
+
+/// The tooltips over the strip's clusters (task 1700,
+/// `pane-color-interface.md` §4 item 5): one tool per cluster, by its
+/// rectangle, saying which pane each dot is. Set again only when what they
+/// say or where they are changed since the last paint.
+fn set_tips(frame: HWND, tips: Vec<(RECT, String)>) {
+    thread_local! {
+        static TIPS: RefCell<Vec<(isize, isize, Vec<(RECT, String)>)>> = const { RefCell::new(Vec::new()) };
+    }
+    let key = frame.0 as isize;
+    let same = TIPS.with(|t| t.borrow().iter().any(|(f, _, was)| *f == key && was.len() == tips.len() && was.iter().zip(&tips).all(|(a, b)| a.0 == b.0 && a.1 == b.1)));
+    if same {
+        return;
+    }
+    let existing = TIPS.with(|t| t.borrow().iter().find(|(f, _, _)| *f == key).map(|(_, h, _)| *h));
+    let tip = match existing.map(|h| HWND(h as *mut _)).filter(|h| unsafe { IsWindow(Some(*h)) }.as_bool()) {
+        Some(h) => h,
+        None => {
+            if tips.is_empty() {
+                return;
+            }
+            let made = unsafe {
+                CreateWindowExW(
+                    WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                    windows::Win32::UI::Controls::TOOLTIPS_CLASSW,
+                    PCWSTR::null(),
+                    WS_POPUP | WINDOW_STYLE(windows::Win32::UI::Controls::TTS_ALWAYSTIP | windows::Win32::UI::Controls::TTS_NOPREFIX),
+                    0,
+                    0,
+                    0,
+                    0,
+                    Some(frame),
+                    None,
+                    None,
+                    None,
+                )
+            };
+            match made {
+                Ok(h) => {
+                    // Lines, as the text has them.
+                    unsafe { SendMessageW(h, windows::Win32::UI::Controls::TTM_SETMAXTIPWIDTH, None, Some(LPARAM(600))) };
+                    h
+                }
+                Err(_) => {
+                    wlogf!(frame, "[strip] the tooltip window could not be made; the dots have no tooltip");
+                    return;
+                }
+            }
+        }
+    };
+    use windows::Win32::UI::Controls::{TTF_SUBCLASS, TTM_ADDTOOLW, TTM_DELTOOLW, TTTOOLINFOW};
+    let was = TIPS.with(|t| t.borrow().iter().find(|(f, _, _)| *f == key).map(|(_, _, w)| w.len()).unwrap_or(0));
+    unsafe {
+        for i in 0..was.max(tips.len()) {
+            let mut ti = TTTOOLINFOW { cbSize: std::mem::size_of::<TTTOOLINFOW>() as u32, hwnd: frame, uId: i + 1, ..Default::default() };
+            SendMessageW(tip, TTM_DELTOOLW, None, Some(LPARAM(&mut ti as *mut _ as isize)));
+        }
+        for (i, (rect, text)) in tips.iter().enumerate() {
+            let mut wide: Vec<u16> = text.encode_utf16().collect();
+            wide.push(0);
+            let mut ti = TTTOOLINFOW {
+                cbSize: std::mem::size_of::<TTTOOLINFOW>() as u32,
+                uFlags: TTF_SUBCLASS,
+                hwnd: frame,
+                uId: i + 1,
+                rect: *rect,
+                lpszText: windows::core::PWSTR(wide.as_mut_ptr()),
+                ..Default::default()
+            };
+            SendMessageW(tip, TTM_ADDTOOLW, None, Some(LPARAM(&mut ti as *mut _ as isize)));
+        }
+    }
+    TIPS.with(|t| {
+        let mut t = t.borrow_mut();
+        t.retain(|(f, _, _)| *f != key);
+        t.push((key, tip.0 as isize, tips));
+    });
+}
+
 fn gdi(c: Rgba) -> u32 {
     polter_control_room::chrome::bgr(c)
 }
@@ -1598,7 +1782,12 @@ pub fn paint(frame: HWND) {
         fill(mem, &strip, gdi(chrome.ground));
 
         let (tabs_now, active) = tabs::strip_snapshot(frame);
-        let colours = tabs::tab_colors(frame);
+        // What each tab carries for its coloured panes (task 1700): read
+        // once per paint, by id, and drawn by `draw_tab` before the title.
+        let marks: Vec<(TabId, Marked)> = tabs_now.iter().map(|(id, _)| (*id, marked(frame, *id))).collect();
+        // Where each cluster with something to say was drawn, for its
+        // tooltip: filled in by `draw_tab`, handed over after the blit.
+        let tips: RefCell<Vec<(RECT, String)>> = RefCell::new(Vec::new());
         let Geometry { slots, overflow, new, menu } = slots(frame);
         let (hover, dragging, dwell) = with_ui(frame, |u| {
             (
@@ -1663,14 +1852,23 @@ pub fn paint(frame: HWND) {
                 right: right_edge,
                 bottom: sh,
             };
-            // The lit terminal's tab (task 1690): a dot in the accent before
-            // its name, breathing, for as long as the highlight lasts.
-            if let Some(a) = crate::highlight::tab_breath(frame, slot.id) {
-                let d = (crate::highlight::TAB_DOT * scale).round().max(2.0) as i32;
-                let top = (sh - d) / 2;
-                let dot = RECT { left: tr.left, top, right: tr.left + d, bottom: top + d };
-                crate::control_room::round(mem, dot, d / 2, crate::highlight::accent(frame, a), None);
-                tr.left += d + (4.0 * scale).round() as i32;
+            // The flag and the dots of the tab's coloured panes (task 1700),
+            // before its name; and the lit terminal's tab (task 1690) a ring
+            // in the accent round them, breathing, for as long as the
+            // highlight lasts -- round an empty dot's room when there are
+            // none (`pane-color-interface.md` §4, item 6).
+            let lit = crate::highlight::tab_breath(frame, slot.id);
+            if let Some((_, m)) = marks.iter().find(|(id, _)| *id == slot.id) {
+                let used = paint_marks(mem, m, tr.left, sh, scale, &theme, lit.map(|a| crate::highlight::accent(frame, a)));
+                if let (Some(tip), false) = (&m.tip, m.cluster.is_empty()) {
+                    let mut t = tips.borrow_mut();
+                    if !t.iter().any(|(_, s)| s == tip) {
+                        t.push((RECT { left: tr.left, top: 0, right: tr.left + used, bottom: sh }, tip.clone()));
+                    }
+                }
+                if used > 0 {
+                    tr.left += used + (look::window_tab::COLUMN_GAP * scale).round() as i32;
+                }
             }
             // A tab always has its number, so this is never an empty string
             // -- which `USER32` must not be handed (task 1439).
@@ -1779,34 +1977,6 @@ pub fn paint(frame: HWND) {
             }
         }
 
-        // The tab's colour, if it has one: a bar along the top of where its
-        // chip would be, clear of the round ends. **Looked up by id**, not
-        // by the loop counter -- the colours come from a second snapshot
-        // and the two lists are only in the same order until they are not.
-        // Last, so that the chip does not cover the selected tab's.
-        for slot in slots.iter() {
-            if slot.rect.right < 0 || slot.rect.left > rc.right {
-                continue;
-            }
-            let colour = colours
-                .iter()
-                .find(|(cid, _)| *cid == slot.id)
-                .map(|(_, c)| *c)
-                .unwrap_or(0) as usize;
-            if colour > 0 && colour < TAB_COLORS.len() {
-                let pill = tabstrip::chip(rect_f(&slot.rect), shf, scale);
-                let inset = tabstrip::corner(pill, scale, false) as i32;
-                let top = pill.y as i32;
-                let bar = RECT {
-                    left: slot.rect.left + inset,
-                    top,
-                    right: (slot.rect.right - inset).max(slot.rect.left + inset),
-                    bottom: top + (3.0 * scale).max(2.0) as i32,
-                };
-                fill(mem, &bar, TAB_COLORS[colour].1);
-            }
-        }
-
         // The `≡`. Drawn before the tabs would be wrong -- nothing can reach
         // under it -- and drawn here, after them, it is also drawn over the
         // strip's own background rather than over a tab, which is what the
@@ -1881,6 +2051,7 @@ pub fn paint(frame: HWND) {
 
         SelectObject(mem, old_font);
         let _ = BitBlt(hdc, 0, 0, rc.right, sh, Some(mem), 0, 0, SRCCOPY);
+        set_tips(frame, tips.into_inner());
         SelectObject(mem, old);
         let _ = DeleteObject(bmp.into());
         let _ = DeleteDC(mem);
@@ -1962,32 +2133,6 @@ pub fn tab_menu_target(frame: HWND, x: i32, y: i32) -> Option<MenuTarget> {
     Some(MenuTarget { index, id, n: g.slots.len() })
 }
 
-/// The tab colours, `0` being none. Nine plus none, which is what
-/// `TerminalTabColor.swift` has; `s4.md` §3.3 says eight and is out by one.
-/// The values are macOS's own system colours, as `COLORREF` (`0x00BBGGRR`).
-///
-/// **The names are `TerminalTabColor.localizedName`'s, word for word**, and
-/// that file rather than `MainMenu.strings` is the source because this menu
-/// is not in the nib: the submenu macOS shows here is built in Swift from
-/// this same enum. Taking the words from anywhere else would be inventing a
-/// second set of colour names for one product.
-///
-/// A table cannot call a function, so these are marked with `n_` and looked
-/// up with `tr` where the menu is built (and where the log line is written --
-/// see `run_tab_colour`, which now prints the English msgid, which is the
-/// stable thing to grep for).
-const TAB_COLORS: &[(&str, u32)] = &[
-    (n_("None"), 0x00000000),
-    (n_("Blue"), 0x00FF840A),
-    (n_("Purple"), 0x00F25ABF),
-    (n_("Pink"), 0x005F37FF),
-    (n_("Red"), 0x003A45FF),
-    (n_("Orange"), 0x000A9FFF),
-    (n_("Yellow"), 0x000AD6FF),
-    (n_("Green"), 0x0058D130),
-    (n_("Teal"), 0x00E2E663),
-    (n_("Graphite"), 0x00938E8E),
-];
 
 /// One row of the tab menu, ported item for item from
 /// `TerminalWindow.swift:717` (`configureTabContextMenuIfNeeded` and the two
@@ -2003,6 +2148,9 @@ enum TabCmd {
     Supervisor,
     Watch,
     Shield,
+    /// No worker is to be started in this terminal (task 1700), under the
+    /// shield as everywhere the shield is.
+    WorkersRefused,
     /// A supervisor may answer this terminal's permission boxes. macOS's tab
     /// menu has it beside the shield (`appendAgentSection`), task 1551.
     Authorise,
@@ -2032,6 +2180,7 @@ impl TabCmd {
             TabCmd::Supervisor => n_("Make This Terminal a Supervisor"),
             TabCmd::Watch => n_("Supervise This Terminal"),
             TabCmd::Shield => n_("Keep Agents Out of This Terminal"),
+            TabCmd::WorkersRefused => n_("Don't Start Workers in This Terminal"),
             // The same msgid as `menu.rs` and `ctxmenu.rs`: one switch, one
             // entry in the catalogue.
             TabCmd::Authorise => n_("Let a Supervisor Answer Prompts Here"),
@@ -2058,6 +2207,7 @@ impl TabCmd {
             TabCmd::Supervisor => "poltergeist_supervisor",
             TabCmd::Watch => "poltergeist_toggle_watch",
             TabCmd::Shield => "poltergeist_toggle_shielded",
+            TabCmd::WorkersRefused => "poltergeist_toggle_workers_refused",
             TabCmd::Authorise => "poltergeist_toggle_authorise",
             TabCmd::WorkerMentions => "poltergeist_toggle_worker_mentions",
             // The menu bar's names for the same two rows (`menu.rs`). The
@@ -2088,6 +2238,7 @@ impl TabCmd {
             TabCmd::Supervisor => m.role == 1,
             TabCmd::Watch => m.role == 2,
             TabCmd::Shield => m.shielded,
+            TabCmd::WorkersRefused => m.workers_refused,
             TabCmd::Authorise => m.may_authorise,
             TabCmd::WorkerMentions => {
                 crate::worker_mentions::ticked(Some(m.role), m.worker_mentions)
@@ -2129,6 +2280,7 @@ impl TabCmd {
             | TabCmd::Supervisor
             | TabCmd::Watch
             | TabCmd::Shield
+            | TabCmd::WorkersRefused
             | TabCmd::Authorise
             | TabCmd::WorkerMentions
             | TabCmd::SaveProject
@@ -2177,6 +2329,7 @@ const TAB_MENU: &[Option<TabCmd>] = &[
     Some(TabCmd::Supervisor),
     Some(TabCmd::Watch),
     Some(TabCmd::Shield),
+    Some(TabCmd::WorkersRefused),
     Some(TabCmd::Authorise),
     Some(TabCmd::WorkerMentions),
 ];
@@ -2199,6 +2352,10 @@ const _: () = {
     assert!(found, "TAB_MENU lost the worker-mentions row");
 };
 
+/// The heading over the colour rows (`pane-color-interface.md` §6), the
+/// macOS host's msgid.
+const COLOR_HEADING: &str = n_("Color");
+
 /// A pane title's own first row (task 1583): the macOS host's msgid
 /// (task 1582), and the one the command palette already has.
 const CLOSE_TERMINAL: &str = n_("Close Terminal");
@@ -2216,7 +2373,6 @@ const TAB_TERM_ID_MAX: usize = 0x100;
 /// Command ids. Well clear of anything Windows sends, and clear of
 /// `ctxmenu.rs`'s `0x4000` block so a stray id cannot be read by both.
 const TAB_ID_BASE: usize = 0x5000;
-const TAB_COLOR_BASE: usize = 0x5100;
 const STRIP_ID_BASE: usize = 0x5200;
 /// The rows about a tab's project, which are not in `TAB_MENU`: what they
 /// say depends on the tab (the project's name), and a table's row cannot.
@@ -2257,7 +2413,6 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
     use polter_control_room::panestack::{closing, Closing};
     let mark = tabs::tab_mark(frame, target.id);
     let (role, shielded) = (mark.role, mark.shielded);
-    let colour = tabs::tab_color(frame, target.id);
 
     // The projects the submenu listed, by id offset: what a pick is matched
     // against, so a list that changed meanwhile cannot name another project.
@@ -2268,6 +2423,11 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
         Some(p) => tabs::surface_of_tab_pane(frame, target.id, p),
         None => tabs::surface_of_tab(frame, target.id),
     };
+    // The colour set on that terminal: the ringed dot. Not told yet reads
+    // as none -- the ring is only a hint, and the pick is the core's.
+    let colour = tabs::pane_marks_for_surface(surface)
+        .and_then(|m| m.color)
+        .and_then(|c| polter_control_room::pane_color::Color::from_c(c.index()));
     // "Role ▸", the persona submenu (task 1604: the macOS tab menu's
     // `PersonaMenu`, with the four toggles). Its rows, kept for as long as
     // the menu is, because a pick is an index into them.
@@ -2291,21 +2451,6 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
             wlogf!(frame, "[tabmenu] CreatePopupMenu failed");
             return;
         };
-        let Ok(colours) = CreatePopupMenu() else {
-            let _ = DestroyMenu(menu);
-            wlogf!(frame, "[tabmenu] CreatePopupMenu (colours) failed");
-            return;
-        };
-        for (i, (name, _)) in TAB_COLORS.iter().enumerate() {
-            let mut wide: Vec<u16> = tr(name).encode_utf16().collect();
-            wide.push(0);
-            let flags = if i as u8 == colour {
-                MF_STRING | MF_CHECKED
-            } else {
-                MF_STRING
-            };
-            let _ = AppendMenuW(colours, flags, TAB_COLOR_BASE + i, PCWSTR(wide.as_ptr()));
-        }
 
         let mut items = 0usize;
         if pane.is_some() {
@@ -2345,18 +2490,12 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
             }
             let Some(cmd) = row else {
                 let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-                // The colour submenu goes after the second separator, which
-                // is where macOS puts it (right below "Rename Tab...").
-                if i == 6 {
-                    let mut wide: Vec<u16> = tr("Tab Color").encode_utf16().collect();
-                    wide.push(0);
-                    let _ = AppendMenuW(
-                        menu,
-                        MF_POPUP,
-                        menu_handle_as_id(colours),
-                        PCWSTR(wide.as_ptr()),
-                    );
-                    items += 1;
+                // The colours go after the second separator, which is where
+                // macOS puts them (right below "Rename Tab..."): a heading and
+                // two rows of dots, flat in the menu (task 1700), for the
+                // terminal the menu is about -- so only where there is one.
+                if i == 6 && !surface.is_null() {
+                    items += crate::swatch_menu::append(menu, &tr(COLOR_HEADING));
                 }
                 continue;
             };
@@ -2491,11 +2630,12 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
             role == 1,
             role == 2,
             shielded,
-            colour
+            colour.map_or("none", |c| c.name())
         );
 
         let mut pt = POINT { x, y };
         let _ = ClientToScreen(frame, &mut pt);
+        crate::swatch_menu::begin(colour, crate::termcolor::chrome(frame).dark, tabs::scale_of(frame));
         let cmd = TrackPopupMenu(
             menu,
             TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
@@ -2508,6 +2648,7 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
         let _ = DestroyMenu(menu);
         cmd.0 as usize
     };
+    let picked = crate::swatch_menu::end(chosen);
 
     if chosen == 0 {
         wlogf!(frame, "[tabmenu] dismissed without a choice");
@@ -2561,9 +2702,17 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
         }
         return;
     }
-    if (TAB_COLOR_BASE..TAB_COLOR_BASE + TAB_COLORS.len()).contains(&chosen) {
-        let c = chosen - TAB_COLOR_BASE;
-        run_tab_colour(frame, target.id, c as u8);
+    if (crate::swatch_menu::ROW_BASE..crate::swatch_menu::ROW_BASE + crate::swatch_menu::ROWS).contains(&chosen) {
+        // A row came back: the dot a click or a key meant, or none when
+        // neither said one.
+        match picked {
+            Some(c) => {
+                let action = crate::swatch_menu::action(c);
+                let ok = unsafe { (crate::api().surface_binding_action)(surface, action.as_ptr(), action.len()) };
+                wlogf!(frame, "[tabmenu] colour {} on tab {} surface {:?} ok={}", action, ordinal(frame, target.id), surface, ok as u8);
+            }
+            None => wlogf!(frame, "[tabmenu] a colour row came back with no dot meant; nothing"),
+        }
         return;
     }
     if (TAB_ADD_TO_BASE..TAB_ADD_TO_BASE + TAB_ADD_TO_MAX).contains(&chosen) {
@@ -2600,16 +2749,6 @@ fn menu_handle_as_id(m: HMENU) -> usize {
     m.0 as usize
 }
 
-fn run_tab_colour(frame: HWND, id: TabId, c: u8) {
-    let ok = tabs::set_tab_color(frame, id, c);
-    logf!(
-        "[tabmenu] pick {:?} tab {} -> tab_color:{} ok={}",
-        TAB_COLORS[c as usize].0,
-        ordinal(frame, id),
-        c,
-        ok as u8
-    );
-}
 
 /// Do the thing, on the tab that was right-clicked.
 ///
@@ -2695,7 +2834,7 @@ fn run_tab_command(frame: HWND, id: TabId, cmd: TabCmd) {
         // `Mentions` rides with the three agent rows: all four are core
         // binding strings performed on the tab that was right-clicked, and
         // the core is what decides whether the binding can be performed.
-        TabCmd::Supervisor | TabCmd::Watch | TabCmd::Shield | TabCmd::Authorise | TabCmd::WorkerMentions => {
+        TabCmd::Supervisor | TabCmd::Watch | TabCmd::Shield | TabCmd::WorkersRefused | TabCmd::Authorise | TabCmd::WorkerMentions => {
             // Straight at that tab's surface. `crate::binding` would send it
             // to whichever surface has focus.
             tabs::binding_on_tab(frame, id, cmd.action())
@@ -3729,54 +3868,33 @@ mod menu_inset_tests {
     #[test]
     fn the_id_blocks_do_not_overlap() {
         assert!(TAB_ID_BASE > 0x4000 + 64, "must clear ctxmenu.rs's block");
-        assert!(TAB_ID_BASE + TAB_MENU.len() < TAB_COLOR_BASE);
-        assert!(TAB_COLOR_BASE + TAB_COLORS.len() < STRIP_ID_BASE);
+        assert!(TAB_ID_BASE + TAB_MENU.len() < crate::swatch_menu::ROW_BASE);
+        assert!(crate::swatch_menu::ROW_BASE + crate::swatch_menu::ROWS < STRIP_ID_BASE);
         assert!(STRIP_ID_BASE + STRIP_MENU.len() < 0xF000);
     }
 
-    /// Nine colours plus none, matching `TerminalTabColor.swift`. `s4.md`
-    /// §3.3 says eight; the source is the source.
-    #[test]
-    fn the_palette_matches_the_macos_one() {
-        assert_eq!(TAB_COLORS.len(), 10);
-        assert_eq!(TAB_COLORS[0].1, 0, "index 0 is 'no colour' and draws nothing");
-        for (name, c) in &TAB_COLORS[1..] {
-            assert_ne!(*c, 0, "{name} would draw as no colour at all");
-        }
-    }
-
-    /// **The floor under "these names are macOS's own".**
-    ///
-    /// The table above says in a comment that its ten words are
-    /// `TerminalTabColor.localizedName`'s. The test above checks the
-    /// *colours*; nothing checked the *words*, and a word is the half a
-    /// translator sees. Renaming one on either side -- here, or in the Swift
-    /// -- would leave one product calling the same colour two things, with
-    /// the two names landing in the catalogue as two unrelated entries.
+    /// **The floor under "one palette for both hosts"** (task 1700). The
+    /// colours' numbers, their file names and their English names are the
+    /// macOS host's `PaneColor` word for word: a number off by one draws
+    /// every pane in its neighbour's colour, and a name off is a hover text
+    /// and a translation that are two things for one colour.
     ///
     /// Read at compile time: the test binary runs on a Windows machine with
     /// no checkout on it.
     #[test]
-    fn the_colour_names_are_the_macos_ones() {
-        const SWIFT: &str =
-            include_str!("../../../macos/Sources/Features/Terminal/TerminalTabColor.swift");
+    fn the_palette_is_the_macos_one_number_for_number_and_word_for_word() {
+        const SWIFT: &str = include_str!("../../../macos/Sources/Features/Terminal/PaneColor.swift");
 
-        // The floor's own floor. Pointed at the wrong file -- or an empty one
-        // -- every check below would fail for a reason that has nothing to do
-        // with the names, and a laxer version of this test would pass.
-        assert!(
-            SWIFT.contains("var localizedName: String"),
-            "the included file is not TerminalTabColor.swift any more"
-        );
+        // The floor's own floor: pointed at the wrong file, every check
+        // below would fail for a reason that has nothing to do with colours.
+        assert!(SWIFT.contains("var englishName: String"), "the included file is not PaneColor.swift any more");
+        assert!(SWIFT.contains("case none = 0"), "none is 0 on macOS");
 
-        for (name, _) in TAB_COLORS {
-            let ret = format!("return \"{}\"", name);
-            assert!(
-                SWIFT.contains(&ret),
-                "{:?} is not a name macOS shows for a tab colour; \
-                 one product must not call one colour two things",
-                name
-            );
+        for c in polter_control_room::pane_color::Color::ALL {
+            let (name, label, n) = (c.name(), c.label(), c.to_c());
+            for want in [format!("case {name} = {n}"), format!("case .{name}: return \"{name}\""), format!("case .{name}: return \"{label}\"")] {
+                assert!(SWIFT.contains(&want), "{want:?} is not in PaneColor.swift; one product must not number or name one colour two ways");
+            }
         }
     }
 

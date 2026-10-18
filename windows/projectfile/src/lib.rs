@@ -1,7 +1,7 @@
 //! A project file: what it says, and the bytes it is written as.
 //!
 //! **This mirrors `src/Project.zig`, byte for byte, and nothing else.** The
-//! format, its two versions, what a read puts right and the rules for a
+//! format, its versions, what a read puts right and the rules for a
 //! string and a number are written down once, in that file's module comment;
 //! read it before changing anything here. The third implementation is
 //! `macos/Sources/Features/Projects/ProjectDocument.swift`.
@@ -18,7 +18,7 @@
 pub use polter_split_tree::Axis;
 
 /// The format this build writes, and the latest it reads.
-pub const FORMAT_VERSION: i64 = 2;
+pub const FORMAT_VERSION: i64 = 3;
 
 /// Who was working in a pane when the project was saved.
 ///
@@ -49,6 +49,75 @@ pub struct Who {
     pub supervisor: bool,
 }
 
+/// The colour a person gave a pane (task 1699/1700). The ten of the
+/// palette, in its order, under the names a file, a tool and a binding
+/// action all write (`pane-color-interface.md` §1.1). **The colour set, not
+/// the colour shown**: a supervisor's pane with none set shows purple, and
+/// that is the host's to draw, not the file's to say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneColor {
+    None,
+    Blue,
+    Purple,
+    Pink,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Teal,
+    Graphite,
+}
+
+impl PaneColor {
+    /// In the palette's order: the core's `ghostty_poltergeist_pane_color_e`
+    /// is the index.
+    pub const ALL: [PaneColor; 10] = [
+        PaneColor::None,
+        PaneColor::Blue,
+        PaneColor::Purple,
+        PaneColor::Pink,
+        PaneColor::Red,
+        PaneColor::Orange,
+        PaneColor::Yellow,
+        PaneColor::Green,
+        PaneColor::Teal,
+        PaneColor::Graphite,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PaneColor::None => "none",
+            PaneColor::Blue => "blue",
+            PaneColor::Purple => "purple",
+            PaneColor::Pink => "pink",
+            PaneColor::Red => "red",
+            PaneColor::Orange => "orange",
+            PaneColor::Yellow => "yellow",
+            PaneColor::Green => "green",
+            PaneColor::Teal => "teal",
+            PaneColor::Graphite => "graphite",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<PaneColor> {
+        PaneColor::ALL.into_iter().find(|c| c.name() == name)
+    }
+
+    /// The palette index; `ALL[c.index()] == c`.
+    pub fn index(self) -> usize {
+        PaneColor::ALL.iter().position(|c| *c == self).unwrap_or(0)
+    }
+}
+
+/// Whether a supervisor may start a worker in a pane. **Not a `bool`**: the
+/// host keeps "not told yet" apart from "told: allowed", and so does the
+/// interface (`pane-color-interface.md` §1.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Workers {
+    Allowed,
+    Refused,
+}
+
 /// A pane: one leaf of the *saved* tree. Not a `split_tree::Leaf` -- there is
 /// no such type; `split_tree::Node::Leaf` holds a bare `PaneId`, and a
 /// `PaneId` from a previous run means nothing. So a saved leaf holds what a
@@ -74,12 +143,29 @@ pub struct SavedLeaf {
     /// what a pane nothing recorded this for reads as (`Project.zig`'s
     /// `Leaf.by_supervisor` says why the two are not told apart).
     pub by_supervisor: bool,
+    /// The four marks a person puts on a pane, new with format 3
+    /// (`pane-color-interface.md` §7). Each is `None` when **the host could
+    /// not tell yet** -- a pane just restored from this file, whose values
+    /// the core has not taken back -- and a save fills that in from the file
+    /// (`polter_projects::pages::keeping_what_the_file_knew`) rather than
+    /// writing the default over what the file knew. What `parse_snapshot`
+    /// hands back is never `None`; a `None` that reaches `emit` is written
+    /// as the default, since the file has no way to say "not known".
+    ///
+    /// The project's supervisor's seat: the pane, not the agent in it, so
+    /// it is still the seat after the agent has left. At most one pane of a
+    /// project has it; `parse_snapshot` never hands back two.
+    pub supervisor_seat: Option<bool>,
+    pub color: Option<PaneColor>,
+    pub workers: Option<Workers>,
+    pub shielded: Option<bool>,
     pub agent: Agent,
 }
 
 impl SavedLeaf {
     /// A pane in `cwd` with no title, history or snapshot, not one the
-    /// supervisor opened, and `agent` in it.
+    /// supervisor opened, nobody's seat and no mark on it, and `agent` in
+    /// it.
     pub fn plain(cwd: &str, agent: Agent) -> SavedLeaf {
         SavedLeaf {
             cwd: cwd.to_string(),
@@ -87,6 +173,10 @@ impl SavedLeaf {
             history: String::new(),
             scrollback: String::new(),
             by_supervisor: false,
+            supervisor_seat: Some(false),
+            color: Some(PaneColor::None),
+            workers: Some(Workers::Allowed),
+            shielded: Some(false),
             agent,
         }
     }
@@ -317,7 +407,7 @@ pub fn direction_from_str(s: &str) -> Option<Axis> {
     }
 }
 
-/// The bytes of `snapshot` as a format 2 file -- `emit` in `Project.zig`,
+/// The bytes of `snapshot` as a format 3 file -- `emit` in `Project.zig`,
 /// which says why this is written out by hand and not handed to a JSON
 /// library.
 pub fn emit(snapshot: &Snapshot) -> Result<String, EmitError> {
@@ -410,6 +500,19 @@ fn leaf_out(out: &mut String, leaf: &SavedLeaf) {
     if leaf.by_supervisor {
         out.push_str(",\"by_supervisor\":true");
     }
+    // Each only when it is not the default, in this order (`Project.zig`).
+    if leaf.supervisor_seat == Some(true) {
+        out.push_str(",\"supervisor_seat\":true");
+    }
+    if let Some(c) = leaf.color.filter(|c| *c != PaneColor::None) {
+        field(out, "color", c.name());
+    }
+    if leaf.workers == Some(Workers::Refused) {
+        out.push_str(",\"workers\":\"refused\"");
+    }
+    if leaf.shielded == Some(true) {
+        out.push_str(",\"shielded\":true");
+    }
     out.push_str(",\"agent\":{\"kind\":\"");
     match &leaf.agent {
         Agent::Unknown => out.push_str("unknown\""),
@@ -470,6 +573,7 @@ fn number(out: &mut String, value: f64) -> Result<(), EmitError> {
 struct Fixups {
     scrollback: std::collections::HashSet<String>,
     supervisors: usize,
+    seats: usize,
 }
 
 type Object = serde_json::Map<String, serde_json::Value>;
@@ -541,6 +645,17 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ReadError> {
                     if let Agent::Agent(who) = &mut leaf.agent {
                         who.supervisor = false;
                     }
+                }
+            }
+        }
+    }
+    // Two seats are none, as two supervisors are: which of them is the
+    // project's is not something a read can decide.
+    if fixups.seats > 1 {
+        for window in &mut windows {
+            for tab in &mut window.tabs {
+                for leaf in leaves_mut(&mut tab.root) {
+                    leaf.supervisor_seat = Some(false);
                 }
             }
         }
@@ -659,12 +774,44 @@ fn json_to_leaf(obj: &Object, format: i64, fixups: &mut Fixups) -> Result<SavedL
         Some(serde_json::Value::Bool(b)) => *b,
         Some(_) => return Err(ReadError::Corrupt),
     };
+    // New with format 3, and stricter still: each is written only when it
+    // is not the default, so the one value a file may hold is that value.
+    // Anything else is a damaged file, never quietly the default. Before
+    // format 3 the keys meant nothing and are not read; the seat was the
+    // agent's being the supervisor.
+    let (supervisor_seat, color, workers, shielded) = if format < 3 {
+        (matches!(&agent, Agent::Agent(who) if who.supervisor), PaneColor::None, Workers::Allowed, false)
+    } else {
+        let only_true = |key: &str| match obj.get(key) {
+            None => Ok(false),
+            Some(serde_json::Value::Bool(true)) => Ok(true),
+            Some(_) => Err(ReadError::Corrupt),
+        };
+        let color = match obj.get("color") {
+            None => PaneColor::None,
+            Some(serde_json::Value::String(s)) => PaneColor::from_name(s).ok_or(ReadError::Corrupt)?,
+            Some(_) => return Err(ReadError::Corrupt),
+        };
+        let workers = match obj.get("workers") {
+            None => Workers::Allowed,
+            Some(serde_json::Value::String(s)) if s == "refused" => Workers::Refused,
+            Some(_) => return Err(ReadError::Corrupt),
+        };
+        (only_true("supervisor_seat")?, color, workers, only_true("shielded")?)
+    };
+    if supervisor_seat {
+        fixups.seats += 1;
+    }
     Ok(SavedLeaf {
         cwd: opt_str(obj.get("cwd")),
         title: opt_str(obj.get("title")),
         history: opt_str(obj.get("history")),
         scrollback,
         by_supervisor,
+        supervisor_seat: Some(supervisor_seat),
+        color: Some(color),
+        workers: Some(workers),
+        shielded: Some(shielded),
         agent,
     })
 }

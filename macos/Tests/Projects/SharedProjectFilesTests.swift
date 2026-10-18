@@ -105,7 +105,7 @@ struct SharedProjectFilesTests {
         let reading = try SharedProjectFiles.read(SharedProjectFiles.directory)
         #expect(reading.problems.isEmpty, "\n\(reading.problems.joined(separator: "\n"))")
         // A reader that found nothing passed every row it found.
-        #expect(reading.rows >= 11, "index.txt has \(reading.rows) rows; there were 11 when this was written")
+        #expect(reading.rows >= 14, "index.txt has \(reading.rows) rows; there were 14 when this was written")
     }
 
     /// The rules for a string and a number, said here as well as in the
@@ -136,7 +136,7 @@ struct SharedProjectFilesTests {
         }
         for bad in [Double.nan, .infinity, -.infinity] {
             #expect(throws: ProjectFileError.notFinite) { try Writing.number(bad) }
-            let leaf = ProjectNode.leaf(cwd: "", title: "", history: "", scrollback: "", bySupervisor: false, agent: .none)
+            let leaf = ProjectNode.leaf(cwd: "", title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
             let root = ProjectNode.split(direction: .horizontal, ratio: bad, left: leaf, right: leaf)
             #expect(throws: ProjectFileError.notFinite) {
                 try ProjectFile.oneTab(name: "n", savedAt: 1, root: root, nextScrollback: nil).encoded()
@@ -151,7 +151,7 @@ struct SharedProjectFilesTests {
         """#
         let file = try ProjectFile.decode(from: Data(json.utf8))
         // Not `.none`, and not the agent the stray key describes.
-        let leaf = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "1.snap", bySupervisor: false, agent: .unknown)
+        let leaf = ProjectNode.leaf(cwd: "/a", title: "", history: "", scrollback: "1.snap", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
         #expect(file == ProjectFile(
             name: "old", savedAt: 7, group: nil,
             windows: [ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf)])],
@@ -168,10 +168,11 @@ struct SharedProjectFilesTests {
         // It has everything a format 1 file has. Read as one, it is a
         // project of one pane, and the next save writes that over whatever
         // it was.
-        let later = Data(#"{"format":3,"name":"later","saved_at":1,"root":{"kind":"leaf","cwd":"/a"}}"#.utf8)
-        #expect(throws: ProjectFileError.tooNew(found: 3)) { try ProjectFile.decode(from: later) }
-        #expect(throws: ProjectFileError.tooNew(found: 3)) { try ProjectFile.format(of: later) }
-        #expect("\(ProjectFileError.tooNew(found: 3))".contains("format 3"))
+        let later = Data(#"{"format":4,"name":"later","saved_at":1,"root":{"kind":"leaf","cwd":"/a"}}"#.utf8)
+        #expect(throws: ProjectFileError.tooNew(found: 4)) { try ProjectFile.decode(from: later) }
+        #expect(throws: ProjectFileError.tooNew(found: 4)) { try ProjectFile.format(of: later) }
+        #expect("\(ProjectFileError.tooNew(found: 4))".contains("format 4"))
+        #expect("\(ProjectFileError.tooNew(found: 4))".contains("reads up to format 3"))
 
         // A `format` that is not a version at all is a damaged file -- and
         // not a too-new one.
@@ -230,7 +231,7 @@ struct SharedProjectFilesTests {
         }
         // The control: the same shape, whole, reads.
         let whole = Data("{\"format\":2,\"name\":\"n\",\"saved_at\":1,\"windows\":[{\"front\":0,\"tabs\":[{\"root\":\(leaf)}]}]}".utf8)
-        #expect(try ProjectFile.decode(from: whole).firstTab == .leaf(cwd: "", title: "", history: "", scrollback: "", bySupervisor: false, agent: .none))
+        #expect(try ProjectFile.decode(from: whole).firstTab == .leaf(cwd: "", title: "", history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none))
     }
 
     // MARK: A stack
@@ -286,7 +287,7 @@ struct SharedProjectFilesTests {
     // MARK: The whole project
 
     private func leaf(_ cwd: String, _ scrollback: String = "") -> ProjectNode {
-        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, agent: .none)
+        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
     }
 
     private var threeTabs: ProjectFile {

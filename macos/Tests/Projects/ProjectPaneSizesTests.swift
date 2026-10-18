@@ -9,7 +9,7 @@ import Testing
 /// (AX frames, which drop the half point the right column has).
 struct ProjectPaneSizesTests {
     private static func leaf(_ n: Int) -> ProjectNode {
-        .leaf(cwd: "/\(n)", title: "t\(n)", history: "", scrollback: "\(n).snap", bySupervisor: false, agent: .none)
+        .leaf(cwd: "/\(n)", title: "t\(n)", history: "", scrollback: "\(n).snap", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
     }
 
     /// 1 | (2 / 3), both splits at the middle.

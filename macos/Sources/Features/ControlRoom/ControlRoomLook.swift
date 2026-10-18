@@ -254,6 +254,36 @@ enum ControlRoomLook {
         static let edge: Double = 2.0
     }
 
+    /// The dots on a window tab, one per pane given a colour, led by the supervisor's flag (task 1699). Columns of two, top then bottom, left to right, in the panes' reading order.
+    enum TabDots {
+        /// A dot's diameter.
+        /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+        static let dot: Double = 6.0
+        /// Between two dots, across and down: two rows are dot + gap + dot = `window_tab.glyph`.
+        /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+        static let gap: Double = 2.0
+        /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+        static let rows: Double = 2.0
+        /// The most dots drawn whole.
+        /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+        static let max: Double = 8.0
+        /// With more than `max`, this many are drawn and a `+N` for the rest.
+        /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+        static let shownWhenOver: Double = 6.0
+        /// Between the flag (`window_tab.glyph` square) and the first column.
+        /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+        static let flagGap: Double = 4.0
+        /// Between the last column and `+N`, written at `font.min` in `text_secondary`.
+        /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+        static let plusGap: Double = 4.0
+        /// The width of the accent ring round the dots while a pane of the tab is lit (`terminal_highlight`).
+        /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+        static let ring: Double = 1.5
+        /// From the dots' outer edge to the ring. With no dots the ring goes round the room of one.
+        /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+        static let ringGap: Double = 2.0
+    }
+
     /// The tabs over a cell that holds several terminals.
     enum StackTab {
         /// From the content's left and right edges to a tab's body: corner 8 + straight 4 + arc 8. Also the terminal text's inset.
@@ -665,15 +695,87 @@ enum ControlRoomLook {
         var supervisorEdgeFocused: RGBA
         /// Source: design v17, src/tokens-l.css and src/tokens-d.css.
         var supervisorTerminalEdge: RGBA
-        /// The badge's ground. Light: the app icon's own colour (`images/Polter.icon/icon.json` fill, srgb 0.24706 0.21961 0.78824; `windows/host/polter.ico` the same). Dark: the same hue (OKLCH 275.7) at lightness 0.55, the lightest step its white word still reads on at 4.5 with room.
-        /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
-        var supervisorBadge: RGBA
-        /// The mark and the word on the badge.
-        /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
-        var supervisorBadgeText: RGBA
-        /// The mark before a supervisor's name on a stack's tab, and the edge round its pane with no frames. Dark: the icon's hue at lightness 0.68, the first step that is 3 on every ground it is drawn on.
-        /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
-        var supervisorMark: RGBA
+        /// A blue pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneBlue: RGBA
+        /// The ground of a blue pane's badge at the left of its title. Dark grounds are light, with a dark word.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneBlueBadge: RGBA
+        /// The mark and the word on a blue badge.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneBlueBadgeText: RGBA
+        /// A purple pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu. A supervisor given no colour is shown in this; on light it is the app icon's own (`images/Polter.icon/icon.json`).
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var panePurple: RGBA
+        /// The ground of a purple pane's badge at the left of its title. Dark grounds are light, with a dark word.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var panePurpleBadge: RGBA
+        /// The mark and the word on a purple badge.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var panePurpleBadgeText: RGBA
+        /// A pink pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var panePink: RGBA
+        /// The ground of a pink pane's badge at the left of its title. Dark grounds are light, with a dark word.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var panePinkBadge: RGBA
+        /// The mark and the word on a pink badge.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var panePinkBadgeText: RGBA
+        /// A red pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneRed: RGBA
+        /// The ground of a red pane's badge at the left of its title. Dark grounds are light, with a dark word.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneRedBadge: RGBA
+        /// The mark and the word on a red badge.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneRedBadgeText: RGBA
+        /// A orange pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneOrange: RGBA
+        /// The ground of a orange pane's badge at the left of its title. Dark grounds are light, with a dark word.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneOrangeBadge: RGBA
+        /// The mark and the word on a orange badge.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneOrangeBadgeText: RGBA
+        /// A yellow pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneYellow: RGBA
+        /// The ground of a yellow pane's badge at the left of its title. Dark grounds are light, with a dark word.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneYellowBadge: RGBA
+        /// The mark and the word on a yellow badge.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneYellowBadgeText: RGBA
+        /// A green pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneGreen: RGBA
+        /// The ground of a green pane's badge at the left of its title. Dark grounds are light, with a dark word.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneGreenBadge: RGBA
+        /// The mark and the word on a green badge.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneGreenBadgeText: RGBA
+        /// A teal pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneTeal: RGBA
+        /// The ground of a teal pane's badge at the left of its title. Dark grounds are light, with a dark word.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneTealBadge: RGBA
+        /// The mark and the word on a teal badge.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneTealBadgeText: RGBA
+        /// A graphite pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneGraphite: RGBA
+        /// The ground of a graphite pane's badge at the left of its title. Dark grounds are light, with a dark word.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneGraphiteBadge: RGBA
+        /// The mark and the word on a graphite badge.
+        /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+        var paneGraphiteBadgeText: RGBA
         /// Source: design v17, src/tokens-l.css and src/tokens-d.css.
         var workerEdge: RGBA
         /// Dark only.
@@ -769,9 +871,33 @@ enum ControlRoomLook {
         supervisorEdge: RGBA(r: 0, g: 0, b: 0, a: 0.12),
         supervisorEdgeFocused: RGBA(r: 0, g: 0, b: 0, a: 0.38),
         supervisorTerminalEdge: RGBA(r: 0, g: 0, b: 0, a: 0.1),
-        supervisorBadge: RGBA(r: 63, g: 56, b: 201, a: 1.0),
-        supervisorBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
-        supervisorMark: RGBA(r: 63, g: 56, b: 201, a: 1.0),
+        paneBlue: RGBA(r: 42, g: 123, b: 218, a: 1.0),
+        paneBlueBadge: RGBA(r: 40, g: 117, b: 208, a: 1.0),
+        paneBlueBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
+        panePurple: RGBA(r: 63, g: 56, b: 201, a: 1.0),
+        panePurpleBadge: RGBA(r: 63, g: 56, b: 201, a: 1.0),
+        panePurpleBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
+        panePink: RGBA(r: 216, g: 54, b: 162, a: 1.0),
+        panePinkBadge: RGBA(r: 206, g: 51, b: 154, a: 1.0),
+        panePinkBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
+        paneRed: RGBA(r: 224, g: 54, b: 114, a: 1.0),
+        paneRedBadge: RGBA(r: 214, g: 51, b: 109, a: 1.0),
+        paneRedBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
+        paneOrange: RGBA(r: 182, g: 103, b: 42, a: 1.0),
+        paneOrangeBadge: RGBA(r: 173, g: 98, b: 39, a: 1.0),
+        paneOrangeBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
+        paneYellow: RGBA(r: 142, g: 122, b: 41, a: 1.0),
+        paneYellowBadge: RGBA(r: 135, g: 116, b: 39, a: 1.0),
+        paneYellowBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
+        paneGreen: RGBA(r: 45, g: 140, b: 68, a: 1.0),
+        paneGreenBadge: RGBA(r: 42, g: 133, b: 64, a: 1.0),
+        paneGreenBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
+        paneTeal: RGBA(r: 45, g: 135, b: 135, a: 1.0),
+        paneTealBadge: RGBA(r: 43, g: 129, b: 129, a: 1.0),
+        paneTealBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
+        paneGraphite: RGBA(r: 119, g: 123, b: 129, a: 1.0),
+        paneGraphiteBadge: RGBA(r: 113, g: 117, b: 122, a: 1.0),
+        paneGraphiteBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
         workerEdge: RGBA(r: 0, g: 0, b: 0, a: 0.22),
         workerEdgeInner: RGBA(r: 0, g: 0, b: 0, a: 0.0),
         stackTabSeparator: RGBA(r: 0, g: 0, b: 0, a: 0.16),
@@ -835,9 +961,33 @@ enum ControlRoomLook {
         supervisorEdge: RGBA(r: 0, g: 0, b: 0, a: 0.55),
         supervisorEdgeFocused: RGBA(r: 255, g: 255, b: 255, a: 0.4),
         supervisorTerminalEdge: RGBA(r: 0, g: 0, b: 0, a: 0.4),
-        supervisorBadge: RGBA(r: 86, g: 89, b: 235, a: 1.0),
-        supervisorBadgeText: RGBA(r: 255, g: 255, b: 255, a: 1.0),
-        supervisorMark: RGBA(r: 125, g: 139, b: 254, a: 1.0),
+        paneBlue: RGBA(r: 55, g: 139, b: 238, a: 1.0),
+        paneBlueBadge: RGBA(r: 55, g: 139, b: 238, a: 1.0),
+        paneBlueBadgeText: RGBA(r: 12, g: 23, b: 35, a: 1.0),
+        panePurple: RGBA(r: 115, g: 128, b: 238, a: 1.0),
+        panePurpleBadge: RGBA(r: 115, g: 128, b: 238, a: 1.0),
+        panePurpleBadgeText: RGBA(r: 18, g: 21, b: 36, a: 1.0),
+        panePink: RGBA(r: 241, g: 61, b: 181, a: 1.0),
+        panePinkBadge: RGBA(r: 241, g: 61, b: 181, a: 1.0),
+        panePinkBadgeText: RGBA(r: 32, g: 16, b: 25, a: 1.0),
+        paneRed: RGBA(r: 241, g: 75, b: 129, a: 1.0),
+        paneRedBadge: RGBA(r: 241, g: 75, b: 129, a: 1.0),
+        paneRedBadgeText: RGBA(r: 33, g: 16, b: 20, a: 1.0),
+        paneOrange: RGBA(r: 202, g: 116, b: 47, a: 1.0),
+        paneOrangeBadge: RGBA(r: 202, g: 116, b: 47, a: 1.0),
+        paneOrangeBadgeText: RGBA(r: 33, g: 18, b: 8, a: 1.0),
+        paneYellow: RGBA(r: 159, g: 137, b: 47, a: 1.0),
+        paneYellowBadge: RGBA(r: 159, g: 137, b: 47, a: 1.0),
+        paneYellowBadgeText: RGBA(r: 26, g: 22, b: 6, a: 1.0),
+        paneGreen: RGBA(r: 51, g: 157, b: 77, a: 1.0),
+        paneGreenBadge: RGBA(r: 51, g: 157, b: 77, a: 1.0),
+        paneGreenBadgeText: RGBA(r: 12, g: 26, b: 14, a: 1.0),
+        paneTeal: RGBA(r: 52, g: 152, b: 152, a: 1.0),
+        paneTealBadge: RGBA(r: 52, g: 152, b: 152, a: 1.0),
+        paneTealBadgeText: RGBA(r: 3, g: 26, b: 26, a: 1.0),
+        paneGraphite: RGBA(r: 133, g: 139, b: 144, a: 1.0),
+        paneGraphiteBadge: RGBA(r: 133, g: 139, b: 144, a: 1.0),
+        paneGraphiteBadgeText: RGBA(r: 20, g: 22, b: 24, a: 1.0),
         workerEdge: RGBA(r: 0, g: 0, b: 0, a: 0.6),
         workerEdgeInner: RGBA(r: 255, g: 255, b: 255, a: 0.1),
         stackTabSeparator: RGBA(r: 255, g: 255, b: 255, a: 0.15),

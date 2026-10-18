@@ -5499,6 +5499,8 @@ fn launchPersonaIn(
     const surface = self.findSurfaceByID(target) orelse return error.UnknownTerminal;
     const seat: FreeWorker.Seat = .{
         .here = true,
+        .shielded = self.poltergeist.isShielded(target),
+        .workers_refused = self.poltergeist.workersOf(target) == .refused,
         .agent = self.agentPresent(target),
         .at_prompt = surface.isAtShellPrompt(),
         .draft = surface.draftFor(.agent),
@@ -5508,6 +5510,10 @@ fn launchPersonaIn(
         .agent => error.AgentThere,
         .not_at_prompt => error.NotAtPrompt,
         .draft => error.DraftInLine,
+        // The rpc refuses both before a host is asked; this is the same
+        // answer for anything that reaches here another way.
+        .shielded => error.Shielded,
+        .workers_refused => error.WorkersRefused,
         .elsewhere, .other_directory => unreachable,
     };
     try self.startRoleIn(target, by, choice, line, .agent);
@@ -5539,6 +5545,8 @@ fn poltergeistFreeWorker(
         } else false else false;
         seat.* = .{
             .here = here,
+            .shielded = self.poltergeist.isShielded(w),
+            .workers_refused = self.poltergeist.workersOf(w) == .refused,
             .agent = self.agentPresent(w),
             .at_prompt = if (surface) |s| s.isAtShellPrompt() else false,
             .draft = if (surface) |s| s.draftFor(.agent) else true,
@@ -5561,6 +5569,12 @@ const FreeWorker = struct {
     const Seat = struct {
         /// Still open, and in the supervisor's tab.
         here: bool,
+        /// The user has shielded it. Nothing is typed into a shielded
+        /// terminal, this launch included -- `in` was refused for it and
+        /// `auto` never asked until task 1699.
+        shielded: bool,
+        /// The user keeps it for their own commands (task 1699).
+        workers_refused: bool,
         /// An agent is connected to Polter from it.
         agent: bool,
         at_prompt: bool,
@@ -5569,13 +5583,16 @@ const FreeWorker = struct {
         /// It stands where the role is to start, or nowhere was named.
         dir_fits: bool,
 
-        const Why = enum { elsewhere, agent, not_at_prompt, draft, other_directory };
+        const Why = enum { elsewhere, shielded, workers_refused, agent, not_at_prompt, draft, other_directory };
 
         /// Why this one cannot be used; null when it can. In the order a
         /// caller would want to hear it: an agent that is there is the
         /// reason whatever its screen looks like.
         fn why(self: Seat) ?Why {
             if (!self.here) return .elsewhere;
+            // The user's word comes before anything the screen says.
+            if (self.shielded) return .shielded;
+            if (self.workers_refused) return .workers_refused;
             if (self.agent) return .agent;
             if (!self.at_prompt) return .not_at_prompt;
             if (self.draft) return .draft;
@@ -5601,6 +5618,8 @@ const FreeWorker = struct {
         for (seats, 0..) |seat, i| {
             const why: poltergeistpkg.rpc.PassedOver.Why = switch (seat.why() orelse continue) {
                 .elsewhere => continue,
+                .shielded => .shielded,
+                .workers_refused => .workers_refused,
                 .agent => .agent,
                 .not_at_prompt => .not_at_prompt,
                 .draft => .draft,
@@ -5621,7 +5640,7 @@ const FreeWorker = struct {
 
 test "a worker's pane is used again only when it is ours, empty, waiting and where the role is to start" {
     const testing = std.testing;
-    const free: FreeWorker.Seat = .{ .here = true, .agent = false, .at_prompt = true, .draft = false, .dir_fits = true };
+    const free: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .at_prompt = true, .draft = false, .dir_fits = true };
     try testing.expectEqual(@as(?FreeWorker.Seat.Why, null), free.why());
 
     // Each of the five on its own is enough to leave it alone.
@@ -5640,8 +5659,22 @@ test "a worker's pane is used again only when it is ours, empty, waiting and whe
     seat = free;
     seat.dir_fits = false;
     try testing.expectEqual(@as(?FreeWorker.Seat.Why, .other_directory), seat.why());
+    // The user's two marks (task 1699), each enough on its own, and said
+    // ahead of anything the screen says: a pane the user keeps for their
+    // own commands is that whatever is running in it.
+    seat = free;
+    seat.shielded = true;
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .shielded), seat.why());
+    seat = free;
+    seat.workers_refused = true;
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .workers_refused), seat.why());
+    seat.agent = true;
+    seat.at_prompt = false;
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .workers_refused), seat.why());
+    try testing.expectEqual(@as(?usize, 1), FreeWorker.pick(&.{ seat, free }));
+    try testing.expectEqual(poltergeistpkg.rpc.PassedOver.Why.workers_refused, FreeWorker.passedOver(&.{seat}).?.why);
     // An agent that is there is the reason, whatever else is true.
-    seat = .{ .here = true, .agent = true, .at_prompt = false, .draft = true, .dir_fits = false };
+    seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = true, .at_prompt = false, .draft = true, .dir_fits = false };
     try testing.expectEqual(@as(?FreeWorker.Seat.Why, .agent), seat.why());
 
     // The oldest that can be used, and none when none can.
@@ -5657,7 +5690,7 @@ test "a worker's pane is used again only when it is ours, empty, waiting and whe
 // and why (#1498): the oldest of the caller's in its tab, and only those.
 test "the worker pane passed over is the oldest in the tab, with its reason (#1498)" {
     const testing = std.testing;
-    const free: FreeWorker.Seat = .{ .here = true, .agent = false, .at_prompt = true, .draft = false, .dir_fits = true };
+    const free: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .at_prompt = true, .draft = false, .dir_fits = true };
 
     var gone = free;
     gone.here = false;
@@ -8601,7 +8634,17 @@ fn openTerminalAt(
         if (place == .tab) break :placed .{ .tab = .asked };
 
         const where = placed_where: switch (try self.poltergeistPlaceWorker(alloc, rt_app, surface, by)) {
-            .split => |w| w,
+            // **Not out of a pane the user keeps for their own commands**
+            // (task 1699): a split takes half of its room. `beside` never
+            // gets here for one -- the rpc refused it by name.
+            .split => |w| if (beside == null and self.poltergeist.workersOf(w.target.id) == .refused) {
+                log.info(
+                    "poltergeist: the pane a worker would be split out of ({x}) is kept for the user's commands; " ++
+                        "the terminal goes into a tab",
+                    .{w.target.id},
+                );
+                break :placed .{ .tab = .workers_refused };
+            } else w,
             .tab => |why| {
                 if (beside) |b| {
                     log.info(

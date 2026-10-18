@@ -29,7 +29,7 @@ struct ProjectStoreSettingsTests {
     }
 
     private func leaf(_ cwd: String, _ scrollback: String = "") -> ProjectNode {
-        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, agent: .unknown)
+        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
     }
 
     // MARK: The section keeps up with autosave (#965)

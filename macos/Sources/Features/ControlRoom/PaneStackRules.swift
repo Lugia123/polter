@@ -32,6 +32,8 @@ enum PaneStackRules {
         /// What its own view calls it, for a terminal the snapshot does
         /// not list.
         var ownName: String
+        /// The colour the user set on it (task 1699).
+        var color: PaneColor = .none
     }
 
     /// What a pane holding `members`, showing `shown`, draws.
@@ -60,7 +62,8 @@ enum PaneStackRules {
                 shown: title?.shown ?? listed.map { .init($0.shown) } ?? .none,
                 wears: frame?.wears ?? .plain,
                 role: title?.roleWord(in: frame?.wears ?? .plain),
-                terminal: member.terminal)
+                terminal: member.terminal,
+                color: member.color)
         }
         let urgent: [Int] = pulses.compactMap { waiting in
             members.firstIndex { $0.terminal == waiting }

@@ -35,17 +35,21 @@
 //! this file makes the bytes there from values written out in its tests,
 //! and the other two only read them and compare (`test/project-format/README.md`).
 //!
-//! A file is one of two formats.
+//! A file is one of three formats.
 //!
 //! **Format 1** (no `format` key) is what was written while a project was
 //! one tab: `name`, `saved_at`, `root` (that tab's tree), `next_scrollback`.
 //! It is read as a project of one window with one tab, the window's frame
 //! not recorded and every pane's occupant not known. It is never written.
 //!
-//! **Format 2** is what is written, always, in this order and with no
-//! space anywhere:
+//! **Format 2** is format 3 below without the four marks a leaf carries
+//! after `by_supervisor`; a format 2 file's seat is the pane whose agent is
+//! the supervisor. It is never written.
 //!
-//!     {"format":2,"name":S,"saved_at":I,"root":{"kind":"moved-to-windows"},
+//! **Format 3** (task 1699) is what is written, always, in this order and
+//! with no space anywhere:
+//!
+//!     {"format":3,"name":S,"saved_at":I,"root":{"kind":"moved-to-windows"},
 //!      "group":S,"next_scrollback":I,"windows":[WINDOW,...]}
 //!     WINDOW  {"frame":{"origin":"top_left"|"bottom_left","x":N,"y":N,
 //!              "width":N,"height":N},"front":I,"tabs":[{"root":NODE},...]}
@@ -54,14 +58,28 @@
 //!           | LEAF
 //!           | {"kind":"stack","shown":I,"members":[LEAF,LEAF,...]}
 //!     LEAF    {"kind":"leaf","cwd":S,"title":S,"history":S,"scrollback":S,
-//!              "by_supervisor":true,"agent":AGENT}
+//!              "by_supervisor":true,"supervisor_seat":true,"color":COLOR,
+//!              "workers":"refused","shielded":true,"agent":AGENT}
+//!     COLOR   "blue"|"purple"|"pink"|"red"|"orange"|"yellow"|"green"
+//!           | "teal"|"graphite"
 //!     AGENT   {"kind":"unknown"} | {"kind":"none"}
 //!           | {"kind":"agent","role":S,"cli":S,"session":S,"supervisor":B}
 //!
 //! `group`, `next_scrollback` and `frame` are left out when there is none;
-//! so is any string of a leaf or an agent that is empty, and `by_supervisor`
-//! when it is not true. Everything else is
-//! always there, and a format 2 file without it is `Corrupt`.
+//! so is any string of a leaf or an agent that is empty, `by_supervisor`,
+//! `supervisor_seat` and `shielded` when they are not true, `color` when
+//! there is none and `workers` when they are allowed. Any of those four
+//! written another way -- a colour this build does not name, `false` --
+//! is `Corrupt`: read as the default, the next save would write the
+//! default over what the user set. Everything else is always there, and a
+//! file without it is `Corrupt`.
+//!
+//! **Why format 3 and not four more keys in format 2**: a released build
+//! reads format 2 and ignores a key it does not know, and its next save
+//! writes the file again without it. The colours, the shields and the
+//! seat would go the first time an older Polter saved -- which on Windows
+//! is seconds after opening. A released build turns format 3 away as
+//! `TooNew` instead.
 //!
 //!   - A string is its UTF-8 bytes between quotes, with `"` and `\` each
 //!     behind a backslash and every byte below 0x20 as `\u00xx` in lower
@@ -103,7 +121,8 @@
 //! numbering exists to prevent. And a project has at most one supervisor:
 //! **a file in which two or more panes say they are it reads with none of
 //! them being it** -- which of them it was cannot be told from the file, and
-//! whoever opens a project starts its supervisor without asking.
+//! whoever opens a project starts its supervisor without asking. The same
+//! for the seat: two panes that each say `supervisor_seat` read as no seat.
 const Project = @This();
 
 const std = @import("std");
@@ -180,8 +199,47 @@ pub const Leaf = struct {
     /// the supervisor may take for its own".
     by_supervisor: bool,
 
+    /// This pane is where the project's supervisor sits (format 3, task
+    /// 1699). **The pane's, not the agent's**, for the reason written on
+    /// `by_supervisor`: the agent goes and the seat stays, so opening the
+    /// project again knows where to start the supervisor. At most one pane
+    /// of a project is the seat, and `parse` never hands back two.
+    supervisor_seat: bool,
+
+    /// The colour the user gave the pane: what was *set*, `none` for none.
+    /// A supervisor's purple is not written -- it is what the seat is
+    /// shown in when nothing was set.
+    color: Color,
+
+    /// Whether the user keeps workers out of this pane.
+    workers: Workers,
+
+    /// Whether the user put this pane out of every agent's reach.
+    shielded: bool,
+
     /// Who was working in this pane.
     agent: Agent,
+};
+
+/// A pane's colour, as `poltergeist.Bus.PaneColor` has it (a test holds
+/// the two lists equal). The name is what the file writes.
+pub const Color = enum {
+    none,
+    blue,
+    purple,
+    pink,
+    red,
+    orange,
+    yellow,
+    green,
+    teal,
+    graphite,
+};
+
+/// Whether workers may be started in a pane.
+pub const Workers = enum {
+    allowed,
+    refused,
 };
 
 /// Who was working in a pane when the project was saved.
@@ -522,7 +580,7 @@ fn replaced(c: u8) bool {
 }
 
 /// The format this build writes, and the latest it reads.
-pub const format_version: u32 = 2;
+pub const format_version: u32 = 3;
 
 /// Write the snapshot, replacing whatever project of this name was there.
 ///
@@ -653,6 +711,10 @@ fn emitLeaf(w: *std.Io.Writer, leaf: Leaf) EmitError!void {
     try emitField(w, "history", leaf.history);
     try emitField(w, "scrollback", leaf.scrollback);
     if (leaf.by_supervisor) try w.writeAll(",\"by_supervisor\":true");
+    if (leaf.supervisor_seat) try w.writeAll(",\"supervisor_seat\":true");
+    if (leaf.color != .none) try emitField(w, "color", @tagName(leaf.color));
+    if (leaf.workers != .allowed) try emitField(w, "workers", @tagName(leaf.workers));
+    if (leaf.shielded) try w.writeAll(",\"shielded\":true");
     try w.writeAll(",\"agent\":{\"kind\":\"");
     try w.writeAll(@tagName(leaf.agent));
     try w.writeByte('"');
@@ -716,6 +778,9 @@ const Fixups = struct {
     scrollback: std.StringHashMapUnmanaged(void) = .empty,
     /// Every pane that says it is the supervisor.
     supervisors: std.ArrayListUnmanaged(*Agent) = .empty,
+    /// Every pane that says it is the supervisor's seat, for the same
+    /// rule: more than one, and none of them is.
+    seats: std.ArrayListUnmanaged(*bool) = .empty,
 };
 
 /// The same, for bytes already in hand.
@@ -792,6 +857,13 @@ pub fn parse(arena: Allocator, bytes: []const u8) ReadError!Snapshot {
             .{ name, fixups.supervisors.items.len },
         );
         for (fixups.supervisors.items) |agent| agent.agent.supervisor = false;
+    }
+    if (fixups.seats.items.len > 1) {
+        log.warn(
+            "project '{s}' has {d} panes that each say they are the supervisor's seat; read as having none",
+            .{ name, fixups.seats.items.len },
+        );
+        for (fixups.seats.items) |seat| seat.* = false;
     }
 
     return .{
@@ -884,7 +956,7 @@ fn parseNode(arena: Allocator, value: std.json.Value, format: u32, fixups: *Fixu
 
     if (std.mem.eql(u8, kind, "leaf")) {
         node.* = .{ .leaf = try parseLeaf(arena, obj, format, fixups) };
-        try noteSupervisor(arena, &node.leaf, fixups);
+        try noteSupervisor(arena, &node.leaf, fixups, format);
         return node;
     }
 
@@ -909,7 +981,7 @@ fn parseNode(arena: Allocator, value: std.json.Value, format: u32, fixups: *Fixu
                 else => return error.Corrupt,
             }
             member.* = try parseLeaf(arena, m, format, fixups);
-            try noteSupervisor(arena, member, fixups);
+            try noteSupervisor(arena, member, fixups, format);
         }
         const shown: usize = switch (obj.get("shown") orelse return error.Corrupt) {
             .integer => |n| std.math.cast(usize, n) orelse return error.Corrupt,
@@ -970,14 +1042,45 @@ fn parseLeaf(arena: Allocator, obj: std.json.ObjectMap, format: u32, fixups: *Fi
             .bool => |b| b,
             else => return error.Corrupt,
         } else false,
+        // New with format 3, and strict the same way: a value this build
+        // does not write is a damaged file, never read as the default --
+        // which the next save would then write over what was there.
+        // Before format 3 the seat was the supervisor's agent's (below).
+        .supervisor_seat = if (format < 3) false else try onlyTrue(obj.get("supervisor_seat")),
+        .color = if (format < 3) .none else if (obj.get("color")) |v| switch (v) {
+            .string => |str| std.meta.stringToEnum(Color, str) orelse return error.Corrupt,
+            else => return error.Corrupt,
+        } else .none,
+        .workers = if (format < 3) .allowed else if (obj.get("workers")) |v| switch (v) {
+            .string => |str| if (std.mem.eql(u8, str, "refused")) .refused else return error.Corrupt,
+            else => return error.Corrupt,
+        } else .allowed,
+        .shielded = if (format < 3) false else try onlyTrue(obj.get("shielded")),
         // A format 1 file never said, whatever keys it has.
         .agent = if (format == 1) .unknown else try parseAgent(obj.get("agent") orelse return error.Corrupt),
     };
 }
 
+/// A key that is written only when it is true: absent is false, `true` is
+/// true, and anything else -- `false` included, which no build writes --
+/// is a damaged file.
+fn onlyTrue(value: ?std.json.Value) ReadError!bool {
+    const v = value orelse return false;
+    return switch (v) {
+        .bool => |b| if (b) true else error.Corrupt,
+        else => error.Corrupt,
+    };
+}
+
 /// Remember a pane that says it is the supervisor's, by where it now
 /// lives, so that `parse` can take the claim back from all of them.
-fn noteSupervisor(arena: Allocator, leaf: *Leaf, fixups: *Fixups) ReadError!void {
+fn noteSupervisor(arena: Allocator, leaf: *Leaf, fixups: *Fixups, format: u32) ReadError!void {
+    // Before format 3 the seat was wherever the supervisor's agent was.
+    if (format < 3) switch (leaf.agent) {
+        .agent => |who| leaf.supervisor_seat = who.supervisor,
+        .unknown, .none => {},
+    };
+    if (leaf.supervisor_seat) try fixups.seats.append(arena, &leaf.supervisor_seat);
     switch (leaf.agent) {
         .agent => |who| if (who.supervisor) try fixups.supervisors.append(arena, &leaf.agent),
         .unknown, .none => {},
@@ -1140,6 +1243,10 @@ fn expectLeavesEqual(al: Leaf, bl: Leaf) !void {
     try testing.expectEqualStrings(al.history, bl.history);
     try testing.expectEqualStrings(al.scrollback, bl.scrollback);
     try testing.expectEqual(al.by_supervisor, bl.by_supervisor);
+    try testing.expectEqual(al.supervisor_seat, bl.supervisor_seat);
+    try testing.expectEqual(al.color, bl.color);
+    try testing.expectEqual(al.workers, bl.workers);
+    try testing.expectEqual(al.shielded, bl.shielded);
     try testing.expectEqualDeep(al.agent, bl.agent);
 }
 
@@ -1186,8 +1293,8 @@ test "what is written comes back exactly" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const left: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "✳ retry.py", .history = "a1b2c3.history", .scrollback = "0.snap", .by_supervisor = false, .agent = .unknown } };
-    const right: Node = .{ .leaf = .{ .cwd = "/work/repo/tests", .title = "✳ tests", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
+    const left: Node = .{ .leaf = .{ .cwd = "/work/repo", .title = "✳ retry.py", .history = "a1b2c3.history", .scrollback = "0.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const right: Node = .{ .leaf = .{ .cwd = "/work/repo/tests", .title = "✳ tests", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
     const root: Node = .{ .split = .{
         .direction = .horizontal,
         .ratio = 0.62,
@@ -1236,9 +1343,9 @@ test "a nested tree round-trips" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const a: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
-    const b: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
-    const c: Node = .{ .leaf = .{ .cwd = "/c", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
+    const a: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const b: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const c: Node = .{ .leaf = .{ .cwd = "/c", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
     const inner: Node = .{ .split = .{ .direction = .vertical, .ratio = 0.5, .left = &b, .right = &c } };
     const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.3, .left = &a, .right = &inner } };
 
@@ -1290,8 +1397,8 @@ test "a truncated file does not read out half a tree" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const left: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
-    const right: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
+    const left: Node = .{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
+    const right: Node = .{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
     const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = 0.5, .left = &left, .right = &right } };
     try write(alloc, io, dir, try oneTab(alloc, "cutoff", 3, &root, null));
 
@@ -1422,7 +1529,7 @@ test "rename keeps the tree and moves the name" {
     const dir = try tmpDir(alloc, io);
     defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const leaf: Node = .{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } };
+    const leaf: Node = .{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } };
     try write(alloc, io, dir, try oneTab(alloc, "old name", 6, &leaf, 3));
 
     try rename(alloc, io, dir, "old name", "new name");
@@ -1684,7 +1791,7 @@ test "a file from a later format is refused as too new, and is never read as for
     // It has everything a format 1 file has. Read as one, it is a project
     // of one pane, and the next save writes that over whatever it was.
     try testing.expectError(error.TooNew, parse(alloc,
-        \\{"format":3,"name":"later","saved_at":1,"root":{"kind":"leaf","cwd":"/a"}}
+        \\{"format":4,"name":"later","saved_at":1,"root":{"kind":"leaf","cwd":"/a"}}
     ));
     try testing.expectError(error.TooNew, parse(alloc, "{\"format\":9000,\"name\":\"n\",\"saved_at\":1,\"windows\":[]}"));
 
@@ -1747,12 +1854,62 @@ test "a format 2 file that lacks what format 2 always writes is corrupt" {
     try testing.expectEqual(Agent.none, ok.firstTab().?.leaf.agent);
 }
 
+test "a format 3 mark this build does not write is corrupt, never read as the default" {
+    // Read as the default, the next save would write the default over what
+    // the user had set -- the silent loss format 3 exists to prevent.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cases = [_]struct { what: []const u8, keys: []const u8 }{
+        .{ .what = "a colour this build does not name", .keys = "\"color\":\"magenta\"" },
+        .{ .what = "a colour that is not text", .keys = "\"color\":5" },
+        .{ .what = "workers said the way that is never written", .keys = "\"workers\":\"allowed\"" },
+        .{ .what = "workers that is not a word this build writes", .keys = "\"workers\":\"some\"" },
+        .{ .what = "a shield written false", .keys = "\"shielded\":false" },
+        .{ .what = "a shield that is not yes", .keys = "\"shielded\":1" },
+        .{ .what = "a seat written false", .keys = "\"supervisor_seat\":false" },
+        .{ .what = "a seat that is not yes", .keys = "\"supervisor_seat\":\"yes\"" },
+    };
+    for (cases) |c| {
+        const bytes = try std.fmt.allocPrint(alloc, "{{\"format\":3,\"name\":\"n\",\"saved_at\":1,\"windows\":[{{\"front\":0,\"tabs\":[{{\"root\":{{\"kind\":\"leaf\",{s},\"agent\":{{\"kind\":\"none\"}}}}}}]}}]}}", .{c.keys});
+        testing.expectError(error.Corrupt, parse(alloc, bytes)) catch |err| {
+            std.debug.print("{s}: read without complaint\n", .{c.what});
+            return err;
+        };
+    }
+
+    // The control: each of the four, said the way it is written, reads.
+    const ok = try parse(alloc, "{\"format\":3,\"name\":\"n\",\"saved_at\":1,\"windows\":[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"supervisor_seat\":true,\"color\":\"yellow\",\"workers\":\"refused\",\"shielded\":true,\"agent\":{\"kind\":\"none\"}}}]}]}");
+    const leaf = ok.firstTab().?.leaf;
+    try testing.expect(leaf.supervisor_seat);
+    try testing.expectEqual(Color.yellow, leaf.color);
+    try testing.expectEqual(Workers.refused, leaf.workers);
+    try testing.expect(leaf.shielded);
+
+    // And a format 2 file that happens to carry the keys never reads them:
+    // no build wrote them there, so they are not the user's.
+    const two = try parse(alloc, "{\"format\":2,\"name\":\"n\",\"saved_at\":1,\"windows\":[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"color\":\"magenta\",\"agent\":{\"kind\":\"none\"}}}]}]}");
+    try testing.expectEqual(Color.none, two.firstTab().?.leaf.color);
+}
+
+test "a project's colours are the bus's, name for name" {
+    // The hosts read a file's colour and hand it to the core by name
+    // (`poltergeist_set_pane_color:<name>`); a name on one list and not the
+    // other would be a colour that cannot come back.
+    const Bus = @import("poltergeist/main.zig").Bus;
+    try testing.expectEqual(std.enums.values(Bus.PaneColor).len, std.enums.values(Color).len);
+    inline for (comptime std.enums.values(Color)) |c| {
+        try testing.expect(Bus.PaneColor.parse(@tagName(c)) != null);
+    }
+}
+
 test "a stack is at least two panes with one of them showing, to write as to read" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const pane: Leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .none };
+    const pane: Leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none };
     const bad = [_]Stack{
         // One terminal in a pane is a leaf, and it is not this that turns
         // it into one.
@@ -1778,7 +1935,7 @@ test "a ratio that is not a finite number cannot be written" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const leaf: Node = .{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .none } };
+    const leaf: Node = .{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } };
     for ([_]f64{ std.math.nan(f64), std.math.inf(f64), -std.math.inf(f64) }) |bad| {
         const root: Node = .{ .split = .{ .direction = .horizontal, .ratio = bad, .left = &leaf, .right = &leaf } };
         var buf: std.Io.Writer.Allocating = .init(alloc);
@@ -1826,12 +1983,21 @@ const Shared = struct {
     value: Snapshot,
 
     fn leaf(comptime cwd: []const u8, comptime scrollback: []const u8, comptime agent: Agent) *const Node {
-        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = scrollback, .by_supervisor = false, .agent = agent } };
+        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = scrollback, .by_supervisor = false, .supervisor_seat = seated(agent), .color = .none, .workers = .allowed, .shielded = false, .agent = agent } };
+    }
+
+    /// The seat is where the supervisor's agent is, in every file here
+    /// that has one -- which is what a format 2 file reads as, too.
+    fn seated(comptime agent: Agent) bool {
+        return switch (agent) {
+            .agent => |who| who.supervisor,
+            .unknown, .none => false,
+        };
     }
 
     /// A pane the project's supervisor opened.
     fn opened(comptime cwd: []const u8, comptime agent: Agent) *const Node {
-        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = "", .by_supervisor = true, .agent = agent } };
+        return &.{ .leaf = .{ .cwd = cwd, .title = "", .history = "", .scrollback = "", .by_supervisor = true, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = agent } };
     }
 
     fn split(comptime direction: Direction, comptime ratio: f64, comptime left: *const Node, comptime right: *const Node) *const Node {
@@ -1859,8 +2025,8 @@ const Shared = struct {
             .windows = &.{.{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(
                 .vertical,
                 0.25,
-                &.{ .leaf = .{ .cwd = "/work/left", .title = "left title", .history = "left.history", .scrollback = "3.snap", .by_supervisor = false, .agent = .unknown } },
-                &.{ .leaf = .{ .cwd = "/work/right", .title = "right title", .history = "right.history", .scrollback = "8.snap", .by_supervisor = false, .agent = .unknown } },
+                &.{ .leaf = .{ .cwd = "/work/left", .title = "left title", .history = "left.history", .scrollback = "3.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } },
+                &.{ .leaf = .{ .cwd = "/work/right", .title = "right title", .history = "right.history", .scrollback = "8.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } },
             ) }} }},
         } },
         // A format 1 file with no tab in it.
@@ -1880,7 +2046,7 @@ const Shared = struct {
             .windows = &.{.{
                 .frame = .{ .origin = .bottom_left, .x = 120, .y = 80, .width = 1280, .height = 800 },
                 .front = 0,
-                .tabs = &.{.{ .root = &.{ .leaf = .{ .cwd = "/work", .title = "zsh", .history = "a1b2c3.history", .scrollback = "0.snap", .by_supervisor = false, .agent = .none } } }},
+                .tabs = &.{.{ .root = &.{ .leaf = .{ .cwd = "/work", .title = "zsh", .history = "a1b2c3.history", .scrollback = "0.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } } }},
             }},
         } },
         // Several windows, several tabs, and every way a string or a number
@@ -1904,9 +2070,13 @@ const Shared = struct {
                                 .history = "a1b2c3.history",
                                 .scrollback = "0.snap",
                                 .by_supervisor = false,
+                                .supervisor_seat = false,
+                                .color = .none,
+                                .workers = .allowed,
+                                .shielded = false,
                                 .agent = .none,
                             } },
-                            &.{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown } },
+                            &.{ .leaf = .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown } },
                         ) },
                         .{ .root = &.{ .leaf = .{
                             .cwd = "/a/b",
@@ -1914,6 +2084,10 @@ const Shared = struct {
                             .history = "",
                             .scrollback = "12345678901234567890.snap",
                             .by_supervisor = false,
+                            .supervisor_seat = false,
+                            .color = .none,
+                            .workers = .allowed,
+                            .shielded = false,
                             .agent = worker(false),
                         } } },
                         .{ .root = split(
@@ -1994,6 +2168,10 @@ const Shared = struct {
                     .history = "",
                     .scrollback = "",
                     .by_supervisor = false,
+                    .supervisor_seat = false,
+                    .color = .none,
+                    .workers = .allowed,
+                    .shielded = false,
                     .agent = .{ .agent = .{ .role = "polter-supervisor", .cli = "claude-code", .session = "s-2", .supervisor = false } },
                 } } }} },
             },
@@ -2030,15 +2208,15 @@ const Shared = struct {
                         .horizontal,
                         0.5,
                         &.{ .stack = .{ .shown = 1, .members = &.{
-                            .{ .cwd = "/work/repo", .title = "supervisor", .history = "s.history", .scrollback = "0.snap", .by_supervisor = false, .agent = supervisor },
-                            .{ .cwd = "/work/repo/a", .title = "", .history = "", .scrollback = "1.snap", .by_supervisor = true, .agent = worker(false) },
-                            .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = .unknown },
+                            .{ .cwd = "/work/repo", .title = "supervisor", .history = "s.history", .scrollback = "0.snap", .by_supervisor = false, .supervisor_seat = true, .color = .none, .workers = .allowed, .shielded = false, .agent = supervisor },
+                            .{ .cwd = "/work/repo/a", .title = "", .history = "", .scrollback = "1.snap", .by_supervisor = true, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = worker(false) },
+                            .{ .cwd = "", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .unknown },
                         } } },
                         leaf("/work/repo/b", "2.snap", .none),
                     ) },
                     .{ .root = &.{ .stack = .{ .shown = 0, .members = &.{
-                        .{ .cwd = "/x", .title = "", .history = "", .scrollback = "4.snap", .by_supervisor = false, .agent = .none },
-                        .{ .cwd = "/y", .title = "", .history = "", .scrollback = "5.snap", .by_supervisor = false, .agent = .none },
+                        .{ .cwd = "/x", .title = "", .history = "", .scrollback = "4.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none },
+                        .{ .cwd = "/y", .title = "", .history = "", .scrollback = "5.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none },
                     } } } },
                 },
             }},
@@ -2055,10 +2233,71 @@ const Shared = struct {
                 .vertical,
                 0.5,
                 &.{ .stack = .{ .shown = 0, .members = &.{
-                    .{ .cwd = "/a", .title = "", .history = "", .scrollback = "1.snap", .by_supervisor = false, .agent = worker(false) },
-                    .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .agent = worker(false) },
+                    .{ .cwd = "/a", .title = "", .history = "", .scrollback = "1.snap", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = worker(false) },
+                    .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = worker(false) },
                 } } },
                 leaf("/c", "", .none),
+            ) }} }},
+        } },
+        // What a format 2 file reads as now: everything it said, the seat
+        // where its supervisor's agent was, and none of the user's marks
+        // (format 3, task 1699). Written back as format 3.
+        .{ .kind = .from, .stem = "format_2", .value = .{
+            .name = "with a supervisor",
+            .saved_at = 1757000002,
+            .group = null,
+            .next_scrollback = null,
+            .windows = &.{.{
+                .frame = .{ .origin = .bottom_left, .x = 0, .y = 0, .width = 1440, .height = 900 },
+                .front = 1,
+                .tabs = &.{
+                    .{ .root = split(.horizontal, 0.9856906946328695, leaf("/work/repo", "", supervisor), opened("/work/repo", worker(false))) },
+                    .{ .root = split(.vertical, 0.5, opened("/work/repo", .none), leaf("", "", .unknown)) },
+                },
+            }},
+        } },
+        // The user's marks on panes (format 3, task 1699): a seat whose
+        // supervisor has gone, colours, a pane kept for commands, a shield,
+        // and the same on the members of a stack.
+        .{ .kind = .same, .stem = "pane_marks", .value = .{
+            .name = "pane marks",
+            .saved_at = 1757000009,
+            .group = "g",
+            .next_scrollback = null,
+            .windows = &.{.{
+                .frame = null,
+                .front = 0,
+                .tabs = &.{
+                    .{ .root = split(
+                        .horizontal,
+                        0.5,
+                        &.{ .leaf = .{ .cwd = "/work", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = true, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } },
+                        split(
+                            .vertical,
+                            0.5,
+                            &.{ .leaf = .{ .cwd = "/work/api", .title = "", .history = "", .scrollback = "", .by_supervisor = true, .supervisor_seat = false, .color = .orange, .workers = .allowed, .shielded = false, .agent = worker(false) } },
+                            &.{ .leaf = .{ .cwd = "/work/web", .title = "npm run dev", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .teal, .workers = .refused, .shielded = false, .agent = .none } },
+                        ),
+                    ) },
+                    .{ .root = &.{ .stack = .{ .shown = 0, .members = &.{
+                        .{ .cwd = "/prod", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .red, .workers = .refused, .shielded = true, .agent = .none },
+                        .{ .cwd = "/x", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .graphite, .workers = .allowed, .shielded = false, .agent = .unknown },
+                    } } } },
+                },
+            }},
+        } },
+        // Two panes each say they are the seat: neither is, as for two
+        // supervisors, and their other marks are kept.
+        .{ .kind = .from, .stem = "two_seats", .value = .{
+            .name = "two seats",
+            .saved_at = 1757000010,
+            .group = null,
+            .next_scrollback = null,
+            .windows = &.{.{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(
+                .horizontal,
+                0.5,
+                &.{ .leaf = .{ .cwd = "/a", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .purple, .workers = .allowed, .shielded = false, .agent = .none } },
+                &.{ .leaf = .{ .cwd = "/b", .title = "", .history = "", .scrollback = "", .by_supervisor = false, .supervisor_seat = false, .color = .none, .workers = .allowed, .shielded = false, .agent = .none } },
             ) }} }},
         } },
         .{ .kind = .refused, .stem = "too_new", .value = undefined },

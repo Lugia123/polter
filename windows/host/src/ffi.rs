@@ -169,6 +169,12 @@ pub const ACTION_POLTER_TAB_MOVE: u32 = 82;
 /// 1690): light a terminal for the person to find. The payload is
 /// `ghostty_action_polter_highlight_s`; see `Action::as_polter_highlight`.
 pub const ACTION_POLTER_HIGHLIGHT: u32 = 83;
+/// `Action.Key.poltergeist_pane`, appended after `polter_highlight` (task
+/// 1699/1700, `pane-color-interface.md` §3): what a person has marked on one
+/// terminal -- its colour, whether workers may start in it, and the flag its
+/// tab draws for it. ⚠️ **Appended, like every one before it.** The payload
+/// is `ghostty_action_poltergeist_pane_s`; see `Action::as_poltergeist_pane`.
+pub const ACTION_POLTERGEIST_PANE: u32 = 84;
 
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
@@ -371,6 +377,23 @@ pub const SCREENSHOT_PENDING: i32 = 3;
 /// this struct mean anything.** Without them `offset_of!` measured whatever
 /// order rustc chose and `size_of` came out 16 -- a number the C side has
 /// never had -- so a pin on it pinned nothing the core writes.
+/// `ghostty_action_poltergeist_pane_s` (task 1700): three C enums, `int`
+/// each, at 0, 4 and 8. **Its own action and not three more fields on the
+/// mark**: the mark is full at 24 bytes and its offsets are pinned.
+///
+/// The colour is the one **set**, not the one shown: a supervisor with none
+/// set draws purple, and that is decided where it is drawn
+/// (`pane::badge_ground`), not here.
+#[repr(C)]
+pub struct PoltergeistPane {
+    /// `ghostty_poltergeist_pane_color_e`: the palette index, 0 none.
+    pub color: i32,
+    /// `ghostty_poltergeist_workers_e`: 0 allowed, 1 refused.
+    pub workers: i32,
+    /// `ghostty_poltergeist_flag_e`: 0 none, 1 raised, 2 lowered.
+    pub flag: i32,
+}
+
 #[repr(C)]
 pub struct PoltergeistMark {
     pub prefix: *const c_char,
@@ -896,6 +919,28 @@ impl Action {
         let label = (!label.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(label) }.to_string_lossy().into_owned());
         let out = usize::from_ne_bytes(self.payload[16..24].try_into().unwrap()) as *mut LayoutOut;
         (seconds, label, out)
+    }
+
+    /// `ghostty_action_poltergeist_pane_s { color; workers; flag; }`, three
+    /// ints. `None` for a value outside its enum: a core newer than this
+    /// host, or a payload read at the wrong tag -- either way not something
+    /// to draw as the nearest value that fits.
+    pub fn as_poltergeist_pane(&self) -> Option<(polter_projectfile::PaneColor, polter_projectfile::Workers, crate::tabs::Flag)> {
+        use polter_projectfile::{PaneColor, Workers};
+        let int = |off: usize| i32::from_ne_bytes(self.payload[off..off + 4].try_into().unwrap());
+        let color = *PaneColor::ALL.get(usize::try_from(int(std::mem::offset_of!(PoltergeistPane, color))).ok()?)?;
+        let workers = match int(std::mem::offset_of!(PoltergeistPane, workers)) {
+            0 => Workers::Allowed,
+            1 => Workers::Refused,
+            _ => return None,
+        };
+        let flag = match int(std::mem::offset_of!(PoltergeistPane, flag)) {
+            0 => crate::tabs::Flag::None,
+            1 => crate::tabs::Flag::Raised,
+            2 => crate::tabs::Flag::Lowered,
+            _ => return None,
+        };
+        Some((color, workers, flag))
     }
 
     /// `ghostty_action_reload_config_s { bool soft; }`.

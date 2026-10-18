@@ -110,7 +110,8 @@ struct PaneFrameBarFitTests {
     /// How many pixels of the bar are the badge's ground, at a scale of 2.
     /// Its ground and nothing else: the word and the mark on it are white,
     /// and no other colour of a bar is near it.
-    static func badgePixels(_ wears: PaneFrame.Kind, _ title: PaneFrame.Title, width: Double, scheme: ColorScheme) throws -> Int {
+    static func badgePixels(_ wears: PaneFrame.Kind, _ title: PaneFrame.Title, width: Double, scheme: ColorScheme,
+                            ground: PaneColor = .purple) throws -> Int {
         let scale = 2.0
         let view = PaneFrameView(wears: wears, title: title, caption: nil, focused: false, well: nil, cover: nil, stack: nil) {
             Color.clear
@@ -121,7 +122,7 @@ struct PaneFrameBarFitTests {
         renderer.scale = CGFloat(scale)
         let image = try #require(renderer.cgImage)
         let rep = NSBitmapImageRep(cgImage: image)
-        let want = Look.theme(dark: scheme == .dark).supervisorBadge
+        let want = PaneFrame.badgeGround(ground, theme: Look.theme(dark: scheme == .dark))
         var count = 0
         for y in 0..<Int(Look.Pane.barHeight * scale) {
             for x in 0..<Int(width * scale) {
@@ -161,6 +162,32 @@ struct PaneFrameBarFitTests {
         }
     }
 
+    /// A pane given a colour has a badge in it at the left of its title
+    /// (task 1699): a worker's with its word, an ordinary terminal's the dot
+    /// alone; a supervisor's in its own colour when it was given one. And
+    /// with no colour, no badge, as before.
+    @Test func aPaneGivenAColourHasABadgeInIt() throws {
+        for scheme in [ColorScheme.light, .dark] {
+            let worker = PaneFrame.Title(name: "api", shown: .working, word: "在干活", badged: true, color: .orange)
+            let withWord = try Self.badgePixels(.worker, worker, width: 600, scheme: scheme, ground: .orange)
+            #expect(withWord > 20 * 40 * 2, "\(scheme): \(withWord)")
+            let plain = PaneFrame.Title(name: "zsh", shown: .none, word: "", badged: true, color: .orange)
+            let dotOnly = try Self.badgePixels(.plain, plain, width: 600, scheme: scheme, ground: .orange)
+            // 26 by 20, round at both ends: a dot, no word.
+            #expect(dotOnly > 20 * 16 * 2 && dotOnly < 20 * 26 * 4, "\(scheme): \(dotOnly)")
+            let teal = PaneFrame.Title(name: "boss", shown: .working, word: "在干活", badged: true, color: .teal)
+            #expect(try Self.badgePixels(.supervisor, teal, width: 600, scheme: scheme, ground: .teal) > 20 * 40 * 2)
+            #expect(try Self.badgePixels(.supervisor, teal, width: 600, scheme: scheme, ground: .purple) == 0)
+            let none = PaneFrame.Title(name: "api", shown: .working, word: "在干活", badged: true)
+            #expect(try Self.badgePixels(.worker, none, width: 600, scheme: scheme, ground: .orange) == 0)
+        }
+        // Where there is a badge the word after the name is on it, not after it.
+        let worker = PaneFrame.Title(name: "api", shown: .working, word: "", badged: true, color: .green)
+        #expect(worker.badgeKind(in: .worker) == .dot)
+        #expect(worker.badgeWord(in: .worker) == PaneFrame.roleWord(.worker))
+        #expect(PaneFrame.Title(name: "z", shown: .none, word: "", badged: true, color: .green).badgeWord(in: .plain) == "")
+    }
+
     /// The control room's own frame has no badge: it is the supervisor's
     /// and nothing else, and the Windows host draws it without one.
     @Test func theControlRoomsFrameHasNoBadge() throws {
@@ -170,18 +197,66 @@ struct PaneFrameBarFitTests {
         #expect(try Self.badgePixels(.supervisor, split, width: 400, scheme: .light) > 0)
     }
 
+    /// With the edge drawn the pane's content steps in by its width, so the
+    /// edge lies beside the terminal's text and never on it (task 1699: at
+    /// `window-padding` 0 it covered the first column). With no edge the
+    /// content reaches the pane's edge as before.
+    @Test func theEdgeNeverLiesOnWhatIsInThePane() throws {
+        // Green, with a red first column and first row: the terminal's
+        // first character cell, which is what must never be under the line.
+        let content = ZStack(alignment: .topLeading) {
+            Color(.sRGB, red: 0, green: 1, blue: 0, opacity: 1)
+            Color(.sRGB, red: 1, green: 0, blue: 0, opacity: 1).frame(width: 1)
+            Color(.sRGB, red: 1, green: 0, blue: 0, opacity: 1).frame(height: 1)
+        }
+        func green(_ rep: NSBitmapImageRep, _ x: Int, _ y: Int) -> Bool {
+            guard let c = rep.colorAt(x: x, y: y) else { return false }
+            return c.greenComponent > 0.9 && c.redComponent < 0.1 && c.blueComponent < 0.1
+        }
+        func red(_ rep: NSBitmapImageRep, _ x: Int, _ y: Int) -> Bool {
+            guard let c = rep.colorAt(x: x, y: y) else { return false }
+            return c.redComponent > 0.9 && c.greenComponent < 0.1 && c.blueComponent < 0.1
+        }
+        let edge = Int(Look.SupervisorBadge.edge * 2)
+        for colour in [PaneColor?.none, .purple, .orange] {
+            let view = content.frame(maxWidth: .infinity, maxHeight: .infinity)
+                .modifier(PaneSupervisorEdge(color: colour))
+                .frame(width: 200, height: 100)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            let rep = NSBitmapImageRep(cgImage: try #require(renderer.cgImage))
+            // Every side: the outermost pixel is the content's only with no
+            // edge, and the first pixel past the edge is always the content's.
+            // The first column and the first row are the content's own,
+            // seen whole: right at the pane's edge with no line, just past
+            // the line with one.
+            let first = colour == nil ? 0 : edge
+            #expect(red(rep, first, 100), "\(String(describing: colour)): the first column at \(first)")
+            #expect(red(rep, 200, first), "\(String(describing: colour)): the first row at \(first)")
+            // The far sides: the outermost pixel is the content's only with
+            // no line, and the first pixel past the line is always the content's.
+            for (x, y) in [(399, 100), (200, 199)] {
+                #expect(green(rep, x, y) == (colour == nil), "\(String(describing: colour)) at \(x),\(y)")
+            }
+            for (x, y) in [(399 - edge, 100), (200, 199 - edge)] {
+                #expect(green(rep, x, y), "\(String(describing: colour)) at \(x),\(y)")
+            }
+        }
+    }
+
     /// The edge round a supervisor's pane with no frames: just inside it,
     /// `supervisor_badge.edge` thick on every side, and nothing further in.
     @Test func theEdgeIsJustInsideThePaneOnEverySide() throws {
         for scheme in [ColorScheme.light, .dark] {
-            for shows in [true, false] {
-                let view = Color.clear.frame(width: 200, height: 100)
-                    .modifier(PaneSupervisorEdge(shows: shows))
+            for (shows, colour) in [(true, PaneColor.purple), (false, .purple), (true, .orange)] {
+                let view = Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .modifier(PaneSupervisorEdge(color: shows ? colour : nil))
+                    .frame(width: 200, height: 100)
                     .environment(\.colorScheme, scheme)
                 let renderer = ImageRenderer(content: view)
                 renderer.scale = 2
                 let rep = NSBitmapImageRep(cgImage: try #require(renderer.cgImage))
-                let want = Look.theme(dark: scheme == .dark).supervisorMark
+                let want = try #require(colour.dot(Look.theme(dark: scheme == .dark)))
                 func isMark(_ x: Int, _ y: Int) -> Bool {
                     guard let c = rep.colorAt(x: x, y: y), c.alphaComponent > 0.9 else { return false }
                     return abs(c.redComponent * 255 - Double(want.r)) + abs(c.greenComponent * 255 - Double(want.g))

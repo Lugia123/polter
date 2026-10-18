@@ -8,4 +8,7 @@ from	two_supervisors
 from	duplicate_scrollback
 same	stack
 from	stack_put_right
+from	format_2
+same	pane_marks
+from	two_seats
 refused	too_new

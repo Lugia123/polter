@@ -34,7 +34,7 @@ import GhosttyKit
 /// can hand it to a `JSONEncoder`, whose bytes are not the format's.
 struct ProjectFile: Equatable {
     /// The format this build writes, and the latest it reads.
-    static let formatVersion = 2
+    static let formatVersion = 3
 
     let name: String
 
@@ -189,7 +189,23 @@ indirect enum ProjectNode: Equatable {
     /// It is the pane's and not the agent's: the agent leaves, the pane is
     /// nobody's, and it is still one the supervisor may use again. False
     /// is also what a pane nothing recorded this for reads as.
-    case leaf(cwd: String, title: String, history: String, scrollback: String, bySupervisor: Bool, agent: ProjectAgent)
+    ///
+    /// The four after it are new with format 3 (task 1699), each written
+    /// only when it is not the default and each a damaged file when written
+    /// any other way (`Project.zig`'s module comment says why):
+    ///
+    /// - `supervisorSeat`: the pane is where the project's supervisor sits.
+    ///   The pane's, not the agent's, for the reason `bySupervisor` is; at
+    ///   most one pane of a project has it (`puttingRight`). A format 2 file's
+    ///   seat is the pane whose agent is the supervisor.
+    /// - `color`: the colour the user *set* (`PaneColor`), not the one shown
+    ///   -- a supervisor's purple is not written.
+    /// - `workersRefused`: the user keeps workers out of this pane.
+    /// - `shielded`: the user put the pane out of every agent's reach.
+    case leaf(
+        cwd: String, title: String, history: String, scrollback: String, bySupervisor: Bool,
+        supervisorSeat: Bool, color: PaneColor, workersRefused: Bool, shielded: Bool,
+        agent: ProjectAgent)
     /// Several terminals in one pane: one showing, the others behind it,
     /// a row of tabs over the pane to choose between them
     /// (`Project.Stack` in `src/Project.zig`).
@@ -236,7 +252,7 @@ indirect enum ProjectNode: Equatable {
 
     var scrollbackFilenames: [String] {
         switch self {
-        case .leaf(_, _, _, let scrollback, _, _): return scrollback.isEmpty ? [] : [scrollback]
+        case .leaf(_, _, _, let scrollback, _, _, _, _, _, _): return scrollback.isEmpty ? [] : [scrollback]
         case .stack(_, let members): return members.flatMap(\.scrollbackFilenames)
         case .split(_, _, let left, let right): return left.scrollbackFilenames + right.scrollbackFilenames
         }
@@ -281,7 +297,7 @@ enum ProjectFileError: LocalizedError, Equatable, CustomStringConvertible {
 // MARK: - Writing
 
 extension ProjectFile {
-    /// The bytes of this project as a format 2 file -- `emit` in
+    /// The bytes of this project as a format 3 file -- `emit` in
     /// `Project.zig`. **Written by hand rather than through `JSONEncoder`**:
     /// the three implementations have to write the same bytes, and
     /// `JSONEncoder` orders keys its own way, escapes `/`, and prints a
@@ -327,13 +343,20 @@ extension ProjectFile {
 enum ProjectFileWriting {
     static func node(_ node: ProjectNode, into out: inout String) throws {
         switch node {
-        case .leaf(let cwd, let title, let history, let scrollback, let bySupervisor, let agent):
+        case .leaf(
+            let cwd, let title, let history, let scrollback, let bySupervisor,
+            let supervisorSeat, let color, let workersRefused, let shielded, let agent):
             out += "{\"kind\":\"leaf\""
             field("cwd", cwd, into: &out)
             field("title", title, into: &out)
             field("history", history, into: &out)
             field("scrollback", scrollback, into: &out)
             if bySupervisor { out += ",\"by_supervisor\":true" }
+            // Format 3's four marks, each only when it is not the default.
+            if supervisorSeat { out += ",\"supervisor_seat\":true" }
+            if color != .none { field("color", color.name, into: &out) }
+            if workersRefused { out += ",\"workers\":\"refused\"" }
+            if shielded { out += ",\"shielded\":true" }
             out += ",\"agent\":{\"kind\":"
             switch agent {
             case .unknown: out += "\"unknown\""
@@ -466,17 +489,20 @@ extension ProjectFile {
 
     /// What `Project.zig`'s module comment says a read puts right: a
     /// snapshot name an earlier pane already has reads as none, and **when
-    /// two or more panes say they are the supervisor, none of them is**.
+    /// two or more panes say they are the supervisor, none of them is** --
+    /// and the same, on its own, for two or more that say they are the
+    /// supervisor's seat.
     func puttingRight() -> ProjectFile {
         var seen: Set<String> = []
         let supervisors = tabs.reduce(0) { $0 + $1.supervisorCount }
+        let seats = tabs.reduce(0) { $0 + $1.seatCount }
         return ProjectFile(
             name: name,
             savedAt: savedAt,
             group: group,
             windows: windows.map { window in
                 ProjectWindow(frame: window.frame, front: window.front, tabs: window.tabs.map {
-                    ProjectTab(root: $0.root.puttingRight(seen: &seen, demoting: supervisors > 1))
+                    ProjectTab(root: $0.root.puttingRight(seen: &seen, demoting: supervisors > 1, unseating: seats > 1))
                 })
             },
             nextScrollback: nextScrollback)
@@ -486,35 +512,49 @@ extension ProjectFile {
 extension ProjectNode {
     var supervisorCount: Int {
         switch self {
-        case .leaf(_, _, _, _, _, let agent): return agent.isSupervisor ? 1 : 0
+        case .leaf(_, _, _, _, _, _, _, _, _, let agent): return agent.isSupervisor ? 1 : 0
         case .stack(_, let members): return members.reduce(0) { $0 + $1.supervisorCount }
         case .split(_, _, let left, let right): return left.supervisorCount + right.supervisorCount
         }
     }
 
+    /// How many panes say they are the supervisor's seat.
+    var seatCount: Int {
+        switch self {
+        case .leaf(_, _, _, _, _, let seat, _, _, _, _): return seat ? 1 : 0
+        case .stack(_, let members): return members.reduce(0) { $0 + $1.seatCount }
+        case .split(_, _, let left, let right): return left.seatCount + right.seatCount
+        }
+    }
+
     /// Left before right, and a stack's members in their order, which is
     /// the order `seen` is filled in.
-    fileprivate func puttingRight(seen: inout Set<String>, demoting: Bool) -> ProjectNode {
+    fileprivate func puttingRight(seen: inout Set<String>, demoting: Bool, unseating: Bool) -> ProjectNode {
         switch self {
-        case .leaf(let cwd, let title, let history, let scrollback, let bySupervisor, var agent):
+        case .leaf(
+            let cwd, let title, let history, let scrollback, let bySupervisor,
+            let supervisorSeat, let color, let workersRefused, let shielded, var agent):
             let kept = scrollback.isEmpty || seen.insert(scrollback).inserted
             if demoting, case .agent(let role, let cli, let session, _) = agent {
                 agent = .agent(role: role, cli: cli, session: session, supervisor: false)
             }
             return .leaf(
                 cwd: cwd, title: title, history: history, scrollback: kept ? scrollback : "",
-                bySupervisor: bySupervisor, agent: agent)
+                bySupervisor: bySupervisor, supervisorSeat: supervisorSeat && !unseating,
+                color: color, workersRefused: workersRefused, shielded: shielded, agent: agent)
 
         case .stack(let shown, let members):
             var put: [ProjectNode] = []
             for member in members {
-                put.append(member.puttingRight(seen: &seen, demoting: demoting))
+                put.append(member.puttingRight(seen: &seen, demoting: demoting, unseating: unseating))
             }
             return .stack(shown: shown, members: put)
 
         case .split(let direction, let ratio, let left, let right):
-            let first = left.puttingRight(seen: &seen, demoting: demoting)
-            return .split(direction: direction, ratio: ratio, left: first, right: right.puttingRight(seen: &seen, demoting: demoting))
+            let first = left.puttingRight(seen: &seen, demoting: demoting, unseating: unseating)
+            return .split(
+                direction: direction, ratio: ratio, left: first,
+                right: right.puttingRight(seen: &seen, demoting: demoting, unseating: unseating))
         }
     }
 }
@@ -637,6 +677,8 @@ enum ProjectFileReading {
             case kind, cwd, title, history, scrollback, agent, direction, ratio, left, right
             case shown, members
             case bySupervisor = "by_supervisor"
+            case supervisorSeat = "supervisor_seat"
+            case color, workers, shielded
         }
 
         private enum AgentKeys: String, CodingKey { case kind, role, cli, session, supervisor }
@@ -653,6 +695,14 @@ enum ProjectFileReading {
                 // file delete things; and failing the whole decode would make one
                 // bad field cost the user the entire project.
                 let scrollback = try container.decodeIfPresent(String.self, forKey: .scrollback) ?? ""
+                // A format 1 file never said, whatever keys it has.
+                let agent = format >= 2 ? try Self.agent(container) : .unknown
+                // New with format 3, and strict: a value this build does
+                // not write is an error, never read as the default -- which
+                // the next save would write over what the user set. A file
+                // of an earlier format never has them, whatever keys it
+                // carries; its seat is where the supervisor's agent was.
+                let marks = format >= 3 ? try Self.marks(container) : nil
                 node = .leaf(
                     cwd: try container.decodeIfPresent(String.self, forKey: .cwd) ?? "",
                     title: try container.decodeIfPresent(String.self, forKey: .title) ?? "",
@@ -663,8 +713,11 @@ enum ProjectFileReading {
                     // is an error.
                     bySupervisor: format >= 2 && container.contains(.bySupervisor)
                         ? try container.decode(Bool.self, forKey: .bySupervisor) : false,
-                    // A format 1 file never said, whatever keys it has.
-                    agent: format >= 2 ? try Self.agent(container) : .unknown)
+                    supervisorSeat: marks?.seat ?? agent.isSupervisor,
+                    color: marks?.marks.color ?? .none,
+                    workersRefused: marks?.marks.workersRefused ?? false,
+                    shielded: marks?.marks.shielded ?? false,
+                    agent: agent)
 
             case "stack":
                 // Format 1 has no such node. And nothing about a stack is
@@ -705,6 +758,42 @@ enum ProjectFileReading {
                     in: container,
                     debugDescription: "unknown project node kind '\(kind)'")
             }
+        }
+
+        /// A format 3 leaf's four marks. Each is written only when it is not
+        /// the default, so absent is the default and anything but the one
+        /// way it is written -- `false`, `"allowed"`, a colour this build
+        /// does not name, `null` -- is an error.
+        private static func marks(
+            _ leaf: KeyedDecodingContainer<CodingKeys>
+        ) throws -> (seat: Bool, marks: ProjectPaneMarks) {
+            func onlyTrue(_ key: CodingKeys) throws -> Bool {
+                guard leaf.contains(key) else { return false }
+                guard try leaf.decode(Bool.self, forKey: key) else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: key, in: leaf, debugDescription: "'\(key.stringValue)' is written only as true")
+                }
+                return true
+            }
+            var color = PaneColor.none
+            if leaf.contains(.color) {
+                let name = try leaf.decode(String.self, forKey: .color)
+                guard let named = PaneColor(name: name) else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .color, in: leaf, debugDescription: "no pane colour is called '\(name)'")
+                }
+                color = named
+            }
+            var refused = false
+            if leaf.contains(.workers) {
+                guard try leaf.decode(String.self, forKey: .workers) == "refused" else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .workers, in: leaf, debugDescription: "'workers' is written only as \"refused\"")
+                }
+                refused = true
+            }
+            return (try onlyTrue(.supervisorSeat),
+                    ProjectPaneMarks(color: color, workersRefused: refused, shielded: try onlyTrue(.shielded)))
         }
 
         /// Strict where the rest of a leaf is not: these keys are new with
@@ -867,6 +956,14 @@ extension ProjectNode {
     /// `tree` is the tree `node` is in: a pane's stack is kept there, not
     /// in the node, and every terminal of it is captured
     /// (`capturing(_:in:leaf:)`).
+    ///
+    /// The user's marks (task 1699) are the terminal's: the colour and the
+    /// workers from the core's last pane report, the shield from its last
+    /// mark -- **except for a terminal opened from a file whose marks the
+    /// core has not said back yet**, which writes the file's
+    /// (`ProjectMarksHandBack`). The seat is said only of the terminal the
+    /// supervisor is in now; of any other "no" means "cannot tell", and
+    /// `ProjectPages.saving` decides what is written.
     static func capturing(
         _ node: SplitTree<Ghostty.SurfaceView>.Node,
         in tree: SplitTree<Ghostty.SurfaceView>,
@@ -875,14 +972,74 @@ extension ProjectNode {
     ) -> ProjectNode {
         capturing(node, in: tree) { view in
             let who = who(view)
+            let marks = view.projectMarksToSave
             return .leaf(
                 cwd: view.pwd ?? "",
                 title: view.title,
                 history: view.historyFilename ?? "",
                 scrollback: scrollback(view),
                 bySupervisor: who.bySupervisor,
+                supervisorSeat: view.poltergeistRole == .supervisor,
+                color: marks.color,
+                workersRefused: marks.workersRefused,
+                shielded: marks.shielded,
                 agent: who.agent)
         }
+    }
+}
+
+// MARK: - The user's marks, handed back (task 1699)
+
+extension Ghostty.SurfaceView {
+    private final class HandBackBox: NSObject {
+        static var key = 0
+        var value: ProjectMarksHandBack
+        init(_ value: ProjectMarksHandBack) { self.value = value }
+    }
+
+    /// The marks the terminal says it has now.
+    var projectMarksLive: ProjectPaneMarks {
+        ProjectPaneMarks(
+            color: poltergeistPaneColor, workersRefused: poltergeistWorkersRefused, shielded: poltergeistShielded)
+    }
+
+    /// The hand-back of a terminal opened from a file with marks, while the
+    /// core has not yet said them back; nil for every other terminal.
+    private var projectMarksHandBack: ProjectMarksHandBack? {
+        get { (objc_getAssociatedObject(self, &HandBackBox.key) as? HandBackBox)?.value }
+        set {
+            objc_setAssociatedObject(
+                self, &HandBackBox.key, newValue.map(HandBackBox.init), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+    }
+
+    /// Give the terminal the marks `file` says its pane has, **at once
+    /// after it is made**, with the same binding actions the menus send
+    /// (`pane-color-interface.md` §7.2). A file that says nothing is not
+    /// handed back: the terminal's own first report is then the truth.
+    ///
+    /// The count of pane reports is taken before the actions go: the core
+    /// answers each in the same call, and what came before is the core's
+    /// defaults, which a save must not take for the file's values.
+    func handBackProjectMarks(_ file: ProjectPaneMarks) {
+        let actions = file.handBack
+        guard !actions.isEmpty, let surface else { return }
+        var handBack = ProjectMarksHandBack(file: file, reportsBefore: poltergeistPaneReports)
+        for action in actions where !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
+            Ghostty.logger.warning("project mark hand-back failed action=\(action, privacy: .public)")
+        }
+        handBack.observe(projectMarksLive, reports: poltergeistPaneReports)
+        projectMarksHandBack = handBack.settled ? nil : handBack
+    }
+
+    /// What a save writes of this terminal's marks (`capturing`).
+    var projectMarksToSave: ProjectPaneMarks {
+        let live = projectMarksLive
+        guard var handBack = projectMarksHandBack else { return live }
+        let saved = handBack.saved(live, reports: poltergeistPaneReports)
+        handBack.observe(live, reports: poltergeistPaneReports)
+        projectMarksHandBack = handBack.settled ? nil : handBack
+        return saved
     }
 }
 
@@ -934,7 +1091,7 @@ extension ProjectNode {
         // Who was in the pane is not acted on here: a restored pane is a
         // terminal in the right place, and starting an agent in it is a
         // decision for whoever opens the project.
-        case .leaf(let cwd, let title, let history, let scrollback, _, _):
+        case .leaf(let cwd, let title, let history, let scrollback, _, _, let color, let workersRefused, let shielded, _):
             var config = Ghostty.SurfaceConfiguration()
             if !cwd.isEmpty { config.workingDirectory = cwd }
             // Passed through opaquely -- see `SurfaceConfiguration.historyRestore`.
@@ -950,6 +1107,11 @@ extension ProjectNode {
             }
             config.pixelSize = pixelSize
             let view = Ghostty.SurfaceView(app, baseConfig: config)
+            // The user's marks go back to the core before anything else can
+            // happen to the terminal -- a save included (task 1699). The seat
+            // is not handed back: it is the project's own mark, which the
+            // core is told through `ProjectLinker`.
+            view.handBackProjectMarks(ProjectPaneMarks(color: color, workersRefused: workersRefused, shielded: shielded))
             // Not forced into the "explicitly named" tier (see
             // `titleFromTerminal` in `SurfaceView_AppKit.swift`): a saved
             // title is a snapshot of what the pane showed, not necessarily

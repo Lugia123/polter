@@ -314,12 +314,19 @@ struct PaneStackStripView: View {
                 // The supervisor's mark, in its own colour and on no ground
                 // of its own, so that it is not read as the tab in front
                 // (task 1692, the design's `supervisor-pane-v1`, situation 1).
-                if member.marked {
-                    PaneSupervisorMark()
-                        .fill(theme.supervisorMark.color)
-                        .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
-                        .padding(.trailing, CGFloat(Look.StackTab.gap))
-                        .accessibilityHidden(true)
+                // A member given a colour has a dot in it, the supervisor its
+                // flag in its colour, the same way (task 1699).
+                if let colour = member.markColor, let ink = colour.dot(theme) {
+                    Group {
+                        if member.marked {
+                            PaneSupervisorMark().fill(ink.color)
+                        } else {
+                            PaneDotMark().fill(ink.color)
+                        }
+                    }
+                    .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
+                    .padding(.trailing, CGFloat(Look.StackTab.gap))
+                    .accessibilityHidden(true)
                 }
                 HStack(spacing: CGFloat(Look.Pane.nameRoleGap)) {
                     if member.terminal != nil, member.terminal == highlight.id, !highlight.fading {

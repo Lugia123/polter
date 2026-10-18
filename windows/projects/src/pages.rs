@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use polter_projectfile::{leaves, Agent, Frame, SavedLeaf, SavedNode, Snapshot, Tab, Who, Window};
+use polter_projectfile::{leaves, leaves_mut, Agent, Frame, PaneColor, SavedLeaf, SavedNode, Snapshot, Tab, Who, Window, Workers};
 
 /// A page's name for as long as the host has the project in hand.
 pub type PageId = usize;
@@ -78,6 +78,13 @@ pub struct Known {
     pub cwd: String,
     /// Who was in it; `Unknown` when the file did not say.
     pub agent: Agent,
+    /// The four marks of format 3, as the file has them: a file always
+    /// says, so these are never "not known" (a format 2 file says the
+    /// defaults, and its supervisor's pane is the seat).
+    pub supervisor_seat: bool,
+    pub color: PaneColor,
+    pub workers: Workers,
+    pub shielded: bool,
 }
 
 impl Pages {
@@ -286,11 +293,12 @@ impl Pages {
     /// and only then takes the place of the page it is.
     pub fn saving(&self, name: &str, saved_at: i64, group: Option<String>, next_scrollback: Option<u64>, screen: &Screen) -> (Pages, Snapshot) {
         let known = self.known();
-        let told: Vec<Live> = screen
+        let mut told: Vec<Live> = screen
             .live
             .iter()
             .map(|l| Live { root: keeping_what_the_file_knew(&l.root, &known), ..l.clone() })
             .collect();
+        one_seat(&screen.live, &mut told);
         let pages = self.updated(&told, &screen.frames, screen.keeping_front);
         let file = Snapshot { name: name.to_string(), saved_at, group, windows: pages.file_windows(), next_scrollback };
         (pages, file)
@@ -369,11 +377,42 @@ impl Pages {
         for page in self.windows.iter().flat_map(|w| w.pages.iter()) {
             for leaf in leaves(&page.tab.root) {
                 if !leaf.scrollback.is_empty() {
-                    known.entry(leaf.scrollback.clone()).or_insert_with(|| Known { cwd: leaf.cwd.clone(), agent: leaf.agent.clone() });
+                    known.entry(leaf.scrollback.clone()).or_insert_with(|| Known {
+                        cwd: leaf.cwd.clone(),
+                        agent: leaf.agent.clone(),
+                        supervisor_seat: leaf.supervisor_seat.unwrap_or(false),
+                        color: leaf.color.unwrap_or(PaneColor::None),
+                        workers: leaf.workers.unwrap_or(Workers::Allowed),
+                        shielded: leaf.shielded.unwrap_or(false),
+                    });
                 }
             }
         }
         known
+    }
+}
+
+/// **The seat moves to where the supervisor is now, and only then.** A host
+/// that can say which pane the supervisor is in says `Some(true)` there and
+/// `None` everywhere else (the Windows host: `pane-color-interface.md`
+/// §7.1), so the panes it did not name take the file's seat back -- which,
+/// once the supervisor has moved, is a second seat, and two seats read as
+/// none. So when any pane on screen was said to be the seat, every other
+/// pane on screen is not. When none was -- no supervisor is in the project
+/// right now -- the file's seat stands.
+///
+/// `asked` is what the host said, before the file was asked; `told` the
+/// same tabs after. A page that is not open keeps its own seat either way.
+fn one_seat(asked: &[Live], told: &mut [Live]) {
+    let said = |l: &&SavedLeaf| l.supervisor_seat == Some(true);
+    if !asked.iter().any(|l| leaves(&l.root).iter().any(said)) {
+        return;
+    }
+    for (a, t) in asked.iter().zip(told.iter_mut()) {
+        let named: Vec<bool> = leaves(&a.root).iter().map(said).collect();
+        for (leaf, seat) in leaves_mut(&mut t.root).into_iter().zip(named) {
+            leaf.supervisor_seat = Some(seat);
+        }
     }
 }
 
@@ -393,6 +432,12 @@ impl Pages {
 ///   shell integration, never. A project just opened is saved within
 ///   seconds; written as they come, its panes would all lose the
 ///   directories they were opened in.
+/// - *What a person marked on it* -- colour, workers, shield, seat (task
+///   1700). A pane restored from the file is not told its marks until the
+///   core has taken them back, and the core's first word on a new terminal
+///   is the defaults; the host says `None` until then
+///   (`pane-color-interface.md` §7.2). Written as the defaults, the first
+///   save after opening would take every colour and shield off the file.
 pub fn keeping_what_the_file_knew(node: &SavedNode, known: &BTreeMap<String, Known>) -> SavedNode {
     fn keep(leaf: &SavedLeaf, known: &BTreeMap<String, Known>) -> SavedLeaf {
         let Some(was) = known.get(&leaf.scrollback) else { return leaf.clone() };
@@ -403,6 +448,10 @@ pub fn keeping_what_the_file_knew(node: &SavedNode, known: &BTreeMap<String, Kno
         if leaf.agent == Agent::Unknown {
             leaf.agent = was.agent.clone();
         }
+        leaf.supervisor_seat = leaf.supervisor_seat.or(Some(was.supervisor_seat));
+        leaf.color = leaf.color.or(Some(was.color));
+        leaf.workers = leaf.workers.or(Some(was.workers));
+        leaf.shielded = leaf.shielded.or(Some(was.shielded));
         leaf
     }
     match node {

@@ -167,11 +167,20 @@ private struct PaneFramed: ViewModifier {
     @Environment(\.paneFrameTree) private var tree
     @Environment(\.ghosttyLastFocusedSurface) private var lastFocused
     @Environment(\.colorScheme) private var scheme
+    /// The colours of this pane and of a stack's members, as their surfaces
+    /// last said (task 1699): kept here so a change redraws the frame, which
+    /// does not observe the surfaces themselves.
+    @State private var colours: [UUID: PaneColor] = [:]
 
     func body(content: Content) -> some View {
+        let colourOf = { (view: Ghostty.SurfaceView) in colours[view.id] ?? view.poltergeistPaneColor }
         let drawn = PaneFrame.drawn(
             terminal: ControlRoomLender.terminal(of: surfaceView), ownName: surfaceView.title,
-            at: place, in: source.terminals)
+            at: place, in: source.terminals).map { framed -> PaneFrame.Drawn in
+                var coloured = framed
+                coloured.title.color = colourOf(surfaceView)
+                return coloured
+            }
         // **One chain, whatever the pane wears** -- never a choice between a
         // framed pane and a bare one: see `PaneFrameChrome` for what a
         // choice here did to the terminal (task 1461). A pane with nothing
@@ -188,7 +197,7 @@ private struct PaneFramed: ViewModifier {
         let stack = members.map { members in
             PaneStackRules.stack(
                 members: members.members.map {
-                    .init(terminal: ControlRoomLender.terminal(of: $0), ownName: $0.title)
+                    .init(terminal: ControlRoomLender.terminal(of: $0), ownName: $0.title, color: colourOf($0))
                 },
                 shown: members.members.firstIndex { $0.id == members.shown } ?? 0,
                 terminals: source.terminals, pulses: source.waiting)
@@ -197,8 +206,10 @@ private struct PaneFramed: ViewModifier {
         // With no frames, a supervisor's pane still says it is one: a line
         // just inside it, over the terminal's own padding (task 1692). A
         // stack always wears a frame, so it never has this.
-        let edged = stack == nil && PaneFrame.edged(
-            terminal: ControlRoomLender.terminal(of: surfaceView), at: place, in: source.terminals)
+        // And any pane given a colour says which, the same way (task 1699).
+        let edge = stack == nil ? PaneFrame.edge(
+            terminal: ControlRoomLender.terminal(of: surfaceView), at: place, in: source.terminals,
+            color: colourOf(surfaceView)) : nil
         // The title is where the pane is picked up (task 1508) -- except
         // over a stack, where that band is the strip and the pane is picked
         // up by its tabs, one terminal at a time (task 1582). Neither keeps
@@ -222,7 +233,12 @@ private struct PaneFramed: ViewModifier {
                 stack: stack,
                 stackActions: actions(members: members),
                 closeHole: closeShows))
-            .modifier(PaneSupervisorEdge(shows: edged))
+            .modifier(PaneSupervisorEdge(color: edge))
+            .onReceive(Publishers.MergeMany(((members?.members) ?? [surfaceView]).map { view in
+                view.$poltergeistPaneColor.map { (view.id, $0) }
+            })) { id, colour in
+                if colours[id] != colour { colours[id] = colour }
+            }
             // A layer over the title band, and nothing round what is framed:
             // what picks the pane up and opens its menu, and its close
             // button at the left end, over the name (tasks 1582, 1642).

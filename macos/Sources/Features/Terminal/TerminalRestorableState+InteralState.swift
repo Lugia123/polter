@@ -13,7 +13,10 @@ extension TerminalRestorableState {
 
         // MARK: - Version 7 (1.3.0)
         let effectiveFullscreenMode: FullscreenMode?
-        let tabColor: TerminalTabColor?
+        // `tabColor` was here. A colour is a pane's now, kept by the core
+        // (task 1699), and the one a tab had is let go rather than carried
+        // over (the user's ruling): an older state that has the key decodes
+        // with it ignored.
         let titleOverride: String?
 
         // MARK: - Polter: project binding
@@ -33,7 +36,6 @@ extension TerminalRestorableState.InternalState where ViewType == Ghostty.Surfac
             focusedSurface: controller.focusedSurface?.id.uuidString,
             surfaceTree: controller.surfaceTree,
             effectiveFullscreenMode: controller.fullscreenStyle?.fullscreenMode,
-            tabColor: (controller.window as? TerminalWindow)?.tabColor,
             titleOverride: controller.titleOverride,
             boundProject: controller.boundProject,
         )

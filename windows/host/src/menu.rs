@@ -214,6 +214,8 @@ pub enum Flag {
     Supervisor,
     Watched,
     Shielded,
+    /// No worker is to be started in this terminal (task 1700).
+    WorkersRefused,
     Held,
     MayAuthorise,
     /// This terminal, **as a supervisor**, lets the workers it minds name each
@@ -454,6 +456,9 @@ const AGENTS_ROWS: &[Row] = &[
     toggle(n_("Make This Terminal a Supervisor"), "poltergeist_supervisor", Flag::Supervisor, Ready::Always),
     toggle(n_("Supervise This Terminal"), "poltergeist_toggle_watch", Flag::Watched, Ready::Always),
     toggle(n_("Keep Agents Out of This Terminal"), "poltergeist_toggle_shielded", Flag::Shielded, Ready::Always),
+    // Right under the shield, wherever the shield is (task 1700): agents
+    // may still read and type here, and no worker is started in it.
+    toggle(n_("Don't Start Workers in This Terminal"), "poltergeist_toggle_workers_refused", Flag::WorkersRefused, Ready::Always),
     // **What this opens, in the label, because the menu is where it is
     // granted.** Off for every terminal until this is ticked. With it on a
     // supervisor may take *either* answer in that box -- including
@@ -930,6 +935,7 @@ fn default_state(flag: Flag) -> Option<bool> {
         Flag::Supervisor
         | Flag::Watched
         | Flag::Shielded
+        | Flag::WorkersRefused
         | Flag::Held
         | Flag::MayAuthorise
         | Flag::WorkerMentions => {
@@ -939,6 +945,7 @@ fn default_state(flag: Flag) -> Option<bool> {
                 Flag::Supervisor => mark.role == ROLE_SUPERVISOR,
                 Flag::Watched => mark.role == ROLE_WATCHED,
                 Flag::Shielded => mark.shielded,
+                Flag::WorkersRefused => mark.workers_refused,
                 Flag::Held => mark.held,
                 Flag::MayAuthorise => mark.may_authorise,
                 Flag::WorkerMentions => {
@@ -1064,6 +1071,7 @@ const ALL_FLAGS: &[Flag] = &[
     Flag::Supervisor,
     Flag::Watched,
     Flag::Shielded,
+    Flag::WorkersRefused,
     Flag::Held,
 ];
 
@@ -1092,6 +1100,7 @@ fn check_state_counts() -> (usize, usize, Vec<&'static str>) {
                 Flag::Supervisor => "Supervisor",
                 Flag::Watched => "Watched",
                 Flag::Shielded => "Shielded",
+                Flag::WorkersRefused => "WorkersRefused",
                 Flag::Held => "Held",
                 Flag::MayAuthorise => "MayAuthorise",
                 Flag::WorkerMentions => "WorkerMentions",

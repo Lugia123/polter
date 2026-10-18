@@ -58,6 +58,8 @@ pub enum Tick {
     PgSupervisor,
     PgWatched,
     PgShielded,
+    /// No worker is to be started in this terminal (task 1700).
+    PgWorkersRefused,
     PgMayAuthorise,
     /// This terminal, **as a supervisor**, lets the workers it minds name
     /// each other directly. Scoped to a supervisor, so its row is left out
@@ -157,6 +159,12 @@ const ROWS: &[Row] = &[
         n_("Keep Agents Out of This Terminal"),
         "poltergeist_toggle_shielded",
         Tick::PgShielded,
+    ),
+    // Right under the shield (task 1700).
+    checkable(
+        n_("Don't Start Workers in This Terminal"),
+        "poltergeist_toggle_workers_refused",
+        Tick::PgWorkersRefused,
     ),
     // **The row the user asked for, and its label carries what it opens.**
     // Off until ticked. Ticked, a supervisor may take *either* answer in a
@@ -343,6 +351,7 @@ fn tick_state(surface: Surface, mark: Option<crate::tabs::Mark>, t: Tick) -> boo
         Tick::PgSupervisor => matches!(mark, Some(m) if m.role == ROLE_SUPERVISOR),
         Tick::PgWatched => matches!(mark, Some(m) if m.role == ROLE_WATCHED),
         Tick::PgShielded => matches!(mark, Some(m) if m.shielded),
+        Tick::PgWorkersRefused => matches!(mark, Some(m) if m.workers_refused),
         // The fourth bit, and it is a permission rather than a mark: the
         // three above are promises to the person at this terminal, this is
         // one they granted to a supervisor. It has no glyph on the tab for
@@ -1091,6 +1100,7 @@ mod tests {
             Tick::PgSupervisor,
             Tick::PgWatched,
             Tick::PgShielded,
+            Tick::PgWorkersRefused,
             Tick::PgMayAuthorise,
         ] {
             let items = build(&no_shortcuts, &|t| t == probe);
@@ -1181,7 +1191,7 @@ mod tests {
     /// declared. **The fifth bit defaults off**, so every assertion written
     /// against the four-field tuple means exactly what it meant before.
     fn mark(role: u8, shielded: bool, held: bool, may_authorise: bool) -> crate::tabs::Mark {
-        crate::tabs::Mark { role, shielded, held, may_authorise, worker_mentions: false }
+        crate::tabs::Mark { role, shielded, held, may_authorise, worker_mentions: false, workers_refused: false }
     }
 
     /// `supervisor` and `watched` are two values of one enum, so they can

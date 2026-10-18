@@ -34,6 +34,17 @@ struct PaneStack: Equatable {
         /// 1692): wherever it is in the stack, in front or behind -- behind,
         /// the frame is the one in front's and says nothing of it.
         var marked: Bool { wears == .supervisor }
+
+        /// The colour the user set on it (task 1699); `.none` for none.
+        var color: PaneColor = .none
+
+        /// The colour its mark is drawn in on its tab -- the flag when it
+        /// is the supervisor, a dot when it was given a colour -- or nil
+        /// for no mark.
+        var markColor: PaneColor? {
+            let shown = PaneColor.shown(set: color, supervisor: marked)
+            return shown == .none ? nil : shown
+        }
     }
 
     /// How an ordinary terminal's stack is drawn. **The design draws

@@ -4,14 +4,24 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use polter_projectfile::{emit, parse_snapshot, Agent, Axis, Frame, Origin, SavedLeaf, SavedNode, Snapshot, Tab, Who, Window};
+use polter_projectfile::{emit, parse_snapshot, Agent, Axis, Frame, Origin, PaneColor, SavedLeaf, SavedNode, Snapshot, Tab, Who, Window, Workers};
 
 use crate::autosave::{Change, Debounce, QUIET};
 use crate::pages::{keeping_what_the_file_knew, Known, Live, Pages, Screen};
 use crate::placement::{self, Home, Place, Rect};
 
 fn leaf_of(cwd: &str, scrollback: &str, agent: Agent) -> SavedNode {
-    SavedNode::Leaf(SavedLeaf { cwd: cwd.into(), title: String::new(), history: String::new(), scrollback: scrollback.into(), by_supervisor: false, agent })
+    SavedNode::Leaf(SavedLeaf { scrollback: scrollback.into(), ..SavedLeaf::plain(cwd, agent) })
+}
+
+/// What the file says of a pane with no mark on it.
+fn unmarked() -> Known {
+    Known { cwd: String::new(), agent: Agent::None, supervisor_seat: false, color: PaneColor::None, workers: Workers::Allowed, shielded: false }
+}
+
+/// A pane with these marks, `None` being "the host could not tell yet".
+fn marked(cwd: &str, scrollback: &str, seat: Option<bool>, color: Option<PaneColor>, workers: Option<Workers>, shielded: Option<bool>) -> SavedNode {
+    SavedNode::Leaf(SavedLeaf { scrollback: scrollback.into(), supervisor_seat: seat, color, workers, shielded, ..SavedLeaf::plain(cwd, Agent::None) })
 }
 
 fn leaf(cwd: &str, scrollback: &str) -> SavedNode {
@@ -309,8 +319,8 @@ fn a_pane_nobody_can_tell_about_keeps_what_the_file_said_of_it() {
     assert_eq!(
         known,
         BTreeMap::from([
-            ("0.snap".to_string(), Known { cwd: "/a".into(), agent: worker() }),
-            ("1.snap".to_string(), Known { cwd: "/b".into(), agent: Agent::None }),
+            ("0.snap".to_string(), Known { cwd: "/a".into(), agent: worker(), ..unmarked() }),
+            ("1.snap".to_string(), Known { cwd: "/b".into(), agent: Agent::None, ..unmarked() }),
         ])
     );
 
@@ -1121,4 +1131,60 @@ fn what_is_said_is_the_bytes_the_core_is_tested_on() {
             stated::rename_question("notes", "scratch"),
         ]
     );
+}
+
+/// **The first save after a project opens does not take its marks off it**
+/// (task 1700; `pane-color-interface.md` §7.2). The panes are open, the core
+/// has not taken their colours, shields and refusals back yet, and the host
+/// says it cannot tell -- so what is written is what the file had.
+#[test]
+fn a_save_before_the_marks_are_taken_back_writes_what_the_file_had() {
+    let file = one_tab(
+        split(
+            marked("/a", "0.snap", Some(true), Some(PaneColor::Orange), Some(Workers::Allowed), Some(false)),
+            marked("/b", "1.snap", Some(false), Some(PaneColor::Teal), Some(Workers::Refused), Some(true)),
+            Axis::Horizontal,
+        ),
+        2,
+    );
+    let pages = Pages::from_file(&file);
+    let not_yet = split(marked("/a", "0.snap", None, None, None, None), marked("/b", "1.snap", None, None, None, None), Axis::Horizontal);
+    let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: not_yet }], frames: BTreeMap::new(), keeping_front: false };
+    let (_, written) = pages.saving("p", 2, None, Some(2), &screen);
+    assert_eq!(written.windows[0].tabs[0].root, file.windows[0].tabs[0].root);
+    // And it is the bytes: the file says the marks it said.
+    let bytes = emit(&written).unwrap();
+    for want in [r#""supervisor_seat":true,"color":"orange""#, r#""color":"teal","workers":"refused","shielded":true"#] {
+        assert!(bytes.contains(want), "{want} not in {bytes}");
+    }
+
+    // Told, what it was told is what is written -- the defaults included.
+    let told = split(
+        marked("/a", "0.snap", None, Some(PaneColor::None), Some(Workers::Allowed), Some(false)),
+        marked("/b", "1.snap", None, Some(PaneColor::Pink), Some(Workers::Allowed), Some(false)),
+        Axis::Horizontal,
+    );
+    let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: told }], frames: BTreeMap::new(), keeping_front: false };
+    let (_, written) = pages.saving("p", 3, None, Some(2), &screen);
+    let got: Vec<(Option<PaneColor>, Option<Workers>, Option<bool>)> =
+        polter_projectfile::leaves(&written.windows[0].tabs[0].root).iter().map(|l| (l.color, l.workers, l.shielded)).collect();
+    assert_eq!(got, vec![(Some(PaneColor::None), Some(Workers::Allowed), Some(false)), (Some(PaneColor::Pink), Some(Workers::Allowed), Some(false))]);
+}
+
+/// The seat stays where the file had it while no supervisor is on screen,
+/// and moves -- leaving no second seat behind -- when one is.
+#[test]
+fn the_seat_moves_to_where_the_supervisor_is_and_stays_put_while_there_is_none() {
+    let file = one_tab(split(marked("/a", "0.snap", Some(true), Some(PaneColor::None), None, None), leaf("/b", "1.snap"), Axis::Horizontal), 2);
+    let pages = Pages::from_file(&file);
+    let seats = |root: SavedNode| -> Vec<Option<bool>> {
+        let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root }], frames: BTreeMap::new(), keeping_front: false };
+        let (_, written) = pages.saving("p", 2, None, Some(2), &screen);
+        polter_projectfile::leaves(&written.windows[0].tabs[0].root).iter().map(|l| l.supervisor_seat).collect()
+    };
+    let nobody = |cwd: &str, snap: &str| marked(cwd, snap, None, Some(PaneColor::None), Some(Workers::Allowed), Some(false));
+    let here = |cwd: &str, snap: &str| marked(cwd, snap, Some(true), Some(PaneColor::None), Some(Workers::Allowed), Some(false));
+    assert_eq!(seats(split(nobody("/a", "0.snap"), nobody("/b", "1.snap"), Axis::Horizontal)), vec![Some(true), Some(false)], "no supervisor: the file's seat");
+    assert_eq!(seats(split(nobody("/a", "0.snap"), here("/b", "1.snap"), Axis::Horizontal)), vec![Some(false), Some(true)], "it moved");
+    assert_eq!(seats(split(here("/a", "0.snap"), nobody("/b", "1.snap"), Axis::Horizontal)), vec![Some(true), Some(false)], "where it was");
 }

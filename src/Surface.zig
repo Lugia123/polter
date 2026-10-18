@@ -198,6 +198,12 @@ poltergeist_tab_held: bool = false,
 poltergeist_tab_may_authorise: bool = false,
 poltergeist_tab_worker_mentions: bool = false,
 
+/// The pane half of what the apprt was last told (task 1699): the colour,
+/// whether workers are kept out, and the flag. Null until the first one is
+/// sent, so the first `updatePoltergeistTabMark` always sends it -- a host
+/// that is never told the defaults cannot tell "told none" from "not told".
+poltergeist_pane: ?apprt.action.PoltergeistPane = null,
+
 /// The persona half of this tab's mark, kept here because the action hands
 /// the apprt a pointer to it and that pointer has to outlive the call.
 ///
@@ -4071,6 +4077,25 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
         .worker_mentions = self.poltergeist_tab_worker_mentions,
         .persona = self.poltergeist_persona,
     };
+
+    // The pane half goes on its own action, and is compared on its own:
+    // either half can change without the other.
+    const pane: apprt.action.PoltergeistPane = .{
+        .color = @enumFromInt(@intFromEnum(self.app.poltergeist.paneColor(self.id))),
+        .workers = @enumFromInt(@intFromEnum(self.app.poltergeist.workersOf(self.id))),
+        .flag = @enumFromInt(@intFromEnum(mark.flag())),
+    };
+    if (poltergeistPaneChanged(self.poltergeist_pane, pane)) {
+        self.poltergeist_pane = pane;
+        _ = self.rt_app.performAction(
+            .{ .surface = self },
+            .poltergeist_pane,
+            pane,
+        ) catch |err| {
+            log.warn("poltergeist: could not mark the pane err={}", .{err});
+        };
+    }
+
     if (!poltergeistTabMarkChanged(was, now)) return;
     self.poltergeist_tab_mark = mark;
     self.poltergeist_tab_shielded = shielded;
@@ -4084,7 +4109,7 @@ pub fn updatePoltergeistTabMark(self: *Surface) void {
     // touches the title at all, so a tab the user renamed keeps its name
     // whether Poltergeist has anything to say about it or not.
     var buf: [poltergeist_mark_prefix_max]u8 = undefined;
-    const prefix = poltergeistMarkPrefix(&buf, mark, shielded);
+    const prefix = poltergeistMarkPrefix(&buf, shielded);
 
     _ = self.rt_app.performAction(
         .{ .surface = self },
@@ -4183,73 +4208,111 @@ test "a hold is a change even when nothing else moved" {
     try testing.expect(!poltergeistTabMarkChanged(held, held));
 }
 
-/// Enough room for the widest mark: the shield in front of the widest
-/// `TabMark` prefix, plus the sentinel. Checked by a test rather than
-/// guessed, so a new glyph that does not fit fails there instead of
-/// truncating a tab.
+/// Is the pane half of the mark different from what the apprt was last
+/// sent? Never sent is always a change: a host told nothing could not tell
+/// "none" from "not said" (task 1699).
+fn poltergeistPaneChanged(was: ?apprt.action.PoltergeistPane, now: apprt.action.PoltergeistPane) bool {
+    const last = was orelse return true;
+    return !std.meta.eql(last, now);
+}
+
+test "the pane half of the mark is sent first, and again only on a change (#1699)" {
+    const testing = std.testing;
+    const base: apprt.action.PoltergeistPane = .{ .color = .none, .workers = .allowed, .flag = .none };
+    try testing.expect(poltergeistPaneChanged(null, base));
+    try testing.expect(!poltergeistPaneChanged(base, base));
+    var c = base;
+    c.color = .orange;
+    try testing.expect(poltergeistPaneChanged(base, c));
+    var w = base;
+    w.workers = .refused;
+    try testing.expect(poltergeistPaneChanged(base, w));
+    var f = base;
+    f.flag = .lowered;
+    try testing.expect(poltergeistPaneChanged(base, f));
+}
+
+/// Enough room for the widest prefix, plus the sentinel. Checked by a test
+/// rather than guessed, so a new glyph that does not fit fails there
+/// instead of truncating a tab.
 const poltergeist_mark_prefix_max = 32;
 
-/// Compose what the tab shows in front of the title out of the two things
-/// Poltergeist knows about a terminal.
+/// What the tab shows in front of the title: the shield, or nothing.
 ///
-/// The shield leads: it is a fact about the whole terminal regardless of
-/// what that terminal is up to, and a column of tabs is read down its left
-/// edge.
+/// **Only the shield, since task 1699.** The marks of `Bus.TabMark` (● ○
+/// 💤 ◉ ◎ ⚑ ⚐) used to follow it. A tab now carries a dot for every pane
+/// given a colour, and a black or white disc beside a row of coloured ones
+/// reads as one more of them; and the supervisor's flag was there twice,
+/// once in front of the title and once among the dots. The flag goes to
+/// the host on `poltergeist_pane` and is drawn among the dots, once; what
+/// a watched terminal is doing is the status glyph at the tab's right end
+/// and the glyph in its pane's title, as it already was.
 fn poltergeistMarkPrefix(
     buf: *[poltergeist_mark_prefix_max]u8,
-    mark: poltergeistpkg.Bus.TabMark,
     shielded: bool,
 ) [:0]const u8 {
-    return std.fmt.bufPrintZ(buf, "{s}{s}", .{
+    return std.fmt.bufPrintZ(buf, "{s}", .{
         if (shielded) poltergeistpkg.Bus.shield_prefix else "",
-        mark.prefix(),
     }) catch unreachable;
 }
 
-test "poltergeist mark prefix composes shield in front of the mark" {
+test "poltergeist mark prefix is the shield and nothing else" {
     const testing = std.testing;
     var buf: [poltergeist_mark_prefix_max]u8 = undefined;
 
     // Nothing to say is an empty prefix, not a space.
-    try testing.expectEqualStrings(
-        "",
-        poltergeistMarkPrefix(&buf, .none, false),
-    );
-
-    // A shielded terminal nobody watches is the common case, and it is
-    // exactly the one a single enum could not express.
+    try testing.expectEqualStrings("", poltergeistMarkPrefix(&buf, false));
     try testing.expectEqualStrings(
         poltergeistpkg.Bus.shield_prefix,
-        poltergeistMarkPrefix(&buf, .none, true),
-    );
-
-    try testing.expectEqualStrings(
-        poltergeistpkg.Bus.TabMark.supervisor.prefix(),
-        poltergeistMarkPrefix(&buf, .supervisor, false),
+        poltergeistMarkPrefix(&buf, true),
     );
 }
 
-test "poltergeist mark prefix fits every combination" {
-    const testing = std.testing;
-    var buf: [poltergeist_mark_prefix_max]u8 = undefined;
+/// The marks only the user puts on a terminal from a binding (task 1699).
+const PoltergeistUserMark = enum { shielded, color, workers };
 
-    // Every mark, shielded and not. The point is that `bufPrintZ` never
-    // overflows: the `unreachable` in the composer is only sound while
-    // that holds, so a new glyph that does not fit fails here.
-    for (std.enums.values(poltergeistpkg.Bus.TabMark)) |mark| {
-        for ([_]bool{ false, true }) |shielded| {
-            const got = poltergeistMarkPrefix(&buf, mark, shielded);
-            try testing.expect(got.len < poltergeist_mark_prefix_max);
-
-            // The shield always leads when it is on, and is never there
-            // when it is off -- including for `none`, where it is the
-            // whole prefix.
-            try testing.expectEqual(
-                shielded,
-                std.mem.startsWith(u8, got, poltergeistpkg.Bus.shield_prefix),
-            );
-            try testing.expect(std.mem.endsWith(u8, got, mark.prefix()));
+/// Put one of the user's marks on this terminal, registering it first if
+/// the bus has never heard of it -- the terminal these are most often put
+/// on is one nobody watches, which has no entry, for the reason written on
+/// `poltergeist_toggle_shielded`.
+fn poltergeistUserMark(
+    self: *Surface,
+    comptime which: PoltergeistUserMark,
+    value: switch (which) {
+        .shielded => bool,
+        .color => poltergeistpkg.Bus.PaneColor,
+        .workers => poltergeistpkg.Bus.Workers,
+    },
+) !void {
+    const bus = &self.app.poltergeist;
+    const set = struct {
+        fn set(b: *poltergeistpkg.Bus, id: poltergeistpkg.Bus.Id, v: @TypeOf(value)) poltergeistpkg.Bus.SetHeldError!void {
+            // `.user`: this is a binding, and the bus refuses these from
+            // anybody else.
+            return switch (which) {
+                .shielded => b.setShielded(id, v, .user),
+                .color => b.setPaneColor(id, v, .user),
+                .workers => b.setWorkers(id, v, .user),
+            };
         }
+    }.set;
+    set(bus, self.id, value) catch |err| switch (err) {
+        error.UnknownTerminal => {
+            try bus.register(self.id);
+            try set(bus, self.id, value);
+        },
+        error.NotPermitted => unreachable,
+    };
+}
+
+test "the binding's pane colours are the bus's, name for name" {
+    // The handler converts by name; a colour missing on either side would
+    // be `null` there and crash, so the two lists are held equal here.
+    const B = input.Binding.Action.PaneColor;
+    const P = poltergeistpkg.Bus.PaneColor;
+    try std.testing.expectEqual(std.enums.values(B).len, std.enums.values(P).len);
+    inline for (comptime std.enums.values(B)) |c| {
+        try std.testing.expect(P.parse(@tagName(c)) != null);
     }
 }
 
@@ -7580,6 +7643,44 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             // tick, because a terminal nobody samples never gets one.
             self.updatePoltergeistTabMark();
 
+            return true;
+        },
+
+        .poltergeist_set_shielded => |v| {
+            const next = v == .on;
+            try self.poltergeistUserMark(.shielded, next);
+            log.info("poltergeist: shield is now {}", .{next});
+            self.updatePoltergeistTabMark();
+            return true;
+        },
+
+        .poltergeist_set_pane_color => |v| {
+            const color = poltergeistpkg.Bus.PaneColor.parse(@tagName(v)).?;
+            try self.poltergeistUserMark(.color, color);
+            log.info("poltergeist: pane color is now {t}", .{color});
+            self.updatePoltergeistTabMark();
+            return true;
+        },
+
+        .poltergeist_set_workers => |v| {
+            const workers: poltergeistpkg.Bus.Workers = switch (v) {
+                .allowed => .allowed,
+                .refused => .refused,
+            };
+            try self.poltergeistUserMark(.workers, workers);
+            log.info("poltergeist: workers are now {t}", .{workers});
+            self.updatePoltergeistTabMark();
+            return true;
+        },
+
+        .poltergeist_toggle_workers_refused => {
+            const workers: poltergeistpkg.Bus.Workers = switch (self.app.poltergeist.workersOf(self.id)) {
+                .allowed => .refused,
+                .refused => .allowed,
+            };
+            try self.poltergeistUserMark(.workers, workers);
+            log.info("poltergeist: workers are now {t}", .{workers});
+            self.updatePoltergeistTabMark();
             return true;
         },
 

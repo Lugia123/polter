@@ -868,6 +868,10 @@ extension Ghostty {
                 return setPoltergeistMark(
                     app, target: target, v: action.action.poltergeist_mark)
 
+            case GHOSTTY_ACTION_POLTERGEIST_PANE:
+                return setPoltergeistPane(
+                    app, target: target, v: action.action.poltergeist_pane)
+
             case GHOSTTY_ACTION_CHECK_FOR_UPDATES:
                 checkForUpdates(app)
 
@@ -1690,6 +1694,23 @@ extension Ghostty {
         /// renamed itself wiped its own mark. It lives on the surface now
         /// and is composed in front of the title whenever the title is
         /// rendered, so a rename recomposes rather than overwrites.
+        /// The pane half of the mark (task 1699): its colour, whether
+        /// workers are kept out, the supervisor's flag. Stored on the
+        /// surface; the tab's dots and the pane's badge are drawn from it.
+        private static func setPoltergeistPane(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_poltergeist_pane_s) -> Bool {
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface) else { return false }
+            surfaceView.poltergeistPaneColor = PaneColor(rawValue: Int(v.color.rawValue)) ?? .none
+            surfaceView.poltergeistWorkersRefused = v.workers == GHOSTTY_POLTERGEIST_WORKERS_REFUSED
+            surfaceView.poltergeistFlag = PaneFlag(rawValue: Int(v.flag.rawValue)) ?? .none
+            surfaceView.poltergeistPaneReports += 1
+            return true
+        }
+
         private static func setPoltergeistMark(
             _ app: ghostty_app_t,
             target: ghostty_target_s,

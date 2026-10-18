@@ -589,6 +589,19 @@ pub const Entry = struct {
     /// "you may not stop working", this says "nobody may touch you".
     shielded: bool = false,
 
+    /// The colour the user gave this pane (task 1699): a mark the person
+    /// makes for themselves, so the user alone sets it. What is kept is
+    /// what was *set*; a supervisor with none set is shown in purple, and
+    /// `shownColor` is where that is decided.
+    color: PaneColor = .none,
+
+    /// The user keeps this terminal for their own commands: no agent is
+    /// started in it or beside it (task 1699). Unlike `shielded` it takes
+    /// nothing out of reach -- an agent may still read it and type into it
+    /// -- so it is a word about what the pane is for, not who may touch it.
+    /// The user alone sets it, for the reason written on `shielded`.
+    workers: Workers = .allowed,
+
     /// An agent opened this terminal: `terminal_open`, `role_launch`, or a
     /// new pane in `terminal_layout` (task #989).
     ///
@@ -1785,6 +1798,94 @@ pub fn setShielded(
     if (shielded and e.role == .watched) self.unwatch(id);
 }
 
+/// The colours a pane may be given. The order is the one the menus lay
+/// them out in, and it is also the C enum's
+/// (`ghostty_poltergeist_pane_color_e`) and the order the Windows host's
+/// palette is indexed by, so a value is never renumbered.
+///
+/// Blue and red are the status colours' neighbours (`attention`,
+/// `problem`); a pane's colour is drawn as a dot or a badge and a status
+/// as its glyph, so the shape tells them apart, and the look table keeps
+/// their hues apart as far as it can.
+pub const PaneColor = enum(u8) {
+    none = 0,
+    blue = 1,
+    purple = 2,
+    pink = 3,
+    red = 4,
+    orange = 5,
+    yellow = 6,
+    green = 7,
+    teal = 8,
+    graphite = 9,
+
+    /// The word a project file, a tool reply and a binding action write.
+    pub fn name(self: PaneColor) [:0]const u8 {
+        return @tagName(self);
+    }
+
+    pub fn parse(text: []const u8) ?PaneColor {
+        return std.meta.stringToEnum(PaneColor, text);
+    }
+};
+
+/// Whether workers may be started in a terminal. Two words rather than a
+/// bool so that "not said" and "said: allowed" stay apart wherever it is
+/// written down.
+pub const Workers = enum(u8) {
+    allowed = 0,
+    refused = 1,
+};
+
+/// Give a pane a colour, or take it away (`.none`). The user only, for
+/// the reason written on `Entry.color`.
+pub fn setPaneColor(
+    self: *Bus,
+    id: Id,
+    color: PaneColor,
+    who: Authority,
+) SetHeldError!void {
+    if (who != .user) return error.NotPermitted;
+    const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
+    e.color = color;
+}
+
+/// Keep workers out of a terminal, or let them in again. The user only,
+/// for the reason written on `Entry.workers`.
+pub fn setWorkers(
+    self: *Bus,
+    id: Id,
+    workers: Workers,
+    who: Authority,
+) SetHeldError!void {
+    if (who != .user) return error.NotPermitted;
+    const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
+    e.workers = workers;
+}
+
+/// The colour a pane was given, `.none` for one the bus has never heard of.
+pub fn paneColor(self: *const Bus, id: Id) PaneColor {
+    const e = self.entries.get(id) orelse return .none;
+    return e.color;
+}
+
+/// The colour a pane is shown in: what the user gave it, and for a
+/// supervisor given none, the purple of the app's icon. **The one place
+/// the core decides it**; the hosts decide the same thing at their own
+/// single point (`PaneFrame.badgeGround`, `pane::badge_ground`).
+pub fn shownColor(self: *const Bus, id: Id) PaneColor {
+    const e = self.entries.get(id) orelse return .none;
+    if (e.color == .none and e.role == .supervisor) return .purple;
+    return e.color;
+}
+
+/// Whether the user keeps workers out of this terminal. A terminal the bus
+/// never registered carries no marks, so workers are not refused there.
+pub fn workersOf(self: *const Bus, id: Id) Workers {
+    const e = self.entries.get(id) orelse return .allowed;
+    return e.workers;
+}
+
 /// Let a supervisor answer this terminal's permission prompts, or stop it.
 /// The user only, for the reason written on `Entry.shielded`.
 pub fn setMayAuthorise(
@@ -2714,6 +2815,24 @@ pub const TabMark = enum {
             .supervisor_silent => "\u{2690} ",
         };
     }
+
+    /// The flag this mark puts among a tab's dots (task 1699): the
+    /// supervisor's, raised or lowered, and nothing for any other mark.
+    pub fn flag(self: TabMark) Flag {
+        return switch (self) {
+            .supervisor => .raised,
+            .supervisor_silent => .lowered,
+            .none, .on_duty, .quiet, .off_duty, .held_on_duty, .held_quiet => .none,
+        };
+    }
+};
+
+/// The flag a tab's dots lead with: ⚑ for a supervisor at its post, ⚐ for
+/// one that has gone quiet (`TabMark.supervisor_silent`), none otherwise.
+pub const Flag = enum(u8) {
+    none = 0,
+    raised = 1,
+    lowered = 2,
 };
 
 /// What a shielded terminal's tab wears, in front of whatever `TabMark`
@@ -4770,6 +4889,65 @@ test "a terminal that was never a supervisor cannot stand down from it" {
     try b.register(worker);
     try testing.expectError(error.NotASupervisor, b.standDown(worker));
     try testing.expectError(error.NotASupervisor, b.standDown(0xdead));
+}
+
+test "only the user colours a pane or keeps workers out of it, and it starts with neither (#1699)" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    try testing.expectEqual(PaneColor.none, b.paneColor(worker));
+    try testing.expectEqual(Workers.allowed, b.workersOf(worker));
+
+    // A supervisor is refused both: they are marks the person makes for
+    // themselves.
+    try testing.expectError(error.NotPermitted, b.setPaneColor(worker, .orange, .supervisor));
+    try testing.expectError(error.NotPermitted, b.setWorkers(worker, .refused, .supervisor));
+    try testing.expectEqual(PaneColor.none, b.paneColor(worker));
+    try testing.expectEqual(Workers.allowed, b.workersOf(worker));
+
+    try b.setPaneColor(worker, .orange, .user);
+    try b.setWorkers(worker, .refused, .user);
+    try testing.expectEqual(PaneColor.orange, b.paneColor(worker));
+    try testing.expectEqual(Workers.refused, b.workersOf(worker));
+
+    // Keeping workers out takes nothing out of reach, and leaves the watch.
+    try testing.expect(!b.isShielded(worker));
+    try testing.expectEqual(Role.watched, b.roleOf(worker));
+
+    // A terminal the bus never heard of carries neither.
+    try testing.expectEqual(Workers.allowed, b.workersOf(0xdead));
+    try testing.expectError(error.UnknownTerminal, b.setPaneColor(0xdead, .blue, .user));
+}
+
+test "a supervisor given no colour is shown purple, and given one is shown in it (#1699)" {
+    var b = testBus();
+    defer b.deinit();
+
+    try b.addSupervisor(boss);
+    try b.watch(worker, boss);
+
+    try testing.expectEqual(PaneColor.purple, b.shownColor(boss));
+    try testing.expectEqual(PaneColor.none, b.paneColor(boss));
+    try testing.expectEqual(PaneColor.none, b.shownColor(worker));
+
+    try b.setPaneColor(boss, .teal, .user);
+    try testing.expectEqual(PaneColor.teal, b.shownColor(boss));
+    try b.setPaneColor(worker, .purple, .user);
+    try testing.expectEqual(PaneColor.purple, b.shownColor(worker));
+}
+
+test "the flag among a tab's dots is the supervisor's, raised or lowered" {
+    for (std.enums.values(TabMark)) |m| {
+        const want: Flag = switch (m) {
+            .supervisor => .raised,
+            .supervisor_silent => .lowered,
+            else => .none,
+        };
+        try testing.expectEqual(want, m.flag());
+    }
 }
 
 test "only the user may shield a terminal, and it starts unshielded" {

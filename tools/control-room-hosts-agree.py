@@ -190,7 +190,14 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/Splits/PolterCloseCircle.swift",
     "macos/Sources/Features/ControlRoom/PaneFrame.swift",
     "macos/Sources/Features/Terminal/TabAccessory.swift",
+    "macos/Sources/Features/Terminal/PaneColor.swift",
+    "macos/Sources/Features/Terminal/TabDots.swift",
 ]
+# What each terminal of FIXTURE was given as a colour, and the tab-dot cases
+# (task 1699): beside the fixture, which the core writes and a Zig test holds
+# to, so it cannot carry what only a host knows. Both dumps read it from the
+# fixture's own directory.
+PANE_COLORS = "src/poltergeist/testdata/pane_colors.json"
 CRATE = "windows/control-room"
 HEIGHT = "800"
 
@@ -561,6 +568,24 @@ for name in ["BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "Alread
     print("refusal \(name) says=\(quote(ControlRoomActions.Refusal(name: name).message))")
 }
 
+struct PaneColors: Decodable {
+    struct Case: Decodable {
+        struct Pane: Decodable { let name: String; let color: String; let flag: String }
+        let `case`: String
+        let panes: [Pane]
+    }
+    let colors: [String: String]
+    let tab_dots: [Case]
+}
+let paneColors = try JSONDecoder().decode(PaneColors.self, from: Data(contentsOf:
+    URL(fileURLWithPath: args[1]).deletingLastPathComponent().appendingPathComponent("pane_colors.json")))
+func hex(_ c: ControlRoomLook.RGBA?) -> String {
+    guard let c else { return "-" }
+    return String(format: "#%02X%02X%02X", c.r, c.g, c.b)
+}
+func points(_ v: Double) -> String {
+    v == v.rounded() ? String(Int(v)) : String(v)
+}
 // The frame each pane of a split terminal tab wears.
 let terminals = snapshot.terminals ?? []
 var paneIDs: [String?] = terminals.map { $0.id }
@@ -583,9 +608,23 @@ for (placeName, place) in panePlaces {
         } else {
             print("pane place=\(placeName) terminal=\(id ?? "-") wears=-")
         }
-        // Task 1692: the supervisor's badge on the bar, and its edge with no frames.
-        print("pane_mark place=\(placeName) terminal=\(id ?? "-") badge=\(d.map { $0.title.badge(in: $0.wears) } ?? false) "
-            + "edged=\(PaneFrame.edged(terminal: id, at: place, in: terminals))")
+        // Tasks 1692 and 1699: the badge on the bar, the edge round the pane
+        // with no frames, and its mark on a stack's tab, in both themes.
+        let color = id.flatMap { paneColors.colors[$0] }.flatMap { PaneColor(name: $0) } ?? .none
+        var coloured = d
+        coloured?.title.color = color
+        let badge = coloured.map { $0.title.badgeKind(in: $0.wears) } ?? .none
+        let shown = coloured.map { $0.title.shownColor(in: $0.wears) } ?? .none
+        let listed = id.flatMap { id in terminals.first { $0.id == id } }
+        let member = PaneStack.Member(name: "", shown: .none, wears: listed?.pane ?? .plain, color: color)
+        for dark in [false, true] {
+            let theme = ControlRoomLook.theme(dark: dark)
+            print("pane_mark theme=\(dark ? "dark" : "light") place=\(placeName) terminal=\(id ?? "-") badge=\(badge.name) "
+                + "ground=\(badge == .none ? "-" : hex(PaneFrame.badgeGround(shown, theme: theme))) "
+                + "text=\(badge == .none ? "-" : hex(PaneFrame.badgeText(shown, theme: theme))) "
+                + "edge=\(hex(PaneFrame.edge(terminal: id, at: place, in: terminals, color: color)?.dot(theme))) "
+                + "stack=\(hex(member.markColor?.dot(theme)))")
+        }
         all.append(d)
     }
     print("pane_ground place=\(placeName) shows=\(PaneFrame.groundShows(all))")
@@ -594,6 +633,24 @@ let noSnapshot = PaneFrame.drawn(terminal: "0x00000000000000a1", ownName: "own",
 print("pane no-snapshot wears=\(noSnapshot?.wears.rawValue ?? "-") name=\(quote(noSnapshot?.title.name ?? ""))")
 for w in PaneFrame.Kind.allCases {
     print("pane_role wears=\(w.rawValue) word=\(PaneFrame.roleWord(w).map(quote) ?? "-")")
+}
+
+// Tasks 1692 and 1699: the badge on a pane's bar, the edge round it with no
+// frames, and its mark on a stack's tab, in each theme, for the colours in
+// pane_colors.json.
+for c in paneColors.tab_dots {
+  for dark in [false, true] {
+    let theme = ControlRoomLook.theme(dark: dark)
+    let themeName = dark ? "dark" : "light"
+        let drawn = TabDots.of(c.panes.map {
+            .init(name: $0.name, color: PaneColor(name: $0.color) ?? .none,
+                  flag: $0.flag == "raised" ? .raised : $0.flag == "lowered" ? .lowered : .none)
+        })
+        let flag = drawn.flag.map { "\($0.0.name):\(hex($0.1.dot(theme)))" } ?? "none:-"
+        let dots = drawn.dots.isEmpty ? "-" : drawn.dots.map { hex($0.dot(theme)) }.joined(separator: ",")
+        print("tab_dots theme=\(themeName) case=\(c.case) flag=\(flag) dots=\(dots) plus=\(drawn.plus) "
+            + "width=\(points(drawn.width)) tip=\(quote(TabDots.tip(drawn, english: true)))")
+    }
 }
 
 // Looking at a row: which are marked seen, and after how long. The wait is
@@ -984,7 +1041,7 @@ def main():
         print(f"FAIL: {problem}")
         return 1
 
-    missing = [p for p in [FIXTURE, *SWIFT_SOURCES, os.path.join(CRATE, "Cargo.toml")]
+    missing = [p for p in [FIXTURE, PANE_COLORS, *SWIFT_SOURCES, os.path.join(CRATE, "Cargo.toml")]
                if not os.path.isfile(os.path.join(ROOT, p))]
     if missing:
         print("FAIL: nothing to compare -- these are not there:")

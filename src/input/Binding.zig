@@ -768,6 +768,28 @@ pub const Action = union(enum) {
     /// have to be remembered.
     poltergeist_toggle_shielded,
 
+    /// Shield this terminal (`on`) or lift the shield (`off`), whatever it
+    /// was. The same shield as `poltergeist_toggle_shielded`; this one says
+    /// which way, so a host putting back what a project file recorded does
+    /// not have to know what the terminal said first.
+    poltergeist_set_shielded: OnOff,
+
+    /// Give this pane a colour, or take it away with `none`: `blue`,
+    /// `purple`, `pink`, `red`, `orange`, `yellow`, `green`, `teal`,
+    /// `graphite`. The pane's tab carries a dot in it and the pane's title
+    /// a badge. A mark you make for yourself, so only you can set it.
+    poltergeist_set_pane_color: PaneColor,
+
+    /// Keep workers out of this terminal (`refused`) or let them in again
+    /// (`allowed`). Agents can still read it and type into it; a
+    /// supervisor is told not to start an agent in it or beside it. Only
+    /// you can set this.
+    poltergeist_set_workers: PaneWorkers,
+
+    /// Keep workers out of this terminal, or let them in again: the switch
+    /// form of `poltergeist_set_workers`.
+    poltergeist_toggle_workers_refused,
+
     /// Let a supervisor answer this terminal's permission prompts on its
     /// behalf, or stop it. Off until you say otherwise.
     ///
@@ -1299,6 +1321,34 @@ pub const Action = union(enum) {
         onto_previous,
     };
 
+    /// A pane's colour (task 1699). The same values, in the same order,
+    /// as `poltergeist.Bus.PaneColor`, which a test in `Surface.zig` holds
+    /// this to.
+    pub const PaneColor = enum {
+        none,
+        blue,
+        purple,
+        pink,
+        red,
+        orange,
+        yellow,
+        green,
+        teal,
+        graphite,
+    };
+
+    /// Whether workers may be started in a terminal (task 1699).
+    pub const PaneWorkers = enum {
+        allowed,
+        refused,
+    };
+
+    /// One of two ways, said outright.
+    pub const OnOff = enum {
+        on,
+        off,
+    };
+
     pub const SplitFocusDirection = enum {
         previous,
         next,
@@ -1703,6 +1753,10 @@ pub const Action = union(enum) {
             .poltergeist_toggle_watch,
             .poltergeist_toggle_held,
             .poltergeist_toggle_shielded,
+            .poltergeist_set_shielded,
+            .poltergeist_set_pane_color,
+            .poltergeist_set_workers,
+            .poltergeist_toggle_workers_refused,
             .poltergeist_toggle_authorise,
             .poltergeist_toggle_worker_mentions,
             .poltergeist_toggle_chat,

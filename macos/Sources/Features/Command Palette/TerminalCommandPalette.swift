@@ -166,8 +166,9 @@ struct TerminalCommandPaletteView: View {
         TerminalController.all.flatMap { controller -> [CommandOption] in
             guard let window = controller.window else { return [] }
 
-            let color = (window as? TerminalWindow)?.tabColor
-            let displayColor = color != TerminalTabColor.none ? color : nil
+            // Each terminal's own colour (task 1699), as its tab's dot and
+            // its title's badge show it.
+            let theme = ControlRoomLook.theme(for: window.effectiveAppearance)
 
             return controller.surfaceTree.map { surface in
                 let terminalTitle = surface.title.isEmpty ? window.title : surface.title
@@ -190,7 +191,8 @@ struct TerminalCommandPaletteView: View {
                     title: String(format: String(localized: "Focus: %@", comment: "命令面板：跳到某个终端，%@ 是它的标题"), displayTitle),
                     subtitle: subtitle,
                     leadingIcon: "rectangle.on.rectangle",
-                    leadingColor: displayColor?.displayColor.map { Color($0) },
+                    leadingColor: PaneColor.shown(set: surface.poltergeistPaneColor,
+                                                  supervisor: surface.poltergeistRole == .supervisor).dot(theme)?.color,
                     sortKey: ObjectIdentifier(surface),
                     aliases: ["focus"]
                 ) {

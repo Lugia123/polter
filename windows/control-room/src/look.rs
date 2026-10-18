@@ -253,6 +253,36 @@ pub mod supervisor_badge {
     pub const EDGE: f64 = 2.0;
 }
 
+/// The dots on a window tab, one per pane given a colour, led by the supervisor's flag (task 1699). Columns of two, top then bottom, left to right, in the panes' reading order.
+pub mod tab_dots {
+    /// A dot's diameter.
+    /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+    pub const DOT: f64 = 6.0;
+    /// Between two dots, across and down: two rows are dot + gap + dot = `window_tab.glyph`.
+    /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+    pub const GAP: f64 = 2.0;
+    /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+    pub const ROWS: f64 = 2.0;
+    /// The most dots drawn whole.
+    /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+    pub const MAX: f64 = 8.0;
+    /// With more than `max`, this many are drawn and a `+N` for the rest.
+    /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+    pub const SHOWN_WHEN_OVER: f64 = 6.0;
+    /// Between the flag (`window_tab.glyph` square) and the first column.
+    /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+    pub const FLAG_GAP: f64 = 4.0;
+    /// Between the last column and `+N`, written at `font.min` in `text_secondary`.
+    /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+    pub const PLUS_GAP: f64 = 4.0;
+    /// The width of the accent ring round the dots while a pane of the tab is lit (`terminal_highlight`).
+    /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+    pub const RING: f64 = 1.5;
+    /// From the dots' outer edge to the ring. With no dots the ring goes round the room of one.
+    /// Source: design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words.
+    pub const RING_GAP: f64 = 2.0;
+}
+
 /// The tabs over a cell that holds several terminals.
 pub mod stack_tab {
     /// From the content's left and right edges to a tab's body: corner 8 + straight 4 + arc 8. Also the terminal text's inset.
@@ -665,15 +695,87 @@ pub struct Theme {
     pub supervisor_edge_focused: Rgba,
     /// Source: design v17, src/tokens-l.css and src/tokens-d.css.
     pub supervisor_terminal_edge: Rgba,
-    /// The badge's ground. Light: the app icon's own colour (`images/Polter.icon/icon.json` fill, srgb 0.24706 0.21961 0.78824; `windows/host/polter.ico` the same). Dark: the same hue (OKLCH 275.7) at lightness 0.55, the lightest step its white word still reads on at 4.5 with room.
-    /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
-    pub supervisor_badge: Rgba,
-    /// The mark and the word on the badge.
-    /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
-    pub supervisor_badge_text: Rgba,
-    /// The mark before a supervisor's name on a stack's tab, and the edge round its pane with no frames. Dark: the icon's hue at lightness 0.68, the first step that is 3 on every ground it is drawn on.
-    /// Source: design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692).
-    pub supervisor_mark: Rgba,
+    /// A blue pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_blue: Rgba,
+    /// The ground of a blue pane's badge at the left of its title. Dark grounds are light, with a dark word.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_blue_badge: Rgba,
+    /// The mark and the word on a blue badge.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_blue_badge_text: Rgba,
+    /// A purple pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu. A supervisor given no colour is shown in this; on light it is the app icon's own (`images/Polter.icon/icon.json`).
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_purple: Rgba,
+    /// The ground of a purple pane's badge at the left of its title. Dark grounds are light, with a dark word.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_purple_badge: Rgba,
+    /// The mark and the word on a purple badge.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_purple_badge_text: Rgba,
+    /// A pink pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_pink: Rgba,
+    /// The ground of a pink pane's badge at the left of its title. Dark grounds are light, with a dark word.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_pink_badge: Rgba,
+    /// The mark and the word on a pink badge.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_pink_badge_text: Rgba,
+    /// A red pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_red: Rgba,
+    /// The ground of a red pane's badge at the left of its title. Dark grounds are light, with a dark word.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_red_badge: Rgba,
+    /// The mark and the word on a red badge.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_red_badge_text: Rgba,
+    /// A orange pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_orange: Rgba,
+    /// The ground of a orange pane's badge at the left of its title. Dark grounds are light, with a dark word.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_orange_badge: Rgba,
+    /// The mark and the word on a orange badge.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_orange_badge_text: Rgba,
+    /// A yellow pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_yellow: Rgba,
+    /// The ground of a yellow pane's badge at the left of its title. Dark grounds are light, with a dark word.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_yellow_badge: Rgba,
+    /// The mark and the word on a yellow badge.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_yellow_badge_text: Rgba,
+    /// A green pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_green: Rgba,
+    /// The ground of a green pane's badge at the left of its title. Dark grounds are light, with a dark word.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_green_badge: Rgba,
+    /// The mark and the word on a green badge.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_green_badge_text: Rgba,
+    /// A teal pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_teal: Rgba,
+    /// The ground of a teal pane's badge at the left of its title. Dark grounds are light, with a dark word.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_teal_badge: Rgba,
+    /// The mark and the word on a teal badge.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_teal_badge_text: Rgba,
+    /// A graphite pane's dot: on its tab, on its stack tab, as its edge when panes wear no frames, in the menu.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_graphite: Rgba,
+    /// The ground of a graphite pane's badge at the left of its title. Dark grounds are light, with a dark word.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_graphite_badge: Rgba,
+    /// The mark and the word on a graphite badge.
+    /// Source: task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own.
+    pub pane_graphite_badge_text: Rgba,
     /// Source: design v17, src/tokens-l.css and src/tokens-d.css.
     pub worker_edge: Rgba,
     /// Dark only.
@@ -769,9 +871,33 @@ pub const LIGHT: Theme = Theme {
     supervisor_edge: Rgba { r: 0, g: 0, b: 0, a: 0.12 },
     supervisor_edge_focused: Rgba { r: 0, g: 0, b: 0, a: 0.38 },
     supervisor_terminal_edge: Rgba { r: 0, g: 0, b: 0, a: 0.1 },
-    supervisor_badge: Rgba { r: 63, g: 56, b: 201, a: 1.0 },
-    supervisor_badge_text: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
-    supervisor_mark: Rgba { r: 63, g: 56, b: 201, a: 1.0 },
+    pane_blue: Rgba { r: 42, g: 123, b: 218, a: 1.0 },
+    pane_blue_badge: Rgba { r: 40, g: 117, b: 208, a: 1.0 },
+    pane_blue_badge_text: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
+    pane_purple: Rgba { r: 63, g: 56, b: 201, a: 1.0 },
+    pane_purple_badge: Rgba { r: 63, g: 56, b: 201, a: 1.0 },
+    pane_purple_badge_text: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
+    pane_pink: Rgba { r: 216, g: 54, b: 162, a: 1.0 },
+    pane_pink_badge: Rgba { r: 206, g: 51, b: 154, a: 1.0 },
+    pane_pink_badge_text: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
+    pane_red: Rgba { r: 224, g: 54, b: 114, a: 1.0 },
+    pane_red_badge: Rgba { r: 214, g: 51, b: 109, a: 1.0 },
+    pane_red_badge_text: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
+    pane_orange: Rgba { r: 182, g: 103, b: 42, a: 1.0 },
+    pane_orange_badge: Rgba { r: 173, g: 98, b: 39, a: 1.0 },
+    pane_orange_badge_text: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
+    pane_yellow: Rgba { r: 142, g: 122, b: 41, a: 1.0 },
+    pane_yellow_badge: Rgba { r: 135, g: 116, b: 39, a: 1.0 },
+    pane_yellow_badge_text: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
+    pane_green: Rgba { r: 45, g: 140, b: 68, a: 1.0 },
+    pane_green_badge: Rgba { r: 42, g: 133, b: 64, a: 1.0 },
+    pane_green_badge_text: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
+    pane_teal: Rgba { r: 45, g: 135, b: 135, a: 1.0 },
+    pane_teal_badge: Rgba { r: 43, g: 129, b: 129, a: 1.0 },
+    pane_teal_badge_text: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
+    pane_graphite: Rgba { r: 119, g: 123, b: 129, a: 1.0 },
+    pane_graphite_badge: Rgba { r: 113, g: 117, b: 122, a: 1.0 },
+    pane_graphite_badge_text: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
     worker_edge: Rgba { r: 0, g: 0, b: 0, a: 0.22 },
     worker_edge_inner: Rgba { r: 0, g: 0, b: 0, a: 0.0 },
     stack_tab_separator: Rgba { r: 0, g: 0, b: 0, a: 0.16 },
@@ -835,9 +961,33 @@ pub const DARK: Theme = Theme {
     supervisor_edge: Rgba { r: 0, g: 0, b: 0, a: 0.55 },
     supervisor_edge_focused: Rgba { r: 255, g: 255, b: 255, a: 0.4 },
     supervisor_terminal_edge: Rgba { r: 0, g: 0, b: 0, a: 0.4 },
-    supervisor_badge: Rgba { r: 86, g: 89, b: 235, a: 1.0 },
-    supervisor_badge_text: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
-    supervisor_mark: Rgba { r: 125, g: 139, b: 254, a: 1.0 },
+    pane_blue: Rgba { r: 55, g: 139, b: 238, a: 1.0 },
+    pane_blue_badge: Rgba { r: 55, g: 139, b: 238, a: 1.0 },
+    pane_blue_badge_text: Rgba { r: 12, g: 23, b: 35, a: 1.0 },
+    pane_purple: Rgba { r: 115, g: 128, b: 238, a: 1.0 },
+    pane_purple_badge: Rgba { r: 115, g: 128, b: 238, a: 1.0 },
+    pane_purple_badge_text: Rgba { r: 18, g: 21, b: 36, a: 1.0 },
+    pane_pink: Rgba { r: 241, g: 61, b: 181, a: 1.0 },
+    pane_pink_badge: Rgba { r: 241, g: 61, b: 181, a: 1.0 },
+    pane_pink_badge_text: Rgba { r: 32, g: 16, b: 25, a: 1.0 },
+    pane_red: Rgba { r: 241, g: 75, b: 129, a: 1.0 },
+    pane_red_badge: Rgba { r: 241, g: 75, b: 129, a: 1.0 },
+    pane_red_badge_text: Rgba { r: 33, g: 16, b: 20, a: 1.0 },
+    pane_orange: Rgba { r: 202, g: 116, b: 47, a: 1.0 },
+    pane_orange_badge: Rgba { r: 202, g: 116, b: 47, a: 1.0 },
+    pane_orange_badge_text: Rgba { r: 33, g: 18, b: 8, a: 1.0 },
+    pane_yellow: Rgba { r: 159, g: 137, b: 47, a: 1.0 },
+    pane_yellow_badge: Rgba { r: 159, g: 137, b: 47, a: 1.0 },
+    pane_yellow_badge_text: Rgba { r: 26, g: 22, b: 6, a: 1.0 },
+    pane_green: Rgba { r: 51, g: 157, b: 77, a: 1.0 },
+    pane_green_badge: Rgba { r: 51, g: 157, b: 77, a: 1.0 },
+    pane_green_badge_text: Rgba { r: 12, g: 26, b: 14, a: 1.0 },
+    pane_teal: Rgba { r: 52, g: 152, b: 152, a: 1.0 },
+    pane_teal_badge: Rgba { r: 52, g: 152, b: 152, a: 1.0 },
+    pane_teal_badge_text: Rgba { r: 3, g: 26, b: 26, a: 1.0 },
+    pane_graphite: Rgba { r: 133, g: 139, b: 144, a: 1.0 },
+    pane_graphite_badge: Rgba { r: 133, g: 139, b: 144, a: 1.0 },
+    pane_graphite_badge_text: Rgba { r: 20, g: 22, b: 24, a: 1.0 },
     worker_edge: Rgba { r: 0, g: 0, b: 0, a: 0.6 },
     worker_edge_inner: Rgba { r: 255, g: 255, b: 255, a: 0.1 },
     stack_tab_separator: Rgba { r: 255, g: 255, b: 255, a: 0.15 },

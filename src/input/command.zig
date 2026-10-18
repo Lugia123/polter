@@ -634,6 +634,19 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Stop every agent, supervisors included, from reading this terminal or typing into it. Its tab wears a lock while the shield stands. Only you can set this."),
         }},
 
+        .poltergeist_toggle_workers_refused => comptime &.{.{
+            .action = .poltergeist_toggle_workers_refused,
+            .title = i18n.N_("Don't Start Workers in This Terminal"),
+            .description = i18n.N_("Keep this terminal for your own commands: a supervisor starts no agent in it or beside it. Agents can still read it and type into it. Only you can set this."),
+        }},
+
+        // The `set_` forms say which way, for a host putting back what a
+        // project file recorded; the person has the menu and the switch.
+        .poltergeist_set_shielded,
+        .poltergeist_set_pane_color,
+        .poltergeist_set_workers,
+        => comptime &.{},
+
         .poltergeist_toggle_chat => comptime &.{.{
             .action = .poltergeist_toggle_chat,
             .title = i18n.N_("Terminal Conversations"),

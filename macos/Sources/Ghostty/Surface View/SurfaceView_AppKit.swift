@@ -147,6 +147,22 @@ extension Ghostty {
         /// terminal is a supervisor.
         @Published var poltergeistWorkerMentions: Bool = false
 
+        /// The pane half of the mark (task 1699): the colour the user set
+        /// (not the one shown -- `PaneColor.shown` decides that), whether
+        /// the user keeps workers out of this terminal, and the
+        /// supervisor's flag for the tab's dots. Set from
+        /// `GHOSTTY_ACTION_POLTERGEIST_PANE`, which the core sends when the
+        /// surface starts and whenever one of the three changes.
+        @Published var poltergeistPaneColor: PaneColor = .none
+        @Published var poltergeistWorkersRefused: Bool = false
+        @Published var poltergeistFlag: PaneFlag = .none
+
+        /// How many `GHOSTTY_ACTION_POLTERGEIST_PANE`s have arrived. A
+        /// project putting back what its file says counts from the moment
+        /// it handed the values back: what came before was the core's
+        /// defaults (`pane-color-interface.md` §7.2).
+        @Published var poltergeistPaneReports: Int = 0
+
         /// Which persona this terminal has been given, and whether its
         /// face has since been changed by hand (roles.md §5.2).
         ///
@@ -1769,6 +1785,14 @@ extension Ghostty {
                 menu.addItem(copy)
             }
 
+            // This pane's colour (task 1699): the same flat palette the
+            // tab's menu has, aimed at this pane.
+            let palette = NSMenuItem()
+            palette.view = makePaneColorPaletteView(selectedColor: poltergeistPaneColor) { [weak self] color in
+                self?.setPaneColor(color)
+            }
+            menu.addItem(palette)
+
             menu.addItem(.separator())
             // Ticked when the terminal already is what the item offers to
             // make it. Without this an item that has been used reads
@@ -1783,6 +1807,11 @@ extension Ghostty {
             item = menu.addItem(withTitle: String(localized: "Keep Agents Out of This Terminal", comment: "右键菜单：护盾，任何 agent 都不许碰"), action: #selector(poltergeistToggleShielded(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "lock")
             item.state = poltergeistShielded ? .on : .off
+            // Agents may still read it and type into it; no worker is
+            // started in it or beside it (task 1699).
+            item = menu.addItem(withTitle: String(localized: "Don't Start Workers in This Terminal", comment: "右键菜单：不在此终端开 worker；agent 仍可读、可发命令"), action: #selector(poltergeistToggleWorkersRefused(_:)), keyEquivalent: "")
+            item.setImageIfDesired(systemSymbolName: "apple.terminal")
+            item.state = poltergeistWorkersRefused ? .on : .off
             item = menu.addItem(withTitle: String(localized: "Let a Supervisor Answer Prompts Here", comment: "右键菜单：允许总管替此终端点授权框，含「不再询问」"), action: #selector(poltergeistToggleAuthorise(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "hand.raised")
             item.state = poltergeistMayAuthorise ? .on : .off
@@ -2006,6 +2035,15 @@ extension Ghostty {
 
         @objc func poltergeistToggleShielded(_ sender: Any) {
             poltergeistAction("poltergeist_toggle_shielded")
+        }
+
+        @objc func poltergeistToggleWorkersRefused(_ sender: Any) {
+            poltergeistAction("poltergeist_toggle_workers_refused")
+        }
+
+        /// Give this pane a colour, or take it away (task 1699).
+        func setPaneColor(_ color: PaneColor) {
+            poltergeistAction(color.bindingAction)
         }
 
         private func poltergeistAction(_ action: String) {
@@ -2540,6 +2578,30 @@ extension Ghostty.SurfaceView: NSMenuItemValidation {
 
         case #selector(toggleReadonly):
             item.state = readonly ? .on : .off
+            return true
+
+        // The menu bar's agent rows. This view is the first responder that
+        // answers them, so AppKit asks it -- not `TerminalController` -- and
+        // a row nobody ticks here reads the same whether the terminal is
+        // what it offers to make it or not (seen in task 1699's pictures).
+        case #selector(poltergeistSupervisor(_:)):
+            item.state = poltergeistRole == .supervisor ? .on : .off
+            return true
+
+        case #selector(poltergeistToggleWatch(_:)):
+            item.state = poltergeistRole == .watched ? .on : .off
+            return true
+
+        case #selector(poltergeistToggleShielded(_:)):
+            item.state = poltergeistShielded ? .on : .off
+            return true
+
+        case #selector(poltergeistToggleWorkersRefused(_:)):
+            item.state = poltergeistWorkersRefused ? .on : .off
+            return true
+
+        case #selector(poltergeistToggleAuthorise(_:)):
+            item.state = poltergeistMayAuthorise ? .on : .off
             return true
 
         case #selector(copy(_:)):

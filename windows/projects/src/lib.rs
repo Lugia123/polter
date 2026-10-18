@@ -1,6 +1,6 @@
 //! A project while the host has it in hand.
 //!
-//! Three things, none of which needs a window:
+//! Four things, none of which needs a window:
 //!
 //!   * `pages` -- which open tab is which page of the file, and what a save
 //!     makes of the tabs that are open and the pages that are not.
@@ -8,6 +8,8 @@
 //!     and which screens are there now.
 //!   * `autosave` -- how soon a change is written, and that changes which
 //!     never stop arriving do not put the write off for ever.
+//!   * `handback` -- what a pane restored from a project hands back to the
+//!     core, and why the core's first word on it is not believed.
 //!
 //! **These are the macOS host's rules, case for case** (`ProjectPages.swift`,
 //! `ProjectPlacement`, `ProjectAutosave.swift`), and the tests here are its
@@ -23,6 +25,7 @@ pub const fn n_(s: &'static str) -> &'static str {
 }
 
 pub mod autosave;
+pub mod handback;
 pub mod orders;
 pub mod page_rules;
 pub mod pages;

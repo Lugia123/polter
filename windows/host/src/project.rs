@@ -435,10 +435,27 @@ pub fn to_layout_shape(node: &SavedNode, snaps: &Path) -> serde_json::Value {
         }),
         SavedNode::Leaf(leaf) => {
             let scrollback = scrollback_path(snaps, leaf);
-            if leaf.cwd.is_empty() && leaf.history.is_empty() && scrollback.is_none() {
+            let marks = polter_projects::handback::Marks::of(leaf);
+            if leaf.cwd.is_empty() && leaf.history.is_empty() && scrollback.is_none() && marks.is_default() {
                 serde_json::json!({ "new": null })
             } else {
                 let mut new_obj = serde_json::Map::new();
+                // What the pane hands back once it is made (task 1700); the
+                // defaults are not written, and a cell without the key hands
+                // nothing back.
+                if !marks.is_default() {
+                    let mut m = serde_json::Map::new();
+                    if marks.color != polter_projectfile::PaneColor::None {
+                        m.insert("color".to_string(), serde_json::Value::String(marks.color.name().to_string()));
+                    }
+                    if marks.workers == polter_projectfile::Workers::Refused {
+                        m.insert("workers".to_string(), serde_json::Value::String("refused".to_string()));
+                    }
+                    if marks.shielded {
+                        m.insert("shielded".to_string(), serde_json::Value::Bool(true));
+                    }
+                    new_obj.insert("marks".to_string(), serde_json::Value::Object(m));
+                }
                 if !leaf.cwd.is_empty() {
                     new_obj.insert("cwd".to_string(), serde_json::Value::String(leaf.cwd.clone()));
                 }
@@ -530,6 +547,11 @@ pub fn write_fixture(path: &str) -> bool {
         history: "a1b2c3.history".to_string(),
         scrollback: "1.snap".to_string(),
         by_supervisor: false,
+        // A mark of each kind, so a reader that drops one is caught.
+        supervisor_seat: Some(true),
+        color: Some(polter_projectfile::PaneColor::Teal),
+        workers: Some(polter_projectfile::Workers::Refused),
+        shielded: Some(true),
         agent: Agent::None,
     });
     let left_leaf = SavedNode::Leaf(SavedLeaf::plain("", Agent::Unknown));
@@ -736,6 +758,10 @@ mod tests {
             history: "a1b2c3.history".to_string(),
             scrollback: "0.snap".to_string(),
             by_supervisor: false,
+            supervisor_seat: Some(false),
+            color: Some(polter_projectfile::PaneColor::Orange),
+            workers: Some(polter_projectfile::Workers::Refused),
+            shielded: Some(true),
             agent: Agent::None,
         });
         let right = SavedNode::Leaf(SavedLeaf::plain("/work/repo/tests", Agent::None));

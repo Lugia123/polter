@@ -490,6 +490,14 @@ pub const Action = union(Key) {
     /// screen only: nothing reaches the terminal.
     polter_highlight: PolterHighlight,
 
+    /// The pane half of what Poltergeist says about this surface (task
+    /// 1699): the colour the user gave it, whether workers are kept out of
+    /// it, and the supervisor's flag. Sent when the surface starts and then
+    /// whenever one of the three changes. A separate action rather than
+    /// three more fields on `poltergeist_mark`, whose struct is full and
+    /// whose offsets an old Windows host still reads by hand.
+    poltergeist_pane: PoltergeistPane,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -581,6 +589,7 @@ pub const Action = union(Key) {
         pane_stack,
         polter_tab_move,
         polter_highlight,
+        poltergeist_pane,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -2513,6 +2522,79 @@ pub const PolterHighlight = extern struct {
     /// (`h` a surface handle, 0 for none) or `{"ended":bool}`; `refused`
     /// with `{"code","message"}`.
     out: *PoltergeistLayout.Out,
+};
+
+/// The pane half of a surface's mark (task 1699). Three int-wide enums,
+/// so twelve bytes at 0, 4 and 8: it sits inside the action union without
+/// moving any other action's payload.
+///
+/// Sync with: ghostty_action_poltergeist_pane_s
+pub const PoltergeistPane = extern struct {
+    /// The colour the user *set*, not the one shown: a supervisor with
+    /// none set is drawn purple, and the host decides that at its single
+    /// point (`badgeGround`), as the core does in `Bus.shownColor`.
+    color: Color,
+    workers: Workers,
+    flag: Flag,
+
+    /// Sync with: ghostty_poltergeist_pane_color_e. The values are
+    /// `Bus.PaneColor`'s, which a test below holds this to.
+    pub const Color = enum(c_int) {
+        none = 0,
+        blue = 1,
+        purple = 2,
+        pink = 3,
+        red = 4,
+        orange = 5,
+        yellow = 6,
+        green = 7,
+        teal = 8,
+        graphite = 9,
+    };
+
+    /// Sync with: ghostty_poltergeist_workers_e
+    pub const Workers = enum(c_int) {
+        allowed = 0,
+        refused = 1,
+    };
+
+    /// Sync with: ghostty_poltergeist_flag_e
+    pub const Flag = enum(c_int) {
+        none = 0,
+        raised = 1,
+        lowered = 2,
+    };
+
+    test "the pane payload is laid out the way ghostty.h says" {
+        // Written out: the Windows host reads it by hand.
+        const testing = std.testing;
+        try testing.expectEqual(@as(usize, 12), @sizeOf(PoltergeistPane));
+        try testing.expectEqual(@as(usize, 0), @offsetOf(PoltergeistPane, "color"));
+        try testing.expectEqual(@as(usize, 4), @offsetOf(PoltergeistPane, "workers"));
+        try testing.expectEqual(@as(usize, 8), @offsetOf(PoltergeistPane, "flag"));
+    }
+
+    test "the pane payload's enums are the bus's, value for value" {
+        // The surface converts by number (`@enumFromInt`), so a value that
+        // differs here would arrive as another colour.
+        const Bus = @import("../poltergeist/main.zig").Bus;
+        inline for (comptime std.enums.values(Bus.PaneColor)) |c| {
+            try std.testing.expectEqualStrings(@tagName(c), @tagName(@as(Color, @enumFromInt(@intFromEnum(c)))));
+        }
+        try std.testing.expectEqual(std.enums.values(Bus.PaneColor).len, std.enums.values(Color).len);
+        inline for (comptime std.enums.values(Bus.Workers)) |w| {
+            try std.testing.expectEqualStrings(@tagName(w), @tagName(@as(Workers, @enumFromInt(@intFromEnum(w)))));
+        }
+        inline for (comptime std.enums.values(Bus.Flag)) |f| {
+            try std.testing.expectEqualStrings(@tagName(f), @tagName(@as(Flag, @enumFromInt(@intFromEnum(f)))));
+        }
+    }
+
+    test "ghostty.h PoltergeistPane enums" {
+        try lib.checkGhosttyHEnum(Color, "GHOSTTY_POLTERGEIST_PANE_COLOR_");
+        try lib.checkGhosttyHEnum(Workers, "GHOSTTY_POLTERGEIST_WORKERS_");
+        try lib.checkGhosttyHEnum(Flag, "GHOSTTY_POLTERGEIST_FLAG_");
+    }
 };
 
 pub const PoltergeistClose = extern struct {

@@ -27,6 +27,7 @@
 
 use crate::layout::Rect;
 use crate::look::{font, pane, radius, side, space, supervisor_badge, window_tab, Rgba, Theme};
+use crate::pane_color::Color as PaneColor;
 use crate::scene::{self, Face, Item, Part, Piece, Side, Style};
 use crate::snapshot::{BarShown, Shown, Terminal};
 
@@ -54,6 +55,40 @@ pub struct Title {
 pub struct Drawn {
     pub wears: Wears,
     pub title: Title,
+    /// The colour a person set on the terminal (task 1700): the *set* one,
+    /// none being `None`. What it is drawn in is [`shown`](crate::pane_color::shown).
+    pub color: Option<PaneColor>,
+}
+
+/// What a pane's title has at its left end (`pane-color-interface.md` §6):
+/// the supervisor's flag badge, a coloured pane's dot badge, or nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadgeKind {
+    Flag,
+    Dot,
+    None,
+}
+
+impl BadgeKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            BadgeKind::Flag => "flag",
+            BadgeKind::Dot => "dot",
+            BadgeKind::None => "none",
+        }
+    }
+}
+
+/// Which badge a pane's title draws, and in which colour: the supervisor's
+/// flag in its shown colour (purple when none is set), a dot in the colour
+/// of any other pane that has one, and nothing where nothing is drawn.
+pub fn badge(drawn: Option<&Drawn>) -> (BadgeKind, Option<PaneColor>) {
+    let Some(d) = drawn else { return (BadgeKind::None, None) };
+    match (d.wears, crate::pane_color::shown(d.color, d.wears)) {
+        (Wears::Supervisor, c) => (BadgeKind::Flag, c),
+        (_, Some(c)) => (BadgeKind::Dot, Some(c)),
+        (_, None) => (BadgeKind::None, None),
+    }
 }
 
 /// Where a pane is.
@@ -77,7 +112,7 @@ pub struct Place {
 /// - An ordinary terminal alone in its tab wears nothing: the window's tab
 ///   already says which it is. A supervisor or a worker wears its frame
 ///   even alone.
-pub fn drawn(terminal: Option<&str>, own_name: &str, place: Place, terminals: Option<&[Terminal]>) -> Option<Drawn> {
+pub fn drawn(terminal: Option<&str>, own_name: &str, place: Place, terminals: Option<&[Terminal]>, color: Option<PaneColor>) -> Option<Drawn> {
     if !place.enabled || place.quick_terminal {
         return None;
     }
@@ -91,8 +126,9 @@ pub fn drawn(terminal: Option<&str>, own_name: &str, place: Place, terminals: Op
                 Some(bar) => Title { name: t.title.clone(), shown: bar.shown, word: bar.text.clone() },
                 None => Title { name: t.title.clone(), shown: BarShown::of(t.shown), word: t.text.clone() },
             },
+            color,
         },
-        None => Drawn { wears: Wears::Plain, title: Title { name: own_name.to_string(), shown: BarShown::None, word: String::new() } },
+        None => Drawn { wears: Wears::Plain, title: Title { name: own_name.to_string(), shown: BarShown::None, word: String::new() }, color },
     };
     if drawn.wears == Wears::Plain && place.alone {
         return None;
@@ -100,28 +136,29 @@ pub fn drawn(terminal: Option<&str>, own_name: &str, place: Place, terminals: Op
     Some(drawn)
 }
 
-/// Whether the pane of `terminal` at `place` is drawn with the supervisor's
-/// edge: a line just inside it, all round, and nothing else (task 1692, the
-/// design's `supervisor-pane-v1`, situation 2). Only where it wears no frame
-/// because the setting is off -- with no title there is nowhere for the
-/// badge to go -- and for the core's supervisor only; alone in its tab too,
-/// as its frame would be. Never in the quick terminal. macOS's
+/// The colour of the edge the pane of `terminal` at `place` is drawn with:
+/// a line just inside it, all round, and nothing else (task 1692, the
+/// design's `supervisor-pane-v1`, situation 2; any coloured pane since task
+/// 1700). Only where it wears no frame because the setting is off -- with no
+/// title there is nowhere for a badge to go -- and in the pane's shown
+/// colour, so a supervisor with none set has the purple one; alone in its
+/// tab too, as its frame would be. Never in the quick terminal. macOS's
 /// `PaneFrame.edged`.
-pub fn edged(terminal: Option<&str>, place: Place, terminals: Option<&[Terminal]>) -> bool {
+pub fn edged(terminal: Option<&str>, place: Place, terminals: Option<&[Terminal]>, color: Option<PaneColor>) -> Option<PaneColor> {
     if place.enabled || place.quick_terminal {
-        return false;
+        return None;
     }
     let listed = terminal.and_then(|id| terminals?.iter().find(|t| t.id == id));
-    listed.is_some_and(|t| t.pane == Some(Wears::Supervisor))
+    let wears = listed.and_then(|t| t.pane).unwrap_or(Wears::Plain);
+    crate::pane_color::shown(color, wears)
 }
 
 /// The ground of the supervisor's badge: the pane's own colour when it has
-/// one, the supervisor's colour (the app icon's) when it has not. **The one
-/// place it is chosen**: no pane has a colour of its own yet (task 1694 will
-/// give them one), so every caller passes none today. macOS's
-/// `PaneFrame.badgeGround`.
-pub fn badge_ground(pane_color: Option<Rgba>, theme: &Theme) -> Rgba {
-    pane_color.unwrap_or(theme.supervisor_badge)
+/// one, the supervisor's colour (the app icon's purple) when it has not.
+/// **The one place it is chosen** (task 1692; `pane_color` is the colour
+/// *set*, task 1700). macOS's `PaneFrame.badgeGround`.
+pub fn badge_ground(pane_color: Option<PaneColor>, theme: &Theme) -> Rgba {
+    pane_color.unwrap_or(PaneColor::Purple).badge(theme)
 }
 
 /// How thick the supervisor's edge is, in device pixels: never less than one.
@@ -362,15 +399,20 @@ pub fn build(frame: Px, drawn: &Drawn, view: &View, tr: &dyn Fn(&str) -> String)
     // word is what goes before the badge would be cut (`Side::Yield`): the
     // name is cut first, then the word goes, and the badge stays.
     let ui = |color: Rgba, weight: f64| Style { size: font::BODY, weight, face: Face::Ui, color };
-    let badge = drawn.wears == Wears::Supervisor;
+    // Since task 1700 any pane with a colour has a badge too: the
+    // supervisor's flag and its word, or a coloured pane's dot and the word
+    // that says what it is (an ordinary terminal's dot has none), on the
+    // colour's own ground. Given too little room it is the mark alone.
+    let (kind, color) = badge(Some(drawn));
+    let badge = kind != BadgeKind::None;
     let mut parts = Vec::new();
-    if badge {
+    if let (true, Some(c)) = (badge, color) {
+        let (mark, text) = match kind {
+            BadgeKind::Flag => (crate::glyph::Mark::Supervisor, tr(crate::lend::msg::SUPERVISOR)),
+            BadgeKind::Dot | BadgeKind::None => (crate::glyph::Mark::Dot, role_word(drawn.wears).map(tr).unwrap_or_default()),
+        };
         parts.push(Part {
-            piece: Piece::Badge {
-                text: tr(crate::lend::msg::SUPERVISOR),
-                style: ui(theme.supervisor_badge_text, font::WEIGHT_EMPHASIS),
-                ground: badge_ground(None, theme),
-            },
+            piece: Piece::Badge { mark, text, style: ui(c.badge_text(theme), font::WEIGHT_EMPHASIS), ground: badge_ground(Some(c), theme) },
             side: Side::Lead,
             gap: 0.0,
         });
@@ -448,7 +490,7 @@ mod tests {
     }
 
     fn wears(id: &str, place: Place) -> Option<Wears> {
-        drawn(Some(id), "", place, Some(&terminals())).map(|d| d.wears)
+        drawn(Some(id), "", place, Some(&terminals()), None).map(|d| d.wears)
     }
 
     // ---- which of the three (the same cases as PaneFrameTests.swift)
@@ -471,24 +513,24 @@ mod tests {
     #[test]
     fn the_title_is_the_terminals_own_name_glyph_and_word() {
         let all = terminals();
-        let b = drawn(Some(WORKER), "not this", SPLIT, Some(&all)).unwrap();
+        let b = drawn(Some(WORKER), "not this", SPLIT, Some(&all), None).unwrap();
         assert_eq!(b.title, title("web-app worker", Shown::NeedsYou, "Awaiting approval"));
         // Not the first one listed, and not another terminal's.
-        let c = drawn(Some(SHELL), "not this", SPLIT, Some(&all)).unwrap();
+        let c = drawn(Some(SHELL), "not this", SPLIT, Some(&all), None).unwrap();
         assert_eq!(c.title, title("zsh", Shown::None, ""));
     }
 
     #[test]
     fn an_ordinary_terminal_that_waits_says_so() {
-        let c = drawn(Some(WAITING_SHELL), "", SPLIT, Some(&terminals()));
-        assert_eq!(c, Some(Drawn { wears: Wears::Plain, title: title("zsh — ~/work", Shown::NeedsYou, "Awaiting approval") }));
+        let c = drawn(Some(WAITING_SHELL), "", SPLIT, Some(&terminals()), None);
+        assert_eq!(c, Some(Drawn { wears: Wears::Plain, title: title("zsh — ~/work", Shown::NeedsYou, "Awaiting approval"), color: None }));
     }
 
     // ---- alone in its tab
 
     #[test]
     fn an_ordinary_terminal_alone_in_its_tab_wears_nothing() {
-        assert_eq!(drawn(Some(SHELL), "zsh", ALONE, Some(&terminals())), None);
+        assert_eq!(drawn(Some(SHELL), "zsh", ALONE, Some(&terminals()), None), None);
     }
 
     #[test]
@@ -508,7 +550,7 @@ mod tests {
         for alone in [false, true] {
             let place = Place { enabled: false, quick_terminal: false, alone };
             for id in [SUPERVISOR, WORKER, SHELL] {
-                assert_eq!(drawn(Some(id), "zsh", place, Some(&terminals())), None, "{id} alone={alone}");
+                assert_eq!(drawn(Some(id), "zsh", place, Some(&terminals()), None), None, "{id} alone={alone}");
             }
         }
     }
@@ -522,13 +564,13 @@ mod tests {
         for alone in [false, true] {
             let place = Place { enabled: false, quick_terminal: false, alone };
             for t in &all {
-                assert_eq!(edged(Some(&t.id), place, Some(&all)), t.pane == Some(Wears::Supervisor), "{} alone={alone}", t.id);
+                assert_eq!(edged(Some(&t.id), place, Some(&all), None).is_some(), t.pane == Some(Wears::Supervisor), "{} alone={alone}", t.id);
             }
-            assert!(!edged(None, place, Some(&all)));
-            assert!(!edged(Some("0xee"), place, Some(&all)));
-            assert!(!edged(Some(SUPERVISOR), place, None));
-            assert!(!edged(Some(SUPERVISOR), Place { enabled: true, ..place }, Some(&all)));
-            assert!(!edged(Some(SUPERVISOR), Place { quick_terminal: true, ..place }, Some(&all)));
+            assert!(edged(None, place, Some(&all), None).is_none());
+            assert!(edged(Some("0xee"), place, Some(&all), None).is_none());
+            assert!(edged(Some(SUPERVISOR), place, None, None).is_none());
+            assert!(edged(Some(SUPERVISOR), Place { enabled: true, ..place }, Some(&all), None).is_none());
+            assert!(edged(Some(SUPERVISOR), Place { quick_terminal: true, ..place }, Some(&all), None).is_none());
         }
         // The terminal's window is the edge in from its cell on every side,
         // and never less than a pixel in.
@@ -542,7 +584,7 @@ mod tests {
     fn the_quick_terminal_is_never_framed() {
         let place = Place { enabled: true, quick_terminal: true, alone: false };
         for id in [SUPERVISOR, WORKER, SHELL] {
-            assert_eq!(drawn(Some(id), "zsh", place, Some(&terminals())), None, "{id}");
+            assert_eq!(drawn(Some(id), "zsh", place, Some(&terminals()), None), None, "{id}");
         }
     }
 
@@ -551,12 +593,12 @@ mod tests {
     #[test]
     fn a_terminal_the_core_has_not_listed_is_an_ordinary_one_under_its_own_name() {
         let all = terminals();
-        let plain = Some(Drawn { wears: Wears::Plain, title: title("fish", Shown::None, "") });
-        assert_eq!(drawn(Some("0x00000000000000ff"), "fish", SPLIT, Some(&all)), plain);
-        assert_eq!(drawn(None, "fish", SPLIT, Some(&all)), plain);
-        assert_eq!(drawn(Some(SUPERVISOR), "fish", SPLIT, None), plain);
+        let plain = Some(Drawn { wears: Wears::Plain, title: title("fish", Shown::None, ""), color: None });
+        assert_eq!(drawn(Some("0x00000000000000ff"), "fish", SPLIT, Some(&all), None), plain);
+        assert_eq!(drawn(None, "fish", SPLIT, Some(&all), None), plain);
+        assert_eq!(drawn(Some(SUPERVISOR), "fish", SPLIT, None, None), plain);
         // And alone, that is nothing.
-        assert_eq!(drawn(None, "fish", ALONE, Some(&all)), None);
+        assert_eq!(drawn(None, "fish", ALONE, Some(&all), None), None);
     }
 
     #[test]
@@ -564,8 +606,8 @@ mod tests {
         let old = FIXTURE.replace("\"pane\": \"supervisor\",", "").replace("\"pane\": \"worker\",", "").replace("\"pane\": \"plain\",", "");
         let all = snapshot::decode(&old).unwrap().terminals;
         assert!(all.iter().all(|t| t.pane.is_none()));
-        let d = drawn(Some(SUPERVISOR), "", SPLIT, Some(&all));
-        assert_eq!(d, Some(Drawn { wears: Wears::Plain, title: title("web-app", Shown::NeedsYou, "Awaiting approval") }));
+        let d = drawn(Some(SUPERVISOR), "", SPLIT, Some(&all), None);
+        assert_eq!(d, Some(Drawn { wears: Wears::Plain, title: title("web-app", Shown::NeedsYou, "Awaiting approval"), color: None }));
     }
 
     #[test]
@@ -591,7 +633,7 @@ mod tests {
 
     #[test]
     fn the_ground_shows_as_soon_as_one_pane_is_framed() {
-        let framed = Some(Drawn { wears: Wears::Worker, title: title("w", Shown::None, "") });
+        let framed = Some(Drawn { wears: Wears::Worker, title: title("w", Shown::None, ""), color: None });
         assert!(ground_shows(&[None, framed.clone()]));
         assert!(ground_shows(&[framed]));
         assert!(!ground_shows(&[None]));
@@ -702,7 +744,7 @@ mod tests {
     }
 
     fn a(wears: Wears, name: &str, shown: Shown, word: &str) -> Drawn {
-        Drawn { wears, title: title(name, shown, word) }
+        Drawn { wears, title: title(name, shown, word), color: None }
     }
 
     fn words(items: &[Item]) -> Vec<String> {
@@ -846,9 +888,10 @@ mod tests {
                 sv[0],
                 Part {
                     piece: Piece::Badge {
+                        mark: crate::glyph::Mark::Supervisor,
                         text: "Supervisor".into(),
-                        style: Style { size: font::BODY, weight: font::WEIGHT_EMPHASIS, face: Face::Ui, color: theme.supervisor_badge_text },
-                        ground: theme.supervisor_badge,
+                        style: Style { size: font::BODY, weight: font::WEIGHT_EMPHASIS, face: Face::Ui, color: theme.pane_purple_badge_text },
+                        ground: theme.pane_purple_badge,
                     },
                     side: Side::Lead,
                     gap: 0.0,
@@ -998,7 +1041,7 @@ mod tests {
         let all = terminals();
         for t in &all {
             let bar = t.bar.clone().unwrap_or_else(|| panic!("{} has no bar", t.id));
-            let d = drawn(Some(&t.id), "", SPLIT, Some(&all)).unwrap();
+            let d = drawn(Some(&t.id), "", SPLIT, Some(&all), None).unwrap();
             assert_eq!(d.title, Title { name: t.title.clone(), shown: bar.shown, word: bar.text }, "{}", t.id);
         }
     }
@@ -1010,8 +1053,8 @@ mod tests {
         assert_eq!(held.bar, Some(Bar { shown: BarShown::Held, text: "Held".to_string() }));
         // What a row or a window tab would draw of it is still its status.
         assert_eq!((held.shown, held.text.as_str()), (Shown::None, "Off duty"));
-        let d = drawn(Some(&held.id), "", SPLIT, Some(&all));
-        assert_eq!(d, Some(Drawn { wears: Wears::Worker, title: Title { name: "tokens".to_string(), shown: BarShown::Held, word: "Held".to_string() } }));
+        let d = drawn(Some(&held.id), "", SPLIT, Some(&all), None);
+        assert_eq!(d, Some(Drawn { wears: Wears::Worker, title: Title { name: "tokens".to_string(), shown: BarShown::Held, word: "Held".to_string() }, color: None }));
         let held_ones: Vec<&str> = all.iter().filter(|t| t.bar.as_ref().is_some_and(|b| b.shown == BarShown::Held)).map(|t| t.title.as_str()).collect();
         assert_eq!(held_ones, ["tokens"]);
     }
@@ -1023,7 +1066,7 @@ mod tests {
         for status in [Shown::NeedsYou, Shown::Trouble, Shown::DoneUnseen, Shown::Working, Shown::None] {
             for bar in BarShown::ALL {
                 let all = listed(status, "status", Some((bar, "pair")));
-                let d = drawn(Some("0x01"), "", SPLIT, Some(&all)).unwrap();
+                let d = drawn(Some("0x01"), "", SPLIT, Some(&all), None).unwrap();
                 assert_eq!(d.title, Title { name: "t".to_string(), shown: bar, word: "pair".to_string() }, "{status:?} {bar:?}");
             }
         }
@@ -1032,7 +1075,7 @@ mod tests {
     #[test]
     fn a_snapshot_from_before_the_core_gave_the_pair_says_the_status() {
         let all = listed(Shown::Working, "在干活", None);
-        let d = drawn(Some("0x01"), "", SPLIT, Some(&all)).unwrap();
+        let d = drawn(Some("0x01"), "", SPLIT, Some(&all), None).unwrap();
         assert_eq!(d.title, title("t", Shown::Working, "在干活"));
         // And such a snapshot reads: the fixture with every `bar` cut out.
         let mut old = String::new();
@@ -1072,7 +1115,7 @@ mod tests {
         for dark in [false, true] {
             let theme = look::theme(dark);
             for (wears, second) in [(Wears::Supervisor, theme.text_secondary), (Wears::Worker, theme.terminal_dim), (Wears::Plain, theme.terminal_dim)] {
-                let d = Drawn { wears, title: Title { name: "tests".to_string(), shown: BarShown::Held, word: "被按住".to_string() } };
+                let d = Drawn { wears, title: Title { name: "tests".to_string(), shown: BarShown::Held, word: "被按住".to_string() }, color: None };
                 let items = build(f, &d, &view(dark, 1.0, false), &same);
                 let parts = items
                     .iter()
@@ -1100,5 +1143,79 @@ mod tests {
             assert_eq!(bar.outline, crate::glyph::Outline::RoundRect(x, 3.0, 2.4, 8.0, 0.8));
             assert_eq!(bar.level, 1.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod colour_tests {
+    use super::*;
+    use crate::look;
+    use crate::pane_color::Color;
+
+    fn d(wears: Wears, color: Option<Color>) -> Drawn {
+        Drawn { wears, title: Title { name: "n".into(), shown: BarShown::None, word: String::new() }, color }
+    }
+
+    /// The supervisor's flag whatever its colour, purple when none is set;
+    /// a dot for any other pane with one; nothing for one without, or where
+    /// no frame is drawn.
+    #[test]
+    fn the_badge_is_the_flag_for_the_supervisor_and_a_dot_for_any_other_coloured_pane() {
+        assert_eq!(badge(Some(&d(Wears::Supervisor, None))), (BadgeKind::Flag, Some(Color::Purple)));
+        assert_eq!(badge(Some(&d(Wears::Supervisor, Some(Color::Teal)))), (BadgeKind::Flag, Some(Color::Teal)));
+        assert_eq!(badge(Some(&d(Wears::Worker, Some(Color::Orange)))), (BadgeKind::Dot, Some(Color::Orange)));
+        assert_eq!(badge(Some(&d(Wears::Plain, Some(Color::Red)))), (BadgeKind::Dot, Some(Color::Red)));
+        assert_eq!(badge(Some(&d(Wears::Worker, None))), (BadgeKind::None, None));
+        assert_eq!(badge(None), (BadgeKind::None, None));
+    }
+
+    fn bar(drawn: &Drawn, dark: bool) -> Vec<Item> {
+        let theme = look::theme(dark);
+        let view = View { theme, scale: 1.0, focused: false, well: theme.terminal_background, close: false };
+        build(Px { x: 0, y: 0, w: 600, h: 300 }, drawn, &view, &|s| s.to_string())
+    }
+
+    fn badges(items: &[Item]) -> Vec<Piece> {
+        items
+            .iter()
+            .flat_map(|i| match i {
+                Item::Line { parts, .. } => parts.iter().map(|p| p.piece.clone()).collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .filter(|p| matches!(p, Piece::Badge { .. }))
+            .collect()
+    }
+
+    /// A coloured worker's badge is its dot and its word on the colour's own
+    /// ground, and the word does not follow the name as well; a coloured
+    /// ordinary terminal's is the dot alone.
+    #[test]
+    fn a_coloured_pane_s_badge_is_its_dot_and_its_word_on_its_colour() {
+        for dark in [false, true] {
+            let t = look::theme(dark);
+            let w = badges(&bar(&d(Wears::Worker, Some(Color::Orange)), dark));
+            assert_eq!(w.len(), 1, "dark={dark}");
+            match &w[0] {
+                Piece::Badge { mark, text, style, ground } => {
+                    assert_eq!((*mark, text.as_str(), style.color, *ground), (crate::glyph::Mark::Dot, "Worker", t.pane_orange_badge_text, t.pane_orange_badge));
+                }
+                _ => unreachable!(),
+            }
+            let p = badges(&bar(&d(Wears::Plain, Some(Color::Teal)), dark));
+            assert!(matches!(&p[..], [Piece::Badge { mark: crate::glyph::Mark::Dot, text, .. }] if text.is_empty()), "dark={dark}: {p:?}");
+            // With none set: no badge, and the worker's word after its name.
+            assert!(badges(&bar(&d(Wears::Worker, None), dark)).is_empty());
+            let sv = badges(&bar(&d(Wears::Supervisor, Some(Color::Green)), dark));
+            assert!(matches!(&sv[..], [Piece::Badge { mark: crate::glyph::Mark::Supervisor, ground, .. }] if *ground == t.pane_green_badge), "dark={dark}");
+        }
+    }
+
+    #[test]
+    fn with_no_frames_any_coloured_pane_has_its_edge_in_its_colour() {
+        let off = Place { enabled: false, quick_terminal: false, alone: false };
+        assert_eq!(edged(None, off, Some(&[]), Some(Color::Pink)), Some(Color::Pink));
+        assert_eq!(edged(None, off, Some(&[]), None), None);
+        assert_eq!(edged(None, Place { enabled: true, ..off }, Some(&[]), Some(Color::Pink)), None);
+        assert_eq!(edged(None, Place { quick_terminal: true, ..off }, Some(&[]), Some(Color::Pink)), None);
     }
 }

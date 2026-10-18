@@ -80,7 +80,12 @@ pub enum Shape {
     /// `poltergeist_layout` tool reaches, refuses the key. The core deletes a
     /// snapshot it cannot decode, so accepting a path from a caller would be
     /// letting any agent name a `.snap` file for the core to remove.
-    New { cwd: Option<String>, history: Option<String>, scrollback: Option<String> },
+    ///
+    /// `marks` is what a person had marked on the pane a project saved
+    /// (task 1700), handed back to the core once the pane is made
+    /// (`tabs::hand_back`). **Project only, like `scrollback`**: the marks
+    /// are the person's to set, and the tool refuses the key.
+    New { cwd: Option<String>, history: Option<String>, scrollback: Option<String>, marks: Option<polter_projects::handback::Marks> },
     Split {
         axis: Axis,
         ratio: f64,
@@ -116,6 +121,30 @@ enum Source {
     Project,
 }
 
+/// A project cell's `"marks"`, as `project::to_layout_shape` writes them:
+/// the colour by its file name, and the other two only when set. Written
+/// by this host for this host, so anything else is a bug, said as one.
+fn marks_of(v: &serde_json::Value) -> Result<polter_projects::handback::Marks, String> {
+    use polter_projectfile::{PaneColor, Workers};
+    let o = v.as_object().ok_or_else(|| "\"marks\" must be an object".to_string())?;
+    let color = match o.get("color") {
+        None => PaneColor::None,
+        Some(serde_json::Value::String(s)) => PaneColor::from_name(s).ok_or_else(|| format!("\"marks\" names no colour {s:?}"))?,
+        Some(_) => return Err("\"marks\".color must be a colour's name".to_string()),
+    };
+    let workers = match o.get("workers") {
+        None => Workers::Allowed,
+        Some(serde_json::Value::String(s)) if s == "refused" => Workers::Refused,
+        Some(_) => return Err("\"marks\".workers can only be \"refused\"".to_string()),
+    };
+    let shielded = match o.get("shielded") {
+        None => false,
+        Some(serde_json::Value::Bool(true)) => true,
+        Some(_) => return Err("\"marks\".shielded can only be true".to_string()),
+    };
+    Ok(polter_projects::handback::Marks { color, workers, shielded })
+}
+
 fn parse_from(v: &serde_json::Value, source: Source) -> Result<Shape, String> {
     let obj = v.as_object().ok_or_else(|| "each cell must be an object".to_string())?;
 
@@ -127,7 +156,7 @@ fn parse_from(v: &serde_json::Value, source: Source) -> Result<Shape, String> {
     }
 
     if let Some(n) = obj.get("new") {
-        let (cwd, history, scrollback) = match n {
+        let (cwd, history, scrollback, marks) = match n {
             serde_json::Value::Object(o) => {
                 let cwd = match o.get("cwd") {
                     Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
@@ -145,12 +174,19 @@ fn parse_from(v: &serde_json::Value, source: Source) -> Result<Shape, String> {
                     (Some(serde_json::Value::String(s)), Source::Project) if !s.is_empty() => Some(s.clone()),
                     (Some(_), Source::Project) => None,
                 };
-                (cwd, history, scrollback)
+                let marks = match (o.get("marks"), source) {
+                    (None, _) => None,
+                    (Some(_), Source::Tool) => {
+                        return Err("\"marks\" is not accepted here; a terminal's colour and shield are the person's to set".to_string())
+                    }
+                    (Some(m), Source::Project) => Some(marks_of(m)?),
+                };
+                (cwd, history, scrollback, marks)
             }
-            serde_json::Value::Null => (None, None, None),
+            serde_json::Value::Null => (None, None, None, None),
             _ => return Err("\"new\" must be an object or null".to_string()),
         };
-        return Ok(Shape::New { cwd, history, scrollback });
+        return Ok(Shape::New { cwd, history, scrollback, marks });
     }
 
     // The macOS host's words, refusal for refusal (`PoltergeistLayoutShape`).
@@ -245,13 +281,14 @@ pub struct Fresh<'a> {
     pub cwd: &'a Option<String>,
     pub history: &'a Option<String>,
     pub scrollback: &'a Option<String>,
+    pub marks: &'a Option<polter_projects::handback::Marks>,
 }
 
 /// Every cell that needs a pane made, in the order they will be numbered.
 pub fn fresh<'a>(shape: &'a Shape, out: &mut Vec<Fresh<'a>>) {
     match shape {
         Shape::Existing(_) => {}
-        Shape::New { cwd, history, scrollback } => out.push(Fresh { cwd, history, scrollback }),
+        Shape::New { cwd, history, scrollback, marks } => out.push(Fresh { cwd, history, scrollback, marks }),
         Shape::Split { left, right, .. } => {
             fresh(left, out);
             fresh(right, out);

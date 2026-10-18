@@ -220,6 +220,9 @@
 "poltergeist_toggle_authorise" = "切换：让总管替你回答权限询问";
 "poltergeist_toggle_worker_mentions" = "切换：允许 worker 之间直接点名";
 "poltergeist_persona_set" = "把这个终端设成某个角色";
+"poltergeist_set_shielded" = "设定：不让 agent 碰此终端（开或关）";
+"poltergeist_set_pane_color" = "给这一格分屏设颜色";
+"poltergeist_set_workers" = "设定：不在此终端开 worker（开或关）";
 "poltergeist_persona_clear" = "清掉这个终端的角色";
 "poltergeist_persona_skill" = "在这里单独开关一个技能";
 "poltergeist_persona_mcp" = "在这里单独开关一个 MCP 服务器";
@@ -1166,3 +1169,24 @@
 
 /* The seconds left, on the small badge terminal_highlight puts on a pane too small for its card (task 1689). */
 "%lld s" = "%lld 秒";
+
+/* A pane colour (task 1699). */
+"Pink" = "粉";
+
+/* A pane colour (task 1699). */
+"Teal" = "青";
+
+/* A pane colour (task 1699). */
+"Graphite" = "石墨";
+
+/* A pane colour (task 1699): no colour. */
+"None" = "无";
+
+/* The menu item that keeps workers out of a terminal (task 1699). Agents can still read it and type into it. */
+"Don't Start Workers in This Terminal" = "不在此终端开 worker";
+
+/* The first line of the hover text over a tab's colour dots (task 1699). */
+"Panes with a colour" = "上了颜色的分屏";
+
+/* In the hover text over a tab's colour dots, the line of the supervisor's pane (task 1699). */
+"supervisor" = "总管";

@@ -1,0 +1,19 @@
+{
+  "_": "The colour each terminal of control_snapshot.json was given, as the core's poltergeist_pane action says it (the colour set, not the one shown). Read by tools/control-room-hosts-agree.py for both hosts (task 1699). A terminal not named here was given none.",
+  "colors": {
+    "0x00000000000000a1": "orange",
+    "0x00000000000000b1": "teal",
+    "0x00000000000000a2": "graphite",
+    "0x00000000000000a3": "purple",
+    "0x00000000000000c1": "red"
+  },
+  "tab_dots": [
+    { "case": "none", "panes": [ { "name": "zsh", "color": "none", "flag": "none" } ] },
+    { "case": "one", "panes": [ { "name": "api", "color": "orange", "flag": "none" } ] },
+    { "case": "supervisor_unset", "panes": [ { "name": "web-app", "color": "none", "flag": "raised" }, { "name": "api", "color": "orange", "flag": "none" }, { "name": "tests", "color": "none", "flag": "none" } ] },
+    { "case": "supervisor_teal_lowered", "panes": [ { "name": "boss", "color": "teal", "flag": "lowered" }, { "name": "a", "color": "blue", "flag": "none" }, { "name": "b", "color": "red", "flag": "none" } ] },
+    { "case": "supervisor_purple", "panes": [ { "name": "boss", "color": "purple", "flag": "raised" }, { "name": "a", "color": "orange", "flag": "none" } ] },
+    { "case": "eight", "panes": [ { "name": "1", "color": "blue", "flag": "none" }, { "name": "2", "color": "purple", "flag": "none" }, { "name": "3", "color": "pink", "flag": "none" }, { "name": "4", "color": "red", "flag": "none" }, { "name": "5", "color": "orange", "flag": "none" }, { "name": "6", "color": "yellow", "flag": "none" }, { "name": "7", "color": "green", "flag": "none" }, { "name": "8", "color": "teal", "flag": "none" } ] },
+    { "case": "nine", "panes": [ { "name": "s", "color": "none", "flag": "raised" }, { "name": "1", "color": "blue", "flag": "none" }, { "name": "2", "color": "purple", "flag": "none" }, { "name": "3", "color": "pink", "flag": "none" }, { "name": "4", "color": "red", "flag": "none" }, { "name": "5", "color": "orange", "flag": "none" }, { "name": "6", "color": "yellow", "flag": "none" }, { "name": "7", "color": "green", "flag": "none" }, { "name": "8", "color": "teal", "flag": "none" }, { "name": "9", "color": "graphite", "flag": "none" } ] }
+  ]
+}

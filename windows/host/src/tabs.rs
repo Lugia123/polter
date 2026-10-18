@@ -63,7 +63,17 @@ pub struct Pane {
     /// whichever pane's mark came last; a screenshot an agent takes must
     /// black out the shielded terminal and no other, so it reads this
     /// (`shielded_pane_hwnds`).
-    pub shielded: bool,
+    ///
+    /// `None` while not told yet: a pane restored from a project with its
+    /// shield on, before the shield has been handed back to the core
+    /// (`PaneMarks::waiting`). A project save keeps the file's word for it
+    /// then, rather than writing "off" (task 1700).
+    pub shielded: Option<bool>,
+    /// What a person has marked on this pane's terminal, as the core last
+    /// said (`poltergeist_pane`, task 1700), and whether this pane's own
+    /// mark says it is the supervisor. **On the pane, not on the tab**: a
+    /// colour is one terminal's, and the tab's dots are read off its panes.
+    pub marks: PaneMarks,
     /// This pane's own last-reported `PWD` (`GHOSTTY_ACTION_PWD`), independent
     /// of `Tab::cwd`.
     ///
@@ -120,6 +130,60 @@ pub struct Pane {
     /// 1583). Set and cleared by `layout` only, so it is told once per
     /// change and not on every layout.
     pub behind_said: bool,
+}
+
+/// The flag a tab's cluster draws for the supervisor's pane
+/// (`ghostty_poltergeist_flag_e`): none, raised (it is at work), lowered (it
+/// has been quiet a long time).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flag {
+    None,
+    Raised,
+    Lowered,
+}
+
+/// What a person has marked on a pane's terminal, and what the host has
+/// been told of it (`pane-color-interface.md` §3, §7.2).
+///
+/// **`None` is "not told yet", which is not the default.** A pane made the
+/// ordinary way is told the defaults by the core as it is made, so it starts
+/// with them. A pane restored from a project with marks on it starts with
+/// `None` and waits (`waiting`): the core's first word on it is the
+/// defaults, said before anything was handed back, and believing it would
+/// write the defaults over the project at the next save.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneMarks {
+    /// The colour set, not the colour shown: a supervisor with none set is
+    /// drawn purple, and that is the drawing's rule (`pane::badge_ground`).
+    pub color: Option<polter_projectfile::PaneColor>,
+    pub workers: Option<polter_projectfile::Workers>,
+    pub flag: Flag,
+    /// This pane's own last mark said it is the supervisor. What a project
+    /// save takes the seat from (§7.1); `Tab::role` is the tab's, and is
+    /// whichever pane's mark came last.
+    pub supervisor: bool,
+    pub waiting: polter_projects::handback::Waiting,
+}
+
+impl PaneMarks {
+    /// A terminal just made: what the core's first word on it says.
+    pub const NEW: PaneMarks = PaneMarks {
+        color: Some(polter_projectfile::PaneColor::None),
+        workers: Some(polter_projectfile::Workers::Allowed),
+        flag: Flag::None,
+        supervisor: false,
+        waiting: polter_projects::handback::Waiting::No,
+    };
+
+    /// A terminal made from a project leaf with `marks` on it: told nothing
+    /// until they have been handed back, when there are any.
+    pub fn restored(marks: polter_projects::handback::Marks) -> PaneMarks {
+        let waiting = polter_projects::handback::Waiting::for_restored(marks);
+        match waiting {
+            polter_projects::handback::Waiting::No => PaneMarks::NEW,
+            polter_projects::handback::Waiting::ToHandBack(_) => PaneMarks { color: None, workers: None, waiting, ..PaneMarks::NEW },
+        }
+    }
 }
 
 /// A tab's identity. **Never an index, and never reused.**
@@ -180,11 +244,6 @@ pub struct Tab {
     pub id: TabId,
     pub body: Body,
     pub title: String,
-    /// The tab's colour: 0 for none, otherwise an index into the strip's
-    /// palette. **Stored on the tab, not in a side table keyed by position**
-    /// -- for the same reason the title is: a parallel array is how "the
-    /// order is right but the colours are wrong" gets written.
-    pub color: u8,
     /// What Poltergeist has made of this terminal, as the core last said.
     /// `ghostty_action_poltergeist_role_e`: 0 none, 1 supervisor, 2 watched.
     ///
@@ -2828,13 +2887,23 @@ fn create_pane(
     // is skipped.
     let pending_cwd = take_pending_cwd(s as usize);
     let pending_history = take_pending_history(s as usize);
+    // What the core said of its marks inside `surface_new` reached no pane;
+    // what it said is the defaults, which is what a pane made the ordinary
+    // way starts with. A restored one waits for its hand-back.
+    let marks = match spec.marks {
+        Some(m) => PaneMarks::restored(m),
+        None => PaneMarks::NEW,
+    };
 
     Some(Pane {
         id,
         hwnd: child.0 as isize,
         surface: s as usize,
-        // A new terminal is not shielded until a mark says so.
-        shielded: false,
+        // A new terminal is not shielded until a mark says so -- and one
+        // restored with its shield on is not known to be either way until
+        // the shield has been handed back.
+        shielded: if marks.waiting.accept() { Some(false) } else { None },
+        marks,
         cwd: pending_cwd,
         title: None,
         history: pending_history,
@@ -2899,6 +2968,9 @@ pub struct NewTab {
     /// being opened, and nowhere else -- the same rule `Ghostty.App.swift`'s
     /// `openChat` states.
     pub chat: bool,
+    /// What a pane restored from a project hands back to the core once it
+    /// is made (task 1700): `None` for every caller but a project load.
+    pub marks: Option<polter_projects::handback::Marks>,
     /// The tab is added to its window **without being brought in front**:
     /// the person is looking at the control room and stays there
     /// (`polter_control_room::rules::new_tab`). Its strip shows it; it is
@@ -3025,7 +3097,6 @@ pub fn create_tab_with(
             id: tab_id,
             body: Body::Terminal(Terminal { tree: Tree::with_pane(id), panes: vec![pane], focused: id }),
             title: "shell".to_string(),
-            color: 0,
             role: 0,
             shielded: false,
             held: false,
@@ -3160,6 +3231,9 @@ fn apply_layout(
     // Kept so the reply can name the new panes by surface: after `made` is
     // drained into the tab, the pairs are gone from here.
     let mut fresh_pairs: Vec<(PaneId, usize)> = Vec::new();
+    // The restored panes with marks to hand back, by surface: handed back
+    // once they are in the tab, so the core's answer finds them.
+    let mut handing_back: Vec<(usize, polter_projects::handback::Marks)> = Vec::new();
     for (id, cell) in ids.iter().zip(wanted.iter()) {
         // **Where its place is, on screen or not** (task 1597): a member of
         // a stack that is not in front is `Hidden` in the layout, and was
@@ -3176,10 +3250,14 @@ fn apply_layout(
             cwd: cell.cwd.clone(),
             history: cell.history.clone(),
             scrollback: cell.scrollback.clone(),
+            marks: *cell.marks,
             ..NewTab::default()
         };
         match create_pane(frame, app, hinst, *id, r, spec) {
             Some(p) => {
+                if let Some(m) = cell.marks.filter(|m| !m.is_default()) {
+                    handing_back.push((p.surface, m));
+                }
                 fresh_pairs.push((p.id, p.surface));
                 made.push(p);
             }
@@ -3219,6 +3297,7 @@ fn apply_layout(
         }
         term.tree = tree.clone();
     }
+    hand_back(&handing_back);
 
     layout(frame);
     // **The reply is in the caller's namespace**, which is the whole point of
@@ -3482,7 +3561,6 @@ fn arrange_layout(
                         id: new_tab,
                         body: Body::Terminal(Terminal { tree: tree.clone(), panes, focused: first }),
                         title,
-                        color: 0,
                         role: 0,
                         shielded: false,
                         held: false,
@@ -4952,43 +5030,116 @@ pub fn install_reopen_opener() {
     });
 }
 
-/// Every tab's colour, by identity, in one lock.
+/// Record a `poltergeist_pane` against **the surface it was sent for**
+/// (task 1700): the colour set on it, whether workers may start in it, and
+/// the flag its tab draws for it. `false` when no pane shows that surface --
+/// the core's first word on a terminal arrives from inside `surface_new`,
+/// before there is one, and says the defaults a new pane starts with.
 ///
-/// **By identity, not a `Vec<u8>` in strip order.** A vector indexed by
-/// position is the parallel array this file's rule 1 exists to forbid, and
-/// the bug it writes -- colours right, order wrong -- is invisible until two
-/// tabs happen to be different colours.
-pub fn tab_colors(frame: HWND) -> Vec<(TabId, u8)> {
-    match window(frame) {
-        Some(w) => w.tabs.iter().map(|t| (t.id, t.color)).collect(),
-        None => Vec::new(),
-    }
-}
-
-/// A tab's colour, and how to set it. 0 is "none".
-pub fn tab_color(frame: HWND, id: TabId) -> u8 {
-    window(frame)
-        .and_then(|w| w.tabs.iter().find(|t| t.id == id).map(|t| t.color))
-        .unwrap_or(0)
-}
-
-pub fn set_tab_color(frame: HWND, id: TabId, color: u8) -> bool {
-    let found = match window(frame) {
-        Some(mut w) => match w.tabs.iter_mut().find(|t| t.id == id) {
-            Some(tab) => {
-                tab.color = color;
-                true
+/// **Not believed while the pane waits for its hand-back**: then it is the
+/// core speaking before it was told, and the pane keeps "not told yet"
+/// (`PaneMarks`). The flag is believed either way -- it is the core's own
+/// fact about who is at work, nothing a project hands back.
+// window-free: keyed by surface, which is unique in the process
+pub fn set_pane_for_surface(surface: Surface, color: polter_projectfile::PaneColor, workers: polter_projectfile::Workers, flag: Flag) -> PaneTold {
+    let key = surface as usize;
+    let told = with_windows_mut(|ws| {
+        for win in ws.iter_mut() {
+            for tab in win.tabs.iter_mut() {
+                if let Some(pane) = tab.panes_mut().iter_mut().find(|p| p.surface == key) {
+                    pane.marks.flag = flag;
+                    if !pane.marks.waiting.accept() {
+                        return PaneTold::NotBelieved;
+                    }
+                    let changed = pane.marks.color != Some(color) || pane.marks.workers != Some(workers);
+                    pane.marks.color = Some(color);
+                    pane.marks.workers = Some(workers);
+                    return PaneTold::Kept { frame: win.frame, changed };
+                }
             }
-            None => false,
-        },
-        None => false,
-    };
-    if found {
+        }
+        PaneTold::NoPane
+    });
+    if let PaneTold::Kept { frame, changed } = told {
+        if changed {
+            crate::project_session::note(polter_projects::autosave::Change::PaneDetail);
+        }
+        // The tab's dots and the pane's badge are drawn from this; an edge
+        // gained or lost moves the terminal.
+        let frame = HWND(frame as *mut _);
+        if changed {
+            crate::pane_frames::colours_changed(frame);
+        }
         unsafe {
             let _ = InvalidateRect(Some(frame), None, false);
         }
     }
-    found
+    told
+}
+
+/// What became of a `poltergeist_pane`: what the log line says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneTold {
+    /// No pane shows that surface (yet).
+    NoPane,
+    /// The pane waits for its hand-back; only the flag was taken.
+    NotBelieved,
+    Kept { frame: isize, changed: bool },
+}
+
+/// Hand back to the core what a pane restored from a project had marked on
+/// it (`pane-color-interface.md` §7.2), **after** the pane has been put in
+/// its tab and no lock is held: the core answers each action at once, from
+/// inside the call, and the answer has to find the pane.
+///
+/// The pane stops waiting first, so that answer is believed; it is the first
+/// word that is.
+// window-free: keyed by surface, which is unique in the process
+pub fn hand_back(made: &[(usize, polter_projects::handback::Marks)]) {
+    for (surface, marks) in made {
+        let stopped = with_windows_mut(|ws| {
+            ws.iter_mut().flat_map(|w| w.tabs.iter_mut()).find_map(|t| t.panes_mut().iter_mut().find(|p| p.surface == *surface).map(|p| {
+                p.marks.waiting = polter_projects::handback::Waiting::No;
+            }))
+        });
+        if stopped.is_none() {
+            // process-wide: a pane made a moment ago and gone already.
+            plogf!("[pane] hand-back: surface {:#x} has no pane any more; nothing handed back", surface);
+            continue;
+        }
+        for action in marks.actions() {
+            let ok = unsafe { (api().surface_binding_action)(*surface as Surface, action.as_ptr(), action.len()) };
+            // not-gated: once per mark per restored pane, and a refusal here
+            // is a colour or a shield the project had and the terminal has not.
+            // process-wide: keyed by surface; the pane's window is not asked
+            // for one line.
+            plogf!("[pane] hand-back {} surface {:#x} ok={}", action, surface, ok);
+        }
+    }
+}
+
+/// The marks of the pane showing `surface`, wherever it is.
+// window-free: keyed by surface, which is unique in the process
+pub fn pane_marks_for_surface(surface: Surface) -> Option<PaneMarks> {
+    let key = surface as usize;
+    with_windows(|ws| ws.iter().flat_map(|w| w.tabs.iter()).find_map(|t| t.panes().iter().find(|p| p.surface == key).map(|p| p.marks)))
+}
+
+/// The marks of every pane of a tab, in **reading order** -- the tree's
+/// order, left and top first, a stack's members in their order -- with the
+/// pane's own title (`pane-color-interface.md` §4). What the tab's dots and
+/// their tooltip are drawn from.
+pub fn pane_marks_of_tab(frame: HWND, id: TabId) -> Vec<(PaneMarks, String)> {
+    let Some(w) = window(frame) else { return Vec::new() };
+    let Some(tab) = w.tabs.iter().find(|t| t.id == id) else { return Vec::new() };
+    let Some(term) = tab.terminal() else { return Vec::new() };
+    // Each place in tree order; a stack is its members, in their order.
+    term.tree
+        .members()
+        .into_iter()
+        .filter_map(|pid| term.panes.iter().find(|p| p.id == pid))
+        .map(|p| (p.marks, p.title.clone().unwrap_or_default()))
+        .collect()
 }
 
 /// What Poltergeist has made of a tab: `(role, shielded)`.
@@ -5001,6 +5152,7 @@ pub fn tab_mark(frame: HWND, id: TabId) -> Mark {
                 held: t.held,
                 may_authorise: t.may_authorise,
                 worker_mentions: t.worker_mentions,
+                workers_refused: t.focused_pane().is_some_and(|p| p.marks.workers == Some(polter_projectfile::Workers::Refused)),
             })
         })
         .unwrap_or_default()
@@ -5026,6 +5178,11 @@ pub struct Mark {
     pub held: bool,
     pub may_authorise: bool,
     pub worker_mentions: bool,
+    /// The person has said no worker is to be started in this terminal
+    /// (task 1700). **The pane's**, from its `poltergeist_pane`, not the
+    /// tab's: not told yet reads as not refused -- it is a tick, and the
+    /// core is what refuses.
+    pub workers_refused: bool,
 }
 
 /// What Poltergeist has made of the terminal in a **particular surface**.
@@ -5051,6 +5208,7 @@ pub fn mark_for_surface(surface: Surface) -> Option<Mark> {
                 held: t.held,
                 may_authorise: t.may_authorise,
                 worker_mentions: t.worker_mentions,
+                workers_refused: t.panes().iter().any(|p| p.surface == key && p.marks.workers == Some(polter_projectfile::Workers::Refused)),
             })
     })
 }
@@ -5075,15 +5233,26 @@ pub fn shielded_pane_hwnds() -> Vec<isize> {
 
 /// `shielded_pane_hwnds` over the tabs it is given.
 fn shielded_hwnds_of<'a>(tabs: impl Iterator<Item = &'a Tab>) -> Vec<isize> {
-    tabs.flat_map(|t| t.panes().iter()).filter(|p| p.shielded).map(|p| p.hwnd).filter(|h| *h != 0).collect()
+    tabs.flat_map(|t| t.panes().iter()).filter(|p| p.shielded == Some(true)).map(|p| p.hwnd).filter(|h| *h != 0).collect()
 }
 
-/// Record on the pane showing `surface` whether its terminal is shielded.
-/// `false` when no pane of `tab` shows it.
-fn mark_pane_shielded(tab: &mut Tab, surface: usize, shielded: bool) -> bool {
+/// Record on the pane showing `surface` what its own mark says: whether
+/// its terminal is shielded and whether it is the supervisor. `false` when
+/// no pane of `tab` shows it.
+///
+/// **The shield is not believed while the pane waits for its hand-back**
+/// (`PaneMarks::waiting`): what the core says then is from before it was
+/// told, and a project save would write it over the file.
+fn mark_pane(tab: &mut Tab, surface: usize, shielded: bool, supervisor: bool) -> bool {
     match tab.panes_mut().iter_mut().find(|p| p.surface == surface) {
         Some(pane) => {
-            pane.shielded = shielded;
+            if pane.marks.waiting.accept() {
+                if pane.shielded != Some(shielded) {
+                    crate::project_session::note(polter_projects::autosave::Change::PaneDetail);
+                }
+                pane.shielded = Some(shielded);
+            }
+            pane.marks.supervisor = supervisor;
             true
         }
         None => false,
@@ -5149,7 +5318,7 @@ pub fn set_mark_for_surface(
     with_windows_mut(|ws| {
         for win in ws.iter_mut() {
             for tab in win.tabs.iter_mut() {
-                if mark_pane_shielded(tab, key, shielded) {
+                if mark_pane(tab, key, shielded, role == 1) {
                     tab.role = role;
                     tab.shielded = shielded;
                     tab.held = held;
@@ -5376,7 +5545,7 @@ mod pane_metadata_tests {
     use super::*;
 
     fn test_pane(id: u64, surface: usize) -> Pane {
-        Pane { id, hwnd: 0, surface, shielded: false, cwd: None, title: None, history: None, scrollback: None, held: None, behind_said: false }
+        Pane { id, hwnd: 0, surface, shielded: Some(false), marks: PaneMarks::NEW, cwd: None, title: None, history: None, scrollback: None, held: None, behind_said: false }
     }
 
     /// The test machine, 94bf0b56a: two panes side by side, the right one
@@ -5393,22 +5562,42 @@ mod pane_metadata_tests {
         let mut tabs = vec![test_tab(vec![left, right]), test_tab(vec![other])];
 
         assert!(shielded_hwnds_of(tabs.iter()).is_empty());
-        assert!(mark_pane_shielded(&mut tabs[0], 0x20, true));
+        assert!(mark_pane(&mut tabs[0], 0x20, true, false));
         assert_eq!(shielded_hwnds_of(tabs.iter()), [0x200], "the pane beside it is not shielded");
         // A mark for the other pane of the same tab, saying it is not
         // shielded, does not take the first one's away.
-        assert!(mark_pane_shielded(&mut tabs[0], 0x10, false));
+        assert!(mark_pane(&mut tabs[0], 0x10, false, false));
         assert_eq!(shielded_hwnds_of(tabs.iter()), [0x200]);
-        assert!(mark_pane_shielded(&mut tabs[1], 0x30, true));
+        assert!(mark_pane(&mut tabs[1], 0x30, true, false));
         assert_eq!(shielded_hwnds_of(tabs.iter()), [0x200, 0x300]);
-        assert!(mark_pane_shielded(&mut tabs[0], 0x20, false));
+        assert!(mark_pane(&mut tabs[0], 0x20, false, false));
         assert_eq!(shielded_hwnds_of(tabs.iter()), [0x300]);
         // A surface this tab does not show is not this tab's to mark.
-        assert!(!mark_pane_shielded(&mut tabs[0], 0x30, false));
+        assert!(!mark_pane(&mut tabs[0], 0x30, false, false));
         assert_eq!(shielded_hwnds_of(tabs.iter()), [0x300]);
         // A pane with no window yet has nothing to paint over.
         tabs[1].panes_mut()[0].hwnd = 0;
         assert!(shielded_hwnds_of(tabs.iter()).is_empty());
+    }
+
+    /// A pane restored from a project with its shield on does not take the
+    /// core's first word -- "not shielded", said before the shield was
+    /// handed back -- and says "not told" until it has been (task 1700).
+    #[test]
+    fn a_pane_waiting_for_its_hand_back_does_not_believe_the_shield_is_off() {
+        let marks = polter_projects::handback::Marks { shielded: true, ..polter_projects::handback::Marks::DEFAULT };
+        let mut waiting = test_pane(1, 0x10);
+        waiting.marks = PaneMarks::restored(marks);
+        waiting.shielded = None;
+        let mut tabs = vec![test_tab(vec![waiting])];
+        assert!(mark_pane(&mut tabs[0], 0x10, false, true));
+        assert_eq!(tabs[0].panes()[0].shielded, None, "not believed while waiting");
+        assert!(tabs[0].panes()[0].marks.supervisor, "the role is the core's own and is believed");
+        tabs[0].panes_mut()[0].marks.waiting = polter_projects::handback::Waiting::No;
+        assert!(mark_pane(&mut tabs[0], 0x10, true, true));
+        assert_eq!(tabs[0].panes()[0].shielded, Some(true));
+        // And a pane restored with nothing to hand back starts told.
+        assert_eq!(PaneMarks::restored(polter_projects::handback::Marks::DEFAULT), PaneMarks::NEW);
     }
 
     fn test_tab(panes: Vec<Pane>) -> Tab {
@@ -5416,7 +5605,6 @@ mod pane_metadata_tests {
             id: TabId(0),
             body: Body::Terminal(Terminal { tree: Tree::new(), focused: 0, panes }),
             title: String::new(),
-            color: 0,
             role: 0,
             shielded: false,
             held: false,
@@ -6178,7 +6366,6 @@ pub fn pane_to_new_window(src: HWND, pane: PaneId, at: windows::Win32::Foundatio
             id: tab_id,
             body: Body::Terminal(Terminal { tree: Tree::with_pane(pane), panes: vec![p], focused: pane }),
             title: own.unwrap_or(title),
-            color: 0,
             role: 0,
             shielded: false,
             held: false,
@@ -6238,7 +6425,6 @@ pub fn pane_to_new_tab(src: HWND, pane: PaneId, dst: HWND, index: usize) -> bool
                 id: tab_id,
                 body: Body::Terminal(Terminal { tree: Tree::with_pane(pane), panes: vec![p], focused: pane }),
                 title: own.unwrap_or(title),
-                color: 0,
                 role: 0,
                 shielded: false,
                 held: false,
@@ -6539,7 +6725,6 @@ fn toggle_control_room(frame: HWND, hinst: windows::Win32::Foundation::HINSTANCE
                         id: tab_id,
                         body: Body::ControlRoom(RoomTab { hwnd: panel.0 as isize }),
                         title: tr(rules::msg::TAB_TITLE),
-                        color: 0,
                         role: 0,
                         shielded: false,
                         held: false,

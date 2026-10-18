@@ -162,6 +162,7 @@ mod shot_agent;
 mod shots;
 mod shellopen;
 mod strip;
+mod swatch_menu;
 mod tabs;
 mod taskbar;
 mod toast;
@@ -3450,6 +3451,26 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             true
         }
 
+        // What a person has marked on one terminal (task 1700): its colour,
+        // whether workers may start in it, and its tab's flag. Inline for the
+        // reason the mark is: it names its surface and touches no window.
+        ffi::ACTION_POLTERGEIST_PANE => {
+            let surface = target_surface(&target);
+            let Some((color, workers, flag)) = action.as_poltergeist_pane() else {
+                // not-gated: a value outside its enum is a core this host
+                // does not match, said once per push and never drawn.
+                alogf!(origin, "[action] poltergeist_pane with a value outside its enum; not taken surface={:?}", target.surface);
+                return true;
+            };
+            let told = surface.map(|s| tabs::set_pane_for_surface(s, color, workers, flag));
+            alogf!(
+                origin,
+                "[action] poltergeist_pane color={} workers={:?} flag={:?} surface={:?} told={:?}",
+                color.name(), workers, flag, target.surface, told
+            );
+            true
+        }
+
         // An agent asking, through the tool surface, for a tab or a window to
         // go. **The arm's whole substance is in the out parameter**: the core
         // reads `result` back the moment this returns and turns it into what
@@ -4771,6 +4792,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 WD_PONG.store(wp.0 as u64, Ordering::Relaxed);
                 LRESULT(0)
             }
+            // The colour rows of a pane's menu (task 1700): owner-drawn, so
+            // their size and their drawing are asked of the menu's owner,
+            // and which row is selected is said to it (taken note of, and
+            // answered as before). Only while such a menu is up.
+            WM_MEASUREITEM | WM_DRAWITEM | WM_MENUSELECT if crate::swatch_menu::on_owner_message(msg, wp, lp).is_some() => LRESULT(1),
+
             // The frame owns the strip only; it must still never let GDI
             // erase, or the strip flickers on every resize.
             WM_ERASEBKGND => LRESULT(1),

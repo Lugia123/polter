@@ -10,7 +10,7 @@ struct ProjectPagesTests {
     private typealias Live = ProjectPages.Live
 
     private func leaf(_ cwd: String, _ scrollback: String = "", _ agent: ProjectAgent = .none) -> ProjectNode {
-        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, agent: agent)
+        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: agent)
     }
 
     private func frame(_ x: Double) -> ProjectFrame {
@@ -38,7 +38,7 @@ struct ProjectPagesTests {
     private func cwds(_ pages: ProjectPages) -> [[String]] {
         pages.fileWindows.map { window in
             window.tabs.map { tab -> String in
-                if case .leaf(let cwd, _, _, _, _, _) = tab.root { return cwd }
+                if case .leaf(let cwd, _, _, _, _, _, _, _, _, _) = tab.root { return cwd }
                 return "split"
             }
         }
@@ -338,8 +338,8 @@ struct ProjectPagesTests {
             nextScrollback: 2))
         let known = pages.known
         #expect(known == [
-            "0.snap": ProjectPages.Known(cwd: "/a", agent: worker, bySupervisor: false),
-            "1.snap": ProjectPages.Known(cwd: "/b", agent: .none, bySupervisor: false),
+            "0.snap": ProjectPages.Known(cwd: "/a", agent: worker, bySupervisor: false, supervisorSeat: false, marks: .none),
+            "1.snap": ProjectPages.Known(cwd: "/b", agent: .none, bySupervisor: false, supervisorSeat: false, marks: .none),
         ])
 
         // The save cannot tell about either pane.
@@ -377,7 +377,7 @@ struct ProjectPagesTests {
     /// every save after a restart -- does not make it a pane the supervisor
     /// did not open. And a save that can tell says so.
     @Test func aPaneTheSupervisorOpenedStaysOne() {
-        let opened = ProjectNode.leaf(cwd: "/w", title: "", history: "", scrollback: "0.snap", bySupervisor: true, agent: .none)
+        let opened = ProjectNode.leaf(cwd: "/w", title: "", history: "", scrollback: "0.snap", bySupervisor: true, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
         let known = ProjectPages(file: .oneTab(name: "p", savedAt: 1, root: opened, nextScrollback: 1)).known
         #expect(known["0.snap"]?.bySupervisor == true)
         #expect(leaf("/w", "0.snap", .none).keepingWhatTheFileKnew(known) == opened)
@@ -532,5 +532,117 @@ struct ProjectPagesTests {
             #expect(change.noLaterThan >= ProjectAutosaveChange.quiet)
             #expect(change.noLaterThan <= 30)
         }
+    }
+}
+
+// MARK: - The user's marks and the seat at a save (task 1699)
+
+@Suite
+struct ProjectPaneMarksSavingTests {
+    private typealias Live = ProjectPages.Live
+
+    private static func leaf(_ cwd: String, _ scrollback: String, seat: Bool = false, color: PaneColor = .none) -> ProjectNode {
+        .leaf(cwd: cwd, title: "", history: "", scrollback: scrollback, bySupervisor: false, supervisorSeat: seat,
+              color: color, workersRefused: false, shielded: false, agent: .none)
+    }
+
+    private let set = ProjectPaneMarks(color: .orange, workersRefused: true, shielded: true)
+
+    @Test func whatIsHandedBackIsOneActionPerMarkThatIsSet() {
+        #expect(ProjectPaneMarks.none.handBack.isEmpty)
+        #expect(set.handBack == [
+            "poltergeist_set_pane_color:orange", "poltergeist_set_workers:refused", "poltergeist_set_shielded:on",
+        ])
+        #expect(ProjectPaneMarks(color: .none, workersRefused: false, shielded: true).handBack == ["poltergeist_set_shielded:on"])
+    }
+
+    /// **A save before the core has said the marks back writes the file's**:
+    /// what the terminal has until then is the core's defaults.
+    @Test func aSaveBeforeTheHandBackIsAnsweredKeepsTheFilesMarks() {
+        var handBack = ProjectMarksHandBack(file: set, reportsBefore: 1)
+        // The core's first report, from before the hand-back: defaults.
+        #expect(handBack.saved(.none, reports: 1) == set)
+        handBack.observe(.none, reports: 1)
+        #expect(!handBack.settled)
+        // The core has answered the colour and workers, not yet the shield.
+        let half = ProjectPaneMarks(color: .orange, workersRefused: true, shielded: false)
+        #expect(handBack.saved(half, reports: 2) == set)
+        // All three answered: the terminal's word from now on, the user's
+        // own changes included.
+        handBack.observe(set, reports: 2)
+        #expect(handBack.settled)
+        let changed = ProjectPaneMarks(color: .teal, workersRefused: false, shielded: false)
+        #expect(handBack.saved(changed, reports: 3) == changed)
+    }
+
+    /// Only the shield in the file: no pane report follows the hand-back,
+    /// and none is needed -- the core's colour and workers are the file's.
+    @Test func aShieldAloneIsKnownByTheMarkNotByAPaneReport() {
+        let shieldOnly = ProjectPaneMarks(color: .none, workersRefused: false, shielded: true)
+        var handBack = ProjectMarksHandBack(file: shieldOnly, reportsBefore: 1)
+        #expect(handBack.saved(.none, reports: 1) == shieldOnly)
+        handBack.observe(shieldOnly, reports: 1)
+        // A colour the user sets later arrives in a report, and is taken.
+        let coloured = ProjectPaneMarks(color: .red, workersRefused: false, shielded: true)
+        #expect(handBack.saved(coloured, reports: 2) == coloured)
+        // The user takes the shield off after the core had it: taken.
+        #expect(handBack.saved(.none, reports: 2) == .none)
+    }
+
+    private var twoPages: ProjectPages {
+        ProjectPages(file: ProjectFile(
+            name: "p", savedAt: 1, group: "g",
+            windows: [ProjectWindow(frame: nil, front: 0, tabs: [
+                ProjectTab(root: .split(direction: .horizontal, ratio: 0.5,
+                                        left: Self.leaf("/a", "0.snap"), right: Self.leaf("/b", "1.snap", color: .blue))),
+                // Not open at the save below; the file's seat is here.
+                ProjectTab(root: Self.leaf("/c", "2.snap", seat: true)),
+            ])],
+            nextScrollback: 3))
+    }
+
+    private func saved(_ pages: ProjectPages, _ root: ProjectNode) -> ProjectFile {
+        pages.saving(name: "p", savedAt: 2, group: "g", nextScrollback: 3, screen: .init(
+            live: [Live(id: 0, window: 1, index: 0, selected: true, root: root)],
+            frames: [:], keepingFront: true)).file
+    }
+
+    /// A pane says it is the seat only when the supervisor is in it now:
+    /// then every other pane, open or not, is written as not.
+    @Test func aPaneThatSaysItIsTheSeatUnseatsEveryOther() throws {
+        let file = saved(twoPages, .split(direction: .horizontal, ratio: 0.5,
+                                          left: Self.leaf("/a", "0.snap", seat: true), right: Self.leaf("/b", "1.snap", color: .blue)))
+        #expect(file.tabs == [
+            .split(direction: .horizontal, ratio: 0.5,
+                   left: Self.leaf("/a", "0.snap", seat: true), right: Self.leaf("/b", "1.snap", color: .blue)),
+            Self.leaf("/c", "2.snap"),
+        ])
+        #expect(file.tabs.reduce(0) { $0 + $1.seatCount } == 1)
+        #expect(ProjectPages(file: file).supervisorPane == "0.snap")
+        #expect(try ProjectFile.decode(from: file.encoded()) == file)
+    }
+
+    /// No pane says so: "no" is "cannot tell", and each keeps the file's.
+    @Test func withNoPaneSayingItIsTheSeatEachKeepsWhatTheFileHad() {
+        let pages = ProjectPages(file: .oneTab(name: "p", savedAt: 1, root: .split(
+            direction: .horizontal, ratio: 0.5,
+            left: Self.leaf("/a", "0.snap", seat: true), right: Self.leaf("/b", "1.snap")), nextScrollback: 2))
+        let file = saved(pages, .split(direction: .horizontal, ratio: 0.5,
+                                       left: Self.leaf("/a", "0.snap"), right: Self.leaf("/b", "1.snap")))
+        #expect(file.firstTab == .split(direction: .horizontal, ratio: 0.5,
+                                        left: Self.leaf("/a", "0.snap", seat: true), right: Self.leaf("/b", "1.snap")))
+        // And a page not open keeps its seat too.
+        let other = saved(twoPages, .split(direction: .horizontal, ratio: 0.5,
+                                           left: Self.leaf("/a", "0.snap"), right: Self.leaf("/b", "1.snap", color: .blue)))
+        #expect(ProjectPages(file: other).supervisorPane == "2.snap")
+    }
+
+    /// What the file says of a pane's marks is what a terminal that comes
+    /// back as it is handed.
+    @Test func theFilesMarksAreKnownByThePanesName() {
+        let pages = ProjectPages(file: .oneTab(name: "p", savedAt: 1, root: .leaf(
+            cwd: "/a", title: "", history: "", scrollback: "0.snap", bySupervisor: false, supervisorSeat: false,
+            color: .orange, workersRefused: true, shielded: true, agent: .none), nextScrollback: 1))
+        #expect(pages.known["0.snap"]?.marks == set)
     }
 }

@@ -25,13 +25,6 @@ class TerminalWindow: NSWindow {
     /// Update notification UI in titlebar
     private let updateAccessory = NSTitlebarAccessoryViewController()
 
-    /// Visual indicator that mirrors the selected tab color.
-    private lazy var tabColorIndicator: NSHostingView<TabColorIndicatorView> = {
-        let view = NSHostingView(rootView: TabColorIndicatorView(tabColor: tabColor))
-        view.translatesAutoresizingMaskIntoConstraints = false
-        return view
-    }()
-
     /// The configuration derived from the Ghostty config so we don't need to rely on references.
     private(set) var derivedConfig: DerivedConfig = .init()
 
@@ -59,13 +52,14 @@ class TerminalWindow: NSWindow {
         windowController as? TerminalController
     }
 
-    /// The color assigned to this window's tab. Setting this updates the tab color indicator
-    /// and marks the window's restorable state as dirty.
-    var tabColor: TerminalTabColor = .none {
+    /// The dots of this tab's panes that have a colour, led by the
+    /// supervisor's flag (task 1699). Set by the controller from its
+    /// surfaces; the old one colour per tab is gone, not carried over
+    /// (the user's ruling of 2026-10-18).
+    var paneDots: TabDots.Drawn = TabDots.of([]) {
         didSet {
-            guard tabColor != oldValue else { return }
-            tabColorIndicator.rootView = TabColorIndicatorView(tabColor: tabColor)
-            invalidateRestorableState()
+            guard paneDots != oldValue else { return }
+            refreshTabAccessory()
         }
     }
 
@@ -159,8 +153,6 @@ class TerminalWindow: NSWindow {
         // Setup the accessory view for tabs that shows our keyboard shortcuts,
         // zoomed state, etc. Note I tried to use SwiftUI here but ran into issues
         // where buttons were not clickable on macOS 15.
-        tabColorIndicator.rootView = TabColorIndicatorView(tabColor: tabColor)
-
         let stackView = NSStackView()
         stackView.orientation = .horizontal
         stackView.setHuggingPriority(.defaultHigh, for: .horizontal)
@@ -427,9 +419,8 @@ class TerminalWindow: NSWindow {
     /// view here.
     private func tabAccessoryView(for item: TabAccessory.Item) -> NSView {
         switch item {
-        case .highlight: return highlightDotView
+        case .paneDots: return paneDotsView
         case .projectMark: return projectMarkView
-        case .colorIndicator: return tabColorIndicator
         case .poltergeistMark: return poltergeistMarkLabel
         case .keyEquivalent: return keyEquivalentLabel
         case .resetZoom: return resetZoomTabButton
@@ -484,12 +475,17 @@ class TerminalWindow: NSWindow {
 
         projectMarkView.toolTip = projectOfTab.map(TabAccessory.projectMarkHelp)
 
+        paneDotsView.rootView = TabPaneDotsView(drawn: paneDots, lit: highlightedTab)
+        paneDotsView.toolTip = paneDots.isEmpty ? nil : TabDots.tip(paneDots)
+        paneDotsView.setAccessibilityLabel(paneDots.isEmpty ? nil : TabDots.tip(paneDots))
+
         let visible = TabAccessory.visibleItems(.init(
             poltergeistMark: poltergeistMark,
             surfaceIsZoomed: surfaceIsZoomed,
             status: tabStatus.shown,
             project: projectOfTab,
-            highlighted: highlightedTab))
+            highlighted: highlightedTab,
+            hasDots: !paneDots.isEmpty))
         for item in TabAccessory.Item.allCases {
             tabAccessoryView(for: item).isHidden = !visible.contains(item)
         }
@@ -501,13 +497,13 @@ class TerminalWindow: NSWindow {
     /// 1689). Set by `PolterHighlight` and by nothing else.
     private var highlightedTab = false
 
-    /// The breathing dot beside the title.
-    private lazy var highlightDotView: NSHostingView<PolterHighlightDot> = {
-        let size = CGFloat(ControlRoomLook.WindowTab.glyph)
-        let view = NSHostingView(rootView: PolterHighlightDot())
+    /// The pane dots beside the title, and the ring round them while a
+    /// terminal of the tab is lit (`TabPaneDotsView`). Sized by its own
+    /// content: the width is the dots', the height the tab glyph's.
+    private lazy var paneDotsView: NSHostingView<TabPaneDotsView> = {
+        let view = NSHostingView(rootView: TabPaneDotsView(drawn: paneDots, lit: false))
         view.translatesAutoresizingMaskIntoConstraints = false
-        view.widthAnchor.constraint(equalToConstant: size).isActive = true
-        view.heightAnchor.constraint(equalToConstant: size).isActive = true
+        view.heightAnchor.constraint(equalToConstant: CGFloat(ControlRoomLook.WindowTab.glyph) + 2 * CGFloat(ControlRoomLook.TabDots.ringGap + ControlRoomLook.TabDots.ring)).isActive = true
         view.isHidden = true
         return view
     }()
@@ -990,26 +986,6 @@ extension TerminalWindow {
 
 }
 
-/// A small circle indicator displayed in the tab accessory view that shows
-/// the user-assigned tab color. When no color is set, the view is hidden.
-private struct TabColorIndicatorView: View {
-    /// The tab color to display.
-    let tabColor: TerminalTabColor
-
-    var body: some View {
-        if let color = tabColor.displayColor {
-            Circle()
-                .fill(Color(color))
-                .frame(width: 6, height: 6)
-        } else {
-            Circle()
-                .fill(Color.clear)
-                .frame(width: 6, height: 6)
-                .hidden()
-        }
-    }
-}
-
 // MARK: - Tab Context Menu
 
 extension TerminalWindow {
@@ -1024,6 +1000,7 @@ extension TerminalWindow {
     private static let agentWatchIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentWatch")
     private static let agentHeldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentHeld")
     private static let agentShieldIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentShield")
+    private static let agentWorkersIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentWorkers")
     private static let agentAuthoriseIdentifier = NSUserInterfaceItemIdentifier("com.lugia.polter.agentAuthorise")
     private static let agentPersonaIdentifier = PersonaMenu.itemIdentifier
     private static let agentMentionsIdentifier = MentionMenu.itemIdentifier
@@ -1140,6 +1117,7 @@ extension TerminalWindow {
             Self.agentWatchIdentifier,
             Self.agentHeldIdentifier,
             Self.agentShieldIdentifier,
+            Self.agentWorkersIdentifier,
             Self.agentAuthoriseIdentifier,
             Self.agentPersonaIdentifier,
             Self.agentMentionsIdentifier,
@@ -1165,6 +1143,11 @@ extension TerminalWindow {
              "lock",
              #selector(TerminalController.poltergeistToggleShielded(_:)),
              Self.agentShieldIdentifier),
+            (String(localized: "Don't Start Workers in This Terminal",
+                    comment: "标签页右键菜单：不在此终端开 worker；agent 仍可读、可发命令"),
+             "apple.terminal",
+             #selector(TerminalController.poltergeistToggleWorkersRefused(_:)),
+             Self.agentWorkersIdentifier),
             (String(localized: "Let a Supervisor Answer Prompts Here",
                     comment: "标签页右键菜单：允许总管替此终端点授权框，含「不再询问」"),
              "hand.raised",
@@ -1188,6 +1171,8 @@ extension TerminalWindow {
                 item.state = surface?.poltergeistRole == .watched ? .on : .off
             } else if identifier == Self.agentShieldIdentifier {
                 item.state = (surface?.poltergeistShielded ?? false) ? .on : .off
+            } else if identifier == Self.agentWorkersIdentifier {
+                item.state = (surface?.poltergeistWorkersRefused ?? false) ? .on : .off
             } else if identifier == Self.agentAuthoriseIdentifier {
                 item.state = (surface?.poltergeistMayAuthorise ?? false) ? .on : .off
             }
@@ -1244,12 +1229,15 @@ extension TerminalWindow {
             menu.addItem(copy)
         }
 
+        // The colour of one pane (task 1699): on a tab, the pane of it that
+        // has focus; on a pane's title or a stack's tab, that pane, which
+        // `polterPaneMenu` has just focused.
         let paletteItem = NSMenuItem()
         paletteItem.identifier = Self.tabColorPaletteIdentifier
-        paletteItem.view = makeTabColorPaletteView(
-            selectedColor: (target?.window as? TerminalWindow)?.tabColor ?? .none
+        paletteItem.view = makePaneColorPaletteView(
+            selectedColor: target?.focusedSurface?.poltergeistPaneColor ?? .none
         ) { [weak target] color in
-            (target?.window as? TerminalWindow)?.tabColor = color
+            target?.setPaneColor(color)
         }
         menu.addItem(paletteItem)
     }
@@ -1334,18 +1322,6 @@ extension TerminalWindow {
         takeOutItem.target = target
         menu.addItem(takeOutItem)
     }
-}
-
-private func makeTabColorPaletteView(
-    selectedColor: TerminalTabColor,
-    selectionHandler: @escaping (TerminalTabColor) -> Void
-) -> NSView {
-    let hostingView = NSHostingView(rootView: TabColorMenuView(
-        selectedColor: selectedColor,
-        onSelect: selectionHandler
-    ))
-    hostingView.frame.size = hostingView.intrinsicContentSize
-    return hostingView
 }
 
 // MARK: - Inline Tab Title Editing

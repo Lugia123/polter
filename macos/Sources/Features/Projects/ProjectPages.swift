@@ -294,6 +294,14 @@ struct ProjectPages: Equatable {
     /// means "as far as could be told": each is first given what the file
     /// knew and the capture could not say (`keepingWhatTheFileKnew`), and
     /// only then takes the place of the page it is.
+    ///
+    /// **The supervisor's seat** (`pane-color-interface.md` §7.1, the rule
+    /// both hosts keep): a capture says a pane is the seat only when the
+    /// supervisor is in it now, and of every other pane it does not know.
+    /// So when some open pane says it is, every other pane of the project
+    /// -- open or not -- is written as not, or a seat taken back from the
+    /// file would make two, which read back as none. When none says so,
+    /// each pane keeps what the file had.
     func saving(
         name: String,
         savedAt: Int,
@@ -302,12 +310,18 @@ struct ProjectPages: Equatable {
         screen: Screen
     ) -> (pages: ProjectPages, file: ProjectFile) {
         let (live, frames, keepingFront) = (screen.live, screen.frames, screen.keepingFront)
-        let known = self.known
+        let seated = live.contains { $0.root.seatCount > 0 }
+        var base = self
+        var known = self.known
+        if seated {
+            base.unseatEveryPane()
+            for name in known.keys { known[name]?.supervisorSeat = false }
+        }
         let told = live.map {
             Live(id: $0.id, window: $0.window, index: $0.index, selected: $0.selected,
                  root: $0.root.keepingWhatTheFileKnew(known))
         }
-        let pages = updated(live: told, frames: frames, keepingFront: keepingFront)
+        let pages = base.updated(live: told, frames: frames, keepingFront: keepingFront)
         return (pages, ProjectFile(
             name: name, savedAt: savedAt, group: group,
             windows: pages.fileWindows, nextScrollback: nextScrollback))
@@ -341,8 +355,8 @@ struct ProjectPages: Equatable {
     // MARK: The supervisor's pane
 
     /// The snapshot name of the pane the project marks as its
-    /// supervisor's, if it marks one. A pane with no snapshot name cannot
-    /// be found again and is not one.
+    /// supervisor's -- its seat -- if it marks one. A pane with no snapshot
+    /// name cannot be found again and is not one.
     var supervisorPane: String? {
         for window in windows {
             for page in window.pages {
@@ -359,14 +373,24 @@ struct ProjectPages: Equatable {
 
     /// Mark the pane called `name` as the supervisor's, **and no other**: a
     /// project has one, and a file in which two panes say they are it reads
-    /// as having none (`ProjectFile.puttingRight`). What the pane's agent
-    /// otherwise was is kept; a pane nobody could say anything about, or
-    /// nobody was in, becomes an agent of which only this is known.
+    /// as having none (`ProjectFile.puttingRight`). Both marks move: the
+    /// seat, and the agent's `supervisor`. What the pane's agent otherwise
+    /// was is kept; a pane nobody could say anything about, or nobody was
+    /// in, becomes an agent of which only this is known.
     mutating func makeSupervisor(pane name: String) {
         guard !name.isEmpty else { return }
         for w in windows.indices {
             for p in windows[w].pages.indices {
                 windows[w].pages[p].tab = ProjectTab(root: windows[w].pages[p].tab.root.markingSupervisor(name))
+            }
+        }
+    }
+
+    /// No pane of any page is the seat.
+    private mutating func unseatEveryPane() {
+        for w in windows.indices {
+            for p in windows[w].pages.indices {
+                windows[w].pages[p].tab = ProjectTab(root: windows[w].pages[p].tab.root.unseated)
             }
         }
     }
@@ -382,6 +406,11 @@ struct ProjectPages: Equatable {
         var agent: ProjectAgent
         /// Whether the project's supervisor opened it.
         var bySupervisor: Bool
+        /// Whether it is the supervisor's seat.
+        var supervisorSeat: Bool
+        /// The user's colour, workers and shield: what a terminal that
+        /// comes back as this pane is handed back (`ProjectSession.restore`).
+        var marks: ProjectPaneMarks
     }
 
     /// What the file says of each of its panes, by the pane's snapshot
@@ -400,8 +429,8 @@ struct ProjectPages: Equatable {
 extension ProjectNode {
     fileprivate var supervisorPane: String? {
         switch self {
-        case .leaf(_, _, _, let scrollback, _, let agent):
-            return agent.isSupervisor && !scrollback.isEmpty ? scrollback : nil
+        case .leaf(_, _, _, let scrollback, _, let seat, _, _, _, _):
+            return seat && !scrollback.isEmpty ? scrollback : nil
         case .stack(_, let members):
             return members.lazy.compactMap(\.supervisorPane).first
         case .split(_, _, let left, let right):
@@ -411,7 +440,7 @@ extension ProjectNode {
 
     fileprivate var workerPanes: [String] {
         switch self {
-        case .leaf(_, _, _, let scrollback, let bySupervisor, _):
+        case .leaf(_, _, _, let scrollback, let bySupervisor, _, _, _, _, _):
             return bySupervisor && !scrollback.isEmpty ? [scrollback] : []
         case .stack(_, let members):
             return members.flatMap(\.workerPanes)
@@ -422,7 +451,9 @@ extension ProjectNode {
 
     fileprivate func markingSupervisor(_ name: String) -> ProjectNode {
         switch self {
-        case .leaf(let cwd, let title, let history, let scrollback, let bySupervisor, let agent):
+        case .leaf(
+            let cwd, let title, let history, let scrollback, let bySupervisor,
+            _, let color, let workersRefused, let shielded, let agent):
             let isIt = scrollback == name
             let marked: ProjectAgent
             switch agent {
@@ -433,7 +464,8 @@ extension ProjectNode {
             }
             return .leaf(
                 cwd: cwd, title: title, history: history, scrollback: scrollback,
-                bySupervisor: bySupervisor, agent: marked)
+                bySupervisor: bySupervisor, supervisorSeat: isIt,
+                color: color, workersRefused: workersRefused, shielded: shielded, agent: marked)
         case .stack(let shown, let members):
             return .stack(shown: shown, members: members.map { $0.markingSupervisor(name) })
         case .split(let direction, let ratio, let left, let right):
@@ -443,11 +475,30 @@ extension ProjectNode {
         }
     }
 
+    /// This tree with no pane the seat.
+    fileprivate var unseated: ProjectNode {
+        switch self {
+        case .leaf(
+            let cwd, let title, let history, let scrollback, let bySupervisor,
+            _, let color, let workersRefused, let shielded, let agent):
+            return .leaf(
+                cwd: cwd, title: title, history: history, scrollback: scrollback,
+                bySupervisor: bySupervisor, supervisorSeat: false,
+                color: color, workersRefused: workersRefused, shielded: shielded, agent: agent)
+        case .stack(let shown, let members):
+            return .stack(shown: shown, members: members.map(\.unseated))
+        case .split(let direction, let ratio, let left, let right):
+            return .split(direction: direction, ratio: ratio, left: left.unseated, right: right.unseated)
+        }
+    }
+
     fileprivate func collectKnown(into known: inout [String: ProjectPages.Known]) {
         switch self {
-        case .leaf(let cwd, _, _, let scrollback, let bySupervisor, let agent):
+        case .leaf(let cwd, _, _, let scrollback, let bySupervisor, let seat, let color, let refused, let shielded, let agent):
             if !scrollback.isEmpty, known[scrollback] == nil {
-                known[scrollback] = ProjectPages.Known(cwd: cwd, agent: agent, bySupervisor: bySupervisor)
+                known[scrollback] = ProjectPages.Known(
+                    cwd: cwd, agent: agent, bySupervisor: bySupervisor, supervisorSeat: seat,
+                    marks: ProjectPaneMarks(color: color, workersRefused: refused, shielded: shielded))
             }
         case .stack(_, let members):
             for member in members { member.collectKnown(into: &known) }
@@ -503,14 +554,28 @@ extension ProjectNode {
     ///   the project it is the file that knows. It is a thing about the
     ///   pane for life, so once the file says yes a save that cannot tell
     ///   does not make it no.
+    /// - *Whether it is the supervisor's seat.* A capture says yes only of
+    ///   the pane the supervisor is in now; of the others it cannot tell.
+    ///   So a no keeps what the file said -- and `ProjectPages.saving`,
+    ///   when some pane says yes, hands this a file that says no of every
+    ///   pane, which is the other half of the rule.
+    ///
+    /// The user's colour, workers and shield are not here: a capture that
+    /// cannot tell them yet takes the file's values itself
+    /// (`ProjectMarksHandBack`), since it is the terminal, not the file,
+    /// that knows whether they have been handed back.
     func keepingWhatTheFileKnew(_ known: [String: ProjectPages.Known]) -> ProjectNode {
         switch self {
-        case .leaf(let cwd, let title, let history, let scrollback, let bySupervisor, let agent):
+        case .leaf(
+            let cwd, let title, let history, let scrollback, let bySupervisor,
+            let supervisorSeat, let color, let workersRefused, let shielded, let agent):
             guard let was = known[scrollback] else { return self }
             return .leaf(
                 cwd: cwd.isEmpty ? was.cwd : cwd,
                 title: title, history: history, scrollback: scrollback,
                 bySupervisor: bySupervisor || was.bySupervisor,
+                supervisorSeat: supervisorSeat || was.supervisorSeat,
+                color: color, workersRefused: workersRefused, shielded: shielded,
                 agent: Self.agent(now: agent, was: was.agent))
         // Each member of a stack is a pane of its own, found by its own
         // snapshot name -- in front or behind.
@@ -521,6 +586,85 @@ extension ProjectNode {
                 direction: direction, ratio: ratio,
                 left: left.keepingWhatTheFileKnew(known), right: right.keepingWhatTheFileKnew(known))
         }
+    }
+}
+
+// MARK: - The user's marks on a pane
+
+/// The three marks a user puts on a pane that the core keeps for the
+/// terminal (task 1699): its colour, whether workers are kept out of it, and
+/// its shield. A project file keeps them per pane; opening the project hands
+/// them back to each new terminal with the same binding actions the menus
+/// use (`pane-color-interface.md` §2, §7.2).
+struct ProjectPaneMarks: Equatable {
+    var color: PaneColor
+    var workersRefused: Bool
+    var shielded: Bool
+
+    /// Nothing set: what a terminal starts with.
+    static let none = ProjectPaneMarks(color: .none, workersRefused: false, shielded: false)
+
+    /// The binding actions that give a terminal that has none of the marks
+    /// these: one for each that is not the default.
+    var handBack: [String] {
+        var actions: [String] = []
+        if color != .none { actions.append(color.bindingAction) }
+        if workersRefused { actions.append("poltergeist_set_workers:refused") }
+        if shielded { actions.append("poltergeist_set_shielded:on") }
+        return actions
+    }
+}
+
+/// A terminal opened from a project file that had marks on its pane, from
+/// the moment they were handed back until the core has said them back.
+///
+/// **Three states, not two** (§7.2): the core tells a terminal its marks as
+/// it starts, and for a terminal opened from a file that first report is the
+/// core's defaults -- it has not been told the file's values yet. Taken as
+/// the terminal's, the first save after opening a project would write "no
+/// colour, no shield" over what the user set. So until the core has spoken
+/// since the hand-back, a save writes what the file said.
+///
+/// - Colour and workers come in the pane report. They are known once a
+///   report has arrived after the hand-back (`reportsBefore` is the count
+///   when it was sent).
+/// - The shield comes in the mark. It is known once the terminal says what
+///   the file said: a terminal starts unshielded, so for a file that says
+///   "unshielded" that is at once, and for one that says "shielded" it is
+///   the core having taken the hand-back.
+struct ProjectMarksHandBack: Equatable {
+    /// What the file said of the pane.
+    let file: ProjectPaneMarks
+    /// How many pane reports the terminal had had just before the marks
+    /// were handed back.
+    let reportsBefore: Int
+    private(set) var paneKnown = false
+    private(set) var shieldKnown = false
+
+    init(file: ProjectPaneMarks, reportsBefore: Int) {
+        self.file = file
+        self.reportsBefore = reportsBefore
+    }
+
+    /// Learn from what the terminal says now. Once known, known: what the
+    /// terminal says after that is the user's doing.
+    mutating func observe(_ live: ProjectPaneMarks, reports: Int) {
+        if reports > reportsBefore { paneKnown = true }
+        if live.shielded == file.shielded { shieldKnown = true }
+    }
+
+    /// Whether the terminal's own word is good for all three.
+    var settled: Bool { paneKnown && shieldKnown }
+
+    /// What a save writes of the pane's marks, given what the terminal says
+    /// now and how many pane reports it has had.
+    func saved(_ live: ProjectPaneMarks, reports: Int) -> ProjectPaneMarks {
+        var after = self
+        after.observe(live, reports: reports)
+        return ProjectPaneMarks(
+            color: after.paneKnown ? live.color : file.color,
+            workersRefused: after.paneKnown ? live.workersRefused : file.workersRefused,
+            shielded: after.shieldKnown ? live.shielded : file.shielded)
     }
 }
 

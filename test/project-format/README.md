@@ -17,10 +17,10 @@ have to write the same bytes**, not merely files the others can read.
 
 `index.txt` names every file, one `kind<TAB>stem` per line:
 
-- `same` -- `<stem>.json` is a format 2 file. Read and written back, it is
-  the same bytes.
+- `same` -- `<stem>.json` is a format 3 file, the format that is written.
+  Read and written back, it is the same bytes.
 - `from` -- `<stem>.in.json` is something else that has to be read: a format
-  1 file, or a file a read puts right. Read and written, it is the bytes of
+  1 or 2 file, or a file a read puts right. Read and written, it is the bytes of
   `<stem>.json`.
 - `refused` -- `<stem>.in.json` is from a later format and must not be read.
 

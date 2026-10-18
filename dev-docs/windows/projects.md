@@ -43,6 +43,26 @@
 设置窗口里的三件事跟着走：改名 → `moved`（开着的页跟到新文件，否则下一次自动保存会把旧文件写回来）；
 删除、恢复上一版 → `forget`（标签页留着，不再是任何项目的页——否则会把刚删的写回来、把刚恢复的盖掉）。
 
+### 2.1 分屏的标记（format 3，任务 #1700）
+
+颜色、「不在此终端开 worker」、护盾、总管格存在叶子上（契约：`pane-color-interface.md` §7，
+格式：`src/Project.zig`）。颜色、workers、护盾是**核心里那个终端的属性**，宿主只是转述：
+
+- **存**：`project_ui::tab_tree` 从分屏取——颜色和 workers 来自这一格最后收到的 `poltergeist_pane`，
+  护盾来自它自己的 mark；总管格只在 mark 说 role = supervisor 的那一格写 true，其余格写「不知道」，
+  由 `polter_projects::pages` 的 `one_seat` 定：屏上有一格说了 true，屏上其它格都写 false；
+  一格都没说（总管不在），各格沿用文件里的。标记变化记作「标题、目录」那一类（30 秒）。
+- **开**：叶子的三个标记随 layout 的 `new` 单元走（键 `marks`，只有项目来源接受，工具来源拒绝），
+  格子建好、装进标签页、锁放开之后，`tabs::hand_back` 对非默认值发 `poltergeist_set_pane_color:<c>` /
+  `poltergeist_set_workers:refused` / `poltergeist_set_shielded:on`，核心当场推回。
+- ⚠️ **竞态**：核心对新终端的第一句话是全默认，而且是在 `ghostty_surface_new` 里、交回之前说的；
+  项目刚开几秒就会自动保存。所以带标记的恢复格从「不知道」开始（`PaneMarks::restored`，
+  `polter_projects::handback::Waiting`），交回之前的推送一律不认；存盘时「不知道」走
+  `keeping_what_the_file_knew` 取文件里的值。判据：`polter-projects` 的
+  `a_save_before_the_marks_are_taken_back_writes_what_the_file_had`。
+- 旧版本（只读到 format 2）遇到 format 3 报 `TooNew` 拒读；新版本存一次 format 2 文件就把它升成 3
+  （`found_on_disk` 把升格式当布局变化，留 `.prev`）。
+
 ## 3. 整个打开
 
 `project_session::open`：文件里每个窗口，凡是有页没开着的——

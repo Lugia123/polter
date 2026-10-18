@@ -5266,6 +5266,10 @@ pub const TabWhy = enum {
     /// it is a guess this does not make.
     last_worker_gone,
 
+    // -- cannot, again: the pane a split would grow from is one the user
+    // keeps for their own commands (task 1699).
+    workers_refused,
+
     pub const Kind = enum {
         /// Not a fallback: what was asked for.
         asked,
@@ -5279,7 +5283,7 @@ pub const TabWhy = enum {
     pub fn kind(self: TabWhy) Kind {
         return switch (self) {
             .asked => .asked,
-            .no_pane_count, .column_full, .split_refused, .split_failed => .cannot,
+            .no_pane_count, .column_full, .split_refused, .split_failed, .workers_refused => .cannot,
             .last_worker_pending, .last_worker_gone => .timing,
         };
     }
@@ -5320,6 +5324,10 @@ pub const PassedOver = struct {
         draft,
         /// It stands in another directory than the one asked for.
         other_directory,
+        /// The user has shielded it: nothing may be typed into it.
+        shielded,
+        /// The user keeps it for their own commands (task 1699).
+        workers_refused,
     };
 };
 
@@ -7347,6 +7355,23 @@ fn dispatchOne(
                 "`beside` opens the role's terminal as a new pane in that terminal's tab; " ++
                     "it does not go with `in` (a terminal already open) or with `place`.",
             );
+            // **The user keeps that terminal for their own commands** (task
+            // 1699): no agent in it and none beside it. Refused here, before
+            // the host is asked, the way a shield is -- and by name, so it
+            // is not read as the terminal being busy.
+            for ([_]?Bus.Id{ p.in, p.beside }) |named| {
+                const id = named orelse continue;
+                if (bus.workersOf(id) == .refused) return .{ .failed = .{
+                    .code = "WorkersRefused",
+                    .message = try std.fmt.allocPrint(
+                        alloc,
+                        "0x{x:0>16}: the user marked this terminal \"Don't Start Workers in This Terminal\". " ++
+                            "It can still be read and typed into, but no agent is started in it or beside it; " ++
+                            "leave `in` and `beside` out and a pane of its own is opened.",
+                        .{id},
+                    ),
+                } };
+            }
             const opened = host.personaLaunch(alloc, caller, p.key, p.cli, p.cwd, p.place, p.in, p.beside) catch |err| return switch (err) {
                 // Starting it in a terminal that is already open (`in`).
                 error.UnknownTerminal => hostFailure(
@@ -8691,6 +8716,8 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         .duty = e.duty,
         .held = e.held,
         .shielded = e.shielded,
+        .color = bus.shownColor(id),
+        .workers = e.workers,
         // Null rather than zero when nothing has ever sampled it. Zero
         // here means "moving this instant", which is a claim, and a
         // terminal nobody has looked at yet gives no grounds for one.
@@ -11358,6 +11385,75 @@ test "terminal_list says which terminals are out of reach before anything is ref
 
     try testing.expect((shielded orelse return error.NotListed).shielded);
     try testing.expect(!(stranger orelse return error.NotListed).shielded);
+}
+
+test "terminal_list says each terminal's colour, as shown, and whether workers are kept out (#1699)" {
+    // `describe` is the step that can be dropped without the wire test
+    // noticing, as for the shield above.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    try b.watch(0x5151, boss);
+    try b.setPaneColor(0x5151, .orange, .user);
+    try b.setWorkers(0x5151, .refused, .user);
+
+    const open = [_]Place{ .{ .id = boss }, .{ .id = 0x5151 }, .{ .id = 0x7272 } };
+    var fake: FakeHost = .{ .open = &open };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .terminal_list);
+    defer testing.allocator.free(res.terminals);
+
+    var marked: ?wire.TerminalInfo = null;
+    var supervisor: ?wire.TerminalInfo = null;
+    var stranger: ?wire.TerminalInfo = null;
+    for (res.terminals) |info| {
+        if (info.id == 0x5151) marked = info;
+        if (info.id == boss) supervisor = info;
+        if (info.id == 0x7272) stranger = info;
+    }
+    const m = marked orelse return error.NotListed;
+    try testing.expectEqual(Bus.PaneColor.orange, m.color);
+    try testing.expectEqual(Bus.Workers.refused, m.workers);
+    // The colour a person sees: the supervisor's purple, though nobody set it.
+    try testing.expectEqual(Bus.PaneColor.purple, (supervisor orelse return error.NotListed).color);
+    const st = stranger orelse return error.NotListed;
+    try testing.expectEqual(Bus.PaneColor.none, st.color);
+    try testing.expectEqual(Bus.Workers.allowed, st.workers);
+}
+
+test "role_launch: a terminal kept for the user's commands is refused for in and for beside, by name (#1699)" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    try b.watch(worker, boss);
+    try b.setWorkers(worker, .refused, .user);
+
+    var into: FakeHost = .{};
+    const in_refused = try dispatch(alloc, &b, into.host(), term(boss), .{ .role_launch = .{ .key = "archer", .in = worker } });
+    try testing.expect(in_refused == .failed);
+    try testing.expectEqualStrings("WorkersRefused", in_refused.failed.code);
+    try testing.expect(std.mem.indexOf(u8, in_refused.failed.message, "0x0000000000002222") != null);
+    try testing.expect(into.role_launched == null);
+
+    var near: FakeHost = .{};
+    const beside_refused = try dispatch(alloc, &b, near.host(), term(boss), .{ .role_launch = .{ .key = "archer", .beside = worker } });
+    try testing.expect(beside_refused == .failed);
+    try testing.expectEqualStrings("WorkersRefused", beside_refused.failed.code);
+    try testing.expect(near.role_launched == null);
+
+    // It is not out of reach: what a person's shell may be asked still is.
+    var reach: FakeHost = .{};
+    const read = try dispatch(alloc, &b, reach.host(), term(boss), .{ .terminal_read = .{ .id = worker } });
+    try testing.expect(read != .failed);
+
+    // Let back in, the same launch goes to the host.
+    try b.setWorkers(worker, .allowed, .user);
+    var again: FakeHost = .{};
+    _ = try dispatch(alloc, &b, again.host(), term(boss), .{ .role_launch = .{ .key = "archer", .in = worker } });
+    try testing.expectEqual(@as(?Bus.Id, worker), again.role_launched.?.into);
 }
 
 test "a terminal nobody is watching is still listed, with where it is" {

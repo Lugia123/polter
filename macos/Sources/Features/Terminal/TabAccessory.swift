@@ -27,16 +27,19 @@ enum TabAccessory {
     /// wants (0.10) is exactly that: one case, one view, one line below --
     /// nothing that assigns `accessoryView`.
     enum Item: CaseIterable {
-        /// The accent dot of a tab whose terminal `terminal_highlight` has
-        /// lit (task 1689), breathing with the pane until it ends. First,
-        /// so it is the thing nearest the title: the design puts it before
-        /// the name, and the system's tabs keep that side to themselves.
-        case highlight
+        /// The dots of the tab's panes that have a colour, led by the
+        /// supervisor's flag (task 1699, `TabDots`) -- and, while
+        /// `terminal_highlight` has lit a terminal of the tab (task 1689),
+        /// an accent ring round them, breathing with the pane until it
+        /// ends. First, so it is the thing nearest the title: the design
+        /// puts it before the name, and the system's tabs keep that side to
+        /// themselves. It used to be two things, the tab's one colour dot
+        /// and the lit tab's own dot; a pane's colour and the lit dot in
+        /// one place would have read as one more colour.
+        case paneDots
         /// The mark of a tab that is a page of a project: two stacked
-        /// pages. First, so it is the thing nearest the title.
+        /// pages.
         case projectMark
-        /// The dot in the colour the user gave the tab.
-        case colorIndicator
         /// The Poltergeist mark: supervising, supervised, and so on.
         case poltergeistMark
         /// The shortcut that selects this tab, e.g. `⌘1`.
@@ -62,6 +65,8 @@ enum TabAccessory {
         var project: String?
         /// Whether a terminal of this tab is lit by `terminal_highlight`.
         var highlighted: Bool = false
+        /// Whether the tab has dots or a flag to draw (`TabDots`).
+        var hasDots: Bool = false
     }
 
     /// How a tab says it is a page of a project.
@@ -112,18 +117,19 @@ enum TabAccessory {
 
     /// Which items are visible, in layout order.
     ///
-    /// The colour dot and the shortcut hint are always in the stack: each
-    /// draws nothing by itself when it has nothing to say (a clear dot, an
-    /// empty string), which is how they behaved before there was a mark.
-    /// **No mark hides the mark and nothing else.**
+    /// The shortcut hint is always in the stack: it draws nothing by itself
+    /// when it has nothing to say (an empty string), which is how it
+    /// behaved before there was a mark. The dots take no room when there
+    /// are none and nothing is lit. **No mark hides the mark and nothing
+    /// else.**
     static func visibleItems(_ state: State) -> [Item] {
         Item.allCases.filter { item in
             switch item {
-            case .highlight:
-                return state.highlighted
+            case .paneDots:
+                return state.hasDots || state.highlighted
             case .projectMark:
                 return state.project != nil && projectMark == .stackedPages
-            case .colorIndicator, .keyEquivalent:
+            case .keyEquivalent:
                 return true
             case .poltergeistMark:
                 return !markText(state.poltergeistMark).isEmpty

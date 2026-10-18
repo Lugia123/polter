@@ -206,6 +206,9 @@
 "poltergeist_toggle_authorise" = "Toggle: Let a Supervisor Answer Prompts";
 "poltergeist_toggle_worker_mentions" = "Toggle: Let Workers Name Each Other Directly";
 "poltergeist_persona_set" = "Set This Terminal's Role";
+"poltergeist_set_shielded" = "Set: Keep Agents Out of This Terminal";
+"poltergeist_set_pane_color" = "Set This Pane's Colour";
+"poltergeist_set_workers" = "Set: Don't Start Workers in This Terminal";
 "poltergeist_persona_clear" = "Clear This Terminal's Role";
 "poltergeist_persona_skill" = "Switch One Skill On or Off Here";
 "poltergeist_persona_mcp" = "Switch One MCP Server On or Off Here";
@@ -1127,3 +1130,24 @@
 
 /* The seconds left, on the small badge terminal_highlight puts on a pane too small for its card (task 1689). */
 "%lld s" = "%lld s";
+
+/* A pane colour (task 1699). */
+"Pink" = "Pink";
+
+/* A pane colour (task 1699). */
+"Teal" = "Teal";
+
+/* A pane colour (task 1699). */
+"Graphite" = "Graphite";
+
+/* A pane colour (task 1699): no colour. */
+"None" = "None";
+
+/* The menu item that keeps workers out of a terminal (task 1699). Agents can still read it and type into it. */
+"Don't Start Workers in This Terminal" = "Don't Start Workers in This Terminal";
+
+/* The first line of the hover text over a tab's colour dots (task 1699). */
+"Panes with a colour" = "Panes with a colour";
+
+/* In the hover text over a tab's colour dots, the line of the supervisor's pane (task 1699). */
+"supervisor" = "supervisor";

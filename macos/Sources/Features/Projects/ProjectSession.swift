@@ -580,6 +580,15 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
                 return
             }
             session.attach(controller, page: page)
+            // The core starts a terminal that came back from a restart with
+            // no colour, no shield and workers allowed; the file has what
+            // the user set (task 1699).
+            let known = session.pages.known
+            for view in controller.surfaceTree {
+                guard let snapshot = view.projectSnapshot, snapshot.project == key,
+                      let was = known[snapshot.filename] else { continue }
+                view.handBackProjectMarks(was.marks)
+            }
         } catch {
             logger.warning("a restored tab was not put back in project '\(name, privacy: .public)': \(error.localizedDescription, privacy: .public)")
         }

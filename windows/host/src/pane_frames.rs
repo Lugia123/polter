@@ -33,6 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
 use polter_control_room::look;
 use polter_control_room::pane::{self, Drawn, Place, Px, Title};
+use polter_control_room::pane_color::Color;
 use polter_control_room::panestack::{self, Geometry, Hit};
 use polter_control_room::snapshot::BarShown;
 use polter_control_room::rules;
@@ -98,6 +99,8 @@ pub struct Stacked {
     pub keys: Vec<Option<String>>,
     /// What each one's own pane calls it.
     pub names: Vec<String>,
+    /// The colour set on each one (task 1700), none being `None`.
+    pub colors: Vec<Option<Color>>,
 }
 
 impl Stacked {
@@ -125,10 +128,13 @@ pub struct One {
     /// The terminals stacked in this place, when there is more than one:
     /// its title is then a strip of tabs (task 1583).
     pub stack: Option<Stacked>,
-    /// It wears no frame because the setting is off, and is a supervisor's:
-    /// its window is put the edge in from `rect`, and the edge is painted
-    /// round it (`pane::edged`, task 1692).
-    pub edged: bool,
+    /// The colour set on its terminal (task 1700), none being `None`.
+    pub color: Option<Color>,
+    /// It wears no frame because the setting is off, and has a colour --
+    /// a supervisor always does: its window is put the edge in from `rect`,
+    /// and the edge is painted round it in this colour (`pane::edged`,
+    /// tasks 1692 and 1700).
+    pub edged: Option<Color>,
 }
 
 /// What a window's content area holds besides its panes.
@@ -148,6 +154,21 @@ pub struct Frames {
 pub struct Asked {
     enabled: bool,
     keys: Vec<(PaneId, String)>,
+    /// The colour set on each pane's terminal (task 1700). Not told yet --
+    /// a pane restored from a project, before its colour is handed back --
+    /// is drawn as none: it is the drawing of a moment, and the next
+    /// `poltergeist_pane` lays it out again.
+    colors: Vec<(PaneId, Option<Color>)>,
+}
+
+/// The colours set on the panes of a window's tab in front.
+fn colors_of(win: &tabs::WindowState) -> Vec<(PaneId, Option<Color>)> {
+    win.tabs.get(win.active).map(|t| t.panes().iter().map(|p| (p.id, colour(p.marks.color))).collect()).unwrap_or_default()
+}
+
+/// The drawing's colour for the file's: none is `None`, and so is not told.
+pub fn colour(c: Option<polter_projectfile::PaneColor>) -> Option<Color> {
+    c.and_then(|c| Color::from_c(c.index()))
 }
 
 /// `poltergeist-pane-frames`. On when it cannot be read, which is its
@@ -168,9 +189,9 @@ impl Asked {
     /// **Call with the window's state unlocked**: it takes the lock for the
     /// list of panes and lets it go before it asks the core anything.
     pub fn ask(frame: HWND) -> Asked {
-        let panes: Vec<(PaneId, usize)> = match tabs::window(frame) {
-            Some(win) => win.tabs.get(win.active).map(|t| t.panes().iter().map(|p| (p.id, p.surface)).collect()).unwrap_or_default(),
-            None => Vec::new(),
+        let (panes, colors): (Vec<(PaneId, usize)>, _) = match tabs::window(frame) {
+            Some(win) => (win.tabs.get(win.active).map(|t| t.panes().iter().map(|p| (p.id, p.surface)).collect()).unwrap_or_default(), colors_of(&win)),
+            None => (Vec::new(), Vec::new()),
         };
         let keys = match crate::api_opt() {
             Some(api) => panes
@@ -183,11 +204,15 @@ impl Asked {
                 .collect(),
             None => Vec::new(),
         };
-        Asked { enabled: enabled(), keys }
+        Asked { enabled: enabled(), keys, colors }
     }
 
     fn key(&self, pane: PaneId) -> Option<&str> {
         self.keys.iter().find(|(id, _)| *id == pane).map(|(_, k)| k.as_str())
+    }
+
+    fn color(&self, pane: PaneId) -> Option<Color> {
+        self.colors.iter().find(|(id, _)| *id == pane).and_then(|(_, c)| *c)
     }
 
     /// The terminals of a place, with their keys, from what the layout
@@ -198,6 +223,7 @@ impl Asked {
         Stacked {
             keys: members.iter().map(|(id, _)| self.key(*id).map(str::to_string)).collect(),
             names: members.iter().map(|(_, n)| n.clone()).collect(),
+            colors: members.iter().map(|(id, _)| self.color(*id)).collect(),
             members: members.into_iter().map(|(id, _)| id).collect(),
             current,
         }
@@ -217,8 +243,8 @@ impl Asked {
         // The quick terminal is a window of its own with one surface and no
         // tabs (`quick.rs`); it never comes through here.
         let place = Place { enabled: self.enabled, quick_terminal: false, alone: visible.len() == 1 };
-        let drawn = wears(visible.iter().map(|(id, _, name, stack)| (self.key(*id), name.as_str(), stack.as_ref())), place);
-        let edged = edges(visible.iter().map(|(id, _, _, stack)| (self.key(*id), stack.is_some())), place);
+        let drawn = wears(visible.iter().map(|(id, _, name, stack)| (self.key(*id), name.as_str(), stack.as_ref(), self.color(*id))), place);
+        let edged = edges(visible.iter().map(|(id, _, _, stack)| (self.key(*id), stack.is_some(), self.color(*id))), place);
         let ground = pane::ground_shows(&drawn);
         let px = |r: &TreeRect| Px { x: r.x as i32, y: r.y as i32, w: r.w as i32, h: r.h as i32 };
         let area = px(&bounds);
@@ -238,8 +264,8 @@ impl Asked {
                 // in the gap between two frames.
                 (Some(_), false) | (None, _) => {
                     let clear = polter_split_tree::clear_of_dividers(*cell, bounds, thickness);
-                    if edged {
-                        // A supervisor's pane with no frames gives up the
+                    if edged.is_some() {
+                        // A coloured pane with no frames gives up the
                         // edge on every side, inside what it is left of its
                         // cell; the edge is painted there.
                         let rect = px(&clear);
@@ -251,7 +277,7 @@ impl Asked {
                 }
             };
             windows.push((*id, window));
-            panes.push(One { pane: *id, key: self.key(*id).map(str::to_string), own_name: name.clone(), drawn, rect, stack: stack.clone(), edged });
+            panes.push(One { pane: *id, key: self.key(*id).map(str::to_string), own_name: name.clone(), drawn, rect, stack: stack.clone(), color: self.color(*id), edged });
         }
         (Frames { place: Some(place), ground, panes }, windows)
     }
@@ -263,7 +289,7 @@ impl Asked {
 /// with the setting off: a stack with no strip is terminals nobody can
 /// reach (macOS's `PaneStackRules.Choices`). It wears the frame of the one
 /// in front, and its title says nothing: the strip stands where it would.
-fn wears<'a>(panes: impl Iterator<Item = (Option<&'a str>, &'a str, Option<&'a Stacked>)>, place: Place) -> Vec<Option<Drawn>> {
+fn wears<'a>(panes: impl Iterator<Item = (Option<&'a str>, &'a str, Option<&'a Stacked>, Option<Color>)>, place: Place) -> Vec<Option<Drawn>> {
     source::with(|data| {
         let terminals = match data {
             Data::Ready(r) => Some(r.snapshot.terminals.as_slice()),
@@ -271,27 +297,29 @@ fn wears<'a>(panes: impl Iterator<Item = (Option<&'a str>, &'a str, Option<&'a S
             Data::Unreadable(_) => None,
         };
         panes
-            .map(|(key, name, stack)| match stack {
+            .map(|(key, name, stack, color)| match stack {
+                // The strip stands where the badge would: a stack's title has
+                // none, and each member's colour is on its own tab.
                 Some(s) => {
                     let model = model(s, terminals, &[]);
-                    Some(Drawn { wears: panestack::wears(&model), title: Title { name: String::new(), shown: BarShown::None, word: String::new() } })
+                    Some(Drawn { wears: panestack::wears(&model), title: Title { name: String::new(), shown: BarShown::None, word: String::new() }, color: None })
                 }
-                None => pane::drawn(key, name, place, terminals),
+                None => pane::drawn(key, name, place, terminals, color),
             })
             .collect()
     })
 }
 
-/// Which of some panes at `place` have the supervisor's edge, from the
-/// snapshot as it is. A place holding a stack never has: it always wears a
-/// frame.
-fn edges<'a>(panes: impl Iterator<Item = (Option<&'a str>, bool)>, place: Place) -> Vec<bool> {
+/// The edge each of some panes at `place` has, and its colour, from the
+/// snapshot as it is. A place holding a stack never has one: it always
+/// wears a frame.
+fn edges<'a>(panes: impl Iterator<Item = (Option<&'a str>, bool, Option<Color>)>, place: Place) -> Vec<Option<Color>> {
     source::with(|data| {
         let terminals = match data {
             Data::Ready(r) => Some(r.snapshot.terminals.as_slice()),
             Data::NotYet | Data::Unreadable(_) => None,
         };
-        panes.map(|(key, stacked)| !stacked && pane::edged(key, place, terminals)).collect()
+        panes.map(|(key, stacked, color)| if stacked { None } else { pane::edged(key, place, terminals, color) }).collect()
     })
 }
 
@@ -299,7 +327,7 @@ fn edges<'a>(panes: impl Iterator<Item = (Option<&'a str>, bool)>, place: Place)
 /// order of who is waiting.
 fn model(s: &Stacked, terminals: Option<&[polter_control_room::snapshot::Terminal]>, pulses: &[&str]) -> panestack::PaneStack {
     let members: Vec<(Option<&str>, &str)> = s.keys.iter().zip(&s.names).map(|(k, n)| (k.as_deref(), n.as_str())).collect();
-    panestack::stack(&members, s.current, terminals, pulses)
+    panestack::stack(&members, s.current, terminals, pulses, &s.colors)
 }
 
 /// What a change of the snapshot or of the setting asks of one window.
@@ -318,22 +346,31 @@ fn stale(frame: HWND, on: bool) -> Stale {
     if place.enabled != on {
         return Stale::Layout;
     }
-    let now = wears(win.pane_frames.panes.iter().map(|p| (p.key.as_deref(), p.own_name.as_str(), p.stack.as_ref())), place);
+    // The colours as the panes have them now: a change of colour is told
+    // here too (`colours_changed`).
+    let colors = colors_of(&win);
+    let color = |id: PaneId| colors.iter().find(|(p, _)| *p == id).and_then(|(_, c)| *c);
+    let now = wears(win.pane_frames.panes.iter().map(|p| (p.key.as_deref(), p.own_name.as_str(), p.stack.as_ref(), color(p.pane))), place);
     let moved = win.pane_frames.panes.iter().zip(&now).any(|(p, d)| p.drawn.as_ref().map(|d| d.wears) != d.as_ref().map(|d| d.wears));
     // A pane that gains or loses the supervisor's edge moves its terminal.
-    let edged = edges(win.pane_frames.panes.iter().map(|p| (p.key.as_deref(), p.stack.is_some())), place);
+    let edged = edges(win.pane_frames.panes.iter().map(|p| (p.key.as_deref(), p.stack.is_some(), color(p.pane))), place);
     let reedged = win.pane_frames.panes.iter().zip(&edged).any(|(p, e)| p.edged != *e);
     if moved || reedged {
         return Stale::Layout;
     }
     // A strip says what its members' titles would, and it is worked out
     // when it is painted: any stack is painted again.
-    let said = win.pane_frames.panes.iter().zip(&now).any(|(p, d)| p.drawn != *d || p.stack.is_some());
+    let said = win.pane_frames.panes.iter().zip(&now).any(|(p, d)| p.drawn != *d || p.stack.is_some() || p.color != color(p.pane));
     if !said {
         return Stale::Nothing;
     }
     for (p, d) in win.pane_frames.panes.iter_mut().zip(now) {
         p.drawn = d;
+        p.color = color(p.pane);
+        // A stack's members' colours are on its strip.
+        if let Some(s) = p.stack.as_mut() {
+            s.colors = s.members.iter().map(|m| color(*m)).collect();
+        }
     }
     Stale::Paint
 }
@@ -400,18 +437,18 @@ pub fn ground_color(frame: HWND) -> Option<COLORREF> {
 /// into `hdc`, the frame window's: called once the content area below the
 /// strip has been cleared, in a window whose tab in front has no frames.
 pub fn paint_edges(frame: HWND, hdc: HDC) {
-    let (rects, scale): (Vec<Px>, f64) = match tabs::window(frame) {
-        Some(win) if !win.pane_frames.ground => (win.pane_frames.panes.iter().filter(|p| p.edged).map(|p| p.rect).collect(), win.scale.max(0.1)),
+    let (rects, scale): (Vec<(Px, Color)>, f64) = match tabs::window(frame) {
+        Some(win) if !win.pane_frames.ground => (win.pane_frames.panes.iter().filter_map(|p| p.edged.map(|c| (p.rect, c))).collect(), win.scale.max(0.1)),
         Some(_) | None => return,
     };
     if rects.is_empty() {
         return;
     }
-    let color = colorref(look::theme(dark(frame)).supervisor_mark);
+    let theme = look::theme(dark(frame));
     let e = pane::edge_px(scale);
     unsafe {
-        let brush = CreateSolidBrush(color);
-        for r in rects {
+        for (r, c) in rects {
+            let brush = CreateSolidBrush(colorref(c.ink(theme)));
             for side in [
                 RECT { left: r.x, top: r.y, right: r.right(), bottom: r.y + e },
                 RECT { left: r.x, top: r.bottom() - e, right: r.right(), bottom: r.bottom() },
@@ -420,8 +457,19 @@ pub fn paint_edges(frame: HWND, hdc: HDC) {
             ] {
                 FillRect(hdc, &side, brush);
             }
+            let _ = DeleteObject(brush.into());
         }
-        let _ = DeleteObject(brush.into());
+    }
+}
+
+/// A pane's colour changed (`tabs::set_pane_for_surface`, task 1700): what
+/// the window's frames, edges and strips draw is worked out again, as for a
+/// new snapshot.
+pub fn colours_changed(frame: HWND) {
+    match stale(frame, enabled()) {
+        Stale::Nothing => {}
+        Stale::Paint => repaint(frame),
+        Stale::Layout => crate::tabs::layout(frame),
     }
 }
 
@@ -525,7 +573,7 @@ unsafe fn paint_strip(frame: HWND, mem: HDC, one: &One, stack: &Stacked, wears: 
         let place = Place { enabled: true, quick_terminal: false, alone: false };
         let shown_key = stack.keys.get(stack.current).and_then(|k| k.as_deref());
         let shown_name = stack.names.get(stack.current).map(String::as_str).unwrap_or("");
-        let status = pane::drawn(shown_key, shown_name, place, terminals).map(|d| d.title).unwrap_or_else(|| panestack::status_title(&model, ""));
+        let status = pane::drawn(shown_key, shown_name, place, terminals, None).map(|d| d.title).unwrap_or_else(|| panestack::status_title(&model, ""));
         (model, status)
     });
     let mono = |weight| Style { size: font::BODY, weight, face: Face::Mono, color: theme.text };

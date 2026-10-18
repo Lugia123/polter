@@ -48,15 +48,15 @@ struct PaneFrameTests {
     @Test func theTitleIsTheTerminalsOwnNameGlyphAndWord() throws {
         let all = try terminals()
         let b = PaneFrame.drawn(terminal: worker, ownName: "not this", at: split, in: all)
-        #expect(b?.title == Title(name: "web-app worker", shown: .needsYou, word: "Awaiting approval"))
+        #expect(b?.title == Title(name: "web-app worker", shown: .needsYou, word: "Awaiting approval", badged: true))
         // Not the first one listed, and not another terminal's.
         let c = PaneFrame.drawn(terminal: shell, ownName: "not this", at: split, in: all)
-        #expect(c?.title == Title(name: "zsh", shown: .none, word: ""))
+        #expect(c?.title == Title(name: "zsh", shown: .none, word: "", badged: true))
     }
 
     @Test func anOrdinaryTerminalThatWaitsSaysSo() throws {
         let c = PaneFrame.drawn(terminal: waitingShell, ownName: "", at: split, in: try terminals())
-        #expect(c == Drawn(wears: .plain, title: Title(name: "zsh — ~/work", shown: .needsYou, word: "Awaiting approval")))
+        #expect(c == Drawn(wears: .plain, title: Title(name: "zsh — ~/work", shown: .needsYou, word: "Awaiting approval", badged: true)))
     }
 
     // MARK: Alone in its tab
@@ -103,11 +103,11 @@ struct PaneFrameTests {
     @Test func aTerminalTheCoreHasNotListedIsAnOrdinaryOneUnderItsOwnName() throws {
         let all = try terminals()
         let unknown = PaneFrame.drawn(terminal: "0x00000000000000ff", ownName: "fish", at: split, in: all)
-        #expect(unknown == Drawn(wears: .plain, title: Title(name: "fish", shown: .none, word: "")))
+        #expect(unknown == Drawn(wears: .plain, title: Title(name: "fish", shown: .none, word: "", badged: true)))
         let noID = PaneFrame.drawn(terminal: nil, ownName: "fish", at: split, in: all)
-        #expect(noID == Drawn(wears: .plain, title: Title(name: "fish", shown: .none, word: "")))
+        #expect(noID == Drawn(wears: .plain, title: Title(name: "fish", shown: .none, word: "", badged: true)))
         let noSnapshot = PaneFrame.drawn(terminal: supervisor, ownName: "fish", at: split, in: nil)
-        #expect(noSnapshot == Drawn(wears: .plain, title: Title(name: "fish", shown: .none, word: "")))
+        #expect(noSnapshot == Drawn(wears: .plain, title: Title(name: "fish", shown: .none, word: "", badged: true)))
         // And alone, that is nothing.
         let unknownAlone = PaneFrame.drawn(terminal: nil, ownName: "fish", at: alone, in: all)
         #expect(unknownAlone == nil)
@@ -118,7 +118,7 @@ struct PaneFrameTests {
         let old = try JSONDecoder().decode(ControlRoomSnapshot.Terminal.self, from: json)
         #expect(old.pane == nil)
         let drawn = PaneFrame.drawn(terminal: "0x01", ownName: "", at: split, in: [old])
-        #expect(drawn == Drawn(wears: .plain, title: Title(name: "old", shown: .working, word: "在干活")))
+        #expect(drawn == Drawn(wears: .plain, title: Title(name: "old", shown: .working, word: "在干活", badged: true)))
     }
 
     @Test func aFrameTheHostDoesNotKnowIsAnErrorNotAnOrdinaryTerminal() {
@@ -137,7 +137,7 @@ struct PaneFrameTests {
         for terminal in all {
             let bar = try #require(terminal.bar, "\(terminal.id) has no bar")
             let drawn = try #require(PaneFrame.drawn(terminal: terminal.id, ownName: "", at: split, in: all))
-            #expect(drawn.title == Title(name: terminal.title, shown: bar.shown, word: bar.text, badged: terminal.pane == .supervisor),
+            #expect(drawn.title == Title(name: terminal.title, shown: bar.shown, word: bar.text, badged: true),
                     "\(terminal.id)")
         }
     }
@@ -151,7 +151,7 @@ struct PaneFrameTests {
         #expect(held.shown == .none)
         #expect(held.text == "Off duty")
         let drawn = PaneFrame.drawn(terminal: held.id, ownName: "", at: split, in: all)
-        #expect(drawn == Drawn(wears: .worker, title: Title(name: "tokens", shown: .held, word: "Held")))
+        #expect(drawn == Drawn(wears: .worker, title: Title(name: "tokens", shown: .held, word: "Held", badged: true)))
         // Exactly one of the fixture's terminals is held.
         let heldOnes = all.filter { $0.bar?.shown == .held }.map(\.title)
         #expect(heldOnes == ["tokens"])
@@ -165,7 +165,7 @@ struct PaneFrameTests {
                 let terminal = ControlRoomSnapshot.Terminal(
                     id: "0x01", title: "t", shown: status, text: "status", pane: .worker, bar: Bar(shown: bar, text: "pair"))
                 let drawn = PaneFrame.drawn(terminal: "0x01", ownName: "", at: split, in: [terminal])
-                #expect(drawn?.title == Title(name: "t", shown: bar, word: "pair"), "\(status) \(bar)")
+                #expect(drawn?.title == Title(name: "t", shown: bar, word: "pair", badged: true), "\(status) \(bar)")
             }
         }
     }
@@ -175,7 +175,7 @@ struct PaneFrameTests {
         let old = try JSONDecoder().decode(ControlRoomSnapshot.Terminal.self, from: json)
         #expect(old.bar == nil)
         let drawn = PaneFrame.drawn(terminal: "0x01", ownName: "", at: split, in: [old])
-        #expect(drawn?.title == Title(name: "old", shown: .working, word: "在干活"))
+        #expect(drawn?.title == Title(name: "old", shown: .working, word: "在干活", badged: true))
     }
 
     @Test func aGlyphTheHostDoesNotKnowIsAnErrorNotABlankTitle() {

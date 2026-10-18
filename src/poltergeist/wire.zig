@@ -933,6 +933,16 @@ pub const TerminalInfo = struct {
     /// would go looking for a bug instead of reading a decision.
     shielded: bool = false,
 
+    /// The colour the pane is shown in (task 1699): what the user gave it,
+    /// and `purple` for a supervisor given none -- the colour a person
+    /// sees, so "the orange one" in their words finds the terminal here.
+    color: Bus.PaneColor = .none,
+
+    /// Whether the user keeps workers out of this terminal (task 1699).
+    /// It takes nothing out of reach; `role_launch` will not start an
+    /// agent in it or beside it.
+    workers: Bus.Workers = .allowed,
+
     watching: bool = false,
 
     /// Where it is working, and what its tab says.
@@ -1970,6 +1980,10 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
     try s.write(info.held);
     try s.objectField("shielded");
     try s.write(info.shielded);
+    try s.objectField("color");
+    try s.write(info.color.name());
+    try s.objectField("workers");
+    try s.write(@tagName(info.workers));
     try s.objectField("watching");
     try s.write(info.watching);
 
@@ -2477,6 +2491,32 @@ test "a listing says which terminals are out of reach, and which are not" {
     const second = std.mem.indexOf(u8, out, "\"0x0000000000000022\"").?;
     const shield = std.mem.indexOf(u8, out, "\"shielded\":true").?;
     try testing.expect(shield > first and shield < second);
+}
+
+test "a listing says each terminal's colour and whether workers are kept out of it (#1699)" {
+    // Both always present, as the shield is: a reader inferring `none` or
+    // `allowed` from a missing key could not tell an older host from a
+    // pane with nothing on it.
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    const list = [_]TerminalInfo{
+        .{ .id = 0x11, .agent = .none, .agent_present = false, .color = .orange, .workers = .refused },
+        .{ .id = 0x22, .agent = .none, .agent_present = false },
+    };
+    try writeResponse(&w, .{ .terminals = &list });
+
+    const out = w.buffered();
+    const first = std.mem.indexOf(u8, out, "\"0x0000000000000011\"").?;
+    const second = std.mem.indexOf(u8, out, "\"0x0000000000000022\"").?;
+    const orange = std.mem.indexOf(u8, out, "\"color\":\"orange\"").?;
+    const refused = std.mem.indexOf(u8, out, "\"workers\":\"refused\"").?;
+    try testing.expect(orange > first and orange < second);
+    try testing.expect(refused > first and refused < second);
+    const none = std.mem.indexOf(u8, out, "\"color\":\"none\"").?;
+    const allowed = std.mem.indexOf(u8, out, "\"workers\":\"allowed\"").?;
+    try testing.expect(none > second);
+    try testing.expect(allowed > second);
 }
 
 test "screen text goes out escaped, not raw" {

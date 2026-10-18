@@ -536,7 +536,7 @@ private struct ProjectDetail: View {
 
     static func leaves(_ node: ProjectNode) -> [Leaf] {
         switch node {
-        case .leaf(let cwd, let title, _, _, _, _): [Leaf(cwd: cwd, title: title)]
+        case .leaf(let cwd, let title, _, _, _, _, _, _, _, _): [Leaf(cwd: cwd, title: title)]
         // One box in the thumbnail, labelled with the terminal in front.
         case .stack(let shown, let members): members.indices.contains(shown) ? leaves(members[shown]) : []
         case .split(_, _, let left, let right): leaves(left) + leaves(right)

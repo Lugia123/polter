@@ -20,7 +20,7 @@ struct ProjectStackTests {
     }
 
     private static func leaf(_ n: Int) -> ProjectNode {
-        .leaf(cwd: "/\(n)", title: "t\(n)", history: "", scrollback: "\(n).snap", bySupervisor: false, agent: .none)
+        .leaf(cwd: "/\(n)", title: "t\(n)", history: "", scrollback: "\(n).snap", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
     }
 
     /// 1 | 3, the right pane holding 2, 3, 4 with 3 in front.
@@ -58,12 +58,12 @@ struct ProjectStackTests {
         #expect(got == .split(direction: .horizontal, ratio: 0.5, left: Self.leaf(1), right: Self.leaf(2)))
     }
 
-    @Test func aProjectWithAStackIsFormat2AndReadsBackTheSame() throws {
+    @Test func aProjectWithAStackIsWrittenInTheCurrentFormatAndReadsBackTheSame() throws {
         let t = Terminals()
         let file = Self.project(try Self.capture(try Self.stackedTree(t), t))
         let bytes = try file.encoded()
         let text = try #require(String(bytes: bytes, encoding: .utf8))
-        #expect(text.hasPrefix(#"{"format":2,"#))
+        #expect(text.hasPrefix(#"{"format":3,"#))
         // The stack as `Project.zig`'s module comment spells it.
         #expect(text.contains(
             #"{"kind":"stack","shown":1,"members":[{"kind":"leaf","cwd":"/2","title":"t2","scrollback":"2.snap","agent":{"kind":"none"}},"#
@@ -102,7 +102,7 @@ struct ProjectStackTests {
         var made: [String] = []
         var byCwd: [String: MockView] = [:]
         let tree: Tree = root.building { leaf in
-            guard case .leaf(let cwd, _, _, _, _, _) = leaf else { return MockView() }
+            guard case .leaf(let cwd, _, _, _, _, _, _, _, _, _) = leaf else { return MockView() }
             made.append(cwd)
             let view = MockView()
             byCwd[cwd] = view
@@ -123,7 +123,7 @@ struct ProjectStackTests {
         let back = try ProjectFile.decode(from: try file.encoded())
         let u = Terminals()
         let opened: Tree = try #require(back.firstTab).building { leaf in
-            guard case .leaf(let cwd, _, _, _, _, _) = leaf, let n = Int(cwd.dropFirst()) else { return MockView() }
+            guard case .leaf(let cwd, _, _, _, _, _, _, _, _, _) = leaf, let n = Int(cwd.dropFirst()) else { return MockView() }
             return u.view(n)
         }
         #expect(try Self.capture(opened, u) == file.firstTab)

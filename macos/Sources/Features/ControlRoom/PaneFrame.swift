@@ -37,9 +37,13 @@ enum PaneFrame {
         /// room's own frame, which is the supervisor's and nothing else, and
         /// which the Windows host draws without one too.
         var badged: Bool
+        /// The colour the user set on the pane (task 1699); `.none` for
+        /// none, and for every title that is not a pane's. The host knows
+        /// it, not the snapshot: the split view sets it from the surface.
+        var color: PaneColor = .none
 
         init(name: String, shown: ControlRoomSnapshot.Terminal.Bar.Shown, word: String, says: Kind? = nil, note: String? = nil,
-             takeOver: ControlRoomList.TakeOverTitle? = nil, badged: Bool = false) {
+             takeOver: ControlRoomList.TakeOverTitle? = nil, badged: Bool = false, color: PaneColor = .none) {
             self.name = name
             self.shown = shown
             self.word = word
@@ -47,6 +51,7 @@ enum PaneFrame {
             self.note = note
             self.takeOver = takeOver
             self.badged = badged
+            self.color = color
         }
 
         /// The control room's own frame: the supervisor's status, which is
@@ -67,7 +72,52 @@ enum PaneFrame {
         /// (task 1692, the design's `supervisor-pane-v1` C): on a pane of a
         /// split (`badged`), whenever that word would be the supervisor's.
         func badge(in wears: Kind) -> Bool {
-            badged && (says ?? wears) == .supervisor
+            badgeKind(in: wears) == .flag
+        }
+
+        /// What the badge at the left of the bar of a frame that is
+        /// `wears` holds (task 1699): the supervisor's flag; for any other
+        /// pane given a colour, a dot; or no badge. Only on a pane of a
+        /// split (`badged`).
+        func badgeKind(in wears: Kind) -> Badge {
+            guard badged else { return .none }
+            if (says ?? wears) == .supervisor { return .flag }
+            return color == .none ? .none : .dot
+        }
+
+        /// The colour the pane is shown in: what was set, and a
+        /// supervisor's purple when nothing was.
+        func shownColor(in wears: Kind) -> PaneColor {
+            PaneColor.shown(set: color, supervisor: (says ?? wears) == .supervisor)
+        }
+
+        /// The word on the badge: what the pane is -- the supervisor's word,
+        /// or a worker's -- and nothing for an ordinary terminal, whose
+        /// badge is its dot alone.
+        func badgeWord(in wears: Kind) -> String {
+            switch badgeKind(in: wears) {
+            case .none: return ""
+            case .flag: return PaneFrame.roleWord(.supervisor) ?? ""
+            case .dot: return PaneFrame.roleWord(says ?? wears) ?? ""
+            }
+        }
+    }
+
+    /// What the badge at the left of a pane's title holds.
+    enum Badge: Equatable {
+        case none
+        /// The supervisor's flag and its word.
+        case flag
+        /// A dot in the pane's colour, and the word for what it is when it
+        /// has one (a worker).
+        case dot
+
+        var name: String {
+            switch self {
+            case .none: return "none"
+            case .flag: return "flag"
+            case .dot: return "dot"
+            }
         }
     }
 
@@ -107,19 +157,23 @@ enum PaneFrame {
             let shown = listed.bar?.shown ?? .init(listed.shown)
             let wears = listed.pane ?? .plain
             return Drawn(wears: wears, title: Title(name: listed.title, shown: shown, word: ControlRoomList.say(listed.bar?.text ?? listed.text),
-                                                    badged: wears == .supervisor))
+                                                    badged: true))
         }
-            ?? Drawn(wears: .plain, title: Title(name: ownName, shown: .none, word: ""))
+            ?? Drawn(wears: .plain, title: Title(name: ownName, shown: .none, word: "", badged: true))
         if drawn.wears == .plain, place.alone { return nil }
         return drawn
     }
 
-    /// The ground of the supervisor's badge: the pane's own colour when it
-    /// has one, the supervisor's colour (the app icon's) when it has not.
-    /// **The one place it is chosen**: no pane has a colour of its own yet
-    /// (task 1694 will give them one), so every caller passes nil today.
-    static func badgeGround(_ paneColor: ControlRoomLook.RGBA?, theme: ControlRoomLook.Theme) -> ControlRoomLook.RGBA {
-        paneColor ?? theme.supervisorBadge
+    /// The ground of a badge, for the colour the pane is shown in: the
+    /// supervisor's purple (the app icon's) when it is none. **The one
+    /// place it is chosen** (task 1692; the colours, task 1699).
+    static func badgeGround(_ shown: PaneColor, theme: ControlRoomLook.Theme) -> ControlRoomLook.RGBA {
+        shown.badge(theme) ?? theme.panePurpleBadge
+    }
+
+    /// The word and the mark on that badge.
+    static func badgeText(_ shown: PaneColor, theme: ControlRoomLook.Theme) -> ControlRoomLook.RGBA {
+        shown.badgeText(theme) ?? theme.panePurpleBadgeText
     }
 
     /// Whether the pane of `terminal` at `place` is drawn with the
@@ -130,9 +184,18 @@ enum PaneFrame {
     /// supervisor only; alone in its tab too, as its frame would be. Never
     /// in the quick terminal, which is never framed.
     static func edged(terminal: String?, at place: Place, in terminals: [ControlRoomSnapshot.Terminal]?) -> Bool {
-        guard !place.enabled, !place.quickTerminal else { return false }
+        edge(terminal: terminal, at: place, in: terminals, color: .none) != nil
+    }
+
+    /// The colour of that line (task 1699): the colour the pane is shown
+    /// in, for a supervisor and for any pane given a colour -- with no
+    /// title, the line is where the colour goes. Nil for no line.
+    static func edge(terminal: String?, at place: Place, in terminals: [ControlRoomSnapshot.Terminal]?,
+                     color: PaneColor) -> PaneColor? {
+        guard !place.enabled, !place.quickTerminal else { return nil }
         let listed = terminal.flatMap { id in terminals?.first { $0.id == id } }
-        return listed?.pane == .supervisor
+        let shown = PaneColor.shown(set: color, supervisor: listed?.pane == .supervisor)
+        return shown == .none ? nil : shown
     }
 
     /// Whether the tab's ground shows between and around its panes: it

@@ -94,6 +94,10 @@ class BaseTerminalController: NSWindowController,
     /// The cancellables related to our focused surface.
     private var focusedSurfaceCancellables: Set<AnyCancellable> = []
 
+    /// What the tab's dots are listening to: every terminal of the tree --
+    /// its colour, its flag, its name (task 1699).
+    private var paneDotsCancellables: Set<AnyCancellable> = []
+
     /// Cancellable for aggregating bell state across all surfaces in this controller.
     private var bellStateCancellable: AnyCancellable?
 
@@ -366,6 +370,34 @@ class BaseTerminalController: NSWindowController,
         // A terminal the control room has borrowed may just have lost its
         // place here.
         ControlRoomLender.shared.treesChanged()
+        watchPaneDots()
+    }
+
+    /// Listen to every terminal of the tree for what the tab's dots say
+    /// (task 1699), starting again whenever the tree changes. **Every
+    /// terminal, not the focused one**: the dots are the tab's whole
+    /// account of its panes, behind a stack's front member included.
+    func watchPaneDots() {
+        paneDotsCancellables = []
+        let views = surfaceTree.members()
+        Publishers.MergeMany(views.map { view in
+            view.$poltergeistPaneColor.map { _ in () }
+                .merge(with: view.$poltergeistFlag.map { _ in () }, view.$title.map { _ in () })
+                .eraseToAnyPublisher()
+        })
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] in self?.refreshPaneDots() }
+        .store(in: &paneDotsCancellables)
+        refreshPaneDots()
+    }
+
+    /// Hand the tab its dots, worked out from the tree's terminals in
+    /// reading order (`TabDots`). A window with no tab -- the quick
+    /// terminal's panel -- has none to show.
+    func refreshPaneDots() {
+        (window as? TerminalWindow)?.paneDots = TabDots.of(surfaceTree.members().map {
+            .init(name: $0.title, color: $0.poltergeistPaneColor, flag: $0.poltergeistFlag)
+        })
     }
 
     /// Update all surfaces with the focus state. This ensures that libghostty has an accurate view about
@@ -1383,6 +1415,9 @@ class BaseTerminalController: NSWindowController,
 
         // Everything beyond here is setting up the window
         guard let window else { return }
+
+        // The tab's dots, now that there is a tab to put them on.
+        watchPaneDots()
 
         // We always initialize our fullscreen style to native if we can because
         // initialization sets up some state (i.e. observers). If its set already

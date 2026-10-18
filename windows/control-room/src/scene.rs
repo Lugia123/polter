@@ -244,7 +244,10 @@ pub enum Piece {
     /// `ground`, round at both ends and `look::supervisor_badge` in size.
     /// As wide as the two and its paddings; a host given less draws the
     /// flag alone on it, and nothing when even that does not fit.
-    Badge { text: String, style: Style, ground: Rgba },
+    ///
+    /// `mark` is the flag for the supervisor and the dot for any other pane
+    /// with a colour (task 1700); `text` empty is the mark alone.
+    Badge { mark: crate::glyph::Mark, text: String, style: Style, ground: Rgba },
 }
 
 /// One part of a line. A host measures the words; that is the one thing

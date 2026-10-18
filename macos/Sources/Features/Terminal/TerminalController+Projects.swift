@@ -414,6 +414,21 @@ extension TerminalController {
             .dropFirst()
             .sink { [weak self] _ in self?.projectSession?.poke(.paneDetail) }
             .store(in: &projectAutosaveCancellables)
+        // The user's marks on a pane are part of what is saved (format 3,
+        // task 1699): a colour, the workers mark or the shield changed is
+        // a pane changed.
+        surfaceValuesPublisher(valueKeyPath: \.poltergeistPaneColor, publisherKeyPath: \.$poltergeistPaneColor)
+            .dropFirst()
+            .sink { [weak self] _ in self?.projectSession?.poke(.paneDetail) }
+            .store(in: &projectAutosaveCancellables)
+        surfaceValuesPublisher(valueKeyPath: \.poltergeistWorkersRefused, publisherKeyPath: \.$poltergeistWorkersRefused)
+            .dropFirst()
+            .sink { [weak self] _ in self?.projectSession?.poke(.paneDetail) }
+            .store(in: &projectAutosaveCancellables)
+        surfaceValuesPublisher(valueKeyPath: \.poltergeistShielded, publisherKeyPath: \.$poltergeistShielded)
+            .dropFirst()
+            .sink { [weak self] _ in self?.projectSession?.poke(.paneDetail) }
+            .store(in: &projectAutosaveCancellables)
     }
 
     func stopProjectAutosave() {

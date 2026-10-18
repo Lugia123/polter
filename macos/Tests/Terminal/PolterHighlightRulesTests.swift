@@ -115,10 +115,15 @@ struct PolterHighlightRulesTests {
         #expect(refused == ["code": "NotShown", "message": "a \"quoted\" word"])
     }
 
-    @Test func theLitTabsDotIsNearestTheTitleAndOnlyWhileLit() {
-        #expect(TabAccessory.Item.allCases.first == .highlight)
-        #expect(!TabAccessory.visibleItems(.init()).contains(.highlight))
+    /// Since task 1699 the lit tab's mark is a ring round the tab's dots,
+    /// in the same slot: nearest the title, and taking room while lit even
+    /// when the tab has no dots.
+    @Test func theLitTabsRingIsNearestTheTitleAndOnlyWhileLit() {
+        #expect(TabAccessory.Item.allCases.first == .paneDots)
+        #expect(!TabAccessory.visibleItems(.init()).contains(.paneDots))
         let lit = TabAccessory.visibleItems(.init(highlighted: true))
-        #expect(lit == [.highlight, .colorIndicator, .keyEquivalent])
+        #expect(lit == [.paneDots, .keyEquivalent])
+        let dots = TabAccessory.visibleItems(.init(hasDots: true))
+        #expect(dots == [.paneDots, .keyEquivalent])
     }
 }

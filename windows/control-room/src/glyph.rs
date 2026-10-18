@@ -58,6 +58,14 @@ pub enum Mark {
     /// round at its ends and a pennant notched at its free end. The macOS
     /// host's `PaneSupervisorMark` is the same from the same numbers.
     Supervisor,
+    /// The supervisor's flag lowered (task 1700, `pane-color-interface.md`
+    /// §1.3): ⚐, the same pole and pennant with the pennant hollow -- it has
+    /// been quiet a long time.
+    SupervisorLowered,
+    /// A coloured pane's dot in its badge (task 1700): a disc on the
+    /// glyphs' artboard, as the design's `dot_svg` draws it (r 4 about the
+    /// middle).
+    Dot,
 }
 
 pub fn mark(mark: Mark) -> Vec<Shape> {
@@ -66,6 +74,12 @@ pub fn mark(mark: Mark) -> Vec<Shape> {
             full(Outline::RoundRect(2.5, 0.9, 1.4, 12.4, 0.7)),
             full(Outline::Polygon(vec![(3.9, 2.1), (11.5, 2.1), (9.6, 5.0), (11.5, 7.9), (3.9, 7.9)])),
         ],
+        Mark::SupervisorLowered => vec![
+            full(Outline::RoundRect(2.5, 0.9, 1.4, 12.4, 0.7)),
+            full(Outline::Polygon(vec![(3.9, 2.1), (11.5, 2.1), (9.6, 5.0), (11.5, 7.9), (3.9, 7.9)])),
+            cut(Outline::Polygon(vec![(5.1, 3.2), (9.4, 3.2), (8.2, 5.0), (9.4, 6.8), (5.1, 6.8)])),
+        ],
+        Mark::Dot => vec![full(Outline::Ellipse(3.0, 3.0, 8.0, 8.0))],
         Mark::Pinned => vec![
             // The head, the body widening to the plate, and the needle.
             full(Outline::RoundRect(4.0, 1.0, 6.0, 2.2, 1.0)),

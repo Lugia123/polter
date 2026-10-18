@@ -3118,7 +3118,7 @@ fn list_layout(hwnd: HWND, list: &List, height: f64) -> ListLayout {
 
 /// How wide `text` is in `font`. Nothing is as wide as nothing, and is not
 /// asked about (`draw_text`).
-unsafe fn text_width(dc: HDC, font: HFONT, text: &str) -> i32 {
+pub(crate) unsafe fn text_width(dc: HDC, font: HFONT, text: &str) -> i32 {
     if !scene::draws(text) {
         return 0;
     }
@@ -3148,17 +3148,23 @@ unsafe fn part_width(dc: HDC, at: Px, part: &Part, fonts: &mut Fonts) -> i32 {
         Piece::Words { text, style } => unsafe { text_width(dc, fonts.get(style), text) },
         Piece::Glyph { size, .. } => at.len(*size),
         Piece::Held { size, .. } | Piece::Mark { size, .. } => at.len(*size),
-        Piece::Badge { text, style, .. } => badge_widths(at, unsafe { text_width(dc, fonts.get(style), text) }).0,
+        Piece::Badge { text, style, .. } => badge_widths(at, if text.is_empty() { None } else { Some(unsafe { text_width(dc, fonts.get(style), text) }) }).0,
     }
 }
 
-/// How wide the supervisor's badge is with its word and with its flag
-/// alone (`Piece::Badge`), when the word measures `word` pixels.
-fn badge_widths(at: Px, word: i32) -> (i32, i32) {
+/// How wide a badge is with its word and with its mark alone
+/// (`Piece::Badge`), when the word measures `word` pixels. A badge with no
+/// word -- an ordinary terminal's dot (task 1700) -- is its mark alone both
+/// ways.
+fn badge_widths(at: Px, word: Option<i32>) -> (i32, i32) {
     use polter_control_room::look::supervisor_badge as b;
     let lead = at.len(b::PADDING_LEADING);
     let mark = at.len(side::GLYPH);
-    (lead + mark + at.len(b::MARK_WORD_GAP) + word + at.len(b::PADDING_TRAILING), 2 * lead + mark)
+    let alone = 2 * lead + mark;
+    match word {
+        Some(word) => (lead + mark + at.len(b::MARK_WORD_GAP) + word + at.len(b::PADDING_TRAILING), alone),
+        None => (alone, alone),
+    }
 }
 
 unsafe fn paint_piece(dc: HDC, at: Px, piece: &Piece, r: RECT, fonts: &mut Fonts, t: f64, ellipsis: bool) {
@@ -3185,17 +3191,18 @@ unsafe fn paint_piece(dc: HDC, at: Px, piece: &Piece, r: RECT, fonts: &mut Fonts
             let top = r.top + (r.bottom - r.top - side) / 2;
             unsafe { draw_shapes(dc, r.left, top, side, &glyph::mark(*mark), *color, 1.0) };
         }
-        // The supervisor's badge (task 1692): the flag and the word on the
-        // icon's colour, round at both ends. Given less than all of it --
-        // `place_line` cuts a leading part only past the end of the line --
-        // the flag alone, and nothing when that does not fit either.
-        Piece::Badge { text, style, ground } => {
+        // A badge (tasks 1692, 1700): the supervisor's flag or a coloured
+        // pane's dot, and the word, on the colour's ground, round at both
+        // ends. Given less than all of it -- `place_line` cuts a leading part
+        // only past the end of the line -- the mark alone, and nothing when
+        // that does not fit either.
+        Piece::Badge { mark: shape, text, style, ground } => {
             use polter_control_room::look::supervisor_badge as b;
             let font = fonts.get(style);
-            let (whole, flag) = badge_widths(at, unsafe { text_width(dc, font, text) });
+            let (whole, flag) = badge_widths(at, if text.is_empty() { None } else { Some(unsafe { text_width(dc, font, text) }) });
             let room = r.right - r.left;
             let (w, word) = if room >= whole {
-                (whole, true)
+                (whole, !text.is_empty())
             } else if room >= flag {
                 (flag, false)
             } else {
@@ -3207,7 +3214,7 @@ unsafe fn paint_piece(dc: HDC, at: Px, piece: &Piece, r: RECT, fonts: &mut Fonts
             let mark = at.len(side::GLYPH);
             unsafe {
                 round(dc, RECT { left: r.left, top, right: r.left + w, bottom: top + h }, h / 2, *ground, None);
-                draw_shapes(dc, r.left + lead, top + (h - mark) / 2, mark, &glyph::mark(glyph::Mark::Supervisor), style.color, 1.0);
+                draw_shapes(dc, r.left + lead, top + (h - mark) / 2, mark, &glyph::mark(*shape), style.color, 1.0);
                 if word {
                     let from = r.left + lead + mark + at.len(b::MARK_WORD_GAP);
                     let to = RECT { left: from, top, right: r.left + w, bottom: top + h };
@@ -3285,7 +3292,7 @@ pub unsafe fn draw_glyph(dc: HDC, x: i32, y: i32, side: i32, shown: Shown, color
 
 /// Shapes on the status glyphs' artboard, in a square `side` pixels across
 /// with its top left at `x, y`.
-unsafe fn draw_shapes(dc: HDC, x: i32, y: i32, side: i32, shapes: &[glyph::Shape], color: Rgba, opacity: f64) {
+pub(crate) unsafe fn draw_shapes(dc: HDC, x: i32, y: i32, side: i32, shapes: &[glyph::Shape], color: Rgba, opacity: f64) {
     if shapes.is_empty() || side <= 0 {
         return;
     }

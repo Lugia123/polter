@@ -451,6 +451,12 @@
                                     <action selector="poltergeistToggleShielded:" target="-1" id="pg9-Sh-Ld2"/>
                                 </connections>
                             </menuItem>
+                            <menuItem title="Don't Start Workers in This Terminal" id="pgW-Wk-Rf1">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="poltergeistToggleWorkersRefused:" target="-1" id="pgW-Wk-Rf2"/>
+                                </connections>
+                            </menuItem>
                             <menuItem title="Let a Supervisor Answer Prompts Here" id="pgA-Au-Th1">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>

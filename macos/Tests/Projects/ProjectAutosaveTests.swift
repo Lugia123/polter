@@ -174,7 +174,7 @@ struct ProjectAutosaveTests {
     }
 
     private func leaf(_ cwd: String, _ title: String = "") -> ProjectNode {
-        .leaf(cwd: cwd, title: title, history: "", scrollback: "", bySupervisor: false, agent: .unknown)
+        .leaf(cwd: cwd, title: title, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
     }
 
     /// `.prev` is the file from before the *last* layout change -- one
@@ -285,7 +285,7 @@ struct ProjectAutosaveTests {
         #expect(plan(project([[leaf("/first"), leaf("/second")]])) == .written(rotated: true))
 
         // A project from a later format is somebody's project: kept.
-        let later = Data(#"{"format":3,"name":"p","saved_at":1,"windows":[]}"#.utf8)
+        let later = Data(#"{"format":4,"name":"p","saved_at":1,"windows":[]}"#.utf8)
         #expect(ProjectFileWriter.plan(writing: was, over: later, keeping: .onLayoutChange) == .written(rotated: true))
     }
 

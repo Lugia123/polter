@@ -875,6 +875,45 @@ typedef struct {
   ghostty_action_poltergeist_host_class_e host_class;
 } ghostty_poltergeist_persona_s;
 
+// apprt.action.PoltergeistPane.Color -- the order is Bus.PaneColor's and the
+// Windows host's palette index; never renumbered.
+typedef enum {
+  GHOSTTY_POLTERGEIST_PANE_COLOR_NONE,
+  GHOSTTY_POLTERGEIST_PANE_COLOR_BLUE,
+  GHOSTTY_POLTERGEIST_PANE_COLOR_PURPLE,
+  GHOSTTY_POLTERGEIST_PANE_COLOR_PINK,
+  GHOSTTY_POLTERGEIST_PANE_COLOR_RED,
+  GHOSTTY_POLTERGEIST_PANE_COLOR_ORANGE,
+  GHOSTTY_POLTERGEIST_PANE_COLOR_YELLOW,
+  GHOSTTY_POLTERGEIST_PANE_COLOR_GREEN,
+  GHOSTTY_POLTERGEIST_PANE_COLOR_TEAL,
+  GHOSTTY_POLTERGEIST_PANE_COLOR_GRAPHITE,
+} ghostty_poltergeist_pane_color_e;
+
+// apprt.action.PoltergeistPane.Workers
+typedef enum {
+  GHOSTTY_POLTERGEIST_WORKERS_ALLOWED,
+  GHOSTTY_POLTERGEIST_WORKERS_REFUSED,
+} ghostty_poltergeist_workers_e;
+
+// apprt.action.PoltergeistPane.Flag: the supervisor's flag among a tab's
+// dots -- raised (at its post) or lowered (silent past the threshold).
+typedef enum {
+  GHOSTTY_POLTERGEIST_FLAG_NONE,
+  GHOSTTY_POLTERGEIST_FLAG_RAISED,
+  GHOSTTY_POLTERGEIST_FLAG_LOWERED,
+} ghostty_poltergeist_flag_e;
+
+// apprt.action.PoltergeistPane (task 1699): the pane half of a surface's
+// mark. Sent when the surface starts and whenever a field changes. `color`
+// is the colour the user set, not the one shown: a supervisor with none
+// set is drawn purple, decided by the host. Twelve bytes at 0, 4, 8.
+typedef struct {
+  ghostty_poltergeist_pane_color_e color;
+  ghostty_poltergeist_workers_e workers;
+  ghostty_poltergeist_flag_e flag;
+} ghostty_action_poltergeist_pane_s;
+
 // apprt.action.PoltergeistMark.C
 typedef struct {
   const char* prefix;
@@ -1486,6 +1525,7 @@ typedef enum {
   GHOSTTY_ACTION_PANE_STACK,
   GHOSTTY_ACTION_POLTER_TAB_MOVE,
   GHOSTTY_ACTION_POLTER_HIGHLIGHT,
+  GHOSTTY_ACTION_POLTERGEIST_PANE,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1542,6 +1582,7 @@ typedef union {
   ghostty_action_pane_stack_e pane_stack;
   ghostty_action_polter_tab_move_s polter_tab_move;
   ghostty_action_polter_highlight_s polter_highlight;
+  ghostty_action_poltergeist_pane_s poltergeist_pane;
 } ghostty_action_u;
 
 typedef struct {

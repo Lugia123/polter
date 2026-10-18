@@ -67,6 +67,7 @@
 "pg3-Su-Pv1.title" = "将此终端设为总管";
 "pg4-Wa-Tc1.title" = "监督此终端";
 "pg9-Sh-Ld1.title" = "不让 agent 碰此终端";
+"pgW-Wk-Rf1.title" = "不在此终端开 worker";
 "pgA-Au-Th1.title" = "允许总管在此终端替你回答权限询问";
 "pgB-Ro-Le1.title" = "角色";
 "pgC-Mn-Tn1.title" = "允许 worker 之间直接点名";

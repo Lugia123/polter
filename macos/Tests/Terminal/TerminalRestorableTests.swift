@@ -56,7 +56,6 @@ struct TerminalRestorableTests {
             .value.internalState
         #expect(v5.focusedSurface == "v5")
         #expect(v5.effectiveFullscreenMode == nil)
-        #expect(v5.tabColor == nil)
         #expect(v5.titleOverride == nil)
         #expect(v5.surfaceTree.contains(where: { $0.id.uuidString == "926F3F2A-824C-40C9-87CA-2CDCA4E11049" }))
         #expect(v5.surfaceTree.contains(where: { $0.id.uuidString == "AC5E829B-85FD-4C69-B196-2EE469C72A90" }))
@@ -79,7 +78,8 @@ struct TerminalRestorableTests {
             .value.internalState
         #expect(v7.focusedSurface == "v7")
         #expect(v7.effectiveFullscreenMode == .native)
-        #expect(v7.tabColor == .green)
+        // v7 states carry a `tabColor` (green here). It decodes with that
+        // key ignored: a tab's one colour is let go (task 1699).
         #expect(v7.titleOverride == "1.3.0")
         #expect(v7.surfaceTree.contains(where: { $0.id.uuidString == "5D580A7A-81EA-47C6-BB9A-AD4B1783E478" }))
         #expect(v7.surfaceTree.contains(where: { $0.id.uuidString == "96EA1189-7482-41BC-A6CD-26E5190E4BFA" }))
@@ -104,7 +104,6 @@ struct TerminalRestorableTests {
             .value.internalState
         #expect(v7Generic.focusedSurface == "v7 generic")
         #expect(v7Generic.effectiveFullscreenMode == .native)
-        #expect(v7Generic.tabColor == .green)
         #expect(v7Generic.titleOverride == "tip")
         #expect(v7Generic.surfaceTree.contains(where: { $0.id.uuidString == "953CE952-D91D-4D36-AC72-9D0F1F6BCE73" }))
         #expect(v7Generic.surfaceTree.contains(where: { $0.id.uuidString == "D3223569-2E01-4BC5-9DB2-DBFC3AFF46D1" }))
@@ -123,7 +122,6 @@ extension TerminalRestorableTests {
             focusedSurface: nil,
             surfaceTree: tree.0,
             effectiveFullscreenMode: nil,
-            tabColor: nil,
             titleOverride: nil,
             boundProject: "写 retry 装饰器"))
 

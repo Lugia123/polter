@@ -75,6 +75,8 @@
       "macos/Sources/Helpers/SafeTextMeasure.swift",
       "macos/Sources/Helpers/Extensions/Array+Extension.swift",
       "macos/Sources/Features/Terminal/TabAccessory.swift",
+      "macos/Sources/Features/Terminal/PaneColor.swift",
+      "macos/Sources/Features/Terminal/TabDots.swift",
       "macos/Sources/Features/Terminal/TabIntoPane.swift",
       {
         "path": "macos/Sources/Features/Splits/PoltergeistLayoutShape.swift",
@@ -212,7 +214,8 @@
       "macos/Tests/Projects/ProjectPaneSizesTests.swift",
       "macos/Tests/Personas/RoleCliOfferTests.swift",
       "macos/Tests/Terminal/PolterHighlightRulesTests.swift",
-      "macos/Tests/Terminal/ReopenTabEntryTests.swift"
+      "macos/Tests/Terminal/ReopenTabEntryTests.swift",
+      "macos/Tests/Terminal/TabDotsTests.swift"
     ],
     "out": [
       {

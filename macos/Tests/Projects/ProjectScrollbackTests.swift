@@ -73,7 +73,7 @@ struct ProjectScrollbackTests {
             _ = capture
             let snapshot = allocator.snapshot(for: pane.snapshot, allocate: true)
             if let snapshot { pane.snapshot = snapshot }
-            return .leaf(cwd: pane.cwd, title: "", history: "", scrollback: snapshot?.filename ?? "", bySupervisor: false, agent: .unknown)
+            return .leaf(cwd: pane.cwd, title: "", history: "", scrollback: snapshot?.filename ?? "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
         }
         let root = leaves.dropFirst().reduce(leaves[0]) { .split(direction: .horizontal, ratio: 0.5, left: $0, right: $1) }
         return ProjectFile.oneTab(name: "p", savedAt: 0, root: root, nextScrollback: allocator.next)
@@ -81,7 +81,7 @@ struct ProjectScrollbackTests {
 
     private func snapshots(_ node: ProjectNode?) -> [String: String] {
         switch node {
-        case .leaf(let cwd, _, _, let scrollback, _, _): return [cwd: scrollback]
+        case .leaf(let cwd, _, _, let scrollback, _, _, _, _, _, _): return [cwd: scrollback]
         case .stack(_, let members): return members.map { snapshots($0) }.reduce(into: [:]) { $0.merge($1) { $1 } }
         case .split(_, _, let left, let right): return snapshots(left).merging(snapshots(right)) { $1 }
         case nil: return [:]

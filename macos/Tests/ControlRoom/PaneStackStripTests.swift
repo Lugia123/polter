@@ -371,7 +371,7 @@ struct PaneStackStripTests {
             let renderer = ImageRenderer(content: view)
             renderer.scale = 2
             let rep = NSBitmapImageRep(cgImage: try #require(renderer.cgImage))
-            let want = Look.theme(dark: scheme == .dark).supervisorMark
+            let want = Look.theme(dark: scheme == .dark).panePurple
             var count = 0
             for y in 0..<rep.pixelsHigh {
                 for x in 0..<rep.pixelsWide {

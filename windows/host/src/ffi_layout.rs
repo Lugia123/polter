@@ -51,6 +51,13 @@ const _: () = assert!(std::mem::offset_of!(PoltergeistMark, may_authorise) == 14
 const _: () = assert!(std::mem::offset_of!(PoltergeistMark, worker_mentions) == 15, "PoltergeistMark.worker_mentions is not at ghostty_action_poltergeist_mark_s.worker_mentions");
 const _: () = assert!(std::mem::offset_of!(PoltergeistMark, persona) == 16, "PoltergeistMark.persona is not at ghostty_action_poltergeist_mark_s.persona");
 
+// PoltergeistPane <- ghostty_action_poltergeist_pane_s
+const _: () = assert!(std::mem::size_of::<PoltergeistPane>() == 12, "size of PoltergeistPane != sizeof(ghostty_action_poltergeist_pane_s)");
+const _: () = assert!(std::mem::align_of::<PoltergeistPane>() == 4, "align of PoltergeistPane != alignof(ghostty_action_poltergeist_pane_s)");
+const _: () = assert!(std::mem::offset_of!(PoltergeistPane, color) == 0, "PoltergeistPane.color is not at ghostty_action_poltergeist_pane_s.color");
+const _: () = assert!(std::mem::offset_of!(PoltergeistPane, workers) == 4, "PoltergeistPane.workers is not at ghostty_action_poltergeist_pane_s.workers");
+const _: () = assert!(std::mem::offset_of!(PoltergeistPane, flag) == 8, "PoltergeistPane.flag is not at ghostty_action_poltergeist_pane_s.flag");
+
 // PersonaMark <- ghostty_poltergeist_persona_s
 const _: () = assert!(std::mem::size_of::<PersonaMark>() == 24, "size of PersonaMark != sizeof(ghostty_poltergeist_persona_s)");
 const _: () = assert!(std::mem::align_of::<PersonaMark>() == 8, "align of PersonaMark != alignof(ghostty_poltergeist_persona_s)");

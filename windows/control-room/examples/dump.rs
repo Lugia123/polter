@@ -12,7 +12,10 @@ use polter_control_room::act::{self, Act, Refusal, SeenMarker};
 use polter_control_room::rules;
 use polter_control_room::layout::{self, ListLayout, Rect};
 use polter_control_room::list::{self, List, Row};
+use polter_control_room::json::Value;
 use polter_control_room::pane;
+use polter_control_room::pane_color::Color as PaneColor;
+use polter_control_room::{panestack, tabmarks};
 use polter_control_room::pulse::{self, Scope};
 use polter_control_room::quota;
 use polter_control_room::rowmenu;
@@ -80,6 +83,77 @@ fn row(section: &str, r: &Row) {
     }
 }
 
+/// `#RRGGBB` in capitals, no alpha, or `-`.
+fn hex(c: Option<polter_control_room::look::Rgba>) -> String {
+    c.map_or("-".to_string(), |c| format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b))
+}
+
+/// `pane_colors.json`, beside the snapshot (`pane-color-interface.md` §11):
+/// the colour set on each terminal, and the window-tab cases.
+struct PaneColours {
+    colors: Vec<(String, PaneColor)>,
+    cases: Vec<(String, Vec<tabmarks::Seen>)>,
+}
+
+impl PaneColours {
+    fn read(snapshot: &str) -> PaneColours {
+        let path = std::path::Path::new(snapshot).with_file_name("pane_colors.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let v = polter_control_room::json::parse(&text).expect("pane_colors.json is JSON");
+        let colour = |name: &str| -> Option<PaneColor> {
+            if name == "none" {
+                return None;
+            }
+            Some(PaneColor::from_name(name).unwrap_or_else(|| panic!("pane_colors.json: {name:?} is no colour")))
+        };
+        let colors = match v.get("colors") {
+            Some(Value::Obj(fields)) => fields
+                .iter()
+                .filter_map(|(id, c)| match c {
+                    Value::Str(c) => colour(c).map(|c| (id.clone(), c)),
+                    _ => panic!("pane_colors.json: colors.{id} is not a word"),
+                })
+                .collect(),
+            _ => panic!("pane_colors.json: no colors"),
+        };
+        let word = |v: &Value, key: &str| match v.get(key) {
+            Some(Value::Str(s)) => s.clone(),
+            _ => panic!("pane_colors.json: a {key} is missing"),
+        };
+        let cases = match v.get("tab_dots") {
+            Some(Value::Arr(items)) => items
+                .iter()
+                .map(|case| {
+                    let panes = match case.get("panes") {
+                        Some(Value::Arr(ps)) => ps
+                            .iter()
+                            .map(|p| tabmarks::Seen {
+                                name: word(p, "name"),
+                                color: colour(&word(p, "color")),
+                                flag: match word(p, "flag").as_str() {
+                                    "none" => None,
+                                    "raised" => Some(tabmarks::Flag::Raised),
+                                    "lowered" => Some(tabmarks::Flag::Lowered),
+                                    other => panic!("pane_colors.json: flag {other:?}"),
+                                },
+                            })
+                            .collect(),
+                        _ => panic!("pane_colors.json: a case has no panes"),
+                    };
+                    (word(case, "case"), panes)
+                })
+                .collect(),
+            _ => panic!("pane_colors.json: no tab_dots"),
+        };
+        PaneColours { colors, cases }
+    }
+
+    fn of(&self, id: Option<&str>) -> Option<PaneColor> {
+        let id = id?;
+        self.colors.iter().find(|(t, _)| t == id).map(|(_, c)| *c)
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
@@ -97,6 +171,9 @@ fn main() {
         }
     };
     let l = List::from_snapshot(&snap);
+    // The colour each terminal was given, from beside the snapshot: the
+    // core's snapshot does not carry it (`pane-color-interface.md` §11).
+    let colours = PaneColours::read(&args[1]);
 
     println!("count waiting={} quiet={}", l.waiting_count, l.quiet_count);
     // The two headings: what the core wrote, and the sentence made of it.
@@ -553,7 +630,8 @@ fn main() {
     for (place_name, place) in places {
         let mut all = Vec::new();
         for id in &ids {
-            let d = pane::drawn(id.as_deref(), "own", place, Some(&snap.terminals));
+            let set = colours.of(id.as_deref());
+            let d = pane::drawn(id.as_deref(), "own", place, Some(&snap.terminals), set);
             match &d {
                 Some(d) => println!(
                     "pane place={place_name} terminal={} wears={} name={} shown={} word={}",
@@ -565,22 +643,57 @@ fn main() {
                 ),
                 None => println!("pane place={place_name} terminal={} wears=-", id.as_deref().unwrap_or("-")),
             }
-            // Task 1692: the supervisor's badge on the bar (`pane::build` draws
-            // one for a supervisor's frame), and its edge with no frames.
-            println!(
-                "pane_mark place={place_name} terminal={} badge={} edged={}",
-                id.as_deref().unwrap_or("-"),
-                d.as_ref().is_some_and(|d| d.wears == pane::Wears::Supervisor),
-                pane::edged(id.as_deref(), place, Some(&snap.terminals))
-            );
+            // Tasks 1692 and 1700: the badge at the left of the bar, the edge
+            // with no frames, and the mark on a stack's tab, in both themes.
+            for (theme_name, dark) in [("light", false), ("dark", true)] {
+                let theme = polter_control_room::look::theme(dark);
+                let (kind, c) = pane::badge(d.as_ref());
+                let badged = c.filter(|_| kind != pane::BadgeKind::None);
+                let edge = pane::edged(id.as_deref(), place, Some(&snap.terminals), set);
+                // The stack's tab: what `panestack::stack` makes of the member.
+                let member = panestack::stack(&[(id.as_deref(), "own")], 0, Some(&snap.terminals), &[], &[set]);
+                let stack = member.members[0].mark().map(|(_, c)| c.ink(theme));
+                println!(
+                    "pane_mark theme={theme_name} place={place_name} terminal={} badge={} ground={} text={} edge={} stack={}",
+                    id.as_deref().unwrap_or("-"),
+                    kind.name(),
+                    hex(badged.map(|c| c.badge(theme))),
+                    hex(badged.map(|c| c.badge_text(theme))),
+                    hex(edge.map(|c| c.ink(theme))),
+                    hex(stack),
+                );
+            }
             all.push(d);
         }
         println!("pane_ground place={place_name} shows={}", pane::ground_shows(&all));
     }
-    let nothing = pane::drawn(Some("0x00000000000000a1"), "own", places[0].1, None);
+    let nothing = pane::drawn(Some("0x00000000000000a1"), "own", places[0].1, None, None);
     println!("pane no-snapshot wears={} name={}", nothing.as_ref().map_or("-", |d| d.wears.name()), quote(nothing.as_ref().map_or("", |d| &d.title.name)));
     for w in snapshot::Pane::ALL {
         println!("pane_role wears={} word={}", w.name(), pane::role_word(w).map_or("-".to_string(), quote));
+    }
+
+    // A window tab's flag and dots (task 1700), for each case beside the
+    // snapshot, in both themes: what is drawn, how wide up to its last
+    // column of dots (the count's words are measured by each host, so not
+    // here), and the tooltip in English.
+    for (case, panes) in &colours.cases {
+        for (theme_name, dark) in [("light", false), ("dark", true)] {
+            let theme = polter_control_room::look::theme(dark);
+            let (flag, dots) = tabmarks::of_panes(panes);
+            let c = tabmarks::cluster(flag.map(|(_, c)| c), &dots, 1.0, |_| 0.0);
+            let (shown, plus) = tabmarks::shown(dots.len());
+            let width = if plus > 0 { c.w - polter_control_room::look::tab_dots::PLUS_GAP } else { c.w };
+            let drawn: Vec<String> = dots.iter().take(shown).map(|d| hex(Some(d.ink(theme)))).collect();
+            println!(
+                "tab_dots theme={theme_name} case={case} flag={}:{} dots={} plus={plus} width={} tip={}",
+                flag.map_or("none", |(f, _)| f.name()),
+                hex(flag.map(|(_, c)| c.ink(theme))),
+                if drawn.is_empty() { "-".to_string() } else { drawn.join(",") },
+                width,
+                quote(&tabmarks::tip(panes, &|m| m.to_string()).unwrap_or_default()),
+            );
+        }
     }
 
     // Looking at a row: which are marked seen, and after how long. The

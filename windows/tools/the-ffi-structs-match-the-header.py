@@ -66,6 +66,7 @@ PAIRS = [
     ("ffi.rs", "ScreenshotOut", "ScreenshotOut", "ghostty_action_poltergeist_screenshot_out_s"),
     ("ffi.rs", "ControlRoomAlert", "ControlRoomAlert", "ghostty_control_room_alert_s"),
     ("ffi.rs", "PoltergeistMark", "PoltergeistMark", "ghostty_action_poltergeist_mark_s"),
+    ("ffi.rs", "PoltergeistPane", "PoltergeistPane", "ghostty_action_poltergeist_pane_s"),
     ("ffi.rs", "PersonaMark", "PersonaMark", "ghostty_poltergeist_persona_s"),
     ("ffi.rs", "PersonaRow", "PersonaRow", "ghostty_persona_s"),
     ("ffi.rs", "ClipboardContent", "ClipboardContent", "ghostty_clipboard_content_s"),

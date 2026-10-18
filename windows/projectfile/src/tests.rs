@@ -161,6 +161,12 @@ fn a_format_1_file_reads_as_one_window_with_one_tab_and_nobody_knows_who_was_in_
                         history: String::new(),
                         scrollback: "1.snap".to_string(),
                         by_supervisor: false,
+                        // Nobody's seat: the agent the stray key describes
+                        // is not read, so neither is its being the supervisor.
+                        supervisor_seat: Some(false),
+                        color: Some(PaneColor::None),
+                        workers: Some(Workers::Allowed),
+                        shielded: Some(false),
                         // Not `None`, and not the agent the stray key describes.
                         agent: Agent::Unknown,
                     })
@@ -181,10 +187,14 @@ fn a_format_1_file_reads_as_one_window_with_one_tab_and_nobody_knows_who_was_in_
 fn a_file_from_a_later_format_is_refused_as_too_new_and_is_never_read_as_format_1() {
     // It has everything a format 1 file has. Read as one, it is a project of
     // one pane, and the next save writes that over whatever it was.
-    let later = br#"{"format":3,"name":"later","saved_at":1,"root":{"kind":"leaf","cwd":"/a"}}"#;
-    assert_eq!(parse_snapshot(later), Err(ReadError::TooNew { found: 3 }));
-    assert_eq!(format_of(later), Err(ReadError::TooNew { found: 3 }));
-    assert!(ReadError::TooNew { found: 3 }.to_string().contains("format 3"));
+    // One past this build, whatever this build is: the test was written
+    // with 3 and went stale when 3 became the format written.
+    let n = FORMAT_VERSION + 1;
+    let later = format!(r#"{{"format":{n},"name":"later","saved_at":1,"root":{{"kind":"leaf","cwd":"/a"}}}}"#);
+    let later = later.as_bytes();
+    assert_eq!(parse_snapshot(later), Err(ReadError::TooNew { found: n }));
+    assert_eq!(format_of(later), Err(ReadError::TooNew { found: n }));
+    assert!(ReadError::TooNew { found: n }.to_string().contains(&format!("format {n}")));
 
     // A `format` that is not a version at all is a damaged file.
     for bad in ["0", "-1", "\"2\"", "2.0", "null", "true", "[2]", "18446744073709551615"] {
@@ -293,6 +303,10 @@ fn a_file_with_fields_this_build_does_not_know_still_reads() {
                 history: "h.history".to_string(),
                 scrollback: "0.snap".to_string(),
                 by_supervisor: false,
+                supervisor_seat: Some(false),
+                color: Some(PaneColor::None),
+                workers: Some(Workers::Allowed),
+                shielded: Some(false),
                 agent: Agent::Unknown,
             })),
             right: Box::new(SavedNode::Leaf(SavedLeaf::plain("", Agent::Unknown))),
@@ -474,5 +488,134 @@ fn what_a_save_finds_is_compared_over_every_tab_and_window() {
 
     // Not a project, and a project from a later format: kept, never read.
     assert_eq!(found_on_disk(b"{not json", &was), Existing::Unreadable);
-    assert_eq!(found_on_disk(br#"{"format":3,"name":"p","saved_at":1,"windows":[]}"#, &was), Existing::Unreadable);
+    let later = format!(r#"{{"format":{},"name":"p","saved_at":1,"windows":[]}}"#, FORMAT_VERSION + 1);
+    assert_eq!(found_on_disk(later.as_bytes(), &was), Existing::Unreadable);
+}
+
+// ---------------------------------------------------------------------------
+// Format 3: what a person marked on a pane, and the supervisor's seat
+// ---------------------------------------------------------------------------
+
+/// A one-pane format `format` file whose leaf has `extra` after its
+/// scrollback (no leading comma) and `agent` as its agent.
+fn one_leaf_file(format: i64, extra: &str, agent: &str) -> String {
+    let sep = if extra.is_empty() { "" } else { "," };
+    format!(
+        r#"{{"format":{format},"name":"p","saved_at":1,"root":{{"kind":"moved-to-windows"}},"windows":[{{"front":0,"tabs":[{{"root":{{"kind":"leaf","cwd":"/a"{sep}{extra},"agent":{agent}}}}}]}}]}}"#
+    )
+}
+
+fn the_leaf(snap: &Snapshot) -> SavedLeaf {
+    leaves(snap.tabs().next().unwrap())[0].clone()
+}
+
+#[test]
+fn the_four_marks_are_written_after_by_supervisor_in_order_and_only_when_not_the_default() {
+    let marked = SavedLeaf {
+        by_supervisor: true,
+        supervisor_seat: Some(true),
+        color: Some(PaneColor::Orange),
+        workers: Some(Workers::Refused),
+        shielded: Some(true),
+        ..SavedLeaf::plain("/a", Agent::None)
+    };
+    let bytes = emit(&one_tab("p", SavedNode::Leaf(marked.clone()))).unwrap();
+    assert!(
+        bytes.contains(r#""cwd":"/a","by_supervisor":true,"supervisor_seat":true,"color":"orange","workers":"refused","shielded":true,"agent":{"kind":"none"}"#),
+        "{bytes}"
+    );
+    assert!(bytes.starts_with(r#"{"format":3,"#), "{bytes}");
+    assert_eq!(the_leaf(&parse_snapshot(bytes.as_bytes()).unwrap()), marked);
+
+    // The defaults are not written at all.
+    let plain = emit(&one_tab("p", leaf("/a"))).unwrap();
+    for key in ["supervisor_seat", "color", "workers", "shielded"] {
+        assert!(!plain.contains(key), "{key} in {plain}");
+    }
+}
+
+#[test]
+fn every_colour_is_written_by_its_name_and_read_back() {
+    for c in PaneColor::ALL {
+        assert_eq!(PaneColor::from_name(c.name()), Some(c));
+        assert_eq!(PaneColor::ALL[c.index()], c);
+        let leaf = SavedLeaf { color: Some(c), ..SavedLeaf::plain("/a", Agent::None) };
+        let bytes = emit(&one_tab("p", SavedNode::Leaf(leaf.clone()))).unwrap();
+        assert_eq!(bytes.contains(r#""color""#), c != PaneColor::None, "{bytes}");
+        assert_eq!(the_leaf(&parse_snapshot(bytes.as_bytes()).unwrap()), leaf);
+    }
+}
+
+/// A `None` -- the host could not tell yet -- is written as the default:
+/// the file cannot say "not known". Filling it from the file first is the
+/// saver's job (`polter_projects`), and it is tested there.
+#[test]
+fn a_mark_not_known_yet_is_written_as_the_default() {
+    let unknown = SavedLeaf { supervisor_seat: None, color: None, workers: None, shielded: None, ..SavedLeaf::plain("/a", Agent::None) };
+    assert_eq!(emit(&one_tab("p", SavedNode::Leaf(unknown))).unwrap(), emit(&one_tab("p", leaf("/a"))).unwrap());
+}
+
+#[test]
+fn a_mark_with_a_value_a_writer_never_writes_is_corrupt_and_not_the_default() {
+    let none = r#"{"kind":"none"}"#;
+    for (why, extra) in [
+        ("a colour not in the palette", r#""color":"magenta""#),
+        ("a colour that is not a string", r#""color":5"#),
+        ("workers allowed, which is never written", r#""workers":"allowed""#),
+        ("workers as a boolean", r#""workers":true"#),
+        ("shielded false, which is never written", r#""shielded":false"#),
+        ("shielded as a word", r#""shielded":"yes""#),
+        ("a seat that is false", r#""supervisor_seat":false"#),
+        ("a seat that is a number", r#""supervisor_seat":1"#),
+    ] {
+        assert_eq!(parse_snapshot(one_leaf_file(3, extra, none).as_bytes()), Err(ReadError::Corrupt), "{why}");
+        // A format 2 file never had these keys, so they mean nothing there.
+        assert!(parse_snapshot(one_leaf_file(2, extra, none).as_bytes()).is_ok(), "{why}, in format 2");
+    }
+    // The one name of the default a writer does not write still reads.
+    assert_eq!(the_leaf(&parse_snapshot(one_leaf_file(3, r#""color":"none""#, none).as_bytes()).unwrap()).color, Some(PaneColor::None));
+}
+
+#[test]
+fn a_format_2_file_has_no_marks_and_its_seat_is_where_its_supervisor_was() {
+    let sup = r#"{"kind":"agent","role":"r","cli":"claude","session":"s","supervisor":true}"#;
+    let marks = r#""color":"orange","workers":"refused","shielded":true,"supervisor_seat":true"#;
+    let l = the_leaf(&parse_snapshot(one_leaf_file(2, marks, sup).as_bytes()).unwrap());
+    assert_eq!((l.supervisor_seat, l.color, l.workers, l.shielded), (Some(true), Some(PaneColor::None), Some(Workers::Allowed), Some(false)));
+    let nobody = the_leaf(&parse_snapshot(one_leaf_file(2, marks, r#"{"kind":"none"}"#).as_bytes()).unwrap());
+    assert_eq!(nobody.supervisor_seat, Some(false), "a seat key in format 2 is not read");
+    // And written again, it is format 3 with the seat.
+    let again = emit(&parse_snapshot(one_leaf_file(2, "", sup).as_bytes()).unwrap()).unwrap();
+    assert!(again.starts_with(r#"{"format":3,"#) && again.contains(r#""supervisor_seat":true"#), "{again}");
+}
+
+/// In format 3 the seat is the pane's and the agent's `supervisor` says
+/// only who that agent was: an agent that was the supervisor in a pane
+/// without the seat gives that pane no seat.
+#[test]
+fn in_format_3_the_seat_is_read_from_its_own_key_only() {
+    let sup = r#"{"kind":"agent","role":"r","cli":"claude","session":"s","supervisor":true}"#;
+    let l = the_leaf(&parse_snapshot(one_leaf_file(3, "", sup).as_bytes()).unwrap());
+    assert_eq!(l.supervisor_seat, Some(false));
+    let seat = the_leaf(&parse_snapshot(one_leaf_file(3, r#""supervisor_seat":true"#, r#"{"kind":"none"}"#).as_bytes()).unwrap());
+    assert_eq!(seat.supervisor_seat, Some(true));
+}
+
+#[test]
+fn two_seats_are_none() {
+    let seated = |cwd: &str| SavedNode::Leaf(SavedLeaf { supervisor_seat: Some(true), ..SavedLeaf::plain(cwd, Agent::None) });
+    let two = one_tab("p", SavedNode::Split { axis: Axis::Horizontal, ratio: 0.5, left: Box::new(seated("/a")), right: Box::new(seated("/b")) });
+    let read = parse_snapshot(emit(&two).unwrap().as_bytes()).unwrap();
+    let seats: Vec<Option<bool>> = leaves(read.tabs().next().unwrap()).iter().map(|l| l.supervisor_seat).collect();
+    assert_eq!(seats, vec![Some(false), Some(false)]);
+    // One is one.
+    let one = one_tab("p", SavedNode::Split { axis: Axis::Horizontal, ratio: 0.5, left: Box::new(seated("/a")), right: Box::new(leaf("/b")) });
+    let read = parse_snapshot(emit(&one).unwrap().as_bytes()).unwrap();
+    let seats: Vec<Option<bool>> = leaves(read.tabs().next().unwrap()).iter().map(|l| l.supervisor_seat).collect();
+    assert_eq!(seats, vec![Some(true), Some(false)]);
+}
+
+#[test]
+fn a_format_4_file_is_refused_as_too_new() {
+    assert_eq!(parse_snapshot(one_leaf_file(4, "", r#"{"kind":"none"}"#).as_bytes()), Err(ReadError::TooNew { found: 4 }));
 }

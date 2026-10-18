@@ -98,6 +98,17 @@ pub(crate) fn tab_tree(frame: HWND, id: TabId) -> Option<(SavedNode, Vec<LeafPan
                             // slot; empty until then.
                             scrollback: String::new(),
                             by_supervisor: false,
+                            // The seat where this pane's own mark says the
+                            // supervisor is, and "cannot tell" elsewhere:
+                            // the file's seat stands until a supervisor is
+                            // somewhere (`polter_projects::pages`'s
+                            // `one_seat`, `pane-color-interface.md` §7.1).
+                            supervisor_seat: p.marks.supervisor.then_some(true),
+                            // `None` while the pane waits for its hand-back:
+                            // the save keeps the file's word (task 1700).
+                            color: p.marks.color,
+                            workers: p.marks.workers,
+                            shielded: p.shielded,
                             // **Not known, which is not "nobody".** This
                             // host does not yet record which agent, if any,
                             // is in a pane; saying `None` here would write

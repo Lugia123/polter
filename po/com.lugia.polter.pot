@@ -977,6 +977,17 @@ msgid ""
 "into it. Its tab wears a lock while the shield stands. Only you can set this."
 msgstr ""
 
+#: src/input/command.zig
+msgid "Don't Start Workers in This Terminal"
+msgstr ""
+
+#: src/input/command.zig
+msgid ""
+"Keep this terminal for your own commands: a supervisor starts no agent in it "
+"or beside it. Agents can still read it and type into it. Only you can set "
+"this."
+msgstr ""
+
 #: src/input/command.zig:606 windows/host/src/menu.rs:411
 msgid "Terminal Conversations"
 msgstr ""
@@ -5510,4 +5521,23 @@ msgstr ""
 #: windows/host/src/highlight.rs:802
 #, rust-format
 msgid "Press any key or click to end · {} s left"
+msgstr ""
+
+#: windows/control-room/src/tabmarks.rs:98
+msgid "Panes with a colour"
+msgstr ""
+
+#: windows/control-room/src/tabmarks.rs:99
+#, rust-format
+msgid "{}, {}"
+msgstr ""
+
+#: windows/control-room/src/tabmarks.rs:100
+#, rust-format
+msgid "{}, supervisor"
+msgstr ""
+
+#: windows/control-room/src/tabmarks.rs:101
+#, rust-format
+msgid "{}, supervisor, {}"
 msgstr ""

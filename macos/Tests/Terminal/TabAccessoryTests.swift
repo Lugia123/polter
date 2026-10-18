@@ -8,14 +8,14 @@ import Testing
 /// when it was empty, which took the shortcut hint, the colour dot and the
 /// reset-zoom button away from every unmarked tab (#67).
 struct TabAccessoryTests {
-    @Test func aTabWithoutAMarkStillHasItsShortcutHintAndColourDot() {
+    @Test func aTabWithoutAMarkStillHasItsShortcutHint() {
         let visible = TabAccessory.visibleItems(.init())
-        #expect(visible == [.colorIndicator, .keyEquivalent])
+        #expect(visible == [.keyEquivalent])
     }
 
     @Test func aMarkIsAddedBesideTheOthersNotInsteadOfThem() {
         let visible = TabAccessory.visibleItems(.init(poltergeistMark: "⚑ "))
-        #expect(visible == [.colorIndicator, .poltergeistMark, .keyEquivalent])
+        #expect(visible == [.poltergeistMark, .keyEquivalent])
     }
 
     @Test func aMarkOfOnlySpacesIsNoMark() {
@@ -25,10 +25,10 @@ struct TabAccessoryTests {
 
     @Test func resetZoomShowsOnlyWhileZoomedWithOrWithoutAMark() {
         let unmarked = TabAccessory.visibleItems(.init(surfaceIsZoomed: true))
-        #expect(unmarked == [.colorIndicator, .keyEquivalent, .resetZoom])
+        #expect(unmarked == [.keyEquivalent, .resetZoom])
 
         let marked = TabAccessory.visibleItems(.init(poltergeistMark: "⚑ ", surfaceIsZoomed: true))
-        #expect(marked == [.colorIndicator, .poltergeistMark, .keyEquivalent, .resetZoom])
+        #expect(marked == [.poltergeistMark, .keyEquivalent, .resetZoom])
     }
 
     @Test func visibleItemsKeepTheLayoutOrder() {
