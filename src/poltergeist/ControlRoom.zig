@@ -2181,8 +2181,9 @@ pub const Superseded = struct {
 /// **And the group's workers it was minding go to the one that took it
 /// over** (task 1864), before the standing goes: `removeSupervisor`
 /// releases whatever is still minded by it, and the work in the group
-/// carries on under its new supervisor, not under nobody. Only the group's
-/// own: a terminal of another group it minds is not this takeover's.
+/// carries on under its new supervisor, not under nobody. The group's
+/// members, and its own workers whether they are in the group or not (task
+/// 1874); a terminal of another group it only minds is not this takeover's.
 /// Null when it was not taken over from.
 pub fn dropSuperseded(arena: Allocator, bus: *Bus, chat: *Chat, group: []const u8, id: Id) Allocator.Error!?Superseded {
     const by = supersededIn(bus, chat, group, id) orelse return null;
@@ -2190,6 +2191,19 @@ pub fn dropSuperseded(arena: Allocator, bus: *Bus, chat: *Chat, group: []const u
     var passed: std.ArrayListUnmanaged(Id) = .empty;
     for (members) |w| {
         if (w == id or w == by) continue;
+        if (bus.passWatch(w, id, by)) try passed.append(arena, w);
+    }
+    // **And its own workers, in the group or not** (task 1874). A worker a
+    // role launch opened is minded and marked as its supervisor's
+    // (`Bus.workerOf`) whether or not anybody put it in the group -- on the
+    // Windows machine the one that was not came out of the takeover minded
+    // by nobody. Not a terminal it only watches: one of another group's is
+    // not this takeover's.
+    var it_workers = bus.entries.iterator();
+    while (it_workers.next()) |kv| {
+        const w = kv.key_ptr.*;
+        if (w == id or w == by) continue;
+        if (kv.value_ptr.worker_of != id) continue;
         if (bus.passWatch(w, id, by)) try passed.append(arena, w);
     }
     chat.remove(group, id) catch return null;
@@ -5065,6 +5079,43 @@ test "1864: the workers of a supervisor taken over from are minded by the one th
     try testing.expectEqual(Bus.Role.watched, still_watched);
     try testing.expectEqual(@as(usize, 2), w.bus.mindCount(0xb2));
     try testing.expectEqual(@as(usize, 0), w.bus.mindCount(0xa1));
+}
+
+test "1874: a worker of the supervisor taken over from that is in no group goes to the one that took over" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: u8 = 0;
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    _ = try w.chat.setProject("web-app", .{ .bound = "web" });
+    // A worker its role launch opened: minded and marked as its worker, and
+    // never put in the group.
+    try w.terminal(0xc1, "tester", 0x21);
+    try w.bus.watch(0xc1, 0xa1);
+    try w.bus.markWorkerOf(0xc1, 0xa1);
+    // One it only watches, of nothing here: not this takeover's.
+    try w.terminal(0xc2, "elsewhere", 0x23);
+    try w.bus.watch(0xc2, 0xa1);
+    w.bus.noteAgentHere(0xa1, true, .{ .pid = 91, .started = 50 }, 200);
+    w.bus.noteAgentHere(0xa1, false, null, 1_000);
+    _ = w.bus.considerLinks(1_000 + Bus.link_grace_ms, &ctx, noRuns);
+    try w.terminal(0xb2, "now", 0x22);
+    try w.bus.addSupervisor(0xb2);
+    try w.chat.add("web-app", 0xb2, .all, .{});
+
+    const dropped = (try dropSuperseded(a, &w.bus, &w.chat, "web-app", 0xa1)) orelse return error.NotDropped;
+    try testing.expectEqual(@as(usize, 1), dropped.passed.len);
+    try testing.expectEqual(@as(Id, 0xc1), dropped.passed[0]);
+    const worker_minder = w.bus.entries.get(0xc1).?.watched_by;
+    try testing.expectEqual(@as(?Id, 0xb2), worker_minder);
+    const worker_role = w.bus.roleOf(0xc1);
+    try testing.expectEqual(Bus.Role.watched, worker_role);
+    // The other was released with the standing, as before.
+    const other_minder = w.bus.entries.get(0xc2).?.watched_by;
+    try testing.expectEqual(@as(?Id, null), other_minder);
 }
 
 test "1864: a supervisor taken over from in one group keeps its standing for another" {
