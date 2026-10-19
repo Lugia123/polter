@@ -25,6 +25,49 @@ struct ProjectLinkTests {
         supervisor: Link.terminal(0xa1), workers: [Link.terminal(0xb1)])
     private let notes = Link.Stated(name: "notes \"2\" 写", group: nil, pages: 1, open: nil, supervisor: nil, workers: [])
 
+    // MARK: Which pane a save says is the seat (task 1831)
+
+    /// The old supervisor's agent has left, and the core keeps it a
+    /// supervisor; another took the group over in another pane. Both
+    /// terminals are supervisors, and only the group's supervisor now is
+    /// the seat -- not two, which read back as none.
+    @Test func theSeatIsThePaneOfTheGroupsSupervisorNowAndNoOther() {
+        let old = Link.terminal(0xa1), now = Link.terminal(0xc1)
+        #expect(Link.seat(supervisor: true, terminal: now, group: "g", steward: now))
+        #expect(!Link.seat(supervisor: true, terminal: old, group: "g", steward: now))
+        // A terminal that is no supervisor is never the seat.
+        #expect(!Link.seat(supervisor: false, terminal: now, group: "g", steward: now))
+        // A group with no supervisor now: no pane says it is, and the
+        // file's seat stands.
+        #expect(!Link.seat(supervisor: true, terminal: old, group: "g", steward: nil))
+        #expect(!Link.seat(supervisor: true, terminal: nil, group: "g", steward: now))
+        // A project with no group has no steward to ask: its supervisor's
+        // pane is the seat, as before.
+        #expect(Link.seat(supervisor: true, terminal: old, group: nil, steward: nil))
+    }
+
+    /// The whole save: two panes whose terminals are both supervisors, as
+    /// a save takes them, write one seat.
+    @Test func twoSupervisorsPanesSaveAsOneSeat() throws {
+        let old = Link.terminal(0xa1), now = Link.terminal(0xc1)
+        func leaf(_ cwd: String, _ snap: String, _ terminal: String) -> ProjectNode {
+            .leaf(cwd: cwd, title: "", titleChosen: false, history: "", scrollback: snap, bySupervisor: false,
+                  supervisorSeat: Link.seat(supervisor: true, terminal: terminal, group: "g", steward: now),
+                  color: .none, workersRefused: false, shielded: false, agent: .unknown)
+        }
+        let pages = ProjectPages(file: ProjectFile(
+            name: "p", savedAt: 1, group: "g", color: .none,
+            windows: [ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf("/a", "0.snap", old), title: "")])],
+            nextScrollback: 2))
+        let root = ProjectNode.split(direction: .horizontal, ratio: 0.5, left: leaf("/a", "0.snap", old), right: leaf("/c", "1.snap", now))
+        let (_, file) = pages.saving(
+            name: "p", savedAt: 2, group: "g", color: .none, nextScrollback: 2,
+            screen: .init(live: [.init(id: pages.pageIDs[0], window: 1, index: 0, selected: true, root: root, title: "")],
+                          frames: [:], keepingFront: false))
+        #expect(file.tabs.reduce(0) { $0 + $1.seatCount } == 1)
+        #expect(try ProjectFile.decode(from: file.encoded()).tabs.reduce(0) { $0 + $1.seatCount } == 1)
+    }
+
     // MARK: What the app says
 
     /// **The bytes the app sends are the bytes the core's own reader is

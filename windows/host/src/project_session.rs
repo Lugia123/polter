@@ -255,7 +255,15 @@ fn screen_of(
     capture: bool,
     keeping_front: bool,
     supervisor: Option<&str>,
+    group: Option<&str>,
 ) -> (Screen, Found) {
+    // Who the group's supervisor is now, as the core says (task 1831).
+    let steward = group.and_then(|g| {
+        crate::control_room_source::with(|d| match d {
+            crate::control_room_source::Data::Ready(r) => r.list.row(g).and_then(|row| row.steward.clone()),
+            _ => None,
+        })
+    });
     let mut live = Vec::new();
     let mut frames = BTreeMap::new();
     let mut gone = Vec::new();
@@ -273,6 +281,7 @@ fn screen_of(
         let behind: Vec<Option<String>> = panes.iter().map(crate::project_ui::LeafPane::terminal).collect();
         pages::fill_agents(&mut root, &behind, &agent_of);
         pages::mark_workers(&mut root, &behind, supervisor, &worker_of);
+        pages::mark_seats(&mut root, &behind, group, steward.as_deref());
         terminals.push((*page, behind.into_iter().flatten().collect()));
         let token = frame.0 as isize;
         // The tab's chosen name, whoever chose it; none is "none said",
@@ -339,7 +348,7 @@ fn save(file: &Path, keeping_front: bool, capture: bool) -> Result<(), String> {
     let snaps = project::scrollback_dir(file);
     let in_use = names_in_use(&pages, &snaps);
     let mut alloc = project::Allocator::new(next, in_use.iter().map(String::as_str));
-    let (screen, found) = screen_of(&bound, &snaps, &mut alloc, capture, keeping_front, supervisor.as_deref());
+    let (screen, found) = screen_of(&bound, &snaps, &mut alloc, capture, keeping_front, supervisor.as_deref(), group.as_deref());
     let (after, snapshot) = pages.saving(&name, wall_secs(), group, color, Some(alloc.next), &screen);
 
     project::write_file(file, &snapshot, WriteKind::Save).map_err(|e| e.to_string())?;
@@ -525,7 +534,7 @@ fn save_as_for(file: &Path, chosen: &[(HWND, TabId)], name: String, kind: WriteK
     // A new project, or one saved over: no supervisor of it to compare
     // with yet, so no pane is marked as its worker here. The next save
     // after its supervisor's pane is marked does that.
-    let (screen, found) = screen_of(&bound, &snaps, &mut alloc, true, false, None);
+    let (screen, found) = screen_of(&bound, &snaps, &mut alloc, true, false, None, group.as_deref());
     if screen.live.is_empty() {
         return Err("that tab no longer exists".to_string());
     }

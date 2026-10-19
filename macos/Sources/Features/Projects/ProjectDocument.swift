@@ -1042,13 +1042,14 @@ extension ProjectNode {
     /// mark -- **except for a terminal opened from a file whose marks the
     /// core has not said back yet**, which writes the file's
     /// (`ProjectMarksHandBack`). The seat is said only of the terminal the
-    /// supervisor is in now; of any other "no" means "cannot tell", and
-    /// `ProjectPages.saving` decides what is written.
+    /// supervisor is in now -- `who`'s `seat`, which is `ProjectLink.seat`
+    /// for an open project (task 1831) -- and of any other "no" means
+    /// "cannot tell"; `ProjectPages.saving` decides what is written.
     static func capturing(
         _ node: SplitTree<Ghostty.SurfaceView>.Node,
         in tree: SplitTree<Ghostty.SurfaceView>,
         scrollback: (Ghostty.SurfaceView) -> String,
-        who: (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool)
+        who: (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool, seat: Bool)
     ) -> ProjectNode {
         capturing(node, in: tree) { view in
             let who = who(view)
@@ -1061,7 +1062,7 @@ extension ProjectNode {
                 history: view.historyFilename ?? "",
                 scrollback: scrollback(view),
                 bySupervisor: who.bySupervisor,
-                supervisorSeat: view.poltergeistRole == .supervisor,
+                supervisorSeat: who.seat,
                 color: marks.color,
                 workersRefused: marks.workersRefused,
                 shielded: marks.shielded,

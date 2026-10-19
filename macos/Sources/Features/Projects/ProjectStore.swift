@@ -291,7 +291,7 @@ final class ProjectStore {
         color: PaneColor,
         pages: ProjectPages,
         tabs screen: OpenTabs,
-        who: (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool),
+        who: (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool, seat: Bool),
         keeping: ProjectFileWriter.Keeping
     ) throws -> (entry: Entry, pages: ProjectPages) {
         let (open, frames, keepingFront) = (screen.open, screen.frames, screen.keepingFront)
@@ -399,7 +399,9 @@ final class ProjectStore {
                     capturingScrollback: capturingScrollback, title: "")],
                 frames: [:],
                 keepingFront: false),
-            who: { _ in (.unknown, false) },
+            // No session to ask the group's supervisor of: the seat is
+            // the pane whose terminal is a supervisor, as it always was.
+            who: { view in (.unknown, false, view.poltergeistRole == .supervisor) },
             keeping: keeping).entry
     }
 

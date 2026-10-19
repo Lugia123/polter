@@ -1618,3 +1618,53 @@ fn a_project_file_changed_by_hand_changes_the_directorys_fingerprint() {
     let two = f(&[("b.json", 1, 1), ("a.json", 2, 2)]);
     assert_eq!(two, f(&[("a.json", 2, 2), ("b.json", 1, 1)]));
 }
+
+// ---- task 1831: one seat, the group's supervisor's now
+
+#[test]
+fn the_seat_is_the_pane_of_the_groups_supervisor_now_and_no_other() {
+    use crate::pages::seat;
+    assert!(seat(true, Some("0xnow"), Some("g"), Some("0xnow")));
+    assert!(!seat(true, Some("0xold"), Some("g"), Some("0xnow")));
+    // A terminal that is no supervisor is never the seat.
+    assert!(!seat(false, Some("0xnow"), Some("g"), Some("0xnow")));
+    // A group with no supervisor now: no pane says it is.
+    assert!(!seat(true, Some("0xold"), Some("g"), None));
+    assert!(!seat(true, None, Some("g"), Some("0xnow")));
+    // A project with no group: its supervisor's pane, as before.
+    assert!(seat(true, Some("0xold"), None, None));
+}
+
+/// The old supervisor's agent has left and the core keeps it a supervisor;
+/// another took the group over in the next pane. The capture marks both;
+/// the save writes one.
+#[test]
+fn two_supervisors_panes_save_as_one_seat() {
+    use crate::pages::mark_seats;
+    let mut root = split(seat_of("/a", "0.snap", Agent::Unknown), seat_of("/c", "1.snap", Agent::Unknown), Axis::Horizontal);
+    let terminals = [Some("0xold".to_string()), Some("0xnow".to_string())];
+    mark_seats(&mut root, &terminals, Some("g"), Some("0xnow"));
+    let seats: Vec<Option<bool>> = polter_projectfile::leaves(&root).iter().map(|l| l.supervisor_seat).collect();
+    assert_eq!(seats, vec![None, Some(true)]);
+
+    // Saved over a file that seated the old one: one seat, the new one's.
+    let file = Snapshot {
+        name: "p".into(),
+        saved_at: 1,
+        group: Some("g".into()),
+        color: PaneColor::None,
+        windows: vec![Window { frame: None, front: 0, tabs: vec![tab(split(seat_of("/a", "0.snap", Agent::Unknown), leaf_of("/c", "1.snap", Agent::Unknown), Axis::Horizontal))] }],
+        next_scrollback: Some(2),
+    };
+    let pages = Pages::from_file(&file);
+    let id = pages.page_ids()[0];
+    let screen = Screen {
+        live: vec![Live { id, window: 7, index: 0, selected: true, root, title: None }],
+        frames: BTreeMap::new(),
+        keeping_front: false,
+    };
+    let (_, written) = pages.saving("p", 2, Some("g".into()), PaneColor::None, Some(2), &screen);
+    let seats = written.windows.iter().flat_map(|w| &w.tabs).flat_map(|t| polter_projectfile::leaves(&t.root)).filter(|l| l.supervisor_seat == Some(true)).count();
+    assert_eq!(seats, 1);
+    assert_eq!(polter_projectfile::leaves(&written.windows[0].tabs[0].root)[1].supervisor_seat, Some(true));
+}

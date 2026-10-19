@@ -555,6 +555,42 @@ pub fn mark_workers(root: &mut SavedNode, terminals: &[Option<String>], supervis
     }
 }
 
+/// Whether a save says a pane is the project's supervisor's seat (task
+/// 1831): of a project with a group, **the pane its supervisor is in now**
+/// -- the terminal the core names the group's steward -- and no other.
+/// `supervisor` is whether the terminal is a supervisor at all. The macOS
+/// host's `ProjectLink.seat`, rule for rule.
+///
+/// Not the pane of every terminal that is a supervisor: the core keeps a
+/// supervisor whose agent has left one, so that the next agent there is one
+/// too, and when another took the group over in another pane, a save wrote
+/// two seats -- which read back as none. A group with no supervisor now
+/// says no pane is, and the file's seat stands. A project with no group has
+/// no steward to ask, and its supervisor's pane is the seat, as it always
+/// was.
+pub fn seat(supervisor: bool, terminal: Option<&str>, group: Option<&str>, steward: Option<&str>) -> bool {
+    if !supervisor {
+        return false;
+    }
+    if group.is_none() {
+        return true;
+    }
+    matches!((terminal, steward), (Some(t), Some(s)) if t == s)
+}
+
+/// The seat as `seat` says it, over a capture that took it from every pane
+/// whose terminal is a supervisor (`supervisor_seat: Some(true)`): one that
+/// is not the group's supervisor now goes back to "cannot tell" (`None`),
+/// which keeps the file's word rather than writing a second seat.
+/// `terminals` as in `mark_workers`.
+pub fn mark_seats(root: &mut SavedNode, terminals: &[Option<String>], group: Option<&str>, steward: Option<&str>) {
+    for (leaf, terminal) in leaves_mut(root).into_iter().zip(terminals) {
+        if leaf.supervisor_seat == Some(true) && !seat(true, terminal.as_deref(), group, steward) {
+            leaf.supervisor_seat = None;
+        }
+    }
+}
+
 /// `node` with what a save could not tell about a pane filled in from what
 /// the file said of it, by snapshot name.
 ///

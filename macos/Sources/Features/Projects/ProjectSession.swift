@@ -205,10 +205,13 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
     /// Who is in each pane, as the core's latest snapshot says
     /// (`terminals[].who`), and whether the project's supervisor opened it
     /// (`ProjectLink.pane` has the rule). Read once for a whole save.
-    private func whoIsInPane() -> (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool) {
-        guard let ghostty = liveMembers.first?.controller.ghostty else { return { _ in (.unknown, false) } }
+    private func whoIsInPane() -> (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool, seat: Bool) {
+        guard let ghostty = liveMembers.first?.controller.ghostty else {
+            return { view in (.unknown, false, ProjectLink.seat(supervisor: view.poltergeistRole == .supervisor, terminal: nil, group: self.group, steward: nil)) }
+        }
+        let latest = ControlRoomFeed.shared(ghostty).latest
         var said: [String: ProjectLink.Who] = [:]
-        for terminal in ControlRoomFeed.shared(ghostty).latest?.terminals ?? [] {
+        for terminal in latest?.terminals ?? [] {
             guard let who = terminal.who else { continue }
             let kind: ProjectLink.Who.Kind
             switch who.is {
@@ -220,8 +223,15 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
                 kind: kind, role: who.role, cli: who.cli, session: who.session, workerOf: who.worker_of)
         }
         let supervisor = stated?.supervisor
+        // Who the group's supervisor is now, as the core says (task 1831).
+        let group = self.group
+        let steward = group.flatMap { g in latest?.groups.first { $0.name == g }?.steward }
         return { view in
-            ProjectLink.pane(ControlRoomLender.terminal(of: view).flatMap { said[$0] }, supervisor: supervisor)
+            let terminal = ControlRoomLender.terminal(of: view)
+            let pane = ProjectLink.pane(terminal.flatMap { said[$0] }, supervisor: supervisor)
+            let seat = ProjectLink.seat(
+                supervisor: view.poltergeistRole == .supervisor, terminal: terminal, group: group, steward: steward)
+            return (pane.agent, pane.bySupervisor, seat)
         }
     }
 

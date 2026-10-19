@@ -279,6 +279,25 @@ enum ProjectLink {
     ///   supervisor's terminal to compare with -- its page is closed, or
     ///   the project has none -- that cannot be told, which is not "no":
     ///   the file's mark stays.
+    /// Whether a save says a pane is the project's supervisor's seat (task
+    /// 1831): of a project with a group, **the pane its supervisor is in
+    /// now** -- the terminal the core names the group's steward -- and no
+    /// other. `supervisor` is whether the terminal is a supervisor at all.
+    ///
+    /// Not the pane of every terminal that is a supervisor: the core keeps
+    /// a supervisor whose agent has left one, so that the next agent there
+    /// is one too, and when another took the group over in another pane, a
+    /// save wrote two seats -- which read back as none. A group with no
+    /// supervisor now says no pane is, and the file's seat stands. A project
+    /// with no group has no steward to ask, and its supervisor's pane is
+    /// the seat, as it always was.
+    static func seat(supervisor: Bool, terminal: String?, group: String?, steward: String?) -> Bool {
+        guard supervisor else { return false }
+        guard group != nil else { return true }
+        guard let terminal, let steward else { return false }
+        return terminal == steward
+    }
+
     static func pane(_ who: Who?, supervisor: String?) -> (agent: ProjectAgent, bySupervisor: Bool) {
         guard let who else { return (.unknown, false) }
         let agent: ProjectAgent
