@@ -2908,17 +2908,101 @@ test "doc_zh (1751 B): a full translation is of the English as it is now and kee
     try testing.expectEqual(@as(usize, 0), bad);
 }
 
+test "doc_zh (1751 B): fenced code is kept line for line, and its backticks are not names" {
+    // As `keybind` has it: a fence closed with four backticks, and prose
+    // with names in backticks after it.
+    const en =
+        \\Chained actions work with key sequences as well:
+        \\
+        \\```ini
+        \\keybind = ctrl+a>n=new_window
+        \\keybind = chain=goto_split:left
+        \\````
+        \\
+        \\Key tables are defined using `<table>/<binding>`.
+    ;
+    const zh =
+        \\链式动作也适用于按键序列：
+        \\
+        \\```ini
+        \\keybind = ctrl+a>n=new_window
+        \\keybind = chain=goto_split:left
+        \\````
+        \\
+        \\按键表用 `<table>/<binding>` 语法定义。
+    ;
+    try testing.expect(sameShape(en, zh, "fenced"));
+    // A line of the code changed in the Chinese is caught.
+    const changed =
+        \\链式动作也适用于按键序列：
+        \\
+        \\```ini
+        \\keybind = ctrl+a>n=new_window
+        \\keybind = chain=goto_split:right
+        \\````
+        \\
+        \\按键表用 `<table>/<binding>` 语法定义。
+    ;
+    try testing.expect(!sameShape(en, changed, "fenced"));
+    // And a name in the prose after the fence still has to be there.
+    const lost =
+        \\链式动作也适用于按键序列：
+        \\
+        \\```ini
+        \\keybind = ctrl+a>n=new_window
+        \\keybind = chain=goto_split:left
+        \\````
+        \\
+        \\按键表用表名定义。
+    ;
+    try testing.expect(!sameShape(en, lost, "fenced"));
+}
+
 /// Whether `zh` is built like `en`: the same number of paragraphs, every
 /// sample line (indented four or more, after a blank line or another sample)
 /// word for word, and everything `en` puts in backticks still in `zh`.
+///
+/// **Fenced code (```) is a sample too** (task 1751): every line from a
+/// fence to the next one, the fences included, is kept word for word, and
+/// its backticks are not spans. Read as spans, they paired across the fence
+/// -- `keybind` closes one with four -- and turned the prose after it into
+/// "backticked names" no translation could keep.
 fn sameShape(en: []const u8, zh: []const u8, name: []const u8) bool {
     var ok = true;
     if (std.mem.count(u8, en, "\n\n") != std.mem.count(u8, zh, "\n\n")) {
         std.debug.print("doc_zh: '{s}' has a different number of paragraphs\n", .{name});
         ok = false;
     }
+    // `en` without its fenced lines (each left as an empty one), which is
+    // what the sample and backtick checks below read.
+    var prose_buf: [32768]u8 = undefined;
+    var prose_len: usize = 0;
+    var fenced = false;
+    var all = std.mem.splitScalar(u8, en, '\n');
+    var first = true;
+    while (all.next()) |line| {
+        const fence = std.mem.startsWith(u8, std.mem.trimStart(u8, line, " "), "```");
+        if (fence or fenced) {
+            if (std.mem.indexOf(u8, zh, line) == null) {
+                std.debug.print("doc_zh: '{s}' changed the fenced line `{s}`\n", .{ name, line });
+                ok = false;
+            }
+        }
+        const kept: []const u8 = if (fence or fenced) "" else line;
+        if (fence) fenced = !fenced;
+        const need = kept.len + @intFromBool(!first);
+        if (prose_len + need > prose_buf.len) break;
+        if (!first) {
+            prose_buf[prose_len] = '\n';
+            prose_len += 1;
+        }
+        @memcpy(prose_buf[prose_len..][0..kept.len], kept);
+        prose_len += kept.len;
+        first = false;
+    }
+    const prose = prose_buf[0..prose_len];
     var after_blank = false;
-    var lines = std.mem.splitScalar(u8, en, '\n');
+    var lines = std.mem.splitScalar(u8, prose, '\n');
     var in_sample = false;
     while (lines.next()) |line| {
         const indented = std.mem.startsWith(u8, line, "    ");
@@ -2931,7 +3015,7 @@ fn sameShape(en: []const u8, zh: []const u8, name: []const u8) bool {
     }
     // Backticks: a span may be broken over two lines in the English.
     var flat: [32768]u8 = undefined;
-    const joined = flatten(&flat, en);
+    const joined = flatten(&flat, prose);
     var spans = std.mem.splitScalar(u8, joined, '`');
     var inside = false;
     while (spans.next()) |s| : (inside = !inside) {
