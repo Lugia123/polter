@@ -321,6 +321,21 @@ enum ControlRoomRules {
         return .tellThePerson
     }
 
+    /// The window a terminal belongs to (`SurfaceView.homeWindow`): its
+    /// view's own `window`, unless the control room has borrowed it, and
+    /// otherwise the window of the tab that holds it (`owner`, asked only
+    /// when needed: it walks the open windows).
+    ///
+    /// **A terminal stacked behind another in its pane is in no window**
+    /// (task 1878): only the one a pane shows is in the view tree, so its
+    /// `window` is nil while its tab is open. Taken as "no window", every
+    /// new tab and tab move asked of it was refused, and 0.11 stacks a
+    /// supervisor's workers by default.
+    static func home<W>(lent: Bool, window: W?, owner: () -> W?) -> W? {
+        if !lent, let window { return window }
+        return owner()
+    }
+
     /// A group the person has just made is selected once the core lists
     /// it -- not before: the list that is on screen when the answer comes
     /// back may be the one from before the group existed, and a selection

@@ -352,6 +352,31 @@ struct ControlRoomNewTabAnswerTests {
         #expect(bare == .tellThePerson)
     }
 
+    // MARK: The window a terminal belongs to (task 1878)
+
+    @Test func aTerminalInAWindowBelongsToIt() {
+        let home = Rules.home(lent: false, window: "own", owner: { "owner" })
+        #expect(home == "own")
+    }
+
+    /// Stacked behind another in its pane: in no window, and its tab's is
+    /// still its home.
+    @Test func aTerminalBehindInItsStackBelongsToItsTabsWindow() {
+        let home = Rules.home(lent: false, window: String?.none, owner: { "owner" })
+        #expect(home == "owner")
+    }
+
+    /// Borrowed: the window it is in is the control room's.
+    @Test func aBorrowedTerminalBelongsToItsTabsWindowNotTheControlRoom() {
+        let home = Rules.home(lent: true, window: "control room", owner: { "owner" })
+        #expect(home == "owner")
+    }
+
+    @Test func aTerminalNoTabHoldsBelongsNowhere() {
+        let home = Rules.home(lent: false, window: String?.none, owner: { nil })
+        #expect(home == nil)
+    }
+
     @Test func aBorrowedTerminalIsNeverAnsweredWithADialogAboutAWindowBehindTheControlRoom() {
         for wanted in [true, false] {
             let answer = Rules.newTabAnswer(lent: true, homeTakesTabs: false, decorations: true, answerWanted: wanted)

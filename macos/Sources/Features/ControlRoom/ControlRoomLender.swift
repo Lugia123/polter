@@ -185,10 +185,13 @@ final class ControlRoomLender: ObservableObject {
 
 extension Ghostty.SurfaceView {
     /// The window this terminal belongs to: its own tab's. The same as
-    /// `window` except while the control room has borrowed the view.
+    /// `window` except while the control room has borrowed the view, or
+    /// while it is stacked behind another in its pane (`ControlRoomRules.home`).
     var homeWindow: NSWindow? {
-        guard ControlRoomLender.shared.isLent(self) else { return window }
-        return BaseTerminalController.controller(owning: self)?.window
+        ControlRoomRules.home(
+            lent: ControlRoomLender.shared.isLent(self),
+            window: window,
+            owner: { BaseTerminalController.controller(owning: self)?.window })
     }
 }
 
