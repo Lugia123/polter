@@ -56,7 +56,7 @@
 //! reload aimed at *a surface* is a per-surface recompute that must not touch
 //! the app config at all.
 
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
@@ -74,11 +74,60 @@ use crate::{plogf, wlogf};
 /// action at, or null for an app-wide one.
 const WM_POLTER_RELOAD_CONFIG: u32 = WM_APP + 1;
 
-/// The message-only window. Null until [`init`] runs, and a null here is a
-/// reload that is dropped **with a line saying so** -- the alternative is a
-/// menu row that silently does nothing, which is the defect this file exists
-/// to end.
+/// The message-only window. Null until [`init`] runs. An app-wide reload
+/// asked for while it is null is kept and done when it is ready
+/// ([`EARLY`]); one aimed at a surface is dropped **with a line saying so**
+/// -- the alternative is a menu row that silently does nothing, which is the
+/// defect this file exists to end.
 static HWND_RELOAD: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// An app-wide reload asked for **before** [`init`]: kept, and done the
+/// moment there is somewhere to do it (task 1778). `EARLY_NONE`, soft or
+/// hard; a hard one asked for at any point wins, because it reads the files
+/// and a soft one does not.
+///
+/// What it is for: the host tells the core whether Windows is light or dark
+/// straight after `ghostty_app_new`, and in dark mode the core answers at
+/// once with a soft reload -- which arrived 0.11 s before this file was
+/// ready, was dropped, and left the strip in the light half of the theme
+/// for the whole run (#1789, the test machine). Only app-wide requests are
+/// kept: a surface named before init may not be there by the time it is
+/// done, and every surface made after init reads the config afresh.
+static EARLY: AtomicU8 = AtomicU8::new(EARLY_NONE);
+const EARLY_NONE: u8 = 0;
+const EARLY_SOFT: u8 = 1;
+const EARLY_HARD: u8 = 2;
+
+/// What is kept after a request asked for before init, given what was kept
+/// already: the harder of the two.
+fn fold_early(kept: u8, soft: bool) -> u8 {
+    kept.max(if soft { EARLY_SOFT } else { EARLY_HARD })
+}
+
+/// The reload to do now for what was kept: `Some(soft)`, or nothing.
+fn early_to_do(kept: u8) -> Option<bool> {
+    match kept {
+        EARLY_SOFT => Some(true),
+        EARLY_HARD => Some(false),
+        _ => None,
+    }
+}
+
+/// Do the reload kept from before init, if there is one: once, by whoever
+/// takes it first -- `init` when it is ready, or a `request` that kept one
+/// just as `init` finished.
+fn do_early(why: &str) {
+    if let Some(soft) = early_to_do(EARLY.swap(EARLY_NONE, Ordering::AcqRel)) {
+        let posted = post(soft, std::ptr::null_mut());
+        // process-wide: the reload asked for before init is the app's
+        plogf!("[reload] the reload asked for before init (soft={}) done {why}: posted={}", soft as u8, posted as u8);
+    }
+}
+
+fn post(soft: bool, surface: ffi::Surface) -> bool {
+    let h = HWND_RELOAD.load(Ordering::Acquire);
+    !h.is_null() && unsafe { PostMessageW(Some(HWND(h)), WM_POLTER_RELOAD_CONFIG, WPARAM(soft as usize), LPARAM(surface as isize)).is_ok() }
+}
 
 /// Create the message-only window. Called from `main` on the thread that owns
 /// windows, next to the other module `init`s.
@@ -118,6 +167,7 @@ pub fn init(hinst: HINSTANCE) {
                 HWND_RELOAD.store(h.0, Ordering::Release);
                 // process-wide: the reload route is one per process
                 plogf!("[reload] ready");
+                do_early("now that the reload route is ready");
             }
             // Said out loud: a reload route that failed to exist reads, from
             // the chair, as a menu item that does nothing -- which is the
@@ -138,19 +188,47 @@ pub fn init(hinst: HINSTANCE) {
 pub fn request(soft: bool, surface: ffi::Surface) -> bool {
     let h = HWND_RELOAD.load(Ordering::Acquire);
     if h.is_null() {
-        // process-wide: the reload window does not exist, so there is no
-        // window this line could belong to
-        plogf!("[reload] asked for before init; dropped");
-        return false;
+        if !surface.is_null() {
+            // process-wide: the reload window does not exist, so there is no
+            // window this line could belong to
+            plogf!("[reload] asked for before init, for a surface; dropped (a surface made after init reads the config afresh)");
+            return false;
+        }
+        // Kept, not dropped (task 1778): done when init is ready.
+        let _ = EARLY.fetch_update(Ordering::AcqRel, Ordering::Acquire, |k| Some(fold_early(k, soft)));
+        // process-wide: the reload window does not exist yet; the app asked
+        plogf!("[reload] asked for before init (soft={}); kept until it is ready", soft as u8);
+        // `init` may have finished between the load above and the keeping:
+        // then it has already looked, and this one does it instead.
+        if !HWND_RELOAD.load(Ordering::Acquire).is_null() {
+            do_early("by the request that kept it, init having finished meanwhile");
+        }
+        return true;
     }
-    unsafe {
-        PostMessageW(
-            Some(HWND(h)),
-            WM_POLTER_RELOAD_CONFIG,
-            WPARAM(soft as usize),
-            LPARAM(surface as isize),
-        )
-        .is_ok()
+    post(soft, surface)
+}
+
+#[cfg(test)]
+mod early_tests {
+    use super::*;
+
+    /// Task 1778: a request before init is kept, the harder one wins, and
+    /// what is kept is done once -- the order the test machine showed:
+    /// startup's soft reload first, the reload route ready 0.11 s later.
+    #[test]
+    fn a_reload_asked_for_before_init_is_kept_and_done_once() {
+        // Nothing asked: nothing to do.
+        assert_eq!(early_to_do(EARLY_NONE), None);
+        // The light/dark at startup: one soft reload, before init.
+        let kept = fold_early(EARLY_NONE, true);
+        assert_eq!(early_to_do(kept), Some(true));
+        // A hard one as well, either side of it: hard, once.
+        assert_eq!(early_to_do(fold_early(kept, false)), Some(false));
+        assert_eq!(early_to_do(fold_early(fold_early(EARLY_NONE, false), true)), Some(false));
+        // Done once: taking it leaves nothing for a second taker.
+        let cell = AtomicU8::new(kept);
+        assert_eq!(early_to_do(cell.swap(EARLY_NONE, Ordering::AcqRel)), Some(true));
+        assert_eq!(early_to_do(cell.swap(EARLY_NONE, Ordering::AcqRel)), None);
     }
 }
 

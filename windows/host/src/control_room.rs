@@ -144,6 +144,13 @@ const WM_ROOM_SELECT: u32 = WM_APP + 61;
 /// Posted to the panel when what it shows on the right may have to change:
 /// see `request_sync`.
 const WM_ROOM_SYNC: u32 = WM_APP + 63;
+/// A terminal took the keyboard in its own tab while the control room was
+/// out of sight (`pane_took_focus`); the terminal is in `RECLAIMED`.
+const WM_ROOM_RECLAIM: u32 = WM_APP + 69;
+
+/// The terminal `WM_ROOM_RECLAIM` is about, kept here because a message
+/// carries no string. The last one wins: only the latest keyboard matters.
+static RECLAIMED: Mutex<Option<String>> = Mutex::new(None);
 /// Where the person is may have changed: a window came to the front or
 /// left it (task 1505). Posted by `presence_may_have_changed`.
 const WM_ROOM_PRESENCE: u32 = WM_APP + 66;
@@ -160,6 +167,32 @@ pub fn request_sync() {
     if panel != 0 {
         let _ = unsafe { PostMessageW(Some(HWND(panel as *mut c_void)), WM_ROOM_SYNC, WPARAM(0), LPARAM(0)) };
     }
+}
+
+/// A pane took the keyboard (`tabs.rs`, `WM_SETFOCUS`). **With the control
+/// room out of sight only**, that is the person using a terminal in its own
+/// tab -- and if it is the supervisor the control room just put back as it
+/// went out of sight, that is taking it back (task 1758,
+/// `lend::Event::Reclaimed`; macOS sends the same event from the
+/// placeholder in the terminal's own tab, which this host never shows,
+/// because here the two are never both in front). With the control room in
+/// front a pane taking the keyboard is the person clicking into the
+/// terminal shown on its right, which takes nothing back.
+///
+/// Posted, never done in place: this runs inside a focus change.
+pub fn pane_took_focus(surface: crate::ffi::Surface) {
+    let Some(hwnd) = panel() else { return };
+    if unsafe { IsWindowVisible(hwnd) }.as_bool() || surface.is_null() {
+        return;
+    }
+    let key = rules::key(unsafe { (crate::api().surface_poltergeist_id)(surface) });
+    if key.is_empty() {
+        return;
+    }
+    if let Ok(mut r) = RECLAIMED.lock() {
+        *r = Some(key);
+    }
+    let _ = unsafe { PostMessageW(Some(hwnd), WM_ROOM_RECLAIM, WPARAM(0), LPARAM(0)) };
 }
 
 /// The terminal shown on the right took or gave up the keyboard: the frame
@@ -200,6 +233,14 @@ fn sync_loan(hwnd: HWND) {
     // borrowed, and the right side still says what is selected (task 1441
     // -- it used to be told "closing", and forgot).
     let event = if showing { Event::Selected { group, supervisor, place } } else { Event::OutOfSight { group, supervisor, place } };
+    lend(hwnd, event);
+}
+
+/// Tell the lending `event` and do what it says, in order. Copied out of
+/// `STATE` before anything is done: what follows lays the window out.
+fn lend(hwnd: HWND, event: Event) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let showing = unsafe { IsWindowVisible(hwnd) }.as_bool();
     let effects = STATE.with(|s| s.borrow_mut().as_mut().map(|st| st.lending.handle(event)).unwrap_or_default());
     if effects.is_empty() {
         return;
@@ -210,6 +251,16 @@ fn sync_loan(hwnd: HWND) {
             // longer putting it here; with its home gone there is nothing
             // to put anywhere.
             Effect::GiveBack { terminal, to_home, focus: _ } => {
+                // The last frame it showed here, kept for the side to draw
+                // under "it is in its own tab" (task 1758) -- taken off the
+                // screen, so only while this panel is the thing on it.
+                if *to_home && showing {
+                    if let Some((home, pane)) = crate::tabs::place_of_terminal(terminal) {
+                        if let Some(pane_hwnd) = crate::tabs::pane_hwnd(home, pane) {
+                            crate::elsewhere_frame::capture(frame, pane_hwnd, terminal);
+                        }
+                    }
+                }
                 crate::tabs::set_lent(frame, None);
                 wlogf!(frame, "[control-room] gave back terminal {} (home still there: {})", terminal, to_home);
             }
@@ -707,6 +758,15 @@ fn seen_due(hwnd: HWND) {
     }
 }
 
+/// The person took the supervisor back to its own tab and now asks for it
+/// here again, by pressing the right-hand side (task 1758, macOS's
+/// "Click to switch here").
+fn ask_here(hwnd: HWND) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    wlogf!(frame, "[control-room] asked for the supervisor here again");
+    lend(hwnd, Event::AskedFor);
+}
+
 /// "Go to its tab" for the selected group.
 fn go_to_supervisor(hwnd: HWND) {
     let selected = selection();
@@ -949,10 +1009,40 @@ unsafe extern "system" fn name_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             }
             _ => {}
         }
-        match old {
+        let r = match old {
             Some(old) => CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(old), hwnd, msg, wp, lp),
             None => DefWindowProcW(hwnd, msg, wp, lp),
+        };
+        // The empty field says what goes in it, as macOS's does (task 1758):
+        // painted over the control's own drawing, not `EM_SETCUEBANNER`,
+        // which did not show on the test machine's English session (#896).
+        if msg == WM_PAINT && GetWindowTextLengthW(hwnd) == 0 {
+            paint_name_placeholder(hwnd, parent);
         }
+        // Crossing between empty and not: the whole field again, so the
+        // placeholder is not left under the first character.
+        if (msg == WM_CHAR || msg == WM_PASTE || msg == WM_KEYDOWN) && GetWindowTextLengthW(hwnd) <= 1 {
+            let _ = InvalidateRect(Some(hwnd), None, true);
+        }
+        r
+    }
+}
+
+/// «Group name», in the panel's secondary text, where typing begins.
+fn paint_name_placeholder(edit: HWND, panel: HWND) {
+    let font = NAMING.with(|n| n.borrow().as_ref().map(|f| f.font));
+    let Some(font) = font else { return };
+    unsafe {
+        let mut rc = RECT::default();
+        SendMessageW(edit, windows::Win32::UI::Controls::EM_GETRECT, None, Some(LPARAM(&mut rc as *mut RECT as isize)));
+        let dc = GetDC(Some(edit));
+        if dc.is_invalid() {
+            return;
+        }
+        SetBkMode(dc, TRANSPARENT);
+        let colour = look::theme(dark(panel)).text_secondary;
+        draw_text(dc, HFONT(font as *mut c_void), colour, &tr(scene::msg::GROUP_NAME), rc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        ReleaseDC(Some(edit), dc);
     }
 }
 
@@ -2128,6 +2218,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             report_presence(hwnd);
             LRESULT(0)
         }
+        WM_ROOM_RECLAIM => {
+            let terminal = RECLAIMED.lock().ok().and_then(|mut r| r.take());
+            if let Some(terminal) = terminal {
+                // Brought up to date first: the tab change that hid the
+                // panel posted its own sync, and if this message overtook
+                // it the loan would still be here -- taken back by macOS's
+                // rule, and then forgotten again by the `OutOfSight` behind
+                // it. After a sync it is always the out-of-sight case.
+                sync_loan(hwnd);
+                lend(hwnd, Event::Reclaimed { terminal });
+            }
+            LRESULT(0)
+        }
         WM_ROOM_PRESENCE => {
             report_presence(hwnd);
             LRESULT(0)
@@ -2241,7 +2344,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_SETCURSOR if (lp.0 & 0xffff) as u32 == HTCLIENT => {
             let mut at = POINT::default();
             let over = unsafe { GetCursorPos(&mut at).is_ok() && ScreenToClient(hwnd, &mut at).as_bool() };
-            if over && goes_at(hwnd, at.x, at.y) {
+            if over && press_at(hwnd, at.x, at.y).is_some() {
                 unsafe {
                     let _ = SetCursor(LoadCursorW(None, IDC_HAND).ok());
                 }
@@ -2749,16 +2852,18 @@ fn click(hwnd: HWND, x: i32, y: i32) {
             return;
         }
     }
-    if goes_at(hwnd, x, y) {
-        go_to_supervisor(hwnd);
+    match press_at(hwnd, x, y) {
+        Some(scene::Press::GoThere) => go_to_supervisor(hwnd),
+        Some(scene::Press::SwitchHere) => ask_here(hwnd),
+        None => {}
     }
 }
 
-/// Whether a press at this point of the panel goes to the supervisor's own
-/// tab: it is in another window, and the point is on the right-hand side
-/// (`scene::Right::go`). What a click asks, and what the pointer's shape
-/// says before one.
-fn goes_at(hwnd: HWND, x: i32, y: i32) -> bool {
+/// What a press at this point of the panel does, if anything: go to the
+/// supervisor in another window, or bring it here from its own tab -- when
+/// the point is on the right-hand side (`scene::Right::press`). What a click
+/// asks, and what the pointer's shape says before one.
+fn press_at(hwnd: HWND, x: i32, y: i32) -> Option<scene::Press> {
     let g = geometry(hwnd);
     let (px, py) = (x as f64 / g.scale, y as f64 / g.scale);
     let detail = detail();
@@ -2770,12 +2875,41 @@ fn goes_at(hwnd: HWND, x: i32, y: i32) -> bool {
             Data::NotYet => None,
             Data::Unreadable(_) => None,
         };
-        scene::build_right(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, false, &|s| tr(s)).go
+        scene::build_right(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, false, &|s| tr(s)).press
     });
-    go.is_some_and(|go| inside(go, px - g.room.right.x, py - g.room.right.y))
+    go.filter(|(r, _)| inside(*r, px - g.room.right.x, py - g.room.right.y)).map(|(_, p)| p)
 }
 
 // --------------------------------------------------------------------- paint
+
+/// The box the side's two lines of words take, in device pixels, as
+/// `(centre x, centre y, width, height)`: the last two texts on the side --
+/// the sentence and what a press does -- each as wide as its words
+/// measure, for the shade behind them (`elsewhere_frame::paint`).
+fn words_box(dc: HDC, at: Px, items: &[Item]) -> (f64, f64, f64, f64) {
+    let texts: Vec<(&Rect, &str, &Style)> = items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Text { rect, text, style, .. } => Some((rect, text.as_str(), style)),
+            _ => None,
+        })
+        .collect();
+    let lines = &texts[texts.len().saturating_sub(2)..];
+    if lines.is_empty() {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    let measured = unsafe { measure_words(dc, at.scale, &lines.iter().map(|(_, t, s)| (*t, **s)).collect::<Vec<_>>()) };
+    // Centred in their boxes (`scene::centred_lines`): the middle of the
+    // words is the middle of the box, however wide they measure.
+    let left = lines.iter().map(|(r, _, _)| r.x).fold(f64::MAX, f64::min);
+    let right = lines.iter().map(|(r, _, _)| r.x + r.w).fold(f64::MIN, f64::max);
+    let top = lines.iter().map(|(r, _, _)| r.y).fold(f64::MAX, f64::min);
+    let bottom = lines.iter().map(|(r, _, _)| r.y + r.h).fold(f64::MIN, f64::max);
+    let width = measured.iter().copied().fold(0.0, f64::max);
+    let s = at.scale;
+    let (cx, cy) = (at.ox as f64 + (left + right) / 2.0 * s, at.oy as f64 + (top + bottom) / 2.0 * s);
+    (cx, cy, width * s, (bottom - top) * s)
+}
 
 fn rgb(c: Rgba) -> COLORREF {
     COLORREF((c.r as u32) | ((c.g as u32) << 8) | ((c.b as u32) << 16))
@@ -3016,7 +3150,28 @@ fn paint(hwnd: HWND) {
         // The right side.
         if g.room.right.w > 0.0 {
             let at = Px { scale: g.scale, ox: (g.room.right.x * g.scale).round() as i32, oy: (g.room.right.y * g.scale).round() as i32 };
-            paint_items(mem, at, &right.items, &mut fonts, t);
+            // Somewhere else, and its last frame here was kept: the side's
+            // own frame, then the frosted picture inside it, then the words
+            // over that (task 1758). Otherwise the side as it always was.
+            let frosted = match (right.press, right.items.first()) {
+                (Some((place, _)), Some(first @ Item::Round { radius, .. })) => {
+                    paint_items(mem, at, std::slice::from_ref(first), &mut fonts, t);
+                    let px = at.rect(place);
+                    let r = at.len(*radius) * 2;
+                    let clip = CreateRoundRectRgn(px.left, px.top, px.right + 1, px.bottom + 1, r, r);
+                    let drawn = crate::elsewhere_frame::paint(mem, px, clip, &detail, theme.terminal_background, words_box(mem, at, &right.items));
+                    if !clip.is_invalid() {
+                        let _ = DeleteObject(clip.into());
+                    }
+                    drawn
+                }
+                _ => false,
+            };
+            if frosted {
+                paint_items(mem, at, &right.items[1..], &mut fonts, t);
+            } else {
+                paint_items(mem, at, &right.items, &mut fonts, t);
+            }
             // The cross on the line saying a project was made, drawn as
             // every cross this host has (task 1714).
             if let Some(band) = notice_band(hwnd, g.room.right.w, g.scale, theme) {
@@ -3037,7 +3192,7 @@ fn paint(hwnd: HWND) {
             // Why it was not found, on hover (task 1741); none, and the
             // tooltip that was there goes.
             let tips: Vec<(RECT, String)> = offered.tip.iter().filter(|(_, text)| scene::draws(text)).map(|(r, text)| (at.rect(*r), text.clone())).collect();
-            crate::strip::set_tips(hwnd, tips);
+            crate::strip::set_tips(hwnd, crate::strip::Tips::ControlRoom, tips);
         }
 
         drop(fonts);

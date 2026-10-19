@@ -434,6 +434,10 @@ pub struct Drawn {
     pub closes: Vec<(usize, Rect)>,
     /// Where the plus is.
     pub add: Rect,
+    /// What the pointer resting on a place is told (task 1758, macOS's
+    /// `.help`): the plus says what it does, and a glyph waiting past an
+    /// edge says whose it is. Already translated.
+    pub tips: Vec<(Rect, String)>,
     /// The colour of the plus, the closes and the fades' ground.
     pub ink: Rgba,
     pub band: Rgba,
@@ -533,6 +537,7 @@ pub fn build(g: &Geometry, stack: &PaneStack, wears: Wears, title: &Title, view:
     }
 
     // A terminal waiting past an edge shows its glyph at that edge.
+    let mut tips: Vec<(Rect, String)> = Vec::new();
     let (left, right) = stackstrip::beyond(&g.layout, &stack.urgent, g.offset);
     let row_r = g.row();
     let top = g.tab_top();
@@ -542,7 +547,9 @@ pub fn build(g: &Geometry, stack: &PaneStack, wears: Wears, title: &Title, view:
     ] {
         let Some(m) = member.and_then(|i| stack.members.get(i)) else { continue };
         if let Some(piece) = glyph(m.shown, other_ink, theme) {
-            over.push(Item::Line { rect: Rect { x, y: top, w: side::GLYPH, h: t::HEIGHT }, parts: vec![Part { piece, side: Side::Lead, gap: 0.0 }] });
+            let rect = Rect { x, y: top, w: side::GLYPH, h: t::HEIGHT };
+            over.push(Item::Line { rect, parts: vec![Part { piece, side: Side::Lead, gap: 0.0 }] });
+            tips.push((rect, m.name.clone()));
         }
     }
 
@@ -574,7 +581,9 @@ pub fn build(g: &Geometry, stack: &PaneStack, wears: Wears, title: &Title, view:
         .filter(|tab| close_shows(view.hovered == Some(tab.member), tab.current))
         .filter_map(|tab| g.close_rect(tab.member).map(|r| (tab.member, r)))
         .collect();
-    Drawn { under, row, over, closes, add: g.add_rect(), ink: other_ink, band }
+    let add = g.add_rect();
+    tips.push((add, tr(msg::ADD)));
+    Drawn { under, row, over, closes, add, ink: other_ink, band, tips }
 }
 
 #[cfg(test)]
@@ -913,6 +922,28 @@ mod tests {
         let d = build(&geo, &s, Wears::Worker, &status_title(&s, ""), &view(look::theme(false), None), &|x| x.to_string());
         let edge = d.over.iter().any(|i| matches!(i, Item::Line { rect, parts } if rect.x == geo.row().x + t::REVERSE_ARC_RADIUS && matches!(parts[0].piece, Piece::Glyph { shown: Shown::NeedsYou, .. })));
         assert!(edge, "{:?}", d.over);
+    }
+
+    /// Task 1758, macOS's `.help`: the plus says what it does, and the
+    /// glyph waiting past an edge says whose it is -- over the very
+    /// rectangles they are drawn in, so the pointer that sees one is told.
+    #[test]
+    fn the_plus_and_a_glyph_past_an_edge_have_tips() {
+        let mut s = named(&["a", "b", "c", "d", "e", "f", "g", "h"]);
+        s.current = 6;
+        s.members[0].shown = BarShown::NeedsYou;
+        s.urgent = vec![0];
+        let geo = g(&[150.0; 8], 6, 400.0, 0.0);
+        let d = build(&geo, &s, Wears::Worker, &status_title(&s, ""), &view(look::theme(false), None), &|x| format!("<{x}>"));
+        let add = d.tips.iter().find(|(r, _)| *r == d.add).map(|(_, t)| t.as_str());
+        assert_eq!(add, Some(format!("<{}>", msg::ADD).as_str()));
+        let edge = Rect { x: geo.row().x + t::REVERSE_ARC_RADIUS, y: geo.tab_top(), w: side::GLYPH, h: t::HEIGHT };
+        let name = d.tips.iter().find(|(r, _)| *r == edge).map(|(_, t)| t.as_str());
+        assert_eq!(name, Some(s.members[0].name.as_str()));
+        // Nothing waiting past an edge: the plus alone.
+        s.urgent.clear();
+        let d = build(&geo, &s, Wears::Worker, &status_title(&s, ""), &view(look::theme(false), None), &|x| x.to_string());
+        assert_eq!(d.tips.len(), 1);
     }
 
     fn rect_of(i: &Item) -> Option<Rect> {

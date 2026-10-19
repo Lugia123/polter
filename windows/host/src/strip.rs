@@ -150,6 +150,17 @@ unsafe fn paint_marks(dc: HDC, m: &Marked, left: i32, sh: i32, scale: f64, theme
     w as i32
 }
 
+/// Who a window's tooltips are from: one list each (`set_tips`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Tips {
+    /// The tab strip's clusters of coloured dots.
+    Strip,
+    /// The control room's own window.
+    ControlRoom,
+    /// The strips of the stacks in a frame's panes.
+    Stacks,
+}
+
 /// The tooltips over the strip's clusters (task 1700,
 /// `pane-color-interface.md` §4 item 5): one tool per cluster, by its
 /// rectangle, saying which pane each dot is. Set again only when what they
@@ -157,11 +168,17 @@ unsafe fn paint_marks(dc: HDC, m: &Marked, left: i32, sh: i32, scale: f64, theme
 ///
 /// Kept per window, so the control room uses it too (task 1741: why the
 /// last session was not found, on hover).
-pub(crate) fn set_tips(frame: HWND, tips: Vec<(RECT, String)>) {
+///
+/// **And per source within a window** (task 1758). The strip and the stacks'
+/// strips are painted on the same frame window, each by its own painter
+/// with its own list, and one list per window meant the second painter's
+/// call took the first one's tips away. Each source keeps its own tooltip
+/// window, so neither has to know about the other.
+pub(crate) fn set_tips(frame: HWND, source: Tips, tips: Vec<(RECT, String)>) {
     thread_local! {
-        static TIPS: RefCell<Vec<(isize, isize, Vec<(RECT, String)>)>> = const { RefCell::new(Vec::new()) };
+        static TIPS: RefCell<Vec<((isize, Tips), isize, Vec<(RECT, String)>)>> = const { RefCell::new(Vec::new()) };
     }
-    let key = frame.0 as isize;
+    let key = (frame.0 as isize, source);
     let same = TIPS.with(|t| t.borrow().iter().any(|(f, _, was)| *f == key && was.len() == tips.len() && was.iter().zip(&tips).all(|(a, b)| a.0 == b.0 && a.1 == b.1)));
     if same {
         return;
@@ -2054,7 +2071,7 @@ pub fn paint(frame: HWND) {
 
         SelectObject(mem, old_font);
         let _ = BitBlt(hdc, 0, 0, rc.right, sh, Some(mem), 0, 0, SRCCOPY);
-        set_tips(frame, tips.into_inner());
+        set_tips(frame, Tips::Strip, tips.into_inner());
         SelectObject(mem, old);
         let _ = DeleteObject(bmp.into());
         let _ = DeleteDC(mem);
@@ -2361,8 +2378,8 @@ const _: () = {
 };
 
 /// The heading over the colour rows (`pane-color-interface.md` §6), the
-/// macOS host's msgid.
-const COLOR_HEADING: &str = n_("Color");
+/// macOS host's msgid. The terminal's own menu uses it too (`ctxmenu.rs`).
+pub(crate) const COLOR_HEADING: &str = n_("Color");
 
 /// A pane title's own first row (task 1583): the macOS host's msgid
 /// (task 1582), and the one the command palette already has.

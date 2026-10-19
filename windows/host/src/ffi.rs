@@ -14,7 +14,7 @@
 #![allow(dead_code)]
 
 use std::ffi::c_void;
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_int};
 
 pub type App = *mut c_void;
 pub type Config = *mut c_void;
@@ -219,6 +219,11 @@ pub const PROGRESS_STATE_PAUSE: i32 = 4;
 pub const COLOR_KIND_FOREGROUND: i32 = -1;
 pub const COLOR_KIND_BACKGROUND: i32 = -2;
 pub const COLOR_KIND_CURSOR: i32 = -3;
+
+// `ghostty_color_scheme_e`: what the system's light or dark is called when
+// the host tells the core (`theme::tell_core_color_scheme`, task 1778).
+pub const COLOR_SCHEME_LIGHT: i32 = 0;
+pub const COLOR_SCHEME_DARK: i32 = 1;
 
 // `ghostty_action_quit_timer_e`.
 pub const QUIT_TIMER_START: i32 = 0;
@@ -957,6 +962,14 @@ impl Action {
         self.payload[0] != 0
     }
 
+    /// `ghostty_action_config_change_s { ghostty_config_t config; }`: the
+    /// config the core has just applied -- for an app target, with its
+    /// conditional state (light or dark) already chosen. **Valid only for
+    /// the length of the callback**; read what is needed from it there.
+    pub fn as_config_change(&self) -> Config {
+        usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as Config
+    }
+
     /// A bare `c_int` payload: goto_tab, close_tab mode, fullscreen mode.
     pub fn as_i32(&self) -> i32 {
         i32::from_ne_bytes(self.payload[0..4].try_into().unwrap())
@@ -1638,6 +1651,15 @@ pub struct Api {
     /// surface target is: the core's conditional state moved and the values
     /// want recomputing, with no file read anywhere.
     pub surface_update_config: unsafe extern "C" fn(Surface, Config),
+    /// Light or dark (`COLOR_SCHEME_*`) for the whole app: the conditional
+    /// state `theme = light:...,dark:...` is chosen by, and the one every new
+    /// surface starts from. **Nothing called it before task 1778**, so the
+    /// core sat on its default -- light -- whatever Windows said.
+    pub app_set_color_scheme: unsafe extern "C" fn(App, c_int),
+    /// The same for a surface that already exists; a new one copies the
+    /// app's. Each call that changes something comes back as a soft reload
+    /// aimed at that surface (`reload.rs`).
+    pub surface_set_color_scheme: unsafe extern "C" fn(Surface, c_int),
     /// Release a config handle. The twin of `ConfigLoader::load_config`;
     /// without it every reload leaks a whole `Config`, and a reload is a key
     /// people hold down while they edit a theme.

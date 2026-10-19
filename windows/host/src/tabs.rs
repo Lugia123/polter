@@ -6521,6 +6521,22 @@ pub fn any_surface() -> Surface {
     }
 }
 
+/// Every terminal's surface in every window, collected so the caller can
+/// call into the core **after** the registry lock is released (task 1778's
+/// colour scheme: each call comes back as a reload request).
+// window-free: every surface in the process is the answer being asked for
+pub fn all_surfaces() -> Vec<Surface> {
+    with_windows(|ws| {
+        ws.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes().iter())
+            .map(|p| p.surface)
+            .filter(|s| *s != 0)
+            .map(|s| s as Surface)
+            .collect()
+    })
+}
+
 /// Do one of the host's own actions on `frame`: what a key, a menu row or a
 /// palette entry asks for when there is no terminal in front to ask the
 /// core through (`polter_control_room::reach`).
@@ -9345,6 +9361,12 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 LRESULT(0)
             }
 
+            // The colour rows in that menu are owner-drawn, and its owner is
+            // this window (`ctxmenu::show`), so their measuring and drawing
+            // come here -- the frame's procedure does the same for the
+            // strip's menu (task 1758).
+            WM_MEASUREITEM | WM_DRAWITEM | WM_MENUSELECT if crate::swatch_menu::on_owner_message(msg, wp, lp).is_some() => LRESULT(1),
+
             // **The core first** (task 1603). The press goes to it with the
             // position, and its answer decides the release: taken -- a
             // program reporting the mouse, or a `right-click-action` other
@@ -9567,6 +9589,9 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                     crate::shell::recolor(owner);
                     // Its toasts leave the notification centre, as macOS's do.
                     crate::toast::withdraw((api().surface_poltergeist_id)(s));
+                    // Used in its own tab, it may be the control room's
+                    // supervisor being taken back (task 1758).
+                    crate::control_room::pane_took_focus(s);
                 }
                 LRESULT(0)
             }

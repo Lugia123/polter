@@ -50,9 +50,15 @@ pub mod msg {
     /// The second line when the terminal is in another window: the whole
     /// of the right-hand side is the button, and pressing goes there.
     pub const GO_THERE: &str = n_("Click to go there");
+    /// The second line when the person took the terminal back to its own
+    /// tab: pressing anywhere on the side brings it here again (task 1758,
+    /// macOS's `switchHere`).
+    pub const SWITCH_HERE: &str = n_("Click to switch here");
     pub const HIDDEN_STEPS: &str = n_("{} more steps");
     /// The one button of the list: at the right end of its header.
     pub const NEW_GROUP: &str = n_("New Group");
+    /// The empty name field's placeholder: macOS's msgid (task 1758).
+    pub const GROUP_NAME: &str = n_("Group name");
     /// The first sweep of old records waits for the person (task 1511).
     /// `%@` is a size; the macOS host's sentence and its format, so the two
     /// share a translation.
@@ -1239,15 +1245,35 @@ pub fn build_message(width: f64, height: f64, theme: &Theme, scale: f64, text: S
     ]
 }
 
+/// Two lines of `line_h` with `gap` between them, centred up and down in
+/// `place` and as wide as it is less its padding: where the side puts what
+/// it says when the terminal is somewhere else (macOS's `VStack` there).
+pub fn centred_lines(place: Rect, line_h: f64, gap: f64) -> [Rect; 2] {
+    let pad = space::FRAME_TO_CONTENT;
+    let w = (place.w - 2.0 * pad).max(0.0);
+    let top = place.y + ((place.h - 2.0 * line_h - gap) / 2.0).max(pad);
+    [Rect { x: place.x + pad, y: top, w, h: line_h }, Rect { x: place.x + pad, y: top + line_h + gap, w, h: line_h }]
+}
+
+/// What pressing the right-hand side does (`Right::press`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    /// It is in another window: go there (`lend::Place::Elsewhere`).
+    GoThere,
+    /// The person took it back to its own tab: bring it here again
+    /// (`lend::Event::AskedFor`, task 1758).
+    SwitchHere,
+}
+
 /// The right-hand side: the selected group's supervisor, or a sentence
 /// saying why it is not there.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Right {
     pub items: Vec<Item>,
-    /// What a press goes to the supervisor's own tab from, when it is in
-    /// another window: the whole of this side. The second line says so and
-    /// is not the only place to press.
-    pub go: Option<Rect>,
+    /// Where a press does something, and what: the whole of this side, when
+    /// the supervisor is somewhere else. The second line says which and is
+    /// not the only place to press.
+    pub press: Option<(Rect, Press)>,
     /// Where the supervisor's own terminal goes, when it is shown here. The
     /// host puts the terminal's window exactly there; this draws only the
     /// frame round it.
@@ -2123,7 +2149,7 @@ pub fn build_right_with(
         }
         let terminal = terminal_rect_with(width, height, notice_h);
         items.push(Item::Fill { rect: terminal, color: theme.terminal_background });
-        return Right { items, go: None, terminal: Some(terminal), take_over: offered.then_some(bar) };
+        return Right { items, press: None, terminal: Some(terminal), take_over: offered.then_some(bar) };
     }
 
     let ground = theme.terminal_background;
@@ -2156,7 +2182,7 @@ pub fn build_right_with(
     let says = |items: &mut Vec<Item>, at: f64, sentence: &str| {
         items.push(Item::Text { rect: line_at(at), text: tr(sentence), style: body(theme.terminal_dim), align: Align::Left })
     };
-    let mut go = None;
+    let mut press = None;
     match detail {
         Detail_::NothingSelected => {
             items.push(Item::Text { rect: line_at(0.0), text: tr(msg::NO_SELECTION), style: body(theme.text_secondary), align: Align::Left });
@@ -2179,24 +2205,28 @@ pub fn build_right_with(
             name(&mut items, group);
             says(&mut items, 1.0, if alone.is_some() { msg::TERMINAL_GONE } else { lend_msg::GONE });
         }
-        // In its own tab, by the person's choice: said, and left there.
-        Detail_::TakenBack(loan) => {
-            name(&mut items, &loan.group);
-            says(&mut items, 1.0, if alone.is_some() { msg::TERMINAL_IN_ITS_OWN_TAB } else { msg::IN_ITS_OWN_TAB });
-        }
-        // In another window: said, with the way there.
-        Detail_::Elsewhere(loan) => {
-            name(&mut items, &loan.group);
-            says(&mut items, 1.0, if alone.is_some() { msg::TERMINAL_IN_ITS_OWN_TAB } else { msg::IN_ITS_OWN_TAB });
+        // Somewhere else -- in its own tab by the person's choice, or in
+        // another window: where it is, and what pressing anywhere on the
+        // side does, the two lines centred in the side as macOS has them
+        // (`ControlRoomElsewhere`, task 1758), with the frosted frame and
+        // its shade under them (`elsewhere`). The group's name is not
+        // repeated here: it is the row selected beside it.
+        Detail_::TakenBack(_) | Detail_::Elsewhere(_) => {
+            let (action, what) = match detail {
+                Detail_::TakenBack(_) => (msg::SWITCH_HERE, Press::SwitchHere),
+                _ => (msg::GO_THERE, Press::GoThere),
+            };
+            let sentence = if alone.is_some() { msg::TERMINAL_IN_ITS_OWN_TAB } else { msg::IN_ITS_OWN_TAB };
+            let [first, second] = centred_lines(frame, line_h, side::ROW_GAP);
+            items.push(Item::Text { rect: first, text: tr(sentence), style: body(theme.text_secondary), align: Align::Centre });
             // What a press does, in the colour a link has. It is not one:
-            // the whole side takes the press (it used to be a small button
-            // under the sentence, which had to be hit).
-            items.push(Item::Text { rect: line_at(2.0), text: tr(msg::GO_THERE), style: body(theme.attention_text), align: Align::Left });
-            go = Some(frame);
+            // the whole side takes the press.
+            items.push(Item::Text { rect: second, text: tr(action), style: body(theme.attention_text), align: Align::Centre });
+            press = Some((frame, what));
         }
         Detail_::Terminal(_) => {}
     }
-    Right { items, go, terminal: None, take_over: None }
+    Right { items, press, terminal: None, take_over: None }
 }
 
 #[cfg(test)]
@@ -3332,8 +3362,13 @@ mod tests {
 
         let r = right(&Detail_::Elsewhere(loan.clone()), Some(with), false);
         assert!(r.terminal.is_none());
-        assert!(texts(&r.items).contains(&with.id));
+        // Two lines, centred, as macOS has them (task 1758): not the name.
+        assert!(!texts(&r.items).contains(&with.id));
         assert!(texts(&r.items).contains(&msg::IN_ITS_OWN_TAB.to_string()));
+        let lines: Vec<&Rect> = r.items.iter().filter_map(|i| match i { Item::Text { rect, align: Align::Centre, .. } => Some(rect), _ => None }).collect();
+        assert_eq!(lines.len(), 2);
+        let (above, below) = (lines[0].y, 700.0 - (lines[1].y + lines[1].h));
+        assert!((above - below).abs() < 0.001, "centred up and down: {above} above, {below} below");
         assert!(texts(&r.items).contains(&msg::GO_THERE.to_string()));
         // The whole side is what is pressed, not a button inside it: the
         // press area is the frame the side is drawn in, and nothing round
@@ -3342,28 +3377,29 @@ mod tests {
             Item::Round { rect, .. } => *rect,
             other => panic!("the side's own frame comes first: {other:?}"),
         };
-        assert_eq!(r.go, Some(frame));
+        assert_eq!(r.press, Some((frame, Press::GoThere)));
         assert_eq!(r.items.iter().filter(|i| matches!(i, Item::Round { .. })).count(), 1);
-        // Taken back to its own tab in this window is not somewhere a
-        // press goes to: this host has no such press.
+        // Taken back to its own tab in this window: the whole side brings it
+        // here again, and says so (task 1758, as macOS does).
         let r = right(&Detail_::TakenBack(loan.clone()), Some(with), false);
-        assert!(r.go.is_none());
+        assert_eq!(r.press, Some((frame, Press::SwitchHere)));
+        assert!(texts(&r.items).contains(&msg::SWITCH_HERE.to_string()));
         assert!(!texts(&r.items).contains(&msg::GO_THERE.to_string()));
 
         let r = right(&Detail_::NoSupervisor { group: with.id.clone() }, Some(with), false);
-        assert!(r.go.is_none() && r.terminal.is_none());
+        assert!(r.press.is_none() && r.terminal.is_none());
         assert!(texts(&r.items).contains(&msg::NO_SUPERVISOR.to_string()));
 
         let r = right(&Detail_::SupervisorGone { group: with.id.clone() }, Some(with), false);
-        assert!(r.go.is_none() && r.terminal.is_none());
+        assert!(r.press.is_none() && r.terminal.is_none());
         assert!(texts(&r.items).contains(&lend_msg::GONE.to_string()));
 
         let r = right(&Detail_::TakenBack(loan), Some(with), false);
-        assert!(r.go.is_none() && r.terminal.is_none());
+        assert!(r.terminal.is_none());
         assert!(texts(&r.items).contains(&msg::IN_ITS_OWN_TAB.to_string()));
 
         let r = right(&Detail_::NothingSelected, None, false);
-        assert!(r.go.is_none() && r.terminal.is_none());
+        assert!(r.press.is_none() && r.terminal.is_none());
         assert_eq!(texts(&r.items), vec![msg::NO_SELECTION.to_string()]);
     }
 
@@ -3379,7 +3415,7 @@ mod tests {
         assert_eq!((t.x, t.y), (pane::SUPERVISOR_BORDER, pane::BAR_HEIGHT));
         assert_eq!(t.x + t.w, 600.0 - pane::SUPERVISOR_BORDER);
         assert_eq!(t.y + t.h, 700.0 - pane::SUPERVISOR_BORDER);
-        assert!(r.go.is_none());
+        assert!(r.press.is_none());
         // The bar says whose it is, what it is, and its state.
         let said = texts(&r.items);
         assert!(said.contains(&with.id) && said.contains(&lend_msg::SUPERVISOR.to_string()) && said.contains(&with.word), "{said:?}");
@@ -4140,8 +4176,14 @@ mod tests {
         ] {
             let texts = said(&detail, Some(&row));
             assert!(texts.contains(&sentence.to_string()), "{detail:?}: {texts:?}");
-            // Under its title, not its row's identity; nothing about a supervisor.
-            assert_eq!(texts[0], "zsh — ~/work", "{detail:?}");
+            // Under its title, not its row's identity -- except where it is
+            // somewhere else, which says only where and what a press does,
+            // centred, as macOS does (task 1758); nothing about a supervisor
+            // either way.
+            match detail {
+                Detail_::TakenBack(_) | Detail_::Elsewhere(_) => assert_eq!(texts[0], sentence, "{detail:?}"),
+                _ => assert_eq!(texts[0], "zsh — ~/work", "{detail:?}"),
+            }
             assert!(!texts.iter().any(|t| t.contains("terminal:0x") || t.contains("supervisor")), "{detail:?}: {texts:?}");
         }
         // The same for a group is said of its supervisor, under the group's name.

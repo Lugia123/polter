@@ -2,7 +2,8 @@
 #
 # Works on Windows PowerShell 5.1 (`powershell.exe`) and PowerShell 7+
 # (`pwsh.exe`). It reports **the working directory (OSC 7) and the window
-# title (OSC 2), and nothing else.** Prompt marking -- OSC 133 A/B/C/D -- is
+# title (OSC 2), and nothing else** -- besides, when the terminal asks, putting
+# this console into UTF-8 (the section after the guard below). Prompt marking -- OSC 133 A/B/C/D -- is
 # not here, and there is a section below saying why, because "just add
 # OSC 133" is the first thing anyone reading this will want to do.
 #
@@ -86,6 +87,31 @@
 
 if ($env:GHOSTTY_POWERSHELL_LOADED) { return }
 $env:GHOSTTY_POWERSHELL_LOADED = '1'
+
+# ## UTF-8 for this console, and only this one (`windows-console-utf8`)
+#
+# The terminal sets GHOSTTY_CONSOLE_UTF8=1 when the setting is on. A pseudo
+# console starts in the OEM code page (936 on a Chinese Windows), so a program
+# writing UTF-8 is shown as mojibake, and Windows PowerShell 5.1 pipes text to
+# native programs as ASCII, so Chinese arrives as `?`. The terminal cannot set
+# a pseudo console's code page from outside; the shell inside can.
+#
+# Setting `[Console]::InputEncoding` / `OutputEncoding` is what calls
+# SetConsoleCP / SetConsoleOutputCP for this console. **UTF8Encoding($false),
+# not [Text.Encoding]::UTF8**: the latter carries a byte order mark, and 5.1
+# then writes those three bytes at the start of everything it pipes into a
+# native program's stdin. Nothing here outlives the session -- no profile, no
+# registry -- which is the point.
+if ($env:GHOSTTY_CONSOLE_UTF8 -eq '1') {
+    try {
+        $GhosttyUtf8 = New-Object System.Text.UTF8Encoding $false
+        [Console]::InputEncoding = $GhosttyUtf8
+        [Console]::OutputEncoding = $GhosttyUtf8
+        $global:OutputEncoding = $GhosttyUtf8
+        Remove-Variable GhosttyUtf8
+    } catch {
+    }
+}
 
 # `isLocal` on the terminal side short-circuits on the literal `localhost`
 # and otherwise compares bytes against `GetComputerNameA`. The real name is

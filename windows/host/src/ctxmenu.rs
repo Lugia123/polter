@@ -564,6 +564,14 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
             }
             let wide: Vec<u16> = it.text.encode_utf16().chain(Some(0)).collect();
             let _ = AppendMenuW(menu, flags, ID_BASE + it.index, PCWSTR(wide.as_ptr()));
+            // The colours, right under «Copy Terminal ID» and in the same
+            // section, which is where macOS has them (task 1758,
+            // `PaneColorMenu`): a heading and two rows of dots, flat in the
+            // menu as on the tab's menu (`swatch_menu`), for this terminal --
+            // so only when there is one.
+            if ROWS[it.index].action == Some(COPY_ID) && !surface.is_null() {
+                shown += crate::swatch_menu::append(menu, &crate::i18n::tr(crate::strip::COLOR_HEADING));
+            }
         }
 
         // **Self-sufficient**, in the shape `[palette]` uses: the counts are
@@ -595,6 +603,13 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
         // `WM_COMMAND` to a window procedure that would have to know about
         // this file. **The menu's owner is the surface**, so dismissing it by
         // clicking elsewhere behaves the way every other menu does.
+        // The colour set on this terminal is the ringed dot; not told yet
+        // reads as none, as on the tab's menu.
+        let colour = crate::tabs::pane_marks_for_surface(surface)
+            .and_then(|m| m.color)
+            .and_then(|c| polter_control_room::pane_color::Color::from_c(c.index()));
+        let frame = crate::tabs::frame_of_surface(surface).unwrap_or_default();
+        crate::swatch_menu::begin(colour, crate::termcolor::chrome(frame).dark, crate::tabs::scale_of(frame));
         let chosen = TrackPopupMenu(
             menu,
             TPM_RETURNCMD | TPM_RIGHTBUTTON,
@@ -607,6 +622,19 @@ pub fn show(surface_hwnd: HWND, screen_x: i32, screen_y: i32) {
         let _ = DestroyMenu(menu);
 
         let id = chosen.0 as usize;
+        let picked = crate::swatch_menu::end(id);
+        // **Before the role ids**: they sit above every range, these too.
+        if (crate::swatch_menu::ROW_BASE..crate::swatch_menu::ROW_BASE + crate::swatch_menu::ROWS).contains(&id) {
+            match picked {
+                Some(c) => {
+                    let action = crate::swatch_menu::action(c);
+                    let ok = binding_on(surface, surface_hwnd, &action);
+                    hlogf!(surface_hwnd, "[ctx] colour {} on surface {:?} ok={}", action, surface, ok as u8);
+                }
+                None => hlogf!(surface_hwnd, "[ctx] a colour row came back with no dot meant; nothing"),
+            }
+            return;
+        }
         // **Checked before the table**, because the role ids sit above it and
         // an index computed from `ID_BASE` would run off the end of `ROWS`
         // and be reported as "an id outside the table" -- which is the one
@@ -791,6 +819,9 @@ mod tests {
     fn ids_stay_in_their_own_range() {
         assert!(ID_BASE > 0x1000);
         assert!(ID_BASE + ROWS.len() < 0xF000);
+        // The colour rows (task 1758) sit between this table and the roles.
+        assert!(ID_BASE + ROWS.len() < crate::swatch_menu::ROW_BASE);
+        assert!(crate::swatch_menu::ROW_BASE + crate::swatch_menu::ROWS < crate::personas::ID_BASE);
     }
 
     /// Every action string is a core binding name in `action:value` or bare
@@ -874,6 +905,11 @@ mod tests {
             "poltergeist_supervisor",
             "poltergeist_toggle_watch",
             "poltergeist_toggle_shielded",
+            // Right under the shield since task 1700 (ceb512eec), as macOS
+            // has it; this list was not told, and the test sat red on the
+            // main line -- seen only when the host's tests ran on Windows
+            // (task 1790).
+            "poltergeist_toggle_workers_refused",
             "poltergeist_toggle_authorise",
             "ROLES",
             "poltergeist_toggle_worker_mentions",

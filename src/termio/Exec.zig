@@ -19,6 +19,7 @@ const fastmem = @import("../fastmem.zig");
 const internal_os = @import("../os/main.zig");
 const renderer = @import("../renderer.zig");
 const shell_integration = @import("shell_integration.zig");
+const console_utf8 = @import("console_utf8.zig");
 const shell_busy = @import("shell_busy.zig");
 const terminal = @import("../terminal/main.zig");
 const termio = @import("../termio.zig");
@@ -706,6 +707,10 @@ pub const Config = struct {
     env_override: configpkg.RepeatableStringMap = .{},
     shell_integration: configpkg.Config.ShellIntegration = .detect,
     shell_integration_features: configpkg.Config.ShellIntegrationFeatures = .{},
+    /// `windows-console-utf8`. **No default**, so a caller that forgets it
+    /// does not compile, rather than quietly running every console in the
+    /// legacy code page (AGENTS.md, item 6).
+    console_utf8: bool,
     cursor_blink: ?bool = null,
     working_directory: ?[]const u8 = null,
     resources_dir: ?[]const u8,
@@ -1007,6 +1012,27 @@ const Subprocess = struct {
             break :shell integration.command;
         };
 
+        // **After the integration, because it depends on it**: PowerShell
+        // switches to UTF-8 from inside the integration script, so whether
+        // that script was injected decides what can be done (task 1778).
+        const command: configpkg.Command = if (comptime builtin.os.tag == .windows) utf8: {
+            const r = try console_utf8.apply(
+                alloc,
+                shell_command,
+                &env,
+                detected_shell,
+                cfg.console_utf8,
+            );
+            // The code page the console would otherwise have had, so a log
+            // from a Chinese machine says 936 and the mojibake it would have
+            // shown is explained by the same line.
+            const k32 = struct {
+                extern "kernel32" fn GetOEMCP() callconv(.winapi) u32;
+            };
+            log.info("{s} (OEM code page {d})", .{ r.outcome.message(), k32.GetOEMCP() });
+            break :utf8 r.command;
+        } else shell_command;
+
         // Expand a saved project's opaque history handle into whatever
         // this shell actually uses to restore its own history -- can only
         // happen here, after shell detection above, because the same
@@ -1107,7 +1133,7 @@ const Subprocess = struct {
         // Build our args list
         const args: []const [:0]const u8 = execCommand(
             alloc,
-            shell_command,
+            command,
             internal_os.passwd,
         ) catch |err| switch (err) {
             // If we fail to allocate space for the command we want to

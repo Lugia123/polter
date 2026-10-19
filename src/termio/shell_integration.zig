@@ -303,6 +303,16 @@ test "the Windows default shell is one this can detect" {
     try testing.expectEqualStrings("powershell.exe", std.fs.path.basenameWindows(absolute));
     try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "powershell.exe" }));
 
+    // PowerShell 7, which the default now prefers (task 1778): both of its
+    // locations end in a name this detects, and the MSI's -- which has a space
+    // and so reaches here quoted -- is detected through its quotes. Forward
+    // slashes in the quoted one for the POSIX `basename` reason above.
+    for (internal_os.default_shell.pwsh_locations) |loc| {
+        try testing.expectEqualStrings("pwsh.exe", std.fs.path.basenameWindows(loc.relative));
+    }
+    try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "pwsh.exe" }));
+    try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "\"C:/Program Files/PowerShell/7/pwsh.exe\"" }));
+
     // And the value both of them replaced, which is the whole reason this
     // test exists: it must still be the one that cannot be detected, so a
     // change back to it fails here rather than in a log nobody reads.

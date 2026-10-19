@@ -87,6 +87,8 @@ pub struct Strip {
     members: Vec<PaneId>,
     scale: f64,
     geometry: Geometry,
+    /// Its tooltips, in the frame window's own pixels (task 1758).
+    tips: Vec<(RECT, String)>,
 }
 
 /// The terminals of a place that holds a stack, as the last layout left it.
@@ -663,11 +665,15 @@ pub fn paint(frame: HWND, hdc: HDC, below: RECT) -> bool {
                 crate::strip::draw_cross(mem, at, colorref(pane::close_ink(drawn.wears, theme, lit)), scale);
             }
         }
+        // Every stack's tips together, and set even when there are none:
+        // a stack that has gone takes its tips with it.
+        let tips: Vec<(RECT, String)> = strips.iter().flat_map(|s| s.tips.iter().cloned()).collect();
         STRIPS.with(|all| {
             let mut all = all.borrow_mut();
             all.retain(|s| s.frame != frame.0 as isize);
             all.extend(strips);
         });
+        crate::strip::set_tips(frame, crate::strip::Tips::Stacks, tips);
         let _ = BitBlt(hdc, below.left, below.top, w, h, Some(mem), 0, 0, SRCCOPY);
         SelectObject(mem, old);
         let _ = DeleteObject(bmp.into());
@@ -792,7 +798,10 @@ unsafe fn paint_strip(frame: HWND, mem: HDC, one: &One, stack: &Stacked, wears: 
             }
         }
     }
-    Strip { frame: frame.0 as isize, place: one.pane, rect: one.rect, members: stack.members.clone(), scale, geometry }
+    // In the window's own pixels, which is where a tooltip's tool lives:
+    // the frame's corner, not the memory bitmap's.
+    let tips = drawn.tips.iter().map(|(r, text)| (px_rect(one.rect.x, one.rect.y, scale, *r), text.clone())).collect();
+    Strip { frame: frame.0 as isize, place: one.pane, rect: one.rect, members: stack.members.clone(), scale, geometry, tips }
 }
 
 /// The plus: two strokes through the middle of `r`, a font's body across.

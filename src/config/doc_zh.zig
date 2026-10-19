@@ -1498,6 +1498,55 @@ pub const entries = [_]Entry{
     .{ .key = .@"macos-auto-secure-input", .en = "If true, Ghostty on macOS will automatically enable the \"Secure Input\" feature when it detects that a password prompt is being displayed.", .zh = "设为 true 时，macOS 上的 Ghostty 检测到正在显示密码提示符时，会自动启用“安全输入”功能。" },
     .{ .key = .@"macos-secure-input-indication", .en = "If true, Ghostty will show a graphical indication when secure input is enabled. This indication is generally recommended to know when secure input is enabled.", .zh = "设为 true 时，启用安全输入后 Ghostty 会显示图形提示。一般建议保留这个提示，以便知道安全输入何时开启。" },
     .{ .key = .@"windows-secure-input-exclude-from-capture", .en = "Keep the window out of screen captures while secure input is on.", .zh = "安全输入开启期间，让窗口不出现在屏幕捕获中。" },
+    .{
+        .key = .@"windows-console-utf8",
+        .en = "Switch the console of each new terminal to UTF-8 (code page 65001).",
+        .zh = "把每个新终端的控制台切换到 UTF-8（代码页 65001）。",
+        .full_en =
+        \\Switch the console of each new terminal to UTF-8 (code page 65001).
+        \\
+        \\On a Chinese, Japanese or Korean Windows the console starts in the
+        \\system's legacy code page (936 for Simplified Chinese), and programs that
+        \\write UTF-8 -- `git`, Python, anything built with Rust or Go -- show up as
+        \\mojibake. Windows PowerShell also passes text to other programs as ASCII,
+        \\so Chinese in a pipeline arrives as `?`.
+        \\
+        \\When true, PowerShell sets its console input, console output and pipeline
+        \\encodings to UTF-8 as the shell integration loads, and `cmd.exe` is
+        \\started with `chcp 65001`. Only the terminal Polter started is changed:
+        \\your PowerShell profile, the registry and the system-wide UTF-8 setting
+        \\are left alone, and a console opened outside Polter is as it was.
+        \\
+        \\For PowerShell this needs shell integration: with
+        \\`shell-integration = none`, or a `command` that passes its own `-Command`,
+        \\nothing is changed and the log says so. `cmd.exe` is only changed when
+        \\it is started with no arguments of its own.
+        \\
+        \\A reason to turn this off is an old program that writes text in the
+        \\legacy code page, which shows up as mojibake once the console is UTF-8.
+        \\
+        \\Python reads text piped into it in the legacy code page whatever the
+        \\console says; run it with `-X utf8`, or set `PYTHONUTF8=1`, for it to
+        \\read UTF-8 there.
+        \\
+        \\Only has an effect on Windows.
+        ,
+        .full_zh =
+        \\把每个新终端的控制台切换到 UTF-8（代码页 65001）。
+        \\
+        \\中文、日文或韩文 Windows 上，控制台一开始用的是系统的旧代码页（简体中文是 936），于是输出 UTF-8 的程序——`git`、Python、用 Rust 或 Go 写的程序——显示成乱码。Windows PowerShell 还会用 ASCII 把文字传给别的程序，管道里的中文到了对面变成 `?`。
+        \\
+        \\设为 true 时，PowerShell 在加载 shell 集成时把控制台输入、控制台输出和管道的编码都设成 UTF-8，`cmd.exe` 则带着 `chcp 65001` 启动。只改 Polter 启动的这个终端：你的 PowerShell 配置文件、注册表和系统级的 UTF-8 设置都不动，在 Polter 以外打开的控制台也照旧。
+        \\
+        \\PowerShell 要靠 shell 集成才能切换：设了 `shell-integration = none`，或者 `command` 自带 `-Command` 时，什么都不改，日志里会说明。`cmd.exe` 只有在不带自己的参数启动时才会改。
+        \\
+        \\要关掉它的一个理由是：某个老程序按旧代码页输出文字，控制台换成 UTF-8 以后它会变成乱码。
+        \\
+        \\Python 读管道里传进来的文字时，不管控制台是什么代码页，都按旧代码页解码；要它在这里读 UTF-8，用 `-X utf8` 运行，或者设置 `PYTHONUTF8=1`。
+        \\
+        \\仅在 Windows 上生效。
+        ,
+    },
     .{ .key = .@"macos-applescript", .en = "If true, Ghostty exposes and handles the built-in AppleScript dictionary on macOS.", .zh = "设为 true 时，Ghostty 在 macOS 上提供并处理内置的 AppleScript 词典。" },
     .{ .key = .@"macos-icon", .en = "Customize the macOS app icon.", .zh = "自定义 macOS 应用图标。" },
     .{ .key = .@"macos-custom-icon", .en = "The absolute path to the custom icon file. Supported formats include PNG, JPEG, and ICNS.", .zh = "自定义图标文件的绝对路径。支持 PNG、JPEG 和 ICNS 格式。" },

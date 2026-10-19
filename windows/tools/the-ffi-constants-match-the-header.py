@@ -91,6 +91,7 @@ COMPLETE = {
     "ghostty_action_secure_input_e",
     "ghostty_clipboard_read_result_e",
     "ghostty_clipboard_request_e",
+    "ghostty_color_scheme_e",
     "ghostty_input_action_e",
     "ghostty_input_mods_e",
     "ghostty_input_mouse_state_e",

@@ -4853,6 +4853,10 @@ msgstr ""
 msgid "Click to go there"
 msgstr ""
 
+#: windows/control-room/src/scene.rs
+msgid "Click to switch here"
+msgstr ""
+
 #: windows/control-room/src/scene.rs:40
 #, rust-format
 msgid "{} more steps"
@@ -4860,6 +4864,10 @@ msgstr ""
 
 #: windows/control-room/src/scene.rs:42
 msgid "New Group"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:57
+msgid "Group name"
 msgstr ""
 
 #: windows/control-room/src/scene.rs:50
@@ -6251,4 +6259,40 @@ msgstr ""
 
 #: windows/settings-shell/src/close_confirm.rs:85
 msgid "At least one tab to the right still has a running process. If you close the tab the process will be killed."
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "No plugins installed"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Switch Off"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Switch On"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Switch On (needs settings first)"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Show Log (nothing written yet)"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Open Plugins Folder"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Open Plugin Logs"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Open Plugin Logs (nothing written yet)"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Takes effect after Polter restarts. Its running copy still has the settings it started with."
 msgstr ""

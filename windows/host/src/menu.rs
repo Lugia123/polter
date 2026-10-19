@@ -46,7 +46,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::i18n::{n_, tr};
-use polter_settings_shell::{Route, Section};
+use polter_settings_shell::{plugin_menu, Route, Section};
 use crate::{plogf, wlogf};
 
 // ------------------------------------------------------------------- table
@@ -74,6 +74,11 @@ struct Row {
     /// says which persona this terminal has, which only the run time knows,
     /// and a `const` cannot call a function.
     personas: bool,
+    /// This row is the Plugins submenu (task 1758); its children are built
+    /// when the menu opens, from the plugin catalogue
+    /// (`polter_settings_shell::plugin_menu`), for the reason `personas`
+    /// gives: what is installed is only known then.
+    plugins: bool,
     /// Whether the row can be picked. See `Enable`.
     ///
     /// **Greyed, not hidden** (§3.4.3): a menu item that is missing and one
@@ -137,7 +142,7 @@ fn stack_verb_of(action: Option<&str>) -> Option<polter_split_tree::stack::Verb>
 
 /// A Stack row: live while its verb has something to do.
 const fn act_stack(label: &'static str, action: &'static str) -> Row {
-    Row { label, action: Some(action), sub: None, personas: false, check: None, ready: Ready::NeedsState("a stack verb with nothing to do on the pane in front"), enabled: Enable::WhenStackOffers }
+    Row { label, action: Some(action), sub: None, personas: false, plugins: false, check: None, ready: Ready::NeedsState("a stack verb with nothing to do on the pane in front"), enabled: Enable::WhenStackOffers }
 }
 
 /// The Stack submenu, after «Resize Split» (macOS puts it after «Equalize
@@ -232,7 +237,7 @@ pub enum Flag {
 
 /// Shorthand for the common case: a labelled row that runs a core action.
 const fn act(label: &'static str, action: &'static str) -> Row {
-    Row { label, action: Some(action), sub: None, personas: false, check: None, ready: Ready::Always, enabled: Enable::Yes }
+    Row { label, action: Some(action), sub: None, personas: false, plugins: false, check: None, ready: Ready::Always, enabled: Enable::Yes }
 }
 
 /// A row the terminal's own state can legitimately refuse.
@@ -241,7 +246,7 @@ const fn act_state(label: &'static str, action: &'static str, why: &'static str)
         label,
         action: Some(action),
         sub: None,
-        personas: false,
+        personas: false, plugins: false,
         check: None,
         ready: Ready::NeedsState(why),
         enabled: Enable::Yes,
@@ -250,7 +255,7 @@ const fn act_state(label: &'static str, action: &'static str, why: &'static str)
 
 /// A row that runs a core action and shows a check mark for `flag`.
 const fn toggle(label: &'static str, action: &'static str, flag: Flag, ready: Ready) -> Row {
-    Row { label, action: Some(action), sub: None, personas: false, check: Some(flag), ready, enabled: Enable::Yes }
+    Row { label, action: Some(action), sub: None, personas: false, plugins: false, check: Some(flag), ready, enabled: Enable::Yes }
 }
 
 /// The persona submenu. **With the agent rows**, because a persona is a fact
@@ -260,7 +265,28 @@ const fn personas_row() -> Row {
         label: "",
         action: None,
         sub: None,
-        personas: true,
+        personas: true, plugins: false,
+        check: None,
+        ready: Ready::Always,
+        enabled: Enable::Yes,
+    }
+}
+
+/// The Plugins submenu, with the agent rows as on macOS (task 1758).
+///
+/// **It still names `__polter_plugin_page`**, and that is for the palette,
+/// not the menu: the palette is this table's rows, searched
+/// (`host_commands_where`), and «Plugins…» was how it reached the settings
+/// window's Plugins section. The menu builds this row as its submenu and
+/// never gives it an id of its own (`flatten` skips it); the palette offers
+/// it under this label and runs the action, as before.
+const fn plugins_row() -> Row {
+    Row {
+        label: n_("Plugins"),
+        action: Some("__polter_plugin_page"),
+        sub: None,
+        personas: false,
+        plugins: true,
         check: None,
         ready: Ready::Always,
         enabled: Enable::Yes,
@@ -268,12 +294,12 @@ const fn personas_row() -> Row {
 }
 
 const fn sep() -> Row {
-    Row { label: "", action: None, sub: None, personas: false, check: None, ready: Ready::Always, enabled: Enable::Yes }
+    Row { label: "", action: None, sub: None, personas: false, plugins: false, check: None, ready: Ready::Always, enabled: Enable::Yes }
 }
 
 /// A row that opens a nested menu.
 const fn sub(label: &'static str, rows: &'static [Row]) -> Row {
-    Row { label, action: None, sub: Some(rows), personas: false, check: None, ready: Ready::Always, enabled: Enable::Yes }
+    Row { label, action: None, sub: Some(rows), personas: false, plugins: false, check: None, ready: Ready::Always, enabled: Enable::Yes }
 }
 
 // The prefix that marks a row as the host's own, and the predicate for it,
@@ -309,7 +335,7 @@ const FILE_ROWS: &[Row] = &[
         label: n_("Reopen Closed Tab"),
         action: Some("__polter_reopen_tab"),
         sub: None,
-        personas: false,
+        personas: false, plugins: false,
         check: None,
         ready: Ready::NeedsState("needs a tab closed in this session; the row is greyed until then"),
         enabled: Enable::WhenReopenable,
@@ -520,8 +546,11 @@ const AGENTS_ROWS: &[Row] = &[
     // logged it, and no apprt was ever told.
     toggle(n_("Hold This Terminal to Its Work"), "poltergeist_toggle_held", Flag::Held, Ready::Always),
     sep(),
-    // A host row: the core knows nothing about the page.
-    act(n_("Plugins…"), "__polter_plugin_page"),
+    // Plugins ▸, macOS's submenu (task 1758): each plugin with its own
+    // settings, switch and log, then the two folders. It used to be
+    // «Plugins…», which opened the settings window and nothing else; that
+    // host action stays for the key that names it (`keys.rs`).
+    plugins_row(),
     // No "Role Library..." row of its own any more: it is the last row of
     // "Role ▸" (`personas::entries`), as on macOS, where the menu had it
     // twice (task 1604).
@@ -570,7 +599,7 @@ const HELP_ROWS: &[Row] = &[
         label: n_("Polter Help"),
         action: Some("__polter_help_docs"),
         sub: None,
-        personas: false,
+        personas: false, plugins: false,
         check: None,
         ready: Ready::HostGap("no docs opener exists yet"),
         enabled: Enable::No,
@@ -627,7 +656,7 @@ const ROOT: &[Row] = &[
         label: n_("Language…"),
         action: Some("__polter_language"),
         sub: None,
-        personas: false,
+        personas: false, plugins: false,
         check: None,
         ready: Ready::Always,
         enabled: Enable::Yes,
@@ -1354,7 +1383,7 @@ fn flatten<'a>(rows: &'a [Row], out: &mut Vec<&'a Row>, supervisor: bool) {
         // `personas::ID_BASE` instead of out of this index. Skipped here for
         // the same reason `sub` is -- an entry that took an index and then
         // appended a different number of items would shift every id after it.
-        if r.personas {
+        if r.personas || r.plugins {
             continue;
         }
         if r.action.is_some() {
@@ -1375,6 +1404,7 @@ fn build(
     rows: &[Row],
     next: &mut usize,
     personas: &mut Vec<crate::personas::Entry>,
+    plugins: &mut Vec<plugin_menu::Act>,
     supervisor: bool,
 ) -> Option<HMENU> {
     unsafe {
@@ -1411,6 +1441,12 @@ fn build(
                 );
                 continue;
             }
+            if r.plugins {
+                let Some(child) = build_plugins(frame, plugins) else { return None };
+                let wide: Vec<u16> = tr(r.label).encode_utf16().chain(Some(0)).collect();
+                let _ = AppendMenuW(menu, MF_POPUP | MF_STRING, child.0 as usize, PCWSTR(wide.as_ptr()));
+                continue;
+            }
             if r.label.is_empty() {
                 let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
                 continue;
@@ -1420,7 +1456,7 @@ fn build(
                 // walking the tree the same way this does; a submenu quietly
                 // left out here would shift every id after it, and the menu
                 // would then run the wrong command while looking right.
-                let child = build(frame, children, next, personas, supervisor)?;
+                let child = build(frame, children, next, personas, plugins, supervisor)?;
                 let wide: Vec<u16> = tr(r.label).encode_utf16().chain(Some(0)).collect();
                 let _ = AppendMenuW(
                     menu,
@@ -1465,6 +1501,151 @@ fn build(
     }
 }
 
+/// Where the Plugins rows' ids start, and how many there can be: above the
+/// widest static table and below `personas::ID_BASE` (the test
+/// `ids_stay_in_their_own_range` holds both).
+const PLUGIN_ID_BASE: usize = 0x5C00;
+const PLUGIN_ID_MAX: usize = 0x400;
+
+/// Build the Plugins popup from the catalogue as it is now, and put what
+/// each row does in `acts`, indexed by id. `None` when Windows would not
+/// give us a menu.
+fn build_plugins(frame: HWND, acts: &mut Vec<plugin_menu::Act>) -> Option<HMENU> {
+    let facts: Vec<plugin_menu::Facts> = crate::plugins::catalog()
+        .into_iter()
+        .map(|p| {
+            let params: Vec<(String, String, bool)> = p.params.iter().map(|x| (x.name.clone(), x.title.clone(), x.required)).collect();
+            let values: Vec<(String, String)> = p.values.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            plugin_menu::Facts {
+                missing: polter_settings_shell::plugins::missing_required(&params, &values).len(),
+                has_log: crate::plugins::log_path(&p.key).is_some_and(|f| f.is_file()),
+                key: p.key,
+                name: p.name,
+                events: p.events,
+                enabled: p.enabled,
+            }
+        })
+        .collect();
+    let logs_exist = crate::plugins::log_path("_").and_then(|f| f.parent().map(|d| d.is_dir())).unwrap_or(false);
+    let lines = plugin_menu::menu(&facts, logs_exist, &|s| tr(s));
+    let popup = || match unsafe { CreatePopupMenu() } {
+        Ok(m) => Some(m),
+        Err(e) => {
+            wlogf!(frame, "[menu] CreatePopupMenu for plugins failed: {e:?}");
+            None
+        }
+    };
+    let leaf = |menu: HMENU, l: &plugin_menu::Leaf, acts: &mut Vec<plugin_menu::Act>| {
+        let flags = if l.enabled { MF_STRING } else { MF_STRING | MF_GRAYED };
+        let id = PLUGIN_ID_BASE + acts.len();
+        acts.push(l.act.clone());
+        let wide: Vec<u16> = l.label.encode_utf16().chain(Some(0)).collect();
+        unsafe {
+            let _ = AppendMenuW(menu, flags, id, PCWSTR(wide.as_ptr()));
+        }
+    };
+    let menu = popup()?;
+    // **Every leaf takes the next id, greyed or not**, in `plugin_menu`'s
+    // own order -- the order `leaves` gives -- so an id is an index into
+    // `acts` whatever is greyed.
+    for line in &lines {
+        match line {
+            plugin_menu::Line::Plugin { title, checked, rows } => {
+                let child = popup()?;
+                for r in rows {
+                    leaf(child, r, acts);
+                }
+                let mut flags = MF_POPUP | MF_STRING;
+                if *checked {
+                    flags |= MF_CHECKED;
+                }
+                let wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+                unsafe {
+                    let _ = AppendMenuW(menu, flags, child.0 as usize, PCWSTR(wide.as_ptr()));
+                }
+            }
+            plugin_menu::Line::Nothing(text) => {
+                let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+                unsafe {
+                    let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, PCWSTR(wide.as_ptr()));
+                }
+            }
+            plugin_menu::Line::Separator => unsafe {
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            },
+            plugin_menu::Line::Leaf(l) => leaf(menu, l, acts),
+        }
+    }
+    wlogf!(frame, "[menu] plugins submenu: {} plugin(s), {} row(s)", facts.len(), acts.len());
+    Some(menu)
+}
+
+/// Do what a Plugins row says (task 1758, `PluginMenu.swift`'s actions).
+fn perform_plugin(frame: HWND, act: &plugin_menu::Act) {
+    use plugin_menu::Act;
+    match act {
+        Act::Settings(key) => {
+            crate::settings_win::request(Route::to(Section::Plugins, Some(key)), frame);
+            wlogf!(frame, "[menu] plugin {key}: settings");
+        }
+        Act::Switch(key, on) => {
+            // **Its own values, carried over.** The core's writer takes the
+            // whole set and an empty field removes a value, so switching
+            // with nothing would clear what the person filled in.
+            let Some(p) = crate::plugins::catalog().into_iter().find(|p| &p.key == key) else {
+                wlogf!(frame, "[menu] plugin {key}: switch {} -- not in the catalogue any more", if *on { "on" } else { "off" });
+                return;
+            };
+            match crate::plugins::configure(key, *on, &p.values) {
+                Ok(crate::plugins::Saved::WaitsForRestart) => {
+                    wlogf!(frame, "[menu] plugin {key}: switched {}, takes effect after a restart", if *on { "on" } else { "off" });
+                    // Its running copy keeps what it started with: said, as
+                    // macOS says it, rather than left to be wondered about.
+                    let title: Vec<u16> = tr(n_("Restart Polter to apply")).encode_utf16().chain(Some(0)).collect();
+                    let body: Vec<u16> = tr(n_("Takes effect after Polter restarts. Its running copy still has the settings it started with."))
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                    unsafe {
+                        MessageBoxW(Some(frame), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONINFORMATION);
+                    }
+                }
+                Ok(crate::plugins::Saved::Applied) => wlogf!(frame, "[menu] plugin {key}: switched {}", if *on { "on" } else { "off" }),
+                // Said in the log and nowhere else: macOS only beeps here,
+                // and this host makes no sound anywhere -- a beep would be
+                // its first, for the one menu row whose failure the plugins
+                // page states anyway the next time it is opened.
+                Err(why) => wlogf!(frame, "[menu] plugin {key}: could not switch {}: {why}", if *on { "on" } else { "off" }),
+            }
+        }
+        Act::ShowLog(key) => match crate::plugins::log_path(key) {
+            Some(path) => {
+                if !crate::projects_ui::reveal_file(path.to_string_lossy().into_owned(), "[menu] plugin log shown in Explorer") {
+                    wlogf!(frame, "[menu] plugin {key}: Explorer could not be started");
+                }
+            }
+            None => wlogf!(frame, "[menu] plugin {key}: no state directory, so no log"),
+        },
+        Act::OpenFolder => match crate::plugins::user_dir() {
+            Some(dir) => {
+                // Made if it is not there yet: a folder that does not open is
+                // a worse answer than an empty one.
+                let _ = std::fs::create_dir_all(&dir);
+                let ok = crate::shellopen::detached(Some(frame), "[menu] plugins folder", dir.to_string_lossy().into_owned());
+                wlogf!(frame, "[menu] plugins folder {:?} ok={ok}", dir);
+            }
+            None => wlogf!(frame, "[menu] plugins folder: no config directory"),
+        },
+        Act::OpenLogs => match crate::plugins::log_path("_").and_then(|f| f.parent().map(|d| d.to_path_buf())) {
+            Some(dir) => {
+                let ok = crate::shellopen::detached(Some(frame), "[menu] plugin logs folder", dir.to_string_lossy().into_owned());
+                wlogf!(frame, "[menu] plugin logs folder {:?} ok={ok}", dir);
+            }
+            None => wlogf!(frame, "[menu] plugin logs folder: no state directory"),
+        },
+    }
+}
+
 /// Build the persona popup: the same one the right-click menus build,
 /// submenus included (#1670). `None` when Windows would not give us a menu.
 fn build_personas(frame: HWND, entries: &[crate::personas::Entry]) -> Option<HMENU> {
@@ -1491,7 +1672,9 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
     // rebuilding it afterwards would be a second walk that can disagree with
     // the first.
     let mut personas: Vec<crate::personas::Entry> = Vec::new();
-    let Some(menu) = build(frame, ROOT, &mut next, &mut personas, supervisor) else { return };
+    // The same for the Plugins rows: what each id means, kept until the pick.
+    let mut plugins: Vec<plugin_menu::Act> = Vec::new();
+    let Some(menu) = build(frame, ROOT, &mut next, &mut personas, &mut plugins, supervisor) else { return };
 
     // Items on the root itself, which is what a person sees when it opens:
     // the groups plus the tail rows (`GROUP_COUNT` and the tail test say how
@@ -1531,6 +1714,14 @@ pub fn show(frame: HWND, screen_x: i32, screen_y: i32) {
             return;
         };
         crate::personas::perform(frame, crate::tabs::active_surface(frame), entry);
+        return;
+    }
+    // The Plugins rows, between the table and the personas.
+    if (PLUGIN_ID_BASE..PLUGIN_ID_BASE + PLUGIN_ID_MAX).contains(&id) {
+        match plugins.get(id - PLUGIN_ID_BASE) {
+            Some(act) => perform_plugin(frame, act),
+            None => wlogf!(frame, "[menu] a plugin id came back with no row behind it: {id}"),
+        }
         return;
     }
     if id < ID_BASE {
@@ -2098,6 +2289,9 @@ mod tests {
         flatten(ROOT, &mut flat, true);
         assert!(ID_BASE > 0x4000 + 0x100);
         assert!(ID_BASE + flat.len() < 0xF000);
+        // The Plugins rows (task 1758): above the table, below the personas.
+        assert!(ID_BASE + flat.len() < PLUGIN_ID_BASE);
+        assert!(PLUGIN_ID_BASE + PLUGIN_ID_MAX <= crate::personas::ID_BASE);
     }
 
     /// Binding strings have no spaces and no invented punctuation. A typo in

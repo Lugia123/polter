@@ -106,11 +106,27 @@ pub struct Lending {
     detail: Detail,
     /// The terminal the person took back, while its group stays selected.
     declined: Option<String>,
+    /// **This host's own, and the reason `Reclaimed` can mean anything
+    /// here** (task 1758). The terminal the control room had on loan and put
+    /// back because it went out of sight -- set by `OutOfSight` only when it
+    /// really did return one, kept while the control room stays hidden, and
+    /// gone the moment it is seen again.
+    ///
+    /// On macOS the control room is usually a window of its own, so the
+    /// person takes a terminal back while it is still on loan and the
+    /// control room still on screen. Here the control room and the
+    /// terminal's own tab share one window and are never both in front:
+    /// going to that tab hides the control room first, which puts the loan
+    /// back, and only then does the terminal get the keyboard there. So a
+    /// `Reclaimed` arriving with nothing on loan is honoured for exactly the
+    /// terminal that was just put back -- and never at startup, when the
+    /// control room has not shown anything yet and nothing was put back.
+    returned_on_hide: Option<String>,
 }
 
 impl Default for Lending {
     fn default() -> Self {
-        Lending { loan: None, detail: Detail::NothingSelected, declined: None }
+        Lending { loan: None, detail: Detail::NothingSelected, declined: None, returned_on_hide: None }
     }
 }
 
@@ -134,6 +150,17 @@ impl Lending {
                     self.declined = Some(terminal.clone());
                     self.detail = Detail::TakenBack(loan);
                     vec![Effect::GiveBack { terminal, to_home: true, focus: true }]
+                }
+                // Nothing on loan: the terminal was put back as the control
+                // room went out of sight, and the person is using it in its
+                // own tab now (`returned_on_hide`). Taken back, then: the
+                // control room does not fetch it again until asked.
+                None if self.returned_on_hide.as_deref() == Some(terminal.as_str())
+                    && matches!(&self.detail, Detail::TakenBack(w) if w.terminal == terminal) =>
+                {
+                    self.returned_on_hide = None;
+                    self.declined = Some(terminal);
+                    Vec::new()
                 }
                 other => {
                     self.loan = other;
@@ -160,6 +187,9 @@ impl Lending {
                 if self.declined.as_deref() == Some(terminal.as_str()) {
                     self.declined = None;
                 }
+                if self.returned_on_hide.as_deref() == Some(terminal.as_str()) {
+                    self.returned_on_hide = None;
+                }
                 let waiting_on_it = match &self.detail {
                     Detail::TakenBack(wanted) | Detail::Elsewhere(wanted) if wanted.terminal == terminal => Some(wanted.group.clone()),
                     _ => None,
@@ -182,6 +212,7 @@ impl Lending {
 
             Event::Closing => {
                 self.declined = None;
+                self.returned_on_hide = None;
                 self.detail = Detail::NothingSelected;
                 self.return_loan()
             }
@@ -189,6 +220,12 @@ impl Lending {
             Event::OutOfSight { group, supervisor, place } => {
                 self.declined = None;
                 let back = self.return_loan();
+                // What this hiding put back, if it put anything back; a
+                // later `OutOfSight` while still hidden returns nothing and
+                // leaves it be.
+                if let Some(Effect::GiveBack { terminal, .. }) = back.first() {
+                    self.returned_on_hide = Some(terminal.clone());
+                }
                 let Some(group) = group else {
                     self.detail = Detail::NothingSelected;
                     return back;
@@ -211,6 +248,9 @@ impl Lending {
     }
 
     fn select(&mut self, group: Option<String>, supervisor: Option<String>, place: Place) -> Vec<Effect> {
+        // Seen again: whatever was put back on hiding has been either taken
+        // back (`declined`) or not.
+        self.returned_on_hide = None;
         let Some(group) = group else {
             self.declined = None;
             self.detail = Detail::NothingSelected;
@@ -481,6 +521,55 @@ mod tests {
         l.handle(Event::Reclaimed { terminal: "t1".into() });
         assert_eq!(l.handle(selected("a", Some("t1"), Place::Here)), Vec::new());
         l.handle(out_of_sight("a", Some("t1"), Place::Here));
+        assert_eq!(l.handle(selected("a", Some("t1"), Place::Here)), vec![Effect::Borrow(loan("a", "t1"))]);
+    }
+
+    /// Task 1758, Windows only: the control room and the terminal's own tab
+    /// are never both in front, so going to the tab hides the control room
+    /// (the loan goes home) before the terminal there takes the keyboard.
+    /// That keyboard is the taking back: coming into sight again, the side
+    /// offers "Click to switch here" and fetches nothing until pressed.
+    #[test]
+    fn using_the_terminal_in_its_own_tab_after_the_control_room_showed_it_takes_it_back() {
+        let mut l = Lending::default();
+        l.handle(selected("a", Some("t1"), Place::Here));
+        // To its own tab: the control room goes out of sight first.
+        assert_eq!(l.handle(out_of_sight("a", Some("t1"), Place::Here)), vec![back("t1", true, false)]);
+        // A snapshot while hidden changes nothing about what was put back.
+        assert_eq!(l.handle(out_of_sight("a", Some("t1"), Place::Here)), vec![]);
+        // The terminal takes the keyboard there: taken back, nothing moves.
+        assert_eq!(l.handle(Event::Reclaimed { terminal: "t1".into() }), vec![]);
+        // Seen again: not fetched; the side says so and offers it.
+        assert_eq!(l.handle(selected("a", Some("t1"), Place::Here)), vec![]);
+        assert_eq!(l.detail(), &Detail::TakenBack(loan("a", "t1")));
+        assert_eq!(l.loan(), None);
+        // Pressed: here again.
+        assert_eq!(l.handle(Event::AskedFor), vec![Effect::Borrow(loan("a", "t1"))]);
+    }
+
+    /// The same keyboard before the control room ever showed anything --
+    /// somebody working in the supervisor's tab, then opening the control
+    /// room for the first time -- is not a taking back: nothing was put back.
+    #[test]
+    fn the_first_time_the_control_room_is_opened_it_fetches_the_supervisor_whatever_had_the_keyboard() {
+        let mut l = Lending::default();
+        // Started behind the supervisor's tab: told what is selected, nothing lent.
+        assert_eq!(l.handle(out_of_sight("a", Some("t1"), Place::Here)), vec![]);
+        assert_eq!(l.handle(Event::Reclaimed { terminal: "t1".into() }), vec![]);
+        // First seen: fetched.
+        assert_eq!(l.handle(selected("a", Some("t1"), Place::Here)), vec![Effect::Borrow(loan("a", "t1"))]);
+    }
+
+    /// Going to the tab but using another pane in it is not taking this one
+    /// back: that pane's keyboard names another terminal, and coming back
+    /// fetches this one as before.
+    #[test]
+    fn going_to_its_tab_without_using_it_does_not_take_it_back() {
+        let mut l = Lending::default();
+        l.handle(selected("a", Some("t1"), Place::Here));
+        l.handle(out_of_sight("a", Some("t1"), Place::Here));
+        // Another pane of the same tab took the keyboard: no Reclaimed for t1.
+        assert_eq!(l.handle(Event::Reclaimed { terminal: "t9".into() }), vec![]);
         assert_eq!(l.handle(selected("a", Some("t1"), Place::Here)), vec![Effect::Borrow(loan("a", "t1"))]);
     }
 

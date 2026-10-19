@@ -4324,6 +4324,35 @@ keybind: Keybinds = .{},
 /// Only has an effect on Windows.
 @"windows-secure-input-exclude-from-capture": bool = true,
 
+/// Switch the console of each new terminal to UTF-8 (code page 65001).
+///
+/// On a Chinese, Japanese or Korean Windows the console starts in the
+/// system's legacy code page (936 for Simplified Chinese), and programs that
+/// write UTF-8 -- `git`, Python, anything built with Rust or Go -- show up as
+/// mojibake. Windows PowerShell also passes text to other programs as ASCII,
+/// so Chinese in a pipeline arrives as `?`.
+///
+/// When true, PowerShell sets its console input, console output and pipeline
+/// encodings to UTF-8 as the shell integration loads, and `cmd.exe` is
+/// started with `chcp 65001`. Only the terminal Polter started is changed:
+/// your PowerShell profile, the registry and the system-wide UTF-8 setting
+/// are left alone, and a console opened outside Polter is as it was.
+///
+/// For PowerShell this needs shell integration: with
+/// `shell-integration = none`, or a `command` that passes its own `-Command`,
+/// nothing is changed and the log says so. `cmd.exe` is only changed when
+/// it is started with no arguments of its own.
+///
+/// A reason to turn this off is an old program that writes text in the
+/// legacy code page, which shows up as mojibake once the console is UTF-8.
+///
+/// Python reads text piped into it in the legacy code page whatever the
+/// console says; run it with `-X utf8`, or set `PYTHONUTF8=1`, for it to
+/// read UTF-8 there.
+///
+/// Only has an effect on Windows.
+@"windows-console-utf8": bool = true,
+
 /// If true, Ghostty exposes and handles the built-in AppleScript dictionary
 /// on macOS.
 ///
@@ -5702,13 +5731,24 @@ pub fn finalize(self: *Config) !void {
                         var buf: [std.fs.max_path_bytes]u8 = undefined;
                         var environ_map = try global.environMap();
                         defer environ_map.deinit();
-                        if (internal_os.default_shell.systemPowerShell(
+                        //
+                        // PowerShell 7 first when it is installed (task
+                        // 1778); the log names which of the two it was.
+                        if (internal_os.default_shell.systemShell(
                             global.io(),
                             &environ_map,
                             &buf,
-                        )) |path| {
-                            log.info("default shell src=system value={s}", .{path});
-                            self.command = .{ .shell = try alloc.dupeZ(u8, path) };
+                        )) |found| {
+                            log.info("default shell src=system kind={s} value={s}", .{ @tagName(found.kind), found.path });
+                            // **Quoted when it has a space**, which the
+                            // MSI's `C:\Program Files\...` does: a `shell`
+                            // value is split on unquoted whitespace
+                            // (`Exec.splitWindowsShell`), and unquoted this
+                            // would start `C:\Program` with an argument.
+                            self.command = .{ .shell = if (std.mem.indexOfScalar(u8, found.path, ' ') != null)
+                                try std.fmt.allocPrintSentinel(alloc, "\"{s}\"", .{found.path}, 0)
+                            else
+                                try alloc.dupeZ(u8, found.path) };
                         } else |err| {
                             log.warn(
                                 "no PowerShell to default to ({s}); falling back to cmd.exe. " ++

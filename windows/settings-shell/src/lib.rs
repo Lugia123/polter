@@ -30,9 +30,11 @@ pub mod inline;
 pub mod official;
 pub mod palette;
 pub mod picker;
+pub mod plugin_menu;
 pub mod projects;
 pub mod role_cli;
 pub mod search;
+pub mod shell_profiles;
 
 // ================================================================ sections
 

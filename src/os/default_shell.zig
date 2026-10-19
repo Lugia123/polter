@@ -65,6 +65,81 @@ pub fn powershellPath(
     return writer.buffered();
 }
 
+/// Which PowerShell `systemShell` found.
+pub const Kind = enum {
+    /// PowerShell 7, from either place in `pwsh_locations`.
+    pwsh,
+    /// Windows PowerShell 5.1, the operating system component.
+    windows_powershell,
+};
+
+pub const Found = struct {
+    path: []const u8,
+    kind: Kind,
+};
+
+/// Where PowerShell 7 lives when it is installed, **in the order they are
+/// tried**: the MSI (which is also what `winget` installs) under
+/// `%ProgramFiles%`, then the Microsoft Store's app execution alias.
+///
+/// Absolute for the reason `powershell_relative` gives. A `pwsh` that is only
+/// on `PATH` -- Scoop's shim, a zip unpacked somewhere -- is not found here;
+/// `command = pwsh` names it.
+pub const pwsh_locations = [_]struct { variable: []const u8, relative: []const u8 }{
+    .{ .variable = "ProgramFiles", .relative = "\\PowerShell\\7\\pwsh.exe" },
+    .{ .variable = "LOCALAPPDATA", .relative = "\\Microsoft\\WindowsApps\\pwsh.exe" },
+};
+
+/// The shell to start: **PowerShell 7 when it is installed, Windows
+/// PowerShell otherwise** (task 1778), or Windows PowerShell's own reason
+/// for not being there.
+///
+/// PowerShell 7 is preferred because its pipeline is UTF-8 where 5.1's is
+/// ASCII, and it is what somebody who installed it expects to get. Its
+/// absence is the ordinary case and is not an error: a location whose
+/// variable is unset, or whose path does not fit, is passed over the same
+/// way as one where nothing is installed.
+///
+/// `exists` answers "is this file there" -- `systemShell` passes the real
+/// check, a test passes its own, so the order is testable anywhere. The
+/// returned path points into `buf`.
+pub fn pick(
+    environ_map: *const std.process.Environ.Map,
+    buf: []u8,
+    exists: anytype,
+) Error!Found {
+    for (pwsh_locations) |loc| {
+        const root = environ_map.get(loc.variable) orelse continue;
+        var writer: std.Io.Writer = .fixed(buf);
+        writer.writeAll(root) catch continue;
+        writer.writeAll(loc.relative) catch continue;
+        const path = writer.buffered();
+        if (exists.check(path)) return .{ .path = path, .kind = .pwsh };
+    }
+
+    const path = try powershellPath(environ_map, buf);
+    if (!exists.check(path)) return error.NotPresent;
+    return .{ .path = path, .kind = .windows_powershell };
+}
+
+/// `pick` against the filesystem. **Windows only**, for the reason
+/// `systemPowerShell` gives.
+pub fn systemShell(
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    buf: []u8,
+) Error!Found {
+    comptime std.debug.assert(builtin.os.tag == .windows);
+    const Fs = struct {
+        io: std.Io,
+        fn check(self: @This(), path: []const u8) bool {
+            std.Io.Dir.accessAbsolute(self.io, path, .{}) catch return false;
+            return true;
+        }
+    };
+    return pick(environ_map, buf, Fs{ .io = io });
+}
+
 /// The absolute path of Windows PowerShell, or the reason there is none.
 ///
 /// **Windows only**, and the guard is a compile error rather than a runtime
@@ -161,4 +236,65 @@ test "the probe answers both ways" {
         Error.NotPresent,
         systemPowerShell(testing.io, &environ_map, &buf),
     );
+}
+
+/// A filesystem for `pick` that has exactly the paths it is given.
+const FakeFs = struct {
+    present: []const []const u8,
+    fn check(self: FakeFs, path: []const u8) bool {
+        for (self.present) |p| if (std.mem.eql(u8, p, path)) return true;
+        return false;
+    }
+};
+
+fn testMap() !std.process.Environ.Map {
+    var m: std.process.Environ.Map = .init(testing.allocator);
+    errdefer m.deinit();
+    try m.put("SystemRoot", "C:\\Windows");
+    try m.put("ProgramFiles", "C:\\Program Files");
+    try m.put("LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local");
+    return m;
+}
+
+const msi_pwsh = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
+const store_pwsh = "C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe";
+const winps = "C:\\Windows" ++ powershell_relative;
+
+test "pick (1778): PowerShell 7 wins over Windows PowerShell when both are there" {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var m = try testMap();
+    defer m.deinit();
+    const found = try pick(&m, &buf, FakeFs{ .present = &.{ winps, msi_pwsh } });
+    try testing.expectEqual(Kind.pwsh, found.kind);
+    try testing.expectEqualStrings(msi_pwsh, found.path);
+}
+
+test "pick (1778): the Store's pwsh is found when the MSI's is not" {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var m = try testMap();
+    defer m.deinit();
+    const found = try pick(&m, &buf, FakeFs{ .present = &.{ winps, store_pwsh } });
+    try testing.expectEqual(Kind.pwsh, found.kind);
+    try testing.expectEqualStrings(store_pwsh, found.path);
+}
+
+test "pick (1778): no PowerShell 7 is the ordinary case, and gives Windows PowerShell" {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var m = try testMap();
+    defer m.deinit();
+    // Not even the variables: a location that cannot be built is passed over.
+    _ = m.swapRemove("ProgramFiles");
+    _ = m.swapRemove("LOCALAPPDATA");
+    const found = try pick(&m, &buf, FakeFs{ .present = &.{winps} });
+    try testing.expectEqual(Kind.windows_powershell, found.kind);
+    try testing.expectEqualStrings(winps, found.path);
+}
+
+test "pick (1778): nothing at all keeps Windows PowerShell's own reason" {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var m = try testMap();
+    defer m.deinit();
+    try testing.expectError(error.NotPresent, pick(&m, &buf, FakeFs{ .present = &.{} }));
+    _ = m.swapRemove("SystemRoot");
+    try testing.expectError(error.NoSystemRoot, pick(&m, &buf, FakeFs{ .present = &.{} }));
 }

@@ -4931,6 +4931,10 @@ msgstr "界面在总管的标签页"
 msgid "Click to go there"
 msgstr "点击过去"
 
+#: windows/control-room/src/scene.rs
+msgid "Click to switch here"
+msgstr "点击切换到这里"
+
 #: windows/control-room/src/scene.rs:40
 #, rust-format
 msgid "{} more steps"
@@ -4939,6 +4943,10 @@ msgstr "还有 {} 步"
 #: windows/control-room/src/scene.rs:42
 msgid "New Group"
 msgstr "新建群"
+
+#: windows/control-room/src/scene.rs:57
+msgid "Group name"
+msgstr "群名"
 
 #: windows/control-room/src/scene.rs:50
 msgid "Starting the supervisor…"
@@ -6482,3 +6490,39 @@ msgstr "关闭右侧的标签页？"
 #: windows/settings-shell/src/close_confirm.rs:85
 msgid "At least one tab to the right still has a running process. If you close the tab the process will be killed."
 msgstr "右侧至少有一个标签页里还有进程在运行。关闭会杀掉它。"
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "No plugins installed"
+msgstr "没有已安装的插件"
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Switch Off"
+msgstr "停用"
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Switch On"
+msgstr "启用"
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Switch On (needs settings first)"
+msgstr "启用（需先完成设置）"
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Show Log (nothing written yet)"
+msgstr "查看日志（还没有内容）"
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Open Plugins Folder"
+msgstr "打开插件目录"
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Open Plugin Logs"
+msgstr "打开插件日志"
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Open Plugin Logs (nothing written yet)"
+msgstr "打开插件日志（还没有内容）"
+
+#: windows/settings-shell/src/plugin_menu.rs
+msgid "Takes effect after Polter restarts. Its running copy still has the settings it started with."
+msgstr "重启 Polter 后生效。正在运行的那一份仍用它启动时的设置。"

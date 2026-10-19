@@ -36,7 +36,7 @@ use std::sync::Mutex;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM, RECT};
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::UI::Controls::EM_SETSEL;
+use windows::Win32::UI::Controls::{EM_GETRECT, EM_SETSEL};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -122,8 +122,12 @@ struct Inbox {
     /// The surface `start_search` was aimed at, travelling with the needle so
     /// the two cannot be taken from different moments.
     owner: Option<usize>,
-    total: Option<i64>,
-    selected: Option<i64>,
+    /// `Some` when the core sent one, holding what it said: a count, or
+    /// none at all (`count_from_core`). Two layers because "this action did
+    /// not carry a total" and "the total is that there is none" are two
+    /// different things to the bar (task 1791).
+    total: Option<Option<i64>>,
+    selected: Option<Option<i64>>,
 }
 
 static INBOX: Mutex<Inbox> = Mutex::new(Inbox {
@@ -248,6 +252,15 @@ pub fn on_end(surface: Option<crate::ffi::Surface>) -> bool {
     true
 }
 
+/// A count as the core sends it (`apprt.action.SearchTotal` /
+/// `SearchSelected`'s `cval`), as the bar keeps it: a number, or **none**.
+/// The core sends `-1` for "there is no count" -- the needle was emptied,
+/// nothing is selected -- and taken as a number that was painted `-1/-1`
+/// under an empty search box (task 1791, the test machine).
+fn count_from_core(raw: i64) -> Option<i64> {
+    (raw >= 0).then_some(raw)
+}
+
 /// `GHOSTTY_ACTION_SEARCH_TOTAL` / `SEARCH_SELECTED`. **Safe from any thread.**
 ///
 /// **Filtered here rather than at the drain**, and that is the whole reason
@@ -260,11 +273,11 @@ pub fn on_count(surface: Option<crate::ffi::Surface>, total: Option<i64>, select
         return false;
     }
     if let Ok(mut inbox) = INBOX.lock() {
-        if total.is_some() {
-            inbox.total = total;
+        if let Some(t) = total {
+            inbox.total = Some(count_from_core(t));
         }
-        if selected.is_some() {
-            inbox.selected = selected;
+        if let Some(s) = selected {
+            inbox.selected = Some(count_from_core(s));
         }
     }
     post(WM_SEARCH_COUNT);
@@ -758,10 +771,10 @@ extern "system" fn search_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     drop(inbox); // never hold the lock across a Win32 call
                     STATE.with(|c| {
                         if let Some(st) = c.borrow_mut().as_mut() {
-                            if t.is_some() {
+                            if let Some(t) = t {
                                 st.total = t;
                             }
-                            if s.is_some() {
+                            if let Some(s) = s {
                                 st.selected = s;
                             }
                         }
@@ -860,16 +873,79 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
 
         let r = CallWindowProcW(old, hwnd, msg, wp, lp);
 
+        // The empty box says what it is for, as macOS's does (task 1758).
+        // Painted over the control's own drawing rather than set with
+        // `EM_SETCUEBANNER`: on the test machine's English session the cue
+        // did not show (#896, `settings_win.rs`).
+        if msg == WM_PAINT && GetWindowTextLengthW(hwnd) == 0 {
+            paint_placeholder(hwnd);
+        }
+
         // After the control has applied the edit, so what we read is what the
         // user now sees.
         if msg == WM_CHAR || msg == WM_PASTE || (msg == WM_KEYDOWN && wp.0 as u16 == VK_BACK.0) {
             push_needle();
+            // Crossing between empty and not: the whole box again, so the
+            // placeholder is neither left behind under the first character
+            // nor missing after the last one is deleted.
+            if GetWindowTextLengthW(hwnd) <= 1 {
+                let _ = InvalidateRect(Some(hwnd), None, true);
+            }
         }
         r
     }
 }
 
 // ------------------------------------------------------------------- paint
+
+/// «Search», dim, where the needle would start: inside the control's own
+/// formatting rectangle, so it sits exactly where typing begins.
+fn paint_placeholder(edit: HWND) {
+    let Some(wins) = windows() else { return };
+    unsafe {
+        let mut rc = RECT::default();
+        SendMessageW(edit, EM_GETRECT, None, Some(LPARAM(&mut rc as *mut RECT as isize)));
+        let dc = GetDC(Some(edit));
+        if dc.is_invalid() {
+            return;
+        }
+        let old_font = SelectObject(dc, wins.font.into());
+        SetBkMode(dc, TRANSPARENT);
+        let parent = GetParent(edit).unwrap_or_default();
+        SetTextColor(dc, COLORREF(theme::for_window(parent).dim()));
+        // Never an empty string to `DrawTextW`: USER32 reads through the
+        // pointer of an empty slice (#1439). A catalogue that answered ""
+        // would otherwise be a crash rather than a missing word.
+        let text = crate::i18n::tr(crate::i18n::n_("Search"));
+        if !text.is_empty() {
+            let mut wide: Vec<u16> = text.encode_utf16().collect();
+            DrawTextW(dc, &mut wide, &mut rc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        SelectObject(dc, old_font);
+        ReleaseDC(Some(edit), dc);
+    }
+}
+
+/// An up or a down chevron centred in `r`, in lines rather than a glyph:
+/// macOS's ⌃ ⌄ (`chevron.up` / `chevron.down`), which no font on a Windows
+/// machine can be counted on to have (task 1758).
+unsafe fn draw_chevron(hdc: HDC, r: &RECT, up: bool, colour: u32, sc: &dyn Fn(i32) -> i32) {
+    unsafe {
+        let cx = (r.left + r.right) / 2;
+        let cy = (r.top + r.bottom) / 2;
+        let (half_w, half_h) = (sc(4), sc(2));
+        let (tip, ends) = if up { (cy - half_h, cy + half_h) } else { (cy + half_h, cy - half_h) };
+        let pen = CreatePen(PS_SOLID, sc(1).max(1), COLORREF(colour));
+        let old = SelectObject(hdc, pen.into());
+        let _ = MoveToEx(hdc, cx - half_w, ends, None);
+        let _ = LineTo(hdc, cx, tip);
+        let _ = LineTo(hdc, cx + half_w, ends);
+        // `LineTo` leaves out its last pixel; this puts it back.
+        let _ = LineTo(hdc, cx + half_w + 1, ends);
+        SelectObject(hdc, old);
+        let _ = DeleteObject(pen.into());
+    }
+}
 
 fn paint(hwnd: HWND) {
     unsafe {
@@ -917,21 +993,40 @@ fn paint(hwnd: HWND) {
                 DrawTextW(hdc, &mut wide, &mut tr, DT_RIGHT | DT_SINGLELINE);
             }
 
-            SetTextColor(hdc, COLORREF(theme::for_window(hwnd).dim()));
-            for (x, glyph) in [(prev_x, "\u{2039}"), (next_x, "\u{203A}"), (close_x, "\u{00D7}")] {
-                let mut g: Vec<u16> = glyph.encode_utf16().collect();
-                let mut br = RECT {
-                    left: x,
-                    top: sc(PAD),
-                    right: x + sc(BTN_W),
-                    bottom: rc.bottom - sc(PAD - 2),
-                };
-                DrawTextW(hdc, &mut g, &mut br, DT_CENTER | DT_SINGLELINE);
-            }
+            let dim = theme::for_window(hwnd).dim();
+            SetTextColor(hdc, COLORREF(dim));
+            let button = |x: i32| RECT {
+                left: x,
+                top: sc(PAD),
+                right: x + sc(BTN_W),
+                bottom: rc.bottom - sc(PAD - 2),
+            };
+            // Previous is up and next is down, as macOS lays them out
+            // (task 1758); the close cross stays a glyph.
+            draw_chevron(hdc, &button(prev_x), true, dim, &sc);
+            draw_chevron(hdc, &button(next_x), false, dim, &sc);
+            let mut g: Vec<u16> = "\u{00D7}".encode_utf16().collect();
+            let mut br = button(close_x);
+            DrawTextW(hdc, &mut g, &mut br, DT_CENTER | DT_SINGLELINE);
 
             SelectObject(hdc, old_font);
         });
 
         let _ = EndPaint(hwnd, &ps);
+    }
+}
+
+#[cfg(test)]
+mod count_tests {
+    use super::*;
+
+    /// Task 1791: the core's `-1` is no count, never the number -1; a real
+    /// count, zero included, is kept as it came.
+    #[test]
+    fn minus_one_from_the_core_is_no_count() {
+        assert_eq!(count_from_core(-1), None);
+        assert_eq!(count_from_core(i64::MIN), None);
+        assert_eq!(count_from_core(0), Some(0));
+        assert_eq!(count_from_core(2), Some(2));
     }
 }

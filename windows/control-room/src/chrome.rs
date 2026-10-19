@@ -136,6 +136,20 @@ pub fn client_inset(maximized: bool, fullscreen: bool, overhang: i32) -> i32 {
 /// process; a second window closed from its own lit close button never got
 /// the message that the pointer had left, and the first window went on
 /// painting its close button red.
+/// The terminal's configured background, as the window should take it
+/// when no program has set one (OSC 11): **the one the core last applied**
+/// -- the config with its conditional state, light or dark, already chosen
+/// (`App.updateConfig`'s `config_change`) -- and only without that, the
+/// one in the config as it was loaded.
+///
+/// Task 1778: the loaded config resolves `theme = light:X,dark:Y` once, at
+/// the conditional state it was loaded in (light), and never again. Read
+/// from that alone, the strip stayed light in dark mode while the
+/// terminal under it went dark.
+pub fn configured_ground(applied: Option<u32>, loaded: Option<u32>) -> Option<u32> {
+    applied.or(loaded)
+}
+
 pub fn lit_button(hover: Option<(isize, usize)>, me: isize) -> Option<usize> {
     hover.filter(|(w, _)| *w == me).map(|(_, b)| b)
 }
@@ -143,6 +157,23 @@ pub fn lit_button(hover: Option<(isize, usize)>, me: isize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 1778: what the core applied wins over what was loaded, and
+    /// follows it each way; nothing applied yet is the loaded one.
+    #[test]
+    fn the_ground_follows_the_scheme_the_core_applied() {
+        let (light, dark) = (0x00FF_FFFF, 0x0000_0000);
+        // Loaded at the default (light) state, never re-read.
+        assert_eq!(configured_ground(None, Some(light)), Some(light));
+        // Windows went dark: the core applied the dark half.
+        assert_eq!(configured_ground(Some(dark), Some(light)), Some(dark));
+        assert!(Chrome::of(configured_ground(Some(dark), Some(light)).map(from_bgr)).dark);
+        // And back.
+        assert_eq!(configured_ground(Some(light), Some(light)), Some(light));
+        assert!(!Chrome::of(configured_ground(Some(light), Some(light)).map(from_bgr)).dark);
+        // Nothing readable anywhere: none, and the chrome is dark by rule.
+        assert_eq!(configured_ground(None, None), None);
+    }
 
     #[test]
     fn fullscreen_takes_the_whole_window_even_from_maximised() {

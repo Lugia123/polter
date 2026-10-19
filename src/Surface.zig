@@ -929,6 +929,7 @@ pub fn init(
             .env_override = config.env,
             .shell_integration = config.@"shell-integration",
             .shell_integration_features = config.@"shell-integration-features",
+            .console_utf8 = config.@"windows-console-utf8",
             .cursor_blink = config.@"cursor-style-blink",
             .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
             .resources_dir = global.resourcesDir().host(),

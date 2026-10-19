@@ -1143,7 +1143,18 @@ fn save_new() {
 /// for the same reason.
 fn reveal_selected() {
     let Some((_, item)) = dir_and_selected() else { return };
-    let path = pj::reveal_path(&item.path.to_string_lossy());
+    if !reveal_file(item.path.to_string_lossy().into_owned(), "[projects-ui] show in Explorer") {
+        say(tr("Explorer could not be started."), true);
+    }
+}
+
+/// Explorer, open on `path`'s folder with `path` selected -- the way
+/// `reveal_selected` describes, for anybody who has a file to show
+/// (the Plugins menu's Show Log, task 1758). False when the thread that
+/// does it could not be started; what Explorer then did is in the log line,
+/// which `tag` begins.
+pub(crate) fn reveal_file(path: String, tag: &'static str) -> bool {
+    let path = pj::reveal_path(&path);
     let spawned = std::thread::Builder::new().name("polter-reveal".into()).spawn(move || {
         crate::name_this_thread("polter-reveal");
         let how = match reveal_with_shell(&path) {
@@ -1154,12 +1165,10 @@ fn reveal_selected() {
                 format!("SHOpenFolderAndSelectItems failed ({e}); explorer /select spawned={}", r.is_ok())
             }
         };
-        // process-wide: the projects section of the one settings window
-        crate::plogf!("[projects-ui] show in Explorer {:?}: {how}", path);
+        // process-wide: a file shown in Explorer, from wherever asked
+        crate::plogf!("{tag} {:?}: {how}", path);
     });
-    if spawned.is_err() {
-        say(tr("Explorer could not be started."), true);
-    }
+    spawned.is_ok()
 }
 
 /// The shell's call, on the calling thread (which it initialises for COM).

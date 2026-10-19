@@ -93,7 +93,7 @@ W1 已改完。
 | `AGENTS_ROWS` | 不让 agent 碰此终端 | `Keep Agents Out of This Terminal` | `b55204b5f` |
 | `AGENTS_ROWS` | 允许总管替此终端点授权框（含「不再询问」） | `Let a Supervisor Answer Prompts Here` | **新定** |
 | `AGENTS_ROWS` | 保持这个终端在岗 | `Hold This Terminal to Its Work` | `b55204b5f` |
-| `AGENTS_ROWS` | 插件… | `Plugins…` | `b55204b5f` |
+| `AGENTS_ROWS` | 插件 ▸（子菜单，task 1758；命令面板里仍打开插件页） | `Plugins` | mac `PluginMenu.swift` |
 | `AGENTS_ROWS` | 语言… | `Language…` | `b55204b5f` |
 | `GOTO_SPLIT_ROWS` | 上 | `Up` | `b55204b5f` |
 | `GOTO_SPLIT_ROWS` | 下 | `Down` | `b55204b5f` |

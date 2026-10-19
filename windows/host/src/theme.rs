@@ -97,6 +97,45 @@ pub fn system_light() -> bool {
     ))
 }
 
+/// Tell the core whether Windows is light or dark: the app, so every new
+/// surface starts on that side of `theme = light:...,dark:...`, and every
+/// surface that already exists (task 1778).
+///
+/// **Nothing told it before**, and the core's default is light: a person in
+/// dark mode with a light/dark theme pair got the light one, and switching
+/// Windows changed nothing. The strip needs no call of its own -- it follows
+/// the terminal's background (`termcolor::chrome`), which this changes.
+///
+/// The core ignores a scheme it already has, so calling this once per window
+/// on one `WM_SETTINGCHANGE` costs nothing past the first. The surfaces are
+/// collected first and told outside the window registry's lock: each change
+/// comes back as a reload request, and that path must not find the lock held.
+pub fn tell_core_color_scheme(why: &str) {
+    const _: () = assert!(crate::ffi::COLOR_SCHEME_LIGHT == 0 && crate::ffi::COLOR_SCHEME_DARK == 1);
+    let app = crate::app_handle();
+    if app.is_null() {
+        // process-wide: the app, and every window with it, is what is told
+        crate::plogf!("[theme] color scheme ({why}): no app yet; not told");
+        return;
+    }
+    let scheme = polter_settings_shell::palette::core_color_scheme(read_dword(
+        w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+        w!("AppsUseLightTheme"),
+    ));
+    let api = crate::api();
+    unsafe { (api.app_set_color_scheme)(app, scheme) };
+    let surfaces = crate::tabs::all_surfaces();
+    for s in &surfaces {
+        unsafe { (api.surface_set_color_scheme)(*s, scheme) };
+    }
+    // process-wide: one light or dark for the app and every surface in it
+    crate::plogf!(
+        "[theme] color scheme ({why}): {} -> app and {} surface(s)",
+        if scheme == crate::ffi::COLOR_SCHEME_DARK { "dark" } else { "light" },
+        surfaces.len()
+    );
+}
+
 fn read_dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
     let mut value = 0u32;
     let mut len = std::mem::size_of::<u32>() as u32;

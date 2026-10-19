@@ -92,6 +92,18 @@ pub fn system_light(apps_use_light: Option<u32>) -> bool {
     apps_use_light != Some(0)
 }
 
+/// The same reading as the core's `ghostty_color_scheme_e`: `0` light, `1`
+/// dark (task 1778). The host tells the core this so that
+/// `theme = light:...,dark:...` follows Windows; an absent value is light,
+/// for the reason [`system_light`] gives.
+pub fn core_color_scheme(apps_use_light: Option<u32>) -> i32 {
+    if system_light(apps_use_light) {
+        0
+    } else {
+        1
+    }
+}
+
 /// The link colour from the system's accent: the `AccentPalette` value,
 /// eight RGBA entries from the lightest shade to the darkest. **On a dark
 /// ground the second-lightest, on a light one the first darker shade** --
@@ -169,6 +181,17 @@ mod tests {
         assert!(system_light(None));
         assert!(system_light(Some(1)));
         assert!(!system_light(Some(0)));
+    }
+
+    /// Task 1778: the number the core gets. `GHOSTTY_COLOR_SCHEME_LIGHT` is
+    /// 0 and `_DARK` is 1 (`ghostty.h`); the host's `ffi::COLOR_SCHEME_*`
+    /// are held to the header by the ffi-constants gate and to these by a
+    /// compile-time assert in `theme.rs`.
+    #[test]
+    fn the_core_hears_dark_only_when_windows_says_dark() {
+        assert_eq!(core_color_scheme(Some(0)), 1);
+        assert_eq!(core_color_scheme(Some(1)), 0);
+        assert_eq!(core_color_scheme(None), 0);
     }
 
     /// The default blue's `AccentPalette`, as Windows 11 writes it.

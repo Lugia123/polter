@@ -106,6 +106,7 @@ mod control_room_keys;
 mod control_room_source;
 mod ctxmenu;
 mod divider;
+mod elsewhere_frame;
 mod dnd;
 mod ffi;
 mod keybinds;
@@ -3863,6 +3864,13 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // The config is one document for the process, and a per-window
             // notification here would invite a second, per-window copy of a fact
             // there is only one of.
+            // **The app's own carries the config with light or dark chosen**
+            // (`App.updateConfig`); its background is what the chrome takes
+            // from now on (task 1778). Read here, while the pointer is good.
+            if target_surface(&target).is_none() {
+                // carries no terminal: the app's applied config is one for every window
+                crate::divider::note_applied_config(action.as_config_change());
+            }
             // carries no terminal: a reload is not about a surface, even when a
             // surface's keybinding is what asked for it
             reload::on_config_change();
@@ -5060,6 +5068,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
             WM_SETTINGCHANGE if crate::theme::is_colour_change(lp) => {
+                // Every frame gets this message and each one tells the core;
+                // the core ignores a scheme it already has, so the second
+                // window's call changes nothing (`App.colorSchemeEvent`).
+                crate::theme::tell_core_color_scheme("ImmersiveColorSet");
                 crate::shell::recolor_now(hwnd);
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
@@ -5691,6 +5703,8 @@ fn load_api() -> Option<Api> {
             config_get: sym!(internal, "ghostty_config_get"),
             app_update_config: sym!(internal, "ghostty_app_update_config"),
             surface_update_config: sym!(internal, "ghostty_surface_update_config"),
+            app_set_color_scheme: sym!(internal, "ghostty_app_set_color_scheme"),
+            surface_set_color_scheme: sym!(internal, "ghostty_surface_set_color_scheme"),
             config_free: sym!(internal, "ghostty_config_free"),
             app_new: sym!(internal, "ghostty_app_new"),
             app_tick: sym!(internal, "ghostty_app_tick"),
@@ -7474,6 +7488,9 @@ fn main() {
     }
     APP.store(app, Ordering::Release);
     logf!("ghostty_app_new -> {:?}", app);
+    // Before the first surface, so it starts on the right side of
+    // `theme = light:...,dark:...` instead of being reloaded onto it.
+    crate::theme::tell_core_color_scheme("startup");
 
     // ---- windows ----
     //

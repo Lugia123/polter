@@ -156,11 +156,25 @@ fn dpi_of(hwnd: HWND) -> i32 {
     unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96) as i32
 }
 
-/// The terminal's `background`, read when it is painted so a reloaded config
-/// is followed. `None` when it cannot be read; the caller then paints the
-/// whole window the divider colour, which is the old look, not a hole.
-pub(crate) fn terminal_background() -> Option<COLORREF> {
-    let cfg = crate::config_handle();
+/// The `background` the core last applied app-wide, with its conditional
+/// state chosen (task 1778): `NONE` until a `config_change` for the app has
+/// said one. Kept as a `u32` colour with a flag bit, so one atomic says both
+/// whether there is one and what it is.
+static APPLIED_BACKGROUND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(NONE);
+const NONE: u64 = 0;
+const SAID: u64 = 1 << 32;
+
+/// The app's `config_change` (`main.rs`): note the `background` of the
+/// config the core just applied. **Called during the callback**, the only
+/// time `cfg` is valid. A config it cannot be read from leaves what was
+/// noted before.
+pub(crate) fn note_applied_config(cfg: crate::ffi::Config) {
+    if let Some(c) = read_background(cfg) {
+        APPLIED_BACKGROUND.store(SAID | c.0 as u64, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn read_background(cfg: crate::ffi::Config) -> Option<COLORREF> {
     if cfg.is_null() {
         return None;
     }
@@ -170,6 +184,21 @@ pub(crate) fn terminal_background() -> Option<COLORREF> {
         (crate::api().config_get)(cfg, &mut c as *mut _ as *mut std::ffi::c_void, key.as_ptr(), key.len())
     };
     ok.then(|| COLORREF(c.r as u32 | (c.g as u32) << 8 | (c.b as u32) << 16))
+}
+
+/// The terminal's `background`, read when it is painted so a reloaded config
+/// is followed. `None` when it cannot be read; the caller then paints the
+/// whole window the divider colour, which is the old look, not a hole.
+///
+/// **The applied one first** (`polter_control_room::chrome::configured_ground`):
+/// the config this host holds was loaded at the default conditional state
+/// and resolves `theme = light:X,dark:Y` to its light half for ever, so a
+/// strip read from it alone stayed light in dark mode (task 1778, the test
+/// machine).
+pub(crate) fn terminal_background() -> Option<COLORREF> {
+    let applied = APPLIED_BACKGROUND.load(std::sync::atomic::Ordering::Acquire);
+    let applied = (applied & SAID != 0).then_some(applied as u32);
+    polter_control_room::chrome::configured_ground(applied, read_background(crate::config_handle()).map(|c| c.0)).map(COLORREF)
 }
 
 /// `split-divider-color`, read when a divider is painted so a reloaded
