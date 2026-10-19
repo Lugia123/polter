@@ -2042,7 +2042,10 @@ pub const StreamHandler = struct {
 /// Erases that really remove what the viewport shows -- `3J`, a full
 /// reset, scrollback pruning -- still move it, inside `PageList`, because
 /// there is nothing left where it was.
-fn eraseDisplayComplete(t: *terminal.Terminal, protected: bool) void {
+/// `pub` for `scrollback.zig`'s test of a reopened pane on Windows (task
+/// 1785): the ED2 ConPTY opens with goes through here, not through the
+/// terminal's own stream.
+pub fn eraseDisplayComplete(t: *terminal.Terminal, protected: bool) void {
     switch (t.screens.active.pages.viewport) {
         .active => t.scrollViewport(.{ .bottom = {} }),
         .top, .pin => {},

@@ -355,10 +355,13 @@ fn lastNonEmptyActiveRow(dst: *terminalpkg.Screen) ?terminalpkg.size.CellCountIn
 /// its *end*, next to the marker, rather than its beginning.
 ///
 /// The viewport is not a promise: anything that scrolls to the bottom takes
-/// it back, which is ordinary and right. On Windows that happens
-/// immediately, because ConPTY's opening `ESC [ 2 J` scrolls to the bottom
-/// before it erases (`stream_handler.zig`), so this is visible on macOS and
-/// GTK and not there. The marker is in history either way.
+/// it back, which is ordinary and right -- a key pressed, by default.
+/// **ConPTY's opening `ESC [ 2 J` no longer does** (task 1785, issue #90):
+/// it used to, because ED2 scrolled to the bottom before it erased, and so
+/// on Windows a reopened pane opened on a new prompt with all of this one
+/// scroll up. Since task 1776 an ED2 with the viewport in history leaves it
+/// there (`stream_handler.eraseDisplayComplete`), and the pane opens on the
+/// restored tail on every platform.
 fn showRestoredTail(to: *Terminal, pushed: usize) void {
     if (pushed == 0) return;
     if (to.rows <= 2) return;
@@ -1061,6 +1064,47 @@ test "a reopened pane opens on what it was showing, not below it" {
     );
     defer testing.allocator.free(after);
     try testing.expect(std.mem.indexOf(u8, after, "NEWSHELL") != null);
+}
+
+test "1785: a reopened pane on Windows still opens on what it was showing after ConPTY's ED2" {
+    // The order on Windows (#826, issue #90): the restore, then ConPTY's
+    // opening bytes, which erase the screen, before PowerShell draws its
+    // prompt. The erase goes through termio's handler -- the one that
+    // decides where the viewport goes -- not the terminal's own stream.
+    const stream_handler = @import("stream_handler.zig");
+    var buf: [128]u8 = undefined;
+    const path = try testPath(&buf);
+    defer testCleanup(path);
+    {
+        var source = try testSource(80, 24, 30);
+        defer source.deinit(testing.allocator);
+        try testSave(&source, path);
+    }
+
+    var t = try testFresh(80, 24);
+    defer t.deinit(testing.allocator);
+    var s = t.vtStream();
+    defer s.deinit();
+    try testing.expect(restore(testing.allocator, testing.io, path, &t, &s) == .restored);
+    // The fixture is the reading: the restore left it on the restored tail.
+    try testing.expect(t.screens.get(.primary).?.pages.viewport != .active);
+
+    // ConPTY's first frame: hide the cursor, erase, home.
+    s.nextSlice("\x1b[?25l");
+    stream_handler.eraseDisplayComplete(&t, false);
+    s.nextSlice("\x1b[m\x1b[H\x1b[?25h");
+    // PowerShell's prompt, as output: the default `scroll-to-bottom` does
+    // not follow output.
+    s.nextSlice("PS C:\\> ");
+
+    try testing.expect(t.screens.get(.primary).?.pages.viewport != .active);
+    const viewport = try t.screens.get(.primary).?.dumpStringAlloc(
+        testing.allocator,
+        .{ .viewport = .{} },
+    );
+    defer testing.allocator.free(viewport);
+    try testing.expect(std.mem.indexOf(u8, viewport, "L000029") != null);
+    try testing.expect(std.mem.indexOf(u8, viewport, boundary_msgid) != null);
 }
 
 test "a snapshot with a blank screen gets no marker and no scroll" {
