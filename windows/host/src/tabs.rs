@@ -400,6 +400,10 @@ pub enum Op {
     /// Where the new tab's shell starts (`None` means wherever the asking
     /// terminal is standing, which is what a keybinding means).
     NewTab(Option<String>),
+    /// A new tab running `command` instead of the configured shell, in
+    /// `cwd`: a row of the strip's shell list (task 1804). Named fields, for
+    /// the reason `NewTab` the struct gives -- two strings side by side.
+    NewTabRunning { command: String, cwd: Option<String> },
     /// Rearrange this tab's panes into a shape given from outside.
     ///
     /// **Queued like every other mutation**, and for the sharper of the two
@@ -578,6 +582,7 @@ impl Op {
     pub fn name(&self) -> &'static str {
         match self {
             Op::NewTab(_) => "NewTab",
+            Op::NewTabRunning { .. } => "NewTabRunning",
             Op::ApplyLayout(..) => "ApplyLayout",
             Op::ArrangeLayout(..) => "ArrangeLayout",
             Op::MoveTabForTool(..) => "MoveTabForTool",
@@ -2969,8 +2974,8 @@ pub struct NewTab {
     /// caller but a project load. Passed through unread: the core decides
     /// whether the file is there and usable, and removes it when it is not.
     pub scrollback: Option<String>,
-    /// What to run instead of the configured shell. `polter +chat` for the
-    /// chat surface; nothing else uses it yet.
+    /// What to run instead of the configured shell: `polter +chat` for the
+    /// chat surface, and a row of the strip's shell list (task 1804).
     pub command: Option<String>,
     /// **What makes a chat surface different from any other terminal**: it
     /// tells the core that requests from this surface speak for the person at
@@ -7102,6 +7107,13 @@ pub fn is_frame(hwnd: HWND) -> bool {
     with_windows(|ws| ws.iter().any(|w| w.frame == key))
 }
 
+/// Where the pane typing goes to in `frame` last said it was standing: what
+/// a tab opened from this window's strip starts in (task 1804). None when
+/// the tab in front is not a terminal's, or its shell never said.
+pub fn typing_cwd(frame: HWND) -> Option<String> {
+    window(frame).and_then(|w| w.typing_pane().and_then(|p| p.cwd.clone()))
+}
+
 /// The pane window of the focused pane of `frame`'s active tab -- where typing
 /// goes in that window (#1012).
 pub fn active_pane_hwnd(frame: HWND) -> Option<HWND> {
@@ -8204,6 +8216,10 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
         match op {
             Op::NewTab(cwd) => {
                 create_tab_in(frame, app, hinst, cwd);
+            }
+            Op::NewTabRunning { command, cwd } => {
+                wlogf!(frame, "[tab] new tab running {command:?} in {cwd:?}");
+                create_tab_with(frame, app, hinst, NewTab { command: Some(command), cwd, ..Default::default() });
             }
             Op::NewWindow => {
                 // **A window and then a tab in it, and the log says which of

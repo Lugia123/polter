@@ -530,6 +530,8 @@
 "In points; may be fractional." = "In points; may be fractional.";
 "Line Height" = "Line Height";
 "Extra height per line, in points or percent (e.g. 20%)." = "Extra height per line, in points or percent (e.g. 20%).";
+"Default Shell" = "Default Shell";
+"The shell a new tab starts." = "The shell a new tab starts.";
 "Scrollback Lines" = "Scrollback Lines";
 "How many lines of history each terminal keeps." = "How many lines of history each terminal keeps.";
 "Copy on Select" = "Copy on Select";

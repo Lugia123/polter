@@ -15,6 +15,9 @@
 //! are the same shell and the menu's "default" mark can be worked out without
 //! asking the core.
 
+use crate::general::{Control, Item, Source};
+use crate::n_;
+
 /// Which kind of shell a row is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -71,13 +74,13 @@ pub fn profiles(m: &Machine) -> Vec<Profile> {
     if let Some(p) = m.windows_powershell {
         out.push(Profile {
             kind: Kind::WindowsPowerShell,
-            name: "Windows PowerShell".into(),
+            name: n_("Windows PowerShell").into(),
             command: quote(p),
         });
     }
     out.push(Profile {
         kind: Kind::Cmd,
-        name: "Command Prompt".into(),
+        name: n_("Command Prompt").into(),
         command: "cmd.exe".into(),
     });
     for name in wsl_names(m.wsl) {
@@ -201,6 +204,109 @@ fn normalize(s: &str) -> String {
         s
     };
     s.replace('/', "\\").to_lowercase()
+}
+
+// ============================================================ the menu
+
+/// One line of the shell list under the strip's chevron (task 1804).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Line {
+    /// Row `index` of [`profiles`], with its text: the name, then -- after
+    /// a tab, where a menu puts what goes on the right -- "WSL" for a
+    /// distribution and "Default" for the shell a new tab starts.
+    Row { index: usize, text: String },
+    Separator,
+    /// "Change Default Shell…", which opens the settings window's Terminal
+    /// group (the "Default Shell" row).
+    ChangeDefault(String),
+}
+
+/// The list, top to bottom: the Windows shells, the WSL distributions after
+/// a line when there are any, a line, then "Change Default Shell…". `tr`
+/// is the host's translation; a WSL row's name is the distribution's own
+/// and is not translated.
+pub fn menu(rows: &[Profile], sel: Selection, tr: &dyn Fn(&str) -> String) -> Vec<Line> {
+    let default = default_row(rows, sel);
+    let text = |i: usize, r: &Profile| {
+        let name = if r.kind == Kind::Wsl { r.name.clone() } else { tr(&r.name) };
+        let mut tags: Vec<String> = Vec::new();
+        if r.kind == Kind::Wsl {
+            tags.push("WSL".to_string());
+        }
+        if default == Some(i) {
+            tags.push(tr(n_("Default")));
+        }
+        if tags.is_empty() {
+            name
+        } else {
+            format!("{name}\t{}", tags.join(" · "))
+        }
+    };
+    let mut out = Vec::new();
+    for (i, r) in rows.iter().enumerate().filter(|(_, r)| r.kind != Kind::Wsl) {
+        out.push(Line::Row { index: i, text: text(i, r) });
+    }
+    let mut wsl = rows.iter().enumerate().filter(|(_, r)| r.kind == Kind::Wsl).peekable();
+    if wsl.peek().is_some() {
+        out.push(Line::Separator);
+        for (i, r) in wsl {
+            out.push(Line::Row { index: i, text: text(i, r) });
+        }
+    }
+    out.push(Line::Separator);
+    out.push(Line::ChangeDefault(tr(n_("Change Default Shell…"))));
+    out
+}
+
+// ============================================== the "Default Shell" row
+
+/// The config key the "Default Shell" row writes.
+pub const KEY: &str = "command";
+
+/// The value the row's "Automatic" entry stands for: no `command` line. An
+/// empty value is never a `command` (the core refuses it), so it cannot be
+/// mistaken for one.
+pub const AUTOMATIC: &str = "";
+
+/// Make the form's `command` item the "Default Shell" list (1778 v1,
+/// picture 2): "Automatic", then each of `rows`, and -- when the files set
+/// a `command` that is none of them -- that value, shown as it is written
+/// and left alone when chosen. Any other item is not touched.
+///
+/// The core sends `command` as a line of text: its choices are this
+/// machine's, which the core does not know. What is in effect when no file
+/// sets it is the core's own pick, so a value from the defaults is shown as
+/// "Automatic" -- written down, it would freeze today's pick (`Write`).
+pub fn offer(it: &mut Item, rows: &[Profile]) {
+    if it.key != KEY {
+        return;
+    }
+    let set = (it.source != Source::Default).then(|| it.value.clone());
+    it.control = Control::Choice;
+    it.choices = std::iter::once(AUTOMATIC.to_string()).chain(rows.iter().map(|r| r.command.clone())).collect();
+    it.choice_labels = std::iter::once(Some(n_("Automatic").to_string())).chain(rows.iter().map(|r| Some(r.name.clone()))).collect();
+    it.choice_template = None;
+    it.default = AUTOMATIC.to_string();
+    // The row's own spelling of what the file says, so the list finds it;
+    // a value that is no row stays as written and becomes a row of its own
+    // (`general::shown_choices`).
+    it.value = match (selection(rows, set.as_deref()), set) {
+        (Selection::Auto, _) => AUTOMATIC.to_string(),
+        (Selection::Row(i), _) => rows[i].command.clone(),
+        (Selection::Custom, Some(v)) => v,
+        (Selection::Custom, None) => AUTOMATIC.to_string(),
+    };
+}
+
+/// What choosing `value` in the row writes: `None` -- take the line out --
+/// for "Automatic", the value otherwise. Asked of a choice list only; no
+/// other list has an empty value.
+pub fn written<'a>(control: Control, value: &'a str) -> Option<&'a str> {
+    if control == Control::Choice && value == AUTOMATIC {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 #[cfg(test)]
@@ -335,5 +441,146 @@ mod tests {
             bare[default_row(&bare, Selection::Auto).unwrap()].kind,
             Kind::Cmd
         );
+    }
+
+    // -- task 1804: the strip's list and the settings row -------------------
+
+    fn upper(s: &str) -> String {
+        s.to_uppercase()
+    }
+
+    fn texts(lines: &[Line]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| match l {
+                Line::Row { index, text } => format!("{index}:{text}"),
+                Line::Separator => "--".to_string(),
+                Line::ChangeDefault(t) => format!("change:{t}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_list_is_the_windows_shells_then_wsl_then_change_default() {
+        let w = [wsl("Ubuntu", None), wsl("Debian", None)];
+        let rows = profiles(&Machine { pwsh: Some(PWSH), windows_powershell: Some(WINPS), wsl: &w });
+        let lines = texts(&menu(&rows, Selection::Auto, &upper));
+        assert_eq!(
+            lines,
+            vec![
+                "0:POWERSHELL 7\tDEFAULT",
+                "1:WINDOWS POWERSHELL",
+                "2:COMMAND PROMPT",
+                "--",
+                "3:Ubuntu\tWSL",
+                "4:Debian\tWSL",
+                "--",
+                "change:CHANGE DEFAULT SHELL…",
+            ]
+        );
+    }
+
+    #[test]
+    fn no_wsl_means_one_line_before_change_default_and_the_mark_follows_the_file() {
+        let w = [wsl("Ubuntu", None)];
+        let bare = profiles(&Machine { pwsh: None, windows_powershell: Some(WINPS), wsl: &[] });
+        let lines = texts(&menu(&bare, Selection::Auto, &upper));
+        assert_eq!(lines, vec!["0:WINDOWS POWERSHELL\tDEFAULT", "1:COMMAND PROMPT", "--", "change:CHANGE DEFAULT SHELL…"]);
+        // A WSL distribution set as the shell: marked there, both words.
+        let rows = profiles(&Machine { pwsh: None, windows_powershell: Some(WINPS), wsl: &w });
+        let wsl_default = texts(&menu(&rows, Selection::Row(2), &upper));
+        assert_eq!(wsl_default[0], "0:WINDOWS POWERSHELL");
+        assert_eq!(wsl_default[3], "2:Ubuntu\tWSL · DEFAULT");
+        // A command that is none of them: nobody is marked.
+        let custom = texts(&menu(&rows, Selection::Custom, &upper));
+        // Only the shells' own lines: "Change Default Shell…" has the word
+        // in its name and is no mark.
+        let marked: Vec<&String> = custom.iter().filter(|t| !t.starts_with("change:")).filter(|t| t.contains("DEFAULT")).collect();
+        assert!(marked.is_empty(), "{custom:?}");
+    }
+
+    fn command_item(value: &str, source: Source) -> Item {
+        Item {
+            kind: crate::general::Kind::Key,
+            key: KEY.into(),
+            group: Some("terminal".into()),
+            control: Control::Text,
+            choices: Vec::new(),
+            choice_labels: Vec::new(),
+            choice_template: None,
+            on: None,
+            off: None,
+            aliases: Vec::new(),
+            min: None,
+            max: None,
+            default: String::new(),
+            value: value.into(),
+            doc: None,
+            doc_zh: None,
+            doc_full_zh: None,
+            label: Some("Default Shell".into()),
+            summary: None,
+            source,
+            readonly: None,
+        }
+    }
+
+    fn from_file() -> Source {
+        Source::Main { path: "config".into(), line: 3 }
+    }
+
+    /// Picture 2: Automatic, each shell, and the file's own value when it is
+    /// none of them. What is in effect by default reads as Automatic.
+    #[test]
+    fn the_command_row_lists_automatic_each_shell_and_a_custom_value() {
+        let rows = profiles(&Machine { pwsh: Some(PWSH), windows_powershell: Some(WINPS), wsl: &[] });
+        let quoted = format!("\"{PWSH}\"");
+
+        // Nothing in the files: the core's pick is shown as Automatic.
+        let mut it = command_item(&quoted, Source::Default);
+        offer(&mut it, &rows);
+        assert_eq!(it.control, Control::Choice);
+        let choices = it.choices.clone();
+        assert_eq!(choices, vec![AUTOMATIC.to_string(), quoted.clone(), WINPS.to_string(), "cmd.exe".to_string()]);
+        let labels = it.choice_labels.clone();
+        assert_eq!(labels[0].as_deref(), Some("Automatic"));
+        assert_eq!(labels[3].as_deref(), Some("Command Prompt"));
+        let auto = crate::general::choice_index(&it);
+        assert_eq!(auto, Some(0));
+
+        // Set to a shell, written another way: its row, in the row's spelling.
+        let mut it = command_item("C:/program files/powershell/7/PWSH.EXE", from_file());
+        offer(&mut it, &rows);
+        let row = crate::general::choice_index(&it);
+        assert_eq!(row, Some(1));
+
+        // Set to something else: a row of its own, after the shells.
+        let mut it = command_item("wsl.exe ~", from_file());
+        offer(&mut it, &rows);
+        let shown = crate::general::shown_choices(&it);
+        assert_eq!(shown.last().map(String::as_str), Some("wsl.exe ~"));
+        let custom = crate::general::choice_index(&it);
+        assert_eq!(custom, Some(4));
+        // Chosen again, it is what the file says: nothing to write.
+        let again = crate::general::should_write("wsl.exe ~", &it);
+        assert!(!again);
+
+        // Every other key is left as it was.
+        let mut other = command_item("x", from_file());
+        other.key = "font-size".into();
+        offer(&mut other, &rows);
+        assert_eq!(other.control, Control::Text);
+    }
+
+    /// Automatic takes the line out; a shell writes its command.
+    #[test]
+    fn choosing_automatic_takes_the_line_out() {
+        let none = written(Control::Choice, AUTOMATIC);
+        assert_eq!(none, None);
+        let set = written(Control::Choice, "cmd.exe");
+        assert_eq!(set, Some("cmd.exe"));
+        // An empty text box is not this row's business.
+        let text = written(Control::Text, "");
+        assert_eq!(text, Some(""));
     }
 }

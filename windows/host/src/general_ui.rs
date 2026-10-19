@@ -28,6 +28,7 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicUsize, Ordering};
 
 use polter_settings_shell::general::{self as rules, Commit, Control, FormRead, Group, Item, Kind, ReadOnlyNote, Source};
+use polter_settings_shell::shell_profiles;
 use polter_settings_shell::inline::{self, Run};
 use polter_settings_shell::search as find;
 use polter_settings_shell::{self as shell, grid, Rect};
@@ -275,6 +276,28 @@ fn read_form() -> Result<Form, String> {
     // interface language is the host's to ask.
     let chinese = crate::plugins::interface_languages().first().is_some_and(|l| l.starts_with("zh"));
     parse_form(&text, shortcut_text, chinese).ok_or_else(|| "the core's answer would not parse".to_string())
+}
+
+/// The `command` the config files set, as the parser reads it; `None` when
+/// no file or argument sets it -- the core's own pick is in effect, and that
+/// is "Automatic" (task 1804). Read from the same table the form draws, which
+/// is the one place that knows where a value came from.
+pub(crate) fn command_set() -> Option<String> {
+    let form = read_form().ok()?;
+    let it = form.items.iter().find(|it| it.kind == Kind::Key && it.key == "command")?;
+    (it.source != Source::Default).then(|| it.value.clone())
+}
+
+/// The table as the window shows it: `command` is the "Default Shell" list
+/// of this machine's shells (`shell_profiles::offer`, task 1804). Not what
+/// `command_set` reads -- that wants what the file says, untouched.
+fn read_form_shown() -> Result<Form, String> {
+    let mut form = read_form()?;
+    let rows = crate::shell_menu::detected();
+    for it in form.items.iter_mut() {
+        shell_profiles::offer(it, &rows);
+    }
+    Ok(form)
 }
 
 /// The keys bound to `action` now, written as the menus write them, or
@@ -854,7 +877,7 @@ pub(crate) fn form_value(key: &str) -> Option<String> {
 }
 
 fn reload_form() {
-    let form = read_form();
+    let form = read_form_shown();
     let keybinds = crate::keybinds::listed();
     ST.with(|c| {
         let s = &mut *c.borrow_mut();
@@ -1757,7 +1780,8 @@ fn changed(index: usize, commit: Commit) {
     if rules::commit_for(control) != commit || !rules::should_write(&v, &it) {
         return;
     }
-    write(index, &it.key, Some(&v));
+    // "Automatic" in the Default Shell list is no line at all (task 1804).
+    write(index, &it.key, shell_profiles::written(control, &v));
 }
 
 /// A slider was let go (`TB_ENDTRACK`, after a drag or a key): it writes
@@ -1837,7 +1861,7 @@ fn refresh_values(read: FormRead) {
     ST.with(|c| c.borrow_mut().keybinds = keybinds);
     kb_publish(current() == Group::Keybinds);
     let _ = unsafe { InvalidateRect(Some(kb_hwnd()), None, false) };
-    let form = match read_form() {
+    let form = match read_form_shown() {
         Ok(f) => f,
         Err(e) => {
             ST.with(|c| {

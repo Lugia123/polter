@@ -6530,3 +6530,27 @@ msgstr "打开插件日志（还没有内容）"
 #: windows/settings-shell/src/plugin_menu.rs
 msgid "Takes effect after Polter restarts. Its running copy still has the settings it started with."
 msgstr "重启 Polter 后生效。正在运行的那一份仍用它启动时的设置。"
+
+#: src/config/form.zig
+msgid "Default Shell"
+msgstr "默认 Shell"
+
+#: src/config/form.zig
+msgid "The shell a new tab starts."
+msgstr "新标签页启动的 Shell。"
+
+#: windows/settings-shell/src/shell_profiles.rs
+msgid "Windows PowerShell"
+msgstr "Windows PowerShell"
+
+#: windows/settings-shell/src/shell_profiles.rs
+msgid "Command Prompt"
+msgstr "命令提示符"
+
+#: windows/settings-shell/src/shell_profiles.rs
+msgid "Default"
+msgstr "默认"
+
+#: windows/settings-shell/src/shell_profiles.rs
+msgid "Change Default Shell…"
+msgstr "更改默认 Shell…"

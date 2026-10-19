@@ -485,8 +485,13 @@ fn tab_shows_close(tw: i32, scale: f64) -> bool {
 /// Room the overflow button takes when there is one.
 const OVERFLOW_W: i32 = 22;
 
-/// Room the `+` takes, which it always does: it is the same width as the
-/// overflow button.
+/// The shell chevron beside the `+` (task 1804, 1778 v1 design B): opens
+/// the list of shells a new tab can start. Narrow on purpose -- a click on
+/// the `+` itself still opens the default shell, as it always has.
+const SHELL_W: i32 = 14;
+
+/// Room the `+` and the shell chevron beside it take, which they always do:
+/// the `+` is the same width as the overflow button.
 ///
 /// **The tabs do not get this room.** They used to: the tabs were laid out
 /// across the whole strip and the `+` was then pinned over the right end of
@@ -494,7 +499,17 @@ const OVERFLOW_W: i32 = 22;
 /// the `+` drawn over its close cross (ten tabs on a real machine, fourth
 /// run: "the last tab's cross cannot be seen").
 fn new_w(scale: f64) -> i32 {
+    plus_w(scale) + shell_w(scale)
+}
+
+/// The `+` alone.
+fn plus_w(scale: f64) -> i32 {
     (OVERFLOW_W as f64 * scale) as i32
+}
+
+/// The chevron alone.
+fn shell_w(scale: f64) -> i32 {
+    (SHELL_W as f64 * scale) as i32
 }
 
 /// How the tabs are sized, and whether the strip overflows.
@@ -592,13 +607,20 @@ pub fn is_interactive(frame: HWND, x: i32, y: i32) -> bool {
 /// enough tabs teaches the user it was never there; one that stays put is
 /// still where they last saw it.
 fn new_rect(strip_w: i32, scale: f64, sh: i32, after_tabs: i32, overflowing: bool, inset: i32) -> RECT {
-    let w = (OVERFLOW_W as f64 * scale) as i32;
-    let right_limit = if overflowing { strip_w - w } else { strip_w };
+    let w = plus_w(scale);
+    let right_limit = if overflowing { strip_w - (OVERFLOW_W as f64 * scale) as i32 } else { strip_w };
     // Floored at the inset, not at 0: with no tabs at all the `+` would
     // otherwise sit underneath the menu button, and whichever the hit test
     // named first would win a click aimed at the other.
-    let left = after_tabs.min(right_limit - w).max(inset);
+    // Room is left for the chevron after it (`new_w`), so the pair is
+    // pinned together and the chevron never falls off the strip's end.
+    let left = after_tabs.min(right_limit - new_w(scale)).max(inset);
     RECT { left, top: 0, right: left + w, bottom: sh }
+}
+
+/// The shell chevron: straight after the `+`, always with it.
+fn shell_rect(new: RECT, scale: f64) -> RECT {
+    RECT { left: new.right, top: new.top, right: new.right + shell_w(scale), bottom: new.bottom }
 }
 
 /// Everything on the strip that a pointer can be over.
@@ -610,6 +632,8 @@ struct Geometry {
     slots: Vec<Slot>,
     overflow: Option<RECT>,
     new: RECT,
+    /// The shell chevron beside the `+` (task 1804).
+    shell: RECT,
     menu: RECT,
 }
 
@@ -661,6 +685,7 @@ fn slots(frame: HWND) -> Geometry {
                 slots: Vec::new(),
                 overflow: None,
                 new: RECT::default(),
+                shell: RECT::default(),
                 menu: RECT::default(),
             };
         }
@@ -704,10 +729,12 @@ fn slots(frame: HWND) -> Geometry {
         })
         .collect();
     let after_tabs = tab_x(inset, n, tw, scroll);
+    let new = new_rect(strip_w, scale, sh, after_tabs, overflowing, inset);
     Geometry {
         slots,
         overflow: overflowing.then(|| overflow_rect(strip_w, scale, sh)),
-        new: new_rect(strip_w, scale, sh, after_tabs, overflowing, inset),
+        new,
+        shell: shell_rect(new, scale),
         menu: menu_rect(scale, sh),
     }
 }
@@ -735,6 +762,9 @@ pub enum Hit {
     /// check), and reordering the variants would change what those
     /// comparisons mean without changing a line of the code that makes them.
     Menu,
+    /// The chevron beside the `+` that lists the shells a new tab can start
+    /// (task 1804). Appended, for the reason `Menu` gives.
+    Shell,
 }
 
 fn hit(g: &Geometry, x: i32, y: i32) -> Hit {
@@ -746,7 +776,7 @@ fn hit(g: &Geometry, x: i32, y: i32) -> Hit {
     if contains(&g.menu, x, y) {
         return Hit::Menu;
     }
-    let (slots, overflow, new) = (&g.slots, g.overflow, g.new);
+    let (slots, overflow, new, shell) = (&g.slots, g.overflow, g.new, g.shell);
     // The button sits on top of whatever the strip scrolled under it.
     if let Some(r) = overflow {
         if contains(&r, x, y) {
@@ -757,6 +787,9 @@ fn hit(g: &Geometry, x: i32, y: i32) -> Hit {
     // of the last tab, and the thing on top is the thing that was clicked.
     if contains(&new, x, y) {
         return Hit::New;
+    }
+    if contains(&shell, x, y) {
+        return Hit::Shell;
     }
     for s in slots.iter() {
         if contains(&s.close, x, y) {
@@ -987,6 +1020,12 @@ pub fn on_button_down(frame: HWND, x: i32, y: i32) {
         },
         Hit::Overflow => {
             show_overflow_menu(frame, g.overflow.unwrap_or_default());
+            return;
+        }
+        // The list of shells; choosing one opens a tab running it. Not
+        // this file's to build, like the root menu.
+        Hit::Shell => {
+            crate::shell_menu::show(frame, g.shell);
             return;
         }
         Hit::Close(id) => {
@@ -1808,7 +1847,7 @@ pub fn paint(frame: HWND) {
         // Where each cluster with something to say was drawn, for its
         // tooltip: filled in by `draw_tab`, handed over after the blit.
         let tips: RefCell<Vec<(RECT, String)>> = RefCell::new(Vec::new());
-        let Geometry { slots, overflow, new, menu } = slots(frame);
+        let Geometry { slots, overflow, new, shell, menu } = slots(frame);
         let (hover, dragging, dwell) = with_ui(frame, |u| {
             (
                 u.hover,
@@ -2015,6 +2054,39 @@ pub fn paint(frame: HWND) {
             let mut plus: Vec<u16> = "+".encode_utf16().collect();
             let mut r2 = new;
             DrawTextW(mem, &mut plus, &mut r2, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        }
+
+        // The shell chevron, with the `+` and in its colours: a hairline
+        // between them so the two are two targets, and a small triangle
+        // drawn as a polygon -- not a `▾` character, which the menu font
+        // may not have (task 1804).
+        {
+            let lit = hover == Hit::Shell;
+            fill(mem, &shell, gdi(if lit { buttons.hover } else { chrome.ground }));
+            let ink = gdi(if lit { buttons.text_hot } else { buttons.text });
+            let inset = (7.0 * scale) as i32;
+            let hair = RECT { left: shell.left, top: shell.top + inset, right: shell.left + 1.max(scale as i32), bottom: shell.bottom - inset };
+            // The `+`'s hover ground at rest, the strip's under the pointer:
+            // a line that is there in both, in colours the strip already has.
+            fill(mem, &hair, gdi(if lit { chrome.ground } else { buttons.hover }));
+            let cx = (shell.left + shell.right) / 2;
+            let cy = (shell.top + shell.bottom) / 2;
+            let half = (4.0 * scale).round() as i32;
+            let drop = (3.0 * scale).round() as i32;
+            let tri = [
+                POINT { x: cx - half, y: cy - drop / 2 - 1 },
+                POINT { x: cx + half, y: cy - drop / 2 - 1 },
+                POINT { x: cx, y: cy + drop },
+            ];
+            let brush = CreateSolidBrush(COLORREF(ink));
+            let pen = CreatePen(PS_SOLID, 1, COLORREF(ink));
+            let old_brush = SelectObject(mem, brush.into());
+            let old_pen = SelectObject(mem, pen.into());
+            let _ = Polygon(mem, &tri);
+            SelectObject(mem, old_pen);
+            SelectObject(mem, old_brush);
+            let _ = DeleteObject(pen.into());
+            let _ = DeleteObject(brush.into());
         }
 
         // The overflow button, drawn last so the scrolled tabs pass under it.
@@ -3259,7 +3331,7 @@ fn reachable_point(frame: HWND, index: usize) -> Result<(i32, i32), String> {
     }
     let strip_w = (rc.right - rc.left - crate::shell::reserved_right(frame)).max(1);
     let y = (s.rect.top + s.rect.bottom) / 2;
-    let covers: Vec<(i32, i32)> = [Some(g.new), g.overflow]
+    let covers: Vec<(i32, i32)> = [Some(g.new), Some(g.shell), g.overflow]
         .into_iter()
         .flatten()
         .map(|r| (r.left, r.right))
@@ -3688,6 +3760,7 @@ mod menu_inset_tests {
             // Parked off the right-hand end so it cannot take a hit meant
             // for a tab; where it really goes is `new_rect`'s business.
             new: RECT { left: strip_w + 1000, top: 0, right: strip_w + 1022, bottom: sh },
+            shell: RECT { left: strip_w + 1022, top: 0, right: strip_w + 1036, bottom: sh },
             menu: menu_rect(scale, sh),
         }
     }
@@ -3766,8 +3839,9 @@ mod menu_inset_tests {
             with_button < without,
             "5 tabs in 1000px must be narrower once 46px is spent: {with_button} vs {without}",
         );
-        // The 22 is the `+`, which the tabs do not stand under either.
-        assert_eq!(with_button, (1000 - 46 - 22) / 5);
+        // Nor do they stand under the `+` and the shell chevron beside it
+        // (`new_w`, task 1804), whatever width those are.
+        assert_eq!(with_button, (1000 - menu_w(1.0) - new_w(1.0)) / 5);
     }
 
     /// **The trap, as a unit test.** Right-clicking the Nth tab must resolve
@@ -4054,6 +4128,35 @@ mod close_affordance_tests {
                             "scale {scale}, strip {strip_w}, {n} tabs of {tw}: the last tab ends at {last_right} and the + starts at {}",
                             new.left
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    /// **The shell chevron goes with the `+`** (task 1804): straight after
+    /// it, and inside the strip -- clear of the `»` when there is one --
+    /// however many tabs there are and however far they are scrolled.
+    #[test]
+    fn the_shell_chevron_stands_beside_the_plus_and_inside_the_strip() {
+        use super::{extent, menu_w, new_rect, shell_rect, strip_h, tab_x, OVERFLOW_W, SHELL_W};
+        for &scale in &[1.0f64, 1.25, 1.5, 2.0, 3.0] {
+            for strip_w in (300..2600).step_by(37) {
+                for n in 0usize..40 {
+                    let inset = menu_w(scale);
+                    let (tw, overflowing) = layout(strip_w, scale, n, inset);
+                    let (_, max_scroll) = extent(scale, strip_w, tw, n, overflowing, inset);
+                    for scroll in [0, max_scroll] {
+                        let new = new_rect(strip_w, scale, strip_h(scale), tab_x(inset, n, tw, scroll), overflowing, inset);
+                        let shell = shell_rect(new, scale);
+                        let limit = if overflowing { strip_w - (OVERFLOW_W as f64 * scale) as i32 } else { strip_w };
+                        let w = shell.right - shell.left;
+                        assert_eq!(shell.left, new.right, "scale {scale}, strip {strip_w}, {n} tabs");
+                        assert_eq!(w, (SHELL_W as f64 * scale) as i32);
+                        if strip_w - inset > 4 * (shell.right - new.left) {
+                            assert!(shell.right <= limit, "scale {scale}, strip {strip_w}, {n} tabs: the chevron ends at {} past {limit}", shell.right);
+                            assert!(new.left >= inset);
+                        }
                     }
                 }
             }

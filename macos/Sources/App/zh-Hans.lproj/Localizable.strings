@@ -546,6 +546,8 @@
 "In points; may be fractional." = "以点为单位，可以带小数。";
 "Line Height" = "行高调整";
 "Extra height per line, in points or percent (e.g. 20%)." = "每行额外加高，写点数或百分比（如 20%）。";
+"Default Shell" = "默认 Shell";
+"The shell a new tab starts." = "新标签页启动的 Shell。";
 "Scrollback Lines" = "回滚行数";
 "How many lines of history each terminal keeps." = "每个终端保留多少行历史。";
 "Copy on Select" = "选中即复制";

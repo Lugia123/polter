@@ -157,6 +157,11 @@ pub const table = [_]Item{
     .{ .key = .@"adjust-cell-height", .group = .font, .label = i18n.N_("Line Height"), .summary = i18n.N_("Extra height per line, in points or percent (e.g. 20%).") },
 
     // Terminal
+    // Drawn by the Windows host as a list of the shells on this machine
+    // (`windows/settings-shell/src/shell_profiles.rs`, task 1804): the core
+    // sends it as text because the choices are the machine's, not the
+    // table's. macOS has no list to offer and does not show it.
+    .{ .key = .command, .group = .terminal, .os = .windows, .label = i18n.N_("Default Shell"), .summary = i18n.N_("The shell a new tab starts."), .aliases = &.{ "shell", "pwsh", "powershell", "cmd", "wsl", "command", "默认 shell", "外壳", "命令行" } },
     .{ .key = .@"scrollback-limit-lines", .group = .terminal, .label = i18n.N_("Scrollback Lines"), .summary = i18n.N_("How many lines of history each terminal keeps.") },
     .{ .key = .@"copy-on-select", .group = .terminal, .label = i18n.N_("Copy on Select"), .summary = i18n.N_("Copy selected text to the clipboard automatically."), .choices = &.{ .{ .value = "none", .label = i18n.N_("Don't Copy") }, .{ .value = "primary", .label = i18n.N_("Selection Pasteboard Only") }, .{ .value = "clipboard", .label = i18n.N_("Clipboard Only") }, .{ .value = "both", .label = i18n.N_("Both") } } },
     .{ .key = .@"clipboard-read", .group = .terminal, .label = i18n.N_("Clipboard Reading"), .summary = i18n.N_("Whether programs may read the clipboard: ask, allow or deny."), .choices = &.{ .{ .value = "ask", .label = i18n.N_("Ask") }, .{ .value = "allow", .label = i18n.N_("Allow") }, .{ .value = "deny", .label = i18n.N_("Deny") } } },

@@ -6300,3 +6300,27 @@ msgstr ""
 #: windows/settings-shell/src/plugin_menu.rs
 msgid "Takes effect after Polter restarts. Its running copy still has the settings it started with."
 msgstr ""
+
+#: src/config/form.zig
+msgid "Default Shell"
+msgstr ""
+
+#: src/config/form.zig
+msgid "The shell a new tab starts."
+msgstr ""
+
+#: windows/settings-shell/src/shell_profiles.rs
+msgid "Windows PowerShell"
+msgstr ""
+
+#: windows/settings-shell/src/shell_profiles.rs
+msgid "Command Prompt"
+msgstr ""
+
+#: windows/settings-shell/src/shell_profiles.rs
+msgid "Default"
+msgstr ""
+
+#: windows/settings-shell/src/shell_profiles.rs
+msgid "Change Default Shell…"
+msgstr ""

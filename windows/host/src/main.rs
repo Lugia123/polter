@@ -163,6 +163,7 @@ mod terminal_id;
 mod shot_agent;
 mod shots;
 mod shellopen;
+mod shell_menu;
 mod strip;
 mod swatch_menu;
 mod tabs;
