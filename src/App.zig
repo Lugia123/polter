@@ -2429,16 +2429,75 @@ fn controlActStateProjects(ctx: *anyopaque, statement: poltergeistpkg.Projects.S
 
     // The panes a project's supervisor opened, said back after a restart
     // or a restore: the terminals are new and nothing in memory knows
-    // them. Each is recorded as opened by the terminal now in the
-    // supervisor's pane, unless this run already knows who opened it.
+    // them. Each is recorded as a worker of the terminal now in the
+    // supervisor's pane (`statedWorker`), so the next worker joins their
+    // stack and a free one is used again (task 1857).
     for (list) |p| {
         const boss = p.supervisor orelse continue;
         for (p.workers) |w| {
-            if (w == boss or self.poltergeist.openedBy(w) != null) continue;
-            self.markAgentOpened(w, boss);
-            self.poltergeistRecordWorker(boss, w);
+            switch (statedWorker(boss, w, self.poltergeist.workerOf(w), self.poltergeist.openedBy(w))) {
+                .keep => {},
+                .record => {
+                    self.markAgentOpened(w, boss);
+                    self.poltergeistRecordWorker(boss, w);
+                    log.info("projects: terminal {x} in a pane {s}'s supervisor opened is {x}'s worker again", .{ w, p.name, boss });
+                },
+                .rehome => |from| {
+                    if (self.poltergeist_workers.getPtr(from)) |l| {
+                        if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, l.items, w)) |i| _ = l.orderedRemove(i);
+                    }
+                    self.markAgentOpened(w, boss);
+                    self.poltergeistRecordWorker(boss, w);
+                    log.info("projects: terminal {x} in a pane {s}'s supervisor opened was {x}'s worker; {x} is the supervisor now", .{ w, p.name, from, boss });
+                },
+            }
         }
     }
+}
+
+/// What a pane the project file marks as its supervisor's (`by_supervisor`)
+/// makes of terminal `w`, with `boss` the terminal in the supervisor's pane
+/// now (task 1857).
+///
+/// - Recorded when nothing in this run says who opened it: it came back
+///   with the project.
+/// - **Moved over** when it is recorded as another terminal's worker: it
+///   was recorded under whoever was in the supervisor's pane when the
+///   project was first stated, and the supervisor took up its post
+///   somewhere else since -- in a new tab of the project (task 1794). It
+///   used to be left there, so the new supervisor's next worker started a
+///   stack of its own beside the old one (1:1:2).
+/// - Left alone when an agent opened it in this run and not as a worker --
+///   that terminal is that agent's -- and when it already is `boss`'s.
+const StatedWorker = union(enum) {
+    keep,
+    record,
+    rehome: poltergeistpkg.Bus.Id,
+};
+
+fn statedWorker(boss: poltergeistpkg.Bus.Id, w: poltergeistpkg.Bus.Id, worker_of: ?poltergeistpkg.Bus.Id, opened_by: ?poltergeistpkg.Bus.Id) StatedWorker {
+    if (w == boss) return .keep;
+    if (worker_of) |was| return if (was == boss) .keep else .{ .rehome = was };
+    if (opened_by) |by| if (by != boss) return .keep;
+    return .record;
+}
+
+test "1857: a pane the file marks as the supervisor's is the supervisor's now, wherever it was recorded" {
+    const testing = std.testing;
+    // Came back with the project: nothing known.
+    try testing.expectEqual(StatedWorker.record, statedWorker(0xa1, 0xb1, null, null));
+    // Already the supervisor's.
+    try testing.expectEqual(StatedWorker.keep, statedWorker(0xa1, 0xb1, 0xa1, 0xa1));
+    // Recorded under the pane's terminal before the supervisor took up its
+    // post in a new tab: moved over.
+    const moved = statedWorker(0xa2, 0xb1, 0xa1, 0xa1);
+    try testing.expectEqual(StatedWorker{ .rehome = 0xa1 }, moved);
+    // Opened this run by another agent, not as a worker: left alone.
+    try testing.expectEqual(StatedWorker.keep, statedWorker(0xa1, 0xb1, null, 0xc3));
+    // Opened by the supervisor, not yet recorded: recorded.
+    try testing.expectEqual(StatedWorker.record, statedWorker(0xa1, 0xb1, null, 0xa1));
+    // The supervisor's own pane is never its worker.
+    try testing.expectEqual(StatedWorker.keep, statedWorker(0xa1, 0xa1, null, null));
 }
 
 /// The host could not open a project it was ordered to. The start that
