@@ -88,22 +88,36 @@ enum AppIcon: Equatable, Codable, Sendable {
 #if !DOCK_TILE_PLUGIN
 /// Making sure that `NSWorkspace.shared.setIcon` executes on only one thread at a time
 actor AppIconUpdater {
+    /// Only what would change something is done (`AppIconChange`, task
+    /// 1873): this runs at launch, at the reload every launch does, and at
+    /// every reload after, and setting the bundle's icon each time made
+    /// LaunchServices register the bundle again each time.
     func update(icon: AppIcon?) {
-        UserDefaults.ghostty.appIcon = icon
-        // Notify DockTilePlugin to update dock icon
-        DistributedNotificationCenter.default()
-            .postNotificationName(
-                .ghosttyIconDidChange,
-                object: nil,
-                userInfo: nil,
-                deliverImmediately: true,
-            )
+        let bundlePath = Bundle.main.bundlePath
+        let change = AppIconChange.of(
+            want: icon,
+            stored: UserDefaults.ghostty.appIcon,
+            bundleHasCustomIcon: AppIconChange.bundleHasCustomIcon(at: bundlePath))
 
-        NSWorkspace.shared.setIcon(
-            icon?.image(in: .main),
-            forFile: Bundle.main.bundlePath,
-        )
-        NSWorkspace.shared.noteFileSystemChanged(Bundle.main.bundlePath)
+        if change.defaults {
+            UserDefaults.ghostty.appIcon = icon
+            // Notify DockTilePlugin to update dock icon
+            DistributedNotificationCenter.default()
+                .postNotificationName(
+                    .ghosttyIconDidChange,
+                    object: nil,
+                    userInfo: nil,
+                    deliverImmediately: true,
+                )
+        }
+
+        if change.bundle {
+            NSWorkspace.shared.setIcon(
+                icon?.image(in: .main),
+                forFile: bundlePath,
+            )
+            NSWorkspace.shared.noteFileSystemChanged(bundlePath)
+        }
     }
 }
 #endif
