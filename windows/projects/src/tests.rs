@@ -24,6 +24,11 @@ fn marked(cwd: &str, scrollback: &str, seat: Option<bool>, color: Option<PaneCol
     SavedNode::Leaf(SavedLeaf { scrollback: scrollback.into(), supervisor_seat: seat, color, workers, shielded, ..SavedLeaf::plain(cwd, Agent::None) })
 }
 
+/// A pane the file seats its supervisor in (`supervisor_seat`).
+fn seat_of(cwd: &str, scrollback: &str, agent: Agent) -> SavedNode {
+    SavedNode::Leaf(SavedLeaf { scrollback: scrollback.into(), supervisor_seat: Some(true), ..SavedLeaf::plain(cwd, agent) })
+}
+
 fn leaf(cwd: &str, scrollback: &str) -> SavedNode {
     leaf_of(cwd, scrollback, Agent::None)
 }
@@ -661,7 +666,7 @@ fn tied() -> Pages {
         windows: vec![Window {
             frame: None,
             front: 0,
-            tabs: vec![tab(split(leaf_of("/a", "0.snap", chief()), leaf_of("/b", "1.snap", worker()), Axis::Horizontal)), tab(leaf("/c", "2.snap"))],
+            tabs: vec![tab(split(seat_of("/a", "0.snap", chief()), leaf_of("/b", "1.snap", worker()), Axis::Horizontal)), tab(leaf("/c", "2.snap"))],
         }],
         next_scrollback: Some(3),
     })
@@ -731,11 +736,31 @@ fn an_open_project_says_its_pages_terminals_and_where_its_supervisor_is() {
 
     // An agent in a pane is not the supervisor for being an agent: with
     // the worker's pane first, it is still the marked pane that is named.
-    let turned = Pages::from_file(&one_tab(split(leaf_of("/b", "1.snap", worker()), leaf_of("/a", "0.snap", chief()), Axis::Horizontal), 2));
+    let turned = Pages::from_file(&one_tab(split(leaf_of("/b", "1.snap", worker()), seat_of("/a", "0.snap", chief()), Axis::Horizontal), 2));
     assert_eq!(Stated::of_open("p", None, &turned, &[(0, terms(&["0xw", "0xs"]))]).supervisor, Some("0xs".into()));
     // And a project nobody is marked in names nobody.
     let unmarked = Pages::from_file(&one_tab(leaf_of("/b", "1.snap", worker()), 2));
     assert_eq!(Stated::of_open("p", None, &unmarked, &[(0, terms(&["0xw"]))]).supervisor, None);
+}
+
+/// Task 1794: the supervisor's pane is the seat, as macOS writes it and as
+/// both hosts read it -- not an agent's flag. A file macOS wrote seats a
+/// pane whose agent says `supervisor: false`; an older file of this host's
+/// flagged an agent and seated nobody.
+#[test]
+fn the_supervisors_pane_is_the_seat_and_not_the_agents_flag() {
+    let mut not_chief = chief();
+    if let Agent::Agent(who) = &mut not_chief {
+        who.supervisor = false;
+    }
+    let from_mac = Pages::from_file(&one_tab(split(leaf_of("/b", "1.snap", worker()), seat_of("/a", "0.snap", not_chief), Axis::Horizontal), 2));
+    assert_eq!(Stated::of_open("p", None, &from_mac, &[(0, terms(&["0xw", "0xs"]))]).supervisor, Some("0xs".into()));
+    let flag_only = Pages::from_file(&one_tab(split(leaf_of("/b", "1.snap", worker()), leaf_of("/a", "0.snap", chief()), Axis::Horizontal), 2));
+    assert_eq!(Stated::of_open("p", None, &flag_only, &[(0, terms(&["0xw", "0xs"]))]).supervisor, None);
+    // Marking writes the seat, and what is stated follows it.
+    let mut marked = flag_only;
+    assert!(marked.mark_supervisor("1.snap"));
+    assert_eq!(Stated::of_open("p", None, &marked, &[(0, terms(&["0xw", "0xs"]))]).supervisor, Some("0xw".into()));
 }
 
 /// A page split since it was written has three terminals and two leaves:
@@ -791,7 +816,8 @@ const SNAPSHOT: &str = r#"{
     {"order":"bind",     "project":"scratch","group":"old","to":"old","terminal":"0xa1"},
     {"order":"set_group","project":"copy","group":null,"to":null,"terminal":null},
     {"order":"rename",   "project":"web-app","group":null,"to":"storefront","terminal":null},
-    {"order":"add_tab",  "project":"web-app","group":null,"to":null,"terminal":"0xb9"}
+    {"order":"add_tab",  "project":"web-app","group":null,"to":null,"terminal":"0xb9"},
+    {"order":"seat",     "project":"web-app","group":"web-app","to":null,"terminal":"0xa2"}
   ],
   "groups": [
     {"name":"web-app","project":{"tie":"bound","name":"web-app","pages":3,"open":false,"start":"project","why":"none"}},
@@ -817,6 +843,7 @@ fn the_snapshots_orders_and_each_groups_project_are_read() {
             order(Kind::SetGroup, "copy", None, None, None),
             order(Kind::Rename, "web-app", None, Some("storefront"), None),
             order(Kind::AddTab, "web-app", None, None, Some("0xb9")),
+            order(Kind::Seat, "web-app", Some("web-app"), None, Some("0xa2")),
         ]
     );
     let web = &told.groups["web-app"];
@@ -849,7 +876,7 @@ fn what_cannot_be_read_is_an_error_not_a_guess() {
 }
 
 fn have(name: &str, group: Option<&str>, terminals: &[&str]) -> Have {
-    Have { name: name.into(), group: group.map(str::to_string), terminals: terms(terminals), open: !terminals.is_empty() }
+    Have { name: name.into(), group: group.map(str::to_string), terminals: terms(terminals), open: !terminals.is_empty(), supervisor: None }
 }
 
 fn any_terminal(_: &str) -> bool {
@@ -920,6 +947,30 @@ fn an_order_to_add_a_tab_adds_it_once() {
     assert_eq!(orders::step(&o, &[], &any_terminal), Step::Nothing("no such project"));
 }
 
+/// Task 1794: the supervisor's pane follows the group's supervisor -- a
+/// pane of the project that is not the marked one, or a tab of no project
+/// that a start opened for it; once marked, nothing more.
+#[test]
+fn an_order_to_seat_a_supervisor_marks_its_pane_once() {
+    let o = order(Kind::Seat, "web-app", Some("web-app"), None, Some("0xa2"));
+    let seated = |sup: Option<&str>, terminals: &[&str]| Have { supervisor: sup.map(str::to_string), ..have("web-app", Some("web-app"), terminals) };
+    // A pane of it, another one marked: marked, no tab moved.
+    assert_eq!(
+        orders::step(&o, &[seated(Some("0xa1"), &["0xa1", "0xa2"])], &any_terminal),
+        Step::Seat { project: "web-app".into(), terminal: "0xa2".into(), join_tab: false }
+    );
+    // A tab of no project: it joins, then is marked.
+    assert_eq!(
+        orders::step(&o, &[seated(None, &["0xa1"])], &any_terminal),
+        Step::Seat { project: "web-app".into(), terminal: "0xa2".into(), join_tab: true }
+    );
+    // Marked already; another project's page; gone; no project.
+    assert_eq!(orders::step(&o, &[seated(Some("0xa2"), &["0xa1", "0xa2"])], &any_terminal), Step::Nothing("its pane is the marked one already"));
+    assert_eq!(orders::step(&o, &[seated(None, &["0xa1"]), have("notes", None, &["0xa2"])], &any_terminal), Step::Nothing("its tab is another project's page"));
+    assert_eq!(orders::step(&o, &[seated(None, &["0xa1"])], &|_| false), Step::Nothing("that terminal is not open here"));
+    assert_eq!(orders::step(&o, &[], &any_terminal), Step::Nothing("no such project"));
+}
+
 /// Marking a pane the supervisor's unmarks the one that was, and a save
 /// that cannot tell who is in a pane keeps the mark.
 #[test]
@@ -930,19 +981,22 @@ fn one_pane_of_a_project_is_its_supervisors() {
             .iter()
             .flat_map(|w| w.tabs.iter())
             .flat_map(|t| polter_projectfile::leaves(&t.root))
-            .filter(|l| matches!(&l.agent, Agent::Agent(who) if who.supervisor))
+            .filter(|l| l.supervisor_seat == Some(true))
             .map(|l| l.scrollback.clone())
             .collect()
     };
     let mut pages = tied();
     assert_eq!(supervisors(&pages), ["0.snap"]);
-    // A pane nobody was written down for: it is an agent's now, of whom
-    // nothing else is known. The one that was is still who it was.
+    // A pane nobody was written down for is seated and stays nobody's: the
+    // seat is the pane's (task 1794). The one that was is still who it
+    // was, its format 2 flag following the seat.
     assert!(pages.mark_supervisor("2.snap"));
     assert_eq!(supervisors(&pages), ["2.snap"]);
     let was = pages.known();
+    assert!(was["2.snap"].supervisor_seat);
+    assert!(!was["0.snap"].supervisor_seat);
     assert_eq!(was["0.snap"].agent, Agent::Agent(Who { role: "polter-supervisor".into(), cli: "claude-code".into(), session: "s".into(), supervisor: false }));
-    assert_eq!(was["2.snap"].agent, Agent::Agent(Who { role: String::new(), cli: String::new(), session: String::new(), supervisor: true }));
+    assert_eq!(was["2.snap"].agent, Agent::None);
     // A worker's pane keeps who the worker is.
     assert!(pages.mark_supervisor("1.snap"));
     assert_eq!(pages.known()["1.snap"].agent, Agent::Agent(Who { role: "polter-dev".into(), cli: "codex".into(), session: "s".into(), supervisor: true }));
@@ -954,12 +1008,15 @@ fn one_pane_of_a_project_is_its_supervisors() {
 
     // A pane that has no name yet is not "the pane called nothing": asked
     // for that, nothing is marked -- and the one that was stays.
-    let mut unnamed = Pages::from_file(&one_tab(split(leaf_of("/a", "", worker()), leaf_of("/b", "1.snap", chief()), Axis::Horizontal), 2));
+    let mut unnamed = Pages::from_file(&one_tab(split(leaf_of("/a", "", worker()), seat_of("/b", "1.snap", chief()), Axis::Horizontal), 2));
     assert!(!unnamed.mark_supervisor(""));
     assert_eq!(supervisors(&unnamed), ["1.snap"]);
 
-    // The next save sees the tab and cannot say who is in its panes.
-    let unknown = split(leaf_of("/a", "0.snap", Agent::Unknown), leaf_of("/b", "1.snap", Agent::Unknown), Axis::Horizontal);
+    // The next save sees the tab and cannot say who is in its panes, nor
+    // where the supervisor sits -- what the host says when no pane is
+    // marked now (`project_ui`: `None`, not `false`).
+    let cannot_tell = |cwd: &str, name: &str| SavedNode::Leaf(SavedLeaf { scrollback: name.into(), supervisor_seat: None, ..SavedLeaf::plain(cwd, Agent::Unknown) });
+    let unknown = split(cannot_tell("/a", "0.snap"), cannot_tell("/b", "1.snap"), Axis::Horizontal);
     let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: unknown, title: None }], frames: BTreeMap::new(), keeping_front: false };
     let (after, _) = pages.saving("web-app", 2, None, Some(3), &screen);
     assert_eq!(supervisors(&after), ["1.snap"]);

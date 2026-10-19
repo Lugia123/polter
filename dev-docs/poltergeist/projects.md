@@ -109,9 +109,17 @@
 | `set_group` | 把文件里的 `group` 写成这个值（`null` 是去掉） |
 | `rename` | 把项目文件（连同 `.scrollback/`、`.prev`）改名为 `to`。**文件改名由宿主做**，它拥有这些文件 |
 | `add_tab` | 把 `terminal` 所在的标签页加进这个项目 |
+| `seat` | `terminal` 所在的标签页不在任何项目里就先加进这个项目，然后把 `terminal` 那一格标成总管（#1794） |
 
 `add_tab` 是「总管开出来的标签页自动进它那个群的项目」：核心记着哪个终端是哪个 agent 开的。一个终端只催到
 它在某个项目的页上出现过一次为止；之后用户把它移出去，是用户的决定，不再催。
+
+`seat` 让项目的总管格跟着群的总管走（#1794，`Projects.seatFor`，有测试）。以前总管格只在群**第一次**接上
+项目时写（`create`、`bind`）；群绑定以后换了总管——比如重启后用户在项目的某一格里手动 `--resume`——文件里就再也
+没有人标它，下一次「接着上次的会话」找不到格子打命令。现在两种情况会出 `seat`：
+- 项目开着，群的总管在这个项目的某一格里，而宿主陈述的 `supervisor` 不是它：标它那一格。总管的标签页不在项目
+  里时**不**拉进来——那是用户的事。
+- 一次「按项目启动」遇到项目开着但没有总管格（见第 5 条）：核心为它新开的那个标签页，加进项目并标成总管格。
 
 每个群的行上多了 `project`：
 
@@ -132,10 +140,14 @@
 陈述；核心看到 `supervisor` 那格的终端号，把那次启动的启动行（#1486 的 `+launch … --group= --resume=`）
 打进去，此后与今天一样等 agent 连上。`cwd` 不读（那一格有自己的目录），`role` 与 `session` 照读。
 
-三种等不到：宿主说 `project_failed`（当场）；30 秒里宿主没给出总管那格的终端号（文件里没有一格标着总管，
-或者宿主根本没接这件事）；给了终端号但没有 agent 连上（60 秒）。**前两种现在都报成
-`terminal_never_opened`**——宿主的 `failed` 枚举是严格的，加一个新取值要两个宿主同时认得、各配一句话，
-留给接宿主的那一单；要加的话核心这边改 `App.controlActProjectFailed` 与 `Chat.startOf` 两处。
+**「还没开」和「开了但没有总管格」是两件事**（#1794，`Projects.launchPlace`，有测试）。前者等；后者等多久都
+不会变，所以不等：核心记一行 warn，下一拍把这次启动改成「按目录启动」（`Chat.startByDirectory`），目录取群
+上一任总管的 `dir`，没有就取成员共同目录、再没有就 home，开一个新标签页把启动行打进去，然后用 `seat`
+（第 4 条）把这个标签页收进项目、标成总管格，下次就有格子了。
+
+等不到时说清楚等的是什么：宿主说 `project_failed`（当场），或 30 秒里宿主一直没说项目开了 →
+`project_never_opened`；按目录启动等标签页没等到 → `terminal_never_opened`；有终端但没有 agent 连上（60 秒）
+→ `agent_never_connected`（`Chat.timedOut`）。两个宿主都认得 `project_never_opened`，各有一句话。
 
 没有项目的群：与 #1486 完全一样，选目录。
 
@@ -206,6 +218,10 @@
 
 `none` 与 `unknown` 不是一回事：前者是「没有人」，后者是「不知道」。宿主保存到 `unknown` 的格子时保留文件里
 原来写的。是不是总管不在 `who` 里：一格是总管 ⇔ 它的终端号等于绑着本项目的那个群的 `groups[].steward`。
+
+**项目文件里谁是总管只看 leaf 的 `supervisor_seat`**（format 3 起）。leaf 的 `agent.supervisor` 是 format 2
+留下的字段：mac 宿主写文件时一律写 `false`（`ProjectLink.pane`），所以同一格出现 `supervisor_seat: true` 加
+`agent.supervisor: false` 是正常的，不是两个说法打架（#1794 里有人这样读过）。
 
 **「总管开的格子」**：`who.worker_of` 是本轮里这一格作为哪个总管的 worker 开出来的（经 `role_launch` /
 `terminal_open` 放置，`Bus.Entry.worker_of`；不管现在里面是谁），没有就是

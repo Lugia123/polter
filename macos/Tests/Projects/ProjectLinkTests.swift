@@ -175,6 +175,19 @@ struct ProjectLinkTests {
         #expect(Link.step(for: order(.addTab, "web-app", terminal: 0xc1), host: host) == .addTab(project: "web-app", terminal: Link.terminal(0xc1)))
         #expect(Link.step(for: order(.addTab, "web-app", terminal: 0xb2), host: host) == nil)
         #expect(Link.step(for: order(.addTab, "gone", terminal: 0xc1), host: host) == nil)
+
+        // seat (task 1794): a pane of the project that is not the marked
+        // one, or a tab of no project; once it is the marked one, nothing.
+        #expect(Link.step(for: order(.seat, "web-app", group: "web-app", terminal: 0xb1), host: host)
+            == .seat(project: "web-app", terminal: Link.terminal(0xb1)))
+        #expect(Link.step(for: order(.seat, "web-app", group: "web-app", terminal: 0xc1), host: host)
+            == .seat(project: "web-app", terminal: Link.terminal(0xc1)))
+        #expect(Link.step(for: order(.seat, "web-app", group: "web-app", terminal: 0xa1), host: host) == nil)
+        // ...not another project's page, not a project that is gone, not a
+        // terminal that is gone.
+        #expect(Link.step(for: order(.seat, "notes \"2\" 写", group: "g", terminal: 0xb1), host: host) == nil)
+        #expect(Link.step(for: order(.seat, "gone", group: "g", terminal: 0xc1), host: host) == nil)
+        #expect(Link.step(for: order(.seat, "web-app", group: "web-app", terminal: 0xdd), host: host) == nil)
     }
 
     @Test func bindingTakesAProjectOfNoGroupAndIsDoneOnce() {

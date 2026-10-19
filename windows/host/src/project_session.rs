@@ -1094,6 +1094,7 @@ fn obey() {
                 group: p.group.clone(),
                 terminals: p.open.iter().flatten().flatten().cloned().collect(),
                 open: p.open.is_some(),
+                supervisor: p.supervisor.clone(),
             })
             .collect();
         let file_of = |name: &str| all.iter().find(|(_, p)| p.name == name).map(|(f, _)| f.clone());
@@ -1159,6 +1160,12 @@ fn obey() {
             },
             Step::AddTab { project, terminal } => match (file_of(project), tabs::tab_of_terminal(terminal)) {
                 (Some(file), Some((_, tab))) => add_tab(&file, tab),
+                _ => Err("its file was not found, or the terminal is gone".to_string()),
+            },
+            // Task 1794: the supervisor's pane follows the group's supervisor.
+            Step::Seat { project, terminal, join_tab } => match (file_of(project), tabs::tab_of_terminal(terminal)) {
+                (Some(file), Some((_, tab))) => (if *join_tab { add_tab(&file, tab) } else { Ok(()) })
+                    .and_then(|()| mark_supervisor(&file, terminal)),
                 _ => Err("its file was not found, or the terminal is gone".to_string()),
             },
         };

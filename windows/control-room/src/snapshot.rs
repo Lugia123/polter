@@ -283,6 +283,9 @@ impl SupervisorState {
 pub enum StartFailure {
     None,
     TerminalNeverOpened,
+    /// It was to start in its group's project, which never opened (task
+    /// 1794).
+    ProjectNeverOpened,
     AgentNeverConnected,
     TerminalClosed,
     /// `+launch` said so itself, at once: the CLI's program is not there
@@ -298,6 +301,7 @@ impl StartFailure {
         match self {
             StartFailure::None => "none",
             StartFailure::TerminalNeverOpened => "terminal_never_opened",
+            StartFailure::ProjectNeverOpened => "project_never_opened",
             StartFailure::AgentNeverConnected => "agent_never_connected",
             StartFailure::TerminalClosed => "terminal_closed",
             StartFailure::CliNotFound => "cli_not_found",
@@ -307,9 +311,10 @@ impl StartFailure {
 
     /// Every reason the core gives. A word that is none of these is an
     /// error, like a glyph this build does not know.
-    pub const ALL: [StartFailure; 6] = [
+    pub const ALL: [StartFailure; 7] = [
         StartFailure::None,
         StartFailure::TerminalNeverOpened,
+        StartFailure::ProjectNeverOpened,
         StartFailure::AgentNeverConnected,
         StartFailure::TerminalClosed,
         StartFailure::CliNotFound,

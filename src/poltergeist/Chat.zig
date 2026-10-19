@@ -941,6 +941,12 @@ pub const StartFailure = enum {
     none,
     /// The tab for it never appeared.
     terminal_never_opened,
+    /// It was to start in its group's project, and the host never said the
+    /// project was open (task 1794). Not `terminal_never_opened`: a project
+    /// that did open with no pane marked for its supervisor is started in a
+    /// new tab of it instead (`startByDirectory`), so what is left here is
+    /// the project itself not coming.
+    project_never_opened,
     /// The tab is there and no agent connected from it: the CLI did not
     /// start, or started and never reached Polter.
     agent_never_connected,
@@ -993,7 +999,7 @@ pub fn startOf(self: *const Chat, name: []const u8, now_ms: u64) StartView {
     if (s.failed != .none) return .{ .state = .failed, .failed = s.failed, .terminal = s.terminal, .deadline_ms = null, .resuming = s.resuming, .by = s.by, .asking = false };
     if (now_ms > s.deadline_ms) return .{
         .state = .failed,
-        .failed = if (s.terminal == null) .terminal_never_opened else .agent_never_connected,
+        .failed = timedOut(s.by, s.terminal != null),
         .terminal = s.terminal,
         .deadline_ms = null,
         .resuming = s.resuming,
@@ -1001,6 +1007,30 @@ pub fn startOf(self: *const Chat, name: []const u8, now_ms: u64) StartView {
         .asking = false,
     };
     return .{ .state = .starting, .failed = .none, .terminal = s.terminal, .deadline_ms = s.deadline_ms, .resuming = s.resuming, .by = s.by, .asking = s.asking };
+}
+
+/// Why a start that ran out of time failed: what it was still waiting for
+/// (task 1794). A start in a project that never got a terminal was waiting
+/// for the project; one in a directory, for its tab.
+pub fn timedOut(by: StartBy, has_terminal: bool) StartFailure {
+    if (has_terminal) return .agent_never_connected;
+    return switch (by) {
+        .project => .project_never_opened,
+        .directory => .terminal_never_opened,
+    };
+}
+
+/// A start waiting for its project, which the host has stated open with no
+/// pane marked as the supervisor's, goes on as a start in a directory
+/// (task 1794): its tab is the next one, and `deadline_ms` is the tab's.
+/// Answers whether it was such a start; any other is left as it is.
+pub fn startByDirectory(self: *Chat, name: []const u8, deadline_ms: u64) bool {
+    const group = self.groups.getPtr(name) orelse return false;
+    const s = if (group.start) |*v| v else return false;
+    if (s.by != .project or s.terminal != null or s.failed != .none) return false;
+    s.by = .directory;
+    s.deadline_ms = deadline_ms;
+    return true;
 }
 
 /// Begin a start: the tab has been asked for and is waited for until
@@ -4057,6 +4087,40 @@ test "Projects: a group's tie is one of three, kept across a rename, and a start
     chat.endStart("nightly");
     try chat.beginStart("nightly", 100_000, 130_000, false, .project);
     try testing.expect(!chat.startAwaitingProject("nightly", 130_001));
-    try testing.expectEqual(StartFailure.terminal_never_opened, chat.startOf("nightly", 130_001).failed);
+    // Waiting for its project, not for a tab: it says so (task 1794).
+    try testing.expectEqual(StartFailure.project_never_opened, chat.startOf("nightly", 130_001).failed);
     try testing.expect(StartView.none.by == null);
+}
+
+test "task 1794: a start that ran out of time says what it was waiting for, and a project start can go on in a directory" {
+    // What it was waiting for, three ways.
+    try testing.expectEqual(StartFailure.terminal_never_opened, timedOut(.directory, false));
+    try testing.expectEqual(StartFailure.project_never_opened, timedOut(.project, false));
+    try testing.expectEqual(StartFailure.agent_never_connected, timedOut(.project, true));
+    try testing.expectEqual(StartFailure.agent_never_connected, timedOut(.directory, true));
+
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.restoreShell("nightly", "", 0, .none);
+    try chat.restoreShell("other", "", 0, .none);
+
+    // A project start whose project opened with no supervisor's pane goes
+    // on as a start in a directory: the next tab is its, with a tab's time.
+    try chat.beginStart("nightly", 1_000, 31_000, false, .project);
+    try testing.expect(chat.startByDirectory("nightly", 21_000));
+    try testing.expectEqual(StartBy.directory, chat.startOf("nightly", 2_000).by.?);
+    try testing.expectEqualStrings("nightly", chat.startAwaitingTerminal(2_000).?);
+    try testing.expect(!chat.startAwaitingProject("nightly", 2_000));
+    try testing.expectEqual(StartFailure.terminal_never_opened, chat.startOf("nightly", 21_001).failed);
+
+    // Only such a start: one in a directory already, or one with its
+    // terminal, is left as it is.
+    try chat.beginStart("other", 1_000, 11_000, false, .directory);
+    try testing.expect(!chat.startByDirectory("other", 99_000));
+    try testing.expectEqual(@as(?u64, 11_000), chat.startOf("other", 2_000).deadline_ms);
+    chat.endStart("nightly");
+    try chat.beginStart("nightly", 40_000, 70_000, false, .project);
+    chat.startOpened("nightly", 0xa1, 90_000);
+    try testing.expect(!chat.startByDirectory("nightly", 99_000));
+    try testing.expectEqual(StartBy.project, chat.startOf("nightly", 41_000).by.?);
 }

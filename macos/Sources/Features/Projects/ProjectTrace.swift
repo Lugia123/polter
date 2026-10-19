@@ -49,6 +49,15 @@ enum ProjectTrace {
         logger.notice("tab \(what, privacy: .public): project=\(project, privacy: .public) page=\(page.map(String.init) ?? "-", privacy: .public) window=\(controller.window?.windowNumber ?? -1, privacy: .public) by=\(caller, privacy: .public)")
     }
 
+    /// A pane was marked as the project's supervisor's (task 1794): which
+    /// one, and who asked. The mark is what "go on with the last session"
+    /// types into; when it is missing, this line's absence says it was
+    /// never written.
+    static func seated(_ view: Ghostty.SurfaceView, project: String, caller: String) {
+        let id = String(view.id.uuidString.prefix(8))
+        logger.notice("supervisor's pane marked: project=\(project, privacy: .public) pane=\(id, privacy: .public)=\(view.projectSnapshot?.filename ?? "-", privacy: .public) by=\(caller, privacy: .public)")
+    }
+
     /// A save removed files from the project's snapshot directory.
     static func pruned(project: String, removed: [String], kept: Int, wholeDirectory: Bool) {
         if wholeDirectory {

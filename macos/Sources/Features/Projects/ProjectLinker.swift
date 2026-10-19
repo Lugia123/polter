@@ -201,6 +201,14 @@ final class ProjectLinker {
             case .addTab(let project, let terminal):
                 guard let (controller, _) = controller(holding: terminal), let entry = store.entry(name: project) else { return }
                 try ProjectSession.add(controller, to: entry, in: store)
+
+            case .seat(let project, let terminal):
+                guard let (controller, view) = controller(holding: terminal), let entry = store.entry(name: project) else { return }
+                if controller.projectSession == nil {
+                    try ProjectSession.add(controller, to: entry, in: store)
+                }
+                guard let session = controller.projectSession, session.name == project else { return }
+                session.makeSupervisor(view)
             }
         } catch {
             Self.logger.warning("an order from the core was not carried out: \(error.localizedDescription, privacy: .public)")

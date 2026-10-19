@@ -90,6 +90,12 @@ projects: poltergeistpkg.Projects,
 /// for a tab; a second start replaces it.
 project_launch: ?ProjectLaunch = null,
 
+/// The tab a start opened for a group's supervisor because its project was
+/// open and marked no pane as the supervisor's (task 1794), until the host
+/// says that tab is the project's and its pane the marked one -- or the
+/// terminal is gone. `Projects.seatFor` orders it seated meanwhile.
+project_seating: ?poltergeistpkg.Projects.Seating = null,
+
 /// Who is doing which piece of work, per group.
 ///
 /// Beside the chat rather than inside it: a task is not a message, and the
@@ -459,6 +465,12 @@ start_lines: poltergeistpkg.OwedTells = undefined,
 /// the trust box and the CLI's input box shows (`payFirstPrompts`).
 first_prompts: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty,
 
+/// The agents in a project's supervisor's pane that have been taken as the
+/// group's supervisor, or refused and said so (task 1795): once per agent,
+/// not at every request it makes -- and a new agent in that pane again
+/// (`Projects.SeatJudged`). Forgotten with the agent or the terminal.
+seat_judged: poltergeistpkg.Projects.SeatJudged = .{},
+
 /// When each owed second message was first owed, and for which group
 /// (task 1787): how long it has waited for its agent to connect, and what
 /// to say if it never does.
@@ -765,6 +777,7 @@ pub fn deinit(self: *App) void {
     self.chat.deinit();
     self.projects.deinit();
     if (self.project_launch) |*l| l.arena.deinit();
+    if (self.project_seating) |*s| self.alloc.free(s.group);
     self.tasks.deinit();
     self.poltergeist.deinit();
     self.personas.deinit();
@@ -774,6 +787,7 @@ pub fn deinit(self: *App) void {
     self.owed_tells.deinit();
     self.start_lines.deinit();
     self.first_prompts.deinit(self.alloc);
+    self.seat_judged.deinit(self.alloc);
     {
         var it = self.start_owed.valueIterator();
         while (it.next()) |o| self.alloc.free(o.group);
@@ -1117,6 +1131,9 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     const now_ms = self.poltergeistElapsedMs();
     // Before the snapshot: a step that settles a take-over is in this one.
     const take_over_wake = self.takeOverStep(now_ms);
+    // Before it too: a start whose project marks no supervisor's pane opens
+    // its tab here, not while the snapshot is being made (task 1794).
+    self.startHeldInANewTab(rt_app, now_ms);
     // In this snapshot: a start whose CLI is asking, or has stopped asking.
     _ = self.holdStartupQuestions(now_ms);
     // A trust box answered since: the first prompt it was holding back.
@@ -1651,22 +1668,8 @@ fn controlActStartSupervisor(
     const by_project = self.chat.projectOf(group) == .bound;
 
     // The directory: the one named, or the snapshot's, by the same order.
-    const cwd: []const u8 = if (by_project) "" else if (cwd_asked.len > 0) cwd_asked else cwd: {
-        if (last.dir.len > 0) break :cwd last.dir;
-        const common = self.chat.commonDirOf(group);
-        if (common.len > 0) break :cwd common;
-        break :cwd self.controlHome();
-    };
-    var dir_z: [:0]const u8 = "";
-    if (cwd.len > 0) {
-        if (!std.fs.path.isAbsolute(cwd)) return error.NotAbsolute;
-        var dir = std.Io.Dir.openDirAbsolute(global.io(), cwd, .{}) catch
-            return error.NoSuchDirectory;
-        defer dir.close(global.io());
-        const stat = dir.stat(global.io()) catch return error.NoSuchDirectory;
-        if (stat.kind != .directory) return error.NotADirectory;
-        dir_z = try alloc.dupeZ(u8, cwd);
-    }
+    const cwd: []const u8 = if (by_project) "" else if (cwd_asked.len > 0) cwd_asked else self.controlStartDir(group);
+    const dir_z: [:0]const u8 = if (cwd.len > 0) try startDirZ(alloc, cwd) else "";
 
     const rt_app = self.poltergeist_rt_app orelse return error.NoRuntime;
     const choice = try self.resolveLaunch(alloc, p.key, cli, null);
@@ -1713,6 +1716,41 @@ fn controlActStartSupervisor(
     try self.personas.expectLaunch(choice.key, choice.cli, line, Chat.user_id, now_ms);
     errdefer self.personas.dropLaunch();
 
+    _ = try self.openStartTab(alloc, rt_app, dir_z, now_ms);
+    log.info("control room: starting a supervisor for a group in role {s}", .{choice.key});
+}
+
+/// The directory a start in a group's own tab opens in, when none was
+/// asked for: its last supervisor's, else the one its members share, else
+/// home.
+fn controlStartDir(self: *App, group: []const u8) []const u8 {
+    const last = self.chat.lastSupervisorOf(group);
+    if (last.dir.len > 0) return last.dir;
+    const common = self.chat.commonDirOf(group);
+    if (common.len > 0) return common;
+    return self.controlHome();
+}
+
+/// `cwd` as a tab is opened in, once it is known to be a directory.
+fn startDirZ(alloc: Allocator, cwd: []const u8) ![:0]const u8 {
+    if (!std.fs.path.isAbsolute(cwd)) return error.NotAbsolute;
+    var dir = std.Io.Dir.openDirAbsolute(global.io(), cwd, .{}) catch
+        return error.NoSuchDirectory;
+    defer dir.close(global.io());
+    const stat = dir.stat(global.io()) catch return error.NoSuchDirectory;
+    if (stat.kind != .directory) return error.NotADirectory;
+    return try alloc.dupeZ(u8, cwd);
+}
+
+/// Ask for the tab a start's launch waits for (`personas.expectLaunch`),
+/// in `dir_z`, and answer the terminal it is: null when none appeared.
+fn openStartTab(
+    self: *App,
+    alloc: Allocator,
+    rt_app: *apprt.App,
+    dir_z: [:0]const u8,
+    now_ms: u64,
+) !?poltergeistpkg.Bus.Id {
     var before: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
     for (self.surfaces.items) |v| try before.put(alloc, v.core().id, {});
 
@@ -1748,9 +1786,116 @@ fn controlActStartSupervisor(
             try self.startRoleIn(id, launch.by, .{ .key = launch.key, .cli = launch.cli }, launch.line, .agent);
             self.controlStartOpened(id);
         }
-        break;
+        return id;
     }
-    log.info("control room: starting a supervisor for a group in role {s}", .{choice.key});
+    return null;
+}
+
+/// A launch held for its project's supervisor's pane, where the project is
+/// open and marks none (task 1794): started in a new tab instead, in the
+/// group's last supervisor's directory, and that tab is to become a page
+/// of the project with its pane marked (`project_seating`). On a tick, not
+/// inside the snapshot that found it.
+fn startHeldInANewTab(self: *App, rt_app: *apprt.App, now_ms: u64) void {
+    const held = if (self.project_launch) |*l| l else return;
+    if (!held.no_seat) return;
+    defer {
+        held.arena.deinit();
+        self.project_launch = null;
+    }
+    const Store = poltergeistpkg.PersonaStore;
+    const group = held.group;
+    // Its time ran out before this tick: it failed as a project start, and
+    // is not brought back as another kind.
+    if (!self.chat.startAwaitingProject(group, now_ms)) return;
+    const project = switch (self.chat.projectOf(group)) {
+        .bound => |name| name,
+        else => return,
+    };
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cwd = self.controlStartDir(group);
+    log.warn("control room: project {s} is open and marks no pane as its supervisor's; starting the supervisor of {s} in a new tab of it, in {s}", .{ project, group, cwd });
+    const dir_z = startDirZ(alloc, cwd) catch |err| {
+        log.warn("control room: could not start the supervisor in a new tab of its project: its directory err={}", .{err});
+        self.chat.failStart(group, .terminal_never_opened);
+        return;
+    };
+    if (!self.chat.startByDirectory(group, now_ms + Store.pending_launch_ms)) return;
+    self.personas.expectLaunch(held.key, held.cli, held.line, poltergeistpkg.Chat.user_id, now_ms) catch {
+        self.chat.failStart(group, .terminal_never_opened);
+        return;
+    };
+
+    // Before the tab is asked for, with no terminal: the tab that claims
+    // the launch fills it in (`controlStartOpened`), inside the ask on
+    // macOS, after it on Windows, whose `new_tab` is posted -- so what the
+    // ask answers is not waited for (task 1794).
+    const owned = self.alloc.dupe(u8, group) catch {
+        self.personas.dropLaunch();
+        self.chat.failStart(group, .terminal_never_opened);
+        return;
+    };
+    self.dropProjectSeating();
+    self.project_seating = .{ .group = owned, .terminal = null };
+
+    _ = self.openStartTab(alloc, rt_app, dir_z, now_ms) catch |err| {
+        log.warn("control room: could not open a tab for the supervisor err={}", .{err});
+        self.personas.dropLaunch();
+        self.chat.failStart(group, .terminal_never_opened);
+        self.dropProjectSeating();
+        return;
+    };
+    self.controlRoomTouch();
+}
+
+/// An agent judged in a project's supervisor's pane that has left since is
+/// forgotten, so the next one there is judged (task 1795) -- also one whose
+/// CLI says no session id, and whose first request comes after its left
+/// was taken back. `SeatJudged.seen` is the rule: a leave is the left
+/// turning true, not a left that is still there.
+fn forgetSeatAgentsThatLeft(self: *App) void {
+    while (true) {
+        var it = self.seat_judged.by_terminal.iterator();
+        const left = while (it.next()) |e| {
+            const now = self.poltergeist.agentHasLeft(e.key_ptr.*);
+            if (now and !e.value_ptr.left) break e.key_ptr.*;
+            e.value_ptr.left = now;
+        } else return;
+        self.seat_judged.gone(left);
+    }
+}
+
+fn dropProjectSeating(self: *App) void {
+    if (self.project_seating) |s| self.alloc.free(s.group);
+    self.project_seating = null;
+}
+
+/// The tab a start opened to be seated is done with: the host says its
+/// pane is the project's marked one, or it is gone (task 1794).
+fn settleProjectSeating(self: *App) void {
+    const seat = self.project_seating orelse return;
+    // A group no longer tied to a project has nothing to be seated in.
+    const name = switch (self.chat.projectOf(seat.group)) {
+        .bound => |n| n,
+        else => return self.dropProjectSeating(),
+    };
+    const seated = if (self.projects.find(name)) |p|
+        seat.terminal != null and p.supervisor != null and p.supervisor.? == seat.terminal.?
+    else
+        false;
+    const gone = if (seat.terminal) |t| for (self.surfaces.items) |v| {
+        if (v.core().id == t) break false;
+    } else true else false;
+    if (!seat.over(self.chat.startAwaitingTerminal(self.poltergeistElapsedMs()), seated, gone)) return;
+    if (seated) {
+        log.info("control room: the tab started for {s}'s supervisor is its project's supervisor's pane now", .{seat.group});
+    } else if (seat.terminal == null) {
+        log.warn("control room: no tab came for {s}'s supervisor; nothing to seat", .{seat.group});
+    }
+    self.dropProjectSeating();
 }
 
 /// The terminal a control-room start was waiting for is `id`: from now it
@@ -1758,6 +1903,9 @@ fn controlActStartSupervisor(
 fn controlStartOpened(self: *App, id: poltergeistpkg.Bus.Id) void {
     const now_ms = self.poltergeistElapsedMs();
     const group = self.chat.startAwaitingTerminal(now_ms) orelse return;
+    // The tab a start opened to be seated in its project (task 1794).
+    if (self.project_seating) |*s| if (s.opened(group, id))
+        log.info("control room: the tab {x} claimed {s}'s supervisor's launch, and is to be seated", .{ id, group });
     self.chat.startOpened(group, id, now_ms + poltergeistpkg.PersonaStore.standing_wait_ms);
     self.controlRoomTouch();
 }
@@ -2089,6 +2237,10 @@ const ProjectLaunch = struct {
     key: []const u8,
     cli: []const u8,
     line: []const u8,
+    /// The host stated the project open with no pane marked as the
+    /// supervisor's: the launch goes into a new tab of it on the next tick
+    /// (`startHeldInANewTab`), not here in the middle of a snapshot.
+    no_seat: bool,
 };
 
 fn holdProjectLaunch(self: *App, group: []const u8, choice: LaunchChoice, line: []const u8) Allocator.Error!void {
@@ -2101,6 +2253,7 @@ fn holdProjectLaunch(self: *App, group: []const u8, choice: LaunchChoice, line: 
         .key = try aa.dupe(u8, choice.key),
         .cli = try aa.dupe(u8, choice.cli),
         .line = try aa.dupe(u8, line),
+        .no_seat = false,
     };
     if (self.project_launch) |*old| old.arena.deinit();
     self.project_launch = held;
@@ -2129,6 +2282,10 @@ fn projectViews(self: *App, alloc: Allocator, now_ms: u64) Allocator.Error![]con
             .supervisors = supervisors,
             .claim = self.chat.projectClaimOf(name),
             .awaiting_open = self.chat.startAwaitingProject(name, now_ms),
+            .seating = if (self.project_seating) |seat|
+                (if (std.mem.eql(u8, seat.group, name)) seat.terminal else null)
+            else
+                null,
         };
     }
     return views;
@@ -2183,6 +2340,8 @@ fn projectsWork(self: *App, alloc: Allocator, now_ms: u64) Allocator.Error!polte
         }
     }
 
+    self.settleProjectSeating();
+    self.forgetSeatAgentsThatLeft();
     self.deliverProjectLaunch(now_ms);
 
     return .{ .table = &self.projects, .standings = out.standings, .orders = out.orders };
@@ -2201,8 +2360,19 @@ fn deliverProjectLaunch(self: *App, now_ms: u64) void {
     }
     const tie = self.chat.projectOf(held.group);
     if (tie != .bound) return;
-    const stated = self.projects.find(tie.bound) orelse return;
-    const pane = stated.supervisor orelse return;
+    const pane = switch (poltergeistpkg.Projects.launchPlace(self.projects.find(tie.bound))) {
+        .not_open => return,
+        // Waiting would never change this: the next tick starts it in a
+        // new tab of the project (task 1794).
+        .no_seat => {
+            if (!held.no_seat) {
+                held.no_seat = true;
+                self.controlRoomTouch();
+            }
+            return;
+        },
+        .pane => |pane| pane,
+    };
 
     self.chat.startOpened(held.group, pane, now_ms + poltergeistpkg.PersonaStore.standing_wait_ms);
     self.startRoleIn(pane, poltergeistpkg.Chat.user_id, .{ .key = held.key, .cli = held.cli }, held.line, .agent) catch |err| {
@@ -2248,10 +2418,8 @@ fn controlActProjectFailed(ctx: *anyopaque, name: []const u8, why: poltergeistpk
     const group = try arena.allocator().dupe(u8, found);
 
     if (self.chat.startAwaitingProject(group, now_ms)) {
-        // 暂定: said with the reason there already is for a start whose
-        // terminal never came. A sentence of its own needs a word both
-        // hosts know, which is theirs to add.
-        self.chat.failStart(group, .terminal_never_opened);
+        // The project did not come (task 1794 gave both hosts the word).
+        self.chat.failStart(group, .project_never_opened);
     }
     if (why == .not_found) {
         if (self.chat.setProject(group, .undecided) catch false) {
@@ -5504,6 +5672,9 @@ fn poltergeistAgentArrived(
 ) void {
     const self: *App = @ptrCast(@alignCast(ctx));
     self.identifyIfHandStarted(bus, id);
+    // Before the standing's early return: an agent started by hand in a
+    // project's supervisor's pane has no standing to claim (task 1795).
+    self.seatAgentArrived(id);
     const applied = self.personas.claimStanding(bus, id, self.poltergeistElapsedMs()) orelse return;
     defer self.refreshPoltergeistTabs();
     defer self.saveSession();
@@ -5514,6 +5685,82 @@ fn poltergeistAgentArrived(
     const surface = self.findSurfaceByID(id) orelse return;
     if (applied.watched_by != null) surface.setPoltergeistWatching(true);
     if (applied.want.quiet_ms) |ms| surface.setPoltergeistThreshold(ms);
+}
+
+/// An agent is talking to Polter from `id`. When `id` is in the pane a
+/// group's project marks as its supervisor's, the agent is that group's
+/// supervisor and is put in the group -- unless the group has one already,
+/// which a project may not have two of, and which is said in the group
+/// instead (task 1795, `Projects.seatClaim`). Decided once per terminal.
+///
+/// Only this road: `become_supervisor` and `group_add` by hand are left as
+/// they are, so a person can still take a group over themselves.
+fn seatAgentArrived(self: *App, id: poltergeistpkg.Bus.Id) void {
+    const bus = &self.poltergeist;
+    // The one that was judged here has left since: whoever this is, is
+    // judged. Not while a left from before it is still on the bus.
+    const left = bus.agentHasLeft(id);
+    self.seat_judged.seen(id, left);
+    const agent = poltergeistpkg.Projects.SeatJudged.agentKey(bus.agentOf(id).session_id.get());
+    // The cheap questions first: this runs at every request.
+    if (!self.seat_judged.due(id, agent)) return;
+    if (!self.projects.isSeated(id)) return;
+
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const now_ms = self.poltergeistElapsedMs();
+    const views = self.projectViews(alloc, now_ms) catch return;
+    const supervises_another = for (views) |v| {
+        if (v.steward) |s| if (s == id) break true;
+    } else false;
+    const claim = self.projects.seatClaim(views, .{
+        .terminal = id,
+        .watched = bus.roleOf(id) == .watched,
+        .supervises_another = supervises_another,
+        .being_started = self.chat.startingIn(id, now_ms) != null,
+    });
+    var buf: [512]u8 = undefined;
+    switch (claim) {
+        .none => return,
+        .watched => |w| {
+            self.seat_judged.judged(self.alloc, id, agent, left) catch {};
+            log.warn("poltergeist: an agent in project {s}'s supervisor's pane is watched by a supervisor; not made {s}'s", .{ w.project, w.group });
+        },
+        .refuse => |r| {
+            self.seat_judged.judged(self.alloc, id, agent, left) catch {};
+            log.warn("poltergeist: an agent in project {s}'s supervisor's pane, but {s} has a supervisor already; not made one", .{ r.project, r.group });
+            const text = std.fmt.bufPrint(&buf, "[Polter] An agent started in project {s}'s supervisor's pane (0x{x:0>16}), " ++
+                "but {s} already has a supervisor (0x{x:0>16}): it was not made one. A project has one supervisor.", .{ r.project, id, r.group, r.steward }) catch return;
+            _ = chatPost(self, r.group, r.steward, text, .none) catch |err| {
+                log.warn("poltergeist: could not say so in {s} err={}", .{ r.group, err });
+            };
+            self.controlRoomTouch();
+        },
+        .take => |t| {
+            self.seat_judged.judged(self.alloc, id, agent, left) catch {};
+            if (!bus.isSupervisor(id)) bus.addSupervisor(id) catch |err| {
+                log.warn("poltergeist: could not make the agent in {s}'s supervisor's pane a supervisor err={}", .{ t.project, err });
+                return;
+            };
+            chatAdd(self, t.group, id, .all) catch |err| {
+                log.warn("poltergeist: could not put the supervisor in {s} err={}", .{ t.group, err });
+                return;
+            };
+            log.info("poltergeist: the agent in project {s}'s supervisor's pane is {s}'s supervisor now", .{ t.project, t.group });
+            const text = std.fmt.bufPrint(&buf, "[Polter] This terminal is in project {s}'s supervisor's pane, " ++
+                "and is {s}'s supervisor now.", .{ t.project, t.group }) catch return;
+            _ = chatPost(self, t.group, id, text, .none) catch |err| {
+                log.warn("poltergeist: could not say so in {s} err={}", .{ t.group, err });
+            };
+            const told = std.fmt.bufPrint(&buf, "[Polter] This terminal is in the supervisor's pane of project {s}, " ++
+                "so you are the supervisor of group `{s}` now. Read the `supervising` skill with the polter " ++
+                "MCP tool skill_read, then group_read `{s}` and task_list before doing anything else.", .{ t.project, t.group, t.group }) catch return;
+            self.tellSurface(id, told);
+            self.refreshPoltergeistTabs();
+            self.saveSession();
+        },
+    }
 }
 
 /// An agent that is talking to Polter from `id` with no hooks and no role
@@ -11778,6 +12025,7 @@ pub fn deleteSurface(self: *App, rt_surface: *apprt.Surface) void {
             _ = self.surfaces.swapRemove(i);
             // Gone: a terminal that is given this id later is another one.
             self.projects.forget(poltergeistpkg.Bus.idOf(rt_surface.core()));
+            self.seat_judged.gone(poltergeistpkg.Bus.idOf(rt_surface.core()));
             self.controlRoomTouch();
             continue;
         }

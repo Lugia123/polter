@@ -4966,6 +4966,10 @@ msgstr "去那个标签页"
 msgid "The supervisor did not start: its tab never opened."
 msgstr "总管没有启动：它的标签页没有开出来。"
 
+#: windows/control-room/src/scene.rs:79
+msgid "The supervisor did not start: its group's project never opened."
+msgstr "总管没有启动：群的项目一直没有打开。"
+
 #: windows/control-room/src/scene.rs:53
 msgid ""
 "The supervisor did not start: its tab opened, but no agent connected from "

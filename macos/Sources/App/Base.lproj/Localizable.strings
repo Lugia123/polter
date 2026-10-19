@@ -748,6 +748,7 @@
 "The supervisor is waiting in its tab for you to answer a question." = "The supervisor is waiting in its tab for you to answer a question.";
 "Go to Its Tab" = "Go to Its Tab";
 "The supervisor did not start: its tab never opened." = "The supervisor did not start: its tab never opened.";
+"The supervisor did not start: its group's project never opened." = "The supervisor did not start: its group's project never opened.";
 "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why." = "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.";
 "The supervisor did not start: its tab was closed first." = "The supervisor did not start: its tab was closed first.";
 "The supervisor did not start: its agent CLI was not found. Its tab shows why." = "The supervisor did not start: its agent CLI was not found. Its tab shows why.";

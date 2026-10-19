@@ -266,6 +266,162 @@ pub const GroupView = struct {
     /// A supervisor is being started for it and is waiting for its project
     /// to be opened.
     awaiting_open: bool,
+    /// The terminal a start opened for its supervisor because the project
+    /// was open and marked no pane as the supervisor's (task 1794): it is
+    /// to become a page of the project, with its pane marked. Null when
+    /// there is none. No default: a view that does not say is a compile
+    /// error, not a group that is never seated.
+    seating: ?Id,
+};
+
+/// Where a held launch goes, given what the host last said of the group's
+/// project (task 1794). `not_open` and `no_seat` are two different things
+/// and must not be told the same: the first is waited for, the second will
+/// never change by waiting.
+pub const LaunchPlace = union(enum) {
+    /// Not stated, or stated closed: the host has not opened it yet.
+    not_open,
+    /// Open, and this terminal is in the pane its file marks.
+    pane: Id,
+    /// Open, and its file marks no pane as the supervisor's.
+    no_seat,
+};
+
+pub fn launchPlace(stated: ?Stated) LaunchPlace {
+    const p = stated orelse return .not_open;
+    if (p.open == null) return .not_open;
+    if (p.supervisor) |pane| return .{ .pane = pane };
+    return .no_seat;
+}
+
+/// The terminal whose pane the group's project should mark as the
+/// supervisor's and does not (task 1794): the one a start opened for it
+/// (`seating`), else its supervisor when that supervisor is in a pane of
+/// the project. A project that is not open is not asked; one that already
+/// marks that terminal is not asked again.
+///
+/// The second is what keeps a project's mark following its group: the
+/// mark used to be written only when a group was first tied to a project
+/// (`create`, `bind`), so a supervisor started later in one of its panes --
+/// by hand, after a restart -- was never marked, and the next "go on with
+/// the last session" found no pane to type into.
+pub fn seatFor(p: Stated, g: GroupView) ?Id {
+    if (p.open == null) return null;
+    if (g.seating) |t| {
+        if (p.supervisor == null or p.supervisor.? != t) return t;
+        return null;
+    }
+    const s = g.steward orelse return null;
+    if (!p.holds(s)) return null;
+    if (p.supervisor != null and p.supervisor.? == s) return null;
+    return s;
+}
+
+/// The tab a start opens for a group's supervisor to be seated in (task
+/// 1794), from the moment the tab is asked for until the host says its
+/// pane is the project's marked one.
+///
+/// **Which terminal is learnt when the tab claims the launch, not from the
+/// call that asked for it** (`opened`). On Windows the tab is made after
+/// that call returns (its `new_tab` is posted), so the call has no terminal
+/// to answer, and a seating set from its answer was never set: the agent
+/// started and joined its group, and no seat was ever ordered (task 1794,
+/// measured on the Windows machine). On macOS the tab claims the launch
+/// inside the call, which comes to the same place earlier.
+pub const Seating = struct {
+    /// Owned by whoever holds this.
+    group: []const u8,
+    /// Null until the tab has claimed the launch.
+    terminal: ?Id,
+
+    /// The tab `group`'s start was waiting for is `id`: it is the one to
+    /// seat. The first such tab only; a start for another group is not
+    /// this one's. Whether it was taken.
+    pub fn opened(self: *Seating, group: []const u8, id: Id) bool {
+        if (self.terminal != null or !std.mem.eql(u8, self.group, group)) return false;
+        self.terminal = id;
+        return true;
+    }
+
+    /// Whether this seating is over. Before its tab: when the start is no
+    /// longer waiting for one (`awaiting`, `Chat.startAwaitingTerminal`) --
+    /// it failed or ran out, and no tab is coming. After: when the host
+    /// says the tab's pane is seated, or the tab is gone.
+    pub fn over(self: Seating, awaiting: ?[]const u8, seated: bool, gone: bool) bool {
+        if (self.terminal == null) {
+            const a = awaiting orelse return true;
+            return !std.mem.eql(u8, a, self.group);
+        }
+        return seated or gone;
+    }
+};
+
+/// Which agents in a project's supervisor's pane have been judged (task
+/// 1795): each agent once -- its refusal or its welcome said once -- and a
+/// new agent in the same pane again.
+///
+/// **Per agent, not per terminal.** Kept per terminal until the terminal
+/// closed, a pane refused once stayed refused: its group's supervisor could
+/// go, and an agent started there afterwards was never made the new one.
+/// An agent is told apart by its hooks' session id (`agentKey`), and one
+/// that leaves is forgotten (`gone`), which covers a CLI that says none.
+pub const SeatJudged = struct {
+    by_terminal: std.AutoHashMapUnmanaged(Id, Judged) = .empty,
+
+    pub const Judged = struct {
+        /// `agentKey` of the agent judged.
+        agent: u64,
+        /// Whether the bus said an agent had left this terminal, as last
+        /// seen. **A leave is the moment it turns true**, not every moment
+        /// it is: the left of the agent before can still be on the bus for
+        /// the first requests of the next one, and forgetting at each of
+        /// them judged that one five times and said so five times (task
+        /// 1795, measured on the Windows machine).
+        left: bool,
+    };
+
+    pub fn deinit(self: *SeatJudged, alloc: Allocator) void {
+        self.by_terminal.deinit(alloc);
+    }
+
+    /// The agent, by its hooks' session id: 0 while it has said none.
+    pub fn agentKey(session: ?[]const u8) u64 {
+        const s = session orelse return 0;
+        return std.hash.Wyhash.hash(0, s) | 1;
+    }
+
+    /// Whether the agent `agent` in `terminal` is to be judged. Not one
+    /// already judged; one judged before its session id came is the same
+    /// agent once it has one, and is not judged again for it.
+    pub fn due(self: *SeatJudged, terminal: Id, agent: u64) bool {
+        const was = self.by_terminal.getPtr(terminal) orelse return true;
+        if (was.agent == agent or agent == 0) return false;
+        if (was.agent == 0) {
+            was.agent = agent;
+            return false;
+        }
+        return true;
+    }
+
+    /// `left`: whether the bus says an agent has left `terminal` now.
+    pub fn judged(self: *SeatJudged, alloc: Allocator, terminal: Id, agent: u64, left: bool) Allocator.Error!void {
+        try self.by_terminal.put(alloc, terminal, .{ .agent = agent, .left = left });
+    }
+
+    /// What the bus says of `terminal` now: whether an agent has left it.
+    /// The one judged there is forgotten when that turns true -- it has
+    /// left since -- and not while a left from before it stays.
+    pub fn seen(self: *SeatJudged, terminal: Id, left: bool) void {
+        const was = self.by_terminal.getPtr(terminal) orelse return;
+        if (left and !was.left) return self.gone(terminal);
+        was.left = left;
+    }
+
+    /// The agent in `terminal` has left, or the terminal is gone: whoever
+    /// comes next there is judged.
+    pub fn gone(self: *SeatJudged, terminal: Id) void {
+        _ = self.by_terminal.remove(terminal);
+    }
 };
 
 /// A terminal an agent opened, and the terminal that agent is in.
@@ -336,6 +492,10 @@ pub const Order = struct {
         rename,
         /// Put the tab `terminal` is in into the project, as a page.
         add_tab,
+        /// Make the tab `terminal` is in a page of the project if it is not
+        /// one already, and mark `terminal`'s pane the supervisor's
+        /// (`seatFor`, task 1794).
+        seat,
     };
 };
 
@@ -477,6 +637,13 @@ fn standingOf(
                 .group = g.name,
                 .to = null,
                 .terminal = null,
+            });
+            if (seatFor(p, g)) |t| try orders.append(arena, .{
+                .order = .seat,
+                .project = p.name,
+                .group = g.name,
+                .to = null,
+                .terminal = t,
             });
             // What its supervisor opened and no project has yet.
             if (g.steward) |boss| for (opened) |o| {
@@ -732,6 +899,7 @@ fn view(name: []const u8, tie: Tie, steward: ?Id, claim: ?Chat.ProjectClaim) Gro
         .supervisors = if (steward == null) 0 else 1,
         .claim = claim,
         .awaiting_open = false,
+        .seating = null,
     };
 }
 
@@ -1255,4 +1423,318 @@ test "Projects: the panes a project's supervisor opened are said with it, each o
         \\[{"name":"a","group":null,"pages":1,"open":null,"supervisor":null,"workers":["0x00000000000000b9"]}]
         ,
     }) |bad| try testing.expectError(error.BadRequest, read(aa, bad));
+}
+
+test "task 1794: a held launch tells a project not yet open from one open with no supervisor's pane" {
+    var p: Projects = .init(testing.allocator);
+    defer p.deinit();
+    // Not stated at all, and stated closed: both are waited for.
+    try testing.expectEqual(LaunchPlace.not_open, launchPlace(p.find("web-app")));
+    try stateJson(&p,
+        \\[{"name":"web-app","group":"web-app","pages":2,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"seated","group":"seated","pages":1,"open":[["0x00000000000000a1","0x00000000000000a2"]],"supervisor":"0x00000000000000a2","workers":[]},
+        \\ {"name":"seatless","group":"seatless","pages":1,"open":[["0x00000000000000b1"]],"supervisor":null,"workers":[]}]
+    );
+    try testing.expectEqual(LaunchPlace.not_open, launchPlace(p.find("web-app")));
+    // Open with a pane marked: that pane.
+    try testing.expectEqual(LaunchPlace{ .pane = 0xa2 }, launchPlace(p.find("seated")));
+    // Open with none marked: waiting would never change it.
+    try testing.expectEqual(LaunchPlace.no_seat, launchPlace(p.find("seatless")));
+}
+
+test "task 1794: a project's supervisor's pane follows its group's supervisor, and a tab a start opened is seated" {
+    var p: Projects = .init(testing.allocator);
+    defer p.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // Open, its file marking 0xa1's pane; the group's supervisor is now
+    // 0xa2, in another pane of it (started there by hand).
+    try stateJson(&p,
+        \\[{"name":"web-app","group":"web-app","pages":2,"open":[["0x00000000000000a1","0x00000000000000a2"],["0x00000000000000a3"]],"supervisor":"0x00000000000000a1","workers":[]},
+        \\ {"name":"closed","group":"closed","pages":1,"open":null,"supervisor":null,"workers":[]},
+        \\ {"name":"seatless","group":"seatless","pages":1,"open":[["0x00000000000000c1"]],"supervisor":null,"workers":[]}]
+    );
+    const web = p.find("web-app").?;
+    // Marked: nothing to do.
+    try testing.expectEqual(@as(?Id, null), seatFor(web, view("web-app", .{ .bound = "web-app" }, 0xa1, null)));
+    // A supervisor in another pane of it: that pane, on any page.
+    try testing.expectEqual(@as(?Id, 0xa2), seatFor(web, view("web-app", .{ .bound = "web-app" }, 0xa2, null)));
+    try testing.expectEqual(@as(?Id, 0xa3), seatFor(web, view("web-app", .{ .bound = "web-app" }, 0xa3, null)));
+    // A supervisor whose tab is not in the project: its tab is not pulled
+    // in -- that is the person's to do.
+    try testing.expectEqual(@as(?Id, null), seatFor(web, view("web-app", .{ .bound = "web-app" }, 0xd9, null)));
+    // No supervisor: nothing.
+    try testing.expectEqual(@as(?Id, null), seatFor(web, view("web-app", .{ .bound = "web-app" }, null, null)));
+    // A project that is not open is not asked.
+    try testing.expectEqual(@as(?Id, null), seatFor(p.find("closed").?, view("closed", .{ .bound = "closed" }, 0xa2, null)));
+
+    // The tab a start opened for it, outside the project: that one, before
+    // any supervisor -- and not again once it is the marked one.
+    var seating = view("seatless", .{ .bound = "seatless" }, null, null);
+    seating.seating = 0xe1;
+    try testing.expectEqual(@as(?Id, 0xe1), seatFor(p.find("seatless").?, seating));
+    seating.steward = 0xc1;
+    try testing.expectEqual(@as(?Id, 0xe1), seatFor(p.find("seatless").?, seating));
+
+    // What reconcile orders of it.
+    const groups = [_]GroupView{ view("web-app", .{ .bound = "web-app" }, 0xa2, null), seating };
+    const out = try p.reconcile(aa, &groups, &.{});
+    var seats: usize = 0;
+    for (out.orders) |o| {
+        if (o.order != .seat) continue;
+        seats += 1;
+        if (std.mem.eql(u8, o.project, "web-app")) {
+            try expectOrder(.{ .order = .seat, .project = "web-app", .group = "web-app", .to = null, .terminal = 0xa2 }, o);
+        } else {
+            try expectOrder(.{ .order = .seat, .project = "seatless", .group = "seatless", .to = null, .terminal = 0xe1 }, o);
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), seats);
+
+    // The host seated it and said so: nothing more is asked of either.
+    try stateJson(&p,
+        \\[{"name":"web-app","group":"web-app","pages":2,"open":[["0x00000000000000a1","0x00000000000000a2"],["0x00000000000000a3"]],"supervisor":"0x00000000000000a2","workers":[]},
+        \\ {"name":"seatless","group":"seatless","pages":2,"open":[["0x00000000000000c1"],["0x00000000000000e1"]],"supervisor":"0x00000000000000e1","workers":[]}]
+    );
+    try testing.expectEqual(@as(?Id, null), seatFor(p.find("seatless").?, seating));
+    const again = try p.reconcile(aa, &groups, &.{});
+    for (again.orders) |o| try testing.expect(o.order != .seat);
+}
+
+/// What an agent arriving in `terminal` comes to, when that terminal is in
+/// the pane a group's project marks as its supervisor's (task 1795): it is
+/// that group's supervisor -- a project has one -- unless the group has a
+/// supervisor already, or the terminal is somebody else's to say about.
+pub const SeatClaim = union(enum) {
+    /// Not in any group's marked pane, or not this road's to decide.
+    none,
+    /// Make it the supervisor of `group`, and put it in the group.
+    take: struct { group: []const u8, project: []const u8 },
+    /// `group` has a supervisor already, `steward`: leave it as it is and
+    /// say so in the group.
+    refuse: struct { group: []const u8, project: []const u8, steward: Id },
+    /// A supervisor is watching this terminal: `become_supervisor` refuses
+    /// it, and so does this.
+    watched: struct { group: []const u8, project: []const u8 },
+};
+
+/// What the terminal is to the bus and the control room, as `seatClaim`
+/// needs it.
+pub const SeatClaimant = struct {
+    terminal: Id,
+    /// Another supervisor is watching it.
+    watched: bool,
+    /// It is already the supervisor of a group other than the one whose
+    /// pane it is in.
+    supervises_another: bool,
+    /// The control room is starting it for a group: that road puts it in
+    /// its group (`App.controlStartConnected`), not this one.
+    being_started: bool,
+};
+
+pub fn seatClaim(self: *const Projects, groups: []const GroupView, who: SeatClaimant) SeatClaim {
+    for (groups) |g| {
+        const name = switch (g.tie) {
+            .bound => |n| n,
+            else => continue,
+        };
+        const p = self.find(name) orelse continue;
+        const pane = p.supervisor orelse continue;
+        if (pane != who.terminal) continue;
+        if (who.being_started) return .none;
+        if (g.steward) |s| {
+            if (s == who.terminal) return .none;
+            return .{ .refuse = .{ .group = g.name, .project = p.name, .steward = s } };
+        }
+        if (who.watched) return .{ .watched = .{ .group = g.name, .project = p.name } };
+        if (who.supervises_another) return .none;
+        return .{ .take = .{ .group = g.name, .project = p.name } };
+    }
+    return .none;
+}
+
+/// Whether `terminal` is in the pane some open project marks as its
+/// supervisor's: the cheap question asked before `seatClaim`'s.
+pub fn isSeated(self: *const Projects, terminal: Id) bool {
+    const list = self.stated orelse return false;
+    for (list) |p| {
+        if (p.supervisor) |s| if (s == terminal) return true;
+    }
+    return false;
+}
+
+test "task 1795: an agent in a project's supervisor's pane is its group's supervisor, and a project has one" {
+    var p: Projects = .init(testing.allocator);
+    defer p.deinit();
+    try testing.expect(!p.isSeated(0xa1));
+    try stateJson(&p,
+        \\[{"name":"web-app","group":"web-app","pages":1,"open":[["0x00000000000000a1","0x00000000000000a2"]],"supervisor":"0x00000000000000a1","workers":[]},
+        \\ {"name":"spare","group":null,"pages":1,"open":[["0x00000000000000c1"]],"supervisor":"0x00000000000000c1","workers":[]}]
+    );
+    try testing.expect(p.isSeated(0xa1));
+    try testing.expect(!p.isSeated(0xa2));
+    const free: SeatClaimant = .{ .terminal = 0xa1, .watched = false, .supervises_another = false, .being_started = false };
+    const nobody = [_]GroupView{view("web-app", .{ .bound = "web-app" }, null, null)};
+
+    // In the marked pane, the group with nobody in charge: taken.
+    const took_it = p.seatClaim(&nobody, free);
+    try testing.expect(took_it == .take);
+    try testing.expectEqualStrings("web-app", took_it.take.group);
+    try testing.expectEqualStrings("web-app", took_it.take.project);
+
+    // Another pane of the same project: not this road's.
+    var other = free;
+    other.terminal = 0xa2;
+    try testing.expect(p.seatClaim(&nobody, other) == .none);
+
+    // The group has a supervisor already, somewhere else: refused, and who.
+    const held = [_]GroupView{view("web-app", .{ .bound = "web-app" }, 0xd1, null)};
+    const refused = p.seatClaim(&held, free);
+    try testing.expect(refused == .refuse);
+    try testing.expectEqual(@as(Id, 0xd1), refused.refuse.steward);
+    // ...and it is this one: nothing to do.
+    const self_held = [_]GroupView{view("web-app", .{ .bound = "web-app" }, 0xa1, null)};
+    try testing.expect(p.seatClaim(&self_held, free) == .none);
+
+    // Watched by a supervisor: as `become_supervisor` would, it is not.
+    var watched = free;
+    watched.watched = true;
+    try testing.expect(p.seatClaim(&nobody, watched) == .watched);
+    // Already another group's supervisor; being started by the control
+    // room: not this road's.
+    var busy = free;
+    busy.supervises_another = true;
+    try testing.expect(p.seatClaim(&nobody, busy) == .none);
+    var starting = free;
+    starting.being_started = true;
+    try testing.expect(p.seatClaim(&nobody, starting) == .none);
+
+    // A project no group is tied to: nothing, whoever is in its pane.
+    var spare = free;
+    spare.terminal = 0xc1;
+    try testing.expect(p.seatClaim(&nobody, spare) == .none);
+    // A group not bound: nothing.
+    const loose = [_]GroupView{view("web-app", .undecided, null, null)};
+    try testing.expect(p.seatClaim(&loose, free) == .none);
+}
+
+test "task 1794: the tab a start opens is seated when it claims the launch, also when it is made after the ask returns" {
+    // Asked for: no terminal yet, and no seat ordered for it.
+    var s: Seating = .{ .group = "web-app", .terminal = null };
+    var g = view("web-app", .{ .bound = "web-app" }, null, null);
+    g.seating = s.terminal;
+    var p: Projects = .init(testing.allocator);
+    defer p.deinit();
+    // Open, and marking no pane as the supervisor's.
+    try stateJson(&p,
+        \\[{"name":"web-app","group":"web-app","pages":1,"open":[["0x00000000000000c1"]],"supervisor":null,"workers":[]}]
+    );
+    try testing.expectEqual(@as(?Id, null), seatFor(p.find("web-app").?, g));
+    // Still waiting for its tab: not over.
+    try testing.expect(!s.over("web-app", false, false));
+
+    // The ask has returned (Windows: the tab is posted). Another group's
+    // tab is not this one's.
+    try testing.expect(!s.opened("docs", 0xd1));
+    try testing.expectEqual(@as(?Id, null), s.terminal);
+
+    // The tab claims the launch, later: from now on it is seated.
+    try testing.expect(s.opened("web-app", 0xe1));
+    g.seating = s.terminal;
+    try testing.expectEqual(@as(?Id, 0xe1), seatFor(p.find("web-app").?, g));
+    // A second tab is not: the first one was the start's.
+    try testing.expect(!s.opened("web-app", 0xe2));
+    try testing.expectEqual(@as(?Id, 0xe1), s.terminal);
+    try testing.expect(!s.over(null, false, false));
+    try testing.expect(s.over(null, true, false));
+    try testing.expect(s.over(null, false, true));
+
+    // A start that ran out before any tab came: over, nothing to seat.
+    const lost: Seating = .{ .group = "web-app", .terminal = null };
+    try testing.expect(lost.over(null, false, false));
+    try testing.expect(lost.over("docs", false, false));
+}
+
+test "task 1795: a pane that refused an agent takes the next one, once its group's supervisor has gone" {
+    var p: Projects = .init(testing.allocator);
+    defer p.deinit();
+    try stateJson(&p,
+        \\[{"name":"web-app","group":"web-app","pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a1","workers":[]}]
+    );
+    var judged: SeatJudged = .{};
+    defer judged.deinit(testing.allocator);
+    const seat: SeatClaimant = .{ .terminal = 0xa1, .watched = false, .supervises_another = false, .being_started = false };
+    const held = [_]GroupView{view("web-app", .{ .bound = "web-app" }, 0xd1, null)};
+    const nobody = [_]GroupView{view("web-app", .{ .bound = "web-app" }, null, null)};
+
+    // An agent before its session id: judged, refused, once.
+    try testing.expect(judged.due(0xa1, 0));
+    try testing.expect(p.seatClaim(&held, seat) == .refuse);
+    try judged.judged(testing.allocator, 0xa1, 0, false);
+    try testing.expect(!judged.due(0xa1, 0));
+    // Its session id arrives: the same agent, not judged again.
+    const first = SeatJudged.agentKey("ses-1");
+    try testing.expect(!judged.due(0xa1, first));
+    try testing.expect(!judged.due(0xa1, first));
+
+    // The supervisor goes. The same agent is still not asked again: its
+    // refusal was said, and it is the person's to make it one.
+    try testing.expect(!judged.due(0xa1, first));
+
+    // A new agent in the pane, by its session: judged, and taken.
+    const second = SeatJudged.agentKey("ses-2");
+    try testing.expect(second != first);
+    try testing.expect(judged.due(0xa1, second));
+    try testing.expect(p.seatClaim(&nobody, seat) == .take);
+    try judged.judged(testing.allocator, 0xa1, second, false);
+    try testing.expect(!judged.due(0xa1, second));
+
+    // One that says no session: forgotten when the agent leaves, so the
+    // next one is judged.
+    try judged.judged(testing.allocator, 0xa1, 0, false);
+    try testing.expect(!judged.due(0xa1, 0));
+    judged.gone(0xa1);
+    try testing.expect(judged.due(0xa1, 0));
+    try testing.expect(p.seatClaim(&nobody, seat) == .take);
+}
+
+test "task 1795: the left of the agent before does not have the next one judged at every request" {
+    var p: Projects = .init(testing.allocator);
+    defer p.deinit();
+    try stateJson(&p,
+        \\[{"name":"web-app","group":"web-app","pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a1","workers":[]}]
+    );
+    var judged: SeatJudged = .{};
+    defer judged.deinit(testing.allocator);
+    const seat: SeatClaimant = .{ .terminal = 0xa1, .watched = false, .supervises_another = false, .being_started = false };
+    const nobody = [_]GroupView{view("web-app", .{ .bound = "web-app" }, null, null)};
+
+    // The first agent, judged while nothing has left.
+    judged.seen(0xa1, false);
+    try testing.expect(judged.due(0xa1, 0));
+    try judged.judged(testing.allocator, 0xa1, 0, false);
+
+    // It goes: the bus says so. Forgotten once.
+    judged.seen(0xa1, true);
+    // The next agent's requests, five of them, while that left is still on
+    // the bus: judged at the first, and not again.
+    var judgements: usize = 0;
+    for (0..5) |_| {
+        judged.seen(0xa1, true);
+        if (judged.due(0xa1, 0)) {
+            try testing.expect(p.seatClaim(&nobody, seat) == .take);
+            try judged.judged(testing.allocator, 0xa1, 0, true);
+            judgements += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), judgements);
+
+    // The bus takes the left back once this one is here; this one going
+    // later is a leave again, and the one after it is judged.
+    judged.seen(0xa1, false);
+    try testing.expect(!judged.due(0xa1, 0));
+    judged.seen(0xa1, true);
+    try testing.expect(judged.due(0xa1, 0));
 }

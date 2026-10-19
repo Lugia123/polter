@@ -278,7 +278,8 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
 
     /// The pane `view` is the supervisor's, and no other pane of the
     /// project is (`ProjectPages.makeSupervisor`).
-    func makeSupervisor(_ view: Ghostty.SurfaceView) {
+    func makeSupervisor(_ view: Ghostty.SurfaceView, caller: String = #function) {
+        ProjectTrace.seated(view, project: name, caller: caller)
         // A pane is found by its snapshot name, which a save gives it.
         if view.projectSnapshot == nil {
             save(capturing: [], keeping: .onLayoutChange, what: "save before marking the supervisor")

@@ -134,6 +134,7 @@ enum ProjectLink {
             case setGroup = "set_group"
             case rename
             case addTab = "add_tab"
+            case seat
         }
 
         let kind: Kind
@@ -292,6 +293,9 @@ enum ProjectLink {
         case setGroup(project: String, group: String?)
         case rename(project: String, to: String)
         case addTab(project: String, terminal: String)
+        /// Make the tab `terminal` is in a page of `project` when it is a
+        /// page of none, and mark its pane the supervisor's (task 1794).
+        case seat(project: String, terminal: String)
     }
 
     /// What to do about `order`, or nil when there is nothing to do: it is
@@ -343,6 +347,16 @@ enum ProjectLink {
             guard let terminal = order.terminal, host.project(order.project) != nil else { return nil }
             guard host.terminals.contains(terminal), host.projectOfTab[terminal] == nil else { return nil }
             return .addTab(project: order.project, terminal: terminal)
+
+        case .seat:
+            guard let terminal = order.terminal, let project = host.project(order.project) else { return nil }
+            guard host.terminals.contains(terminal) else { return nil }
+            // A tab of this project or of none; another project's page is
+            // not taken from it.
+            let tabOf = host.projectOfTab[terminal]
+            guard tabOf == nil || tabOf == order.project else { return nil }
+            if tabOf == order.project, project.supervisor == terminal { return nil }
+            return .seat(project: order.project, terminal: terminal)
         }
     }
 

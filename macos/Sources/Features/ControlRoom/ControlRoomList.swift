@@ -180,6 +180,9 @@ struct ControlRoomList: Equatable {
         enum Failure: String, Equatable, Decodable, CaseIterable {
             case none
             case terminalNeverOpened = "terminal_never_opened"
+            /// It was to start in its group's project, and the project
+            /// never opened (task 1794).
+            case projectNeverOpened = "project_never_opened"
             case agentNeverConnected = "agent_never_connected"
             case terminalClosed = "terminal_closed"
             /// `+launch` said so itself, at once: the CLI's program is not

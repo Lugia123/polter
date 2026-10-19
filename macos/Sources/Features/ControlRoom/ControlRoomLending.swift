@@ -225,6 +225,9 @@ extension ControlRoomLending {
             case (.failed, .terminalNeverOpened):
                 return String(localized: "The supervisor did not start: its tab never opened.",
                               comment: "总控台：启动总管失败，标签页没开出来")
+            case (.failed, .projectNeverOpened):
+                return String(localized: "The supervisor did not start: its group's project never opened.",
+                              comment: "总控台：启动总管失败，它要在群的项目里启动，可那个项目一直没有打开")
             case (.failed, .agentNeverConnected):
                 return String(localized: "The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.",
                               comment: "总控台：启动总管失败，标签页开了但里面的 agent 没有连上 Polter")

@@ -20,6 +20,9 @@ pub enum Kind {
     SetGroup,
     Rename,
     AddTab,
+    /// Make the tab `terminal` is in a page of the project if it is not
+    /// one, and mark its pane the supervisor's (task 1794).
+    Seat,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +108,7 @@ pub fn decode(snapshot: &str) -> Result<Told, String> {
                     "set_group" => Kind::SetGroup,
                     "rename" => Kind::Rename,
                     "add_tab" => Kind::AddTab,
+                    "seat" => Kind::Seat,
                     other => return Err(format!("{at}.order is {other:?}, which this build does not know")),
                 };
                 orders.push(Order {
@@ -153,6 +157,9 @@ pub struct Have {
     /// Every terminal on a page of it that is open; empty when none is.
     pub terminals: Vec<String>,
     pub open: bool,
+    /// The terminal in the pane its file marks as the supervisor's, when
+    /// it is open and marks one.
+    pub supervisor: Option<String>,
 }
 
 /// What the host does about an order now.
@@ -177,6 +184,9 @@ pub enum Step {
     Rename { from: String, to: String },
     /// The tab `terminal` is in becomes a page of `project`.
     AddTab { project: String, terminal: String },
+    /// The tab `terminal` is in becomes a page of `project` when it is a
+    /// page of none (`join_tab`), and its pane is marked the supervisor's.
+    Seat { project: String, terminal: String, join_tab: bool },
 }
 
 /// What `order` still asks, given the projects the host has (`have`) and
@@ -245,6 +255,22 @@ pub fn step(order: &Order, have: &[Have], live: &dyn Fn(&str) -> bool) -> Step {
                 return Step::Nothing("its tab is already a page of a project");
             }
             Step::AddTab { project: order.project.clone(), terminal: terminal.clone() }
+        }
+        Kind::Seat => {
+            let Some(terminal) = &order.terminal else { return Step::Nothing("no terminal was named") };
+            let Some(p) = project else { return Step::Nothing("no such project") };
+            if !live(terminal) {
+                return Step::Nothing("that terminal is not open here");
+            }
+            let join_tab = match page_of(terminal) {
+                None => true,
+                Some(q) if q.name == p.name => false,
+                Some(_) => return Step::Nothing("its tab is another project's page"),
+            };
+            if !join_tab && p.supervisor.as_deref() == Some(terminal.as_str()) {
+                return Step::Nothing("its pane is the marked one already");
+            }
+            Step::Seat { project: p.name.clone(), terminal: terminal.clone(), join_tab }
         }
     }
 }

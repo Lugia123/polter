@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use polter_projectfile::{leaves, leaves_mut, Agent, Frame, PaneColor, SavedLeaf, SavedNode, Snapshot, Tab, Who, Window, Workers};
+use polter_projectfile::{leaves, leaves_mut, Agent, Frame, PaneColor, SavedLeaf, SavedNode, Snapshot, Tab, Window, Workers};
 
 /// A page's name for as long as the host has the project in hand.
 pub type PageId = usize;
@@ -348,9 +348,12 @@ impl Pages {
     /// other pane of the project is (a project has one). False, and nothing
     /// changed, when no pane is called that.
     ///
-    /// Who is in it is kept when the file said; when it did not, the pane is
-    /// an agent's of whom nothing else is known -- the mark has nowhere else
-    /// to be written (`Who::supervisor`).
+    /// The mark is the pane's `supervisor_seat` (task 1794), as on macOS and
+    /// as `Stated::of_open` reads it. Who is in the pane is left as the file
+    /// said: a pane nobody was written down for is not made an agent's to
+    /// carry the mark. An agent's own `supervisor` flag, a format 2 field,
+    /// follows the seat where there is an agent, for a reader that still
+    /// looks there.
     pub fn mark_supervisor(&mut self, scrollback: &str) -> bool {
         fn has(node: &SavedNode, name: &str) -> bool {
             match node {
@@ -362,10 +365,9 @@ impl Pages {
         }
         fn mark_leaf(leaf: &mut SavedLeaf, name: &str) {
             let it = leaf.scrollback == name;
-            match &mut leaf.agent {
-                Agent::Agent(who) => who.supervisor = it,
-                other if it => *other = Agent::Agent(Who { role: String::new(), cli: String::new(), session: String::new(), supervisor: true }),
-                _ => {}
+            leaf.supervisor_seat = Some(it);
+            if let Agent::Agent(who) = &mut leaf.agent {
+                who.supervisor = it;
             }
         }
         fn mark(node: &mut SavedNode, name: &str) {

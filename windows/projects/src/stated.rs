@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use polter_projectfile::{leaves, Agent, Snapshot};
+use polter_projectfile::{leaves, Snapshot};
 
 use crate::pages::{PageId, Pages};
 
@@ -60,7 +60,11 @@ impl Stated {
                 continue;
             }
             for (leaf, terminal) in panes.iter().zip(terminals) {
-                if matches!(&leaf.agent, Agent::Agent(who) if who.supervisor) && supervisor.is_none() {
+                // The pane's seat, never the agent's flag (task 1794): a file
+                // macOS wrote says `agent.supervisor: false` on the very pane
+                // it seats, and the seat is what both hosts mean by "the
+                // supervisor's pane" (`projects.md` §9).
+                if leaf.supervisor_seat == Some(true) && supervisor.is_none() {
                     supervisor = Some(terminal.clone());
                 }
             }

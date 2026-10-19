@@ -76,6 +76,7 @@ pub mod msg {
     pub const ASKING: &str = n_("The supervisor is waiting in its tab for you to answer a question.");
     pub const GO_TO_ITS_TAB: &str = n_("Go to Its Tab");
     pub const NEVER_OPENED: &str = n_("The supervisor did not start: its tab never opened.");
+    pub const PROJECT_NEVER_OPENED: &str = n_("The supervisor did not start: its group's project never opened.");
     #[rustfmt::skip]
     pub const NEVER_CONNECTED: &str = n_("The supervisor did not start: its tab opened, but no agent connected from it. Its tab shows why.");
     pub const CLOSED_FIRST: &str = n_("The supervisor did not start: its tab was closed first.");
@@ -1671,6 +1672,7 @@ pub fn no_supervisor_words(start: Option<&crate::snapshot::SupervisorStart>) -> 
         Some((S::Starting, _)) if start.is_some_and(|s| s.asking) => msg::ASKING,
         Some((S::Starting, _)) => msg::STARTING,
         Some((S::Failed, F::TerminalNeverOpened)) => msg::NEVER_OPENED,
+        Some((S::Failed, F::ProjectNeverOpened)) => msg::PROJECT_NEVER_OPENED,
         Some((S::Failed, F::AgentNeverConnected)) => msg::NEVER_CONNECTED,
         Some((S::Failed, F::TerminalClosed)) => msg::CLOSED_FIRST,
         Some((S::Failed, F::CliNotFound)) => msg::CLI_NOT_FOUND,
@@ -3633,6 +3635,8 @@ mod tests {
         assert_eq!(says(S::Absent, F::None), msg::NO_SUPERVISOR);
         assert_eq!(says(S::Starting, F::None), msg::STARTING);
         assert_eq!(says(S::Failed, F::TerminalNeverOpened), msg::NEVER_OPENED);
+        assert_eq!(says(S::Failed, F::ProjectNeverOpened), msg::PROJECT_NEVER_OPENED);
+        assert_ne!(msg::PROJECT_NEVER_OPENED, msg::NEVER_OPENED);
         assert_eq!(says(S::Failed, F::AgentNeverConnected), msg::NEVER_CONNECTED);
         assert_eq!(says(S::Failed, F::TerminalClosed), msg::CLOSED_FIRST);
         // What the launcher said itself, each with its own sentence, and

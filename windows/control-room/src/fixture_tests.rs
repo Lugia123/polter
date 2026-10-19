@@ -915,7 +915,7 @@ fn what_the_core_says_of_a_supervisor_is_read_as_said_and_an_unknown_word_is_an_
         assert_eq!(with.failed, reason, "{}", reason.name());
     }
     let named: Vec<&str> = StartFailure::ALL.iter().map(|r| r.name()).collect();
-    assert_eq!(named, ["none", "terminal_never_opened", "agent_never_connected", "terminal_closed", "cli_not_found", "cli_did_not_start"]);
+    assert_eq!(named, ["none", "terminal_never_opened", "project_never_opened", "agent_never_connected", "terminal_closed", "cli_not_found", "cli_did_not_start"]);
     let no_role = read(first("\"role\": \"polter-supervisor\"", "\"role\": null"));
     assert_eq!(no_role.role, None);
     assert!(matches!(snapshot::decode(&first("\"state\": \"present\"", "\"state\": \"maybe\"")), Err(DecodeError::UnknownValue(_))));

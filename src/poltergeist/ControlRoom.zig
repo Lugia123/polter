@@ -80,6 +80,7 @@
 //!                                 answers it: a host says so and offers
 //!                                 to go to that tab
 //!         "failed": "none",       none | terminal_never_opened |
+//!                                 project_never_opened |
 //!                                 agent_never_connected | terminal_closed |
 //!                                 cli_not_found | cli_did_not_start
 //!                                 the last two are `+launch` saying so
@@ -5633,9 +5634,9 @@ test "Projects: the snapshot says which project each group has, what starting it
         try table.state(try Projects.parse(aa, v));
     }
     const views = [_]Projects.GroupView{
-        .{ .name = "tied", .tie = .{ .bound = "tied" }, .steward = null, .supervisors = 0, .claim = null, .awaiting_open = true },
-        .{ .name = "old", .tie = .undecided, .steward = 0xa1, .supervisors = 1, .claim = .{ .terminal = 0xa1, .said = false }, .awaiting_open = false },
-        .{ .name = "said-no", .tie = .declined, .steward = null, .supervisors = 0, .claim = null, .awaiting_open = false },
+        .{ .name = "tied", .tie = .{ .bound = "tied" }, .steward = null, .supervisors = 0, .claim = null, .awaiting_open = true, .seating = null },
+        .{ .name = "old", .tie = .undecided, .steward = 0xa1, .supervisors = 1, .claim = .{ .terminal = 0xa1, .said = false }, .awaiting_open = false, .seating = null },
+        .{ .name = "said-no", .tie = .declined, .steward = null, .supervisors = 0, .claim = null, .awaiting_open = false, .seating = null },
     };
     const out = try table.reconcile(aa, &views, &.{});
     w.projects = .{ .table = &table, .standings = out.standings, .orders = out.orders };

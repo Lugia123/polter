@@ -4888,6 +4888,10 @@ msgstr ""
 msgid "The supervisor did not start: its tab never opened."
 msgstr ""
 
+#: windows/control-room/src/scene.rs:79
+msgid "The supervisor did not start: its group's project never opened."
+msgstr ""
+
 #: windows/control-room/src/scene.rs:53
 msgid ""
 "The supervisor did not start: its tab opened, but no agent connected from "
