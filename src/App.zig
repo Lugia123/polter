@@ -2444,26 +2444,78 @@ fn controlActStateProjects(ctx: *anyopaque, statement: poltergeistpkg.Projects.S
     // supervisor's pane (`statedWorker`), so the next worker joins their
     // stack and a free one is used again (task 1857).
     for (list) |p| {
-        const boss = p.supervisor orelse continue;
-        for (p.workers) |w| {
-            switch (statedWorker(boss, w, self.poltergeist.workerOf(w), self.poltergeist.openedBy(w))) {
-                .keep => {},
-                .record => {
-                    self.markAgentOpened(w, boss);
-                    self.poltergeistRecordWorker(boss, w);
-                    log.info("projects: terminal {x} in a pane {s}'s supervisor opened is {x}'s worker again", .{ w, p.name, boss });
-                },
-                .rehome => |from| {
-                    if (self.poltergeist_workers.getPtr(from)) |l| {
-                        if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, l.items, w)) |i| _ = l.orderedRemove(i);
-                    }
-                    self.markAgentOpened(w, boss);
-                    self.poltergeistRecordWorker(boss, w);
-                    log.info("projects: terminal {x} in a pane {s}'s supervisor opened was {x}'s worker; {x} is the supervisor now", .{ w, p.name, from, boss });
-                },
-            }
+        // The group's supervisor before the pane the file marks (task
+        // 1875): the seat follows the supervisor only at the next save, and
+        // until then the file's pane is the one taken over from -- whose
+        // workers this would hand back to it.
+        const steward = if (p.group) |g| self.projectStewardOf(g, p.name) else null;
+        const boss = workersBoss(p.supervisor, steward) orelse continue;
+        self.rehomeStatedWorkers(p.name, p.workers, boss);
+    }
+}
+
+/// Whose the workers a project's file marks are (task 1875): the group's
+/// supervisor when it has one minding it, the terminal in the pane the file
+/// marks as the supervisor's when not.
+fn workersBoss(seat: ?poltergeistpkg.Bus.Id, steward: ?poltergeistpkg.Bus.Id) ?poltergeistpkg.Bus.Id {
+    return steward orelse seat;
+}
+
+/// The supervisor minding `group`, when `group`'s project is `project`.
+fn projectStewardOf(self: *App, group: []const u8, project: []const u8) ?poltergeistpkg.Bus.Id {
+    const tie = self.chat.projectOf(group);
+    if (tie != .bound or !std.mem.eql(u8, tie.bound, project)) return null;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    return poltergeistpkg.ControlRoom.stewardOfGroup(arena.allocator(), &self.poltergeist, &self.chat, group);
+}
+
+/// The panes `project`'s file marks as its supervisor's (`workers`) are
+/// `boss`'s workers (`statedWorker`, task 1857).
+fn rehomeStatedWorkers(self: *App, project: []const u8, workers: []const poltergeistpkg.Bus.Id, boss: poltergeistpkg.Bus.Id) void {
+    for (workers) |w| {
+        switch (statedWorker(boss, w, self.poltergeist.workerOf(w), self.poltergeist.openedBy(w))) {
+            .keep => {},
+            .record => {
+                self.markAgentOpened(w, boss);
+                self.poltergeistRecordWorker(boss, w);
+                log.info("projects: terminal {x} in a pane {s}'s supervisor opened is {x}'s worker again", .{ w, project, boss });
+            },
+            .rehome => |from| {
+                if (self.poltergeist_workers.getPtr(from)) |l| {
+                    if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, l.items, w)) |i| _ = l.orderedRemove(i);
+                }
+                self.markAgentOpened(w, boss);
+                self.poltergeistRecordWorker(boss, w);
+                log.info("projects: terminal {x} in a pane {s}'s supervisor opened was {x}'s worker; {x} is the supervisor now", .{ w, project, from, boss });
+            },
         }
     }
+}
+
+/// `id` joined `group` and is its supervisor now: the workers its project's
+/// file marks are its at once (task 1875), not at the next statement -- by
+/// which time its first worker has been placed beside it, starting a
+/// column of its own (Windows, 2026-10-20: `placed:split` in its own tab,
+/// and the move logged in the same millisecond, after).
+fn takeUpStatedWorkers(self: *App, group: []const u8, id: poltergeistpkg.Bus.Id) void {
+    if (!self.poltergeist.isSupervisor(id)) return;
+    const tie = self.chat.projectOf(group);
+    if (tie != .bound) return;
+    const p = self.projects.find(tie.bound) orelse return;
+    const steward = self.projectStewardOf(group, p.name) orelse return;
+    if (steward != id) return;
+    self.rehomeStatedWorkers(p.name, p.workers, id);
+}
+
+test "1875: a project's workers are its group's supervisor's before the seat has followed it" {
+    const testing = std.testing;
+    // Taken over: the group's supervisor, not the pane the file still marks.
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 0xb2), workersBoss(0xa1, 0xb2));
+    // Nobody minding the group: the file's pane, as before (task 1857).
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 0xa1), workersBoss(0xa1, null));
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 0xb2), workersBoss(null, 0xb2));
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), workersBoss(null, null));
 }
 
 /// What a pane the project file marks as its supervisor's (`by_supervisor`)
@@ -10851,6 +10903,9 @@ fn chatAdd(
     // left (task 1864): that one gives it up now, not when its next agent
     // turns up as a second supervisor.
     self.dropSupersededBy(group, id);
+    // And the workers its project's file marks are its now, before its
+    // first one is placed (task 1875).
+    self.takeUpStatedWorkers(group, id);
 
     // A supervisor joining: if that makes it this group's, what it is is
     // written down for whoever starts the next one.
