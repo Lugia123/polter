@@ -5595,6 +5595,25 @@ pub fn lineCheck(on_screen: bool, turn_since: bool, waited_ms: u64, tries: u8) L
     return if (tries < 2) .again else .give_up;
 }
 
+/// What to do with a second message owed to a terminal whose agent is not
+/// connected (task 1787). **Not "it is gone"**: agy's hook can reach Polter
+/// before its MCP server does -- measured, 25 ms apart, and the order
+/// differs from one start to the next -- and the second message used to be
+/// dropped right there, with nothing in the log. Gone only once its CLI has
+/// exited (the shell is at its prompt again); otherwise kept and tried
+/// again, for at most `start_line_agent_wait_ms`, then given up on and said.
+pub const StartLineAbsent = enum { wait, gone, give_up };
+
+/// How long an owed second message waits for its agent to connect: the
+/// minute a launch waits for one (`Bus.launch_agent_wait_ms`).
+pub const start_line_agent_wait_ms: u64 = Bus.launch_agent_wait_ms;
+
+pub fn startLineWithoutAgent(shell_at_prompt: bool, owed_for_ms: u64) StartLineAbsent {
+    if (shell_at_prompt) return .gone;
+    if (owed_for_ms >= start_line_agent_wait_ms) return .give_up;
+    return .wait;
+}
+
 /// What `startupReach` answers for a terminal Polter owes a first prompt:
 /// its input box does not let anybody else's line in until the prompt has
 /// gone -- a mention typed first would be the CLI's first prompt, without
@@ -15968,6 +15987,18 @@ test "launched standing: the launcher saying hooks are expected is not the agent
     try testing.expectEqual(@as(?persona.Capabilities.PendingStanding, null), late.persona.pending_standing);
     const supervisor_at_the_end = bus.isSupervisor(fresh);
     try testing.expect(!supervisor_at_the_end);
+}
+
+test "1787: a second message owed before its agent connects waits for it, a minute at most" {
+    // agy's hook came 25 ms before its MCP server (c1b, round two): waited.
+    try testing.expectEqual(StartLineAbsent.wait, startLineWithoutAgent(false, 0));
+    try testing.expectEqual(StartLineAbsent.wait, startLineWithoutAgent(false, start_line_agent_wait_ms - 1));
+    // Never connected: given up on, and said, rather than tried for ever.
+    try testing.expectEqual(StartLineAbsent.give_up, startLineWithoutAgent(false, start_line_agent_wait_ms));
+    try testing.expectEqual(@as(u64, 60_000), start_line_agent_wait_ms);
+    // Its CLI has exited: nobody left to tell.
+    try testing.expectEqual(StartLineAbsent.gone, startLineWithoutAgent(true, 0));
+    try testing.expectEqual(StartLineAbsent.gone, startLineWithoutAgent(true, start_line_agent_wait_ms));
 }
 
 test "1746: a second message that did not show is typed again once, then given up on" {

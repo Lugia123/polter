@@ -529,7 +529,7 @@ pub const StartupSays = struct {
     pub fn blockSaid(self: StartupSays, screen: []const u8) ?[]const u8 {
         const tail = bottomRows(screen, ScreenSays.rows);
         for (self.blocks) |text| {
-            if (std.mem.indexOf(u8, tail, text) != null) return text;
+            if (containsWrapped(tail, text)) return text;
         }
         return null;
     }
@@ -537,10 +537,10 @@ pub const StartupSays = struct {
     pub fn verdict(self: StartupSays, screen: []const u8) Verdict {
         const tail = bottomRows(screen, ScreenSays.rows);
         for (self.blocks) |text| {
-            if (std.mem.indexOf(u8, tail, text) != null) return .blocked;
+            if (containsWrapped(tail, text)) return .blocked;
         }
         for (self.ready_says) |text| {
-            if (std.mem.indexOf(u8, tail, text) != null) return .ready;
+            if (containsWrapped(tail, text)) return .ready;
         }
         return .neither;
     }
@@ -567,6 +567,47 @@ pub fn startupFor(manifests: []const Manifest, cli: []const u8) ?StartupSays {
         return m.startup_says;
     }
     return null;
+}
+
+/// Whether `needle` is in `hay` once neither has any white space: a
+/// sentence a narrow terminal broke over two rows is still that sentence
+/// (task 1787). agy wraps its own text at a word, so the space becomes a
+/// line break -- "Do you trust the contents of this" over "project?" in a
+/// narrow split, read off one -- and a terminal wraps a long word inside
+/// it, so the break can fall anywhere. Both match. A declared text is a
+/// whole sentence of eight bytes or more (`startupSaysOf`), and the run of
+/// characters it comes to with its spaces taken out does not turn up by
+/// accident; only the sentence itself, broken, makes it.
+///
+/// Only for `StartupSays`: an approval box wraps too, but whether Codex's
+/// and Claude Code's do in a narrow split is to be measured first.
+fn containsWrapped(hay: []const u8, needle: []const u8) bool {
+    var n_len: usize = 0;
+    for (needle) |c| {
+        if (!isBlank(c)) n_len += 1;
+    }
+    if (n_len == 0) return false;
+    var start: usize = 0;
+    while (start < hay.len) : (start += 1) {
+        if (isBlank(hay[start])) continue;
+        var h = start;
+        var n: usize = 0;
+        var matched: usize = 0;
+        while (matched < n_len) {
+            while (n < needle.len and isBlank(needle[n])) n += 1;
+            while (h < hay.len and isBlank(hay[h])) h += 1;
+            if (h == hay.len or hay[h] != needle[n]) break;
+            h += 1;
+            n += 1;
+            matched += 1;
+        }
+        if (matched == n_len) return true;
+    }
+    return false;
+}
+
+fn isBlank(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\r' or c == '\n';
 }
 
 /// The last `n` rows of `screen` that end at its last row with anything
@@ -3798,6 +3839,57 @@ test "1777: the shipped opencode manifest declares the box opencode 1.2.10 draws
     ;
     try testing.expectEqualStrings("Permission required", all[0].screen_says.approvalSaid(box).?);
     try testing.expect(all[0].screen_says.approvalSaid("┃  Ask anything...\n  Build  local-vllm\n") == null);
+}
+
+test "1787: agy's trust question broken over two rows in a narrow split is still the question" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const agy = try std.json.parseFromSliceLeaky(std.json.Value, a, @embedFile("plugin_antigravity_json"), .{});
+    const says = try startupSaysOf(a, "antigravity", agy.object);
+
+    // Read off a narrow split by the test session (t1746b-20, agy 1.4.2):
+    // agy wraps at a word.
+    const narrow =
+        \\Accessing workspace:
+        \\/h/t1746b-repo-wt/w1
+        \\Do you trust the contents of this
+        \\project?
+        \\Antigravity CLI requires permission
+        \\to read, edit, and execute files
+        \\here.
+        \\> Yes, I trust this folder
+        \\  No, exit
+        \\  ↑/↓ Navigate · enter Confirm
+    ;
+    try testing.expectEqual(StartupSays.Verdict.blocked, says.verdict(narrow));
+    try testing.expectEqualStrings("Do you trust the contents of this project?", says.blockSaid(narrow).?);
+
+    // A terminal breaking a word inside it, and spaces doubled.
+    try testing.expectEqual(StartupSays.Verdict.blocked, says.verdict(
+        \\Do you trust the contents of this proj
+        \\ect?
+        \\> Yes, I trust this folder
+    ));
+    try testing.expectEqual(StartupSays.Verdict.blocked, says.verdict("Do  you trust   the contents of this\r\n project?\n"));
+
+    // Not the question: half of it, its words scattered, or talk about it.
+    try testing.expectEqual(StartupSays.Verdict.neither, says.verdict(
+        \\Do you trust the contents of this
+        \\repository's README before running it?
+    ));
+    try testing.expectEqual(StartupSays.Verdict.neither, says.verdict(
+        \\project? trust the contents of this, do you
+    ));
+    try testing.expect(says.blockSaid("I asked: do you trust the contents of this project?\n") == null);
+
+    // The input box's own words, broken over two rows, are its input box.
+    try testing.expectEqual(StartupSays.Verdict.ready, says.verdict(
+        \\>
+        \\? for
+        \\shortcuts
+    ));
+    try testing.expectEqual(StartupSays.Verdict.neither, says.verdict("? for help, or shortcuts\n"));
 }
 
 test "1682: what agy shows before it connects: the trust box blocks, its input box lets the first line in" {

@@ -459,6 +459,11 @@ start_lines: poltergeistpkg.OwedTells = undefined,
 /// the trust box and the CLI's input box shows (`payFirstPrompts`).
 first_prompts: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty,
 
+/// When each owed second message was first owed, and for which group
+/// (task 1787): how long it has waited for its agent to connect, and what
+/// to say if it never does.
+start_owed: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, StartOwed) = .empty,
+
 /// Second messages typed and not yet seen to have reached their CLI
 /// (`checkStartLines`, task 1746 round two): the line, when it was typed,
 /// and how many times.
@@ -769,6 +774,11 @@ pub fn deinit(self: *App) void {
     self.owed_tells.deinit();
     self.start_lines.deinit();
     self.first_prompts.deinit(self.alloc);
+    {
+        var it = self.start_owed.valueIterator();
+        while (it.next()) |o| self.alloc.free(o.group);
+        self.start_owed.deinit(self.alloc);
+    }
     {
         var it = self.start_checks.valueIterator();
         while (it.next()) |c| self.alloc.free(c.line);
@@ -1781,10 +1791,22 @@ fn controlStartConnected(self: *App, id: poltergeistpkg.Bus.Id) void {
     // a word and wait. What to do first is said now, as a second message,
     // once that turn is over -- a session picked up again too: its first
     // turn has no tools either (measured, round two).
-    const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else return;
+    //
+    // Each way out says so (task 1787): this used to go quiet at every one,
+    // and a second message that never came left nothing in the log to find.
+    const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else {
+        log.info("control room: no second message for 0x{x}: its launch is not known", .{id});
+        return;
+    };
     self.ensurePlugins();
-    const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse return;
-    if (!says.tools_from_second_turn) return;
+    const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse {
+        log.info("control room: no second message for 0x{x}: {s} declares nothing it shows at startup", .{ id, cli });
+        return;
+    };
+    if (!says.tools_from_second_turn) {
+        log.info("control room: no second message for 0x{x}: {s} has Polter's tools from its first turn", .{ id, cli });
+        return;
+    }
     var buf: [poltergeistpkg.OwedTells.max_line + 1]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, start_line_fmt, .{group}) catch {
         log.warn("control room: the group's name is too long for the started supervisor's second message; not sent", .{});
@@ -1794,7 +1816,23 @@ fn controlStartConnected(self: *App, id: poltergeistpkg.Bus.Id) void {
         log.warn("control room: could not keep the started supervisor's second message err={}", .{err});
         return;
     };
+    self.noteStartOwed(id, group);
     self.payStartLines();
+}
+
+const StartOwed = struct { at_ms: u64, group: []u8 };
+
+/// Remember when the second message for `id` was first owed, and for which
+/// group. A message owed again keeps its first moment: the wait for the
+/// agent does not start over.
+fn noteStartOwed(self: *App, id: poltergeistpkg.Bus.Id, group: []const u8) void {
+    if (self.start_owed.contains(id)) return;
+    const copy = self.alloc.dupe(u8, group) catch return;
+    self.start_owed.put(self.alloc, id, .{ .at_ms = self.poltergeistElapsedMs(), .group = copy }) catch self.alloc.free(copy);
+}
+
+fn forgetStartOwed(self: *App, id: poltergeistpkg.Bus.Id) void {
+    if (self.start_owed.fetchRemove(id)) |kv| self.alloc.free(kv.value.group);
 }
 
 /// The second message (`start_lines`): what the role's instructions said to
@@ -1895,23 +1933,88 @@ const start_line_head = 24;
 /// line -- the person typing, a draft, a box (`Surface.mayType`) -- and
 /// typed once, after.
 fn startLineTry(self: *App, id: poltergeistpkg.Bus.Id, line: []const u8) poltergeistpkg.OwedTells.Outcome {
-    const surface = self.findSurfaceByID(id) orelse return .gone;
-    if (!self.agentPresent(id)) return .gone;
+    const surface = self.findSurfaceByID(id) orelse {
+        log.info("control room: the started supervisor's second message is not typed: its terminal is closed id={x}", .{id});
+        self.forgetStartOwed(id);
+        return .gone;
+    };
+    // **Its agent may not have connected yet** (task 1787): agy's hook can
+    // come before its MCP server, and this used to drop the line right
+    // there, without a word.
+    if (!self.agentPresent(id)) {
+        const owed_ms = if (self.start_owed.get(id)) |o| o.at_ms else self.poltergeistElapsedMs();
+        switch (poltergeistpkg.rpc.startLineWithoutAgent(surface.shellIdle(), self.poltergeistElapsedMs() -| owed_ms)) {
+            .wait => return .refused,
+            .gone => {
+                log.info("control room: the started supervisor's second message is not typed: its CLI has exited id={x}", .{id});
+                self.forgetStartOwed(id);
+                return .gone;
+            },
+            .give_up => {
+                log.warn("control room: the started supervisor's second message is not typed: no agent connected from its terminal within {d}s; given up id={x}", .{ poltergeistpkg.rpc.start_line_agent_wait_ms / std.time.ms_per_s, id });
+                self.startLineGivenUp(id);
+                return .gone;
+            },
+        }
+    }
     // A copy, kept for as long as the name read out of it is used.
     const agent = self.poltergeist.agentOf(id);
-    const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else return .gone;
-    const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse return .gone;
+    const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else {
+        log.warn("control room: the started supervisor's second message is not typed: its launch is no longer known id={x}", .{id});
+        self.forgetStartOwed(id);
+        return .gone;
+    };
+    const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse {
+        log.warn("control room: the started supervisor's second message is not typed: {s} no longer declares its startup id={x}", .{ cli, id });
+        self.forgetStartOwed(id);
+        return .gone;
+    };
     const said: ?bool = if (agent.hooks == .live) agent.state == .ended else null;
     const screen = poltergeistRead(self, self.alloc, id, 0) catch return .refused;
     defer self.alloc.free(screen);
     if (!says.firstTurnOver(said, screen)) return .refused;
-    const typed = surface.typePoltergeistNotice(line) catch return .gone;
+    const typed = surface.typePoltergeistNotice(line) catch |err| {
+        log.warn("control room: the started supervisor's second message could not be typed err={} id={x}", .{ err, id });
+        self.forgetStartOwed(id);
+        return .gone;
+    };
     if (typed) {
         log.info("control room: the started supervisor's second message is typed id={x}", .{id});
         self.noteStartLineTyped(id, line);
+        self.forgetStartOwed(id);
         return .typed;
     }
-    return if (surface.poltergeist_notice_refused) .refused else .gone;
+    if (surface.poltergeist_notice_refused) return .refused;
+    log.warn("control room: the started supervisor's second message was not taken by its terminal id={x}", .{id});
+    self.forgetStartOwed(id);
+    return .gone;
+}
+
+/// A second message given up on because no agent ever connected (task
+/// 1787): said where the person who started it will see it.
+fn startLineGivenUp(self: *App, id: poltergeistpkg.Bus.Id) void {
+    const owed = self.start_owed.fetchRemove(id) orelse return;
+    defer self.alloc.free(owed.value.group);
+    self.sayStartLineGivenUp(owed.value.group, id);
+}
+
+/// Into the group's record, where the control room shows it to the person
+/// who started the supervisor (task 1787). The record has no author of its
+/// own for Polter, so it is signed with the terminal it is about and says
+/// who is speaking in its first word.
+fn sayStartLineGivenUp(self: *App, group: []const u8, id: poltergeistpkg.Bus.Id) void {
+    var buf: [512]u8 = undefined;
+    const text = std.fmt.bufPrint(
+        &buf,
+        "[Polter] This supervisor's second message was not typed: no agent connected from its terminal " ++
+            "within {d}s. It waits at its first answer -- tell it in its tab to call me and read the group `{s}`.",
+        .{ poltergeistpkg.rpc.start_line_agent_wait_ms / std.time.ms_per_s, group },
+    ) catch return;
+    _ = chatPost(self, group, id, text, .none) catch |err| {
+        log.warn("control room: could not say in group {s} that the second message was given up err={}", .{ group, err });
+        return;
+    };
+    self.controlRoomTouch();
 }
 
 /// How a first prompt Polter types ends: the same words `-i` carries

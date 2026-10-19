@@ -2935,6 +2935,25 @@ test "unreadTotal counts across every group" {
     try testing.expectEqual(@as(usize, 3), chat.unreadTotal(a));
 }
 
+test "1787: what Polter says in a group signed with its supervisor wakes nobody but the person" {
+    // `App.sayStartLineGivenUp`: the record has no author for Polter, so the
+    // line is signed with the supervisor it is about and names nobody. It
+    // must not come back to that supervisor as something to read, nor wake
+    // anybody else in the group -- only be there in the record.
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.create("c1b", boss);
+    try chat.add("c1b", a, .none, .{});
+    _ = try chat.post("c1b", boss, "[Polter] This supervisor's second message was not typed: no agent connected from its terminal within 60s.", 0);
+
+    try testing.expectEqual(@as(usize, 0), chat.waking("c1b", boss, .supervisor));
+    try testing.expectEqual(@as(usize, 0), chat.unread("c1b", boss));
+    try testing.expectEqual(@as(usize, 0), chat.waking("c1b", a, .watched));
+    // In the record all the same, for whoever reads the group -- the
+    // control room shows it to the person.
+    try testing.expectEqual(@as(usize, 1), chat.unread("c1b", a));
+}
+
 test "a terminal is never unread to itself" {
     var chat = testChat();
     defer chat.deinit();
