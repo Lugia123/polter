@@ -47,7 +47,7 @@
 *   **团队管理：** 它可以拉一个群聊、分发任务、接收工作汇报。这个任务面板就算你重启终端也依然在。
 *   **发呆检测：** Polter 会计算每个屏幕有多久没动静了，一旦卡死，立刻通报给总管。
 *   **角色与项目：** 把常用的 AI 启动参数（技能、提示词、模型）保存为“角色 (Role)”。通过“项目”功能可以保存当前所有的标签页、目录和历史记录，下次一键恢复（支持 macOS 和 Windows）。
-*   **消息钩子 (Hooks)：** 由角色启动的 Claude Code 会在一轮对话结束时，主动告诉 Polter 它说了什么。总管会直接收到通知，而不是被动等待静止的屏幕。（目前仅限 Claude Code；其它工具依然通过监听屏幕活动来监控）。
+*   **消息钩子 (Hooks)：** 由角色启动的智能体会在一轮对话结束时，主动告诉 Polter 它说了什么。总管会直接收到通知，而不是被动等待静止的屏幕。（支持 Claude Code、Codex 和 OpenCode；Antigravity 只在 macOS 上支持。其它工具依然通过监听屏幕活动来监控。）
 *   **内置插件：** 发行版开箱即带 7 个配置插件。
 *   **确认提示归总管：** worker 停在权限确认上，由总管处理，所有标签页都一样：它能判断的自己回答，判断不了的提到你面前，并发一条系统通知。你可以对单个标签页说不（`Agent → 允许总管在此回答提示`）、把标签页护起来，或者对全部说不（`poltergeist-may-authorise = false`）。
 *   **统一设置：** 角色、项目、插件和配置文件全部在一个设置窗口中集中管理。
@@ -88,7 +88,7 @@ mv Polter.app /Applications/
 解压后直接运行 `polter-host.exe`，请把其他文件（DLL 和 share 文件夹）跟它放在同一个目录下。如果遇到 Windows SmartScreen 拦截，点击“详细信息 -> 仍要运行”即可。
 
 ### 前置条件
-你需要有一个智能体 CLI（命令行工具）在你的系统 `PATH` 环境变量中，**且在 Polter 启动的那一刻就存在**。目前仅针对 Claude Code 进行了深度测试。
+你需要有一个智能体 CLI（命令行工具）在你的系统 `PATH` 环境变量中，**且在 Polter 启动的那一刻就存在**。Claude Code、Codex 和 OpenCode 在 macOS 和 Windows 上都是深度接入的，Antigravity（`agy`）只在 macOS 上：Polter 能按角色启动它们，也能收到它们的钩子。默认只开了 Claude Code 插件，其它的到 `设置…` 的插件页里打开。
 
 ### 快速上手
 
@@ -104,7 +104,7 @@ mv Polter.app /Applications/
 
 | 对比项 | Polter | tmux | Claude Code (子智能体) | [Claude Squad](https://github.com/smtg-ai/claude-squad) | [cmux](https://github.com/manaflow-ai/cmux) |
 | --- | --- | --- | --- | --- | --- |
-| **它是啥？** | 内置 MCP 的终端 (Ghostty fork) | 终端复用器 | Claude Code 会话内部功能 | 基于 tmux 和 git 工作区的 TUI | 基于 Ghostty 的 macOS 终端 |
+| **它是啥？** | 基于 Ghostty 的终端，内置 MCP | 终端复用器 | Claude Code 会话内部功能 | 基于 tmux 和 git 工作区的 TUI | 基于 Ghostty 的 macOS 终端 |
 | **谁来监督 AI？** | 另一个 AI (总管) | 你自己 | 父级会话 | 你，在同一个窗口里 | 你 (通过通知提示音) |
 | **工作节点是啥？** | 终端里的独立会话 | 你在窗格里启动的任何东西 | 父会话的子智能体 | 自己工作区里的独立会话 | 你在窗格里启动的任何东西 |
 | **画面不动时？** | 总管会被告知它发呆了多久 | 状态栏高亮并响铃 (需配置) | — | — | 响铃 (当 agent 发信号时) |
@@ -142,7 +142,7 @@ mv Polter.app /Applications/
 三种可能：插件被禁用了；Polter 启动时 `claude` 命令不在 `PATH` 中；或者你在设置里把 `poltergeist-register-mcp` 关了。注册表指向的是最后一次启动的构建版本。
 
 **2. 除了 Claude Code 还能用别的 AI 工具吗？**
-服务端用的是标准 MCP 协议，任何 MCP 客户端都能接进来，自带了 7 个配置插件。但目前只针对 Claude Code 做了深度测试，其它工具请当作未测试对待。
+服务端用的是标准 MCP 协议，任何 MCP 客户端都能接进来，自带了 7 个配置插件。其中 4 个接得更深：Claude Code、Codex 和 OpenCode 支持 macOS 和 Windows，Antigravity（`agy`）只支持 macOS。Polter 能按角色启动它们、收到它们的钩子，内置的总管和测试员角色提供给 Claude Code、Codex 和 Antigravity。另外 3 个（DeepSeek-TUI、Kimi CLI、Qwen Code）只帮它们登记 MCP 服务：能用这些工具，但只能靠屏幕活动来监控。
 
 **3. 这不就是 tmux 吗？**
 不是。`tmux` 只是帮你分屏，盯着屏幕的活儿还得你干。Polter 的作用是把其它节点的发呆时间汇报给某一个智能体，并允许它读取别的屏幕和敲键盘。
