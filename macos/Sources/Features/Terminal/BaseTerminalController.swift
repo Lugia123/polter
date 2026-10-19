@@ -1160,6 +1160,9 @@ class BaseTerminalController: NSWindowController,
 
     private func applyTitleToWindow() {
         guard let window else { return }
+        // An agent's spinner sets it several times a second, and every
+        // time lays the tab bar out again (task 1873).
+        WindowOpsTally.count(.titleSets)
 
         // The mark rides on the override too. An override is the user's
         // own name for the tab; it replaces what the program calls itself,

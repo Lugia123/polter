@@ -91,6 +91,9 @@ final class ControlRoomLender: ObservableObject {
             isFocusedPane: home.focusedSurface === view,
             keyboardIsUnclaimed: window.firstResponder == nil || window.firstResponder === window))
         guard !steps.isEmpty else { return }
+        // Said when it does something (task 1873): making a window key is
+        // one of the window operations a return can cause.
+        Ghostty.logger.notice("control room: settle \(terminal, privacy: .public) -> \(String(describing: steps), privacy: .public)")
         for step in steps {
             switch step {
             case .makeKey:

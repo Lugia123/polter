@@ -721,6 +721,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         //
         // There might be a better way to make the tab bar "un-lazy", but I can't find it.
         if let window = window, !window.isOpaque {
+            // The whole window composited again (task 1873).
+            WindowOpsTally.count(.fixTabBar)
             window.isOpaque = true
             window.isOpaque = false
         }
@@ -1400,6 +1402,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     override func windowDidBecomeKey(_ notification: Notification) {
         super.windowDidBecomeKey(notification)
+        WindowOpsTally.count(.becomeKey)
         self.relabelTabs()
         self.fixTabBar()
         // A tab chosen, or dragged into this window: either way it is the

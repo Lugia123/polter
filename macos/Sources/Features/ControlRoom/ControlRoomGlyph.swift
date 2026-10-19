@@ -55,6 +55,8 @@ struct ControlRoomGlyph: View {
             case .needsYou:
                 if pulses && moves {
                     TimelineView(.animation) { context in
+                        // Each frame of the breath is one (task 1873).
+                        let _ = WindowOpsTally.count(.glyphTicks)
                         symbol(Look.Symbol.waiting, theme.attention)
                             .opacity(Self.pulse(at: context.date.timeIntervalSinceReferenceDate))
                     }
@@ -78,6 +80,8 @@ struct ControlRoomGlyph: View {
                 if moves {
                     TimelineView(.periodic(from: .distantPast,
                                            by: Look.Status.workingSpinPeriod / Look.Status.workingSpinSteps)) { context in
+                        // Each step of the spin is one (task 1873).
+                        let _ = WindowOpsTally.count(.glyphTicks)
                         Spinner(step: Self.spinStep(at: context.date.timeIntervalSinceReferenceDate))
                             .foregroundStyle(theme.working.color)
                     }

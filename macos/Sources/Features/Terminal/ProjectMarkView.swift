@@ -91,6 +91,7 @@ final class ProjectMarkView: NSView {
         guard inputs != drawnFrom else { return }
         drawnFrom = inputs
         drawings += 1
+        WindowOpsTally.count(.markRedraw)
         // The artboard drawn into the view's square.
         let unit = Double(side) / ControlRoomLook.Status.artboard
         let pixelsPerPoint = Double(scale) * unit

@@ -244,6 +244,11 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// tab it would be a placeholder in its own tab for nobody's benefit --
     /// and that other tab may be the terminal's own.
     func windowDidChangeOcclusionState(_ notification: Notification) {
+        // Every time (task 1873): whether this flips, and how often, is
+        // what decides whether a terminal goes back and forth.
+        let raw = window?.occlusionState.rawValue ?? 0
+        Ghostty.logger.notice("control room: occlusion 0x\(String(raw, radix: 16), privacy: .public) visible=\(self.isVisible) key=\(self.window?.isKeyWindow ?? false)")
+        WindowOpsTally.count(.occlusionFlips)
         // In sight: borrow. Out of sight: give back, and say why.
         syncDetail()
         reportPresence()
@@ -316,9 +321,17 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// Hand `event` to the lending and do what it says, in order.
     private func lend(_ event: ControlRoomLending.Event) {
         for effect in lending.handle(event) {
+            // One line a move (task 1873): a move is rare when all is well,
+            // and every one takes a terminal's view between windows.
+            let raw = window?.occlusionState.rawValue ?? 0
+            Ghostty.logger.notice("control room: lend \(String(describing: event), privacy: .public) -> \(String(describing: effect), privacy: .public) visible=\(self.isVisible) occlusion=0x\(String(raw, radix: 16), privacy: .public)")
             switch effect {
-            case let .borrow(loan): borrow(loan)
-            case let .giveBack(_, toHome, focus): giveBack(toHome: toHome, focus: focus)
+            case let .borrow(loan):
+                WindowOpsTally.count(.borrow)
+                borrow(loan)
+            case let .giveBack(_, toHome, focus):
+                WindowOpsTally.count(.giveBack)
+                giveBack(toHome: toHome, focus: focus)
             }
         }
         if model.detail != lending.detail { model.detail = lending.detail }
