@@ -1053,7 +1053,8 @@ class AppDelegate: NSObject,
         // view of its own to draw, and a badge shows when it is set.
         guard dockBadge.needsSetting(label) else { return }
         NSApp.dockTile.badgeLabel = label
-        WindowOpsTally.count(.badgeSets)
+        // WindowOpsTally is the main actor's; this method is not isolated.
+        Task { @MainActor in WindowOpsTally.count(.badgeSets) }
     }
 
     private func ghosttyConfigDidChange(config: Ghostty.Config) {
