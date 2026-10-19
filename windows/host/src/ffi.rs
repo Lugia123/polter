@@ -175,6 +175,18 @@ pub const ACTION_POLTER_HIGHLIGHT: u32 = 83;
 /// tab draws for it. ⚠️ **Appended, like every one before it.** The payload
 /// is `ghostty_action_poltergeist_pane_s`; see `Action::as_poltergeist_pane`.
 pub const ACTION_POLTERGEIST_PANE: u32 = 84;
+/// `Action.Key.poltergeist_new_stacked`, appended after `poltergeist_pane`
+/// (task 1797): a new terminal stacked in front of the target's, where a
+/// supervisor's next worker goes. ⚠️ **Appended, like every one before
+/// it.** The payload is `ghostty_action_poltergeist_new_stacked_s`; see
+/// `Action::as_poltergeist_new_stacked`.
+pub const ACTION_POLTERGEIST_NEW_STACKED: u32 = 85;
+/// `Action.Key.poltergeist_move_pane`, appended after
+/// `poltergeist_new_stacked` (task 1797, `terminal_stack`): move the target's
+/// terminal onto another's stack or beside it. ⚠️ **Appended, like every one
+/// before it.** The payload is `ghostty_action_poltergeist_move_pane_s`; see
+/// `Action::as_poltergeist_move_pane`.
+pub const ACTION_POLTERGEIST_MOVE_PANE: u32 = 86;
 
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
@@ -789,6 +801,13 @@ impl Action {
         usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) != 0
     }
 
+    /// `ghostty_action_new_tab_s.by` (task 1823), at 16 after the two
+    /// pointers: true when the core asked for the tab, which then opens in
+    /// the background. Held by a test beside `NewTab.C` in `action.zig`.
+    pub fn as_new_tab_by_core(&self) -> bool {
+        i32::from_ne_bytes(self.payload[16..20].try_into().unwrap()) == 1
+    }
+
     pub fn as_new_tab_cwd(&self) -> Option<String> {
         let p = usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *const c_char;
         if p.is_null() {
@@ -819,6 +838,23 @@ impl Action {
         };
         let result = usize::from_ne_bytes(self.payload[16..24].try_into().unwrap()) as *mut i32;
         (dir, cwd, result)
+    }
+
+    /// `ghostty_action_poltergeist_new_stacked_s { const char*
+    /// working_directory; result_e* result; }` (task 1797): the directory
+    /// (`None` for empty: where the joined terminal is standing) and the
+    /// cell to answer in, 0 unsupported / 1 will stack. Offsets 0 and 8,
+    /// held by a test beside `PoltergeistNewStacked` in `action.zig`.
+    pub fn as_poltergeist_new_stacked(&self) -> (Option<String>, *mut i32) {
+        let cwd_p = usize::from_ne_bytes(self.payload[0..8].try_into().unwrap()) as *const c_char;
+        let cwd = if cwd_p.is_null() {
+            None
+        } else {
+            let s = unsafe { std::ffi::CStr::from_ptr(cwd_p) }.to_string_lossy().into_owned();
+            if s.is_empty() { None } else { Some(s) }
+        };
+        let result = usize::from_ne_bytes(self.payload[8..16].try_into().unwrap()) as *mut i32;
+        (cwd, result)
     }
 
     /// `ghostty_action_poltergeist_tab_panes_s { uint32_t* count; }`.
@@ -913,6 +949,18 @@ impl Action {
         let window = u64::from_ne_bytes(self.payload[8..16].try_into().unwrap());
         let out = usize::from_ne_bytes(self.payload[16..24].try_into().unwrap()) as *mut LayoutOut;
         (index, window, out)
+    }
+
+    /// `ghostty_action_poltergeist_move_pane_s { uint64_t onto; as_e as;
+    /// out_s* out; }` (task 1797): the handle of the terminal it goes to at
+    /// 0, `as` at 8 (0 onto its stack, 1 split to its right), then 4 bytes
+    /// of padding, `out` at 16 -- held by a test beside
+    /// `PoltergeistMovePane` in `action.zig`.
+    pub fn as_poltergeist_move_pane(&self) -> (u64, i32, *mut LayoutOut) {
+        let onto = u64::from_ne_bytes(self.payload[0..8].try_into().unwrap());
+        let how = i32::from_ne_bytes(self.payload[8..12].try_into().unwrap());
+        let out = usize::from_ne_bytes(self.payload[16..24].try_into().unwrap()) as *mut LayoutOut;
+        (onto, how, out)
     }
 
     /// `ghostty_action_polter_highlight_s { uint32_t seconds; const char*

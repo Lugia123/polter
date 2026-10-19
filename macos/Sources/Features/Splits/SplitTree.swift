@@ -1556,6 +1556,19 @@ extension SplitTree {
     /// one `tab` had the keyboard on. A tab of one terminal makes an
     /// ordinary pane, as `inserting(view:at:direction:)` does: one is not a
     /// stack. `tab`'s splits are not kept -- the tab becomes one pane.
+    /// `view`, from outside this tree, put where `target` is (task 1797,
+    /// `terminal_stack`): onto the stack of the pane `target` is in,
+    /// **behind, at the end** -- what that pane shows does not change, so a
+    /// tidy that moves five does not flip it five times -- or, `splitRight`,
+    /// into a pane of its own to the right of that pane. A pane of one
+    /// terminal becomes a stack of two.
+    func takingIn(_ view: ViewType, onto target: ViewType, splitRight: Bool) throws -> Self {
+        guard !contains(where: { $0 === view }) else { throw SplitError.viewAlreadyPresent }
+        guard let front = shown(for: target) else { throw SplitError.viewNotFound }
+        if splitRight { return try inserting(view: view, at: front, direction: .right) }
+        return try stacking(view, onto: target).showing(front)
+    }
+
     func inserting(tab: Self, showing shown: ViewType, at target: ViewType, direction: NewDirection) throws -> Self {
         let incoming = tab.members()
         guard incoming.contains(where: { $0 === shown }) else { throw SplitError.viewNotFound }

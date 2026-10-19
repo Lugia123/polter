@@ -1,5 +1,27 @@
 # 判据：总管开出来的 worker 落在哪
 
+> **#1797 起规则换了，先读这一节；下面的旧节只作历史记录。**
+> 用户定的规则：总管的标签只有两格，左边总管，右边一摞 worker。核心的
+> `WorkerPlacement.decide`（`App.zig`）只剩四个结果：
+> - 第 1 个：总管往右分一格（`placed: "split"`）；
+> - 第 2 个起：叠进总管当前标签里**最新那个自己的 worker** 那一格，放最前、摞上显示它
+>   （`placed: "stack"`）。按身份认，用户自己开的格子不叠进去。没有列，没有个数上限，worker 不再开新标签；
+> - 上一个还没出现（Windows 分屏、叠摞都是异步的）：请求停住，每 250ms 重看一次，最多等 3 秒。
+>   等到了就叠上去；到点还没等到，日志写
+>   `waited 3000ms for the worker asked for before this one and it has not appeared; this one is placed without it`，
+>   然后照常落位，请求不会被丢掉；
+> - 宿主不报格数：新标签（`fallback: "no_pane_count"`）。
+>
+> `column_full`、`last_worker_pending`、`last_worker_gone` 这三个原因已经删掉。
+>
+> **判据**：从只有总管的窗口开始，连开 5 个 worker（`terminal_open`，不带 place，各给不同的 `cwd`）。
+> - 结果应是两格：总管在左，右边一摞 5 个，最前面显示第 5 个。
+> - **键盘一直在总管那一格**：新 worker 不抢焦点。只有一种例外：被盖到后面的那个本来有键盘，
+>   键盘就给同一格里的新终端（`stack::focus_after_new`）。
+> - 日志：第 1 个是 `[split] Right`，后面 4 个各有一行 `[action] poltergeist_new_stacked onto=…`，
+>   接着是 `[stack] New on pane … -> keyboard on <总管的 pane>`。
+> - 再把总管拖到一个新标签，开第 6 个：它应该在新标签里往右分一格，不叠回旧标签那一摞（规则 4）。
+
 **覆盖 362 前半段**：`terminal_open` 不再一律新开 tab，而是按一份住在核心里的预算
 把 worker 摆进总管自己的 tab。预算是 `App.zig` 里的 `WorkerPlacement.decide`，
 **两个 apprt 里没有它的任何一个数字**——它们只回答一个事实：这个 tab 里有几格。

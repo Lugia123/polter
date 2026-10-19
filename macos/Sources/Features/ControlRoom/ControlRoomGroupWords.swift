@@ -208,6 +208,8 @@ enum ControlRoomGroupWords {
             return String(localized: "Asked the supervisor to report progress", comment: "总控台：群行下的一行，已请总管汇报进度")
         case .closeIdleWorkers:
             return String(localized: "Asked the supervisor to close idle workers", comment: "总控台：群行下的一行，已请总管关闭闲置 worker")
+        case .tidyWorkers:
+            return String(localized: "Asked the supervisor to tidy its workers", comment: "总控台：群行下的一行，已请总管整理 worker 布局")
         }
     }
 

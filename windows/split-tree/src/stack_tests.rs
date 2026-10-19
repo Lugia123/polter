@@ -522,3 +522,46 @@ fn a_member_behind_its_stack_is_seen_while_the_control_room_shows_it() {
     // Not in this tree: nothing to say.
     assert!(!tree.behind_for_core(E, false));
 }
+
+/// Task 1797: a worker the core stacks keeps the keyboard where it was;
+/// macOS's `aWorkerStackedByTheCoreTakesTheKeyboardFromNobody`.
+#[test]
+fn a_worker_stacked_by_the_core_takes_the_keyboard_from_nobody() {
+    use crate::stack::focus_after_new;
+    // The supervisor (A) has it, a worker goes onto B: A keeps it.
+    let kept = focus_after_new(A, D, B, false);
+    assert_eq!(kept, A);
+    // The one going behind had it: the new one in the same place.
+    let moved = focus_after_new(B, D, B, false);
+    assert_eq!(moved, D);
+    // The person's own "new" takes it there, as it always has.
+    let theirs = focus_after_new(A, D, B, true);
+    assert_eq!(theirs, D);
+}
+
+/// Task 1797: a terminal taken in goes behind, at the end, and the place
+/// shows what it showed; macOS's
+/// `aTerminalTakenInGoesBehindAtTheEndAndThePaneShowsWhatItShowed`.
+#[test]
+fn a_terminal_taken_in_goes_behind_at_the_end_and_the_place_shows_what_it_showed() {
+    let one = fixture().taking_in(D, B, false).unwrap();
+    sound(&one);
+    let stack = one.stack_of(B).unwrap().clone();
+    assert_eq!(stack.shown, B);
+    assert_eq!(stack.members, [B, D]);
+    let two = one.taking_in(E, D, false).unwrap();
+    sound(&two);
+    let after = two.stack_of(B).unwrap().clone();
+    assert_eq!(after.shown, B);
+    assert_eq!(after.members, [B, D, E]);
+    assert_eq!(two.taking_in(D, B, false), Err(Error::AlreadyPresent));
+}
+
+/// macOS's `aTerminalTakenInBesideGetsAPaneOfItsOwnToTheRight`.
+#[test]
+fn a_terminal_taken_in_beside_gets_a_place_of_its_own_to_the_right() {
+    let beside = fixture().taking_in(D, A, true).unwrap();
+    sound(&beside);
+    assert!(beside.stacks().is_empty());
+    assert_eq!(beside.shown_panes(), [A, D, B, C]);
+}

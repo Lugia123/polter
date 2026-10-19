@@ -2490,6 +2490,11 @@ msgid ""
 "The person asked from the control room: please close the workers in this group that are idle -- finished, or waiting with nothing to do -- and say in this group which ones you closed."
 msgstr ""
 
+#: src/poltergeist/ControlAct.zig:327
+msgid ""
+"The person asked from the control room: please tidy your workers -- move each into the stack to your right with terminal_stack (onto: your own id), so your tab is you and that one stack. Leave panes the user keeps for their own commands, shielded ones and ones that are not workers where they are, and say in this group what you moved, what you did not and why."
+msgstr ""
+
 #: src/poltergeist/ControlRoom.zig:870
 msgid "Screen still for {1} min"
 msgstr ""
@@ -5258,6 +5263,10 @@ msgstr ""
 msgid "Ask the Supervisor to Close Idle Workers"
 msgstr ""
 
+#: windows/control-room/src/rowmenu.rs:208
+msgid "Ask the Supervisor to Tidy Its Workers"
+msgstr ""
+
 #: windows/control-room/src/rowmenu.rs:160
 msgid "Copy Supervisor's Terminal ID"
 msgstr ""
@@ -5400,6 +5409,10 @@ msgstr ""
 
 #: windows/control-room/src/scene.rs:29
 msgid "Asked the supervisor to close idle workers"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:30
+msgid "Asked the supervisor to tidy its workers"
 msgstr ""
 
 #: windows/control-room/src/scene.rs:30

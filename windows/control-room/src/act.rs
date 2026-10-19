@@ -80,6 +80,8 @@ pub enum Ask {
     Report,
     /// To close the workers that have nothing to do.
     CloseIdle,
+    /// To gather its workers into the stack to its right (task 1797).
+    TidyWorkers,
 }
 
 impl Ask {
@@ -88,6 +90,7 @@ impl Ask {
         match self {
             Ask::Report => "report",
             Ask::CloseIdle => "close_idle",
+            Ask::TidyWorkers => "tidy_workers",
         }
     }
 }
@@ -724,6 +727,7 @@ mod menu_tests {
         );
         assert_eq!(encode(&Act::AskSupervisor { group: "g", ask: Ask::Report }).unwrap(), r#"{"act":"ask_supervisor","group":"g","ask":"report"}"#);
         assert_eq!(encode(&Act::AskSupervisor { group: "g", ask: Ask::CloseIdle }).unwrap(), r#"{"act":"ask_supervisor","group":"g","ask":"close_idle"}"#);
+        assert_eq!(encode(&Act::AskSupervisor { group: "g", ask: Ask::TidyWorkers }).unwrap(), r#"{"act":"ask_supervisor","group":"g","ask":"tidy_workers"}"#);
         assert_eq!(Refusal::parse("MuteInThePast"), Refusal::SnoozeInThePast);
         assert_eq!(Refusal::parse("EmptyName"), Refusal::EmptyName);
         assert_eq!(not_delivered("DraftInLine"), ("the supervisor's input line has text in it", true));

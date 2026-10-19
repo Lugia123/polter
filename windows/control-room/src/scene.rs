@@ -27,6 +27,7 @@ pub mod msg {
     // What the list draws besides its rows (task 1661).
     pub const ASKED_REPORT: &str = n_("Asked the supervisor for a progress report");
     pub const ASKED_CLOSE_IDLE: &str = n_("Asked the supervisor to close idle workers");
+    pub const ASKED_TIDY_WORKERS: &str = n_("Asked the supervisor to tidy its workers");
     pub const NOT_DELIVERED: &str = n_("Not delivered: {}");
     pub const NOT_DELIVERED_RETRIED: &str = n_("Not delivered yet: {}. It will be tried again.");
     pub const ARCHIVED_HEADER: &str = n_("Archived ({})");
@@ -548,6 +549,7 @@ pub fn build_extras(
                     tr(match ask {
                         crate::act::Ask::Report => msg::ASKED_REPORT,
                         crate::act::Ask::CloseIdle => msg::ASKED_CLOSE_IDLE,
+                        crate::act::Ask::TidyWorkers => msg::ASKED_TIDY_WORKERS,
                     })
                 ),
                 theme.text_secondary,

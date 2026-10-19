@@ -15,18 +15,27 @@ extension BaseTerminalController {
     var holdsStacks: Bool { !(self is QuickTerminalController) }
 
     /// Open a new terminal in the pane `target` is in, in front.
+    /// `byPerson` false is a worker the core stacked (task 1797,
+    /// `poltergeist_new_stacked`): the keyboard stays where it was
+    /// (`TerminalPresence.focus(_:afterStacking:onto:byPerson:)`).
     @discardableResult
     func stackNewTerminal(
         onto target: Ghostty.SurfaceView,
-        baseConfig config: Ghostty.SurfaceConfiguration? = nil
+        baseConfig config: Ghostty.SurfaceConfiguration? = nil,
+        byPerson: Bool = true
     ) -> Ghostty.SurfaceView? {
         guard holdsStacks, surfaceTree.contains(target) else { return nil }
         guard let ghostty_app = ghostty.app else { return nil }
+        // The one in front of that pane now, which goes behind.
+        let behind = surfaceTree.shown(for: target) ?? target
         let newView = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
         do {
             let newTree = try surfaceTree.stacking(newView, onto: target)
+            let focus = TerminalPresence.focus(focusedSurface, afterStacking: newView, onto: behind, byPerson: byPerson)
             replaceSurfaceTree(
-                newTree, moveFocusTo: newView, moveFocusFrom: focusedSurface,
+                newTree,
+                moveFocusTo: focus === newView ? newView : nil,
+                moveFocusFrom: focus === newView ? focusedSurface : nil,
                 undoAction: "Stack Terminal")
         } catch {
             Ghostty.logger.warning("failed to stack a new terminal: \(error, privacy: .public)")
@@ -189,6 +198,51 @@ extension BaseTerminalController {
               let tree = try? surfaceTree.stacking(source, onto: target, at: index) else { return }
         from.polterLetGo(source)
         replaceSurfaceTree(tree, moveFocusTo: source, moveFocusFrom: focusedSurface, undoAction: "Stack Terminal")
+    }
+
+    /// `view` -- a terminal of any tab, any window -- moved to where
+    /// `target`, a terminal of this tab, is (task 1797, `terminal_stack`):
+    /// onto its pane's stack behind, at the end, or into a pane of its own
+    /// to the right (`SplitTree.takingIn`). A move: it keeps its surface and
+    /// its process, and the pane or tab it leaves closes when empty
+    /// (`polterLetGo`). The keyboard stays where it was, except on `view`
+    /// itself when it goes behind: then what its new pane shows has it.
+    /// The answer is the tool's: applied, or why not.
+    func polterMovePane(_ view: Ghostty.SurfaceView, onto target: Ghostty.SurfaceView, splitRight: Bool) -> (applied: Bool, text: String) {
+        guard surfaceTree.contains(target) else { return (false, "the terminal it goes to is not in a terminal tab") }
+        guard view !== target else { return (false, "a terminal cannot be moved onto itself") }
+        guard splitRight || holdsStacks else { return (false, "this window holds no stacks") }
+        if !splitRight, let stack = surfaceTree.stack(of: target), stack.members.contains(where: { $0 === view }) {
+            return (true, "already in that stack")
+        }
+        let base: SplitTree<Ghostty.SurfaceView>
+        let from: BaseTerminalController?
+        if surfaceTree.contains(view) {
+            guard let without = polterTakingOut(view)?.tree else { return (false, "it could not be taken out of its pane") }
+            base = without
+            from = nil
+        } else {
+            guard let owner = BaseTerminalController.controller(owning: view) else {
+                return (false, "the terminal to move is not in a terminal tab")
+            }
+            base = surfaceTree
+            from = owner
+        }
+        let tree: SplitTree<Ghostty.SurfaceView>
+        do {
+            tree = try base.takingIn(view, onto: target, splitRight: splitRight)
+        } catch {
+            return (false, "it could not be put there: \(error)")
+        }
+        let hadKeyboard = focusedSurface === view || view.window?.firstResponder === view
+        from?.polterLetGo(view)
+        let shownNow = tree.isShown(view) ? view : tree.shown(for: target)
+        replaceSurfaceTree(
+            tree,
+            moveFocusTo: hadKeyboard ? shownNow : nil,
+            moveFocusFrom: nil,
+            undoAction: "Move Terminal")
+        return (true, splitRight ? "split beside" : "stacked behind")
     }
 
     // MARK: The menu

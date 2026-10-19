@@ -450,6 +450,33 @@ struct SplitStackTests {
         #expect(ids(swapped.members()) == ids([f.e, f.b, f.d, f.c]))
     }
 
+    @Test func aTerminalTakenInGoesBehindAtTheEndAndThePaneShowsWhatItShowed() throws {
+        // Task 1797: "tidy your workers" moves each one in without flipping
+        // the pane it joins.
+        let f = try Fixture()
+        let one = try f.tree.takingIn(f.d, onto: f.b, splitRight: false)
+        sound(one)
+        let stack = try only(one)
+        #expect(stack.shown == f.b.id)
+        #expect(ids(stack.members) == ids([f.b, f.d]))
+        // A second, onto the one behind: still the same pane, still b shown.
+        let two = try one.takingIn(f.e, onto: f.d, splitRight: false)
+        sound(two)
+        let after = try only(two)
+        #expect(after.shown == f.b.id)
+        #expect(ids(after.members) == ids([f.b, f.d, f.e]))
+        // Already here: refused, nothing changed.
+        #expect(refusal { _ = try two.takingIn(f.d, onto: f.b, splitRight: false) } == .viewAlreadyPresent)
+    }
+
+    @Test func aTerminalTakenInBesideGetsAPaneOfItsOwnToTheRight() throws {
+        let f = try Fixture()
+        let beside = try f.tree.takingIn(f.d, onto: f.a, splitRight: true)
+        sound(beside)
+        #expect(beside.stacks.isEmpty)
+        #expect(ids(beside.shownLeaves()) == ids([f.a, f.d, f.b, f.c]))
+    }
+
     @Test func aTreeWithNoStacksAnswersEveryQuestionAsItDidBefore() throws {
         // What step 1 changes for the application as it is: nothing.
         let f = try Fixture()

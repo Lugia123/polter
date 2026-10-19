@@ -347,6 +347,11 @@ extension Ghostty.Notification {
     /// is how the two are told apart (`ControlRoomRules.newTabActivates`).
     static let NewTabAnswerWantedKey = "polter.newTabAnswerWanted"
 
+    /// With `ghosttyNewTab`: whether the core asked for the tab (a `Bool`,
+    /// `ghostty_action_new_tab_s.by`, task 1823) -- an agent's or the core's
+    /// own. Such a tab opens in the background (`ControlRoomRules.newTab`).
+    static let NewTabByCoreKey = "polter.newTabByCore"
+
     /// Posted when a new split is requested. The sending object will be the surface that had focus. The
     /// userdata has one key "direction" with the direction to split to.
     static let ghosttyNewSplit = Notification.Name("com.mitchellh.ghostty.newSplit")

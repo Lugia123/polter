@@ -1151,7 +1151,7 @@ const tools = [_]Tool{
             "POLTER_WORKTREE. worktree_status says how the trees stand, worktree_remove " ++
             "takes one down.",
         .schema =
-        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here","stack"],"description":"Defaults to auto: beside you while there is room -- three in a column, three more beside those -- a new tab once there is not. tab is a guarantee of its own tab; here asks for a split in your tab, and the reply says when it could not. stack is not built yet and is refused with NotBuiltYet. Terminals in your tab that are not your workers are left alone and not counted, under auto and here alike."},"worktree":{"type":"string","description":"A worktree name: letters, digits, '.', '_', '-'. Opens the terminal in that tree of cwd's repository, making it (branch wt/<name>) if needed."}},"required":["cwd"]}
+        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here","stack"],"description":"Defaults to auto: your tab is you on the left and one stack of your workers on the right -- the first worker splits you to the right, every one after it is stacked in front in that pane (the newest of your workers still in your tab); never a new tab. stack is the same. tab is a guarantee of its own tab; here is a pane of its own split off yours, for what is not a worker (a server, a log), and the reply says when it could not. Terminals in your tab that are not your workers are never stacked into."},"worktree":{"type":"string","description":"A worktree name: letters, digits, '.', '_', '-'. Opens the terminal in that tree of cwd's repository, making it (branch wt/<name>) if needed."}},"required":["cwd"]}
         ,
     },
     .{
@@ -1243,12 +1243,12 @@ const tools = [_]Tool{
             "uses a pane you opened for an earlier worker that now has no agent in it and " ++
             "is waiting at its prompt (`placed: \"reused\"`, `reused: \"free_worker\"`, " ++
             "and the reply carries that terminal's id; when one of yours was there and not " ++
-            "free, `passed_over` names it and why), then goes beside you -- three in a " ++
-            "column, three more beside those -- and into a new tab only after that; `tab` " ++
-            "is always a new tab; `here` is a new split in your own tab; the reply's " ++
-            "`placed` says which it got, and `fallback` why when it was not what you asked. " ++
-            "`stack` is a name for stacking workers in one pane's room that is not built " ++
-            "yet: it is refused with NotBuiltYet and opens nothing. **`in` starts the role " ++
+            "free, `passed_over` names it and why), then goes into your stack: the first " ++
+            "worker splits you to the right, every later one is stacked in front in that " ++
+            "pane (`placed: \"stack\"`), never a new tab; `stack` is the same without " ++
+            "reusing a free pane; `tab` is always a new tab; `here` is a pane of its own " ++
+            "split off yours; the reply's `placed` says which it got, and `fallback` why " ++
+            "when it was not what you asked. **`in` starts the role " ++
             "in a terminal that is already open** instead of opening one -- a pane of " ++
             "yours standing empty, or a shell the user told you to use. It is typed into " ++
             "only if no agent is in it, it is at its shell's prompt and has no half-typed " ++
@@ -1488,6 +1488,24 @@ const tools = [_]Tool{
             "as terminal_read.",
         .schema =
         \\{"type":"object","properties":{"id":{"type":"string"},"index":{"type":"integer","minimum":0},"window":{"type":"string","description":"Any terminal in the window the tab goes to. Leave out to stay in this window."}},"required":["id","index"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "terminal_stack",
+        .description = "Move one terminal into a stack -- what \"tidy your workers\" is done with. " ++
+            "`onto` your own id puts `id` into **your stack**: the pane of your newest worker in " ++
+            "your tab, or, when there is none, a pane split off yours to the right. `onto` any " ++
+            "other terminal puts it onto that terminal's stack. It goes in behind, at the end: " ++
+            "what each stack shows does not change, and the keyboard stays where it was. " ++
+            "**A move, not a restart**: the terminal keeps its process, its scrollback and its " ++
+            "agent's session, across tabs and windows; a pane or a tab it leaves empty is " ++
+            "closed. Refused, with nothing moved, when the terminal is shielded (Shielded), is " ++
+            "shown in the control room (Lent), or a key reached it in the last ten seconds " ++
+            "(UserPresent), and when `onto` is a terminal the user keeps for their own commands " ++
+            "(WorkersRefused). Leave those, and terminals that are not workers, where they are. " ++
+            "Supervisor only. Same reach rule as terminal_read.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string","description":"The terminal to move."},"onto":{"type":"string","description":"Your own id for your stack, or the terminal whose stack it joins."}},"required":["id","onto"],"additionalProperties":false}
         ,
     },
     .{
@@ -2285,6 +2303,7 @@ test "the tools that decide reach say so in their own description" {
             "terminal_answer_prompt",
             "terminal_layout",
             "terminal_tab_move",
+            "terminal_stack",
             "terminal_highlight",
         }) |name| {
             if (!std.mem.eql(u8, t.name, name)) continue;

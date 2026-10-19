@@ -972,6 +972,16 @@ typedef enum {
   GHOSTTY_ACTION_NEW_TAB_RESULT_REFUSED,
 } ghostty_action_new_tab_result_e;
 
+// Who wants the tab (task 1823). CORE opens in the background on both hosts:
+// the tab in front stays in front, the window is not raised and the keyboard
+// stays where it was. PERSON (a key, the menu, "+", the control room's
+// "Start") is brought forward as ever. Zero is PERSON, what an older core
+// that never wrote the field meant.
+typedef enum {
+  GHOSTTY_ACTION_NEW_TAB_BY_PERSON,
+  GHOSTTY_ACTION_NEW_TAB_BY_CORE,
+} ghostty_action_new_tab_by_e;
+
 // Where a new tab should start. Empty means "wherever it would have
 // started anyway", which is what a keybinding or a menu item passes.
 //
@@ -982,6 +992,7 @@ typedef enum {
 typedef struct {
   const char* working_directory;
   ghostty_action_new_tab_result_e* result;
+  ghostty_action_new_tab_by_e by;
 } ghostty_action_new_tab_s;
 
 // apprt.action.OpenConfig
@@ -1360,6 +1371,48 @@ typedef struct {
   ghostty_action_new_split_result_e* result;
 } ghostty_action_new_split_s;
 
+// apprt.action.PoltergeistNewStacked.Result (task 1797)
+//
+// UNSUPPORTED is first for the reason it is first above. WILL_STACK says the
+// request was taken on, not that the terminal is there yet.
+typedef enum {
+  GHOSTTY_ACTION_POLTERGEIST_NEW_STACKED_RESULT_UNSUPPORTED,
+  GHOSTTY_ACTION_POLTERGEIST_NEW_STACKED_RESULT_WILL_STACK,
+} ghostty_action_poltergeist_new_stacked_result_e;
+
+// apprt.action.PoltergeistNewStacked (task 1797)
+//
+// Open a new terminal in the target surface's pane, in front of it; the pane
+// becomes a stack if it was not one. The new terminal is what the stack
+// shows; keyboard focus stays where it was (both hosts alike). The same contract as new_split: an apprt
+// that cannot start it in `working_directory` must leave `result` alone and
+// open nothing. `working_directory` may be empty ("where the joined terminal
+// is standing"); `result` may be NULL.
+typedef struct {
+  const char* working_directory;
+  ghostty_action_poltergeist_new_stacked_result_e* result;
+} ghostty_action_poltergeist_new_stacked_s;
+
+// apprt.action.PoltergeistMovePane.As (task 1797)
+typedef enum {
+  GHOSTTY_POLTERGEIST_MOVE_PANE_STACK,
+  GHOSTTY_POLTERGEIST_MOVE_PANE_SPLIT_RIGHT,
+} ghostty_poltergeist_move_pane_as_e;
+
+// apprt.action.PoltergeistMovePane (task 1797)
+//
+// Move the target surface's terminal to the one whose surface handle is
+// `onto`: onto its stack (behind, at the end) or into a pane of its own split
+// off it to the right. A move, across tabs and windows: the terminal keeps
+// its surface and its process; the pane and the tab it leaves close when
+// empty. The keyboard stays where it was. The answer goes in `out` as for a
+// layout (`applied`, or `refused` with the reason as text).
+typedef struct {
+  uint64_t onto;
+  ghostty_poltergeist_move_pane_as_e as;
+  ghostty_action_poltergeist_layout_out_s* out;
+} ghostty_action_poltergeist_move_pane_s;
+
 // apprt.action.PoltergeistScreenshot.Result
 //
 // UNSUPPORTED is first for the reason it is first above. PENDING means the
@@ -1526,6 +1579,8 @@ typedef enum {
   GHOSTTY_ACTION_POLTER_TAB_MOVE,
   GHOSTTY_ACTION_POLTER_HIGHLIGHT,
   GHOSTTY_ACTION_POLTERGEIST_PANE,
+  GHOSTTY_ACTION_POLTERGEIST_NEW_STACKED,
+  GHOSTTY_ACTION_POLTERGEIST_MOVE_PANE,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1583,6 +1638,8 @@ typedef union {
   ghostty_action_polter_tab_move_s polter_tab_move;
   ghostty_action_polter_highlight_s polter_highlight;
   ghostty_action_poltergeist_pane_s poltergeist_pane;
+  ghostty_action_poltergeist_new_stacked_s poltergeist_new_stacked;
+  ghostty_action_poltergeist_move_pane_s poltergeist_move_pane;
 } ghostty_action_u;
 
 typedef struct {

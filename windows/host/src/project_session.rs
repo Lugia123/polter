@@ -36,10 +36,14 @@
 //!    its tabs back after a restart, so there is no tab to match to a page
 //!    (`Pages::page_sharing` is there for the day it does). The project is
 //!    opened again from its file.
-//!  * **Who is in a pane is not recorded**: every pane is saved `Unknown`,
-//!    which keeps whatever the file already said of it -- the snapshot's
-//!    `terminals[].who` is not read here yet, and no pane is marked as
-//!    opened by the supervisor, so `workers` is always said empty.
+//!
+//! # Who is in a pane
+//!
+//! A save reads the snapshot's `terminals[].who` for each pane: who is in it
+//! (`agent`, task 1800 -- the supervisor's pane keeps its mark,
+//! `pages::agent_kept`), and whether the supervisor opened it as a worker
+//! (`by_supervisor`, task 1799), which is what the core is then told as
+//! `workers`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -55,7 +59,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use polter_projects::autosave::{Change, Debounce};
 use polter_projects::orders::{self, Have, Order, Step, Told};
 use polter_projects::page_rules::{self, SaveOver};
-use polter_projects::pages::{Live, PageId, Pages, Screen};
+use polter_projects::pages::{self, Live, PageId, Pages, Screen};
 use polter_projects::placement::{self, Place, Rect};
 use polter_projects::stated::{self, FailedWhy, Stated};
 
@@ -230,7 +234,19 @@ fn frame_of(hwnd: HWND) -> Option<project::Frame> {
 /// that are no longer anywhere come back in the second list.
 ///
 /// `capture` is `project_ui::name_leaves`'s.
-fn screen_of(bound: &[(TabId, PageId)], snaps: &Path, alloc: &mut project::Allocator, capture: bool, keeping_front: bool) -> (Screen, Found) {
+///
+/// `supervisor` is the terminal in the project's supervisor pane as the
+/// core was last told (`Stated::supervisor`): each pane whose terminal the
+/// core says was opened as its worker is marked so (`pages::mark_workers`,
+/// task 1799). `None` marks nothing and the file's marks stand.
+fn screen_of(
+    bound: &[(TabId, PageId)],
+    snaps: &Path,
+    alloc: &mut project::Allocator,
+    capture: bool,
+    keeping_front: bool,
+    supervisor: Option<&str>,
+) -> (Screen, Found) {
     let mut live = Vec::new();
     let mut frames = BTreeMap::new();
     let mut gone = Vec::new();
@@ -245,7 +261,10 @@ fn screen_of(bound: &[(TabId, PageId)], snaps: &Path, alloc: &mut project::Alloc
             continue;
         };
         crate::project_ui::name_leaves(frame, &mut root, &panes, snaps, alloc, capture);
-        terminals.push((*page, panes.iter().filter_map(crate::project_ui::LeafPane::terminal).collect()));
+        let behind: Vec<Option<String>> = panes.iter().map(crate::project_ui::LeafPane::terminal).collect();
+        pages::fill_agents(&mut root, &behind, &agent_of);
+        pages::mark_workers(&mut root, &behind, supervisor, &worker_of);
+        terminals.push((*page, behind.into_iter().flatten().collect()));
         let token = frame.0 as isize;
         // The tab's chosen name, whoever chose it; none is "none said",
         // which keeps the file's (`Live::title`). Never the program's title.
@@ -258,6 +277,27 @@ fn screen_of(bound: &[(TabId, PageId)], snaps: &Path, alloc: &mut project::Alloc
         }
     }
     (Screen { live, frames, keeping_front }, Found { gone, terminals })
+}
+
+/// What the core's last snapshot says of who is in `terminal` (`who`);
+/// none when it does not list it, says nothing of it, or has not been read.
+fn who_of<R>(terminal: &str, f: impl FnOnce(&polter_control_room::snapshot::Who) -> R) -> Option<R> {
+    crate::control_room_source::with(|data| match data {
+        crate::control_room_source::Data::Ready(r) => r.snapshot.terminals.iter().find(|t| t.id == terminal).and_then(|t| t.who.as_ref()).map(f),
+        _ => None,
+    })
+}
+
+/// The supervisor `terminal` was opened for as a worker (`who.worker_of`).
+fn worker_of(terminal: &str) -> Option<String> {
+    who_of(terminal, |w| w.worker_of.clone()).flatten()
+}
+
+/// Who is in `terminal`, as a save writes it (task 1800): not known when
+/// the snapshot cannot say.
+fn agent_of(terminal: &str) -> polter_projectfile::Agent {
+    who_of(terminal, |w| pages::agent_said(w.is.name(), w.role.as_deref(), w.cli.as_deref(), w.session.as_deref()))
+        .unwrap_or(polter_projectfile::Agent::Unknown)
 }
 
 /// Every snapshot name `pages` refers to or the directory holds: what an
@@ -276,10 +316,13 @@ fn names_in_use(pages: &Pages, snaps: &Path) -> Vec<String> {
 ///
 /// `keeping_front` is for the save a closing tab makes (`Pages::updated`).
 fn save(file: &Path, keeping_front: bool, capture: bool) -> Result<(), String> {
-    let Some((name, group, next, pages, bound)) = OPEN.with(|o| {
+    let Some((name, group, next, pages, bound, supervisor)) = OPEN.with(|o| {
         let open = o.try_borrow().ok()?;
         let p = open.iter().find(|p| p.file == file)?;
-        Some((p.name.clone(), p.group.clone(), p.next_scrollback, p.pages.clone(), p.tabs.clone()))
+        // Who the supervisor is, as the core was last told: what macOS
+        // compares a pane's worker with as well (`ProjectSession`).
+        let supervisor = Stated::of_open(&p.name, p.group.clone(), &p.pages, &on_screen(p)).supervisor;
+        Some((p.name.clone(), p.group.clone(), p.next_scrollback, p.pages.clone(), p.tabs.clone(), supervisor))
     }) else {
         return Ok(());
     };
@@ -287,7 +330,7 @@ fn save(file: &Path, keeping_front: bool, capture: bool) -> Result<(), String> {
     let snaps = project::scrollback_dir(file);
     let in_use = names_in_use(&pages, &snaps);
     let mut alloc = project::Allocator::new(next, in_use.iter().map(String::as_str));
-    let (screen, found) = screen_of(&bound, &snaps, &mut alloc, capture, keeping_front);
+    let (screen, found) = screen_of(&bound, &snaps, &mut alloc, capture, keeping_front, supervisor.as_deref());
     let (after, snapshot) = pages.saving(&name, wall_secs(), group, Some(alloc.next), &screen);
 
     project::write_file(file, &snapshot, WriteKind::Save).map_err(|e| e.to_string())?;
@@ -464,7 +507,10 @@ fn save_as_for(file: &Path, chosen: &[(HWND, TabId)], name: String, kind: WriteK
             bound.push((*tab, pages.new_page_id()));
         }
     }
-    let (screen, found) = screen_of(&bound, &snaps, &mut alloc, true, false);
+    // A new project, or one saved over: no supervisor of it to compare
+    // with yet, so no pane is marked as its worker here. The next save
+    // after its supervisor's pane is marked does that.
+    let (screen, found) = screen_of(&bound, &snaps, &mut alloc, true, false, None);
     if screen.live.is_empty() {
         return Err("that tab no longer exists".to_string());
     }
@@ -571,7 +617,9 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
             None => match placement::place(window.frame, at == 0, named, !frame.0.is_null(), &screens) {
                 Place::Tabs(_) => (frame, false),
                 Place::OwnWindow(rect) => {
-                    let Some(made) = crate::create_frame_secondary(hinst) else {
+                    // Behind: shown without being activated (task 1823).
+                    let made = if behind { crate::create_frame_secondary_behind(hinst) } else { crate::create_frame_secondary(hinst) };
+                    let Some(made) = made else {
                         errors.push("a window could not be created".to_string());
                         continue;
                     };
@@ -852,6 +900,12 @@ fn projects_dir() -> Option<PathBuf> {
     project::resolve_state_dir().map(|s| project::default_dir(&s))
 }
 
+/// The terminals of each page of `p` that has a tab open, as the last save
+/// found them.
+fn on_screen(p: &Open) -> Vec<(PageId, Vec<String>)> {
+    p.terminals.iter().filter(|(page, _)| p.tabs.iter().any(|(_, id)| id == page)).cloned().collect()
+}
+
 /// Every project there is, each as it would be said: an open one from what
 /// is open, the rest from their files.
 fn everything() -> Vec<(PathBuf, Stated)> {
@@ -873,8 +927,7 @@ fn everything_and_unreadable() -> (Vec<(PathBuf, Stated)>, Vec<String>) {
             let showing = OPEN.with(|o| {
                 let o = o.try_borrow().ok()?;
                 let p = o.iter().find(|p| p.file == e.path)?;
-                let on_screen: Vec<(PageId, Vec<String>)> = p.terminals.iter().filter(|(page, _)| p.tabs.iter().any(|(_, id)| id == page)).cloned().collect();
-                Some(Stated::of_open(&p.name, p.group.clone(), &p.pages, &on_screen))
+                Some(Stated::of_open(&p.name, p.group.clone(), &p.pages, &on_screen(p)))
             });
             match showing {
                 Some(said) => Some((e.path, said)),
@@ -1155,6 +1208,9 @@ fn obey() {
                     let facts = tabs::new_tab_facts();
                     let (frame, behind) = match (ordered_project_tab(facts.control_room.is_some(), facts.tabs_beside, facts.any_terminal_window), facts.control_room) {
                         (To::Behind(_), Some(room)) => (room, true),
+                        // The core's order, with the control room not in
+                        // front: the window in front, still behind (task 1823).
+                        (To::Behind(_), None) => (frame.unwrap_or_default(), true),
                         _ => (frame.unwrap_or_default(), false),
                     };
                     let opened = open(frame, crate::app_handle(), hinst(), &file, true, behind);

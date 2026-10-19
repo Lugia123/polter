@@ -32,4 +32,15 @@ struct TerminalPresenceTests {
         #expect(Presence.focus("a", afterShowing: "d", inPlaceOf: "b") == "a")
         #expect(Presence.focus(String?.none, afterShowing: "d", inPlaceOf: "b") == nil)
     }
+
+    @Test func aWorkerStackedByTheCoreTakesTheKeyboardFromNobody() {
+        // Task 1797: the supervisor ("s") or the person somewhere else has
+        // the keyboard, and a worker is stacked onto worker "w": it stays.
+        #expect(Presence.focus("s", afterStacking: "n", onto: "w", byPerson: false) == "s")
+        #expect(Presence.focus(String?.none, afterStacking: "n", onto: "w", byPerson: false) == nil)
+        // The one going behind had it: the new one in the same pane.
+        #expect(Presence.focus("w", afterStacking: "n", onto: "w", byPerson: false) == "n")
+        // The person's own "new" takes it there, as it always has.
+        #expect(Presence.focus("s", afterStacking: "n", onto: "w", byPerson: true) == "n")
+    }
 }

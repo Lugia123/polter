@@ -244,7 +244,13 @@
    两处一起），于是「总管开的、agent 已走的格子可再用」（#1492）在重启或从项目还原以后照常认得。已经知道是谁
    开的不改；`supervisor` 为 `null` 的项目不记（没有可以记给的终端）。
 
-格式那边的标记做出来之前，宿主恒发 `"workers": []`，行为与没有这件事时相同。
+标记在格式里叫 `by_supervisor`（leaf 上，只在为真时写）。两个宿主都按上面三段做：mac 是 `ProjectLink.pane` 与
+`ProjectPages.workerPanes`；Windows 是 `polter_projects::pages::mark_workers` 与 `Stated::of_open`（任务 #1799，
+在这之前 Windows 恒写 `false`、恒发 `"workers": []`，重开项目以后总管认不出自己的 worker）。两边都把它当成「一旦是
+就一直是」：保存时没有总管可比（项目没有总管、或总管那格没开）就沿用文件里的标记，不写成「不是」。
+
+⚠️ Windows 认「哪一格是总管那格」读的是 leaf 的 `agent.supervisor`（`Stated::of_open`、`Pages::mark_supervisor`），
+不是 `supervisor_seat`；mac 只看 `supervisor_seat`。`by_supervisor` 比的是那一格的终端，所以跟着各自宿主认的那一格走。
 
 ## 10. 没验的
 

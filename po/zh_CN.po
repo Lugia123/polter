@@ -2506,6 +2506,11 @@ msgid ""
 "The person asked from the control room: please close the workers in this group that are idle -- finished, or waiting with nothing to do -- and say in this group which ones you closed."
 msgstr "用户在总控台请你关掉这个群里闲着的 worker（做完了的，或者在等着却没事可做的），并在这个群里说一声关了哪几个。"
 
+#: src/poltergeist/ControlAct.zig:327
+msgid ""
+"The person asked from the control room: please tidy your workers -- move each into the stack to your right with terminal_stack (onto: your own id), so your tab is you and that one stack. Leave panes the user keeps for their own commands, shielded ones and ones that are not workers where they are, and say in this group what you moved, what you did not and why."
+msgstr "用户在总控台请你整理一下 worker：用 terminal_stack（onto 写你自己的 id）把它们一个个挪进你右边那一摞，让你的标签只有你和那一摞。用户留给自己用的格子、shielded 的格子、不是 worker 的格子都不动。做完在这个群里说一声挪了哪些、哪些没挪、为什么。"
+
 #: src/poltergeist/ControlRoom.zig:870
 msgid "Screen still for {1} min"
 msgstr "屏幕 {1} 分没动"
@@ -5773,6 +5778,10 @@ msgstr "请总管汇报进度"
 msgid "Ask the Supervisor to Close Idle Workers"
 msgstr "让总管关闭闲置 worker"
 
+#: windows/control-room/src/rowmenu.rs:208
+msgid "Ask the Supervisor to Tidy Its Workers"
+msgstr "让总管整理 worker 布局"
+
 #: windows/control-room/src/rowmenu.rs:160
 msgid "Copy Supervisor's Terminal ID"
 msgstr "复制总管终端 ID"
@@ -5916,6 +5925,10 @@ msgstr "已请总管汇报进度"
 #: windows/control-room/src/scene.rs:29
 msgid "Asked the supervisor to close idle workers"
 msgstr "已请总管关闭闲置的 worker"
+
+#: windows/control-room/src/scene.rs:30
+msgid "Asked the supervisor to tidy its workers"
+msgstr "已请总管整理 worker 布局"
 
 #: windows/control-room/src/scene.rs:30
 msgid "Not delivered: {}"

@@ -79,11 +79,13 @@ struct ControlRoomActions {
         case projectNotNow(group: String)
     }
 
-    /// The two things the group row's menu asks a supervisor to do: the
-    /// core types a sentence of its own for each (task 1659).
+    /// The things the group row's menu asks a supervisor to do: the core
+    /// types a sentence of its own for each (task 1659; `tidyWorkers`, task
+    /// 1797).
     enum Ask: CaseIterable {
         case reportProgress
         case closeIdleWorkers
+        case tidyWorkers
     }
 
     /// Why an action was not done. `name` is the core's word for it and is
@@ -311,6 +313,7 @@ struct ControlRoomActions {
             switch ask {
             case .reportProgress: word = "report"
             case .closeIdleWorkers: word = "close_idle"
+            case .tidyWorkers: word = "tidy_workers"
             }
             return ["act": "ask_supervisor", "group": group, "ask": word]
         case .projectDecline(let group):

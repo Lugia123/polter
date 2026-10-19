@@ -217,6 +217,8 @@ extension ControlRoomModel {
             ask(.reportProgress, of: row)
         case "close_idle_workers":
             ask(.closeIdleWorkers, of: row)
+        case "tidy_workers":
+            ask(.tidyWorkers, of: row)
         case "reveal":
             if let dir = row.facts?.recordDir { effects.reveal(URL(fileURLWithPath: dir, isDirectory: true)) }
         case "copy_supervisor_id":

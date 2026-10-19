@@ -123,10 +123,11 @@ pub(crate) fn tab_tree(frame: HWND, id: TabId) -> Option<(SavedNode, Vec<LeafPan
                             color: p.marks.color,
                             workers: p.marks.workers,
                             shielded: p.shielded,
-                            // **Not known, which is not "nobody".** This
-                            // host does not yet record which agent, if any,
-                            // is in a pane; saying `None` here would write
-                            // down that a worker's pane was a plain shell.
+                            // **Not known, which is not "nobody"**, until
+                            // the core is asked: that is done after this
+                            // lock is let go (`project_session::screen_of`,
+                            // task 1800). A pane it cannot say stays this,
+                            // and the file's word is kept.
                             agent: Agent::Unknown,
                         },
                         LeafPane { pane: p.id, surface: p.surface, slot: p.scrollback.as_ref().map(|j| j.slot().clone()) },

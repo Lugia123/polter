@@ -698,6 +698,12 @@ extension Ghostty {
             case GHOSTTY_ACTION_POLTER_TAB_MOVE:
                 return polterTabMove(target: target, v: action.action.polter_tab_move)
 
+            case GHOSTTY_ACTION_POLTERGEIST_NEW_STACKED:
+                return poltergeistNewStacked(target: target, v: action.action.poltergeist_new_stacked)
+
+            case GHOSTTY_ACTION_POLTERGEIST_MOVE_PANE:
+                return poltergeistMovePane(target: target, v: action.action.poltergeist_move_pane)
+
             case GHOSTTY_ACTION_POLTER_HIGHLIGHT:
                 return polterHighlight(target: target, v: action.action.polter_highlight)
 
@@ -1105,6 +1111,9 @@ extension Ghostty {
                 return s.isEmpty ? nil : s
             }
             let answer = action.result
+            // Task 1823: who wants it, not whether an answer is wanted -- the
+            // control room's "Start" wants one and is the person's.
+            let byCore = action.by == GHOSTTY_ACTION_NEW_TAB_BY_CORE
             func refuse(_ why: String) -> Bool {
                 Ghostty.logger.warning("new tab refused: \(why, privacy: .public)")
                 answer?.pointee = GHOSTTY_ACTION_NEW_TAB_RESULT_REFUSED
@@ -1116,7 +1125,10 @@ extension Ghostty {
                 var config = SurfaceConfiguration()
                 config.workingDirectory = requested
                 answer?.pointee = GHOSTTY_ACTION_NEW_TAB_RESULT_WILL_OPEN
-                var info: [AnyHashable: Any] = [Notification.NewTabAnswerWantedKey: answer != nil]
+                var info: [AnyHashable: Any] = [
+                    Notification.NewTabAnswerWantedKey: answer != nil,
+                    Notification.NewTabByCoreKey: byCore,
+                ]
                 if requested != nil { info[Notification.NewSurfaceConfigKey] = config }
                 NotificationCenter.default.post(
                     name: Notification.ghosttyNewTab,
@@ -1176,6 +1188,7 @@ extension Ghostty {
                     userInfo: [
                         Notification.NewSurfaceConfigKey: config,
                         Notification.NewTabAnswerWantedKey: answer != nil,
+                        Notification.NewTabByCoreKey: byCore,
                     ]
                 )
                 return true
@@ -2647,6 +2660,73 @@ extension Ghostty {
                         for (i, b) in bytes.enumerated() { dst[i] = b }
                     }
                     info.pointee.len = bytes.count
+                }
+            }
+            return true
+        }
+
+        /// A worker stacked in front of the target, in its pane (task 1797,
+        /// `poltergeist_new_stacked`): made before this returns, so the core
+        /// finds it at once. The cell is written only when it was made --
+        /// the same contract as `newSplit` -- and the keyboard stays where
+        /// it was (`stackNewTerminal(onto:baseConfig:byPerson:)`).
+        private static func poltergeistNewStacked(
+            target: ghostty_target_s,
+            v: ghostty_action_poltergeist_new_stacked_s) -> Bool {
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface)
+            else { return false }
+            guard let controller = BaseTerminalController.controller(owning: surfaceView),
+                  controller.surfaceTree.contains(surfaceView) else {
+                Ghostty.logger.warning(
+                    "new stacked refused: the target surface is not in any terminal window's split tree")
+                return false
+            }
+            var config = SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_SPLIT))
+            if let dir = v.working_directory.flatMap({ String(cString: $0) }), !dir.isEmpty {
+                config.workingDirectory = dir
+            }
+            guard controller.stackNewTerminal(onto: surfaceView, baseConfig: config, byPerson: false) != nil else {
+                Ghostty.logger.warning("new stacked refused: the pane would not take another terminal")
+                return false
+            }
+            if let cell = v.result { cell.pointee = GHOSTTY_ACTION_POLTERGEIST_NEW_STACKED_RESULT_WILL_STACK }
+            return true
+        }
+
+        /// Move the target's terminal to the one whose handle is `onto`
+        /// (`poltergeist_move_pane`, task 1797). See
+        /// `BaseTerminalController.polterMovePane`; this is the C ABI glue.
+        /// A terminal the control room is showing is refused as `Lent`, the
+        /// moved one or the one it goes to, as for a tab move.
+        private static func poltergeistMovePane(
+            target: ghostty_target_s,
+            v: ghostty_action_poltergeist_move_pane_s) -> Bool {
+            guard let out = v.out else { return false }
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let moved = self.surfaceView(from: surface)
+            else { return false }
+            let onto: Ghostty.SurfaceView? = TerminalController.all.lazy.compactMap { c in
+                c.surfaceTree.first { PoltergeistLayoutCell.surfaceHandle(for: $0).map(UInt64.init) == v.onto }
+            }.first
+            let answer: (applied: Bool, text: String)
+            if ControlRoomLender.shared.isLent(moved) || onto.map({ ControlRoomLender.shared.isLent($0) }) == true {
+                answer = (false, #"{"code":"Lent","message":"that terminal is shown in the control room; nothing was moved"}"#)
+            } else if let onto, let controller = BaseTerminalController.controller(owning: onto) {
+                answer = controller.polterMovePane(moved, onto: onto, splitRight: v.as == GHOSTTY_POLTERGEIST_MOVE_PANE_SPLIT_RIGHT)
+            } else {
+                answer = (false, "the terminal it goes to is not in a terminal tab")
+            }
+
+            out.pointee.result = answer.applied ? GHOSTTY_ACTION_POLTERGEIST_LAYOUT_APPLIED : GHOSTTY_ACTION_POLTERGEIST_LAYOUT_REFUSED
+            let bytes = Array(answer.text.utf8)
+            let n = min(bytes.count, out.pointee.cap)
+            out.pointee.len = n
+            if n > 0, let buf = out.pointee.buf {
+                buf.withMemoryRebound(to: UInt8.self, capacity: n) { dst in
+                    for i in 0..<n { dst[i] = bytes[i] }
                 }
             }
             return true

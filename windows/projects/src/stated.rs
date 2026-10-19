@@ -50,6 +50,7 @@ impl Stated {
     pub fn of_open(name: &str, group: Option<String>, pages: &Pages, open: &[(PageId, Vec<String>)]) -> Stated {
         let mut on_pages: Vec<Vec<String>> = Vec::new();
         let mut supervisor = None;
+        let mut workers = Vec::new();
         // In the project's order, not the order the tabs were opened in.
         for id in pages.page_ids() {
             let Some((_, terminals)) = open.iter().find(|(page, _)| *page == id) else { continue };
@@ -67,6 +68,9 @@ impl Stated {
                 if leaf.supervisor_seat == Some(true) && supervisor.is_none() {
                     supervisor = Some(terminal.clone());
                 }
+                if leaf.by_supervisor {
+                    workers.push(terminal.clone());
+                }
             }
         }
         Stated {
@@ -75,9 +79,10 @@ impl Stated {
             pages: pages.page_ids().len(),
             open: if on_pages.is_empty() { None } else { Some(on_pages) },
             supervisor,
-            // The file has no mark for these yet (`by_supervisor`, #1491):
-            // until it does, none is what the contract says to send.
-            workers: Vec::new(),
+            // Found by counting, like the supervisor: a page that changed
+            // since it was written names none of its workers either
+            // (task 1799).
+            workers,
         }
     }
 }

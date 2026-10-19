@@ -128,6 +128,7 @@ struct ControlRoomGroupFactsTests {
             == #"{"act":"delete_group","group":"g","members":3,"open_tasks":4}"#)
         #expect(try json(.askSupervisor(group: "g", ask: .reportProgress)) == #"{"act":"ask_supervisor","ask":"report","group":"g"}"#)
         #expect(try json(.askSupervisor(group: "g", ask: .closeIdleWorkers)) == #"{"act":"ask_supervisor","ask":"close_idle","group":"g"}"#)
+        #expect(try json(.askSupervisor(group: "g", ask: .tidyWorkers)) == #"{"act":"ask_supervisor","ask":"tidy_workers","group":"g"}"#)
     }
 
     /// Every refusal the new acts can give has a sentence of its own, not

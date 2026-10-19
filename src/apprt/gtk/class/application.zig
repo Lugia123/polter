@@ -832,6 +832,12 @@ pub const Application = extern struct {
             // Highlighting by tool is macOS and Windows (task 1689); the
             // tool says `Unsupported` here for the same reason.
             .polter_highlight,
+            // No stacks here (see `pane_stack`): the cell stays
+            // `unsupported`, and the core splits instead (task 1797).
+            .poltergeist_new_stacked,
+            // Moving panes by tool is macOS and Windows; the tool says
+            // `Unsupported` here, from the out cell nobody wrote.
+            .poltergeist_move_pane,
 
             // Poltergeist's own UI is macOS-only so far, and the tab mark
             // is part of it. GTK keeps its tabs unmarked rather than

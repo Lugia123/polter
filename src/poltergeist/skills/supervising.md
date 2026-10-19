@@ -502,7 +502,7 @@ cleared: only that terminal's next event clears it.
 
 ### `[Polter ask]`: the person asked you something from the control room
 
-The group row's right-click menu can type one of two lines into you, each
+The group row's right-click menu can type one of three lines into you, each
 starting `[Polter ask]` (the same in every language) and kept in the group
 as the person's message:
 
@@ -513,8 +513,16 @@ as the person's message:
   finished or are waiting with nothing to do (`terminal_read` each first:
   a still screen is not an idle worker), and say in the group which you
   closed and which you kept, and why.
+- **tidy your workers** -- gather your workers scattered over other panes
+  and tabs into the stack to your right: `terminal_stack` with `onto` your
+  own id moves each one, keeping its process and session, and makes the
+  stack beside you if there is none. Leave where they are the panes the
+  user keeps for their own commands (`workers: "refused"`), shielded ones,
+  and terminals that are not workers -- a server, a log -- even in your own
+  tab. Say in the group what you moved, what you did not and why. Polter
+  never does this on its own: nothing is tidied unless the person asks.
 
-Either is the person asking, so it comes before what you were doing next;
+Any of them is the person asking, so it comes before what you were doing next;
 answer in the group, where they will look.
 
 ### A worker waiting on a prompt is yours to deal with
@@ -724,12 +732,13 @@ Any terminal, another supervisor or yourself; only you can ask it.
 ### Where a worker lands is not yours to decide any more
 
 **You no longer say where a terminal goes, and you no longer need to.**
-`terminal_open` places workers itself: the first three go beside you, as a
-column to your right; the next three stand beside those, a second column;
-and once both are full the rest go into tabs. Terminals the person opened in
-your tab do not change that: they are left where they are, and only your own
-workers count towards the six.
-Asking for a position was never possible and is now not needed — the budget
+`terminal_open` places workers itself: your tab is two panes, you on the
+left and **one stack of your workers on the right**. The first worker splits
+you to the right; every one after it is stacked in front in that pane, and
+the stack scrolls sideways however many there are -- no columns, no count,
+no tab for a worker. Terminals the person opened in your tab are left where
+they are and never stacked into.
+Asking for a position was never possible and is now not needed — the rule
 lives in one place instead of being recomputed by every supervisor, which is
 how six supervisors used to arrive at six different layouts.
 
@@ -752,16 +761,19 @@ like one that went right from inside a tool reply. What to expect today:
   and send to it as you would any other, but do not start an agent in it:
   `role_launch` refuses `in` and `beside` naming it with `WorkersRefused`, and
   `auto` never reuses it. Only the user sets or lifts it, from the menu.
-- Workers 1–3: beside you, top to bottom, with you on the left — the first
-  splits your own pane to the right, the next two go under the one before.
-  The person's own panes in that tab stay as they were and are not counted.
-- Workers 4–6: **beside the first three**, one each — the fourth to the
-  right of the first, the fifth of the second, the sixth of the third. You
-  on the left, your workers in two columns.
-- Worker 7 onward: **a new tab** (`fallback: "column_full"`). Six is what one
-  tab holds until panes can be stacked; `place: "stack"` is the name that
-  will ask for that, and today it is refused with `NotBuiltYet` and opens
-  nothing.
+- The first worker: your own pane split to the right (`placed: "split"`).
+- Every worker after it: **stacked in front** in the pane of your newest
+  worker still in your tab (`placed: "stack"`). It is what that pane shows;
+  the keyboard stays where it was. A worker of yours the person closed or
+  dragged elsewhere is stepped over, and with none of yours left in your tab
+  the next one splits you to the right again -- so if the person moved you
+  to a tab of your own, your next worker starts a stack there.
+- `place: "stack"` is the same without first reusing a free pane of yours;
+  `place: "here"` is a pane of its own split off yours, for what is not a
+  worker.
+- Two in quick succession: the second waits up to three seconds for the
+  first to appear, so it can join the first one's stack; past that it is
+  placed without it, and Polter's log says so.
 
 **It works the same while the user is watching you in the control room.**
 Your terminal is shown there, and your panes are still in your own tab: a
@@ -771,7 +783,7 @@ If you still see that code on macOS or Windows, it is a defect -- report it.)
 
 **Think about what the user will see in that tab.** It is one of you to
 several of them, and the several are not all alike. Workers belong together
--- let `auto` put them in the columns. A command line the user is meant to
+-- let `auto` put them in your stack. A command line the user is meant to
 watch or type into -- a dev server, a test watcher, a log -- is not a
 worker: give it its own split (`new_split:down` at your own id, or
 `terminal_open` with `place: "here"`) and say in the group which pane it is,
@@ -833,8 +845,8 @@ shell running a command.
   the pane after or before it, so two panes become one.
 
 **A terminal behind another is still running, still in `terminal_list`, and
-still raises its hand**: its glyph is on its tab in the strip, and if its tab
-has been folded behind the strip's `…`, on the `…`. Nothing about minding it
+still raises its hand**: its glyph is on its tab in the strip, which scrolls
+sideways when the stack is long. Nothing about minding it
 changes — you read it and send to it by id exactly as before; you do not
 have to bring it to the front first. Bring it to the front when the *person*
 needs to look at it.

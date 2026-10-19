@@ -1854,6 +1854,12 @@ pub fn is_primary_frame(hwnd: HWND) -> bool {
 /// all quietly followed the newest window. Giving each window its own state
 /// is B1-a; this function's job is to not prejudge it.
 fn create_frame(hinst: HINSTANCE, primary: bool) -> Option<HWND> {
+    create_frame_shown(hinst, primary, SW_SHOW)
+}
+
+/// `create_frame`, shown with `show` -- `SW_SHOWNOACTIVATE` for a window the
+/// core opened behind (task 1823), which `SW_SHOW` would activate.
+fn create_frame_shown(hinst: HINSTANCE, primary: bool, show: SHOW_WINDOW_CMD) -> Option<HWND> {
     let hwnd = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
@@ -1917,7 +1923,7 @@ fn create_frame(hinst: HINSTANCE, primary: bool) -> Option<HWND> {
     shell::init_frame(hwnd);
 
     unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, show);
     }
     // **After `created`, so the tag in this line is one `winid` has already
     // paired with the handle.** Logged per window rather than process-wide
@@ -1937,6 +1943,12 @@ fn create_frame(hinst: HINSTANCE, primary: bool) -> Option<HWND> {
 /// it claim to be the original".
 pub fn create_frame_secondary(hinst: HINSTANCE) -> Option<HWND> {
     create_frame(hinst, false)
+}
+
+/// A secondary frame shown without being activated (task 1823): a page of
+/// a project the core ordered opened, behind.
+pub fn create_frame_secondary_behind(hinst: HINSTANCE) -> Option<HWND> {
+    create_frame_shown(hinst, false, SW_SHOWNOACTIVATE)
 }
 
 pub fn api() -> &'static Api {
@@ -3683,7 +3695,9 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             // carries no terminal: it asks where the one control room is
             let facts = tabs::new_tab_facts();
             let asker = target_surface(&target).map(tabs::asker_facts);
-            let to = new_tab(asker, !action.as_new_tab_answer_wanted(), facts.control_room.is_some(), facts.tabs_beside, facts.any_terminal_window);
+            // Who wants it (task 1823), not whether an answer is wanted: the
+            // control room's "Start" wants one and is the person's.
+            let to = new_tab(asker, !action.as_new_tab_by_core(), facts.control_room.is_some(), facts.tabs_beside, facts.any_terminal_window);
             let behind = |frame: HWND| {
                 tabs::post_op(frame, Op::NewTabWith(tabs::NewTab { cwd: cwd.clone(), behind: true, ..Default::default() }), "new_tab action");
                 true
@@ -3694,7 +3708,10 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
             let done = match to {
                 To::InFront(Home::Askers) => queue_from(origin, Op::NewTab(cwd.clone()), "new_tab action"),
                 To::Behind(Home::Askers) => origin.is_some_and(behind),
-                To::Behind(Home::ControlRooms) | To::Behind(Home::Frontmost) => facts.control_room.is_some_and(behind),
+                To::Behind(Home::ControlRooms) => facts.control_room.is_some_and(behind),
+                // The core's, with the control room not in front (task 1823):
+                // the window the person used last, behind.
+                To::Behind(Home::Frontmost) => (!front.0.is_null()).then_some(front).is_some_and(behind),
                 To::InFront(Home::Frontmost) | To::InFront(Home::ControlRooms) => {
                     queue_from((!front.0.is_null()).then_some(front), Op::NewTab(cwd.clone()), "new_tab action")
                 }
@@ -4575,6 +4592,7 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // strip, or into the strip of another window. A move -- the panes
         // keep their windows and surfaces (`tabs::move_tab_for_tool`).
         ffi::ACTION_POLTER_TAB_MOVE => layout::perform_tab_move(&action, target_surface(&target)),
+        ffi::ACTION_POLTERGEIST_MOVE_PANE => layout::perform_move_pane(&action, target_surface(&target)),
 
         // A terminal lit up for the person to find (`terminal_highlight`,
         // task 1690): answered before this returns, as a tab move is.
@@ -4584,6 +4602,26 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         // 1583). **Answered now**: a verb with nothing to do returns false
         // so the key falls through, as macOS's does; one that has is queued
         // for the window's thread, on the pane the action named.
+        // Task 1797: the core stacks a worker in front in the place of the
+        // pane it names. Answered now, as `new_split` is: "will" only when
+        // the op would be taken, and the cell left alone otherwise -- the
+        // core then splits instead and says so.
+        ffi::ACTION_POLTERGEIST_NEW_STACKED => {
+            let (cwd, result) = action.as_poltergeist_new_stacked();
+            let at = target_surface(&target).and_then(tabs::pane_id_of_surface);
+            let offered = origin.is_some_and(|f| tabs::pane_stack_offers(f, polter_split_tree::stack::Verb::New, at));
+            if !offered {
+                alogf!(origin, "[action] poltergeist_new_stacked onto={:?}: that place takes no stack now; not taken", at);
+                return false;
+            }
+            alogf!(origin, "[action] poltergeist_new_stacked onto={:?} cwd={}", at, cwd.as_deref().unwrap_or("(inherited)"));
+            let queued = queue_from(origin, Op::WorkerStacked(cwd, at), "poltergeist_new_stacked action");
+            if queued && !result.is_null() {
+                // `ghostty_action_poltergeist_new_stacked_result_e`: 1 == WILL_STACK.
+                unsafe { result.write(1) };
+            }
+            queued
+        }
         ffi::ACTION_PANE_STACK => {
             let v = action.as_i32();
             let at = target_surface(&target).and_then(tabs::pane_id_of_surface);

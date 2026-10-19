@@ -892,7 +892,7 @@ Windows 是 `rules::menu_row_offered` 加 `rules::project_tab`）：
 |---|---|
 | `ghostty_app_control_snapshot` | **有。** JSON 的形状写在 `src/poltergeist/ControlRoom.zig` 文件头，夹具是 `src/poltergeist/testdata/control_snapshot.json`。返回 0 字节表示还没算过，不是空的总控台 |
 | 动作 `CONTROL_ROOM_CHANGED` | **有。** mac 的宿主还没有接它的分支；Windows 宿主记为欠账；gtk 记为未实现 |
-| `ghostty_app_control_act` | **有一部分**：已看、先放着（到下一个事件 / 到某时刻）、取消先放着、批准一次、拒绝、回一句、新建群（`new_group`）、给没有总管的群启动总管（`start_supervisor`，§6.4）；群行右键菜单（task 1659）：置顶 / 取消置顶、静音（到某时刻或一直）/ 取消静音、归档 / 取消归档、重命名、改群简介、删除群、请总管汇报进度 / 关闭闲置 worker（`ask_supervisor`）。**没有**：移交。请求与每一种拒绝写在 `src/poltergeist/ControlAct.zig` 文件头 |
+| `ghostty_app_control_act` | **有一部分**：已看、先放着（到下一个事件 / 到某时刻）、取消先放着、批准一次、拒绝、回一句、新建群（`new_group`）、给没有总管的群启动总管（`start_supervisor`，§6.4）；群行右键菜单（task 1659）：置顶 / 取消置顶、静音（到某时刻或一直）/ 取消静音、归档 / 取消归档、重命名、改群简介、删除群、请总管汇报进度 / 关闭闲置 worker / 整理 worker 布局（`ask_supervisor`；最后一项是 #1797，由总管用 `terminal_stack` 自己挪，Polter 不替它挪）。**没有**：移交。请求与每一种拒绝写在 `src/poltergeist/ControlAct.zig` 文件头 |
 | `ghostty_app_control_group` | 还没有 |
 | `ghostty_app_control_messages` | 还没有 |
 

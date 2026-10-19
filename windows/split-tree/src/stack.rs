@@ -111,6 +111,23 @@ impl Tree {
         self.swapping(front, pane, stacks)
     }
 
+    /// `pane`, from outside this tree, put where `onto` is (task 1797,
+    /// `terminal_stack`; macOS's `SplitTree.takingIn`): onto the stack of
+    /// the place `onto` is in, **behind, at the end** -- what that place
+    /// shows does not change, so a tidy that moves five does not flip it
+    /// five times -- or, `split_right`, into a place of its own to the right
+    /// of that place. A place of one becomes a stack of two.
+    pub fn taking_in(&self, pane: PaneId, onto: PaneId, split_right: bool) -> Result<Tree, Error> {
+        if self.contains(pane) {
+            return Err(Error::AlreadyPresent);
+        }
+        let front = self.shown_for(onto).ok_or(Error::PaneNotFound)?;
+        if split_right {
+            return self.insert(pane, front, NewSplit::Right);
+        }
+        self.stacking(pane, onto)?.showing(front)
+    }
+
     /// Put `pane` into the place `onto` is in at tab `index` of its stack,
     /// in front (a tab let go on a stack's strip). `index` is where it ends
     /// up, from 0; past the end is the end. A place of one becomes a stack
@@ -356,6 +373,22 @@ pub fn offers(verb: Verb, stacked: bool, places: usize, quick: bool) -> bool {
         Verb::New => true,
         Verb::Next | Verb::Previous | Verb::Out => stacked,
         Verb::OntoNext | Verb::OntoPrevious => places > 1,
+    }
+}
+
+/// Who has the keyboard after `new` is stacked in front of `behind`, the
+/// terminal its place showed (macOS's `TerminalPresence.focus(_:
+/// afterStacking:onto:byPerson:)`). The person's own "new" -- a key, the
+/// menu, the strip's "+" -- takes it there. **A worker the core stacked
+/// (task 1797, `poltergeist_new_stacked`) takes it from nobody**: not from
+/// the supervisor, not from where the person is typing. Only `behind`
+/// loses it, because it is going behind, and then to `new` in the same
+/// place.
+pub fn focus_after_new(focused: PaneId, new: PaneId, behind: PaneId, by_person: bool) -> PaneId {
+    if by_person || focused == behind {
+        new
+    } else {
+        focused
     }
 }
 

@@ -50,4 +50,14 @@ enum TerminalPresence {
     static func focus<ID: Equatable>(_ focused: ID?, afterShowing front: ID, inPlaceOf behind: ID) -> ID? {
         focused == behind ? front : focused
     }
+
+    /// The focused terminal after a new one is stacked in front of
+    /// `behind`. The person's own "new" -- a key, a menu, the stack's "+"
+    /// -- takes the keyboard there. **A worker the core stacked (task 1797)
+    /// takes it from nobody**: not from the supervisor, not from where the
+    /// person is typing. Only `behind` itself loses it, because it is going
+    /// behind, and then to the new terminal in the same pane.
+    static func focus<ID: Equatable>(_ focused: ID?, afterStacking new: ID, onto behind: ID, byPerson: Bool) -> ID? {
+        byPerson ? new : focus(focused, afterShowing: new, inPlaceOf: behind)
+    }
 }

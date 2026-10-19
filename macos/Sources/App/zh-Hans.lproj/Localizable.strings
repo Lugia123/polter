@@ -1106,6 +1106,7 @@
 "This group still has %@. Deleting it closes none of their terminals, but they leave the group, and unfinished tasks are deleted with it." = "这个群里还有 %@。删除不会关掉它们的终端，但它们会离开这个群，没做完的任务也一起删掉。";
 "Asked the supervisor to report progress" = "已请总管汇报进度";
 "Asked the supervisor to close idle workers" = "已请总管关闭闲置的 worker";
+"Asked the supervisor to tidy its workers" = "已请总管整理 worker 布局";
 "Not delivered: %@" = "没送出去：%@";
 "Pinned, muted" = "已置顶，已静音";
 "Pinned" = "已置顶";
@@ -1122,6 +1123,7 @@
 "Start Supervisor…" = "启动总管…";
 "Ask the Supervisor to Report Progress" = "请总管汇报进度";
 "Ask the Supervisor to Close Idle Workers" = "让总管关闭闲置 worker";
+"Ask the Supervisor to Tidy Its Workers" = "让总管整理 worker 布局";
 "Copy Supervisor Terminal ID" = "复制总管终端 ID";
 "Pin" = "置顶";
 "Unpin" = "取消置顶";

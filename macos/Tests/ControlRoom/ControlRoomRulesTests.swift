@@ -202,11 +202,23 @@ struct ControlRoomNewTabTests {
         }
     }
 
-    @Test func aTabAskedFromATerminalInItsOwnTabOpensBesideItInFrontAsItAlwaysDid() {
+    @Test func aTabThePersonAsksForFromATerminalOpensBesideItInFront() {
+        for (front, beside, any) in Self.rooms {
+            let plan = Rules.newTab(asker: (lent: false, hasHome: true), byPerson: true, controlRoomInFront: front,
+                                    tabsBesideControlRoom: beside, anyTerminalWindow: any)
+            #expect(plan == .inFront(of: .askers))
+        }
+    }
+
+    @Test func aTabTheCoreAsksForFromATerminalOpensBesideItBehind() {
+        // Task 1823, the user: "every time I am half way through something
+        // in the control room, a supervisor opens a tab and the screen is
+        // taken away". An agent's `terminal_open` from its own terminal came
+        // in front of everything; it goes beside that terminal, behind.
         for (front, beside, any) in Self.rooms {
             let plan = Rules.newTab(asker: (lent: false, hasHome: true), byPerson: false, controlRoomInFront: front,
                                     tabsBesideControlRoom: beside, anyTerminalWindow: any)
-            #expect(plan == .inFront(of: .askers))
+            #expect(plan == .behind(.askers))
         }
     }
 
@@ -218,20 +230,15 @@ struct ControlRoomNewTabTests {
         }
     }
 
-    @Test func aTabAnAgentAskedForDoesNotBringTheApplicationInFrontOfAnother() {
-        // The person is in another application and an agent opens itself
-        // a terminal: the tab opens, and they keep the keyboard.
-        let agentBehind = Rules.newTabActivates(answerWanted: true, appIsActive: false)
-        #expect(!agentBehind)
-        // Already in front, nothing changes for anybody.
-        let agentInFront = Rules.newTabActivates(answerWanted: true, appIsActive: true)
-        #expect(agentInFront)
+    @Test func aTabTheCoreAskedForNeverBringsTheApplicationInFront() {
+        // The core's tab -- an agent's, or its own -- opens, and the person
+        // keeps the keyboard wherever it was (task 1823).
+        let cores = Rules.newTabActivates(byPerson: false)
+        #expect(!cores)
         // A key, a menu item, the Dock's menu: theirs comes forward, as it
         // always has -- the Dock's menu is used from behind.
-        let theirsBehind = Rules.newTabActivates(answerWanted: false, appIsActive: false)
-        #expect(theirsBehind)
-        let theirsInFront = Rules.newTabActivates(answerWanted: false, appIsActive: true)
-        #expect(theirsInFront)
+        let theirs = Rules.newTabActivates(byPerson: true)
+        #expect(theirs)
     }
 
     @Test func aTabTheApplicationAsksForGoesBesideTheControlRoomBehindItWhileThatIsInFront() {
@@ -252,10 +259,11 @@ struct ControlRoomNewTabTests {
                                     tabsBesideControlRoom: beside, anyTerminalWindow: any)
             #expect(plan == .behind(.controlRooms))
         }
-        // Not in front: an ordinary new tab.
+        // Not in front: the terminal window used last, still behind (task
+        // 1823).
         let ordinary = Rules.newTab(asker: nil, byPerson: false, controlRoomInFront: false,
                                     tabsBesideControlRoom: true, anyTerminalWindow: true)
-        #expect(ordinary == .inFront(of: .frontmost))
+        #expect(ordinary == .behind(.frontmost))
     }
 
     @Test func aTabAskedForFromAControlRoomThatIsTheOnlyWindowBecomesATabOfItBehind() {
@@ -289,13 +297,15 @@ struct ControlRoomNewTabTests {
         let theirs = Rules.newTab(asker: nil, byPerson: true, controlRoomInFront: true,
                                   tabsBesideControlRoom: false, anyTerminalWindow: true)
         #expect(theirs == .inFront(of: .frontmost))
-        // With the control room not in front, who asked changes nothing.
+        // With the control room not in front: the same window either way,
+        // and only the person's comes in front (task 1823).
         for (front, beside, any) in Self.rooms where !front {
             let theirs = Rules.newTab(asker: nil, byPerson: true, controlRoomInFront: front,
                                       tabsBesideControlRoom: beside, anyTerminalWindow: any)
             let apps = Rules.newTab(asker: nil, byPerson: false, controlRoomInFront: front,
                                     tabsBesideControlRoom: beside, anyTerminalWindow: any)
-            #expect(theirs == apps)
+            #expect(theirs == (any ? .inFront(of: .frontmost) : .ownWindow))
+            #expect(apps == (any ? .behind(.frontmost) : .ownWindow))
         }
     }
 

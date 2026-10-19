@@ -1220,6 +1220,7 @@ fn row_item_works(id: &str) -> bool {
             | "edit_note"
             | "report_progress"
             | "close_idle_workers"
+            | "tidy_workers"
             | "rename"
     )
 }
@@ -1478,6 +1479,7 @@ fn row_item(hwnd: HWND, group: &str, id: &str) {
         "edit_note" => open_note(hwnd, group, &row.brief),
         "report_progress" => ask_supervisor(hwnd, group, act::Ask::Report),
         "close_idle_workers" => ask_supervisor(hwnd, group, act::Ask::CloseIdle),
+        "tidy_workers" => ask_supervisor(hwnd, group, act::Ask::TidyWorkers),
         "rename" => begin_rename(hwnd, group),
         _ => wlogf!(frame, "[control-room] row menu: {} is not done on this host yet (task 1661)", id),
     }

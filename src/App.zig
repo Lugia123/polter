@@ -432,6 +432,13 @@ poltergeist_workers: std.AutoHashMapUnmanaged(
 /// the worker.
 poltergeist_pending_worker: ?PendingWorker = null,
 
+/// Worker requests parked until the worker their supervisor asked for just
+/// before has appeared (task 1797, Q3): the next one is stacked onto it,
+/// and on the Windows host it is not there yet. Each is looked at again
+/// every `worker_wait_look_ms`, and placed without it once
+/// `worker_wait_ms` has passed. App thread only.
+poltergeist_worker_waits: std.ArrayListUnmanaged(WorkerWait) = .empty,
+
 /// `persona_wait` requests that are being held rather than answered.
 ///
 /// A slot process asks "tell me when this terminal's persona might want me
@@ -736,6 +743,8 @@ pub fn deinit(self: *App) void {
         self.poltergeist_workers.deinit(self.alloc);
     }
     if (self.poltergeist_pending_worker) |*p| p.deinit(self.alloc);
+    for (self.poltergeist_worker_waits.items) |w| w.held.release();
+    self.poltergeist_worker_waits.deinit(self.alloc);
 
     // After them, and that order is the whole of it: each archive gives
     // its subscription back as it is destroyed.
@@ -891,6 +900,8 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
             self.payFirstPrompts();
             // A fresh assignment whose clear was never confirmed.
             self.sweepFreshAssigns();
+            // A worker waiting on the one asked for before it (task 1797).
+            self.sweepWorkerWaits();
             // And the groups: a message that arrived while its reader had
             // just been told about another, or whose notice was refused.
             self.tellTerminalsAboutMessages();
@@ -1716,7 +1727,8 @@ fn controlActStartSupervisor(
     try self.personas.expectLaunch(choice.key, choice.cli, line, Chat.user_id, now_ms);
     errdefer self.personas.dropLaunch();
 
-    _ = try self.openStartTab(alloc, rt_app, dir_z, now_ms);
+    // The person clicked "Start": brought forward.
+    _ = try self.openStartTab(alloc, rt_app, dir_z, now_ms, .person);
     log.info("control room: starting a supervisor for a group in role {s}", .{choice.key});
 }
 
@@ -1744,12 +1756,15 @@ fn startDirZ(alloc: Allocator, cwd: []const u8) ![:0]const u8 {
 
 /// Ask for the tab a start's launch waits for (`personas.expectLaunch`),
 /// in `dir_z`, and answer the terminal it is: null when none appeared.
+/// `by` is who wants it (task 1823): the person's click in the control
+/// room brings it forward, the core's own start does not.
 fn openStartTab(
     self: *App,
     alloc: Allocator,
     rt_app: *apprt.App,
     dir_z: [:0]const u8,
     now_ms: u64,
+    by: apprt.action.NewTab.By,
 ) !?poltergeistpkg.Bus.Id {
     var before: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty;
     for (self.surfaces.items) |v| try before.put(alloc, v.core().id, {});
@@ -1760,7 +1775,7 @@ fn openStartTab(
     var asked = rt_app.performAction(
         .app,
         .new_tab,
-        .{ .working_directory = dir_z, .result = &answer },
+        .{ .working_directory = dir_z, .result = &answer, .by = by },
     ) catch false;
     if (!asked) for (self.surfaces.items) |v| {
         if (self.isChatSurface(v.core().id)) continue;
@@ -1768,7 +1783,7 @@ fn openStartTab(
         asked = rt_app.performAction(
             .{ .surface = v.core() },
             .new_tab,
-            .{ .working_directory = dir_z, .result = &answer },
+            .{ .working_directory = dir_z, .result = &answer, .by = by },
         ) catch false;
         break;
     };
@@ -1841,7 +1856,9 @@ fn startHeldInANewTab(self: *App, rt_app: *apprt.App, now_ms: u64) void {
     self.dropProjectSeating();
     self.project_seating = .{ .group = owned, .terminal = null };
 
-    _ = self.openStartTab(alloc, rt_app, dir_z, now_ms) catch |err| {
+    // Later than the click, and the core's doing: in the background (task
+    // 1823), whatever the person has moved on to.
+    _ = self.openStartTab(alloc, rt_app, dir_z, now_ms, .core) catch |err| {
         log.warn("control room: could not open a tab for the supervisor err={}", .{err});
         self.personas.dropLaunch();
         self.chat.failStart(group, .terminal_never_opened);
@@ -6901,6 +6918,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .taskEdit = taskEdit,
         .layout = poltergeistLayout,
         .tabMove = polterTabMove,
+        .paneMove = polterPaneMove,
         .highlight = polterHighlight,
         .userPresent = polterUserPresent,
         .screenshotAllowed = poltergeistScreenshotAllowed,
@@ -7871,6 +7889,82 @@ fn polterTabMove(
     };
 }
 
+/// Move a terminal into a stack for `terminal_stack` (task 1797). `onto ==
+/// by` is `by`'s own stack, worked out by the rule the next worker would go
+/// by (`WorkerColumn.lastHere`): the pane of its newest worker still in its
+/// tab, `id` itself not counted, or -- none -- a pane split off `by` to the
+/// right, which is the stack to come.
+fn polterPaneMove(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    by: poltergeistpkg.Bus.Id,
+    id: poltergeistpkg.Bus.Id,
+    onto: poltergeistpkg.Bus.Id,
+) anyerror!poltergeistpkg.rpc.LayoutAnswer {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const As = apprt.action.PoltergeistMovePane.As;
+    const moved = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+
+    const Where = struct { target: *Surface, as: As };
+    const where: Where = if (onto == by) mine: {
+        const sup = self.findSurfaceByID(by) orelse return error.NoSuchTerminal;
+        var others: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+        defer others.deinit(alloc);
+        if (self.poltergeist_workers.get(by)) |l| for (l.items) |w| if (w != id) try others.append(alloc, w);
+        const now = try self.poltergeistSeen(alloc);
+        defer alloc.free(now);
+        if (WorkerColumn.lastHere(others.items, now, poltergeistTabOf(sup))) |w| {
+            if (self.findSurfaceByID(w)) |t| break :mine .{ .target = t, .as = .stack };
+        }
+        break :mine .{ .target = sup, .as = .split_right };
+    } else .{ .target = self.findSurfaceByID(onto) orelse return error.NoSuchTerminal, .as = .stack };
+    const target = where.target;
+    const as = where.as;
+
+    const before = self.polterWhere(id);
+    const buf = try alloc.alloc(u8, 4 * 1024);
+    defer alloc.free(buf);
+    var out: apprt.action.PoltergeistLayout.Out = .{ .buf = buf.ptr, .cap = buf.len };
+    _ = moved.rt_app.performAction(
+        .{ .surface = moved },
+        .poltergeist_move_pane,
+        .{ .onto = @intFromPtr(target.rt_surface), .as = as, .out = &out },
+    ) catch |err| {
+        log.warn("polter: pane move action failed err={}", .{err});
+        return error.MoveFailed;
+    };
+
+    const said = buf[0..@min(out.len, buf.len)];
+    return switch (out.result) {
+        .unsupported => error.LayoutUnsupported,
+        .refused => refused: {
+            const r = try polterRefusal(alloc, said);
+            break :refused .{
+                .applied = false,
+                .code = r.code,
+                .text = try self.layoutHandlesInText(alloc, r.message),
+            };
+        },
+        .applied => applied: {
+            log.info("polter: moved {x} {t} {x} for {x}", .{ id, as, target.id, by });
+            // In `by`'s stack now: the newest of its workers there, which
+            // is where its next one goes.
+            if (onto == by) {
+                if (self.poltergeist_workers.getPtr(by)) |l| {
+                    if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, l.items, id)) |i| _ = l.orderedRemove(i);
+                }
+                self.poltergeistRecordWorker(by, id);
+            }
+            const after = self.polterWhere(id);
+            const list = [_]poltergeistpkg.arrange.Move{.{ .id = id, .from = before, .to = after }};
+            break :applied .{
+                .applied = true,
+                .text = try poltergeistpkg.arrange.withMoves(alloc, "{}", &list),
+            };
+        },
+    };
+}
+
 /// Light a terminal up for `terminal_highlight` (task 1689). The apprt does
 /// everything that is seen and answers before it returns; this turns its
 /// answer into the tool's and writes the line that says it started. The
@@ -8442,6 +8536,13 @@ fn poltergeistPerformAction(
             ),
         }),
 
+        // An agent's `new_tab` is the core's, not the person's key (task
+        // 1823): the same action the key sends, opened in the background.
+        .new_tab => {
+            if (!(try surface.rt_app.performAction(.{ .surface = surface }, .new_tab, .{ .by = .core }))) return error.ActionIgnored;
+            return;
+        },
+
         else => {},
     }
 
@@ -8861,23 +8962,24 @@ fn poltergeistSettlePendingWorker(self: *App, alloc: Allocator) Allocator.Error!
 
     // **Nothing yet.** Which is not the same as nothing ever: the apprt
     // performs a split on its own thread, so a call that follows the last one
-    // closely enough looks before the terminal exists.
-    pending.tries += 1;
-    if (pending.tries < 2) {
+    // closely enough looks before the terminal exists. Waited for as long as
+    // a worker request is parked for it (task 1797, Q3).
+    const now_ms = self.poltergeistElapsedMs();
+    if (!pending.overdue(now_ms)) {
         self.poltergeist_pending_worker = pending;
         return;
     }
 
     // ⚠️ **Given up on, and said.** The split was refused, or the person
     // closed the pane before this ran. Left in place it would wedge every
-    // later placement into a tab, which is a worse failure than the one it
-    // was guarding against.
+    // later placement, which is a worse failure than the one it was guarding
+    // against.
     self.poltergeist_pending_worker = null;
     pending.deinit(self.alloc);
     log.info(
-        "poltergeist: the split asked for earlier never produced a terminal; " ++
-            "the next worker will be placed as if this tab had none of ours",
-        .{},
+        "poltergeist: the terminal asked for {d}ms ago never appeared; " ++
+            "the next worker is placed without it",
+        .{now_ms -| pending.asked_ms},
     );
 }
 
@@ -8925,18 +9027,24 @@ const PendingWorker = struct {
     /// does not say which tab anything is in.
     tab: ?u64,
 
-    /// How many settlements have looked and found nothing yet.
+    /// When it was asked for (`poltergeistElapsedMs`).
     ///
     /// **Because "not yet" and "never" are different answers.** Two calls
     /// back to back leave the first split still on the apprt's queue, so the
     /// first look finds nothing -- and dropping the record there is what let
     /// the second call place a worker as though the first had not happened.
-    /// Kept for one more look, then given up on, so a split that really was
-    /// refused cannot wedge every later placement.
-    tries: u8 = 0,
+    /// Kept for `worker_wait_ms` (task 1797, Q3; it was two looks, however
+    /// far apart), then given up on, so a split that really was refused
+    /// cannot wedge every later placement. No default: a record that does
+    /// not say when would never be overdue, or always.
+    asked_ms: u64,
 
     fn deinit(self: *PendingWorker, alloc: Allocator) void {
         self.before.deinit(alloc);
+    }
+
+    fn overdue(self: *const PendingWorker, now_ms: u64) bool {
+        return now_ms >= self.asked_ms +| worker_wait_ms;
     }
 
     /// Which of `now` is the terminal this split produced.
@@ -8977,6 +9085,7 @@ const PendingWorker = struct {
     fn afterSplit(
         alloc: Allocator,
         by: poltergeistpkg.Bus.Id,
+        asked_ms: u64,
         tab: ?u64,
         before: *const std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void),
         now: []const Seen,
@@ -8987,7 +9096,7 @@ const PendingWorker = struct {
         // worker by now, and a snapshot taken here would hold it -- so
         // nothing would ever be new against it, and the next placement
         // would wait on a split that had finished (task 877).
-        var pending: PendingWorker = .{ .by = by, .tab = tab, .before = try before.clone(alloc) };
+        var pending: PendingWorker = .{ .by = by, .asked_ms = asked_ms, .tab = tab, .before = try before.clone(alloc) };
 
         // And a worker that is already here is attributed now, not on the
         // next call: there is nothing to wait for.
@@ -9020,7 +9129,7 @@ test "a terminal opened in another tab is not taken for the worker (task 881)" {
     const testing = std.testing;
     const alloc = testing.allocator;
 
-    var pending: PendingWorker = .{ .by = 1, .tab = 7, .before = .empty };
+    var pending: PendingWorker = .{ .by = 1, .asked_ms = 0, .tab = 7, .before = .empty };
     defer pending.deinit(alloc);
     try pending.before.put(alloc, 1, {});
 
@@ -9046,7 +9155,7 @@ test "a terminal opened in another tab is not taken for the worker (task 881)" {
 
     // An apprt that never says which tab anything is in keeps the old rule
     // rather than attributing nothing at all.
-    var blind: PendingWorker = .{ .by = 1, .tab = null, .before = .empty };
+    var blind: PendingWorker = .{ .by = 1, .asked_ms = 0, .tab = null, .before = .empty };
     defer blind.deinit(alloc);
     try blind.before.put(alloc, 1, {});
     const unknown = [_]Seen{ .{ .id = 1, .tab = null }, .{ .id = 2, .tab = null } };
@@ -9068,7 +9177,7 @@ test "a split that has already happened is attributed at once (task 877)" {
     try before.put(alloc, 1, {});
 
     // Synchronous: the worker is already in the list.
-    var sync = try PendingWorker.afterSplit(alloc, 1, 7, &before, &seenIn(7, &.{ 1, 2 }), &.{});
+    var sync = try PendingWorker.afterSplit(alloc, 1, 0, 7, &before, &seenIn(7, &.{ 1, 2 }), &.{});
     defer if (sync == .pending) sync.pending.deinit(alloc);
 
     // Found at all -- now, or by the next call looking at the same list.
@@ -9085,7 +9194,7 @@ test "a split that has already happened is attributed at once (task 877)" {
 
     // Asynchronous: not there yet, and found against the same `before` on
     // the next call.
-    var later = try PendingWorker.afterSplit(alloc, 1, 7, &before, &seenIn(7, &.{1}), &.{});
+    var later = try PendingWorker.afterSplit(alloc, 1, 0, 7, &before, &seenIn(7, &.{1}), &.{});
     defer if (later == .pending) later.pending.deinit(alloc);
     try testing.expect(later == .pending);
     try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), later.pending.attribute(&seenIn(7, &.{ 1, 2 }), &.{}));
@@ -9096,7 +9205,7 @@ test "a worker is attributed after its terminal exists, not when it was asked fo
     const alloc = testing.allocator;
 
     // The tab as it stood when the split was asked for: the supervisor alone.
-    var pending: PendingWorker = .{ .by = 1, .tab = 7, .before = .empty };
+    var pending: PendingWorker = .{ .by = 1, .asked_ms = 0, .tab = 7, .before = .empty };
     defer pending.deinit(alloc);
     try pending.before.put(alloc, 1, {});
 
@@ -9113,109 +9222,133 @@ test "a worker is attributed after its terminal exists, not when it was asked fo
     try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 3), pending.attribute(&seenIn(7, &.{ 1, 2, 3 }), &.{2}));
 }
 
-/// What the budget says to do, given only numbers.
+/// How long a worker request waits for the worker its supervisor asked for
+/// just before (task 1797, Q3). The next one is stacked onto that one, and
+/// on the Windows host it is made after `performAction` returns; past this
+/// it is placed without it, and the log says so.
+const worker_wait_ms: u64 = 3_000;
+
+/// How often a parked worker request is looked at again while it waits.
+const worker_wait_look_ms: u64 = 250;
+
+/// A worker request parked by `openTerminalAt` until the worker before it
+/// has appeared. See `poltergeist_worker_waits`.
+const WorkerWait = struct {
+    /// The request, with a reference of the wait's own.
+    held: *poltergeistpkg.Server.Pending,
+    /// When the wait gives up (`poltergeistElapsedMs`). Kept across the
+    /// looks: a request dispatched again and parked again waits out the
+    /// same three seconds, not three more.
+    deadline_ms: u64,
+    /// Handed back to the mailbox and not dispatched yet: not handed twice.
+    requeued: bool = false,
+};
+
+/// Hand the parked worker requests back to be dispatched again: each one
+/// every `worker_wait_look_ms`, and one whose time is up so that it is
+/// placed without the worker it waited for. Called with the other sweeps.
+fn sweepWorkerWaits(self: *App) void {
+    if (self.poltergeist_worker_waits.items.len == 0) return;
+    for (self.poltergeist_worker_waits.items) |*w| {
+        if (w.requeued) continue;
+        // A reference for the mailbox, which `poltergeistRequest` releases
+        // as it does every request's; the wait's own is released when the
+        // request finds it again (`takeWorkerWait`).
+        w.held.retain();
+        if (self.poltergeist_requests.push(global.io(), w.held, .{ .instant = {} }) == 0) {
+            w.held.release();
+            log.warn("poltergeist: could not hand a waiting worker request back; looked at again next time", .{});
+            continue;
+        }
+        w.requeued = true;
+    }
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
+    self.noticeRetryIn(worker_wait_look_ms);
+}
+
+/// The wait the request being dispatched was parked in, taken out of the
+/// list: its deadline, or null when it was not parked.
+fn takeWorkerWait(self: *App) ?u64 {
+    const pending = self.poltergeist_dispatching orelse return null;
+    for (self.poltergeist_worker_waits.items, 0..) |w, i| {
+        if (w.held != pending) continue;
+        _ = self.poltergeist_worker_waits.swapRemove(i);
+        // The mailbox's reference keeps it alive for this dispatch.
+        w.held.release();
+        return w.deadline_ms;
+    }
+    return null;
+}
+
+/// Park the request being dispatched until `deadline_ms`. False when there
+/// is nothing to park -- not dispatched from a request -- and the caller
+/// places without waiting.
+fn parkWorkerWait(self: *App, deadline_ms: u64) Allocator.Error!bool {
+    const pending = self.poltergeist_dispatching orelse return false;
+    try self.poltergeist_worker_waits.append(self.alloc, .{ .held = pending, .deadline_ms = deadline_ms });
+    pending.retain();
+    self.poltergeist_parked = true;
+    self.noticeRetryIn(worker_wait_look_ms);
+    return true;
+}
+
+/// Where a supervisor's next worker goes, given only facts (task 1797).
 ///
-/// **Split out so the budget can be tested without an apprt.** Every other
-/// part of the placement needs a window system to say anything; this part is
-/// arithmetic, and arithmetic that nothing pins is arithmetic that drifts.
-const WorkerPlacement = enum {
-    /// Split the supervisor to the right: the first worker, and what puts the
-    /// supervisor on the left without moving it.
+/// **Split out so the rule can be tested without an apprt.** The user's
+/// rule: the supervisor's tab is two panes, the supervisor on the left and
+/// one stack of its workers on the right. So the first worker splits the
+/// supervisor to the right, and every one after it joins that pane's stack,
+/// in front -- no columns, no count, and no tab for a worker any more.
+const WorkerPlacement = union(enum) {
+    /// None of this supervisor's workers is in its tab now: split the
+    /// supervisor to the right. The pane made is the stack to come.
     beside_supervisor,
-    /// Split the last worker downwards, growing the column.
-    below_last_worker,
-    /// Split one of the first three workers to the right: the fourth,
-    /// fifth and sixth stand beside the first, second and third, which is
-    /// a second column made of single-pane splits (task 1492). Which one
-    /// is `WorkerColumn.nth(ours - 3)`.
-    beside_worker,
-    /// Open a tab instead. The caller says why.
+    /// Stacked in front of this worker, the newest of the supervisor's own
+    /// still in its tab: **a worker pane, by identity** -- never a pane by
+    /// position, so a pane the person opened beside the supervisor is not
+    /// stacked into (Q5).
+    onto_worker: poltergeistpkg.Bus.Id,
+    /// A worker this supervisor asked for has not appeared yet, and where
+    /// the next one goes depends on it: wait (Q3).
+    wait,
+    /// The apprt does not say how many terminals share a tab, so it cannot
+    /// be told which tab anything is in: a tab.
     new_tab,
 
-    /// How many workers stand in one column, and how many columns there
-    /// are. Past `column * columns` a tab is the answer -- until panes can
-    /// be stacked, which is where the seventh will go.
-    const column = 3;
-    const columns = 2;
-
-    /// `panes` is how many terminals share the supervisor's tab, as the apprt
-    /// counted them; zero means it did not answer. `ours` is how many of
-    /// them are this supervisor's workers (`WorkerColumn`), and
-    /// `have_last_worker` whether the newest of those is one of them.
-    /// `unsettled` is whether a split this supervisor asked for has not
-    /// produced its terminal yet.
-    fn decide(panes: u32, ours: u32, have_last_worker: bool, unsettled: bool) WorkerPlacement {
-        // ⚠️ **A count that a queued operation has not reached yet is not a
-        // count of anything.** The apprt performs splits on its own thread,
-        // so two calls close together are both answered with the number from
-        // before the first one ran -- and the placement then makes room it
-        // has already used. Measured: the cap became four back to back, and
-        // three when the calls were three seconds apart.
-        //
-        // Placing anyway would need a number nobody has. A tab is the answer
-        // that is right whatever the queue is doing, and the caller is told
-        // why.
-        if (unsettled) return .new_tab;
-
+    /// `panes` is how many terminals share the supervisor's tab, as the
+    /// apprt counted them; zero means it did not answer. `last_here` is
+    /// `WorkerColumn.lastHere`. `unsettled` is whether a terminal this
+    /// supervisor asked for has not appeared yet.
+    fn decide(panes: u32, last_here: ?poltergeistpkg.Bus.Id, unsettled: bool) WorkerPlacement {
+        // ⚠️ **A worker that has not appeared is not a pane to stack onto
+        // or to step past.** Placing anyway would put the next one beside
+        // the supervisor as a second stack, or onto an older worker.
+        if (unsettled) return .wait;
         if (panes == 0) return .new_tab;
-        // Both columns are full. **Ours only**: the person's own terminals
-        // are in neither column and fill neither.
-        if (ours >= column * columns) return .new_tab;
-        // None of ours here: the first worker goes beside the supervisor,
-        // whatever else the person has open in this tab (task 900). Their
-        // panes are left where they are -- this splits the supervisor's own
-        // pane and nothing else.
-        if (ours == 0) return .beside_supervisor;
-        // The first column is full: the next stands beside one of its
-        // three. A second column would be splitting a subtree, which no
-        // action can express -- but a pane beside each of the three is the
-        // same picture, and splitting one pane is all it takes. It used to
-        // be a tab from the fourth on, and the person found their workers
-        // scattered over tabs they had not opened (task 1492).
-        if (ours >= column) return .beside_worker;
-        if (!have_last_worker) return .new_tab;
-        return .below_last_worker;
+        if (last_here) |w| return .{ .onto_worker = w };
+        return .beside_supervisor;
     }
 };
 
-/// This supervisor's workers as the placement sees them: how many are in its
-/// tab now, and whether the newest is one of them.
+/// This supervisor's workers as the placement sees them.
 ///
-/// **Split out for the same reason as `WorkerPlacement`**: counting "ours,
-/// and only ours" is the half of task 900 that a count of panes cannot do,
-/// and it is tested here without a window system.
+/// **Split out for the same reason as `WorkerPlacement`**: "ours, and only
+/// ours" is what a count of panes cannot say, and it is tested here without
+/// a window system.
 const WorkerColumn = struct {
-    count: u32,
-    last_here: bool,
-
-    /// `workers` is the supervisor's list, oldest first; `now` is every
-    /// surface but the chat; `tab` is the supervisor's tab. A worker counts
-    /// when it is still open and in that tab -- one the person closed or
-    /// dragged elsewhere is not in the column any more.
-    fn of(workers: []const poltergeistpkg.Bus.Id, now: []const Seen, tab: ?u64) WorkerColumn {
-        var out: WorkerColumn = .{ .count = 0, .last_here = false };
-        for (workers, 0..) |w, i| {
+    /// The newest of `workers` (the supervisor's list, oldest first) that
+    /// is still open and in `tab`, the supervisor's tab; `now` is every
+    /// surface but the chat. One the person closed or dragged elsewhere is
+    /// stepped over, and the one before it is the stack.
+    fn lastHere(workers: []const poltergeistpkg.Bus.Id, now: []const Seen, tab: ?u64) ?poltergeistpkg.Bus.Id {
+        var i = workers.len;
+        while (i > 0) {
+            i -= 1;
+            const w = workers[i];
             const here = for (now) |seen| {
                 if (seen.id == w) break sameTab(seen.tab, tab);
             } else false;
-            if (!here) continue;
-            out.count += 1;
-            if (i == workers.len - 1) out.last_here = true;
-        }
-        return out;
-    }
-
-    /// The `n`th of this supervisor's workers that is in its tab now,
-    /// counted as `of` counts them; null when there are not that many.
-    fn nth(workers: []const poltergeistpkg.Bus.Id, now: []const Seen, tab: ?u64, n: u32) ?poltergeistpkg.Bus.Id {
-        var seen_here: u32 = 0;
-        for (workers) |w| {
-            const here = for (now) |seen| {
-                if (seen.id == w) break sameTab(seen.tab, tab);
-            } else false;
-            if (!here) continue;
-            if (seen_here == n) return w;
-            seen_here += 1;
+            if (here) return w;
         }
         return null;
     }
@@ -9229,196 +9362,73 @@ const WorkerColumn = struct {
     }
 };
 
-test "the worker budget" {
+test "1797: the first worker splits the supervisor, every one after it joins that stack" {
     const testing = std.testing;
     const settled = false;
 
     // Nobody answered: a tab, whatever else is true.
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(0, 0, false, settled));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(0, 1, true, settled));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(0, null, settled));
+    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(0, 2, settled));
 
-    // The supervisor alone: the first worker goes beside it.
-    try testing.expectEqual(
-        WorkerPlacement.beside_supervisor,
-        WorkerPlacement.decide(1, 0, false, settled),
-    );
+    // The supervisor alone, or with the person's own panes: beside it.
+    const first = WorkerPlacement.decide(1, null, settled);
+    try testing.expectEqual(WorkerPlacement.beside_supervisor, first);
+    const among_theirs = WorkerPlacement.decide(4, null, settled);
+    try testing.expectEqual(WorkerPlacement.beside_supervisor, among_theirs);
 
-    // Second and third grow the column.
-    try testing.expectEqual(
-        WorkerPlacement.below_last_worker,
-        WorkerPlacement.decide(2, 1, true, settled),
-    );
-    try testing.expectEqual(
-        WorkerPlacement.below_last_worker,
-        WorkerPlacement.decide(3, 2, true, settled),
-    );
+    // One of ours here: onto it, however many there are -- no columns, no
+    // tab at seven.
+    const second = WorkerPlacement.decide(2, 2, settled);
+    try testing.expectEqual(WorkerPlacement{ .onto_worker = 2 }, second);
+    const ninth = WorkerPlacement.decide(2, 9, settled);
+    try testing.expectEqual(WorkerPlacement{ .onto_worker = 9 }, ninth);
 
-    // The fourth, fifth and sixth stand beside the first three: a second
-    // column, made by splitting one pane each. It was a tab from the
-    // fourth on (task 1492).
-    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(4, 3, true, settled));
-    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(5, 4, true, settled));
-    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(6, 5, true, settled));
-    // Whether the newest is still there does not matter to it: it is not
-    // the newest it stands beside.
-    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(5, 4, false, settled));
-    // Both columns full: a tab, until panes can be stacked.
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(7, 6, true, settled));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(9, 8, true, settled));
-    try testing.expectEqual(@as(u32, 6), WorkerPlacement.column * WorkerPlacement.columns);
-
-    // The newest worker is gone and others of ours are still here: which
-    // pane replaced it is a guess this does not make.
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(3, 2, false, settled));
+    // The one asked for before has not appeared: wait, whatever is here.
+    const early = WorkerPlacement.decide(2, 2, true);
+    try testing.expectEqual(WorkerPlacement.wait, early);
+    const early_first = WorkerPlacement.decide(1, null, true);
+    try testing.expectEqual(WorkerPlacement.wait, early_first);
 }
 
-test "the person's own terminals are neither avoided nor counted (task 900)" {
-    const testing = std.testing;
-    const settled = false;
-
-    // One terminal the person opened, none of ours: the first worker goes
-    // beside the supervisor all the same. This used to be a tab
-    // (`not_our_layout`) under `auto`.
-    try testing.expectEqual(
-        WorkerPlacement.beside_supervisor,
-        WorkerPlacement.decide(2, 0, false, settled),
-    );
-    try testing.expectEqual(
-        WorkerPlacement.beside_supervisor,
-        WorkerPlacement.decide(4, 0, false, settled),
-    );
-
-    // The person's terminal and a worker of ours: the next grows our column.
-    try testing.expectEqual(
-        WorkerPlacement.below_last_worker,
-        WorkerPlacement.decide(3, 1, true, settled),
-    );
-    // **The pair a pane count cannot tell apart.** Five panes is "four
-    // workers, a tab" if the person's two are counted, and "two workers,
-    // room for one more" if they are not.
-    try testing.expectEqual(
-        WorkerPlacement.below_last_worker,
-        WorkerPlacement.decide(5, 2, true, settled),
-    );
-
-    // Three of ours fill the first column whatever else is here, and the
-    // next starts the second; six fill both.
-    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(5, 3, true, settled));
-    try testing.expectEqual(WorkerPlacement.beside_worker, WorkerPlacement.decide(4, 3, true, settled));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(9, 6, true, settled));
-    // The person's own panes do not fill it: nine terminals of which two
-    // are ours still has room in the first column.
-    try testing.expectEqual(WorkerPlacement.below_last_worker, WorkerPlacement.decide(9, 2, true, settled));
-}
-
-test "the pane a second-column worker stands beside is found by identity, among ours that are still here" {
+test "1797: the stack is the newest worker of ours still in the tab, by identity" {
     const testing = std.testing;
     const tab: ?u64 = 7;
     const now = [_]Seen{
+        // The supervisor.
         .{ .id = 1, .tab = tab },
         .{ .id = 2, .tab = tab },
         .{ .id = 3, .tab = tab },
-        .{ .id = 4, .tab = tab },
         // One of ours that the person dragged to another tab.
         .{ .id = 5, .tab = 8 },
         // A terminal the person opened here: in the tab, and not ours.
         .{ .id = 6, .tab = tab },
     };
-    const workers = [_]poltergeistpkg.Bus.Id{ 2, 3, 5, 4 };
-    // The fourth worker stands beside the first that is here, the fifth
-    // beside the second: 5 is elsewhere and is stepped over, 6 is not ours.
-    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), WorkerColumn.nth(&workers, &now, tab, 0));
-    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 3), WorkerColumn.nth(&workers, &now, tab, 1));
-    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 4), WorkerColumn.nth(&workers, &now, tab, 2));
-    // Not that many: an answer, not a guess.
-    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), WorkerColumn.nth(&workers, &now, tab, 3));
-    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), WorkerColumn.nth(&.{}, &now, tab, 0));
-    // It counts the same ones `of` does.
-    try testing.expectEqual(@as(u32, 3), WorkerColumn.of(&workers, &now, tab).count);
-}
-
-test "only this supervisor's open workers in its tab are counted" {
-    const testing = std.testing;
-    const tab: ?u64 = 7;
-
-    // The supervisor (1), the person's own terminal (5), two workers (2, 3).
-    const now = [_]Seen{
-        .{ .id = 1, .tab = 7 },
-        .{ .id = 5, .tab = 7 },
-        .{ .id = 2, .tab = 7 },
-        .{ .id = 3, .tab = 7 },
-    };
-    const two = WorkerColumn.of(&.{ 2, 3 }, &now, tab);
-    try testing.expectEqual(@as(u32, 2), two.count);
-    try testing.expect(two.last_here);
-
-    // None of ours yet: the person's terminal is not counted.
-    const none = WorkerColumn.of(&.{}, &now, tab);
-    try testing.expectEqual(@as(u32, 0), none.count);
-    try testing.expect(!none.last_here);
-
-    // The newest (9) was closed; the others still count.
-    const gone = WorkerColumn.of(&.{ 2, 3, 9 }, &now, tab);
-    try testing.expectEqual(@as(u32, 2), gone.count);
-    try testing.expect(!gone.last_here);
-
-    // A worker the person moved to another tab is not in this column.
-    const moved = [_]Seen{
-        .{ .id = 1, .tab = 7 },
-        .{ .id = 2, .tab = 8 },
-        .{ .id = 3, .tab = 7 },
-    };
-    const one = WorkerColumn.of(&.{ 2, 3 }, &moved, tab);
-    try testing.expectEqual(@as(u32, 1), one.count);
-    try testing.expect(one.last_here);
-
+    // The newest (5) is elsewhere, 9 was closed: 3 is the stack.
+    const stack = WorkerColumn.lastHere(&.{ 2, 3, 5, 9 }, &now, tab);
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 3), stack);
+    // None of ours here: the person's pane (6) is never one.
+    const none = WorkerColumn.lastHere(&.{ 5, 9 }, &now, tab);
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), none);
+    const empty = WorkerColumn.lastHere(&.{}, &now, tab);
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), empty);
+    // The supervisor's own tab moved (rule 4): ours are in the old one.
+    const moved = WorkerColumn.lastHere(&.{ 2, 3 }, &now, 8);
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, null), moved);
     // An apprt that says nothing about tabs: every open worker counts.
     const blind = [_]Seen{ .{ .id = 1, .tab = null }, .{ .id = 2, .tab = null } };
-    try testing.expectEqual(@as(u32, 1), WorkerColumn.of(&.{2}, &blind, null).count);
+    const unknown = WorkerColumn.lastHere(&.{2}, &blind, null);
+    try testing.expectEqual(@as(?poltergeistpkg.Bus.Id, 2), unknown);
 }
 
-test "a count the queue has not reached yet is not placed on" {
-    const testing = std.testing;
-
-    // **Every one of these would be a split if the count could be trusted.**
-    // It cannot: the apprt performs the previous split on its own thread, so
-    // two calls close together are both answered with the number from before
-    // the first ran. Measured on the real machine as a cap of four back to
-    // back, and three when the calls were three seconds apart.
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(1, 0, false, true));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(2, 1, true, true));
-    try testing.expectEqual(WorkerPlacement.new_tab, WorkerPlacement.decide(3, 2, true, true));
-
-    // And the same numbers, once the terminal has appeared, place as before:
-    // the rule is about not knowing, not about being cautious.
-    try testing.expectEqual(
-        WorkerPlacement.beside_supervisor,
-        WorkerPlacement.decide(1, 0, false, false),
-    );
-    try testing.expectEqual(
-        WorkerPlacement.below_last_worker,
-        WorkerPlacement.decide(2, 1, true, false),
-    );
-}
-
-/// Where a supervisor's next worker terminal goes, or `null` for "a new tab".
-///
-/// **The budget lives here, in one place, and nowhere else.** Neither apprt
-/// holds any of these numbers: they answer one factual question -- how many
-/// terminals share this tab -- and this decides what that means. A second
-/// copy on either side would let the two platforms lay panes out differently
-/// while every log line and every reply read the same.
-///
-/// The shape being built is the supervisor on the left with its workers in a
-/// column beside it. **Only the first three workers are reachable today**:
-/// the fourth needs a new column beside the whole existing one, which is
-/// splitting a subtree, and `new_split` can only split a leaf. Everything
-/// past that falls back to a tab and says so.
-/// Where `poltergeistPlaceWorker` says the next worker goes: a split, or a
-/// tab and the reason -- the reason travels to the caller in the reply
-/// (issue #17), not only to the log.
+/// Where `poltergeistPlaceWorker` says the next worker goes: a split, onto
+/// a stack, a wait, or a tab and the reason -- the reason travels to the
+/// caller in the reply (issue #17), not only to the log.
 const WorkerSpot = union(enum) {
     split: Split,
+    /// `poltergeist_new_stacked` on this worker's surface (task 1797).
+    stack: *Surface,
+    /// A worker this supervisor asked for has not appeared yet.
+    wait,
     tab: poltergeistpkg.rpc.TabWhy,
 
     const Split = struct { target: *Surface, direction: apprt.action.SplitDirection };
@@ -9437,12 +9447,16 @@ fn poltergeistRecordWorker(self: *App, by: poltergeistpkg.Bus.Id, id: poltergeis
     entry.value_ptr.append(self.alloc, id) catch {};
 }
 
+/// Where `by`'s next worker goes, by `WorkerPlacement`. `waited_out` is a
+/// request that has waited `worker_wait_ms` for the worker before it: it
+/// is placed as if that one were not coming.
 fn poltergeistPlaceWorker(
     self: *App,
     alloc: Allocator,
     rt_app: *apprt.App,
     surface: *Surface,
     by: poltergeistpkg.Bus.Id,
+    waited_out: bool,
 ) Allocator.Error!WorkerSpot {
     // **The question only the apprt can answer.** Zero comes back when it did
     // not answer at all -- no apprt writes zero, because a tab holding this
@@ -9454,96 +9468,45 @@ fn poltergeistPlaceWorker(
         .{ .count = &panes },
     ) catch {};
 
-    // **The pane to grow downwards is the last worker, by identity.**
-    //
-    // Not "the second pane" or "the one after the supervisor": an ordinal
-    // still names something after the pane it counted has gone, and the wrong
-    // placement it produces looks exactly like the right one. A `Surface.id`
-    // can be looked up, and a lookup that fails is an answer.
+    if (waited_out) if (self.poltergeist_pending_worker) |*p| if (p.by == by) {
+        // ⚠️ **Said, and placed: never dropped** (Q3).
+        log.info(
+            "poltergeist: waited {d}ms for the worker asked for before this one and it has not " ++
+                "appeared; this one is placed without it",
+            .{worker_wait_ms},
+        );
+        p.deinit(self.alloc);
+        self.poltergeist_pending_worker = null;
+    };
+
     const workers: []const poltergeistpkg.Bus.Id = if (self.poltergeist_workers.get(by)) |l| l.items else &.{};
     const now = try self.poltergeistSeen(alloc);
     defer alloc.free(now);
-    const column = WorkerColumn.of(workers, now, poltergeistTabOf(surface));
-    const target_alive: ?*Surface = if (column.last_here) self.findSurfaceByID(workers[workers.len - 1]) else null;
-
+    const last = WorkerColumn.lastHere(workers, now, poltergeistTabOf(surface));
     const unsettled = if (self.poltergeist_pending_worker) |p| p.by == by else false;
 
-    switch (WorkerPlacement.decide(panes, column.count, target_alive != null, unsettled)) {
+    switch (WorkerPlacement.decide(panes, last, unsettled)) {
         .beside_supervisor => {
             // None of ours is left in this tab, so whatever the list still
             // names is closed or elsewhere: the new worker starts it again.
             if (self.poltergeist_workers.getPtr(by)) |l| l.clearRetainingCapacity();
-            // Nothing is rearranged, so no surface is rebuilt.
             return .{ .split = .{ .target = surface, .direction = .right } };
         },
-
-        .below_last_worker => return .{ .split = .{ .target = target_alive.?, .direction = .down } },
-
-        .beside_worker => {
-            // By identity, like the pane the column grows from: the one it
-            // stands beside is looked up, and a lookup that fails is an
-            // answer.
-            const beside = WorkerColumn.nth(workers, now, poltergeistTabOf(surface), column.count - WorkerPlacement.column);
-            const target = if (beside) |id| self.findSurfaceByID(id) else null;
-            if (target) |t| return .{ .split = .{ .target = t, .direction = .right } };
-            log.info(
-                "poltergeist: falling back to a tab -- the worker number {d} would stand " ++
-                    "beside has gone since it was counted",
-                .{column.count + 1},
-            );
-            return .{ .tab = .last_worker_gone };
+        .onto_worker => |id| {
+            // In `now` a moment ago, so it is there; a lookup that fails is
+            // still an answer.
+            if (self.findSurfaceByID(id)) |t| return .{ .stack = t };
+            if (self.poltergeist_workers.getPtr(by)) |l| l.clearRetainingCapacity();
+            return .{ .split = .{ .target = surface, .direction = .right } };
         },
-
+        .wait => return .wait,
         .new_tab => {
-            // ⚠️ **Each of these is a fallback, and the log says which.**
-            // Read as the design rather than as unfinished work, they would
-            // stop anybody looking for the missing half.
-            if (unsettled) {
-                log.info(
-                    "poltergeist: falling back to a tab -- the last worker this supervisor " ++
-                        "asked for has not appeared yet, so how full its tab is cannot be " ++
-                        "known; placing on the number from before it would use the same " ++
-                        "room twice",
-                    .{},
-                );
-                return .{ .tab = .last_worker_pending };
-            } else if (panes == 0) {
-                log.info(
-                    "poltergeist: falling back to a tab -- this apprt does not say how " ++
-                        "full a tab is",
-                    .{},
-                );
-                return .{ .tab = .no_pane_count };
-            } else if (column.count >= WorkerPlacement.column * WorkerPlacement.columns) {
-                log.info(
-                    // ⚠️ **The ordinal used to be the word "fourth" while the
-                    // count beside it was live**, so a stale count read as
-                    // "4 workers already here, and a fourth would need…" --
-                    // a sentence arguing with itself, and the only thing in
-                    // the log that could have shown the count was wrong.
-                    // Both halves say the same thing now.
-                    "poltergeist: falling back to a tab -- {d} of this supervisor's workers " ++
-                        "already here ({d} terminals in the tab), both columns are full, and " ++
-                        "number {d} would have to be stacked with them (not built yet)",
-                    .{ column.count, panes, column.count + 1 },
-                );
-                return .{ .tab = .column_full };
-            } else {
-                // The last worker has been closed, or moved out of this tab,
-                // while others of ours are still here. **Appending, not
-                // filling the hole**: which pane is a "hole" depends on what
-                // the person did after it closed, so the same sequence would
-                // stop producing the same layout -- and a criterion that reads
-                // the shape could no longer be stated. The gap stays until
-                // something rearranges the tree, and the column starts again
-                // once none of ours is left in it.
-                log.info(
-                    "poltergeist: the last worker is gone; falling back to a tab rather " ++
-                        "than guessing which pane replaced it",
-                    .{},
-                );
-                return .{ .tab = .last_worker_gone };
-            }
+            log.info(
+                "poltergeist: falling back to a tab -- this apprt does not say how " ++
+                    "full a tab is",
+                .{},
+            );
+            return .{ .tab = .no_pane_count };
         },
     }
 }
@@ -9768,10 +9731,12 @@ fn poltergeistOpenTerminal(
 
 /// `poltergeistOpenTerminal`, with the tab it goes in named by `beside`
 /// rather than by the caller (task 1571). With `beside`, the terminal is a
-/// pane in that tab or nothing: **never a tab**, because a tab is the
-/// overflow the parameter exists to prevent -- the budget's answer is still
-/// asked, and where it would have opened a tab the pane goes beside
-/// `beside` itself.
+/// pane split off `beside`, to its right, or nothing: **never a tab**,
+/// because a tab is the overflow the parameter exists to prevent.
+///
+/// `error.WorkerPending` is a request parked to wait for the worker before
+/// it (task 1797, Q3): nothing is answered, and the request is dispatched
+/// again.
 fn openTerminalAt(
     self: *App,
     alloc: Allocator,
@@ -9781,11 +9746,6 @@ fn openTerminalAt(
     beside: ?*Surface,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const surface = beside orelse self.findSurfaceByID(by) orelse return error.UnknownTerminal;
-
-    // A place that has a name and is not built: refused, and said, rather
-    // than read as `auto` -- a caller that asked for a stack and got a
-    // split would have no way to tell.
-    if (place == .stack) return error.NotBuiltYet;
 
     // Checked here so a directory that is not there is refused rather than
     // quietly ignored. The apprt logs and carries on -- which is right for a
@@ -9825,44 +9785,47 @@ fn openTerminalAt(
     // **Where it goes, decided here and nowhere else.**
     //
     // The caller says it wants a terminal; it never says where. A position in
-    // the request would be a budget every agent recomputes, and six agents
-    // recomputing one budget get six answers whose wrong ones read exactly
-    // like the right ones. The two apprts answer one factual question -- how
-    // full is this tab -- and hold none of the numbers below.
+    // the request would be a rule every agent recomputes, and six agents
+    // recomputing one rule get six answers whose wrong ones read exactly
+    // like the right ones. The two apprts answer factual questions -- how
+    // full is this tab, which tab is this in -- and hold none of the rule.
     const placed: poltergeistpkg.rpc.Placed = placed: {
         // ⚠️ **`tab` is a guarantee, not a preference.** It exists so a
         // caller can say "not in with the others", and a request that quietly
         // became a split would leave it no way to tell and no other way to
-        // ask. So it never reaches the budget at all.
+        // ask. So it never reaches the placement at all.
         if (place == .tab) break :placed .{ .tab = .asked };
 
-        const where = placed_where: switch (try self.poltergeistPlaceWorker(alloc, rt_app, surface, by)) {
-            // **Not out of a pane the user keeps for their own commands**
-            // (task 1699): a split takes half of its room. `beside` never
-            // gets here for one -- the rpc refused it by name.
-            .split => |w| if (beside == null and self.poltergeist.workersOf(w.target.id) == .refused) {
-                log.info(
-                    "poltergeist: the pane a worker would be split out of ({x}) is kept for the user's commands; " ++
-                        "the terminal goes into a tab",
-                    .{w.target.id},
-                );
-                break :placed .{ .tab = .workers_refused };
-            } else w,
+        // `beside` names the tab, and `here` the caller's: a pane split off
+        // that terminal, to its right (task 1797 leaves both as they were
+        // meant -- "a pane of its own here", for what is not a worker of
+        // the stack). `auto` and `stack` are the supervisor's stack.
+        const first: WorkerSpot = if (beside) |b|
+            .{ .split = .{ .target = b, .direction = .right } }
+        else if (place == .here)
+            .{ .split = .{ .target = surface, .direction = .right } }
+        else spot: {
+            const now_ms = self.poltergeistElapsedMs();
+            const deadline = self.takeWorkerWait() orelse now_ms +| worker_wait_ms;
+            const spot = try self.poltergeistPlaceWorker(alloc, rt_app, surface, by, now_ms >= deadline);
+            if (spot != .wait) break :spot spot;
+            // **Parked, not refused and not dropped** (Q3): dispatched again
+            // every `worker_wait_look_ms` until the worker before it is
+            // there, and placed without it at the deadline.
+            if (try self.parkWorkerWait(deadline)) return error.WorkerPending;
+            break :spot try self.poltergeistPlaceWorker(alloc, rt_app, surface, by, true);
+        };
+
+        // Asked before the split or the stack: the tab its terminal will
+        // appear in, and the only tab attribution may find it in (task 881).
+        var made_in: ?u64 = null;
+        const how: enum { split, stack } = spot: switch (first) {
             .tab => |why| {
-                if (beside) |b| {
-                    log.info(
-                        "polter: `beside` was asked for and the budget said a tab ({t}); " ++
-                            "splitting the terminal it names instead",
-                        .{why},
-                    );
-                    break :placed_where WorkerSpot.Split{ .target = b, .direction = .right };
-                }
-                // **`here` was asked for and did not happen, and that is worth a
-                // second line.** For `auto` a tab is one of the normal answers;
-                // for `here` it is the caller not getting what it named, and the
-                // reason it did not is already on the line above this one. A
-                // fallback nobody distinguished would read as `here` having
-                // worked.
+                // **`here` was asked for and did not happen, and that is worth
+                // a second line.** For `auto` a tab is one of the normal
+                // answers; for `here` it is the caller not getting what it
+                // named. A fallback nobody distinguished would read as `here`
+                // having worked.
                 if (place == .here) log.info(
                     "poltergeist: `here` was asked for and could not be given; " ++
                         "the terminal went into a tab -- see the line above for why",
@@ -9870,67 +9833,112 @@ fn openTerminalAt(
                 );
                 break :placed .{ .tab = why };
             },
-        };
 
-        // Asked before the split: the tab its terminal will appear in, and
-        // the only tab attribution may find it in (task 881).
-        const target_tab = poltergeistTabOf(where.target);
-
-        var result: apprt.action.NewSplit.Result = .unsupported;
-        _ = rt_app.performAction(
-            .{ .surface = where.target },
-            .new_split,
-            .{
-                .direction = where.direction,
-                .working_directory = dir_z,
-                .result = &result,
+            // Only once the worker before it has been given up on, which
+            // clears it: said, and placed beside the supervisor.
+            .wait => {
+                log.warn("poltergeist: the placement still waited after its wait ran out; splitting beside the supervisor", .{});
+                continue :spot .{ .split = .{ .target = surface, .direction = .right } };
             },
-        ) catch {
-            if (beside != null) return error.NoRoomBeside;
-            break :placed .{ .tab = .split_failed };
+
+            .stack => |target| {
+                // **Not into a pane the user keeps for their own commands**
+                // (task 1699): a stack would cover it.
+                if (self.poltergeist.workersOf(target.id) == .refused) {
+                    log.info(
+                        "poltergeist: the worker pane a worker would be stacked onto ({x}) is kept for " ++
+                            "the user's commands; the terminal goes beside the supervisor",
+                        .{target.id},
+                    );
+                    continue :spot .{ .split = .{ .target = surface, .direction = .right } };
+                }
+                made_in = poltergeistTabOf(target);
+                var result: apprt.action.PoltergeistNewStacked.Result = .unsupported;
+                _ = rt_app.performAction(
+                    .{ .surface = target },
+                    .poltergeist_new_stacked,
+                    .{ .working_directory = dir_z, .result = &result },
+                ) catch {};
+                if (result == .will_stack) break :spot .stack;
+                // An apprt with no stacks (GTK), or one that could not take it
+                // now: a split, as before stacks, and said.
+                log.info(
+                    "poltergeist: the apprt would not stack a worker onto {x}; splitting beside the supervisor",
+                    .{target.id},
+                );
+                continue :spot .{ .split = .{ .target = surface, .direction = .right } };
+            },
+
+            .split => |w| {
+                // **Not out of a pane the user keeps for their own commands**
+                // (task 1699): a split takes half of its room. `beside` never
+                // gets here for one -- the rpc refused it by name.
+                if (beside == null and self.poltergeist.workersOf(w.target.id) == .refused) {
+                    log.info(
+                        "poltergeist: the pane a worker would be split out of ({x}) is kept for the user's commands; " ++
+                            "the terminal goes into a tab",
+                        .{w.target.id},
+                    );
+                    break :placed .{ .tab = .workers_refused };
+                }
+                made_in = poltergeistTabOf(w.target);
+                var result: apprt.action.NewSplit.Result = .unsupported;
+                _ = rt_app.performAction(
+                    .{ .surface = w.target },
+                    .new_split,
+                    .{
+                        .direction = w.direction,
+                        .working_directory = dir_z,
+                        .result = &result,
+                    },
+                ) catch {
+                    if (beside != null) return error.NoRoomBeside;
+                    break :placed .{ .tab = .split_failed };
+                };
+                if (result == .will_split) break :spot .split;
+                // `beside` is a pane or nothing: the fallback below is the tab
+                // it exists to prevent.
+                if (beside != null) return error.NoRoomBeside;
+                // ⚠️ **A live path, not a defensive one.** GTK cannot start a
+                // split in a named directory, so it refuses rather than opening
+                // one in the wrong place; every worker opened on Linux comes
+                // through here.
+                log.info(
+                    "poltergeist: falling back to a tab -- this apprt would not split into {s}",
+                    .{if (dir_z.len > 0) dir_z else "the inherited directory"},
+                );
+                break :placed .{ .tab = .split_refused };
+            },
         };
 
-        if (result == .will_split) {
-            // **Attributed now if its terminal is already here, remembered as
-            // a question if not.** `will_split` is the apprt saying it
-            // *will*: the Windows host queues the split and returns before
-            // it has happened, while macOS makes it synchronously -- the
-            // notification it posts is delivered before `performAction`
-            // returns. Both are handled by `PendingWorker.afterSplit`.
-            const now = try self.poltergeistSeen(alloc);
-            defer alloc.free(now);
-            switch (try PendingWorker.afterSplit(self.alloc, by, target_tab, &before, now, &.{})) {
-                .appeared => |id| self.poltergeistRecordWorker(by, id),
-                .pending => |p| {
-                    if (self.poltergeist_pending_worker) |*old_pending| old_pending.deinit(self.alloc);
-                    self.poltergeist_pending_worker = p;
-                },
-            }
+        // **Attributed now if its terminal is already here, remembered as a
+        // question if not.** `will_split` and `will_stack` are the apprt
+        // saying it *will*: the Windows host queues the work and returns
+        // before it has happened, while macOS makes it synchronously -- the
+        // notification it posts is delivered before `performAction` returns.
+        // Both are handled by `PendingWorker.afterSplit`.
+        const now = try self.poltergeistSeen(alloc);
+        defer alloc.free(now);
+        switch (try PendingWorker.afterSplit(self.alloc, by, self.poltergeistElapsedMs(), made_in, &before, now, &.{})) {
+            .appeared => |id| self.poltergeistRecordWorker(by, id),
+            .pending => |p| {
+                if (self.poltergeist_pending_worker) |*old_pending| old_pending.deinit(self.alloc);
+                self.poltergeist_pending_worker = p;
+            },
         }
-
-        if (result != .will_split) {
-            // `beside` is a pane or nothing: the fallback below is the tab
-            // it exists to prevent.
-            if (beside != null) return error.NoRoomBeside;
-            // ⚠️ **A live path, not a defensive one.** GTK cannot start a
-            // split in a named directory, so it refuses rather than opening
-            // one in the wrong place; every worker opened on Linux comes
-            // through here.
-            log.info(
-                "poltergeist: falling back to a tab -- this apprt would not split into {s}",
-                .{if (dir_z.len > 0) dir_z else "the inherited directory"},
-            );
-            break :placed .{ .tab = .split_refused };
-        }
-        break :placed .split;
+        break :placed switch (how) {
+            .split => .split,
+            .stack => .stack,
+        };
     };
 
     if (placed != .split) {
         var answer: apprt.action.NewTab.Result = .unanswered;
+        // An agent asked for it: in the background (task 1823).
         const performed = rt_app.performAction(
             .{ .surface = surface },
             .new_tab,
-            .{ .working_directory = dir_z, .result = &answer },
+            .{ .working_directory = dir_z, .result = &answer, .by = .core },
         ) catch false;
         try tabWasAsked(performed, answer);
     }
@@ -10504,6 +10512,17 @@ fn chatAdd(
     var buf: [2048]u8 = undefined;
     var fixed: std.heap.FixedBufferAllocator = .init(&buf);
     const footing = self.footingOf(fixed.allocator(), id);
+
+    // A project has one supervisor (task 1797): a second one is refused
+    // here, the one place every add goes through.
+    {
+        var arena: std.heap.ArenaAllocator = .init(self.alloc);
+        defer arena.deinit();
+        if (poltergeistpkg.ControlRoom.projectSupervisorBesides(arena.allocator(), &self.poltergeist, &self.chat, group, id)) |other| {
+            log.info("poltergeist: not adding supervisor {x} to {s}: its project's supervisor is {x}", .{ id, group, other });
+            return error.ProjectHasSupervisor;
+        }
+    }
 
     try self.chat.add(group, id, history, footing);
     self.noteJoined(group, id, footing);

@@ -378,6 +378,11 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .window = (try optionalIdParam(params, "window")) orelse 0,
         } },
 
+        .terminal_stack => .{ .terminal_stack = .{
+            .id = try requireId(params),
+            .onto = (try optionalIdParam(params, "onto")) orelse return error.BadParams,
+        } },
+
         .terminal_answer_prompt => .{
             .terminal_answer_prompt = .{
                 .id = try requireId(params),
@@ -1585,7 +1590,7 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 switch (placed) {
                     // Its terminal does not exist yet, which is why there is
                     // no `id` -- said, rather than left to be inferred.
-                    .split => {
+                    .split, .stack => {
                         try s.objectField("pending");
                         try s.write(true);
                     },
@@ -3234,7 +3239,7 @@ test "a worker pane passed over is named in the reply, with why (#1498)" {
         try writeResponse(&out.writer, .{ .opened = .{
             .id = null,
             .watch = .unknown,
-            .placed = .{ .tab = .column_full },
+            .placed = .{ .tab = .no_pane_count },
             .passed_over = .{ .id = 0x2a, .why = .agent },
         } });
         const text = out.written();
@@ -3494,6 +3499,20 @@ test "tidying: terminal_layout takes id, or into, and not both and not neither" 
     ));
     try testing.expectError(error.BadParams, parse(
         \\{"method":"terminal_layout","params":{"into":{"new_window":true,"new_tab_beside":"0x2a"},"layout":{"pane":"0x2a"}}}
+    ));
+}
+
+test "1797: terminal_stack is read, and needs both terminals" {
+    {
+        var p = try parse(
+            \\{"method":"terminal_stack","params":{"id":"0x2a","onto":"0x2b"}}
+        );
+        defer p.deinit();
+        try testing.expectEqual(@as(Bus.Id, 0x2a), p.value.terminal_stack.id);
+        try testing.expectEqual(@as(Bus.Id, 0x2b), p.value.terminal_stack.onto);
+    }
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"terminal_stack","params":{"id":"0x2a"}}
     ));
 }
 

@@ -1196,12 +1196,25 @@ fn a_project_the_core_ordered_opens_behind_the_control_room_while_that_is_in_fro
     }
 }
 
+/// Task 1823: a tab made behind does not touch the keyboard at all.
+#[test]
+fn a_tab_made_behind_takes_the_keyboard_from_nobody() {
+    use crate::rules::new_tab_takes_keyboard;
+    let behind = new_tab_takes_keyboard(true);
+    assert!(!behind);
+    let in_front = new_tab_takes_keyboard(false);
+    assert!(in_front);
+}
+
 #[test]
 fn where_a_tab_the_core_asked_for_goes() {
     use crate::rules::{new_tab, Home, NewTab};
     // (lent, has a home)
     assert_eq!(new_tab(Some((true, true)), false, true, true, true), NewTab::Behind(Home::Askers));
-    assert_eq!(new_tab(Some((false, true)), false, true, true, true), NewTab::InFront(Home::Askers));
+    // Task 1823: the core's, from a terminal in its own tab, beside it and
+    // behind; the person's comes in front.
+    assert_eq!(new_tab(Some((false, true)), false, true, true, true), NewTab::Behind(Home::Askers));
+    assert_eq!(new_tab(Some((false, true)), true, true, true, true), NewTab::InFront(Home::Askers));
     // Nothing holds it: not opened, whatever else is so.
     for lent in [false, true] {
         for facts in [(false, false, false), (true, true, true)] {
@@ -1213,7 +1226,8 @@ fn where_a_tab_the_core_asked_for_goes() {
     assert_eq!(new_tab(None, false, true, true, false), NewTab::Behind(Home::ControlRooms));
     // Alone in its window with a terminal window elsewhere: still its own.
     assert_eq!(new_tab(None, false, true, false, true), NewTab::Behind(Home::ControlRooms));
-    assert_eq!(new_tab(None, false, false, true, true), NewTab::InFront(Home::Frontmost));
+    // Not in front: the terminal window used last, behind (task 1823).
+    assert_eq!(new_tab(None, false, false, true, true), NewTab::Behind(Home::Frontmost));
     assert_eq!(new_tab(None, false, false, false, false), NewTab::OwnWindow);
     // The control room alone on screen: its own window takes the tab.
     assert_eq!(new_tab(None, false, true, false, false), NewTab::Behind(Home::ControlRooms));
@@ -1227,7 +1241,8 @@ fn where_a_tab_the_core_asked_for_goes() {
         for b in [false, true] {
             for c in [false, true] {
                 assert_eq!(new_tab(Some((true, true)), false, a, b, c), NewTab::Behind(Home::Askers));
-                assert_eq!(new_tab(Some((false, true)), false, a, b, c), NewTab::InFront(Home::Askers));
+                assert_eq!(new_tab(Some((false, true)), false, a, b, c), NewTab::Behind(Home::Askers));
+                assert_eq!(new_tab(Some((false, true)), true, a, b, c), NewTab::InFront(Home::Askers));
             }
         }
     }

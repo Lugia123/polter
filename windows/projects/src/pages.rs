@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use polter_projectfile::{leaves, leaves_mut, Agent, Frame, PaneColor, SavedLeaf, SavedNode, Snapshot, Tab, Window, Workers};
+use polter_projectfile::{leaves, leaves_mut, Agent, Frame, PaneColor, SavedLeaf, SavedNode, Snapshot, Tab, Who, Window, Workers};
 
 /// A page's name for as long as the host has the project in hand.
 pub type PageId = usize;
@@ -91,6 +91,11 @@ pub struct Known {
     pub cwd: String,
     /// Who was in it; `Unknown` when the file did not say.
     pub agent: Agent,
+    /// Whether the project's supervisor opened it as a worker. Once it was,
+    /// it stays so: the agent leaving does not undo it (#1495), and a save
+    /// that cannot tell -- no supervisor in the project right now -- is not
+    /// a "no" (`keeping_what_the_file_knew`).
+    pub by_supervisor: bool,
     /// The four marks of format 3, as the file has them: a file always
     /// says, so these are never "not known" (a format 2 file says the
     /// defaults, and its supervisor's pane is the seat).
@@ -400,6 +405,7 @@ impl Pages {
                     known.entry(leaf.scrollback.clone()).or_insert_with(|| Known {
                         cwd: leaf.cwd.clone(),
                         agent: leaf.agent.clone(),
+                        by_supervisor: leaf.by_supervisor,
                         supervisor_seat: leaf.supervisor_seat.unwrap_or(false),
                         color: leaf.color.unwrap_or(PaneColor::None),
                         workers: leaf.workers.unwrap_or(Workers::Allowed),
@@ -460,6 +466,87 @@ fn one_seat(asked: &[Live], told: &mut [Live]) {
     }
 }
 
+/// Who is in a pane, from the core's three answers (the snapshot's
+/// `who`: `is` as `WhoIs::name` spells it, and the three words beside it),
+/// as a save writes it (task 1800). macOS's `ProjectLink.pane`, the same
+/// mapping: the core's `unknown` is the file's `unknown` -- not known, which
+/// the file's own answer is then kept over (`keeping_what_the_file_knew`)
+/// -- and an agent is never written as the supervisor here: that is the
+/// file's mark, kept by `agent_kept`. A word this build does not know is
+/// `unknown` too: nothing is written over what the file says on a guess.
+pub fn agent_said(is: &str, role: Option<&str>, cli: Option<&str>, session: Option<&str>) -> Agent {
+    match is {
+        "none" => Agent::None,
+        "agent" => Agent::Agent(Who {
+            role: role.unwrap_or_default().to_string(),
+            cli: cli.unwrap_or_default().to_string(),
+            session: session.unwrap_or_default().to_string(),
+            supervisor: false,
+        }),
+        _ => Agent::Unknown,
+    }
+}
+
+/// Write who is in each pane of a tree being saved (task 1800): `agent_of`
+/// asked of the terminal behind each leaf, in the order `leaves_mut` walks
+/// them. A leaf with no terminal yet stays as the capture left it
+/// (`Unknown`).
+pub fn fill_agents(root: &mut SavedNode, terminals: &[Option<String>], agent_of: &dyn Fn(&str) -> Agent) {
+    for (leaf, terminal) in leaves_mut(root).into_iter().zip(terminals) {
+        if let Some(terminal) = terminal {
+            leaf.agent = agent_of(terminal);
+        }
+    }
+}
+
+/// Who a save writes into a pane: what it was told `now`, except where that
+/// would lose what the file `was` (macOS's `ProjectPages.agent(now:was:)`,
+/// case for case).
+///
+/// - Not known now: the file's answer stands.
+/// - **The supervisor's pane** -- `seat`, the pane's `supervisor_seat` as
+///   this save writes it (task 1794; never the agent's own `supervisor`
+///   flag, which a file macOS wrote leaves `false` on the very pane it
+///   seats): `none` or not known keeps the file's answer, and an agent now
+///   fills in the words it has over the file's. The agent's flag follows
+///   the seat, as `Pages::mark_supervisor` writes it, for a reader that
+///   still looks there.
+/// - Anywhere else, an answer replaces what was there: `none` is a pane
+///   whose agent has gone, which is so.
+fn agent_kept(now: &Agent, was: &Agent, seat: bool) -> Agent {
+    if !seat {
+        return if *now == Agent::Unknown { was.clone() } else { now.clone() };
+    }
+    let Agent::Agent(said) = now else { return was.clone() };
+    let (role, cli, session) = match was {
+        Agent::Agent(chief) => (chief.role.as_str(), chief.cli.as_str(), chief.session.as_str()),
+        _ => ("", "", ""),
+    };
+    let pick = |n: &str, w: &str| if n.is_empty() { w.to_string() } else { n.to_string() };
+    Agent::Agent(Who { role: pick(&said.role, role), cli: pick(&said.cli, cli), session: pick(&said.session, session), supervisor: true })
+}
+
+/// Mark the panes of a tree being saved that the project's supervisor
+/// opened as its workers (`by_supervisor`, #1495, task 1799): a pane is one
+/// when the core says its terminal was opened as a worker of `supervisor`,
+/// the terminal in the project's supervisor pane now (the snapshot's
+/// `who.worker_of`). macOS's `ProjectLink.pane`, the same rule.
+///
+/// `terminals` is the terminal behind each leaf, in the order `leaves_mut`
+/// walks them; `None` for a pane that has none yet. With no `supervisor` --
+/// the project has none, or its pane is not open -- nothing can be told,
+/// and nothing is marked here: the file's mark is kept by
+/// `keeping_what_the_file_knew`, not written over with a "no".
+pub fn mark_workers(root: &mut SavedNode, terminals: &[Option<String>], supervisor: Option<&str>, worker_of: &dyn Fn(&str) -> Option<String>) {
+    let Some(supervisor) = supervisor else { return };
+    for (leaf, terminal) in leaves_mut(root).into_iter().zip(terminals) {
+        let Some(terminal) = terminal else { continue };
+        if worker_of(terminal).as_deref() == Some(supervisor) {
+            leaf.by_supervisor = true;
+        }
+    }
+}
+
 /// `node` with what a save could not tell about a pane filled in from what
 /// the file said of it, by snapshot name.
 ///
@@ -489,10 +576,9 @@ pub fn keeping_what_the_file_knew(node: &SavedNode, known: &BTreeMap<String, Kno
         if leaf.cwd.is_empty() {
             leaf.cwd = was.cwd.clone();
         }
-        if leaf.agent == Agent::Unknown {
-            leaf.agent = was.agent.clone();
-        }
+        leaf.by_supervisor = leaf.by_supervisor || was.by_supervisor;
         leaf.supervisor_seat = leaf.supervisor_seat.or(Some(was.supervisor_seat));
+        leaf.agent = agent_kept(&leaf.agent, &was.agent, leaf.supervisor_seat == Some(true));
         leaf.color = leaf.color.or(Some(was.color));
         leaf.workers = leaf.workers.or(Some(was.workers));
         leaf.shielded = leaf.shielded.or(Some(was.shielded));

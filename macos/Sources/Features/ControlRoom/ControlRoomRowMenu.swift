@@ -68,6 +68,7 @@ enum ControlRoomRowMenu {
         case start
         case reportProgress = "report_progress"
         case closeIdleWorkers = "close_idle_workers"
+        case tidyWorkers = "tidy_workers"
         case reveal
         case copySupervisorID = "copy_supervisor_id"
         case pin
@@ -121,7 +122,7 @@ enum ControlRoomRowMenu {
             }
             groups = [
                 go,
-                has ? [.reportProgress, .closeIdleWorkers] : [],
+                has ? [.reportProgress, .closeIdleWorkers, .tidyWorkers] : [],
                 has ? [.reveal, .copySupervisorID] : [.reveal],
                 [state.pinned ? .unpin : .pin, state.muted ? .unmute : .mute],
                 [.rename, .editNote, .project],

@@ -47,6 +47,7 @@ enum ControlRoomRowMenuItems {
         case "start": return String(localized: "Start Supervisor…", comment: "总控台：群行右键菜单，没有总管、也没有上次的会话时")
         case "report_progress": return String(localized: "Ask the Supervisor to Report Progress", comment: "总控台：群行右键菜单，请总管汇报进度")
         case "close_idle_workers": return String(localized: "Ask the Supervisor to Close Idle Workers", comment: "总控台：群行右键菜单，让总管关闭闲置 worker")
+        case "tidy_workers": return String(localized: "Ask the Supervisor to Tidy Its Workers", comment: "总控台：群行右键菜单，让总管把 worker 收进它右边那一摞（#1797）")
         case "reveal": return String(localized: "Show in Finder", comment: "总控台：群行右键菜单，在访达中显示这个群的记录")
         case "copy_supervisor_id": return String(localized: "Copy Supervisor Terminal ID", comment: "总控台：群行右键菜单，复制总管终端 ID")
         case "pin": return String(localized: "Pin", comment: "总控台：群行右键菜单，置顶")
@@ -76,6 +77,7 @@ enum ControlRoomRowMenuItems {
         case "start_new", "start": return "play"
         case "report_progress": return "text.bubble"
         case "close_idle_workers": return "moon"
+        case "tidy_workers": return "square.stack"
         case "reveal": return "folder"
         case "copy_supervisor_id": return "doc.on.doc"
         case "pin": return "pin"

@@ -96,7 +96,7 @@ pub fn entries(state: State) -> Vec<Entry> {
             Sup::None if state.resumable => vec![item("start_resume"), item("start_new")],
             Sup::None => vec![item("start")],
         };
-        let ask: Vec<Entry> = if has { vec![item("report_progress"), item("close_idle_workers")] } else { Vec::new() };
+        let ask: Vec<Entry> = if has { vec![item("report_progress"), item("close_idle_workers"), item("tidy_workers")] } else { Vec::new() };
         let find: Vec<Entry> = if has { vec![item("reveal"), item("copy_supervisor_id")] } else { vec![item("reveal")] };
         let stand = vec![item(if state.pinned { "unpin" } else { "pin" }), if state.muted { item("unmute") } else { opens("mute") }];
         let change = vec![item("rename"), item("edit_note"), opens("project")];
@@ -205,6 +205,7 @@ pub fn label(id: &str) -> Option<&'static str> {
         "start" => n_("Start Supervisor"),
         "report_progress" => n_("Ask the Supervisor for a Progress Report"),
         "close_idle_workers" => n_("Ask the Supervisor to Close Idle Workers"),
+        "tidy_workers" => n_("Ask the Supervisor to Tidy Its Workers"),
         "reveal" => n_("Show in Explorer"),
         "copy_supervisor_id" => n_("Copy Supervisor's Terminal ID"),
         "pin" => n_("Pin"),
@@ -285,7 +286,7 @@ mod tests {
     fn the_four_menus_the_user_chose() {
         assert_eq!(
             ids(st(false, Sup::Hooked, false, false, false)),
-            "jump_to_supervisor - report_progress close_idle_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete"
+            "jump_to_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete"
         );
         assert_eq!(
             ids(st(false, Sup::None, true, false, false)),
@@ -293,11 +294,11 @@ mod tests {
         );
         assert_eq!(
             ids(st(false, Sup::Hookless, false, false, false)),
-            "jump_to_supervisor take_over - report_progress close_idle_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete"
+            "jump_to_supervisor take_over - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete"
         );
         assert_eq!(
             ids(st(false, Sup::Hooked, false, true, true)),
-            "jump_to_supervisor - report_progress close_idle_workers - reveal copy_supervisor_id - unpin unmute - rename edit_note project> - archive delete"
+            "jump_to_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - unpin unmute - rename edit_note project> - archive delete"
         );
     }
 

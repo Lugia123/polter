@@ -357,12 +357,17 @@ enum ControlRoomRules {
     /// control room's window does take terminal tabs; what it lacked was
     /// anybody adding the first one.
     ///
-    /// **A tab the person asked for comes in front.** `byPerson` is a key
-    /// or a menu item; false is the application's own -- the control room
-    /// starting a supervisor, an agent's `terminal_open`. "Behind" is for
-    /// those: the person pressing New Tab on the control room is asking to
-    /// go to that tab, and it goes into the control room's own window
-    /// rather than whichever terminal window was used last.
+    /// **A tab the person asked for comes in front; the core's never does**
+    /// (task 1823, the user: "every time I am half way through something in
+    /// the control room, a supervisor opens a tab and the screen is taken
+    /// away"). `byPerson` is a key, a menu item, the control room's "Start";
+    /// false is the core's -- an agent's `terminal_open` or `role_launch`, a
+    /// project's supervisor started later in a tab of its own. Those go
+    /// where they would have gone, **behind**: beside the terminal that
+    /// asked, wherever it is, and the tab in front stays in front. The
+    /// person pressing New Tab on the control room is asking to go to that
+    /// tab, and it goes into the control room's own window rather than
+    /// whichever terminal window was used last.
     static func newTab(
         asker: (lent: Bool, hasHome: Bool)?,
         byPerson: Bool,
@@ -372,7 +377,7 @@ enum ControlRoomRules {
     ) -> NewTab {
         if let asker {
             guard asker.hasHome else { return .refused }
-            return asker.lent ? .behind(.askers) : .inFront(of: .askers)
+            return asker.lent || !byPerson ? .behind(.askers) : .inFront(of: .askers)
         }
         if controlRoomInFront {
             // The application's own, asked while the person is on the
@@ -384,7 +389,8 @@ enum ControlRoomRules {
             if !byPerson { return .behind(.controlRooms) }
             if tabsBesideControlRoom || !anyTerminalWindow { return .inFront(of: .controlRooms) }
         }
-        return anyTerminalWindow ? .inFront(of: .frontmost) : .ownWindow
+        guard anyTerminalWindow else { return .ownWindow }
+        return byPerson ? .inFront(of: .frontmost) : .behind(.frontmost)
     }
 
     // MARK: The Project menu
@@ -468,17 +474,13 @@ enum ControlRoomRules {
     /// the person is using.
     ///
     /// A tab the person asked for -- a key, a menu item, the Dock's menu --
-    /// does, as it always has. One an agent asked for does not: with the
-    /// application behind another, the tab opens where it would have and
-    /// the application stays behind. It used to come forward every time,
-    /// taking the keyboard from whatever the person was typing into, each
-    /// time an agent opened a terminal for itself.
-    ///
-    /// `answerWanted` is whether the request came with somewhere to write
-    /// an answer: an agent's does and a key press's does not
-    /// (`apprt.action.NewTab.result`).
-    static func newTabActivates(answerWanted: Bool, appIsActive: Bool) -> Bool {
-        !answerWanted || appIsActive
+    /// does, as it always has. One the core asked for never does (task
+    /// 1823): it used to come forward every time, taking the keyboard from
+    /// whatever the person was typing into, each time an agent opened a
+    /// terminal for itself. It was "unless the application is already in
+    /// front", which is exactly when the person is using it.
+    static func newTabActivates(byPerson: Bool) -> Bool {
+        byPerson
     }
 
     /// What is selected once a snapshot has arrived, and whose choice it

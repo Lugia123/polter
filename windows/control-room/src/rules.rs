@@ -115,14 +115,18 @@ pub enum NewTab {
 /// control room starting a supervisor is one -- and the three facts after
 /// it say where there is room.
 ///
-/// `by_person` is a key or a menu item; false is the application's own. A
-/// tab the person asked for on the control room comes in front.
+/// `by_person` is a key, a menu item, the control room's "Start"; false is
+/// the core's -- an agent's `terminal_open` or `role_launch`, a project's
+/// supervisor started later in a tab of its own. **The core's never comes in
+/// front** (task 1823; macOS's `ControlRoomRules.newTab`): it goes where it
+/// would have gone, behind. A tab the person asked for on the control room
+/// comes in front.
 pub fn new_tab(asker: Option<(bool, bool)>, by_person: bool, control_room_in_front: bool, tabs_beside_control_room: bool, any_terminal_window: bool) -> NewTab {
     if let Some((lent, has_home)) = asker {
         if !has_home {
             return NewTab::Refused;
         }
-        return if lent { NewTab::Behind(Home::Askers) } else { NewTab::InFront(Home::Askers) };
+        return if lent || !by_person { NewTab::Behind(Home::Askers) } else { NewTab::InFront(Home::Askers) };
     }
     if control_room_in_front {
         // The application's own, asked while the control room is in front,
@@ -137,11 +141,21 @@ pub fn new_tab(asker: Option<(bool, bool)>, by_person: bool, control_room_in_fro
             return NewTab::InFront(Home::ControlRooms);
         }
     }
-    if any_terminal_window {
+    if !any_terminal_window {
+        NewTab::OwnWindow
+    } else if by_person {
         NewTab::InFront(Home::Frontmost)
     } else {
-        NewTab::OwnWindow
+        NewTab::Behind(Home::Frontmost)
     }
+}
+
+/// Whether making a tab gives the keyboard to it (task 1823). A tab made
+/// behind gives it to nobody: `create_tab_with` used to focus the tab in
+/// front again afterwards, which on a window that is not in front can bring
+/// that window forward.
+pub fn new_tab_takes_keyboard(behind: bool) -> bool {
+    !behind
 }
 
 /// Where a project the core ordered opened goes. The macOS host's

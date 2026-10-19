@@ -225,8 +225,9 @@ final class ProjectLinker {
         if let room {
             try room.loadProjectWhereTabsGo(entry, orderedByCore: true)
         } else {
+            // The core's order, not the person's: behind (task 1823).
             try TerminalController.load(
-                entry, ghostty: ghostty, into: nil, beside: TerminalController.preferredParent?.window)
+                entry, ghostty: ghostty, into: nil, beside: TerminalController.preferredParent?.window, inFront: false)
         }
     }
 

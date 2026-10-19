@@ -365,6 +365,11 @@ pub const Method = enum {
     /// another window's (task 1571). A move, never a close and a reopen.
     terminal_tab_move,
 
+    /// Move one terminal onto another's stack, or -- `onto` the caller -- into
+    /// the caller's own stack, made beside it when there is none (task 1797,
+    /// "tidy your workers"). A move, never a close and a reopen.
+    terminal_stack,
+
     /// Stop being a supervisor.
     ///
     /// What a supervisor is left with once the work is done is an empty box
@@ -728,6 +733,10 @@ pub const Request = union(Method) {
     /// the end. `window` names a terminal whose window the tab goes to; zero
     /// is the window it is in.
     terminal_tab_move: struct { id: Bus.Id, index: u32, window: Bus.Id = 0 },
+
+    /// `id` goes onto `onto`'s stack, behind; `onto` the caller is "my
+    /// stack" (`Host.paneMove` works out which).
+    terminal_stack: struct { id: Bus.Id, onto: Bus.Id },
 
     stand_down,
     become_supervisor,
@@ -1101,6 +1110,7 @@ pub fn callableByPlugin(method: Method) bool {
         // narrowing after somebody has built on the wider rule is not.
         .terminal_layout,
         .terminal_tab_move,
+        .terminal_stack,
 
         // **Closed to plugins.** The role library was opened to the
         // supervisor because the user said so of the supervisor; nothing
@@ -1349,6 +1359,7 @@ pub fn requiresSupervisor(method: Method) bool {
         // is looking at, and the case it exists for is placing workers.
         .terminal_layout,
         .terminal_tab_move,
+        .terminal_stack,
 
         // **Answering somebody else's permission prompt is a supervisor's,
         // on top of the user's switch.** Two conditions rather than one:
@@ -1642,6 +1653,7 @@ pub fn targetsTerminal(method: Method) bool {
         // Names any pane of the tab being rearranged.
         .terminal_layout,
         .terminal_tab_move,
+        .terminal_stack,
 
         // Names the terminal whose prompt is being answered, and is
         // checked for existence like the rest -- an answer typed at a
@@ -1929,6 +1941,7 @@ pub fn selfPermitted(req: Request) bool {
         // the tab it is in" is what holds this side now.
         .terminal_layout,
         .terminal_tab_move,
+        .terminal_stack,
         .terminal_highlight,
         => true,
 
@@ -2043,6 +2056,7 @@ pub fn promptReach(method: Method) enum {
         // Rearranges windows; it cannot put a keystroke into one.
         .terminal_layout,
         .terminal_tab_move,
+        .terminal_stack,
 
         .agent_event,
         .hook_context,
@@ -2416,6 +2430,7 @@ fn eachNamed(req: Request, ctx: anytype, comptime visit: fn (@TypeOf(ctx), Bus.I
             while (it.next() catch return error.BadLayout) |id| try visit(ctx, id);
         },
         .terminal_tab_move => |p| if (p.window != 0) try visit(ctx, p.window),
+        .terminal_stack => |p| try visit(ctx, p.onto),
         .role_launch => |p| if (p.beside) |id| try visit(ctx, id),
         else => {},
     }
@@ -2749,6 +2764,7 @@ test "only what changes the arrangement needs the supervisor" {
             // Rearranging a window is arranging, not operating.
             .terminal_layout,
             .terminal_tab_move,
+            .terminal_stack,
 
             // Which worktrees there are, and taking one away, are the
             // supervisor's books (task 1702).
@@ -2925,8 +2941,8 @@ test "where a terminal went, and why it went to a tab, reach the caller" {
     }
 
     // The kinds a caller acts on differently.
-    try testing.expectEqual(TabWhy.Kind.cannot, TabWhy.column_full.kind());
-    try testing.expectEqual(TabWhy.Kind.timing, TabWhy.last_worker_pending.kind());
+    try testing.expectEqual(TabWhy.Kind.cannot, TabWhy.no_pane_count.kind());
+    try testing.expectEqual(TabWhy.Kind.asked, TabWhy.asked.kind());
 }
 
 test "a terminal opened to be minded is claimed on the way" {
@@ -5378,11 +5394,15 @@ pub const TaskPage = struct {
 /// that turns "a worker" into a position lives in one place, instead of being
 /// recomputed by every supervisor that ever opens one.
 pub const Placement = enum {
-    /// Let Poltergeist decide: beside the caller while there is room in its
-    /// tab, a new tab once there is not. The default, and what a supervisor
-    /// wants unless it has a reason. Terminals in that tab that are not the
-    /// caller's workers are left where they are and do not count against the
-    /// room (task 900).
+    /// Let Poltergeist decide: the supervisor's tab is two panes, the
+    /// caller on the left and one stack of its workers on the right (task
+    /// 1797). The first worker splits the caller to the right; every one
+    /// after it is stacked in front in that pane -- the pane of the newest
+    /// of the caller's own workers still in its tab, found by identity.
+    /// Terminals in that tab that are not the caller's workers are left
+    /// where they are and never stacked into (task 900, Q5). The default,
+    /// and what a supervisor wants unless it has a reason. (`role_launch`
+    /// first uses one of the caller's own worker panes that is free.)
     auto,
 
     /// A new tab, always.
@@ -5394,21 +5414,16 @@ pub const Placement = enum {
     /// tell and no other way to ask.
     tab,
 
-    /// A split in the caller's own tab.
-    ///
-    /// Placed by the same rule as `auto` -- since task 900 `auto` no longer
-    /// keeps out of a tab the person arranged, so the two agree -- but it is
-    /// the caller naming its tab, and a tab instead is logged as `here` not
-    /// honoured. It falls back to a tab when it cannot split, and the reply
-    /// says so and why (`Placed.tab`) -- **a fallback that was silent would
-    /// read as "here" having worked**, and did (issue #17).
+    /// A pane of its own in the caller's tab: the caller split to the
+    /// right (task 1797) -- for what is not one of the stack, a server or a
+    /// log. It falls back to a tab when it cannot split, and the reply says
+    /// so and why (`Placed.tab`) -- **a fallback that was silent would read
+    /// as "here" having worked**, and did (issue #17).
     here,
 
-    /// Stacked with the caller's other workers: one pane's room, a tab for
-    /// each. **Named and not built** -- asked for, it is refused with
-    /// `NotBuiltYet` rather than read as `auto`, so that the word means one
-    /// thing from the day it works (task 1492). It is where the worker
-    /// after the second column will go.
+    /// `auto` without first using a free worker pane: always a new terminal
+    /// in the caller's stack (task 1797; refused as `NotBuiltYet` until
+    /// then).
     stack,
 };
 
@@ -5420,6 +5435,9 @@ pub const Placed = union(enum) {
     /// the reply is written (both apprts split asynchronously), so the
     /// reply has no id and says `pending`.
     split,
+    /// Stacked in front in the pane of the caller's newest worker in its
+    /// tab (task 1797). Pending, as a split is.
+    stack,
     /// A tab, and why.
     tab: TabWhy,
     /// No terminal was opened: the role was started in one that was already
@@ -5445,22 +5463,16 @@ pub const TabWhy = enum {
     // -- cannot: a split was due and could not be made.
     /// The apprt did not say how many terminals share the tab.
     no_pane_count,
-    /// Six workers already stand beside the caller, in two columns of
-    /// three; the seventh would have to be stacked with them, which is not
-    /// built yet. (It was three, and one column, until task 1492.)
-    column_full,
     /// The apprt would not split (GTK cannot split into a named directory).
     split_refused,
     /// Asking the apprt to split failed outright.
     split_failed,
 
-    // -- timing: a split may be possible if asked again.
-    /// The caller's previous worker has not appeared yet, so how full the
-    /// tab is cannot be known.
-    last_worker_pending,
-    /// The caller's previous worker has been closed; which pane replaced
-    /// it is a guess this does not make.
-    last_worker_gone,
+    // `column_full`, `last_worker_pending` and `last_worker_gone` were here
+    // until task 1797: the stack has no column to fill, a worker that has
+    // not appeared yet is waited for, and one that has gone is stepped
+    // over. Nothing is "worth asking again" any more, so the `timing` kind
+    // went with them.
 
     // -- cannot, again: the pane a split would grow from is one the user
     // keeps for their own commands (task 1699).
@@ -5472,15 +5484,12 @@ pub const TabWhy = enum {
         /// What was asked for could not be done. `here` not honoured for one
         /// of these is worth reporting.
         cannot,
-        /// Worth asking again in a moment.
-        timing,
     };
 
     pub fn kind(self: TabWhy) Kind {
         return switch (self) {
             .asked => .asked,
-            .no_pane_count, .column_full, .split_refused, .split_failed, .workers_refused => .cannot,
-            .last_worker_pending, .last_worker_gone => .timing,
+            .no_pane_count, .split_refused, .split_failed, .workers_refused => .cannot,
         };
     }
 };
@@ -6414,6 +6423,17 @@ pub const Host = struct {
             window: Bus.Id,
         ) anyerror!LayoutAnswer,
 
+        /// Move `id` onto `onto`'s stack (task 1797). `onto == by` is `by`'s
+        /// own stack: the pane of its newest worker in its tab, or a pane
+        /// split off it to the right when there is none.
+        paneMove: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            by: Bus.Id,
+            id: Bus.Id,
+            onto: Bus.Id,
+        ) anyerror!LayoutAnswer,
+
         /// A terminal a key reached within the quiet window `UserPresent`
         /// is measured against: `id` itself, or with `whole_tab` any
         /// terminal in its tab. Null when none did, and when `id` names
@@ -6911,6 +6931,16 @@ pub const Host = struct {
         return self.vtable.tabMove(self.ctx, alloc, id, index, window);
     }
 
+    fn paneMove(
+        self: Host,
+        alloc: std.mem.Allocator,
+        by: Bus.Id,
+        id: Bus.Id,
+        onto: Bus.Id,
+    ) anyerror!LayoutAnswer {
+        return self.vtable.paneMove(self.ctx, alloc, by, id, onto);
+    }
+
     fn userPresent(self: Host, id: Bus.Id, whole_tab: bool, except: Bus.Id) ?Present {
         return self.vtable.userPresent(self.ctx, id, whole_tab, except);
     }
@@ -7190,6 +7220,7 @@ pub fn isAgentCall(method: Method) bool {
         .terminal_answer_prompt,
         .terminal_layout,
         .terminal_tab_move,
+        .terminal_stack,
         .terminal_highlight,
         .stand_down,
         .become_supervisor,
@@ -7714,7 +7745,6 @@ fn dispatchOne(
                 .stop => |no| return no,
             };
             const opened = host.openTerminal(alloc, if (tree) |t| t.dir else p.cwd, caller, p.place) catch |err| return switch (err) {
-                error.NotBuiltYet => notBuiltYet(),
                 error.NotAbsolute => hostFailure(
                     "BadParams",
                     "a working directory has to be an absolute path.",
@@ -7867,7 +7897,6 @@ fn dispatchOne(
                     "`in` starts the role where that terminal already is; leave `cwd` out, " ++
                         "or open a new terminal there with `place`.",
                 ),
-                error.NotBuiltYet => notBuiltYet(),
                 // `beside`, and the tab it names would not take another pane.
                 error.NoRoomBeside => hostFailure(
                     "NoRoomBeside",
@@ -8244,6 +8273,42 @@ fn dispatchOne(
                     "this platform does not move tabs for a tool, and nothing was changed.",
                 ),
                 else => hostFailure("TabMoveFailed", "the tab could not be moved"),
+            };
+            if (!answer.applied) return .{ .failed = .{
+                .code = answer.code,
+                .message = answer.text,
+            } };
+            return .{ .text = answer.text };
+        },
+
+        .terminal_stack => |p| {
+            // Moving a terminal onto itself is nothing to do, and says so.
+            if (p.id == p.onto) return hostFailure("BadParams", "`id` and `onto` are the same terminal; nothing to move.");
+            // **Not onto a pane the user keeps for their own commands** (task
+            // 1699): a stack would cover it. The caller's own pane is not
+            // stacked onto -- `onto` the caller is its stack beside it.
+            if (p.onto != caller and bus.workersOf(p.onto) == .refused) return .{ .failed = .{
+                .code = "WorkersRefused",
+                .message = try std.fmt.allocPrint(
+                    alloc,
+                    "0x{x:0>16}: the user marked this terminal \"Don't Start Workers in This Terminal\", " ++
+                        "so nothing is stacked onto it. Nothing was moved.",
+                    .{p.onto},
+                ),
+            } };
+            // The terminal being moved is resized and put somewhere else
+            // under the person's hands.
+            if (host.userPresent(p.id, false, caller)) |at| return hostFailure("UserPresent", try presentSays(alloc, at));
+
+            const answer = host.paneMove(alloc, caller, p.id, p.onto) catch |err| return switch (err) {
+                error.NoSuchTerminal,
+                error.UnknownTerminal,
+                => failure(error.UnknownTerminal),
+                error.LayoutUnsupported => hostFailure(
+                    "Unsupported",
+                    "this platform does not move terminals into stacks for a tool, and nothing was changed.",
+                ),
+                else => hostFailure("MoveFailed", "the terminal could not be moved"),
             };
             if (!answer.applied) return .{ .failed = .{
                 .code = answer.code,
@@ -9966,6 +10031,11 @@ fn chatFailure(err: anyerror) wire.Response {
             "records already exist on disk under that name (a group of that name was destroyed, and its history is still there). Renaming onto them would put two histories under one name. Pick another name.",
         ),
         error.NotAMember => hostFailure("NotAMember", "you are not in that group"),
+        // Task 1797: one supervisor to a project (`ControlRoom.projectSupervisorBesides`).
+        error.ProjectHasSupervisor => hostFailure(
+            "ProjectHasSupervisor",
+            "that terminal is a supervisor, and the group's project already has one minding it: a project has one supervisor. Nothing was changed. Once that supervisor's agent has gone, another may be added.",
+        ),
         error.TooManyGroups => hostFailure("TooManyGroups", "there are already too many groups"),
         error.BadName => hostFailure("BadName", "group names may use lowercase letters, digits and dashes"),
         error.Empty => hostFailure("Empty", "there is nothing there to send or to compact"),
@@ -10334,15 +10404,6 @@ fn cannotEnter() wire.Response {
         "that directory is there but cannot be entered (no permission to search it), " ++
             "so a terminal there would start somewhere else without saying so. Nothing " ++
             "was opened. Fix its permissions or give another directory.",
-    );
-}
-
-fn notBuiltYet() wire.Response {
-    return hostFailure(
-        "NotBuiltYet",
-        "`stack` -- a worker stacked with your others in one pane's room -- is not " ++
-            "built yet, and nothing was opened. `auto` puts six beside you in two " ++
-            "columns before it opens a tab.",
     );
 }
 
@@ -10722,6 +10783,8 @@ const FakeHost = struct {
     layout_refusal: ?struct { code: []const u8, text: []const u8 } = null,
     /// What `tabMove` was last handed.
     tab_moved: ?struct { id: Bus.Id, index: u32, window: Bus.Id } = null,
+    /// What `paneMove` was last handed.
+    pane_moved: ?struct { by: Bus.Id, id: Bus.Id, onto: Bus.Id } = null,
     /// What `highlight` was last handed, and what it answers.
     highlighted: ?struct { id: Bus.Id, seconds: u32, label: ?[]const u8 } = null,
     highlight_answer: HighlightAnswer = .{ .ended = false },
@@ -11122,6 +11185,7 @@ const FakeHost = struct {
             .taskEdit = taskEdit,
             .layout = layout,
             .tabMove = tabMove,
+            .paneMove = paneMove,
             .highlight = highlight,
             .userPresent = userPresent,
             .screenshotAllowed = screenshotAllowedFake,
@@ -11236,6 +11300,19 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         self.tab_moved = .{ .id = id, .index = index, .window = window };
         return .{ .applied = true, .text = try alloc.dupe(u8, "{\"tab_index\":0}") };
+    }
+
+    fn paneMove(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        by: Bus.Id,
+        id: Bus.Id,
+        onto: Bus.Id,
+    ) anyerror!LayoutAnswer {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.pane_moved = .{ .by = by, .id = id, .onto = onto };
+        if (self.layout_refusal) |r| return .{ .applied = false, .code = r.code, .text = r.text };
+        return .{ .applied = true, .text = try alloc.dupe(u8, "{\"as\":\"stack\"}") };
     }
 
     fn userPresent(ctx: *anyopaque, id: Bus.Id, whole_tab: bool, except: Bus.Id) ?Present {
@@ -11799,18 +11876,18 @@ const FakeHost = struct {
         self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into, .beside = beside };
         if (beside != null) return .{ .id = null, .placed = .split };
         if (into) |there| return .{ .id = there, .placed = .{ .reused = .asked } };
-        if (place == .stack) return error.NotBuiltYet;
         // What the app's placement would answer: `tab` is a tab, `here` a
-        // split, and `auto` whichever this fake was told the tab has room
-        // for. A split has no terminal yet, and a late tab has none either.
+        // split, `stack` a stack, and `auto` whichever this fake was told.
+        // A split or a stack has no terminal yet, and a late tab has none
+        // either.
         const placed: Placed = switch (place) {
             .tab => .{ .tab = .asked },
             .here => .split,
-            .auto => if (self.role_auto_splits) .split else .{ .tab = .column_full },
-            .stack => unreachable,
+            .auto => if (self.role_auto_splits) .split else .{ .tab = .no_pane_count },
+            .stack => .stack,
         };
         return .{
-            .id = if (self.role_tab_late or placed == .split) null else 0x7777,
+            .id = if (self.role_tab_late or placed == .split or placed == .stack) null else 0x7777,
             .placed = placed,
         };
     }
@@ -16827,7 +16904,7 @@ test "role_launch in: started in a terminal that is already open, under the rule
     }
 }
 
-test "place stack: a name with nothing behind it yet is refused by name, not read as auto" {
+test "1797: place stack opens a stack, pending as a split is" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
@@ -16835,9 +16912,14 @@ test "place stack: a name with nothing behind it yet is refused by name, not rea
     const alloc = arena.allocator();
 
     var fake: FakeHost = .{};
-    const refused = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "archer", .place = .stack } });
-    try testing.expectEqualStrings("NotBuiltYet", refused.failed.code);
-    try testing.expect(std.mem.indexOf(u8, refused.failed.message, "nothing was opened") != null);
+    const stacked = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "archer", .place = .stack } });
+    try testing.expectEqual(Placed.stack, stacked.opened.placed.?);
+    try testing.expectEqual(@as(?Bus.Id, null), stacked.opened.id);
+
+    // On the wire: `placed: stack`, and pending, since it has no id yet.
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, stacked);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"placed\":\"stack\",\"pending\":true") != null);
 }
 
 test "roles: each reason a write is refused says what to do about it" {
@@ -17659,7 +17741,7 @@ test "role_launch place: the reply says where it went, as terminal_open's does" 
     try testing.expectEqual(Placed.split, beside.opened.placed.?);
     var full: FakeHost = .{};
     const away = try dispatch(alloc, &b, full.host(), term(boss), .{ .role_launch = .{ .key = "hand" } });
-    try testing.expectEqual(Placed{ .tab = .column_full }, away.opened.placed.?);
+    try testing.expectEqual(Placed{ .tab = .no_pane_count }, away.opened.placed.?);
 
     // And on the wire: `placed` is there for a role now.
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -18736,6 +18818,41 @@ test "tidying: a tab move reaches the host, and a key in that tab refuses it" {
     } });
     try testing.expectEqualStrings("UserPresent", no.failed.code);
     try testing.expect(keyed.tab_moved == null);
+}
+
+test "1797: terminal_stack moves a terminal through the host, and refuses what it must not move" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Onto the caller: its own stack, worked out by the host.
+    var fake: FakeHost = .{};
+    const ok = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_stack = .{ .id = worker, .onto = boss } });
+    try testing.expect(ok == .text);
+    const asked = fake.pane_moved.?;
+    try testing.expectEqual(boss, asked.by);
+    try testing.expectEqual(worker, asked.id);
+    try testing.expectEqual(boss, asked.onto);
+
+    // The host's refusal, by its own code: a terminal the control room shows.
+    var lent: FakeHost = .{ .layout_refusal = .{ .code = "Lent", .text = "shown in the control room" } };
+    const shown = try dispatch(alloc, &b, lent.host(), term(boss), .{ .terminal_stack = .{ .id = worker, .onto = boss } });
+    try testing.expectEqualStrings("Lent", shown.failed.code);
+
+    // Under the person's hands: not moved.
+    var keyed: FakeHost = .{ .keyed_terminals = &.{worker} };
+    const typing = try dispatch(alloc, &b, keyed.host(), term(boss), .{ .terminal_stack = .{ .id = worker, .onto = boss } });
+    try testing.expect(typing == .failed);
+    try testing.expectEqualStrings("UserPresent", typing.failed.code);
+    try testing.expect(keyed.pane_moved == null);
+
+    // Onto itself: nothing to do, said.
+    var same: FakeHost = .{};
+    const itself = try dispatch(alloc, &b, same.host(), term(boss), .{ .terminal_stack = .{ .id = worker, .onto = worker } });
+    try testing.expectEqualStrings("BadParams", itself.failed.code);
+    try testing.expect(same.pane_moved == null);
 }
 
 test "tidying: beside goes to the host, and does not go with in or place" {

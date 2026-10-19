@@ -498,6 +498,20 @@ pub const Action = union(Key) {
     /// whose offsets an old Windows host still reads by hand.
     poltergeist_pane: PoltergeistPane,
 
+    /// Open a new terminal in the target surface's pane, stacked in front
+    /// of it (task 1797): where a supervisor's next worker goes when one of
+    /// its workers is already beside it. The pane becomes a stack if it was
+    /// not one. Asked by the core only; no keybinding sends it (the
+    /// binding's `pane_stack:new` has no directory to carry).
+    poltergeist_new_stacked: PoltergeistNewStacked,
+
+    /// Move the target surface's terminal onto another terminal's stack,
+    /// or into a pane of its own to that terminal's right (task 1797,
+    /// `terminal_stack`): what "tidy your workers" is done with. A move,
+    /// across tabs and windows: the terminal keeps its surface and its
+    /// process.
+    poltergeist_move_pane: PoltergeistMovePane,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -590,6 +604,8 @@ pub const Action = union(Key) {
         polter_tab_move,
         polter_highlight,
         poltergeist_pane,
+        poltergeist_new_stacked,
+        poltergeist_move_pane,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -2813,6 +2829,114 @@ pub const NewSplit = struct {
     }
 };
 
+/// A new terminal stacked in front of the target's in its pane (task 1797,
+/// `openTerminalAt`): the supervisor's worker pane becomes a stack, and
+/// each worker after the first joins it there rather than a split or a tab
+/// of its own.
+///
+/// `NewSplit`'s contract, one for one: a directory the apprt cannot start
+/// the terminal in is a refusal (`unsupported`), never a terminal in the
+/// joined one's directory; and `will_stack` says the request was taken on,
+/// not that the terminal is there -- the Windows host queues it, macOS makes
+/// it before returning, and the core finds it in the target's tab either
+/// way (`PendingWorker.afterSplit`).
+///
+/// **The same on both hosts, not left to each** (task 1797, Q4): the new
+/// terminal is the stack's front member, the one the stack shows; the
+/// keyboard stays in the pane that had it -- a worker starting must not
+/// take it from the supervisor or from where the person is typing.
+pub const PoltergeistNewStacked = struct {
+    /// Empty means "where the terminal it joins is standing", as for a
+    /// split.
+    working_directory: [:0]const u8 = "",
+
+    /// Written by the apprt before it returns; never read by it. Null
+    /// when nobody is asking.
+    result: ?*Result = null,
+
+    /// Sync with: ghostty_action_poltergeist_new_stacked_result_e
+    ///
+    /// `unsupported` first, so that a cell nobody wrote -- an apprt with
+    /// no stacks, such as GTK -- reads as "not done".
+    pub const Result = enum(c_int) {
+        /// Nothing was stacked, and nothing will be: this apprt has no
+        /// stacks, the target cannot take one now, or the directory cannot
+        /// be honoured. The core then splits or opens a tab, and says so.
+        unsupported,
+
+        /// This apprt has taken it on. It has not necessarily happened yet.
+        will_stack,
+    };
+
+    // Sync with: ghostty_action_poltergeist_new_stacked_s
+    pub const C = extern struct {
+        working_directory: [*:0]const u8,
+        result: ?*Result,
+    };
+
+    pub fn cval(self: PoltergeistNewStacked) C {
+        return .{
+            .working_directory = self.working_directory.ptr,
+            .result = self.result,
+        };
+    }
+
+    test "ghostty.h PoltergeistNewStacked.Result" {
+        try lib.checkGhosttyHEnum(Result, "GHOSTTY_ACTION_POLTERGEIST_NEW_STACKED_RESULT_");
+    }
+
+    test "the Windows host reads the two words where they are" {
+        const testing = std.testing;
+        // `ffi.rs`'s `as_poltergeist_new_stacked` reads these offsets.
+        try testing.expectEqual(@as(usize, 0), @offsetOf(C, "working_directory"));
+        try testing.expectEqual(@as(usize, 8), @offsetOf(C, "result"));
+    }
+};
+
+/// Move the target's terminal to where another terminal is (task 1797,
+/// `terminal_stack`): onto its stack, or into a pane of its own split off it
+/// to the right. **A move**: the terminal keeps its surface, its process, its
+/// scrollback and its agent's session, as for `polter_tab_move`; the pane it
+/// leaves closes when it was that pane's only terminal, and the tab when it
+/// was that tab's only pane. Across tabs and windows.
+///
+/// Both hosts alike, as for `PoltergeistNewStacked`: the keyboard stays
+/// where it was, except that a terminal that had it and is put behind gives
+/// it to what its new pane shows; what each stack shows does not change --
+/// the terminal moved onto one goes behind, at the end, so a tidy that moves
+/// five does not flip the stack five times.
+pub const PoltergeistMovePane = extern struct {
+    /// The terminal it goes to: `@intFromPtr` of that surface's apprt
+    /// surface, as `PolterTabMove.window` names one. Never 0.
+    onto: u64,
+    as: As,
+    /// Where the apprt writes its answer, as for a layout: `applied`, or
+    /// `refused` with the reason as text. Left `unsupported` by an apprt
+    /// that does not move panes.
+    out: *PoltergeistLayout.Out,
+
+    /// Sync with: ghostty_poltergeist_move_pane_as_e
+    pub const As = enum(c_int) {
+        /// Onto `onto`'s stack, behind; its pane becomes a stack if it was
+        /// not one.
+        stack = 0,
+        /// A pane of its own, `onto` split to the right.
+        split_right = 1,
+    };
+
+    test "ghostty.h PoltergeistMovePane.As" {
+        try lib.checkGhosttyHEnum(As, "GHOSTTY_POLTERGEIST_MOVE_PANE_");
+    }
+
+    test "the Windows host reads the three words where they are" {
+        const testing = std.testing;
+        // `ffi.rs`'s `as_poltergeist_move_pane` reads these offsets.
+        try testing.expectEqual(@as(usize, 0), @offsetOf(PoltergeistMovePane, "onto"));
+        try testing.expectEqual(@as(usize, 8), @offsetOf(PoltergeistMovePane, "as"));
+        try testing.expectEqual(@as(usize, 16), @offsetOf(PoltergeistMovePane, "out"));
+    }
+};
+
 /// Rearrange a tab's panes into a shape given from outside.
 ///
 /// # Why a whole shape rather than one split at a time
@@ -2978,6 +3102,17 @@ pub const NewTab = struct {
     /// way", and there was none.
     result: ?*Result = null,
 
+    /// Who wants the tab (task 1823). **Both hosts alike: a tab the core
+    /// asked for opens in the background** -- the tab in front stays in
+    /// front, the window is not raised, and the keyboard stays where it
+    /// was -- because the person is somewhere else doing something (the
+    /// user, 2026-10-19: "every time I am half way through something in the
+    /// control room, a supervisor opens a tab and the screen is taken
+    /// away"). The tab shows it has something new the way a tab in the
+    /// background does. A tab the person asked for -- a key, the menu, the
+    /// "+", "Start" in the control room -- is brought forward as ever.
+    by: By = .person,
+
     /// Sync with: ghostty_action_new_tab_result_e
     ///
     /// `unanswered` is first so that zero is what a cell nobody wrote reads
@@ -2994,17 +3129,37 @@ pub const NewTab = struct {
         refused,
     };
 
+    /// Sync with: ghostty_action_new_tab_by_e
+    pub const By = enum(c_int) {
+        /// A key, the menu, the strip's "+", a click in the control room.
+        person,
+        /// An agent's `terminal_open` or `role_launch`, or the core on its
+        /// own (a project's supervisor started in a new tab of it).
+        core,
+    };
+
     // Sync with: ghostty_action_new_tab_s
     pub const C = extern struct {
         working_directory: [*:0]const u8,
         result: ?*Result,
+        by: By,
     };
 
     pub fn cval(self: NewTab) C {
         return .{
             .working_directory = self.working_directory.ptr,
             .result = self.result,
+            .by = self.by,
         };
+    }
+
+    test "ghostty.h NewTab.By" {
+        try lib.checkGhosttyHEnum(By, "GHOSTTY_ACTION_NEW_TAB_BY_");
+    }
+
+    test "the Windows host reads who wants the tab where it is" {
+        // `ffi.rs`'s `as_new_tab_by` reads this offset.
+        try std.testing.expectEqual(@as(usize, 16), @offsetOf(C, "by"));
     }
 
     pub fn format(

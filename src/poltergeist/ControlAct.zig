@@ -51,7 +51,7 @@
 //! {"act":"delete_group","group":"web-app","members":N,"open_tasks":N}
 //!                                                       what the dialog said
 //! {"act":"ask_supervisor","group":"web-app","ask":"report"}
-//!                                                       report | close_idle
+//!                                                       report | close_idle | tidy_workers
 //! ```
 //!
 //! `pin`, `mute` and `archive` are the person's marks on the group and are
@@ -306,12 +306,17 @@ pub const Ask = enum {
     report,
     /// Close the workers that are idle.
     close_idle,
+    /// Gather its workers into the stack to its right (task 1797, the
+    /// user's rule 5): done by the supervisor with `terminal_stack`, never
+    /// by Polter on its own.
+    tidy_workers,
 
     /// The line, as an English msgid; `tag` goes before it untranslated.
     fn words(self: Ask) [:0]const u8 {
         return switch (self) {
             .report => ask_words.report,
             .close_idle => ask_words.close_idle,
+            .tidy_workers => ask_words.tidy_workers,
         };
     }
 };
@@ -324,6 +329,7 @@ pub const ask_tag = "[Polter ask]";
 const ask_words = struct {
     const report = i18n.N_("The person asked from the control room: please report on this group's progress -- what is done, what is in progress and what is stuck -- in this group.");
     const close_idle = i18n.N_("The person asked from the control room: please close the workers in this group that are idle -- finished, or waiting with nothing to do -- and say in this group which ones you closed.");
+    const tidy_workers = i18n.N_("The person asked from the control room: please tidy your workers -- move each into the stack to your right with terminal_stack (onto: your own id), so your tab is you and that one stack. Leave panes the user keeps for their own commands, shielded ones and ones that are not workers where they are, and say in this group what you moved, what you did not and why.");
 };
 
 /// Why the host could not open a project it was ordered to.
@@ -1884,6 +1890,14 @@ test "ControlRoom act: asking the supervisor types the tagged line into it, and 
         \\{"act":"ask_supervisor","group":"web-app","ask":"close_idle"}
     , 1_000);
     try testing.expectEqual(@as(usize, 2), b.rec.fix_posts.items.len);
+    // Task 1797: the tidy names the tool it is done with.
+    try b.act(
+        \\{"act":"ask_supervisor","group":"web-app","ask":"tidy_workers"}
+    , 1_000);
+    try testing.expectEqual(@as(usize, 3), b.rec.fix_posts.items.len);
+    const tidy = b.rec.fix_posts.items[2];
+    try testing.expect(std.mem.startsWith(u8, tidy, ask_tag ++ " "));
+    try testing.expect(std.mem.indexOf(u8, tidy, "terminal_stack (onto: your own id)") != null);
     try testing.expect(std.mem.startsWith(u8, b.rec.fix_posts.items[0], ask_tag ++ " The person asked from the control room: please report"));
     // The person's, from elsewhere: not held back by the keyboard clock an
     // agent's post is, held back by a draft (task 1738).

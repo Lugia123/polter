@@ -426,6 +426,10 @@ pub enum Op {
     /// `terminal_tab_move` (task 1571): the tab holding surface `.0` to
     /// place `.1`, in the window of surface `.2` (0: its own).
     MoveTabForTool(usize, usize, usize, crate::layout::Outcome),
+    /// `terminal_stack` (task 1797, `poltergeist_move_pane`): the terminal
+    /// of surface `.0` to where the terminal of surface `.1` is -- onto its
+    /// place's stack, behind, or (`.2`) a place of its own to the right.
+    MovePaneForTool(usize, usize, bool, crate::layout::Outcome),
     /// A second top-level window, with a tab in it.
     ///
     /// **Queued for the same reason `NewTab` is**, and it is the stronger
@@ -500,6 +504,11 @@ pub enum Op {
     /// One of the stack's verbs (`pane_stack`, task 1583), on the place the
     /// pane it names is in (`None`: the focused one).
     PaneStack(polter_split_tree::stack::Verb, Option<PaneId>),
+    /// A worker the core stacks in front in the place of the pane it names
+    /// (`poltergeist_new_stacked`, task 1797): the directory it named
+    /// (`None`: where the joined terminal is standing). The keyboard stays
+    /// where it was (`stack::focus_after_new`).
+    WorkerStacked(Option<String>, Option<PaneId>),
     /// `ghostty_action_goto_split_e`.
     /// The direction, and **which pane to move from** (`None` means the
     /// focused one, which is what a keybinding means).
@@ -586,6 +595,7 @@ impl Op {
             Op::ApplyLayout(..) => "ApplyLayout",
             Op::ArrangeLayout(..) => "ArrangeLayout",
             Op::MoveTabForTool(..) => "MoveTabForTool",
+            Op::MovePaneForTool(..) => "MovePaneForTool",
             Op::NewWindow => "NewWindow",
             Op::GotoTab(_) => "GotoTab",
             Op::ActivateTab(_) => "ActivateTab",
@@ -600,6 +610,7 @@ impl Op {
             Op::Highlight(..) => "Highlight",
             Op::NewSplit(..) => "NewSplit",
             Op::PaneStack(..) => "PaneStack",
+            Op::WorkerStacked(..) => "WorkerStacked",
             Op::GotoSplit(..) => "GotoSplit",
             Op::ResizeSplit(..) => "ResizeSplit",
             Op::EqualizeSplits => "EqualizeSplits",
@@ -3128,7 +3139,12 @@ pub fn create_tab_with(
         }
     }
     layout(frame);
-    focus_active(frame);
+    // Behind takes the keyboard from nobody, not even to hand it back to
+    // the tab in front (task 1823): `SetFocus` on a window that is not in
+    // front can bring it forward.
+    if polter_control_room::rules::new_tab_takes_keyboard(behind) {
+        focus_active(frame);
+    }
     wlogf!(frame, "[tab] created{}; count now {}", if behind { " behind the tab in front" } else { "" }, count(frame));
     // **After the guard above is gone, and that is load-bearing.** Raising a
     // UIA event can call straight back into `uia.rs`, which takes this
@@ -3705,6 +3721,120 @@ fn move_tab_for_tool(surface: usize, index: usize, window: usize) -> Result<Stri
     Ok("{}".into())
 }
 
+/// `terminal_stack` (task 1797): the terminal of `surface` to where the one
+/// of `onto` is, by `move_pane_by_tool`. Refused as `Lent` when either is
+/// the one the control room shows, as a tab move is.
+// window-free: keyed by surface, which is unique in the process -- this turns
+// such a key into the window and pane it names
+fn move_pane_for_tool(surface: usize, onto: usize, split_right: bool) -> Result<String, String> {
+    let read = with_windows(|ws| {
+        let at = |key: usize| {
+            ws.iter().find_map(|w| {
+                w.tabs.iter().find_map(|t| t.panes().iter().find(|p| p.surface == key).map(|p| p.id)).map(|pane| {
+                    let lent = w.shown_on_loan().is_some_and(|l| l.pane == pane);
+                    (w.frame, pane, lent)
+                })
+            })
+        };
+        (at(surface), at(onto))
+    });
+    let (Some((src, pane, lent_src)), Some((dst, place, lent_dst))) = read else {
+        return Err("that terminal, or the one it goes to, is not in a tab this host has open".into());
+    };
+    if lent_src || lent_dst {
+        return Err(crate::layout::coded("Lent", "that terminal is being shown in the control room, and nothing was moved."));
+    }
+    move_pane_by_tool(HWND(src as *mut c_void), pane, HWND(dst as *mut c_void), place, split_right).map_err(|why| why.to_string())?;
+    Ok("{}".into())
+}
+
+/// Put `pane` where `place` is (task 1797, `terminal_stack`): onto its
+/// place's stack, behind, at the end, or into a place of its own to the
+/// right (`Tree::taking_in`) -- from this tab, another tab or another
+/// window, leaving where it was the way a dragged pane does. Unlike a drag,
+/// **nothing is brought forward**: no tab is switched to, no window raised,
+/// and the keyboard stays where it was -- except on `pane` itself when it
+/// goes behind, which gives it to what its new place shows.
+fn move_pane_by_tool(src: HWND, pane: PaneId, dst: HWND, place: PaneId, split_right: bool) -> Result<(), &'static str> {
+    if pane == place {
+        return Err("a terminal cannot be moved onto itself");
+    }
+    let moved: Result<Option<PaneMoved>, &'static str> = with_windows_mut(|ws| {
+        let si = ws.iter().position(|w| w.frame == src.0 as isize).ok_or("its window is gone")?;
+        let di = ws.iter().position(|w| w.frame == dst.0 as isize).ok_or("the window it goes to is gone")?;
+        let st = ws[si].tabs.iter().position(|t| t.pane(pane).is_some()).ok_or("no tab in its window has it")?;
+        let dt = ws[di].tabs.iter().position(|t| t.pane(place).is_some()).ok_or("the terminal it goes to is gone")?;
+        let dst_tab = ws[di].tabs[dt].id;
+        if si == di && st == dt {
+            let term = ws[si].tabs[st].terminal_mut().ok_or("its tab is not a terminal's")?;
+            if !split_right && term.tree.stack_of(place).is_some_and(|s| s.members.contains(&pane)) {
+                return Ok(None);
+            }
+            let had = term.focused == pane;
+            // Out of its stack, or -- the only terminal of its place -- out of the tree.
+            let without = if term.tree.stack_of(pane).is_some() {
+                term.tree.removing_member(pane).map_err(|_| "the tree refused to let it go")?
+            } else {
+                term.tree.remove(pane)
+            };
+            let tree = without.taking_in(pane, place, split_right).map_err(|_| "the tree refused to take it there")?;
+            if had && !tree.shown_panes().contains(&pane) {
+                term.focused = tree.shown_for(place).unwrap_or(place);
+            }
+            term.tree = tree;
+            return Ok(None);
+        }
+        // Into the other tree first: if that refuses, nothing has moved.
+        let into = ws[di].tabs[dt].terminal().ok_or("the tab it goes to is not a terminal's")?.tree.taking_in(pane, place, split_right).map_err(|_| "the tree it goes to refused it")?;
+        let (p, emptied) = take_pane(ws, si, pane, false)?;
+        let (hwnd, surface) = (p.hwnd, p.surface);
+        let dt = ws[di].tabs.iter().position(|t| t.id == dst_tab).ok_or("the tab it goes to is gone")?;
+        let Some(term) = ws[di].tabs[dt].terminal_mut() else { return Err("the tab it goes to is not a terminal's") };
+        term.tree = into;
+        term.panes.push(p);
+        Ok(Some(PaneMoved { hwnd, surface, emptied }))
+    });
+    let moved = match moved {
+        Ok(m) => m,
+        Err(why) => {
+            wlogf!(src, "[stack] pane {} not moved to place {} (split_right={}): {}", pane, place, split_right, why);
+            return Err(why);
+        }
+    };
+    crate::project_session::note(polter_projects::autosave::Change::Layout);
+    let Some(m) = moved else {
+        wlogf!(src, "[stack] pane {} moved to place {} in its tab (split_right={})", pane, place, split_right);
+        layout(src);
+        focus_active(src);
+        crate::uia::tabs_changed(src);
+        return Ok(());
+    };
+    if src != dst {
+        rehome_pane(src, dst, m.hwnd, m.surface);
+    }
+    wlogf!(src, "[stack] pane {} moved to place {} in {} (split_right={})", pane, place, crate::winid::tag(dst), split_right);
+    if let Some(tab) = m.emptied {
+        retire_emptied_tab(src, tab);
+    }
+    forget_a_loan_that_went(src);
+    if src != dst {
+        // absence: means it was not reached -- the window it left still has a tab, and stays.
+        if count(src) == 0 {
+            wlogf!(src, "[stack] its last pane left; closing the window");
+            crate::winid::close_window_now(src);
+        } else {
+            set_active(src, active_index(src));
+            crate::uia::tabs_changed(src);
+        }
+    }
+    // The tab it went to is laid out where it is; which tab is in front is
+    // not changed, and no window is raised.
+    layout(dst);
+    crate::uia::tabs_changed(dst);
+    crate::control_room::request_sync();
+    Ok(())
+}
+
 /// Where the tab holding `surface` stands in its strip, and its title (task
 /// 1571: `terminal_list`'s `tab_index` and `tab_title`).
 // window-free: keyed by surface, which is unique in the process
@@ -3906,15 +4036,25 @@ pub fn pane_stack_offers(frame: HWND, verb: polter_split_tree::stack::Verb, at: 
     polter_split_tree::stack::offers(verb, stacked, term.tree.shown_panes().len(), false)
 }
 
+/// Who asked for a stack's `New`: the person -- a key, the menu, the
+/// strip's "+" -- or the core stacking a worker (task 1797), with the
+/// directory it named.
+#[derive(Clone, Debug)]
+enum StackNewBy {
+    Person,
+    Core(Option<String>),
+}
+
 /// Carry out one of the stack's verbs (task 1583; macOS's
 /// `perform(stack:at:)`). **False means nothing changed**, and the line
-/// above it says why.
+/// above it says why. `by` matters to `New` only.
 fn pane_stack(
     frame: HWND,
     app: App,
     hinst: windows::Win32::Foundation::HINSTANCE,
     verb: polter_split_tree::stack::Verb,
     at: Option<PaneId>,
+    by: StackNewBy,
 ) -> bool {
     use polter_split_tree::stack::Verb;
     if !pane_stack_offers(frame, verb, at) {
@@ -3949,13 +4089,20 @@ fn pane_stack(
                 wlogf!(frame, "[stack] new: the new pane is not in the layout; refusing to create it");
                 return false;
             };
-            // Where the terminal it joins is standing, as a split's does.
-            let spec = NewTab { cwd: cwd.clone(), ..NewTab::default() };
+            // Where the terminal it joins is standing, as a split's does --
+            // or where the core said, for a worker.
+            let (dir, by_person) = match &by {
+                StackNewBy::Person => (cwd.clone(), true),
+                StackNewBy::Core(named) => (named.clone().or_else(|| cwd.clone()), false),
+            };
+            let spec = NewTab { cwd: dir, ..NewTab::default() };
             let Some(made) = create_pane(frame, app, hinst, id, r, spec) else {
                 wlogf!(frame, "[stack] new: the new pane could not be created");
                 return false;
             };
-            (new_tree, Some(made), id)
+            // A worker takes the keyboard from nobody (task 1797).
+            let behind = tree.shown_for(pane).unwrap_or(pane);
+            (new_tree, Some(made), polter_split_tree::stack::focus_after_new(focused, id, behind, by_person))
         }
         Verb::Next | Verb::Previous => {
             let step = if verb == Verb::Next { 1 } else { -1 };
@@ -8547,6 +8694,12 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                     *cell = Some(answer);
                 }
             }
+            Op::MovePaneForTool(surface, onto, split_right, outcome) => {
+                let answer = move_pane_for_tool(surface, onto, split_right);
+                if let Ok(mut cell) = outcome.lock() {
+                    *cell = Some(answer);
+                }
+            }
             Op::NewSplit(dir, cwd, at, asked_by_core) => {
                 // `ghostty_action_split_direction_e`
                 let d = match dir {
@@ -8563,8 +8716,12 @@ pub fn run_ops(frame: HWND, app: App, hinst: windows::Win32::Foundation::HINSTAN
                 wlogf!(frame, "[ops] NewSplit finished: split={}", ok as u8);
             }
             Op::PaneStack(verb, at) => {
-                let ok = pane_stack(frame, app, hinst, verb, at);
+                let ok = pane_stack(frame, app, hinst, verb, at, StackNewBy::Person);
                 wlogf!(frame, "[ops] PaneStack {:?} finished: done={}", verb, ok as u8);
+            }
+            Op::WorkerStacked(cwd, at) => {
+                let ok = pane_stack(frame, app, hinst, polter_split_tree::stack::Verb::New, at, StackNewBy::Core(cwd));
+                wlogf!(frame, "[ops] WorkerStacked finished: done={}", ok as u8);
             }
             Op::GotoSplit(v, at) => {
                 if front_has_no_splits(frame, "goto_split") {

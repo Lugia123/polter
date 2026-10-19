@@ -1091,6 +1091,7 @@
 "This group still has %@. Deleting it closes none of their terminals, but they leave the group, and unfinished tasks are deleted with it." = "This group still has %@. Deleting it closes none of their terminals, but they leave the group, and unfinished tasks are deleted with it.";
 "Asked the supervisor to report progress" = "Asked the supervisor to report progress";
 "Asked the supervisor to close idle workers" = "Asked the supervisor to close idle workers";
+"Asked the supervisor to tidy its workers" = "Asked the supervisor to tidy its workers";
 "Not delivered: %@" = "Not delivered: %@";
 "Pinned, muted" = "Pinned, muted";
 "Pinned" = "Pinned";
@@ -1107,6 +1108,7 @@
 "Start Supervisor…" = "Start Supervisor…";
 "Ask the Supervisor to Report Progress" = "Ask the Supervisor to Report Progress";
 "Ask the Supervisor to Close Idle Workers" = "Ask the Supervisor to Close Idle Workers";
+"Ask the Supervisor to Tidy Its Workers" = "Ask the Supervisor to Tidy Its Workers";
 "Copy Supervisor Terminal ID" = "Copy Supervisor Terminal ID";
 "Pin" = "Pin";
 "Unpin" = "Unpin";

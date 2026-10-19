@@ -16,13 +16,13 @@ struct ControlRoomRowMenuTests {
 
     @Test func theFourMenusTheUserChose() {
         #expect(items(false, .hooked, false, false, false)
-            == "jump_to_supervisor - report_progress close_idle_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete")
+            == "jump_to_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete")
         #expect(items(false, .none, true, false, false)
             == "start_resume start_new - reveal - pin mute> - rename edit_note project> - archive delete")
         #expect(items(false, .hookless, false, false, false)
-            == "jump_to_supervisor take_over - report_progress close_idle_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete")
+            == "jump_to_supervisor take_over - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete")
         #expect(items(false, .hooked, false, true, true)
-            == "jump_to_supervisor - report_progress close_idle_workers - reveal copy_supervisor_id - unpin unmute - rename edit_note project> - archive delete")
+            == "jump_to_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - unpin unmute - rename edit_note project> - archive delete")
     }
 
     @Test func anOldGroupHasOneStartAndAnArchivedOneThreeItems() {

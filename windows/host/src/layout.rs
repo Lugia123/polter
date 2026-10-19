@@ -482,6 +482,56 @@ pub fn perform_tab_move(action: &Action, target: Option<Surface>) -> bool {
     true
 }
 
+/// Perform `poltergeist_move_pane` (task 1797, `terminal_stack`): queued
+/// and drained like a tab move, for its reason, so the answer is read
+/// before this returns.
+pub fn perform_move_pane(action: &Action, target: Option<Surface>) -> bool {
+    let (onto, how, out) = action.as_poltergeist_move_pane();
+    let write = |code: i32, text: &str| {
+        if out.is_null() {
+            return;
+        }
+        unsafe {
+            (*out).result = code;
+            if !(*out).buf.is_null() && (*out).cap > 0 {
+                let n = text.len().min((*out).cap);
+                std::ptr::copy_nonoverlapping(text.as_ptr(), (*out).buf, n);
+                (*out).len = n;
+            }
+        }
+    };
+    let Some(surface) = target else {
+        write(REFUSED, "the move named no terminal");
+        return false;
+    };
+    let Some(frame) = tabs::frame_of_surface(surface) else {
+        write(REFUSED, "that terminal is not in a window this host is tracking");
+        return false;
+    };
+    // `ghostty_poltergeist_move_pane_as_e`: 0 onto its stack, 1 split to its right.
+    let split_right = match how {
+        0 => false,
+        1 => true,
+        _ => {
+            write(REFUSED, &format!("a way to move ({how}) this host does not know; nothing was moved"));
+            return true;
+        }
+    };
+    let outcome: Outcome = Arc::new(Mutex::new(None));
+    tabs::post_op(frame, tabs::Op::MovePaneForTool(surface as usize, onto as usize, split_right, outcome.clone()), "move pane action");
+    tabs::drain_for_layout(frame);
+    let answer = outcome.lock().ok().and_then(|mut o| o.take());
+    match answer {
+        Some(Ok(json)) => write(APPLIED, &json),
+        Some(Err(why)) => write(REFUSED, &why),
+        None => {
+            write(REFUSED, "the move was queued and did not run; the window may have closed");
+            wlogf!(frame, "[stack] queued move produced no answer");
+        }
+    }
+    true
+}
+
 /// Perform `polter_highlight` (task 1690): queued and drained like a tab
 /// move, so the answer -- what was switched, whether the window came
 /// forward -- is read before this returns (#1689's interface, section 2).

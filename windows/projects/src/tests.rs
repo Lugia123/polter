@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use polter_projectfile::{emit, parse_snapshot, Agent, Axis, Frame, Origin, PaneColor, SavedLeaf, SavedNode, Snapshot, Tab, Who, Window, Workers};
 
 use crate::autosave::{Change, Debounce, QUIET};
-use crate::pages::{keeping_what_the_file_knew, Known, Live, Pages, Screen};
+use crate::pages::{agent_said, fill_agents, keeping_what_the_file_knew, mark_workers, Known, Live, Pages, Screen};
 use crate::placement::{self, Home, Place, Rect};
 
 fn leaf_of(cwd: &str, scrollback: &str, agent: Agent) -> SavedNode {
@@ -16,7 +16,7 @@ fn leaf_of(cwd: &str, scrollback: &str, agent: Agent) -> SavedNode {
 
 /// What the file says of a pane with no mark on it.
 fn unmarked() -> Known {
-    Known { cwd: String::new(), agent: Agent::None, supervisor_seat: false, color: PaneColor::None, workers: Workers::Allowed, shielded: false }
+    Known { cwd: String::new(), agent: Agent::None, by_supervisor: false, supervisor_seat: false, color: PaneColor::None, workers: Workers::Allowed, shielded: false }
 }
 
 /// A pane with these marks, `None` being "the host could not tell yet".
@@ -1375,4 +1375,187 @@ fn only_a_chosen_name_is_put_back_and_never_a_programs_title() {
     let file = parse_snapshot(include_bytes!("../../../test/project-format/titles.json")).unwrap();
     let names: Vec<Option<String>> = file.windows[0].tabs.iter().map(restored_name).collect();
     assert_eq!(names, vec![Some("web".to_string()), None]);
+}
+
+// -- task 1799: the panes the supervisor opened ---------------------------
+
+fn opened_by(cwd: &str, scrollback: &str, by_supervisor: bool) -> SavedNode {
+    SavedNode::Leaf(SavedLeaf { scrollback: scrollback.into(), by_supervisor, ..SavedLeaf::plain(cwd, Agent::None) })
+}
+
+fn by_supervisor_of(root: &SavedNode) -> Vec<bool> {
+    polter_projectfile::leaves(root).iter().map(|l| l.by_supervisor).collect()
+}
+
+/// A pane is the supervisor's worker when the core says its terminal was
+/// opened as a worker of the terminal in the supervisor's pane -- not of
+/// some other supervisor, and not for being an agent.
+#[test]
+fn a_save_marks_the_panes_the_core_says_the_supervisor_opened() {
+    let worker_of = |t: &str| match t {
+        "0xw1" | "0xw3" => Some("0xs".to_string()),
+        "0xother" => Some("0xelse".to_string()),
+        _ => None,
+    };
+    let three = || {
+        split(
+            leaf("/s", "0.snap"),
+            SavedNode::Stack { shown: 0, members: vec![SavedLeaf { scrollback: "1.snap".into(), ..SavedLeaf::plain("/w", Agent::None) }, SavedLeaf { scrollback: "2.snap".into(), ..SavedLeaf::plain("/o", Agent::None) }, SavedLeaf { scrollback: "3.snap".into(), ..SavedLeaf::plain("/w", Agent::None) }] },
+            Axis::Horizontal,
+        )
+    };
+    let terminals = [Some("0xs".to_string()), Some("0xw1".to_string()), Some("0xother".to_string()), Some("0xw3".to_string())];
+
+    let mut root = three();
+    mark_workers(&mut root, &terminals, Some("0xs"), &worker_of);
+    let marked = by_supervisor_of(&root);
+    assert_eq!(marked, [false, true, false, true]);
+
+    // A pane with no terminal yet is not anybody's worker.
+    let mut root = three();
+    mark_workers(&mut root, &[Some("0xs".into()), None, None, Some("0xw3".into())], Some("0xs"), &worker_of);
+    let partly = by_supervisor_of(&root);
+    assert_eq!(partly, [false, false, false, true]);
+
+    // No supervisor to compare with: nothing is marked -- which is "cannot
+    // tell", left to the file, not a "no" written over it.
+    let mut root = three();
+    mark_workers(&mut root, &terminals, None, &worker_of);
+    let none = by_supervisor_of(&root);
+    assert_eq!(none, [false, false, false, false]);
+}
+
+/// Once a pane was opened by the supervisor it stays so: a later save that
+/// cannot tell -- the supervisor's pane is not open, or the worker has gone
+/// and the terminal is a shell now -- keeps the file's mark.
+#[test]
+fn a_save_that_cannot_tell_keeps_the_files_mark_that_the_supervisor_opened_a_pane() {
+    let known = Pages::from_file(&one_tab(split(leaf_of("/a", "0.snap", chief()), opened_by("/b", "1.snap", true), Axis::Horizontal), 2)).known();
+    let file_says = known["1.snap"].by_supervisor;
+    assert!(file_says);
+    let kept = keeping_what_the_file_knew(&opened_by("/b", "1.snap", false), &known);
+    let kept = by_supervisor_of(&kept);
+    assert_eq!(kept, [true]);
+    // And a pane the file did not mark is not marked by being kept.
+    let plain = keeping_what_the_file_knew(&opened_by("/a", "0.snap", false), &known);
+    let plain = by_supervisor_of(&plain);
+    assert_eq!(plain, [false]);
+}
+
+/// The core is told which terminals are in the panes the file marks, found
+/// by counting along the page like the supervisor's.
+#[test]
+fn an_open_project_says_which_terminals_its_supervisor_opened() {
+    let page = one_tab(
+        // The supervisor's pane is its seat (task 1794), not its agent's flag.
+        split(seated("/a", "0.snap", chief(), true), split(opened_by("/b", "1.snap", true), opened_by("/c", "2.snap", false), Axis::Vertical), Axis::Horizontal),
+        3,
+    );
+    let pages = Pages::from_file(&page);
+    let said = Stated::of_open("p", None, &pages, &[(0, terms(&["0xs", "0xw", "0xmine"]))]);
+    assert_eq!(said.supervisor, Some("0xs".into()));
+    let workers = said.workers.clone();
+    assert_eq!(workers, terms(&["0xw"]));
+    assert_eq!(stated::refusal(&[said]), None);
+
+    // A page that changed since it was written names none: counting would
+    // name the wrong pane.
+    let changed = Stated::of_open("p", None, &pages, &[(0, terms(&["0xnew", "0xs", "0xw", "0xmine"]))]);
+    let none = changed.workers;
+    assert!(none.is_empty(), "{none:?}");
+}
+
+// -- task 1800: who is in a pane, from the core ------------------------------
+
+fn agent(role: &str, cli: &str, session: &str, supervisor: bool) -> Agent {
+    Agent::Agent(Who { role: role.into(), cli: cli.into(), session: session.into(), supervisor })
+}
+
+/// The core's three answers are the file's three, and an agent is never
+/// written as the supervisor from here.
+#[test]
+fn what_the_core_says_is_in_a_terminal_is_what_a_save_writes() {
+    let none = agent_said("none", None, None, None);
+    assert_eq!(none, Agent::None);
+    let unknown = agent_said("unknown", None, None, None);
+    assert_eq!(unknown, Agent::Unknown);
+    let worker = agent_said("agent", Some("polter-dev"), Some("codex"), Some("s1"));
+    assert_eq!(worker, agent("polter-dev", "codex", "s1", false));
+    // An agent the core knows only some of: the rest is empty, as it wrote.
+    let partly = agent_said("agent", None, Some("claude-code"), None);
+    assert_eq!(partly, agent("", "claude-code", "", false));
+    // A word this build does not know writes nothing over the file.
+    let strange = agent_said("ghost", Some("x"), None, None);
+    assert_eq!(strange, Agent::Unknown);
+}
+
+#[test]
+fn a_save_asks_who_is_behind_each_pane_that_has_a_terminal() {
+    let mut root = split(leaf_of("/a", "0.snap", Agent::Unknown), leaf_of("/b", "1.snap", Agent::Unknown), Axis::Horizontal);
+    let agent_of = |t: &str| if t == "0xw" { agent("polter-dev", "codex", "s1", false) } else { Agent::None };
+    fill_agents(&mut root, &[None, Some("0xw".into())], &agent_of);
+    let said: Vec<Agent> = polter_projectfile::leaves(&root).iter().map(|l| l.agent.clone()).collect();
+    assert_eq!(said, [Agent::Unknown, agent("polter-dev", "codex", "s1", false)]);
+}
+
+fn seated(cwd: &str, scrollback: &str, agent: Agent, seat: bool) -> SavedNode {
+    SavedNode::Leaf(SavedLeaf { scrollback: scrollback.into(), supervisor_seat: Some(seat), ..SavedLeaf::plain(cwd, agent) })
+}
+
+/// macOS's `agent(now:was:)`, with the supervisor's pane being the pane's
+/// seat (task 1794): the seated pane stays the supervisor's whatever is said
+/// of it now, and takes the words an agent in it has; any other pane is what
+/// it is said to be. The file is one macOS writes -- the seat on the pane,
+/// the agent's own flag `false` -- so a reading of the flag would protect
+/// nothing here.
+#[test]
+fn the_supervisors_pane_stays_the_supervisors_and_a_workers_pane_is_what_it_is_now() {
+    let lead = agent("polter-supervisor", "claude-code", "s", false);
+    let file = one_tab(split(seated("/a", "0.snap", lead.clone(), true), seated("/b", "1.snap", worker(), false), Axis::Horizontal), 2);
+    let known = Pages::from_file(&file).known();
+    // `seat` is what the host says of the pane now: `None` until the core
+    // has taken the marks back, as on a restored tab.
+    let kept = |scrollback: &str, now: Agent, seat: Option<bool>| -> Agent {
+        let node = SavedNode::Leaf(SavedLeaf { scrollback: scrollback.into(), supervisor_seat: seat, ..SavedLeaf::plain("/x", now) });
+        let node = keeping_what_the_file_knew(&node, &known);
+        polter_projectfile::leaves(&node)[0].agent.clone()
+    };
+
+    // The seated pane, told nobody is in it: still the supervisor's.
+    let gone = kept("0.snap", Agent::None, None);
+    assert_eq!(gone, lead);
+    // Told of an agent with a new session: the new session, and the flag
+    // follows the seat.
+    let resumed = kept("0.snap", agent("", "claude-code", "s2", false), None);
+    assert_eq!(resumed, agent("polter-supervisor", "claude-code", "s2", true));
+    // Not known: the file's.
+    let unknown = kept("0.snap", Agent::Unknown, None);
+    assert_eq!(unknown, lead);
+
+    // A worker's pane takes what it is told, a new worker or nobody.
+    let next = kept("1.snap", agent("polter-test", "claude-code", "s3", false), None);
+    assert_eq!(next, agent("polter-test", "claude-code", "s3", false));
+    let left = kept("1.snap", Agent::None, None);
+    assert_eq!(left, Agent::None);
+    let unsaid = kept("1.snap", Agent::Unknown, None);
+    assert_eq!(unsaid, worker());
+
+    // The seat moved: the old seat's pane is what it is told now, and the
+    // new one is kept as the supervisor's.
+    let unseated = kept("0.snap", Agent::None, Some(false));
+    assert_eq!(unseated, Agent::None);
+    let moved = kept("1.snap", Agent::None, Some(true));
+    assert_eq!(moved, worker());
+}
+
+/// An older file of this host's said the supervisor only on the agent
+/// (`supervisor: true`, no seat). Windows reads the seat alone (task 1794),
+/// so that pane is no longer kept as the supervisor's by a save.
+#[test]
+fn an_agents_own_supervisor_flag_does_not_keep_a_pane_without_the_seat() {
+    let file = one_tab(seated("/a", "0.snap", chief(), false), 1);
+    let known = Pages::from_file(&file).known();
+    let node = keeping_what_the_file_knew(&leaf_of("/x", "0.snap", Agent::None), &known);
+    let written = polter_projectfile::leaves(&node)[0].agent.clone();
+    assert_eq!(written, Agent::None);
 }

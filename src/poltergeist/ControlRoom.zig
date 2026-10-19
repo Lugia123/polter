@@ -2092,6 +2092,25 @@ pub fn stewardOfGroup(arena: Allocator, bus: *const Bus, chat: *const Chat, name
     return stewardAmong(bus, chat, name, members);
 }
 
+/// The supervisor already minding `name` that adding `id` to it would make
+/// a second one of, in a group with a project: **a project has one
+/// supervisor** (task 1797, the user's rule 1, Q1). Null when the add is
+/// fine -- `id` is no supervisor, is already in the group, the group is not
+/// bound to a project, or nobody else in it minds it.
+///
+/// Asked of every add (`group_add`, and the two the core makes itself), not
+/// of `become_supervisor`: a terminal turning supervisor has not said which
+/// group it is for yet. A supervisor whose agent has left minds nothing
+/// (`minds`), so it does not stand in the way of the next one -- the same
+/// rule `start_supervisor` and `stewardOfGroup` go by.
+pub fn projectSupervisorBesides(arena: Allocator, bus: *const Bus, chat: *const Chat, name: []const u8, id: Id) ?Id {
+    if (id == Chat.user_id or !bus.isSupervisor(id)) return null;
+    if (chat.isMember(name, id)) return null;
+    if (chat.projectOf(name) != .bound) return null;
+    const steward = stewardOfGroup(arena, bus, chat, name) orelse return null;
+    return if (steward == id) null else steward;
+}
+
 /// What the control room says of `name`'s supervisor: there is one, one is
 /// on its way, the last try failed, or there is none -- and what starting
 /// one would use. `steward` is the answer `stewardOf` gave.
@@ -4825,6 +4844,41 @@ test "1802: an agent said to have left moves the snapshot on, and the host is to
     const after = try room.refresh(w.input(7_000), .event);
     const moved = after.notify orelse return error.LeftNotSent;
     try testing.expect(moved > rev);
+}
+
+test "1797: a group with a project takes no second supervisor while its own minds it" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    try w.hook(0xa1, .session_started, null, 100);
+    try w.terminal(0xb2, "second", 0x22);
+    try w.bus.addSupervisor(0xb2);
+    try w.terminal(0xc3, "plain", 0x23);
+
+    // No project: a second supervisor may join, as before.
+    const unbound = projectSupervisorBesides(a, &w.bus, &w.chat, "web-app", 0xb2);
+    try testing.expectEqual(@as(?Id, null), unbound);
+
+    _ = try w.chat.setProject("web-app", .{ .bound = "web" });
+    const second = projectSupervisorBesides(a, &w.bus, &w.chat, "web-app", 0xb2);
+    try testing.expectEqual(@as(?Id, 0xa1), second);
+    // A terminal that is no supervisor, and the one already there, are fine.
+    const plain = projectSupervisorBesides(a, &w.bus, &w.chat, "web-app", 0xc3);
+    try testing.expectEqual(@as(?Id, null), plain);
+    const again = projectSupervisorBesides(a, &w.bus, &w.chat, "web-app", 0xa1);
+    try testing.expectEqual(@as(?Id, null), again);
+
+    // Its agent gone, it minds nothing: the next one may come in.
+    w.bus.noteAgentHere(0xa1, true, .{ .pid = 91, .started = 50 }, 200);
+    w.bus.noteAgentHere(0xa1, false, null, 1_000);
+    var ctx: u8 = 0;
+    _ = w.bus.considerLinks(1_000 + Bus.link_grace_ms, &ctx, noRuns);
+    const left = projectSupervisorBesides(a, &w.bus, &w.chat, "web-app", 0xb2);
+    try testing.expectEqual(@as(?Id, null), left);
 }
 
 test "ControlRoom start: a group with no supervisor says one can be started, in which role and where" {

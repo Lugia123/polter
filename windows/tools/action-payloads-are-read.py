@@ -102,15 +102,16 @@ def main() -> int:
 
     # Two structs whose field counts are known, so that the reader is seen to
     # count and not merely to find something. `new_tab` was the one-field
-    # probe until it grew an answer cell (`result`, task 1451); it is still
-    # here because it is the struct this gate was written about.
+    # probe until it grew an answer cell (`result`, task 1451) and then who
+    # wants it (`by`, task 1823); it is still here because it is the struct
+    # this gate was written about.
     probe_ok = (
         struct_fields(header, "ghostty_action_pwd_s") == 1
-        and struct_fields(header, "ghostty_action_new_tab_s") == 2
+        and struct_fields(header, "ghostty_action_new_tab_s") == 3
     )
     print(
         "probe self-test:",
-        "OK (a one-field payload struct is seen as carrying something, and a two-field one as two)"
+        "OK (a one-field payload struct is seen as carrying something, and a three-field one as three)"
         if probe_ok
         else "FAILED -- the header reader is broken, so nothing below means anything",
     )
