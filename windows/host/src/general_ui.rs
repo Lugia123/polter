@@ -2275,12 +2275,14 @@ fn about_tip(value: HWND, whole: Option<&str>) {
     }
 }
 
-/// Version from the core (`ghostty_info`), build as the build mode and this
-/// binary's identity -- the string the `[build]` log line carries -- and the
-/// host's own commit.
+/// Version as this host's own (`update::VERSION`, the FileVersion's), build
+/// as the build mode, this binary's identity -- the string the `[build]` log
+/// line carries -- and the core's version (`ghostty_info`, Ghostty's
+/// numbering), and the host's own commit (`rules::about_version_and_build`,
+/// task 1786).
 fn about_values() -> Vec<(rules::AboutLabel, String)> {
     let info = unsafe { (crate::api().info)() };
-    let version = (!info.version.is_null() && info.version_len > 0)
+    let core = (!info.version.is_null() && info.version_len > 0)
         .then(|| String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(info.version as *const u8, info.version_len) }).into_owned());
     let mode = match info.build_mode {
         0 => "Debug",
@@ -2290,12 +2292,12 @@ fn about_values() -> Vec<(rules::AboutLabel, String)> {
         _ => "unknown mode",
     };
     let identity = std::env::current_exe().map(|p| crate::binary_identity(&p)).unwrap_or_default();
-    let build = format!("{mode} \u{b7} {identity}");
+    let (version, build) = rules::about_version_and_build(crate::update::VERSION, core.as_deref(), mode, &identity);
     let commit = match crate::HOST_COMMIT {
         "" => String::new(),
         c => format!("{c}{}", if crate::HOST_DIRTY == "1" { " (uncommitted changes)" } else { "" }),
     };
-    rules::about_rows(version.as_deref(), Some(&build), Some(&commit))
+    rules::about_rows(Some(&version), Some(&build), Some(&commit))
 }
 
 /// The form: each key in the label column, right-aligned, with the dot when

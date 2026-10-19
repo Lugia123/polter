@@ -199,7 +199,10 @@ pub fn init(opts: InitOpts) !void {
     // output and did not reach here, because it scanned `src/cli` and
     // `main_ghostty.zig`; **this was found afterwards by reading a log, not
     // by that scan.**
-    std.log.info(build_config.app_name ++ " version={s}", .{build_config.version_string});
+    // Polter's version first, the one a person quotes, then the core's
+    // Ghostty-numbered one, which is what programs in the terminal see
+    // (task 1786, issue #89).
+    std.log.info(build_config.app_name ++ " version={s}{s} core={s}", .{ build_config.shownVersion(), build_config.shownVersionNote(), build_config.version_string });
     std.log.info(build_config.app_name ++ " build optimize={s}", .{build_config.mode_string});
     std.log.info("runtime={}", .{build_config.app_runtime});
     std.log.info("font_backend={}", .{build_config.font_backend});

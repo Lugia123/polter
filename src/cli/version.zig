@@ -37,10 +37,14 @@ pub fn run(alloc: Allocator) !u8 {
     // Not repointed, because the fork's own URL is not written down anywhere
     // this file may read, and guessing one would ship a second wrong link.
     _ = tty;
-    try stdout.print(build_config.app_name ++ " {s}\n\n", .{build_config.version_string});
+    // Polter's own version, the one the mac bundle and the Windows host
+    // say; the core's Ghostty-numbered one beside it, because it is what
+    // programs in the terminal see (`TERM_PROGRAM_VERSION`) (task 1786).
+    try stdout.print(build_config.app_name ++ " {s}{s}\n\n", .{ build_config.shownVersion(), build_config.shownVersionNote() });
 
     try stdout.print("Version\n", .{});
-    try stdout.print("  - version: {s}\n", .{build_config.version_string});
+    try stdout.print("  - version: {s}{s}\n", .{ build_config.shownVersion(), build_config.shownVersionNote() });
+    try stdout.print("  - core   : {s}\n", .{build_config.version_string});
     try stdout.print("  - channel: {t}\n", .{build_config.release_channel});
 
     try stdout.print("Build Config\n", .{});

@@ -15,6 +15,7 @@ const expandPath = @import("../os/path.zig").expand;
 
 const gtk = @import("gtk.zig");
 const GitVersion = @import("GitVersion.zig");
+const PolterVersion = @import("PolterVersion.zig");
 
 /// Standard build configuration options.
 optimize: std.builtin.OptimizeMode,
@@ -54,6 +55,19 @@ log_render_phase: bool = false,
 exe_entrypoint: ExeEntrypoint = .ghostty,
 version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch = 0 },
 lib_version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch = 0 },
+
+/// Polter's own version, `0.10.2135` (`PolterVersion.zig`): what the mac
+/// bundle's `CFBundleShortVersionString` and the Windows host's FileVersion
+/// say, worked out the same way (task 1786, issue #89). **Not `version`**,
+/// which stays Ghostty's numbering on purpose -- see where it is set.
+/// Empty when Ghostty is built as a dependency, where there is no Polter.
+polter_version: []const u8 = "",
+
+/// Where `polter_version`'s major.minor came from (`PolterVersion.Source`):
+/// `tag`, `branch` or `fallback`. A fallback is said wherever the version
+/// is (task 1786): `0.1.N` from a detached checkout with no tag is a build
+/// that could not tell, not a release called 0.1.
+polter_version_source: []const u8 = "",
 
 /// Binary properties
 pie: bool = false,
@@ -533,6 +547,20 @@ pub fn init(
         };
     };
 
+    // **Polter's version beside Ghostty's** (task 1786, issue #89). The
+    // core's `version` above is Ghostty's numbering and has to stay so: it
+    // is `TERM_PROGRAM_VERSION` (beside `TERM_PROGRAM=ghostty`, which
+    // programs read to decide what a "ghostty" can do), the `XTVERSION`
+    // answer, and the string a Windows host reads its pairing commit out
+    // of. What a person is shown as the version is Polter's -- the number
+    // the mac bundle and the Windows FileVersion already carry -- and the
+    // log and `+version` said Ghostty's under Polter's name, on both hosts.
+    if (!is_dep) {
+        const polter = PolterVersion.detect(b);
+        config.polter_version = polter.string;
+        config.polter_version_source = @tagName(polter.source);
+    }
+
     // libghostty-vt properties
 
     const lib_version_string = b.option(
@@ -961,6 +989,8 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
         "{f}",
         .{self.version},
     ));
+    step.addOption([]const u8, "polter_version", self.polter_version);
+    step.addOption([]const u8, "polter_version_source", self.polter_version_source);
     var lib_version_buf: [1024]u8 = undefined;
     step.addOption(std.SemanticVersion, "lib_version", self.lib_version);
     step.addOption([:0]const u8, "lib_version_string", try std.fmt.bufPrintZ(

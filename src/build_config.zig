@@ -17,6 +17,61 @@ pub const ReleaseChannel = BuildConfig.ReleaseChannel;
 pub const version = options.app_version;
 pub const version_string = options.app_version_string;
 
+/// Polter's own version (`build/PolterVersion.zig`), `0.10.2135`: the one a
+/// person is shown, the same number as the mac bundle's and the Windows
+/// host's (task 1786). Empty where it was not worked out. `version` above
+/// is Ghostty's numbering and is what programs in the terminal see.
+pub const polter_version: []const u8 = options.polter_version;
+
+/// Where `polter_version`'s major.minor came from: `tag`, `branch` or
+/// `fallback` (`build/PolterVersion.zig`).
+pub const polter_version_source: []const u8 = options.polter_version_source;
+
+/// The version to show a person: Polter's, or the core's when there is no
+/// Polter one to say.
+pub fn shownVersion() []const u8 {
+    return shown(polter_version, version_string);
+}
+
+fn shown(polter: []const u8, core: []const u8) []const u8 {
+    return if (polter.len > 0) polter else core;
+}
+
+/// What goes after the version wherever it is shown: said when the number
+/// is a guess (task 1786). A detached checkout with no tag and no
+/// `feature/vX.Y` branch is `0.1.N`, and says so rather than pass for a
+/// release. Empty otherwise.
+pub fn shownVersionNote() []const u8 {
+    return note(polter_version, polter_version_source);
+}
+
+fn note(polter: []const u8, source: []const u8) []const u8 {
+    if (polter.len == 0) return "";
+    return if (std.mem.eql(u8, source, "fallback")) " (no tag or version branch: a fallback number)" else "";
+}
+
+test "1786: what a person is shown is Polter's version, and Ghostty's only when there is none" {
+    const testing = std.testing;
+    try testing.expectEqualStrings("0.10.2135", shown("0.10.2135", "1.3.2-HEAD+df00a498e"));
+    try testing.expectEqualStrings("1.3.2-HEAD+df00a498e", shown("", "1.3.2-HEAD+df00a498e"));
+    // A guessed number says it is one; a tagged or branch one says nothing more.
+    try testing.expectEqualStrings(" (no tag or version branch: a fallback number)", note("0.1.2137", "fallback"));
+    try testing.expectEqualStrings("", note("0.10.2135", "tag"));
+    try testing.expectEqualStrings("", note("0.11.12", "branch"));
+    try testing.expectEqualStrings("", note("", "fallback"));
+}
+
+test "1786: this build's Polter version is Polter's numbering, not the core's" {
+    const testing = std.testing;
+    // Worked out by the build from this repository (`PolterVersion.detect`):
+    // three numbers, and never the Ghostty version the core carries.
+    const v = try std.SemanticVersion.parse(polter_version);
+    try testing.expect(v.pre == null and v.build == null);
+    try testing.expect(!std.mem.eql(u8, polter_version, version_string));
+    try testing.expect(v.major != version.major or v.minor != version.minor);
+    try testing.expectEqualStrings(polter_version, shownVersion());
+}
+
 /// The release channel for this build.
 pub const release_channel = std.meta.stringToEnum(ReleaseChannel, @tagName(options.release_channel)).?;
 

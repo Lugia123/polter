@@ -959,6 +959,21 @@ pub fn about_rows(version: Option<&str>, build: Option<&str>, commit: Option<&st
         .collect()
 }
 
+/// The About block's version and build, as the host has them (task 1786,
+/// issue #89): **Version is Polter's own** -- the host's, the number its
+/// FileVersion carries and the macOS About window shows from its bundle --
+/// and the core's version, which is Ghostty's numbering (what programs in
+/// the terminal see as `TERM_PROGRAM_VERSION`), goes at the end of Build.
+/// It used to be Version, so an About window on Windows said `1.3.2-HEAD+…`
+/// where the Mac's said `0.10.2135`.
+pub fn about_version_and_build(polter: &str, core: Option<&str>, mode: &str, identity: &str) -> (String, String) {
+    let mut build = format!("{mode} \u{b7} {identity}");
+    if let Some(core) = core.map(str::trim).filter(|c| !c.is_empty()) {
+        build.push_str(&format!(" \u{b7} core {core}"));
+    }
+    (polter.to_string(), build)
+}
+
 /// A setting's key in the label column, broken into at most `max_lines`
 /// lines after its hyphens, as the macOS form's label wraps
 /// ("font-family-bold-" / "italic"); the last line ends in "…" when the rest
@@ -1780,6 +1795,13 @@ mod tests {
 
     #[test]
     fn about_leaves_out_what_is_blank() {
+        let (version, build) = about_version_and_build("0.10.2135", Some("1.3.2-HEAD+df00a498e"), "ReleaseFast", "sha 1234");
+        // Polter's, as the Mac says it; Ghostty's after the build, not instead (task 1786).
+        assert_eq!(version, "0.10.2135");
+        assert_eq!(build, "ReleaseFast \u{b7} sha 1234 \u{b7} core 1.3.2-HEAD+df00a498e");
+        let (_, no_core) = about_version_and_build("0.10.2135", Some("  "), "Debug", "x");
+        assert_eq!(no_core, "Debug \u{b7} x");
+
         let rows = about_rows(Some("0.9.1"), Some("  "), Some("abc123"));
         assert_eq!(rows, vec![(AboutLabel::Version, "0.9.1".to_string()), (AboutLabel::Commit, "abc123".to_string())]);
         assert!(about_rows(None, None, None).is_empty());
