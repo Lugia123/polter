@@ -9691,12 +9691,12 @@ fn assignAndTell(
         "Task {d} assigned.{s}{s}",
         .{ task, told, switch (cleared) {
             .none => "",
-            .confirmed => " /clear sent; cleared: confirmed -- the CLI started a new " ++
+            .confirmed => " clear sent; cleared: confirmed -- the CLI started a new " ++
                 "session before the line was typed.",
-            .unconfirmed => " /clear sent; cleared: unconfirmed -- the CLI said nothing " ++
+            .unconfirmed => " clear sent; cleared: unconfirmed -- the CLI said nothing " ++
                 "about a new session within 10s, and the line was typed anyway. Read " ++
                 "that terminal before relying on its context being empty.",
-            .pending => " /clear sent; cleared: pending -- this CLI says it has cleared " ++
+            .pending => " clear sent; cleared: pending -- this CLI says it has cleared " ++
                 "only when its next turn starts, which is the turn this line starts. " ++
                 "terminal_list shows a new session_id for it once that has happened; read " ++
                 "that terminal before relying on its context being empty.",
@@ -9762,19 +9762,17 @@ fn blindRefusal(alloc: std.mem.Allocator, bus: *const Bus, host: Host, id: Bus.I
 /// waits for a turn to begin like any other. Antigravity's the same way
 /// (task 1682, measured on agy 1.4.0): after `/clear` no `SessionStart`
 /// comes until the next prompt, and that one names a new conversation.
-/// opencode's is `/new`, with `/clear` as its alias (`slash.aliases` in
-/// opencode 1.2.10 `tui/app.tsx`); it only goes back to the start page, says
-/// nothing, and the next session is created with the next message (task
-/// 1777). `/clear` is what is typed, so every reply that says "/clear sent"
-/// stays true. ⚠️ Read off the source, not off a screen: the alias is matched
-/// by the prompt's fuzzy completion (`autocomplete.tsx`), which a test
-/// machine has to confirm picks "New session" for it.
+/// opencode's is `/new` (task 1777): it only goes back to the start page,
+/// says nothing, and the next session is created with the next message.
+/// ⚠️ Not `/clear`, which 1.x took as `/new`'s alias: in 2.0 it is a command
+/// of its own that also closes the session's tabs (`tui/src/app.tsx` at
+/// v2.0.32, task 1806). So the replies say "clear sent", not which word.
 const FreshCli = struct { cli: []const u8, command: []const u8, confirm: fresh_assign.Confirm };
 const fresh_clis = [_]FreshCli{
     .{ .cli = "claude-code", .command = "/clear", .confirm = .session_start },
     .{ .cli = "codex", .command = "/clear", .confirm = .next_turn },
     .{ .cli = "antigravity", .command = "/clear", .confirm = .next_turn },
-    .{ .cli = "opencode", .command = "/clear", .confirm = .next_turn },
+    .{ .cli = "opencode", .command = "/new", .confirm = .next_turn },
 };
 
 /// The clear for this agent's CLI, or null for one with none.
@@ -9808,7 +9806,7 @@ pub fn freshRefusal(agent: ?Bus.Agent) ?struct { code: []const u8, message: []co
     };
     if (freshCli(a) == null) return .{
         .code = "FreshUnsupported",
-        .message = "only claude-code, codex, antigravity and opencode (/clear) can be cleared; that terminal's CLI " ++
+        .message = "only claude-code, codex, antigravity (/clear) and opencode (/new) can be cleared; that terminal's CLI " ++
             "is another. Nothing was typed and nothing was assigned; assign without fresh, " ++
             "or start a new worker for the task.",
     };
@@ -9867,7 +9865,7 @@ fn freshAssign(
             " Nothing was cleared and nothing was assigned."),
         error.DraftInLine => hostFailure("DraftInLine", draft_in_line ++
             " Nothing was cleared and nothing was assigned."),
-        else => hostFailure("SendFailed", "could not type /clear into that terminal. " ++
+        else => hostFailure("SendFailed", "could not type the clear command into that terminal. " ++
             "Nothing was assigned."),
     };
 
@@ -9893,7 +9891,7 @@ pub fn finishFreshAssign(
     const what = host.taskOwner(task) catch |err| return taskFailure(err);
     if (!what.open) return hostFailure(
         "NotOpen",
-        "/clear was sent, but the task was closed or cancelled while it went through, " ++
+        "The clear was sent, but the task was closed or cancelled while it went through, " ++
             "so it was not assigned.",
     );
     return assignAndTell(alloc, host, task, id, what, cleared);
@@ -14609,7 +14607,7 @@ test "fresh: /clear is typed, the request is held, and nothing is assigned yet" 
     const res = try finishFreshAssign(alloc, fake.host(), id, worker, .confirmed);
     try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "context was cleared") != null);
     try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "in group \"build\": group_read it") != null);
-    try testing.expect(std.mem.indexOf(u8, res.text, "/clear sent; cleared: confirmed") != null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "clear sent; cleared: confirmed") != null);
     try testing.expectEqual(worker, panel.get(id).?.owner);
 }
 
@@ -14638,7 +14636,7 @@ test "1668: codex is cleared with /clear, held only to settle, and the reply say
     try testing.expectEqual(@as(Bus.Id, 0), panel.get(id).?.owner);
 
     const res = try finishFreshAssign(alloc, fake.host(), id, worker, .pending);
-    try testing.expect(std.mem.indexOf(u8, res.text, "/clear sent; cleared: pending") != null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "clear sent; cleared: pending") != null);
     try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "in group \"build\": group_read it") != null);
     try testing.expectEqual(worker, panel.get(id).?.owner);
 
@@ -14668,7 +14666,7 @@ test "1682: antigravity is cleared with /clear and confirmed only by its next tu
     try testing.expectEqual(fresh_assign.Confirm.next_turn, fake.parked_assign.?.confirm);
 }
 
-test "1777: opencode is cleared with /clear and confirmed only by its next turn" {
+test "1806: opencode is cleared with /new and confirmed only by its next turn" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
     var panel: Tasks = .init(testing.allocator, .{});
@@ -14685,7 +14683,7 @@ test "1777: opencode is cleared with /clear and confirmed only by its next turn"
         .id = worker,
         .fresh = true,
     } });
-    try testing.expectEqualStrings("/clear", fake.sent.?.text);
+    try testing.expectEqualStrings("/new", fake.sent.?.text);
     try testing.expectEqual(fresh_assign.Confirm.next_turn, fake.parked_assign.?.confirm);
 }
 

@@ -90,43 +90,34 @@ d.setdefault("mcp", {})["polter"] = {
 }'
 }
 
-# **Confirmed** (task 1777, opencode 1.2.10): a user's skills are
-# `~/.config/opencode/{skill,skills}/**/SKILL.md` (`skill/skill.ts`,
-# `OPENCODE_SKILL_PATTERN`), and this machine's opencode already keeps two
-# there.
-#
-# ⚠️ **opencode reads `~/.claude/skills/**` as well**, so where the Claude
-# Code plugin has mirrored Polter's skills it already sees them, and a copy
-# here gives two files with one name. Measured with `opencode debug skill`
-# in a scratch `$HOME`, one `polter-probe` in each directory: **one skill is
-# listed, the copy here**, and opencode's log says `duplicate skill name`
-# at WARN; nothing fails. (Only here: the one under `.claude`. Only under
-# `.claude`: that one.) So it is installed unconditionally -- it wins over a
-# Claude Code copy that may be another build's, and it is still there for a
-# person who has no Claude Code plugin at all.
+# **Confirmed** (tasks 1777, 1806; opencode 2.0.32): a user's skills are
+# `~/.config/opencode/{skill,skills}/**/SKILL.md`
+# (`core/src/config/plugin/skill.ts`).
 host_skills_dir() {
   printf '%s/.config/opencode/skills' "$home"
 }
 
-# **The first of three that exists, and only that one** (task 1777, opencode
-# 1.2.10, `session/instruction.ts` `globalFiles`): `$OPENCODE_CONFIG_DIR/
-# AGENTS.md`, then `~/.config/opencode/AGENTS.md`, then `~/.claude/CLAUDE.md`
-# -- the loop breaks at the first file it finds.
-#
-# ⚠️ So **creating** `~/.config/opencode/AGENTS.md` would switch the person's
-# `~/.claude/CLAUDE.md` off for opencode: everything they wrote there would
-# stop reaching it, for the sake of our one paragraph. When opencode has no
-# AGENTS.md of its own and does read a CLAUDE.md, nothing is written -- that
-# CLAUDE.md is the Claude Code plugin's rules file, and with its `rules` on
-# it already carries this block. Into an AGENTS.md that is already there, or
-# into a new one when there is no CLAUDE.md to hide, the block goes as it
-# does for every other host. (`OPENCODE_CONFIG_DIR` is a per-launch
-# variable, not something this machine's provision can see.)
+# ⚠️ **opencode reads `~/.claude/skills/**` as well**
+# (`core/src/config/plugin/compatibility.ts`, unless the person's
+# environment says `OPENCODE_DISABLE_CLAUDE_CODE`), so where the Claude Code
+# plugin has mirrored Polter's skills it already sees them, and a copy here
+# would be a second skill of one name. So when they are there, none go here,
+# and the ones an earlier launch put here are taken back (task 1806: one
+# copy, the Claude Code plugin's). Not switched off in opencode instead: that
+# would hide the person's own Claude skills from it as well.
+host_skills_shared_dir() {
+  printf '%s/.claude/skills' "$home"
+}
+
+# `~/.config/opencode/AGENTS.md` (task 1806, opencode 2.0.32,
+# `core/src/config/plugin/instruction.ts`): the person's rules file, read
+# with every `AGENTS.md` found walking up from the project. **2.0 reads no
+# `CLAUDE.md` at all**, so this file hides nothing of the person's by being
+# there -- 1.x read the first of it and `~/.claude/CLAUDE.md`, which is why
+# this used to stay away when there was a CLAUDE.md. Only the marked block
+# is Polter's; everything outside it is left as it was.
 host_rules_file() {
-  agents="$home/.config/opencode/AGENTS.md"
-  if [ -f "$agents" ] || [ ! -f "$home/.claude/CLAUDE.md" ]; then
-    printf '%s' "$agents"
-  fi
+  printf '%s/.config/opencode/AGENTS.md' "$home"
 }
 
 polter_provision_main

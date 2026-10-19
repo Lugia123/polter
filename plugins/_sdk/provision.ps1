@@ -64,6 +64,10 @@
 #                         checked: writing into the wrong file in somebody's
 #                         home directory is worse than not writing. Never a
 #                         project file. See `Set-PolterRules`.
+#   Get-HostSkillsSharedDir
+#                         **Optional.** Another skills directory this host
+#                         reads besides its own; see `host_skills_shared_dir`
+#                         in provision.sh (task 1806).
 #   Get-HostSkillsDir     returns the user-level skills directory, built from
 #                         `$script:PolterHome`.
 #                         **Returning nothing means this host has no skills**,
@@ -618,6 +622,18 @@ function Invoke-PolterProvision {
         return (Write-PolterProvisionDone)
     }
 
+    # Read from a directory another plugin fills (task 1806; see provision.sh):
+    # one copy, not two of one name.
+    if (Get-Command -Name Get-HostSkillsSharedDir -CommandType Function -ErrorAction SilentlyContinue) {
+        $shared = ''
+        try { $shared = ((Get-HostSkillsSharedDir | Out-String).Trim()) } catch { $shared = '' }
+        if ($shared -and (Test-PolterSkillsPresent $shared)) {
+            Remove-PolterSkills -SkillsDir $skillsDir -Keep @() -Why ", because this host reads Polter's skills from $shared"
+            $script:PolterNote = " skills=shared -- read from $shared"
+            return (Write-PolterProvisionDone)
+        }
+    }
+
     # --- the skills -----------------------------------------------------------
     #
     # Polter's skills are reachable through `skill_read`, which an agent has to
@@ -706,6 +722,16 @@ function Invoke-PolterProvision {
 # ending the log line with -Why. An empty -Keep removes all of them: that is
 # what `skills = no` asks for, and only that caller passes one -- the install
 # pass never does. The same checks as `polter_skills_prune` in provision.sh.
+# Whether the directory holds a skill of Polter's: a `polter-*` directory
+# with a SKILL.md in it.
+function Test-PolterSkillsPresent([string]$Dir) {
+    if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $false }
+    foreach ($d in @(Get-ChildItem -LiteralPath $Dir -Directory -Filter 'polter-*' -ErrorAction SilentlyContinue)) {
+        if (Test-Path -LiteralPath (Join-Path $d.FullName 'SKILL.md') -PathType Leaf) { return $true }
+    }
+    return $false
+}
+
 function Remove-PolterSkills {
     param([string]$SkillsDir, [string[]]$Keep, [string]$Why)
     if (Test-Path -LiteralPath $SkillsDir) {

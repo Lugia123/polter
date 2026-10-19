@@ -10,7 +10,9 @@ Python's `sqlite3` and by `adapter.ps1` through the system's SQLite library
 (`winsqlite3.dll` on Windows, `libsqlite3` here), so the same answer from
 both is also the PowerShell reader working.
 
-A stand-in `opencode` on `PATH` answers `--version`.
+A stand-in `opencode` on `PATH` answers `--version` -- as 2.0.32 does, and
+then, over a database only 1.x has opened, as 1.2.10 did (task 1806): the
+two are started differently and keep their sessions in different tables.
 
     python3 test/opencode-adapter/compare.py              # from the repo root
     python3 test/opencode-adapter/compare.py --ps pwsh    # a specific PowerShell
@@ -45,7 +47,7 @@ def skill(path, name, description):
     write(os.path.join(path, "SKILL.md"), "---\nname: %s\ndescription: %s\n---\nbody\n" % (name, description))
 
 
-def rig(base, version="1.2.10"):
+def rig(base, version="opencode v2.0.32", table="session_v2"):
     home, cwd, bin_dir = (os.path.join(base, d) for d in ("home", "proj 中", "bin"))
     skill(os.path.join(home, ".config", "opencode", "skills", "mine"), "mine", "Mine.")
     skill(os.path.join(home, ".config", "opencode", "skills", "deep", "nested"), "nested", "Foldedé.")
@@ -71,10 +73,11 @@ def rig(base, version="1.2.10"):
     os.makedirs(os.path.dirname(db), exist_ok=True)
     con = sqlite3.connect(db)
     con.execute("pragma journal_mode=wal")
-    con.execute("create table session (id text primary key, project_id text, parent_id text, slug text, "
-                "directory text, title text, version text, time_created integer, time_updated integer)")
-    con.executemany("insert into session (id, project_id, parent_id, directory, time_created, time_updated) "
-                    "values (?, 'p', ?, ?, ?, ?)",
+    con.execute("create table %s (id text primary key, project_id text not null, parent_id text, "
+                "slug text not null, directory text not null, title text, version text not null, "
+                "time_created integer not null, time_updated integer not null, time_idle integer)" % table)
+    con.executemany("insert into %s (id, project_id, parent_id, slug, directory, version, time_created, time_updated) "
+                    "values (?, 'p', ?, 's', ?, '2.0.32', ?, ?)" % table,
                     [("ses_old", None, cwd, now - 86400000, now - 86000000),
                      ("ses_new", None, cwd, now, now + 5),
                      ("ses_child", "ses_new", cwd, now, now),
@@ -104,12 +107,23 @@ def requests(home, cwd):
     yield "launch, resume odd", "launch", dict(base, polter=POLTER, session="../x", role={}, cli={})
     yield "launch, resume not a string", "launch", dict(base, polter=POLTER, session=7, role={}, cli={})
     yield "launch, own session", "launch", dict(base, polter=POLTER, session="ses_new", role={}, cli={"args": ["-c"]})
+    yield "launch, own server", "launch", dict(base, polter=POLTER, session=None, role={},
+                                               cli={"args": ["--server", "http://127.0.0.1:4096"]})
     yield "identify, another CLI", "identify", dict(base, pid=os.getpid(), env={"POLTER_AGENT_CLI": "codex"})
     yield "identify, no marker", "identify", dict(base, pid=os.getpid(), env={})
     yield "identify, by pid", "identify", dict(base, pid=os.getpid(), env=me)
     yield "identify, by sidecar", "identify", dict(base, pid=None, sidecar_pid=os.getpid(), env=me)
     yield "identify, neither", "identify", dict(base, pid=None, env=me)
     yield "identify, no directory", "identify", dict(base, pid=os.getpid(), env=me, cwd=None)
+
+
+def requests_onex(home, cwd):
+    """An opencode 1.x, over a database with only 1.x's `session` table."""
+    base = {"version": 1, "home": home, "cwd": cwd}
+    yield "1.x launch, switches", "launch", dict(base, polter=POLTER, session=None,
+                                                 role={"model": "fake/m", "instructions": "x"}, cli={})
+    yield "1.x launch, resume", "launch", dict(base, polter=POLTER, session="ses_new", role={}, cli={})
+    yield "1.x identify, by pid", "identify", dict(base, pid=os.getpid(), env={"POLTER_AGENT_CLI": "opencode"})
 
 
 def norm(out):
@@ -141,11 +155,16 @@ def main():
     bad = 0
     try:
         home, cwd, bin_dir, writer = rig(base)
+        old = rig(os.path.join(base, "onex"), "1.2.10", "session")
+        unknown = rig(os.path.join(base, "unknown"), "no version here")
         py = [os.path.join(PLUGIN, "adapter.py")]
         ps = [a.ps, "-NoProfile", "-NonInteractive", "-File", os.path.join(PLUGIN, "adapter.ps1")]
-        for label, question, req in requests(home, cwd):
-            r1 = run(py, question, req, bin_dir, home)
-            r2 = run(ps, question, req, bin_dir, home)
+        cases = [(r, home, bin_dir) for r in requests(home, cwd)] + [(r, old[0], old[2]) for r in requests_onex(old[0], old[1])]
+        cases += [(("unknown version, " + r[0],) + r[1:], unknown[0], unknown[2]) for r in requests_onex(unknown[0], unknown[1])][:1]
+        for (label, question, req), home_, bin_ in cases:
+            run1 = lambda argv: run(argv, question, req, bin_, home_)
+            r1 = run1(py)
+            r2 = run1(ps)
             # N1: the text after "Could not read <file>: " is the parser's
             # own message, Python's against .NET's.
             same = r1[0] == r2[0] and (r1[0] != 0 or norm(r1[1]) == norm(r2[1]))

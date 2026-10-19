@@ -84,20 +84,15 @@ function Register-HostMcp {
     }
 }
 
-# **Confirmed** (task 1777, opencode 1.2.10): `~/.config/opencode/skills`.
-# opencode reads `~/.claude/skills` too; a skill under both names is listed
-# once, the copy here winning -- `provision.sh` has the measurement.
+# **Confirmed** (tasks 1777, 1806; opencode 2.0.32): `~/.config/opencode/skills`.
 function Get-HostSkillsDir { Join-Path $script:PolterHome '.config\opencode\skills' }
 
-# **The first of `~/.config/opencode/AGENTS.md` and `~/.claude/CLAUDE.md` that
-# exists, and only that one** (`session/instruction.ts`). Creating the
-# AGENTS.md would hide the person's CLAUDE.md from opencode, so it is written
-# only when it is already there or there is no CLAUDE.md to hide.
-# `provision.sh` has the reasons.
-function Get-HostRulesFile {
-    $agents = Join-Path $script:PolterHome '.config\opencode\AGENTS.md'
-    $claude = Join-Path $script:PolterHome '.claude\CLAUDE.md'
-    if ((Test-Path -LiteralPath $agents) -or -not (Test-Path -LiteralPath $claude)) { $agents } else { '' }
-}
+# opencode reads `~/.claude/skills` too, so Polter's skills there are the one
+# copy and none go here -- `provision.sh` says why (task 1806).
+function Get-HostSkillsSharedDir { Join-Path $script:PolterHome '.claude\skills' }
+
+# `~/.config/opencode/AGENTS.md`: opencode 2.0 reads no CLAUDE.md, so the file
+# hides nothing of the person's (task 1806). `provision.sh` has the reasons.
+function Get-HostRulesFile { Join-Path $script:PolterHome '.config\opencode\AGENTS.md' }
 
 Invoke-PolterProvisionMain

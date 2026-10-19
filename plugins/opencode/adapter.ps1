@@ -5,8 +5,9 @@
 # Windows will not run a `.py`, and Polter on Windows has no Python to lean on,
 # so the manifest names this file as `adapter_windows`. Everything
 # `adapter.py`'s header says -- how a role is applied through one
-# `OPENCODE_CONFIG_CONTENT`, what was measured on opencode 1.2.10, the three
-# things it never does -- is true of this file too, and is not repeated here.
+# `OPENCODE_CONFIG_CONTENT` on an opencode of its own (`--standalone`), what
+# was measured on opencode 2.0.32 (task 1806), the three things it never
+# does -- is true of this file too, and is not repeated here.
 #
 #     adapter.ps1 inventory '<request>'
 #     adapter.ps1 launch '<request>'
@@ -25,8 +26,11 @@
 #     runs the person's plugins and rewrites their configuration.
 #   * **`opencode` from npm is a `.cmd`.** A role's instructions go in as an
 #     argument and must not be re-read by `cmd.exe`, so behind npm's
-#     `opencode.cmd` this starts `node.exe` and the `bin/opencode` script it
-#     runs (`Resolve-OpencodeCommand`), which picks the right `opencode.exe`.
+#     `opencode.cmd` this starts what it would (`Resolve-OpencodeCommand`):
+#     2.0's `@opencode/cli\bin\opencode.exe` itself, or 1.x's `node.exe` and
+#     the `opencode-ai\bin\opencode` script, which picks the right
+#     `opencode.exe`. **2.0's layout is read off its `script/publish.ts`,
+#     not off a Windows install.**
 #   * **`identify` on Windows has no process to read** (`pid` is null), so
 #     when this opencode started is when the Polter server it started did
 #     (`sidecar_pid`), as `adapter.py` falls back to as well.
@@ -492,10 +496,13 @@ function Get-StartedMs([long]$Id, [long]$NowMs) {
 # What the provision puts into the polter entry's `environment`.
 $script:AgentMarker = 'POLTER_AGENT_CLI'
 $script:Me = 'opencode'
-$script:HooksFile = 'polter-hooks.js'
-$script:MinVersion = @(1, 2, 10)
+$script:HooksDir = 'polter-hooks'
+$script:HooksEntry = 'index.js'
+$script:MinVersion = @(2, 0, 0)
 $script:VersionTimeoutMs = 10000
 $script:SessionWords = @('-s', '--session', '-c', '--continue')
+$script:ServerWords = @('--server', '--standalone')
+$script:SessionTables = @('session_v2', 'session')
 $script:PromptWords = @('--prompt')
 $script:StartedSlackMs = 5 * 1000
 
@@ -650,10 +657,13 @@ function Resolve-OpencodeCommand {
     return $null
 }
 
-# `node.exe` and the script an `opencode.cmd` starts, or `$null`: npm's
-# layout, `node_modules\opencode-ai\bin\opencode` beside the shim.
+# What an `opencode.cmd` starts, or `$null`: npm's layout beside the shim --
+# 2.0's `node_modules\@opencode\cli\bin\opencode.exe`, which npm runs as it
+# is, else 1.x's `node.exe` and `node_modules\opencode-ai\bin\opencode`.
 function Resolve-OpencodeShim([string]$Shim) {
     $dir = [System.IO.Path]::GetDirectoryName($Shim)
+    $exe = Join-PyPath $dir 'node_modules\@opencode\cli\bin\opencode.exe'
+    if ([System.IO.File]::Exists($exe)) { return , @($exe) }
     $script = Join-PyPath $dir 'node_modules\opencode-ai\bin\opencode'
     if (-not [System.IO.File]::Exists($script)) { return $null }
     $node = Join-PyPath $dir 'node.exe'
@@ -840,14 +850,20 @@ function Get-Sqlite {
     return $script:SqliteClass
 }
 
-# See `session_rows` in adapter.py.
+# See `session_rows` in adapter.py: `{t}` in `$Sql` is the first of
+# `SessionTables` the database has.
 function Get-SessionRows([string]$HomeDir, [string]$Sql, $ArgList) {
     $path = Join-PyPath (Get-DataHome $HomeDir) 'opencode.db'
     if (-not [System.IO.File]::Exists($path)) { return $null }
     $type = Get-Sqlite
     if ($null -eq $type) { return $null }
     try {
-        $rows = $type::Query($path, $Sql, [object[]]$ArgList)
+        $have = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($r in $type::Query($path, "select name from sqlite_master where type = 'table'", [object[]]@())) { [void]$have.Add([string]$r[0]) }
+        $table = $null
+        foreach ($t in $script:SessionTables) { if ($have.Contains($t)) { $table = $t; break } }
+        if ($null -eq $table) { return $null }
+        $rows = $type::Query($path, $Sql.Replace('{t}', $table), [object[]]$ArgList)
     } catch {
         return $null
     }
@@ -865,7 +881,7 @@ function Get-Gathered($Req) {
     $items = New-List
     foreach ($d in (Get-SkillDirs $homeDir $cwd)) { Add-SkillsUnder $d[0] $d[1] $items }
     $files = New-List
-    foreach ($n in @('config.json', 'opencode.json')) { $files.Add(@((Join-PyPath (Get-ConfigHome $homeDir) $n), 'user', $n)) }
+    $files.Add(@((Join-PyPath (Get-ConfigHome $homeDir) 'opencode.json'), 'user', 'opencode.json'))
     if ($null -ne $cwd) { $files.Add(@((Join-PyPath $cwd 'opencode.json'), 'project', 'opencode.json (project)')) }
     foreach ($f in $files) {
         foreach ($i in (Get-ServersFrom (Read-ConfigObject $f[0] $notes $f[2]) $f[1])) { $items.Add($i) }
@@ -923,7 +939,7 @@ function Get-ToolPrefix([string]$Server) {
 }
 
 function Get-HooksPath {
-    return Join-PyPath $PSScriptRoot $script:HooksFile
+    return Join-PyPath $PSScriptRoot $script:HooksDir
 }
 
 # A `file://` URL, written the way `adapter.py` writes it: `file://`, then
@@ -952,8 +968,8 @@ function Get-HooksReady($Polter, $Version, $Notes) {
         $Notes.Add('No Polter path in the request, so opencode is started without Polter''s hooks.')
         return $false
     }
-    if (-not [System.IO.File]::Exists((Get-HooksPath))) {
-        $Notes.Add("Polter's opencode plugin ($($script:HooksFile)) is missing, so opencode is started without its hooks.")
+    if (-not [System.IO.File]::Exists((Join-PyPath (Get-HooksPath) $script:HooksEntry))) {
+        $Notes.Add("Polter's opencode plugin ($($script:HooksDir)) is missing, so opencode is started without its hooks.")
         return $false
     }
     if ($null -eq $Version) {
@@ -980,7 +996,7 @@ function Get-SessionToResume($Req, $Extra, $Notes) {
         $Notes.Add("$(Get-PyPercentS $session) is not an opencode session id; starting a new one.")
         return $null
     }
-    $rows = Get-SessionRows (Get-HomeDir $Req) 'select id from session where id = ?' @($session)
+    $rows = Get-SessionRows (Get-HomeDir $Req) 'select id from {t} where id = ?' @($session)
     if ($null -eq $rows) {
         $Notes.Add("opencode's sessions could not be read; starting a new session instead of $session.")
         return $null
@@ -1073,10 +1089,29 @@ function Get-Launch($Req) {
     $args0 = Get-J $cli 'args'
     if (Test-JList $args0) { foreach ($a in (Get-JItems $args0)) { if ($a -is [string]) { $extra.Add($a) } } }
 
+    $start = Resolve-OpencodeCommand
+    if ($null -eq $start -and $script:OnWindows -and $null -ne $script:ShimFound) {
+        throw "found $($script:ShimFound), but not the program it starts (no @opencode\cli\bin\opencode.exe, or opencode-ai\bin\opencode with a node.exe to run it, behind it). A batch file is not given a role's instructions: cmd.exe would re-read their quotes and newlines."
+    }
+    $version = Get-OpencodeVersion $start
+    # See `launch` in adapter.py: 1.x has no `--standalone` and 2.0 no `-m`,
+    # each refuses the other's, and a version that cannot be read gets neither.
+    $v2 = ($null -ne $version) -and -not (Test-OlderThan $version $script:MinVersion)
+    $v1 = ($null -ne $version) -and -not $v2
+
     $opts = New-List
+    $names = $false
+    foreach ($a in $extra) { if (($script:ServerWords -ccontains $a) -or $a.StartsWith('--server=', $script:Ordinal)) { $names = $true } }
+    if ($v2 -and $names) {
+        $notes.Add("The role's own arguments choose opencode's server; it is not started --standalone, so a shared server's configuration and hooks are that server's.")
+    } elseif ($v2) {
+        $opts.Add('--standalone')
+    } elseif ($null -eq $version) {
+        $notes.Add("opencode's version could not be read, so it is started without --standalone, which 1.x refuses: on 2.0 it then shares the background service, and that server's configuration.")
+    }
     $model = Get-J $cli 'model'
     if (-not (Test-Truthy $model)) { $model = Get-J $role 'model' }
-    if (Test-Truthy $model) { $opts.Add('-m'); $opts.Add($model) }
+    if ((Test-Truthy $model) -and $v1) { $opts.Add('-m'); $opts.Add($model) }
     $session = Get-SessionToResume $Req $extra $notes
     if ($null -ne $session) { $opts.Add('-s'); $opts.Add($session) }
 
@@ -1094,17 +1129,13 @@ function Get-Launch($Req) {
         }
     }
 
-    $start = Resolve-OpencodeCommand
-    if ($null -eq $start -and $script:OnWindows -and $null -ne $script:ShimFound) {
-        throw "found $($script:ShimFound), but not the program it starts (no opencode-ai\bin\opencode behind it with a node.exe to run it). A batch file is not given a role's instructions: cmd.exe would re-read their quotes and newlines."
-    }
-    $version = Get-OpencodeVersion $start
     $polter = Get-J $Req 'polter'
     $hooks = Get-HooksReady $polter $version $notes
 
     $content = New-Map
     $content['$schema'] = 'https://opencode.ai/config.json'
     $content['permission'] = $permission
+    if ((Test-Truthy $model) -and -not $v1) { $content['model'] = $model }
     $envOut = New-Map
     $envOut['OPENCODE_DISABLE_AUTOUPDATE'] = '1'
     if ($hooks) {
@@ -1145,7 +1176,7 @@ function Test-IsOpencode($Path) {
 
 # `@(session, updated, note)`: see `by_directory` in adapter.py.
 function Get-ByDirectory([string]$HomeDir, [string]$Cwd, [long]$SinceMs) {
-    $rows = Get-SessionRows $HomeDir 'select id, time_updated from session where directory = ? and parent_id is null and time_created >= ? order by time_created' @($Cwd, [long]($SinceMs - $script:StartedSlackMs))
+    $rows = Get-SessionRows $HomeDir 'select id, time_updated from {t} where directory = ? and parent_id is null and time_created >= ? order by time_created' @($Cwd, [long]($SinceMs - $script:StartedSlackMs))
     if ($null -eq $rows) { return @($null, $null, 'opencode''s sessions could not be read.') }
     if ($rows.Count -eq 0) {
         return @($null, $null, 'No opencode session in this directory began after this opencode started (a session is made with its first message, or this one goes on with an older one).')

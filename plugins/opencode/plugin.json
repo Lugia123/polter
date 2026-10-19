@@ -2,7 +2,7 @@
   "key": "opencode",
   "name": "opencode",
   "version": "1.0.0",
-  "description": "Registers Polter's MCP server with opencode by editing ~/.config/opencode/opencode.json -- `opencode mcp add` is an interactive wizard, so this one edits a config file, refusing outright if it cannot parse what is there. Needs python3 for that. Mirrors Polter's skills into ~/.config/opencode/skills/polter-*, which wins over a copy under ~/.claude/skills that opencode would also read.",
+  "description": "Registers Polter's MCP server with opencode by editing ~/.config/opencode/opencode.json -- `opencode mcp add` is an interactive wizard, so this one edits a config file, refusing outright if it cannot parse what is there. Needs python3 for that. Mirrors Polter's skills into ~/.config/opencode/skills/polter-* -- unless they are already under ~/.claude/skills, which opencode reads too: then that is the one copy, and none go here.",
   "screen_says": {
     "awaiting_approval": {
       "contains": [
@@ -52,7 +52,7 @@
       "rules": {
         "type": "string",
         "title": "Write Polter's note into this CLI's rules file",
-        "description": "yes writes a marked block into the user-level rules file (never a project one) saying that what an agent prints reaches nobody, and pointing at the operating-a-terminal skill. It is there because a skill is matched against what the user asked for and nothing matches \"you have just finished a task\": on real records, 71 tasks produced 15 done reports. Everything outside the markers is left untouched, and no takes the block back out. opencode reads only the first of ~/.config/opencode/AGENTS.md and ~/.claude/CLAUDE.md that exists, so when it has no AGENTS.md and does read your CLAUDE.md, none is made: making one would stop your CLAUDE.md reaching it.",
+        "description": "yes writes a marked block into the user-level rules file (never a project one) saying that what an agent prints reaches nobody, and pointing at the operating-a-terminal skill. It is there because a skill is matched against what the user asked for and nothing matches \"you have just finished a task\": on real records, 71 tasks produced 15 done reports. Everything outside the markers is left untouched, and no takes the block back out. For opencode the file is ~/.config/opencode/AGENTS.md; opencode 2.0 reads no CLAUDE.md, so writing it hides nothing of yours.",
         "enum": [
           "yes",
           "no"

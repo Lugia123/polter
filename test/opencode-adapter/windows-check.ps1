@@ -1,4 +1,4 @@
-# The opencode adapter's Windows half, on Windows (task 1781).
+# The opencode adapter's Windows half, on Windows (tasks 1781, 1806).
 #
 # `compare.py` beside this file holds `adapter.ps1` to `adapter.py` on a Mac,
 # where the database is read through the system's `libsqlite3`. What only a
@@ -13,8 +13,9 @@
 #      `sidecar_pid`, which is all Windows has (no `pid`).
 #   3. `launch` goes on with a session the database has (`-s`), and starts a
 #      new one, with a note, for one it has not.
-#   4. Behind npm's `opencode.cmd` it starts `node.exe` and the
-#      `bin\opencode` script, never the batch file.
+#   4. Behind npm's `opencode.cmd` it starts what the batch file would, never
+#      the batch file: 1.x's `node.exe` and `opencode-ai\bin\opencode`, and
+#      once 2.0's `@opencode\cli\bin\opencode.exe` is there, that.
 #
 # Run on the test machine, from the repository's copy of the plugin:
 #
@@ -67,8 +68,8 @@ db, cwd, ready, stop = sys.argv[1:5]
 now = int(time.time() * 1000)
 con = sqlite3.connect(db)
 con.execute("pragma journal_mode=wal")
-con.execute("create table session (id text primary key, project_id text, parent_id text, slug text, directory text, title text, version text, time_created integer, time_updated integer)")
-con.executemany("insert into session (id, project_id, parent_id, directory, time_created, time_updated) values (?, 'p', ?, ?, ?, ?)",
+con.execute("create table session_v2 (id text primary key, project_id text not null, parent_id text, slug text not null, directory text not null, title text, version text not null, time_created integer not null, time_updated integer not null, time_idle integer)")
+con.executemany("insert into session_v2 (id, project_id, parent_id, slug, directory, version, time_created, time_updated) values (?, 'p', ?, 's', ?, '2.0.32', ?, ?)",
                 [("ses_old", None, cwd, now - 86400000, now - 86000000), ("ses_new", None, cwd, now, now + 5),
                  ("ses_child", "ses_new", cwd, now, now), ("ses_elsewhere", None, "C:\\else", now, now)])
 con.commit()
@@ -118,8 +119,18 @@ try {
     Check 'a session in the database is gone on with' ($argv.Count -ge 4 -and $argv[-2] -eq '-s' -and $argv[-1] -eq 'ses_new') ("argv: " + ($argv -join ' | '))
     Check 'behind opencode.cmd it starts node.exe and bin\opencode' ($argv.Count -ge 2 -and $argv[0] -like '*\node.exe' -and $argv[1] -like '*\opencode-ai\bin\opencode') ("argv: " + ($argv -join ' | '))
     Check 'a --version that fails is no hooks, and said' (-not ($on.PSObject.Properties.Name -contains 'hooks') -and (@($on.notes) -join ' ') -like '*version*') ("notes: " + (@($on.notes) -join ' / '))
+    # Which opencode that is, nothing says: 1.x refuses --standalone, so it is not given (task 1806).
+    Check 'a version that cannot be read is started without --standalone' ($argv -notcontains '--standalone') ("argv: " + ($argv -join ' | '))
     $gone = Ask 'launch' @{ version = 1; home = $homeDir; cwd = $cwd; polter = 'C:\polter\polter.exe'; session = 'ses_notHere'; role = @{}; cli = @{} }
     Check 'a session not in it starts a new one, with a note' ((@($gone.argv) -notcontains '-s') -and (@($gone.notes) -join ' ') -like '*not on this machine*') ("argv: " + (@($gone.argv) -join ' | ') + " notes: " + (@($gone.notes) -join ' / '))
+
+    # 2.0's npm layout: the package's bin is the program itself (task 1806;
+    # read off its `script/publish.ts`). Only looked at, like `node.exe`.
+    $null = New-Item -ItemType Directory -Force -Path (Join-Path $npm 'node_modules\@opencode\cli\bin')
+    Copy-Item -LiteralPath (Join-Path $env:windir 'System32\where.exe') -Destination (Join-Path $npm 'node_modules\@opencode\cli\bin\opencode.exe')
+    $two = Ask 'launch' @{ version = 1; home = $homeDir; cwd = $cwd; polter = 'C:\polter\polter.exe'; session = $null; role = @{}; cli = @{} }
+    $argv2 = @($two.argv)
+    Check 'behind opencode.cmd 2.0 is started as its own opencode.exe' ($argv2.Count -ge 1 -and $argv2[0] -like '*\@opencode\cli\bin\opencode.exe') ("argv: " + ($argv2 -join ' | '))
 } finally {
     [System.IO.File]::WriteAllText($stop, '', $Utf8)
     if ($null -ne $p) { try { $p.WaitForExit(10000) | Out-Null } catch { } }

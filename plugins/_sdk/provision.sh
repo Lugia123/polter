@@ -47,6 +47,13 @@
 #                        which is a degradation and not a failure: the tools
 #                        still arrive, and the tool-family map in `initialize`
 #                        arrives with them. See dev-docs/poltergeist/provisioning.md.
+#   host_skills_shared_dir()
+#                        **Optional.** Prints another skills directory this
+#                        host reads besides its own -- opencode reads
+#                        `~/.claude/skills` (task 1806). When Polter's skills are
+#                        already there, none are installed into the host's
+#                        own directory and the copies an earlier launch put
+#                        there are taken back: one copy, not two of one name.
 #   host_rules_file()    prints the user-level rules file this CLI reads on
 #                        every turn -- `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`.
 #                        **Printing nothing means nothing is written**, which is
@@ -488,6 +495,20 @@ polter_provision() {
     return $?
   fi
 
+  # Read from a directory another plugin fills (task 1806): the host would
+  # list each skill twice, under one name, and which copy wins is the
+  # host's to say -- an older build's, it may be. So the one there is the
+  # only one, and ours here are taken back.
+  if command -v host_skills_shared_dir >/dev/null 2>&1; then
+    shared=$(host_skills_shared_dir)
+    if [ -n "$shared" ] && polter_skills_present "$shared"; then
+      polter_skills_prune "$skills_dir" "" ", because this host reads Polter's skills from $shared"
+      note=" skills=shared -- read from $shared"
+      polter_provision_done
+      return $?
+    fi
+  fi
+
   # --- the skills -----------------------------------------------------------
   #
   # Polter's skills are reachable through `skill_read`, which an agent has to
@@ -629,6 +650,15 @@ polter_provision() {
 #
 # **The `polter-` prefix is treated as this plugin's namespace**, narrowed by
 # the checks below to what this plugin actually writes.
+# Whether $1 holds a skill of Polter's: a `polter-*` directory with a
+# SKILL.md in it.
+polter_skills_present() {
+  for dir in "$1"/polter-*; do
+    [ -f "$dir/SKILL.md" ] && return 0
+  done
+  return 1
+}
+
 polter_skills_prune() {
   for dir in "$1"/polter-*; do
     [ -d "$dir" ] || continue

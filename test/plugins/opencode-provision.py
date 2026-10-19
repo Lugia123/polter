@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The `opencode` plugin's three answers: who started the server, where the
-skills go, and which rules file -- if any -- may be written.
+skills go, and which rules file is written.
 
-Task 1777. Drives the shipped `opencode` plugin through the real protocol (a
+Tasks 1777, 1806. Drives the shipped `opencode` plugin through the real protocol (a
 greeting line, then one `provision` batch), with a throwaway `HOME` and a stub
 `opencode` on `PATH`, under `/bin/sh` and, when a PowerShell is there,
 `provision.ps1`. Cases:
@@ -12,10 +12,13 @@ greeting line, then one `provision` batch), with a throwaway `HOME` and a stub
   `~/.config/opencode/AGENTS.md` is made with the block;
 - the same build again writes nothing;
 - an entry this build wrote before it carried the marker is written again;
-- a `~/.claude/CLAUDE.md` and no opencode `AGENTS.md`: **no `AGENTS.md` is
-  made** -- opencode reads only the first of the two that exists, so making
-  one would hide the person's `CLAUDE.md` from it -- and `CLAUDE.md` is not
-  touched;
+- a `~/.claude/CLAUDE.md` and no opencode `AGENTS.md`: the `AGENTS.md` is
+  made all the same -- opencode 2.0 reads no `CLAUDE.md`, so it hides nothing
+  (1.x read the first of the two, which is why this used to be "none made")
+  -- and `CLAUDE.md` is not touched;
+- Polter's skills already under `~/.claude/skills`, which opencode reads too:
+  none go into opencode's own directory, the copies an earlier launch put
+  there are taken back, and a skill of the person's there is left;
 - both there: the block goes into `AGENTS.md`, what the person wrote there
   stays, `CLAUDE.md` is not touched;
 - rules = no after yes: the block comes back out, the rest of the file stays.
@@ -155,10 +158,31 @@ def check(label, shell):
         mine = "# mine\n\nThe person's own words.\n"
         write(path(base, *claude), mine)
         ran, r = run(shell, base)
-        none = not os.path.exists(path(base, *agents))
+        made = os.path.isfile(path(base, *agents)) and BEGIN in read(path(base, *agents))
         same = read(path(base, *claude)) == mine
-        verdict("CLAUDE.md and no AGENTS.md: no AGENTS.md is made, CLAUDE.md untouched", ran and none and same,
-                "ran=%s no-agents=%s claude-unchanged=%s" % (ran, none, same), r)
+        verdict("CLAUDE.md and no AGENTS.md: AGENTS.md is made with the block, CLAUDE.md untouched",
+                ran and made and same, "ran=%s agents-block=%s claude-unchanged=%s" % (ran, made, same), r)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+    # Polter's skills under ~/.claude/skills (the Claude Code plugin's), one
+    # copy of ours left in opencode's directory by an earlier launch, and a
+    # skill of the person's beside it.
+    base = rig()
+    try:
+        own = path(base, ".config", "opencode", "skills")
+        write(path(base, ".claude", "skills", "polter-mine", "SKILL.md"),
+              "---\nname: polter-mine\ndescription: the Claude Code plugin's copy\n---\n")
+        write(os.path.join(own, "polter-mine", "SKILL.md"), "---\nname: polter-mine\ndescription: ours, from before\n---\n")
+        write(os.path.join(own, "theirs", "SKILL.md"), "---\nname: theirs\ndescription: the person's\n---\n")
+        ran, r = run(shell, base)
+        gone = not os.path.exists(os.path.join(own, "polter-mine"))
+        kept = os.path.isfile(os.path.join(own, "theirs", "SKILL.md")) and \
+            os.path.isfile(path(base, ".claude", "skills", "polter-mine", "SKILL.md"))
+        said = "skills=shared" in r.stderr
+        verdict("skills under ~/.claude/skills: none in opencode's, ours taken back, the person's and Claude's kept",
+                ran and gone and kept and said,
+                "ran=%s ours-gone=%s others-kept=%s said-shared=%s" % (ran, gone, kept, said), r)
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

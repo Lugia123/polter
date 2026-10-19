@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """The opencode adapter's three answers, in a throwaway HOME.
 
-Task 1777. Runs the shipped `plugins/opencode/adapter.py` as Polter does --
-the file itself, the request as its second argument -- against files written
-here, with a stand-in `opencode` on `PATH` that only answers `--version`.
-opencode's database is a stand-in too: a `session` table with the columns
-the adapter reads, which are opencode 1.2.10's (read off a real one with
-`sqlite3 -readonly`). `hooks-against-opencode.py` beside this file is the
+Tasks 1777, 1806. Runs the shipped `plugins/opencode/adapter.py` as Polter
+does -- the file itself, the request as its second argument -- against files
+written here, with a stand-in `opencode` on `PATH` that only answers
+`--version`, as 2.0.32 does (`opencode v2.0.32`). opencode's database is a
+stand-in too: a `session_v2` table with the columns the adapter reads, which
+are opencode 2.0.32's (read off a real one with `sqlite3 -readonly`), and
+1.x's `session` where the case is a database 2.0 has not opened yet. `hooks-against-opencode.py` beside this file is the
 other half: the same launch handed to a real opencode.
 
     python3 test/opencode-adapter/adapter.py
@@ -27,7 +28,7 @@ import urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 ADAPTER = os.path.join(ROOT, "plugins", "opencode", "adapter.py")
-HOOKS = os.path.join(ROOT, "plugins", "opencode", "polter-hooks.js")
+HOOKS = os.path.join(ROOT, "plugins", "opencode", "polter-hooks")
 POLTER = "/Applications/Polter.app/Contents/MacOS/polter"
 
 failures = []
@@ -50,7 +51,7 @@ def skill(path, name, description="d"):
 
 
 class Rig:
-    def __init__(self, version="1.2.10"):
+    def __init__(self, version="opencode v2.0.32"):
         self.base = tempfile.mkdtemp(prefix="oc1777-")
         self.home = os.path.join(self.base, "home")
         self.cwd = os.path.join(self.base, "proj")
@@ -75,14 +76,15 @@ class Rig:
             raise SystemExit("adapter %s exited %d: %s" % (question, p.returncode, p.stderr))
         return json.loads(p.stdout)
 
-    def sessions(self, rows):
+    def sessions(self, rows, table="session_v2"):
         path = os.path.join(self.home, ".local", "share", "opencode", "opencode.db")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         con = sqlite3.connect(path)
-        con.execute("create table if not exists session (id text primary key, project_id text, parent_id text, "
-                    "slug text, directory text, title text, version text, time_created integer, time_updated integer)")
-        con.executemany("insert into session (id, project_id, parent_id, directory, time_created, time_updated) "
-                        "values (?, 'p', ?, ?, ?, ?)", rows)
+        con.execute("create table if not exists %s (id text primary key, project_id text not null, parent_id text, "
+                    "slug text not null, directory text not null, title text, version text not null, "
+                    "time_created integer not null, time_updated integer not null, time_idle integer)" % table)
+        con.executemany("insert into %s (id, project_id, parent_id, slug, directory, version, time_created, time_updated) "
+                        "values (?, 'p', ?, 's', ?, '2.0.32', ?, ?)" % table, rows)
         con.commit()
         con.close()
 
@@ -109,6 +111,8 @@ def main():
             "chrome-devtools": {"type": "local", "command": ["npx", "chrome-devtools-mcp"]},
             "off": {"type": "local", "command": ["x"], "enabled": False},
             "web": {"type": "remote", "url": "https://user:pw@mcp.example.com/sse"}}}))
+        write(os.path.join(r.home, ".config", "opencode", "config.json"), json.dumps({"mcp": {
+            "unread": {"type": "local", "command": ["x"]}}}))
         inv = r.ask("inventory", {})
         by = {i["id"]: i for i in inv["items"]}
         check("inventory", inv["installed"] and inv["resume"], "installed, and sessions can be gone on with")
@@ -123,6 +127,7 @@ def main():
         check("inventory", "hunter2" not in json.dumps(inv) and "pw@" not in json.dumps(inv),
               "nothing out of an environment table or a URL's credentials")
         check("inventory", by["mcp:web"]["detail"] == "http · mcp.example.com", "a remote server by its host")
+        check("inventory", "mcp:unread" not in by, "config.json is not listed: 2.0 reads only opencode.json(c)")
     finally:
         r.close()
 
@@ -137,14 +142,16 @@ def main():
 
         plain = r.ask("launch", {"polter": POLTER, "session": None, "role": {}, "cli": {}})
         cfg = config_of(plain)
-        check("launch", plain["argv"] == ["opencode"], "a role that says nothing starts plain opencode: %s" % plain["argv"])
+        check("launch", plain["argv"] == ["opencode", "--standalone"],
+              "a role that says nothing starts opencode on a server of its own: %s" % plain["argv"])
         check("launch", plain.get("hooks") is True and plain.get("hooks_heard") == "first_turn",
               "with Polter's hooks, heard from its first turn")
         check("launch", plain["env"].get("POLTER_HOOK_EXE") == POLTER, "the plugin is told which Polter to run")
         check("launch", plain["env"].get("OPENCODE_DISABLE_AUTOUPDATE") == "1", "no upgrade under a role's feet")
         plug = cfg.get("plugin") or [""]
         check("launch", len(plug) == 1 and urllib.parse.unquote(plug[0]) == "file://" + HOOKS
-              and os.path.isfile(HOOKS), "the plugin is the one beside the adapter, as a file:// URL: %s" % plug)
+              and os.path.isfile(os.path.join(HOOKS, "index.js")),
+              "the plugin is the directory beside the adapter, as a file:// URL: %s" % plug)
         check("launch", cfg.get("permission") == {"polter_*": "allow"},
               "Polter's tools are allowed and nothing is denied: %s" % cfg.get("permission"))
 
@@ -156,28 +163,40 @@ def main():
               "a skill switched off is denied by name, and the project's is left alone: %s" % perm)
         check("launch", perm.get("chrome-devtools_*") == "deny" and perm.get("polter_*") == "allow",
               "a server switched off has its tools denied; Polter's never are")
-        check("launch", role["argv"] == ["opencode", "-m", "fake/m", "--prompt", "You are a worker."],
-              "the model, and the instructions as the first prompt: %s" % role["argv"])
+        check("launch", role["argv"] == ["opencode", "--standalone", "--prompt", "You are a worker."],
+              "the instructions as the first prompt, and no -m, which 2.0 does not take: %s" % role["argv"])
+        check("launch", config_of(role).get("model") == "fake/m", "the model is in the configuration instead")
         check("launch", role["summary"] == "1 skill(s) and 1 MCP server(s) switched off", role["summary"])
 
         given = r.ask("launch", {"polter": POLTER, "session": None, "role": {"instructions": "x"},
                                  "cli": {"args": ["--prompt", "mine"]}})
-        check("launch", given["argv"] == ["opencode", "--prompt", "mine"],
+        check("launch", given["argv"] == ["opencode", "--standalone", "--prompt", "mine"],
               "the role's own first prompt is kept, the instructions not added: %s" % given["argv"])
+        served = r.ask("launch", {"polter": POLTER, "session": None, "role": {}, "cli": {"args": ["--server", "http://h"]}})
+        check("launch", served["argv"] == ["opencode", "--server", "http://h"]
+              and any("not started --standalone" in n for n in served["notes"]),
+              "a role that names its own server keeps it, and is told what that means: %s" % served["argv"])
 
         none = r.ask("launch", {"polter": None, "session": None, "role": {}, "cli": {}})
         check("launch", "hooks" not in none and "plugin" not in config_of(none) and "POLTER_HOOK_EXE" not in none["env"],
               "no Polter path: no hooks, and no plugin loaded")
 
-        r.version("1.2.9")
-        old = r.ask("launch", {"polter": POLTER, "session": None, "role": {}, "cli": {}})
+        r.version("1.2.10")
+        old = r.ask("launch", {"polter": POLTER, "session": None, "role": {"model": "fake/m"}, "cli": {}})
         check("launch", "hooks" not in old and "plugin" not in config_of(old)
-              and any("older than 1.2.10" in n for n in old["notes"]), "an older opencode: no hooks, and a note")
+              and any("older than 2.0.0" in n for n in old["notes"]), "a 1.x opencode: no hooks, and a note")
+        check("launch", old["argv"] == ["opencode", "-m", "fake/m"] and "model" not in config_of(old),
+              "and started as 1.x is: no --standalone, the model as -m: %s" % old["argv"])
         r.version("opencode, no version here")
-        unread = r.ask("launch", {"polter": POLTER, "session": None, "role": {}, "cli": {}})
+        unread = r.ask("launch", {"polter": POLTER, "session": None, "role": {"model": "fake/m"}, "cli": {}})
         check("launch", "hooks" not in unread and any("version" in n for n in unread["notes"]),
               "a version that cannot be read counts as too old")
-        r.version("1.19.3")
+        # 1.x refuses --standalone and 2.0 refuses -m, both outright: not
+        # knowing which, neither (task 1806).
+        check("launch", unread["argv"] == ["opencode"] and config_of(unread).get("model") == "fake/m"
+              and any("without --standalone" in n for n in unread["notes"]),
+              "and is given neither --standalone nor -m; the model goes in the configuration: %s" % unread["argv"])
+        r.version("opencode v2.1.0")
         newer = r.ask("launch", {"polter": POLTER, "session": None, "role": {}, "cli": {}})
         check("launch", newer.get("hooks") is True, "a newer one has them")
         with open(os.path.join(r.base, "ran")) as f:
@@ -194,23 +213,38 @@ def main():
         r.sessions([("ses_3742eb0bdffeurmQf36G8sg3vk", None, r.cwd, now - 60000, now - 1000)])
         on = r.ask("launch", {"polter": POLTER, "session": "ses_3742eb0bdffeurmQf36G8sg3vk",
                               "role": {"instructions": "x"}, "cli": {}})
-        check("resume", on["argv"] == ["opencode", "-s", "ses_3742eb0bdffeurmQf36G8sg3vk"],
+        check("resume", on["argv"] == ["opencode", "--standalone", "-s", "ses_3742eb0bdffeurmQf36G8sg3vk"],
               "a session on this machine is gone on with, without the instructions again: %s" % on["argv"])
         gone = r.ask("launch", {"polter": POLTER, "session": "ses_notHere", "role": {}, "cli": {}})
-        check("resume", gone["argv"] == ["opencode"] and any("not on this machine" in n for n in gone["notes"]),
+        check("resume", gone["argv"] == ["opencode", "--standalone"] and any("not on this machine" in n for n in gone["notes"]),
               "one that is not here starts a new session, and says so")
         odd = r.ask("launch", {"polter": POLTER, "session": "../../x", "role": {}, "cli": {}})
-        check("resume", odd["argv"] == ["opencode"] and any("not an opencode session id" in n for n in odd["notes"]),
+        check("resume", odd["argv"] == ["opencode", "--standalone"] and any("not an opencode session id" in n for n in odd["notes"]),
               "something not shaped like an id is not passed on")
         mine = r.ask("launch", {"polter": POLTER, "session": "ses_3742eb0bdffeurmQf36G8sg3vk", "role": {},
                                 "cli": {"args": ["-c"]}})
-        check("resume", mine["argv"] == ["opencode", "-c"], "the role's own choice of session wins")
+        check("resume", mine["argv"] == ["opencode", "--standalone", "-c"], "the role's own choice of session wins")
+    finally:
+        r.close()
+    r = Rig()
+    try:
+        # A database only 1.x has opened: its `session` table is still read.
+        now = int(time.time() * 1000)
+        r.sessions([("ses_fromOneX", None, r.cwd, now - 60000, now - 1000)], table="session")
+        onex = r.ask("launch", {"polter": POLTER, "session": "ses_fromOneX", "role": {}, "cli": {}})
+        check("resume", onex["argv"] == ["opencode", "--standalone", "-s", "ses_fromOneX"],
+              "a session in 1.x's table is found: %s" % onex["argv"])
+        # And once 2.0 has opened it, its own table is the one read.
+        r.sessions([("ses_fromTwo", None, r.cwd, now - 60000, now - 1000)])
+        two = r.ask("launch", {"polter": POLTER, "session": "ses_fromOneX", "role": {}, "cli": {}})
+        check("resume", any("not on this machine" in n for n in two["notes"]),
+              "with both tables, session_v2 is the one read: %s" % two["notes"])
     finally:
         r.close()
     r = Rig()
     try:
         none = r.ask("launch", {"polter": POLTER, "session": "ses_3742eb0bdffeurmQf36G8sg3vk", "role": {}, "cli": {}})
-        check("resume", none["argv"] == ["opencode"] and any("could not be read" in n for n in none["notes"]),
+        check("resume", none["argv"] == ["opencode", "--standalone"] and any("could not be read" in n for n in none["notes"]),
               "no database at all: a new session, and why")
     finally:
         r.close()

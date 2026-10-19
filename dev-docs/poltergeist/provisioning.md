@@ -564,14 +564,16 @@ C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但
    而定案靠的是「本次的版本戳和假 exe 路径一个都不在里面」，变化来自另外两个
    活着的 `claude` 会话进程。**「变了吗」分辨不了方向，「我写的东西在里面吗」才可以。**
 2. **三家的 skill 目录仍然是空的**（`qwen-code` `kimi` `deepseek`）。
-   `opencode` 在 #1777 补上了：`~/.config/opencode/skills/`（opencode 1.2.10
-   `skill/skill.ts`）。⚠️ 它**也读 `~/.claude/skills/**`**，所以 Claude Code 插件
-   装的 polter-* 它本来就看得到；在假 `$HOME` 里两处各放一个同名 skill，
-   `opencode debug skill` 只列一个、是 opencode 目录那个，日志一条
-   `duplicate skill name` WARN，不报错。所以照装。它的规则文件只取
-   `~/.config/opencode/AGENTS.md` 和 `~/.claude/CLAUDE.md` 里**先存在的那一个**，
-   新建 AGENTS.md 会让用户的 CLAUDE.md 对 opencode 失效，所以只在 AGENTS.md
-   已存在、或没有 CLAUDE.md 时才写（`test/plugins/opencode-provision.py`）。
+   `opencode` 在 #1777 补上了：`~/.config/opencode/skills/`。⚠️ 它**也读
+   `~/.claude/skills/**`**，所以 Claude Code 插件装的 polter-* 它本来就看得到。
+   #1806（opencode 2.0.32）起：`~/.claude/skills` 里已经有 Polter 的 skill 时，
+   opencode 目录里就不再装，之前装过的收回，只留一份；没有时照装。办法是 SDK 新加的
+   可选钩子 `host_skills_shared_dir`（ps1 是 `Get-HostSkillsSharedDir`）：宿主说
+   「我还读这个目录」，那里有 `polter-*/SKILL.md` 就走这条路，日志 note 是
+   `skills=shared`。不用 `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS`：它会把用户自己的
+   Claude skills 也藏掉。规则文件一律是 `~/.config/opencode/AGENTS.md`：2.0 完全不读
+   `CLAUDE.md`，写它不会遮住任何东西（1.x 只取两者里先存在的那一个，所以当时有
+   CLAUDE.md 就不写；`test/plugins/opencode-provision.py`）。
    其余三家：`host_skills_dir` 返回空串，那一步整个跳过。这是可接受的降级，
    补法是核实一家填一家，**不要猜**：写进猜出来的目录是留在别人机器上的垃圾。
 3. **第六节那条「探测到就提示一次」还没做。** 没有它，默认关就意味着装了 Codex

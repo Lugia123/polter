@@ -18,36 +18,53 @@ the same three questions for opencode (task 1777):
         -> {"version":1,"me":…,"session":…|null,"session_written_ms":…|null,
             "quit":null,"notes":[…]}
 
-Read off opencode 1.2.10's source (`packages/opencode/src` at v1.2.10) and
-measured against that build in a scratch `HOME`; the measurements are in
-`test/opencode-adapter/`.
+Read off opencode 2.0.32's source (`packages/` at v2.0.32) and measured
+against that build in a scratch `HOME` (task 1806; 1.x was task 1777); the
+measurements are in `test/opencode-adapter/`.
+
+**A server of its own: `--standalone`.** By default opencode 2.0's TUI is a
+client of one background service per person (`opencode serve --service`),
+started by whichever TUI came first and left running after it, with *that*
+TUI's environment (`state/opencode/service.json`). Measured: a second TUI
+started with a different `OPENCODE_CONFIG_CONTENT` attached to the first
+one's service and got none of its own -- so one terminal's role switches and
+hooks would be another's, and a service the person started outside Polter
+has none. `--standalone` starts a private `opencode serve --stdio` under the
+TUI, with this launch's environment, which ends with it. A role whose own
+arguments name a `--server` keeps it, with a note.
 
 **How a role is applied: one environment variable, never a file.**
 opencode reads `OPENCODE_CONFIG_CONTENT` -- a whole configuration, inline --
-after the person's own files and merges it over them (`config/config.ts`:
-`mergeDeep`, and `plugin` and `instructions` lists joined), for that process
-only. So everything a role says goes into that one object:
+in its server process, as one layer above the person's and the project's
+files (`core/src/config.ts`; only managed settings rank above it), for that
+process only. So everything a role says goes into that one object:
 
-  * **Polter's hooks**: `"plugin": ["file:///…/polter-hooks.js"]`, the plugin
-    beside this file, and `POLTER_HOOK_EXE` naming the Polter it runs. The
-    path has to be a `file://` URL: an inline config has no file for a
-    relative path to be relative to. Measured: a path with a space in it,
-    written as `%20`, loads.
+  * **Polter's hooks**: `"plugin": ["file:///…/polter-hooks"]`, the plugin
+    directory beside this file, and `POLTER_HOOK_EXE` naming the Polter it
+    runs. A directory: a configured plugin path that is a file is dropped
+    ("configured plugin path must be a directory", measured). The path has
+    to be a `file://` URL: an inline config has no file for a relative path
+    to be relative to. Measured: a path with a space in it, written as
+    `%20`, loads.
   * **A skill switched off**: `"permission": {"skill": {"<name>": "deny"}}`.
     A denied skill is taken out of the list the model is given
-    (`tool/skill.ts`), not merely refused when called.
+    (`core/src/skill.ts`), not merely refused when called (measured).
   * **An MCP server switched off**: `"permission": {"<server>_*": "deny"}`.
-    A tool denied for every pattern is taken out of the model's tools
-    (`PermissionNext.disabled`); the server itself still starts. An entry
-    `{"enabled": false}` would have stopped it, but opencode checks every
-    source's config against its schema on its own, and an `mcp` entry
-    without its `type` and `command` does not pass.
+    A tool denied for every resource is taken out of what the model is told
+    it can call (`core/src/tool.ts`; measured, against the same server left
+    on); the server itself still starts.
   * **Polter's own tools are never asked about**: `"polter_*": "allow"`,
     which outlasts a person's `"*": "ask"`.
+  * **The role's model**: `"model": "<provider>/<model>"`. 2.0's TUI has no
+    `-m`: given one, it prints its help and exits (measured).
 
-And outside it: `OPENCODE_DISABLE_AUTOUPDATE=1`. Left to itself opencode's
-TUI upgrades itself in the background when it starts (`cli/upgrade.ts`), and
-a role launch is not the moment for the binary to change under it.
+The old `permission` shape is 2.0's still: it turns it into its own rules
+(`core/src/config/normalize.ts`).
+
+And outside it: `OPENCODE_DISABLE_AUTOUPDATE=1`. Left to itself opencode
+upgrades itself in the background when it starts (`cli/src/services/
+updater.ts`), and a role launch is not the moment for the binary to change
+under it.
 
 **The role's instructions go in as the first prompt** (`--prompt`, which
 the TUI types and submits when it opens on a new session --
@@ -55,17 +72,20 @@ the TUI types and submits when it opens on a new session --
 `instructions` take only files. Not on a session that is gone on with: that
 conversation already has them.
 
-**Going on with a session.** A session is `ses_…`, a row of `session` in
-`~/.local/share/opencode/opencode.db` (SQLite); `-s <id>` opens it. The id is
-passed on only when it is shaped like one and its row is on this machine;
-otherwise the launch starts a new session and says why -- `+launch` has
-become the CLI by the time it would fail, and nothing is left to report it.
+**Going on with a session.** A session is `ses_…`, a row of `session_v2` in
+`~/.local/share/opencode/opencode.db` (SQLite; `session` before 2.0, whose
+rows 2.0 copies over); `-s <id>` opens it. The id is passed on only when it
+is shaped like one and its row is on this machine; otherwise the launch
+starts a new session and says why. **Never blindly**: 2.0's `-s` makes a
+session of an id it does not know rather than failing, so an id from
+somewhere else would be a new, empty session under an old name.
 
 **Who it is (`identify`).** opencode hands a local MCP server its whole
-environment with the entry's `environment` on top (`mcp/index.ts`), so
-`me` is the marker the provision writes there (`POLTER_AGENT_CLI=opencode`)
-or, for an entry written before it, the sidecar's parent being a program
-called `opencode`. `session` is read from the database: this directory's
+environment with the entry's `environment` on top, so `me` is the marker
+the provision writes there (`POLTER_AGENT_CLI=opencode`) or, for an entry
+written before it, the sidecar's parent being a program called `opencode`
+-- in 2.0 the private server (`opencode serve --stdio`), itself the TUI's
+child and started with it. `session` is read from the database: this directory's
 session that began after this opencode did, when there is exactly one. A
 running opencode says its session id nowhere else -- no environment, no
 file, no port unless asked for one -- and Polter's hooks say it anyway.
@@ -78,8 +98,8 @@ Three things it does not do, each checkable by reading:
   * **It never reads a value out of an `environment` table**: a server is
     described by its type and its command's file name or URL host.
   * **It never starts a session of `opencode`**, which would start every MCP
-    server it has. It runs `opencode --version`, which starts none, with
-    the models fetch off (`version_of` says why).
+    server it has. It runs `opencode --version`, which starts none and no
+    service, with the models fetch off (`version_of` says why).
 
 The request is the second argument (stdin when it is absent, for trying it by
 hand). One JSON object on stdout; a reason on stderr and a non-zero exit when
@@ -106,14 +126,16 @@ POLTER_SERVER = "polter"
 AGENT_MARKER = "POLTER_AGENT_CLI"
 ME = "opencode"
 
-# Polter's opencode plugin, beside this file.
-HOOKS_FILE = "polter-hooks.js"
+# Polter's opencode plugin, a directory beside this file, and the file in it
+# opencode loads.
+HOOKS_DIR = "polter-hooks"
+HOOKS_ENTRY = "index.js"
 
 # The first build everything here was read off and measured on. Older, or
 # a version that cannot be read: no hooks, and a note -- the rule the Claude
-# Code adapter follows (adapters.md 3.1). A launch with hooks from a build
-# whose events are not these would say states it is not in.
-MIN_VERSION = (1, 2, 10)
+# Code adapter follows (adapters.md 3.1). 1.x loads no plugin of 2.0's shape
+# and says none of its events (task 1806).
+MIN_VERSION = (2, 0, 0)
 
 MAX_BYTES = 4 * 1024 * 1024
 VERSION_TIMEOUT = 10
@@ -127,6 +149,8 @@ PROJECT_SOURCES = ("project",)
 SESSION_ID = re.compile(r"^ses_[A-Za-z0-9]+$")
 # The role's own arguments that already choose a session.
 SESSION_WORDS = ("-s", "--session", "-c", "--continue")
+# And a server: a role that names one keeps it, and is not made standalone.
+SERVER_WORDS = ("--server", "--standalone")
 # And a first prompt.
 PROMPT_WORDS = ("--prompt",)
 
@@ -215,9 +239,10 @@ def skills_in(directory, source):
 
 
 def skill_dirs(home, cwd):
-    """Where opencode 1.2.10 looks, in the order it looks -- a later one of
-    the same name wins (`skill/skill.ts`): the person's `.claude` and
-    `.agents`, the project's, then opencode's own configuration directories."""
+    """Where opencode 2.0 looks, in the order it looks -- a later one of the
+    same name wins: the person's `.claude` and `.agents`, the project's
+    (`core/src/config/plugin/compatibility.ts`), then opencode's own
+    configuration directories (`core/src/config/plugin/skill.ts`)."""
     out = [(os.path.join(home, ".claude", "skills"), "user"),
            (os.path.join(home, ".agents", "skills"), "user")]
     if cwd:
@@ -302,10 +327,11 @@ def servers_from(config, source):
 
 def config_files(home, cwd):
     """The configuration files that name MCP servers, the person's and then
-    the project's. ⚠️ `.jsonc` is opencode's too and is not read here: a file
-    with comments in it would need a JSONC reader, and a guess at one is a
-    server listed wrongly."""
-    out = [(os.path.join(config_home(home), name), "user", name) for name in ("config.json", "opencode.json")]
+    the project's (`core/src/config/discovery.ts`: `opencode.json` and
+    `opencode.jsonc`; 2.0 reads no `config.json`). ⚠️ `.jsonc` is not read
+    here: a file with comments in it would need a JSONC reader, and a guess
+    at one is a server listed wrongly."""
+    out = [(os.path.join(config_home(home), "opencode.json"), "user", "opencode.json")]
     if cwd:
         out.append((os.path.join(cwd, "opencode.json"), "project", "opencode.json (project)"))
     return out
@@ -390,13 +416,14 @@ def tool_prefix(server):
 def version_of(exe):
     """`opencode --version` as a tuple, or None."""
     # **Not as harmless as it reads** (task 1781, measured on 1.2.10 against
-    # a proxy that wrote down every connection): `opencode --version` loads
-    # the models list from models.dev before it answers. With the fetch off
-    # it makes no connection and, once opencode's directories exist, writes
-    # nothing; it never loads a plugin or touches the person's
-    # configuration either way. (`opencode session list`, by contrast, runs
-    # the person's plugins, installs packages and rewrites their config, so
-    # nothing here runs it.)
+    # a proxy that wrote down every connection): `opencode --version` loaded
+    # the models list from models.dev before it answered, which the fetch
+    # off stops. On 2.0 (task 1806, measured in a scratch `HOME`) it starts
+    # no service and loads no plugin, but it makes opencode's directories
+    # and adds a "cli starting" line to `log/opencode.log` each time, fetch
+    # off or not -- it is run once a launch, not in a loop. It prints
+    # `opencode v2.0.32`; 1.x printed the bare number. (`opencode session
+    # list` runs the person's plugins, so nothing here runs it.)
     env = dict(os.environ, OPENCODE_DISABLE_MODELS_FETCH="1", OPENCODE_DISABLE_AUTOUPDATE="1")
     try:
         p = subprocess.run([exe, "--version"], capture_output=True, text=True, env=env,
@@ -407,8 +434,8 @@ def version_of(exe):
     return tuple(int(g) for g in m.groups()) if p.returncode == 0 and m else None
 
 
-def hooks_file():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), HOOKS_FILE)
+def hooks_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), HOOKS_DIR)
 
 
 def hooks_ready(polter, version, notes):
@@ -417,8 +444,8 @@ def hooks_ready(polter, version, notes):
     if not isinstance(polter, str) or not polter:
         notes.append("No Polter path in the request, so opencode is started without Polter's hooks.")
         return False
-    if not os.path.isfile(hooks_file()):
-        notes.append("Polter's opencode plugin (%s) is missing, so opencode is started without its hooks." % HOOKS_FILE)
+    if not os.path.isfile(os.path.join(hooks_dir(), HOOKS_ENTRY)):
+        notes.append("Polter's opencode plugin (%s) is missing, so opencode is started without its hooks." % HOOKS_DIR)
         return False
     if version is None:
         notes.append("Could not read opencode's version, so it is started without Polter's hooks.")
@@ -430,10 +457,19 @@ def hooks_ready(polter, version, notes):
     return True
 
 
+# opencode's table of sessions, by the version that made the database:
+# 2.0's first, then 1.x's (which 2.0 copies into its own on first start, so
+# a database with both has the same sessions in each). The columns read
+# here -- id, directory, parent_id, time_created, time_updated -- are the
+# same in both.
+SESSION_TABLES = ("session_v2", "session")
+
+
 def session_rows(home, sql, args):
     """Rows from opencode's database, read-only, or None when it cannot be
-    read. Never written: `mode=ro`, and opencode's own write-ahead log is
-    left to opencode."""
+    read. `sql` names its table `{t}`, which is the first of
+    `SESSION_TABLES` the database has. Never written: `mode=ro`, and
+    opencode's own write-ahead log is left to opencode."""
     path = os.path.join(data_home(home), "opencode.db")
     if not os.path.isfile(path):
         return None
@@ -441,7 +477,11 @@ def session_rows(home, sql, args):
         uri = "file:%s?mode=ro" % urllib.parse.quote(path)
         con = sqlite3.connect(uri, uri=True, timeout=2)
         try:
-            return con.execute(sql, args).fetchall()
+            have = {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
+            table = next((t for t in SESSION_TABLES if t in have), None)
+            if table is None:
+                return None
+            return con.execute(sql.format(t=table), args).fetchall()
         finally:
             con.close()
     except sqlite3.Error:
@@ -460,7 +500,7 @@ def session_to_resume(req, extra, notes):
         notes.append("%s is not an opencode session id; starting a new one." % session)
         return None
     home = req.get("home") or os.path.expanduser("~")
-    rows = session_rows(home, "select id from session where id = ?", (session,))
+    rows = session_rows(home, "select id from {t} where id = ?", (session,))
     if rows is None:
         notes.append("opencode's sessions could not be read; starting a new session instead of %s." % session)
         return None
@@ -500,10 +540,30 @@ def launch(req):
     if skills_off:
         permission["skill"] = skills_off
 
+    exe = on_path("opencode")
+    version = version_of(exe) if exe else None
+    # 1.x has neither `--standalone` nor a service to keep away from, and
+    # takes its model as `-m`; 2.0 has no `-m`. **Each refuses the other's
+    # flag outright**: 1.x's arguments are `yargs(...).strict()`
+    # (`src/index.ts` at v1.2.10), and 2.0 given `-m` prints its help and
+    # exits (measured) -- either way nothing starts. So a version that
+    # cannot be read gets neither flag, and its model goes in the
+    # configuration, which both read (task 1806).
+    v2 = version is not None and version >= MIN_VERSION
+    v1 = version is not None and not v2
+
     extra = [a for a in (cli.get("args") or []) if isinstance(a, str)]
     opts = []
+    if v2 and any(a in SERVER_WORDS or a.startswith("--server=") for a in extra):
+        notes.append("The role's own arguments choose opencode's server; it is not started --standalone, "
+                     "so a shared server's configuration and hooks are that server's.")
+    elif v2:
+        opts.append("--standalone")
+    elif version is None:
+        notes.append("opencode's version could not be read, so it is started without --standalone, which 1.x "
+                     "refuses: on 2.0 it then shares the background service, and that server's configuration.")
     model = cli.get("model") or role.get("model")
-    if model:
+    if model and v1:
         opts += ["-m", model]
     session = session_to_resume(req, extra, notes)
     if session:
@@ -518,14 +578,14 @@ def launch(req):
         else:
             opts += ["--prompt", instructions]
 
-    exe = on_path("opencode")
-    version = version_of(exe) if exe else None
     hooks = hooks_ready(req.get("polter"), version, notes)
 
     content = {"$schema": "https://opencode.ai/config.json", "permission": permission}
+    if model and not v1:
+        content["model"] = model
     env = {"OPENCODE_DISABLE_AUTOUPDATE": "1"}
     if hooks:
-        content["plugin"] = ["file://" + urllib.parse.quote(hooks_file())]
+        content["plugin"] = ["file://" + urllib.parse.quote(hooks_dir())]
         env["POLTER_HOOK_EXE"] = req["polter"]
     env["OPENCODE_CONFIG_CONTENT"] = json.dumps(content, ensure_ascii=False, separators=(",", ":"))
 
@@ -587,7 +647,7 @@ def by_directory(home, cwd, since_ms):
     begun since this opencode started, or no session. **Wrong is worse than
     none**: two in one directory since then, and none is named."""
     rows = session_rows(home,
-                        "select id, time_updated from session where directory = ? and parent_id is null "
+                        "select id, time_updated from {t} where directory = ? and parent_id is null "
                         "and time_created >= ? order by time_created", (cwd, since_ms - STARTED_SLACK_MS))
     if rows is None:
         return None, None, "opencode's sessions could not be read."

@@ -330,7 +330,7 @@ hook 的沉默有三种来源，其中两种 hook 自己报不出来：
 | Qwen Code | hooks | 0.14.4 | `Stop` 带答案 | `StopFailure` | ✓ | `idle_prompt` | command / http |
 | Copilot CLI | hooks | 1.0.18 | `agentStop` 无答案 | `errorOccurred` | ✓ | ✓ | command / http；直接读 `.claude/settings.json` |
 | Kimi | hooks（Beta） | 1.28.0 | `Stop` 无答案 | `StopFailure` | ✗（文档示例匹配不到） | ✗ | 仅 command |
-| opencode | JS 插件 | 1.2.10 | `session.status` idle，答案由插件读 | `session.error`；可重试的走 `retry` 状态 | `permission.asked` | `question.asked` | 进程内 JS。**已接入，见第十节** |
+| opencode | JS 插件（目录） | 2.0.0 | `session.execution.succeeded`，答案由插件攒 | `session.execution.failed` / `interrupted`；可重试的走 `session.retry.scheduled` | `permission.asked` | `form.created` | 服务进程里的插件，启动加 `--standalone`。**已接入，见第十节** |
 | DeepSeek-TUI（现名 Codewhale） | hooks | 0.8.54 | `turn_end` 无答案 | `on_error` | ✓ | ✓ | 仅 command |
 
 没有跨家的 hook 标准（Agent Plugins 规范 v1 明确把 hook 排除在外），但 Copilot、Gemini、Qwen、Codex
@@ -402,69 +402,98 @@ timeout 取 3，因为 codex 把 `Interrupt` 的超时钳在 3 秒以内，而�
 `fresh_clis` 给每个 CLI 标上确认方式（`fresh_assign.Confirm`）：claude-code 是 `session_start`，最多等 10 秒；codex 是 `next_turn`，打完 `/clear`
 只等 2 秒（`settle_ms`）让它把命令吃下去，然后打任务那一行，回复写 `cleared: pending`。`session_id` 变了就是清过了，terminal_list 看得到。
 
-## 十、opencode（task 1777，opencode 1.2.10）
+## 十、opencode（task 1777 接入，task 1806 改到 opencode 2.0.32）
 
-事实取自 anomalyco/opencode 的 `v1.2.10` 源码（`packages/opencode/src/` 下），
-并在临时 `HOME` 里对本机 1.2.10 实测：`opencode serve` 加一个替身模型（127.0.0.1 上的假
-OpenAI 兼容服务）加一个替身 polter。实测由 `test/opencode-adapter/hooks-against-opencode.py`
-复现，没装 opencode 时它会跳过。
+事实取自 anomalyco/opencode 的 `v2.0.32` 源码（`packages/` 下），并在临时 `HOME` 里对本机
+2.0.32 实测：在 pty 里起它的 TUI，配一个替身模型（127.0.0.1 上的假 OpenAI 兼容服务）和一个
+替身 polter。实测由 `test/opencode-adapter/hooks-against-opencode.py` 复现；没装 opencode，
+或者装的版本低于 2.0 时，它会跳过。1.x 的那一版（task 1777）见 git 历史：2.0 是重写，
+1.x 的插件形状、事件名、会话表在 2.0 里都不认了。
 
-**hook 是一个插件**。opencode 没有 command hook，只有在它自己进程里跑的 JS 插件。
-`plugins/opencode/polter-hooks.js` 就是这个插件：对 Polter 关心的每个事件，它跑一次
-`<polter> +hook --cli opencode <name>`，stdin 是 `{"type","properties","polter"}`。
-`type` 和 `properties` 是 opencode 的原样；`polter` 是插件唯一加上去的东西：
-`answer`、`error`、`child`。事件的含义一律在 `agent_event.zig` 的 `opencode()` 里翻译，
-插件不做判断。
+**一个 TUI 一个私有服务：`--standalone`**。2.0 的 TUI 默认是一个后台服务
+（`opencode serve --service`）的客户端，每个用户只有一个这样的服务。服务由第一个 TUI 拉起，
+TUI 退出后它还活着，带的是**第一个** TUI 的环境（地址、pid、密码在
+`state/opencode/service.json`）。实测：服务还在时，用另一份 `OPENCODE_CONFIG_CONTENT`
+起第二个 TUI，它直接连上了第一个服务，自己那份配置一点都没生效。在服务模式下，Polter 的插件还被
+加载了两份：同一个事件的两次 `+hook` 抢同一个记录槽，子代理的一轮结束也被报了两次。所以 adapter 一律加
+`--standalone`：TUI 底下起一个私有的 `opencode serve --stdio`，带这次启动的环境，跟着 TUI 一起退出，
+不写 service.json。角色自己的参数里写了 `--server` 的，照它的，并留一条 note。
+没有让「standalone」变成默认的环境变量；`opencode service set disabled true` 可以，但那是改用户的全局设置，不用。
+
+**hook 是一个插件**。opencode 没有 command hook，只有在它的服务进程里跑的插件。
+`plugins/opencode/polter-hooks/` 就是这个插件，**是一个目录**：2.0 把配置成文件的插件路径
+直接丢掉（日志原文 `configured plugin path must be a directory`），只加载目录里的 `index.js`，
+默认导出 `{id, setup}`；1.x 那种 `async (ctx) => hooks` 没有兼容层。插件订阅
+`ctx.event.subscribe()`，用 `ctx.tool.hook` 挂工具的前后。对 Polter 关心的每个事件，它跑一次
+`<polter> +hook --cli opencode <type>`，stdin 是 `{"type","data","polter"}`。
+`type` 和 `data` 是 opencode 的原样；`polter` 是插件唯一加上去的东西：
+`answer`（从 `session.text.ended` 攒下来的、这一轮最后一条 assistant 消息的文字）和 `child`。
+事件的含义一律在 `agent_event.zig` 的 `opencode()` 里翻译，插件不做判断。
 
 插件只在 Polter 起的会话里加载：adapter 的 launch 通过 `OPENCODE_CONFIG_CONTENT`
-（`"plugin": ["file:///…/polter-hooks.js"]`）把它加进去，并用 `POLTER_HOOK_EXE`
-告诉它跑哪个 Polter。没有这个变量时，插件的每个处理函数什么都不做。用户的配置文件一个字都不写。
-opencode 会 await `chat.message` 和工具的 hook，所以插件只负责把事件排进队列就返回；
-队列一次只跑一个 `+hook`，顺序也就和 opencode 发出的顺序一致。
+（`"plugin": ["file:///…/polter-hooks"]`）把它加进去，并用 `POLTER_HOOK_EXE` 告诉它跑哪个 Polter。
+没有这个变量时，插件什么都不订阅。用户的配置文件一个字都不写；插件目录里也不写东西
+（它在签过名的 app 里；测试核过前后目录一样）。工具的 hook 会被 opencode await，
+所以插件只负责把事件排进队列就返回；队列一次只跑一个 `+hook`，顺序也就和 opencode 发出的顺序一致。
 
 | opencode 事件（`+hook` 的名字） | → AgentEvent | 说明 |
 |---|---|---|
-| `session.created` | `session_started` | **第一条消息发出时才建会话**，所以 `hooks_heard: first_turn` |
-| `chat.message`（hook） | `turn_started` | |
-| `session.status` idle（`session.idle`） | `turn_ended` | 答案由插件读最后一条 assistant 消息；带 `polter.error` 的回 `Ignored`，见下 |
-| `session.status` retry（`session.retry`） | **`turn_retrying`** | 新加的状态 `retrying`，见下 |
-| `session.error` | `turn_failed` | `MessageAbortedError`→`interrupted`，APIError 429→`rate_limit`，其它→`api_error`，`ProviderAuthError`→`authentication_failed` |
-| `permission.asked` | `awaiting_approval` | `permission` 做 detail；`patterns` 一行一个，放进 text，第一行做摘要；整条请求放进 `input` |
-| `question.asked` | `awaiting_input` | detail 是 `question`，note 是问题原文 |
-| `permission.replied` / `question.replied` / `question.rejected` | `turn_resumed` | |
-| `tool.execute.before` / `.after` | `tool_started` / `turn_resumed` | |
+| `session.created` | `session_started` | **第一条消息发出时才建会话**，所以 `hooks_heard: first_turn`；带 `parentID` 的是子代理的会话，插件不转发 |
+| `session.execution.started` | `turn_started` | 一轮一次。2.0 没有 `chat.message` |
+| `session.execution.succeeded` | `turn_ended` | 答案在 `polter.answer`；一轮里一句话都没说的，`answer` 是 null |
+| `session.execution.failed` | `turn_failed` | 按 `error.type`：`provider.rate-limit`→`rate_limit`，`provider.auth`→`authentication_failed`，`provider.quota`→`billing_error`，`provider.internal`/`transport`/`timeout`→`server_error`，`provider.invalid-request`→`invalid_request`，`output-limit`→`max_output_tokens`，其余原样；note 是 `error.message` |
+| `session.execution.interrupted` | `turn_failed`，detail `interrupted` | note 是 `reason`（实测 `user`：按两次 Esc） |
+| `session.retry.scheduled` | **`turn_retrying`** | 每次重试一条；detail 是 `error.message`，note 是 `attempt N` |
+| `permission.asked` | `awaiting_approval` | `action` 做 detail（2.0 的 shell 工具叫 `shell`）；`resources` 一行一个，放进 text，第一行做摘要；整条请求放进 `input` |
+| `form.created` | `awaiting_input` | 它的 `question` 工具就是一张表单：detail 是 `metadata.kind`（`question`），note 是第一个字段的 `description`（问题原文）；会话 id 在 `form.sessionID` |
+| `permission.replied` / `form.replied` / `form.cancelled` | `turn_resumed` | |
+| `tool.execute.before` / `.after`（插件挂的工具 hook） | `tool_started` / `turn_resumed` | |
 
-**idle 不一定是一轮结束**（实测）：API 出错时，opencode 先发 `session.error`，再连发两次 idle；
-abort 时先 idle，再 `session.error`，再 idle 两次。所以插件在 idle 之后等 300ms
-（`SETTLE_MS`），读最后一条 assistant 消息上的 `info.error`，并且只认 idle 那一刻之前创建的消息。
-实测过：不这样限定的话，下一轮刚建出来、还是空的那条消息会被当成这一轮的答案。
+**一轮就是一组 `session.execution.*`**（实测）：`started`，然后 `succeeded`、`failed`、`interrupted`
+三者恰好一个，后面不再跟 idle。2.0 整轮一个 `session.status` 都不发，所以 1.x 那套
+「idle 之后等 300ms 读最后一条消息上的错误」不要了。
 
 **`turn_retrying` / `retrying`**：opencode 遇到可重试的错误（限流、过载）时不结束这一轮，
-而是无限重试（`session/retry.ts`），屏幕一直在动。这正是 #734 那种情况。它是一个独立的状态，
+而是无限重试，屏幕一直在动。这正是 #734 那种情况。它是一个独立的状态，
 既不是 `failed`（这一轮没结束），也不是 `in_turn`（它没在干活）：
 - 进入时往盒子里送一行 `retrying an API error for Ns: <原话> (attempt N)`；同一次重试的后续尝试不再送，`since` 也不动。
 - Attention 的分类：T1 之内算 `working`，过了 T1 归到 `suspect_stuck`。
 - fresh 派单和回复框都把它当作一轮还在进行。
+- 按两次 Esc 能停下正在重试的这一轮，报 `session.execution.interrupted`（实测）。
 
-**adapter**（`plugins/opencode/adapter.py`）：角色的开关全部写进同一个 `OPENCODE_CONFIG_CONTENT`：
-- 关掉一个 skill：`permission.skill.<name> = deny`，它会从模型拿到的列表里消失；
-- 关掉一个 MCP server：`permission["<server>_*"] = deny`，它的工具不会出现在模型的工具里，但 server 本身照样启动。不能写 `mcp.<name>.enabled=false`，因为每个配置来源都要单独过 schema，只有 `enabled` 的条目会让整份配置无效；
-- `polter_*` 一律 `allow`。
+**adapter**（`plugins/opencode/adapter.py`）：角色的开关全部写进同一个 `OPENCODE_CONFIG_CONTENT`。
+2.0 在服务进程里读它，作为高于用户和项目配置文件的一层（只有托管设置比它高），不再是 mergeDeep：
+- 关掉一个 skill：`permission.skill.<name> = deny`，它会从模型拿到的 skill 列表里消失（实测，留着的那个在）；
+- 关掉一个 MCP server：`permission["<server>_*"] = deny`，它的工具从 `execute` 工具的说明里消失（实测，留着的那个在），server 本身照样启动；
+- `polter_*` 一律 `allow`；
+- 角色的模型写成 `"model"`：**2.0 的 TUI 没有 `-m`**，传了它会打印帮助直接退出（实测）。
 
-另外两个变量：`OPENCODE_DISABLE_AUTOUPDATE=1`；角色说明走 `--prompt`，作为第一条提示，续会话时不再发。
-续会话用 `-s ses_…`，前提是只读打开 `~/.local/share/opencode/opencode.db` 能查到这个 id。
-identify 认 provision 写进去的标记；会话是「本目录、根会话、在这个 opencode 启动之后建的」恰好一个时才给。
-`quit` 为空：还没读过 opencode 的屏幕，不知道什么时候打 `/exit` 是安全的。
-最低版本 1.2.10，低于它或读不出版本时不注入 hook。
-**Windows**（task 1781）：`adapter.ps1` 逐项移植 `adapter.py`，`test/opencode-adapter/compare.py` 拿同一组请求和同一份文件喂给两边，逐字节比对输出（mac 上用 pwsh 跑）。PowerShell 读不了 SQLite，所以 ps1 通过 Add-Type 用 P/Invoke 调系统自带的 `winsqlite3.dll`（Windows 10 1607 起随系统带），以只读方式打开 `opencode.db`；mac 上同一段代码换成 `libsqlite3`。库不在或者打不开，就不给 id，绝不盲传 `-s`。**不走 `opencode session list`**：实测（临时 HOME、替身插件、只记录 CONNECT 的假代理），它会执行用户的插件、连 npm、改写用户的 `opencode.json` 和 config 目录下的 `package.json`、写数据库，开关全关以后仍然连 npm 6 次。`adapter.py` 唯一调用的 `opencode --version` 也量过：不执行插件、不改配置，但会连一次 models.dev；所以带 `OPENCODE_DISABLE_MODELS_FETCH=1` 去调，HOME 已热时既不联网也不写文件。npm 装的 `opencode.cmd` 不直接起：起的是 `node.exe` 加 `node_modules\opencode-ai\bin\opencode`，它自己会挑对的 `opencode.exe`，角色说明也就不经过 `cmd.exe`。Windows 上 identify 拿不到 agent 的 pid，「这个 opencode 何时启动」就用它起的 Polter server（`sidecar_pid`）的启动时间代替，`adapter.py` 在没有 pid 时也一样。
+旧的 `permission` 写法 2.0 还认，会转成它自己的规则。另外一个变量：`OPENCODE_DISABLE_AUTOUPDATE=1`。
+角色说明走 `--prompt`，作为第一条提示，TUI 自己打出来并发出去（实测）；续会话时不再发。
+续会话用 `-s ses_…`，前提是只读打开 `~/.local/share/opencode/opencode.db` 能在 `session_v2`
+（没有它时读 1.x 的 `session`，2.0 第一次启动会把那里的行搬过来）里查到这个 id。
+**绝不盲传 `-s`**：2.0 的 `-s` 碰到不认识的 id 不报错，而是新建一个叫这个名字的空会话。
+实测：续上以后，下一轮的 `session.execution.started` 还是原来那个会话，也没有新的 `session.created`。
+identify 认 provision 写进去的标记，或者 sidecar 的父进程叫 `opencode`（2.0 里是私有的
+`serve --stdio`，TUI 的子进程，和 TUI 一起起来）；会话是「本目录、根会话、在这个 opencode 启动之后建的」
+恰好一个时才给。`quit` 为空：还没读过 opencode 的屏幕，不知道什么时候打 `/exit` 是安全的。
+inventory 只读 `opencode.json`：2.0 不读 `config.json`。
+**最低版本 2.0.0**：低于它的只给 note、不注入 hook，照 1.x 的方式起（不加 `--standalone`，模型走 `-m`）；
+读不出版本时两样都不加（1.x 的命令行是 strict 的，`--standalone` 会让它报 Unknown argument 退出；2.0 收到 `-m` 也一样），模型写进配置——两边都认——不注入 hook，并留一条 note。`opencode --version` 现在输出 `opencode v2.0.32`，
+不起服务、不加载插件，但每次都会建目录、往 `log/opencode.log` 追加一行，关了 models fetch 也一样。
+**Windows**（task 1781）：`adapter.ps1` 逐项移植 `adapter.py`，`test/opencode-adapter/compare.py` 拿同一组请求和同一份文件喂给两边，逐字节比对输出（mac 上用 pwsh 跑；2.0 和 1.x 各一套）。PowerShell 读不了 SQLite，所以 ps1 通过 Add-Type 用 P/Invoke 调系统自带的 `winsqlite3.dll`（Windows 10 1607 起随系统带），以只读方式打开 `opencode.db`；mac 上同一段代码换成 `libsqlite3`。库不在或者打不开，就不给 id，绝不盲传 `-s`。**不走 `opencode session list`**：实测（1.2.10，临时 HOME、替身插件、只记录 CONNECT 的假代理），它会执行用户的插件、连 npm、改写用户的配置。npm 装的 `opencode.cmd` 不直接起：2.0 的包是 `@opencode/cli`，bin 本身就是 `node_modules\@opencode\cli\bin\opencode.exe`，直接起它；1.x 起 `node.exe` 加 `node_modules\opencode-ai\bin\opencode`。⚠️ 2.0 的这个布局读自它的 `script/publish.ts`，还没在 Windows 上装过量过。Windows 上 identify 拿不到 agent 的 pid，「这个 opencode 何时启动」就用它起的 Polter server（`sidecar_pid`）的启动时间代替，`adapter.py` 在没有 pid 时也一样。
 
 **provision**：`environment` 里写 `POLTER_AGENT_CLI=opencode`；skills 装到
-`~/.config/opencode/skills`；规则写进 `~/.config/opencode/AGENTS.md`，但只在它已经存在、
-或者没有 `~/.claude/CLAUDE.md` 时才写。见 [provisioning.md](provisioning.md)。
+`~/.config/opencode/skills`，**除非 `~/.claude/skills` 里已经有 Polter 的 skill**：2.0 也读那里，
+两份同名就成了两个 skill，所以只留 Claude Code 插件那一份，这里之前装过的收回。不用
+`OPENCODE_DISABLE_CLAUDE_CODE_SKILLS`，那会把用户自己的 Claude skills 也一起藏掉。
+规则一律写进 `~/.config/opencode/AGENTS.md`，只动 Polter 那一块：2.0 完全不读 `CLAUDE.md`，
+写这个文件不会遮住用户的任何东西。见 [provisioning.md](provisioning.md)。
 
-**fresh**：`/clear`（`/new` 的别名），确认方式是 `next_turn`，理由同 codex。
+**fresh**：`/new`，确认方式是 `next_turn`，理由同 codex。不再用 `/clear`：1.x 里它是 `/new` 的别名，
+2.0 里是另一个命令，还会关掉会话的标签页。fresh 的回执因此只写「clear sent」，不写具体是哪个词。
 
-**代答**：opencode 的权限框选项是横排的，←→ 移动。插件声明 `screen_says.awaiting_approval.next_option: arrow_right`，所以 `terminal_answer_prompt` 的 choice 2、3 按 → 走过去（D 期）。其余三家没有声明，照旧按 ↓。选 `Allow always` 时 opencode 还会再弹一个确认框，那一步要另外答。
+**代答**：opencode 的权限框还是「Permission required」，选项「Allow once / Always allow / Reject」横排，←→ 移动。插件声明 `screen_says.awaiting_approval.next_option: arrow_right`，所以 `terminal_answer_prompt` 的 choice 2、3 按 → 走过去（D 期）。其余三家没有声明，照旧按 ↓。选 `Always allow` 时 opencode 还会再弹一个确认框，那一步要另外答（1.x 量的，2.0 没量）。
 
 ## 未决问题
 

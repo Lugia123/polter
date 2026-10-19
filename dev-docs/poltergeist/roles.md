@@ -363,7 +363,7 @@ tab 里自己敲了别的命令，标记就开始撒谎，而**一个过期的�
 | codex | `-p/--profile`、`-c mcp_servers.*.enabled/enabled_tools/disabled_tools` | 📖 help + 二进制 |
 | gemini | `-e/--extensions`、`--allowed-mcp-server-names` | 📖 help |
 | qwen-code | `--system-prompt` / `--append-system-prompt` / `--mcp-config` / `--allowed-mcp-server-names` / `-e` | 📖 help |
-| opencode | `OPENCODE_CONFIG_CONTENT`（`permission` 里 deny 掉 skill 和 `<server>_*`）、`-m`、`--prompt`、`-s` | 🔬 实测（#1777，`test/opencode-adapter/hooks-against-opencode.py`） |
+| opencode | `--standalone`、`OPENCODE_CONFIG_CONTENT`（`permission` 里 deny 掉 skill 和 `<server>_*`，模型写进 `model`；2.0 没有 `-m`）、`--prompt`、`-s` | 🔬 实测（#1777 在 1.2.10，#1806 在 2.0.32，`test/opencode-adapter/hooks-against-opencode.py`） |
 | kimi / deepseek | 待核 | — |
 
 **重启会丢上下文。** `claude --continue` 能带着同一段对话用新参数重开，
