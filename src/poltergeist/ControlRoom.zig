@@ -2070,6 +2070,13 @@ fn minds(bus: *const Bus, id: Id) bool {
     return bus.isSupervisor(id) and !bus.agentHasLeft(id);
 }
 
+/// A supervisor whose agent has left (task 1802): not minding the group,
+/// and still what its row has to say -- "Agent left" -- rather than a
+/// group with nobody in it.
+fn leftSupervisor(bus: *const Bus, id: Id) bool {
+    return bus.isSupervisor(id) and bus.agentHasLeft(id);
+}
+
 /// The terminal that is `name`'s supervisor, by the rule the snapshot
 /// uses, for whoever has to answer between two snapshots: an act that is
 /// refused when a group already has one. Null when it has none, and when
@@ -2381,6 +2388,9 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         }
 
         var steward: ?Attention.Status = null;
+        // Its supervisor, when that one's agent has left and no other
+        // minds the group (task 1802).
+        var left_steward: ?Attention.Status = null;
         var workers: std.ArrayListUnmanaged(Attention.Status) = .empty;
         var members: std.ArrayListUnmanaged(Member) = .empty;
         var failing: std.ArrayListUnmanaged(ControlFix.Failing) = .empty;
@@ -2399,7 +2409,11 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
 
             const s = statusOf(in, id, seen, &wake);
             const is_steward = steward_id != null and steward_id.? == id;
-            if (is_steward) steward = s else try workers.append(arena, s);
+            if (is_steward) {
+                steward = s;
+            } else if (steward_id == null and left_steward == null and leftSupervisor(in.bus, id)) {
+                left_steward = s;
+            } else try workers.append(arena, s);
             if (s.alive and s.kind == .failed) try failing.append(arena, try failingOf(arena, in, s));
 
             // A worker's first minute is its supervisor's; the row changes
@@ -2434,6 +2448,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         const last_ms = in.chat.lastMsOf(name);
         const a = Attention.ofGroup(.{
             .steward = steward,
+            .left_steward = left_steward,
             .workers = workers.items,
             .snooze = snooze,
             .last_ms = last_ms,
@@ -2446,7 +2461,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
         // The terminal the row is about, and the others also waiting.
         var about: ?Attention.Status = null;
         var more: usize = 0;
-        if (steward) |s| {
+        if (steward orelse left_steward) |s| {
             if (a.terminal != null and a.terminal.? == s.id) about = s;
         }
         for (workers.items) |w| {
@@ -4768,12 +4783,42 @@ test "1762: a supervisor whose agent has left minds nothing, so one can be start
     try testing.expect(absent.can_start);
     // What `start_supervisor` asks before it opens anything.
     try testing.expectEqual(@as(?Id, null), stewardOfGroup(arena.allocator(), &w.bus, &w.chat, "web-app"));
+    // And the row says why (task 1802): it read as a group with nobody in
+    // it -- its name and nothing else -- on both hosts.
+    const gone_row = try rowNamed(s, "web-app");
+    try testing.expectEqual(Attention.Word.agent_left, gone_row.word);
+    try testing.expectEqual(Attention.Source.agent_left, gone_row.attention.source);
+    try testing.expect(gone_row.unseen);
+    try testing.expect(!gone_row.needs_me);
 
     // An agent started again in it: its first hook makes it the supervisor again.
     try w.hook(0xa1, .session_started, null, 20_000);
     s = (try room.compute(arena.allocator(), w.input(21_000))).snapshot;
     try testing.expectEqual(SupervisorOut.State.present, (try rowNamed(s, "web-app")).supervisor.state);
+    try testing.expect((try rowNamed(s, "web-app")).word != .agent_left);
     try testing.expectEqual(@as(?Id, 0xa1), stewardOfGroup(arena.allocator(), &w.bus, &w.chat, "web-app"));
+}
+
+test "1802: an agent said to have left moves the snapshot on, and the host is told" {
+    var w: World = .init();
+    defer w.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    try w.hook(0xa1, .turn_started, null, 100);
+    w.bus.noteAgentHere(0xa1, true, .{ .pid = 91, .started = 50 }, 200);
+    const first = try room.refresh(w.input(1_000), .event);
+    const rev = first.notify orelse return error.FirstSnapshotNotSent;
+
+    // Gone between two snapshots, by the sweep alone: no hook, no message.
+    w.bus.noteAgentHere(0xa1, false, null, 1_000);
+    var ctx: u8 = 0;
+    _ = w.bus.considerLinks(1_000 + Bus.link_grace_ms, &ctx, noRuns);
+    // What the host does when `Bus.left_changes` moved: works it out again.
+    const after = try room.refresh(w.input(7_000), .event);
+    const moved = after.notify orelse return error.LeftNotSent;
+    try testing.expect(moved > rev);
 }
 
 test "ControlRoom start: a group with no supervisor says one can be started, in which role and where" {

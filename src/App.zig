@@ -3369,6 +3369,11 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
 /// supervisor for good.
 fn notePoltergeistAgentsHere(self: *App) void {
     const now_ms = self.poltergeistElapsedMs();
+    // An agent said to have left here, or back (task 1802): nothing else
+    // that runs this marks the control room, and a supervisor whose agent
+    // had gone was shown "Working" for minutes on Windows.
+    const left_before = self.poltergeist.left_changes;
+    defer if (self.poltergeist.left_changes != left_before) self.controlRoomTouch();
     var it = self.poltergeist.entries.iterator();
     while (it.next()) |kv| {
         switch (kv.value_ptr.role) {

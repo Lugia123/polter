@@ -478,6 +478,11 @@ pub const Snooze = union(enum) {
 pub const Group = struct {
     /// Null when the group has no supervisor.
     steward: ?Status,
+    /// The supervisor whose agent has left (task 1802), when the group has
+    /// no other: it minds nothing, so it is not `steward`, but it is still
+    /// what the row is about -- the group's supervisor went, and saying
+    /// nothing hid that. Not defaulted: whoever builds a group says.
+    left_steward: ?Status,
     workers: []const Status,
     snooze: Snooze,
     /// When the group last had anything happen; the `since_ms` of a group
@@ -518,6 +523,14 @@ pub fn ofGroup(g: Group, t: Thresholds, now_ms: u64) Attention {
         if (s.alive) {
             any_alive = true;
             minded = s.duty == .on;
+            best = ofTerminal(s);
+        }
+    } else if (g.left_steward) |s| {
+        // Said as its own (task 1802): "Agent left", where a group with no
+        // supervisor says nothing. Nobody minds the workers, so theirs
+        // come first when they need the person.
+        if (s.alive) {
+            any_alive = true;
             best = ofTerminal(s);
         }
     }
@@ -864,6 +877,30 @@ test "1762: an agent that left is said to have left, whatever its hooks or its s
     try testing.expectEqual(@as(?u64, null), nextChange(f, T, now));
 }
 
+test "1802: a group whose supervisor's agent left says so, and a worker that needs the person comes first" {
+    var f = hooked(1, .in_turn, 40 * min);
+    f.process = .{ .agent_left = 90 * min };
+    const left = classify(f, T, now);
+    const idle_worker = status(2, .idle, 50 * min);
+    const g: Group = .{ .steward = null, .left_steward = left, .workers = &.{idle_worker}, .snooze = .none, .last_ms = 0 };
+    const a = ofGroup(g, T, now);
+    // What the row draws is the left supervisor's own status, not a group with nobody in it.
+    try testing.expectEqual(Kind.quiet_unknown, a.kind);
+    try testing.expectEqual(What.own, a.what);
+    try testing.expectEqual(@as(?Id, 1), a.terminal);
+    try testing.expectEqual(Source.agent_left, a.source);
+    // Shown to be looked at, never counted as waiting on the person.
+    try testing.expect(unseen(a));
+    try testing.expect(!needsMe(a));
+
+    // A worker at a prompt is the person's at once -- nobody minds it -- and comes first.
+    const asking = status(3, .awaiting_approval, 89 * min);
+    const g2: Group = .{ .steward = null, .left_steward = left, .workers = &.{ idle_worker, asking }, .snooze = .none, .last_ms = 0 };
+    const b = ofGroup(g2, T, now);
+    try testing.expectEqual(Kind.needs_approval, b.kind);
+    try testing.expectEqual(What{ .worker = 3 }, b.what);
+}
+
 /// The same facts `dt` later, with no event in between.
 fn later(f: Facts, dt: u64) Facts {
     var out = f;
@@ -1072,6 +1109,7 @@ test "Attention: held and shielded are carried and change nothing" {
 test "Attention: a group takes its supervisor's kind" {
     const g: Group = .{
         .steward = status(1, .in_turn, 40 * min),
+        .left_steward = null,
         .workers = &.{status(2, .ended, 30 * min)},
         .snooze = .none,
         .last_ms = 0,
@@ -1086,6 +1124,7 @@ test "Attention: a worker left waiting past a minute shows on the group" {
     const late = now - 61 * std.time.ms_per_s;
     const g: Group = .{
         .steward = status(1, .in_turn, 40 * min),
+        .left_steward = null,
         .workers = &.{ status(2, .in_turn, 0), status(3, .awaiting_approval, late) },
         .snooze = .none,
         .last_ms = 0,
@@ -1098,6 +1137,7 @@ test "Attention: a worker left waiting past a minute shows on the group" {
 
     const failed: Group = .{
         .steward = status(1, .in_turn, 40 * min),
+        .left_steward = null,
         .workers = &.{status(4, .failed, late)},
         .snooze = .none,
         .last_ms = 0,
@@ -1109,6 +1149,7 @@ test "Attention: a worker's first minute is its supervisor's to handle" {
     const fresh = now - 30 * std.time.ms_per_s;
     const g: Group = .{
         .steward = status(1, .in_turn, 40 * min),
+        .left_steward = null,
         .workers = &.{status(3, .awaiting_approval, fresh)},
         .snooze = .none,
         .last_ms = 0,
@@ -1124,12 +1165,12 @@ test "Attention: a prompt the supervisor may not answer is the person's from the
     var w = status(3, .awaiting_approval, fresh);
     try testing.expectEqual(Bus.Answer.allowed, w.answer);
     const steward = status(1, .in_turn, 40 * min);
-    try testing.expectEqual(Kind.working, ofGroup(.{ .steward = steward, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
+    try testing.expectEqual(Kind.working, ofGroup(.{ .steward = steward, .left_steward = null, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
 
     // Switched off, or shielded: nobody but the person can, so it is theirs now.
     for ([_]Bus.Answer{ .off, .shielded }) |no| {
         w.answer = no;
-        const a = ofGroup(.{ .steward = steward, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now);
+        const a = ofGroup(.{ .steward = steward, .left_steward = null, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now);
         try testing.expectEqual(Kind.needs_approval, a.kind);
         try testing.expectEqual(What{ .worker = 3 }, a.what);
     }
@@ -1138,7 +1179,7 @@ test "Attention: a prompt the supervisor may not answer is the person's from the
     // supervisor's whatever the switch says.
     var failed = status(4, .failed, fresh);
     failed.answer = .off;
-    try testing.expectEqual(Kind.working, ofGroup(.{ .steward = steward, .workers = &.{failed}, .snooze = .none, .last_ms = 0 }, T, now).kind);
+    try testing.expectEqual(Kind.working, ofGroup(.{ .steward = steward, .left_steward = null, .workers = &.{failed}, .snooze = .none, .last_ms = 0 }, T, now).kind);
 }
 
 test "Attention: with no supervisor to give it to, a worker's first minute is the person's" {
@@ -1148,7 +1189,7 @@ test "Attention: with no supervisor to give it to, a worker's first minute is th
 
     // No supervisor at all.
     for ([_]Status{ w, failed }) |worker| {
-        const a = ofGroup(.{ .steward = null, .workers = &.{worker}, .snooze = .none, .last_ms = 0 }, T, now);
+        const a = ofGroup(.{ .steward = null, .left_steward = null, .workers = &.{worker}, .snooze = .none, .last_ms = 0 }, T, now);
         try testing.expectEqual(worker.kind, a.kind);
         try testing.expectEqual(What{ .worker = worker.id }, a.what);
     }
@@ -1156,13 +1197,13 @@ test "Attention: with no supervisor to give it to, a worker's first minute is th
     // One that has clocked off, and one whose terminal is gone.
     var off = status(1, .in_turn, 40 * min);
     off.duty = .off;
-    try testing.expectEqual(Kind.needs_approval, ofGroup(.{ .steward = off, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
+    try testing.expectEqual(Kind.needs_approval, ofGroup(.{ .steward = off, .left_steward = null, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
     var gone = status(1, .in_turn, 40 * min);
     gone.alive = false;
-    try testing.expectEqual(Kind.needs_approval, ofGroup(.{ .steward = gone, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
+    try testing.expectEqual(Kind.needs_approval, ofGroup(.{ .steward = gone, .left_steward = null, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
 
     // One that is there and on duty keeps its minute.
-    try testing.expectEqual(Kind.working, ofGroup(.{ .steward = status(1, .in_turn, 40 * min), .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
+    try testing.expectEqual(Kind.working, ofGroup(.{ .steward = status(1, .in_turn, 40 * min), .left_steward = null, .workers = &.{w}, .snooze = .none, .last_ms = 0 }, T, now).kind);
 }
 
 test "Attention: only approval and failure bubble, and not past a higher supervisor" {
@@ -1170,6 +1211,7 @@ test "Attention: only approval and failure bubble, and not past a higher supervi
     // A worker waiting on an answer is its supervisor's business.
     const answer: Group = .{
         .steward = status(1, .in_turn, 40 * min),
+        .left_steward = null,
         .workers = &.{status(2, .awaiting_input, late)},
         .snooze = .none,
         .last_ms = 0,
@@ -1179,6 +1221,7 @@ test "Attention: only approval and failure bubble, and not past a higher supervi
     // The supervisor's own approval outranks a worker's failure.
     const both: Group = .{
         .steward = status(1, .awaiting_approval, 99 * min),
+        .left_steward = null,
         .workers = &.{status(2, .failed, late)},
         .snooze = .none,
         .last_ms = 0,
@@ -1190,6 +1233,7 @@ test "Attention: only approval and failure bubble, and not past a higher supervi
     off.duty = .off;
     const clocked: Group = .{
         .steward = status(1, .in_turn, 40 * min),
+        .left_steward = null,
         .workers = &.{off},
         .snooze = .none,
         .last_ms = 0,
@@ -1200,6 +1244,7 @@ test "Attention: only approval and failure bubble, and not past a higher supervi
 test "Attention: a snoozed group is snoozed and does not need me" {
     var g: Group = .{
         .steward = status(1, .awaiting_approval, 40 * min),
+        .left_steward = null,
         .workers = &.{},
         .snooze = .{ .until_change = 50 * min },
         .last_ms = 0,
@@ -1223,17 +1268,18 @@ test "Attention: a snoozed group is snoozed and does not need me" {
 test "Attention: a group with nobody alive is unattended" {
     var dead = status(1, .awaiting_approval, 40 * min);
     dead.alive = false;
-    const g: Group = .{ .steward = dead, .workers = &.{}, .snooze = .none, .last_ms = 7 };
+    const g: Group = .{ .steward = dead, .left_steward = null, .workers = &.{}, .snooze = .none, .last_ms = 7 };
     const a = ofGroup(g, T, now);
     try testing.expectEqual(Kind.unattended, a.kind);
     try testing.expectEqual(@as(?Id, null), a.terminal);
     try testing.expectEqual(@as(u64, 7), a.since_ms);
 
-    const empty: Group = .{ .steward = null, .workers = &.{}, .snooze = .none, .last_ms = 7 };
+    const empty: Group = .{ .steward = null, .left_steward = null, .workers = &.{}, .snooze = .none, .last_ms = 7 };
     try testing.expectEqual(Kind.unattended, ofGroup(empty, T, now).kind);
 
     const orphans: Group = .{
         .steward = null,
+        .left_steward = null,
         .workers = &.{status(2, .in_turn, 0)},
         .snooze = .none,
         .last_ms = 7,
@@ -1278,15 +1324,17 @@ test "Attention: within a kind the longest-waiting is on top" {
 
 test "Attention: one supervisor minding three groups is one waiting" {
     const boss = status(1, .awaiting_approval, 40 * min);
-    const g: Group = .{ .steward = boss, .workers = &.{}, .snooze = .none, .last_ms = 0 };
+    const g: Group = .{ .steward = boss, .left_steward = null, .workers = &.{}, .snooze = .none, .last_ms = 0 };
     const other: Group = .{
         .steward = status(2, .failed, 40 * min),
+        .left_steward = null,
         .workers = &.{},
         .snooze = .none,
         .last_ms = 0,
     };
     const busy: Group = .{
         .steward = status(3, .in_turn, 40 * min),
+        .left_steward = null,
         .workers = &.{},
         .snooze = .none,
         .last_ms = 0,

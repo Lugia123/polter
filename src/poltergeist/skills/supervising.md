@@ -431,6 +431,10 @@ connected from that terminal any more: it exited and the terminal is a bare
 shell. Its `agent` state, `role` and `duty` in `terminal_list` stay as they
 were, so only this and `agent_present: false` there tell it from a worker
 standing by. Do not answer it as one: restart it, or take its work back.
+Once its connection and its program are both gone, `left` there says so
+too -- `"unknown"`, or `"failed"` when it ended with an error -- while
+`agent` still shows what its hooks last said (`in_turn`, for one ended in
+the middle of a turn). On the control room the row reads "Agent left".
 
 **The agent's own word, when it has hooks.** A worker started from a role
 whose CLI supports it reports on itself, and then the line can say

@@ -1047,6 +1047,13 @@ pub const Config = struct {
 alloc: Allocator,
 config: Config,
 entries: std.AutoHashMapUnmanaged(Id, Entry) = .empty,
+/// Bumped whenever any terminal's `Entry.left` is set or taken back (task
+/// 1802). Nothing else says that it moved: `considerLinks` writes it from
+/// a sweep that no terminal's message started, so the control room --
+/// which is worked out again only when something marks it -- went on
+/// saying "Working" on a supervisor that had gone. The host compares this
+/// across what it calls and marks the control room when it changed.
+left_changes: u64 = 0,
 
 /// The last finished turn of each terminal that has had one; see `Turn`.
 turns: std.AutoHashMapUnmanaged(Id, Turn) = .empty,
@@ -1402,6 +1409,7 @@ pub fn noteAgentHere(self: *Bus, id: Id, here: bool, program: ?Program, now_ms: 
         // un-failed by a connection still closing.
         if (e.left) |l| if (l.why == .unknown) {
             e.left = null;
+            self.left_changes +%= 1;
         };
         // The launch being waited on got its agent (task 1712).
         if (e.agent.hooks == .expected) e.agent.connected = true;
@@ -1749,6 +1757,7 @@ pub fn noteLeft(self: *Bus, id: Id, why: Left.Why, now_ms: u64) void {
     // by the connection closing a moment later.
     if (e.left) |l| if (l.why == .failed or why == .unknown) return;
     e.left = .{ .why = why, .at_ms = now_ms };
+    self.left_changes +%= 1;
     // Its program is gone: so is the wait for its hooks (`noteAgentHere`).
     if (e.agent.hooks == .expected) e.agent = .none;
 }
@@ -2321,6 +2330,7 @@ pub fn agentEvent(
             a.expected_ms = if (AgentEvent.heardAtFirstTurn(ev.detail)) null else now_ms;
             a.launched_ms = now_ms;
             a.since_ms = now_ms;
+            if (e.left != null) self.left_changes +%= 1;
             e.left = null;
             if (ev.cli.len > 0) a.cli.set(ev.cli);
             return false;
@@ -2349,6 +2359,7 @@ pub fn agentEvent(
 
     // An agent that speaks is there, whatever was concluded when it went
     // quiet.
+    if (e.left != null) self.left_changes +%= 1;
     e.left = null;
     a.agent_id.set(ev.agent_id);
     a.detail.set(ev.detail);
@@ -6723,6 +6734,38 @@ test "1668: a title that never said it waits does not keep a moving box standing
     _ = try b.noteTitle(worker, null, "✳ Claude Code", 1_200);
     b.noteQuiet(worker, 0, 14_000);
     try testing.expect(!b.promptStanding(worker, 1_000, 1_000, 14_000, null));
+}
+
+test "1802: every time an agent is said to have left, or to be back, it is counted" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(boss, hookEv(.turn_started), 1_000);
+    b.noteAgentHere(boss, true, .{ .pid = 91, .started = 500 }, 1_500);
+    const start = b.left_changes;
+
+    // Gone after the grace: one change, from the sweep and nothing else.
+    b.noteAgentHere(boss, false, null, 2_000);
+    _ = b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveNo);
+    try testing.expect(b.agentHasLeft(boss));
+    try testing.expectEqual(start + 1, b.left_changes);
+
+    // Said again: not a change.
+    b.noteLeft(boss, .unknown, 9_000);
+    try testing.expectEqual(start + 1, b.left_changes);
+
+    // Connected again: taken back, a change.
+    b.noteAgentHere(boss, true, .{ .pid = 92, .started = 9_500 }, 10_000);
+    try testing.expect(!b.agentHasLeft(boss));
+    try testing.expectEqual(start + 2, b.left_changes);
+
+    // A hook with nothing to take back is no change; one after a leaving is.
+    _ = try b.agentEvent(boss, hookEv(.turn_ended), 11_000);
+    try testing.expectEqual(start + 2, b.left_changes);
+    b.noteLeft(boss, .failed, 12_000);
+    try testing.expectEqual(start + 3, b.left_changes);
+    _ = try b.agentEvent(boss, hookEv(.session_started), 13_000);
+    try testing.expect(!b.agentHasLeft(boss));
+    try testing.expectEqual(start + 4, b.left_changes);
 }
 
 test "1762: a supervisor whose connection went with its program has left, and is back with its next hook" {

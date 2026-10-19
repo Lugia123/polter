@@ -9238,7 +9238,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
     const present = host.agentPresent(id);
     // Asked only of a terminal with no agent: one with an agent is past it.
     const question = !present and host.startupReach(id) == .blocked;
-    const e = bus.get(id) orelse return .{ .id = id, .agent = .none, .agent_present = present, .startup_question = question };
+    const e = bus.get(id) orelse return .{ .id = id, .agent = .none, .agent_present = present, .startup_question = question, .left = null };
 
     return .{
         .id = id,
@@ -9294,6 +9294,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         // still there. See `wire.TerminalInfo.agent_present`.
         .agent_present = present,
         .startup_question = question,
+        .left = if (e.left) |l| l.why else null,
     };
 }
 
@@ -18323,6 +18324,20 @@ test "ControlRoom resume: me is the one answer that carries where the terminal s
     // Nobody else's row carries it: it is what a terminal is told about
     // itself.
     try testing.expect(describe(&b, fake.host(), worker).membership == null);
+}
+
+test "1802: terminal_list says an agent has left, which its hooks' last state cannot" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .agent_present = false };
+
+    try testing.expectEqual(@as(?Bus.Left.Why, null), describe(&b, fake.host(), worker).left);
+    b.noteLeft(worker, .unknown, 1_000);
+    try testing.expectEqual(@as(?Bus.Left.Why, .unknown), describe(&b, fake.host(), worker).left);
+    b.noteLeft(boss, .failed, 1_000);
+    try testing.expectEqual(@as(?Bus.Left.Why, .failed), describe(&b, fake.host(), boss).left);
+    // A terminal the bus has no entry for: nothing is known to have left.
+    try testing.expectEqual(@as(?Bus.Left.Why, null), describe(&b, fake.host(), 0x9999).left);
 }
 
 test "ControlRoom resume: the host hears what an agent's hooks said, after the bus has it, and never the launcher's own word" {
