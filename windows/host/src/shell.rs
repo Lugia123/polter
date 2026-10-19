@@ -113,6 +113,18 @@ fn set_attr<T>(hwnd: HWND, attr: u32, value: &T) -> bool {
     }
 }
 
+/// How `init_frame` tells Windows the frame changed.
+///
+/// ⚠️ **`SWP_NOACTIVATE` is load-bearing** (task 1835). Without it this call
+/// activates the window it is about -- `SetWindowPos` activates unless told
+/// not to -- and it runs before `ShowWindow`, so a frame the core opened
+/// behind (`create_frame_secondary_behind`, `SW_SHOWNOACTIVATE`) was active
+/// before it was ever shown: `w2 [win] activated` and the person's window
+/// gone from the front, with nothing after it taking the keyboard
+/// (Windows, 2026-10-20). A frame that is to be active gets that from its
+/// own `ShowWindow(SW_SHOW)`.
+const FRAME_CHANGED: SET_WINDOW_POS_FLAGS = SET_WINDOW_POS_FLAGS(SWP_NOMOVE.0 | SWP_NOSIZE.0 | SWP_NOZORDER.0 | SWP_FRAMECHANGED.0 | SWP_NOACTIVATE.0);
+
 /// Dress the frame. Called once, after the window exists and before it is
 /// shown.
 ///
@@ -155,7 +167,7 @@ pub fn init_frame(hwnd: HWND) {
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            FRAME_CHANGED,
         )
     }
     .is_ok();
@@ -553,4 +565,16 @@ fn rect_outline(hdc: HDC, l: i32, t: i32, r: i32, b: i32, color: u32, w: i32) {
     line(hdc, r, t, r, b, color, w);
     line(hdc, r, b, l, b, color, w);
     line(hdc, l, b, l, t, color, w);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_1835_telling_windows_the_frame_changed_activates_nothing() {
+        assert_ne!(FRAME_CHANGED.0 & SWP_NOACTIVATE.0, 0, "init_frame would activate the frame before it is shown");
+        // And it still says what it is for.
+        assert_ne!(FRAME_CHANGED.0 & SWP_FRAMECHANGED.0, 0);
+    }
 }
