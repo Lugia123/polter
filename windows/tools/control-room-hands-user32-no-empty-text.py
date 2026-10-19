@@ -14,7 +14,9 @@ word, a wait can come with no reason -- and an empty `Vec<u16>` is a count of
 that pointer. The screenshot overlay died of the same thing before the panel
 did (task 1199).
 
-**The rule.** In `windows/host/src/control_room.rs`:
+**The rule.** In `windows/host/src/control_room.rs` -- and, since task 1871,
+in `projects_ui.rs` and `project_picker.rs`, each with its own homes in
+`FILES`:
 
   1. `DrawTextW(` appears in `draw_text` and nowhere else;
      `GetTextExtentPoint32W(` in `text_width` and nowhere else;
@@ -30,8 +32,8 @@ did (task 1199).
 
 **NOT CHECKED.**
 
-  * **The other thirty-odd `DrawTextW` calls in the host** (`strip.rs`,
-    `palette.rs`, the settings pages, ...). Each has its own caller and its
+  * **The other `DrawTextW` calls in the host** (`strip.rs`,
+    `palette.rs`, the other settings pages, ...). Each has its own caller and its
     own reason the text is not empty, or none; nobody has gone through them.
     This is the panel's floor and says nothing about them.
   * **That `USER32` does what the paragraph above says.** It is read from two
@@ -47,8 +49,8 @@ did (task 1199).
 caught, and that the file as it should be is not.
 
 Run:  python3 windows/tools/control-room-hands-user32-no-empty-text.py
-Exit: 0, with `scanned 1 file` and the three calls counted (3, not 0);
-      non-zero otherwise.
+Exit: 0, with `scanned 3 file(s) of 3` and each file's guarded calls
+      counted (3, 1 and 3, not 0); non-zero otherwise.
 """
 
 import os
@@ -59,12 +61,27 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 FILE = os.path.join("windows", "host", "src", "control_room.rs")
 
-# call -> the one function it may be made from
+# call -> the functions it may be made from
 HOMES = {
-    "DrawTextW": "draw_text",
-    "GetTextExtentPoint32W": "text_width",
-    "GetTextExtentExPointW": "fit_chars",
+    "DrawTextW": ("draw_text",),
+    "GetTextExtentPoint32W": ("text_width",),
+    "GetTextExtentExPointW": ("fit_chars",),
 }
+
+# Every file held to the rule, with its homes and how many guarded calls it
+# has. The projects page and the project picker are here since task 1871:
+# the page's Color line has an empty value on purpose, and selecting any
+# project killed the host in `USER32+0x24702` reading `0x2` -- the same
+# crash, three dumps out of three.
+FILES = (
+    (FILE, HOMES, 3),
+    (os.path.join("windows", "host", "src", "projects_ui.rs"), {"DrawTextW": ("draw_text",)}, 1),
+    (
+        os.path.join("windows", "host", "src", "project_picker.rs"),
+        {"DrawTextW": ("draw_text",), "GetTextExtentPoint32W": ("text_width", "measure_in")},
+        3,
+    ),
+)
 OTHERS = ("TextOutW", "ExtTextOutW", "DrawTextExW", "TabbedTextOutW")
 QUESTION = re.compile(r"if\s+!\s*scene::draws\(\s*text\s*\)\s*\{\s*return\b[^;]*;\s*\}")
 
@@ -131,13 +148,14 @@ def line_of(code, at):
     return code.count("\n", 0, at) + 1
 
 
-def findings(src):
+def findings(src, homes=HOMES):
     """`(problems, calls)`: what is wrong, and how many guarded calls were read."""
     code = strip(src)
     funcs = functions(code)
     out = []
     calls = 0
-    for call, home in HOMES.items():
+    for call, allowed in homes.items():
+        home = " or ".join(f"`{h}`" for h in allowed)
         sites = [m.start() for m in re.finditer(r"\b%s\s*\(" % call, code)]
         if not sites:
             out.append(
@@ -148,10 +166,10 @@ def findings(src):
             continue
         for at in sites:
             inside = owner(funcs, at)
-            if inside is None or inside[0] != home:
+            if inside is None or inside[0] not in allowed:
                 where = inside[0] if inside else "no function"
                 out.append(
-                    f"line {line_of(code, at)}: `{call}(` in `{where}`, outside `{home}`. Text that "
+                    f"line {line_of(code, at)}: `{call}(` in `{where}`, outside {home}. Text that "
                     f"reaches it has not been asked `scene::draws`: an empty one is a count of 0 "
                     "and a pointer to nothing, and USER32 reads through it (task 1439)"
                 )
@@ -159,7 +177,7 @@ def findings(src):
             asked = QUESTION.search(code, inside[1], at)
             if not asked:
                 out.append(
-                    f"line {line_of(code, at)}: `{home}` calls `{call}(` without first returning "
+                    f"line {line_of(code, at)}: `{inside[0]}` calls `{call}(` without first returning "
                     "when `!scene::draws(text)`. The question has to come before the call, in "
                     "this function, as `if !scene::draws(text) { return ...; }`"
                 )
@@ -269,20 +287,27 @@ def main():
         return 1
 
     root = sys.argv[1] if len(sys.argv) > 1 else ROOT
-    path = os.path.join(root, FILE)
-    if not os.path.isfile(path):
-        print(f"scanned 0 files: {FILE} is not there. Nothing was checked, which is not a pass")
-        return 1
-    with open(path, encoding="utf-8") as f:
-        src = f.read()
-    out, calls = findings(src)
-    print(f"scanned 1 file ({FILE}); {calls} guarded call(s) of {len(HOMES)}")
-    if out:
+    failed = False
+    scanned = 0
+    for rel, homes, want in FILES:
+        path = os.path.join(root, rel)
+        if not os.path.isfile(path):
+            print(f"FAIL {rel}: not there. Nothing was checked of it, which is not a pass")
+            failed = True
+            continue
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+        scanned += 1
+        out, calls = findings(src, homes)
+        print(f"read {rel}: {calls} guarded call(s) of {want}")
         for line in out:
-            print(f"FAIL {FILE}: {line}")
-        return 1
-    if calls != len(HOMES):
-        print(f"FAIL: read {calls} guarded call(s) and expected {len(HOMES)}")
+            print(f"FAIL {rel}: {line}")
+            failed = True
+        if not out and calls != want:
+            print(f"FAIL {rel}: read {calls} guarded call(s) and expected {want}")
+            failed = True
+    print(f"scanned {scanned} file(s) of {len(FILES)}")
+    if failed or scanned == 0:
         return 1
     print("OK")
     return 0

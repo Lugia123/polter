@@ -34,6 +34,7 @@ use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+use polter_control_room::scene;
 use polter_projects::page_rules as rules;
 use polter_settings_shell::picker::{self, save_as};
 use polter_settings_shell::projects as pj;
@@ -509,6 +510,9 @@ enum Placed {
 
 /// How wide `text` is in `font`, in pixels.
 fn text_width(font: HFONT, text: &str) -> i32 {
+    if !scene::draws(text) {
+        return 0;
+    }
     let t: Vec<u16> = text.encode_utf16().collect();
     let mut size = SIZE::default();
     unsafe {
@@ -1190,8 +1194,15 @@ fn draw_check(hdc: HDC, b: &RECT, on: bool, hot: bool, focus: bool, disabled: bo
     }
 }
 
-fn draw_text(hdc: HDC, s: &str, r: &RECT, font: HFONT, colour: u32, flags: DRAW_TEXT_FORMAT) {
-    let mut t: Vec<u16> = s.encode_utf16().collect();
+/// Words that are not there are not handed to `DrawTextW` (task 1871): an
+/// empty string is a pointer to nothing that `USER32` reads through. The
+/// same for the two measures below; `windows/tools/control-room-hands-user32-no-empty-text.py`
+/// holds this file to it.
+fn draw_text(hdc: HDC, text: &str, r: &RECT, font: HFONT, colour: u32, flags: DRAW_TEXT_FORMAT) {
+    if !scene::draws(text) {
+        return;
+    }
+    let mut t: Vec<u16> = text.encode_utf16().collect();
     let mut r = *r;
     unsafe {
         let old = SelectObject(hdc, HGDIOBJ(font.0));
@@ -1292,6 +1303,9 @@ fn draw_tab_row(h: Handles, d: &DRAWITEMSTRUCT) {
 
 /// How wide `text` is in `font` on `hdc`.
 fn measure_in(hdc: HDC, font: HFONT, text: &str) -> i32 {
+    if !scene::draws(text) {
+        return 0;
+    }
     let t: Vec<u16> = text.encode_utf16().collect();
     let mut size = SIZE::default();
     unsafe {

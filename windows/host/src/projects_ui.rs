@@ -31,6 +31,7 @@ use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+use polter_control_room::scene;
 use polter_settings_shell::projects::{self as pj, NameVerdict, Named, SaveAsStep, Stash, Undo};
 use polter_settings_shell::{grid, scale, section_grid, Rect as SRect};
 use windows::core::{s, w, BOOL, HRESULT, PCWSTR};
@@ -1294,8 +1295,23 @@ fn frame_rect(hdc: HDC, r: &RECT, colour: u32) {
     }
 }
 
-fn draw_text(hdc: HDC, s: &str, r: &RECT, font: &AtomicPtr<c_void>, colour: u32, flags: DRAW_TEXT_FORMAT) {
-    let mut w: Vec<u16> = s.encode_utf16().collect();
+/// The one place this window hands words to the system to be drawn.
+///
+/// **Words that are not there are not handed over** (`scene::draws`, task
+/// 1871). An empty string is a count of 0 and a pointer to nothing (`0x2`),
+/// and `USER32` on Windows 11 build 26200 reads through it. This page has
+/// one on purpose: the Color line's value is the swatches drawn over it,
+/// and its text is `""` -- so selecting any project, which opening the page
+/// does, killed the host in `WM_PAINT` (`USER32+0x24702`, reading `0x2`;
+/// three dumps out of three, since task 1796 added the line). The same
+/// thing the control room died of (task 1439) and the screenshot overlay
+/// before it (task 1199). `windows/tools/control-room-hands-user32-no-empty-text.py`
+/// holds this file to it.
+fn draw_text(hdc: HDC, text: &str, r: &RECT, font: &AtomicPtr<c_void>, colour: u32, flags: DRAW_TEXT_FORMAT) {
+    if !scene::draws(text) {
+        return;
+    }
+    let mut w: Vec<u16> = text.encode_utf16().collect();
     let mut r = *r;
     unsafe {
         let old = SelectObject(hdc, HGDIOBJ(font.load(Ordering::Acquire)));
