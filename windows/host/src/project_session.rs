@@ -826,6 +826,26 @@ pub fn other_pages_open(tab: TabId) -> usize {
     })
 }
 
+/// `add_tab` for an order from the core, where a tab that is a page of
+/// `file` already is the order done, not refused (task 1861).
+///
+/// **The order can be older than the tab's place.** `orders::step` asks
+/// whether the *terminal* is in a project, by the terminals the last save
+/// found (`Open::terminals`); a worker that has just been stacked or split
+/// into one of the project's tabs is not among them until the next save,
+/// and the core, asking the same of what this host last said, orders its
+/// tab added. That tab is a page already, of this very project, and
+/// `add_tab` said so as a failure: "already a page of the project
+/// "g1794". Take it out of that project first."
+fn join_page(file: &Path, tab: TabId) -> Result<(), String> {
+    if file_of_tab(tab).as_deref() == Some(file) {
+        // process-wide: a project is tabs of any number of windows
+        plogf!("[project] tab {:?} is a page of {} already; nothing to add", tab, file.display());
+        return Ok(());
+    }
+    add_tab(file, tab)
+}
+
 /// `tab` becomes one more page of the project in `file`, where its tab is.
 /// The project's other pages are not opened by this.
 pub fn add_tab(file: &Path, tab: TabId) -> Result<(), String> {
@@ -1409,12 +1429,12 @@ fn obey() {
                 None => Err("its file was not found".to_string()),
             },
             Step::AddTab { project, terminal } => match (file_of(project), tabs::tab_of_terminal(terminal)) {
-                (Some(file), Some((_, tab))) => add_tab(&file, tab),
+                (Some(file), Some((_, tab))) => join_page(&file, tab),
                 _ => Err("its file was not found, or the terminal is gone".to_string()),
             },
             // Task 1794: the supervisor's pane follows the group's supervisor.
             Step::Seat { project, terminal, join_tab } => match (file_of(project), tabs::tab_of_terminal(terminal)) {
-                (Some(file), Some((_, tab))) => (if *join_tab { add_tab(&file, tab) } else { Ok(()) })
+                (Some(file), Some((_, tab))) => (if *join_tab { join_page(&file, tab) } else { Ok(()) })
                     .and_then(|()| mark_supervisor(&file, terminal)),
                 _ => Err("its file was not found, or the terminal is gone".to_string()),
             },

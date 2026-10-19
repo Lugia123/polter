@@ -10174,7 +10174,7 @@ fn openTerminalAt(
         };
     };
 
-    if (placed != .split) {
+    if (opensATab(placed)) {
         var answer: apprt.action.NewTab.Result = .unanswered;
         // An agent asked for it: in the background (task 1823).
         const performed = rt_app.performAction(
@@ -10202,6 +10202,32 @@ fn openTerminalAt(
         return .{ .id = id, .placed = placed };
     }
     return .{ .id = null, .placed = placed };
+}
+
+/// Whether a terminal placed so is still to be asked of the apprt as a tab.
+/// A split and a stack were asked for already, of the pane they go in.
+///
+/// ⚠️ **A switch, not `!= .split`** (task 1861). That test was written when
+/// a split was the only other answer; `stack` came with task 1797 and fell
+/// on the tab side of it, so every stacked worker was made twice -- in the
+/// stack, and as an empty tab beside it (Windows, 2026-10-20). Written out,
+/// the next kind of placement is a compile error here until somebody says
+/// which side it is on.
+fn opensATab(placed: poltergeistpkg.rpc.Placed) bool {
+    return switch (placed) {
+        .tab => true,
+        .split, .stack => false,
+        // Nothing is opened for a terminal that was there already.
+        .reused => false,
+    };
+}
+
+test "poltergeist: 1861 a stacked worker is not opened a second time as a tab" {
+    try std.testing.expect(!opensATab(.stack));
+    try std.testing.expect(!opensATab(.split));
+    try std.testing.expect(!opensATab(.{ .reused = .free_worker }));
+    try std.testing.expect(opensATab(.{ .tab = .asked }));
+    try std.testing.expect(opensATab(.{ .tab = .split_refused }));
 }
 
 /// What the apprt's answer to "open a tab" means to whoever asked for a
