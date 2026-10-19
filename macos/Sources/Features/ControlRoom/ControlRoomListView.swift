@@ -639,12 +639,15 @@ struct ControlRoomListView: View {
                     // the status. `ControlRoomLine1` shares out the rest as
                     // before.
                     if let facts = row.facts {
+                        let note = ProjectLinkRules.note(tie: facts.projectTie, why: facts.projectWhy, name: facts.project)
                         ProjectRowNote(
-                            note: ProjectLinkRules.note(tie: facts.projectTie, why: facts.projectWhy, name: facts.project),
+                            note: note,
                             sentence: ProjectLinkPlan.whySentence(facts.projectWhy, group: row.id, blocker: nil))
                             .padding(.leading, gap)
                             .frame(maxWidth: .infinity, alignment: .trailing)
-                            .layoutPriority(-1)
+                            // A name gives way first; something to answer
+                            // does not (task 1830).
+                            .layoutPriority(ProjectLinkRules.notePriority(note))
                     } else {
                         Spacer(minLength: 0)
                     }
@@ -787,12 +790,14 @@ struct ControlRoomListView: View {
                 // The group's project at the right end (task 1713, §3.4):
                 // its name, or what is to be answered about it.
                 if let facts = row.facts {
+                    let note = ProjectLinkRules.note(tie: facts.projectTie, why: facts.projectWhy, name: facts.project)
                     ProjectRowNote(
-                        note: ProjectLinkRules.note(tie: facts.projectTie, why: facts.projectWhy, name: facts.project),
+                        note: note,
                         sentence: ProjectLinkPlan.whySentence(facts.projectWhy, group: row.id, blocker: nil))
-                        // What the group is doing comes first; the project
-                        // gives way (task 1713).
-                        .layoutPriority(-1)
+                        // What the group is doing comes before the
+                        // project's name (task 1713), and after something
+                        // to answer about it (task 1830).
+                        .layoutPriority(ProjectLinkRules.notePriority(note))
                 }
             }
         }

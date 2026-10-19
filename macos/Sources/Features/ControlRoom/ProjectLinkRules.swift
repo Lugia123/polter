@@ -127,6 +127,23 @@ enum ProjectLinkRules {
         return String(localized: "All \(String(pages)) page(s) of its project come back and the supervisor starts in its own pane. The workers' panes come back as terminals only; who is called back is the supervisor's to decide.", comment: "总控台：有项目的群右栏底下那句，参数是项目的页数")
     }
 
+    /// How a row's project note gives way to the rest of the line (task
+    /// 1830, the Windows host's `scene::project_note`): the project's name
+    /// is the first thing cut (`Side::Squeezed`), but something to answer
+    /// -- a file that does not read, a project of the same name -- keeps its
+    /// room and the words for what the group is doing give way to it
+    /// (`Side::Trail`). Both used to give way first here, so on a row whose
+    /// words filled the line "Project file unreadable" was drawn zero wide
+    /// and said nothing at all, where Windows said it (measured on a Mac,
+    /// 0x01f5 #1856 c2-new). The words keep the default, 0.
+    static func notePriority(_ note: Note) -> Double {
+        switch note {
+        case .none: return 0
+        case .name: return -1
+        case .attention: return 1
+        }
+    }
+
     static func note(tie: String, why: String, name: String?) -> Note {
         // Kept, and its file does not read (task 1807): that, before its name.
         if tie == "bound", why == "project_unreadable" { return .attention("unreadable") }

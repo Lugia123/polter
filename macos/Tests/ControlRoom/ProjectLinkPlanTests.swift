@@ -221,6 +221,22 @@ struct ProjectLinkPlanTests {
         #expect(ProjectLinkRules.note(tie: "bound", why: "none", name: "g") == .name("g"))
     }
 
+    /// Task 1830: on a row whose words fill the line, "Project file
+    /// unreadable" is what stays and the words give way; the project's name
+    /// is what goes -- the Windows host's `Side::Trail` and `Side::Squeezed`.
+    /// The row's words are at the default priority, 0.
+    @Test func somethingToAnswerKeepsItsRoomAndANameGivesWay() {
+        let words = 0.0
+        let unreadable = ProjectLinkRules.note(tie: "bound", why: "project_unreadable", name: "g")
+        #expect(ProjectLinkRules.notePriority(unreadable) > words)
+        for why in ["project_name_taken", "several_projects", "project_has_group"] {
+            let ask = ProjectLinkRules.note(tie: "undecided", why: why, name: nil)
+            #expect(ProjectLinkRules.notePriority(ask) > words, "\(why)")
+        }
+        #expect(ProjectLinkRules.notePriority(.name("web")) < words)
+        #expect(ProjectLinkRules.notePriority(.none) == words)
+    }
+
     // MARK: The submenu
 
     @Test func useAnExistingProjectSaysWhoseEachIsAndGreysAnotherGroups() {
