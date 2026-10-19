@@ -14,6 +14,6 @@ struct WindowOpsTallyTests {
     /// the lines of two minutes are read side by side.
     @Test func everyKindIsSaidAndInOneOrder() {
         let line = WindowOpsTally.line([.glyphTicks: 400, .borrow: 1, .titleSets: 37])
-        #expect(line == "window ops/min: borrow=1 giveBack=0 occlusionFlips=0 becomeKey=0 fixTabBar=0 markRedraw=0 titleSets=37 glyphTicks=400")
+        #expect(line == "window ops/min: borrow=1 giveBack=0 occlusionFlips=0 becomeKey=0 fixTabBar=0 markRedraw=0 titleSets=37 glyphTicks=400 setIcon=0 badgeSets=0")
     }
 }

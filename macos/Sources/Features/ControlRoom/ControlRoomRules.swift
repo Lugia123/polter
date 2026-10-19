@@ -230,6 +230,27 @@ enum ControlRoomRules {
         return String(needsMe)
     }
 
+    /// The Dock's badge as it was last set (task 1873).
+    ///
+    /// **Set only when it changes.** It was set -- and the tile told to
+    /// display -- at every control-room snapshot, which come several a
+    /// second while an agent works, whatever the label: a badge is an
+    /// application information item kept by LaunchServices, so each was a
+    /// trip through it and the Dock drawing the icon again.
+    struct DockBadge {
+        private var set = false
+        private(set) var shown: String?
+
+        /// Whether `label` is to be set now: the first time, and whenever
+        /// it is not what was set last. Taken as set when it is.
+        mutating func needsSetting(_ label: String?) -> Bool {
+            if set && label == shown { return false }
+            set = true
+            shown = label
+            return true
+        }
+    }
+
     /// What becomes of "new split" asked of a terminal.
     enum NewSplit: Equatable {
         /// Split it.

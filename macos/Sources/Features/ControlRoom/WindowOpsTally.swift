@@ -17,6 +17,9 @@ import os
 enum WindowOpsTally {
     enum Op: String, CaseIterable {
         case borrow, giveBack, occlusionFlips, becomeKey, fixTabBar, markRedraw, titleSets, glyphTicks
+        /// The bundle's icon set (`AppIconUpdater`) and the Dock's badge
+        /// set (`AppDelegate.setDockBadge`): both go through LaunchServices.
+        case setIcon, badgeSets
     }
 
     static let logger = Logger(

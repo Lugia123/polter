@@ -134,6 +134,8 @@ class AppDelegate: NSObject,
     /// Listens for the control room's snapshot: the Dock badge is its
     /// "N waiting for you".
     private var waitingBadge: AnyCancellable?
+    /// What the Dock's badge was last set to (task 1873).
+    private var dockBadge = ControlRoomRules.DockBadge()
 
     /// The current state of the quick terminal.
     private var quickTerminalControllerState: QuickTerminalState = .uninitialized
@@ -1047,8 +1049,11 @@ class AppDelegate: NSObject,
         // "N waiting for you" comes first; the number is the core's.
         let label = ControlRoomRules.dockBadge(
             needsMe: ControlRoomFeed.shared(ghostty).latest?.needs_me, bells: bells)
+        // Only when it changes, and without `display()`: the tile has no
+        // view of its own to draw, and a badge shows when it is set.
+        guard dockBadge.needsSetting(label) else { return }
         NSApp.dockTile.badgeLabel = label
-        NSApp.dockTile.display()
+        WindowOpsTally.count(.badgeSets)
     }
 
     private func ghosttyConfigDidChange(config: Ghostty.Config) {

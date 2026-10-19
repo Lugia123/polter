@@ -196,6 +196,7 @@
       "macos/Tests/ControlRoom/PaneStackRulesTests.swift",
       "macos/Tests/ControlRoom/TerminalPresenceTests.swift",
       "macos/Tests/ControlRoom/WindowOpsTallyTests.swift",
+      "macos/Tests/ControlRoom/DockBadgeTests.swift",
       "macos/Tests/AppIcon/AppIconChangeTests.swift",
       "macos/Tests/Projects/ProjectAutosaveTests.swift",
       "macos/Tests/Projects/ProjectDocumentTests.swift",

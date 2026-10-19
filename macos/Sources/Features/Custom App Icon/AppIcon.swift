@@ -117,6 +117,7 @@ actor AppIconUpdater {
                 forFile: bundlePath,
             )
             NSWorkspace.shared.noteFileSystemChanged(bundlePath)
+            Task { @MainActor in WindowOpsTally.count(.setIcon) }
         }
     }
 }
