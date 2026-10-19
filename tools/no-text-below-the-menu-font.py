@@ -28,7 +28,10 @@ What is refused, in `macos/Sources/Features/{Settings,Projects,Roles,Plugins}`:
      where the next line is `.labelsHidden()`: neither has text to shrink.
 
 And `SettingsFont` itself must take its size from `NSFont.menuFont(ofSize: 0)`
-and contain no number of its own.
+and contain no number of its own. Since task 1805 it asks through
+`SafeFace.menu.pointSize`, which is the same font at size 0 behind a guard
+for a system that answers nil (it then falls back to `systemFontSize`);
+either spelling is accepted, and nothing else.
 
 # What this cannot see
 
@@ -111,8 +114,8 @@ def main() -> int:
     with open(SOURCE, encoding="utf-8") as fh:
         source = "\n".join(code(l) for l in fh.read().split("\n"))
     bad = 0
-    if "NSFont.menuFont(ofSize: 0).pointSize" not in source:
-        print("FAIL: SettingsFont does not take its size from NSFont.menuFont(ofSize: 0).pointSize")
+    if "NSFont.menuFont(ofSize: 0).pointSize" not in source and "SafeFace.menu.pointSize" not in source:
+        print("FAIL: SettingsFont does not take its size from NSFont.menuFont(ofSize: 0).pointSize or SafeFace.menu.pointSize")
         bad += 1
 
     uses = 0

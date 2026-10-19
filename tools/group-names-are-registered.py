@@ -89,6 +89,7 @@ MAP_FIELDS = {
     ("src/poltergeist/StatsLog.zig", "last"): "keyed by group name: group_stores.Table.stats_last",
     ("src/poltergeist/Server.zig", "tokens"): "keyed by token, not by group",
     ("src/poltergeist/Projects.zig", "settled"): "keyed by terminal id",
+    ("src/poltergeist/Projects.zig", "by_terminal"): "keyed by terminal id: SeatJudged, which agent in a supervisor's pane was judged (task 1795)",
     ("src/poltergeist/ControlFix.zig", "stamps"): "keyed by a hash of the terminal told, the terminals that failed and their moments (stampOf), not by group",
     ("src/poltergeist/ControlNotify.zig", "done"): "keyed by the waiting terminal, its kind and the moment it started (Signature), not by group",
     ("src/poltergeist/Bus.zig", "entries"): "keyed by terminal id",
