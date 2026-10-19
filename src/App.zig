@@ -1879,10 +1879,20 @@ fn forgetSeatAgentsThatLeft(self: *App) void {
         const left = while (it.next()) |e| {
             const now = self.poltergeist.agentHasLeft(e.key_ptr.*);
             if (now and !e.value_ptr.left) break e.key_ptr.*;
+            // Or its round is over (task 1829): a refused agent is not
+            // watched, and leaves no left.
+            if (self.agentRound(e.key_ptr.*) != e.value_ptr.round) break e.key_ptr.*;
             e.value_ptr.left = now;
         } else return;
         self.seat_judged.gone(left);
     }
+}
+
+/// `Server.agentRound`: which time an agent has been connected from `id`,
+/// 0 for none.
+fn agentRound(self: *App, id: poltergeistpkg.Bus.Id) u64 {
+    if (self.poltergeist_server) |*srv| return srv.agentRound(id);
+    return 0;
 }
 
 fn dropProjectSeating(self: *App) void {
@@ -5734,7 +5744,12 @@ fn seatAgentArrived(self: *App, id: poltergeistpkg.Bus.Id) void {
     // The one that was judged here has left since: whoever this is, is
     // judged. Not while a left from before it is still on the bus.
     const left = bus.agentHasLeft(id);
-    self.seat_judged.seen(id, left);
+    // And which agent this is, by its connection (task 1829): a request
+    // with no agent connected -- a hook's, before its CLI has -- judges
+    // nothing; the agent's own first request does.
+    const round = self.agentRound(id);
+    self.seat_judged.seen(id, left, round);
+    if (round == 0) return;
     const agent = poltergeistpkg.Projects.SeatJudged.agentKey(bus.agentOf(id).session_id.get());
     // The cheap questions first: this runs at every request.
     if (!self.seat_judged.due(id, agent)) return;
@@ -5758,11 +5773,11 @@ fn seatAgentArrived(self: *App, id: poltergeistpkg.Bus.Id) void {
     switch (claim) {
         .none => return,
         .watched => |w| {
-            self.seat_judged.judged(self.alloc, id, agent, left) catch {};
+            self.seat_judged.judged(self.alloc, id, agent, left, round) catch {};
             log.warn("poltergeist: an agent in project {s}'s supervisor's pane is watched by a supervisor; not made {s}'s", .{ w.project, w.group });
         },
         .refuse => |r| {
-            self.seat_judged.judged(self.alloc, id, agent, left) catch {};
+            self.seat_judged.judged(self.alloc, id, agent, left, round) catch {};
             log.warn("poltergeist: an agent in project {s}'s supervisor's pane, but {s} has a supervisor already; not made one", .{ r.project, r.group });
             const text = std.fmt.bufPrint(&buf, "[Polter] An agent started in project {s}'s supervisor's pane (0x{x:0>16}), " ++
                 "but {s} already has a supervisor (0x{x:0>16}): it was not made one. A project has one supervisor.", .{ r.project, id, r.group, r.steward }) catch return;
@@ -5772,7 +5787,7 @@ fn seatAgentArrived(self: *App, id: poltergeistpkg.Bus.Id) void {
             self.controlRoomTouch();
         },
         .take => |t| {
-            self.seat_judged.judged(self.alloc, id, agent, left) catch {};
+            self.seat_judged.judged(self.alloc, id, agent, left, round) catch {};
             if (!bus.isSupervisor(id)) bus.addSupervisor(id) catch |err| {
                 log.warn("poltergeist: could not make the agent in {s}'s supervisor's pane a supervisor err={}", .{ t.project, err });
                 return;

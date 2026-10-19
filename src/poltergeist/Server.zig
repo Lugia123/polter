@@ -104,6 +104,11 @@ const Slot = struct {
     /// told things (`Kind.listens`). Cleared with `caller`.
     listens: bool = false,
 
+    /// Which time an agent has been connected from its terminal, for an
+    /// agent's connection (`agentRound`); 0 for one that listens. Cleared
+    /// with `caller`.
+    round: u64 = 0,
+
     /// What the connection said about the program that started it
     /// (`agent_cli.Sighting`), checked and written back compactly as
     /// `{"pid":…,"env":{…}}`; empty when it said nothing. **In the slot
@@ -351,6 +356,10 @@ running: std.atomic.Value(bool) = .init(false),
 /// using. Changing the setting takes effect the next time the socket opens.
 slots: []Slot,
 slots_mutex: std.Io.Mutex = .init,
+
+/// The last round handed out (`agentRound`), under `slots_mutex`. One
+/// count for every terminal, so a round is never anybody else's.
+rounds: u64 = 0,
 
 /// Whether the person has been told this time that every slot is taken,
 /// and how often it has happened since (task 1731). The accept loop's alone:
@@ -869,6 +878,46 @@ pub fn agentPresent(self: *Server, id: Bus.Id) bool {
     return false;
 }
 
+/// Which time an agent has been connected from terminal `id`: a number
+/// that stays the same for as long as an agent's connection is open there,
+/// and is a new one when an agent connects to a terminal none is connected
+/// from (task 1829). 0 when none is connected.
+///
+/// **What tells one agent from the next when nothing else does.** An agent
+/// the bus does not watch -- one refused a project's supervisor's pane --
+/// leaves no `left` behind when it exits, and a CLI resumed into the same
+/// session says the same session id: the next agent there read exactly like
+/// the one before, and was never judged (`Projects.SeatJudged`). An agent
+/// holds the connection its tool calls use from start to exit; one that
+/// listens, or a hook saying one thing, is not counted, as in `agentPresent`.
+pub fn agentRound(self: *Server, id: Bus.Id) u64 {
+    self.slots_mutex.lockUncancelable(self.io);
+    defer self.slots_mutex.unlock(self.io);
+    return self.liveRound(id);
+}
+
+/// `agentRound`'s answer, under `slots_mutex`.
+fn liveRound(self: *const Server, id: Bus.Id) u64 {
+    for (self.slots) |s| {
+        if (s.round == 0) continue;
+        const caller = s.caller orelse continue;
+        switch (caller) {
+            .terminal => |tid| if (tid == id) return s.round,
+            .plugin => {},
+        }
+    }
+    return 0;
+}
+
+/// The round for an agent's connection from `id` just made, under
+/// `slots_mutex`: the one already open there, or a new one.
+fn roundFor(self: *Server, id: Bus.Id) u64 {
+    const open = self.liveRound(id);
+    if (open != 0) return open;
+    self.rounds += 1;
+    return self.rounds;
+}
+
 fn releaseSlot(self: *Server, index: usize) void {
     self.slots_mutex.lockUncancelable(self.io);
     defer self.slots_mutex.unlock(self.io);
@@ -942,6 +991,7 @@ fn connectionMain(self: *Server, index: usize) void {
         // speaks for anybody.
         self.slots[index].caller = null;
         self.slots[index].listens = false;
+        self.slots[index].round = 0;
         self.slots[index].sighting_len = 0;
         self.slots_mutex.unlock(self.io);
         // Outside the lock: the host's answer is to wake its own thread,
@@ -965,6 +1015,10 @@ fn connectionMain(self: *Server, index: usize) void {
     {
         self.slots_mutex.lockUncancelable(self.io);
         defer self.slots_mutex.unlock(self.io);
+        self.slots[index].round = if (shook.kind.listens()) 0 else switch (caller) {
+            .terminal => |tid| self.roundFor(tid),
+            .plugin => 0,
+        };
         self.slots[index].caller = caller;
         self.slots[index].listens = shook.kind.listens();
         self.slots[index].sighting_len = shook.sighting_len;

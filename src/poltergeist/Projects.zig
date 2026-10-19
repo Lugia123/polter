@@ -420,6 +420,15 @@ pub const Seating = struct {
 /// go, and an agent started there afterwards was never made the new one.
 /// An agent is told apart by its hooks' session id (`agentKey`), and one
 /// that leaves is forgotten (`gone`), which covers a CLI that says none.
+///
+/// **Left, or a new round** (task 1829). A leave was only ever the bus's
+/// `left` turning true, and the bus writes one only for a terminal it
+/// watches or a supervisor's: an agent refused the pane is neither, so when
+/// it exited nothing turned true, and a codex resumed there afterwards --
+/// the same session id, too -- was never judged and never taken (measured
+/// on a Mac, with hooks and without). So each agent judged is also known by
+/// its round (`Server.agentRound`): the time an agent has been connected
+/// from that terminal. Another round is another agent.
 pub const SeatJudged = struct {
     by_terminal: std.AutoHashMapUnmanaged(Id, Judged) = .empty,
 
@@ -433,6 +442,9 @@ pub const SeatJudged = struct {
         /// them judged that one five times and said so five times (task
         /// 1795, measured on the Windows machine).
         left: bool,
+        /// `Server.agentRound` when it was judged: never 0, since an agent
+        /// is judged only while it is connected.
+        round: u64,
     };
 
     pub fn deinit(self: *SeatJudged, alloc: Allocator) void {
@@ -458,17 +470,21 @@ pub const SeatJudged = struct {
         return true;
     }
 
-    /// `left`: whether the bus says an agent has left `terminal` now.
-    pub fn judged(self: *SeatJudged, alloc: Allocator, terminal: Id, agent: u64, left: bool) Allocator.Error!void {
-        try self.by_terminal.put(alloc, terminal, .{ .agent = agent, .left = left });
+    /// `left`: whether the bus says an agent has left `terminal` now;
+    /// `round`: `Server.agentRound` of `terminal` now.
+    pub fn judged(self: *SeatJudged, alloc: Allocator, terminal: Id, agent: u64, left: bool, round: u64) Allocator.Error!void {
+        try self.by_terminal.put(alloc, terminal, .{ .agent = agent, .left = left, .round = round });
     }
 
-    /// What the bus says of `terminal` now: whether an agent has left it.
-    /// The one judged there is forgotten when that turns true -- it has
-    /// left since -- and not while a left from before it stays.
-    pub fn seen(self: *SeatJudged, terminal: Id, left: bool) void {
+    /// What is known of `terminal` now: whether the bus says an agent has
+    /// left it, and its round (`Server.agentRound`, 0 for no agent). The
+    /// one judged there is forgotten when the left turns true -- it has
+    /// left since -- and not while a left from before it stays; and when
+    /// the round is not its own -- it has gone, or another has come.
+    pub fn seen(self: *SeatJudged, terminal: Id, left: bool, round: u64) void {
         const was = self.by_terminal.getPtr(terminal) orelse return;
         if (left and !was.left) return self.gone(terminal);
+        if (round != was.round) return self.gone(terminal);
         was.left = left;
     }
 
@@ -1740,7 +1756,7 @@ test "task 1795: a pane that refused an agent takes the next one, once its group
     // An agent before its session id: judged, refused, once.
     try testing.expect(judged.due(0xa1, 0));
     try testing.expect(p.seatClaim(&held, seat) == .refuse);
-    try judged.judged(testing.allocator, 0xa1, 0, false);
+    try judged.judged(testing.allocator, 0xa1, 0, false, 1);
     try testing.expect(!judged.due(0xa1, 0));
     // Its session id arrives: the same agent, not judged again.
     const first = SeatJudged.agentKey("ses-1");
@@ -1756,12 +1772,12 @@ test "task 1795: a pane that refused an agent takes the next one, once its group
     try testing.expect(second != first);
     try testing.expect(judged.due(0xa1, second));
     try testing.expect(p.seatClaim(&nobody, seat) == .take);
-    try judged.judged(testing.allocator, 0xa1, second, false);
+    try judged.judged(testing.allocator, 0xa1, second, false, 1);
     try testing.expect(!judged.due(0xa1, second));
 
     // One that says no session: forgotten when the agent leaves, so the
     // next one is judged.
-    try judged.judged(testing.allocator, 0xa1, 0, false);
+    try judged.judged(testing.allocator, 0xa1, 0, false, 1);
     try testing.expect(!judged.due(0xa1, 0));
     judged.gone(0xa1);
     try testing.expect(judged.due(0xa1, 0));
@@ -1780,20 +1796,20 @@ test "task 1795: the left of the agent before does not have the next one judged 
     const nobody = [_]GroupView{view("web-app", .{ .bound = "web-app" }, null, null)};
 
     // The first agent, judged while nothing has left.
-    judged.seen(0xa1, false);
+    judged.seen(0xa1, false, 1);
     try testing.expect(judged.due(0xa1, 0));
-    try judged.judged(testing.allocator, 0xa1, 0, false);
+    try judged.judged(testing.allocator, 0xa1, 0, false, 1);
 
     // It goes: the bus says so. Forgotten once.
-    judged.seen(0xa1, true);
+    judged.seen(0xa1, true, 1);
     // The next agent's requests, five of them, while that left is still on
     // the bus: judged at the first, and not again.
     var judgements: usize = 0;
     for (0..5) |_| {
-        judged.seen(0xa1, true);
+        judged.seen(0xa1, true, 1);
         if (judged.due(0xa1, 0)) {
             try testing.expect(p.seatClaim(&nobody, seat) == .take);
-            try judged.judged(testing.allocator, 0xa1, 0, true);
+            try judged.judged(testing.allocator, 0xa1, 0, true, 1);
             judgements += 1;
         }
     }
@@ -1801,10 +1817,61 @@ test "task 1795: the left of the agent before does not have the next one judged 
 
     // The bus takes the left back once this one is here; this one going
     // later is a leave again, and the one after it is judged.
-    judged.seen(0xa1, false);
+    judged.seen(0xa1, false, 1);
     try testing.expect(!judged.due(0xa1, 0));
-    judged.seen(0xa1, true);
+    judged.seen(0xa1, true, 1);
     try testing.expect(judged.due(0xa1, 0));
+}
+
+test "task 1829: an agent refused the pane leaves no left; the next one there is judged once, by its round" {
+    var p: Projects = .init(testing.allocator);
+    defer p.deinit();
+    try stateJson(&p,
+        \\[{"name":"web-app","group":"web-app","pages":1,"open":[["0x00000000000000a1"]],"supervisor":"0x00000000000000a1","workers":[]}]
+    );
+    var judged: SeatJudged = .{};
+    defer judged.deinit(testing.allocator);
+    const seat: SeatClaimant = .{ .terminal = 0xa1, .watched = false, .supervises_another = false, .being_started = false };
+    const held = [_]GroupView{view("web-app", .{ .bound = "web-app" }, 0xd1, null)};
+    const nobody = [_]GroupView{view("web-app", .{ .bound = "web-app" }, null, null)};
+    // A codex resumed into the same session says the same id each time,
+    // or none: neither tells the two agents apart.
+    const session = SeatJudged.agentKey("ses-1");
+
+    // The first agent, in round 3, while the group has a supervisor: its
+    // requests, five of them, are judged once and refused once.
+    var refusals: usize = 0;
+    for (0..5) |_| {
+        judged.seen(0xa1, false, 3);
+        if (judged.due(0xa1, session)) {
+            try testing.expect(p.seatClaim(&held, seat) == .refuse);
+            try judged.judged(testing.allocator, 0xa1, session, false, 3);
+            refusals += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), refusals);
+
+    // The supervisor goes, then this agent exits. The bus watches neither
+    // the pane nor it, so no left is ever written: only its round ends.
+    judged.seen(0xa1, false, 0);
+
+    // The next agent, round 4, the same session: judged at its first
+    // request and taken, and not at the four after.
+    var takes: usize = 0;
+    for (0..5) |_| {
+        judged.seen(0xa1, false, 4);
+        if (judged.due(0xa1, session)) {
+            try testing.expect(p.seatClaim(&nobody, seat) == .take);
+            try judged.judged(testing.allocator, 0xa1, session, false, 4);
+            takes += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), takes);
+
+    // Even when nothing saw that round end: the next agent's first request
+    // already carries its own.
+    judged.seen(0xa1, false, 5);
+    try testing.expect(judged.due(0xa1, session));
 }
 
 test "task 1807: a project whose file does not read is not gone: its group keeps it, and takes it up again when the file reads" {
