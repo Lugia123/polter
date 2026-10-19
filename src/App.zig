@@ -478,6 +478,11 @@ first_prompts: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty,
 /// (`Projects.SeatJudged`). Forgotten with the agent or the terminal.
 seat_judged: poltergeistpkg.Projects.SeatJudged = .{},
 
+/// The group each `+launch --group=` said its agent is for, by terminal,
+/// until that agent is heard and the launch is judged (`launchJoin`, task
+/// 1844). Names owned here. Forgotten with the terminal.
+launch_groups: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, []const u8) = .empty,
+
 /// When each owed second message was first owed, and for which group
 /// (task 1787): how long it has waited for its agent to connect, and what
 /// to say if it never does.
@@ -797,6 +802,11 @@ pub fn deinit(self: *App) void {
     self.start_lines.deinit();
     self.first_prompts.deinit(self.alloc);
     self.seat_judged.deinit(self.alloc);
+    {
+        var it = self.launch_groups.valueIterator();
+        while (it.next()) |name| self.alloc.free(name.*);
+        self.launch_groups.deinit(self.alloc);
+    }
     {
         var it = self.start_owed.valueIterator();
         while (it.next()) |o| self.alloc.free(o.group);
@@ -2843,7 +2853,7 @@ fn poltergeistAgentHeard(
         .awaiting_input,
         => .only_a_change,
         // Not an agent speaking: the launcher's own two, and a file.
-        .hooks_expected, .launch_failed, .allowance_written, .context_reported => return,
+        .hooks_expected, .launch_failed, .launched_for_group, .allowance_written, .context_reported => return,
         // Said after every tool call, and about the turn rather than the
         // session: what this keeps (who, which session) the events above
         // have already said, and walking the groups on each tool call
@@ -5781,6 +5791,9 @@ fn poltergeistAgentArrived(
     // Before the standing's early return: an agent started by hand in a
     // project's supervisor's pane has no standing to claim (task 1795).
     self.seatAgentArrived(id);
+    // A launch said which group its agent is for (task 1844): judged now
+    // that the agent is heard, once.
+    self.launchGroupArrived(id);
     const applied = self.personas.claimStanding(bus, id, self.poltergeistElapsedMs()) orelse return;
     defer self.refreshPoltergeistTabs();
     defer self.saveSession();
@@ -6227,6 +6240,126 @@ fn takeOverLaunch(self: *App, aa: Allocator, now_ms: u64) !void {
 /// room was starting a supervisor for in that terminal has failed -- now,
 /// with the reason `+launch` gave, and not a minute from now with the one
 /// reason a timer can give.
+/// `+launch --group=<name>` in `id` (task 1844): kept until the agent it
+/// starts is heard (`launchGroupArrived`). A later launch in the same
+/// terminal replaces it; a name that is no group's name is not kept.
+fn poltergeistLaunchedForGroup(ctx: *anyopaque, id: poltergeistpkg.Bus.Id, group: []const u8) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (!poltergeistpkg.Chat.isValidName(group)) {
+        log.info("poltergeist: a launch in 0x{x} named a group that is no group's name; ignored", .{id});
+        return;
+    }
+    const owned = self.alloc.dupe(u8, group) catch return;
+    const was = self.launch_groups.fetchPut(self.alloc, id, owned) catch {
+        self.alloc.free(owned);
+        return;
+    };
+    if (was) |kv| self.alloc.free(kv.value);
+    log.info("poltergeist: a launch in 0x{x} is for {s}; judged when its agent is heard", .{ id, group });
+}
+
+/// Whether the agent a `+launch --group=` started goes in that group, and
+/// why (task 1844). **Only a launch the group's supervisor made**: the
+/// terminal is that supervisor's worker, or the last line submitted into
+/// it was that supervisor's (`Bus.typedBy`) -- which is how a supervisor
+/// brings its workers back after a restart, typing `polter +launch …
+/// --group=… --resume=…` into each. `group_add` stays the supervisor's;
+/// this does not let a terminal put itself anywhere.
+pub const LaunchJoin = enum {
+    join_as_worker,
+    join_as_typed,
+    no_group,
+    already_in,
+    no_supervisor,
+    is_the_supervisor,
+    not_its_supervisors,
+
+    /// The words the log line says, which is how a run on the machine
+    /// tells which way it went.
+    pub fn why(self: LaunchJoin) []const u8 {
+        return switch (self) {
+            .join_as_worker => "it is a worker of the group's supervisor",
+            .join_as_typed => "the group's supervisor typed the launch",
+            .no_group => "there is no group by that name",
+            .already_in => "it is in the group already",
+            .no_supervisor => "the group has no supervisor to have launched it",
+            .is_the_supervisor => "it is the group's supervisor (the control room puts that one in)",
+            .not_its_supervisors => "neither its supervisor's worker nor launched by its supervisor",
+        };
+    }
+
+    pub fn joins(self: LaunchJoin) bool {
+        return self == .join_as_worker or self == .join_as_typed;
+    }
+};
+
+pub fn launchJoin(
+    group_exists: bool,
+    already_in: bool,
+    steward: ?poltergeistpkg.Bus.Id,
+    id: poltergeistpkg.Bus.Id,
+    worker_of: ?poltergeistpkg.Bus.Id,
+    typed_by: ?poltergeistpkg.Bus.Id,
+) LaunchJoin {
+    if (!group_exists) return .no_group;
+    if (already_in) return .already_in;
+    const s = steward orelse return .no_supervisor;
+    if (s == id) return .is_the_supervisor;
+    if (worker_of == s) return .join_as_worker;
+    if (typed_by == s) return .join_as_typed;
+    return .not_its_supervisors;
+}
+
+/// The agent in `id` is heard: if a launch said which group it is for,
+/// that launch is judged now, once, and the log says which way and why.
+fn launchGroupArrived(self: *App, id: poltergeistpkg.Bus.Id) void {
+    const kv = self.launch_groups.fetchRemove(id) orelse return;
+    defer self.alloc.free(kv.value);
+    const group = kv.value;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const bus = &self.poltergeist;
+    const exists = self.chat.exists(group);
+    const verdict = launchJoin(
+        exists,
+        exists and self.chat.isMember(group, id),
+        if (exists) poltergeistpkg.ControlRoom.stewardOfGroup(arena.allocator(), bus, &self.chat, group) else null,
+        id,
+        bus.workerOf(id),
+        bus.typedBy(id, self.poltergeistElapsedMs()),
+    );
+    if (!verdict.joins()) {
+        log.info("poltergeist: the agent 0x{x} launched for {s} is not put in it: {s}", .{ id, group, verdict.why() });
+        return;
+    }
+    chatAdd(self, group, id, .all) catch |err| {
+        log.warn("poltergeist: the agent 0x{x} launched for {s} could not be put in it ({s}) err={}", .{ id, group, verdict.why(), err });
+        return;
+    };
+    log.info("poltergeist: the agent 0x{x} launched for {s} joined it: {s}", .{ id, group, verdict.why() });
+    self.controlRoomTouch();
+}
+
+test "1844: a launch for a group is put in it only when the group's supervisor made it" {
+    const s: poltergeistpkg.Bus.Id = 0x5;
+    const w: poltergeistpkg.Bus.Id = 0xa1;
+    // The supervisor's worker, after a restart its project put it back.
+    try std.testing.expectEqual(LaunchJoin.join_as_worker, launchJoin(true, false, s, w, s, null));
+    // A plain tab the supervisor typed the launch into: no worker of it
+    // any more, but the line was its.
+    try std.testing.expectEqual(LaunchJoin.join_as_typed, launchJoin(true, false, s, w, null, s));
+    // Typed by somebody else, or by nobody: not in.
+    try std.testing.expectEqual(LaunchJoin.not_its_supervisors, launchJoin(true, false, s, w, null, 0x9));
+    try std.testing.expectEqual(LaunchJoin.not_its_supervisors, launchJoin(true, false, s, w, 0x9, null));
+    // No such group; in it already; nobody minds it; it is the one that does.
+    try std.testing.expectEqual(LaunchJoin.no_group, launchJoin(false, false, null, w, s, s));
+    try std.testing.expectEqual(LaunchJoin.already_in, launchJoin(true, true, s, w, s, s));
+    try std.testing.expectEqual(LaunchJoin.no_supervisor, launchJoin(true, false, null, w, s, s));
+    try std.testing.expectEqual(LaunchJoin.is_the_supervisor, launchJoin(true, false, s, s, null, s));
+    // Only the two joins join.
+    for (std.enums.values(LaunchJoin)) |v| try std.testing.expectEqual(v == .join_as_worker or v == .join_as_typed, v.joins());
+}
+
 fn poltergeistLaunchFailed(
     ctx: *anyopaque,
     _: *poltergeistpkg.Bus,
@@ -6949,6 +7082,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .agentArrived = poltergeistAgentArrived,
         .agentHeard = poltergeistAgentHeard,
         .launchFailed = poltergeistLaunchFailed,
+        .launchedForGroup = poltergeistLaunchedForGroup,
         .personaCatalog = poltergeistPersonaCatalog,
         .personaPut = poltergeistPersonaPut,
         .personaDelete = poltergeistPersonaDelete,
@@ -12166,6 +12300,7 @@ pub fn deleteSurface(self: *App, rt_surface: *apprt.Surface) void {
             // Gone: a terminal that is given this id later is another one.
             self.projects.forget(poltergeistpkg.Bus.idOf(rt_surface.core()));
             self.seat_judged.gone(poltergeistpkg.Bus.idOf(rt_surface.core()));
+            if (self.launch_groups.fetchRemove(poltergeistpkg.Bus.idOf(rt_surface.core()))) |kv| self.alloc.free(kv.value);
             self.controlRoomTouch();
             continue;
         }

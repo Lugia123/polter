@@ -5794,6 +5794,16 @@ pub const Host = struct {
             note: ?[]const u8,
         ) void,
 
+        /// `+launch` in terminal `id` says the agent it is starting is for
+        /// group `group` (`--group=`, task 1844). Kept by the host until
+        /// that agent is heard, and then judged once (`App.launchJoin`).
+        /// `group` is borrowed for the call.
+        launchedForGroup: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+            group: []const u8,
+        ) void,
+
         /// Whether an agent is listening in this terminal right now.
         ///
         /// **A fact, not a policy.** What to do about a `false` is decided
@@ -7094,7 +7104,7 @@ pub fn showsAnAgent(req: Request) bool {
         // does not compile until somebody has said whether hearing it
         // means an agent is there.
         .agent_event => |ev| switch (ev.event) {
-            .hooks_expected, .launch_failed => false,
+            .hooks_expected, .launch_failed, .launched_for_group => false,
             .session_started,
             .turn_started,
             .turn_resumed,
@@ -7571,6 +7581,12 @@ fn dispatchOne(
             // and nobody is told the launch failed.
             if (ev.event == .launch_failed and AgentEvent.LaunchFailure.parse(ev.detail) == .exited and
                 !bus.launchExitIsFailure(id)) return .ok;
+            // Which group the agent `+launch` is starting is for (task
+            // 1844): the host's to keep until that agent is heard.
+            if (ev.event == .launched_for_group) {
+                host.vtable.launchedForGroup(host.ctx, id, ev.detail orelse "");
+                return .ok;
+            }
             _ = try bus.agentEvent(id, ev, host.nowMs());
             // After the bus has taken back what the launch said to expect:
             // whoever was waiting for an agent from here is told now.
@@ -7710,6 +7726,10 @@ fn dispatchOne(
 
                 else => hostFailure("SendFailed", "could not type into that terminal"),
             };
+            // A supervisor's submitted line: what says, for a while, that a
+            // launch typed there is its own (task 1844). Not a worker's,
+            // and not the person's -- they do not come through here.
+            if (p.submit and bus.isSupervisor(caller)) try bus.noteTypedBy(p.id, caller, host.nowMs());
             return .ok;
         },
 
@@ -10802,6 +10822,9 @@ const FakeHost = struct {
     membership_is: ?wire.Membership = null,
     /// What `launchFailed` was last told.
     launch_failed: ?struct { id: Bus.Id, why: AgentEvent.LaunchFailure, note: ?[]const u8 } = null,
+    /// What `+launch` said its agent is for (`launchedForGroup`).
+    launched_for: ?struct { id: Bus.Id, group_len: usize } = null,
+    launched_for_buf: [64]u8 = undefined,
 
     /// The screenshot tools: what the user's switch says, what the apprt
     /// answers to each kind of request, and what it was last asked.
@@ -11129,6 +11152,7 @@ const FakeHost = struct {
             .agentArrived = agentArrived,
             .agentHeard = agentHeard,
             .launchFailed = launchFailed,
+            .launchedForGroup = launchedForGroup,
             .personaCatalog = personaCatalog,
             .personaPut = personaPut,
             .personaDelete = personaDelete,
@@ -11824,6 +11848,12 @@ const FakeHost = struct {
     fn membership(ctx: *anyopaque, _: std.mem.Allocator, _: Bus.Id) anyerror!wire.Membership {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return self.membership_is orelse error.NoSuchGroup;
+    }
+
+    fn launchedForGroup(ctx: *anyopaque, id: Bus.Id, group: []const u8) void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.launched_for = .{ .id = id, .group_len = @min(group.len, self.launched_for_buf.len) };
+        @memcpy(self.launched_for_buf[0..self.launched_for.?.group_len], group[0..self.launched_for.?.group_len]);
     }
 
     fn launchFailed(ctx: *anyopaque, _: *Bus, id: Bus.Id, why: AgentEvent.LaunchFailure, note: ?[]const u8) void {
@@ -14602,6 +14632,38 @@ test "a plugin cannot be a terminal, and the methods that need one say so" {
 
 // -- the panel --------------------------------------------------------------
 
+test "1844: only a supervisor's submitted line says it launched what runs there, and a launch's group goes to the host" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{};
+
+    // Not submitted: not a launch.
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_send = .{ .id = other, .text = "polter +launch w", .submit = false } });
+    try testing.expect(b.typedBy(other, fake.now_ms) == null);
+    // A worker typing there is no supervisor's line.
+    _ = try dispatch(alloc, &b, fake.host(), term(worker), .{ .terminal_send = .{ .id = other, .text = "polter +launch w", .submit = true } });
+    try testing.expect(b.typedBy(other, fake.now_ms) == null);
+    // The supervisor's, submitted: it is.
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_send = .{ .id = other, .text = "polter +launch w", .submit = true } });
+    try testing.expectEqual(@as(?Bus.Id, boss), b.typedBy(other, fake.now_ms));
+    // And for a while only.
+    try testing.expect(b.typedBy(other, fake.now_ms + Bus.typed_by_ms + 1) == null);
+
+    // `+launch --group=` is handed to the host, and shows no agent.
+    var ev: AgentEvent.Event = .none;
+    ev.event = .launched_for_group;
+    ev.detail = "web-app";
+    const said: Request = .{ .agent_event = ev };
+    try testing.expect(!showsAnAgent(said));
+    _ = try dispatch(alloc, &b, fake.host(), term(other), said);
+    const got = fake.launched_for orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(other, got.id);
+    try testing.expectEqualStrings("web-app", fake.launched_for_buf[0..got.group_len]);
+}
+
 /// A bus, a fake host and a real panel, wired together the way the app
 /// wires them.
 fn panelFixture(panel: *Tasks) FakeHost {
@@ -16164,8 +16226,8 @@ test "launched standing: only the launcher's own word is not an agent" {
     // `AgentEvent.Kind` is one somebody has put on a side.
     for (std.enums.values(AgentEvent.Kind)) |kind| {
         const shows = showsAnAgent(.{ .agent_event = hookEvent(kind) });
-        // The two a launcher sends for itself are the two that are not.
-        try testing.expectEqual(kind != .hooks_expected and kind != .launch_failed, shows);
+        // The three a launcher sends for itself are the three that are not.
+        try testing.expectEqual(kind != .hooks_expected and kind != .launch_failed and kind != .launched_for_group, shows);
     }
     try testing.expect(showsAnAgent(.me));
     try testing.expect(showsAnAgent(.terminal_list));
@@ -18435,7 +18497,7 @@ test "ControlRoom resume: the host hears what an agent's hooks said, after the b
     // there is what the host does next.
     try testing.expectEqualStrings("s-9", b.agentOf(worker).session_id.get().?);
 
-    for ([_]AgentEvent.Kind{ .hooks_expected, .launch_failed }) |kind| {
+    for ([_]AgentEvent.Kind{ .hooks_expected, .launch_failed, .launched_for_group }) |kind| {
         fake.heard = null;
         _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = hookEvent(kind) });
         try testing.expect(fake.heard == null);

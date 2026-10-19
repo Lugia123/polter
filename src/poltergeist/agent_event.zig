@@ -23,6 +23,13 @@ pub const Kind = enum {
     /// no agent will connect from this terminal on this launch's account.
     /// `detail` is which kind of failure (`LaunchFailure`).
     launch_failed,
+    /// Not a hook either: `+launch --group=<name>` saying the agent it is
+    /// about to start is for that group (task 1844). `detail` is the
+    /// group's name. Moves nothing on the bus and shows no agent: the host
+    /// keeps it, and once the agent here is heard decides whether it goes
+    /// in the group (`App.launchJoin`) -- only when the group's supervisor
+    /// is the one that launched it.
+    launched_for_group,
     session_started,
     turn_started,
     turn_ended,

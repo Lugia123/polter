@@ -934,6 +934,10 @@ pub const Entry = struct {
     /// "nobody asked", which is not the same as "nobody there".
     agent_here: ?bool = null,
 
+    /// The supervisor that last typed a submitted line in here with
+    /// `terminal_send`, and when (`noteTypedBy`, task 1844).
+    typed_by: ?struct { by: Id, at_ms: u64 } = null,
+
     /// This terminal's own `no tool call` threshold, set by its supervisor
     /// (`setCallsSilentAfter`, `set_quiescence_threshold`'s
     /// `no_tool_call_ms`); null for the configured one (#62). Zero switches
@@ -1643,6 +1647,29 @@ pub fn roleOf(self: *const Bus, id: Id) Role {
 /// since (task 1762): `left` written down, and no agent connected from it
 /// now. A supervisor that answers yes minds nothing -- see
 /// `ControlRoom.stewardAmong`.
+/// How long a line a supervisor typed into a terminal (`noteTypedBy`)
+/// still says that supervisor is the one starting what runs there.
+pub const typed_by_ms: u64 = 2 * std.time.ms_per_min;
+
+/// Supervisor `by` typed a line into `id` with `terminal_send` and
+/// submitted it (task 1844): what `typedBy` answers, for `typed_by_ms`.
+/// Only a supervisor's submitted line is a launch it made -- the person
+/// at that keyboard and a worker typing there are neither -- and the
+/// caller (`rpc`'s `terminal_send`) is the one that knows which it was.
+pub fn noteTypedBy(self: *Bus, id: Id, by: Id, now_ms: u64) Allocator.Error!void {
+    try self.register(id);
+    self.entries.getPtr(id).?.typed_by = .{ .by = by, .at_ms = now_ms };
+}
+
+/// The supervisor that typed the last submitted line into `id`, while that
+/// is still within `typed_by_ms`; null otherwise.
+pub fn typedBy(self: *const Bus, id: Id, now_ms: u64) ?Id {
+    const e = self.entries.get(id) orelse return null;
+    const t = e.typed_by orelse return null;
+    if (now_ms -| t.at_ms > typed_by_ms) return null;
+    return t.by;
+}
+
 pub fn agentHasLeft(self: *const Bus, id: Id) bool {
     const e = self.entries.get(id) orelse return false;
     if (e.left == null) return false;
@@ -2275,6 +2302,10 @@ pub fn agentEvent(
     // screen is still the one that was asked about.
     if (ev.event == .allowance_written) return false;
 
+    // `+launch` saying which group its agent is for (task 1844): the
+    // host's to keep, nothing here moves.
+    if (ev.event == .launched_for_group) return false;
+
     // **How full the window is: kept, and nothing else moves** (task 1779).
     // Said by the status line, which the CLI runs on its own schedule,
     // between turns as well as in them: it is no news of the agent, so not
@@ -2318,7 +2349,7 @@ pub fn agentEvent(
     if (ev.session_id) |sid| a.session_id.set(sid);
 
     const state: AgentState, const notice: ?AgentNotice = switch (ev.event) {
-        .launch_failed, .tool_started, .context_reported => unreachable,
+        .launch_failed, .tool_started, .context_reported, .launched_for_group => unreachable,
         .hooks_expected => {
             // A second launch in the same terminal starts the wait again;
             // a terminal already live stays live -- it has proved its

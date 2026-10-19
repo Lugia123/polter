@@ -22,14 +22,19 @@
 //! treats it the same way (Claude Code's merges a `--settings <json>` into
 //! its own and appends the rest to the command line).
 //!
-//! Two words are Polter's own and go before the `--`, and both are only
-//! ever typed by the control room starting a group's supervisor
-//! (`App.controlActStartSupervisor`):
+//! Two words are Polter's own and go before the `--`. The control room
+//! types both when it starts a group's supervisor
+//! (`App.controlActStartSupervisor`), and a supervisor types them into its
+//! workers' terminals to bring them back after a restart:
 //!
-//!   * `--group=<name>` -- the group this supervisor is being started for.
-//!     It changes one thing: what the agent is told at launch
-//!     (`persona.launchInstructions`) names the group and tells it to read
-//!     that group rather than make one.
+//!   * `--group=<name>` -- the group this agent is being started for. A
+//!     supervisor role's agent is told so at launch
+//!     (`persona.launchInstructions`): it names the group and tells it to
+//!     read that group rather than make one. And whatever the role, Polter
+//!     is told before the CLI starts (`launched_for_group`), and puts the
+//!     agent in that group once it is heard -- when the group's supervisor
+//!     is the one that launched it (task 1844: a supervisor bringing its
+//!     workers back after a restart types this line into each).
 //!   * `--resume=<session>` -- the session to go on with, as the CLI named
 //!     it through its hooks last time. It goes to the adapter in the
 //!     launch request's `session`, not onto the command line: how a CLI is
@@ -288,6 +293,10 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
     // cannot arrive first. Best effort, like `+hook` itself: a launch is
     // not refused because Polter could not be told.
     if (launch.hooks) expectHooks(io, &env, adapter.key, launch.hooks_heard);
+    // Which group the agent is for (task 1844): Polter puts it in that
+    // group once it is heard, when the group's supervisor is the one that
+    // launched it. Best effort, like the line above.
+    if (parsed.group) |g| sayGroup(io, &env, adapter.key, g);
 
     if (comptime std.process.can_replace) {
         const err = std.process.replace(io, .{ .argv = launch.argv, .environ_map = &env });
@@ -430,6 +439,20 @@ fn expectHooks(
     };
     hook.deliver(io, socket_path, token, ev) catch |err| {
         std.log.scoped(.launch).warn("could not say hooks are expected err={t}", .{err});
+    };
+}
+
+/// Tell this terminal's Polter which group the agent about to start is for
+/// (`--group=`, `AgentEvent.Kind.launched_for_group`).
+fn sayGroup(io: std.Io, env: *const std.process.Environ.Map, cli: []const u8, group: []const u8) void {
+    const socket_path = env.get("GHOSTTY_POLTER_SOCKET") orelse return;
+    const token = env.get("GHOSTTY_POLTER_TOKEN") orelse return;
+    var ev: AgentEvent.Event = .none;
+    ev.event = .launched_for_group;
+    ev.cli = cli;
+    ev.detail = group;
+    hook.deliver(io, socket_path, token, ev) catch |err| {
+        std.log.scoped(.launch).warn("could not say which group the agent is for err={t}", .{err});
     };
 }
 
