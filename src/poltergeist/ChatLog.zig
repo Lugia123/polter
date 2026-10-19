@@ -1270,16 +1270,95 @@ fn backfill(self: *ChatLog) void {
     // the deleted group straight back, listed again (task 1665). So the
     // head is written down before anything is removed (`holdFloor`), and
     // the floor is whichever is higher.
-    const floor = @max(measured, readFloor(self.alloc, self.io, self.dir));
+    const held = readFloor(self.alloc, self.io, self.dir);
+    const floor = @max(measured, held);
     if (floor >= self.head()) return;
+
+    // **Only into a group directory that is there** (task 1763). The floor
+    // above is only as good as what is written down, and `holdFloor` is
+    // written by Polter's own deletes: a group's directory removed any other
+    // way -- by hand, by a script tidying up after a test -- took its
+    // numbers with it and wrote nothing down. On a test machine that put
+    // two deleted groups back at the next start, listed and with their
+    // members inferred. A directory a line would have to *make* is a group
+    // that is not there to fill in: every group that exists has one from
+    // the moment it is made (`GroupLog.note`), so the tail this is for --
+    // the record short of the stream after a crash -- always lands in a
+    // directory that is already there.
+    //
+    // The one exception is a record with no group directory at all and
+    // nothing held: an install from before the record, whose whole history
+    // is in the stream and whose directories were never made. That is what
+    // this function was first written for, and it still fills everything
+    // in. **Asked of the directories, not of `measured`**: a group made and
+    // never spoken in has a directory and no numbers, and a record of only
+    // those is not an install from before the record.
+    const into: Into = if (held == 0 and !self.anyGroupDir()) .any_group else .existing_groups;
+
+    var seen: std.StringHashMapUnmanaged(bool) = .empty;
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |k| self.alloc.free(k.*);
+        seen.deinit(self.alloc);
+    }
 
     const old = std.fmt.allocPrint(self.alloc, "{s}.1", .{self.path}) catch return;
     defer self.alloc.free(old);
 
     // Oldest generation first, so the record is written in the same order a
     // live run writes it.
-    self.replay(old, floor);
-    self.replay(self.path, floor);
+    self.replay(old, floor, into, &seen);
+    self.replay(self.path, floor, into, &seen);
+}
+
+/// Whether the record has any group directory in it. The stream files sit
+/// in the same directory and are files, so a directory is a group's.
+fn anyGroupDir(self: *ChatLog) bool {
+    var d = std.Io.Dir.cwd().openDir(self.io, self.dir, .{ .iterate = true }) catch return false;
+    defer d.close(self.io);
+    var it = d.iterate();
+    while (it.next(self.io) catch null) |entry| {
+        const kind = if (entry.kind != .unknown) entry.kind else k: {
+            const st = d.statFile(self.io, entry.name, .{ .follow_symlinks = false }) catch continue;
+            break :k st.kind;
+        };
+        if (kind == .directory) return true;
+    }
+    return false;
+}
+
+/// Which groups `replay` may write into. Two values rather than a bool, so
+/// the call says which case it is.
+const Into = enum { any_group, existing_groups };
+
+/// Whether `group`'s directory is in the record, asked once per group and
+/// remembered in `seen`. A group without one is said once in the log, with
+/// the reason: a line quietly not written is otherwise indistinguishable
+/// from one that was lost.
+fn groupThere(self: *ChatLog, group: []const u8, seen: *std.StringHashMapUnmanaged(bool)) bool {
+    if (seen.get(group)) |there| return there;
+
+    const there = there: {
+        const seg = encodeGroup(self.alloc, group) catch break :there false;
+        defer self.alloc.free(seg);
+        const path = std.fs.path.join(self.alloc, &.{ self.dir, seg }) catch break :there false;
+        defer self.alloc.free(path);
+        const st = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch break :there false;
+        break :there st.kind == .directory;
+    };
+
+    // Not remembered when the name cannot be kept: asked again next line,
+    // which costs a stat and changes no answer.
+    const key = self.alloc.dupe(u8, group) catch return there;
+    seen.put(self.alloc, key, there) catch {
+        self.alloc.free(key);
+        return there;
+    };
+    if (!there) log.info(
+        "chat log: not filling in {s} from the stream: it has no directory (deleted, or renamed away)",
+        .{group},
+    );
+    return there;
 }
 
 /// Where the held floor is kept: `<state>/chat/record.floor`, one decimal
@@ -1384,7 +1463,13 @@ fn streamSeq(alloc: Allocator, io: std.Io, dir: []const u8) !u64 {
 ///
 /// A file that is not there is the ordinary case, not a failure: most logs
 /// never rotate.
-fn replay(self: *ChatLog, path: []const u8, floor: u64) void {
+fn replay(
+    self: *ChatLog,
+    path: []const u8,
+    floor: u64,
+    into: Into,
+    seen: *std.StringHashMapUnmanaged(bool),
+) void {
     const file = std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch return;
     defer file.close(self.io);
 
@@ -1418,6 +1503,7 @@ fn replay(self: *ChatLog, path: []const u8, floor: u64) void {
             _ = arena.reset(.retain_capacity);
             const parsed = parseLine(arena.allocator(), line[0..e]) orelse continue;
             if (parsed.seq == 0 or parsed.seq <= floor) continue;
+            if (into == .existing_groups and !self.groupThere(parsed.group, seen)) continue;
 
             // The line goes across as it was written, not re-rendered:
             // the record then holds the stream's own bytes.
@@ -3070,9 +3156,20 @@ test "a group made again under a deleted name starts from nothing, and is still 
     try testing.expectEqual(@as(u64, 3), new_seq);
 
     // The record of the new group loses its file, as a crash between the
-    // two writes would leave it; the stream still has the line.
-    const day = try std.fs.path.join(alloc, &.{ dir, "chat", "doomed" });
-    try std.Io.Dir.cwd().deleteTree(io, day);
+    // two writes would leave it; the stream still has the line. **The
+    // file, not the directory**: a group that exists has its directory from
+    // the moment it is made (`GroupLog.note`), and since task 1763 a group
+    // with no directory is not filled in at all -- that is a group taken
+    // away, not a record left short.
+    const group_dir = try std.fs.path.join(alloc, &.{ dir, "chat", "doomed" });
+    {
+        var d = try std.Io.Dir.cwd().openDir(io, group_dir, .{ .iterate = true });
+        defer d.close(io);
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        var it = d.iterate();
+        while (try it.next(io)) |e| try names.append(alloc, try alloc.dupe(u8, e.name));
+        for (names.items) |n| try d.deleteFile(io, n);
+    }
 
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
@@ -3081,6 +3178,171 @@ test "a group made again under a deleted name starts from nothing, and is still 
         try testing.expectEqual(@as(usize, 1), page.entries.len);
         try testing.expectEqualStrings("new", page.entries[0].text);
     }
+}
+
+test "a group whose directory was removed outside Polter is not written back (task 1763)" {
+    // What a test machine showed: a clean-up script removed two groups'
+    // directories by hand. Nothing held the floor -- only Polter's own
+    // deletes do -- the two held the highest numbers, and the next start
+    // wrote both back from the stream, listed, with members inferred.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        _ = l.append("anchor", 7, "worker", 1000, false, "one");
+        _ = l.append("kept", 7, "worker", 1001, false, "two");
+        _ = l.append("gone", 7, "worker", 1002, false, "three");
+    }
+
+    // `gone` is taken away by hand: no floor is held.
+    const gone_dir = try std.fs.path.join(alloc, &.{ dir, "chat", "gone" });
+    try std.Io.Dir.cwd().deleteTree(io, gone_dir);
+    // `kept` loses its file but keeps its directory, which is what a crash
+    // between the stream and the record leaves.
+    const kept_dir = try std.fs.path.join(alloc, &.{ dir, "chat", "kept" });
+    {
+        var d = try std.Io.Dir.cwd().openDir(io, kept_dir, .{ .iterate = true });
+        defer d.close(io);
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        var it = d.iterate();
+        while (try it.next(io)) |e| try names.append(alloc, try alloc.dupe(u8, e.name));
+        for (names.items) |n| try d.deleteFile(io, n);
+    }
+
+    // The restart.
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        const page = try l.history(alloc, "kept", 0, 10, .{});
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqualStrings("two", page.entries[0].text);
+    }
+    const back = groupDirIn(io, alloc, dir, "gone");
+    try testing.expect(!back);
+    const listed = try listedAtStart(io, dir, "gone");
+    try testing.expect(!listed);
+}
+
+test "groups that were made and never spoken in do not make the record look new (task 1763)" {
+    // Their directories hold only `group.json`, so the record measures
+    // nothing -- which must not be read as an install from before the
+    // record, or a removed group comes back through that door instead.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        _ = l.append("gone", 7, "worker", 1000, false, "said");
+    }
+    const gone_dir = try std.fs.path.join(alloc, &.{ dir, "chat", "gone" });
+    try std.Io.Dir.cwd().deleteTree(io, gone_dir);
+    const quiet = try std.fs.path.join(alloc, &.{ dir, "chat", "quiet" });
+    try std.Io.Dir.cwd().createDirPath(io, quiet);
+    const meta = try std.fs.path.join(alloc, &.{ quiet, "group.json" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = meta, .data = "{\"brief\":\"\"}" });
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+    }
+    const back = groupDirIn(io, alloc, dir, "gone");
+    try testing.expect(!back);
+}
+
+test "a record from before there was one is still filled in whole (task 1763)" {
+    // The case `backfill` was first written for, kept by the one exception
+    // in it: nothing in the record and nothing held means the history is
+    // all in the stream, and every group's directory is made from it.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        _ = l.append("old-a", 7, "worker", 1000, false, "one");
+        _ = l.append("old-b", 7, "worker", 1001, false, "two");
+    }
+    for ([_][]const u8{ "old-a", "old-b" }) |g| {
+        const p = try std.fs.path.join(alloc, &.{ dir, "chat", g });
+        try std.Io.Dir.cwd().deleteTree(io, p);
+    }
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+    }
+    try testing.expect(groupDirIn(io, alloc, dir, "old-a"));
+    try testing.expect(groupDirIn(io, alloc, dir, "old-b"));
+}
+
+test "a group still running whose directory is removed under it: the next line makes it again (task 1763)" {
+    // Locked as it is, not changed. The record is written as each message
+    // is, so a directory removed from under a group still in memory is made
+    // again by that group's next line, holding that line only. What was said
+    // before it is not put back, then or at the next start: its number is
+    // below the record's head, which is the new line's.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+        _ = l.append("live", 7, "worker", 1000, false, "before");
+
+        const live_dir = try std.fs.path.join(alloc, &.{ dir, "chat", "live" });
+        l.closeHandles();
+        try std.Io.Dir.cwd().deleteTree(io, live_dir);
+        l.reopenHandles();
+        try testing.expect(!groupDirIn(io, alloc, dir, "live"));
+
+        _ = l.append("live", 7, "worker", 1001, false, "after");
+        try testing.expect(groupDirIn(io, alloc, dir, "live"));
+        const page = try l.history(alloc, "live", 0, 10, .{});
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqualStrings("after", page.entries[0].text);
+    }
+
+    // The restart.
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    const page = try l.history(alloc, "live", 0, 10, .{});
+    try testing.expectEqual(@as(usize, 1), page.entries.len);
+    try testing.expectEqualStrings("after", page.entries[0].text);
 }
 
 test "the held floor never goes down, and a broken one counts as none (task 1665)" {
