@@ -5792,6 +5792,9 @@ fn poltergeistAgentArrived(
     // Before the standing's early return: an agent started by hand in a
     // project's supervisor's pane has no standing to claim (task 1795).
     self.seatAgentArrived(id);
+    // A supervisor's terminal whose group somebody else has now: what the
+    // agent before it had there is not this one's (task 1864).
+    self.dropIfSuperseded(id);
     // A launch said which group its agent is for (task 1844): judged now
     // that the agent is heard, once.
     self.launchGroupArrived(id);
@@ -5805,6 +5808,55 @@ fn poltergeistAgentArrived(
     const surface = self.findSurfaceByID(id) orelse return;
     if (applied.watched_by != null) surface.setPoltergeistWatching(true);
     if (applied.want.quiet_ms) |ms| surface.setPoltergeistThreshold(ms);
+}
+
+/// `id` joined `group`: every other member it took the group over from
+/// gives its place up (`ControlRoom.supersededIn`, task 1864).
+fn dropSupersededBy(self: *App, group: []const u8, id: poltergeistpkg.Bus.Id) void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const members = self.chat.membersOf(arena.allocator(), group) catch return;
+    for (members) |m| {
+        if (m != id) _ = self.dropSuperseded(group, m);
+    }
+}
+
+/// An agent is talking to Polter from supervisor `id`: in each group it was
+/// taken over from while it was away, it gives up its place (task 1864).
+/// The other side of `dropSupersededBy`, for a takeover no add went
+/// through. Asked at every request, so the cheap question is first.
+fn dropIfSuperseded(self: *App, id: poltergeistpkg.Bus.Id) void {
+    if (!self.poltergeist.isSupervisor(id)) return;
+    var any = false;
+    var it = self.chat.groups.keyIterator();
+    // Only members of the group are taken out, never a group: the
+    // iteration is over a map nothing below changes.
+    while (it.next()) |name| {
+        if (self.dropSuperseded(name.*, id)) any = true;
+    }
+    if (any) self.saveSession();
+}
+
+/// `id` gives up its place in `group`, and its standing with it when it is
+/// in no group now, if somebody else minds `group`; the group's workers it
+/// was minding go to that one. True when it did.
+fn dropSuperseded(self: *App, group: []const u8, id: poltergeistpkg.Bus.Id) bool {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const dropped = (poltergeistpkg.ControlRoom.dropSuperseded(
+        arena.allocator(),
+        &self.poltergeist,
+        &self.chat,
+        group,
+        id,
+    ) catch return false) orelse return false;
+    // The same record a `group_remove` leaves.
+    if (self.session_log) |*l| l.left(group, self.poltergeistWallMs(), id, false);
+    log.info("poltergeist: 0x{x} gives up its place in {s}, which 0x{x} minds now, " ++
+        "and is a supervisor still: {}", .{ id, group, dropped.by, self.poltergeist.isSupervisor(id) });
+    for (dropped.passed) |w| log.info("poltergeist: watching of 0x{x} passes to 0x{x}", .{ w, dropped.by });
+    self.refreshPoltergeistTabs();
+    return true;
 }
 
 /// An agent is talking to Polter from `id`. When `id` is in the pane a
@@ -10794,6 +10846,11 @@ fn chatAdd(
 
     try self.chat.add(group, id, history, footing);
     self.noteJoined(group, id, footing);
+
+    // A supervisor joining takes the group over from one whose agent has
+    // left (task 1864): that one gives it up now, not when its next agent
+    // turns up as a second supervisor.
+    self.dropSupersededBy(group, id);
 
     // A supervisor joining: if that makes it this group's, what it is is
     // written down for whoever starts the next one.

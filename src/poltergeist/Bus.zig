@@ -1591,6 +1591,22 @@ pub fn removeSupervisor(self: *Bus, id: Id) void {
     }
 }
 
+/// `id`'s minder becomes `to` when it is `from` (task 1864): a supervisor
+/// whose group another has taken over hands that group's workers on to it,
+/// rather than leaving them minded by nobody. **Handed on, not released and
+/// watched again**: the watch goes on as it was -- its sampling, its box,
+/// its count of rounds -- under the one minding the work now, and `watch`
+/// would refuse it while the agent of the one before is back. Which
+/// supervisor inherits them is not guessed here; the caller has the group
+/// that says. True when it moved.
+pub fn passWatch(self: *Bus, id: Id, from: Id, to: Id) bool {
+    if (from == to) return false;
+    const e = self.entries.getPtr(id) orelse return false;
+    if (e.watched_by != from) return false;
+    e.watched_by = to;
+    return true;
+}
+
 /// How many terminals `id` is minding.
 pub fn mindCount(self: *const Bus, id: Id) usize {
     var n: usize = 0;

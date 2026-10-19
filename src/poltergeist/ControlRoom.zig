@@ -2132,6 +2132,75 @@ pub fn dropRefusedSeat(bus: *Bus, chat: *Chat, group: []const u8, id: Id) bool {
     return dropped;
 }
 
+/// Whether supervisor `id` has been taken over from in `group` (task 1864):
+/// the group has a project, `id` is in it, and another of its members
+/// minds it. **What a supervisor's agent leaving keeps is kept for the next
+/// agent in that terminal only while nobody else has the group** -- the
+/// standing and the place in it (`Bus.agentHasLeft`). Once another has it,
+/// the next agent there would make two: both counted, both posting as the
+/// group's, and -- the one that made the group -- the one `stewardAmong`
+/// picks over the one minding it now.
+///
+/// Asked from both sides, because a takeover does not always go through
+/// the door that would see it: of every member when a supervisor is added
+/// to the group (`group_add`, a start, a project's seat), and of a
+/// supervisor itself when its next agent is heard -- the one a member
+/// that turned supervisor in place left for it to find.
+///
+/// Only with a project, as `projectSupervisorBesides`: a group with none may
+/// have more than one supervisor.
+///
+/// The answer is who took it over: the member minding it now, which is who
+/// the workers it leaves go to (`dropSuperseded`). Null when it was not.
+pub fn supersededIn(bus: *const Bus, chat: *const Chat, group: []const u8, id: Id) ?Id {
+    if (id == Chat.user_id or !bus.isSupervisor(id)) return null;
+    if (chat.projectOf(group) != .bound) return null;
+    const g = chat.groups.getPtr(group) orelse return null;
+    if (!g.members.contains(id)) return null;
+    var it = g.members.keyIterator();
+    while (it.next()) |m| {
+        if (m.* == id or m.* == Chat.user_id) continue;
+        if (minds(bus, m.*)) return m.*;
+    }
+    return null;
+}
+
+/// What `dropSuperseded` did: who took the group over, and the workers of
+/// it that were handed on to that one.
+pub const Superseded = struct {
+    by: Id,
+    passed: []const Id,
+};
+
+/// A supervisor taken over from in `group` (`supersededIn`) gives up its
+/// place there, and its supervisor's standing with it unless it is in
+/// another group still -- the standing is one for all its groups, and one
+/// it was not taken over from is still its. The same two things a refused
+/// seat gives up (`dropRefusedSeat`, task 1836).
+///
+/// **And the group's workers it was minding go to the one that took it
+/// over** (task 1864), before the standing goes: `removeSupervisor`
+/// releases whatever is still minded by it, and the work in the group
+/// carries on under its new supervisor, not under nobody. Only the group's
+/// own: a terminal of another group it minds is not this takeover's.
+/// Null when it was not taken over from.
+pub fn dropSuperseded(arena: Allocator, bus: *Bus, chat: *Chat, group: []const u8, id: Id) Allocator.Error!?Superseded {
+    const by = supersededIn(bus, chat, group, id) orelse return null;
+    const members = chat.membersOf(arena, group) catch return null;
+    var passed: std.ArrayListUnmanaged(Id) = .empty;
+    for (members) |w| {
+        if (w == id or w == by) continue;
+        if (bus.passWatch(w, id, by)) try passed.append(arena, w);
+    }
+    chat.remove(group, id) catch return null;
+    var it = chat.groups.valueIterator();
+    const elsewhere = while (it.next()) |g| {
+        if (g.members.contains(id)) break true;
+    } else false;
+    if (!elsewhere) bus.removeSupervisor(id);
+    return .{ .by = by, .passed = passed.items };
+}
+
 /// What the control room says of `name`'s supervisor: there is one, one is
 /// on its way, the last try failed, or there is none -- and what starting
 /// one would use. `steward` is the answer `stewardOf` gave.
@@ -4910,6 +4979,121 @@ test "1836: a refused supervisor's pane gives up the standing and the group the 
     defer arena.deinit();
     const blocked = projectSupervisorBesides(arena.allocator(), &w.bus, &w.chat, "web-app", 0xa1);
     try testing.expectEqual(@as(?Id, null), blocked);
+}
+
+test "1864: a supervisor whose agent left is taken over from once another minds its group" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: u8 = 0;
+
+    // The group's supervisor, its agent gone: its standing and place kept.
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    _ = try w.chat.setProject("web-app", .{ .bound = "web" });
+    w.bus.noteAgentHere(0xa1, true, .{ .pid = 91, .started = 50 }, 200);
+    w.bus.noteAgentHere(0xa1, false, null, 1_000);
+    _ = w.bus.considerLinks(1_000 + Bus.link_grace_ms, &ctx, noRuns);
+
+    // Nobody else has the group: kept, for the next agent there.
+    const alone = supersededIn(&w.bus, &w.chat, "web-app", 0xa1);
+    try testing.expectEqual(@as(?Id, null), alone);
+    const kept = try dropSuperseded(a, &w.bus, &w.chat, "web-app", 0xa1);
+    try testing.expect(kept == null);
+    try testing.expect(w.bus.isSupervisor(0xa1));
+
+    // Another supervisor joins it and minds it.
+    try w.terminal(0xb2, "now", 0x22);
+    try w.bus.addSupervisor(0xb2);
+    try w.chat.add("web-app", 0xb2, .all, .{});
+    const taken = supersededIn(&w.bus, &w.chat, "web-app", 0xa1);
+    try testing.expectEqual(@as(?Id, 0xb2), taken);
+    // The one minding it is not taken over from by one that is gone.
+    const other_way = supersededIn(&w.bus, &w.chat, "web-app", 0xb2);
+    try testing.expectEqual(@as(?Id, null), other_way);
+
+    // Its next agent arriving does not make it the group's again.
+    w.bus.noteAgentHere(0xa1, true, .{ .pid = 93, .started = 3_000 }, 3_000);
+    const back = supersededIn(&w.bus, &w.chat, "web-app", 0xa1);
+    try testing.expectEqual(@as(?Id, 0xb2), back);
+
+    // Without a project, two supervisors may share a group.
+    _ = try w.chat.setProject("web-app", .declined);
+    const unbound = supersededIn(&w.bus, &w.chat, "web-app", 0xa1);
+    try testing.expectEqual(@as(?Id, null), unbound);
+    _ = try w.chat.setProject("web-app", .{ .bound = "web" });
+
+    const dropped = (try dropSuperseded(a, &w.bus, &w.chat, "web-app", 0xa1)) orelse return error.NotDropped;
+    try testing.expectEqual(@as(Id, 0xb2), dropped.by);
+    const member = w.chat.isMember("web-app", 0xa1);
+    try testing.expect(!member);
+    const standing = w.bus.isSupervisor(0xa1);
+    try testing.expect(!standing);
+    try testing.expect(w.bus.isSupervisor(0xb2));
+    try testing.expect(w.chat.isMember("web-app", 0xb2));
+}
+
+test "1864: the workers of a supervisor taken over from are minded by the one that took over" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: u8 = 0;
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    _ = try w.chat.setProject("web-app", .{ .bound = "web" });
+    // Two workers it is minding, in the group.
+    try w.worker(0xc1, "one", 0x21, 0xa1, "web-app");
+    try w.worker(0xc2, "two", 0x21, 0xa1, "web-app");
+    w.bus.noteAgentHere(0xa1, true, .{ .pid = 91, .started = 50 }, 200);
+    w.bus.noteAgentHere(0xa1, false, null, 1_000);
+    _ = w.bus.considerLinks(1_000 + Bus.link_grace_ms, &ctx, noRuns);
+    try w.terminal(0xb2, "now", 0x22);
+    try w.bus.addSupervisor(0xb2);
+    try w.chat.add("web-app", 0xb2, .all, .{});
+
+    const dropped = (try dropSuperseded(a, &w.bus, &w.chat, "web-app", 0xa1)) orelse return error.NotDropped;
+    try testing.expectEqual(@as(usize, 2), dropped.passed.len);
+    // Minded by the one that took over, not released by the standing going.
+    const first = w.bus.entries.get(0xc1).?.watched_by;
+    try testing.expectEqual(@as(?Id, 0xb2), first);
+    const second_worker = w.bus.entries.get(0xc2).?.watched_by;
+    try testing.expectEqual(@as(?Id, 0xb2), second_worker);
+    const still_watched = w.bus.roleOf(0xc1);
+    try testing.expectEqual(Bus.Role.watched, still_watched);
+    try testing.expectEqual(@as(usize, 2), w.bus.mindCount(0xb2));
+    try testing.expectEqual(@as(usize, 0), w.bus.mindCount(0xa1));
+}
+
+test "1864: a supervisor taken over from in one group keeps its standing for another" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: u8 = 0;
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    _ = try w.chat.setProject("web-app", .{ .bound = "web" });
+    try w.chat.create("docs", 0xa1);
+    w.bus.noteAgentHere(0xa1, true, .{ .pid = 91, .started = 50 }, 200);
+    w.bus.noteAgentHere(0xa1, false, null, 1_000);
+    _ = w.bus.considerLinks(1_000 + Bus.link_grace_ms, &ctx, noRuns);
+    try w.terminal(0xb2, "now", 0x22);
+    try w.bus.addSupervisor(0xb2);
+    try w.chat.add("web-app", 0xb2, .all, .{});
+
+    const dropped = try dropSuperseded(a, &w.bus, &w.chat, "web-app", 0xa1);
+    try testing.expect(dropped != null);
+    const member = w.chat.isMember("web-app", 0xa1);
+    try testing.expect(!member);
+    // Still "docs"'s: nobody took that one over.
+    const standing = w.bus.isSupervisor(0xa1);
+    try testing.expect(standing);
+    const in_docs = w.chat.isMember("docs", 0xa1);
+    try testing.expect(in_docs);
 }
 
 test "1797: a group with a project takes no second supervisor while its own minds it" {
