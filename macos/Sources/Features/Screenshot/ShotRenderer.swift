@@ -418,7 +418,7 @@ enum ShotRenderer {
     /// The font the overlay's own words are in: the system's, at the size
     /// menus use, which is the smallest any text of ours may be.
     static func uiFont(scale: Double) -> CTFont {
-        let points = max(NSFont.menuFont(ofSize: 0).pointSize, NSFont.systemFontSize)
+        let points = max(SafeFace.menu.pointSize, NSFont.systemFontSize)
         return CTFontCreateUIFontForLanguage(.system, points * scale, nil)
             ?? CTFontCreateWithName("Helvetica" as CFString, points * scale, nil)
     }

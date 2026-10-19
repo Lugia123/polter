@@ -10,6 +10,9 @@ import SwiftUI
 /// `NSAlert` binds it only to a button titled "Cancel" in English. "This
 /// Group Uses No Project" stands at the left, away from the default.
 struct ProjectJoinSheet: View {
+    /// The question, in bold (task 1805: through `SafeFace`).
+    private static let titleFace = SafeFace(size: NSFont.systemFontSize, weight: .bold)
+
     /// The design's sheet (v2 `metrics.json`): its width, the room round
     /// what is in it, the icon, and the gap between buttons.
     enum Grid {
@@ -37,7 +40,7 @@ struct ProjectJoinSheet: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: Grid.gap) {
                     Text(question.title)
-                        .font(Font(NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)))
+                        .font(Self.titleFace.swiftUI)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(question.body)
                         .fixedSize(horizontal: false, vertical: true)
@@ -57,7 +60,7 @@ struct ProjectJoinSheet: View {
             }
             .padding(.top, Grid.gap)
         }
-        .font(Font(NSFont.menuFont(ofSize: 0)))
+        .font(SafeFace.menu.swiftUI)
         .padding(Grid.pad)
         .frame(width: Grid.width)
         .fixedSize(horizontal: false, vertical: true)

@@ -23,7 +23,7 @@ struct ControlRoomFixLine: View {
     @Environment(\.colorScheme) private var scheme
 
     /// The menu's font: nothing in Polter's own windows is set smaller.
-    private static var font: Font { Font(NSFont.menuFont(ofSize: 0)) }
+    private static var font: Font { SafeFace.menu.swiftUI }
 
     static func title(_ fix: ControlRoomList.Fix) -> String {
         switch fix {

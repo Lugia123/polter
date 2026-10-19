@@ -21,7 +21,7 @@ enum ShotToast {
         gone?.cancel()
 
         let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: NSFont.systemFontSize(for: .regular))
+        label.font = SafeFace(size: NSFont.systemFontSize(for: .regular)).font
         label.textColor = .white
         label.lineBreakMode = .byTruncatingMiddle
         label.sizeToFit()

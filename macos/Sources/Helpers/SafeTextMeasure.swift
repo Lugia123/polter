@@ -36,7 +36,7 @@ enum SafeTextMeasure {
     /// size while the system has no font for it (task 1753).
     static func width(_ text: String, in face: SafeFace) -> CGFloat {
         guard let font = face.font else {
-            return estimate(NSAttributedString(string: text), em: face.size).width
+            return estimate(NSAttributedString(string: text), em: face.pointSize).width
         }
         return width(text, font: font)
     }
@@ -45,7 +45,7 @@ enum SafeTextMeasure {
     /// the face's size while the system has no font for it (task 1753).
     static func height(_ text: String, in face: SafeFace, wrappingAt width: CGFloat) -> CGFloat {
         guard let font = face.font else {
-            return estimate(NSAttributedString(string: text), wrappingAt: width, em: face.size).height
+            return estimate(NSAttributedString(string: text), wrappingAt: width, em: face.pointSize).height
         }
         return height(text, font: font, wrappingAt: width)
     }

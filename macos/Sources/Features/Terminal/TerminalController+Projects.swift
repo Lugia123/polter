@@ -147,7 +147,7 @@ extension TerminalController {
         alert.messageText = String(localized: "Rename Project", comment: "给项目改名的框标题")
         let field = NSTextField(string: name)
         field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
-        field.font = NSFont.systemFont(ofSize: SettingsFont.minimumPointSize)
+        field.font = SafeFace(size: SettingsFont.minimumPointSize).font
         alert.accessoryView = field
         alert.addButton(withTitle: String(localized: "Rename", comment: "给项目改名的框：改名按钮"))
         let cancel = alert.addButton(withTitle: String(localized: "Cancel", comment: "项目选择界面：取消按钮"))
@@ -232,7 +232,7 @@ extension TerminalController {
         alert.informativeText = String(localized: "It is a page of the project \"\(project)\". If you only close it, it comes back the next time the project is opened.", comment: "关掉项目里的一页的询问框正文，参数是项目名")
         let takeOut = NSButton(checkboxWithTitle: String(localized: "Also take it out of the project", comment: "关掉项目里的一页：同时把它从项目里移出"), target: nil, action: nil)
         let dontAsk = NSButton(checkboxWithTitle: String(localized: "Don't ask again (do as chosen this time)", comment: "关掉项目里的一页：以后不再问（照这次选的做）"), target: nil, action: nil)
-        let font = NSFont.systemFont(ofSize: SettingsFont.minimumPointSize)
+        let font = SafeFace(size: SettingsFont.minimumPointSize).font
         takeOut.font = font
         dontAsk.font = font
         let stack = NSStackView(views: [takeOut, dontAsk])

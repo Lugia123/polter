@@ -125,10 +125,11 @@ enum ControlRoomRowMenuItems {
                         item.image = image(symbol, red: isDestructive(key))
                     }
                     if isDestructive(key) {
-                        item.attributedTitle = NSAttributedString(string: item.title, attributes: [
-                            .foregroundColor: NSColor.systemRed,
-                            .font: NSFont.menuFont(ofSize: 0),
-                        ])
+                        // No font while the system has none: the menu's own
+                        // is used, and a nil never reaches CoreText (task 1805).
+                        var attributes: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.systemRed]
+                        if let font = SafeFace.menu.font { attributes[.font] = font }
+                        item.attributedTitle = NSAttributedString(string: item.title, attributes: attributes)
                     }
                     if let right = trailing(key) {
                         put(right, on: item)

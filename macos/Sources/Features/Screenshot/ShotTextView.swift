@@ -203,6 +203,17 @@ final class ShotHaloLayout: NSLayoutManager {
 /// an input method is composing, Esc reaches the input method and not
 /// `cancelOperation`, so it cancels the composition only.
 final class ShotTextView: NSTextView {
+    /// What an empty box is measured in when it has no font of its own.
+    private static let fallbackFace = SafeFace(size: 12)
+
+    /// The height of a line with nothing on it: in the box's font, else the
+    /// fallback face; with neither, an estimate (task 1805) -- 12 points at
+    /// the system's usual line spacing, which is what it measured before.
+    private func emptyLineHeight(_ manager: NSLayoutManager) -> CGFloat {
+        guard let face = font ?? Self.fallbackFace.font else { return 15 }
+        return manager.defaultLineHeight(for: face)
+    }
+
     /// Called when the typing ends. May be called more than once for one
     /// box -- taking the box away makes it give up the keyboard, which asks
     /// again -- and whoever is called has to make the second call nothing.
@@ -290,7 +301,7 @@ final class ShotTextView: NSTextView {
         if manager.numberOfGlyphs == 0 || (selection.location >= length && !extra.isEmpty) {
             // An empty box, or after a line break at the end.
             let line = extra.isEmpty
-                ? NSRect(x: 0, y: 0, width: bounds.width, height: manager.defaultLineHeight(for: font ?? .systemFont(ofSize: 12)))
+                ? NSRect(x: 0, y: 0, width: bounds.width, height: emptyLineHeight(manager))
                 : extra
             return (line.offsetBy(dx: origin.x, dy: origin.y), origin.x + line.minX)
         }

@@ -9,7 +9,7 @@ import SwiftUI
 // which is the smallest anything here is set in.
 
 /// The menu's font: nothing in Polter's own windows is set smaller.
-private var menuFont: Font { Font(NSFont.menuFont(ofSize: 0)) }
+private var menuFont: Font { SafeFace.menu.swiftUI }
 
 /// The line saying a project was made for a group, with its undo and ✕.
 /// The same `ProjectHint` is drawn in the control room and in the

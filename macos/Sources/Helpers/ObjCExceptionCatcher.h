@@ -43,3 +43,10 @@ FOUNDATION_EXPORT NSFont * _Nullable GhosttySystemFontOrNil(
     CGFloat weight,
     BOOL monospaced
 );
+
+/// +[NSFont menuFontOfSize:], typed as what it can really return, for the
+/// same reason (task 1805). `size` 0 is AppKit's default size for it.
+FOUNDATION_EXPORT NSFont * _Nullable GhosttyMenuFontOrNil(CGFloat size);
+
+/// +[NSFont titleBarFontOfSize:], likewise (task 1805).
+FOUNDATION_EXPORT NSFont * _Nullable GhosttyTitleBarFontOrNil(CGFloat size);

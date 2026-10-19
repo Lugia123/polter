@@ -80,4 +80,30 @@ struct SafeFontTests {
         #expect(SafeFace.system(15, .regular, .monospaced) != nil)
         #expect(SafeFace.system(15, .semibold, .system) != nil)
     }
+
+    /// The menu's and the title bar's faces are AppKit's own (task 1805):
+    /// the same font the direct factory gives, size 0 included.
+    @Test func theMenuAndTitleBarFacesAreAppKits() {
+        let menu = SafeFace.system(0, .regular, .menu)
+        #expect(menu?.fontName == NSFont.menuFont(ofSize: 0).fontName)
+        #expect(menu?.pointSize == NSFont.menuFont(ofSize: 0).pointSize)
+        let title = SafeFace.system(13, .regular, .titleBar)
+        #expect(title?.fontName == NSFont.titleBarFont(ofSize: 13).fontName)
+        #expect(SafeFace.menu.pointSize == NSFont.menuFont(ofSize: 0).pointSize)
+    }
+
+    /// A face asked for at AppKit's default size (0) is set at the size the
+    /// face came at, and at the system's font size while there is none --
+    /// never at 0, which is what an estimate or SwiftUI's stand-in would
+    /// be made at otherwise (task 1805).
+    @Test func aDefaultSizedFaceWithoutAFontHasTheSystemsSize() {
+        let none = SafeFace(size: 0, design: .menu, make: { _, _, _ in nil }, standIn: { _, _, _ in nil })
+        #expect(none.pointSize == NSFont.systemFontSize)
+        let sized = SafeFace(size: 0, design: .menu, make: { _, _, _ in NSFont.menuFont(ofSize: 17) })
+        #expect(sized.pointSize == 17)
+        // A size that was asked for is the size, face or not.
+        #expect(SafeFace(size: 15, make: { _, _, _ in nil }, standIn: { _, _, _ in nil }).pointSize == 15)
+        let estimated = SafeTextMeasure.width("x", in: none)
+        #expect(estimated > 0)
+    }
 }

@@ -84,10 +84,7 @@ enum UntrustedURLAlert {
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
-        textView.font = .monospacedSystemFont(
-            ofSize: NSFont.systemFontSize,
-            weight: .regular
-        )
+        textView.font = SafeFace(size: NSFont.systemFontSize, design: .monospaced).font
         textView.textContainerInset = NSSize(width: 6, height: 6)
         textView.string = target
         textView.textContainer?.widthTracksTextView = true

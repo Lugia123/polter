@@ -12,8 +12,9 @@ import SwiftUI
 /// not allowed to be written at all.
 enum SettingsFont {
     /// What a menu item is set in. `ofSize: 0` is how AppKit is asked for
-    /// the default size of a font it defines.
-    static var minimumPointSize: CGFloat { NSFont.menuFont(ofSize: 0).pointSize }
+    /// the default size of a font it defines; through `SafeFace`, which is
+    /// the system's font size while there is no menu face (task 1805).
+    static var minimumPointSize: CGFloat { SafeFace.menu.pointSize }
 
     /// Secondary text: hints, statuses, counts, notes under a control.
     static var minimum: Font { .system(size: minimumPointSize) }

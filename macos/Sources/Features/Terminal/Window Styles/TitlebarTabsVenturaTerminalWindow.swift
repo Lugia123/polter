@@ -240,7 +240,7 @@ class TitlebarTabsVenturaTerminalWindow: TerminalWindow {
     override var titlebarFont: NSFont? {
         didSet {
             guard let toolbar = toolbar as? TerminalToolbar else { return }
-            toolbar.titleFont = titlebarFont ?? .titleBarFont(ofSize: NSFont.systemFontSize)
+            toolbar.titleFont = titlebarFont ?? Self.titleBarFace.font
         }
     }
 

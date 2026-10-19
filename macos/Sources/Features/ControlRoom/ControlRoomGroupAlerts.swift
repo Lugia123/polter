@@ -142,7 +142,7 @@ enum ControlRoomGroupAlerts {
         let label = NSTextField(wrappingLabelWithString: text)
         label.textColor = .systemRed
         // The system's size, which is the menu's: nothing smaller.
-        label.font = .systemFont(ofSize: NSFont.systemFontSize)
+        label.font = SafeFace(size: NSFont.systemFontSize).font
         let gap = CGFloat(ControlRoomLook.Side.quietItemGap)
         label.preferredMaxLayoutWidth = max(0, width - glyph.intrinsicContentSize.width - gap)
         let row = NSStackView(views: [glyph, label])

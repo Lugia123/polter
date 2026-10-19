@@ -193,7 +193,7 @@ final class ProjectLinkDesk: ControlRoomProjectHands {
         alert.informativeText = String(localized: "The project \"\(project)\" stays as it is, and its open tabs stay open. The group uses no project from now on.", comment: "不再作为群的项目：确认框正文，参数是项目名")
         let trash = NSButton(checkboxWithTitle: String(localized: "Also move the project file to the Trash", comment: "不再作为群的项目：同时把项目文件移到废纸篓（默认不勾）"), target: nil, action: nil)
         trash.state = .off
-        trash.font = NSFont.menuFont(ofSize: 0)
+        trash.font = SafeFace.menu.font
         trash.sizeToFit()
         alert.accessoryView = trash
         alert.addButton(withTitle: String(localized: "No Longer This Group's Project", comment: "不再作为群的项目：确认按钮"))

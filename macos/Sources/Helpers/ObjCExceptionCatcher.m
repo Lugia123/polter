@@ -101,3 +101,11 @@ NSFont * _Nullable GhosttySystemFontOrNil(CGFloat size, CGFloat weight, BOOL mon
         ? [NSFont monospacedSystemFontOfSize:size weight:weight]
         : [NSFont systemFontOfSize:size weight:weight];
 }
+
+NSFont * _Nullable GhosttyMenuFontOrNil(CGFloat size) {
+    return [NSFont menuFontOfSize:size];
+}
+
+NSFont * _Nullable GhosttyTitleBarFontOrNil(CGFloat size) {
+    return [NSFont titleBarFontOfSize:size];
+}

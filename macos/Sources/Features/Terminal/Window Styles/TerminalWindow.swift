@@ -408,7 +408,7 @@ class TerminalWindow: NSWindow {
     /// The label that draws the Poltergeist mark.
     private lazy var poltergeistMarkLabel: NSTextField = {
         let label = NSTextField(labelWithString: "")
-        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.font = Self.smallFace.font
         label.alignment = .center
         label.isHidden = true
         return label
@@ -585,12 +585,15 @@ class TerminalWindow: NSWindow {
                 return
             }
 
+            // No font while the system has none, rather than a nil in
+            // the attributes, which CoreText throws on (task 1805).
+            var attributes: [NSAttributedString.Key: Any] = [
+                .foregroundColor: isKeyWindow ? NSColor.labelColor : NSColor.secondaryLabelColor,
+            ]
+            if let font = Self.smallFace.font { attributes[.font] = font }
             keyEquivalentLabel.attributedStringValue = NSAttributedString(
                 string: "\(keyEquivalent) ",
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
-                    .foregroundColor: isKeyWindow ? NSColor.labelColor : NSColor.secondaryLabelColor,
-                ])
+                attributes: attributes)
         }
     }
 
@@ -650,10 +653,15 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    /// The faces this window falls back to (task 1805): made through
+    /// `SafeFace`, which never keeps a nil and never hands one on.
+    private static let smallFace = SafeFace(size: NSFont.smallSystemFontSize)
+    static let titleBarFace = SafeFace(size: NSFont.systemFontSize, design: .titleBar)
+
     // Used to set the titlebar font.
     var titlebarFont: NSFont? {
         didSet {
-            let font = titlebarFont ?? NSFont.titleBarFont(ofSize: NSFont.systemFontSize)
+            let font = titlebarFont ?? Self.titleBarFace.font
             tab.attributedTitle = attributedTitle
 
             // We need to call this every time the font is set,
