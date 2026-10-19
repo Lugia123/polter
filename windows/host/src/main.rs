@@ -132,6 +132,7 @@ mod pane_frames;
 mod panedrag;
 mod personas;
 mod plugins;
+mod gdi_text;
 mod general_ui;
 mod logs_ui;
 mod plugins_ui;

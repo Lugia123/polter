@@ -679,7 +679,7 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     let old = SelectObject(hdc, font_for(dpi).into());
                     let mut wide: Vec<u16> = tr(label).encode_utf16().collect();
                     let mut r = RECT { left: s(PAD), top: s(12), right: rc.right - s(PAD), bottom: s(40) };
-                    DrawTextW(hdc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                    crate::gdi_text::draw_text_w(hdc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
                     // The question's note, under the field, in the dim colour.
                     if let Some(note) = OPEN.with(|c| c.borrow().as_ref().and_then(|o| o.note.clone())) {
                         let mut er = RECT::default();
@@ -690,7 +690,7 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         SetTextColor(hdc, COLORREF(theme::for_window(hwnd).dim()));
                         let mut wide: Vec<u16> = note.encode_utf16().collect();
                         let mut r = RECT { left: pts[0].x, top: pts[0].y + s(4), right: rc.right - s(PAD), bottom: pts[0].y + s(4 + 24) };
-                        DrawTextW(hdc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                        crate::gdi_text::draw_text_w(hdc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
                     }
                     SelectObject(hdc, old);
                 }

@@ -1243,7 +1243,7 @@ impl Measure for Gdi {
             let old = SelectObject(dc, font.into());
             let mut rc = RECT::default();
             let mut t = wide(text);
-            DrawTextW(dc, &mut t, &mut rc, DT_CALCRECT | DT_NOPREFIX);
+            crate::gdi_text::draw_text_w(dc, &mut t, &mut rc, DT_CALCRECT | DT_NOPREFIX);
             SelectObject(dc, old);
             let _ = DeleteObject(font.into());
             let _ = DeleteDC(dc);
@@ -1408,7 +1408,7 @@ pub(crate) unsafe fn draw_items<'a>(
                     if !hidden && !text.is_empty() {
                         let q = at(*q);
                         let mut rc = RECT { left: q.x, top: q.y, right: q.x + size.0, bottom: q.y + size.1 };
-                        DrawTextW(hdc, &mut wide(text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
+                        crate::gdi_text::draw_text_w(hdc, &mut wide(text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
                     }
                 }
                 Shape::Number { n, at: q, text, size } => {
@@ -1419,14 +1419,14 @@ pub(crate) unsafe fn draw_items<'a>(
                     let _ = Ellipse(hdc, c.x - r, c.y - r, c.x + r + 1, c.y + r + 1);
                     let digit = wide(&n.to_string());
                     let mut extent = SIZE::default();
-                    let _ = GetTextExtentPoint32W(hdc, &digit, &mut extent);
+                    let _ = crate::gdi_text::get_text_extent_point32_w(hdc, &digit, &mut extent);
                     SetTextColor(hdc, ink_on(item.colour_rgb()));
-                    let _ = TextOutW(hdc, c.x - extent.cx / 2, c.y - extent.cy / 2, &digit);
+                    let _ = crate::gdi_text::text_out_w(hdc, c.x - extent.cx / 2, c.y - extent.cy / 2, &digit);
                     SetTextColor(hdc, colour);
                     if !text.is_empty() && !hidden {
                         let t = annot::caption_at(*q, item.level, scale, size.1).relative_to(o);
                         let mut rc = RECT { left: t.x, top: t.y, right: t.x + size.0, bottom: t.y + size.1 };
-                        DrawTextW(hdc, &mut wide(text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
+                        crate::gdi_text::draw_text_w(hdc, &mut wide(text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
                     }
                 }
             }
@@ -1579,7 +1579,7 @@ impl Words {
 
     fn size(&self, text: &str) -> (i32, i32) {
         let mut size = SIZE::default();
-        let _ = unsafe { GetTextExtentPoint32W(self.dc, &wide(text), &mut size) };
+        let _ = unsafe { crate::gdi_text::get_text_extent_point32_w(self.dc, &wide(text), &mut size) };
         (size.cx, size.cy)
     }
 
@@ -1588,7 +1588,7 @@ impl Words {
         let l = at.relative_to(self.origin);
         unsafe {
             SetTextColor(self.dc, ink_ref(colour));
-            let _ = TextOutW(self.dc, l.x, l.y, &wide(text));
+            let _ = crate::gdi_text::text_out_w(self.dc, l.x, l.y, &wide(text));
         }
     }
 }
@@ -1940,7 +1940,7 @@ unsafe fn draw_text_box(s: &Session, i: usize, canvas: &Canvas) {
             // words, and `DrawTextW` is not given a counted slice of none:
             // see `Measure for Gdi` (task 1199).
             if !v.text.is_empty() {
-                DrawTextW(dc, &mut wide(&v.text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
+                crate::gdi_text::draw_text_w(dc, &mut wide(&v.text), &mut rc, DT_NOPREFIX | DT_NOCLIP);
             }
             let _ = RestoreDC(dc, saved);
         };

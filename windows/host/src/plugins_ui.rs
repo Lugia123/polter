@@ -660,7 +660,7 @@ fn text_width(text: &str, font: HFONT) -> i32 {
     unsafe {
         let dc = GetDC(Some(h));
         let old = SelectObject(dc, font.into());
-        DrawTextW(dc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(dc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
         SelectObject(dc, old);
         ReleaseDC(Some(h), dc);
     }
@@ -679,7 +679,7 @@ fn measure(text: &str, width: i32, font: HFONT, max_lines: i32) -> i32 {
     unsafe {
         let dc = GetDC(Some(h));
         let old = SelectObject(dc, font.into());
-        DrawTextW(dc, &mut w, &mut r, DT_LEFT | DT_WORDBREAK | DT_CALCRECT | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(dc, &mut w, &mut r, DT_LEFT | DT_WORDBREAK | DT_CALCRECT | DT_NOPREFIX);
         SelectObject(dc, old);
         ReleaseDC(Some(h), dc);
     }
@@ -1293,7 +1293,7 @@ fn draw_text(hdc: HDC, s: &str, r: &RECT, font: HFONT, colour: u32, flags: DRAW_
         let old = SelectObject(hdc, font.into());
         SetTextColor(hdc, COLORREF(colour));
         SetBkMode(hdc, TRANSPARENT);
-        DrawTextW(hdc, &mut w, &mut r, flags | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(hdc, &mut w, &mut r, flags | DT_NOPREFIX);
         SelectObject(hdc, old);
     }
 }

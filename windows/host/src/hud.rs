@@ -1552,7 +1552,7 @@ fn paint_with(hwnd: HWND, label: &str, bg: u32, fg: u32, flags: DRAW_TEXT_FORMAT
             // case. The centred signs are unaffected: the inset is symmetric.
             rc.left += 8;
             rc.right -= 8;
-            DrawTextW(hdc, &mut wide, &mut rc, flags);
+            crate::gdi_text::draw_text_w(hdc, &mut wide, &mut rc, flags);
             SelectObject(hdc, old);
         });
         let _ = EndPaint(hwnd, &ps);

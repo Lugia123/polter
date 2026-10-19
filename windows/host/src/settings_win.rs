@@ -1280,7 +1280,7 @@ fn text_width(hdc: HDC, s: &str, font: *mut c_void) -> i32 {
     let mut r = RECT::default();
     unsafe {
         let old = SelectObject(hdc, HGDIOBJ(font));
-        DrawTextW(hdc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(hdc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
         SelectObject(hdc, old);
     }
     r.right - r.left
@@ -1293,7 +1293,7 @@ fn draw_text(hdc: HDC, s: &str, r: &RECT, font: *mut c_void, colour: u32, flags:
         let old = SelectObject(hdc, HGDIOBJ(font));
         SetTextColor(hdc, COLORREF(colour));
         SetBkMode(hdc, TRANSPARENT);
-        DrawTextW(hdc, &mut w, &mut r, flags | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(hdc, &mut w, &mut r, flags | DT_NOPREFIX);
         SelectObject(hdc, old);
     }
 }

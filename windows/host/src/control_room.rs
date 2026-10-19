@@ -3382,7 +3382,7 @@ unsafe fn draw_text(dc: HDC, font: HFONT, color: Rgba, text: &str, mut r: RECT, 
         let old = SelectObject(dc, font.into());
         SetTextColor(dc, rgb(color));
         let mut wide: Vec<u16> = text.encode_utf16().collect();
-        DrawTextW(dc, &mut wide, &mut r, how);
+        crate::gdi_text::draw_text_w(dc, &mut wide, &mut r, how);
         SelectObject(dc, old);
     }
 }
@@ -3400,7 +3400,7 @@ unsafe fn fit_chars(dc: HDC, font: HFONT, text: &str, width: i32) -> usize {
         let mut size = SIZE::default();
         // A pointer and a count, as everywhere here: `text` is not empty
         // (asked above), so the pointer is to something.
-        let _ = GetTextExtentExPointW(dc, PCWSTR(wide.as_ptr()), wide.len() as i32, width.max(0), Some(&mut fit), None, &mut size);
+        let _ = crate::gdi_text::get_text_extent_ex_point_w(dc, &wide, width.max(0), Some(&mut fit), None, &mut size);
         SelectObject(dc, old);
         // The answer is in UTF-16 units; the question was in characters.
         let mut units = 0usize;
@@ -3464,7 +3464,7 @@ pub(crate) unsafe fn text_width(dc: HDC, font: HFONT, text: &str) -> i32 {
         let old = SelectObject(dc, font.into());
         let wide: Vec<u16> = text.encode_utf16().collect();
         let mut size = SIZE::default();
-        let _ = GetTextExtentPoint32W(dc, &wide, &mut size);
+        let _ = crate::gdi_text::get_text_extent_point32_w(dc, &wide, &mut size);
         SelectObject(dc, old);
         size.cx
     }

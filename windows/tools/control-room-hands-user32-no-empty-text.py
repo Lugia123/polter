@@ -1,56 +1,47 @@
 #!/usr/bin/env python3
-"""The control room's panel never hands the system text with nothing in it.
+"""The Windows host never hands the system text with nothing in it.
 
-**The defect this is the floor for** (task 1439). On its first real machine
-the panel killed the host on every opening that had a row with a status in
-it -- four out of four: Application Error 1000, faulting module `USER32.dll`,
-`0xc0000005`, and nothing in the host's log after `[control-room] opened as`.
+**The defect this is the floor for.** Three windows killed the host the same
+way: the screenshot overlay (task 1199), the control room's panel (task
+1439: four openings out of four), and Manage Projects (task 1871: three dumps
+out of three, `USER32+0x24702` reading address `0x2`). Each drew a string
+that was empty on purpose -- a status with no word, a wait with no reason, a
+Color line whose value is the swatches drawn over it.
 
-The panel draws its words with `DrawTextW` and measures them with
-`GetTextExtentPoint32W`, both given a counted slice. A scene carries words
-that are empty on purpose -- a group nobody waits on has a status with no
-word, a wait can come with no reason -- and an empty `Vec<u16>` is a count of
-0 and a pointer to nothing. `USER32` on Windows 11 build 26200 reads through
-that pointer. The screenshot overlay died of the same thing before the panel
-did (task 1199).
+`DrawTextW`, `TextOutW` and the `GetTextExtent*` calls take a counted slice.
+An empty `Vec<u16>` is a count of 0 and a pointer to nothing (`0x2`), and
+`USER32` on Windows 11 build 26200 reads through that pointer.
 
-**The rule.** In `windows/host/src/control_room.rs` -- and, since task 1871,
-in `projects_ui.rs` and `project_picker.rs`, each with its own homes in
-`FILES`:
+**The rule** (task 1872), over every `.rs` file under `windows/host/src`:
 
-  1. `DrawTextW(` appears in `draw_text` and nowhere else;
-     `GetTextExtentPoint32W(` in `text_width` and nowhere else;
-     `GetTextExtentExPointW(` in `fit_chars` and nowhere else.
-  2. Each of those three functions asks `scene::draws(text)` and returns when
-     the answer is no, **before** the call.
-  3. No other call that takes text to draw or measure (`TextOutW`,
-     `ExtTextOutW`, `DrawTextExW`, `TabbedTextOutW`)
-     is in the file at all: a new one goes through the two above or is added
-     here with its own question.
+  1. `DrawTextW(`, `TextOutW(`, `GetTextExtentPoint32W(` and
+     `GetTextExtentExPointW(` appear in `gdi_text.rs` and nowhere else, each
+     in its one function there (`HOMES`).
+  2. Each of those functions asks `draws(text)` -- `if !draws(text) { ... }`
+     with a `return` in it -- **before** the call.
+  3. No other call that hands text to the system (`OTHERS`) is anywhere in
+     the tree: a new one gets a function in `gdi_text.rs` and a line here.
 
-**What is read.** That one file, comments and string literals removed.
+**What is read.** Every file, comments and string literals removed, so a
+name in a comment or a message is not a call.
 
 **NOT CHECKED.**
 
-  * **The other `DrawTextW` calls in the host** (`strip.rs`,
-    `palette.rs`, the other settings pages, ...). Each has its own caller and its
-    own reason the text is not empty, or none; nobody has gone through them.
-    This is the panel's floor and says nothing about them.
-  * **That `USER32` does what the paragraph above says.** It is read from two
-    crashes with the same signature and from the code; there was no dump
-    either time. What this holds is that the panel no longer does the thing,
-    whatever the thing would have done.
-  * **`scene::draws` itself** -- that it refuses the empty string is a test in
-    `windows/control-room/src/scene.rs`, next to the one that shows the
-    core's own fixture producing such text.
+  * **That `USER32` does what the paragraph above says.** Read from the
+    crashes; the third one had dumps, the address read was `0x2`. What this
+    holds is that the host no longer does the thing.
+  * **`draws` itself** -- that it refuses the empty slice, and what a measure
+    of nothing answers, are tests in `gdi_text.rs`, which run on Windows.
   * Text that is not empty and still draws nothing (a lone combining mark).
+  * Calls made through a function pointer, `windows_sys`, or `link!` of
+    their own -- there are none, and this reads names.
 
-`probe self-test` plants each offender in a scratch source and checks it is
-caught, and that the file as it should be is not.
+`probe self-test` plants each offender in a scratch tree and checks it is
+caught, and that the tree as it should be is not.
 
-Run:  python3 windows/tools/control-room-hands-user32-no-empty-text.py
-Exit: 0, with `scanned 3 file(s) of 3` and each file's guarded calls
-      counted (3, 1 and 3, not 0); non-zero otherwise.
+Run:  python3 windows/tools/control-room-hands-user32-no-empty-text.py [root]
+Exit: 0, with `scanned N file(s)` (N > 1) and 4 guarded call(s) of 4;
+      non-zero otherwise.
 """
 
 import os
@@ -59,31 +50,28 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
-FILE = os.path.join("windows", "host", "src", "control_room.rs")
+SRC = os.path.join("windows", "host", "src")
+HOME_FILE = "gdi_text.rs"
 
-# call -> the functions it may be made from
+# call -> the one function in gdi_text.rs it may be made from
 HOMES = {
-    "DrawTextW": ("draw_text",),
-    "GetTextExtentPoint32W": ("text_width",),
-    "GetTextExtentExPointW": ("fit_chars",),
+    "DrawTextW": "draw_text_w",
+    "TextOutW": "text_out_w",
+    "GetTextExtentPoint32W": "get_text_extent_point32_w",
+    "GetTextExtentExPointW": "get_text_extent_ex_point_w",
 }
-
-# Every file held to the rule, with its homes and how many guarded calls it
-# has. The projects page and the project picker are here since task 1871:
-# the page's Color line has an empty value on purpose, and selecting any
-# project killed the host in `USER32+0x24702` reading `0x2` -- the same
-# crash, three dumps out of three.
-FILES = (
-    (FILE, HOMES, 3),
-    (os.path.join("windows", "host", "src", "projects_ui.rs"), {"DrawTextW": ("draw_text",)}, 1),
-    (
-        os.path.join("windows", "host", "src", "project_picker.rs"),
-        {"DrawTextW": ("draw_text",), "GetTextExtentPoint32W": ("text_width", "measure_in")},
-        3,
-    ),
+OTHERS = (
+    "DrawTextExW",
+    "ExtTextOutW",
+    "TabbedTextOutW",
+    "PolyTextOutW",
+    "GetTextExtentPointW",
+    "GetTabbedTextExtentW",
+    "GetCharacterPlacementW",
+    "DrawStateW",
+    "GrayStringW",
 )
-OTHERS = ("TextOutW", "ExtTextOutW", "DrawTextExW", "TabbedTextOutW")
-QUESTION = re.compile(r"if\s+!\s*scene::draws\(\s*text\s*\)\s*\{\s*return\b[^;]*;\s*\}")
+QUESTION = re.compile(r"if\s+!\s*draws\(\s*text\s*\)\s*\{")
 
 
 def strip(src):
@@ -148,132 +136,180 @@ def line_of(code, at):
     return code.count("\n", 0, at) + 1
 
 
-def findings(src, homes=HOMES):
-    """`(problems, calls)`: what is wrong, and how many guarded calls were read."""
-    code = strip(src)
-    funcs = functions(code)
+def block_end(code, brace):
+    """The index just past the `}` that closes the `{` at `brace`."""
+    depth = 0
+    for j in range(brace, len(code)):
+        if code[j] == "{":
+            depth += 1
+        elif code[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+    return len(code)
+
+
+def asked_before(code, start, at):
+    """Whether `if !draws(text) { ... return ... }` comes between `start` and `at`."""
+    for m in QUESTION.finditer(code, start, at):
+        end = block_end(code, m.end() - 1)
+        if end <= at and re.search(r"\breturn\b", code[m.end():end]):
+            return True
+    return False
+
+
+def calls_in(code, name):
+    return [m.start() for m in re.finditer(r"(?<![\w:])%s\s*\(" % name, code)]
+
+
+def findings(tree):
+    """`(problems, guarded)` for `tree`, a {relative path: source} map."""
     out = []
-    calls = 0
-    for call, allowed in homes.items():
-        home = " or ".join(f"`{h}`" for h in allowed)
-        sites = [m.start() for m in re.finditer(r"\b%s\s*\(" % call, code)]
-        if not sites:
-            out.append(
-                f"`{call}(` is not in the file at all. Either the panel stopped drawing words "
-                "with it -- then this gate is about nothing and must be rewritten for whatever "
-                "it uses now -- or the reading is broken"
-            )
-            continue
-        for at in sites:
-            inside = owner(funcs, at)
-            if inside is None or inside[0] not in allowed:
-                where = inside[0] if inside else "no function"
+    guarded = 0
+    home = tree.get(HOME_FILE)
+    for rel, src in sorted(tree.items()):
+        code = strip(src)
+        funcs = functions(code)
+        for call, fn in HOMES.items():
+            for at in calls_in(code, call):
+                if rel != HOME_FILE:
+                    out.append(
+                        f"{rel}:{line_of(code, at)}: `{call}(` outside `{HOME_FILE}`. Call "
+                        f"`crate::gdi_text::{fn}` instead, which does not hand an empty string "
+                        "over: an empty one is a count of 0 and a pointer to nothing, and USER32 "
+                        "reads through it (tasks 1199, 1439, 1871)"
+                    )
+                    continue
+                inside = owner(funcs, at)
+                if inside is None or inside[0] != fn:
+                    where = inside[0] if inside else "no function"
+                    out.append(f"{rel}:{line_of(code, at)}: `{call}(` in `{where}`, not in `{fn}`")
+                    continue
+                if not asked_before(code, inside[1], at):
+                    out.append(
+                        f"{rel}:{line_of(code, at)}: `{fn}` calls `{call}(` without first returning "
+                        "when `!draws(text)`. The question has to come before the call, in this "
+                        "function, as `if !draws(text) { ...; return ...; }`"
+                    )
+                    continue
+                guarded += 1
+        for call in OTHERS:
+            for at in calls_in(code, call):
                 out.append(
-                    f"line {line_of(code, at)}: `{call}(` in `{where}`, outside {home}. Text that "
-                    f"reaches it has not been asked `scene::draws`: an empty one is a count of 0 "
-                    "and a pointer to nothing, and USER32 reads through it (task 1439)"
+                    f"{rel}:{line_of(code, at)}: `{call}(` -- another way of handing text to the "
+                    f"system, with no question in front of it. Give it a function in `{HOME_FILE}` "
+                    "that asks `draws`, and add it to this gate"
                 )
-                continue
-            asked = QUESTION.search(code, inside[1], at)
-            if not asked:
+    if home is None:
+        out.append(f"`{HOME_FILE}` is not in the tree: there is nowhere the calls may be made")
+    else:
+        code = strip(home)
+        for call, fn in HOMES.items():
+            if not calls_in(code, call):
                 out.append(
-                    f"line {line_of(code, at)}: `{inside[0]}` calls `{call}(` without first returning "
-                    "when `!scene::draws(text)`. The question has to come before the call, in "
-                    "this function, as `if !scene::draws(text) { return ...; }`"
+                    f"`{call}(` is not in `{HOME_FILE}` at all. Either nothing draws with it any "
+                    "more -- then take it out of HOMES -- or the reading is broken"
                 )
-                continue
-            calls += 1
-    for call in OTHERS:
-        for m in re.finditer(r"\b%s\s*\(" % call, code):
-            out.append(
-                f"line {line_of(code, m.start())}: `{call}(` -- another way of handing text to the "
-                "system, with no question in front of it. Draw through `draw_text`, measure "
-                "through `text_width`, or add the call to this gate with its own guard"
-            )
-    return out, calls
+    return out, guarded
 
 
-GOOD = """
-unsafe fn draw_text(dc: HDC, font: HFONT, color: Rgba, text: &str, mut r: RECT, how: DRAW_TEXT_FORMAT) {
-    if !scene::draws(text) {
-        return;
-    }
-    unsafe {
-        let mut wide: Vec<u16> = text.encode_utf16().collect();
-        DrawTextW(dc, &mut wide, &mut r, how);
-    }
-}
-unsafe fn text_width(dc: HDC, font: HFONT, text: &str) -> i32 {
-    if !scene::draws(text) {
+GOOD_HOME = """
+use windows::Win32::Graphics::Gdi::{DrawTextW, TextOutW};
+pub fn draws(text: &[u16]) -> bool { !text.is_empty() }
+pub unsafe fn draw_text_w(hdc: HDC, text: &mut [u16], r: *mut RECT, how: DRAW_TEXT_FORMAT) -> i32 {
+    if !draws(text) {
+        if how.0 & DT_CALCRECT.0 != 0 && !r.is_null() {
+            unsafe { (*r).right = (*r).left; }
+        }
         return 0;
     }
-    unsafe {
-        let wide: Vec<u16> = text.encode_utf16().collect();
-        let mut size = SIZE::default();
-        let _ = GetTextExtentPoint32W(dc, &wide, &mut size);
-        size.cx
-    }
+    unsafe { DrawTextW(hdc, text, r, how) }
 }
-unsafe fn fit_chars(dc: HDC, font: HFONT, text: &str, width: i32) -> usize {
-    if !scene::draws(text) {
-        return 0;
+pub unsafe fn text_out_w(hdc: HDC, x: i32, y: i32, text: &[u16]) -> BOOL {
+    if !draws(text) {
+        return BOOL(1);
     }
-    unsafe {
-        let wide: Vec<u16> = text.encode_utf16().collect();
-        let mut fit = 0i32;
-        let mut size = SIZE::default();
-        let _ = GetTextExtentExPointW(dc, &wide, width, Some(&mut fit), None, &mut size);
-        fit as usize
-    }
+    unsafe { TextOutW(hdc, x, y, text) }
 }
-unsafe fn paint_piece(dc: HDC, text: &str, r: RECT) {
+pub unsafe fn get_text_extent_point32_w(hdc: HDC, text: &[u16], size: *mut SIZE) -> BOOL {
+    if !draws(text) {
+        return BOOL(1);
+    }
+    unsafe { GetTextExtentPoint32W(hdc, text, size) }
+}
+pub unsafe fn get_text_extent_ex_point_w(hdc: HDC, text: &[u16], m: i32, f: Option<*mut i32>, d: Option<*mut i32>, size: *mut SIZE) -> BOOL {
+    if !draws(text) {
+        return BOOL(1);
+    }
+    unsafe { GetTextExtentExPointW(hdc, PCWSTR(text.as_ptr()), text.len() as i32, m, f, d, size) }
+}
+"""
+GOOD_CALLER = """
+fn paint(dc: HDC, s: &str, r: &mut RECT) {
     // DrawTextW(dc, ...) in a comment is not a call
-    unsafe { draw_text(dc, font, color, text, r, DT_LEFT) };
-    let s = "DrawTextW(";
+    let mut w: Vec<u16> = s.encode_utf16().collect();
+    unsafe { crate::gdi_text::draw_text_w(dc, &mut w, r, DT_LEFT) };
+    let msg = "TextOutW(";
 }
 """
 
 
 def self_test():
+    good = {HOME_FILE: GOOD_HOME, "strip.rs": GOOD_CALLER}
+    def with_(rel, src):
+        t = dict(good)
+        t[rel] = src
+        return t
     cases = [
-        ("the file as it should be", GOOD, 0),
-        # What was there: the call made straight from the painting code.
-        ("a second DrawTextW, in the painter",
-         GOOD + "\nunsafe fn paint_items(dc: HDC, text: &str) { unsafe { let mut w: Vec<u16> = text.encode_utf16().collect(); DrawTextW(dc, &mut w, &mut r, DT_LEFT); } }\n", 1),
-        ("the question taken out of draw_text, the code still compiling",
-         GOOD.replace("    if !scene::draws(text) {\n        return;\n    }", "    if !scene::draws(text) {}", 1), 1),
-        ("the question taken out of text_width",
-         GOOD.replace("    if !scene::draws(text) {\n        return 0;\n    }", "", 1), 1),
+        ("the tree as it should be", good, 0),
+        # What was there: the call made straight from a window's painting code.
+        ("a DrawTextW in another file",
+         with_("projects_ui.rs", "fn draw_text(hdc: HDC, s: &str) { let mut w: Vec<u16> = s.encode_utf16().collect(); unsafe { DrawTextW(hdc, &mut w, &mut r, DT_LEFT); } }\n"), 1),
+        ("one guarded by its own question, still in another file",
+         with_("control_room.rs", "fn draw_text(dc: HDC, text: &str) { if !scene::draws(text) { return; } unsafe { DrawTextW(dc, &mut w, &mut r, how); } }\n"), 1),
+        ("the question hollowed out, the code still compiling",
+         with_(HOME_FILE, GOOD_HOME.replace("        return 0;\n", "", 1)), 1),
+        ("the question taken out of text_out_w",
+         with_(HOME_FILE, GOOD_HOME.replace("    if !draws(text) {\n        return BOOL(1);\n    }\n    unsafe { TextOutW", "    unsafe { TextOutW", 1)), 1),
         ("the question after the call",
-         GOOD.replace(
-             "    if !scene::draws(text) {\n        return;\n    }\n    unsafe {\n        let mut wide: Vec<u16> = text.encode_utf16().collect();\n        DrawTextW(dc, &mut wide, &mut r, how);\n    }",
-             "    unsafe {\n        let mut wide: Vec<u16> = text.encode_utf16().collect();\n        DrawTextW(dc, &mut wide, &mut r, how);\n    }\n    if !scene::draws(text) {\n        return;\n    }", 1), 1),
+         with_(HOME_FILE, GOOD_HOME.replace(
+             "    if !draws(text) {\n        return BOOL(1);\n    }\n    unsafe { GetTextExtentPoint32W(hdc, text, size) }",
+             "    let r = unsafe { GetTextExtentPoint32W(hdc, text, size) };\n    if !draws(text) {\n        return BOOL(1);\n    }\n    r", 1)), 1),
         ("the question asked of something else",
-         GOOD.replace("if !scene::draws(text) {\n        return;", "if !scene::draws(other) {\n        return;", 1), 1),
-        ("a measuring call outside text_width",
-         GOOD + "\nfn width(dc: HDC, w: &[u16]) { let mut s = SIZE::default(); unsafe { let _ = GetTextExtentPoint32W(dc, w, &mut s); } }\n", 1),
-        ("TextOutW, which nothing guards",
-         GOOD + "\nfn other(dc: HDC, w: &[u16]) { unsafe { let _ = TextOutW(dc, 0, 0, w); } }\n", 1),
-        ("no DrawTextW left to read",
-         GOOD.replace("DrawTextW(dc, &mut wide, &mut r, how);", "", 1), 1),
-        ("the question taken out of fit_chars",
-         GOOD.replace("    if !scene::draws(text) {\n        return 0;\n    }\n    unsafe {\n        let wide: Vec<u16> = text.encode_utf16().collect();\n        let mut fit", "    unsafe {\n        let wide: Vec<u16> = text.encode_utf16().collect();\n        let mut fit", 1), 1),
-        ("an empty file", "", 3),
+         with_(HOME_FILE, GOOD_HOME.replace("if !draws(text) {\n        return BOOL(1);\n    }\n    unsafe { TextOutW", "if !draws(other) {\n        return BOOL(1);\n    }\n    unsafe { TextOutW", 1)), 1),
+        ("a second call in the home file, outside its function",
+         with_(HOME_FILE, GOOD_HOME + "\nfn other(hdc: HDC, w: &[u16]) { unsafe { let _ = TextOutW(hdc, 0, 0, w); } }\n"), 1),
+        ("ExtTextOutW, which nothing guards",
+         with_("shot.rs", "fn other(dc: HDC, w: &[u16]) { unsafe { let _ = ExtTextOutW(dc, 0, 0, 0, None, w, None); } }\n"), 1),
+        ("no DrawTextW left in the home file",
+         with_(HOME_FILE, GOOD_HOME.replace("    unsafe { DrawTextW(hdc, text, r, how) }", "    0", 1)), 1),
+        ("no home file", {"strip.rs": GOOD_CALLER}, 1),
     ]
     bad = 0
-    for name, src, want in cases:
-        got, _ = findings(src)
+    for name, tree, want in cases:
+        got, _ = findings(tree)
         if len(got) != want:
             bad += 1
             print(f"SELF-TEST FAILED: {name}: wanted {want} finding(s), got {len(got)}")
             for g in got:
                 print(f"    {g}")
-    # And the count the real run reports is the number of guarded calls.
-    _, calls = findings(GOOD)
-    if calls != 3:
+    _, guarded = findings(good)
+    if guarded != len(HOMES):
         bad += 1
-        print(f"SELF-TEST FAILED: the good file has 3 guarded calls, counted {calls}")
+        print(f"SELF-TEST FAILED: the good tree has {len(HOMES)} guarded calls, counted {guarded}")
     return bad
+
+
+def read_tree(root):
+    base = os.path.join(root, SRC)
+    tree = {}
+    for dirpath, _, names in os.walk(base):
+        for n in names:
+            if n.endswith(".rs"):
+                path = os.path.join(dirpath, n)
+                with open(path, encoding="utf-8") as f:
+                    tree[os.path.relpath(path, base)] = f.read()
+    return tree
 
 
 def main():
@@ -287,27 +323,18 @@ def main():
         return 1
 
     root = sys.argv[1] if len(sys.argv) > 1 else ROOT
-    failed = False
-    scanned = 0
-    for rel, homes, want in FILES:
-        path = os.path.join(root, rel)
-        if not os.path.isfile(path):
-            print(f"FAIL {rel}: not there. Nothing was checked of it, which is not a pass")
-            failed = True
-            continue
-        with open(path, encoding="utf-8") as f:
-            src = f.read()
-        scanned += 1
-        out, calls = findings(src, homes)
-        print(f"read {rel}: {calls} guarded call(s) of {want}")
-        for line in out:
-            print(f"FAIL {rel}: {line}")
-            failed = True
-        if not out and calls != want:
-            print(f"FAIL {rel}: read {calls} guarded call(s) and expected {want}")
-            failed = True
-    print(f"scanned {scanned} file(s) of {len(FILES)}")
-    if failed or scanned == 0:
+    tree = read_tree(root)
+    if not tree:
+        print(f"scanned 0 files: there is no {SRC} under {root}. Nothing was checked, which is not a pass")
+        return 1
+    out, guarded = findings(tree)
+    print(f"scanned {len(tree)} file(s) under {SRC}; {guarded} guarded call(s) of {len(HOMES)} in {HOME_FILE}")
+    for line in out:
+        print(f"FAIL {line}")
+    if out:
+        return 1
+    if guarded != len(HOMES):
+        print(f"FAIL: read {guarded} guarded call(s) and expected {len(HOMES)}")
         return 1
     print("OK")
     return 0

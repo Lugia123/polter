@@ -387,7 +387,7 @@ fn measure(text: &str, width: i32) -> i32 {
     unsafe {
         let dc = GetDC(Some(h));
         let old = SelectObject(dc, font().into());
-        DrawTextW(dc, &mut w, &mut r, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(dc, &mut w, &mut r, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
         SelectObject(dc, old);
         ReleaseDC(Some(h), dc);
     }
@@ -578,7 +578,7 @@ fn text_width(text: &str, f: HFONT) -> i32 {
     unsafe {
         let dc = GetDC(Some(h));
         let old = SelectObject(dc, f.into());
-        DrawTextW(dc, &mut w, &mut r, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(dc, &mut w, &mut r, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
         SelectObject(dc, old);
         ReleaseDC(Some(h), dc);
     }

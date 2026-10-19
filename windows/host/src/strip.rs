@@ -131,7 +131,7 @@ unsafe fn paint_marks(dc: HDC, m: &Marked, left: i32, sh: i32, scale: f64, theme
             let mut r = at(r);
             let mut words: Vec<u16> = format!("+{n}").encode_utf16().collect();
             SetTextColor(dc, COLORREF(gdi(theme.text_secondary)));
-            DrawTextW(dc, &mut words, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOCLIP);
+            crate::gdi_text::draw_text_w(dc, &mut words, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOCLIP);
         }
         if let Some(accent) = ring {
             let gap = (tab_dots::RING_GAP * scale).round() as i32;
@@ -1976,7 +1976,7 @@ pub fn paint(frame: HWND) {
             // -- which `USER32` must not be handed (task 1439).
             if !wide.is_empty() && tr.right > tr.left {
                 let before = SelectObject(mem, if on_chip && !bold.is_invalid() { bold.into() } else { font });
-                DrawTextW(
+                crate::gdi_text::draw_text_w(
                     mem,
                     &mut wide,
                     &mut tr,
@@ -2096,7 +2096,7 @@ pub fn paint(frame: HWND) {
             SetTextColor(mem, COLORREF(gdi(if lit { buttons.text_hot } else { buttons.text })));
             let mut plus: Vec<u16> = "+".encode_utf16().collect();
             let mut r2 = new;
-            DrawTextW(mem, &mut plus, &mut r2, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+            crate::gdi_text::draw_text_w(mem, &mut plus, &mut r2, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
         }
 
         // The shell chevron, with the `+` and in its colours: a hairline
@@ -2139,7 +2139,7 @@ pub fn paint(frame: HWND) {
             SetTextColor(mem, COLORREF(gdi(if lit { buttons.text_hot } else { buttons.text })));
             let mut chevron: Vec<u16> = "\u{00bb}".encode_utf16().collect();
             let mut tr = r;
-            DrawTextW(
+            crate::gdi_text::draw_text_w(
                 mem,
                 &mut chevron,
                 &mut tr,

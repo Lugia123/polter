@@ -518,7 +518,7 @@ fn text_width(font: HFONT, text: &str) -> i32 {
     unsafe {
         let dc = GetDC(None);
         let old = SelectObject(dc, HGDIOBJ(font.0));
-        let _ = GetTextExtentPoint32W(dc, &t, &mut size);
+        let _ = crate::gdi_text::get_text_extent_point32_w(dc, &t, &mut size);
         SelectObject(dc, old);
         ReleaseDC(None, dc);
     }
@@ -1208,7 +1208,7 @@ fn draw_text(hdc: HDC, text: &str, r: &RECT, font: HFONT, colour: u32, flags: DR
         let old = SelectObject(hdc, HGDIOBJ(font.0));
         SetTextColor(hdc, COLORREF(colour));
         SetBkMode(hdc, TRANSPARENT);
-        DrawTextW(hdc, &mut t, &mut r, flags | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(hdc, &mut t, &mut r, flags | DT_NOPREFIX);
         SelectObject(hdc, old);
     }
 }
@@ -1310,7 +1310,7 @@ fn measure_in(hdc: HDC, font: HFONT, text: &str) -> i32 {
     let mut size = SIZE::default();
     unsafe {
         let old = SelectObject(hdc, HGDIOBJ(font.0));
-        let _ = GetTextExtentPoint32W(hdc, &t, &mut size);
+        let _ = crate::gdi_text::get_text_extent_point32_w(hdc, &t, &mut size);
         SelectObject(hdc, old);
     }
     size.cx

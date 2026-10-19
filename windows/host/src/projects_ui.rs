@@ -1317,7 +1317,7 @@ fn draw_text(hdc: HDC, text: &str, r: &RECT, font: &AtomicPtr<c_void>, colour: u
         let old = SelectObject(hdc, HGDIOBJ(font.load(Ordering::Acquire)));
         SetTextColor(hdc, COLORREF(colour));
         SetBkMode(hdc, TRANSPARENT);
-        DrawTextW(hdc, &mut w, &mut r, flags | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(hdc, &mut w, &mut r, flags | DT_NOPREFIX);
         SelectObject(hdc, old);
     }
 }

@@ -2707,7 +2707,7 @@ fn measure_with(hdc: HDC) -> impl Fn(&str, i32, Font, bool) -> (i32, i32) {
         let flags = DT_CALCRECT | DT_NOPREFIX | if single { DT_SINGLELINE } else { DT_WORDBREAK | DT_EDITCONTROL };
         unsafe {
             let old = SelectObject(hdc, font(f).into());
-            DrawTextW(hdc, &mut wide, &mut r, flags);
+            crate::gdi_text::draw_text_w(hdc, &mut wide, &mut r, flags);
             SelectObject(hdc, old);
         }
         ((r.right - r.left).min(width), r.bottom - r.top)
@@ -3901,7 +3901,7 @@ fn draw_text(hdc: HDC, s: &str, r: &RECT, f: Font, colour: u32, flags: DRAW_TEXT
         let old = SelectObject(hdc, font(f).into());
         SetTextColor(hdc, COLORREF(colour));
         SetBkMode(hdc, TRANSPARENT);
-        DrawTextW(hdc, &mut wide, &mut r, flags | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(hdc, &mut wide, &mut r, flags | DT_NOPREFIX);
         SelectObject(hdc, old);
     }
 }

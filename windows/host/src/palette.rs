@@ -1412,7 +1412,7 @@ fn paint(hwnd: HWND) {
                     right: rc.right - sc(PAD),
                     bottom: rc.bottom,
                 };
-                DrawTextW(hdc, &mut wide, &mut tr, DT_LEFT | DT_SINGLELINE);
+                crate::gdi_text::draw_text_w(hdc, &mut wide, &mut tr, DT_LEFT | DT_SINGLELINE);
                 SelectObject(hdc, old_font);
                 return;
             }
@@ -1445,11 +1445,11 @@ fn paint(hwnd: HWND) {
                 if let Some(k) = &keys {
                     let mut kw: Vec<u16> = k.encode_utf16().collect();
                     let mut measure = RECT { left: 0, top: 0, right: rc.right, bottom: sc(ROW_H) };
-                    DrawTextW(hdc, &mut kw, &mut measure, DT_SINGLELINE | DT_CALCRECT);
+                    crate::gdi_text::draw_text_w(hdc, &mut kw, &mut measure, DT_SINGLELINE | DT_CALCRECT);
                     keys_left = rc.right - sc(PAD * 2) - (measure.right - measure.left);
                     SetTextColor(hdc, COLORREF(theme::for_window(hwnd).dim()));
                     let mut kr = RECT { left: keys_left, top: y, right: rc.right - sc(PAD * 2), bottom: y + sc(ROW_H) };
-                    DrawTextW(hdc, &mut kw, &mut kr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+                    crate::gdi_text::draw_text_w(hdc, &mut kw, &mut kr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
                     keys_left -= sc(PAD * 2);
                 }
 
@@ -1461,7 +1461,7 @@ fn paint(hwnd: HWND) {
                     right: keys_left,
                     bottom: y + sc(21),
                 };
-                DrawTextW(
+                crate::gdi_text::draw_text_w(
                     hdc,
                     &mut wide,
                     &mut tr,
@@ -1477,7 +1477,7 @@ fn paint(hwnd: HWND) {
                         right: keys_left,
                         bottom: y + sc(ROW_H - 2),
                     };
-                    DrawTextW(
+                    crate::gdi_text::draw_text_w(
                         hdc,
                         &mut dw,
                         &mut dr,

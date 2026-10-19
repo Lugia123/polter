@@ -944,7 +944,7 @@ fn measure(text: &str, width: i32, f: HFONT, max_lines: i32) -> i32 {
     unsafe {
         let dc = GetDC(Some(h));
         let old = SelectObject(dc, f.into());
-        DrawTextW(dc, &mut w, &mut r, DT_LEFT | DT_WORDBREAK | DT_CALCRECT | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(dc, &mut w, &mut r, DT_LEFT | DT_WORDBREAK | DT_CALCRECT | DT_NOPREFIX);
         SelectObject(dc, old);
         ReleaseDC(Some(h), dc);
     }
@@ -972,7 +972,7 @@ fn text_width(text: &str, f: HFONT) -> i32 {
     unsafe {
         let dc = GetDC(Some(h));
         let old = SelectObject(dc, f.into());
-        DrawTextW(dc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(dc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
         SelectObject(dc, old);
         ReleaseDC(Some(h), dc);
     }
@@ -1057,7 +1057,7 @@ fn help_flow(runs: &[(Run, String)], width: i32, expanded: bool) -> inline::Flow
             SelectObject(dc, f.into());
             let mut r = RECT::default();
             let mut w: Vec<u16> = text.encode_utf16().collect();
-            DrawTextW(dc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
+            crate::gdi_text::draw_text_w(dc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
             r.right
         };
         // The space "key  sentence" had between its halves.
@@ -2003,7 +2003,7 @@ pub(crate) fn draw_text(hdc: HDC, s: &str, r: &RECT, f: HFONT, colour: u32, flag
         let old = SelectObject(hdc, f.into());
         SetTextColor(hdc, COLORREF(colour));
         SetBkMode(hdc, TRANSPARENT);
-        DrawTextW(hdc, &mut w, &mut r, flags | DT_NOPREFIX);
+        crate::gdi_text::draw_text_w(hdc, &mut w, &mut r, flags | DT_NOPREFIX);
         SelectObject(hdc, old);
     }
 }

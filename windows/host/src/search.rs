@@ -919,7 +919,7 @@ fn paint_placeholder(edit: HWND) {
         let text = crate::i18n::tr(crate::i18n::n_("Search"));
         if !text.is_empty() {
             let mut wide: Vec<u16> = text.encode_utf16().collect();
-            DrawTextW(dc, &mut wide, &mut rc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+            crate::gdi_text::draw_text_w(dc, &mut wide, &mut rc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
         }
         SelectObject(dc, old_font);
         ReleaseDC(Some(edit), dc);
@@ -990,7 +990,7 @@ fn paint(hwnd: HWND) {
                     right: prev_x - sc(6),
                     bottom: rc.bottom,
                 };
-                DrawTextW(hdc, &mut wide, &mut tr, DT_RIGHT | DT_SINGLELINE);
+                crate::gdi_text::draw_text_w(hdc, &mut wide, &mut tr, DT_RIGHT | DT_SINGLELINE);
             }
 
             let dim = theme::for_window(hwnd).dim();
@@ -1007,7 +1007,7 @@ fn paint(hwnd: HWND) {
             draw_chevron(hdc, &button(next_x), false, dim, &sc);
             let mut g: Vec<u16> = "\u{00D7}".encode_utf16().collect();
             let mut br = button(close_x);
-            DrawTextW(hdc, &mut g, &mut br, DT_CENTER | DT_SINGLELINE);
+            crate::gdi_text::draw_text_w(hdc, &mut g, &mut br, DT_CENTER | DT_SINGLELINE);
 
             SelectObject(hdc, old_font);
         });

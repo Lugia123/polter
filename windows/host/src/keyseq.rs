@@ -521,7 +521,7 @@ extern "system" fn keyseq_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                             COLORREF(if st.pending.is_empty() { COL_DIM } else { COL_TEXT }),
                         );
                         let mut wide: Vec<u16> = text.encode_utf16().collect();
-                        DrawTextW(hdc, &mut wide, &mut rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                        crate::gdi_text::draw_text_w(hdc, &mut wide, &mut rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
                         SelectObject(hdc, old);
                     });
                     let _ = EndPaint(hwnd, &ps);

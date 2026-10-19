@@ -774,7 +774,7 @@ unsafe fn paint_card(hw: HWND, hdc: HDC, rc: RECT, full: bool) {
             }
             let before = SelectObject(dc, font.into());
             SetTextColor(dc, color);
-            DrawTextW(dc, &mut wide, r, flags | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            crate::gdi_text::draw_text_w(dc, &mut wide, r, flags | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             SelectObject(dc, before);
         };
         let seconds = tr(n_("{} s")).replace("{}", &left_s.to_string());
