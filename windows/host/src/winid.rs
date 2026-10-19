@@ -138,10 +138,12 @@ pub fn destroyed(frame: HWND) -> usize {
         "[win] w{} destroyed; {} window(s) left{}",
         id,
         left,
-        match (left, crate::settings_win::is_open()) {
-            (0, false) => " -> quitting",
-            (0, true) => " -> the settings window is open; not quitting",
-            _ => "",
+        match polter_settings_shell::after_terminal_closed(left, crate::settings_win::state()) {
+            polter_settings_shell::AfterTerminalClosed::Quit => " -> quitting",
+            polter_settings_shell::AfterTerminalClosed::KeepSettings => " -> the settings window is open; not quitting",
+            polter_settings_shell::AfterTerminalClosed::CloseSettings =>
+                " -> the settings window is minimised; closing it, which quits",
+            polter_settings_shell::AfterTerminalClosed::Nothing => "",
         }
     );
     left
@@ -312,11 +314,17 @@ pub fn window_finished(frame: HWND) {
     // then is what ends the process (`settings_closed`), asking about
     // anything unsaved on the way, as any close of it does.
     if left == 0 {
-        if polter_settings_shell::quits(left, crate::settings_win::is_open()) {
-            unsafe { windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0) };
+        match polter_settings_shell::after_terminal_closed(left, crate::settings_win::state()) {
+            polter_settings_shell::AfterTerminalClosed::Quit => unsafe {
+                windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0)
+            },
+            // Minimised, it is closed as a quit closes it -- asking about a
+            // draft -- and `settings_closed` ends the process (task 1808).
+            polter_settings_shell::AfterTerminalClosed::CloseSettings => crate::settings_win::close_for_quit(),
+            // Otherwise nothing more to say: `destroyed` said why this is
+            // not the end.
+            polter_settings_shell::AfterTerminalClosed::KeepSettings | polter_settings_shell::AfterTerminalClosed::Nothing => {}
         }
-        // Otherwise nothing more to say: `destroyed` said why this is not
-        // the end.
     } else {
         // **This used to be `wlogf!(frame, ...)` and printed `w?`.**
         // `destroyed` above has just taken `frame` out of `FRAMES`, `of`

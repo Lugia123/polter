@@ -673,10 +673,23 @@ pub fn close_for_quit() {
 }
 
 /// Whether the settings window is open -- the one fact the process's "is
-/// that the last window?" needs from here (#896 D3).
+/// that the last window?" needs from here (#896 D3). Minimised counts as
+/// open: `IsWindowVisible` says so, and `state` tells the two apart.
 pub fn is_open() -> bool {
     let h = win();
     !h.0.is_null() && unsafe { IsWindowVisible(h) }.as_bool()
+}
+
+/// The settings window as the last terminal's closing asks about it
+/// (task 1808): a minimised one is open, and not on screen.
+pub fn state() -> polter_settings_shell::SettingsWindow {
+    if !is_open() {
+        polter_settings_shell::SettingsWindow::Closed
+    } else if unsafe { IsIconic(win()) }.as_bool() {
+        polter_settings_shell::SettingsWindow::Minimized
+    } else {
+        polter_settings_shell::SettingsWindow::Shown
+    }
 }
 
 /// The primary monitor's rectangle and work area, which is what workspace

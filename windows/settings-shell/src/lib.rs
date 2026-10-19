@@ -499,6 +499,45 @@ pub fn quits(terminal_windows_left: usize, settings_open: bool) -> bool {
     terminal_windows_left == 0 && !settings_open
 }
 
+/// The settings window, as far as "is the process finished?" asks
+/// (task 1808).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsWindow {
+    Closed,
+    Shown,
+    /// Open, and minimised: there, and nowhere a person looking at the
+    /// screen would see it.
+    Minimized,
+}
+
+/// What follows a terminal window closing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AfterTerminalClosed {
+    /// Terminal windows are left: nothing.
+    Nothing,
+    /// The last one, and no settings window: the process is finished.
+    Quit,
+    /// The last one under a settings window on screen: it stays, and with
+    /// it the process (#896 D3) -- a draft in it is not lost.
+    KeepSettings,
+    /// The last one, with the settings window minimised: it is closed the
+    /// way a quit closes it, asking about anything unsaved, and its closing
+    /// ends the process. Left alone, it kept a process alive that nothing on
+    /// screen said was there (task 1808, on the test machine).
+    CloseSettings,
+}
+
+/// The rule `quits` is the settings window's half of, from the terminal's
+/// side.
+pub fn after_terminal_closed(terminal_windows_left: usize, settings: SettingsWindow) -> AfterTerminalClosed {
+    match (terminal_windows_left, settings) {
+        (n, _) if n > 0 => AfterTerminalClosed::Nothing,
+        (_, SettingsWindow::Closed) => AfterTerminalClosed::Quit,
+        (_, SettingsWindow::Shown) => AfterTerminalClosed::KeepSettings,
+        (_, SettingsWindow::Minimized) => AfterTerminalClosed::CloseSettings,
+    }
+}
+
 // =================================================================== layout
 
 /// The layout grid, §2.3a. **The one place these numbers are written**: the
@@ -1386,6 +1425,20 @@ mod tests {
         assert!(!quits(0, true), "the last terminal closed under the settings window");
         assert!(!quits(1, false));
         assert!(!quits(2, true));
+    }
+
+    /// Task 1808: a minimised settings window does not keep the process
+    /// alive unseen; one on screen still does (#896 D3).
+    #[test]
+    fn the_last_terminal_closes_a_minimised_settings_window_and_keeps_a_shown_one() {
+        use AfterTerminalClosed::*;
+        assert_eq!(after_terminal_closed(0, SettingsWindow::Closed), Quit);
+        assert_eq!(after_terminal_closed(0, SettingsWindow::Shown), KeepSettings);
+        assert_eq!(after_terminal_closed(0, SettingsWindow::Minimized), CloseSettings);
+        for s in [SettingsWindow::Closed, SettingsWindow::Shown, SettingsWindow::Minimized] {
+            assert_eq!(after_terminal_closed(1, s), Nothing, "{s:?} with a terminal left");
+            assert_eq!(after_terminal_closed(3, s), Nothing, "{s:?} with terminals left");
+        }
     }
 
     /// #896 D2: the check box grows with the DPI (40 at 250%), and never

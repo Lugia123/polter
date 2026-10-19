@@ -455,6 +455,9 @@ pub fn editText(
             copied = @min(line.end + 1, text.len);
         }
         try out.appendSlice(alloc, text[copied..]);
+        // The marker came with the first key the form wrote; with the
+        // last one gone, it goes too (task 1808).
+        out.shrinkRetainingCapacity(withoutEmptyBlock(out.items).len);
         return try out.toOwnedSlice(alloc);
     };
 
@@ -500,6 +503,30 @@ pub fn editText(
     try appendValue(alloc, &out, v, false);
     try out.appendSlice(alloc, eol);
     return try out.toOwnedSlice(alloc);
+}
+
+/// `text` without the block the form appends under, when nothing is left
+/// in it: the marker line, when only blank lines follow it to the end, and
+/// the one empty line before it that was written with it as its separator.
+/// Anything else under the marker -- a key, a comment of the person's --
+/// keeps it. Always a prefix of `text`, since the block is at the end.
+fn withoutEmptyBlock(text: []const u8) []const u8 {
+    var start: usize = 0;
+    var found: ?usize = null;
+    while (start <= text.len) {
+        const nl = std.mem.indexOfScalarPos(u8, text, start, '\n');
+        const end = nl orelse text.len;
+        if (std.mem.eql(u8, std.mem.trim(u8, text[start..end], " \t\r"), block_marker)) {
+            if (std.mem.trim(u8, text[if (nl) |n| n + 1 else end..], " \t\r\n").len == 0) found = start;
+        }
+        start = (nl orelse break) + 1;
+    }
+    const at = found orelse return text;
+    const before = text[0..at];
+    // The separator: an empty line just above the marker.
+    if (std.mem.endsWith(u8, before, "\r\n\r\n")) return before[0 .. before.len - 2];
+    if (std.mem.endsWith(u8, before, "\n\n")) return before[0 .. before.len - 1];
+    return before;
 }
 
 fn hasMarker(text: []const u8) bool {
@@ -1725,6 +1752,30 @@ test "config form: null removes every line of the key and nothing else" {
     );
     try expectEdit("bar = 2\nfont-size = 1", "font-size", null, "bar = 2\n");
     try expectEdit("bar = 2\n", "font-size", null, "bar = 2\n");
+}
+
+test "1808: the form's block goes with the last key in it, and stays for anything else" {
+    // Set, then restored: the file is what it was, marker and separator gone.
+    try expectEdit("font-size = 10\n", "title", "x", "font-size = 10\n\n" ++ block_marker ++ "\ntitle = x\n");
+    try expectEdit("font-size = 10\n\n" ++ block_marker ++ "\ntitle = x\n", "title", null, "font-size = 10\n");
+    try expectEdit("a = 1\r\n\r\n" ++ block_marker ++ "\r\ntitle = x\r\n", "title", null, "a = 1\r\n");
+    // A file the form made from nothing goes back to nothing.
+    try expectEdit(block_marker ++ "\ntitle = x\n", "title", null, "");
+    // Another key under it, or a comment of the person's: the block stays.
+    try expectEdit(
+        "a = 1\n\n" ++ block_marker ++ "\ntheme = dark\ntitle = x\n",
+        "title",
+        null,
+        "a = 1\n\n" ++ block_marker ++ "\ntheme = dark\n",
+    );
+    try expectEdit(
+        "a = 1\n\n" ++ block_marker ++ "\n# mine\ntitle = x\n",
+        "title",
+        null,
+        "a = 1\n\n" ++ block_marker ++ "\n# mine\n",
+    );
+    // A marker with only blank lines after it is empty all the same.
+    try expectEdit("a = 1\n\n" ++ block_marker ++ "\ntitle = x\n\n\n", "title", null, "a = 1\n");
 }
 
 test "config form: a bare key gets its value after the key" {
