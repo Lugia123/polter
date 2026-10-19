@@ -60,6 +60,22 @@ struct ProjectLinkTests {
         #expect(Link.unreadable([]).isEmpty)
     }
 
+    @Test func aProjectFileChangedByHandChangesTheDirectorysFingerprint() {
+        // Task 1830: what the directory watch compares.
+        let before = Link.directoryFingerprint([("g.json", 10, 100.0), ("0.snap", 5, 100.0)])
+        let fixed = Link.directoryFingerprint([("g.json", 12, 101.5), ("0.snap", 5, 100.0)])
+        #expect(before != fixed)
+        let moved = Link.directoryFingerprint([("0.snap", 5, 100.0)])
+        #expect(moved.isEmpty)
+        #expect(before != moved)
+        // A snapshot or a temporary file coming and going is not a change.
+        let tmp = Link.directoryFingerprint([("g.json", 10, 100.0), (".g.json.1.tmp", 3, 102.0), ("1.snap", 9, 102.0)])
+        #expect(tmp == before)
+        // Listed in any order, the same.
+        let two = Link.directoryFingerprint([("b.json", 1, 1.0), ("a.json", 2, 2.0)])
+        #expect(two == Link.directoryFingerprint([("a.json", 2, 2.0), ("b.json", 1, 1.0)]))
+    }
+
     @Test func aTerminalIsWrittenAsTheCoreWritesIt() {
         #expect(Link.terminal(0xa1) == "0x00000000000000a1")
         #expect(Link.terminal(0) == "0x0000000000000000")

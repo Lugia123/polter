@@ -624,6 +624,7 @@ pub fn open_page_in_new_tab(
     root: &SavedNode,
     snaps: &std::path::Path,
     behind: bool,
+    quiet: bool,
 ) -> Result<TabId, String> {
     // The seed pane is created here rather than by the layout step, so its
     // scrollback has to be given here too -- the same reason as `cwd` and
@@ -636,6 +637,7 @@ pub fn open_page_in_new_tab(
         history: Some(seed.history.clone()).filter(|h| !h.is_empty()),
         scrollback: project::scrollback_path(snaps, seed),
         behind,
+        quiet,
         ..Default::default()
     };
     if !tabs::create_tab_with(frame, app, hinst, seed_spec) {

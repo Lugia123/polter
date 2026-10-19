@@ -91,6 +91,19 @@ enum ProjectLink {
         return Array(Set(names)).sorted()
     }
 
+    /// What the projects directory looks like, for noticing that a file in
+    /// it changed by somebody else's hand (task 1830): each project file's
+    /// name, size and time of change, in order. Only what `unreadable`
+    /// counts as a project file -- a temporary file or a snapshot coming
+    /// and going is not a change to the projects. The same rule as the
+    /// Windows host's `stated::directory_fingerprint`.
+    static func directoryFingerprint(_ files: [(name: String, size: Int, modified: Double)]) -> [String] {
+        files
+            .filter { $0.name.count > ".json".count && $0.name.lowercased().hasSuffix(".json") }
+            .map { "\($0.name)|\($0.size)|\(Int64(($0.modified * 1000).rounded()))" }
+            .sorted()
+    }
+
     /// Why a project the core asked for was not opened.
     enum Failure: String, Equatable {
         case notFound = "not_found"

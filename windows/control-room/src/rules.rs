@@ -158,6 +158,25 @@ pub fn new_tab_takes_keyboard(behind: bool) -> bool {
     !behind
 }
 
+/// How a page of a project being opened is opened (task 1835): whether its
+/// tab goes behind the tab in front of its window, and whether it takes the
+/// keyboard. `behind` is the open's (the core's order); `own_window` is a
+/// page that gets a window of its own.
+///
+/// A window made for the project shows its pages -- there is nothing else
+/// in it to stay in front -- but **behind, it takes the keyboard from
+/// nobody**: focusing a pane in it activated the window and brought it in
+/// front of the person (`w2 [win] activated; pane 8 took focus`, 1824b).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageOpening {
+    pub tab_behind: bool,
+    pub takes_keyboard: bool,
+}
+
+pub fn project_page_opening(behind: bool, own_window: bool) -> PageOpening {
+    PageOpening { tab_behind: behind && !own_window, takes_keyboard: !behind }
+}
+
 /// Where a project the core ordered opened goes. The macOS host's
 /// `ControlRoomRules.orderedProjectTab`, with the same answers.
 ///

@@ -36,6 +36,14 @@ final class ProjectLinker {
     private var lastStated: Data?
     private var restatePending = false
     private var acted: [ProjectLink.Order] = []
+    /// The projects directory as it was last looked at, and the timer that
+    /// looks (task 1830). A file fixed, broken or moved away by hand is
+    /// noticed within `watchSeconds`: nothing else posts a notice for it,
+    /// and "the project picks up again once the file reads" was a promise
+    /// that waited for a restart.
+    private var lastDirectory: [String] = []
+    private var watch: Timer?
+    private static let watchSeconds: TimeInterval = 2
 
     private init(_ ghostty: Ghostty.App) {
         self.ghostty = ghostty
@@ -49,6 +57,23 @@ final class ProjectLinker {
             MainActor.assumeIsolated { self?.snapshotArrived() }
         })
         // What is on disk when the app starts.
+        lastDirectory = store.directoryFingerprint()
+        restateSoon()
+        let timer = Timer(timeInterval: Self.watchSeconds, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.lookAtTheDirectory() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watch = timer
+    }
+
+    /// Restate when the projects directory changed by a hand other than
+    /// this app's (task 1830). The app's own writes post their notices and
+    /// are stated already; one more look then finds nothing new to say.
+    private func lookAtTheDirectory() {
+        let now = store.directoryFingerprint()
+        guard now != lastDirectory else { return }
+        lastDirectory = now
+        Self.logger.info("projects: the projects directory changed; stating the projects again")
         restateSoon()
     }
 

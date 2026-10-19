@@ -174,6 +174,23 @@ final class ProjectStore {
         }
     }
 
+    /// The directory as `ProjectLink.directoryFingerprint` sees it (task
+    /// 1830): what the linker compares to notice a file changed, moved or
+    /// fixed by hand. A listing and a stat per file, no decoding.
+    func directoryFingerprint() -> [String] {
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: keys)) ?? []
+        return ProjectLink.directoryFingerprint(urls.map { url in
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            return (
+                name: url.lastPathComponent,
+                size: values?.fileSize ?? 0,
+                modified: values?.contentModificationDate?.timeIntervalSince1970 ?? 0)
+        })
+    }
+
     /// The project files in the directory that did not decode (task 1807):
     /// a project that is there and is not known, which is not one gone.
     func unreadable() -> [URL] {

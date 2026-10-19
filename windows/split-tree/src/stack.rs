@@ -392,6 +392,20 @@ pub fn focus_after_new(focused: PaneId, new: PaneId, behind: PaneId, by_person: 
     }
 }
 
+/// Who has the keyboard after a split makes `new` (task 1834): the person's
+/// split -- a key, the menu -- takes it to the new pane, as it always has;
+/// a worker the core split off (`role_launch`, `terminal_open`) takes it
+/// from nobody. Nothing goes behind in a split, so the pane that had the
+/// keyboard is still on screen and keeps it. The split's half of
+/// `focus_after_new`.
+pub fn focus_after_split(focused: PaneId, new: PaneId, by_person: bool) -> PaneId {
+    if by_person {
+        new
+    } else {
+        focused
+    }
+}
+
 /// The member a step along the tabs from `current` lands on, round the
 /// ends; none when there is nowhere else to go (`PaneStackRules.neighbour`).
 pub fn neighbour(current: usize, count: usize, step: isize) -> Option<usize> {

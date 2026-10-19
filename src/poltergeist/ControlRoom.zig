@@ -2111,6 +2111,27 @@ pub fn projectSupervisorBesides(arena: Allocator, bus: *const Bus, chat: *const 
     return if (steward == id) null else steward;
 }
 
+/// A project's supervisor's pane whose new agent was refused -- `group`
+/// has a supervisor already, elsewhere -- gives up what the agent before it
+/// had there (task 1836): its supervisor's standing and its place in the
+/// group. Both are kept on purpose while a supervisor's agent is away, so
+/// the next agent in that terminal is the supervisor again
+/// (`Bus.agentHasLeft`); refused, it is not, and left as it was it could
+/// still act as one -- post as the group's, add workers, be counted.
+/// True when anything was taken away.
+pub fn dropRefusedSeat(bus: *Bus, chat: *Chat, group: []const u8, id: Id) bool {
+    var dropped = false;
+    if (bus.isSupervisor(id)) {
+        bus.removeSupervisor(id);
+        dropped = true;
+    }
+    if (chat.isMember(group, id)) {
+        chat.remove(group, id) catch {};
+        dropped = true;
+    }
+    return dropped;
+}
+
 /// What the control room says of `name`'s supervisor: there is one, one is
 /// on its way, the last try failed, or there is none -- and what starting
 /// one would use. `steward` is the answer `stewardOf` gave.
@@ -4844,6 +4865,51 @@ test "1802: an agent said to have left moves the snapshot on, and the host is to
     const after = try room.refresh(w.input(7_000), .event);
     const moved = after.notify orelse return error.LeftNotSent;
     try testing.expect(moved > rev);
+}
+
+test "1836: a refused supervisor's pane gives up the standing and the group the agent before it had" {
+    var w: World = .init();
+    defer w.deinit();
+
+    // The pane's last supervisor: its agent gone, its standing and its
+    // place in the group kept, as they are for the next agent there.
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    // Another supervisor minds the group now.
+    try w.terminal(0xb2, "now", 0x22);
+    try w.bus.addSupervisor(0xb2);
+    try w.chat.add("web-app", 0xb2, .all, .{});
+
+    const dropped = dropRefusedSeat(&w.bus, &w.chat, "web-app", 0xa1);
+    try testing.expect(dropped);
+    const standing = w.bus.isSupervisor(0xa1);
+    try testing.expect(!standing);
+    const member = w.chat.isMember("web-app", 0xa1);
+    try testing.expect(!member);
+    // The one minding it is untouched.
+    try testing.expect(w.bus.isSupervisor(0xb2));
+    try testing.expect(w.chat.isMember("web-app", 0xb2));
+
+    // A pane that had nothing to give up: nothing changes, and it says so.
+    try w.terminal(0xc3, "plain", 0x23);
+    const nothing = dropRefusedSeat(&w.bus, &w.chat, "web-app", 0xc3);
+    try testing.expect(!nothing);
+
+    // **Taking it over again is not shut off.** Once the supervisor that
+    // refused it has gone, the pane that gave its standing up may be the
+    // group's again: made a supervisor (`become_supervisor`, or the next
+    // agent there judged afresh -- task 1829) and added, which the one-
+    // supervisor rule lets through because nobody minds the group now.
+    _ = try w.chat.setProject("web-app", .{ .bound = "web" });
+    try w.hook(0xb2, .session_started, null, 100);
+    w.bus.noteAgentHere(0xb2, true, .{ .pid = 92, .started = 50 }, 200);
+    w.bus.noteAgentHere(0xb2, false, null, 1_000);
+    var ctx: u8 = 0;
+    _ = w.bus.considerLinks(1_000 + Bus.link_grace_ms, &ctx, noRuns);
+    try w.bus.addSupervisor(0xa1);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const blocked = projectSupervisorBesides(arena.allocator(), &w.bus, &w.chat, "web-app", 0xa1);
+    try testing.expectEqual(@as(?Id, null), blocked);
 }
 
 test "1797: a group with a project takes no second supervisor while its own minds it" {

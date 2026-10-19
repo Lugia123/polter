@@ -194,6 +194,22 @@ pub fn unreadable<'a>(paths: impl IntoIterator<Item = &'a std::path::Path>) -> V
     names
 }
 
+/// What the projects directory looks like, for noticing that a file in it
+/// changed by somebody else's hand (task 1830): each project file's name,
+/// size and time of change (milliseconds), in order. Only what `unreadable`
+/// counts as a project file -- a temporary file or a snapshot coming and
+/// going is not a change to the projects. The same rule as macOS's
+/// `ProjectLink.directoryFingerprint`.
+pub fn directory_fingerprint(files: &[(String, u64, u64)]) -> Vec<String> {
+    let mut out: Vec<String> = files
+        .iter()
+        .filter(|(n, _, _)| n.len() > ".json".len() && n.to_ascii_lowercase().ends_with(".json"))
+        .map(|(n, size, ms)| format!("{n}|{size}|{ms}"))
+        .collect();
+    out.sort();
+    out
+}
+
 /// The three other things a host says (§3). Each is asked or told on its
 /// own, and the core's answer to the two questions is a refusal by name.
 pub fn failed(name: &str, why: FailedWhy) -> String {

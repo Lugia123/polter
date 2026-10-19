@@ -902,6 +902,9 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
             self.sweepFreshAssigns();
             // A worker waiting on the one asked for before it (task 1797).
             self.sweepWorkerWaits();
+            // A worker asked for whose terminal the apprt makes later (task
+            // 1848): recorded as soon as it is there.
+            self.settlePendingWorkerOnTime();
             // And the groups: a message that arrived while its reader had
             // just been told about another, or whose notice was refused.
             self.tellTerminalsAboutMessages();
@@ -5779,6 +5782,16 @@ fn seatAgentArrived(self: *App, id: poltergeistpkg.Bus.Id) void {
         .refuse => |r| {
             self.seat_judged.judged(self.alloc, id, agent, left, round) catch {};
             log.warn("poltergeist: an agent in project {s}'s supervisor's pane, but {s} has a supervisor already; not made one", .{ r.project, r.group });
+            // What the agent before it had there goes with the refusal
+            // (task 1836): it is not the supervisor, and not in the group.
+            const was_member = self.chat.isMember(r.group, id);
+            if (poltergeistpkg.ControlRoom.dropRefusedSeat(bus, &self.chat, r.group, id)) {
+                // The same record a `group_remove` leaves.
+                if (was_member) if (self.session_log) |*l| l.left(r.group, self.poltergeistWallMs(), id, false);
+                log.info("poltergeist: the refused pane 0x{x} gives up the supervisor's standing and its place in {s} that the agent before it had", .{ id, r.group });
+                self.refreshPoltergeistTabs();
+                self.saveSession();
+            }
             const text = std.fmt.bufPrint(&buf, "[Polter] An agent started in project {s}'s supervisor's pane (0x{x:0>16}), " ++
                 "but {s} already has a supervisor (0x{x:0>16}): it was not made one. A project has one supervisor.", .{ r.project, id, r.group, r.steward }) catch return;
             _ = chatPost(self, r.group, r.steward, text, .none) catch |err| {
@@ -8963,6 +8976,18 @@ fn poltergeistConfigText(
 /// placement at one worker: the code looked for a surface that the apprt had
 /// not created yet, found none, and recorded nothing -- so the second worker
 /// saw no worker of its own in the tab and read the tab as somebody else's.
+/// `poltergeistSettlePendingWorker` from the notice wake (task 1848), and
+/// the next wake asked for while it is still not there. The settlement
+/// gives up by itself after `worker_wait_ms`.
+fn settlePendingWorkerOnTime(self: *App) void {
+    if (self.poltergeist_pending_worker == null) return;
+    self.poltergeistSettlePendingWorker(self.alloc) catch |err| {
+        log.warn("poltergeist: could not look for the worker asked for err={}", .{err});
+        return;
+    };
+    if (self.poltergeist_pending_worker != null) self.noticeRetryIn(worker_wait_look_ms);
+}
+
 fn poltergeistSettlePendingWorker(self: *App, alloc: Allocator) Allocator.Error!void {
     var pending = self.poltergeist_pending_worker orelse return;
 
@@ -8970,6 +8995,7 @@ fn poltergeistSettlePendingWorker(self: *App, alloc: Allocator) Allocator.Error!
     defer alloc.free(now);
     if (pending.attribute(now, &.{})) |id| {
         self.poltergeistRecordWorker(pending.by, id);
+        log.info("poltergeist: recorded terminal {x} as a worker of {x}", .{ id, pending.by });
         self.poltergeist_pending_worker = null;
         pending.deinit(self.alloc);
         return;
@@ -9939,6 +9965,10 @@ fn openTerminalAt(
             .pending => |p| {
                 if (self.poltergeist_pending_worker) |*old_pending| old_pending.deinit(self.alloc);
                 self.poltergeist_pending_worker = p;
+                // Looked for on a timer, not only at the next placement
+                // (task 1848): the last worker of a run has no next one, and
+                // was never recorded -- no `worker_of`, no `by_supervisor`.
+                self.noticeRetryIn(worker_wait_look_ms);
             },
         }
         break :placed switch (how) {

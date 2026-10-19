@@ -565,3 +565,14 @@ fn a_terminal_taken_in_beside_gets_a_place_of_its_own_to_the_right() {
     assert!(beside.stacks().is_empty());
     assert_eq!(beside.shown_panes(), [A, D, B, C]);
 }
+
+/// Task 1834: a worker the core splits off takes the keyboard from nobody;
+/// the person's split takes it to the new pane.
+#[test]
+fn a_worker_split_off_by_the_core_takes_the_keyboard_from_nobody() {
+    use crate::stack::focus_after_split;
+    let kept = focus_after_split(A, D, false);
+    assert_eq!(kept, A);
+    let theirs = focus_after_split(A, D, true);
+    assert_eq!(theirs, D);
+}

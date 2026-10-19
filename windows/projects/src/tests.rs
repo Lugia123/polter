@@ -1601,3 +1601,20 @@ fn pages_just_opened_go_after_the_last_page_of_theirs_already_open() {
     // Nothing opened.
     assert_eq!(gathered(&[1, 9], &[1], &[] as &[u32]), None);
 }
+
+/// Task 1830: what the directory watch compares; macOS's
+/// `aProjectFileChangedByHandChangesTheDirectorysFingerprint`.
+#[test]
+fn a_project_file_changed_by_hand_changes_the_directorys_fingerprint() {
+    let f = |v: &[(&str, u64, u64)]| stated::directory_fingerprint(&v.iter().map(|(n, s, m)| (n.to_string(), *s, *m)).collect::<Vec<_>>());
+    let before = f(&[("g.json", 10, 100_000), ("0.snap", 5, 100_000)]);
+    let fixed = f(&[("g.json", 12, 101_500), ("0.snap", 5, 100_000)]);
+    assert_ne!(before, fixed);
+    let moved = f(&[("0.snap", 5, 100_000)]);
+    assert!(moved.is_empty());
+    // A snapshot or a temporary file coming and going is not a change.
+    let tmp = f(&[("g.json", 10, 100_000), (".g.json.1.tmp", 3, 102_000), ("1.snap", 9, 102_000)]);
+    assert_eq!(tmp, before);
+    let two = f(&[("b.json", 1, 1), ("a.json", 2, 2)]);
+    assert_eq!(two, f(&[("a.json", 2, 2), ("b.json", 1, 1)]));
+}

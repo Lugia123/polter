@@ -110,6 +110,11 @@ thread_local! {
     /// the timer that will look at them.
     static ORDERS: RefCell<Vec<Order>> = const { RefCell::new(Vec::new()) };
     static ORDERS_TIMER: Cell<usize> = const { Cell::new(0) };
+    /// The projects directory as last looked at, and the repeating timer
+    /// that looks (task 1830): a file fixed, broken or moved away by hand
+    /// is noticed within `WATCH_MS`, where nothing else would say so.
+    static DIRECTORY: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    static WATCH_TIMER: Cell<usize> = const { Cell::new(0) };
     /// Orders that were acted on and are still being asked: each is acted
     /// on once for as long as the core goes on asking it.
     static TRIED: RefCell<Vec<Order>> = const { RefCell::new(Vec::new()) };
@@ -649,12 +654,15 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
 
         // Behind the tab in front of a window that was there already; a
         // window made for the project has no tab of the person's to keep.
-        let tucked = behind && !ours;
+        // Behind: the pages take the keyboard from nobody, a window of
+        // their own included, which still shows them (task 1835).
+        let opening = polter_control_room::rules::project_page_opening(behind, ours);
+        let tucked = opening.tab_behind;
         let mut front = None;
         let was_open: Vec<TabId> = bound.iter().map(|(t, _)| *t).collect();
         let mut opened_here: Vec<TabId> = Vec::new();
         for page in missing {
-            match crate::project_ui::open_page_in_new_tab(target, app, hinst, &page.tab.root, &snaps, tucked) {
+            match crate::project_ui::open_page_in_new_tab(target, app, hinst, &page.tab.root, &snaps, tucked, !opening.takes_keyboard) {
                 Ok(tab) => {
                     // The name somebody gave it, back as one (task 1722):
                     // pinned, so the shell's first title does not replace
@@ -691,7 +699,11 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
         }
         // The page that was in front is the one showing.
         if let Some(tab) = front.filter(|_| !tucked) {
-            tabs::activate_tab(target, tab);
+            if opening.takes_keyboard {
+                tabs::activate_tab(target, tab);
+            } else {
+                tabs::activate_tab_quietly(target, tab);
+            }
         }
         // A window made for pages none of which opened is not left empty.
         if ours && tabs::count(target) == 0 {
@@ -1160,6 +1172,7 @@ pub fn known() -> Vec<Known> {
 /// A statement the core would refuse is not sent (`stated::refusal`): the
 /// one it has goes on standing, and the log says which project and why.
 pub fn state() {
+    watch_the_directory();
     let (all, unreadable) = everything_and_unreadable();
     let list: Vec<Stated> = all.into_iter().map(|(_, said)| said).collect();
     if let Some(why) = stated::refusal(&list) {
@@ -1225,6 +1238,63 @@ pub fn told(told: &Told) {
     if any && ORDERS_TIMER.with(Cell::get) == 0 {
         let id = unsafe { SetTimer(None, 0, 10, Some(orders_timer)) };
         ORDERS_TIMER.with(|t| t.set(id));
+    }
+}
+
+/// How often the projects directory is looked at (task 1830).
+const WATCH_MS: u32 = 2_000;
+
+/// The directory as `stated::directory_fingerprint` sees it: a listing and
+/// a stat per file, nothing decoded.
+fn directory_now() -> Vec<String> {
+    let Some(dir) = projects_dir() else { return Vec::new() };
+    let Ok(read) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let files: Vec<(String, u64, u64)> = read
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            let ms = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
+            Some((e.file_name().to_string_lossy().into_owned(), meta.len(), ms))
+        })
+        .collect();
+    polter_projects::stated::directory_fingerprint(&files)
+}
+
+/// Start looking at the projects directory, once: the first statement is
+/// when there is a core to tell.
+fn watch_the_directory() {
+    if WATCH_TIMER.with(Cell::get) != 0 {
+        return;
+    }
+    DIRECTORY.with(|d| {
+        if let Ok(mut d) = d.try_borrow_mut() {
+            *d = Some(directory_now());
+        }
+    });
+    let id = unsafe { SetTimer(None, 0, WATCH_MS, Some(directory_timer)) };
+    // not-gated: the condition is the event -- without the timer a file
+    // fixed by hand is noticed only at the next change of ours.
+    if id == 0 {
+        // process-wide: one projects directory for the process
+        plogf!("[project] SetTimer failed; a project file changed by hand is noticed at the next change only");
+        return;
+    }
+    WATCH_TIMER.with(|t| t.set(id));
+}
+
+unsafe extern "system" fn directory_timer(_: HWND, _: u32, _: usize, _: u32) {
+    let now = directory_now();
+    let changed = DIRECTORY.with(|d| match d.try_borrow_mut() {
+        Ok(mut d) if d.as_ref() != Some(&now) => {
+            *d = Some(now);
+            true
+        }
+        _ => false,
+    });
+    if changed {
+        // process-wide: one projects directory for the process
+        plogf!("[project] the projects directory changed; stating the projects again");
+        state();
     }
 }
 

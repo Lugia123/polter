@@ -1196,6 +1196,21 @@ fn a_project_the_core_ordered_opens_behind_the_control_room_while_that_is_in_fro
     }
 }
 
+/// Task 1835: a project opened behind takes the keyboard from nobody, a
+/// window of its own included; that window still shows its pages.
+#[test]
+fn a_project_opened_behind_takes_the_keyboard_from_nobody() {
+    use crate::rules::{project_page_opening, PageOpening};
+    let among = project_page_opening(true, false);
+    assert_eq!(among, PageOpening { tab_behind: true, takes_keyboard: false });
+    let own = project_page_opening(true, true);
+    assert_eq!(own, PageOpening { tab_behind: false, takes_keyboard: false });
+    let theirs = project_page_opening(false, true);
+    assert_eq!(theirs, PageOpening { tab_behind: false, takes_keyboard: true });
+    let theirs_among = project_page_opening(false, false);
+    assert_eq!(theirs_among, PageOpening { tab_behind: false, takes_keyboard: true });
+}
+
 /// Task 1823: a tab made behind does not touch the keyboard at all.
 #[test]
 fn a_tab_made_behind_takes_the_keyboard_from_nobody() {

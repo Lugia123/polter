@@ -3002,6 +3002,10 @@ pub struct NewTab {
     /// (`polter_control_room::rules::new_tab`). Its strip shows it; it is
     /// laid out and takes the keyboard when it is clicked.
     pub behind: bool,
+    /// In front in its window, but **the keyboard is not given to it** (task
+    /// 1835): a page of a project the core opened in a window of its own.
+    /// Focusing it activated that window over whatever the person was using.
+    pub quiet: bool,
 }
 
 /// What `rules::new_tab` asks about the window a tab was asked from: whether
@@ -3097,6 +3101,7 @@ pub fn create_tab_with(
     let id = take_id();
     let tab_id = TabId(take_id());
     let behind = spec.behind;
+    let spec_quiet = spec.quiet;
     let may_authorise = may_authorise_until_marked();
     let Some(pane) = create_pane(frame, app, hinst, id, bounds, spec) else {
         return false;
@@ -3142,7 +3147,7 @@ pub fn create_tab_with(
     // Behind takes the keyboard from nobody, not even to hand it back to
     // the tab in front (task 1823): `SetFocus` on a window that is not in
     // front can bring it forward.
-    if polter_control_room::rules::new_tab_takes_keyboard(behind) {
+    if polter_control_room::rules::new_tab_takes_keyboard(behind) && !spec_quiet {
         focus_active(frame);
     }
     wlogf!(frame, "[tab] created{}; count now {}", if behind { " behind the tab in front" } else { "" }, count(frame));
@@ -3962,9 +3967,17 @@ fn split_pane(
             // active now -- the same rule the read above used.
             Some(mut win) => match win.tabs.get_mut(tab_idx).and_then(|t| t.terminal_mut()) {
                 Some(term) => {
+                    let surface = pane.surface;
                     term.tree = new_tree;
                     term.panes.push(pane);
-                    term.focused = id;
+                    // A worker the core split off leaves the keyboard where
+                    // it was (task 1834); a person's split takes it there.
+                    let had = term.focused;
+                    term.focused = polter_split_tree::stack::focus_after_split(had, id, !asked_by_core);
+                    if term.focused != id {
+                        unfocus_made(frame, surface);
+                        wlogf!(frame, "[split] pane {} made for the core; the keyboard stays on pane {}", id, had);
+                    }
                 }
                 None => {
                     wlogf!(
@@ -4034,6 +4047,18 @@ pub fn pane_stack_offers(frame: HWND, verb: polter_split_tree::stack::Verb, at: 
     }
     let stacked = term.tree.stack_of(pane).is_some();
     polter_split_tree::stack::offers(verb, stacked, term.tree.shown_panes().len(), false)
+}
+
+/// A pane just made that is not getting the keyboard (task 1834).
+/// `create_pane` tells the core every new surface is focused, which is right
+/// for the person's own new pane; one that never takes the keyboard never
+/// sees a `WM_KILLFOCUS` to take that back, and its program would be told
+/// it has focus while the person types elsewhere.
+fn unfocus_made(frame: HWND, surface: usize) {
+    // Bracketed like the other `set_focus` calls (`create_pane`).
+    wlogf!(frame, "[focus] surface 0x{:x} made without the keyboard; telling the core", surface);
+    unsafe { (api().surface_set_focus)(surface as Surface, false) };
+    wlogf!(frame, "[focus] surface 0x{:x} told it has no focus", surface);
 }
 
 /// Who asked for a stack's `New`: the person -- a key, the menu, the
@@ -4141,6 +4166,10 @@ fn pane_stack(
         };
         term.tree = new_tree;
         if let Some(p) = made {
+            // Made without the keyboard (task 1834): the core is told so.
+            if focus != p.id {
+                unfocus_made(frame, p.surface);
+            }
             term.panes.push(p);
         }
         term.focused = focus;
@@ -4309,6 +4338,27 @@ pub fn activate_tab(frame: HWND, id: TabId) {
     };
     if let Some(idx) = idx {
         set_active(frame, idx);
+    }
+}
+
+/// `activate_tab` without giving the tab the keyboard (task 1835): the tab
+/// in front of a window the core opened behind the person. Focusing a pane
+/// in it would activate that window.
+pub fn activate_tab_quietly(frame: HWND, id: TabId) {
+    let found = {
+        let Some(mut win) = window(frame) else { return };
+        match win.tabs.iter().position(|t| t.id == id) {
+            Some(idx) => {
+                win.active = idx;
+                true
+            }
+            None => false,
+        }
+    };
+    if found {
+        crate::project_session::note(polter_projects::autosave::Change::Front);
+        layout(frame);
+        wlogf!(frame, "[tab] active -> {} of {}, the keyboard left where it was", active_index(frame) + 1, count(frame));
     }
 }
 
