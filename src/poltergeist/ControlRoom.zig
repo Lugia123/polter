@@ -907,17 +907,23 @@ pub fn startCliOf(clis: []const []const u8, last: Chat.LastSupervisor) ?[]const 
     return if (clis.len > 0) clis[0] else null;
 }
 
-/// Whether an open terminal's agent last said it is in `session`.
+/// Whether an open terminal's agent last said it is in `session`, and
+/// has not been said to have left.
 ///
 /// "Last said", not "is": an agent that has left a terminal still open
-/// says nothing on the way out that Polter hears, so this can be true of
-/// a session nobody is in. That errs towards a new session, which starts;
-/// the other way round would start a second agent in a live one.
+/// says nothing on the way out that Polter hears, so its hooks stay
+/// `live` for as long as the terminal is open. **What it left is no
+/// longer held** (task 1810): once its connection and its program have
+/// gone (`Bus.agentHasLeft`, task 1762), the session is free to go on
+/// with. Before that -- the few seconds of `link_grace_ms` -- it still
+/// counts as held, which errs towards a new session, which starts; the
+/// other way round would start a second agent in a live one.
 pub fn sessionHeld(bus: *const Bus, open: []const Id, session: []const u8) bool {
     if (session.len == 0) return false;
     for (open) |id| {
         const a = bus.agentOf(id);
         if (a.hooks != .live) continue;
+        if (bus.agentHasLeft(id)) continue;
         if (std.mem.eql(u8, a.session_id.get() orelse "", session)) return true;
     }
     return false;
@@ -5434,6 +5440,55 @@ test "ControlRoom resume: a CLI is named by its adapter's word, and one nobody n
     try testing.expectEqual(@as(?[]const u8, null), b.cli_label);
     try testing.expectEqualStrings("claude-code", b.last.cli.?);
     try testing.expectEqual(@as(?[]const u8, null), b.last.cli_label);
+}
+
+test "1810: a session whose agent has left its still-open terminal can be gone on with" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    w.roles = &.{.{ .key = "night-lead", .name = "Night Lead", .clis = &.{"claude-code"} }};
+    w.cli_resume = .{ .read = &.{"claude-code"} };
+    try w.chat.restoreShell("nightly", "", 0, .none);
+    _ = try w.chat.setLastSupervisor("nightly", .{
+        .dir = "/work/repo",
+        .dir_from = .supervisor,
+        .role = "night-lead",
+        .cli = "claude-code",
+        .session = "s-1",
+        .heard_ms = 1_700_000_000_000,
+    });
+
+    // Its agent in that session, in a terminal that stays open.
+    try w.terminal(0xc1, "elsewhere", 0x31);
+    var ev: AgentEvent.Event = .none;
+    ev.event = .session_started;
+    ev.cli = "claude-code";
+    ev.session_id = "s-1";
+    _ = try w.bus.agentEvent(0xc1, ev, 500);
+    w.bus.noteAgentHere(0xc1, true, null, 600);
+    var s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    try testing.expectEqual(ResumeOut.Why.session_in_use, (try rowNamed(s, "nightly")).supervisor.@"resume".why);
+
+    // Killed: its connection gone, and after the grace its shell is back at
+    // its prompt. Its hooks are still `live`; the terminal is still open.
+    w.bus.noteAgentHere(0xc1, false, null, 2_000);
+    var ctx: u8 = 0;
+    _ = w.bus.considerLinks(2_000 + Bus.link_grace_ms, &ctx, noRuns);
+    try testing.expectEqual(Bus.Hooks.live, w.bus.agentOf(0xc1).hooks);
+    s = (try room.compute(arena.allocator(), w.input(10_000))).snapshot;
+    const free = (try rowNamed(s, "nightly")).supervisor.@"resume";
+    try testing.expect(free.can);
+    try testing.expect(free.why != .session_in_use);
+
+    // An agent back in it, in that session: held again.
+    ev.event = .turn_started;
+    _ = try w.bus.agentEvent(0xc1, ev, 11_000);
+    s = (try room.compute(arena.allocator(), w.input(12_000))).snapshot;
+    try testing.expectEqual(ResumeOut.Why.session_in_use, (try rowNamed(s, "nightly")).supervisor.@"resume".why);
 }
 
 test "ControlRoom resume: the role and the CLI a start uses are the last supervisor's while they are still there" {

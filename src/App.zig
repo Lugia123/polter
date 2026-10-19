@@ -2716,7 +2716,7 @@ fn noteSupervisor(self: *App, id: poltergeistpkg.Bus.Id, keep: enum { write, onl
             .dir_from = if (footing.cwd.len > 0) .supervisor else was.dir_from,
             .role = role,
             .cli = cli,
-            .session = agent.session_id.get() orelse "",
+            .session = Chat.sessionToWrite(agent.session_id.get(), was, self.chat.resumingIn(name, id)),
             .heard_ms = wall_ms,
         };
         const change = self.chat.setLastSupervisor(name, now) catch continue;

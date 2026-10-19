@@ -1384,6 +1384,27 @@ pub fn supervisorDirOf(self: *const Chat, name: []const u8) []const u8 {
     return self.lastSupervisorOf(name).dir;
 }
 
+/// The session to write down for a group's supervisor (task 1810): what
+/// its agent said, when it has said one. When it has not said one yet, the
+/// one already written down if this terminal is the one the group's start
+/// went on with that session in -- a CLI started with `resume <session>`
+/// says nothing of it until its first turn, and writing "" over it then
+/// lost the session the start had just picked up. Otherwise nothing: an
+/// agent that may be in a new session is not said to be in the old one.
+pub fn sessionToWrite(said: ?[]const u8, was: LastSupervisor, resumed_here: bool) []const u8 {
+    if (said) |s| return s;
+    return if (resumed_here) was.session else "";
+}
+
+/// Whether `terminal` is the one `name`'s start, going on with its last
+/// supervisor's session, opened (task 1810). Asked before `startMade`
+/// ends the start.
+pub fn resumingIn(self: *const Chat, name: []const u8, terminal: Id) bool {
+    const group = self.groups.getPtr(name) orelse return false;
+    const start = group.start orelse return false;
+    return start.resuming and start.terminal != null and start.terminal.? == terminal;
+}
+
 /// Replace what is written down of `name`'s last supervisor with `last`,
 /// whole. Says what that changed, so the caller knows whether it is worth
 /// a write to disk.
@@ -4027,6 +4048,36 @@ test "ControlRoom resume: a start says whether it went on with the last session,
     try testing.expectEqualStrings("alpha", chat.startedFor(0xa1).?);
     try chat.rename("alpha", "zeta");
     try testing.expectEqualStrings("build", chat.startedFor(0xa1).?);
+}
+
+test "1810: a supervisor started to go on with a session keeps it written down until it says another" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.restoreShell("build", "", 0, .none);
+    const was: LastSupervisor = .{ .dir = "/w1", .dir_from = .supervisor, .role = "polter-supervisor", .cli = "codex", .session = "01a152e8", .heard_ms = 1 };
+
+    // What the agent said wins, whatever the start was.
+    try testing.expectEqualStrings("s-new", sessionToWrite("s-new", was, true));
+    try testing.expectEqualStrings("s-new", sessionToWrite("s-new", was, false));
+    // Nothing said yet: kept for the terminal the start went on with it in,
+    // and nothing for any other.
+    try testing.expectEqualStrings("01a152e8", sessionToWrite(null, was, true));
+    try testing.expectEqualStrings("", sessionToWrite(null, was, false));
+
+    // Which terminal that is: the one a resuming start opened, while the
+    // start is on.
+    try chat.beginStart("build", 1_000, 11_000, true, .directory);
+    try testing.expect(!chat.resumingIn("build", 0xa1));
+    chat.startOpened("build", 0xa1, 72_000);
+    try testing.expect(chat.resumingIn("build", 0xa1));
+    try testing.expect(!chat.resumingIn("build", 0xb2));
+    try testing.expect(!chat.resumingIn("nope", 0xa1));
+    chat.startMade("build", 0xa1);
+    try testing.expect(!chat.resumingIn("build", 0xa1));
+    // A start afresh: not going on with anything.
+    try chat.beginStart("build", 80_000, 90_000, false, .directory);
+    chat.startOpened("build", 0xa1, 140_000);
+    try testing.expect(!chat.resumingIn("build", 0xa1));
 }
 
 test "Projects: a group's tie is one of three, kept across a rename, and a start by project waits for no tab" {
