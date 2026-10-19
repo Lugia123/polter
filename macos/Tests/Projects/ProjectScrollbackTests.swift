@@ -25,14 +25,18 @@ struct ProjectScrollbackTests {
     /// a pane that no longer exists) and stale temporaries.
     @Test func pruneKeepsExactlyWhatWasWrittenAndItsTemporary() throws {
         let dir = try makeDirectory(["0.snap", "0.snap.tmp", "1.snap", "2.snap", "2.snap.tmp", "stray"])
-        ProjectScrollback.prune(directory: dir, keeping: ["0.snap", "1.snap"])
+        let pruned = ProjectScrollback.prune(directory: dir, keeping: ["0.snap", "1.snap"])
         #expect(contents(dir) == ["0.snap", "0.snap.tmp", "1.snap"])
+        // What it says it removed is what it removed (task 1784's log line).
+        #expect(Set(pruned.removed) == ["2.snap", "2.snap.tmp", "stray"])
+        #expect(!pruned.wholeDirectory)
     }
 
     @Test func pruneWithNothingWrittenRemovesTheDirectory() throws {
         let dir = try makeDirectory(["0.snap"])
-        ProjectScrollback.prune(directory: dir, keeping: [])
+        let pruned = ProjectScrollback.prune(directory: dir, keeping: [])
         #expect(!FileManager.default.fileExists(atPath: dir.path))
+        #expect(pruned.wholeDirectory)
     }
 
     /// One sanitizer, not two: the directory is derived from the project

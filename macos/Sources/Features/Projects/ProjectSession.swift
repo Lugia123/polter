@@ -106,8 +106,9 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
     /// Make `controller` a page of this project: the page `page` when it is
     /// one the project already has, a new one otherwise. From now on its
     /// layout, directories and titles are written as they change.
-    private func attach(_ controller: TerminalController, page: Int?) {
+    private func attach(_ controller: TerminalController, page: Int?, caller: String = #function) {
         let id = page ?? pages.newPageID()
+        ProjectTrace.membership("attached", controller, project: name, page: id, caller: caller)
         members.removeAll { $0.controller == nil }
         members.append(Member(controller: controller, page: id))
         controller.projectSession = self
@@ -129,8 +130,10 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
     ///
     /// `saving` false writes nothing at all: for undoing a join whose save
     /// failed, which must leave the file as it was.
-    func detach(_ controller: TerminalController, removing: Bool, saving: Bool = true) {
+    func detach(_ controller: TerminalController, removing: Bool, saving: Bool = true, caller: String = #function) {
         guard let at = members.firstIndex(where: { $0.controller === controller }) else { return }
+        ProjectTrace.membership(
+            removing ? "taken out" : "detached", controller, project: name, page: members[at].page, caller: caller)
         if !removing && saving {
             save(capturing: [controller], closing: true, keeping: .onLayoutChange, what: "final save")
         }

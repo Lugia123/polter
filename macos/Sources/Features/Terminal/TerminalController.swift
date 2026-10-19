@@ -1437,6 +1437,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     func window(_ window: NSWindow, willEncodeRestorableState state: NSCoder) {
         let data = TerminalRestorableState(from: self)
         data.encode(with: state)
+        ProjectTrace.encoded(self)
     }
 
     // MARK: First Responder

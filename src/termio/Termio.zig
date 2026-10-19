@@ -529,7 +529,7 @@ pub fn journalScrollback(self: *Termio, final: bool) void {
     if (!self.scrollback_dirty.swap(false, .acq_rel)) {
         if (!sync or j.writer.unsynced_since_ms == null) return;
         journalpkg.flush(io, &j.writer, j.path) catch |err| {
-            log.warn("scrollback journal flush failed, the next write rewrites the file whole path={s} err={}", .{ j.path, err });
+            log.warn("scrollback journal flush failed, the next write rewrites the file whole where={s} err={}", .{ journalpkg.shortPath(j.path), err });
             self.scrollback_dirty.store(true, .monotonic);
             return;
         };
@@ -558,7 +558,7 @@ pub fn journalScrollback(self: *Termio, final: bool) void {
 
     const synced = journalpkg.commit(self.alloc, io, &j.writer, j.path, &prepared, sync, now_ms) catch |err| {
         self.scrollback_dirty.store(true, .monotonic);
-        log.warn("scrollback journal write failed, this pane's scrollback is not saved until the next write, which rewrites the file whole path={s} err={}", .{ j.path, err });
+        log.warn("scrollback journal write failed, this pane's scrollback is not saved until the next write, which rewrites the file whole where={s} mode={s} final={} err={}", .{ journalpkg.shortPath(j.path), mode, final, err });
         return;
     };
 

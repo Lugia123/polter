@@ -105,17 +105,25 @@ enum ProjectScrollback {
     /// this runs, that write may not have happened yet.
     ///
     /// With nothing kept, the directory itself is removed.
-    static func prune(directory: URL, keeping written: Set<String>) {
+    ///
+    /// Answers what it removed, for the log (`ProjectTrace.pruned`, task
+    /// 1784).
+    @discardableResult
+    static func prune(directory: URL, keeping written: Set<String>) -> (removed: [String], wholeDirectory: Bool) {
         let fm = FileManager.default
         guard !written.isEmpty else {
             try? fm.removeItem(at: directory)
-            return
+            return ([], true)
         }
 
         let keep = written.union(written.map { "\($0).tmp" })
         let names = (try? fm.contentsOfDirectory(atPath: directory.path)) ?? []
+        var removed: [String] = []
         for name in names where !keep.contains(name) {
-            try? fm.removeItem(at: directory.appendingPathComponent(name))
+            if (try? fm.removeItem(at: directory.appendingPathComponent(name))) != nil {
+                removed.append(name)
+            }
         }
+        return (removed, false)
     }
 }

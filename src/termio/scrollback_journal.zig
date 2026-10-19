@@ -464,7 +464,13 @@ pub fn commit(
         },
         .append => end: {
             const at = w.end_offset.?;
-            var file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_write });
+            var file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_write }) catch |err| {
+                // The file this pane has been appending to is not there
+                // (or not openable) any more: somebody removed it between
+                // two writes (task 1784).
+                log.warn("scrollback journal append could not open its file where={s} err={}", .{ shortPath(path), err });
+                return err;
+            };
             defer file.close(io);
             // Somebody else's change to the file means our offsets are wrong.
             if (try file.length(io) < at) return error.JournalChanged;
@@ -579,9 +585,24 @@ fn replace(io: std.Io, atomic: *std.Io.File.Atomic) !void {
             return;
         },
         .INTR => continue,
-        .INVAL, .NOENT => return error.FileNotFound,
+        .INVAL, .NOENT => |e| {
+            // Both are "the file or its directory went away under us"; which
+            // one it was is what tells a removed temporary file (NOENT) from
+            // a directory being deleted (INVAL, task 1617). Task 1784.
+            log.warn("scrollback journal rewrite could not rename its new file into place errno={s} file={s}", .{ @tagName(e), std.fs.path.basename(atomic.dest_sub_path) });
+            return error.FileNotFound;
+        },
         else => |err| return std.posix.unexpectedErrno(err),
     };
+}
+
+/// `path` as the log may show it: the project's snapshot directory and the
+/// file, without the home directory or the user's name in front of them
+/// (task 1784).
+pub fn shortPath(path: []const u8) []const u8 {
+    const last = std.mem.lastIndexOfAny(u8, path, "/\\") orelse return path;
+    const before = std.mem.lastIndexOfAny(u8, path[0..last], "/\\") orelse return path;
+    return path[before + 1 ..];
 }
 
 fn indexOfSerial(live: []const *const PageNode, serial: u64) ?usize {
@@ -1690,4 +1711,11 @@ test "journal: a directory deleted while the file is rewritten is an error, not 
         };
     }
     try testing.expect(failed > 0);
+}
+
+test "journal: the log shows a snapshot path from its project directory on (task 1784)" {
+    try testing.expectEqualStrings("shop-web.scrollback/3.snap", shortPath("/h/someone/.local/state/polter/projects/shop-web.scrollback/3.snap"));
+    try testing.expectEqualStrings("p.scrollback/0.snap", shortPath("/p.scrollback/0.snap"));
+    try testing.expectEqualStrings("0.snap", shortPath("0.snap"));
+    try testing.expectEqualStrings("w.scrollback\\1.snap", shortPath("C:\\Users\\x\\w.scrollback\\1.snap"));
 }

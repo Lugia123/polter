@@ -375,7 +375,10 @@ extension TerminalController {
     /// Whether it gets it is the project file's to say
     /// (`ProjectSession.restore`).
     func restoreProjectBinding(_ name: String?) {
-        guard let name else { return }
+        guard let name else {
+            ProjectTrace.logger.notice("restored window has no project binding: window=\(self.window?.windowNumber ?? -1, privacy: .public)")
+            return
+        }
         ProjectSession.restore(self, to: name, in: ProjectStore.shared)
     }
 

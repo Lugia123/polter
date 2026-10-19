@@ -328,9 +328,12 @@ final class ProjectStore {
         // page of it, open or not (and their in-flight `.tmp`). A pane
         // closed since the last save leaves a snapshot nothing refers to,
         // and it goes -- here, on every save, not only the capturing ones.
-        ProjectScrollback.prune(
+        let pruned = ProjectScrollback.prune(
             directory: scrollbackDirectory,
             keeping: Set(file.scrollbackFilenames))
+        ProjectTrace.pruned(
+            project: trimmed, removed: pruned.removed,
+            kept: Set(file.scrollbackFilenames).count, wholeDirectory: pruned.wholeDirectory)
 
         return (entry, written)
     }

@@ -168,6 +168,7 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
 
         // Restore the project binding, so autosave carries on after a
         // restart instead of quietly falling back to manual saving.
+        ProjectTrace.decoded(c, boundProject: state.boundProject)
         c.restoreProjectBinding(state.boundProject)
 
         // Setup our restored state on the controller
