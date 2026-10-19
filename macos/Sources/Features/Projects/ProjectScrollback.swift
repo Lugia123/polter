@@ -93,16 +93,18 @@ enum ProjectScrollback {
         }
     }
 
-    /// Remove everything in `directory` that this save did not write.
+    /// Remove the snapshots in `directory` that this save did not write.
     ///
     /// `written` is every snapshot name the saved tree refers to.
     ///
-    /// The filter is "what this save actually wrote", not a name pattern:
-    /// a pane that existed last time and is gone now leaves a `<n>.snap`
-    /// that matches every pattern and must still go. `<name>.tmp` is kept
-    /// alongside each kept `<name>` because the core writes the snapshot
-    /// there first and renames it into place asynchronously -- by the time
-    /// this runs, that write may not have happened yet.
+    /// Only names `filename(number:)` makes are candidates, and of those only
+    /// the ones not in `written`: a pane that existed last time and is gone
+    /// now leaves a `<n>.snap` that must go. Anything else is left alone --
+    /// above all the core's temporary file, which has a random name of its
+    /// own (`createFileAtomic`) and is renamed into place asynchronously.
+    /// Removing it made that rename fail with NOENT in the same millisecond
+    /// and lost the write (task 1801, measured in task 1784). The same rule
+    /// as Windows' `prune_scrollback_dir`.
     ///
     /// With nothing kept, the directory itself is removed.
     ///
@@ -116,10 +118,9 @@ enum ProjectScrollback {
             return ([], true)
         }
 
-        let keep = written.union(written.map { "\($0).tmp" })
         let names = (try? fm.contentsOfDirectory(atPath: directory.path)) ?? []
         var removed: [String] = []
-        for name in names where !keep.contains(name) {
+        for name in names where isSnapshotFilename(name) && !written.contains(name) {
             if (try? fm.removeItem(at: directory.appendingPathComponent(name))) != nil {
                 removed.append(name)
             }

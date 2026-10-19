@@ -58,6 +58,24 @@ enum ProjectTrace {
         logger.notice("supervisor's pane marked: project=\(project, privacy: .public) pane=\(id, privacy: .public)=\(view.projectSnapshot?.filename ?? "-", privacy: .public) by=\(caller, privacy: .public)")
     }
 
+    /// The application is quitting, and whether the system will bring its
+    /// windows back: `NSQuitAlwaysKeepsWindows` as AppKit reads it, from
+    /// the app's domain or the global one. Either way AppKit closes every
+    /// window after this, and each project tab is detached by
+    /// `windowWillClose`: when it is true, after encoding their state
+    /// (`flushPersistentStateAndClose`), so they come back in their
+    /// projects; when it is not, after discarding it
+    /// (`discardAllPersistentStateAndClose`), so they do not come back at
+    /// all. The detach lines alone cannot tell the two apart; this line
+    /// can (task 1801). The app sets or removes the key from
+    /// `window-save-state` whenever the config loads, so a value written by
+    /// hand does not last.
+    static func quitting() {
+        let keeps = UserDefaults.standard.object(forKey: "NSQuitAlwaysKeepsWindows").map { "\($0)" } ?? "unset"
+        let own = UserDefaults.ghostty.object(forKey: "NSQuitAlwaysKeepsWindows").map { "\($0)" } ?? "unset"
+        logger.notice("quitting: NSQuitAlwaysKeepsWindows=\(keeps, privacy: .public) (app domain: \(own, privacy: .public))")
+    }
+
     /// A save removed files from the project's snapshot directory.
     static func pruned(project: String, removed: [String], kept: Int, wholeDirectory: Bool) {
         if wholeDirectory {

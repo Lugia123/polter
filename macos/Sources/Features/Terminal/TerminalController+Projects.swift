@@ -384,9 +384,14 @@ extension TerminalController {
 
     /// The application is quitting: write every open project as it is now.
     ///
-    /// Quitting closes no window, so `windowWillClose` -- where a tab's last
-    /// save is -- does not run, and a change still waiting out its second
-    /// was lost with the process.
+    /// Run from `applicationWillTerminate`, before AppKit closes the windows.
+    /// It does close them after that, whether it will restore them or not
+    /// (`flushPersistentStateAndClose` / `discardAllPersistentStateAndClose`,
+    /// measured in task 1801), and each project tab is then detached by
+    /// `windowWillClose` with its final save; restoration is not affected,
+    /// as each window's state was encoded first. This save is the one that
+    /// does not depend on that: a change still waiting out its second is
+    /// written before any window goes.
     static func saveBoundProjectsBeforeQuit() {
         var saved: [ObjectIdentifier] = []
         for controller in all {

@@ -643,11 +643,16 @@ class AppDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Whether the windows come back, for reading the project lines
+        // that follow (task 1801).
+        ProjectTrace.quitting()
+
         // A terminal the control room has borrowed goes back to its tab.
         ControlRoomController.shared?.applicationWillTerminate()
 
-        // Quitting closes no window, so nothing else writes a bound tab's
-        // last change.
+        // Written here, before AppKit closes the windows (it does, after
+        // this, restoring them or not -- task 1801), so a bound tab's last
+        // change does not depend on the order the windows close in.
         TerminalController.saveBoundProjectsBeforeQuit()
 
         // We have no notifications we want to persist after death,

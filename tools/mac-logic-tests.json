@@ -197,6 +197,7 @@
       "macos/Tests/Projects/ProjectLinkTests.swift",
       "macos/Tests/Projects/ProjectPageRulesTests.swift",
       "macos/Tests/Projects/ProjectPagesTests.swift",
+      "macos/Tests/Projects/ProjectScrollbackPruneTests.swift",
       "macos/Tests/Projects/ProjectStackTests.swift",
       "macos/Tests/Projects/SharedProjectFilesTests.swift",
       "macos/Tests/Splits/PoltergeistLayoutShapeTests.swift",
@@ -238,7 +239,7 @@
       },
       {
         "path": "macos/Tests/Projects/ProjectScrollbackTests.swift",
-        "why": "imports GhosttyKit: half of it asks the core to write and read a snapshot"
+        "why": "imports GhosttyKit: it asks the core to write and read a snapshot; what a save prunes is ProjectScrollbackPruneTests, which is in"
       },
       {
         "path": "macos/Tests/Projects/ProjectStoreSettingsTests.swift",

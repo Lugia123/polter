@@ -5,40 +5,6 @@ import GhosttyKit
 
 @Suite
 struct ProjectScrollbackTests {
-    private func makeDirectory(_ names: [String]) throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("polter-project-scrollback-tests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        for name in names {
-            try Data(name.utf8).write(to: dir.appendingPathComponent(name))
-        }
-        return dir
-    }
-
-    private func contents(_ dir: URL) -> Set<String> {
-        Set((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
-    }
-
-    /// The filter is "what this save wrote", including the `.tmp` the core
-    /// may still be about to rename into place -- and *every* other entry
-    /// goes, including ones that look exactly like a snapshot (`2.snap` from
-    /// a pane that no longer exists) and stale temporaries.
-    @Test func pruneKeepsExactlyWhatWasWrittenAndItsTemporary() throws {
-        let dir = try makeDirectory(["0.snap", "0.snap.tmp", "1.snap", "2.snap", "2.snap.tmp", "stray"])
-        let pruned = ProjectScrollback.prune(directory: dir, keeping: ["0.snap", "1.snap"])
-        #expect(contents(dir) == ["0.snap", "0.snap.tmp", "1.snap"])
-        // What it says it removed is what it removed (task 1784's log line).
-        #expect(Set(pruned.removed) == ["2.snap", "2.snap.tmp", "stray"])
-        #expect(!pruned.wholeDirectory)
-    }
-
-    @Test func pruneWithNothingWrittenRemovesTheDirectory() throws {
-        let dir = try makeDirectory(["0.snap"])
-        let pruned = ProjectScrollback.prune(directory: dir, keeping: [])
-        #expect(!FileManager.default.fileExists(atPath: dir.path))
-        #expect(pruned.wholeDirectory)
-    }
-
     /// One sanitizer, not two: the directory is derived from the project
     /// file's URL, so a name with a dot in it still maps to one directory.
     @Test func directorySitsBesideTheProjectFile() {
