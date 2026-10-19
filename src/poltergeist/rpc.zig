@@ -14649,8 +14649,14 @@ test "1844: only a supervisor's submitted line says it launched what runs there,
     // The supervisor's, submitted: it is.
     _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_send = .{ .id = other, .text = "polter +launch w", .submit = true } });
     try testing.expectEqual(@as(?Bus.Id, boss), b.typedBy(other, fake.now_ms));
-    // And for a while only.
+    // Still after the two minutes a codex held at a question took to be
+    // heard (task 1876), and for a while only.
+    try testing.expectEqual(@as(?Bus.Id, boss), b.typedBy(other, fake.now_ms + 2 * std.time.ms_per_min + 1));
     try testing.expect(b.typedBy(other, fake.now_ms + Bus.typed_by_ms + 1) == null);
+    // The agent heard there spends it: the next one is nobody's launch.
+    try testing.expectEqual(@as(?Bus.Id, boss), b.takeTypedBy(other, fake.now_ms));
+    try testing.expect(b.typedBy(other, fake.now_ms) == null);
+    try testing.expect(b.takeTypedBy(other, fake.now_ms) == null);
 
     // `+launch --group=` is handed to the host, and shows no agent.
     var ev: AgentEvent.Event = .none;

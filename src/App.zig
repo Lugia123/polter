@@ -6379,6 +6379,14 @@ pub const LaunchJoin = enum {
     is_the_supervisor,
     not_its_supervisors,
 
+    /// Whether the log says this one. Not for the group's supervisor
+    /// itself (task 1876): the control room starts it with `--group=`,
+    /// puts it in on its own, and a line saying it was "not put in" read
+    /// as something gone wrong.
+    pub fn said(self: LaunchJoin) bool {
+        return self != .is_the_supervisor;
+    }
+
     /// The words the log line says, which is how a run on the machine
     /// tells which way it went.
     pub fn why(self: LaunchJoin) []const u8 {
@@ -6398,9 +6406,13 @@ pub const LaunchJoin = enum {
     }
 };
 
+/// `starting` is the control room starting `id` as this group's
+/// supervisor (`Chat.startingIn`): heard before it is one, the group has
+/// no supervisor yet, and it is that supervisor.
 pub fn launchJoin(
     group_exists: bool,
     already_in: bool,
+    starting: bool,
     steward: ?poltergeistpkg.Bus.Id,
     id: poltergeistpkg.Bus.Id,
     worker_of: ?poltergeistpkg.Bus.Id,
@@ -6408,6 +6420,7 @@ pub fn launchJoin(
 ) LaunchJoin {
     if (!group_exists) return .no_group;
     if (already_in) return .already_in;
+    if (starting) return .is_the_supervisor;
     const s = steward orelse return .no_supervisor;
     if (s == id) return .is_the_supervisor;
     if (worker_of == s) return .join_as_worker;
@@ -6418,23 +6431,29 @@ pub fn launchJoin(
 /// The agent in `id` is heard: if a launch said which group it is for,
 /// that launch is judged now, once, and the log says which way and why.
 fn launchGroupArrived(self: *App, id: poltergeistpkg.Bus.Id) void {
+    const bus = &self.poltergeist;
+    const now_ms = self.poltergeistElapsedMs();
+    // Spent by whichever agent is heard first, a launch for a group or not
+    // (task 1876): the line a supervisor typed started that one.
+    const typed_by = bus.takeTypedBy(id, now_ms);
     const kv = self.launch_groups.fetchRemove(id) orelse return;
     defer self.alloc.free(kv.value);
     const group = kv.value;
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     defer arena.deinit();
-    const bus = &self.poltergeist;
     const exists = self.chat.exists(group);
+    const starting = if (self.chat.startingIn(id, now_ms)) |g| std.mem.eql(u8, g, group) else false;
     const verdict = launchJoin(
         exists,
         exists and self.chat.isMember(group, id),
+        starting,
         if (exists) poltergeistpkg.ControlRoom.stewardOfGroup(arena.allocator(), bus, &self.chat, group) else null,
         id,
         bus.workerOf(id),
-        bus.typedBy(id, self.poltergeistElapsedMs()),
+        typed_by,
     );
     if (!verdict.joins()) {
-        log.info("poltergeist: the agent 0x{x} launched for {s} is not put in it: {s}", .{ id, group, verdict.why() });
+        if (verdict.said()) log.info("poltergeist: the agent 0x{x} launched for {s} is not put in it: {s}", .{ id, group, verdict.why() });
         return;
     }
     chatAdd(self, group, id, .all) catch |err| {
@@ -6449,18 +6468,24 @@ test "1844: a launch for a group is put in it only when the group's supervisor m
     const s: poltergeistpkg.Bus.Id = 0x5;
     const w: poltergeistpkg.Bus.Id = 0xa1;
     // The supervisor's worker, after a restart its project put it back.
-    try std.testing.expectEqual(LaunchJoin.join_as_worker, launchJoin(true, false, s, w, s, null));
+    try std.testing.expectEqual(LaunchJoin.join_as_worker, launchJoin(true, false, false, s, w, s, null));
     // A plain tab the supervisor typed the launch into: no worker of it
     // any more, but the line was its.
-    try std.testing.expectEqual(LaunchJoin.join_as_typed, launchJoin(true, false, s, w, null, s));
+    try std.testing.expectEqual(LaunchJoin.join_as_typed, launchJoin(true, false, false, s, w, null, s));
     // Typed by somebody else, or by nobody: not in.
-    try std.testing.expectEqual(LaunchJoin.not_its_supervisors, launchJoin(true, false, s, w, null, 0x9));
-    try std.testing.expectEqual(LaunchJoin.not_its_supervisors, launchJoin(true, false, s, w, 0x9, null));
+    try std.testing.expectEqual(LaunchJoin.not_its_supervisors, launchJoin(true, false, false, s, w, null, 0x9));
+    try std.testing.expectEqual(LaunchJoin.not_its_supervisors, launchJoin(true, false, false, s, w, 0x9, null));
     // No such group; in it already; nobody minds it; it is the one that does.
-    try std.testing.expectEqual(LaunchJoin.no_group, launchJoin(false, false, null, w, s, s));
-    try std.testing.expectEqual(LaunchJoin.already_in, launchJoin(true, true, s, w, s, s));
-    try std.testing.expectEqual(LaunchJoin.no_supervisor, launchJoin(true, false, null, w, s, s));
-    try std.testing.expectEqual(LaunchJoin.is_the_supervisor, launchJoin(true, false, s, s, null, s));
+    try std.testing.expectEqual(LaunchJoin.no_group, launchJoin(false, false, false, null, w, s, s));
+    try std.testing.expectEqual(LaunchJoin.already_in, launchJoin(true, true, false, s, w, s, s));
+    try std.testing.expectEqual(LaunchJoin.no_supervisor, launchJoin(true, false, false, null, w, s, s));
+    try std.testing.expectEqual(LaunchJoin.is_the_supervisor, launchJoin(true, false, false, s, s, null, s));
+    // The control room starting it as the supervisor (task 1876): heard
+    // before it is one, so nobody minds the group yet -- it is the
+    // supervisor, and the log says nothing about it.
+    try std.testing.expectEqual(LaunchJoin.is_the_supervisor, launchJoin(true, false, true, null, s, null, null));
+    try std.testing.expectEqual(LaunchJoin.no_supervisor, launchJoin(true, false, false, null, s, null, null));
+    for (std.enums.values(LaunchJoin)) |v| try std.testing.expectEqual(v != .is_the_supervisor, v.said());
     // Only the two joins join.
     for (std.enums.values(LaunchJoin)) |v| try std.testing.expectEqual(v == .join_as_worker or v == .join_as_typed, v.joins());
 }

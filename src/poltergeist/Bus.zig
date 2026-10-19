@@ -1664,8 +1664,12 @@ pub fn roleOf(self: *const Bus, id: Id) Role {
 /// now. A supervisor that answers yes minds nothing -- see
 /// `ControlRoom.stewardAmong`.
 /// How long a line a supervisor typed into a terminal (`noteTypedBy`)
-/// still says that supervisor is the one starting what runs there.
-pub const typed_by_ms: u64 = 2 * std.time.ms_per_min;
+/// still says that supervisor is the one starting what runs there, at the
+/// most: the next agent heard there spends it (`takeTypedBy`). Two
+/// minutes was too short (task 1876): a codex held at "This conversation
+/// is open in another app" was heard after that, and was not put in the
+/// group its supervisor had typed it into.
+pub const typed_by_ms: u64 = 10 * std.time.ms_per_min;
 
 /// Supervisor `by` typed a line into `id` with `terminal_send` and
 /// submitted it (task 1844): what `typedBy` answers, for `typed_by_ms`.
@@ -1684,6 +1688,15 @@ pub fn typedBy(self: *const Bus, id: Id, now_ms: u64) ?Id {
     const t = e.typed_by orelse return null;
     if (now_ms -| t.at_ms > typed_by_ms) return null;
     return t.by;
+}
+
+/// `typedBy`, spent: an agent is heard in `id`, and the line was the
+/// launch of that one or of none. The next agent there is nobody's
+/// launch until a supervisor types again.
+pub fn takeTypedBy(self: *Bus, id: Id, now_ms: u64) ?Id {
+    const by = self.typedBy(id, now_ms);
+    if (self.entries.getPtr(id)) |e| e.typed_by = null;
+    return by;
 }
 
 pub fn agentHasLeft(self: *const Bus, id: Id) bool {
