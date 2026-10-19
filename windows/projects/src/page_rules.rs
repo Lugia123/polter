@@ -337,3 +337,25 @@ pub fn open_elsewhere_words(name: &str) -> Words {
 pub fn page_of_another_words(tab_title: &str, project: &str) -> Words {
     Words::of(n_("The tab \"{}\" is already a page of the project \"{}\". Take it out of that project first."), &[tab_title, project])
 }
+
+// ---- Pages that open together
+
+/// Where a project's pages just opened in a window go (task 1796): right
+/// after the last of its pages that was open there already, so a project's
+/// pages stand together. `None` leaves them where they were made -- at the
+/// end of the window's tabs, one after another, which is together already
+/// -- when none of its pages was open there, or they follow it already.
+///
+/// **Only the pages just opened move.** One the person dragged away from
+/// the others earlier stays where they put it: what was open is not looked
+/// at again, and its place is only where the new ones go.
+///
+/// `tabs` is the window's tabs in order; `was_open` the project's pages
+/// that were open before, `opened` the ones just opened, in their order.
+/// Moving `opened[k]` to the answer plus `k`, in order, puts them there.
+pub fn gathered<T: PartialEq>(tabs: &[T], was_open: &[T], opened: &[T]) -> Option<usize> {
+    let rest: Vec<&T> = tabs.iter().filter(|t| !opened.contains(t)).collect();
+    let after = rest.iter().rposition(|t| was_open.contains(t))? + 1;
+    let already = opened.iter().enumerate().all(|(k, t)| tabs.get(after + k) == Some(t));
+    (!already && !opened.is_empty()).then_some(after)
+}

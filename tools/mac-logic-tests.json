@@ -82,6 +82,7 @@
       "macos/Sources/Helpers/Extensions/Array+Extension.swift",
       "macos/Sources/Features/Terminal/TabAccessory.swift",
       "macos/Sources/Features/Terminal/PaneColor.swift",
+      "macos/Sources/Features/Terminal/ProjectMark.swift",
       "macos/Sources/Features/Terminal/TabDots.swift",
       "macos/Sources/Features/Terminal/TabIntoPane.swift",
       {
@@ -98,6 +99,7 @@
         "why": "only the drop zone's arithmetic, which is the end of the file; the views before it hold live terminals"
       },
       "macos/Sources/Features/Projects/ProjectScrollback.swift",
+      "macos/Sources/Features/Projects/ProjectTone.swift",
       {
         "path": "macos/Sources/Features/Projects/ProjectDocument.swift",
         "until": "// MARK: - Capture",
@@ -199,6 +201,7 @@
       "macos/Tests/Projects/ProjectPagesTests.swift",
       "macos/Tests/Projects/ProjectScrollbackPruneTests.swift",
       "macos/Tests/Projects/ProjectStackTests.swift",
+      "macos/Tests/Projects/ProjectColorTests.swift",
       "macos/Tests/Projects/SharedProjectFilesTests.swift",
       "macos/Tests/Splits/PoltergeistLayoutShapeTests.swift",
       "macos/Tests/Splits/PolterArrangePlanTests.swift",

@@ -56,6 +56,7 @@ fn project() -> Pages {
         name: "p".into(),
         saved_at: 1,
         group: Some("g".into()),
+        color: PaneColor::None,
         windows: vec![
             Window { frame: Some(frame(10.0)), front: 1, tabs: vec![tab(leaf("/a", "0.snap")), tab(leaf("/b", "1.snap")), tab(leaf("/c", "2.snap"))] },
             Window { frame: Some(frame(20.0)), front: 0, tabs: vec![tab(leaf("/d", "3.snap"))] },
@@ -107,6 +108,7 @@ fn the_files_pages_come_back_as_the_files_pages() {
         name: "p".into(),
         saved_at: 1,
         group: None,
+        color: PaneColor::None,
         windows: vec![
             Window { frame: Some(frame(10.0)), front: 1, tabs: vec![tab(leaf("/a", "")), tab(leaf("/b", ""))] },
             Window { frame: None, front: 0, tabs: vec![tab(leaf("/c", ""))] },
@@ -121,6 +123,7 @@ fn the_files_pages_come_back_as_the_files_pages() {
     // A front that names no tab is the first, and a window with no tab is
     // no window.
     let odd = Pages::from_file(&Snapshot {
+        color: PaneColor::None,
         windows: vec![Window { frame: None, front: 7, tabs: vec![tab(leaf("/a", ""))] }, Window { frame: None, front: 0, tabs: vec![] }],
         ..file
     });
@@ -313,7 +316,7 @@ fn worker() -> Agent {
 }
 
 fn one_tab(root: SavedNode, next: u64) -> Snapshot {
-    Snapshot { name: "p".into(), saved_at: 1, group: None, windows: vec![Window { frame: None, front: 0, tabs: vec![tab(root)] }], next_scrollback: Some(next) }
+    Snapshot { name: "p".into(), saved_at: 1, group: None, color: PaneColor::None, windows: vec![Window { frame: None, front: 0, tabs: vec![tab(root)] }], next_scrollback: Some(next) }
 }
 
 /// **Not known does not overwrite what the file knew**; an answer does.
@@ -353,6 +356,7 @@ fn what_the_file_knew_of_a_pane_is_found_wherever_the_pane_is() {
         name: "p".into(),
         saved_at: 1,
         group: None,
+        color: PaneColor::None,
         windows: vec![Window { frame: None, front: 0, tabs: vec![tab(leaf_of("/a", "0.snap", Agent::None)), tab(leaf_of("/b", "1.snap", worker()))] }],
         next_scrollback: Some(2),
     };
@@ -379,6 +383,7 @@ fn a_save_writes_the_open_tabs_as_they_are_and_the_rest_as_they_were() {
         name: "p".into(),
         saved_at: 1,
         group: Some("g".into()),
+        color: PaneColor::None,
         windows: vec![
             Window { frame: Some(frame(10.0)), front: 0, tabs: vec![tab(leaf_of("/a", "0.snap", worker())), tab(leaf_of("/b", "1.snap", Agent::None))] },
             Window { frame: Some(frame(20.0)), front: 0, tabs: vec![tab(leaf_of("/d", "3.snap", worker()))] },
@@ -403,7 +408,7 @@ fn a_save_writes_the_open_tabs_as_they_are_and_the_rest_as_they_were() {
         frames: frames(&[(7, 77.0)]),
         keeping_front: false,
     };
-    let (after, written) = pages.saving("p", 9, Some("g".into()), Some(5), &screen);
+    let (after, written) = pages.saving("p", 9, Some("g".into()), PaneColor::Teal, Some(5), &screen);
 
     assert_eq!(
         written,
@@ -411,6 +416,8 @@ fn a_save_writes_the_open_tabs_as_they_are_and_the_rest_as_they_were() {
             name: "p".into(),
             saved_at: 9,
             group: Some("g".into()),
+            // Carried as it is handed in (task 1796).
+            color: PaneColor::Teal,
             windows: vec![
                 Window {
                     frame: Some(frame(77.0)),
@@ -430,7 +437,7 @@ fn a_save_writes_the_open_tabs_as_they_are_and_the_rest_as_they_were() {
     // What is written is a file all three implementations read back.
     assert_eq!(parse_snapshot(emit(&written).unwrap().as_bytes()).unwrap(), written);
     // And the next save starts from it: nothing changed, nothing to do.
-    let (again, _) = after.saving("p", 10, Some("g".into()), Some(5), &Screen::default());
+    let (again, _) = after.saving("p", 10, Some("g".into()), PaneColor::Teal, Some(5), &Screen::default());
     assert_eq!(again, after);
 }
 
@@ -663,6 +670,7 @@ fn tied() -> Pages {
         name: "web-app".into(),
         saved_at: 1,
         group: Some("web-app".into()),
+        color: PaneColor::None,
         windows: vec![Window {
             frame: None,
             front: 0,
@@ -708,7 +716,7 @@ fn the_statement_says_every_key_of_every_project() {
 
 #[test]
 fn a_project_that_is_not_open_says_what_its_file_says() {
-    let file = Snapshot { name: "notes".into(), saved_at: 1, group: Some("g".into()), windows: tied().file_windows(), next_scrollback: None };
+    let file = Snapshot { name: "notes".into(), saved_at: 1, group: Some("g".into()), color: PaneColor::None, windows: tied().file_windows(), next_scrollback: None };
     assert_eq!(Stated::of_closed(&file), Stated { name: "notes".into(), group: Some("g".into()), pages: 2, open: None, supervisor: None, workers: Vec::new() });
 }
 
@@ -1020,7 +1028,7 @@ fn one_pane_of_a_project_is_its_supervisors() {
     let cannot_tell = |cwd: &str, name: &str| SavedNode::Leaf(SavedLeaf { scrollback: name.into(), supervisor_seat: None, ..SavedLeaf::plain(cwd, Agent::Unknown) });
     let unknown = split(cannot_tell("/a", "0.snap"), cannot_tell("/b", "1.snap"), Axis::Horizontal);
     let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: unknown, title: None }], frames: BTreeMap::new(), keeping_front: false };
-    let (after, _) = pages.saving("web-app", 2, None, Some(3), &screen);
+    let (after, _) = pages.saving("web-app", 2, None, PaneColor::None, Some(3), &screen);
     assert_eq!(supervisors(&after), ["1.snap"]);
 }
 
@@ -1242,7 +1250,7 @@ fn a_save_before_the_marks_are_taken_back_writes_what_the_file_had() {
     let pages = Pages::from_file(&file);
     let not_yet = split(marked("/a", "0.snap", None, None, None, None), marked("/b", "1.snap", None, None, None, None), Axis::Horizontal);
     let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: not_yet, title: None }], frames: BTreeMap::new(), keeping_front: false };
-    let (_, written) = pages.saving("p", 2, None, Some(2), &screen);
+    let (_, written) = pages.saving("p", 2, None, PaneColor::None, Some(2), &screen);
     assert_eq!(written.windows[0].tabs[0].root, file.windows[0].tabs[0].root);
     // And it is the bytes: the file says the marks it said.
     let bytes = emit(&written).unwrap();
@@ -1257,7 +1265,7 @@ fn a_save_before_the_marks_are_taken_back_writes_what_the_file_had() {
         Axis::Horizontal,
     );
     let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root: told, title: None }], frames: BTreeMap::new(), keeping_front: false };
-    let (_, written) = pages.saving("p", 3, None, Some(2), &screen);
+    let (_, written) = pages.saving("p", 3, None, PaneColor::None, Some(2), &screen);
     let got: Vec<(Option<PaneColor>, Option<Workers>, Option<bool>)> =
         polter_projectfile::leaves(&written.windows[0].tabs[0].root).iter().map(|l| (l.color, l.workers, l.shielded)).collect();
     assert_eq!(got, vec![(Some(PaneColor::None), Some(Workers::Allowed), Some(false)), (Some(PaneColor::Pink), Some(Workers::Allowed), Some(false))]);
@@ -1271,7 +1279,7 @@ fn the_seat_moves_to_where_the_supervisor_is_and_stays_put_while_there_is_none()
     let pages = Pages::from_file(&file);
     let seats = |root: SavedNode| -> Vec<Option<bool>> {
         let screen = Screen { live: vec![Live { id: 0, window: 1, index: 0, selected: true, root, title: None }], frames: BTreeMap::new(), keeping_front: false };
-        let (_, written) = pages.saving("p", 2, None, Some(2), &screen);
+        let (_, written) = pages.saving("p", 2, None, PaneColor::None, Some(2), &screen);
         polter_projectfile::leaves(&written.windows[0].tabs[0].root).iter().map(|l| l.supervisor_seat).collect()
     };
     let nobody = |cwd: &str, snap: &str| marked(cwd, snap, None, Some(PaneColor::None), Some(Workers::Allowed), Some(false));
@@ -1295,6 +1303,7 @@ fn named_project(tabs: Vec<(SavedNode, Option<&str>)>) -> Pages {
         name: "p".into(),
         saved_at: 1,
         group: None,
+        color: PaneColor::None,
         windows: vec![Window { frame: None, front: 0, tabs: tabs.into_iter().map(|(root, t)| Tab { root, title: t.map(str::to_string) }).collect() }],
         next_scrollback: None,
     })
@@ -1315,7 +1324,7 @@ fn a_save_writes_the_name_somebody_gave_the_tab() {
         frames: BTreeMap::new(),
         keeping_front: false,
     };
-    let (_, file) = pages.saving("p", 2, None, None, &screen);
+    let (_, file) = pages.saving("p", 2, None, PaneColor::None, None, &screen);
     assert_eq!(tab_names(&file), vec![Some("web".to_string()), None]);
     // And it is in the bytes, where the format puts it.
     assert!(emit(&file).unwrap().contains(r#""agent":{"kind":"none"}},"title":"web"}"#));
@@ -1337,13 +1346,13 @@ fn a_save_before_the_name_is_put_back_writes_what_the_file_had() {
         frames: BTreeMap::new(),
         keeping_front: false,
     };
-    let (after, file) = pages.saving("p", 2, None, None, &screen);
+    let (after, file) = pages.saving("p", 2, None, PaneColor::None, None, &screen);
     // The tab's own name; a pane's chosen name in a tab that had none (what
     // Windows makes of it); and nothing for a tab nobody named.
     assert_eq!(tab_names(&file), vec![Some("web".to_string()), Some("dev server".to_string()), None]);
     // A name said now beats the file's.
     let renamed = Screen { live: vec![Live { title: Some("api".into()), ..screen.live[0].clone() }], ..screen.clone() };
-    let (_, file) = after.saving("p", 3, None, None, &renamed);
+    let (_, file) = after.saving("p", 3, None, PaneColor::None, None, &renamed);
     assert_eq!(tab_names(&file)[0].as_deref(), Some("api"));
 }
 
@@ -1351,7 +1360,7 @@ fn a_save_before_the_name_is_put_back_writes_what_the_file_had() {
 fn a_page_that_is_not_open_keeps_its_name() {
     let pages = named_project(vec![(leaf("/a", "0.snap"), Some("web")), (leaf("/b", "1.snap"), None)]);
     let screen = Screen { live: vec![Live { root: leaf("/b", "1.snap"), ..live(1, 1, 0, true, "/b") }], frames: BTreeMap::new(), keeping_front: false };
-    let (_, file) = pages.saving("p", 2, None, None, &screen);
+    let (_, file) = pages.saving("p", 2, None, PaneColor::None, None, &screen);
     assert_eq!(tab_names(&file), vec![Some("web".to_string()), None]);
 }
 
@@ -1558,4 +1567,37 @@ fn an_agents_own_supervisor_flag_does_not_keep_a_pane_without_the_seat() {
     let node = keeping_what_the_file_knew(&leaf_of("/x", "0.snap", Agent::None), &known);
     let written = polter_projectfile::leaves(&node)[0].agent.clone();
     assert_eq!(written, Agent::None);
+}
+
+// ---- task 1796: pages that open together
+
+/// Where moving `opened[k]` to `at + k`, in order, leaves the tabs.
+fn gather_moves(tabs: &[u32], at: usize, opened: &[u32]) -> Vec<u32> {
+    let mut t = tabs.to_vec();
+    for (k, id) in opened.iter().enumerate() {
+        let from = t.iter().position(|x| x == id).unwrap();
+        let v = t.remove(from);
+        t.insert(at + k, v);
+    }
+    t
+}
+
+#[test]
+fn pages_just_opened_go_after_the_last_page_of_theirs_already_open() {
+    use crate::page_rules::gathered;
+    // 1 and 2 are the project's, open already; 9 is the person's; 5 and 6
+    // just opened at the end.
+    let tabs = [1, 2, 9, 5, 6];
+    let at = gathered(&tabs, &[1, 2], &[5, 6]).expect("they move");
+    assert_eq!(gather_moves(&tabs, at, &[5, 6]), vec![1, 2, 5, 6, 9]);
+    // The person dragged 1 away: it stays, and the new ones follow 2.
+    let tabs = [2, 9, 1, 8, 5];
+    let at = gathered(&tabs, &[1, 2], &[5]).expect("it moves");
+    assert_eq!(gather_moves(&tabs, at, &[5]), vec![2, 9, 1, 5, 8], "after the last one open, wherever that is");
+    // Nothing of it open there: they stay where they were made.
+    assert_eq!(gathered(&[9, 8, 5, 6], &[], &[5, 6]), None);
+    // Already following it.
+    assert_eq!(gathered(&[9, 1, 5, 6], &[1], &[5, 6]), None);
+    // Nothing opened.
+    assert_eq!(gathered(&[1, 9], &[1], &[] as &[u32]), None);
 }

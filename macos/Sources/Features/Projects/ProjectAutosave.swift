@@ -74,7 +74,7 @@ enum ProjectFileWriter {
         if let format = try? ProjectFile.format(of: existing), format < ProjectFile.formatVersion {
             return .written(rotated: true)
         }
-        if old.name == file.name && old.group == file.group && old.windows == file.windows
+        if old.name == file.name && old.group == file.group && old.color == file.color && old.windows == file.windows
             && old.nextScrollback == file.nextScrollback {
             return .unchanged
         }

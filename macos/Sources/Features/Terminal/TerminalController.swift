@@ -89,6 +89,15 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
     }
 
+    /// The colour of the project this tab is a page of (task 1796), which
+    /// its project mark is drawn in. Set only by `ProjectSession`, with
+    /// `boundProject`.
+    var boundProjectColor: PaneColor = .none {
+        didSet {
+            (window as? TerminalWindow)?.projectColorOfTab = boundProjectColor
+        }
+    }
+
     /// The project this tab is a page of, open: what writes the project's
     /// file as its tabs change, and what a tab's own changes are told to
     /// (`ProjectSession.poke`). Nil for a tab of no project. Held strongly

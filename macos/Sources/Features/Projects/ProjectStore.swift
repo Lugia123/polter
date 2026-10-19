@@ -65,6 +65,8 @@ final class ProjectStore {
         var totalPaneCount = 0
         /// The group its file says it is the project of, if any.
         var group: String?
+        /// The colour its file gives it (task 1796); `.none` for none yet.
+        var color: PaneColor = .none
         /// Whether a `.prev` generation exists to go back to -- see
         /// `ProjectFileWriter.write`.
         var hasPrevious = false
@@ -202,6 +204,7 @@ final class ProjectStore {
             pageCount: file.pageCount,
             totalPaneCount: file.totalPaneCount,
             group: file.group,
+            color: file.color,
             hasPrevious: FileManager.default.fileExists(atPath: ProjectFileWriter.previousURL(for: url).path))
     }
 
@@ -268,6 +271,7 @@ final class ProjectStore {
     func save(
         name: String,
         group: String?,
+        color: PaneColor,
         pages: ProjectPages,
         tabs screen: OpenTabs,
         who: (Ghostty.SurfaceView) -> (agent: ProjectAgent, bySupervisor: Bool),
@@ -331,6 +335,7 @@ final class ProjectStore {
             name: trimmed,
             savedAt: Int(Date().timeIntervalSince1970),
             group: group,
+            color: color,
             nextScrollback: allocator.next,
             screen: .init(live: tabs, frames: frames, keepingFront: keepingFront))
         let entry = try write(file, keeping: keeping)
@@ -368,6 +373,7 @@ final class ProjectStore {
         return try save(
             name: name,
             group: group(name: name),
+            color: color(name: name),
             pages: pages,
             tabs: OpenTabs(
                 // A tree has no tab, so no tab name.
@@ -386,6 +392,45 @@ final class ProjectStore {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = ruleURL(name: trimmed) else { return nil }
         return (try? Data(contentsOf: url)).flatMap { try? ProjectFile.decode(from: $0) }?.group
+    }
+
+    /// The colour of the project saved as `name`: the one its file has, or
+    /// -- there is no file, or it has none -- the one it would be given
+    /// (`givenColor`). Nothing is written by asking.
+    func color(name: String) -> PaneColor {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = ruleURL(name: trimmed) else { return ProjectTone.pick(used: []) }
+        let file = (try? Data(contentsOf: url)).flatMap { try? ProjectFile.decode(from: $0) }
+        if let color = file?.color, color != .none { return color }
+        return givenColor(besides: url)
+    }
+
+    /// The colour a project in the file `url` is given: the one the other
+    /// projects use least (`ProjectTone.pick`). A file that does not read
+    /// counts for nothing; it has no colour anybody sees.
+    func givenColor(besides url: URL) -> PaneColor {
+        let others = listed().filter { $0.url.standardizedFileURL != url.standardizedFileURL }
+        return ProjectTone.pick(used: others.map(\.file.color))
+    }
+
+    /// `file`, read from `entry`, in its colour: when it has none it is
+    /// given one, and the file is written there and then (task 1796), so
+    /// the next host to read it -- Windows' included -- draws the same
+    /// colour rather than giving one of its own. A write that fails is
+    /// logged and the colour is still used; the next save writes it.
+    func givingColor(_ file: ProjectFile, of entry: Entry) -> ProjectFile {
+        guard file.color == .none else { return file }
+        let given = file.with(color: givenColor(besides: entry.url))
+        do {
+            try ProjectFileWriter.write(given, to: entry.url, keeping: .onLayoutChange)
+            Self.logger.info(
+                "project '\(file.name, privacy: .public)' had no colour and was given \(given.color.name, privacy: .public)")
+            NotificationCenter.default.post(name: Self.didWrite, object: self, userInfo: ["name": file.name])
+        } catch {
+            Self.logger.warning(
+                "project '\(file.name, privacy: .public)' was given \(given.color.name, privacy: .public) but it was not written: \(error.localizedDescription, privacy: .public)")
+        }
+        return given
     }
 
     /// The file-level half of `save`, keeping one previous generation --
@@ -429,8 +474,20 @@ final class ProjectStore {
         let file = try read(entry)
         guard file.group != group else { return }
         let changed = ProjectFile(
-            name: file.name, savedAt: file.savedAt, group: group, windows: file.windows, nextScrollback: file.nextScrollback)
+            name: file.name, savedAt: file.savedAt, group: group, color: file.color, windows: file.windows,
+            nextScrollback: file.nextScrollback)
         try ProjectFileWriter.write(changed, to: entry.url, keeping: .onLayoutChange)
+        NotificationCenter.default.post(name: Self.didWrite, object: self, userInfo: ["name": file.name])
+    }
+
+    /// Write `color` into the file of a project none of whose pages is
+    /// open, and change nothing else about it. (An open project's colour
+    /// is its session's to write: `ProjectSession.setColor`.)
+    func setColor(_ entry: Entry, to color: PaneColor) throws {
+        guard ProjectTone.order.contains(color) else { return }
+        let file = try read(entry)
+        guard file.color != color else { return }
+        try ProjectFileWriter.write(file.with(color: color), to: entry.url, keeping: .onLayoutChange)
         NotificationCenter.default.post(name: Self.didWrite, object: self, userInfo: ["name": file.name])
     }
 

@@ -312,6 +312,7 @@ struct ProjectPages: Equatable {
         name: String,
         savedAt: Int,
         group: String?,
+        color: PaneColor,
         nextScrollback: Int?,
         screen: Screen
     ) -> (pages: ProjectPages, file: ProjectFile) {
@@ -329,7 +330,7 @@ struct ProjectPages: Equatable {
         }
         let pages = base.updated(live: told, frames: frames, keepingFront: keepingFront)
         return (pages, ProjectFile(
-            name: name, savedAt: savedAt, group: group,
+            name: name, savedAt: savedAt, group: group, color: color,
             windows: pages.fileWindows, nextScrollback: nextScrollback))
     }
 

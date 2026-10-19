@@ -4,6 +4,7 @@ same	one_tab
 same	windows_and_tabs
 same	supervisor
 same	group
+same	project_color
 from	two_supervisors
 from	duplicate_scrollback
 same	stack
@@ -13,3 +14,4 @@ same	pane_marks
 from	two_seats
 same	titles
 refused	too_new
+damaged	project_color_purple

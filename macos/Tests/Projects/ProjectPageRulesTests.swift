@@ -104,7 +104,7 @@ struct ProjectPageRulesTests {
     @Test func aProjectIsCountedWhole() {
         func leaf(_ cwd: String) -> ProjectNode { .leaf(cwd: cwd, title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none) }
         let file = ProjectFile(
-            name: "p", savedAt: 1, group: nil,
+            name: "p", savedAt: 1, group: nil, color: .none,
             windows: [
                 ProjectWindow(frame: nil, front: 0, tabs: [
                     ProjectTab(root: leaf("/a"), title: ""),

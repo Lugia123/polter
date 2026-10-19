@@ -9,6 +9,7 @@ fn one_tab(name: &str, root: SavedNode) -> Snapshot {
         name: name.to_string(),
         saved_at: 1,
         group: None,
+        color: PaneColor::None,
         windows: vec![Window { frame: None, front: 0, tabs: vec![Tab::unnamed(root)] }],
         next_scrollback: None,
     }
@@ -27,7 +28,8 @@ const SHARED: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/project_for
 /// `index.txt` says what each is: `same` (read and written, it is the same
 /// bytes), `from` (`<stem>.in.json` read and written is the bytes of
 /// `<stem>.json`), `refused` (`<stem>.in.json` is from a later format and
-/// must not be read). Nothing in this crate makes any of them, so a writer
+/// must not be read), `damaged` (`<stem>.in.json` says what the format does
+/// not allow and must not be read). Nothing in this crate makes any of them, so a writer
 /// here that drops a field, orders two keys the other way or prints a number
 /// its own way is a red line that shows both byte strings -- not a file that
 /// went out and came back the same.
@@ -68,6 +70,15 @@ fn every_shared_file_is_read_and_written_back_as_the_same_bytes() {
                 assert!(
                     matches!(parse_snapshot(&input), Err(ReadError::TooNew { .. })),
                     "{stem}.in.json must be refused as too new, and read as {:?}",
+                    parse_snapshot(&input)
+                );
+            }
+            "damaged" => {
+                named += 1;
+                let input = read(format!("{stem}.in.json"));
+                assert!(
+                    matches!(parse_snapshot(&input), Err(ReadError::Corrupt)),
+                    "{stem}.in.json must be refused as damaged, and read as {:?}",
                     parse_snapshot(&input)
                 );
             }
@@ -151,6 +162,7 @@ fn a_format_1_file_reads_as_one_window_with_one_tab_and_nobody_knows_who_was_in_
             name: "old".to_string(),
             saved_at: 7,
             group: None,
+            color: PaneColor::None,
             windows: vec![Window {
                 frame: None,
                 front: 0,
@@ -385,6 +397,7 @@ fn three_tabs() -> Snapshot {
         name: "p".to_string(),
         saved_at: 1,
         group: Some("g".to_string()),
+        color: PaneColor::None,
         windows: vec![
             Window {
                 frame: Some(Frame { origin: Origin::TopLeft, x: 1.0, y: 2.0, width: 3.0, height: 4.0 }),
@@ -409,7 +422,7 @@ fn the_tab_in_front_is_the_first_windows_front_tab() {
     let mut odd = was.clone();
     odd.windows[0].front = 9;
     assert_eq!(odd.front_tab(), Some(&was.windows[0].tabs[0].root));
-    let blank = Snapshot { name: "p".to_string(), saved_at: 1, group: None, windows: Vec::new(), next_scrollback: None };
+    let blank = Snapshot { name: "p".to_string(), saved_at: 1, group: None, color: PaneColor::None, windows: Vec::new(), next_scrollback: None };
     assert_eq!(blank.front_tab(), None);
 }
 
@@ -640,6 +653,7 @@ fn one_tab_file(format: i64, leaf_extra: &str, tab_extra: &str) -> String {
 fn a_chosen_title_is_written_right_after_the_title_and_a_tab_name_after_the_root() {
     let chosen = SavedLeaf { title: "dev server".into(), title_chosen: true, history: "h".into(), ..SavedLeaf::plain("/a", Agent::None) };
     let snap = Snapshot {
+        color: PaneColor::None,
         windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root: SavedNode::Leaf(chosen.clone()), title: Some("web".into()) }] }],
         ..one_tab("p", leaf("/a"))
     };
@@ -659,6 +673,7 @@ fn nothing_chosen_writes_no_key() {
     // Chosen with no name, and a tab named "", are written as nothing.
     let empty = SavedLeaf { title_chosen: true, ..SavedLeaf::plain("/a", Agent::None) };
     let snap = Snapshot {
+        color: PaneColor::None,
         windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root: SavedNode::Leaf(empty), title: Some(String::new()) }] }],
         ..one_tab("p", leaf("/a"))
     };
@@ -690,4 +705,32 @@ fn a_title_key_a_writer_never_writes_is_corrupt() {
     let two = parse_snapshot(one_tab_file(2, r#""title":"t","title_chosen":true"#, r#","title":"web""#).as_bytes()).unwrap();
     assert!(!the_leaf(&two).title_chosen);
     assert_eq!(two.windows[0].tabs[0].title, None);
+}
+
+/// Task 1796: a project's colour is a pane colour but purple, read back
+/// and written after the group; anything else is Corrupt, and before
+/// format 3 there is no such key.
+#[test]
+fn a_projects_colour_is_a_pane_colour_but_purple_and_anything_else_is_corrupt() {
+    let file = |format: u32, color: &str| {
+        format!(r#"{{"format":{format},"name":"p","saved_at":1,"root":{{"kind":"moved-to-windows"}}{color},"windows":[]}}"#)
+    };
+    for c in PaneColor::ALL {
+        let read = parse_snapshot(file(3, &format!(r#","color":"{}""#, c.name())).as_bytes());
+        match c {
+            PaneColor::None | PaneColor::Purple => assert_eq!(read, Err(ReadError::Corrupt), "{c:?}"),
+            _ => {
+                let s = read.unwrap_or_else(|e| panic!("{c:?}: {e:?}"));
+                assert_eq!(s.color, c);
+                assert!(emit(&s).unwrap().contains(&format!(r#","color":"{}","windows""#, c.name())));
+            }
+        }
+    }
+    for bad in [r#","color":"magenta""#, r#","color":"""#, r#","color":5"#, r#","color":null"#] {
+        assert_eq!(parse_snapshot(file(3, bad).as_bytes()), Err(ReadError::Corrupt), "{bad}");
+    }
+    let none = parse_snapshot(file(3, "").as_bytes()).unwrap();
+    assert_eq!(none.color, PaneColor::None);
+    assert!(!emit(&none).unwrap().contains("color"));
+    assert_eq!(parse_snapshot(file(2, r#","color":"teal""#).as_bytes()).unwrap().color, PaneColor::None);
 }

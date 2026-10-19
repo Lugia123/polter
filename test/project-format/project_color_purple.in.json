@@ -1,0 +1,10 @@
+{
+  "format": 3,
+  "name": "in the supervisor's colour",
+  "saved_at": 1757000007,
+  "root": { "kind": "moved-to-windows" },
+  "color": "purple",
+  "windows": [
+    { "front": 0, "tabs": [ { "root": { "kind": "leaf", "cwd": "/work/web", "agent": { "kind": "none" } } } ] }
+  ]
+}

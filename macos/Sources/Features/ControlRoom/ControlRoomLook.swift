@@ -284,6 +284,71 @@ enum ControlRoomLook {
         static let ringGap: Double = 2.0
     }
 
+    /// The mark of a page of a project: two stacked pages in a `window_tab.glyph` square, outlined in the project's colour and lit by a glow of it laid on with screen, which never makes the tab darker (task 1796).
+    enum ProjectMark {
+        /// The back page's left edge, from the square's left.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let backX0: Double = 4.0
+        /// The back page's top edge, from the square's top.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let backY0: Double = 1.0
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let backX1: Double = 13.0
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let backY1: Double = 10.0
+        /// The front page. The back page is drawn only where the front one is not, `front_clear` round it.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let frontX0: Double = 1.0
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let frontY0: Double = 4.0
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let frontX1: Double = 10.0
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let frontY1: Double = 13.0
+        /// How far outside the front page the back page's line stops.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let frontClear: Double = 0.75
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let pageRadius: Double = 2.0
+        /// The pages' line width.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let line: Double = 1.5
+        /// The glow's circle, round the square's centre, before it is blurred.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let glowRadius: Double = 10.0
+        /// The glow's coverage at its middle, times the state's strength.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let glowStrength: Double = 0.45
+        /// The Gaussian blur of the glow's coverage (its sigma). Only the coverage is blurred; its colour is the project's everywhere.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let glowBlur: Double = 2.5
+        /// Round the mark's square, the room the glow mostly stays out of, so the lines keep the tab's ground beside them.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let coreGap: Double = 2.0
+        /// The clear core's corner radius: the pages' 3 and `core_gap` more.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let coreRadius: Double = 5.0
+        /// The blur of the clear core's edge.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let coreBlur: Double = 0.8
+        /// How much of the glow stays in the clear core, so the mark does not sit in a dark square of its own.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let coreKeep: Double = 0.15
+        /// How strong the mark of a tab not in front is, dark theme: its colour mixed this far from the tab's ground toward the project's, and its glow times this.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let restDark: Double = 0.8
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let hoverDark: Double = 0.9
+        /// The same, light theme: a lighter colour on a light ground loses contrast fast.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let restLight: Double = 0.9
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let hoverLight: Double = 0.95
+        /// The tab in front: full.
+        /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+        static let selected: Double = 1.0
+    }
+
     /// The tabs over a cell that holds several terminals.
     enum StackTab {
         /// From the content's left and right edges to a tab's body: corner 8 + straight 4 + arc 8. Also the terminal text's inset.

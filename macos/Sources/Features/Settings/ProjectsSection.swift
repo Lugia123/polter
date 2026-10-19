@@ -158,6 +158,20 @@ final class ProjectsModel: ObservableObject {
         }
     }
 
+    /// The selected project is `color` from now on (task 1796): through its
+    /// session when a page of it is open, which redraws its tabs' marks,
+    /// and straight into its file when none is.
+    func setColor(_ color: PaneColor) {
+        guard let entry = selected else { return }
+        attempt {
+            if let session = ProjectSession.open(for: entry.name, in: store) {
+                session.setColor(color)
+            } else {
+                try store.setColor(entry, to: color)
+            }
+        }
+    }
+
     func restorePrevious() {
         guard let entry = selected else { return }
         attempt { try store.restorePrevious(entry) }
@@ -449,6 +463,9 @@ private struct ProjectDetail: View {
             }
 
             VStack(alignment: .leading, spacing: L.rowGap) {
+                formRow(String(localized: "Color", comment: "设置窗口·项目：字段名，项目的颜色（标签上项目标记的颜色）")) {
+                    ProjectColorPicker(chosen: entry.color) { model.setColor($0) }
+                }
                 formRow(String(localized: "Saved", comment: "设置窗口·项目：字段名，上次保存时间")) {
                     Text(ProjectsView.dateFormatter.string(from: entry.savedAt))
                 }
@@ -595,5 +612,56 @@ private struct ProjectThumbnail: View {
                 }
             }
         }
+    }
+}
+
+/// The project's colour (task 1796): one choice per colour a project may
+/// be, in `ProjectTone.order`, each the project mark itself as a tab in
+/// front draws it -- the pages and their glow -- so what is picked is what
+/// the tabs will show. The chosen one has a ring in the accent colour, not
+/// a grey ground.
+private struct ProjectColorPicker: View {
+    let chosen: PaneColor
+    var choose: (PaneColor) -> Void
+
+    private static let mark = CGFloat(ControlRoomLook.WindowTab.glyph)
+    /// Room round the mark for its glow, and the ring outside it.
+    private static let cell = mark + 2 * CGFloat(SettingsLayout.rowGap)
+
+    var body: some View {
+        HStack(spacing: SettingsLayout.rowGap / 2) {
+            ForEach(ProjectTone.order, id: \.rawValue) { tone in
+                Button { choose(tone) } label: {
+                    ProjectMarkSwatch(color: tone)
+                        .frame(width: Self.mark, height: Self.mark)
+                        .frame(width: Self.cell, height: Self.cell)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Self.cell / 4)
+                                .strokeBorder(Color.accentColor, lineWidth: 1.5)
+                                .opacity(tone == chosen ? 1 : 0))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(tone.localizedName)
+                .accessibilityLabel(tone.localizedName)
+                .accessibilityAddTraits(tone == chosen ? .isSelected : [])
+            }
+        }
+    }
+}
+
+/// `ProjectMarkView` in a SwiftUI view, drawn as on the tab in front.
+private struct ProjectMarkSwatch: NSViewRepresentable {
+    let color: PaneColor
+
+    func makeNSView(context: Context) -> ProjectMarkView {
+        let view = ProjectMarkView(frame: .zero)
+        view.selected = true
+        view.color = color
+        return view
+    }
+
+    func updateNSView(_ view: ProjectMarkView, context: Context) {
+        view.color = color
     }
 }

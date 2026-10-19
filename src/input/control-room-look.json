@@ -35,6 +35,7 @@
     "v17-contrast": "design v17, src/contrast.md (measured off the rendered pictures)",
     "supervisor-pane-v1": "design supervisor-pane-v1 (task 1688), the user's choice C of 2026-10-18: README.md and src/build.py; colours from the app icon (task 1692)",
     "pane-color-v1": "design pane-color-v1 (task 1694) as the user ruled it on 2026-10-18 (task 1699): the two rows of dots, a badge per colour, dark badges light with dark words",
+    "project-color-v6": "design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow",
     "pane-color-1699": "task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own"
   },
 
@@ -180,6 +181,33 @@
       "plus_gap": { "v": 4, "doc": "Between the last column and `+N`, written at `font.min` in `text_secondary`." },
       "ring": { "v": 1.5, "doc": "The width of the accent ring round the dots while a pane of the tab is lit (`terminal_highlight`)." },
       "ring_gap": { "v": 2, "doc": "From the dots' outer edge to the ring. With no dots the ring goes round the room of one." }
+    },
+    "project_mark": {
+      "_src": "project-color-v6",
+      "_doc": "The mark of a page of a project: two stacked pages in a `window_tab.glyph` square, outlined in the project's colour and lit by a glow of it laid on with screen, which never makes the tab darker (task 1796).",
+      "back_x0": { "v": 4, "doc": "The back page's left edge, from the square's left." },
+      "back_y0": { "v": 1, "doc": "The back page's top edge, from the square's top." },
+      "back_x1": { "v": 13 },
+      "back_y1": { "v": 10 },
+      "front_x0": { "v": 1, "doc": "The front page. The back page is drawn only where the front one is not, `front_clear` round it." },
+      "front_y0": { "v": 4 },
+      "front_x1": { "v": 10 },
+      "front_y1": { "v": 13 },
+      "front_clear": { "v": 0.75, "doc": "How far outside the front page the back page's line stops." },
+      "page_radius": { "v": 2 },
+      "line": { "v": 1.5, "doc": "The pages' line width." },
+      "glow_radius": { "v": 10, "doc": "The glow's circle, round the square's centre, before it is blurred." },
+      "glow_strength": { "v": 0.45, "doc": "The glow's coverage at its middle, times the state's strength." },
+      "glow_blur": { "v": 2.5, "doc": "The Gaussian blur of the glow's coverage (its sigma). Only the coverage is blurred; its colour is the project's everywhere." },
+      "core_gap": { "v": 2, "doc": "Round the mark's square, the room the glow mostly stays out of, so the lines keep the tab's ground beside them." },
+      "core_radius": { "v": 5, "doc": "The clear core's corner radius: the pages' 3 and `core_gap` more." },
+      "core_blur": { "v": 0.8, "doc": "The blur of the clear core's edge." },
+      "core_keep": { "v": 0.15, "doc": "How much of the glow stays in the clear core, so the mark does not sit in a dark square of its own." },
+      "rest_dark": { "v": 0.8, "doc": "How strong the mark of a tab not in front is, dark theme: its colour mixed this far from the tab's ground toward the project's, and its glow times this." },
+      "hover_dark": { "v": 0.9 },
+      "rest_light": { "v": 0.9, "doc": "The same, light theme: a lighter colour on a light ground loses contrast fast." },
+      "hover_light": { "v": 0.95 },
+      "selected": { "v": 1, "doc": "The tab in front: full." }
     },
     "stack_tab": {
       "_src": "v14-grid",

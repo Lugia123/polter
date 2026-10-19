@@ -63,7 +63,7 @@ use polter_projects::pages::{self, Live, PageId, Pages, Screen};
 use polter_projects::placement::{self, Place, Rect};
 use polter_projects::stated::{self, FailedWhy, Stated};
 
-use crate::project::{self, WriteKind};
+use crate::project::{self, PaneColor, WriteKind};
 use crate::tabs::{self, TabId};
 use crate::{plogf, wlogf};
 
@@ -75,6 +75,10 @@ struct Open {
     /// The group the file says it is the project of. Carried from read to
     /// write; changed only when the core asks (`set_group`).
     group: Option<String>,
+    /// The project's colour (task 1796), carried from read to write like
+    /// the group; changed only by the person (settings) or, when it has
+    /// none, given one (`project_color::give`).
+    color: PaneColor,
     next_scrollback: Option<u64>,
     pages: Pages,
     /// Which tab is which page. A tab is in here from the moment it is
@@ -316,13 +320,13 @@ fn names_in_use(pages: &Pages, snaps: &Path) -> Vec<String> {
 ///
 /// `keeping_front` is for the save a closing tab makes (`Pages::updated`).
 fn save(file: &Path, keeping_front: bool, capture: bool) -> Result<(), String> {
-    let Some((name, group, next, pages, bound, supervisor)) = OPEN.with(|o| {
+    let Some((name, group, color, next, pages, bound, supervisor)) = OPEN.with(|o| {
         let open = o.try_borrow().ok()?;
         let p = open.iter().find(|p| p.file == file)?;
         // Who the supervisor is, as the core was last told: what macOS
         // compares a pane's worker with as well (`ProjectSession`).
         let supervisor = Stated::of_open(&p.name, p.group.clone(), &p.pages, &on_screen(p)).supervisor;
-        Some((p.name.clone(), p.group.clone(), p.next_scrollback, p.pages.clone(), p.tabs.clone(), supervisor))
+        Some((p.name.clone(), p.group.clone(), p.color, p.next_scrollback, p.pages.clone(), p.tabs.clone(), supervisor))
     }) else {
         return Ok(());
     };
@@ -331,7 +335,7 @@ fn save(file: &Path, keeping_front: bool, capture: bool) -> Result<(), String> {
     let in_use = names_in_use(&pages, &snaps);
     let mut alloc = project::Allocator::new(next, in_use.iter().map(String::as_str));
     let (screen, found) = screen_of(&bound, &snaps, &mut alloc, capture, keeping_front, supervisor.as_deref());
-    let (after, snapshot) = pages.saving(&name, wall_secs(), group, Some(alloc.next), &screen);
+    let (after, snapshot) = pages.saving(&name, wall_secs(), group, color, Some(alloc.next), &screen);
 
     project::write_file(file, &snapshot, WriteKind::Save).map_err(|e| e.to_string())?;
     // After the write, so a failed write leaves the previous save's
@@ -495,6 +499,12 @@ fn save_as_for(file: &Path, chosen: &[(HWND, TabId)], name: String, kind: WriteK
     // handed out again.
     let existing = project::read_file(file).ok();
     let group = group.unwrap_or_else(|| existing.as_ref().and_then(|e| e.group.clone()));
+    // What the name already holds keeps its colour; a new project is
+    // given the one least in use (task 1796).
+    let color = match existing.as_ref().map(|e| e.color) {
+        Some(c) if c != PaneColor::None => c,
+        _ => given_color(file),
+    };
     let snaps = project::scrollback_dir(file);
     let mut in_use: Vec<String> = existing.as_ref().map(project::Snapshot::scrollback_names).unwrap_or_default();
     in_use.extend(names_in_use(&Pages::new(), &snaps));
@@ -514,7 +524,7 @@ fn save_as_for(file: &Path, chosen: &[(HWND, TabId)], name: String, kind: WriteK
     if screen.live.is_empty() {
         return Err("that tab no longer exists".to_string());
     }
-    let (after, snapshot) = pages.saving(&name, wall_secs(), group.clone(), Some(alloc.next), &screen);
+    let (after, snapshot) = pages.saving(&name, wall_secs(), group.clone(), color, Some(alloc.next), &screen);
     project::write_file(file, &snapshot, kind).map_err(|e| e.to_string())?;
     let pruned = project::prune_scrollback_dir(&snaps, &after.scrollback_names());
     // process-wide: a project is tabs of any number of windows
@@ -536,6 +546,7 @@ fn save_as_for(file: &Path, chosen: &[(HWND, TabId)], name: String, kind: WriteK
                 file: file.to_path_buf(),
                 name,
                 group,
+                color,
                 next_scrollback: Some(alloc.next),
                 pages: after,
                 tabs: bound,
@@ -640,6 +651,8 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
         // window made for the project has no tab of the person's to keep.
         let tucked = behind && !ours;
         let mut front = None;
+        let was_open: Vec<TabId> = bound.iter().map(|(t, _)| *t).collect();
+        let mut opened_here: Vec<TabId> = Vec::new();
         for page in missing {
             match crate::project_ui::open_page_in_new_tab(target, app, hinst, &page.tab.root, &snaps, tucked) {
                 Ok(tab) => {
@@ -656,6 +669,7 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
                         wlogf!(target, "[project] page {} of {:?} is named {:?} again", page.id, snapshot.name, name);
                     }
                     bound.push((tab, page.id));
+                    opened_here.push(tab);
                     opened += 1;
                     first.get_or_insert((target, tab));
                     if page.id == window.front {
@@ -664,6 +678,16 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
                 }
                 Err(e) => errors.push(e),
             }
+        }
+        // Its pages together (task 1796): the ones just opened go after
+        // the last of its pages open in this window already. None of those
+        // moves, so a page the person dragged away stays where they put it.
+        let order: Vec<TabId> = tabs::strip_snapshot(target).0.into_iter().map(|(t, _)| t).collect();
+        if let Some(at) = page_rules::gathered(&order, &was_open, &opened_here) {
+            for (k, tab) in opened_here.iter().enumerate() {
+                tabs::move_tab_keeping_front(target, *tab, at + k);
+            }
+            wlogf!(target, "[project] {} page(s) of {:?} just opened go beside the ones open, at {at}", opened_here.len(), snapshot.name);
         }
         // The page that was in front is the one showing.
         if let Some(tab) = front.filter(|_| !tucked) {
@@ -703,6 +727,7 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
         if behind { ", behind the tab in front" } else { "" }
     );
 
+    let color = color_of(file, &snapshot);
     OPEN.with(|o| {
         if let Ok(mut open) = o.try_borrow_mut() {
             match open.iter_mut().find(|p| p.file == file) {
@@ -711,6 +736,7 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
                     file: file.to_path_buf(),
                     name: snapshot.name.clone(),
                     group: snapshot.group.clone(),
+                    color,
                     next_scrollback: snapshot.next_scrollback,
                     pages,
                     tabs: bound,
@@ -787,6 +813,7 @@ pub fn add_tab(file: &Path, tab: TabId) -> Result<(), String> {
         return Err(w.filled(&crate::i18n::tr(w.msgid)));
     }
     let snapshot = project::read_file(file).map_err(|e| e.to_string())?;
+    let color = color_of(file, &snapshot);
     OPEN.with(|o| {
         let Ok(mut open) = o.try_borrow_mut() else { return };
         if !open.iter().any(|p| p.file == file) {
@@ -794,6 +821,7 @@ pub fn add_tab(file: &Path, tab: TabId) -> Result<(), String> {
                 file: file.to_path_buf(),
                 name: snapshot.name.clone(),
                 group: snapshot.group.clone(),
+                color,
                 next_scrollback: snapshot.next_scrollback,
                 pages: Pages::from_file(&snapshot),
                 tabs: Vec::new(),
@@ -827,7 +855,14 @@ pub fn take_out(tab: TabId) -> Result<(), String> {
         p.pages.remove(page);
         p.tabs.retain(|(t, _)| *t != tab);
         p.terminals.retain(|(id, _)| *id != page);
-        let snapshot = project::Snapshot { name: p.name.clone(), saved_at: wall_secs(), group: p.group.clone(), windows: p.pages.file_windows(), next_scrollback: p.next_scrollback };
+        let snapshot = project::Snapshot {
+            name: p.name.clone(),
+            saved_at: wall_secs(),
+            group: p.group.clone(),
+            color: p.color,
+            windows: p.pages.file_windows(),
+            next_scrollback: p.next_scrollback,
+        };
         let keep = p.pages.scrollback_names();
         let none_open = p.tabs.is_empty();
         if none_open {
@@ -889,12 +924,55 @@ pub fn tabs_of(file: &Path) -> Vec<(HWND, TabId)> {
     bound.into_iter().filter_map(|t| tabs::locate_tab(t).map(|(f, _, _)| (f, t))).collect()
 }
 
+/// The colour of the open project `tab` is a page of, which its project
+/// mark is drawn in (task 1796); `None` for a tab of no project. A project
+/// is given one when it opens (`color_of`), so `Some(PaneColor::None)` is a
+/// file that could not be written and a colour not yet given.
+pub fn project_color_of_tab(tab: TabId) -> Option<PaneColor> {
+    OPEN.with(|o| o.try_borrow().ok()?.iter().find(|p| p.tabs.iter().any(|(t, _)| *t == tab)).map(|p| p.color))
+}
+
 /// The file of the open project `tab` is a page of, and its name.
 pub fn project_file_of_tab(tab: TabId) -> Option<(PathBuf, String)> {
     OPEN.with(|o| o.try_borrow().ok()?.iter().find(|p| p.tabs.iter().any(|(t, _)| *t == tab)).map(|p| (p.file.clone(), p.name.clone())))
 }
 
 // ------------------------------------------------------- telling the core
+
+/// The colour of the project in `file`: the one it has, or -- it has none
+/// -- the one it is given, written into the file there and then (task
+/// 1796), so the next host to read it, the mac's included, draws the same
+/// colour rather than giving one of its own. Written as a rename is: the
+/// same project, not a new version, so `.prev` is left alone. A write that
+/// fails is logged and the colour is still used; the next save writes it.
+fn color_of(file: &Path, snapshot: &project::Snapshot) -> PaneColor {
+    if snapshot.color != PaneColor::None {
+        return snapshot.color;
+    }
+    let color = given_color(file);
+    let given = project::Snapshot { color, ..snapshot.clone() };
+    match project::write_file(file, &given, WriteKind::Rename) {
+        Ok(()) => plogf!("[project] {:?} had no colour and was given {}", snapshot.name, color.name()),
+        Err(e) => plogf!("[project] {:?} was given {} but it was not written: {e}", snapshot.name, color.name()),
+    }
+    color
+}
+
+/// The colour a project in `file` is given: the one the other projects
+/// beside it use least (`polter_projects::tone::pick`). A file that does
+/// not read counts for nothing; it has no colour anybody sees.
+fn given_color(file: &Path) -> PaneColor {
+    let used: Vec<PaneColor> = file
+        .parent()
+        .map(|dir| project::list(dir).entries)
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| e.path != file)
+        .filter_map(|e| project::read_file(&e.path).ok())
+        .map(|s| s.color)
+        .collect();
+    polter_projects::tone::pick(&used)
+}
 
 fn projects_dir() -> Option<PathBuf> {
     project::resolve_state_dir().map(|s| project::default_dir(&s))
@@ -1315,6 +1393,30 @@ fn set_group(file: &Path, group: Option<String>) -> Result<(), String> {
     let mut snapshot = project::read_file(file).map_err(|e| e.to_string())?;
     snapshot.group = group;
     project::write_file(file, &snapshot, WriteKind::Save).map_err(|e| e.to_string())
+}
+
+/// The project in `file` is `color` from now on (task 1796, the settings
+/// window's colour line). An open project is written as it stands with the
+/// new colour, and the strips its tabs are on are drawn again; a closed one
+/// has only that changed in its file. Written as a rename is: the same
+/// project, not a new version.
+pub fn set_color(file: &Path, color: PaneColor) -> Result<(), String> {
+    let tabs: Option<Vec<TabId>> = OPEN.with(|o| {
+        let mut open = o.try_borrow_mut().ok()?;
+        let p = open.iter_mut().find(|p| p.file == file)?;
+        p.color = color;
+        Some(p.tabs.iter().map(|(t, _)| *t).collect())
+    });
+    let Some(tabs) = tabs else {
+        let snapshot = project::read_file(file).map_err(|e| e.to_string())?;
+        return project::write_file(file, &project::Snapshot { color, ..snapshot }, WriteKind::Rename).map_err(|e| e.to_string());
+    };
+    for frame in tabs.into_iter().filter_map(|t| tabs::locate_tab(t).map(|(f, _, _)| f)) {
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(frame), None, false);
+        }
+    }
+    save(file, false, false)
 }
 
 /// The pane `terminal` is in becomes the supervisor's pane of the open

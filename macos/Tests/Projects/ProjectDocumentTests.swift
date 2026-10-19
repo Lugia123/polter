@@ -404,7 +404,7 @@ struct ProjectChosenTitleFileTests {
     /// A tab's chosen name: after its root, left out when it has none.
     @Test func aTabsNameIsWrittenAfterItsRootAndReadBack() throws {
         let named = ProjectFile(
-            name: "n", savedAt: 1, group: nil,
+            name: "n", savedAt: 1, group: nil, color: .none,
             windows: [ProjectWindow(frame: nil, front: 0, tabs: [
                 ProjectTab(root: Self.leaf("", chosen: false), title: "web"),
                 ProjectTab(root: Self.leaf("", chosen: false), title: ""),

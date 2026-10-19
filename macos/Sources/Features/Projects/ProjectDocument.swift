@@ -46,6 +46,13 @@ struct ProjectFile: Equatable {
     /// no group. A project has at most one.
     let group: String?
 
+    /// The project's colour, which its pages' project mark is drawn in
+    /// (task 1796); `.none` when it has been given none yet. A pane colour
+    /// but `.purple`, the supervisor's flag (`ProjectTone`). Every writer
+    /// carries it from what it read: one that dropped it would lose what
+    /// the user chose.
+    let color: PaneColor
+
     /// The windows, in an order that stays the same from one save to the
     /// next (`ProjectPages.updated`) -- not the order they are stacked in on
     /// screen. Empty for a project
@@ -61,10 +68,11 @@ struct ProjectFile: Equatable {
     /// Absent in files written before snapshots existed.
     let nextScrollback: Int?
 
-    init(name: String, savedAt: Int, group: String?, windows: [ProjectWindow], nextScrollback: Int?) {
+    init(name: String, savedAt: Int, group: String?, color: PaneColor, windows: [ProjectWindow], nextScrollback: Int?) {
         self.name = name
         self.savedAt = savedAt
         self.group = group
+        self.color = color
         self.windows = windows
         self.nextScrollback = nextScrollback
     }
@@ -77,6 +85,7 @@ struct ProjectFile: Equatable {
             name: name,
             savedAt: savedAt,
             group: nil,
+            color: .none,
             windows: root.map { [ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: $0, title: "")])] } ?? [],
             nextScrollback: nextScrollback)
     }
@@ -94,10 +103,15 @@ struct ProjectFile: Equatable {
         windows.flatMap { $0.tabs.map(\.root) }
     }
 
-    /// The same project under another name and time: its windows, its group
-    /// and its counter go with it.
+    /// The same project under another name and time: its windows, its
+    /// group, its colour and its counter go with it.
     func with(name: String, savedAt: Int) -> ProjectFile {
-        ProjectFile(name: name, savedAt: savedAt, group: group, windows: windows, nextScrollback: nextScrollback)
+        ProjectFile(name: name, savedAt: savedAt, group: group, color: color, windows: windows, nextScrollback: nextScrollback)
+    }
+
+    /// The same project in another colour, and nothing else changed.
+    func with(color: PaneColor) -> ProjectFile {
+        ProjectFile(name: name, savedAt: savedAt, group: group, color: color, windows: windows, nextScrollback: nextScrollback)
     }
 
     /// Every snapshot filename the project refers to, in any window or tab
@@ -327,6 +341,7 @@ extension ProjectFile {
             out += ",\"group\":"
             ProjectFileWriting.string(group, into: &out)
         }
+        if color != .none { out += ",\"color\":\"\(color.name)\"" }
         if let nextScrollback { out += ",\"next_scrollback\":\(nextScrollback)" }
         out += ",\"windows\":["
         for (i, window) in windows.enumerated() {
@@ -520,6 +535,7 @@ extension ProjectFile {
             name: name,
             savedAt: savedAt,
             group: group,
+            color: color,
             windows: windows.map { window in
                 ProjectWindow(frame: window.frame, front: window.front, tabs: window.tabs.map {
                     ProjectTab(
@@ -623,6 +639,7 @@ enum ProjectFileReading {
             case savedAt = "saved_at"
             case root
             case group
+            case color
             case windows
             case nextScrollback = "next_scrollback"
         }
@@ -643,10 +660,24 @@ enum ProjectFileReading {
             }
 
             let group = try ProjectFileReading.strictString(container, .group)
+            // A colour this build does not name, `none` written out, or
+            // `purple` is an error: read as no colour, the next save would
+            // drop the one the user chose (task 1796). Before format 3
+            // there was no such key.
+            var color = PaneColor.none
+            if format >= 3, container.contains(.color) {
+                let word = try container.decode(String.self, forKey: .color)
+                guard let named = ProjectTone.named(word) else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .color, in: container, debugDescription: "no project colour is called '\(word)'")
+                }
+                color = named
+            }
             file = ProjectFile(
                 name: name,
                 savedAt: savedAt,
                 group: group.isEmpty ? nil : group,
+                color: color,
                 windows: try container.decode([Window].self, forKey: .windows).map(\.window),
                 nextScrollback: nextScrollback)
         }

@@ -23,6 +23,9 @@ have to write the same bytes**, not merely files the others can read.
   1 or 2 file, or a file a read puts right. Read and written, it is the bytes of
   `<stem>.json`.
 - `refused` -- `<stem>.in.json` is from a later format and must not be read.
+- `damaged` -- `<stem>.in.json` is of the format that is written and must not
+  be read: it says something the format does not allow (a project in
+  `purple`, task 1796).
 
 ## Who makes them
 

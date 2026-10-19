@@ -1844,6 +1844,14 @@ pub fn paint(frame: HWND) {
         // What each tab carries for its coloured panes (task 1700): read
         // once per paint, by id, and drawn by `draw_tab` before the title.
         let marks: Vec<(TabId, Marked)> = tabs_now.iter().map(|(id, _)| (*id, marked(frame, *id))).collect();
+        // Which tabs are pages of a project, and its colour (task 1796):
+        // `Some(None)` is a project with none given.
+        use polter_control_room::pane_color::Color;
+        use polter_control_room::project_mark;
+        let projects: Vec<(TabId, Option<Color>)> = tabs_now
+            .iter()
+            .filter_map(|(id, _)| crate::project_session::project_color_of_tab(*id).map(|c| (*id, Color::from_name(c.name()))))
+            .collect();
         // Where each cluster with something to say was drawn, for its
         // tooltip: filled in by `draw_tab`, handed over after the blit.
         let tips: RefCell<Vec<(RECT, String)>> = RefCell::new(Vec::new());
@@ -1870,6 +1878,7 @@ pub fn paint(frame: HWND) {
         // this file places them on its own slots and decides none of it.
         // Light or dark is the terminal's (above), not the system's.
         let theme = chrome.theme();
+        let theme_is_dark = chrome.dark;
         let ground = chrome.ground;
         let shf = sh as f64;
         let active_id = slots.get(active).map(|s| s.id);
@@ -1916,6 +1925,40 @@ pub fn paint(frame: HWND) {
             // in the accent round them, breathing, for as long as the
             // highlight lasts -- round an empty dot's room when there are
             // none (`pane-color-interface.md` §4, item 6).
+            // The project mark first, when the tab is a page of a project
+            // (task 1796): the pages in the project's colour, mixed toward
+            // the ground behind them by the tab's state, and their glow.
+            if let Some(project) = projects.iter().find(|(id, _)| *id == slot.id).map(|(_, c)| *c) {
+                let side = (look::window_tab::GLYPH * scale).round() as i32;
+                let (x, y) = (tr.left, (sh - side) / 2);
+                let is_hover = matches!(hover, Hit::Tab(h) | Hit::Close(h) if h == slot.id);
+                let state = if i == active {
+                    project_mark::State::Selected
+                } else if is_hover {
+                    project_mark::State::Hover
+                } else {
+                    project_mark::State::Rest
+                };
+                let behind = if on_chip {
+                    tabstrip::chip_color(ground, theme, now.lift)
+                } else if is_hover && i != active {
+                    tabstrip::hover_color(ground, theme)
+                } else {
+                    tabstrip::track_color(ground, theme)
+                };
+                let strength = project_mark::strength(state, theme_is_dark);
+                let ink = match project {
+                    Some(c) => project_mark::toward(behind, c.ink(theme), strength),
+                    None => theme.text_secondary,
+                };
+                if project.is_some() {
+                    let glow = project_mark::glow(scale, strength);
+                    let reach = (glow.reach * scale).round() as i32;
+                    crate::control_room::screen_glow(mem, x - reach, y - reach, &glow, ink);
+                }
+                crate::control_room::draw_shapes(mem, x, y, side, &project_mark::shapes(), ink, 1.0);
+                tr.left += side + (look::window_tab::COLUMN_GAP * scale).round() as i32;
+            }
             let lit = crate::highlight::tab_breath(frame, slot.id);
             if let Some((_, m)) = marks.iter().find(|(id, _)| *id == slot.id) {
                 let used = paint_marks(mem, m, tr.left, sh, scale, &theme, lit.map(|a| crate::highlight::accent(frame, a)));

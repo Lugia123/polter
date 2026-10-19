@@ -5870,6 +5870,17 @@ mod pane_metadata_tests {
 /// none. The acceptance check for it (three tabs, move the first to third,
 /// the contents follow) therefore tests the model, not this function.
 pub fn move_tab_to(frame: HWND, id: TabId, to: usize) {
+    move_tab(frame, id, to, true);
+}
+
+/// `move_tab_to`, leaving the tab that was showing the one showing: for a
+/// move the person did not make (a project's pages gathered as it opens,
+/// task 1796), which must not take them off the tab they are on.
+pub fn move_tab_keeping_front(frame: HWND, id: TabId, to: usize) {
+    move_tab(frame, id, to, false);
+}
+
+fn move_tab(frame: HWND, id: TabId, to: usize, follow: bool) {
     let moved = {
         let Some(mut win) = window(frame) else { return };
         let Some(from) = win.tabs.iter().position(|t| t.id == id) else {
@@ -5884,10 +5895,12 @@ pub fn move_tab_to(frame: HWND, id: TabId, to: usize) {
         if to == from {
             return;
         }
+        let showing = win.tabs.get(win.active).map(|t| t.id);
         let tab = win.tabs.remove(from);
         win.tabs.insert(to, tab);
-        // Follow the tab that moved, not the position it left.
-        win.active = to;
+        // Follow the tab that moved, not the position it left -- or, not
+        // the person's move, the tab that was showing.
+        win.active = if follow { to } else { showing.and_then(|s| win.tabs.iter().position(|t| t.id == s)).unwrap_or(to) };
         (from, to)
     };
     layout(frame);

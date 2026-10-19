@@ -309,7 +309,15 @@ impl Pages {
     /// things means "as far as could be told": each is first given what the
     /// file knew and the capture could not say (`keeping_what_the_file_knew`),
     /// and only then takes the place of the page it is.
-    pub fn saving(&self, name: &str, saved_at: i64, group: Option<String>, next_scrollback: Option<u64>, screen: &Screen) -> (Pages, Snapshot) {
+    pub fn saving(
+        &self,
+        name: &str,
+        saved_at: i64,
+        group: Option<String>,
+        color: PaneColor,
+        next_scrollback: Option<u64>,
+        screen: &Screen,
+    ) -> (Pages, Snapshot) {
         let known = self.known();
         let mut told: Vec<Live> = screen
             .live
@@ -323,7 +331,7 @@ impl Pages {
             .collect();
         one_seat(&screen.live, &mut told);
         let pages = self.updated(&told, &screen.frames, screen.keeping_front);
-        let file = Snapshot { name: name.to_string(), saved_at, group, windows: pages.file_windows(), next_scrollback };
+        let file = Snapshot { name: name.to_string(), saved_at, group, color, windows: pages.file_windows(), next_scrollback };
         (pages, file)
     }
 

@@ -3700,6 +3700,44 @@ unsafe fn dib(w: i32, h: i32) -> Option<(HBITMAP, *mut u32)> {
     Some((bmp, bits as *mut u32))
 }
 
+/// Lay `glow` on `dst` in `color` with screen (task 1796,
+/// `polter_control_room::project_mark`), its top left at `(x, y)`: what is
+/// there is read back, lit pixel by pixel and written again. **Not
+/// `AlphaBlend`**: that is source-over, which darkens a light ground, and
+/// the grey ring round v5's glow was a straight-alpha colour blended so.
+/// Only what the clip lets through is written, so a glow drawn through the
+/// chip's outline stays inside it.
+pub(crate) unsafe fn screen_glow(dst: HDC, x: i32, y: i32, glow: &polter_control_room::project_mark::Glow, color: Rgba) {
+    let n = glow.side as i32;
+    if n <= 0 {
+        return;
+    }
+    unsafe {
+        let Some((bmp, bits)) = dib(n, n) else { return };
+        let mdc = CreateCompatibleDC(None);
+        let old = SelectObject(mdc, bmp.into());
+        let _ = BitBlt(mdc, 0, 0, n, n, Some(dst), x, y, SRCCOPY);
+        let _ = GdiFlush();
+        let px = std::slice::from_raw_parts_mut(bits, (n * n) as usize);
+        for py in 0..n as usize {
+            for pxi in 0..n as usize {
+                let a = glow.at(pxi, py);
+                if a <= 0.0 {
+                    continue;
+                }
+                let v = &mut px[py * n as usize + pxi];
+                let bg = (((*v >> 16) & 0xff) as u8, ((*v >> 8) & 0xff) as u8, (*v & 0xff) as u8);
+                let (r, g, b) = polter_control_room::project_mark::screen(bg, color, a);
+                *v = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+            }
+        }
+        let _ = BitBlt(dst, x, y, n, n, Some(mdc), 0, 0, SRCCOPY);
+        SelectObject(mdc, old);
+        let _ = DeleteDC(mdc);
+        let _ = DeleteObject(bmp.into());
+    }
+}
+
 /// Lay a shape over `dst` in one colour, with soft edges.
 ///
 /// `draw` paints the shape into a mask `SS` times larger each way, in

@@ -21,7 +21,7 @@ struct ProjectPagesTests {
     /// page (id 3).
     private var project: ProjectPages {
         ProjectPages(file: ProjectFile(
-            name: "p", savedAt: 1, group: "g",
+            name: "p", savedAt: 1, group: "g", color: .none,
             windows: [
                 ProjectWindow(frame: frame(10), front: 1, tabs: [
                     ProjectTab(root: leaf("/a", "0.snap"), title: ""),
@@ -52,7 +52,7 @@ struct ProjectPagesTests {
 
     @Test func theFilesPagesComeBackAsTheFilesPages() {
         let file = ProjectFile(
-            name: "p", savedAt: 1, group: nil,
+            name: "p", savedAt: 1, group: nil, color: .none,
             windows: [
                 ProjectWindow(frame: frame(10), front: 1, tabs: [ProjectTab(root: leaf("/a"), title: ""), ProjectTab(root: leaf("/b"), title: "")]),
                 ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf("/c"), title: "")]),
@@ -366,7 +366,7 @@ struct ProjectPagesTests {
     @Test func whatTheFileKnewOfAPaneIsFoundWhereverThePaneIs() {
         // In the file the worker's pane is on the second page.
         let file = ProjectFile(
-            name: "p", savedAt: 1, group: nil,
+            name: "p", savedAt: 1, group: nil, color: .none,
             windows: [ProjectWindow(frame: nil, front: 0, tabs: [
                 ProjectTab(root: leaf("/a", "0.snap", .none), title: ""), ProjectTab(root: leaf("/b", "1.snap", worker), title: ""),
             ])],
@@ -405,7 +405,7 @@ struct ProjectPagesTests {
     /// one of them just opened and able to say nothing of itself.
     @Test func aSaveWritesTheOpenTabsAsTheyAreAndTheRestAsTheyWere() throws {
         let file = ProjectFile(
-            name: "p", savedAt: 1, group: "g",
+            name: "p", savedAt: 1, group: "g", color: .none,
             windows: [
                 ProjectWindow(frame: frame(10), front: 0, tabs: [
                     ProjectTab(root: leaf("/a", "0.snap", worker), title: ""),
@@ -416,7 +416,7 @@ struct ProjectPagesTests {
             nextScrollback: 4)
         let pages = ProjectPages(file: file)
         let (after, written) = pages.saving(
-            name: "p", savedAt: 9, group: "g", nextScrollback: 5,
+            name: "p", savedAt: 9, group: "g", color: .teal, nextScrollback: 5,
             screen: .init(live: [
                 // Just opened: no directory yet, and nobody can say who.
                 Live(id: 0, window: 7, index: 0, selected: false, root: leaf("", "0.snap", .unknown), title: ""),
@@ -426,7 +426,8 @@ struct ProjectPagesTests {
             ], frames: [7: frame(77)], keepingFront: false))
 
         #expect(written == ProjectFile(
-            name: "p", savedAt: 9, group: "g",
+            // Carried as it is handed in (task 1796).
+            name: "p", savedAt: 9, group: "g", color: .teal,
             windows: [
                 ProjectWindow(frame: frame(77), front: 1, tabs: [
                     ProjectTab(root: leaf("/a", "0.snap", worker), title: ""),
@@ -442,7 +443,7 @@ struct ProjectPagesTests {
         #expect(try ProjectFile.decode(from: written.encoded()) == written)
         // And the next save starts from it: nothing changed, nothing to do.
         let (again, _) = after.saving(
-            name: "p", savedAt: 10, group: "g", nextScrollback: 5,
+            name: "p", savedAt: 10, group: "g", color: .teal, nextScrollback: 5,
             screen: .init(live: [], frames: [:], keepingFront: false))
         #expect(again == after)
     }
@@ -593,7 +594,7 @@ struct ProjectPaneMarksSavingTests {
 
     private var twoPages: ProjectPages {
         ProjectPages(file: ProjectFile(
-            name: "p", savedAt: 1, group: "g",
+            name: "p", savedAt: 1, group: "g", color: .none,
             windows: [ProjectWindow(frame: nil, front: 0, tabs: [
                 ProjectTab(root: .split(direction: .horizontal, ratio: 0.5,
                                         left: Self.leaf("/a", "0.snap"), right: Self.leaf("/b", "1.snap", color: .blue)), title: ""),
@@ -604,7 +605,7 @@ struct ProjectPaneMarksSavingTests {
     }
 
     private func saved(_ pages: ProjectPages, _ root: ProjectNode) -> ProjectFile {
-        pages.saving(name: "p", savedAt: 2, group: "g", nextScrollback: 3, screen: .init(
+        pages.saving(name: "p", savedAt: 2, group: "g", color: .none, nextScrollback: 3, screen: .init(
             live: [Live(id: 0, window: 1, index: 0, selected: true, root: root, title: "")],
             frames: [:], keepingFront: true)).file
     }
@@ -717,13 +718,13 @@ struct ProjectChosenTitleTests {
     /// the seat moved -- and comes back as the tab's `titleOverride`.
     @Test func aTabsNameIsSavedWithItsPage() throws {
         let pages = ProjectPages(file: ProjectFile(
-            name: "p", savedAt: 1, group: nil,
+            name: "p", savedAt: 1, group: nil, color: .none,
             windows: [ProjectWindow(frame: nil, front: 0, tabs: [
                 ProjectTab(root: Self.leaf("0.snap", "", chosen: false), title: "old"),
                 ProjectTab(root: Self.leaf("1.snap", "", chosen: false), title: "kept"),
             ])],
             nextScrollback: 2))
-        let saved = pages.saving(name: "p", savedAt: 2, group: nil, nextScrollback: 2, screen: .init(
+        let saved = pages.saving(name: "p", savedAt: 2, group: nil, color: .none, nextScrollback: 2, screen: .init(
             live: [Live(id: 0, window: 1, index: 0, selected: true, root: Self.leaf("0.snap", "", chosen: false), title: "web")],
             frames: [:], keepingFront: false))
         #expect(saved.file.windows[0].tabs.map(\.title) == ["web", "kept"])

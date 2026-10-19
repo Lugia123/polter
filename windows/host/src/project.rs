@@ -54,7 +54,7 @@ use polter_split_tree::{Axis, Node, PaneId};
 // place and the agent in a pane -- are in the crate for whoever starts
 // recording them.
 pub use polter_projectfile::{
-    emit, is_scrollback_name, leaves, leaves_mut, parse_snapshot, to_shape, Agent, Frame, ReadError, SavedLeaf, SavedNode, Snapshot,
+    emit, is_scrollback_name, leaves, leaves_mut, parse_snapshot, to_shape, Agent, Frame, PaneColor, ReadError, SavedLeaf, SavedNode, Snapshot,
     Tab, Window,
 };
 
@@ -571,6 +571,7 @@ pub fn write_fixture(path: &str) -> bool {
         name: "fixture project".to_string(),
         saved_at: 1_757_000_000,
         group: None,
+        color: PaneColor::None,
         // And a tab name, for the same reason.
         windows: vec![Window { frame: None, front: 0, tabs: vec![Tab { root, title: Some("fixture tab".to_string()) }] }],
         next_scrollback: None,
@@ -753,6 +754,7 @@ mod tests {
             name: name.to_string(),
             saved_at,
             group: None,
+            color: PaneColor::None,
             windows: root.map(|root| Window { frame: None, front: 0, tabs: vec![Tab::unnamed(root)] }).into_iter().collect(),
             next_scrollback,
         }
@@ -1033,6 +1035,7 @@ mod tests {
             name: "stacked".to_string(),
             saved_at: 1,
             group: None,
+            color: PaneColor::None,
             windows: vec![Window { frame: None, front: 0, tabs: vec![Tab::unnamed(saved.clone())] }],
             next_scrollback: None,
         };

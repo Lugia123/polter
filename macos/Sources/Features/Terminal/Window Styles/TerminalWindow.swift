@@ -389,15 +389,21 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    /// The colour of the project this tab is a page of (task 1796); `.none`
+    /// for none, or a project not given one yet. Set by the tab's controller
+    /// with `projectOfTab`.
+    var projectColorOfTab: PaneColor = .none {
+        didSet {
+            guard projectColorOfTab != oldValue else { return }
+            projectMarkView.color = projectColorOfTab
+        }
+    }
+
     /// The mark of a page of a project: two stacked pages, the size of the
-    /// status glyph.
-    private lazy var projectMarkView: NSImageView = {
+    /// status glyph, in the project's colour and its glow (task 1796).
+    private lazy var projectMarkView: ProjectMarkView = {
         let size = CGFloat(ControlRoomLook.WindowTab.glyph)
-        let view = NSImageView()
-        view.image = NSImage(systemSymbolName: "square.on.square", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: size - 3, weight: .regular))
-        view.contentTintColor = .secondaryLabelColor
-        view.imageScaling = .scaleProportionallyDown
+        let view = ProjectMarkView(frame: NSRect(x: 0, y: 0, width: size, height: size))
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalToConstant: size).isActive = true
         view.heightAnchor.constraint(equalToConstant: size).isActive = true
@@ -456,6 +462,8 @@ class TerminalWindow: NSWindow {
         guard let appDelegate = NSApp.delegate as? AppDelegate else { return }
         let group: AnyObject = tabGroup ?? self
         let front: NSWindow = tabGroup?.selectedWindow ?? self
+        // The project mark is full on the tab in front, faded on the rest.
+        projectMarkView.selected = front === self
         // The same three numbers the core is told for this window
         // (`Ghostty.App.poltergeistGrouping`).
         tabStatus = ControlRoomPulse.status(

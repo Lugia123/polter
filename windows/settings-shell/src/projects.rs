@@ -791,7 +791,11 @@ pub const UNDO_W: i32 = 72;
 /// below it, **no less than `THUMB_MIN`** (at the minimum window that is
 /// what it gets) and no more than `THUMB_MAX`. And the gap between two panes
 /// in it.
-pub const THUMB_MIN: i32 = 96;
+///
+/// 72 since the colour line came in (task 1796): at the minimum window the
+/// thumbnail was already at its least, and the line's 24 pixels had to come
+/// from somewhere for the history to stay above the bottom rule.
+pub const THUMB_MIN: i32 = 72;
 pub const THUMB_MAX: i32 = 240;
 pub const THUMB_GAP: i32 = 4;
 /// One line of the detail, and one row of the version history (a button
@@ -799,9 +803,12 @@ pub const THUMB_GAP: i32 = 4;
 pub const LINE_H: i32 = 20;
 /// Rename… and Restore.
 pub const BUTTON_W: i32 = 96;
-/// How many detail lines there are: last saved, size, directories, roles,
-/// scrollback, autosave.
-pub const DETAIL_LINES: usize = 6;
+/// How many detail lines there are: colour, last saved, size, directories,
+/// roles, scrollback, autosave.
+pub const DETAIL_LINES: usize = 7;
+/// How many colours a project may be (`polter_control_room::project_tone`),
+/// one square each on the colour line.
+pub const COLOR_SWATCHES: usize = 8;
 
 /// This section's own constants, for the test that holds them to multiples
 /// of four with the grid's.
@@ -891,6 +898,10 @@ pub struct EditorLayout {
     /// the previous generation.
     pub history: [Rect; 2],
     pub restore: [Rect; 2],
+    /// The colour line's squares (task 1796), in `polter_projects::tone::ORDER`, from
+    /// the control column: one line high each, `ROW_GAP` apart, so the
+    /// marks' glows have room.
+    pub swatches: [Rect; COLOR_SWATCHES],
     /// The editor's margin and its control column, the two left edges.
     pub margin: i32,
     pub control_left: i32,
@@ -934,7 +945,18 @@ pub fn editor_layout(editor: Rect, dpi: i32) -> EditorLayout {
         restore[i] = Rect::new((right - s(BUTTON_W)).max(control_left), y, right.max(control_left), y + s(CONTROL_H));
         y += s(CONTROL_H) + s(ROW_GAP);
     }
-    EditorLayout { title, rename, thumb, labels, values, history_heading, history, restore, margin, control_left }
+    let side = s(LINE_H);
+    let mut swatches = [Rect::default(); COLOR_SWATCHES];
+    for (i, r) in swatches.iter_mut().enumerate() {
+        let left = control_left + i as i32 * (side + s(ROW_GAP));
+        *r = Rect::new(left, values[0].top, left + side, values[0].top + side);
+    }
+    EditorLayout { title, rename, thumb, labels, values, history_heading, history, restore, swatches, margin, control_left }
+}
+
+/// Which colour square `(x, y)` is on, if any.
+pub fn swatch_at(e: &EditorLayout, x: i32, y: i32) -> Option<usize> {
+    e.swatches.iter().position(|r| r.contains(x, y))
 }
 
 #[cfg(test)]
@@ -1544,6 +1566,18 @@ mod tests {
             let th = e.thumb.height();
             assert!(th >= scale(THUMB_MIN, dpi) && th <= scale(THUMB_MAX, dpi), "{at} thumb {th}");
             assert!(e.history[0].bottom < e.history[1].top, "{at}");
+            // The colour squares: on the first line, from the control
+            // column, apart, and inside the editor.
+            for (i, r) in e.swatches.iter().enumerate() {
+                assert_eq!((r.top, r.bottom), (e.values[0].top, e.values[0].bottom), "{at} square {i}");
+                assert!(r.right <= g.editor.right - scale(PAD, dpi), "{at} square {i} {r:?}");
+                assert_eq!(swatch_at(&e, r.left + 1, r.top + 1), Some(i), "{at}");
+                if i > 0 {
+                    assert!(r.left > e.swatches[i - 1].right, "{at} squares {} and {i} touch", i - 1);
+                }
+            }
+            assert_eq!(e.swatches[0].left, e.control_left, "{at}");
+            assert_eq!(swatch_at(&e, e.swatches[0].left - 1, e.swatches[0].top + 1), None, "{at}");
             // The window's and the section's rules are still one line.
             let l = layout(w + scale(SIDEBAR, dpi) + 1, h + scale(TOP, dpi) + 1, dpi);
             assert_eq!(l.content.top + g.bottom_rule.top, l.bottom_rule.top, "{at}");

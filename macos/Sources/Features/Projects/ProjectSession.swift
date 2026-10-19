@@ -37,6 +37,10 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
     /// written back; changed only by `setGroup`, which the core's orders
     /// call.
     private(set) var group: String?
+    /// The project's colour (task 1796). Read from the file -- given one
+    /// when it has none (`ProjectStore.givingColor`) -- and written back;
+    /// changed only by `setColor`, which the settings window calls.
+    private(set) var color: PaneColor
     private var members: [Member] = []
     /// How many `open`s have put tabs up and not yet finished placing
     /// their windows. While any has not, a save takes no frame and no
@@ -51,11 +55,12 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         self?.autosaveNow()
     }
 
-    private init(name: String, store: ProjectStore, pages: ProjectPages, group: String?) {
+    private init(name: String, store: ProjectStore, pages: ProjectPages, group: String?, color: PaneColor) {
         self.name = name
         self.store = store
         self.pages = pages
         self.group = group
+        self.color = color
     }
 
     // MARK: Finding and making one
@@ -69,8 +74,9 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
     /// one read from its file with none of its pages open yet.
     static func session(for entry: ProjectStore.Entry, in store: ProjectStore) throws -> ProjectSession {
         if let session = open(for: entry.name, in: store) { return session }
-        let file = try store.read(entry)
-        let session = ProjectSession(name: entry.name, store: store, pages: ProjectPages(file: file), group: file.group)
+        let file = store.givingColor(try store.read(entry), of: entry)
+        let session = ProjectSession(
+            name: entry.name, store: store, pages: ProjectPages(file: file), group: file.group, color: file.color)
         try session.claim()
         return session
     }
@@ -113,6 +119,7 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         members.append(Member(controller: controller, page: id))
         controller.projectSession = self
         controller.boundProject = name
+        controller.boundProjectColor = color
         controller.startProjectAutosave()
         // What carries the tab's place in the project across a restart --
         // see `TerminalRestorableState.InternalState.boundProject`.
@@ -142,6 +149,7 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         controller.stopScrollbackJournals()
         controller.projectSession = nil
         controller.boundProject = nil
+        controller.boundProjectColor = .none
         controller.invalidateRestorableState()
         if removing {
             pages.remove(page)
@@ -257,7 +265,7 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         }
         let taken = ProjectPages.taken(frames: frames, closing: closing, opening: opening > 0)
         pages = try store.save(
-            name: name, group: group, pages: pages,
+            name: name, group: group, color: color, pages: pages,
             tabs: .init(open: open, frames: taken.frames, keepingFront: taken.keepingFront),
             who: whoIsInPane(), keeping: keeping).pages
         // Also when nothing was written: what changed may be only a
@@ -274,6 +282,16 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         guard self.group != group else { return }
         self.group = group
         save(capturing: [], keeping: .onLayoutChange, what: "save of the group")
+    }
+
+    /// The project is `color` from now on, and the file says so.
+    func setColor(_ color: PaneColor) {
+        guard self.color != color, ProjectTone.order.contains(color) else { return }
+        self.color = color
+        for member in liveMembers {
+            member.controller.boundProjectColor = color
+        }
+        save(capturing: [], keeping: .onLayoutChange, what: "save of the colour")
     }
 
     /// The pane `view` is the supervisor's, and no other pane of the
@@ -359,7 +377,8 @@ final class ProjectSession: ProjectBindingHolder, ProjectMoveFollower {
         }
 
         let session = ProjectSession(
-            name: trimmed, store: store, pages: ProjectPages(), group: store.group(name: trimmed))
+            name: trimmed, store: store, pages: ProjectPages(), group: store.group(name: trimmed),
+            color: store.color(name: trimmed))
         try session.claim()
         for controller in controllers {
             session.attach(controller, page: nil)

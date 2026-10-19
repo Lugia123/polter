@@ -31,6 +31,7 @@ pub mod page_rules;
 pub mod pages;
 pub mod placement;
 pub mod stated;
+pub mod tone;
 
 #[cfg(test)]
 mod tests;

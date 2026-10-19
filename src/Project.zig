@@ -50,7 +50,7 @@
 //! with no space anywhere:
 //!
 //!     {"format":3,"name":S,"saved_at":I,"root":{"kind":"moved-to-windows"},
-//!      "group":S,"next_scrollback":I,"windows":[WINDOW,...]}
+//!      "group":S,"color":PCOLOR,"next_scrollback":I,"windows":[WINDOW,...]}
 //!     WINDOW  {"frame":{"origin":"top_left"|"bottom_left","x":N,"y":N,
 //!              "width":N,"height":N},"front":I,"tabs":[TAB,...]}
 //!     TAB     {"root":NODE,"title":S}
@@ -64,10 +64,13 @@
 //!              "workers":"refused","shielded":true,"agent":AGENT}
 //!     COLOR   "blue"|"purple"|"pink"|"red"|"orange"|"yellow"|"green"
 //!           | "teal"|"graphite"
+//!     PCOLOR  COLOR but "purple": the project's own colour (task 1796),
+//!             which its pages' project mark is drawn in. "purple" is the
+//!             supervisor's flag and is never a project's: it is Corrupt.
 //!     AGENT   {"kind":"unknown"} | {"kind":"none"}
 //!           | {"kind":"agent","role":S,"cli":S,"session":S,"supervisor":B}
 //!
-//! `group`, `next_scrollback` and `frame` are left out when there is none;
+//! `group`, the project's `color`, `next_scrollback` and `frame` are left out when there is none;
 //! so is any string of a leaf or an agent that is empty, `by_supervisor`,
 //! `title_chosen`, `supervisor_seat` and `shielded` when they are not true,
 //! a tab's `title` when it has none, `color` when
@@ -390,6 +393,13 @@ pub const Snapshot = struct {
     /// with no group. A project has at most one.
     group: ?[]const u8,
 
+    /// The project's colour, which its pages' project mark is drawn in
+    /// (task 1796), or `none` when it has been given none yet. One of the
+    /// pane colours but `purple`: that is the supervisor's flag. No default:
+    /// a project built without saying is a compile error, not one whose
+    /// colour the next save quietly drops.
+    color: Color,
+
     /// The windows, in an order that stays the same from one save to the
     /// next -- not the order they are stacked in on screen, which would
     /// reorder the file every time a person clicked on another window.
@@ -660,6 +670,11 @@ pub fn emit(w: *std.Io.Writer, snapshot: Snapshot) EmitError!void {
         try w.writeAll(",\"group\":");
         try emitString(w, group);
     };
+    if (snapshot.color != .none) {
+        try w.writeAll(",\"color\":\"");
+        try w.writeAll(@tagName(snapshot.color));
+        try w.writeByte('"');
+    }
     if (snapshot.next_scrollback) |n| try w.print(",\"next_scrollback\":{d}", .{n});
     try w.writeAll(",\"windows\":[");
     for (snapshot.windows, 0..) |window, i| {
@@ -871,6 +886,14 @@ pub fn parse(arena: Allocator, bytes: []const u8) ReadError!Snapshot {
         else => return error.Corrupt,
     } else null;
 
+    // A colour this build does not name, `none` written out, or `purple`
+    // (the supervisor's flag, never a project's) is Corrupt: read as no
+    // colour, the next save would drop the one the user chose.
+    const color: Color = if (format < 3) .none else if (obj.get("color")) |v| switch (v) {
+        .string => |s| projectColor(s) orelse return error.Corrupt,
+        else => return error.Corrupt,
+    } else .none;
+
     if (fixups.supervisors.items.len > 1) {
         log.warn(
             "project '{s}' has {d} panes that each say they are the supervisor; read as having none",
@@ -890,8 +913,19 @@ pub fn parse(arena: Allocator, bytes: []const u8) ReadError!Snapshot {
         .name = name,
         .saved_at = saved_at,
         .group = group,
+        .color = color,
         .windows = windows,
         .next_scrollback = next_scrollback,
+    };
+}
+
+/// A project colour named in a file: a pane colour, but neither `none`
+/// (which is written by leaving the key out) nor `purple`.
+pub fn projectColor(name: []const u8) ?Color {
+    const c = std.meta.stringToEnum(Color, name) orelse return null;
+    return switch (c) {
+        .none, .purple => null,
+        else => c,
     };
 }
 
@@ -1270,7 +1304,7 @@ fn oneTab(arena: Allocator, name: []const u8, saved_at: i64, root: ?*const Node,
         windows[0] = .{ .frame = null, .front = 0, .tabs = tabs };
         break :windows windows;
     } else &.{};
-    return .{ .name = name, .saved_at = saved_at, .group = null, .windows = windows, .next_scrollback = next_scrollback };
+    return .{ .name = name, .saved_at = saved_at, .group = null, .color = .none, .windows = windows, .next_scrollback = next_scrollback };
 }
 
 fn expectLeavesEqual(al: Leaf, bl: Leaf) !void {
@@ -1891,6 +1925,30 @@ test "a format 2 file that lacks what format 2 always writes is corrupt" {
     try testing.expectEqual(Agent.none, ok.firstTab().?.leaf.agent);
 }
 
+test "task 1796: a project's colour is a pane colour but purple, and anything else is corrupt" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const tail = "\"windows\":[{\"front\":0,\"tabs\":[{\"root\":{\"kind\":\"leaf\",\"agent\":{\"kind\":\"none\"}}}]}]}";
+    for ([_][]const u8{ "\"purple\"", "\"none\"", "\"magenta\"", "\"\"", "5", "null" }) |bad| {
+        const bytes = try std.fmt.allocPrint(alloc, "{{\"format\":3,\"name\":\"n\",\"saved_at\":1,\"color\":{s},{s}", .{ bad, tail });
+        testing.expectError(error.Corrupt, parse(alloc, bytes)) catch |err| {
+            std.debug.print("project color {s}: read without complaint\n", .{bad});
+            return err;
+        };
+    }
+    // Each of the eight reads; no key is no colour.
+    for ([_]Color{ .blue, .orange, .green, .pink, .teal, .yellow, .red, .graphite }) |c| {
+        const bytes = try std.fmt.allocPrint(alloc, "{{\"format\":3,\"name\":\"n\",\"saved_at\":1,\"color\":\"{s}\",{s}", .{ @tagName(c), tail });
+        try testing.expectEqual(c, (try parse(alloc, bytes)).color);
+    }
+    const none = try std.fmt.allocPrint(alloc, "{{\"format\":3,\"name\":\"n\",\"saved_at\":1,{s}", .{tail});
+    try testing.expectEqual(Color.none, (try parse(alloc, none)).color);
+    // A format 2 file never had one, whatever it says.
+    const old = try std.fmt.allocPrint(alloc, "{{\"format\":2,\"name\":\"n\",\"saved_at\":1,\"color\":\"teal\",{s}", .{tail});
+    try testing.expectEqual(Color.none, (try parse(alloc, old)).color);
+}
+
 test "a format 3 mark this build does not write is corrupt, never read as the default" {
     // Read as the default, the next save would write the default over what
     // the user had set -- the silent loss format 3 exists to prevent.
@@ -2004,6 +2062,8 @@ test "a ratio that is not a finite number cannot be written" {
 //            format 1 file, or a file a read puts right. Read and written,
 //            it is the bytes of `<stem>.json`.
 //   refused  `<stem>.in.json` must not be read: it is from a later format.
+//   damaged  `<stem>.in.json` is of this format and must not be read: it
+//            says something the format does not allow.
 //
 // **The bytes are made here and nowhere else.** Each `<stem>.json` is what
 // `emit` gives for a value spelled out below, so it is not a file that
@@ -2024,11 +2084,11 @@ test "a ratio that is not a finite number cannot be written" {
 const shared_dir = "test/project-format";
 
 const Shared = struct {
-    const Kind = enum { same, from, refused };
+    const Kind = enum { same, from, refused, damaged };
 
     kind: Kind,
     stem: []const u8,
-    /// What the file reads as. Not looked at for `refused`.
+    /// What the file reads as. Not looked at for `refused` or `damaged`.
     value: Snapshot,
 
     fn leaf(comptime cwd: []const u8, comptime scrollback: []const u8, comptime agent: Agent) *const Node {
@@ -2070,6 +2130,7 @@ const Shared = struct {
             .name = "every field",
             .saved_at = 1757000000,
             .group = null,
+            .color = .none,
             .next_scrollback = 12,
             .windows = &.{.{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(
                 .vertical,
@@ -2083,6 +2144,7 @@ const Shared = struct {
             .name = "nothing in it",
             .saved_at = 5,
             .group = null,
+            .color = .none,
             .next_scrollback = null,
             .windows = &.{},
         } },
@@ -2091,6 +2153,7 @@ const Shared = struct {
             .name = "one tab",
             .saved_at = 1757000001,
             .group = null,
+            .color = .none,
             .next_scrollback = 1,
             .windows = &.{.{
                 .frame = .{ .origin = .bottom_left, .x = 120, .y = 80, .width = 1280, .height = 800 },
@@ -2104,6 +2167,7 @@ const Shared = struct {
             .name = "写 retry 装饰器 \"v2\" a/b",
             .saved_at = -1,
             .group = null,
+            .color = .none,
             .next_scrollback = 9007199254740993,
             .windows = &.{
                 .{
@@ -2118,7 +2182,8 @@ const Shared = struct {
                                 .title = "a \"quoted\" title, a backslash \\, a tab\t, a line\n, 中文, ✳ and 🧪",
                                 .history = "a1b2c3.history",
                                 .scrollback = "0.snap",
-                                .title_chosen = false, .by_supervisor = false,
+                                .title_chosen = false,
+                                .by_supervisor = false,
                                 .supervisor_seat = false,
                                 .color = .none,
                                 .workers = .allowed,
@@ -2132,7 +2197,8 @@ const Shared = struct {
                             .title = "\x01\x1f\x7f</script>\u{2028}",
                             .history = "",
                             .scrollback = "12345678901234567890.snap",
-                            .title_chosen = false, .by_supervisor = false,
+                            .title_chosen = false,
+                            .by_supervisor = false,
                             .supervisor_seat = false,
                             .color = .none,
                             .workers = .allowed,
@@ -2169,6 +2235,7 @@ const Shared = struct {
                 .name = "with a supervisor",
                 .saved_at = 1757000002,
                 .group = null,
+                .color = .none,
                 .next_scrollback = null,
                 .windows = &.{.{
                     .frame = .{ .origin = .bottom_left, .x = 0, .y = 0, .width = 1440, .height = 900 },
@@ -2192,11 +2259,25 @@ const Shared = struct {
             .name = "polter 0.10 群",
             .saved_at = 1757000003,
             .group = "polter 0.10 群",
+            .color = .none,
             .next_scrollback = 2,
             .windows = &.{.{
                 .frame = null,
                 .front = 0,
                 .tabs = &.{.{ .root = leaf("/work/repo", "1.snap", supervisor), .title = "" }},
+            }},
+        } },
+        // A project with a colour (task 1796): written after the group.
+        .{ .kind = .same, .stem = "project_color", .value = .{
+            .name = "web-app",
+            .saved_at = 1757000004,
+            .group = "web-app",
+            .color = .teal,
+            .next_scrollback = 1,
+            .windows = &.{.{
+                .frame = null,
+                .front = 0,
+                .tabs = &.{.{ .root = leaf("/work/web", "0.snap", supervisor), .title = "" }},
             }},
         } },
         // Three panes each say they are the supervisor: none of them is,
@@ -2205,6 +2286,7 @@ const Shared = struct {
             .name = "two supervisors",
             .saved_at = 1757000004,
             .group = "g",
+            .color = .none,
             .next_scrollback = null,
             .windows = &.{
                 .{ .frame = null, .front = 0, .tabs = &.{
@@ -2216,7 +2298,8 @@ const Shared = struct {
                     .title = "",
                     .history = "",
                     .scrollback = "",
-                    .title_chosen = false, .by_supervisor = false,
+                    .title_chosen = false,
+                    .by_supervisor = false,
                     .supervisor_seat = false,
                     .color = .none,
                     .workers = .allowed,
@@ -2231,6 +2314,7 @@ const Shared = struct {
             .name = "one snapshot, three panes",
             .saved_at = 1757000005,
             .group = null,
+            .color = .none,
             .next_scrollback = 4,
             .windows = &.{
                 .{ .frame = null, .front = 1, .tabs = &.{
@@ -2248,6 +2332,7 @@ const Shared = struct {
             .name = "a stack",
             .saved_at = 1757000007,
             .group = "g",
+            .color = .none,
             .next_scrollback = 6,
             .windows = &.{.{
                 .frame = null,
@@ -2277,6 +2362,7 @@ const Shared = struct {
             .name = "a stack put right",
             .saved_at = 1757000008,
             .group = null,
+            .color = .none,
             .next_scrollback = 2,
             .windows = &.{.{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(
                 .vertical,
@@ -2295,6 +2381,7 @@ const Shared = struct {
             .name = "with a supervisor",
             .saved_at = 1757000002,
             .group = null,
+            .color = .none,
             .next_scrollback = null,
             .windows = &.{.{
                 .frame = .{ .origin = .bottom_left, .x = 0, .y = 0, .width = 1440, .height = 900 },
@@ -2312,6 +2399,7 @@ const Shared = struct {
             .name = "pane marks",
             .saved_at = 1757000009,
             .group = "g",
+            .color = .none,
             .next_scrollback = null,
             .windows = &.{.{
                 .frame = null,
@@ -2341,6 +2429,7 @@ const Shared = struct {
             .name = "two seats",
             .saved_at = 1757000010,
             .group = null,
+            .color = .none,
             .next_scrollback = null,
             .windows = &.{.{ .frame = null, .front = 0, .tabs = &.{.{ .root = split(
                 .horizontal,
@@ -2356,6 +2445,7 @@ const Shared = struct {
             .name = "titles",
             .saved_at = 1757000011,
             .group = null,
+            .color = .none,
             .next_scrollback = null,
             .windows = &.{.{
                 .frame = null,
@@ -2372,6 +2462,8 @@ const Shared = struct {
             }},
         } },
         .{ .kind = .refused, .stem = "too_new", .value = undefined },
+        // A project in the supervisor's colour (task 1796).
+        .{ .kind = .damaged, .stem = "project_color_purple", .value = undefined },
     };
 };
 
@@ -2381,6 +2473,7 @@ fn expectSnapshotsEqual(want: Snapshot, got: Snapshot) !void {
     try testing.expectEqual(want.next_scrollback, got.next_scrollback);
     try testing.expectEqual(want.group == null, got.group == null);
     if (want.group) |g| try testing.expectEqualStrings(g, got.group.?);
+    try testing.expectEqual(want.color, got.color);
     try testing.expectEqual(want.windows.len, got.windows.len);
     for (want.windows, got.windows) |w, g| {
         try testing.expectEqual(w.frame, g.frame);
@@ -2422,6 +2515,12 @@ test "the files under test/project-format are what this build writes, and what i
             files_named += 1;
             const in = try dir.readFileAlloc(io, in_name, alloc, .limited(1024 * 1024));
             try testing.expectError(error.TooNew, parse(alloc, in));
+            continue;
+        }
+        if (f.kind == .damaged) {
+            files_named += 1;
+            const in = try dir.readFileAlloc(io, in_name, alloc, .limited(1024 * 1024));
+            try testing.expectError(error.Corrupt, parse(alloc, in));
             continue;
         }
 

@@ -60,6 +60,7 @@ pub mod look;
 pub mod pane;
 pub mod pane_color;
 pub mod project_link;
+pub mod project_mark;
 pub mod project_notice;
 pub mod project_words;
 pub mod panestack;

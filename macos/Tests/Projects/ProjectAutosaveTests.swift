@@ -263,7 +263,7 @@ struct ProjectAutosaveTests {
     @Test func whatASaveFindsIsComparedOverEveryTabAndWindow() throws {
         func project(_ windows: [[ProjectNode]], group: String? = "g", savedAt: Int = 1) -> ProjectFile {
             ProjectFile(
-                name: "p", savedAt: savedAt, group: group,
+                name: "p", savedAt: savedAt, group: group, color: .none,
                 windows: windows.map { ProjectWindow(frame: nil, front: 0, tabs: $0.map { ProjectTab(root: $0, title: "") }) },
                 nextScrollback: nil)
         }

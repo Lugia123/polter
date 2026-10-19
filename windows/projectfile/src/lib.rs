@@ -266,6 +266,11 @@ pub struct Snapshot {
     pub saved_at: i64,
     /// The group this project is the project of. A project has at most one.
     pub group: Option<String>,
+    /// The project's colour, which its pages' project mark is drawn in
+    /// (task 1796); `None` when it has been given none yet. A pane colour
+    /// but `Purple`, the supervisor's flag. Every writer carries it from
+    /// what it read: one that dropped it would lose what the user chose.
+    pub color: PaneColor,
     /// The windows, in an order that stays the same from one save to the
     /// next -- not the order they are stacked in on screen. Empty for a project
     /// with nothing in it.
@@ -442,6 +447,11 @@ pub fn emit(snapshot: &Snapshot) -> Result<String, EmitError> {
     if let Some(group) = snapshot.group.as_deref().filter(|g| !g.is_empty()) {
         out.push_str(",\"group\":");
         string(&mut out, group);
+    }
+    if snapshot.color != PaneColor::None {
+        out.push_str(",\"color\":\"");
+        out.push_str(snapshot.color.name());
+        out.push('"');
     }
     if let Some(n) = snapshot.next_scrollback {
         out.push_str(&format!(",\"next_scrollback\":{n}"));
@@ -692,7 +702,29 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ReadError> {
         }
     }
 
-    Ok(Snapshot { name, saved_at, group, windows, next_scrollback })
+    // A colour this build does not name, `none` written out, or `purple`
+    // is Corrupt: read as no colour, the next save would drop the one the
+    // user chose (task 1796).
+    let color = if format < 3 {
+        PaneColor::None
+    } else {
+        match obj.get("color") {
+            None => PaneColor::None,
+            Some(serde_json::Value::String(s)) => project_color(s).ok_or(ReadError::Corrupt)?,
+            Some(_) => return Err(ReadError::Corrupt),
+        }
+    };
+
+    Ok(Snapshot { name, saved_at, group, color, windows, next_scrollback })
+}
+
+/// A project colour named in a file: a pane colour, but neither `none`
+/// (written by leaving the key out) nor `purple` (the supervisor's flag).
+pub fn project_color(name: &str) -> Option<PaneColor> {
+    match PaneColor::from_name(name)? {
+        PaneColor::None | PaneColor::Purple => None,
+        c => Some(c),
+    }
 }
 
 fn json_to_windows(v: &serde_json::Value, format: i64, fixups: &mut Fixups) -> Result<Vec<Window>, ReadError> {
@@ -948,6 +980,8 @@ pub fn found_on_disk(on_disk: &[u8], new: &Snapshot) -> polter_settings_shell::p
                 layout_changed: !same,
                 only_the_time_changed: old.name == new.name
                     && old.group == new.group
+                    // A colour given or chosen is written (task 1796).
+                    && old.color == new.color
                     && old.windows == new.windows
                     && old.next_scrollback == new.next_scrollback,
             }

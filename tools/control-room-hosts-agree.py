@@ -198,6 +198,8 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/Terminal/PaneColor.swift",
     "macos/Sources/Features/Terminal/TabDots.swift",
     "macos/Sources/Features/ControlRoom/ProjectLinkRules.swift",
+    "macos/Sources/Features/Projects/ProjectTone.swift",
+    "macos/Sources/Features/Terminal/ProjectMark.swift",
 ]
 # What each terminal of FIXTURE was given as a colour, and the tab-dot cases
 # (task 1699): beside the fixture, which the core writes and a Zig test holds
@@ -673,6 +675,7 @@ func hex(_ c: ControlRoomLook.RGBA?) -> String {
 func points(_ v: Double) -> String {
     v == v.rounded() ? String(Int(v)) : String(v)
 }
+func f3(_ v: Double) -> String { String(format: "%.3f", v) }
 // The frame each pane of a split terminal tab wears.
 let terminals = snapshot.terminals ?? []
 var paneIDs: [String?] = terminals.map { $0.id }
@@ -1109,6 +1112,46 @@ for r in list.rows where r.alone == nil {
 for (on, said) in ControlRoomRowMenu.followAskCases {
     print(ControlRoomRowMenu.followAskLine(waitingOn: on, ask: said))
 }
+// The mark itself: its pages, its strength in each state, and its glow at
+// the scales a screen has.
+for s in ProjectMark.shapes {
+    print("project_mark shape x=\(f3(s.x)) y=\(f3(s.y)) w=\(f3(s.w)) h=\(f3(s.h)) r=\(f3(s.radius)) level=\(f3(s.level))")
+}
+for dark in [false, true] {
+    for st in ProjectMark.State.allCases {
+        print("project_mark strength dark=\(dark) state=\(st.rawValue) \(f3(ProjectMark.strength(st, dark: dark)))")
+    }
+}
+for scale in [1.0, 1.25, 1.5, 2.0] {
+    for strength in [ProjectMark.strength(.rest, dark: true), 1.0] {
+        let g = ProjectMark.glow(scale: scale, strength: strength)
+        let mid = g.side / 2
+        print("project_mark glow scale=\(String(format: "%.2f", scale)) strength=\(f3(strength)) reach=\(f3(g.reach)) side=\(g.side) "
+            + "total=\(String(format: "%.6f", g.total)) middle=\(String(format: "%.6f", g.at(mid, mid))) "
+            + "top_middle=\(String(format: "%.6f", g.at(mid, Int(g.reach * scale))))")
+    }
+}
+// The colours a project may be, in order, and the one a new project is
+// given beside others (task 1796). Last, and the same list as
+// `windows/projects/examples/tone.rs`, which the Windows side runs after the
+// dump: the rule is the projects crate's, not the control room's.
+let projectToneCases: [[String]] = [
+    [],
+    ["blue"],
+    ["blue", "orange"],
+    ["blue", "blue", "orange"],
+    ["orange"],
+    ["purple", "purple"],
+    ["graphite", "red", "yellow", "teal", "pink", "green", "orange"],
+    ["blue", "orange", "green", "pink", "teal", "yellow", "red", "graphite"],
+    ["blue", "orange", "green", "pink", "teal", "yellow", "red", "graphite", "blue", "green"],
+]
+print("project_tone order=\(ProjectTone.order.map(\.name).joined(separator: ","))")
+for names in projectToneCases {
+    let used = names.map { PaneColor(name: $0)! }
+    let said = used.isEmpty ? "-" : used.map(\.name).joined(separator: ",")
+    print("project_tone used=\(said) pick=\(ProjectTone.pick(used: used).name)")
+}
 '''
 
 
@@ -1223,6 +1266,17 @@ def main():
             print("FAIL: the Windows side did not run:")
             print(win.stderr.strip()[-2000:])
             return 1
+        # The colour a project is given (task 1796) is the projects crate's
+        # rule; its lines go after the dump's, as the macOS dump prints them.
+        cmd = ["cargo", "run", "-q", "-p", "polter-projects", "--example", "tone"]
+        tone = run(cmd + ["--offline"], os.path.join(ROOT, "windows"), env)
+        if tone.returncode != 0 and "offline" in tone.stderr:
+            tone = run(cmd, os.path.join(ROOT, "windows"), env)
+        if tone.returncode != 0:
+            print("FAIL: the Windows side's project colours did not run:")
+            print(tone.stderr.strip()[-2000:])
+            return 1
+        win = subprocess.CompletedProcess(win.args, 0, win.stdout + tone.stdout, win.stderr)
 
         # -- macOS: the app's own source files, in a package -------------------
         src = os.path.join(work, "pkg", "Sources", "dump")

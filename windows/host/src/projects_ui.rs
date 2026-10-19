@@ -1224,7 +1224,16 @@ fn on_command(id: u16, code: u32) {
 }
 
 fn on_click(x: i32, y: i32) {
-    let (g, _, ll, _, _) = geometry();
+    let (g, _, ll, e, _) = geometry();
+    // A colour square of the project shown (task 1796).
+    if with(|s| s.detail.is_some()) {
+        if let Some(i) = pj::swatch_at(&e, x, y) {
+            if let Some(tone) = polter_projects::tone::ORDER.get(i) {
+                set_color(*tone);
+            }
+            return;
+        }
+    }
     let Some(list) = g.list else { return };
     if !list.contains(x, y) {
         return;
@@ -1435,6 +1444,8 @@ fn paint_detail(hdc: HDC, d: &Detail, e: &pj::EditorLayout, dpi: i32, offset: i6
     let dirs = pj::distinct_dirs(leaves.iter().map(|l| l.cwd.as_str()));
     let panes = leaves.len();
     let lines: [(String, String, bool); pj::DETAIL_LINES] = [
+        // The colour's squares are drawn over its value, below.
+        (tr("Color"), String::new(), false),
         (tr("Saved"), pj::format_time(d.snap.saved_at, offset), false),
         (tr("Panes"), size_text(panes), false),
         (tr("Directories"), if dirs.is_empty() { tr("None recorded") } else { dirs.join("; ") }, dirs.is_empty()),
@@ -1453,6 +1464,7 @@ fn paint_detail(hdc: HDC, d: &Detail, e: &pj::EditorLayout, dpi: i32, offset: i6
         draw_text(hdc, label, &rect(e.labels[i]), &FONT, theme::dim(), right_label);
         draw_text(hdc, v, &rect(e.values[i]), &FONT, if *quiet { theme::dim() } else { theme::text() }, value);
     }
+    paint_colors(hdc, d.snap.color, e, dpi);
 
     draw_text(hdc, &tr("Version History"), &rect(e.history_heading), &FONT_BOLD, theme::text(), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     let count = |s: &Snapshot| s.pane_count();
@@ -1469,6 +1481,68 @@ fn paint_detail(hdc: HDC, d: &Detail, e: &pj::EditorLayout, dpi: i32, offset: i6
     if versions.len() < 2 {
         let r = rect(e.history[versions.len().min(1)]);
         draw_text(hdc, &tr("No earlier version is kept yet."), &r, &FONT, theme::dim(), value);
+    }
+}
+
+/// The colour line (task 1796): each colour a project may be, as the mark
+/// a tab in front draws -- the pages and their glow, on this page's ground
+/// -- and a ring in the accent round the project's own. A ring and not a
+/// grey ground, as everywhere a choice is shown.
+fn paint_colors(hdc: HDC, chosen: project::PaneColor, e: &pj::EditorLayout, dpi: i32) {
+    use polter_control_room::look;
+    use polter_control_room::project_mark::{self, State};
+    use polter_control_room::pane_color::Color;
+    use polter_projects::tone::ORDER;
+    let set = theme::system();
+    let rgb = |c: u32| look::Rgba { r: (c & 0xff) as u8, g: ((c >> 8) & 0xff) as u8, b: ((c >> 16) & 0xff) as u8, a: 1.0 };
+    let ground = rgb(set.bg());
+    let dark = !set.light;
+    let palette = look::theme(dark);
+    let px = dpi as f64 / 96.0;
+    let side = (look::window_tab::GLYPH * px).round() as i32;
+    let strength = project_mark::strength(State::Selected, dark);
+    let glow = project_mark::glow(px, strength);
+    let reach = (glow.reach * px).round() as i32;
+    for (tone, sq) in ORDER.iter().zip(e.swatches.iter()) {
+        let Some(tone) = Color::from_name(tone.name()) else { continue };
+        let r = rect(*sq);
+        let (x, y) = (r.left + (r.right - r.left - side) / 2, r.top + (r.bottom - r.top - side) / 2);
+        let ink = project_mark::toward(ground, tone.ink(palette), strength);
+        unsafe {
+            crate::control_room::screen_glow(hdc, x - reach, y - reach, &glow, ink);
+            crate::control_room::draw_shapes(hdc, x, y, side, &project_mark::shapes(), ink, 1.0);
+        }
+        if tone.name() == chosen.name() {
+            let pad = scale(2, dpi);
+            let ring = RECT { left: r.left - pad, top: r.top - pad, right: r.right + pad, bottom: r.bottom + pad };
+            frame_round(hdc, &ring, scale(4, dpi), set.link());
+        }
+    }
+}
+
+/// A rounded rectangle's outline, one pixel, in `colour`.
+fn frame_round(hdc: HDC, r: &RECT, radius: i32, colour: u32) {
+    unsafe {
+        let pen = CreatePen(PS_SOLID, 1, COLORREF(colour));
+        let old_pen = SelectObject(hdc, pen.into());
+        let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        let _ = RoundRect(hdc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
+        SelectObject(hdc, old_brush);
+        SelectObject(hdc, old_pen);
+        let _ = DeleteObject(pen.into());
+    }
+}
+
+/// The selected project is `tone` from now on (task 1796), open or not
+/// (`project_session::set_color`).
+fn set_color(color: project::PaneColor) {
+    let Some((_, item)) = dir_and_selected() else { return };
+    let done = crate::project_session::set_color(&item.path, color);
+    // Read again first: `select` clears the status line a failure is said in.
+    select(Some(item.path.clone()));
+    match done {
+        Ok(()) => crate::plogf!("[projects-ui] {:?} is {} now", item.name, color.name()),
+        Err(e) => say(e, true),
     }
 }
 

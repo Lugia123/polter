@@ -1284,7 +1284,35 @@ fn main() {
     for (on, said) in polter_control_room::act::follow_ask_cases() {
         println!("{}", polter_control_room::act::follow_ask_line(on, said.as_ref()));
     }
+    // The mark itself: its pages, its strength in each state, and its glow
+    // at the scales a screen has.
+    use polter_control_room::glyph::Outline;
+    use polter_control_room::project_mark::{self, State};
+    for s in project_mark::shapes() {
+        let Outline::RoundRect(x, y, w, h, r) = s.outline else { panic!("a page is a rounded rectangle") };
+        println!("project_mark shape x={x:.3} y={y:.3} w={w:.3} h={h:.3} r={r:.3} level={:.3}", s.level);
+    }
+    for dark in [false, true] {
+        for st in State::ALL {
+            println!("project_mark strength dark={dark} state={} {:.3}", st.name(), project_mark::strength(st, dark));
+        }
+    }
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+        for strength in [project_mark::strength(State::Rest, true), 1.0] {
+            let g = project_mark::glow(scale, strength);
+            let mid = g.side / 2;
+            println!(
+                "project_mark glow scale={scale:.2} strength={strength:.3} reach={:.3} side={} total={:.6} middle={:.6} top_middle={:.6}",
+                g.reach,
+                g.side,
+                g.total(),
+                g.at(mid, mid),
+                g.at(mid, (g.reach * scale) as usize)
+            );
+        }
+    }
 }
+
 
 /// The words of one allowance block, in English, on UTC.
 fn quota_words(name: &str, q: &quota::Quota) {

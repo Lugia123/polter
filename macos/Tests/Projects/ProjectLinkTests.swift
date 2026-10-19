@@ -257,7 +257,7 @@ struct ProjectLinkTests {
     @Test func markingAPaneTheSupervisorsUnmarksEveryOther() throws {
         let old = ProjectAgent.agent(role: "polter-supervisor", cli: "claude-code", session: "s", supervisor: true)
         var pages = ProjectPages(file: ProjectFile(
-            name: "p", savedAt: 1, group: "g",
+            name: "p", savedAt: 1, group: "g", color: .none,
             windows: [ProjectWindow(frame: nil, front: 0, tabs: [
                 ProjectTab(root: .split(direction: .horizontal, ratio: 0.5, left: leaf("/a", "0.snap", old), right: leaf("/b", "1.snap", .none, bySupervisor: true)), title: ""),
                 ProjectTab(root: leaf("/c", "2.snap", .unknown), title: ""),
@@ -268,7 +268,7 @@ struct ProjectLinkTests {
 
         pages.makeSupervisor(pane: "2.snap")
         #expect(pages.supervisorPane == "2.snap")
-        let file = ProjectFile(name: "p", savedAt: 1, group: "g", windows: pages.fileWindows, nextScrollback: 3)
+        let file = ProjectFile(name: "p", savedAt: 1, group: "g", color: .none, windows: pages.fileWindows, nextScrollback: 3)
         // Exactly one, so it reads back as it is written.
         #expect(try ProjectFile.decode(from: file.encoded()) == file)
         #expect(file.tabs.reduce(0) { $0 + $1.supervisorCount } == 1)

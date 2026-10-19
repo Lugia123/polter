@@ -730,6 +730,7 @@ mod tests {
             name: "demo".to_string(),
             saved_at: 1,
             group: None,
+            color: crate::project::PaneColor::None,
             windows: vec![Window {
                 frame: None,
                 front: 0,
@@ -856,6 +857,7 @@ mod tests {
             name: "three panes three dirs".to_string(),
             saved_at: 42,
             group: None,
+            color: crate::project::PaneColor::None,
             windows: vec![Window { frame: None, front: 0, tabs: vec![Tab::unnamed(saved)] }],
             next_scrollback: None,
         };

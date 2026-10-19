@@ -283,6 +283,71 @@ pub mod tab_dots {
     pub const RING_GAP: f64 = 2.0;
 }
 
+/// The mark of a page of a project: two stacked pages in a `window_tab.glyph` square, outlined in the project's colour and lit by a glow of it laid on with screen, which never makes the tab darker (task 1796).
+pub mod project_mark {
+    /// The back page's left edge, from the square's left.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const BACK_X0: f64 = 4.0;
+    /// The back page's top edge, from the square's top.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const BACK_Y0: f64 = 1.0;
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const BACK_X1: f64 = 13.0;
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const BACK_Y1: f64 = 10.0;
+    /// The front page. The back page is drawn only where the front one is not, `front_clear` round it.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const FRONT_X0: f64 = 1.0;
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const FRONT_Y0: f64 = 4.0;
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const FRONT_X1: f64 = 10.0;
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const FRONT_Y1: f64 = 13.0;
+    /// How far outside the front page the back page's line stops.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const FRONT_CLEAR: f64 = 0.75;
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const PAGE_RADIUS: f64 = 2.0;
+    /// The pages' line width.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const LINE: f64 = 1.5;
+    /// The glow's circle, round the square's centre, before it is blurred.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const GLOW_RADIUS: f64 = 10.0;
+    /// The glow's coverage at its middle, times the state's strength.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const GLOW_STRENGTH: f64 = 0.45;
+    /// The Gaussian blur of the glow's coverage (its sigma). Only the coverage is blurred; its colour is the project's everywhere.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const GLOW_BLUR: f64 = 2.5;
+    /// Round the mark's square, the room the glow mostly stays out of, so the lines keep the tab's ground beside them.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const CORE_GAP: f64 = 2.0;
+    /// The clear core's corner radius: the pages' 3 and `core_gap` more.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const CORE_RADIUS: f64 = 5.0;
+    /// The blur of the clear core's edge.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const CORE_BLUR: f64 = 0.8;
+    /// How much of the glow stays in the clear core, so the mark does not sit in a dark square of its own.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const CORE_KEEP: f64 = 0.15;
+    /// How strong the mark of a tab not in front is, dark theme: its colour mixed this far from the tab's ground toward the project's, and its glow times this.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const REST_DARK: f64 = 0.8;
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const HOVER_DARK: f64 = 0.9;
+    /// The same, light theme: a lighter colour on a light ground loses contrast fast.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const REST_LIGHT: f64 = 0.9;
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const HOVER_LIGHT: f64 = 0.95;
+    /// The tab in front: full.
+    /// Source: design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow.
+    pub const SELECTED: f64 = 1.0;
+}
+
 /// The tabs over a cell that holds several terminals.
 pub mod stack_tab {
     /// From the content's left and right edges to a tab's body: corner 8 + straight 4 + arc 8. Also the terminal text's inset.

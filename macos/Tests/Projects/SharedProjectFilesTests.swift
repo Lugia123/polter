@@ -15,7 +15,8 @@ import Foundation
 /// `index.txt` says what each is: `same` (read and written, it is the same
 /// bytes), `from` (`<stem>.in.json` read and written is the bytes of
 /// `<stem>.json`), `refused` (`<stem>.in.json` is from a later format and
-/// must not be read).
+/// must not be read), `damaged` (`<stem>.in.json` says what the format does
+/// not allow and must not be read).
 enum SharedProjectFiles {
     /// Where the files live, found from this file's own path -- the tests
     /// only ever run from a checkout.
@@ -80,6 +81,17 @@ enum SharedProjectFiles {
                     // The refusal asked for.
                 } catch {
                     reading.problems.append("\(stem).in.json must be refused as too new, and was refused as \(error)")
+                }
+
+            case "damaged":
+                reading.named += 1
+                do {
+                    let file = try ProjectFile.decode(from: try bytes("\(stem).in.json"))
+                    reading.problems.append("\(stem).in.json must be refused as damaged, and read as \(file)")
+                } catch ProjectFileError.tooNew {
+                    reading.problems.append("\(stem).in.json must be refused as damaged, and was refused as too new")
+                } catch {
+                    // The refusal asked for: it does not decode.
                 }
 
             default:
@@ -153,7 +165,7 @@ struct SharedProjectFilesTests {
         // Not `.none`, and not the agent the stray key describes.
         let leaf = ProjectNode.leaf(cwd: "/a", title: "", titleChosen: false, history: "", scrollback: "1.snap", bySupervisor: false, supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .unknown)
         #expect(file == ProjectFile(
-            name: "old", savedAt: 7, group: nil,
+            name: "old", savedAt: 7, group: nil, color: .none,
             windows: [ProjectWindow(frame: nil, front: 0, tabs: [ProjectTab(root: leaf, title: "")])],
             nextScrollback: 2))
         #expect(try ProjectFile.format(of: Data(json.utf8)) == 1)
@@ -292,7 +304,7 @@ struct SharedProjectFilesTests {
 
     private var threeTabs: ProjectFile {
         ProjectFile(
-            name: "p", savedAt: 1, group: "g",
+            name: "p", savedAt: 1, group: "g", color: .none,
             windows: [
                 ProjectWindow(
                     frame: ProjectFrame(origin: .bottomLeft, x: 1, y: 2, width: 3, height: 4),
