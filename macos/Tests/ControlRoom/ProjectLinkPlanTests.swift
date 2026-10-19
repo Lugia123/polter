@@ -191,23 +191,34 @@ struct ProjectLinkPlanTests {
 
     @Test func theBannerIsForWhatWasNotMade() {
         let projects = [Plan.Project(name: "polter", group: nil, savedAt: day, pages: 1)]
-        let taken = Plan.banner(why: "project_name_taken", tie: "undecided", group: "polter", projects: projects)
+        let taken = Plan.banner(why: "project_name_taken", tie: "undecided", group: "polter", projects: projects, unreadable: [])
         guard case .nameTaken(let text, let blocker) = taken else { Issue.record("no banner"); return }
         #expect(blocker == "polter")
         #expect(text.contains("1 page(s)"))
         let two = [Plan.Project(name: "a", group: "g", savedAt: day, pages: 1),
                    Plan.Project(name: "b", group: "g", savedAt: day, pages: 2),
                    Plan.Project(name: "c", group: nil, savedAt: day, pages: 1)]
-        let several = Plan.banner(why: "several_projects", tie: "undecided", group: "g", projects: two)
+        let several = Plan.banner(why: "several_projects", tie: "undecided", group: "g", projects: two, unreadable: [])
         guard case .several(_, let candidates) = several else { Issue.record("no banner"); return }
         #expect(candidates.map(\.name) == ["a", "b"])
-        let many = Plan.banner(why: "supervisor_of_several", tie: "undecided", group: "g", projects: [])
+        let many = Plan.banner(why: "supervisor_of_several", tie: "undecided", group: "g", projects: [], unreadable: [])
         #expect(many.map { if case .notMade(_, let save) = $0 { return save } else { return false } } == true)
-        let other = Plan.banner(why: "project_has_group", tie: "undecided", group: "g", projects: [])
+        let other = Plan.banner(why: "project_has_group", tie: "undecided", group: "g", projects: [], unreadable: [])
         #expect(other.map { if case .notMade(_, let save) = $0 { return save } else { return true } } == false)
-        #expect(Plan.banner(why: "none", tie: "bound", group: "g", projects: []) == nil)
-        #expect(Plan.banner(why: "not_taken_up", tie: "undecided", group: "g", projects: []) == nil)
-        #expect(Plan.banner(why: "declined", tie: "declined", group: "g", projects: []) == nil)
+        #expect(Plan.banner(why: "none", tie: "bound", group: "g", projects: [], unreadable: []) == nil)
+        #expect(Plan.banner(why: "not_taken_up", tie: "undecided", group: "g", projects: [], unreadable: []) == nil)
+        #expect(Plan.banner(why: "declined", tie: "declined", group: "g", projects: [], unreadable: []) == nil)
+        // Task 1807: a project kept while a file does not read names the
+        // files, and is not a "not made".
+        let kept = Plan.banner(why: "project_unreadable", tie: "bound", group: "g", projects: [],
+                               unreadable: ["g.json", "notes.json"])
+        if case .unreadable(let text) = kept {
+            #expect(text.contains("g.json, notes.json"))
+        } else {
+            Issue.record("expected the unreadable banner, got \(String(describing: kept))")
+        }
+        #expect(ProjectLinkRules.note(tie: "bound", why: "project_unreadable", name: "g") == .attention("unreadable"))
+        #expect(ProjectLinkRules.note(tie: "bound", why: "none", name: "g") == .name("g"))
     }
 
     // MARK: The submenu
@@ -249,6 +260,7 @@ struct ProjectLinkPlanTests {
         var did: [String] = []
         var refuse: String?
         func projects() -> [ProjectLinkPlan.Project] { [] }
+        func unreadableProjectFiles() -> [String] { [] }
         func open(project: String) { did.append("open \(project)") }
         func showInSettings(project: String?) { did.append("settings \(project ?? "-")") }
         func unlink(group: String, project: String) { did.append("unlink \(group) \(project)") }

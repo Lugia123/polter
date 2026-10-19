@@ -39,6 +39,7 @@ pub mod msg {
         n_("This supervisor looks after several groups with no project, so it is not known which one its tab is for.");
     pub const OTHER_SUPERVISOR: &str = n_("There is more than one supervisor in this group.");
     pub const PROJECTS_UNKNOWN: &str = n_("The projects on this computer have not been read yet");
+    pub const PROJECT_UNREADABLE: &str = n_("A project file could not be read");
     // "Use an Existing Project ›", one line per project: whose it is.
     pub const IN_NO_GROUP: &str = n_("{} — in no group");
     pub const OF_GROUP: &str = n_("{} — group “{}”");
@@ -55,11 +56,16 @@ pub mod msg {
     pub const WORD_NAME_TAKEN: &str = n_("Same-name project");
     pub const WORD_SEVERAL: &str = n_("Two projects");
     pub const WORD_NOT_MADE: &str = n_("Project not made");
+    pub const WORD_UNREADABLE: &str = n_("Project file unreadable");
     // The banner on the right (v2 D: it asks, it does not report).
     pub const BANNER_NAME_TAKEN: &str = n_(
         "There is already a project “{}” ({}, {} pages), in no group. A group's project has the group's name: add the supervisor's tab to it, as this group's project?",
     );
     pub const BANNER_SEVERAL: &str = n_("More than one project says it is this group's. Choose the one it uses; the others lose the group's name, and no file is deleted.");
+    // Task 1807: the group's project is kept while a file does not read.
+    pub const BANNER_UNREADABLE: &str = n_(
+        "The project file {} could not be read, so this group keeps its project as it is. Once the file reads again, the project is used again by itself.",
+    );
     pub const OPEN_FIRST: &str = n_("Open “{}” First");
     pub const LINK_EXISTING_DOTS: &str = n_("Use an Existing Project…");
     // The confirmation (v2 B1), a task dialog with command links.
@@ -134,6 +140,7 @@ pub fn reason(why: &str, name: &str, tr: &dyn Fn(&str) -> String) -> String {
         "supervisor_of_several" => tr(msg::SUPERVISOR_OF_SEVERAL),
         "other_supervisor" => tr(msg::OTHER_SUPERVISOR),
         "projects_unknown" => tr(msg::PROJECTS_UNKNOWN),
+        "project_unreadable" => tr(msg::PROJECT_UNREADABLE),
         _ => String::new(),
     }
 }
@@ -145,6 +152,7 @@ pub fn note_word(note: &Note, tr: &dyn Fn(&str) -> String) -> Option<String> {
         Note::Name(n) => Some(n.clone()),
         Note::Attention("name_taken") => Some(tr(msg::WORD_NAME_TAKEN)),
         Note::Attention("several") => Some(tr(msg::WORD_SEVERAL)),
+        Note::Attention("unreadable") => Some(tr(msg::WORD_UNREADABLE)),
         Note::Attention(_) => Some(tr(msg::WORD_NOT_MADE)),
     }
 }
@@ -194,7 +202,8 @@ pub struct Button {
 /// The banner on the right for a group whose tie was not made (§3.4), or
 /// none for a group with nothing to answer. `blocker`: the project with
 /// the group's name, when that is why. `candidates`: for several, the
-/// projects that say they are the group's.
+/// projects that say they are the group's. `unreadable`: the project files
+/// that do not read, which a group kept for one names (task 1807).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Banner {
     pub text: String,
@@ -203,7 +212,14 @@ pub struct Banner {
     pub uses: Vec<(String, String)>,
 }
 
-pub fn banner(note: &Note, why: &str, blocker: Option<&Blocker>, candidates: &[String], tr: &dyn Fn(&str) -> String) -> Option<Banner> {
+pub fn banner(
+    note: &Note,
+    why: &str,
+    blocker: Option<&Blocker>,
+    candidates: &[String],
+    unreadable: &[String],
+    tr: &dyn Fn(&str) -> String,
+) -> Option<Banner> {
     let decline = || Button { item: Item::DeclineProject, label: tr(msg::DECLINE_PROJECT) };
     match note {
         Note::Attention("name_taken") => {
@@ -224,6 +240,13 @@ pub fn banner(note: &Note, why: &str, blocker: Option<&Blocker>, candidates: &[S
             text: tr(msg::BANNER_SEVERAL),
             buttons: vec![decline()],
             uses: candidates.iter().map(|c| (c.clone(), fill(&tr(msg::USE_THIS), c))).collect(),
+        }),
+        // Which file to mend is what the person needs: they are named. Nothing
+        // to press -- mending it is outside Polter, and it comes back by itself.
+        Note::Attention("unreadable") => Some(Banner {
+            text: if unreadable.is_empty() { reason(why, "", tr) } else { fill(&tr(msg::BANNER_UNREADABLE), &unreadable.join(", ")) },
+            buttons: Vec::new(),
+            uses: Vec::new(),
         }),
         Note::Attention(_) => Some(Banner {
             text: reason(why, "", tr),
@@ -414,6 +437,7 @@ mod tests {
         let whys = [
             "none", "pending", "not_taken_up", "declined", "project_name_taken", "several_projects", "project_has_group",
             "supervisor_has_project", "supervisor_of_several", "other_supervisor", "no_supervisor", "projects_unknown",
+            "project_unreadable",
         ];
         for tie in ["undecided", "bound", "declined"] {
             for why in whys {
@@ -451,7 +475,7 @@ mod tests {
         let n = note("undecided", "project_name_taken", None);
         assert_eq!(note_word(&n, &en).as_deref(), Some("Same-name project"));
         let b = Blocker { name: "polter".into(), saved: "13 Oct".into(), pages: 1 };
-        let banner = banner(&n, "project_name_taken", Some(&b), &[], &en).expect("one to answer");
+        let banner = banner(&n, "project_name_taken", Some(&b), &[], &[], &en).expect("one to answer");
         assert!(banner.text.contains("“polter” (13 Oct, 1 pages)"), "{}", banner.text);
         let order: Vec<String> = banner.buttons.iter().map(|b| b.item.id()).collect();
         assert_eq!(order, ["join_existing", "replace_existing", "open_blocker", "decline_project"]);
@@ -461,7 +485,23 @@ mod tests {
     }
 
     fn banner_of(tie: &str, why: &str) -> Option<Banner> {
-        banner(&note(tie, why, Some("web")), why, None, &[], &en)
+        banner(&note(tie, why, Some("web")), why, None, &[], &[], &en)
+    }
+
+    /// Task 1807: a group kept for a project whose file does not read says
+    /// so, before its name, and names the files to mend; nothing to press.
+    #[test]
+    fn a_kept_project_whose_file_does_not_read_names_the_file() {
+        let n = note("bound", "project_unreadable", Some("web"));
+        assert_eq!(n.said(), "attention:unreadable");
+        assert_eq!(note_word(&n, &en).as_deref(), Some("Project file unreadable"));
+        let files = ["web.json".to_string(), "notes.json".to_string()];
+        let b = banner(&n, "project_unreadable", None, &[], &files, &en).expect("one to say");
+        assert!(b.text.contains("web.json, notes.json"), "{}", b.text);
+        assert!(!b.text.contains("{}"), "{}", b.text);
+        assert!(b.buttons.is_empty() && b.uses.is_empty());
+        // The same project, read: its name as ever.
+        assert_eq!(note("bound", "none", Some("web")).said(), "name:web");
     }
 
     #[test]

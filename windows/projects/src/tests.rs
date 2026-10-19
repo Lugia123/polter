@@ -687,7 +687,7 @@ fn the_statement_says_every_key_of_every_project() {
         Stated { name: "notes".into(), group: None, pages: 1, open: None, supervisor: None, workers: Vec::new() },
     ];
     assert_eq!(
-        stated::statement(&list),
+        stated::statement(&list, &[]),
         concat!(
             r#"{"act":"projects","list":["#,
             r#"{"name":"web-app","group":"web-app","pages":3,"open":[["0xa1","0xb1"],["0xb2"]],"supervisor":"0xa1","workers":["0xb1","0xb2"]},"#,
@@ -698,10 +698,12 @@ fn the_statement_says_every_key_of_every_project() {
     assert_eq!(stated::refusal(&list), None);
     // No project at all is still a statement: "there are none" is not
     // "nothing was said".
-    assert_eq!(stated::statement(&[]), r#"{"act":"projects","list":[]}"#);
+    assert_eq!(stated::statement(&[], &[]), r#"{"act":"projects","list":[]}"#);
+    // Task 1807: the files that did not read, said only when there are any.
+    assert_eq!(stated::statement(&[], &["notes.json".into()]), r#"{"act":"projects","list":[],"unreadable":["notes.json"]}"#);
     // A name is written as JSON writes it.
     let odd = [Stated { name: "a\"b\\c".into(), group: None, pages: 0, open: None, supervisor: None, workers: Vec::new() }];
-    assert_eq!(stated::statement(&odd), r#"{"act":"projects","list":[{"name":"a\"b\\c","group":null,"pages":0,"open":null,"supervisor":null,"workers":[]}]}"#);
+    assert_eq!(stated::statement(&odd, &[]), r#"{"act":"projects","list":[{"name":"a\"b\\c","group":null,"pages":0,"open":null,"supervisor":null,"workers":[]}]}"#);
 }
 
 #[test]
@@ -1192,14 +1194,35 @@ fn what_is_said_is_the_bytes_the_core_is_tested_on() {
     assert_eq!(
         lines,
         [
-            stated::statement(&list),
-            stated::statement(&[]),
+            stated::statement(&list, &[]),
+            stated::statement(&[], &[]),
             stated::failed("web-app", FailedWhy::NotFound),
             stated::failed("web-app", FailedWhy::Unreadable),
             stated::remove_question(&id(0xb2)),
             stated::rename_question("notes", "scratch"),
+            stated::statement(&[], &["notes.json".into()]),
         ]
     );
+}
+
+/// Task 1807: the files said not to read are the `.json` ones, by name,
+/// once each -- not a temporary file, a snapshot or a previous version,
+/// which would keep a deleted project's group tied for as long as they lay
+/// there.
+#[test]
+fn only_a_json_file_that_does_not_read_is_said() {
+    use std::path::Path;
+    let found = [
+        Path::new("/p/notes.json"),
+        Path::new("/p/.notes.json.12.0.tmp"),
+        Path::new("/p/notes.json.prev"),
+        Path::new("/p/0.snap"),
+        Path::new("/p/Web.JSON"),
+        Path::new("/p/.json"),
+        Path::new("/q/notes.json"),
+    ];
+    assert_eq!(stated::unreadable(found), ["Web.JSON", "notes.json"]);
+    assert!(stated::unreadable(std::iter::empty()).is_empty());
 }
 
 /// **The first save after a project opens does not take its marks off it**

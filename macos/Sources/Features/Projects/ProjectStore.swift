@@ -172,6 +172,17 @@ final class ProjectStore {
         }
     }
 
+    /// The project files in the directory that did not decode (task 1807):
+    /// a project that is there and is not known, which is not one gone.
+    func unreadable() -> [URL] {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil)) ?? []
+        var failed: [URL] = []
+        _ = ProjectListing.decode(urls.filter { $0.pathExtension == "json" }) { url, _ in failed.append(url) }
+        return failed
+    }
+
     /// The project called `name`, wherever it is saved -- see
     /// `ProjectListing.locate`.
     func entry(name: String) -> Entry? {

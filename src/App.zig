@@ -2384,9 +2384,17 @@ fn deliverProjectLaunch(self: *App, now_ms: u64) void {
 }
 
 /// The host's statement of every project (`ControlAct`, `projects`).
-fn controlActStateProjects(ctx: *anyopaque, list: []const poltergeistpkg.Projects.Stated) anyerror!void {
+fn controlActStateProjects(ctx: *anyopaque, statement: poltergeistpkg.Projects.Statement) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    try self.projects.state(list);
+    const list = statement.list;
+    if (try self.projects.state(list, statement.unreadable)) {
+        // Said when it changes, not at every statement (task 1807).
+        if (statement.unreadable.len == 0) {
+            log.info("projects: every project file reads again", .{});
+        } else for (statement.unreadable) |f| {
+            log.warn("projects: the project file {s} could not be read; a group whose project is not listed keeps it until it reads or is removed", .{f});
+        }
+    }
     self.noteTerminalProjects();
 
     // The panes a project's supervisor opened, said back after a restart
@@ -2421,7 +2429,11 @@ fn controlActProjectFailed(ctx: *anyopaque, name: []const u8, why: poltergeistpk
         // The project did not come (task 1794 gave both hosts the word).
         self.chat.failStart(group, .project_never_opened);
     }
-    if (why == .not_found) {
+    // Not found while some project file does not read is not known to be
+    // gone: a host finds a project by reading its file (task 1807).
+    if (why == .not_found and self.projects.unreadable.len > 0) {
+        log.warn("control room: a group's project was not found, and a project file could not be read; the group keeps it", .{});
+    } else if (why == .not_found) {
         if (self.chat.setProject(group, .undecided) catch false) {
             self.chat.setProjectClaim(group, null);
             if (self.group_log) |*l| l.project(group, .undecided);

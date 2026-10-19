@@ -3,6 +3,7 @@
   "menu": [
     { "tie": "bound", "why": "none", "steward": true, "name": "web" },
     { "tie": "bound", "why": "none", "steward": false, "name": "web" },
+    { "tie": "bound", "why": "project_unreadable", "steward": true, "name": "web" },
     { "tie": "undecided", "why": "not_taken_up", "steward": false, "name": null },
     { "tie": "undecided", "why": "not_taken_up", "steward": true, "name": null },
     { "tie": "undecided", "why": "pending", "steward": true, "name": null },

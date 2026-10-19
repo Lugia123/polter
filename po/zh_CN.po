@@ -6143,6 +6143,18 @@ msgstr "两个项目"
 msgid "Project not made"
 msgstr "项目没建成"
 
+#: windows/control-room/src/project_words.rs:42
+msgid "A project file could not be read"
+msgstr "有项目文件读不出"
+
+#: windows/control-room/src/project_words.rs:59
+msgid "Project file unreadable"
+msgstr "项目文件读不出"
+
+#: windows/control-room/src/project_words.rs:66
+msgid "The project file {} could not be read, so this group keeps its project as it is. Once the file reads again, the project is used again by itself."
+msgstr "项目文件 {} 读不出，这个群的项目先原样保留。文件能读了以后，项目会自动接着用。"
+
 #: windows/control-room/src/project_words.rs:60
 #, rust-format
 msgid ""

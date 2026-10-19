@@ -167,6 +167,10 @@ final class ProjectLinkDesk: ControlRoomProjectHands {
         return now
     }
 
+    func unreadableProjectFiles() -> [String] {
+        ProjectLink.unreadable(store.unreadable())
+    }
+
     func open(project: String) {
         guard let entry = store.entry(name: project) else {
             tell(ProjectStore.StoreError.notFound.localizedDescription)

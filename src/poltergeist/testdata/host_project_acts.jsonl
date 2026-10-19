@@ -4,3 +4,4 @@
 {"act":"project_failed","name":"web-app","why":"unreadable"}
 {"act":"project_remove","terminal":"0x00000000000000b2"}
 {"act":"project_rename","from":"notes","to":"scratch"}
+{"act":"projects","list":[],"unreadable":["notes.json"]}

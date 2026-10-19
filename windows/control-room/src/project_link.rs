@@ -90,7 +90,7 @@ pub enum Note {
     /// The project's name, in the second ink.
     Name(String),
     /// The attention glyph and a short word: there is something to answer.
-    /// The word's key: `name_taken`, `several`, `not_made`.
+    /// The word's key: `name_taken`, `several`, `not_made`, `unreadable`.
     Attention(&'static str),
 }
 
@@ -106,6 +106,10 @@ impl Note {
 }
 
 pub fn note(tie: &str, why: &str, name: Option<&str>) -> Note {
+    // Kept, and its file does not read (task 1807): that, before its name.
+    if tie == "bound" && why == "project_unreadable" {
+        return Note::Attention("unreadable");
+    }
     if tie == "bound" {
         if let Some(name) = name {
             return Note::Name(name.into());

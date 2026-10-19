@@ -88,6 +88,12 @@ alloc: Allocator,
 stated: ?[]const Stated = null,
 arena: ?std.heap.ArenaAllocator = null,
 
+/// The project files the host found and could not read (task 1807), by
+/// file name, from the same statement; in `arena`. A project whose file is
+/// one of them is in the directory and not in `stated`: **not known, which
+/// is not gone** -- see `standingOf`.
+unreadable: []const []const u8 = &.{},
+
 /// Every terminal a statement has ever shown on a page of a project, in
 /// this run. A tab its supervisor opened is ordered into the group's
 /// project until it is seen there once; after that, somebody taking it out
@@ -105,6 +111,42 @@ pub fn deinit(self: *Projects) void {
 }
 
 pub const ParseError = error{ BadRequest, OutOfMemory };
+
+/// A whole statement: the projects, and the files that could not be read
+/// as one (task 1807).
+pub const Statement = struct {
+    list: []const Stated,
+    unreadable: []const []const u8,
+};
+
+/// Read the `unreadable` of a statement: the names of project files the
+/// host could not read. Absent is none -- a host from before it said.
+/// Only a `.json` file can be a project; any other name (a temporary file,
+/// a snapshot) is not one and is left out, so that it cannot hold a group's
+/// tie forever (task 1807).
+pub fn parseUnreadable(arena: Allocator, value: ?std.json.Value) ParseError![]const []const u8 {
+    const v = value orelse return &.{};
+    const items = switch (v) {
+        .array => |a| a.items,
+        else => return error.BadRequest,
+    };
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (items) |item| {
+        const name = switch (item) {
+            .string => |s| s,
+            else => return error.BadRequest,
+        };
+        if (!isProjectFileName(name)) continue;
+        try out.append(arena, name);
+    }
+    return out.items;
+}
+
+/// `<something>.json`, and a name, not a path.
+fn isProjectFileName(name: []const u8) bool {
+    if (std.mem.indexOfAny(u8, name, "/\\") != null) return false;
+    return name.len > ".json".len and std.ascii.endsWithIgnoreCase(name, ".json");
+}
 
 /// Read the `list` of a statement. What it returns borrows from `arena`.
 ///
@@ -195,8 +237,9 @@ fn idOf(v: std.json.Value) error{BadRequest}!Id {
     return std.fmt.parseInt(u64, s[2..], 16) catch error.BadRequest;
 }
 
-/// Take a statement as everything the host knows. Copies it.
-pub fn state(self: *Projects, list: []const Stated) Allocator.Error!void {
+/// Take a statement as everything the host knows. Copies it. Whether the
+/// files that could not be read are other than last time, for the log.
+pub fn state(self: *Projects, list: []const Stated, unreadable: []const []const u8) Allocator.Error!bool {
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     errdefer arena.deinit();
     const aa = arena.allocator();
@@ -220,9 +263,21 @@ pub fn state(self: *Projects, list: []const Stated) Allocator.Error!void {
         };
     }
 
+    const files = try aa.alloc([]const u8, unreadable.len);
+    for (unreadable, files) |f, *k| k.* = try aa.dupe(u8, f);
+    const changed = !sameNames(self.unreadable, files);
+
     if (self.arena) |*old| old.deinit();
     self.arena = arena;
     self.stated = kept;
+    self.unreadable = files;
+    return changed;
+}
+
+fn sameNames(a: []const []const u8, b: []const []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| if (!std.mem.eql(u8, x, y)) return false;
+    return true;
 }
 
 /// The project by that name in the last statement; null when there is
@@ -459,6 +514,10 @@ pub const Why = enum {
     project_name_taken,
     /// More than one project file says it is this group's.
     several_projects,
+    /// It has one, the host does not list it, and some project file could
+    /// not be read (`unreadable`): it is kept, not untied (task 1807). The
+    /// host says which files.
+    project_unreadable,
 };
 
 /// What the host is asked to do.
@@ -611,6 +670,14 @@ fn standingOf(
     switch (g.tie) {
         .bound => |name| {
             const p = self.find(name) orelse {
+                // Not listed, and a project file could not be read: it may
+                // be this one. Not known, which is not gone (task 1807) --
+                // the tie stays, and comes back into use by itself once the
+                // file reads again. Which file is whose cannot be told: its
+                // name and group are inside it. So any file that does not
+                // read holds every tie whose project is not listed; one
+                // removed leaves the others to be untied as gone.
+                if (self.unreadable.len > 0) return .project_unreadable;
                 // Gone. The group goes back to being started by directory,
                 // and is not offered a project again until it is taken up
                 // again: the person who deleted one did not ask for another.
@@ -815,7 +882,8 @@ pub const ToolRefusal = error{
 pub fn refusalOf(why: Why) ?ToolRefusal {
     return switch (why) {
         .none, .pending => null,
-        .projects_unknown => error.ProjectsUnknown,
+        // Not known either way while its file does not read (task 1807).
+        .projects_unknown, .project_unreadable => error.ProjectsUnknown,
         .project_has_group, .several_projects, .supervisor_has_project => error.ProjectHasGroup,
         .project_name_taken => error.ProjectNameTaken,
         // What only applies to a tie the core works out by itself reads,
@@ -888,7 +956,7 @@ fn stateJson(p: *Projects, json: []const u8) !void {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const v = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), json, .{});
-    try p.state(try parse(arena.allocator(), v));
+    _ = try p.state(try parse(arena.allocator(), v), &.{});
 }
 
 fn view(name: []const u8, tie: Tie, steward: ?Id, claim: ?Chat.ProjectClaim) GroupView {
@@ -1406,7 +1474,7 @@ test "Projects: the panes a project's supervisor opened are said with it, each o
     // Kept as said, in the order said.
     var p: Projects = .init(testing.allocator);
     defer p.deinit();
-    try p.state(list);
+    _ = try p.state(list, &.{});
     try testing.expectEqualSlices(Id, &.{ 0xb1, 0xb2 }, p.find("web-app").?.workers);
 
     for ([_][]const u8{
@@ -1737,4 +1805,60 @@ test "task 1795: the left of the agent before does not have the next one judged 
     try testing.expect(!judged.due(0xa1, 0));
     judged.seen(0xa1, true);
     try testing.expect(judged.due(0xa1, 0));
+}
+
+test "task 1807: a project whose file does not read is not gone: its group keeps it, and takes it up again when the file reads" {
+    var p: Projects = .init(testing.allocator);
+    defer p.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const groups = [_]GroupView{view("notes", .{ .bound = "notes" }, 0xa1, took(0xa1))};
+    const unreadable = [_][]const u8{"notes.json"};
+
+    // Not listed, and a file that does not read: kept, and said so.
+    try testing.expect(try p.state(&.{}, &unreadable));
+    var out = try p.reconcile(aa, &groups, &.{});
+    try testing.expectEqual(Why.project_unreadable, out.standings[0].why);
+    try testing.expectEqual(@as(usize, 0), out.commits.len);
+    // The same again is not a change, for the log.
+    try testing.expect(!try p.state(&.{}, &unreadable));
+
+    // The file reads again: listed, and nothing to say.
+    try testing.expect(try p.state(&.{.{ .name = "notes", .group = "notes", .pages = 1, .open = null, .supervisor = null, .workers = &.{} }}, &.{}));
+    out = try p.reconcile(aa, &groups, &.{});
+    try testing.expectEqual(Why.none, out.standings[0].why);
+    try testing.expectEqual(@as(usize, 0), out.commits.len);
+
+    // The file is removed: nothing left that does not read, and gone is
+    // gone -- untied, as before.
+    _ = try p.state(&.{}, &.{});
+    out = try p.reconcile(aa, &groups, &.{});
+    try testing.expectEqual(Why.not_taken_up, out.standings[0].why);
+    try testing.expectEqual(@as(usize, 1), out.commits.len);
+    try testing.expectEqual(@as(?[]const u8, null), out.commits[0].project);
+}
+
+test "task 1807: only a .json file that does not read holds a tie; a temporary file or a snapshot does not" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, aa,
+        \\[".notes.json.12.0.tmp","notes.json.tmp","0.snap","notes.json.prev","notes.json.deleted","a/b.json","..\\c.json",".json","Notes.JSON","notes.json"]
+    , .{});
+    const kept = try parseUnreadable(aa, v);
+    try testing.expectEqual(@as(usize, 2), kept.len);
+    try testing.expectEqualStrings("Notes.JSON", kept[0]);
+    try testing.expectEqualStrings("notes.json", kept[1]);
+    try testing.expectEqual(@as(usize, 0), (try parseUnreadable(aa, null)).len);
+
+    // Such names alone leave a tie to be untied as gone.
+    var p: Projects = .init(testing.allocator);
+    defer p.deinit();
+    const t = try std.json.parseFromSliceLeaky(std.json.Value, aa,
+        \\[".notes.json.12.0.tmp","0.snap"]
+    , .{});
+    _ = try p.state(&.{}, try parseUnreadable(aa, t));
+    const out = try p.reconcile(aa, &.{view("notes", .{ .bound = "notes" }, 0xa1, took(0xa1))}, &.{});
+    try testing.expectEqual(Why.not_taken_up, out.standings[0].why);
 }

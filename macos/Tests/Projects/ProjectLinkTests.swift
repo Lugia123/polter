@@ -37,17 +37,27 @@ struct ProjectLinkTests {
         let text = try String(contentsOf: Self.testdata.appendingPathComponent("host_project_acts.txt"), encoding: .utf8)
         let lines = text.split(separator: "\n").map(String.init)
         let written = [
-            Link.statement([webApp, notes]),
-            Link.statement([]),
+            Link.statement([webApp, notes], unreadable: []),
+            Link.statement([], unreadable: []),
             Link.failed("web-app", .notFound),
             Link.failed("web-app", .unreadable),
             Link.askRemove(terminal: Link.terminal(0xb2)),
             Link.askRename(from: "web-app", to: "storefront"),
+            Link.statement([], unreadable: ["notes \"2\" 写.json"]),
         ].map { String(bytes: $0, encoding: .utf8) ?? "" }
         #expect(lines.count == written.count)
         for (line, mine) in zip(lines, written) {
             #expect(mine == line)
         }
+    }
+
+    /// Task 1807: the files said not to read are the `.json` ones, by name,
+    /// once each.
+    @Test func onlyAJsonFileThatDoesNotReadIsSaid() {
+        let found = ["/p/notes.json", "/p/.notes.json.12.0.tmp", "/p/notes.json.prev", "/p/0.snap",
+                     "/p/Web.JSON", "/p/.json", "/q/notes.json"].map { URL(fileURLWithPath: $0) }
+        #expect(Link.unreadable(found) == ["Web.JSON", "notes.json"])
+        #expect(Link.unreadable([]).isEmpty)
     }
 
     @Test func aTerminalIsWrittenAsTheCoreWritesIt() {
@@ -60,7 +70,7 @@ struct ProjectLinkTests {
     /// and an empty list, not by leaving keys out -- to the core a key left
     /// out is a sentence refused whole.
     @Test func aClosedProjectStillSaysEveryKey() throws {
-        let said = try #require(JSONSerialization.jsonObject(with: Link.statement([notes])) as? [String: Any])
+        let said = try #require(JSONSerialization.jsonObject(with: Link.statement([notes], unreadable: [])) as? [String: Any])
         let project = try #require((said["list"] as? [[String: Any]])?.first)
         #expect(Set(project.keys) == ["name", "group", "pages", "open", "supervisor", "workers"])
         #expect(project["group"] is NSNull)

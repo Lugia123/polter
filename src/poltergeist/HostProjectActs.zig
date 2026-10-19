@@ -23,7 +23,8 @@ test "HostProjectActs: every request a host writes about projects is one the cor
     // Everything, two projects: one open with a supervisor, one closed.
     {
         const act = try ControlAct.parse(aa, it.next().?);
-        const list = act.projects;
+        const list = act.projects.list;
+        try testing.expectEqual(@as(usize, 0), act.projects.unreadable.len);
         try testing.expectEqual(@as(usize, 2), list.len);
         try testing.expectEqualStrings("web-app", list[0].name);
         try testing.expectEqualStrings("web-app", list[0].group.?);
@@ -41,7 +42,7 @@ test "HostProjectActs: every request a host writes about projects is one the cor
         try testing.expect(list[1].supervisor == null);
     }
     // No project at all is still a statement.
-    try testing.expectEqual(@as(usize, 0), (try ControlAct.parse(aa, it.next().?)).projects.len);
+    try testing.expectEqual(@as(usize, 0), (try ControlAct.parse(aa, it.next().?)).projects.list.len);
     {
         const act = try ControlAct.parse(aa, it.next().?);
         try testing.expectEqualStrings("web-app", act.project_failed.name);
@@ -55,5 +56,12 @@ test "HostProjectActs: every request a host writes about projects is one the cor
         try testing.expectEqualStrings("storefront", act.project_rename.to);
     }
     // Nothing in the file this did not read.
+    {
+        // A file that did not read (task 1807).
+        const act = try ControlAct.parse(aa, it.next().?);
+        try testing.expectEqual(@as(usize, 0), act.projects.list.len);
+        try testing.expectEqual(@as(usize, 1), act.projects.unreadable.len);
+        try testing.expectEqualStrings("notes \"2\" 写.json", act.projects.unreadable[0]);
+    }
     try testing.expect(it.next() == null);
 }

@@ -91,7 +91,7 @@ final class ProjectLinker {
     }
 
     private func restate() {
-        let request = ProjectLink.statement(stated())
+        let request = ProjectLink.statement(stated(), unreadable: ProjectLink.unreadable(store.unreadable()))
         guard request != lastStated else { return }
         if let refusal = send(request) {
             // Refused whole, and what was said before still stands. Not

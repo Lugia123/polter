@@ -75,7 +75,8 @@ enum ProjectLinkRules {
         /// The project's name, in the second ink.
         case name(String)
         /// The attention glyph and a short word: there is something to
-        /// answer. The word's key: `name_taken`, `several`, `not_made`.
+        /// answer. The word's key: `name_taken`, `several`, `not_made`,
+        /// `unreadable`.
         case attention(String)
 
         var said: String {
@@ -127,6 +128,8 @@ enum ProjectLinkRules {
     }
 
     static func note(tie: String, why: String, name: String?) -> Note {
+        // Kept, and its file does not read (task 1807): that, before its name.
+        if tie == "bound", why == "project_unreadable" { return .attention("unreadable") }
         if tie == "bound", let name { return .name(name) }
         if tie != "undecided" { return .none }
         switch why {

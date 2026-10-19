@@ -2649,7 +2649,8 @@ fn notice_band(hwnd: HWND, width: f64, scale: f64, theme: &look::Theme) -> Optio
                 pages: k.pages,
             });
             let candidates: Vec<String> = known.iter().filter(|k| k.group.as_deref() == Some(group.as_str())).map(|k| k.name.clone()).collect();
-            let banner = project_words::banner(&note, &p.why, blocker.as_ref(), &candidates, &t)?;
+            let unreadable = crate::project_session::unreadable();
+            let banner = project_words::banner(&note, &p.why, blocker.as_ref(), &candidates, &unreadable, &t)?;
             Some(project_notice::band(project_notice::Notice::Banner(&banner), w, theme, &measure))
         })
     };

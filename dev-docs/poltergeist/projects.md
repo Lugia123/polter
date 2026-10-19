@@ -31,6 +31,7 @@
 | 情形 | 怎么办 |
 | --- | --- |
 | 群说绑着 P，宿主的清单里没有 P | 群**解绑**（文件没了），回到选目录；不当场再提议一个——删项目的人没要新的 |
+| 群说绑着 P，清单里没有 P，**但宿主说有项目文件读不出**（`unreadable`） | **不解绑**，原因 `project_unreadable`（#1807）：读不出不是没了，那个文件可能就是 P。读不出的文件说不出自己是谁（名字和群都在文件里），所以只要有一个读不出，所有「清单里找不到」的绑定都先留着；文件修好就照常接上，坏文件删掉才按「没了」解绑。总控台横幅写出读不出的文件名。宿主打开项目回 `not_found` 时同样不解绑 |
 | 群说绑着 P，P 的文件写的是别的群或没写 | 待办 `set_group`：把文件改对 |
 | 另一个文件也自称是这个群的（复制了项目文件） | 待办 `set_group`→`null`：清掉那一个 |
 | 文件自称属于一个不存在的群，或一个说过「没有」的群 | 待办 `set_group`→`null` |
@@ -56,6 +57,9 @@
   终端（`ghostty_surface_poltergeist_id` 的那个号，`0x` 加 16 位十六进制）、文件标成总管的那一格里现在是
   哪个终端，文件标成「总管开的」那些格里现在是哪些终端（`workers`，任务 #1495，见第 9 节）。没开就是
   `"open":null`、`"supervisor":null`、`"workers":[]`。**六个键每一项都要写**，漏写不是「没有」，整句被拒。
+- `"unreadable":["notes.json",…]`（#1807，可选）：项目目录里**有、但读不出**的项目文件名。只有 `.json` 算，
+  临时文件、`.snap`、`.prev` 不算（不然一个残留的临时文件会让被删项目的群永远解不了绑）。没有就不写，
+  不写等于空。核心见 §2：有它在，清单里找不到的绑定先留着。
 - **它替换上一句**，不是增量。丢一句不要紧，下一句会把全部再说一遍。
 - 什么时候说：启动时读完项目目录说一次；此后项目被新建、打开、关闭、改名、删除，或者多了少了一页、
   一格，都重说。说多了没有代价。
@@ -132,7 +136,8 @@
 - `pages` / `open` 在宿主没说过时是 `null`：**不知道不是 0，也不是「关着」**。
 - `why` 一个词说清现状：`none`（绑着，没事）、`projects_unknown`（宿主没说过）、`not_taken_up`（旧群，
   这一轮还没有总管接手）、`declined`、`pending`（待办已经发给宿主）、`no_supervisor`、`other_supervisor`、
-  `supervisor_of_several`、`supervisor_has_project`、`project_has_group`、`project_name_taken`、`several_projects`。
+  `supervisor_of_several`、`supervisor_has_project`、`project_has_group`、`project_name_taken`、`several_projects`、
+  `project_unreadable`（绑着，清单里没有，而有项目文件读不出：先留着，见 §2）。
 
 ## 5. 从群启动
 

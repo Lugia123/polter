@@ -127,7 +127,8 @@
 //!    {"name":"web-app","group":"web-app"|null,"pages":3,
 //!     "open":null | [["0x…","0x…"],["0x…"]],
 //!     "supervisor":"0x…"|null,
-//!     "workers":["0x…", …]}, … ]}
+//!     "workers":["0x…", …]}, … ],
+//!  "unreadable":["notes.json", …]}
 //! {"act":"project_failed","name":"web-app","why":"not_found"|"unreadable"}
 //! {"act":"project_remove","terminal":"0x…"}
 //! {"act":"project_rename","from":"web-app","to":"storefront"}
@@ -152,7 +153,11 @@
 //! has the whole of it): each project, the group its file names, how many
 //! pages it has, and for one that is open the terminals on each page, the
 //! one in the supervisor's pane, and the ones in the panes its file marks
-//! as opened by its supervisor (`workers`; empty when none). Every key is said in every entry. It
+//! as opened by its supervisor (`workers`; empty when none). Every key is said in every entry.
+//! `unreadable` names the project files the host found and could not read
+//! (task 1807): a group whose project is not listed keeps it while any is
+//! there, since that file may be its project's. Only `.json` names count;
+//! absent is none. It
 //! replaces what was said before; a list that does not read whole is
 //! refused whole and the last one stands. The host says it at start, and
 //! whenever a project is made, opened, closed, renamed, deleted, or gains
@@ -211,7 +216,7 @@
 //! | take_over | `NoSuchGroup` | the group is not there |
 //! | take_over | `NotStartedByHand` | its supervisor is not one an adapter recognised as started by hand, or that adapter gave no way to quit it |
 //! | take_over | `AlreadyTakingOver` | a take-over is under way |
-//! | projects | `BadRequest` | an entry lacks a key, two projects have one name, a terminal is on the pages of two, or the supervisor's pane is on no page |
+//! | projects | `BadRequest` | an entry lacks a key, two projects have one name, a terminal is on the pages of two, or the supervisor's pane is on no page; `unreadable` is not a list of strings |
 //! | project_failed | `NoSuchProject` | no group is tied to a project by that name |
 //! | project_remove | `ProjectsUnknown` | the host has stated nothing yet |
 //! | project_remove | `NotInAProject` | that terminal is on no page of an open project |
@@ -271,7 +276,7 @@ pub const Act = union(enum) {
     /// Empty `role`, `cwd` and `cli` are "the one the snapshot names".
     start_supervisor: struct { group: []const u8, role: []const u8, cwd: []const u8, cli: []const u8 = "", session: Session },
     /// Everything the host knows about projects, replacing what it said.
-    projects: []const Projects.Stated,
+    projects: Projects.Statement,
     project_failed: struct { name: []const u8, why: ProjectFailure },
     project_remove: Id,
     project_rename: struct { from: []const u8, to: []const u8 },
@@ -413,7 +418,7 @@ pub const Host = struct {
     /// and `cwd` are the snapshot's.
     startSupervisor: *const fn (ctx: *anyopaque, group: []const u8, role: []const u8, cwd: []const u8, cli: []const u8, session: Session) anyerror!void,
     /// Take a statement of every project as what is now known.
-    stateProjects: *const fn (ctx: *anyopaque, list: []const Projects.Stated) anyerror!void,
+    stateProjects: *const fn (ctx: *anyopaque, statement: Projects.Statement) anyerror!void,
     /// A project the host was ordered to open did not open.
     projectFailed: *const fn (ctx: *anyopaque, name: []const u8, why: ProjectFailure) anyerror!void,
     /// Whether the page `terminal` is on may be taken out of its project;
@@ -555,7 +560,10 @@ pub fn parse(arena: Allocator, json: []const u8) (Refusal || Allocator.Error)!Ac
                     .last,
             },
         },
-        .projects => .{ .projects = try Projects.parse(arena, try fieldOf(obj, "list")) },
+        .projects => .{ .projects = .{
+            .list = try Projects.parse(arena, try fieldOf(obj, "list")),
+            .unreadable = try Projects.parseUnreadable(arena, obj.get("unreadable")),
+        } },
         .project_failed => .{ .project_failed = .{
             .name = try textOf(obj, "name"),
             .why = std.meta.stringToEnum(ProjectFailure, try textOf(obj, "why")) orelse return error.BadRequest,
@@ -707,7 +715,7 @@ pub fn perform(
             if (chat.startOf(s.group, now_ms).state == .starting) return error.AlreadyStarting;
             try host.startSupervisor(host.ctx, s.group, s.role, s.cwd, s.cli, s.session);
         },
-        .projects => |list| try host.stateProjects(host.ctx, list),
+        .projects => |s| try host.stateProjects(host.ctx, s),
         .project_failed => |f| try host.projectFailed(host.ctx, f.name, f.why),
         .project_remove => |terminal| try host.projectRemove(host.ctx, terminal),
         .project_rename => |r| try host.projectRename(host.ctx, r.from, r.to),
@@ -817,6 +825,8 @@ const Recorder = struct {
     /// How many projects the last statement had, and how many open.
     stated: ?usize = null,
     stated_open: usize = 0,
+    /// How many unreadable files it named (task 1807).
+    stated_unreadable: usize = 0,
     project_failed: ?ProjectFailure = null,
     asked_remove: ?Id = null,
     renames: usize = 0,
@@ -972,12 +982,13 @@ const Recorder = struct {
         self.taken_over += 1;
     }
 
-    fn stateProjects(ctx: *anyopaque, list: []const Projects.Stated) anyerror!void {
+    fn stateProjects(ctx: *anyopaque, statement: Projects.Statement) anyerror!void {
         const self: *Recorder = @ptrCast(@alignCast(ctx));
         if (self.refuse_with) |err| return err;
-        self.stated = list.len;
+        self.stated = statement.list.len;
+        self.stated_unreadable = statement.unreadable.len;
         self.stated_open = 0;
-        for (list) |p| {
+        for (statement.list) |p| {
             if (p.open != null) self.stated_open += 1;
         }
     }
@@ -1540,6 +1551,14 @@ test "Projects: what the host says about projects reaches the core whole, and wh
         \\{"act":"projects","list":[]}
     , 1_000);
     try testing.expectEqual(@as(?usize, 0), b.rec.stated);
+    try testing.expectEqual(@as(usize, 0), b.rec.stated_unreadable);
+
+    // Task 1807: the files that could not be read, and only `.json` ones
+    // -- a temporary file or a snapshot is not a project.
+    try b.act(
+        \\{"act":"projects","list":[],"unreadable":["notes.json","NOTES2.JSON",".notes.json.12.0.tmp","0.snap","a/b.json",".json"]}
+    , 1_000);
+    try testing.expectEqual(@as(usize, 2), b.rec.stated_unreadable);
 
     // One that does not read whole changes nothing: the last one stands.
     b.rec.stated = 99;
@@ -1549,6 +1568,10 @@ test "Projects: what the host says about projects reaches the core whole, and wh
         \\{"act":"projects","list":{}}
         ,
         \\{"act":"projects","list":[{"name":"a"}]}
+        ,
+        \\{"act":"projects","list":[],"unreadable":"notes.json"}
+        ,
+        \\{"act":"projects","list":[],"unreadable":[7]}
         ,
     }) |bad| try testing.expectError(error.BadRequest, b.act(bad, 1_000));
     try testing.expectEqual(@as(?usize, 99), b.rec.stated);
@@ -1609,6 +1632,10 @@ test "Projects: the core takes what the Windows host writes, line for line" {
     try testing.expectEqual(@as(?Id, 0xb2), b.rec.asked_remove);
     try b.act(lines.next().?, 1_000);
     try testing.expectEqual(@as(usize, 1), b.rec.renames);
+    // A file that did not read (task 1807).
+    try b.act(lines.next().?, 1_000);
+    try testing.expectEqual(@as(?usize, 0), b.rec.stated);
+    try testing.expectEqual(@as(usize, 1), b.rec.stated_unreadable);
     try testing.expectEqual(@as(?[]const u8, null), lines.next());
 }
 

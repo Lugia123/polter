@@ -5913,6 +5913,18 @@ msgstr ""
 msgid "Project not made"
 msgstr ""
 
+#: windows/control-room/src/project_words.rs:42
+msgid "A project file could not be read"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:59
+msgid "Project file unreadable"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:66
+msgid "The project file {} could not be read, so this group keeps its project as it is. Once the file reads again, the project is used again by itself."
+msgstr ""
+
 #: windows/control-room/src/project_words.rs:60
 #, rust-format
 msgid ""

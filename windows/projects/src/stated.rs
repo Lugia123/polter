@@ -147,7 +147,11 @@ fn list_of(items: &[String]) -> String {
 
 /// The statement, as the bytes handed to `ghostty_app_control_act`. Six keys
 /// a project, each written whether or not it has anything to say.
-pub fn statement(list: &[Stated]) -> String {
+///
+/// `unreadable`: the project files found and not read (task 1807,
+/// [`unreadable`]). Written only when there are any, so a statement with
+/// none is the bytes it always was.
+pub fn statement(list: &[Stated], unreadable: &[String]) -> String {
     let each: Vec<String> = list
         .iter()
         .map(|p| {
@@ -162,7 +166,27 @@ pub fn statement(list: &[Stated]) -> String {
             )
         })
         .collect();
-    format!("{{\"act\":\"projects\",\"list\":[{}]}}", each.join(","))
+    if unreadable.is_empty() {
+        return format!("{{\"act\":\"projects\",\"list\":[{}]}}", each.join(","));
+    }
+    format!("{{\"act\":\"projects\",\"list\":[{}],\"unreadable\":{}}}", each.join(","), list_of(unreadable))
+}
+
+/// The files to say could not be read (task 1807), from the paths that
+/// were found and did not read: their names, `.json` ones only, in order
+/// and once each. **Not known is not gone**: a group whose project is not
+/// listed keeps it while any is said, since that file may be its project's.
+/// A temporary file or a snapshot is never a project, and one said here
+/// would keep a deleted project's group tied for as long as it lay there.
+pub fn unreadable<'a>(paths: impl IntoIterator<Item = &'a std::path::Path>) -> Vec<String> {
+    let mut names: Vec<String> = paths
+        .into_iter()
+        .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
+        .filter(|n| n.len() > ".json".len() && n.to_ascii_lowercase().ends_with(".json"))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// The three other things a host says (§3). Each is asked or told on its

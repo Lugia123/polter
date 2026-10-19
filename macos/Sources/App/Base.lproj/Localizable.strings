@@ -1185,6 +1185,9 @@
 "Same-name project" = "Same-name project";
 "Two projects" = "Two projects";
 "Project not made" = "Project not made";
+"Project file unreadable" = "Project file unreadable";
+"A project file could not be read." = "A project file could not be read.";
+"The project file %@ could not be read, so this group keeps its project as it is. Once the file reads again, the project is used again by itself." = "The project file %@ could not be read, so this group keeps its project as it is. Once the file reads again, the project is used again by itself.";
 "There is already a project \"%@\", and it is the group \"%@\"'s." = "There is already a project \"%@\", and it is the group \"%@\"'s.";
 "There is already a project \"%@\", in no group." = "There is already a project \"%@\", in no group.";
 "Two projects both say they are this group's." = "Two projects both say they are this group's.";

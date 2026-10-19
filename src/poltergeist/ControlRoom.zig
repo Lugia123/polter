@@ -204,7 +204,7 @@
 //!                                 supervisor_of_several |
 //!                                 supervisor_has_project |
 //!                                 project_has_group | project_name_taken |
-//!                                 several_projects
+//!                                 several_projects | project_unreadable
 //!         "ask": false },         put the question "join the project of
 //!                                 the group's name?" to the person now
 //!                                 (task 1713, `askFor`): only for
@@ -5676,7 +5676,7 @@ test "Projects: the snapshot says which project each group has, what starting it
         const v = try std.json.parseFromSliceLeaky(std.json.Value, aa,
             \\[{"name":"tied","group":"tied","pages":3,"open":null,"supervisor":null,"workers":[]}]
         , .{});
-        try table.state(try Projects.parse(aa, v));
+        _ = try table.state(try Projects.parse(aa, v), &.{});
     }
     const views = [_]Projects.GroupView{
         .{ .name = "tied", .tie = .{ .bound = "tied" }, .steward = null, .supervisors = 0, .claim = null, .awaiting_open = true, .seating = null },

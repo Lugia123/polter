@@ -157,7 +157,7 @@ mod tests {
     fn the_banner_asks_in_wrapped_lines_with_its_buttons_under_them() {
         let theme = look::theme(false);
         let b = Blocker { name: "polter".into(), saved: "13 Oct".into(), pages: 1 };
-        let banner = banner(&note("undecided", "project_name_taken", None), "project_name_taken", Some(&b), &[], &same).unwrap();
+        let banner = banner(&note("undecided", "project_name_taken", None), "project_name_taken", Some(&b), &[], &[], &same).unwrap();
         let band = band(Notice::Banner(&banner), 420.0, &theme, &eight);
         // Four buttons, in the order of the menu's, the first the one it is for.
         let order: Vec<&Press> = band.presses.iter().map(|(_, p)| p).collect();
@@ -182,7 +182,7 @@ mod tests {
     fn several_projects_get_one_button_each_before_no_project() {
         let theme = look::theme(false);
         let candidates = vec!["web".to_string(), "website".to_string()];
-        let banner = banner(&note("undecided", "several_projects", None), "several_projects", None, &candidates, &same).unwrap();
+        let banner = banner(&note("undecided", "several_projects", None), "several_projects", None, &candidates, &[], &same).unwrap();
         let band = band(Notice::Banner(&banner), 900.0, &theme, &eight);
         let order: Vec<&Press> = band.presses.iter().map(|(_, p)| p).collect();
         assert_eq!(order, [&Press::Use("web".into()), &Press::Use("website".into()), &Press::Button(Menu::DeclineProject)]);

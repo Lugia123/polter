@@ -1224,6 +1224,9 @@
 "Same-name project" = "有同名项目";
 "Two projects" = "两个项目";
 "Project not made" = "项目没建成";
+"Project file unreadable" = "项目文件读不出";
+"A project file could not be read." = "有项目文件读不出。";
+"The project file %@ could not be read, so this group keeps its project as it is. Once the file reads again, the project is used again by itself." = "项目文件 %@ 读不出，这个群的项目先原样保留。文件能读了以后，项目会自动接着用。";
 "There is already a project \"%@\", and it is the group \"%@\"'s." = "已有项目「%@」，它是群「%@」的。";
 "There is already a project \"%@\", in no group." = "已有项目「%@」，还不属于任何群。";
 "Two projects both say they are this group's." = "两个项目都说是这个群的。";

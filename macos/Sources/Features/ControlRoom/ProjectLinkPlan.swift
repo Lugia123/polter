@@ -200,6 +200,7 @@ enum ProjectLinkPlan {
         switch key {
         case "name_taken": return String(localized: "Same-name project", comment: "总控台群行右端：有同名项目挡着，要用户回答")
         case "several": return String(localized: "Two projects", comment: "总控台群行右端：两个项目都说是这个群的")
+        case "unreadable": return String(localized: "Project file unreadable", comment: "总控台群行右端：群的项目文件读不出（绑定先留着）")
         default: return String(localized: "Project not made", comment: "总控台群行右端：项目没建成")
         }
     }
@@ -226,6 +227,8 @@ enum ProjectLinkPlan {
             return String(localized: "There is more than one supervisor in the group.", comment: "项目：群里不止一个总管")
         case "projects_unknown":
             return String(localized: "Which projects there are is not known yet.", comment: "项目：宿主还没报过项目，菜单里不可点的一行")
+        case "project_unreadable":
+            return String(localized: "A project file could not be read.", comment: "项目：群的项目文件读不出，绑定先留着（悬停说明）")
         default:
             return nil
         }
@@ -320,10 +323,21 @@ enum ProjectLinkPlan {
         case several(text: String, candidates: [Project])
         /// The rest: the sentence, and what can be done in one press.
         case notMade(text: String, saveTab: Bool)
+        /// A project kept while a file does not read (task 1807): which
+        /// files, so the person knows what to mend. Nothing to press.
+        case unreadable(text: String)
     }
 
-    static func banner(why: String, tie: String, group: String, projects: [Project],
+    /// `unreadable`: the project files that do not read (task 1807).
+    static func banner(why: String, tie: String, group: String, projects: [Project], unreadable: [String],
                        locale: Locale = .current) -> Banner? {
+        if tie == "bound", why == "project_unreadable" {
+            if unreadable.isEmpty {
+                return .unreadable(text: whySentence(why, group: group, blocker: nil) ?? why)
+            }
+            let files = unreadable.joined(separator: ", ")
+            return .unreadable(text: String(localized: "The project file \(files) could not be read, so this group keeps its project as it is. Once the file reads again, the project is used again by itself.", comment: "总控台右栏横幅：群的项目文件读不出，绑定先留着；参数是读不出的文件名"))
+        }
         guard tie == "undecided" else { return nil }
         switch why {
         case "project_name_taken":
@@ -410,6 +424,8 @@ enum ProjectLinkPlan {
 protocol ControlRoomProjectHands: AnyObject {
     /// Every project there is, as the host lists them.
     func projects() -> [ProjectLinkPlan.Project]
+    /// The project files that do not read, by name (task 1807).
+    func unreadableProjectFiles() -> [String]
     func open(project: String)
     func showInSettings(project: String?)
     /// Asks first, with "also move the project file to the Trash".

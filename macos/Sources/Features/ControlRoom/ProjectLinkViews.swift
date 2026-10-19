@@ -127,7 +127,7 @@ struct ProjectLinkBannerView: View {
 
     private var text: String {
         switch banner {
-        case .nameTaken(let text, _), .several(let text, _), .notMade(let text, _): return text
+        case .nameTaken(let text, _), .several(let text, _), .notMade(let text, _), .unreadable(let text): return text
         }
     }
 
@@ -178,6 +178,10 @@ struct ProjectLinkBannerView: View {
                 }
             }
             .fixedSize()
+        case .unreadable:
+            // Mending the file is outside Polter, and it is used again by
+            // itself once it reads.
+            EmptyView()
         }
     }
 
@@ -250,7 +254,8 @@ struct ProjectLinkStrip: View {
         if let hint = hints.hint(for: group) {
             ProjectHintBar(hint: hint, hints: hints, allowShort: inPane)
         } else if !inPane, let hands,
-                  let banner = ProjectLinkPlan.banner(why: why, tie: tie, group: group, projects: hands.projects()) {
+                  let banner = ProjectLinkPlan.banner(why: why, tie: tie, group: group, projects: hands.projects(),
+                                                      unreadable: hands.unreadableProjectFiles()) {
             ProjectLinkBannerView(banner: banner, group: group, hands: hands, tell: tell)
         }
     }

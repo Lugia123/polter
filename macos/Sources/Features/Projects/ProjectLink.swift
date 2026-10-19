@@ -51,7 +51,12 @@ enum ProjectLink {
     /// `{"act":"projects","list":[…]}`: everything, replacing whatever was
     /// said before. Written by hand, in one key order, so that what is sent
     /// is a string a test can hold against the core's reader.
-    static func statement(_ list: [Stated]) -> Data {
+    ///
+    /// `unreadable`: the project files there that did not read (task 1807,
+    /// `unreadable(_:)`), said only when there are any -- a statement with
+    /// none is the bytes it always was. **Not known is not gone**: the core
+    /// keeps a group's project while one is said.
+    static func statement(_ list: [Stated], unreadable: [String]) -> Data {
         var out = "{\"act\":\"projects\",\"list\":["
         for (i, project) in list.enumerated() {
             if i > 0 { out += "," }
@@ -67,8 +72,23 @@ enum ProjectLink {
             out += ",\"supervisor\":" + (project.supervisor.map(quoted) ?? "null")
             out += ",\"workers\":[" + project.workers.map(quoted).joined(separator: ",") + "]}"
         }
-        out += "]}"
+        out += "]"
+        if !unreadable.isEmpty {
+            out += ",\"unreadable\":[" + unreadable.map(quoted).joined(separator: ",") + "]"
+        }
+        out += "}"
         return Data(out.utf8)
+    }
+
+    /// The files to say did not read (task 1807): the names of the `.json`
+    /// ones, in order and once each. A temporary file, a snapshot or a
+    /// previous version is never a project, and one said would keep a
+    /// deleted project's group tied for as long as it lay there.
+    static func unreadable(_ urls: [URL]) -> [String] {
+        let names = urls.map(\.lastPathComponent).filter {
+            $0.count > ".json".count && $0.lowercased().hasSuffix(".json")
+        }
+        return Array(Set(names)).sorted()
     }
 
     /// Why a project the core asked for was not opened.

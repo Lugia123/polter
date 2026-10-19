@@ -95,6 +95,9 @@ thread_local! {
     static TIMER: Cell<usize> = const { Cell::new(0) };
     /// The statement the core last took; none until it has taken one.
     static STATED: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The project files the last statement said could not be read (task
+    /// 1807), for the control room's banner.
+    static UNREADABLE: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// The orders of the last snapshot that are still to be looked at, and
     /// the timer that will look at them.
     static ORDERS: RefCell<Vec<Order>> = const { RefCell::new(Vec::new()) };
@@ -852,8 +855,18 @@ fn projects_dir() -> Option<PathBuf> {
 /// Every project there is, each as it would be said: an open one from what
 /// is open, the rest from their files.
 fn everything() -> Vec<(PathBuf, Stated)> {
-    let Some(dir) = projects_dir() else { return Vec::new() };
-    project::list(&dir)
+    everything_and_unreadable().0
+}
+
+/// `everything`, and the project files that are there and did not read
+/// (task 1807): what `project::list` skipped, and a listed one whose file
+/// no longer reads. **Not known is not gone**: they are said to the core,
+/// which keeps a group's project while one is there rather than untie it.
+fn everything_and_unreadable() -> (Vec<(PathBuf, Stated)>, Vec<String>) {
+    let Some(dir) = projects_dir() else { return (Vec::new(), Vec::new()) };
+    let listing = project::list(&dir);
+    let mut unread: Vec<PathBuf> = listing.skipped.iter().map(|(p, _)| p.clone()).collect();
+    let all = listing
         .entries
         .into_iter()
         .filter_map(|e| {
@@ -865,10 +878,24 @@ fn everything() -> Vec<(PathBuf, Stated)> {
             });
             match showing {
                 Some(said) => Some((e.path, said)),
-                None => project::read_file(&e.path).ok().map(|file| (e.path, Stated::of_closed(&file))),
+                None => match project::read_file(&e.path) {
+                    Ok(file) => Some((e.path, Stated::of_closed(&file))),
+                    // Gone between the listing and here is gone.
+                    Err(project::ReadError::NotFound) => None,
+                    Err(_) => {
+                        unread.push(e.path);
+                        None
+                    }
+                },
             }
         })
-        .collect()
+        .collect();
+    (all, stated::unreadable(unread.iter().map(PathBuf::as_path)))
+}
+
+/// The project files the core was last told could not be read (task 1807).
+pub fn unreadable() -> Vec<String> {
+    UNREADABLE.with(|u| u.try_borrow().map(|u| u.clone()).unwrap_or_default())
 }
 
 // ------------------------------------------- a group's project (task 1714)
@@ -1002,13 +1029,14 @@ pub fn known() -> Vec<Known> {
 /// A statement the core would refuse is not sent (`stated::refusal`): the
 /// one it has goes on standing, and the log says which project and why.
 pub fn state() {
-    let list: Vec<Stated> = everything().into_iter().map(|(_, said)| said).collect();
+    let (all, unreadable) = everything_and_unreadable();
+    let list: Vec<Stated> = all.into_iter().map(|(_, said)| said).collect();
     if let Some(why) = stated::refusal(&list) {
         // process-wide: a project is tabs of any number of windows
         plogf!("[project] NOT stated: the core would refuse it: {:?}", why);
         return;
     }
-    let text = stated::statement(&list);
+    let text = stated::statement(&list, &unreadable);
     if STATED.with(|s| s.try_borrow().is_ok_and(|s| s.as_deref() == Some(text.as_str()))) {
         return;
     }
@@ -1021,6 +1049,15 @@ pub fn state() {
                 list.iter().filter(|p| p.open.is_some()).count(),
                 list.iter().filter(|p| p.supervisor.is_some()).count()
             );
+            if !unreadable.is_empty() {
+                // process-wide: a project is tabs of any number of windows
+                plogf!("[project] said {} project file(s) do not read: {}", unreadable.len(), unreadable.join(", "));
+            }
+            UNREADABLE.with(|u| {
+                if let Ok(mut u) = u.try_borrow_mut() {
+                    *u = unreadable;
+                }
+            });
             STATED.with(|s| {
                 if let Ok(mut s) = s.try_borrow_mut() {
                     *s = Some(text);
