@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AppKit
 @testable import Ghostty
 
 /// A project's colour (task 1796): the key in its file, the colour a new
@@ -109,5 +110,36 @@ struct ProjectColorTests {
 
     @Test func theFrontPageIsDrawnLastAndCutsTheBackOne() {
         #expect(ProjectMark.shapes.map(\.level) == [1, 0, 0, 1, 0])
+    }
+
+    /// A tab's layout asks the mark to draw on every pass, and its window's
+    /// title changing is a pass (task 1873). Asked again with nothing
+    /// changed, it draws nothing: every drawing is two new images for the
+    /// window server.
+    @Test @MainActor func theSameMarkAskedAgainIsNotDrawnAgain() {
+        let view = ProjectMarkView(frame: NSRect(x: 0, y: 0, width: 14, height: 14))
+        view.color = .blue
+        let first = view.drawings
+        #expect(first == 1)
+        view.layout()
+        view.layout()
+        view.color = .blue
+        view.selected = false
+        #expect(view.drawings == first)
+    }
+
+    @Test @MainActor func aMarkIsDrawnAgainWhenWhatItIsDrawnFromChanged() {
+        let view = ProjectMarkView(frame: NSRect(x: 0, y: 0, width: 14, height: 14))
+        view.color = .blue
+        view.selected = true
+        #expect(view.drawings == 2)
+        view.color = .green
+        #expect(view.drawings == 3)
+        view.frame = NSRect(x: 0, y: 0, width: 20, height: 20)
+        view.layout()
+        #expect(view.drawings == 4)
+        view.appearance = NSAppearance(named: view.effectiveAppearance.name == .darkAqua ? .aqua : .darkAqua)
+        view.layout()
+        #expect(view.drawings == 5)
     }
 }

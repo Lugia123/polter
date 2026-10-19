@@ -83,6 +83,7 @@
       "macos/Sources/Features/Terminal/TabAccessory.swift",
       "macos/Sources/Features/Terminal/PaneColor.swift",
       "macos/Sources/Features/Terminal/ProjectMark.swift",
+      "macos/Sources/Features/Terminal/ProjectMarkView.swift",
       "macos/Sources/Features/Terminal/TabDots.swift",
       "macos/Sources/Features/Terminal/TabIntoPane.swift",
       {

@@ -30,6 +30,24 @@ final class ProjectMarkView: NSView {
     private let glowLayer = CALayer()
     private let pagesLayer = CALayer()
 
+    /// Everything a drawing is made from. The layers are drawn again only
+    /// when one of these changed (task 1873): a tab's layout asks on every
+    /// pass -- each time its window's title changes, which an agent's
+    /// spinner does several times a second -- and every drawing was two new
+    /// images handed to the window server.
+    struct Inputs: Equatable {
+        var side: CGFloat
+        var scale: CGFloat
+        var color: PaneColor
+        var selected: Bool
+        var appearance: NSAppearance.Name
+    }
+
+    /// What the layers were last drawn from; nil before the first drawing.
+    private var drawnFrom: Inputs?
+    /// How many times the layers have been drawn. For the tests.
+    private(set) var drawings = 0
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
@@ -68,6 +86,11 @@ final class ProjectMarkView: NSView {
         let side = bounds.width
         guard side > 0 else { return }
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let inputs = Inputs(side: side, scale: scale, color: color, selected: selected,
+                            appearance: effectiveAppearance.name)
+        guard inputs != drawnFrom else { return }
+        drawnFrom = inputs
+        drawings += 1
         // The artboard drawn into the view's square.
         let unit = Double(side) / ControlRoomLook.Status.artboard
         let pixelsPerPoint = Double(scale) * unit
