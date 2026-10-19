@@ -315,11 +315,151 @@ fn markBoundary(to: *Terminal, dst: *terminalpkg.Screen) bool {
     to.setAttribute(.faint) catch {};
     defer to.setAttribute(.unset) catch {};
 
-    const text = std.mem.span(internal_os.i18n._(boundary_msgid.ptr));
-    to.printString("\u{2500}\u{2500} ") catch return true;
-    to.printString(text) catch return true;
-    to.printString(" \u{2500}\u{2500}") catch return true;
+    var buf: [boundary_line_max]u8 = undefined;
+    to.printString(boundaryLine(&buf)) catch return true;
     return true;
+}
+
+/// Room for the marker's line in any language it is translated into.
+pub const boundary_line_max = 512;
+
+/// The marker's line as it is drawn, and as a reader of the screen reads
+/// it back: the wording in the language Polter speaks now, between two
+/// rules. Empty when it does not fit `buf`.
+pub fn boundaryLine(buf: []u8) []const u8 {
+    const text = std.mem.span(internal_os.i18n._(boundary_msgid.ptr));
+    return std.fmt.bufPrint(buf, "\u{2500}\u{2500} {s} \u{2500}\u{2500}", .{text}) catch "";
+}
+
+/// Every wording the marker has been drawn in: the msgid, and each
+/// translation of it in `po/` (task 1862). A pane restored today may carry
+/// the marker of a session that ran in another language -- people switch
+/// Polter between English and Chinese -- so a reader that knew only
+/// today's wording took that session's whole screen as this one's.
+/// `test "1862: every translation of the marker in po/ ..."` fails when a
+/// translation is added there and not here.
+pub const boundary_wordings = [_][]const u8{
+    boundary_msgid,
+    "以上为上次会话恢复的历史记录",
+    "以上為上次工作階段還原的歷史記錄",
+};
+
+/// Whether `line` is the restored history's marker in any wording it can
+/// have been drawn in (`boundary_wordings`, and `today`'s): a rule, the
+/// wording, a rule, as `boundaryLine` draws it.
+fn isBoundaryLine(line: []const u8, today: []const u8) bool {
+    const rule = "\u{2500}\u{2500} ";
+    const end_rule = " \u{2500}\u{2500}";
+    const t = std.mem.trim(u8, line, " \r\t");
+    if (t.len < rule.len + end_rule.len) return false;
+    if (!std.mem.startsWith(u8, t, rule) or !std.mem.endsWith(u8, t, end_rule)) return false;
+    const words = t[rule.len .. t.len - end_rule.len];
+    if (std.mem.eql(u8, words, today)) return true;
+    for (boundary_wordings) |w| if (std.mem.eql(u8, words, w)) return true;
+    return false;
+}
+
+/// What of the text `screen` is this session's: everything after the last
+/// line that is the restored history's marker, in whatever language it was
+/// drawn (`isBoundaryLine`), or all of it when there is none (task 1862).
+/// `today` is the marker's wording in the language Polter speaks now.
+///
+/// **What is above the marker is not on this terminal now.** It is what
+/// the previous session showed, put back for reading -- a CLI's startup
+/// question among it, when that session ended at one -- and a reader that
+/// took it as this session's refused to type into a bare shell because of
+/// a box that was answered, or never answered, a day before (measured on
+/// the Windows machine: codex's "Update available" above the marker, a
+/// PowerShell prompt below it, and the supervisor could not be started).
+pub fn sinceRestored(screen: []const u8, today: []const u8) []const u8 {
+    var from: usize = 0;
+    var start: usize = 0;
+    while (start <= screen.len) {
+        const end = std.mem.indexOfScalarPos(u8, screen, start, '\n') orelse screen.len;
+        if (isBoundaryLine(screen[start..end], today)) from = @min(end + 1, screen.len);
+        if (end == screen.len) break;
+        start = end + 1;
+    }
+    return screen[from..];
+}
+
+/// The marker's wording in the language Polter speaks now.
+pub fn boundaryWording() []const u8 {
+    return std.mem.span(internal_os.i18n._(boundary_msgid.ptr));
+}
+
+test "1862: only what is below the restored history's marker is this session's" {
+    var buf: [boundary_line_max]u8 = undefined;
+    const marker = boundaryLine(&buf);
+    try testing.expect(marker.len > 0);
+    const today = boundaryWording();
+    const box = "Update available! 0.163 -> 0.170\n> Update now\n  Skip\n";
+    const screen = try std.mem.concat(testing.allocator, u8, &.{ "old output\n", box, marker, "\nPS C:\\w> \n" });
+    defer testing.allocator.free(screen);
+    const now = sinceRestored(screen, today);
+    try testing.expectEqualStrings("PS C:\\w> \n", now);
+    try testing.expect(std.mem.indexOf(u8, now, "Update available") == null);
+    // No marker: all of it is this session's.
+    try testing.expectEqualStrings(box, sinceRestored(box, today));
+    // Two restores: after the last.
+    const twice = try std.mem.concat(testing.allocator, u8, &.{ marker, "\na\n", box, marker, "\nb" });
+    defer testing.allocator.free(twice);
+    try testing.expectEqualStrings("b", sinceRestored(twice, today));
+    // Padded as a screen read pads it: still the marker.
+    const padded = try std.mem.concat(testing.allocator, u8, &.{ box, marker, "   \r\nnew" });
+    defer testing.allocator.free(padded);
+    try testing.expectEqualStrings("new", sinceRestored(padded, today));
+    // The marker ending the text: nothing after it yet.
+    const last = try std.mem.concat(testing.allocator, u8, &.{ box, marker });
+    defer testing.allocator.free(last);
+    try testing.expectEqualStrings("", sinceRestored(last, today));
+}
+
+test "1862: a marker drawn in another language is the marker too" {
+    // The last session ran in English; Polter speaks Chinese today.
+    const old = "\u{2500}\u{2500} Above this line: history restored from the previous session \u{2500}\u{2500}";
+    const today = "以上为上次会话恢复的历史记录";
+    const screen = "Update available!\n" ++ old ++ "\n$ ";
+    try testing.expectEqualStrings("$ ", sinceRestored(screen, today));
+    // And the other way round, and the traditional characters.
+    const zh = "\u{2500}\u{2500} 以上为上次会话恢复的历史记录 \u{2500}\u{2500}";
+    try testing.expectEqualStrings("$ ", sinceRestored("box\n" ++ zh ++ "\n$ ", "Above this line: history restored from the previous session"));
+    const tw = "\u{2500}\u{2500} 以上為上次工作階段還原的歷史記錄 \u{2500}\u{2500}";
+    try testing.expectEqualStrings("$ ", sinceRestored("box\n" ++ tw ++ "\n$ ", today));
+    // Rules round other words are a line somebody printed, not the marker.
+    const fake = "\u{2500}\u{2500} not the marker \u{2500}\u{2500}";
+    const kept = "box\n" ++ fake ++ "\n$ ";
+    try testing.expectEqualStrings(kept, sinceRestored(kept, today));
+}
+
+test "1862: every translation of the marker in po/ is one sinceRestored knows" {
+    // Read at test time from the repository root, where `zig build test`
+    // runs (as `test/project-format` is). Not finding po/ is a failure.
+    const io = testing.io;
+    var dir = try std.Io.Dir.cwd().openDir(io, "po", .{ .iterate = true });
+    defer dir.close(io);
+    var it = dir.iterate();
+    var seen: usize = 0;
+    while (try it.next(io)) |entry| {
+        if (!std.mem.endsWith(u8, entry.name, ".po")) continue;
+        const bytes = try dir.readFileAlloc(io, entry.name, testing.allocator, .limited(4 * 1024 * 1024));
+        defer testing.allocator.free(bytes);
+        const key = "msgid \"" ++ boundary_msgid ++ "\"\nmsgstr \"";
+        const at = std.mem.indexOf(u8, bytes, key) orelse continue;
+        const rest = bytes[at + key.len ..];
+        const close = std.mem.indexOfScalar(u8, rest, '"') orelse continue;
+        const said = rest[0..close];
+        seen += 1;
+        if (said.len == 0) continue;
+        var known = false;
+        for (boundary_wordings) |w| known = known or std.mem.eql(u8, w, said);
+        if (!known) {
+            std.debug.print("po/{s} translates the marker as \"{s}\", which boundary_wordings does not have\n", .{ entry.name, said });
+            return error.TestUnexpectedResult;
+        }
+    }
+    // A po/ with no file that has the marker is not one this was checked against.
+    try testing.expect(seen > 0);
 }
 
 /// The marker's untranslated wording. Extracted by `xgettext` -- this file is

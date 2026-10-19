@@ -21,6 +21,7 @@ const global = @import("global.zig");
 const log = std.log.scoped(.app);
 
 const poltergeistpkg = @import("poltergeist/main.zig");
+const scrollback = @import("termio/scrollback.zig");
 
 /// Least time between telling one terminal it has messages. Agents talking
 /// to each other can produce a burst; being told once about all of it is
@@ -6463,7 +6464,10 @@ fn startupQuestionText(self: *App, id: poltergeistpkg.Bus.Id) ?[]const u8 {
         return null;
     };
     defer self.alloc.free(screen);
-    return says.blockSaid(screen);
+    // Only this session's: a question above the restored history's
+    // marker is the last session's, and is not on this terminal (task
+    // 1862).
+    return says.blockSaid(scrollback.sinceRestored(screen, scrollback.boundaryWording()));
 }
 
 /// Every launch that has waited `Bus.launch_agent_wait_ms` with no agent
