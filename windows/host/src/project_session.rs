@@ -993,7 +993,9 @@ fn color_of(file: &Path, snapshot: &project::Snapshot) -> PaneColor {
     let color = given_color(file);
     let given = project::Snapshot { color, ..snapshot.clone() };
     match project::write_file(file, &given, WriteKind::Rename) {
+        // process-wide: a project's file, whose tabs may be in any window
         Ok(()) => plogf!("[project] {:?} had no colour and was given {}", snapshot.name, color.name()),
+        // process-wide: a project's file, whose tabs may be in any window
         Err(e) => plogf!("[project] {:?} was given {} but it was not written: {e}", snapshot.name, color.name()),
     }
     color

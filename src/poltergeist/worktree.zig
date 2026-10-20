@@ -1171,11 +1171,19 @@ test "worktree: a job makes the tree off the calling thread, which carries on me
     try testing.expect(took < 500);
 
     // And the caller is free the whole time: it keeps turning until told.
+    // **Counted in time, not in turns** (task 1919): a full run, with
+    // xcodebuild's tests beside it, stretched the 20 ms sleeps past 80 ms
+    // and came back with fewer than 25 turns across the two seconds. What
+    // is claimed is that the caller came back more than once while git was
+    // still at it, and that git took its two seconds on the other thread.
+    const t1: Io.Timestamp = .now(io, .awake);
     var turns: usize = 0;
     while (!job.finished.load(.acquire)) : (turns += 1) {
         try io.sleep(.fromMilliseconds(20), .awake);
     }
-    try testing.expect(turns >= 25);
+    const waited = t1.untilNow(io, .awake).toMilliseconds();
+    try testing.expect(turns >= 2);
+    try testing.expect(waited >= 1_500);
     job.join();
     try testing.expectEqual(@as(u32, 1), told.count.load(.acquire));
 
