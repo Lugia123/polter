@@ -59,9 +59,14 @@ POLTER_OPENCODE_MARKER=POLTER_AGENT_CLI
 
 host_mcp_current() {
   polter_json_read "$(config)" \
-    'env = (d.get("mcp") or {}).get("polter", {}).get("environment", {})
+    'e = (d.get("mcp") or {}).get("polter")
+# Nothing at all when there is no entry: any output reads as somebody
+# else'"'"'s registration (`registration=other`, task 1930).
+if not isinstance(e, dict):
+    raise SystemExit(0)
+env = e.get("environment") or {}
 print(env.get("POLTER_REGISTERED", ""), env.get("POLTER_AGENT_CLI", ""))
-print(" ".join((d.get("mcp") or {}).get("polter", {}).get("command", [])))'
+print(" ".join(e.get("command") or []))'
 }
 
 # An entry this build wrote before it carried the marker is this build's,

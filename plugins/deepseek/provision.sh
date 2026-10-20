@@ -27,7 +27,11 @@ config() {
 
 host_mcp_current() {
   polter_json_read "$(config)" \
-    'p = (d.get("mcpServers") or {}).get("polter", {});
+    'p = (d.get("mcpServers") or {}).get("polter")
+# Nothing at all when there is no entry: any output reads as somebody
+# else'"'"'s registration (`registration=other`, task 1930).
+if not isinstance(p, dict):
+    raise SystemExit(0)
 print(p.get("command", ""), (p.get("env") or {}).get("POLTER_REGISTERED", ""))'
 }
 

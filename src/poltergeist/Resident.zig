@@ -4902,6 +4902,19 @@ test "the hosts that edit a config file, and the four properties they promise" {
             sk.close(io);
         }
 
+        // 0. **The file is there already, with no polter in it** (task
+        //    1930): somebody who set opencode up themselves -- a provider,
+        //    a model. Its reader printed its empty fields, one space, and
+        //    the SDK took the space for another installation's entry:
+        //    `status=declined`, and nothing was registered for anyone who
+        //    had ever written their own config.
+        {
+            try std.Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(cfg).?);
+            var own = try std.Io.Dir.cwd().createFile(io, cfg, .{});
+            try own.writeStreamingAll(io, "{\"model\": \"theirs\"}\n");
+            own.close(io);
+        }
+
         // 1. First run writes the file, at the path this host's own
         //    `config()` returns -- which is how the fourth hook gets
         //    exercised rather than assumed.
@@ -4911,9 +4924,12 @@ test "the hosts that edit a config file, and the four properties they promise" {
             .version = "1.2.3",
             .stderr_out = &run1,
         });
+        try testing.expect(std.mem.indexOf(u8, run1.items, "status=declined") == null);
         try testing.expect(std.mem.indexOf(u8, run1.items, "status=provisioned") != null);
 
         const first = try std.Io.Dir.cwd().readFileAlloc(io, cfg, alloc, .unlimited);
+        // What was theirs is still there.
+        try testing.expect(std.mem.indexOf(u8, first, "\"theirs\"") != null);
         try testing.expect(std.mem.indexOf(u8, first, "polter") != null);
         try testing.expect(std.mem.indexOf(u8, first, "/nowhere/polter") != null);
         try testing.expect(std.mem.indexOf(u8, first, "1.2.3") != null);

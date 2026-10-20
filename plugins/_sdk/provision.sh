@@ -363,7 +363,12 @@ polter_provision() {
   stale=no
   if [ "$mcp_unanswered" = no ]; then
     registration=other
-    if [ -z "$current" ]; then
+    # **Blank is none** (task 1930), as `provision.ps1` has always read it
+    # (`IsNullOrWhiteSpace`): a host that prints its fields with nothing in
+    # them -- `print("", "")` is one space -- has no entry, and taking that
+    # space for somebody else's registration refused every user whose own
+    # opencode.json had no polter in it yet.
+    if [ -z "$(printf '%s' "$current" | tr -d '[:space:]')" ]; then
       registration=none
     else
       case "$current" in
