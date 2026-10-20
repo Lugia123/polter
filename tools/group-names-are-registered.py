@@ -44,6 +44,7 @@ ROOT = os.path.dirname(HERE)
 GROUP_NAME_FILES = {
     "src/App.zig": "the host: takes a group's name from a request and finds the group",
     "src/cli/chat.zig": "the chat page: names groups to the socket; holds no storage",
+    "src/cli/launch.zig": "`+launch --group=` (task 1844): says the name to the socket once, in a `launched_for_group` event, before the CLI starts; holds no storage. The host keeps it by terminal (App.launch_groups) only until that agent is heard, and a group renamed or deleted in between is judged as no group by that name and not joined",
     "src/poltergeist/Chat.zig": "the table of groups (group_stores.Table.chat_groups)",
     "src/poltergeist/ChatLog.zig": "the record and the stream (group_stores.Root.chat, Stream.*)",
     "src/poltergeist/ControlAsk.zig": "the control room's last ask of each group's supervisor, keyed by the group's name (group_stores.Table.control_asks): dropped on delete, re-keyed on rename",
