@@ -984,6 +984,13 @@ pub fn about_version_and_build(polter: &str, core: Option<&str>, mode: &str, ide
 /// -- `DT_WORDBREAK` does not break inside a word, it widens the box -- and
 /// drawn right-aligned on one line, so its *start* fell off the left edge
 /// (":-family-bold-italic").
+///
+/// **And a label with no hyphen to break at** (task 1883): a Chinese name
+/// has no space either, so it comes here, and it was one piece -- cut to
+/// one line with the mark, while the form drew the whole title instead,
+/// right-aligned, and its start fell off the left edge the same way
+/// ("孑成文件并粘贴路径" for "粘贴图片时存成文件并粘贴路径"). A piece too
+/// wide for a line on its own may now end a line after any character.
 pub fn wrap_key_label(text: &str, fits: impl Fn(&str) -> bool, max_lines: usize) -> Option<Vec<String>> {
     if text.chars().any(char::is_whitespace) || max_lines == 0 {
         return None;
@@ -1003,6 +1010,17 @@ pub fn wrap_key_label(text: &str, fits: impl Fn(&str) -> bool, max_lines: usize)
     if start < text.len() {
         pieces.push(&text[start..]);
     }
+    // A piece that does not fit a line by itself may break anywhere in it.
+    let pieces: Vec<&str> = pieces
+        .into_iter()
+        .flat_map(|p| -> Vec<&str> {
+            if fits(p) {
+                vec![p]
+            } else {
+                p.char_indices().map(|(i, c)| &p[i..i + c.len_utf8()]).collect()
+            }
+        })
+        .collect();
     let mut lines: Vec<String> = Vec::new();
     let mut at = 0;
     while at < pieces.len() {
@@ -1102,6 +1120,24 @@ mod tests {
         // One that fits stays whole; a name with a space is DrawText's.
         assert_eq!(wrap_key_label("font-style", fits, 2).unwrap(), ["font-style"]);
         assert_eq!(wrap_key_label("Font family bold", fits, 2), None);
+    }
+
+    #[test]
+    fn task_1883_a_label_with_nothing_to_break_at_wraps_and_keeps_its_start() {
+        // Eight characters a line.
+        let fits = |s: &str| s.chars().count() <= 8;
+        // Chinese: no space and no hyphen. Two lines, the start kept.
+        let lines = wrap_key_label("粘贴图片时存成文件并粘贴路径", fits, 2).unwrap();
+        assert_eq!(lines, ["粘贴图片时存成文", "件并粘贴路径"]);
+        // Longer than two lines' worth: the second ends in the mark.
+        let lines = wrap_key_label("粘贴图片时存成文件并粘贴路径到这里来", fits, 2).unwrap();
+        assert_eq!(lines, ["粘贴图片时存成文", "件并粘贴路径到\u{2026}"]);
+        // A key with a piece too long for a line: broken inside it, and the
+        // hyphens still where the rest breaks.
+        let lines = wrap_key_label("aaaaaaaaaaaa-b", fits, 2).unwrap();
+        assert_eq!(lines, ["aaaaaaaa", "aaaa-b"]);
+        // One that fits is one line, unbroken.
+        assert_eq!(wrap_key_label("存成文件", fits, 2).unwrap(), ["存成文件"]);
     }
 
     #[test]

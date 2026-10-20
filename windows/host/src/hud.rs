@@ -51,7 +51,7 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use windows::core::w;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -1245,8 +1245,10 @@ unsafe extern "system" fn link_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 // Bottom-left of the pane, where every browser and every other
                 // terminal puts this. **Width is capped at the pane**, so a
                 // long URL is elided rather than drawn off the side of the
-                // window.
-                let want = sc(16) + sc(7) * url.chars().count() as i32;
+                // window. **The URL is measured in the bar's font** (task
+                // 1883): it was guessed at 7 px a character, and a short one
+                // came out elided on a bar narrower than it.
+                let want = link_bar_want(text_width_in_hud_font(hwnd, &url), url.chars().count(), sc(7));
                 let w = want.min(fr.right - fr.left - sc(16)).max(sc(60));
                 let h = sc(HEIGHT);
                 let x = fr.left + sc(8);
@@ -1529,6 +1531,41 @@ fn paint(hwnd: HWND, label: &str, bg: u32, fg: u32) {
 
 /// The same, with the caller saying how the text is laid out. The two signs
 /// that are labels centre theirs; the link bar left-aligns and elides.
+/// The room `paint_with` leaves at each end of a sign's text, in pixels.
+const TEXT_INSET: i32 = 8;
+
+/// How wide the link bar wants to be for a URL `measured` pixels wide in
+/// its font (task 1883): the text and `paint_with`'s room at both ends,
+/// and a pixel either side for rounding, so a URL that fits is not elided
+/// by the ellipsis' own arithmetic. With nothing measured -- the font not
+/// made yet -- the old guess, `per_char` a character.
+fn link_bar_want(measured: i32, chars: usize, per_char: i32) -> i32 {
+    let text = if measured > 0 { measured } else { per_char * chars as i32 };
+    text + 2 * TEXT_INSET + 2
+}
+
+/// How wide `text` is in the HUD's font on `hwnd`, in pixels; 0 when there
+/// is no font yet or nothing to measure.
+fn text_width_in_hud_font(hwnd: HWND, text: &str) -> i32 {
+    // The handle copied out: nothing below is done while `STATE` is held.
+    let Some(font) = STATE.with(|c| c.borrow().as_ref().map(|st| st.font)) else {
+        return 0;
+    };
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    let mut size = SIZE::default();
+    unsafe {
+        let dc = GetDC(Some(hwnd));
+        if dc.is_invalid() {
+            return 0;
+        }
+        let old = SelectObject(dc, font.into());
+        let _ = crate::gdi_text::get_text_extent_point32_w(dc, &wide, &mut size);
+        SelectObject(dc, old);
+        ReleaseDC(Some(hwnd), dc);
+    }
+    size.cx
+}
+
 fn paint_with(hwnd: HWND, label: &str, bg: u32, fg: u32, flags: DRAW_TEXT_FORMAT) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
@@ -1550,8 +1587,8 @@ fn paint_with(hwnd: HWND, label: &str, bg: u32, fg: u32, flags: DRAW_TEXT_FORMAT
             let mut wide: Vec<u16> = label.encode_utf16().collect();
             // A little breathing room at both ends for the left-aligned
             // case. The centred signs are unaffected: the inset is symmetric.
-            rc.left += 8;
-            rc.right -= 8;
+            rc.left += TEXT_INSET;
+            rc.right -= TEXT_INSET;
             crate::gdi_text::draw_text_w(hdc, &mut wide, &mut rc, flags);
             SelectObject(hdc, old);
         });
@@ -1562,6 +1599,17 @@ fn paint_with(hwnd: HWND, label: &str, bg: u32, fg: u32, flags: DRAW_TEXT_FORMAT
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_1883_the_link_bar_is_as_wide_as_the_url_measured() {
+        // Measured: the URL's own width, not seven pixels a character.
+        // "https://example.com/p148" is 24 characters; at 9 px each it
+        // needs 216, which the old guess (24 × 7 = 168) cut short.
+        assert_eq!(link_bar_want(216, 24, 7), 216 + 2 * TEXT_INSET + 2);
+        assert!(link_bar_want(216, 24, 7) > 24 * 7 + 2 * TEXT_INSET);
+        // Nothing measured: the old guess, so the bar still has a size.
+        assert_eq!(link_bar_want(0, 24, 7), 24 * 7 + 2 * TEXT_INSET + 2);
+    }
 
     /// **These run on Windows and nowhere else.** `polter-host` does not build
     /// for the machine this port is written on, so unlike the rules in

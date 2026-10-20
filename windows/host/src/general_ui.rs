@@ -2394,6 +2394,14 @@ fn paint_form(win: HWND) {
                     draw_text(hdc, l, &at, font(), theme::text(), DT_RIGHT | DT_SINGLELINE);
                 }
             }
+            // One line: **the line, not the title** (task 1883). It is the
+            // title when the title fits, and cut to fit with the mark when
+            // not -- the whole title drawn right-aligned on one line lost
+            // its start off the left edge.
+            Some(lines) => {
+                let l = lines.first().map(String::as_str).unwrap_or("");
+                draw_text(hdc, l, &lr, font(), theme::text(), DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+            }
             _ => {
                 let flags = if one_line { DT_RIGHT | DT_SINGLELINE | DT_VCENTER } else { DT_RIGHT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_EDITCONTROL };
                 draw_text(hdc, &title, &lr, font(), theme::text(), flags);
