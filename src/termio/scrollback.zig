@@ -509,6 +509,62 @@ fn showRestoredTail(to: *Terminal, pushed: usize) void {
     to.scrollViewport(.{ .delta = -@as(isize, @intCast(up)) });
 }
 
+/// The end of a restored session, kept through the pane's first resizes
+/// (task 1979).
+///
+/// **The viewport `showRestoredTail` leaves does not survive a reflow.** A
+/// pane is restored at the size its terminal was made with, and on macOS a
+/// project's split is made at a provisional size and given its real one by
+/// the layout after. A resize that changes the columns reflows the pages
+/// and puts the viewport back on the active area -- so the pane opened on
+/// its new shell with the marker as the one line of history in sight, and
+/// everything above it a scroll away, reading as "the history is empty"
+/// (demo, 2026-10-21: the snapshot held all of it, before and after).
+///
+/// So the marker is pinned (a tracked pin moves with the reflow) and, after
+/// each resize, the viewport is put back on it -- the marker on the third
+/// row from the bottom, as `showRestoredTail` places it -- **for as long as
+/// nobody has moved the viewport**: once it is on the active area before a
+/// resize (a key, a scroll to the bottom), the person has it, and this lets
+/// go.
+pub const RestoredTail = struct {
+    /// First row of the marker's line, tracked by the primary screen's pages.
+    pin: *terminalpkg.Pin,
+
+    /// After `restore` into `t`, the marker it wrote, or null when it wrote
+    /// none: the last row of history, or the first of the rows its line
+    /// wrapped over.
+    pub fn init(t: *Terminal) ?RestoredTail {
+        const pages = &t.screens.get(.primary).?.pages;
+        if (pages.viewport == .active) return null;
+        const top = pages.getTopLeft(.active);
+        var at = top.up(1) orelse return null;
+        while (at.rowAndCell().row.wrap_continuation) at = at.up(1) orelse break;
+        const tracked = pages.trackPin(at) catch return null;
+        return .{ .pin = tracked };
+    }
+
+    pub fn deinit(self: RestoredTail, t: *Terminal) void {
+        t.screens.get(.primary).?.pages.untrackPin(self.pin);
+    }
+
+    /// Call after `t` was resized; `was_active` is whether its viewport was
+    /// on the active area before. Answers whether to keep it: false once the
+    /// person has the viewport, and the caller deinits it.
+    pub fn resized(self: RestoredTail, t: *Terminal, was_active: bool) bool {
+        if (was_active or self.pin.garbage) return false;
+        const pages = &t.screens.get(.primary).?.pages;
+        if (pages.viewport != .active) return true;
+        const above: usize = if (t.rows > 2) @as(usize, t.rows) - 3 else 0;
+        if (self.pin.up(above)) |top| {
+            pages.scroll(.{ .pin = top });
+        } else {
+            pages.scroll(.top);
+        }
+        return true;
+    }
+};
+
 /// Give the transplanted cursor back everything but its place in the pages.
 ///
 /// **The cursor comes over with the pages only because its `page_pin` is a
@@ -1392,4 +1448,58 @@ fn testReopenedPaneResized(cols: u16, rows: u16) !void {
         );
         try testing.expect(std.mem.indexOf(u8, after, "three") != null);
     }
+}
+
+test "1979: a pane restored at one width and resized to another still opens on the end of what it showed" {
+    // The demo's left pane: 60x29 when it was saved; restored into the
+    // terminal a split is first made with, 80x24; then given its 60x29.
+    var source = try testFresh(60, 29);
+    defer source.deinit(testing.allocator);
+    try source.printString("shop-web % echo marker-left-1979; seq 1 30");
+    source.carriageReturn();
+    try source.linefeed();
+    try source.printString("marker-left-1979");
+    for (1..31) |n| {
+        var nb: [8]u8 = undefined;
+        source.carriageReturn();
+        try source.linefeed();
+        try source.printString(try std.fmt.bufPrint(&nb, "{d}", .{n}));
+    }
+    source.carriageReturn();
+    try source.linefeed();
+    try source.printString("shop-web % ");
+
+    var p_buf: [128]u8 = undefined;
+    const path = try testPath(&p_buf);
+    defer testCleanup(path);
+    try testSave(&source, path);
+
+    var pane = try testFresh(80, 24);
+    defer pane.deinit(testing.allocator);
+    const out = restore(testing.allocator, testing.io, path, &pane, {});
+    try testing.expect(out == .restored);
+    const tail = RestoredTail.init(&pane) orelse return error.NoMarker;
+    defer tail.deinit(&pane);
+
+    const pages = &pane.screens.get(.primary).?.pages;
+    const was_active = pages.viewport == .active;
+    try pane.resize(testing.allocator, .{ .cols = 60, .rows = 29 });
+    try testing.expect(tail.resized(&pane, was_active));
+
+    // The new shell's first lines, which do not move the viewport.
+    try pane.printString("Last login: now");
+    pane.carriageReturn();
+    try pane.linefeed();
+    try pane.printString("shop-web % ");
+
+    const view = try pane.screens.get(.primary).?.dumpStringAlloc(testing.allocator, .{ .viewport = .{} });
+    defer testing.allocator.free(view);
+    const end_of_old = std.mem.indexOf(u8, view, "\n30\n");
+    try testing.expect(end_of_old != null);
+    // The marker wraps at 60 columns in English; its start is enough.
+    try testing.expect(std.mem.indexOf(u8, view, boundary_msgid[0..15]) != null);
+
+    // A key took the viewport to the bottom: the next resize lets go.
+    pages.scroll(.active);
+    try testing.expect(!tail.resized(&pane, pages.viewport == .active));
 }

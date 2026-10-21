@@ -130,6 +130,11 @@ thread_enter_state: ?*ThreadEnterState = null,
 /// touches it after `init`.
 restored: ?Restored = null,
 
+/// The restored session's end, put back in view after each resize until
+/// the person moves the viewport (`scrollback.RestoredTail`, task 1979).
+/// Touched under the renderer lock, as the terminal is.
+restored_tail: ?scrollback.RestoredTail = null,
+
 pub const Restored = struct {
     /// `PageList.resize_count` of the primary screen just after the restore.
     resize_count: u64,
@@ -456,6 +461,7 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
                     .cols = self.terminal.cols,
                     .rows = self.terminal.rows,
                 };
+                self.restored_tail = scrollback.RestoredTail.init(&self.terminal);
             },
         }
     }
@@ -849,6 +855,11 @@ pub fn resize(
         self.scrollback_dirty.store(true, .monotonic);
 
         // Update the size of our terminal state
+        const was_active = self.terminal.screens.get(.primary).?.pages.viewport == .active;
+        defer if (self.restored_tail) |tail| if (!tail.resized(&self.terminal, was_active)) {
+            tail.deinit(&self.terminal);
+            self.restored_tail = null;
+        };
         try self.terminal.resize(
             self.alloc,
             .{
