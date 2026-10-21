@@ -231,6 +231,10 @@ resource_judges: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, ResourceJudge) 
 resource_pressure: poltergeistpkg.judge.PressureState = .fresh,
 /// Panes being stopped: what their note will say once `Stopper` is done.
 resource_kills: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, ResourceKill) = .empty,
+/// Seven days of each pane's levels, by half hour (task 1993, #1985 §9):
+/// the slots in memory, and the day file they go into.
+resource_history: poltergeistpkg.ResourceHistory = .{},
+resource_history_file: ?poltergeistpkg.ResourceHistory.File = null,
 /// Stops that finished, handed over from the stopper's thread.
 resource_stopped_mutex: std.Io.Mutex = .init,
 resource_stopped: std.ArrayListUnmanaged(ResourceStopped) = .empty,
@@ -770,6 +774,17 @@ pub fn deinit(self: *App) void {
         while (self.resource_stops_running.load(.acquire) > 0 and waited <= poltergeistpkg.Stopper.grace_ms + 1_000) : (waited += 50)
             global.io().sleep(.fromMilliseconds(50), .awake) catch break;
     }
+    // The half hours still open go down as they stand.
+    {
+        var ids: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+        defer ids.deinit(self.alloc);
+        var it = self.resource_history.slots.keyIterator();
+        while (it.next()) |id| ids.append(self.alloc, id.*) catch break;
+        for (ids.items) |id| if (self.resource_history.take(id)) |c| self.writeHistorySlot(c);
+    }
+    self.resource_history.deinit(self.alloc);
+    if (self.resource_history_file) |*f| f.deinit(self.alloc);
+    self.resource_history_file = null;
     self.resource_judges.deinit(self.alloc);
     self.resource_kills.deinit(self.alloc);
     self.resource_stopped.deinit(self.alloc);
@@ -1226,6 +1241,8 @@ fn judgeResources(self: *App, usage: []const poltergeistpkg.ledger.Usage) void {
         for (stale.items) |id| _ = self.resource_judges.remove(id);
     }
 
+    self.recordResourceHistory(usage);
+
     for (usage) |u| {
         const lim = self.poltergeist.limitsOf(u.id);
         if (lim.isEmpty()) continue;
@@ -1251,6 +1268,52 @@ fn judgeResources(self: *App, usage: []const poltergeistpkg.ledger.Usage) void {
     }
 }
 
+/// Every pane read, into its half hour: the level its judge is at (ok for
+/// a pane with no lines), and the most it held. A pane no longer read has
+/// its half hour written as it stood.
+fn recordResourceHistory(self: *App, usage: []const poltergeistpkg.ledger.Usage) void {
+    const History = poltergeistpkg.ResourceHistory;
+    const wall = self.poltergeistWallMs();
+    const offset = poltergeistpkg.daylog.localOffsetMs(wall);
+    {
+        var gone: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+        defer gone.deinit(self.alloc);
+        var it = self.resource_history.slots.keyIterator();
+        while (it.next()) |id| if (!self.resource_usage.contains(id.*)) gone.append(self.alloc, id.*) catch break;
+        for (gone.items) |id| if (self.resource_history.take(id)) |c| self.writeHistorySlot(c);
+    }
+    for (usage) |u| {
+        const level: History.Level = if (self.resource_judges.getPtr(u.id)) |j| History.levelOf(&j.state) else .ok;
+        const closed = self.resource_history.note(self.alloc, u.id, wall, offset, level, u.mem, u.procs) catch continue;
+        if (closed) |c| self.writeHistorySlot(c);
+    }
+}
+
+fn writeHistorySlot(self: *App, c: poltergeistpkg.ResourceHistory.Closed) void {
+    const f = &(self.resource_history_file orelse return);
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    poltergeistpkg.ResourceHistory.writeSlot(&w, c) catch return;
+    f.write(c.slot.start_ms, w.buffered());
+}
+
+/// A line that counted, into the history at this moment, and its pane's
+/// half hour raised to it.
+fn writeHistoryEvent(self: *App, u: poltergeistpkg.ledger.Usage, e: poltergeistpkg.judge.Event, for_ms: u32, told: poltergeistpkg.ResourceHistory.Told) void {
+    const History = poltergeistpkg.ResourceHistory;
+    switch (e.what) {
+        .kill => self.resource_history.raise(u.id, .killed),
+        .withheld => self.resource_history.raise(u.id, .withheld),
+        .warn => {},
+    }
+    const f = &(self.resource_history_file orelse return);
+    const wall = self.poltergeistWallMs();
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    History.writeEvent(&w, u.id, wall, e, for_ms, u.topName(), u.top_count, told) catch return;
+    f.write(wall, w.buffered());
+}
+
 fn resourceWarned(self: *App, u: poltergeistpkg.ledger.Usage, lim: poltergeistpkg.limits.Limits, e: poltergeistpkg.judge.Event) void {
     const judge = poltergeistpkg.judge;
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
@@ -1263,7 +1326,13 @@ fn resourceWarned(self: *App, u: poltergeistpkg.ledger.Usage, lim: poltergeistpk
     // A warning is a question of hours, as `notify_user` scheduling is:
     // outside the hours the person allows, not raised. A kill is told at
     // any hour (`finishResourceStop`).
-    if (e.tell_person and self.resourceWarningAllowed()) _ = self.raiseSystemNotification(u.id, resourceTr(judge.words.warn_title), body);
+    const told_person = e.tell_person and self.resourceWarningAllowed();
+    if (told_person) _ = self.raiseSystemNotification(u.id, resourceTr(judge.words.warn_title), body);
+    const boss_told = lim.warn_tells_supervisor and self.resourceSupervisor(u.id) != null;
+    self.writeHistoryEvent(u, e, switch (e.metric) {
+        .memory => lim.memory.for_ms,
+        .processes => lim.processes.for_ms,
+    }, .{ .person = told_person, .supervisor = boss_told });
     if (lim.warn_tells_supervisor) if (self.resourceSupervisor(u.id)) |boss| {
         var line: [254]u8 = undefined;
         var a2: [32]u8 = undefined;
@@ -1329,6 +1398,9 @@ fn resourceKill(self: *App, surface: *Surface, u: poltergeistpkg.ledger.Usage, l
         u.id, pids.len, @tagName(e.metric), e.value, e.at, if (e.isFast()) " (fast)" else "",
     });
     _ = self.resource_stops_running.fetchAdd(1, .acq_rel);
+    // Into the history now, at the moment the line counted: the person is
+    // always told, the supervisor when there is one.
+    self.writeHistoryEvent(u, e, note.for_ms, .{ .person = true, .supervisor = self.resourceSupervisor(u.id) != null });
     poltergeistpkg.Stopper.start(.{
         .io = global.io(),
         .alloc = std.heap.smp_allocator,
@@ -4593,6 +4665,13 @@ pub fn ensureChatLog(self: *App, want: bool) void {
         if (self.task_log) |*t| t.restore(&self.tasks);
     } else |err| {
         log.warn("poltergeist: could not open the task log err={}", .{err});
+    }
+
+    // The resource history (task 1993): written only, like the stats.
+    if (poltergeistpkg.ResourceHistory.File.init(self.alloc, io, state_dir)) |f| {
+        self.resource_history_file = f;
+    } else |err| {
+        log.warn("poltergeist: could not set up the resource history err={}", .{err});
     }
 
     // Beside it, and never read back here: the hourly snapshot is for the

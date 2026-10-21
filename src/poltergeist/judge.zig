@@ -86,7 +86,7 @@ const Track = struct {
 };
 
 const per_metric = limits.max_warns + 1;
-const kill_slot = limits.max_warns;
+pub const kill_slot = limits.max_warns;
 
 pub const State = struct {
     memory: [per_metric]Track,
