@@ -5503,7 +5503,32 @@ pub const Opened = struct {
     /// Under `auto`, the caller's own worker pane that was looked at to be
     /// used again and was not, and why. See `PassedOver`.
     passed_over: ?PassedOver = null,
+    /// Under `here`, the terminal whose pane `auto` would have stacked this
+    /// one onto -- the caller's stack, which this pane is not in (task
+    /// 1958). Null when `auto` would have split it off the caller too, or
+    /// when `here` was not asked for.
+    stack: ?Bus.Id = null,
 };
+
+/// What `role_launch` says when a worker asked for `here` was split off
+/// the caller beside a stack it would otherwise have joined (task 1958).
+///
+/// **A suggestion, not a correction.** `here` is placed as asked -- the
+/// person may have wanted that pane. But a supervisor that learnt `here`
+/// before 1797, when it still went through the stack rule, kept asking for
+/// it out of habit, and its tab grew one column per worker beside a stack
+/// it never used, with nothing in any reply to say so.
+fn hereBesideStack(alloc: std.mem.Allocator, caller: Bus.Id, stack: Bus.Id) std.mem.Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(
+        alloc,
+        "This worker is a pane of its own split off yours (`here`), not in your stack of " ++
+            "workers, which is the pane holding 0x{x:0>16}. To put it there, terminal_stack " ++
+            "id=<this worker, from terminal_list> onto=0x{x:0>16}; leave `place` out and the " ++
+            "next worker goes there by itself. If the user asked for it to be where it is, " ++
+            "leave it.",
+        .{ stack, caller },
+    );
+}
 
 /// A worker pane `auto` would have used again, and the reason it did not.
 ///
@@ -7982,6 +8007,12 @@ fn dispatchOne(
                     .placed = opened.placed,
                     .passed_over = opened.passed_over,
                     .worktree = if (tree) |t| t.answer else null,
+                    // Only a split beside a stack it would have joined: a
+                    // `here` that fell back to a tab says so in `fallback`.
+                    .note = if (opened.stack) |stack| if (opened.placed == .split)
+                        try hereBesideStack(alloc, caller, stack)
+                    else
+                        null else null,
                 },
             };
         },
@@ -10956,6 +10987,9 @@ const FakeHost = struct {
     open_result: ?Bus.Id = null,
     /// Where the fake says it put the terminal.
     open_placed: Placed = .{ .tab = .asked },
+    /// The caller's stack, as the app would find it for a `here` launch
+    /// (task 1958). Null is no stack: `auto` would have split too.
+    role_stack: ?Bus.Id = null,
     open_error: ?anyerror = null,
 
     /// Worktrees (task 1702). `worktree_answer` is what `worktreePrepare`
@@ -11919,6 +11953,8 @@ const FakeHost = struct {
         return .{
             .id = if (self.role_tab_late or placed == .split or placed == .stack) null else 0x7777,
             .placed = placed,
+            // The app's `WorkerColumn.lastHere`, asked only under `here`.
+            .stack = if (place == .here) self.role_stack else null,
         };
     }
 
@@ -16915,6 +16951,56 @@ test "roles: what the supervisor sends is what the library is handed" {
     try testing.expectEqual(boss, fake.role_launched.?.by);
     try testing.expectEqualStrings("claude-code", fake.role_launched.?.cli);
     try testing.expectEqualStrings("/tmp", fake.role_launched.?.cwd);
+}
+
+test "1958: a worker launched here is split off as asked, and the reply says where the stack is and how to move it there" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const first: Bus.Id = 0x5555;
+
+    // The ai-video supervisor's second worker (2026-10-21): its first is in
+    // the stack, and it asked for `here` again.
+    var second: FakeHost = .{ .role_stack = first };
+    const launched = try dispatch(alloc, &b, second.host(), term(boss), .{ .role_launch = .{
+        .key = "animator",
+        .cwd = "/tmp",
+        .place = .here,
+    } });
+    // Placed as asked: a suggestion, not a correction.
+    try testing.expectEqual(Placement.here, second.role_launched.?.place);
+    const placed = launched.opened.placed.?;
+    try testing.expect(placed == .split);
+    const note = launched.opened.note orelse return error.NoLayoutNote;
+    try testing.expect(std.mem.indexOf(u8, note, "not in your stack") != null);
+    try testing.expect(std.mem.indexOf(u8, note, "0x0000000000005555") != null);
+    try testing.expect(std.mem.indexOf(u8, note, "onto=0x0000000000001111") != null);
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, launched);
+    const said = out.written();
+    try testing.expect(std.mem.indexOf(u8, said, "\"placed\":\"split\"") != null);
+    try testing.expect(std.mem.indexOf(u8, said, "\"note\":\"This worker is a pane of its own") != null);
+
+    // `auto`: into the stack, nothing to suggest.
+    var auto_launch: FakeHost = .{ .role_stack = first, .role_auto_splits = true };
+    const by_rule = try dispatch(alloc, &b, auto_launch.host(), term(boss), .{ .role_launch = .{ .key = "animator", .cwd = "/tmp" } });
+    try testing.expect(by_rule.opened.note == null);
+    var plain: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&plain.writer, by_rule);
+    try testing.expect(std.mem.indexOf(u8, plain.written(), "\"note\"") == null);
+
+    // No stack yet: `auto` would have split it off the caller too.
+    var alone: FakeHost = .{};
+    const first_one = try dispatch(alloc, &b, alone.host(), term(boss), .{ .role_launch = .{ .key = "animator", .cwd = "/tmp", .place = .here } });
+    try testing.expect(first_one.opened.note == null);
+
+    // terminal_open's `here` is a server's or a log's pane: nothing said.
+    var server: FakeHost = .{ .open_result = null, .open_placed = .split };
+    const pane = try dispatch(alloc, &b, server.host(), term(boss), .{ .terminal_open = .{ .cwd = "/tmp", .place = .here } });
+    try testing.expect(pane.opened.note == null);
 }
 
 test "role_launch in: started in a terminal that is already open, under the rules of anything that types into one" {

@@ -1247,7 +1247,9 @@ const tools = [_]Tool{
             "worker splits you to the right, every later one is stacked in front in that " ++
             "pane (`placed: \"stack\"`), never a new tab; `stack` is the same without " ++
             "reusing a free pane; `tab` is always a new tab; `here` is a pane of its own " ++
-            "split off yours; the reply's `placed` says which it got, and `fallback` why " ++
+            "split off yours, not in your stack -- when `auto` would have put it in your " ++
+            "stack, the reply's `note` says so and how to move it there; the reply's " ++
+            "`placed` says which it got, and `fallback` why " ++
             "when it was not what you asked. **`in` starts the role " ++
             "in a terminal that is already open** instead of opening one -- a pane of " ++
             "yours standing empty, or a shell the user told you to use. It is typed into " ++

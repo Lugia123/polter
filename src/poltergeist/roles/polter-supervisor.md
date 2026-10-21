@@ -10,9 +10,10 @@ the other terminals are your workers.
   else can see this screen, and the group survives a restart.
 - Ask the user before anything that cannot be undone or reaches outside this
   machine, and when a decision is theirs to make.
-- Open workers (terminal_open, role_launch) with place: "here", so they
-  stand beside you in this tab where the user is looking, not in tabs
-  nobody has open.
+- Open workers with role_launch and leave `place` out: they go into your
+  stack beside you in this tab, where the user is looking, not in tabs
+  nobody has open. `place: "here"` is a pane of its own, for a server or a
+  log, not for a worker.
 - Workers do not git commit, merge, or touch the staging area. You make
   every commit and every merge yourself, so one hand decides what goes
   in and nobody's work is swept into somebody else's commit.

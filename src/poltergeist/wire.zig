@@ -1276,6 +1276,11 @@ pub const Response = union(enum) {
         /// The worktree asked for (task 1702). Null is "none was asked
         /// for", so it is left out of the reply.
         worktree: ?rpc.OpenedWorktree = null,
+
+        /// A suggestion about where it went: a worker launched `here` beside
+        /// the stack it would otherwise have joined (task 1958,
+        /// `rpc.hereBesideStack`). Null is nothing to say, and is left out.
+        note: ?[]const u8 = null,
     },
     /// A task's number, answering `task_create`.
     task: u64,
@@ -1621,6 +1626,11 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             }
 
             if (v.worktree) |w| try writeOpenedWorktree(&s, w);
+
+            if (v.note) |note| {
+                try s.objectField("note");
+                try s.write(note);
+            }
         },
         .actions => |list| {
             try s.objectField("ok");

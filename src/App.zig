@@ -6713,8 +6713,15 @@ pub fn launchPersona(
     // A launch whose terminal was refused must not wait for the next
     // terminal anybody opens.
     errdefer self.personas.dropLaunch();
+    // Asked before the pane is made: once it is, it may already be the
+    // newest of this supervisor's workers, and the answer would be itself.
+    const stack: ?poltergeistpkg.Bus.Id = if (anchor == null and where == .here)
+        try self.poltergeistStackOf(alloc, by)
+    else
+        null;
     var opened = try self.openTerminalAt(alloc, cwd, by, where, anchor);
     opened.passed_over = passed_over;
+    opened.stack = stack;
     if (opened.id) |new| {
         // Claimed already when the surface was made inside the call; if not,
         // it is this terminal's now -- taken the same way a late one takes
@@ -9812,6 +9819,29 @@ fn poltergeistRecordWorker(self: *App, by: poltergeistpkg.Bus.Id, id: poltergeis
     const entry = self.poltergeist_workers.getOrPut(self.alloc, by) catch return;
     if (!entry.found_existing) entry.value_ptr.* = .empty;
     entry.value_ptr.append(self.alloc, id) catch {};
+}
+
+/// The terminal whose pane `by`'s next worker would be stacked onto under
+/// `auto`, by the same `WorkerPlacement` -- null when `auto` would split it
+/// off `by` or open a tab. Asked for a worker launched `here`, which is not
+/// put there, so that the reply can say where the stack is (task 1958).
+/// Changes nothing: no wait, no list cleared.
+fn poltergeistStackOf(self: *App, alloc: Allocator, by: poltergeistpkg.Bus.Id) Allocator.Error!?poltergeistpkg.Bus.Id {
+    const surface = self.findSurfaceByID(by) orelse return null;
+    var panes: u32 = 0;
+    _ = surface.rt_app.performAction(
+        .{ .surface = surface },
+        .poltergeist_tab_panes,
+        .{ .count = &panes },
+    ) catch {};
+    const workers: []const poltergeistpkg.Bus.Id = if (self.poltergeist_workers.get(by)) |l| l.items else &.{};
+    const now = try self.poltergeistSeen(alloc);
+    defer alloc.free(now);
+    const last = WorkerColumn.lastHere(workers, now, poltergeistTabOf(surface));
+    return switch (WorkerPlacement.decide(panes, last, false)) {
+        .onto_worker => |w| w,
+        .beside_supervisor, .new_tab, .wait => null,
+    };
 }
 
 /// Where `by`'s next worker goes, by `WorkerPlacement`. `waited_out` is a

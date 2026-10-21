@@ -1761,7 +1761,9 @@ test "persona: every set starts with the official roles" {
     try testing.expectEqual(Polter.Open.auto, boss.polter.open);
     try testing.expect(boss.instructions != null);
     // The three house rules of task 900 are in the text an agent is given.
-    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "place: \"here\"") != null);
+    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "role_launch and leave `place` out") != null);
+    // Not `here` for a worker (task 1958): that is a column per worker.
+    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "with place: \"here\"") == null);
     try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "Workers do not git commit, merge") != null);
     try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "one dedicated test worker") != null);
     // Nothing of the CLI's own but Polter's skills: the polter server is
