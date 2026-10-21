@@ -2717,6 +2717,7 @@ test "a response carries ids as the same text the host exports" {
         .agent_present = false,
         .startup_question = false,
         .left = null,
+        .resources = null,
         .role = .watched,
         .duty = .on,
         .held = false,
@@ -2750,8 +2751,8 @@ test "a response is one line" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .role = .supervisor, .duty = .on, .held = false, .quiet_ms = 0, .watching = false, .rounds = 0 },
-        .{ .id = 2, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .role = .watched, .duty = .off, .held = true, .quiet_ms = 90_000, .watching = true, .rounds = 2 },
+        .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .role = .supervisor, .duty = .on, .held = false, .quiet_ms = 0, .watching = false, .rounds = 0 },
+        .{ .id = 2, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .role = .watched, .duty = .off, .held = true, .quiet_ms = 90_000, .watching = true, .rounds = 2 },
     };
     try writeResponse(&w, .{ .terminals = &list });
 
@@ -2769,8 +2770,8 @@ test "a listing says which terminals are out of reach, and which are not" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .shielded = true },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .role = .watched, .watching = true },
+        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .shielded = true },
+        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .role = .watched, .watching = true },
     };
     try writeResponse(&w, .{ .terminals = &list });
 
@@ -2794,8 +2795,8 @@ test "a listing says each terminal's colour and whether workers are kept out of 
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .color = .orange, .workers = .refused },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null },
+        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .color = .orange, .workers = .refused },
+        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null },
     };
     try writeResponse(&w, .{ .terminals = &list });
 
@@ -2843,6 +2844,7 @@ test "an unwatched terminal is placed, but not measured" {
             .agent_present = false,
             .startup_question = false,
             .left = null,
+            .resources = null,
             .cwd = "/work/alpha",
             .title = "◑ colstat",
         },
@@ -2852,6 +2854,7 @@ test "an unwatched terminal is placed, but not measured" {
             .agent_present = false,
             .startup_question = false,
             .left = null,
+            .resources = null,
             .role = .watched,
             .watching = true,
             .cwd = "/work/beta",
@@ -2879,8 +2882,8 @@ test "a terminal that has never called a tool sends no call_silent_ms, not zero"
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .call_silent_ms = 1_320_000 },
+        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null },
+        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .call_silent_ms = 1_320_000 },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -2900,8 +2903,8 @@ test "grouping reaches the wire, not just the in-memory Response (task 650)" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .window = 1, .tab = 3 },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null }, // nobody grouped this one: absent, not zero
+        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .window = 1, .tab = 3 },
+        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null }, // nobody grouped this one: absent, not zero
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -2917,8 +2920,8 @@ test "a tab's place and title reach the wire, and are left out when nobody said 
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .window = 1, .tab = 3, .tab_index = 2, .tab_title = "build" },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .window = 1, .tab = 4 },
+        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .window = 1, .tab = 3, .tab_index = 2, .tab_title = "build" },
+        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .window = 1, .tab = 4 },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -3772,8 +3775,8 @@ test "1746: a terminal says whether its CLI is asking the person a question befo
     var buf: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = true, .left = null },
-        .{ .id = 0x22, .agent = .none, .agent_present = true, .startup_question = false, .left = null },
+        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = true, .left = null, .resources = null },
+        .{ .id = 0x22, .agent = .none, .agent_present = true, .startup_question = false, .left = null, .resources = null },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -3787,8 +3790,8 @@ test "#63: a terminal says whether an agent is connected from it, true or false"
     var buf: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = true, .startup_question = false, .left = null },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null },
+        .{ .id = 0x11, .agent = .none, .agent_present = true, .startup_question = false, .left = null, .resources = null },
+        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -3800,9 +3803,9 @@ test "1802: a terminal says whether its agent has left, and why, null included" 
     var buf: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = .unknown },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = .failed },
-        .{ .id = 0x33, .agent = .none, .agent_present = true, .startup_question = false, .left = null },
+        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = .unknown, .resources = null },
+        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = .failed, .resources = null },
+        .{ .id = 0x33, .agent = .none, .agent_present = true, .startup_question = false, .left = null, .resources = null },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
