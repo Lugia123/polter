@@ -63,6 +63,16 @@ pub fn physicalMemory() ?u64 {
     return v;
 }
 
+/// The kernel's memory pressure level, `kern.memorystatus_vm_pressure_level`:
+/// 1 normal, 2 warn, 4 critical. Null where it is not read.
+pub fn pressureLevel() ?u32 {
+    if (builtin.os.tag != .macos) return null;
+    var v: u32 = 0;
+    var len: usize = @sizeOf(u32);
+    if (std.c.sysctlbyname("kern.memorystatus_vm_pressure_level", &v, &len, null, 0) != 0) return null;
+    return v;
+}
+
 // ---------------------------------------------------------------- macOS
 
 const ProcBsdInfo = extern struct {
@@ -151,4 +161,6 @@ test "procscan: this process is in the reading, with its parent and some memory"
     try testing.expect(mine.footprint > 1 << 20);
     try testing.expect(mine.name().len > 0);
     try testing.expect(physicalMemory().? > 1 << 30);
+    const level = pressureLevel().?;
+    try testing.expect(level == 1 or level == 2 or level == 4);
 }
