@@ -2199,6 +2199,31 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// One page of the control room's right side, as JSON: the answer to
+    /// `req`, one JSON request -- the performance page's and the task
+    /// page's (task 2015, `polter-artifacts/2015/API.md` §2). Same buffer
+    /// rule as `ghostty_app_control_snapshot`; a second call with the same
+    /// request hands back the same answer, so a host may ask for the length
+    /// first.
+    ///
+    /// **Zero, every time, for now**: the pages are filled in by task 2015
+    /// Q3 and Q4. Zero is "no answer yet", which a host draws as nothing
+    /// already, so a host can be built and run against this before then.
+    export fn ghostty_app_control_page(
+        app: *App,
+        req: [*]const u8,
+        len: usize,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        _ = app;
+        _ = req;
+        _ = len;
+        _ = buf;
+        _ = cap;
+        return 0;
+    }
+
     /// The group a click on a notification raised from terminal `id` (a
     /// `ghostty_surface_poltergeist_id`) opens the control room at: the
     /// group it supervises, else the first it is in, in the control room's

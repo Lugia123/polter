@@ -1787,6 +1787,15 @@ GHOSTTY_API uintptr_t ghostty_app_control_snapshot(ghostty_app_t, char*, uintptr
 // they no longer hold. There is no field for who is asking: calling this is
 // being the person. App thread only.
 GHOSTTY_API bool ghostty_app_control_act(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+
+// One page of the control room's right side, as JSON: the answer to `req`,
+// one JSON request ({"page":"resources",...} or {"page":"tasks",...}; task
+// 2015). Same buffer rule as ghostty_app_control_snapshot, and a second call
+// with the same request gives the same answer, so a host may ask for the
+// length first. Zero bytes means the core has no answer yet: draw nothing.
+// For now it is always zero -- the pages are filled in by task 2015 Q3 and
+// Q4 -- so a host can be built against it first. App thread only.
+GHOSTTY_API uintptr_t ghostty_app_control_page(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 // Where the person is, as far as the control room goes: whether it is in
 // front, and which groups' cards it has on screen, as JSON
 // {"in_front":bool,"cards":["group",...]}. Said whenever either changes; the
