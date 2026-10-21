@@ -76,11 +76,46 @@ fn homeUnix(io: std.Io, environ_map: *const std.process.Environ.Map, buf: []u8) 
     return null;
 }
 
+/// USERPROFILE first, because that is where the agent CLIs look: Node's
+/// os.homedir() and Codex both read it. HOMEDRIVE + HOMEPATH can point
+/// somewhere else -- a domain account's network drive -- and then a skill
+/// written there is one the CLI never reads (task 2062). They are only the
+/// fallback now.
 fn homeWindows(environ_map: *const std.process.Environ.Map, buf: []u8) !?[]const u8 {
     var writer: std.Io.Writer = .fixed(buf);
+    if (environ_map.get("USERPROFILE")) |profile| {
+        if (profile.len > 0) {
+            _ = try writer.write(profile);
+            return writer.buffered();
+        }
+    }
     _ = try writer.write(environ_map.get("HOMEDRIVE") orelse return null);
     _ = try writer.write(environ_map.get("HOMEPATH") orelse return null);
     return writer.buffered();
+}
+
+test "2062: the Windows home is USERPROFILE, and HOMEDRIVE + HOMEPATH only without it" {
+    const testing = std.testing;
+    var buf: [256]u8 = undefined;
+
+    var both: std.process.Environ.Map = .init(testing.allocator);
+    defer both.deinit();
+    try both.put("USERPROFILE", "C:\\Users\\someone");
+    try both.put("HOMEDRIVE", "H:");
+    try both.put("HOMEPATH", "\\");
+    const from_profile = try homeWindows(&both, &buf);
+    try testing.expectEqualStrings("C:\\Users\\someone", from_profile.?);
+
+    var legacy: std.process.Environ.Map = .init(testing.allocator);
+    defer legacy.deinit();
+    try legacy.put("HOMEDRIVE", "H:");
+    try legacy.put("HOMEPATH", "\\home");
+    const from_drive = try homeWindows(&legacy, &buf);
+    try testing.expectEqualStrings("H:\\home", from_drive.?);
+
+    var none: std.process.Environ.Map = .init(testing.allocator);
+    defer none.deinit();
+    try testing.expect((try homeWindows(&none, &buf)) == null);
 }
 
 fn trimSpace(input: []const u8) []const u8 {
