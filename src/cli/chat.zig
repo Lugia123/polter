@@ -2053,7 +2053,7 @@ const Chat = struct {
 
             _ = win.printSegment(
                 .{ .text = label, .style = style },
-                .{ .row_offset = row, .col_offset = 0 },
+                .{ .row_offset = row, .col_offset = 0, .wrap = .none },
             );
 
             row += 1;
@@ -2076,9 +2076,11 @@ const Chat = struct {
                 .style = .{ .fg = c_author },
             }, .{ .row_offset = row, .col_offset = 0 });
 
+            // One row: a title wider than the column is cut, not run on
+            // into the next member's row (task 2043).
             _ = win.printSegment(
                 .{ .text = m.title },
-                .{ .row_offset = row, .col_offset = 2 },
+                .{ .row_offset = row, .col_offset = 2, .wrap = .none },
             );
             row += 1;
         }
@@ -2117,20 +2119,15 @@ const Chat = struct {
         var head_height: u16 = 2;
         const brief = self.currentBrief();
         if (brief.len > 0 and win.height > 4) {
-            var rows: std.ArrayListUnmanaged([]const u8) = .empty;
-            defer rows.deinit(self.alloc);
-
-            const inner = win.width -| 2;
-            try layout.wrap(self.alloc, &rows, brief, inner, measure);
-
             // Two lines of it at most: a brief long enough to fill the
             // screen is one the supervisor should have trimmed, and this
             // is not the place to read it in full.
-            for (rows.items[0..@min(rows.items.len, 2)], 0..) |line, i| {
+            const rows = try briefRows(self.frame.allocator(), brief, win.width -| 2, 2);
+            for (rows, 0..) |line, i| {
                 _ = win.printSegment(.{
                     .text = line,
                     .style = .{ .fg = c_dim, .italic = true },
-                }, .{ .row_offset = @intCast(2 + i), .col_offset = 1 });
+                }, .{ .row_offset = @intCast(2 + i), .col_offset = 1, .wrap = .none });
                 head_height += 1;
             }
         }
@@ -3253,13 +3250,13 @@ const Chat = struct {
                             .fg = if (from_user) c_user else c_author,
                             .bold = true,
                         },
-                    }, .{ .row_offset = y, .col_offset = 1 });
+                    }, .{ .row_offset = y, .col_offset = 1, .wrap = .none });
                 },
 
                 .body => {
                     _ = win.printSegment(
                         .{ .text = row.text },
-                        .{ .row_offset = y, .col_offset = 3 },
+                        .{ .row_offset = y, .col_offset = 3, .wrap = .none },
                     );
                 },
 
@@ -3270,7 +3267,7 @@ const Chat = struct {
                     _ = win.printSegment(.{
                         .text = row.text,
                         .style = .{ .fg = c_dim, .italic = true },
-                    }, .{ .row_offset = y, .col_offset = 1 });
+                    }, .{ .row_offset = y, .col_offset = 1, .wrap = .none });
                 },
             }
         }
@@ -3339,6 +3336,23 @@ fn formatTime(alloc: Allocator, at_ms: i64) []const u8 {
 /// back to the msgid, which is a readable answer rather than a blank.
 fn tr(comptime msgid: [:0]const u8) []const u8 {
     return std.mem.span(internal_os.i18n._(msgid.ptr));
+}
+
+/// The brief's rows under the group's name: each of its lines wrapped to
+/// `width`, at most `max` rows (task 2043). Split at its newlines first --
+/// `layout.wrap` takes one line, and a newline left in a row is one the
+/// terminal obeys, which ran the brief's later lines down over the
+/// messages (B5.5).
+fn briefRows(alloc: Allocator, brief: []const u8, width: u16, max: usize) Allocator.Error![]const []const u8 {
+    var rows: std.ArrayListUnmanaged([]const u8) = .empty;
+    var lines = std.mem.splitAny(u8, brief, "\r\n");
+    while (lines.next()) |line| {
+        if (rows.items.len >= max) break;
+        if (line.len == 0) continue;
+        try layout.wrap(alloc, &rows, line, width, Chat.measure);
+    }
+    if (rows.items.len > max) rows.shrinkRetainingCapacity(max);
+    return rows.items;
 }
 
 /// Where `--group` puts the selection: the index of the group of that
@@ -3858,6 +3872,30 @@ test "2015: --group opens at that group, and a name no group has says so and ope
         "No group is called \"nope\"; here are all of them",
         missingGroupText(arena.allocator(), "nope"),
     );
+}
+
+test "2043: a brief of several lines keeps to its two rows, and no row holds a newline" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The brief B5.5 was shot with: a paragraph, then a line of its own and
+    // a list, which drew over the messages.
+    const brief = "shop-web (repo: ~/demo/shop-web)。任务 1-7 是已关闭的历史。\n第 4 轮进行中（2026-10-22）：\n- test-writer (codex)：写 test/cart.test.js";
+    const rows = try briefRows(a, brief, 80, 2);
+    try testing.expectEqual(@as(usize, 2), rows.len);
+    for (rows) |r| {
+        try testing.expect(std.mem.indexOfAny(u8, r, "\r\n") == null);
+        try testing.expect(Chat.measure(r) <= 80);
+    }
+    try testing.expectEqualStrings("第 4 轮进行中（2026-10-22）：", rows[1]);
+    // Narrow: the first line alone fills both rows.
+    const narrow = try briefRows(a, brief, 20, 2);
+    try testing.expectEqual(@as(usize, 2), narrow.len);
+    for (narrow) |r| try testing.expect(Chat.measure(r) <= 20);
+    // Empty lines are no rows; a CRLF is a line break.
+    const crlf = try briefRows(a, "one\r\n\r\ntwo", 80, 2);
+    try testing.expectEqual(@as(usize, 2), crlf.len);
+    try testing.expectEqualStrings("two", crlf[1]);
 }
 
 test "2015: one group's window has no list of groups and no key that changes the group" {
