@@ -38,7 +38,9 @@
     "project-color-v6": "design 1796 v6, mock1796v6.py and README.md, as the user ruled it on 2026-10-19 (task 1796): S, the small faint glow",
     "pane-color-1699": "task 1699's palette: each colour's hue fixed, lightness solved for the thresholds in `contrast` (dots 3 on every ground they sit on, a badge's word 4.5 on it), chroma 85% of the sRGB maximum at that lightness (graphite 6%); purple on light is the app icon's own",
     "perf-v4": "design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149)",
-    "perf-2015": "task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit"
+    "perf-2015": "task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit",
+    "perf-v4-svg": "design #1985 ui-v4, src/perf4.py: the dial's and the curve's drawing, read for task 2039 W2 (seq 166)",
+    "task-v9": "design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts"
   },
 
   "numbers": {
@@ -394,6 +396,14 @@
       "dial_open_degrees": { "v": 240, "doc": "How far round the arc goes; the gap is at the bottom." },
       "dial_cap_top": { "v": 86, "doc": "From the dial's top to the words in the arc's gap." },
       "dial_cap_height": 20,
+      "dial_radius": { "v": 44, "src": "perf-v4-svg", "doc": "The arc's radius, to the middle of its stroke, in the `dial` square." },
+      "dial_tick_inner": { "v": 49, "src": "perf-v4-svg", "doc": "A warn line's tick, from the dial's centre: from here." },
+      "dial_tick_outer": { "v": 55, "src": "perf-v4-svg", "doc": "To here: outside the arc." },
+      "dial_tick_stroke": { "v": 2, "src": "perf-v4-svg" },
+      "dial_start_degrees": { "v": 150, "src": "perf-v4-svg", "doc": "Where the arc starts, clockwise from three o'clock; it runs `dial_open_degrees` from there." },
+      "curve_stroke": { "v": 1.25, "src": "perf-v4-svg", "doc": "The curve in row 4." },
+      "curve_dash": { "v": 2, "src": "perf-v4-svg", "doc": "The dashed line at the kill line's height over the curve: a dash, then `curve_gap`." },
+      "curve_gap": { "v": 3, "src": "perf-v4-svg" },
       "font_big": { "v": 24, "doc": "L1: the number in the dial." },
       "font_value": { "v": 15, "doc": "L2: the value in row 1. Everything else is L3, `font.body`." },
       "badge_height": { "v": 20, "doc": "The level badge at the head's right end." },
@@ -439,7 +449,56 @@
       "seg_rule": { "v": 2, "doc": "The line under the one chosen." },
       "cards_title_top": { "v": 12, "doc": "From the box to the line over the cards." },
       "cards_title_height": 20,
+      "cards_title_inset": { "v": 4, "src": "perf-v4-svg", "doc": "The line over the cards, in from their left and right edges." },
       "cards_top": { "v": 8, "doc": "From that line to the first row of cards." }
+    },
+    "task_page": {
+      "_src": "task-v9",
+      "_doc": "The task page (task 2015 Q9/Q10): the group's goal, a table of its tasks, the open one's detail, the closed ones folded, the keys at the foot.",
+      "pad_x": { "v": 24, "doc": "Round the page, left and right." },
+      "goal_height": { "v": 28, "doc": "The group's goal, the line at the top." },
+      "row_height": 28,
+      "row_pad_x": 12,
+      "col_glyph": { "v": 26, "doc": "The status glyph (`side.glyph` square)." },
+      "col_id": { "v": 60, "doc": "#215, in the terminal's face." },
+      "col_state": 104,
+      "col_owner": { "v": 120, "doc": "In the terminal's face. The title takes what is left." },
+      "col_idle": { "v": 96, "doc": "How long since it moved, to the right." },
+      "closed_top": { "v": 4, "doc": "Over \"8 closed\"." },
+      "closed_rule_gap": { "v": 12, "doc": "From those words to the line after them." },
+      "detail_radius_mac": { "v": 10, "doc": "The open task's ground on macOS." },
+      "detail_radius_windows": { "v": 6, "doc": "The same on Windows, as the panels there are rounder by less." },
+      "detail_margin_y": 6,
+      "detail_pad_top": 4,
+      "detail_pad_right": 24,
+      "detail_pad_bottom": 16,
+      "detail_pad_left": { "v": 38, "doc": "Lines the detail up with the title column." },
+      "detail_column_gap": 40,
+      "detail_left_width": { "v": 440, "doc": "The task and its log; the group's messages take the rest." },
+      "heading_height": { "v": 24, "doc": "\"The task\", \"What happened\", \"What the group said\"." },
+      "heading_rule_gap": { "v": 12, "doc": "From a heading to the line after it." },
+      "body_bottom": { "v": 12, "doc": "Under the task's words." },
+      "log_row": 24,
+      "log_time": 52,
+      "log_track": { "v": 28, "doc": "The track between the time and who." },
+      "log_track_x": { "v": 9.75, "doc": "The track's line, from the column's left." },
+      "log_dot": 6,
+      "log_dot_top": { "v": 9, "doc": "From the row's top to the dot's." },
+      "log_who": 64,
+      "log_gap_row": { "v": 20, "doc": "\"18 minutes later\": the track is dashed through it." },
+      "said_head_gap": { "v": 12, "doc": "Between a message's time and who sent it." },
+      "said_bottom": 12,
+      "hints_bottom": 12,
+      "hints_left": 12,
+      "hints_height": 32,
+      "hints_radius": 16,
+      "hints_pad_left": 6,
+      "hints_pad_right": 16,
+      "hints_gap": { "v": 16, "doc": "Between one key and its words and the next." },
+      "key_font": { "v": 13, "doc": "The key, in the terminal's face." },
+      "key_radius": 10,
+      "key_pad_x": 8,
+      "key_gap": { "v": 6, "doc": "From a key to its words." }
     }
   },
 
@@ -565,10 +624,27 @@
     "perf_card": { "light": "#000000@0.03", "dark": "#FFFFFF@0.04", "src": "perf-v4", "doc": "A card's ground, and the box with the grid. Light: undesigned." },
     "perf_card_edge": { "light": "#000000@0.10", "dark": "#FFFFFF@0.10", "src": "perf-v4", "doc": "Their hairline." },
     "perf_tip": { "light": "#FFFFFF", "dark": "#2C3138", "src": "perf-v4", "doc": "A grid cell's hover, to its left. Light: undesigned." },
-    "perf_tip_edge": { "light": "#000000@0.14", "dark": "#FFFFFF@0.14", "src": "perf-v4" }
+    "perf_tip_edge": { "light": "#000000@0.14", "dark": "#FFFFFF@0.14", "src": "perf-v4" },
+    "surface_perf_card": { "light": "#F0F1F3", "dark": "#2A2F38", "src": "perf-v4", "doc": "Measured: a card's ground as it comes out over the page (ui-v4 metrics.md). For the contrast report; a host draws `perf_card`. Light: undesigned." },
+    "task_queued": { "light": "#616365", "dark": "#95999C", "src": "task-v9", "doc": "The six task glyphs (`strings.task_symbol`). Queued: as `text_tertiary`." },
+    "task_working": { "light": "#202223", "dark": "#EFF2F6", "src": "task-v9", "doc": "Working: as `text`." },
+    "task_blocked": { "light": "#545557", "dark": "#B4B8BB", "src": "task-v9", "doc": "Blocked: as `text_secondary`." },
+    "task_done": { "light": "#545557", "dark": "#B4B8BB", "src": "task-v9", "doc": "Done, waiting to be closed: as `text_secondary`." },
+    "task_closed": { "light": "#616365", "dark": "#95999C", "src": "task-v9", "doc": "Closed: as `text_tertiary`." },
+    "task_cancelled": { "light": "#616365", "dark": "#95999C", "src": "task-v9", "doc": "Cancelled: as `text_tertiary`." }
   },
 
   "strings": {
+    "task_symbol": {
+      "_src": "task-v9",
+      "_doc": "The six task glyphs, by the system symbol macOS draws; Windows draws the same shape by name (`glyph.rs`), at `side.glyph`.",
+      "queued": "circle",
+      "working": "clock",
+      "blocked": "minus.circle",
+      "done": "checkmark.circle",
+      "closed": "checkmark",
+      "cancelled": "xmark.circle"
+    },
     "symbol": {
       "_src": "v14-changes",
       "_doc": "The system symbols the glyphs are. Working is the system's progress spinner, which has no symbol name. `held` is the supervisor's ruling (the design says only `a pause glyph`).",
@@ -633,7 +709,9 @@
       { "on": "surface_supervisor_bar", "glyph": ["pane_blue", "pane_purple", "pane_pink", "pane_red", "pane_orange", "pane_yellow", "pane_green", "pane_teal", "pane_graphite"] },
       { "on": "terminal_background", "glyph": ["pane_blue", "pane_purple", "pane_pink", "pane_red", "pane_orange", "pane_yellow", "pane_green", "pane_teal", "pane_graphite"] },
       { "on": "worker_band", "glyph": ["pane_blue_badge", "pane_purple_badge", "pane_pink_badge", "pane_red_badge", "pane_orange_badge", "pane_yellow_badge", "pane_green_badge", "pane_teal_badge", "pane_graphite_badge"] },
-      { "on": "surface_supervisor_bar", "glyph": ["pane_blue_badge", "pane_purple_badge", "pane_pink_badge", "pane_red_badge", "pane_orange_badge", "pane_yellow_badge", "pane_green_badge", "pane_teal_badge", "pane_graphite_badge"] }
+      { "on": "surface_supervisor_bar", "glyph": ["pane_blue_badge", "pane_purple_badge", "pane_pink_badge", "pane_red_badge", "pane_orange_badge", "pane_yellow_badge", "pane_green_badge", "pane_teal_badge", "pane_graphite_badge"] },
+      { "on": "surface_perf_card", "text": ["text", "text_secondary", "text_tertiary", "level_warn1_text", "level_warn2_text", "level_warn3_text", "level_warn4_text", "level_withheld_text", "level_killed_text"] },
+      { "on": "perf_tip", "text": ["text", "text_secondary", "text_tertiary", "level_warn1_text", "level_warn2_text", "level_warn3_text", "level_warn4_text", "level_withheld_text", "level_killed_text"] }
     ]
   }
 }

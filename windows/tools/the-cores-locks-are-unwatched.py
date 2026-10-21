@@ -147,8 +147,25 @@ LOCK_GATE = os.path.join(HERE, "lock-reentry.py")
 # two in `focusCallback` that synthesise modifier releases) is
 # already one that does not hold it, or it would hang today. Not done:
 # nothing here was run under a held lock to see it hang.
-CALLS = 110
-SPLIT = {"lockUncancelable": 55, "unlock": 55}
+#
+# 110 -> 112 (task 1993 P4, aafff9b42; its body changed in P4b, a95a4d65d),
+# re-read 2026-10-22 by the same method: strip `//`, count `.mutex.<name>(`
+# in `src/Surface.zig` -- 56 `lockUncancelable`, 56 `unlock`. The pair is
+# ours: `noteKilled`, which puts back the modes a stopped agent left on and
+# writes the kill note above the shell's prompt (`termio.killnote.put`).
+# **What it does while holding the lock** was read: `killnote.put` only, and
+# that only touches `self.io.terminal` -- modes, the scrolling region,
+# `switchScreenMode`, `insertLines`, printing, and (back off the alternate
+# screen) `Screen.clonePartialRowGrowCapacity`, which may allocate a bigger
+# page but calls nothing outside the terminal. `queueRender` is after the
+# block, with the lock released. **Its one caller was enumerated**:
+# `App.finishResourceStop`, from `finishResourceStops`, from `App.tick` --
+# which the apprt runs from its own loop (`ghostty_app_tick`; GTK's
+# `application.zig`), not from inside a surface callback; nothing on the way
+# from `tick` to the call takes this lock. Not done: nothing here was run
+# under a held lock to see it hang.
+CALLS = 112
+SPLIT = {"lockUncancelable": 56, "unlock": 56}
 
 # Claim 2. Down is a safety regression; up means somebody found another.
 CAREFUL_SITES = 2
