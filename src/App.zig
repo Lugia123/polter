@@ -7523,6 +7523,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .quietMs = poltergeistQuiet,
         .callSilentMs = poltergeistCallSilent,
         .nowMs = poltergeistNow,
+        .resourceUsage = poltergeistResourceUsage,
         .openTerminals = poltergeistOpenTerminals,
         .openTerminal = poltergeistOpenTerminal,
         .worktreePrepare = poltergeistWorktreePrepare,
@@ -9461,6 +9462,11 @@ fn poltergeistNow(ctx: *anyopaque) u64 {
     return self.poltergeistElapsedMs();
 }
 
+fn poltergeistResourceUsage(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) ?poltergeistpkg.ledger.Usage {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.resource_usage.get(id);
+}
+
 /// Every terminal on screen, with where it is and what it is called.
 ///
 /// The chat interface is left out: it is a window onto the conversation,
@@ -9616,6 +9622,7 @@ fn poltergeistSettlePendingWorker(self: *App, alloc: Allocator) Allocator.Error!
     defer alloc.free(now);
     if (pending.attribute(now, &.{})) |id| {
         self.poltergeistRecordWorker(pending.by, id);
+        self.claimLaunchLimits(pending.by, id);
         log.info("poltergeist: recorded terminal {x} as a worker of {x}", .{ id, pending.by });
         self.poltergeist_pending_worker = null;
         pending.deinit(self.alloc);
@@ -10095,6 +10102,15 @@ const WorkerSpot = union(enum) {
 
     const Split = struct { target: *Surface, direction: apprt.action.SplitDirection };
 };
+
+/// `id` has appeared as the worker `by` launched: the resource lines that
+/// launch asked for go on it now (task 1993, `Bus.claimPendingLimits`).
+/// Here and not in `poltergeistRecordWorker`, which also records a pane
+/// that was moved or re-homed -- that one asked for no lines.
+fn claimLaunchLimits(self: *App, by: poltergeistpkg.Bus.Id, id: poltergeistpkg.Bus.Id) void {
+    if (self.poltergeist.claimPendingLimits(by, id, self.poltergeistElapsedMs()))
+        log.info("resources: terminal {x} took the lines {x}'s launch asked for", .{ id, by });
+}
 
 /// Add `id` to the end of `by`'s workers. See `poltergeist_workers`.
 fn poltergeistRecordWorker(self: *App, by: poltergeistpkg.Bus.Id, id: poltergeistpkg.Bus.Id) void {
@@ -10605,7 +10621,10 @@ fn openTerminalAt(
         const now = try self.poltergeistSeen(alloc);
         defer alloc.free(now);
         switch (try PendingWorker.afterSplit(self.alloc, by, self.poltergeistElapsedMs(), made_in, &before, now, &.{})) {
-            .appeared => |id| self.poltergeistRecordWorker(by, id),
+            .appeared => |id| {
+                self.poltergeistRecordWorker(by, id);
+                self.claimLaunchLimits(by, id);
+            },
             .pending => |p| {
                 if (self.poltergeist_pending_worker) |*old_pending| old_pending.deinit(self.alloc);
                 self.poltergeist_pending_worker = p;

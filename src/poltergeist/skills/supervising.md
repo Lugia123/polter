@@ -634,6 +634,16 @@ the same terminal: a worker you told to stand by needs both raised —
 quiet clauses and the other keeps coming. `no_tool_call_ms: 0` switches that
 clause off for the terminal, `null` gives it back to the configuration.
 
+**A worker that could eat the machine gets lines.** Every terminal is
+measured -- `terminal_list` and `me` carry `resources`: the bytes and the
+process count of everything running in it, and the name holding the most --
+but only a terminal you drew lines on is judged. Draw them when you launch it
+(`limits` on `role_launch` / `terminal_open`) or later with
+`terminal_limits(id, limits)`: memory as a size (`8G`) or a share of the
+machine (`40%`), processes as a count, up to four `warn` lines and one `kill`.
+There are no defaults; a metric you do not name is not judged, and `{}`
+clears them. Your own terminal, the person's and a chat cannot have lines.
+
 `terminal_list` reports `cwd`, `title`, and for marked terminals the quiet
 time, duty state and round count. An unwatched terminal has **no quiet time at
 all**, and that absence is information: do not read a missing `quiet_ms` as

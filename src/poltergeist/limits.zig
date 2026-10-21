@@ -212,6 +212,35 @@ fn hundredths(t: []const u8) ?u64 {
     return n + f;
 }
 
+/// A size or a share the way `size` reads it back: "8G", "19.5G", "40%".
+/// The largest unit it is a whole number of hundredths of; bytes as a
+/// plain number when none.
+pub fn format(v: Value, buf: []u8) []const u8 {
+    switch (v) {
+        .count => |c| return std.fmt.bufPrint(buf, "{d}", .{c}) catch unreachable,
+        .share => |sh| return hundredthsText(buf, sh, "%"),
+        .bytes => |b| {
+            for ([_]struct { shift: u6, unit: []const u8 }{
+                .{ .shift = 40, .unit = "T" }, .{ .shift = 30, .unit = "G" },
+                .{ .shift = 20, .unit = "M" }, .{ .shift = 10, .unit = "K" },
+            }) |u| {
+                const one = @as(u128, 1) << u.shift;
+                const h = @as(u128, b) * 100;
+                if (b >= one and h % one == 0) return hundredthsText(buf, @intCast(h / one), u.unit);
+            }
+            return std.fmt.bufPrint(buf, "{d}", .{b}) catch unreachable;
+        },
+    }
+}
+
+fn hundredthsText(buf: []u8, h: u64, unit: []const u8) []const u8 {
+    const whole = h / 100;
+    const frac = h % 100;
+    if (frac == 0) return std.fmt.bufPrint(buf, "{d}{s}", .{ whole, unit }) catch unreachable;
+    if (frac % 10 == 0) return std.fmt.bufPrint(buf, "{d}.{d}{s}", .{ whole, frac / 10, unit }) catch unreachable;
+    return std.fmt.bufPrint(buf, "{d}.{d:0>2}{s}", .{ whole, frac, unit }) catch unreachable;
+}
+
 /// "10s", "2m", "1h"; 2 s to 1 h. Null otherwise.
 fn duration(v: std.json.Value) ?u32 {
     const t = switch (v) {
@@ -287,6 +316,15 @@ test "1993: a size is exact, and a share is of this machine" {
     try testing.expectEqual(Value{ .share = 1250 }, size("12.5%").?);
     try testing.expectEqual(@as(u64, 12 << 30), (Value{ .share = 3750 }).resolve(32 << 30));
     try testing.expectEqual(@as(u64, 32 << 30), (Value{ .share = 10_000 }).resolve(32 << 30));
+}
+
+test "1993: a line is written back the way it was read" {
+    var buf: [32]u8 = undefined;
+    for ([_][]const u8{ "8G", "19.5G", "1.25G", "512M", "40%", "12.5%", "3T" }) |text| {
+        try testing.expectEqualStrings(text, format(size(text).?, &buf));
+    }
+    try testing.expectEqualStrings("300", format(.{ .count = 300 }, &buf));
+    try testing.expectEqualStrings("1000", format(.{ .bytes = 1000 }, &buf));
 }
 
 test "1993: limits refuse what they cannot read, naming the key" {

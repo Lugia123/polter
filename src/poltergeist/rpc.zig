@@ -21,6 +21,9 @@ const MentionRetry = @import("MentionRetry.zig");
 const Plugin = @import("Plugin.zig");
 const Tasks = @import("Tasks.zig");
 const fresh_assign = @import("fresh_assign.zig");
+pub const limits = @import("limits.zig");
+const procscan = @import("procscan.zig");
+const ledger = @import("ledger.zig");
 const arrange = @import("arrange.zig");
 const RecordTools = @import("RecordTools.zig");
 const screenshot = @import("screenshot.zig");
@@ -103,6 +106,11 @@ pub const Method = enum {
     /// Change how long this terminal must be still before the supervisor
     /// hears about it.
     set_quiescence_threshold,
+
+    /// Draw, change or clear a worker's resource lines: memory and process
+    /// count, warn and kill (task 1993, `limits.zig`). A supervisor, for a
+    /// terminal it opened as its worker only.
+    terminal_limits,
 
     /// Put a terminal under supervision, or take it out again.
     ///
@@ -512,6 +520,16 @@ pub const CallsThreshold = union(enum) {
     ms: u64,
 };
 
+/// `limits` as a request carried it (task 1993): not given, read, or not
+/// readable -- and then what was wrong with it, which is the reply. Kept
+/// as a refusal rather than failing the parse so that the supervisor is
+/// told which key, not just `BadParams`.
+pub const LimitsParam = union(enum) {
+    absent,
+    given: limits.Limits,
+    bad: []const u8,
+};
+
 pub const Request = union(Method) {
     me,
     terminal_list,
@@ -551,6 +569,8 @@ pub const Request = union(Method) {
     clock_in: struct { id: Bus.Id },
     /// Either threshold or both; at least one (#62). See `CallsThreshold`.
     set_quiescence_threshold: struct { id: Bus.Id, ms: ?u64, no_tool_call_ms: CallsThreshold },
+    /// `{}` clears them: the pane is measured and nothing else.
+    terminal_limits: struct { id: Bus.Id, limits: LimitsParam },
     set_watch: struct { id: Bus.Id, watch: bool },
     skill_read: struct { name: []const u8 },
 
@@ -666,6 +686,9 @@ pub const Request = union(Method) {
         /// A worktree's name (task 1702): the terminal opens in that tree
         /// of `cwd`'s repository, made if it is not there. Empty is none.
         worktree: []const u8 = "",
+        /// The new terminal's resource lines (task 1993), as
+        /// `terminal_limits` would set them.
+        limits: LimitsParam = .absent,
     },
     role_list,
     /// `role` is the role object as JSON text; the wire layer writes it
@@ -700,6 +723,9 @@ pub const Request = union(Method) {
         /// it supervises exactly one, and none -- said in the reply --
         /// when it supervises several.
         group: []const u8 = "",
+        /// The worker's resource lines (task 1993), as `terminal_limits`
+        /// would set them.
+        limits: LimitsParam = .absent,
     },
     worktree_status: struct { name: []const u8 = "", repo: []const u8 = "" },
     worktree_remove: struct { name: []const u8, repo: []const u8 = "" },
@@ -1182,6 +1208,7 @@ pub fn callableByPlugin(method: Method) bool {
         .clock_out,
         .clock_in,
         .set_quiescence_threshold,
+        .terminal_limits,
         .set_watch,
 
         // The plugin tools. All three are the supervisor's already, so
@@ -1348,6 +1375,7 @@ pub fn requiresSupervisor(method: Method) bool {
         .clock_out,
         .clock_in,
         .set_quiescence_threshold,
+        .terminal_limits,
         .set_watch,
 
         .group_set_brief,
@@ -1685,6 +1713,7 @@ pub fn targetsTerminal(method: Method) bool {
         .clock_out,
         .clock_in,
         .set_quiescence_threshold,
+        .terminal_limits,
         => true,
     };
 }
@@ -1898,6 +1927,7 @@ pub fn selfPermitted(req: Request) bool {
         .clock_in,
         .clock_out,
         .set_quiescence_threshold,
+        .terminal_limits,
         => false,
 
         // **Allowed: naming yourself here is ordinary.**
@@ -2103,6 +2133,7 @@ pub fn promptReach(method: Method) enum {
         .clock_in,
         .clock_out,
         .set_quiescence_threshold,
+        .terminal_limits,
         .set_watch,
         .stand_down,
         .become_supervisor,
@@ -2735,6 +2766,7 @@ test "only what changes the arrangement needs the supervisor" {
             .clock_out,
             .clock_in,
             .set_quiescence_threshold,
+            .terminal_limits,
             .set_watch,
             .group_create,
             .group_destroy,
@@ -6053,6 +6085,10 @@ pub const Host = struct {
         /// to hand it some.
         nowMs: *const fn (ctx: *anyopaque) u64,
 
+        /// The latest reading of a terminal's processes (task 1993), or null
+        /// when there is none: not started, or not read on this platform.
+        resourceUsage: *const fn (ctx: *anyopaque, id: Bus.Id) ?ledger.Usage,
+
         /// Start or stop sampling a terminal's screen.
         ///
         /// Separate from the bus entry because they are separate facts: the
@@ -6718,6 +6754,10 @@ pub const Host = struct {
         return self.vtable.nowMs(self.ctx);
     }
 
+    fn resourceUsage(self: Host, id: Bus.Id) ?ledger.Usage {
+        return self.vtable.resourceUsage(self.ctx, id);
+    }
+
     fn openTerminals(self: Host, alloc: std.mem.Allocator) anyerror![]const Place {
         return self.vtable.openTerminals(self.ctx, alloc);
     }
@@ -7226,6 +7266,7 @@ pub fn isAgentCall(method: Method) bool {
         .clock_out,
         .clock_in,
         .set_quiescence_threshold,
+        .terminal_limits,
         .set_watch,
         .skill_read,
         .group_create,
@@ -7800,6 +7841,9 @@ fn dispatchOne(
         },
 
         .terminal_open => |p| {
+            // Refused before anything is opened: a terminal opened without
+            // the lines that were asked for would run unjudged.
+            if (limitsRefusal(p.limits)) |no| return no;
             const tree = switch (try prepareWorktree(alloc, host, caller, p.cwd, p.worktree)) {
                 .go => |t| t,
                 .stop => |no| return no,
@@ -7870,6 +7914,7 @@ fn dispatchOne(
                 .placed = opened.placed,
                 .passed_over = opened.passed_over,
                 .worktree = if (tree) |t| t.answer else null,
+                .limits = try launchLimits(bus, host, caller, p.limits, opened.id),
             } };
         },
 
@@ -7925,6 +7970,7 @@ fn dispatchOne(
                 "`in` starts the role where that terminal already is; a worktree needs a new " ++
                     "terminal, so leave `in` out.",
             );
+            if (limitsRefusal(p.limits)) |no| return no;
             const tree = switch (try prepareWorktree(alloc, host, caller, p.cwd, p.worktree)) {
                 .go => |t| t,
                 .stop => |no| return no,
@@ -8030,6 +8076,7 @@ fn dispatchOne(
                     .worktree = if (tree) |t| t.answer else null,
                     .joins = opened.joins,
                     .join_note = opened.join_note,
+                    .limits = try launchLimits(bus, host, caller, p.limits, opened.id),
                     // Only a split beside a stack it would have joined: a
                     // `here` that fell back to a tab says so in `fallback`.
                     .note = if (opened.stack) |stack| if (opened.placed == .split)
@@ -8547,6 +8594,20 @@ fn dispatchOne(
                 .configured => try bus.setCallsSilentAfter(p.id, null, host.nowMs()),
                 .ms => |ms| try bus.setCallsSilentAfter(p.id, ms, host.nowMs()),
             }
+            return .ok;
+        },
+
+        .terminal_limits => |p| {
+            if (limitsRefusal(p.limits)) |no| return no;
+            const l = switch (p.limits) {
+                .given => |l| l,
+                // Both refused by `limitsRefusal`, and `absent` by the wire.
+                .absent, .bad => unreachable,
+            };
+            bus.setLimits(caller, p.id, l) catch |err| return switch (err) {
+                error.UnknownTerminal => failure(error.UnknownTerminal),
+                error.NotYourWorker => notYourWorker(),
+            };
             return .ok;
         },
 
@@ -9377,7 +9438,8 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
     const present = host.agentPresent(id);
     // Asked only of a terminal with no agent: one with an agent is past it.
     const question = !present and host.startupReach(id) == .blocked;
-    const e = bus.get(id) orelse return .{ .id = id, .agent = .none, .agent_present = present, .startup_question = question, .left = null };
+    const resources: ?wire.Resources = if (host.resourceUsage(id)) |u| .{ .usage = u, .limits = bus.limitsOf(id) } else null;
+    const e = bus.get(id) orelse return .{ .id = id, .agent = .none, .agent_present = present, .startup_question = question, .left = null, .resources = resources };
 
     return .{
         .id = id,
@@ -9434,6 +9496,7 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
         .agent_present = present,
         .startup_question = question,
         .left = if (e.left) |l| l.why else null,
+        .resources = resources,
     };
 }
 
@@ -10801,6 +10864,58 @@ fn prepareWorktree(
     };
 }
 
+/// `limits` that cannot be drawn on this machine, as the reply: unreadable
+/// (the key is named), a share where the machine's memory is not read, or
+/// a kill line at or under a warn line. Null to go ahead.
+fn limitsRefusal(p: LimitsParam) ?wire.Response {
+    const l = switch (p) {
+        .absent => return null,
+        .bad => |why| return hostFailure("BadParams", why),
+        .given => |l| l,
+    };
+    const phys = procscan.physicalMemory() orelse {
+        for (l.memory.warns()) |w| if (w == .share) return noShare();
+        if (l.memory.kill) |k| if (k == .share) return noShare();
+        return null;
+    };
+    if (limits.check(&l, phys)) |why| return hostFailure("BadParams", why);
+    return null;
+}
+
+fn noShare() wire.Response {
+    return hostFailure("BadParams", "limits.memory: this platform does not read the machine's memory, " ++
+        "so a share (\"40%\") cannot be worked out; give a size, like \"8G\".");
+}
+
+fn notYourWorker() wire.Response {
+    return hostFailure("NotYourWorker", "lines go only on a terminal you opened as your worker " ++
+        "(role_launch, terminal_open). Your own terminal, the person's, a chat and another " ++
+        "supervisor's worker are measured and never judged.");
+}
+
+/// A launch's `limits`, put on the terminal it opened (task 1993), and what
+/// the reply says of them: "set", "pending" -- the terminal is not there
+/// yet, and takes them when it appears -- or why they were not set. Null
+/// when none were asked for.
+fn launchLimits(bus: *Bus, host: Host, caller: Bus.Id, p: LimitsParam, id: ?Bus.Id) std.mem.Allocator.Error!?[]const u8 {
+    const l = switch (p) {
+        .given => |l| l,
+        // `bad` was refused before anything was opened.
+        .absent, .bad => return null,
+    };
+    const new = id orelse {
+        try bus.pendLimits(caller, l, host.nowMs());
+        return "pending";
+    };
+    bus.setLimits(caller, new, l) catch |err| return switch (err) {
+        error.UnknownTerminal => "not set: the terminal was not on the bus. terminal_limits it " ++
+            "once terminal_list shows it.",
+        error.NotYourWorker => "not set: that terminal is not one you opened as your worker, " ++
+            "so it is measured and never judged.",
+    };
+    return "set";
+}
+
 fn hostFailure(code: []const u8, message: []const u8) wire.Response {
     return .{ .failed = .{ .code = code, .message = message } };
 }
@@ -10922,6 +11037,9 @@ const FakeHost = struct {
     set_to: ?struct { id: Bus.Id, ms: u64 } = null,
     read_count: usize = 0,
     refuse: bool = false,
+    /// The one reading `resourceUsage` answers with, for its own id (task
+    /// 1993).
+    usage: ?ledger.Usage = null,
     /// What the app does on an agent's first request when a launch named
     /// its group (task 1971): puts it in, so `refuse` no longer holds.
     joins_on_arrival: bool = false,
@@ -11238,6 +11356,7 @@ const FakeHost = struct {
             .quietMs = quietMs,
             .callSilentMs = callSilentMs,
             .nowMs = nowMs,
+            .resourceUsage = resourceUsage,
             .openTerminals = openTerminals,
             .setWatching = setWatching,
             .stoodDown = stoodDown,
@@ -12005,6 +12124,12 @@ const FakeHost = struct {
     fn nowMs(ctx: *anyopaque) u64 {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return self.now_ms;
+    }
+
+    fn resourceUsage(ctx: *anyopaque, id: Bus.Id) ?ledger.Usage {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const u = self.usage orelse return null;
+        return if (u.id == id) u else null;
     }
 
     fn openTerminals(
@@ -17035,6 +17160,131 @@ test "1958: a worker launched here is split off as asked, and the reply says whe
     var server: FakeHost = .{ .open_result = null, .open_placed = .split };
     const pane = try dispatch(alloc, &b, server.host(), term(boss), .{ .terminal_open = .{ .cwd = "/tmp", .place = .here } });
     try testing.expect(pane.opened.note == null);
+}
+
+fn limitsFrom(text: []const u8) !LimitsParam {
+    const p = try std.json.parseFromSlice(std.json.Value, testing.allocator, text, .{});
+    defer p.deinit();
+    var why: []const u8 = "";
+    return .{ .given = try limits.parse(p.value, &why) };
+}
+
+fn replyText(alloc: std.mem.Allocator, r: wire.Response) ![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, r);
+    return out.written();
+}
+
+test "1993: terminal_limits draws lines on the caller's worker, and on nothing else" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var host: FakeHost = .{};
+    const mine: Bus.Id = 0x1993;
+    try b.markOpenedByAgent(mine, boss);
+    try b.markWorkerOf(mine, boss);
+    const kill = try limitsFrom("{\"memory\": {\"warn\": [\"8G\"], \"kill\": \"19G\"}}");
+
+    const set = try dispatch(alloc, &b, host.host(), term(boss), .{ .terminal_limits = .{ .id = mine, .limits = kill } });
+    try testing.expect(set == .ok);
+    try testing.expect(b.limitsOf(mine).hasKill());
+
+    // The person's terminal (`worker` was only watched, never opened by an
+    // agent), the supervisor's own, and one that is not there.
+    for ([_]struct { id: Bus.Id, code: []const u8 }{
+        .{ .id = worker, .code = "NotYourWorker" },
+        // Its own: refused before it gets here, as every call aimed at
+        // itself that may not be is; `Bus.mayLimit` refuses it as well.
+        .{ .id = boss, .code = "SelfTarget" },
+        .{ .id = 0xdead, .code = "UnknownTerminal" },
+    }) |c| {
+        const no = try dispatch(alloc, &b, host.host(), term(boss), .{ .terminal_limits = .{ .id = c.id, .limits = kill } });
+        try testing.expectEqualStrings(c.code, no.failed.code);
+    }
+    try testing.expect(!b.limitsOf(worker).hasKill());
+    try testing.expect(!b.limitsOf(boss).hasKill());
+
+    // A worker may not draw them, even on itself.
+    const by_worker = try dispatch(alloc, &b, host.host(), term(mine), .{ .terminal_limits = .{ .id = mine, .limits = kill } });
+    try testing.expect(by_worker == .failed);
+
+    // Unreadable, and kill under a warn line: refused, naming the key, and
+    // what was there stays.
+    const unreadable = try dispatch(alloc, &b, host.host(), term(boss), .{ .terminal_limits = .{ .id = mine, .limits = .{ .bad = "limits.memory.kill: a size" } } });
+    try testing.expectEqualStrings("limits.memory.kill: a size", unreadable.failed.message);
+    const upside_down = try dispatch(alloc, &b, host.host(), term(boss), .{ .terminal_limits = .{ .id = mine, .limits = try limitsFrom("{\"processes\": {\"warn\": [500], \"kill\": 400}}") } });
+    try testing.expectEqualStrings("BadParams", upside_down.failed.code);
+    try testing.expect(b.limitsOf(mine).hasKill());
+
+    // `{}` clears.
+    _ = try dispatch(alloc, &b, host.host(), term(boss), .{ .terminal_limits = .{ .id = mine, .limits = try limitsFrom("{}") } });
+    try testing.expect(b.limitsOf(mine).isEmpty());
+}
+
+test "1993: a launch's limits go on its terminal, or wait for it, and bad ones open nothing" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const kill = try limitsFrom("{\"memory\": {\"kill\": \"19G\"}}");
+
+    // A tab: the terminal is there (the app marks it opened by and a
+    // worker of the caller before answering), so they are set.
+    try b.markOpenedByAgent(0x7777, boss);
+    try b.markWorkerOf(0x7777, boss);
+    var tab: FakeHost = .{};
+    const in_tab = try dispatch(alloc, &b, tab.host(), term(boss), .{ .role_launch = .{ .key = "archer", .cwd = "/tmp", .place = .tab, .limits = kill } });
+    try testing.expectEqualStrings("set", in_tab.opened.limits.?);
+    try testing.expect(b.limitsOf(0x7777).hasKill());
+    try testing.expect(std.mem.indexOf(u8, try replyText(alloc, in_tab), "\"limits\":\"set\"") != null);
+
+    // A split: not there yet, so they wait for it.
+    var split: FakeHost = .{};
+    const in_split = try dispatch(alloc, &b, split.host(), term(boss), .{ .role_launch = .{ .key = "archer", .cwd = "/tmp", .place = .here, .limits = kill } });
+    try testing.expectEqualStrings("pending", in_split.opened.limits.?);
+    try testing.expect(b.pending_limits.contains(boss));
+
+    // None asked for: none said.
+    var plain: FakeHost = .{};
+    const none = try dispatch(alloc, &b, plain.host(), term(boss), .{ .role_launch = .{ .key = "archer", .cwd = "/tmp", .place = .tab } });
+    try testing.expect(none.opened.limits == null);
+
+    // Unreadable: refused before anything is opened.
+    var bad: FakeHost = .{};
+    const refused = try dispatch(alloc, &b, bad.host(), term(boss), .{ .role_launch = .{ .key = "archer", .cwd = "/tmp", .limits = .{ .bad = "limits.memory.kill: a size" } } });
+    try testing.expectEqualStrings("BadParams", refused.failed.code);
+    try testing.expect(bad.role_launched == null);
+    const refused_open = try dispatch(alloc, &b, bad.host(), term(boss), .{ .terminal_open = .{ .cwd = "/tmp", .limits = .{ .bad = "limits.memory.kill: a size" } } });
+    try testing.expectEqualStrings("BadParams", refused_open.failed.code);
+}
+
+test "1993: me and terminal_list carry a pane's reading and its lines, and leaves out what it has not read" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const mine: Bus.Id = 0x1993;
+    try b.markOpenedByAgent(mine, boss);
+    try b.markWorkerOf(mine, boss);
+    try b.setLimits(boss, mine, (try limitsFrom("{\"memory\": {\"warn\": [\"8G\", \"40%\"], \"kill\": \"19.5G\"}}")).given);
+    var u: ledger.Usage = .{ .id = mine, .mem = 14 << 30, .procs = 23, .top_count = 7, .top_mem = 12 << 30 };
+    @memcpy(u.top[0..10], "python3.13");
+    u.top_len = 10;
+    var host: FakeHost = .{ .usage = u };
+
+    // `me`, asked by the pane itself; terminal_list describes every row
+    // with the same `describe`.
+    const with = try replyText(alloc, try dispatch(alloc, &b, host.host(), term(mine), .me));
+    try testing.expect(std.mem.indexOf(u8, with, "\"resources\":{\"mem\":15032385536,\"procs\":23,\"top\":{\"name\":\"python3.13\",\"count\":7,") != null);
+    try testing.expect(std.mem.indexOf(u8, with, "\"limits\":{\"memory\":{\"warn\":[\"8G\",\"40%\"],\"kill\":\"19.5G\",\"for\":\"10s\"},\"warn_tells_supervisor\":false}") != null);
+
+    // Another terminal, with no reading: no block at all, not an empty one.
+    const without = try replyText(alloc, try dispatch(alloc, &b, host.host(), term(worker), .me));
+    try testing.expect(std.mem.indexOf(u8, without, "\"resources\"") == null);
 }
 
 test "1971: role_launch hands the group to the host and says which one the worker joins, or why none" {

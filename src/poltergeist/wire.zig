@@ -16,6 +16,7 @@ const Chat = @import("Chat.zig");
 const Plugin = @import("Plugin.zig");
 const rpc = @import("rpc.zig");
 const Projects = @import("Projects.zig");
+const ledger = @import("ledger.zig");
 
 pub const ParseError = error{
     /// The bytes are not a JSON object.
@@ -202,6 +203,17 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             } };
         },
 
+        .terminal_limits => .{
+            .terminal_limits = .{
+                .id = try requireId(params),
+                // Required: clearing is `{}`, said, never a parameter forgotten.
+                .limits = switch (limitsParam(params)) {
+                    .absent => return error.BadParams,
+                    else => |l| l,
+                },
+            },
+        },
+
         .set_watch => .{
             .set_watch = .{
                 .id = try requireId(params),
@@ -293,6 +305,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 .watch = optionalBool(params, "watch", false),
                 .place = try placeParam(aa, params),
                 .worktree = (try optionalString(aa, params, "worktree")) orelse "",
+                .limits = limitsParam(params),
             },
         },
 
@@ -334,6 +347,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 // The group the worker goes in (task 1971); left out, the
                 // caller's own.
                 .group = (try optionalString(aa, params, "group")) orelse "",
+                .limits = limitsParam(params),
             },
         },
         .worktree_status => .{ .worktree_status = .{
@@ -866,6 +880,17 @@ fn optionalU16(
     };
 }
 
+/// `limits` (task 1993). What is wrong with it is the reply, naming the key
+/// (`rpc.LimitsParam`); its strings are static, so nothing is allocated.
+fn limitsParam(params: ?std.json.ObjectMap) rpc.LimitsParam {
+    const given = params orelse return .absent;
+    const v = given.get("limits") orelse return .absent;
+    if (v == .null) return .absent;
+    var why: []const u8 = "";
+    const l = rpc.limits.parse(v, &why) catch return .{ .bad = why };
+    return .{ .given = l };
+}
+
 fn optionalBool(params: ?std.json.ObjectMap, key: []const u8, default: bool) bool {
     const p = params orelse return default;
     const v = p.get(key) orelse return default;
@@ -1097,6 +1122,21 @@ pub const TerminalInfo = struct {
     /// this is the field that says it is over. **No default**, on
     /// `agent_present`'s terms.
     left: ?Bus.Left.Why,
+    /// What its processes hold (task 1993), and the lines drawn for it.
+    /// Null when there is no reading of it -- not started, or a platform
+    /// that does not read one -- and then left out of the reply entirely.
+    /// **No default**, on `agent_present`'s terms: a describer that forgot
+    /// it would be a pane that looks unmeasured.
+    resources: ?Resources,
+};
+
+/// One pane's reading (task 1993): `terminal_list` and `me`.
+pub const Resources = struct {
+    /// Its processes, summed, and the name holding the most. A value, so
+    /// the name travels with it and nothing points into the sampler's.
+    usage: ledger.Usage,
+    /// As the supervisor drew them; left out when there are none.
+    limits: rpc.limits.Limits,
 };
 
 /// A terminal's agent state, as `terminal_list` and `terminal_turn` show it.
@@ -1290,6 +1330,11 @@ pub const Response = union(enum) {
         /// the caller might have expected one. Null is left out.
         joins: ?[]const u8 = null,
         join_note: ?[]const u8 = null,
+
+        /// What became of the `limits` the call asked for (task 1993):
+        /// "set", "pending" (the terminal is not there yet and takes them
+        /// when it appears), or why not. Null when none were asked for.
+        limits: ?[]const u8 = null,
     },
     /// A task's number, answering `task_create`.
     task: u64,
@@ -1647,6 +1692,10 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             if (v.join_note) |n| {
                 try s.objectField("join_note");
                 try s.write(n);
+            }
+            if (v.limits) |l| {
+                try s.objectField("limits");
+                try s.write(l);
             }
         },
         .actions => |list| {
@@ -2226,7 +2275,68 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
         try s.endArray();
     }
 
+    if (info.resources) |r| try writeResources(s, r);
+
     try s.endObject();
+}
+
+fn writeResources(s: *std.json.Stringify, r: Resources) std.Io.Writer.Error!void {
+    try s.objectField("resources");
+    try s.beginObject();
+    try s.objectField("mem");
+    try s.write(r.usage.mem);
+    try s.objectField("procs");
+    try s.write(r.usage.procs);
+    if (r.usage.top_len > 0) {
+        try s.objectField("top");
+        try s.beginObject();
+        try s.objectField("name");
+        try s.write(r.usage.topName());
+        try s.objectField("count");
+        try s.write(r.usage.top_count);
+        try s.objectField("mem");
+        try s.write(r.usage.top_mem);
+        try s.endObject();
+    }
+    // In the words they were drawn in ("8G", "40%"), so a supervisor reads
+    // back what it wrote.
+    if (!r.limits.isEmpty()) {
+        try s.objectField("limits");
+        try s.beginObject();
+        inline for (.{ "memory", "processes" }) |name| {
+            const m = @field(r.limits, name);
+            if (!m.isEmpty()) {
+                try s.objectField(name);
+                try s.beginObject();
+                if (m.warn_len > 0) {
+                    try s.objectField("warn");
+                    try s.beginArray();
+                    for (m.warns()) |w| try writeLimitValue(s, w);
+                    try s.endArray();
+                }
+                if (m.kill) |k| {
+                    try s.objectField("kill");
+                    try writeLimitValue(s, k);
+                }
+                try s.objectField("for");
+                var buf: [16]u8 = undefined;
+                try s.write(std.fmt.bufPrint(&buf, "{d}s", .{m.for_ms / 1000}) catch unreachable);
+                try s.endObject();
+            }
+        }
+        try s.objectField("warn_tells_supervisor");
+        try s.write(r.limits.warn_tells_supervisor);
+        try s.endObject();
+    }
+    try s.endObject();
+}
+
+fn writeLimitValue(s: *std.json.Stringify, v: rpc.limits.Value) std.Io.Writer.Error!void {
+    var buf: [32]u8 = undefined;
+    switch (v) {
+        .count => |c| try s.write(c),
+        else => try s.write(rpc.limits.format(v, &buf)),
+    }
 }
 
 /// One terminal's agent state. `since_ms` is left out where the caller has
@@ -3590,6 +3700,40 @@ test "1971: role_launch reads `group`, and an absent one is empty" {
         defer p.deinit();
         try testing.expectEqualStrings("", p.value.role_launch.group);
     }
+}
+
+test "1993: limits are read where they are given, refused by key, and terminal_limits needs them" {
+    {
+        var p = try parse(
+            \\{"method":"role_launch","params":{"key":"hand","limits":{"memory":{"kill":"19G"}}}}
+        );
+        defer p.deinit();
+        try testing.expect(p.value.role_launch.limits.given.hasKill());
+    }
+    {
+        var p = try parse(
+            \\{"method":"terminal_open","params":{"cwd":"/tmp","limits":{"memory":{"kill":19}}}}
+        );
+        defer p.deinit();
+        try testing.expectEqualStrings("limits.memory.kill", p.value.terminal_open.limits.bad[0..18]);
+    }
+    {
+        var p = try parse(
+            \\{"method":"terminal_open","params":{"cwd":"/tmp"}}
+        );
+        defer p.deinit();
+        try testing.expect(p.value.terminal_open.limits == .absent);
+    }
+    {
+        var p = try parse(
+            \\{"method":"terminal_limits","params":{"id":"0x22","limits":{}}}
+        );
+        defer p.deinit();
+        try testing.expect(p.value.terminal_limits.limits.given.isEmpty());
+    }
+    try testing.expectError(error.BadParams, parse(
+        \\{"method":"terminal_limits","params":{"id":"0x22"}}
+    ));
 }
 
 test "#62: set_quiescence_threshold takes either threshold, and refuses neither" {

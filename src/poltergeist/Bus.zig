@@ -25,6 +25,7 @@ const assert = std.debug.assert;
 const Sampler = @import("Sampler.zig");
 const Attention = @import("Attention.zig");
 const AgentEvent = @import("agent_event.zig");
+const limits = @import("limits.zig");
 
 /// A terminal's identity. This is `Surface.id`, which Ghostty already
 /// assigns and already exports to child processes as `GHOSTTY_SURFACE_ID`,
@@ -223,6 +224,16 @@ pub const ClockOffError = error{
 
     /// Only the supervisor clocks terminals off.
     NotPermitted,
+};
+
+pub const SetLimitsError = error{
+    UnknownTerminal,
+
+    /// Not a terminal the caller opened as its worker: its own, the
+    /// user's, a chat, another supervisor's. Those are measured and never
+    /// judged (task 1993) -- a line on one of them would be a kill nobody
+    /// who may decide it asked for.
+    NotYourWorker,
 };
 
 pub const SetHeldError = error{
@@ -657,6 +668,12 @@ pub const Entry = struct {
     /// "you may not stop working", this says "nobody may touch you".
     shielded: bool = false,
 
+    /// The resource lines its supervisor drew for it (task 1993,
+    /// `setLimits`); `.none` is measured and not judged. Kept when a new
+    /// agent starts in the pane -- the same supervisor, the next task --
+    /// and gone with the entry.
+    limits: limits.Limits = .none,
+
     /// The colour the user gave this pane (task 1699): a mark the person
     /// makes for themselves, so the user alone sets it. What is kept is
     /// what was *set*; a supervisor with none set is shown in purple, and
@@ -1051,6 +1068,10 @@ pub const Config = struct {
 alloc: Allocator,
 config: Config,
 entries: std.AutoHashMapUnmanaged(Id, Entry) = .empty,
+/// Lines a supervisor asked for with a launch whose terminal was not there
+/// yet (every split; every Windows tab), keyed by the supervisor and taken
+/// by its next worker that appears (`claimPendingLimits`, task 1993).
+pending_limits: std.AutoHashMapUnmanaged(Id, PendingLimits) = .empty,
 /// Bumped whenever any terminal's `Entry.left` is set or taken back (task
 /// 1802). Nothing else says that it moved: `considerLinks` writes it from
 /// a sweep that no terminal's message started, so the control room --
@@ -1121,6 +1142,7 @@ pub fn deinit(self: *Bus) void {
     while (raises.next()) |r| self.alloc.free(r.text);
     self.raises.deinit(self.alloc);
     self.entries.deinit(self.alloc);
+    self.pending_limits.deinit(self.alloc);
     self.* = undefined;
 }
 
@@ -1141,6 +1163,7 @@ pub fn unregister(self: *Bus, id: Id) void {
     if (self.asks.fetchRemove(id)) |kv| self.alloc.free(kv.value);
     if (self.pending_tools.fetchRemove(id)) |kv| self.alloc.free(kv.value.input);
     if (self.raises.fetchRemove(id)) |kv| self.alloc.free(kv.value.text);
+    _ = self.pending_limits.remove(id);
 }
 
 /// Record that the supervisor in `id` has put something in front of the
@@ -1222,6 +1245,50 @@ pub fn markWorkerOf(self: *Bus, id: Id, by: Id) Allocator.Error!void {
 pub fn workerOf(self: *const Bus, id: Id) ?Id {
     const e = self.entries.get(id) orelse return null;
     return e.worker_of;
+}
+
+pub const PendingLimits = struct { limits: limits.Limits, at_ms: u64 };
+
+/// How long a launch's lines wait for its terminal: the placement gives up
+/// well before this (`worker_wait_ms`).
+pub const pending_limits_ms: u64 = 60_000;
+
+/// Whether `caller` may draw lines on `id`: a terminal it opened as its
+/// worker, that an agent opened, and that is not itself. A chat surface,
+/// the user's own terminal, the caller's own pane and another
+/// supervisor's worker all answer no.
+pub fn mayLimit(self: *const Bus, caller: Id, id: Id) bool {
+    if (caller == id) return false;
+    const e = self.entries.get(id) orelse return false;
+    if (!e.opened_by_agent) return false;
+    return e.worker_of == caller or e.opened_by == caller;
+}
+
+/// Draw `id`'s lines, or clear them with `.none`.
+pub fn setLimits(self: *Bus, caller: Id, id: Id, l: limits.Limits) SetLimitsError!void {
+    const e = self.entries.getPtr(id) orelse return error.UnknownTerminal;
+    if (!self.mayLimit(caller, id)) return error.NotYourWorker;
+    e.limits = l;
+}
+
+pub fn limitsOf(self: *const Bus, id: Id) limits.Limits {
+    const e = self.entries.get(id) orelse return .none;
+    return e.limits;
+}
+
+/// Keep `l` for `by`'s next worker to appear: its launch did not have a
+/// terminal to set them on yet. A second launch before that replaces it.
+pub fn pendLimits(self: *Bus, by: Id, l: limits.Limits, now_ms: u64) Allocator.Error!void {
+    try self.pending_limits.put(self.alloc, by, .{ .limits = l, .at_ms = now_ms });
+}
+
+/// `id` has just appeared as `by`'s new worker: it takes the lines `by`'s
+/// launch asked for, if they are still waiting. True when it took them.
+pub fn claimPendingLimits(self: *Bus, by: Id, id: Id, now_ms: u64) bool {
+    const kv = self.pending_limits.fetchRemove(by) orelse return false;
+    if (now_ms -| kv.value.at_ms > pending_limits_ms) return false;
+    self.setLimits(by, id, kv.value.limits) catch return false;
+    return true;
 }
 
 /// The terminal whose agent opened this one, or null.
@@ -5323,6 +5390,83 @@ test "the flag among a tab's dots is the supervisor's, raised or lowered" {
         };
         try testing.expectEqual(want, m.flag());
     }
+}
+
+test "1993: lines go only on a terminal the caller opened as its worker" {
+    var b = testBus();
+    defer b.deinit();
+    const other_boss: Id = 0x5150;
+    const mine: Id = 0x1993;
+    const theirs: Id = 0x1994;
+    const users: Id = 0x1995;
+    const opened: Id = 0x1996;
+    try b.addSupervisor(boss);
+    try b.addSupervisor(other_boss);
+    const kill = try limitsWithKill();
+
+    try b.markOpenedByAgent(mine, boss);
+    try b.markWorkerOf(mine, boss);
+    try b.markOpenedByAgent(theirs, other_boss);
+    try b.markWorkerOf(theirs, other_boss);
+    // A terminal the person opened, and the supervisor watches: still the
+    // person's, so never judged. A chat surface is opened by the app, not
+    // by an agent, and answers the same.
+    try b.register(users);
+    try b.watch(users, boss);
+    // Opened by this supervisor's own split, not as a worker: its own.
+    try b.markOpenedByAgent(opened, boss);
+    // Recorded as its worker but never opened by an agent: a pane the
+    // person opened that a project file names. Still the person's.
+    const stated: Id = 0x1997;
+    try b.markWorkerOf(stated, boss);
+
+    try b.setLimits(boss, mine, kill);
+    try testing.expect(b.limitsOf(mine).hasKill());
+    try b.setLimits(boss, opened, kill);
+    try testing.expectError(error.NotYourWorker, b.setLimits(boss, theirs, kill));
+    try testing.expectError(error.NotYourWorker, b.setLimits(boss, users, kill));
+    try testing.expectError(error.NotYourWorker, b.setLimits(boss, stated, kill));
+    try testing.expectError(error.NotYourWorker, b.setLimits(boss, boss, kill));
+    try testing.expectError(error.UnknownTerminal, b.setLimits(boss, 0xdead, kill));
+    try testing.expect(!b.limitsOf(users).hasKill());
+    try testing.expect(!b.limitsOf(boss).hasKill());
+
+    // `{}` clears.
+    try b.setLimits(boss, mine, .none);
+    try testing.expect(b.limitsOf(mine).isEmpty());
+}
+
+test "1993: a launch's lines wait for its terminal, for a minute, and go once" {
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    const kill = try limitsWithKill();
+    const first: Id = 0x1993;
+    const second: Id = 0x1994;
+    try b.markOpenedByAgent(first, boss);
+    try b.markWorkerOf(first, boss);
+    try b.markOpenedByAgent(second, boss);
+    try b.markWorkerOf(second, boss);
+
+    try b.pendLimits(boss, kill, 1_000);
+    try testing.expect(b.claimPendingLimits(boss, first, 2_000));
+    try testing.expect(b.limitsOf(first).hasKill());
+    // Taken: the next worker does not get them as well.
+    try testing.expect(!b.claimPendingLimits(boss, second, 3_000));
+    try testing.expect(b.limitsOf(second).isEmpty());
+
+    // Too late: a launch that never got its terminal leaves nothing behind
+    // for whatever appears next.
+    try b.pendLimits(boss, kill, 10_000);
+    try testing.expect(!b.claimPendingLimits(boss, second, 10_000 + pending_limits_ms + 1));
+    try testing.expect(b.limitsOf(second).isEmpty());
+}
+
+fn limitsWithKill() !limits.Limits {
+    const p = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"memory\": {\"kill\": \"19G\"}}", .{});
+    defer p.deinit();
+    var why: []const u8 = "";
+    return limits.parse(p.value, &why);
 }
 
 test "only the user may shield a terminal, and it starts unshielded" {

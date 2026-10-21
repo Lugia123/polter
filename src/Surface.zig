@@ -222,6 +222,12 @@ poltergeist_persona: apprt.action.PoltergeistMark.Persona = .none,
 /// do not update it, or a notice would keep pushing its own deadline back.
 last_key_time: ?std.Io.Timestamp = null,
 
+/// The pane terminal's device as `e_tdev` reads it, once `resourcePane`
+/// has read it (task 1993): it does not change while the child runs, and
+/// it was a `fstatat` per pane every two seconds on the app thread. Null
+/// is not read yet -- a failed read is tried again, not remembered.
+resource_tty: ?u32 = null,
+
 /// When an input method last changed what it is composing here, while a
 /// composition is open; null when none is (task 1578).
 ///
@@ -9004,13 +9010,15 @@ pub fn getProcessInfo(self: *Surface, comptime info: ProcessInfo) ?ProcessInfo.T
 /// `getProcessInfo` already is: both are set once when the child starts.
 pub fn resourcePane(self: *Surface) ?poltergeistpkg.ledger.Pane {
     const root = self.io.childPid() orelse return null;
-    const tty: ?u32 = tty: {
+    const tty: ?u32 = self.resource_tty orelse tty: {
         if (comptime builtin.os.tag != .macos) break :tty null;
         const name = self.getProcessInfo(.tty_name) orelse break :tty null;
         var st: std.c.Stat = undefined;
         // `std.c.stat` has no macOS arm64 binding in this Zig; `fstatat` does.
         if (std.c.fstatat(std.c.AT.FDCWD, name.ptr, &st, 0) != 0) break :tty null;
-        break :tty @bitCast(st.rdev);
+        const dev: u32 = @bitCast(st.rdev);
+        self.resource_tty = dev;
+        break :tty dev;
     };
     return .{ .id = self.id, .root = std.math.cast(u32, root) orelse return null, .tty = tty };
 }

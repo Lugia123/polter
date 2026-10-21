@@ -1050,6 +1050,26 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "terminal_limits",
+        .description = "Draw, change or clear the resource lines of a terminal you opened as your " ++
+            "worker (role_launch, terminal_open -- both also take `limits` for the terminal they " ++
+            "open). Every terminal is measured -- terminal_list shows each one's `resources`: " ++
+            "bytes and processes of everything running in it -- but only one with lines is judged. " ++
+            "`{\"memory\": {\"warn\": [\"8G\", \"40%\"], \"kill\": \"19G\", \"for\": \"10s\"}, " ++
+            "\"processes\": {\"warn\": [300], \"kill\": 2000}, \"warn_tells_supervisor\": false}`. " ++
+            "Memory is a size (512M, 8G, 1.5G) or a share of the machine (40%); processes a count. " ++
+            "Up to four warn lines and one kill line each; a reading counts once it has stayed over a " ++
+            "line for `for` (10s if left out). A warn line tells the person; you hear of it only with " ++
+            "`warn_tells_supervisor`. **The kill line stops the agent and everything under it** -- " ++
+            "the shell stays -- and you are told, with the command to resume it. At 1.5 times the " ++
+            "kill line it is immediate. `{}` clears every line. There are no defaults: a metric not " ++
+            "named is not judged. Your own terminal, the person's, a chat and another supervisor's " ++
+            "worker answer `NotYourWorker`. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"id":{"type":"string"},"limits":{"type":"object"}},"required":["id","limits"],"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "set_watch",
         .description = "Put a terminal under your supervision, or take it out again. " ++
             "Watching it is what makes its quiet spells arrive in your notices, and it " ++
@@ -1151,7 +1171,7 @@ const tools = [_]Tool{
             "POLTER_WORKTREE. worktree_status says how the trees stand, worktree_remove " ++
             "takes one down.",
         .schema =
-        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here","stack"],"description":"Defaults to auto: your tab is you on the left and one stack of your workers on the right -- the first worker splits you to the right, every one after it is stacked in front in that pane (the newest of your workers still in your tab); never a new tab. stack is the same. tab is a guarantee of its own tab; here is a pane of its own split off yours, for what is not a worker (a server, a log), and the reply says when it could not. Terminals in your tab that are not your workers are never stacked into."},"worktree":{"type":"string","description":"A worktree name: letters, digits, '.', '_', '-'. Opens the terminal in that tree of cwd's repository, making it (branch wt/<name>) if needed."}},"required":["cwd"]}
+        \\{"type":"object","properties":{"cwd":{"type":"string"},"watch":{"type":"boolean","description":"Defaults to false"},"place":{"type":"string","enum":["auto","tab","here","stack"],"description":"Defaults to auto: your tab is you on the left and one stack of your workers on the right -- the first worker splits you to the right, every one after it is stacked in front in that pane (the newest of your workers still in your tab); never a new tab. stack is the same. tab is a guarantee of its own tab; here is a pane of its own split off yours, for what is not a worker (a server, a log), and the reply says when it could not. Terminals in your tab that are not your workers are never stacked into."},"worktree":{"type":"string","description":"A worktree name: letters, digits, '.', '_', '-'. Opens the terminal in that tree of cwd's repository, making it (branch wt/<name>) if needed."},"limits":{"type":"object","description":"Resource lines for the new terminal, as terminal_limits sets them."}},"required":["cwd"]}
         ,
     },
     .{
@@ -1300,7 +1320,7 @@ const tools = [_]Tool{
             "`joins` names it; `join_note` says why it was put in none. " ++
             "Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"key":{"type":"string"},"group":{"type":"string","description":"The group the worker is put in; left out, the one you supervise."},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."},"beside":{"type":"string","description":"The id of a terminal whose tab the new one goes in, as a new pane -- never a new tab. Not with in or place."},"worktree":{"type":"string","description":"As terminal_open's: the role's terminal opens in that git worktree, made if needed. Not with in."}},"required":["key"],"additionalProperties":false}
+        \\{"type":"object","properties":{"key":{"type":"string"},"group":{"type":"string","description":"The group the worker is put in; left out, the one you supervise."},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."},"beside":{"type":"string","description":"The id of a terminal whose tab the new one goes in, as a new pane -- never a new tab. Not with in or place."},"worktree":{"type":"string","description":"As terminal_open's: the role's terminal opens in that git worktree, made if needed. Not with in."},"limits":{"type":"object","description":"Resource lines for the worker, as terminal_limits sets them."}},"required":["key"],"additionalProperties":false}
         ,
     },
     .{
