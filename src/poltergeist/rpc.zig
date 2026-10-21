@@ -5548,6 +5548,9 @@ pub const PassedOver = struct {
     pub const Why = enum {
         /// An agent is still connected from it.
         agent,
+        /// A role's launch line went into it and its agent has not been
+        /// heard yet: its CLI is starting (task 1974).
+        launching,
         /// Its shell is not at a prompt -- something is running there.
         not_at_prompt,
         /// Something half typed is in its input line.
@@ -7925,6 +7928,12 @@ fn dispatchOne(
                     "an agent is already running in that terminal. A role is started in " ++
                         "a shell that is waiting; to change what a running agent wears, " ++
                         "that is the user's menu.",
+                ),
+                error.AgentStarting => hostFailure(
+                    "AgentStarting",
+                    "a role was just launched in that terminal and its agent has not connected " ++
+                        "yet: its CLI is starting, and a line typed now would go into it. Nothing " ++
+                        "was typed. Wait for it to show in terminal_list, or open another.",
                 ),
                 error.NotAtPrompt => hostFailure(
                     "NotAtPrompt",

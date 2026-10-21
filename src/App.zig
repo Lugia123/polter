@@ -484,6 +484,13 @@ seat_judged: poltergeistpkg.Projects.SeatJudged = .{},
 /// 1844). Names owned here. Forgotten with the terminal.
 launch_groups: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, []const u8) = .empty,
 
+/// Terminals a role's launch line was typed into whose agent has not been
+/// heard yet (task 1974). While one is here its pane is not free for
+/// another launch, whatever its screen says -- see `FreeWorker.Launching`.
+/// Gone when its agent is heard, its launch fails, it closes, the person
+/// types into it, or `launch_agent_wait_ms` passes with none of that.
+launching: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, FreeWorker.Launching) = .empty,
+
 /// When each owed second message was first owed, and for which group
 /// (task 1787): how long it has waited for its agent to connect, and what
 /// to say if it never does.
@@ -808,6 +815,7 @@ pub fn deinit(self: *App) void {
         while (it.next()) |name| self.alloc.free(name.*);
         self.launch_groups.deinit(self.alloc);
     }
+    self.launching.deinit(self.alloc);
     {
         var it = self.start_owed.valueIterator();
         while (it.next()) |o| self.alloc.free(o.group);
@@ -5827,6 +5835,11 @@ fn startRoleIn(
     if (self.terminal_meta) |*m| m.role(id, self.poltergeistWallMs(), choice.key);
 
     try surface.typePoltergeistTextAs(line, true, who);
+    // Its CLI is starting from now until its agent is heard (task 1974).
+    self.launching.put(self.alloc, id, .{
+        .deadline_ms = self.poltergeistElapsedMs() +| poltergeistpkg.Bus.launch_agent_wait_ms,
+        .typed_at = .now(global.io(), .boot),
+    }) catch {};
 }
 
 /// A request has come from terminal `id` (`rpc.arrived`): if a role launch
@@ -5850,6 +5863,8 @@ fn poltergeistAgentArrived(
     // A launch said which group its agent is for (task 1844): judged now
     // that the agent is heard, once.
     self.launchGroupArrived(id);
+    // Its launch has an agent: the pane is that agent's (task 1974).
+    _ = self.launching.remove(id);
     const applied = self.personas.claimStanding(bus, id, self.poltergeistElapsedMs()) orelse return;
     defer self.refreshPoltergeistTabs();
     defer self.saveSession();
@@ -6499,6 +6514,7 @@ fn poltergeistLaunchFailed(
 ) void {
     const self: *App = @ptrCast(@alignCast(ctx));
     _ = self.personas.dropStanding(id);
+    _ = self.launching.remove(id);
     defer self.refreshPoltergeistTabs();
 
     // Whoever ran the launch hears that it failed, watch or no watch (task
@@ -6554,6 +6570,7 @@ fn holdStartupQuestions(self: *App, now_ms: u64) bool {
         if (asking) {
             _ = self.personas.extendStanding(id, now_ms + Store.standing_wait_ms, now_ms);
             _ = self.poltergeist.holdLaunch(id, now_ms);
+            if (self.launching.getPtr(id)) |l| l.deadline_ms = @max(l.deadline_ms, now_ms +| poltergeistpkg.Bus.launch_agent_wait_ms);
         }
         if (group) |g| {
             if (self.chat.startAsking(g, asking, now_ms + Store.standing_wait_ms, now_ms)) {
@@ -6756,12 +6773,14 @@ fn launchPersonaIn(
         .shielded = self.poltergeist.isShielded(target),
         .workers_refused = self.poltergeist.workersOf(target) == .refused,
         .agent = self.agentPresent(target),
+        .launching = self.stillLaunching(target, surface),
         .at_prompt = surface.isAtShellPrompt(),
         .draft = surface.draftFor(.agent),
         .dir_fits = true,
     };
     if (seat.why()) |why| return switch (why) {
         .agent => error.AgentThere,
+        .launching => error.AgentStarting,
         .not_at_prompt => error.NotAtPrompt,
         .draft => error.DraftInLine,
         // The rpc refuses both before a host is asked; this is the same
@@ -6802,6 +6821,7 @@ fn poltergeistFreeWorker(
             .shielded = self.poltergeist.isShielded(w),
             .workers_refused = self.poltergeist.workersOf(w) == .refused,
             .agent = self.agentPresent(w),
+            .launching = if (surface) |s| self.stillLaunching(w, s) else false,
             .at_prompt = if (surface) |s| s.isAtShellPrompt() else false,
             .draft = if (surface) |s| s.draftFor(.agent) else true,
             .dir_fits = cwd.len == 0 or if (surface) |s| dir: {
@@ -6814,6 +6834,15 @@ fn poltergeistFreeWorker(
     if (FreeWorker.pick(seats)) |at| return .{ .free = workers[at], .passed_over = null };
     const over = FreeWorker.passedOver(seats) orelse return none;
     return .{ .free = null, .passed_over = .{ .id = workers[over.at], .why = over.why } };
+}
+
+/// Whether the launch typed into `id` is still starting its CLI
+/// (`FreeWorker.Launching`). One that is not any more is forgotten.
+fn stillLaunching(self: *App, id: poltergeistpkg.Bus.Id, surface: *Surface) bool {
+    const l = self.launching.get(id) orelse return false;
+    if (l.holds(self.poltergeistElapsedMs(), surface.last_key_time)) return true;
+    _ = self.launching.remove(id);
+    return false;
 }
 
 /// Whether a pane a supervisor opened for a worker can have a role started
@@ -6831,13 +6860,16 @@ const FreeWorker = struct {
         workers_refused: bool,
         /// An agent is connected to Polter from it.
         agent: bool,
+        /// A launch line went in and its agent has not been heard yet
+        /// (`Launching`, task 1974).
+        launching: bool,
         at_prompt: bool,
         /// A half-typed line is in front of whoever uses it next.
         draft: bool,
         /// It stands where the role is to start, or nowhere was named.
         dir_fits: bool,
 
-        const Why = enum { elsewhere, shielded, workers_refused, agent, not_at_prompt, draft, other_directory };
+        const Why = enum { elsewhere, shielded, workers_refused, agent, launching, not_at_prompt, draft, other_directory };
 
         /// Why this one cannot be used; null when it can. In the order a
         /// caller would want to hear it: an agent that is there is the
@@ -6848,6 +6880,12 @@ const FreeWorker = struct {
             if (self.shielded) return .shielded;
             if (self.workers_refused) return .workers_refused;
             if (self.agent) return .agent;
+            // **Before the screen is asked** (task 1974): a CLI that is
+            // starting can leave the cursor on the prompt's row, and a
+            // shell can draw its prompt before it has read the launch line
+            // typed ahead of it. Either read as an empty prompt, and the
+            // next worker's launch line went into the first one's CLI.
+            if (self.launching) return .launching;
             if (!self.at_prompt) return .not_at_prompt;
             if (self.draft) return .draft;
             if (!self.dir_fits) return .other_directory;
@@ -6875,6 +6913,7 @@ const FreeWorker = struct {
                 .shielded => .shielded,
                 .workers_refused => .workers_refused,
                 .agent => .agent,
+                .launching => .launching,
                 .not_at_prompt => .not_at_prompt,
                 .draft => .draft,
                 .other_directory => .other_directory,
@@ -6884,6 +6923,26 @@ const FreeWorker = struct {
         return null;
     }
 
+    /// A launch line typed into a pane, until its agent is heard (task
+    /// 1974): `App.launching`.
+    const Launching = struct {
+        /// When it stops counting with no word: `launch_agent_wait_ms`
+        /// after the line went in, held while its CLI asks the person
+        /// something before it starts (`holdStartupQuestions`).
+        deadline_ms: u64,
+        /// When the line went in, on the clock of `Surface.last_key_time`.
+        typed_at: std.Io.Timestamp,
+
+        /// Whether it still counts at `now_ms`. Not once the person has
+        /// pressed a key there since: they have taken the pane over, and
+        /// what is in it is theirs to say.
+        fn holds(self: Launching, now_ms: u64, last_key: ?std.Io.Timestamp) bool {
+            if (now_ms > self.deadline_ms) return false;
+            if (last_key) |k| if (k.nanoseconds > self.typed_at.nanoseconds) return false;
+            return true;
+        }
+    };
+
     /// What `poltergeistFreeWorker` found: a pane to use, or the one that
     /// was passed over. At most one of the two.
     const Found = struct {
@@ -6892,9 +6951,37 @@ const FreeWorker = struct {
     };
 };
 
+test "1974: a pane whose launch is still starting its CLI is not free, whatever its screen says" {
+    const testing = std.testing;
+    // The demo's second worker (2026-10-21): the first one's Codex was at
+    // "Starting MCP servers", no agent heard yet, and its screen read as an
+    // empty prompt -- so it was taken, and agy's launch line went into Codex.
+    const starting: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .launching = true, .at_prompt = true, .draft = false, .dir_fits = true };
+    const why = starting.why();
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .launching), why);
+    try testing.expectEqual(@as(?usize, null), FreeWorker.pick(&.{starting}));
+    // Said in the reply, so the supervisor knows why a new pane was opened.
+    const over = FreeWorker.passedOver(&.{starting}).?;
+    try testing.expectEqual(poltergeistpkg.rpc.PassedOver.Why.launching, over.why);
+    // An agent that is there is still the first reason.
+    var both = starting;
+    both.agent = true;
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .agent), both.why());
+
+    // How long it counts: until its minute is up, or the person presses a
+    // key there after the line went in -- then the pane is theirs.
+    const typed: std.Io.Timestamp = .{ .nanoseconds = 1_000 };
+    const l: FreeWorker.Launching = .{ .deadline_ms = 60_000, .typed_at = typed };
+    try testing.expect(l.holds(59_999, null));
+    try testing.expect(l.holds(60_000, null));
+    try testing.expect(!l.holds(60_001, null));
+    try testing.expect(l.holds(10, .{ .nanoseconds = 500 }));
+    try testing.expect(!l.holds(10, .{ .nanoseconds = 2_000 }));
+}
+
 test "a worker's pane is used again only when it is ours, empty, waiting and where the role is to start" {
     const testing = std.testing;
-    const free: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .at_prompt = true, .draft = false, .dir_fits = true };
+    const free: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .launching = false, .at_prompt = true, .draft = false, .dir_fits = true };
     try testing.expectEqual(@as(?FreeWorker.Seat.Why, null), free.why());
 
     // Each of the five on its own is enough to leave it alone.
@@ -6928,7 +7015,7 @@ test "a worker's pane is used again only when it is ours, empty, waiting and whe
     try testing.expectEqual(@as(?usize, 1), FreeWorker.pick(&.{ seat, free }));
     try testing.expectEqual(poltergeistpkg.rpc.PassedOver.Why.workers_refused, FreeWorker.passedOver(&.{seat}).?.why);
     // An agent that is there is the reason, whatever else is true.
-    seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = true, .at_prompt = false, .draft = true, .dir_fits = false };
+    seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = true, .launching = false, .at_prompt = false, .draft = true, .dir_fits = false };
     try testing.expectEqual(@as(?FreeWorker.Seat.Why, .agent), seat.why());
 
     // The oldest that can be used, and none when none can.
@@ -6944,7 +7031,7 @@ test "a worker's pane is used again only when it is ours, empty, waiting and whe
 // and why (#1498): the oldest of the caller's in its tab, and only those.
 test "the worker pane passed over is the oldest in the tab, with its reason (#1498)" {
     const testing = std.testing;
-    const free: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .at_prompt = true, .draft = false, .dir_fits = true };
+    const free: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .launching = false, .at_prompt = true, .draft = false, .dir_fits = true };
 
     var gone = free;
     gone.here = false;
@@ -12498,6 +12585,7 @@ pub fn deleteSurface(self: *App, rt_surface: *apprt.Surface) void {
             self.projects.forget(poltergeistpkg.Bus.idOf(rt_surface.core()));
             self.seat_judged.gone(poltergeistpkg.Bus.idOf(rt_surface.core()));
             if (self.launch_groups.fetchRemove(poltergeistpkg.Bus.idOf(rt_surface.core()))) |kv| self.alloc.free(kv.value);
+            _ = self.launching.remove(poltergeistpkg.Bus.idOf(rt_surface.core()));
             self.controlRoomTouch();
             continue;
         }
