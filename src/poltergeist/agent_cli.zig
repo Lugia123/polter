@@ -336,6 +336,10 @@ fn run(
     const spawned = std.process.spawn(io, .{
         .argv = argv,
         .environ_map = environ_map,
+        // Without it a GUI host hands every adapter a console window of
+        // its own, which flashed on each launch (task 2034). The pipes
+        // still deliver; see the same flag in Resident.zig.
+        .create_no_window = true,
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
