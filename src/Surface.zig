@@ -9023,6 +9023,41 @@ pub fn resourcePane(self: *Surface) ?poltergeistpkg.ledger.Pane {
     return .{ .id = self.id, .root = std.math.cast(u32, root) orelse return null, .tty = tty };
 }
 
+/// Polter stopped this pane's agent at its kill line (task 1993): put the
+/// modes it may have left on back to a shell's, and write `text` on a row
+/// of its own (`termio.killnote`). Under the terminal's lock, from the app
+/// thread, as `passwordInput` touches the terminal.
+pub fn noteKilled(self: *Surface, text: []const u8) void {
+    {
+        self.renderer_state.mutex.lockUncancelable(global.io());
+        defer self.renderer_state.mutex.unlock(global.io());
+        termio.killnote.reset(&self.io.terminal);
+        if (termio.killnote.isPlain(text)) termio.killnote.write(&self.io.terminal, text);
+    }
+    self.queueRender() catch {};
+}
+
+/// Whether the person is at this pane's keyboard now, as a kill waits for
+/// (task 1993, `judge.Guard.typing`): a real key in the last
+/// `notice_quiet_keyboard_ms`, or an input method composing. Injected keys
+/// never count -- they put `last_key_time` back (`typePoltergeistTextAs`,
+/// `sendPoltergeistKey`).
+pub fn personTyping(self: *const Surface) bool {
+    return self.presenceForMove() != .absent;
+}
+
+test "1993: a kill waits for a real key in the last ten seconds, or a composition" {
+    const testing = std.testing;
+    // `personTyping` is `presenceForMove` != absent, which is this.
+    try testing.expectEqual(Presence.keyed, presence(notice_quiet_keyboard_ms - 1, null).present);
+    try testing.expectEqual(Presence.absent, presence(notice_quiet_keyboard_ms, null).present);
+    try testing.expectEqual(Presence.absent, presence(null, null).present);
+    try testing.expectEqual(Presence.composing, presence(null, 0).present);
+    // Injected keys do not count because `typePoltergeistTextAs` and
+    // `sendPoltergeistKey` put `last_key_time` back around the key they
+    // press. That is not held here: a `Surface` cannot be built in a test.
+}
+
 test "a tool close never closes a readonly terminal, and never asks" {
     const testing = std.testing;
 

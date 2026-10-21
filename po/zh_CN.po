@@ -5484,6 +5484,62 @@ msgstr "解除这个键的绑定"
 #: windows/settings-shell/src/general.rs:727
 msgid "Write Scrollback to a File"
 msgstr "把回滚内容写入文件"
+#: src/poltergeist/judge.zig:245
+msgid "Polter stopped this pane: memory {1}, over its kill line of {2} for {3} s"
+msgstr "Polter 中断了这一格：内存 {1}，超过中断线 {2} 已持续 {3} 秒"
+
+#: src/poltergeist/judge.zig:246
+msgid "Polter stopped this pane at once: memory {1}, over 1.5 times its kill line of {2}"
+msgstr "Polter 立即中断了这一格：内存 {1}，超过中断线 {2} 的 1.5 倍"
+
+#: src/poltergeist/judge.zig:247
+msgid "Polter stopped this pane: {1} processes, over its kill line of {2} for {3} s"
+msgstr "Polter 中断了这一格：进程 {1} 个，超过中断线 {2} 个已持续 {3} 秒"
+
+#: src/poltergeist/judge.zig:248
+msgid "Polter stopped this pane at once: {1} processes, over 1.5 times its kill line of {2}"
+msgstr "Polter 立即中断了这一格：进程 {1} 个，超过中断线 {2} 个的 1.5 倍"
+
+#: src/poltergeist/judge.zig:249
+msgid "Memory {1}, over warn line {2} of {3}"
+msgstr "内存 {1}，过了预警 {2}（{3}）"
+
+#: src/poltergeist/judge.zig:250
+msgid "{1} processes, over warn line {2} of {3}"
+msgstr "进程 {1} 个，过了预警 {2}（{3} 个）"
+
+#: src/poltergeist/judge.zig:251
+msgid "Memory {1}, over its kill line of {2}; it is held or shielded, so it was not stopped"
+msgstr "内存 {1}，过了中断线 {2}；这一格被保持或屏蔽，所以没有中断"
+
+#: src/poltergeist/judge.zig:252
+msgid "{1} processes, over its kill line of {2}; it is held or shielded, so it was not stopped"
+msgstr "进程 {1} 个，过了中断线 {2} 个；这一格被保持或屏蔽，所以没有中断"
+
+#: src/poltergeist/judge.zig:253
+msgid "{1}; most of it was {2} ({3} processes)"
+msgstr "{1}；占得最多的是 {2}（{3} 个进程）"
+
+#: src/poltergeist/judge.zig:254
+msgid "Polter stopped a pane"
+msgstr "Polter 中断了一格"
+
+#: src/poltergeist/judge.zig:255
+msgid "A pane is over a line"
+msgstr "有一格过了资源线"
+
+#: src/poltergeist/judge.zig:256
+msgid "The machine is short of memory"
+msgstr "整机内存紧张"
+
+#: src/poltergeist/judge.zig:257
+msgid "Memory pressure is high. Holding the most: {1}"
+msgstr "内存压力偏高。占用最多的：{1}"
+
+#: src/poltergeist/judge.zig:258
+msgid "Memory pressure is critical. Holding the most: {1}"
+msgstr "内存压力已到严重。占用最多的：{1}"
+
 
 #~ msgid "Filter by key"
 #~ msgstr "按键名筛选"

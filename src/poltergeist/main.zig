@@ -40,6 +40,7 @@ pub const ledger = @import("ledger.zig");
 pub const ResourceSampler = @import("ResourceSampler.zig");
 pub const limits = @import("limits.zig");
 pub const judge = @import("judge.zig");
+pub const Stopper = @import("stopper.zig");
 pub const Feed = @import("Feed.zig");
 pub const GroupLog = @import("GroupLog.zig");
 pub const GroupRename = @import("GroupRename.zig");
@@ -132,6 +133,7 @@ test {
     _ = ResourceSampler;
     _ = limits;
     _ = judge;
+    _ = Stopper;
     _ = Feed;
     _ = GroupLog;
     _ = GroupRename;

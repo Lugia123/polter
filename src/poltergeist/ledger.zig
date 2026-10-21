@@ -46,70 +46,43 @@ pub const Usage = struct {
     }
 };
 
-/// One usage per pane, in the panes' order, in `alloc`.
-pub fn account(alloc: Allocator, procs: []const Proc, panes: []const Pane) Allocator.Error![]Usage {
-    // Parent → children, by index into `procs`.
-    var kids: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
-    defer {
-        var it = kids.valueIterator();
-        while (it.next()) |l| l.deinit(alloc);
-        kids.deinit(alloc);
-    }
+/// Parent → children, by index into `procs`.
+const Kids = std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32));
+
+fn kidsOf(alloc: Allocator, procs: []const Proc) Allocator.Error!Kids {
+    var kids: Kids = .empty;
+    errdefer freeKids(alloc, &kids);
     for (procs, 0..) |p, i| {
         const e = try kids.getOrPut(alloc, p.ppid);
         if (!e.found_existing) e.value_ptr.* = .empty;
         try e.value_ptr.append(alloc, @intCast(i));
     }
+    return kids;
+}
 
-    var claimed = try alloc.alloc(bool, procs.len);
+fn freeKids(alloc: Allocator, kids: *Kids) void {
+    var it = kids.valueIterator();
+    while (it.next()) |l| l.deinit(alloc);
+    kids.deinit(alloc);
+}
+
+/// One usage per pane, in the panes' order, in `alloc`.
+pub fn account(alloc: Allocator, procs: []const Proc, panes: []const Pane) Allocator.Error![]Usage {
+    var kids = try kidsOf(alloc, procs);
+    defer freeKids(alloc, &kids);
+
+    const claimed = try alloc.alloc(bool, procs.len);
     defer alloc.free(claimed);
     @memset(claimed, false);
 
     const out = try alloc.alloc(Usage, panes.len);
     errdefer alloc.free(out);
-    var stack: std.ArrayListUnmanaged(u32) = .empty;
-    defer stack.deinit(alloc);
     var mine: std.ArrayListUnmanaged(u32) = .empty;
     defer mine.deinit(alloc);
 
     for (panes, out) |pane, *u| {
         mine.clearRetainingCapacity();
-        // The tree under the child: walked by pid, so an unreadable child
-        // (login) still leads to its readable children.
-        stack.clearRetainingCapacity();
-        try stack.append(alloc, pane.root);
-        for (procs, 0..) |p, i| if (p.pid == pane.root and !claimed[i]) {
-            claimed[i] = true;
-            try mine.append(alloc, @intCast(i));
-        };
-        while (stack.pop()) |pid| {
-            const l = kids.get(pid) orelse continue;
-            for (l.items) |i| {
-                if (claimed[i]) continue;
-                claimed[i] = true;
-                try mine.append(alloc, i);
-                try stack.append(alloc, procs[i].pid);
-            }
-        }
-        // And whatever still runs on the pane's terminal, with its own tree.
-        if (pane.tty) |tty| if (tty != procscan.no_tty) {
-            for (procs, 0..) |p, i| {
-                if (claimed[i] or p.tdev != tty) continue;
-                claimed[i] = true;
-                try mine.append(alloc, @intCast(i));
-                try stack.append(alloc, p.pid);
-                while (stack.pop()) |pid| {
-                    const l = kids.get(pid) orelse continue;
-                    for (l.items) |k| {
-                        if (claimed[k]) continue;
-                        claimed[k] = true;
-                        try mine.append(alloc, k);
-                        try stack.append(alloc, procs[k].pid);
-                    }
-                }
-            }
-        };
-
+        try walk(alloc, procs, &kids, claimed, pane, &mine);
         u.* = .{ .id = pane.id, .mem = 0, .procs = 0 };
         for (mine.items) |i| {
             u.mem += procs[i].footprint;
@@ -133,6 +106,83 @@ pub fn account(alloc: Allocator, procs: []const Proc, panes: []const Pane) Alloc
         }
     }
     return out;
+}
+
+/// The indices into `procs` that are `pane`'s, appended to `mine`: the
+/// rules at the top of this file. `claimed` is shared across panes so that
+/// a process is counted once.
+fn walk(
+    alloc: Allocator,
+    procs: []const Proc,
+    kids: *const Kids,
+    claimed: []bool,
+    pane: Pane,
+    mine: *std.ArrayListUnmanaged(u32),
+) Allocator.Error!void {
+    var stack: std.ArrayListUnmanaged(u32) = .empty;
+    defer stack.deinit(alloc);
+    // The tree under the child: walked by pid, so an unreadable child
+    // (login) still leads to its readable children.
+    try stack.append(alloc, pane.root);
+    for (procs, 0..) |p, i| if (p.pid == pane.root and !claimed[i]) {
+        claimed[i] = true;
+        try mine.append(alloc, @intCast(i));
+    };
+    while (stack.pop()) |pid| {
+        const l = kids.get(pid) orelse continue;
+        for (l.items) |i| {
+            if (claimed[i]) continue;
+            claimed[i] = true;
+            try mine.append(alloc, i);
+            try stack.append(alloc, procs[i].pid);
+        }
+    }
+    // And whatever still runs on the pane's terminal, with its own tree.
+    if (pane.tty) |tty| if (tty != procscan.no_tty) {
+        for (procs, 0..) |p, i| {
+            if (claimed[i] or p.tdev != tty) continue;
+            claimed[i] = true;
+            try mine.append(alloc, @intCast(i));
+            try stack.append(alloc, p.pid);
+            while (stack.pop()) |pid| {
+                const l = kids.get(pid) orelse continue;
+                for (l.items) |k| {
+                    if (claimed[k]) continue;
+                    claimed[k] = true;
+                    try mine.append(alloc, k);
+                    try stack.append(alloc, procs[k].pid);
+                }
+            }
+        }
+    };
+}
+
+/// What a kill of `pane` stops (task 1993, #1985 §3.2): every one of its
+/// processes except the terminal's child and the children of that child
+/// -- `login` and the shell it started, on macOS -- so the pane is left at
+/// its prompt. Pids, in `alloc`.
+///
+/// ⚠️ A pane whose child runs the agent with no shell in between (a
+/// command given instead of a shell) has the agent at that second level,
+/// and it is not stopped: the pane's own process is never killed.
+pub fn stoppable(alloc: Allocator, procs: []const Proc, pane: Pane) Allocator.Error![]u32 {
+    var kids = try kidsOf(alloc, procs);
+    defer freeKids(alloc, &kids);
+    const claimed = try alloc.alloc(bool, procs.len);
+    defer alloc.free(claimed);
+    @memset(claimed, false);
+    var mine: std.ArrayListUnmanaged(u32) = .empty;
+    defer mine.deinit(alloc);
+    try walk(alloc, procs, &kids, claimed, pane, &mine);
+
+    var out: std.ArrayListUnmanaged(u32) = .empty;
+    errdefer out.deinit(alloc);
+    for (mine.items) |i| {
+        const p = procs[i];
+        if (p.pid == pane.root or p.ppid == pane.root) continue;
+        try out.append(alloc, p.pid);
+    }
+    return out.toOwnedSlice(alloc);
 }
 
 const testing = std.testing;
@@ -198,4 +248,18 @@ test "1993: a process is counted in one pane only, and a pane with nothing is ze
     try testing.expectEqual(@as(u32, 0), us[1].procs);
     try testing.expectEqual(@as(u64, 0), us[2].mem);
     try testing.expectEqual(@as(usize, 0), us[2].topName().len);
+}
+
+test "1993: a kill stops the agent and everything under it, and leaves login and the shell" {
+    // 10 login (unreadable); 11 zsh; 12 claude; 13–14 its workers; 30 a
+    // double-forked node on the terminal; 21 another pane's.
+    const procs = [_]Proc{
+        P(11, 10, 3, 4, "zsh"),            P(12, 11, 3, 300, "claude"),
+        P(13, 12, 3, 23000, "python3.13"), P(14, 13, 3, 100, "python3.13"),
+        P(30, 1, 3, 800, "node"),          P(21, 20, 4, 5, "zsh"),
+    };
+    const got = try stoppable(testing.allocator, &procs, .{ .id = 0xa, .root = 10, .tty = 3 });
+    defer testing.allocator.free(got);
+    std.mem.sort(u32, got, {}, std.sort.asc(u32));
+    try testing.expectEqualSlices(u32, &.{ 12, 13, 14, 30 }, got);
 }

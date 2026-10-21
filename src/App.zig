@@ -216,13 +216,26 @@ notice_wake: ?poltergeistpkg.ControlWake = null,
 
 /// The thread reading every pane's process tree (task 1993, #1985), and
 /// what it last read: memory and process count by terminal. Started on the
-/// first tick, like the stall watch. Nothing is judged from these yet.
+/// first tick, like the stall watch, and judged against each pane's lines
+/// (`judgeResources`).
 resource_sampler: ?poltergeistpkg.ResourceSampler = null,
 /// The sampler saying a reading is ready. Set off the app thread.
 resources_due: std.atomic.Value(bool) = .init(false),
 resource_usage: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, poltergeistpkg.ledger.Usage) = .empty,
 /// When the readings were last written to the log (`resources_log_every_ms`).
 resources_logged_ms: ?u64 = null,
+/// Each judged pane's judge, and the lines it was judging by: lines that
+/// changed start it again (`judge.State.fresh`).
+resource_judges: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, ResourceJudge) = .empty,
+/// The machine's memory pressure, told to the person only (#1985 §3.4).
+resource_pressure: poltergeistpkg.judge.PressureState = .fresh,
+/// Panes being stopped: what their note will say once `Stopper` is done.
+resource_kills: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, ResourceKill) = .empty,
+/// Stops that finished, handed over from the stopper's thread.
+resource_stopped_mutex: std.Io.Mutex = .init,
+resource_stopped: std.ArrayListUnmanaged(ResourceStopped) = .empty,
+resource_stops_running: std.atomic.Value(u32) = .init(0),
+resource_stopped_due: std.atomic.Value(bool) = .init(false),
 
 /// The thread that reads each account's allowance off disk, and the flag it
 /// raises when what it read is new (`poltergeist/QuotaWatch.zig`). Null
@@ -750,6 +763,16 @@ pub fn deinit(self: *App) void {
     if (self.resource_sampler) |*w| w.stop();
     self.resource_sampler = null;
     self.resource_usage.deinit(self.alloc);
+    // A stop still waiting out its grace calls back into this App: wait
+    // for it rather than have it write into freed memory.
+    {
+        var waited: u64 = 0;
+        while (self.resource_stops_running.load(.acquire) > 0 and waited <= poltergeistpkg.Stopper.grace_ms + 1_000) : (waited += 50)
+            global.io().sleep(.fromMilliseconds(50), .awake) catch break;
+    }
+    self.resource_judges.deinit(self.alloc);
+    self.resource_kills.deinit(self.alloc);
+    self.resource_stopped.deinit(self.alloc);
 
     // Clean up all our surfaces
     for (self.surfaces.items) |surface| surface.deinit();
@@ -896,6 +919,7 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
         };
     }
     if (self.resources_due.swap(false, .acq_rel)) self.takeResourceReading();
+    if (self.resource_stopped_due.swap(false, .acq_rel)) self.finishResourceStops();
 
     // Drain our mailbox
     try self.drainMailbox(rt_app);
@@ -1153,6 +1177,7 @@ fn takeResourceReading(self: *App) void {
         self.resource_usage.clearRetainingCapacity();
         for (usage) |u| self.resource_usage.put(self.alloc, u.id, u) catch break;
         self.logResources(usage);
+        self.judgeResources(usage);
     }
 
     var panes: std.ArrayListUnmanaged(poltergeistpkg.ledger.Pane) = .empty;
@@ -1166,8 +1191,289 @@ fn takeResourceReading(self: *App) void {
     sampler.setPanes(panes.items) catch |err| log.warn("resources: could not hand the sampler its panes err={}", .{err});
 }
 
+const ResourceJudge = struct {
+    state: poltergeistpkg.judge.State,
+    limits: poltergeistpkg.limits.Limits,
+};
+
+const ResourceKill = struct {
+    event: poltergeistpkg.judge.Event,
+    for_ms: u32,
+    top: [16]u8,
+    top_len: u8,
+    top_count: u32,
+};
+
+const ResourceStopped = struct { id: poltergeistpkg.Bus.Id, out: poltergeistpkg.Stopper.Outcome };
+
+/// Every reading against every pane's lines (task 1993, #1985 §3):
+/// `judge.step`, then what its events say to do. Only a pane its supervisor
+/// drew lines on is judged, and `Bus.killGuard` is asked again here -- the
+/// second guard -- with a chat surface never stopped either.
+fn judgeResources(self: *App, usage: []const poltergeistpkg.ledger.Usage) void {
+    const judge = poltergeistpkg.judge;
+    const now: i64 = @intCast(self.poltergeistElapsedMs());
+    const phys = poltergeistpkg.procscan.physicalMemory() orelse 0;
+
+    // Judges of panes that no longer have lines, or are gone, go.
+    {
+        var it = self.resource_judges.iterator();
+        var stale: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+        defer stale.deinit(self.alloc);
+        while (it.next()) |kv| if (self.poltergeist.limitsOf(kv.key_ptr.*).isEmpty() or !self.resource_usage.contains(kv.key_ptr.*)) {
+            stale.append(self.alloc, kv.key_ptr.*) catch break;
+        };
+        for (stale.items) |id| _ = self.resource_judges.remove(id);
+    }
+
+    for (usage) |u| {
+        const lim = self.poltergeist.limitsOf(u.id);
+        if (lim.isEmpty()) continue;
+        const guard = if (self.isChatSurface(u.id)) .never else self.poltergeist.killGuard(u.id);
+        if (guard == .never) continue;
+        const surface = self.findSurfaceByID(u.id) orelse continue;
+        const slot = self.resource_judges.getOrPut(self.alloc, u.id) catch continue;
+        if (!slot.found_existing or !std.meta.eql(slot.value_ptr.limits, lim)) slot.value_ptr.* = .{ .state = .fresh, .limits = lim };
+        const v = judge.step(&slot.value_ptr.state, &lim, .{ .mem = u.mem, .procs = u.procs }, now, phys, .{
+            .protected = guard == .protected,
+            .typing = surface.personTyping(),
+        });
+        for (v.all()) |e| switch (e.what) {
+            .warn, .withheld => self.resourceWarned(u, lim, e),
+            .kill => {},
+        };
+        if (v.kill()) |e| self.resourceKill(surface, u, lim, e);
+    }
+
+    // The machine as a whole: the person, never a pane.
+    if (poltergeistpkg.procscan.pressureLevel()) |level| {
+        if (judge.pressureStep(&self.resource_pressure, judge.Pressure.fromKernel(level), now)) |p| self.resourcePressure(usage, p);
+    }
+}
+
+fn resourceWarned(self: *App, u: poltergeistpkg.ledger.Usage, lim: poltergeistpkg.limits.Limits, e: poltergeistpkg.judge.Event) void {
+    const judge = poltergeistpkg.judge;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const body = judge.warnText(arena.allocator(), resourceTr, e, u.topName(), u.top_count) catch return;
+    {
+        const en = judge.warnText(arena.allocator(), judge.english, e, u.topName(), u.top_count) catch "";
+        log.warn("resources: 0x{x} {s}", .{ u.id, en });
+    }
+    // A warning is a question of hours, as `notify_user` scheduling is:
+    // outside the hours the person allows, not raised. A kill is told at
+    // any hour (`finishResourceStop`).
+    if (e.tell_person and self.resourceWarningAllowed()) _ = self.raiseSystemNotification(u.id, resourceTr(judge.words.warn_title), body);
+    if (lim.warn_tells_supervisor) if (self.resourceSupervisor(u.id)) |boss| {
+        var line: [254]u8 = undefined;
+        var a2: [32]u8 = undefined;
+        var b2: [32]u8 = undefined;
+        // `tellSurface` takes under 255 bytes: in a supervisor's words, short.
+        const text = switch (e.metric) {
+            .memory => std.fmt.bufPrint(&line, "Polter: 0x{x} holds {s}, over a line of {s} you drew.", .{ u.id, judge.bytesText(&a2, e.value), judge.bytesText(&b2, e.at) }),
+            .processes => std.fmt.bufPrint(&line, "Polter: 0x{x} runs {d} processes, over a line of {d} you drew.", .{ u.id, e.value, e.at }),
+        } catch return;
+        self.tellSurface(boss, text);
+    };
+}
+
+/// Whether a warning may be raised now: `notify.decide` with the hours the
+/// person set (`poltergeist_notify_window`), as a scheduling question --
+/// one nobody has to be woken for. The count is 1: the system's own
+/// notification is somewhere to send it, with or without a plugin.
+fn resourceWarningAllowed(self: *App) bool {
+    const event: poltergeistpkg.notify.Event = .{ .reason = .scheduling, .title = "", .body = "", .at_ms = self.poltergeistWallMs() };
+    return poltergeistpkg.notify.decide(event, self.poltergeist_notify_window, localMinuteNow(), 1) == .tell;
+}
+
+/// The person's language, as every other word the core writes (`controlFixTr`).
+fn resourceTr(msgid: [:0]const u8) []const u8 {
+    return std.mem.span(internal_os.i18n._(msgid.ptr));
+}
+
+/// Who is told of a pane's kill: the supervisor it was opened for, or the
+/// one whose agent opened it.
+fn resourceSupervisor(self: *App, id: poltergeistpkg.Bus.Id) ?poltergeistpkg.Bus.Id {
+    return self.poltergeist.workerOf(id) orelse self.poltergeist.openedBy(id);
+}
+
+/// Stop `u`'s agent: everything in the pane but its child and that child's
+/// children (`ledger.stoppable`), `SIGTERM` then `SIGKILL` on a thread of its
+/// own (`Stopper`). The rest is `finishResourceStops`.
+fn resourceKill(self: *App, surface: *Surface, u: poltergeistpkg.ledger.Usage, lim: poltergeistpkg.limits.Limits, e: poltergeistpkg.judge.Event) void {
+    if (self.resource_kills.contains(u.id)) return;
+    const pane = surface.resourcePane() orelse return;
+    const procs = poltergeistpkg.procscan.scan(self.alloc) catch return;
+    defer self.alloc.free(procs);
+    const pids = poltergeistpkg.ledger.stoppable(std.heap.smp_allocator, procs, pane) catch return;
+    if (pids.len == 0) {
+        std.heap.smp_allocator.free(pids);
+        log.warn("resources: 0x{x} is over its kill line and has nothing to stop under its shell", .{u.id});
+        return;
+    }
+    const note: ResourceKill = .{
+        .event = e,
+        .for_ms = switch (e.metric) {
+            .memory => lim.memory.for_ms,
+            .processes => lim.processes.for_ms,
+        },
+        .top = u.top,
+        .top_len = u.top_len,
+        .top_count = u.top_count,
+    };
+    self.resource_kills.put(self.alloc, u.id, note) catch {
+        std.heap.smp_allocator.free(pids);
+        return;
+    };
+    log.warn("resources: stopping 0x{x}: {d} processes, {s} {d} over {d}{s}", .{
+        u.id, pids.len, @tagName(e.metric), e.value, e.at, if (e.isFast()) " (fast)" else "",
+    });
+    _ = self.resource_stops_running.fetchAdd(1, .acq_rel);
+    poltergeistpkg.Stopper.start(.{
+        .io = global.io(),
+        .alloc = std.heap.smp_allocator,
+        .pids = pids,
+        .id = u.id,
+        .fire = resourceStopped,
+        .ctx = self,
+    }) catch |err| {
+        log.warn("resources: could not start stopping 0x{x} err={}", .{ u.id, err });
+        _ = self.resource_stops_running.fetchSub(1, .acq_rel);
+        std.heap.smp_allocator.free(pids);
+        _ = self.resource_kills.remove(u.id);
+    };
+}
+
+/// On the stopper's thread: hand the outcome over and wake the app.
+fn resourceStopped(ctx: *anyopaque, id: u64, out: poltergeistpkg.Stopper.Outcome) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    {
+        self.resource_stopped_mutex.lockUncancelable(global.io());
+        defer self.resource_stopped_mutex.unlock(global.io());
+        self.resource_stopped.append(self.alloc, .{ .id = id, .out = out }) catch {};
+    }
+    self.resource_stopped_due.store(true, .release);
+    _ = self.resource_stops_running.fetchSub(1, .acq_rel);
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
+/// The agent is gone: the pane's modes put back and its line written, then
+/// the person, the supervisor and the group told, and the pane's open
+/// tasks blocked (#1985 §3.2). Never resumed here: the supervisor is given
+/// the command.
+fn finishResourceStops(self: *App) void {
+    var done: std.ArrayListUnmanaged(ResourceStopped) = .empty;
+    defer done.deinit(self.alloc);
+    {
+        self.resource_stopped_mutex.lockUncancelable(global.io());
+        defer self.resource_stopped_mutex.unlock(global.io());
+        std.mem.swap(std.ArrayListUnmanaged(ResourceStopped), &done, &self.resource_stopped);
+    }
+    for (done.items) |d| {
+        const kv = self.resource_kills.fetchRemove(d.id) orelse continue;
+        self.finishResourceStop(d.id, kv.value, d.out);
+    }
+}
+
+fn finishResourceStop(self: *App, id: poltergeistpkg.Bus.Id, k: ResourceKill, out: poltergeistpkg.Stopper.Outcome) void {
+    const judge = poltergeistpkg.judge;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const top = k.top[0..k.top_len];
+    const said = judge.killText(aa, resourceTr, k.event, k.for_ms, top, k.top_count) catch "";
+    log.warn("resources: stopped 0x{x}: {s}; {d} sent SIGTERM, {d} still there after {d} ms and sent SIGKILL", .{
+        id, judge.killText(aa, judge.english, k.event, k.for_ms, top, k.top_count) catch "", out.termed, out.killed, poltergeistpkg.Stopper.grace_ms,
+    });
+    if (self.findSurfaceByID(id)) |surface| {
+        const note = std.fmt.allocPrint(aa, "\u{2500}\u{2500} {s} \u{2500}\u{2500}", .{said}) catch "";
+        surface.noteKilled(note);
+    }
+
+    // The person: always, at any hour.
+    _ = self.raiseSystemNotification(id, resourceTr(judge.words.kill_title), said);
+
+    // The supervisor: what happened and how to go on, typed in -- the
+    // notice box has no line of its own for one terminal's text.
+    if (self.resourceSupervisor(id)) |boss| {
+        const agent = self.poltergeist.agentOf(id);
+        const launch = self.personas.launchOf(id);
+        const role: []const u8 = if (launch) |l| l.role else self.personas.stateOf(id).key orelse "";
+        const cli: []const u8 = agent.cli.get() orelse if (launch) |l| l.choice.cli else "";
+        var line: std.Io.Writer.Allocating = .init(aa);
+        var a: [32]u8 = undefined;
+        var b: [32]u8 = undefined;
+        line.writer.print("Polter stopped the agent in 0x{x}: ", .{id}) catch {};
+        switch (k.event.metric) {
+            .memory => line.writer.print("memory {s} over its kill line {s}", .{ judge.bytesText(&a, k.event.value), judge.bytesText(&b, k.event.at) }) catch {},
+            .processes => line.writer.print("{d} processes over its kill line {d}", .{ k.event.value, k.event.at }) catch {},
+        }
+        line.writer.writeAll(if (k.event.isFast()) ", 1.5x: at once." else ".") catch {};
+        if (role.len > 0 and cli.len > 0) {
+            line.writer.writeAll(" Resume it there with: polter") catch {};
+            poltergeistpkg.agent_cli.writeLaunchWords(&line.writer, role, cli, .{ .group = null, .session = agent.session_id.get() }) catch {};
+        }
+        // `tellSurface` takes under 255 bytes and drops the rest unsaid.
+        const short = std.fmt.allocPrint(aa, "Polter stopped the agent in 0x{x} at its kill line; its tasks are blocked.", .{id}) catch "";
+        self.tellSurface(boss, if (line.written().len < 255) line.written() else short);
+    }
+
+    // Its open tasks, in every group it is in, are blocked. No line in the
+    // groups: Polter has no name of its own there yet, and a line posted as
+    // the person would put words in their mouth in a record that is taken
+    // at its word.
+    const live = self.liveTerminals(aa) catch &.{};
+    const groups = self.chat.groupsFor(aa, id, live) catch &.{};
+    for (groups) |group| {
+        const mine = self.tasks.forWorker(self.alloc, group, id) catch continue;
+        defer self.alloc.free(mine);
+        for (mine) |t| {
+            self.tasks.setProgress(t.id, id, .blocked) catch continue;
+            self.logTask(.progressed, t.id);
+        }
+    }
+}
+
+/// The machine's pressure held for 10 s: the person, with the three panes
+/// holding the most. Nothing is stopped for it.
+fn resourcePressure(self: *App, usage: []const poltergeistpkg.ledger.Usage, p: poltergeistpkg.judge.Pressure) void {
+    const judge = poltergeistpkg.judge;
+    var top: [3]?poltergeistpkg.ledger.Usage = .{ null, null, null };
+    for (usage) |u| {
+        var i: usize = 0;
+        while (i < top.len) : (i += 1) {
+            if (top[i] == null or u.mem > top[i].?.mem) {
+                var k = top.len - 1;
+                while (k > i) : (k -= 1) top[k] = top[k - 1];
+                top[i] = u;
+                break;
+            }
+        }
+    }
+    var buf: [400]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    var a: [32]u8 = undefined;
+    var nm: [16]u8 = undefined;
+    for (top, 0..) |t, n| if (t) |u| {
+        w.print("{s}0x{x} {s} ({s})", .{ if (n > 0) ", " else "", u.id, judge.bytesText(&a, u.mem), judge.safeName(&nm, u.topName()) }) catch break;
+    };
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const msgid = switch (p) {
+        .critical => judge.words.pressure_critical,
+        else => judge.words.pressure_warn,
+    };
+    const fill = poltergeistpkg.ControlRoom.Say.fill;
+    log.warn("resources: {s}", .{fill(arena.allocator(), msgid, &.{w.buffered()}) catch ""});
+    const body = fill(arena.allocator(), resourceTr(msgid), &.{w.buffered()}) catch return;
+    const from = (top[0] orelse return).id;
+    // A warning about the machine, held to the person's hours like a pane's.
+    if (!self.resourceWarningAllowed()) return;
+    _ = self.raiseSystemNotification(from, resourceTr(judge.words.pressure_title), body);
+}
+
 /// One line a minute: the three panes holding the most. What a reading
-/// was, for anybody looking back at a night; nothing acts on it yet.
+/// was, for anybody looking back at a night.
 fn logResources(self: *App, usage: []const poltergeistpkg.ledger.Usage) void {
     const now_ms = self.poltergeistElapsedMs();
     if (self.resources_logged_ms) |at| if (now_ms -| at < resources_log_every_ms) return;

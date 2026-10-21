@@ -27,6 +27,8 @@
 //! the pane's limits change.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const i18n = @import("../os/i18n.zig");
 const limits = @import("limits.zig");
 const Limits = limits.Limits;
 
@@ -205,6 +207,115 @@ fn tell(t: *Track, now_ms: i64) bool {
     t.told_ms = now_ms;
     return true;
 }
+
+// ------------------------------------------------------------- the words
+
+/// "19.4 GB", "512 MB": one decimal over a gigabyte, whole megabytes under.
+pub fn bytesText(buf: []u8, b: u64) []const u8 {
+    const gb: u64 = 1 << 30;
+    if (b >= gb) {
+        const tenths = (b * 10 + gb / 2) / gb;
+        return std.fmt.bufPrint(buf, "{d}.{d} GB", .{ tenths / 10, tenths % 10 }) catch "";
+    }
+    return std.fmt.bufPrint(buf, "{d} MB", .{(b + (1 << 19)) >> 20}) catch "";
+}
+
+/// A process name as it may be written: the kernel's short name is cut at
+/// 16 bytes, which can cut a character in two, and nothing stops it holding
+/// a control byte. Anything but printable ASCII becomes `?`.
+pub fn safeName(buf: []u8, name: []const u8) []const u8 {
+    const n = @min(buf.len, name.len);
+    for (name[0..n], buf[0..n]) |c, *o| o.* = if (c >= 0x20 and c < 0x7f) c else '?';
+    return buf[0..n];
+}
+
+/// A msgid in the person's language: `i18n._` in the app, `english` (the
+/// msgid itself) or a catalogue in a test -- as `ControlFix.Tr`.
+pub const Tr = *const fn (msgid: [:0]const u8) []const u8;
+
+pub fn english(msgid: [:0]const u8) []const u8 {
+    return msgid;
+}
+
+/// Every sentence the person is told about a pane's lines (task 1993):
+/// the note in the pane and the system notifications. English msgids, said
+/// in the person's language through `po/`; `{1}`… are filled as
+/// `ControlRoom.Say.fill` fills them, with numbers that are not translated.
+pub const words = struct {
+    pub const kill_memory = i18n.N_("Polter stopped this pane: memory {1}, over its kill line of {2} for {3} s");
+    pub const kill_memory_fast = i18n.N_("Polter stopped this pane at once: memory {1}, over 1.5 times its kill line of {2}");
+    pub const kill_processes = i18n.N_("Polter stopped this pane: {1} processes, over its kill line of {2} for {3} s");
+    pub const kill_processes_fast = i18n.N_("Polter stopped this pane at once: {1} processes, over 1.5 times its kill line of {2}");
+    pub const warn_memory = i18n.N_("Memory {1}, over warn line {2} of {3}");
+    pub const warn_processes = i18n.N_("{1} processes, over warn line {2} of {3}");
+    pub const withheld_memory = i18n.N_("Memory {1}, over its kill line of {2}; it is held or shielded, so it was not stopped");
+    pub const withheld_processes = i18n.N_("{1} processes, over its kill line of {2}; it is held or shielded, so it was not stopped");
+    pub const most = i18n.N_("{1}; most of it was {2} ({3} processes)");
+    pub const kill_title = i18n.N_("Polter stopped a pane");
+    pub const warn_title = i18n.N_("A pane is over a line");
+    pub const pressure_title = i18n.N_("The machine is short of memory");
+    pub const pressure_warn = i18n.N_("Memory pressure is high. Holding the most: {1}");
+    pub const pressure_critical = i18n.N_("Memory pressure is critical. Holding the most: {1}");
+
+    /// Every msgid above, for the test that each is translated.
+    pub const all = [_][:0]const u8{
+        kill_memory,   kill_memory_fast,  kill_processes,  kill_processes_fast,
+        warn_memory,   warn_processes,    withheld_memory, withheld_processes,
+        most,          kill_title,        warn_title,      pressure_title,
+        pressure_warn, pressure_critical,
+    };
+};
+
+/// What a stopped pane's note and notification say (task 1993): the
+/// reading, the line, and who held the most. Plain text, no rules round it
+/// (the pane's note adds them).
+pub fn killText(arena: Allocator, tr: Tr, e: Event, for_ms: u32, top: []const u8, top_count: u32) Allocator.Error![]const u8 {
+    var a: [32]u8 = undefined;
+    var b: [32]u8 = undefined;
+    var sec: [16]u8 = undefined;
+    const secs = std.fmt.bufPrint(&sec, "{d}", .{for_ms / 1000}) catch "";
+    const fast = e.isFast();
+    const said = switch (e.metric) {
+        .memory => try fill(arena, tr(if (fast) words.kill_memory_fast else words.kill_memory), &.{ bytesText(&a, e.value), bytesText(&b, e.at), secs }),
+        .processes => try fill(arena, tr(if (fast) words.kill_processes_fast else words.kill_processes), &.{ countText(&a, e.value), countText(&b, e.at), secs }),
+    };
+    return withMost(arena, tr, said, top, top_count);
+}
+
+/// A warn line, or a kill line on a pane that may not be stopped.
+pub fn warnText(arena: Allocator, tr: Tr, e: Event, top: []const u8, top_count: u32) Allocator.Error![]const u8 {
+    var a: [32]u8 = undefined;
+    var b: [32]u8 = undefined;
+    var n: [4]u8 = undefined;
+    const which = switch (e.line) {
+        .warn => |i| std.fmt.bufPrint(&n, "{d}", .{@as(u32, i) + 1}) catch "",
+        .kill => "",
+    };
+    const said = switch (e.metric) {
+        .memory => switch (e.what) {
+            .withheld => try fill(arena, tr(words.withheld_memory), &.{ bytesText(&a, e.value), bytesText(&b, e.at) }),
+            else => try fill(arena, tr(words.warn_memory), &.{ bytesText(&a, e.value), which, bytesText(&b, e.at) }),
+        },
+        .processes => switch (e.what) {
+            .withheld => try fill(arena, tr(words.withheld_processes), &.{ countText(&a, e.value), countText(&b, e.at) }),
+            else => try fill(arena, tr(words.warn_processes), &.{ countText(&a, e.value), which, countText(&b, e.at) }),
+        },
+    };
+    return withMost(arena, tr, said, top, top_count);
+}
+
+fn withMost(arena: Allocator, tr: Tr, said: []const u8, top: []const u8, top_count: u32) Allocator.Error![]const u8 {
+    if (top.len == 0) return said;
+    var nm: [16]u8 = undefined;
+    var c: [16]u8 = undefined;
+    return fill(arena, tr(words.most), &.{ said, safeName(&nm, top), countText(&c, top_count) });
+}
+
+fn countText(buf: []u8, n: u64) []const u8 {
+    return std.fmt.bufPrint(buf, "{d}", .{n}) catch "";
+}
+
+const fill = @import("ControlRoom.zig").Say.fill;
 
 // ------------------------------------------------------- machine pressure
 
@@ -412,4 +523,53 @@ test "1993: machine pressure is told after ten seconds, each level once in ten m
     for (cases) |c| try testing.expectEqual(c.want, pressureStep(&s, c.level, c.t * 1000));
     try testing.expectEqual(Pressure.critical, Pressure.fromKernel(4));
     try testing.expectEqual(Pressure.normal, Pressure.fromKernel(1));
+}
+
+test "1993: a stopped pane is told what, against which line, and who held the most" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const slow: Event = .{ .metric = .memory, .line = .kill, .what = .kill, .value = 19_400 << 20, .at = 19 * G, .tell_person = true };
+    try testing.expectEqualStrings(
+        "Polter stopped this pane: memory 18.9 GB, over its kill line of 19.0 GB for 10 s; most of it was python3.13 (7 processes)",
+        try killText(a, english, slow, 10_000, "python3.13", 7),
+    );
+    const fast: Event = .{ .metric = .processes, .line = .kill, .what = .kill, .value = 3100, .at = 2000, .tell_person = true };
+    try testing.expectEqualStrings(
+        "Polter stopped this pane at once: 3100 processes, over 1.5 times its kill line of 2000",
+        try killText(a, english, fast, 10_000, "", 0),
+    );
+    const warn: Event = .{ .metric = .memory, .line = .{ .warn = 1 }, .what = .warn, .value = 14 * G, .at = 13 * G, .tell_person = true };
+    try testing.expectEqualStrings("Memory 14.0 GB, over warn line 2 of 13.0 GB", try warnText(a, english, warn, "", 0));
+    const held: Event = .{ .metric = .memory, .line = .kill, .what = .withheld, .value = 20 * G, .at = 19 * G, .tell_person = true };
+    try testing.expectEqualStrings(
+        "Memory 20.0 GB, over its kill line of 19.0 GB; it is held or shielded, so it was not stopped",
+        try warnText(a, english, held, "", 0),
+    );
+    // A name cut in the middle of a character, or carrying an escape.
+    const cut = try killText(a, english, slow, 10_000, "\xe4\xb8\x1b[?1049h", 1);
+    try testing.expect(std.mem.indexOfScalar(u8, cut, 0x1b) == null);
+    try testing.expect(std.unicode.utf8ValidateSlice(cut));
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("512 MB", bytesText(&buf, 512 << 20));
+}
+
+test "1993: every sentence about a pane's lines is in po/zh_CN.po" {
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const catalogue = std.Io.Dir.cwd().readFileAlloc(threaded.io(), "po/zh_CN.po", a, .limited(4 * 1024 * 1024)) catch |err| {
+        std.debug.print("cannot read po/zh_CN.po ({t}). Run `zig build test` from the repository root.\n", .{err});
+        return error.SourceUnreadable;
+    };
+    for (words.all) |msgid| {
+        const found = try i18n.po_text.lookup(a, catalogue, msgid);
+        const said = found orelse {
+            std.debug.print("not in po/zh_CN.po: {s}\n", .{msgid});
+            return error.Untranslated;
+        };
+        try testing.expect(said.len > 0 and !std.mem.eql(u8, said, msgid));
+    }
 }

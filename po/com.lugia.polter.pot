@@ -6349,3 +6349,59 @@ msgstr ""
 #: windows/settings-shell/src/shell_profiles.rs
 msgid "Change Default Shell…"
 msgstr ""
+
+#: src/poltergeist/judge.zig:245
+msgid "Polter stopped this pane: memory {1}, over its kill line of {2} for {3} s"
+msgstr ""
+
+#: src/poltergeist/judge.zig:246
+msgid "Polter stopped this pane at once: memory {1}, over 1.5 times its kill line of {2}"
+msgstr ""
+
+#: src/poltergeist/judge.zig:247
+msgid "Polter stopped this pane: {1} processes, over its kill line of {2} for {3} s"
+msgstr ""
+
+#: src/poltergeist/judge.zig:248
+msgid "Polter stopped this pane at once: {1} processes, over 1.5 times its kill line of {2}"
+msgstr ""
+
+#: src/poltergeist/judge.zig:249
+msgid "Memory {1}, over warn line {2} of {3}"
+msgstr ""
+
+#: src/poltergeist/judge.zig:250
+msgid "{1} processes, over warn line {2} of {3}"
+msgstr ""
+
+#: src/poltergeist/judge.zig:251
+msgid "Memory {1}, over its kill line of {2}; it is held or shielded, so it was not stopped"
+msgstr ""
+
+#: src/poltergeist/judge.zig:252
+msgid "{1} processes, over its kill line of {2}; it is held or shielded, so it was not stopped"
+msgstr ""
+
+#: src/poltergeist/judge.zig:253
+msgid "{1}; most of it was {2} ({3} processes)"
+msgstr ""
+
+#: src/poltergeist/judge.zig:254
+msgid "Polter stopped a pane"
+msgstr ""
+
+#: src/poltergeist/judge.zig:255
+msgid "A pane is over a line"
+msgstr ""
+
+#: src/poltergeist/judge.zig:256
+msgid "The machine is short of memory"
+msgstr ""
+
+#: src/poltergeist/judge.zig:257
+msgid "Memory pressure is high. Holding the most: {1}"
+msgstr ""
+
+#: src/poltergeist/judge.zig:258
+msgid "Memory pressure is critical. Holding the most: {1}"
+msgstr ""

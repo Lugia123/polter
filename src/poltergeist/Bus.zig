@@ -1271,6 +1271,28 @@ pub fn setLimits(self: *Bus, caller: Id, id: Id, l: limits.Limits) SetLimitsErro
     e.limits = l;
 }
 
+/// What a kill line that counted may do to `id`, asked again at the
+/// moment it counts (task 1993) -- the second guard, after `mayLimit`
+/// when the lines were drawn: a terminal can have become a supervisor, or
+/// been held or shielded by the person, since.
+pub const KillGuard = enum {
+    /// Stop its agent.
+    may,
+    /// Held or shielded: the kill line only warns (`judge.Guard.protected`).
+    protected,
+    /// A supervisor, or not a worker an agent opened: never stopped, and
+    /// not warned of either -- lines on it should not exist.
+    never,
+};
+
+pub fn killGuard(self: *const Bus, id: Id) KillGuard {
+    const e = self.entries.get(id) orelse return .never;
+    if (self.isSupervisor(id) or !e.opened_by_agent) return .never;
+    if (e.worker_of == null and e.opened_by == null) return .never;
+    if (e.held or e.shielded) return .protected;
+    return .may;
+}
+
 pub fn limitsOf(self: *const Bus, id: Id) limits.Limits {
     const e = self.entries.get(id) orelse return .none;
     return e.limits;
@@ -5434,6 +5456,32 @@ test "1993: lines go only on a terminal the caller opened as its worker" {
     // `{}` clears.
     try b.setLimits(boss, mine, .none);
     try testing.expect(b.limitsOf(mine).isEmpty());
+}
+
+test "1993: a kill is asked again when it counts: a pane that became a supervisor, or was held, is not stopped" {
+    var b = testBus();
+    defer b.deinit();
+    try b.addSupervisor(boss);
+    const mine: Id = 0x1993;
+    try b.markOpenedByAgent(mine, boss);
+    try b.markWorkerOf(mine, boss);
+    try b.setLimits(boss, mine, try limitsWithKill());
+    try testing.expectEqual(KillGuard.may, b.killGuard(mine));
+
+    try b.setHeld(mine, true, .user);
+    try testing.expectEqual(KillGuard.protected, b.killGuard(mine));
+    try b.setHeld(mine, false, .user);
+    try b.setShielded(mine, true, .user);
+    try testing.expectEqual(KillGuard.protected, b.killGuard(mine));
+    try b.setShielded(mine, false, .user);
+
+    // Its lines were drawn while it was a worker; it supervises now.
+    try b.addSupervisor(mine);
+    try testing.expectEqual(KillGuard.never, b.killGuard(mine));
+    // The person's own terminal, and one the bus never heard of.
+    try b.register(worker);
+    try testing.expectEqual(KillGuard.never, b.killGuard(worker));
+    try testing.expectEqual(KillGuard.never, b.killGuard(0xdead));
 }
 
 test "1993: a launch's lines wait for its terminal, for a minute, and go once" {

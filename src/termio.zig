@@ -24,6 +24,7 @@ pub const backend = @import("termio/backend.zig");
 pub const mailbox = @import("termio/mailbox.zig");
 pub const Exec = @import("termio/Exec.zig");
 pub const Options = @import("termio/Options.zig");
+pub const killnote = @import("termio/killnote.zig");
 pub const scrollback = @import("termio/scrollback.zig");
 pub const scrollback_journal = @import("termio/scrollback_journal.zig");
 pub const shell_busy = @import("termio/shell_busy.zig");
