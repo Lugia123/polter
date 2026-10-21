@@ -33,6 +33,11 @@ pub const Member = struct {
     /// bytes as `p_comm` is on macOS.
     name: [16]u8,
     name_len: u8,
+    /// User and kernel time so far, 100 ns units (`GetProcessTimes`); zero
+    /// when it could not be read.
+    cpu_100ns: u64 = 0,
+    /// When it started, `FILETIME` (100 ns since 1601); zero when unknown.
+    created: u64 = 0,
 
     pub fn nameOf(self: *const Member) []const u8 {
         return self.name[0..self.name_len];
@@ -47,13 +52,29 @@ pub const Reading = struct {
     top_len: u8,
     top_count: u32,
     top_mem: u64,
+    /// CPU time of the processes in it now, nanoseconds (task 2015): two
+    /// readings apart, the cores it used.
+    cpu_ns: u64 = 0,
+    /// Wall-clock milliseconds the oldest process but the shell and the
+    /// console host started: how long its work has run. Null when there is
+    /// none -- the shell alone at its prompt.
+    started_ms: ?i64 = null,
 };
 
-pub fn summarise(members: []const Member) Reading {
+/// `FILETIME`'s 1601 to the Unix epoch, milliseconds.
+const filetime_epoch_ms: i64 = 11_644_473_600_000;
+
+/// What `members` add up to. `shell_pid` and the console host are left out
+/// of when the work started, as `stoppable` leaves them out of a stop.
+pub fn summarise(members: []const Member, shell_pid: u32) Reading {
     var r: Reading = .{ .mem = 0, .procs = 0, .top = @splat(0), .top_len = 0, .top_count = 0, .top_mem = 0 };
     for (members) |m| {
         r.mem += m.private;
         r.procs += 1;
+        r.cpu_ns += m.cpu_100ns * 100;
+        if (m.pid == shell_pid or isConsoleHost(m.nameOf()) or m.created == 0) continue;
+        const at: i64 = @as(i64, @intCast(m.created / 10_000)) - filetime_epoch_ms;
+        r.started_ms = if (r.started_ms) |s| @min(s, at) else at;
     }
     for (members) |m| {
         var count: u32 = 0;
@@ -191,6 +212,7 @@ pub const win = if (builtin.os.tag == .windows) struct {
     extern "kernel32" fn K32GetProcessMemoryInfo(Process: HANDLE, ppsmemCounters: *ProcessMemoryCountersEx, cb: DWORD) callconv(.winapi) BOOL;
     extern "kernel32" fn QueryFullProcessImageNameW(hProcess: HANDLE, dwFlags: DWORD, lpExeName: [*]u16, lpdwSize: *DWORD) callconv(.winapi) BOOL;
     extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+    extern "kernel32" fn GetProcessTimes(hProcess: HANDLE, lpCreationTime: *u64, lpExitTime: *u64, lpKernelTime: *u64, lpUserTime: *u64) callconv(.winapi) BOOL;
 
     /// A job whose processes all stop when its last handle closes. Null when
     /// the system will not make one: the shell then runs without, as before.
@@ -249,6 +271,15 @@ pub const win = if (builtin.os.tag == .windows) struct {
                 var path: [512]u16 = undefined;
                 var len: DWORD = path.len;
                 if (QueryFullProcessImageNameW(h, 0, &path, &len) != .FALSE) m.name_len = narrowName(&m.name, path[0..len]);
+                // `FILETIME`s, read as the u64 they are laid out as.
+                var created: u64 = 0;
+                var exited: u64 = 0;
+                var kernel: u64 = 0;
+                var user: u64 = 0;
+                if (GetProcessTimes(h, &created, &exited, &kernel, &user) != .FALSE) {
+                    m.created = created;
+                    m.cpu_100ns = kernel + user;
+                }
             }
             try out.append(alloc, m);
         }
@@ -282,14 +313,14 @@ test "1993: a Windows pane is its job, summed, with the name holding the most" {
         M(10, 60, "pwsh.exe"),     M(11, 9, "conhost.exe"),   M(12, 400, "node.exe"),
         M(13, 7000, "python.exe"), M(14, 7000, "Python.exe"), M(15, 300, "node.exe"),
     };
-    const r = summarise(&members);
+    const r = summarise(&members, 10);
     try testing.expectEqual(@as(u32, 6), r.procs);
     try testing.expectEqual(@as(u64, (60 + 9 + 400 + 14000 + 300) << 20), r.mem);
     try testing.expectEqualStrings("python.exe", r.top[0..r.top_len]);
     try testing.expectEqual(@as(u32, 2), r.top_count);
     try testing.expectEqual(@as(u64, 14000 << 20), r.top_mem);
 
-    const empty = summarise(&.{});
+    const empty = summarise(&.{}, 10);
     try testing.expectEqual(@as(u32, 0), empty.procs);
     try testing.expectEqual(@as(u8, 0), empty.top_len);
 }
@@ -312,4 +343,27 @@ test "1993: an image path becomes a short ASCII name" {
     try testing.expectEqualStrings("a-very-long-prog", out[0..narrowName(&out, long)]);
     const wide = std.unicode.utf8ToUtf16LeStringLiteral("C:\\工具\\工具.exe");
     try testing.expectEqualStrings("??.exe", out[0..narrowName(&out, wide)]);
+}
+
+test "2015: a Windows pane's CPU is its processes', and its work started with the oldest but the shell" {
+    // 2026-10-21 12:00 UTC as a FILETIME, and an hour before it.
+    const noon: u64 = (1792584000000 + 11_644_473_600_000) * 10_000;
+    const hour: u64 = 3600 * 10_000_000;
+    var shell = M(10, 60, "pwsh.exe");
+    shell.created = noon - 5 * hour;
+    shell.cpu_100ns = 30_000_000;
+    var host = M(11, 9, "conhost.exe");
+    host.created = noon - 5 * hour;
+    var node = M(12, 400, "node.exe");
+    node.created = noon - hour;
+    node.cpu_100ns = 20_000_000;
+    var late = M(13, 9, "python.exe");
+    late.created = noon;
+    // One whose times could not be read: no start, no time.
+    const unread = M(14, 9, "x.exe");
+    const r = summarise(&.{ shell, host, node, late, unread }, 10);
+    try testing.expectEqual(@as(u64, 5_000_000_000), r.cpu_ns);
+    try testing.expectEqual(@as(?i64, 1792584000000 - 3600 * 1000), r.started_ms);
+    // The shell alone at its prompt: nothing has started.
+    try testing.expectEqual(@as(?i64, null), summarise(&.{ shell, host }, 10).started_ms);
 }

@@ -1592,13 +1592,15 @@ const Subprocess = struct {
     pub fn resourceReading(self: *const Subprocess, alloc: Allocator) ?internal_os.job.Reading {
         if (comptime builtin.os.tag != .windows) return null;
         const p = self.process orelse return null;
-        const job = switch (p) {
-            .fork_exec => |cmd| cmd.job orelse return null,
+        const cmd = switch (p) {
+            .fork_exec => |found| found,
             .flatpak => return null,
         };
+        const job = cmd.job orelse return null;
+        const shell: u32 = if (cmd.pid) |h| internal_os.job.win.pidOf(h) else 0;
         const members = internal_os.job.win.members(alloc, job) catch return null;
         defer alloc.free(members);
-        return internal_os.job.summarise(members);
+        return internal_os.job.summarise(members, shell);
     }
 
     /// Windows: stop everything in the terminal's job but the shell and the

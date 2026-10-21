@@ -105,6 +105,9 @@ MAP_FIELDS = {
     ("src/poltergeist/PersonaStore.zig", "launchers"): "keyed by terminal id",
     ("src/poltergeist/PersonaStore.zig", "standings"): "keyed by terminal id",
     ("src/poltergeist/TerminalMeta.zig", "last"): "keyed by terminal id",
+    ("src/poltergeist/Bus.zig", "pending_limits"): "keyed by terminal id: the supervisor whose launch asked for the lines, taken by its next worker (task 1993)",
+    ("src/poltergeist/ResourceHistory.zig", "slots"): "keyed by terminal id: each pane's open half hour (task 1993)",
+    ("src/poltergeist/ResourceHistory.zig", "gone"): "keyed by terminal id: panes closed since a reading last named them (task 2015)",
 }
 
 FIELD_GROUP = re.compile(r"^\s*(pub\s+)?group\s*:\s*\[\]const u8")

@@ -38,6 +38,11 @@ pub const Proc = struct {
     /// The short name the kernel keeps (`p_comm`), up to 16 bytes.
     comm: [16]u8,
     comm_len: u8,
+    /// User and system time so far, nanoseconds (task 2015); zero when it
+    /// could not be read.
+    cpu_ns: u64 = 0,
+    /// When it started, wall-clock milliseconds; zero when unknown.
+    start_ms: i64 = 0,
 
     pub fn name(self: *const Proc) []const u8 {
         return self.comm[0..self.comm_len];
@@ -143,6 +148,20 @@ const RUSAGE_INFO_V4: c_int = 4;
 /// this machine's processes at this offset summed to what Activity Monitor
 /// shows.
 const footprint_offset = 16 + 7 * 8;
+/// `ri_user_time` and `ri_system_time`: the first two after the uuid. In
+/// the units of `mach_absolute_time`, not nanoseconds, on Apple silicon
+/// (one tick is 125/3 ns there): `mach_timebase_info` turns them.
+const user_time_offset = 16;
+const system_time_offset = 24;
+
+const MachTimebase = extern struct { numer: u32, denom: u32 };
+extern "c" fn mach_timebase_info(info: *MachTimebase) c_int;
+
+/// Mach ticks to nanoseconds, by the machine's timebase.
+fn ticksToNs(ticks: u64, tb: MachTimebase) u64 {
+    if (tb.denom == 0) return ticks;
+    return @intCast(@as(u128, ticks) * tb.numer / tb.denom);
+}
 
 extern "c" fn proc_listallpids(buffer: ?*anyopaque, buffersize: c_int) c_int;
 extern "c" fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: ?*anyopaque, size: c_int) c_int;
@@ -161,15 +180,30 @@ fn darwin(alloc: Allocator) Allocator.Error![]Proc {
     errdefer out.deinit(alloc);
     try out.ensureTotalCapacity(alloc, @intCast(got));
     var usage: [512]u8 align(8) = undefined;
+    var tb: MachTimebase = .{ .numer = 1, .denom = 1 };
+    _ = mach_timebase_info(&tb);
     for (pids[0..@min(pids.len, @as(usize, @intCast(got)))]) |pid| {
         if (pid <= 0) continue;
         var info: ProcBsdInfo = undefined;
         if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, @sizeOf(ProcBsdInfo)) != @sizeOf(ProcBsdInfo)) continue;
-        const footprint: u64 = if (proc_pid_rusage(pid, RUSAGE_INFO_V4, &usage) == 0)
-            std.mem.readInt(u64, usage[footprint_offset..][0..8], .little)
-        else
-            0;
-        var p: Proc = .{ .pid = info.pbi_pid, .ppid = info.pbi_ppid, .tdev = info.e_tdev, .footprint = footprint, .comm = info.pbi_comm, .comm_len = 0 };
+        var footprint: u64 = 0;
+        var cpu_ns: u64 = 0;
+        if (proc_pid_rusage(pid, RUSAGE_INFO_V4, &usage) == 0) {
+            footprint = std.mem.readInt(u64, usage[footprint_offset..][0..8], .little);
+            const ticks = std.mem.readInt(u64, usage[user_time_offset..][0..8], .little) +
+                std.mem.readInt(u64, usage[system_time_offset..][0..8], .little);
+            cpu_ns = ticksToNs(ticks, tb);
+        }
+        var p: Proc = .{
+            .pid = info.pbi_pid,
+            .ppid = info.pbi_ppid,
+            .tdev = info.e_tdev,
+            .footprint = footprint,
+            .comm = info.pbi_comm,
+            .comm_len = 0,
+            .cpu_ns = cpu_ns,
+            .start_ms = @intCast(info.pbi_start_tvsec * 1000 + info.pbi_start_tvusec / 1000),
+        };
         p.comm_len = @intCast(std.mem.indexOfScalar(u8, &info.pbi_comm, 0) orelse info.pbi_comm.len);
         out.appendAssumeCapacity(p);
     }
@@ -193,4 +227,55 @@ test "procscan: this process is in the reading, with its parent and some memory"
     try testing.expect(physicalMemory().? > 1 << 30);
     const level = pressureLevel().?;
     try testing.expect(level == 1 or level == 2 or level == 4);
+}
+
+test "2015: a process's CPU time is in nanoseconds, and its start is when it started" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const testing = std.testing;
+    const me: u32 = @intCast(std.c.getpid());
+    const before = try readOne(testing.allocator, me);
+    const ru0 = cpuSelf();
+    // Spin until the kernel's own account, in microseconds, says this
+    // process has used 200 ms more -- however long that takes under load;
+    // a fixed wall time measured nothing when the machine was busy and
+    // this ran at background priority.
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const t0 = std.Io.Timestamp.now(io, .awake);
+    var x: u64 = 0;
+    while (cpuSelf() - ru0 < 200 * std.time.ns_per_ms) {
+        for (0..100_000) |_| x +%= 1;
+        if (t0.untilNow(io, .awake).toSeconds() > 30) return error.SkipZigTest;
+    }
+    std.mem.doNotOptimizeAway(x);
+    const after = try readOne(testing.allocator, me);
+    const ru1 = cpuSelf();
+    const spent = after.cpu_ns - before.cpu_ns;
+    const said = ru1 - ru0;
+    // Ticks read as nanoseconds would be 24 times too few on Apple
+    // silicon. The two accounts are of the same time, read at slightly
+    // different moments: within a fifth of each other.
+    try testing.expect(spent * 5 > said * 4);
+    try testing.expect(spent * 4 < said * 5);
+    const wall: i64 = @intCast(@divFloor(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_ms));
+    try testing.expect(after.start_ms <= wall);
+    try testing.expect(after.start_ms > wall - 24 * 3600 * 1000);
+}
+
+/// This process's user and system time by `getrusage`, nanoseconds: the
+/// account in units nobody has to convert.
+fn cpuSelf() u64 {
+    var ru: std.c.rusage = undefined;
+    _ = std.c.getrusage(std.c.rusage.SELF, &ru);
+    const us = @as(u64, @intCast(ru.utime.sec)) * 1_000_000 + @as(u64, @intCast(ru.utime.usec)) +
+        @as(u64, @intCast(ru.stime.sec)) * 1_000_000 + @as(u64, @intCast(ru.stime.usec));
+    return us * 1000;
+}
+
+fn readOne(alloc: Allocator, pid: u32) !Proc {
+    const procs = try scan(alloc);
+    defer alloc.free(procs);
+    for (procs) |p| if (p.pid == pid) return p;
+    return error.NotFound;
 }

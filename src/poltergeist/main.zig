@@ -43,6 +43,7 @@ pub const judge = @import("judge.zig");
 pub const Stopper = @import("stopper.zig");
 pub const ResourceHistory = @import("ResourceHistory.zig");
 pub const ResourceGrid = @import("ResourceGrid.zig");
+pub const ResourceRecent = @import("ResourceRecent.zig");
 pub const Feed = @import("Feed.zig");
 pub const GroupLog = @import("GroupLog.zig");
 pub const GroupRename = @import("GroupRename.zig");
@@ -138,6 +139,7 @@ test {
     _ = Stopper;
     _ = ResourceHistory;
     _ = ResourceGrid;
+    _ = ResourceRecent;
     _ = Feed;
     _ = GroupLog;
     _ = GroupRename;

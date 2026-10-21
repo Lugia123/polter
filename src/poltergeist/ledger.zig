@@ -40,6 +40,15 @@ pub const Usage = struct {
     top_len: u8 = 0,
     top_count: u32 = 0,
     top_mem: u64 = 0,
+    /// CPU time of the pane's processes now, nanoseconds (task 2015): two
+    /// readings apart, the cores it used. A process that ended takes its
+    /// time with it, so this can go down.
+    cpu_ns: u64 = 0,
+    /// Wall-clock milliseconds the pane's work started: the oldest of what
+    /// a kill would stop (`stoppable`) -- not `login` and the shell, which
+    /// have been there since the pane opened. Null with the shell alone at
+    /// its prompt.
+    started_ms: ?i64 = null,
 
     pub fn topName(self: *const Usage) []const u8 {
         return self.top[0..self.top_len];
@@ -85,8 +94,12 @@ pub fn account(alloc: Allocator, procs: []const Proc, panes: []const Pane) Alloc
         try walk(alloc, procs, &kids, claimed, pane, &mine);
         u.* = .{ .id = pane.id, .mem = 0, .procs = 0 };
         for (mine.items) |i| {
-            u.mem += procs[i].footprint;
+            const p = procs[i];
+            u.mem += p.footprint;
             u.procs += 1;
+            u.cpu_ns += p.cpu_ns;
+            if (p.pid == pane.root or p.ppid == pane.root or p.start_ms == 0) continue;
+            u.started_ms = if (u.started_ms) |s| @min(s, p.start_ms) else p.start_ms;
         }
         // The name holding the most, summed over every process with it.
         for (mine.items) |i| {
@@ -262,4 +275,26 @@ test "1993: a kill stops the agent and everything under it, and leaves login and
     defer testing.allocator.free(got);
     std.mem.sort(u32, got, {}, std.sort.asc(u32));
     try testing.expectEqualSlices(u32, &.{ 12, 13, 14, 30 }, got);
+}
+
+test "2015: a pane's CPU is its processes', and its work started with the oldest past login and the shell" {
+    var zsh = P(11, 10, 3, 4, "zsh");
+    zsh.start_ms = 1_000;
+    zsh.cpu_ns = 7;
+    var claude = P(12, 11, 3, 300, "claude");
+    claude.start_ms = 50_000;
+    claude.cpu_ns = 100;
+    var worker = P(13, 12, 3, 900, "python3.13");
+    worker.start_ms = 90_000;
+    worker.cpu_ns = 1000;
+    const panes = [_]Pane{.{ .id = 0xa, .root = 10, .tty = null }};
+    const us = try account(testing.allocator, &.{ zsh, claude, worker }, &panes);
+    defer testing.allocator.free(us);
+    try testing.expectEqual(@as(u64, 1107), us[0].cpu_ns);
+    try testing.expectEqual(@as(?i64, 50_000), us[0].started_ms);
+
+    // The shell alone at its prompt: nothing has started.
+    const idle = try account(testing.allocator, &.{zsh}, &panes);
+    defer testing.allocator.free(idle);
+    try testing.expectEqual(@as(?i64, null), idle[0].started_ms);
 }

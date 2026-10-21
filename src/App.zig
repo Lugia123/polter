@@ -222,6 +222,12 @@ resource_sampler: ?poltergeistpkg.ResourceSampler = null,
 /// The sampler saying a reading is ready. Set off the app thread.
 resources_due: std.atomic.Value(bool) = .init(false),
 resource_usage: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, poltergeistpkg.ledger.Usage) = .empty,
+/// Each pane's last five minutes, for its card on the performance page
+/// (task 2015, `ResourceRecent`): kept while it is read, dropped with it.
+resource_recent: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, poltergeistpkg.ResourceRecent) = .empty,
+/// The readings' count, each point's `seq`: a page asks for what came
+/// after the last it has.
+resource_seq: u64 = 0,
 /// When the readings were last written to the log (`resources_log_every_ms`).
 resources_logged_ms: ?u64 = null,
 /// Each judged pane's judge, and the lines it was judging by: lines that
@@ -767,6 +773,7 @@ pub fn deinit(self: *App) void {
     if (self.resource_sampler) |*w| w.stop();
     self.resource_sampler = null;
     self.resource_usage.deinit(self.alloc);
+    self.resource_recent.deinit(self.alloc);
     // A stop still waiting out its grace calls back into this App: wait
     // for it rather than have it write into freed memory.
     {
@@ -1610,8 +1617,28 @@ fn resourcePressure(self: *App, usage: []const poltergeistpkg.ledger.Usage, p: p
 fn useResourceReading(self: *App, usage: []const poltergeistpkg.ledger.Usage) void {
     self.resource_usage.clearRetainingCapacity();
     for (usage) |u| self.resource_usage.put(self.alloc, u.id, u) catch break;
+    self.keepRecent(usage);
     self.logResources(usage);
     self.judgeResources(usage);
+}
+
+/// The reading into each pane's last five minutes; a pane it does not
+/// name is gone, and its minutes with it.
+fn keepRecent(self: *App, usage: []const poltergeistpkg.ledger.Usage) void {
+    self.resource_seq += 1;
+    const wall = self.poltergeistWallMs();
+    {
+        var gone: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+        defer gone.deinit(self.alloc);
+        var it = self.resource_recent.keyIterator();
+        while (it.next()) |id| if (!self.resource_usage.contains(id.*)) gone.append(self.alloc, id.*) catch break;
+        for (gone.items) |id| _ = self.resource_recent.remove(id);
+    }
+    for (usage) |u| {
+        const r = self.resource_recent.getOrPut(self.alloc, u.id) catch continue;
+        if (!r.found_existing) r.value_ptr.* = .{};
+        r.value_ptr.push(.{ .seq = self.resource_seq, .at_ms = wall, .mem = u.mem }, u.cpu_ns, u.started_ms);
+    }
 }
 
 /// Every pane's job, read now, as one reading (Windows).
@@ -1630,6 +1657,8 @@ fn takeJobReadings(self: *App) void {
             .top_len = r.top_len,
             .top_count = r.top_count,
             .top_mem = r.top_mem,
+            .cpu_ns = r.cpu_ns,
+            .started_ms = r.started_ms,
         }) catch return;
     }
     self.useResourceReading(usage.items);
