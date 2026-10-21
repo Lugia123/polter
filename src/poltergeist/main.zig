@@ -46,6 +46,7 @@ pub const ResourceGrid = @import("ResourceGrid.zig");
 pub const ResourceRecent = @import("ResourceRecent.zig");
 pub const ResourcePage = @import("ResourcePage.zig");
 pub const ResourceNames = @import("ResourceNames.zig");
+pub const TaskPage = @import("TaskPage.zig");
 pub const Feed = @import("Feed.zig");
 pub const GroupLog = @import("GroupLog.zig");
 pub const GroupRename = @import("GroupRename.zig");
@@ -144,6 +145,7 @@ test {
     _ = ResourceRecent;
     _ = ResourcePage;
     _ = ResourceNames;
+    _ = TaskPage;
     _ = Feed;
     _ = GroupLog;
     _ = GroupRename;

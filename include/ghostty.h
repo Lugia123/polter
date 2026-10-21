@@ -1793,7 +1793,7 @@ GHOSTTY_API bool ghostty_app_control_act(ghostty_app_t, const char*, uintptr_t, 
 // 2015). Same buffer rule as ghostty_app_control_snapshot, and a second call
 // with the same request gives the same answer, so a host may ask for the
 // length first. Zero bytes means the core has no answer yet: draw nothing.
-// The task page answers zero until task 2015 Q4. App thread only.
+// App thread only.
 GHOSTTY_API uintptr_t ghostty_app_control_page(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 // Where the person is, as far as the control room goes: whether it is in
 // front, and which groups' cards it has on screen, as JSON

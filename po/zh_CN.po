@@ -5770,6 +5770,163 @@ msgid "Resume command given to the supervisor"
 msgstr "接回命令已给总管"
 
 
+#: src/poltergeist/TaskPage.zig:81
+msgid "No."
+msgstr "号"
+
+#: src/poltergeist/TaskPage.zig:82
+msgid "State"
+msgstr "状态"
+
+#: src/poltergeist/TaskPage.zig:83
+msgid "Title"
+msgstr "标题"
+
+#: src/poltergeist/TaskPage.zig:84
+msgid "Owner"
+msgstr "负责人"
+
+#: src/poltergeist/TaskPage.zig:85
+msgid "Quiet for"
+msgstr "多久没动"
+
+#: src/poltergeist/TaskPage.zig:86
+msgid "Queued"
+msgstr "排着"
+
+#: src/poltergeist/TaskPage.zig:87
+msgid "In progress"
+msgstr "在做"
+
+#: src/poltergeist/TaskPage.zig:88
+msgid "Stuck"
+msgstr "卡住"
+
+#: src/poltergeist/TaskPage.zig:89
+msgid "Done, to close"
+msgstr "做完待关"
+
+#: src/poltergeist/TaskPage.zig:90
+msgid "Closed"
+msgstr "关了"
+
+#: src/poltergeist/TaskPage.zig:91
+msgid "Cancelled"
+msgstr "取消了"
+
+#: src/poltergeist/TaskPage.zig:92
+msgid "Nobody yet"
+msgstr "未指派"
+
+#: src/poltergeist/TaskPage.zig:93
+msgid "Just now"
+msgstr "刚刚"
+
+#: src/poltergeist/TaskPage.zig:94
+msgid "{1} min"
+msgstr "{1} 分钟"
+
+#: src/poltergeist/TaskPage.zig:95
+msgid "{1} h"
+msgstr "{1} 小时"
+
+#: src/poltergeist/TaskPage.zig:96
+msgid "Yesterday"
+msgstr "昨天"
+
+#: src/poltergeist/TaskPage.zig:97
+msgid "{1} days ago"
+msgstr "{1} 天前"
+
+#: src/poltergeist/TaskPage.zig:98
+msgid "The task"
+msgstr "任务原文"
+
+#: src/poltergeist/TaskPage.zig:99
+msgid "What happened"
+msgstr "经过"
+
+#: src/poltergeist/TaskPage.zig:100
+msgid "What the group said about #{1}"
+msgstr "群里提到 #{1} 的消息"
+
+#: src/poltergeist/TaskPage.zig:102
+msgid "Made this task"
+msgstr "建了这条任务"
+
+#: src/poltergeist/TaskPage.zig:103
+msgid "Gave it to {1}"
+msgstr "派给 {1}"
+
+#: src/poltergeist/TaskPage.zig:104
+msgid "Took it back"
+msgstr "收回了"
+
+#: src/poltergeist/TaskPage.zig:105
+msgid "Started"
+msgstr "开始做"
+
+#: src/poltergeist/TaskPage.zig:106
+msgid "Said it is stuck"
+msgstr "报卡住"
+
+#: src/poltergeist/TaskPage.zig:107
+msgid "Said it is done"
+msgstr "说做完了"
+
+#: src/poltergeist/TaskPage.zig:108
+msgid "Put it back in the queue"
+msgstr "放回排队"
+
+#: src/poltergeist/TaskPage.zig:109
+msgid "Closed it"
+msgstr "关了它"
+
+#: src/poltergeist/TaskPage.zig:110
+msgid "Cancelled it"
+msgstr "取消了它"
+
+#: src/poltergeist/TaskPage.zig:111
+msgid "Changed its title"
+msgstr "改了标题"
+
+#: src/poltergeist/TaskPage.zig:112
+msgid "(What came before was merged)"
+msgstr "（这之前的经过已合并）"
+
+#: src/poltergeist/TaskPage.zig:113
+msgid "{1} min later"
+msgstr "隔了 {1} 分钟"
+
+#: src/poltergeist/TaskPage.zig:114
+msgid "{1} closed"
+msgstr "关了的 {1} 条"
+
+#: src/poltergeist/TaskPage.zig:115
+msgid "Pick a task"
+msgstr "选任务"
+
+#: src/poltergeist/TaskPage.zig:116
+msgid "Fold its story"
+msgstr "收起这条的经过"
+
+#: src/poltergeist/TaskPage.zig:117
+msgid "Open its story"
+msgstr "展开这条的经过"
+
+#: src/poltergeist/TaskPage.zig:118
+msgid "Filter"
+msgstr "筛选"
+
+#: src/poltergeist/TaskPage.zig:119
+msgid "Open ones only"
+msgstr "只看开着的"
+
+#: src/poltergeist/TaskPage.zig:120
+msgid "Closed ones too"
+msgstr "也看关了的"
+
+
 #~ msgid "Filter by key"
 #~ msgstr "按键名筛选"
 

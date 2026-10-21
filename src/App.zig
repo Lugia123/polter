@@ -3678,8 +3678,7 @@ fn renderPage(self: *App, arena: Allocator, req: []const u8) Allocator.Error![]c
         else => return "{\"error\":\"BadRequest\"}",
     };
     if (std.mem.eql(u8, r.page, "resources")) return self.renderResources(arena, r);
-    // The task page is task 2015 Q4's: no answer yet.
-    if (std.mem.eql(u8, r.page, "tasks")) return "";
+    if (std.mem.eql(u8, r.page, "tasks")) return self.renderTasks(arena, r);
     return "{\"error\":\"BadRequest\"}";
 }
 
@@ -3706,6 +3705,82 @@ fn pagePanes(self: *App, arena: Allocator, group: []const u8) Allocator.Error!?[
         if (!steward and own) try out.append(arena, .{ .id = id, .name = title, .role = .own });
     }
     return out.items;
+}
+
+fn renderTasks(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]const u8 {
+    const Page = poltergeistpkg.TaskPage;
+    if (!self.chat.exists(r.group)) return "{\"error\":\"NoSuchGroup\"}";
+    const wall = self.poltergeistWallMs();
+
+    // The panel, whole: the same page `task_list` reads for the supervisor.
+    const win = try self.tasks.page(arena, r.group, .{});
+    const tasks = try arena.alloc(Page.Task, win.tasks.len);
+    for (win.tasks, tasks) |t, *out| out.* = .{
+        .id = t.id,
+        .title = t.title,
+        .state = t.state,
+        .progress = t.progress,
+        .owner = try self.memberName(arena, r.group, t.owner),
+    };
+
+    // The record, newest pages back to its start or to what one page holds
+    // -- the same record `task_history` reads.
+    var events: std.ArrayListUnmanaged(Page.Event) = .empty;
+    if (self.task_log) |*l| {
+        const page = try l.history(arena, r.group, 0, poltergeistpkg.TaskLog.max_history_limit);
+        for (page.events) |e| {
+            const op = std.meta.stringToEnum(poltergeistpkg.TaskLog.Op, e.op) orelse continue;
+            try events.append(arena, .{
+                .at_ms = e.at_ms,
+                .op = op,
+                .task = e.task,
+                .progress = std.meta.stringToEnum(poltergeistpkg.Tasks.Progress, e.progress) orelse .queued,
+                .owner = try self.memberName(arena, r.group, e.owner),
+            });
+        }
+    }
+
+    // What the group said of the open one, the last week of it.
+    var said: std.ArrayListUnmanaged(Page.Said) = .empty;
+    if (r.open_task) |id| if (self.chat_log) |*l| {
+        var tag: [24]u8 = undefined;
+        const match = std.fmt.bufPrint(&tag, "#{d}", .{id}) catch "";
+        const page = try l.history(arena, r.group, 0, 200, .{ .since_ms = wall - Page.said_ms, .match = match });
+        // Newest first from the record; the page reads oldest first.
+        var i = page.entries.len;
+        while (i > 0) : (i -= 1) {
+            const e = page.entries[i - 1];
+            if (!Page.mentions(e.text, id)) continue;
+            try said.append(arena, .{ .at_ms = e.at_ms, .who = e.author, .text = e.text });
+        }
+    };
+
+    return Page.render(arena, .{
+        .group = r.group,
+        .goal = self.chat.briefOf(r.group) catch "",
+        .tasks = tasks,
+        .events = events.items,
+        .open_task = r.open_task,
+        .said = said.items,
+        .closed = r.closed,
+        .now_ms = wall,
+        .offset_ms = poltergeistpkg.daylog.localOffsetMs(wall),
+        .tr = resourceTr,
+    });
+}
+
+/// What a terminal is called on the task page: its title in the group, in
+/// another group, or as the history last knew it; empty for nobody.
+fn memberName(self: *App, arena: Allocator, group: []const u8, id: poltergeistpkg.Bus.Id) Allocator.Error![]const u8 {
+    if (id == poltergeistpkg.Tasks.nobody) return "";
+    for ([_]bool{ true, false }) |same_group| {
+        for (self.control_room.route_rows) |row| {
+            if (same_group != std.mem.eql(u8, row.group, group)) continue;
+            for (row.members, row.titles) |m, t| if (m == id) return t;
+        }
+    }
+    if (self.resource_names.get(id)) |e| return e.name;
+    return std.fmt.allocPrint(arena, "0x{x}", .{id});
 }
 
 const GoneNames = struct {

@@ -2206,8 +2206,7 @@ pub const CAPI = struct {
     /// request hands back the same answer, so a host may ask for the length
     /// first.
     ///
-    /// Zero is "no answer yet": the task page until task 2015 Q4, and any
-    /// page before the core has a reading. A host draws nothing then.
+    /// Zero is "no answer yet": a host draws nothing then.
     export fn ghostty_app_control_page(
         app: *App,
         req: [*]const u8,

@@ -58,6 +58,7 @@ GROUP_NAME_FILES = {
     "src/poltergeist/MentionRetry.zig": "mentions waiting to be typed again, each naming its group (group_stores.Table.mention_retries)",
     "src/poltergeist/ResourceNames.zig": "the group each pane in the resource history was in, as a value (group_stores.Table.resource_names): renamed with its group, dropped on delete, written to resources/names.json at the next reading",
     "src/poltergeist/ResourcePage.zig": "the performance page's answer: says the group's name back to the host; stores nothing",
+    "src/poltergeist/TaskPage.zig": "the task page's answer: says the group's name back to the host; stores nothing",
     "src/poltergeist/StatsLog.zig": "stats/<group>/ and the last-written clock (Root.stats, Table.stats_last)",
     "src/poltergeist/TaskLog.zig": "tasks/<group>/ (group_stores.Root.tasks)",
     "src/poltergeist/Tasks.zig": "the group field of every task (group_stores.Table.task_group_field)",
