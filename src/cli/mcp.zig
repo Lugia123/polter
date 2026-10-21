@@ -1294,9 +1294,13 @@ const tools = [_]Tool{
             "get NoRoomBeside and nothing is opened. Not with `in` or `place`. " ++
             "`worktree` is terminal_open's: the role's terminal opens in that tree, and the " ++
             "reply says whether it did (`worktree.used`). Not with `in`. " ++
+            "**The worker is put in your group** before its agent's first request is " ++
+            "answered, so its first group_read already works: the group you supervise, " ++
+            "or the one you name in `group` when you supervise several. The reply's " ++
+            "`joins` names it; `join_note` says why it was put in none. " ++
             "Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"key":{"type":"string"},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."},"beside":{"type":"string","description":"The id of a terminal whose tab the new one goes in, as a new pane -- never a new tab. Not with in or place."},"worktree":{"type":"string","description":"As terminal_open's: the role's terminal opens in that git worktree, made if needed. Not with in."}},"required":["key"],"additionalProperties":false}
+        \\{"type":"object","properties":{"key":{"type":"string"},"group":{"type":"string","description":"The group the worker is put in; left out, the one you supervise."},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."},"beside":{"type":"string","description":"The id of a terminal whose tab the new one goes in, as a new pane -- never a new tab. Not with in or place."},"worktree":{"type":"string","description":"As terminal_open's: the role's terminal opens in that git worktree, made if needed. Not with in."}},"required":["key"],"additionalProperties":false}
         ,
     },
     .{

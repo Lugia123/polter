@@ -5835,6 +5835,11 @@ fn startRoleIn(
     if (self.terminal_meta) |*m| m.role(id, self.poltergeistWallMs(), choice.key);
 
     try surface.typePoltergeistTextAs(line, true, who);
+    // A supervisor's launch line is a line that supervisor submitted there
+    // (`Bus.noteTypedBy`, task 1971): what puts the agent in the group the
+    // line names (`launchJoin`'s `join_as_typed`) even before the pane is
+    // recorded as its worker -- a split on Windows is attributed later.
+    if (self.poltergeist.isSupervisor(by)) self.poltergeist.noteTypedBy(id, by, self.poltergeistElapsedMs()) catch {};
     // Its CLI is starting from now until its agent is heard (task 1974).
     self.launching.put(self.alloc, id, .{
         .deadline_ms = self.poltergeistElapsedMs() +| poltergeistpkg.Bus.launch_agent_wait_ms,
@@ -6677,15 +6682,26 @@ pub fn launchPersona(
     into: ?poltergeistpkg.Bus.Id,
     /// A terminal whose tab the new one is opened in, as a pane (task 1571).
     beside: ?poltergeistpkg.Bus.Id,
+    /// `role_launch`'s `group` (task 1971): empty for the caller's own,
+    /// null for a launch that is not a supervisor's -- a person's click.
+    group: ?[]const u8,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const choice = try self.resolveLaunch(alloc, key, cli, by);
-    const line = try launchLine(alloc, choice);
+    // **Its group, on the line** (task 1971): `+launch --group=` tells
+    // Polter before the CLI starts, and the agent is put in the group when
+    // it is heard -- before its first request is answered (`arrived`), so
+    // its first `group_read` is a member's. It used to be put in by the
+    // supervisor's own `group_add`, after; until then every group call the
+    // worker made came back NotAMember.
+    const joining: LaunchGroup = if (group) |named| try self.launchGroupOf(alloc, by, named) else .{ .none = .not_asked };
+    const line = try launchLineFor(alloc, choice, .{ .group = joining.name(), .session = null });
+    const join_note = joining.note();
 
     if (into) |target| {
         // It is where it is: a directory would have to be typed into it.
         if (cwd.len > 0) return error.InWithCwd;
         try self.launchPersonaIn(target, by, choice, line);
-        return .{ .id = target, .placed = .{ .reused = .asked } };
+        return .{ .id = target, .placed = .{ .reused = .asked }, .joins = joining.name(), .join_note = join_note };
     }
 
     const anchor: ?*Surface = if (beside) |id|
@@ -6710,7 +6726,7 @@ pub fn launchPersona(
         const found = try self.poltergeistFreeWorker(alloc, by, cwd);
         if (found.free) |free| {
             if (self.launchPersonaIn(free, by, choice, line)) {
-                return .{ .id = free, .placed = .{ .reused = .free_worker } };
+                return .{ .id = free, .placed = .{ .reused = .free_worker }, .joins = joining.name(), .join_note = join_note };
             } else |err| {
                 // It was free when it was looked at and is not now: a new
                 // pane is the answer it would have been without this.
@@ -6738,6 +6754,8 @@ pub fn launchPersona(
         null;
     var opened = try self.openTerminalAt(alloc, cwd, by, where, anchor);
     opened.passed_over = passed_over;
+    opened.joins = joining.name();
+    opened.join_note = join_note;
     opened.stack = stack;
     if (opened.id) |new| {
         // Claimed already when the surface was made inside the call; if not,
@@ -7152,7 +7170,7 @@ pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) any
         try self.startRoleIn(id, id, choice, try launchLine(aa, choice), .person);
         return .started_here;
     }
-    _ = try self.launchPersona(aa, id, key, cli, "", .tab, null, null);
+    _ = try self.launchPersona(aa, id, key, cli, "", .tab, null, null, null);
     return .started_in_tab;
 }
 
@@ -7193,9 +7211,112 @@ fn poltergeistPersonaLaunch(
     place: poltergeistpkg.rpc.Placement,
     into: ?poltergeistpkg.Bus.Id,
     beside: ?poltergeistpkg.Bus.Id,
+    group: []const u8,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const self: *App = @ptrCast(@alignCast(ctx));
-    return self.launchPersona(alloc, by, key, cli, cwd, place, into, beside);
+    return self.launchPersona(alloc, by, key, cli, cwd, place, into, beside, group);
+}
+
+/// The group a supervisor's `role_launch` puts its worker in (task 1971):
+/// the one it supervises, or the one it named of those -- and none, said
+/// why, otherwise. Pure, so the rule is tested without an app.
+pub const LaunchGroup = union(enum) {
+    join: []const u8,
+    none: Why,
+
+    pub const Why = enum {
+        /// Not a supervisor's launch: a person's click.
+        not_asked,
+        /// The caller supervises no group.
+        no_group,
+        /// It supervises several and named none of them.
+        several,
+        /// It named a group it does not supervise.
+        not_yours,
+    };
+
+    /// `stewarded` is the groups `by` supervises, `named` the one asked
+    /// for (empty for "mine").
+    pub fn of(stewarded: []const []const u8, named: []const u8) LaunchGroup {
+        if (named.len > 0) {
+            for (stewarded) |g| if (std.mem.eql(u8, g, named)) return .{ .join = g };
+            return .{ .none = .not_yours };
+        }
+        return switch (stewarded.len) {
+            0 => .{ .none = .no_group },
+            1 => .{ .join = stewarded[0] },
+            else => .{ .none = .several },
+        };
+    }
+
+    pub fn name(self: LaunchGroup) ?[]const u8 {
+        return switch (self) {
+            .join => |g| g,
+            .none => null,
+        };
+    }
+
+    /// What the reply says when it is put in none and the caller might
+    /// have thought otherwise; null when there is nothing to say.
+    pub fn note(self: LaunchGroup) ?[]const u8 {
+        return switch (self) {
+            .join => null,
+            .none => |why| switch (why) {
+                .not_asked, .no_group => null,
+                .several => "not put in a group: you supervise more than one; pass `group` to " ++
+                    "have it put in one, or group_add it.",
+                .not_yours => "not put in that group: you are not its supervisor. Pass one you " ++
+                    "supervise, or leave `group` out.",
+            },
+        };
+    }
+};
+
+test "1971: a supervisor's worker goes in the group it supervises, and says why when it goes in none" {
+    const testing = std.testing;
+    const one = [_][]const u8{"shop-web"};
+    const two = [_][]const u8{ "api-server", "shop-web" };
+
+    // The demo: one group, nothing named -- that one.
+    const mine = LaunchGroup.of(&one, "");
+    try testing.expectEqualStrings("shop-web", mine.name() orelse return error.NotJoined);
+    try testing.expect(mine.note() == null);
+
+    // Several, named one of them: that one. Named none: none, and said.
+    try testing.expectEqualStrings("api-server", LaunchGroup.of(&two, "api-server").name().?);
+    const several = LaunchGroup.of(&two, "");
+    try testing.expect(several.name() == null);
+    try testing.expect(std.mem.indexOf(u8, several.note().?, "pass `group`") != null);
+
+    // Named one it does not supervise: none, and said.
+    const theirs = LaunchGroup.of(&one, "docs-site");
+    try testing.expect(theirs.name() == null);
+    const why = theirs.note().?;
+    try testing.expect(std.mem.indexOf(u8, why, "not its supervisor") != null);
+
+    // No group at all: nothing to join, nothing to say.
+    const lone = LaunchGroup.of(&.{}, "");
+    try testing.expect(lone.name() == null);
+    try testing.expect(lone.note() == null);
+}
+
+/// The groups `by` supervises (`ControlRoom.stewardOfGroup`), sorted, and
+/// what `LaunchGroup.of` makes of them with `named`.
+fn launchGroupOf(self: *App, alloc: Allocator, by: poltergeistpkg.Bus.Id, named: []const u8) Allocator.Error!LaunchGroup {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    var mine: std.ArrayListUnmanaged([]const u8) = .empty;
+    var it = self.chat.groups.keyIterator();
+    while (it.next()) |g| {
+        const steward = poltergeistpkg.ControlRoom.stewardOfGroup(arena.allocator(), &self.poltergeist, &self.chat, g.*) orelse continue;
+        if (steward == by) try mine.append(alloc, try alloc.dupe(u8, g.*));
+    }
+    std.mem.sort([]const u8, mine.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lt);
+    return LaunchGroup.of(mine.items, named);
 }
 
 /// Take a terminal out of any persona, back to handing out everything.

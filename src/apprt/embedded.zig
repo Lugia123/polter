@@ -2669,6 +2669,8 @@ pub const CAPI = struct {
             .tab,
             null,
             null,
+            // A person's click: no supervisor's group to join.
+            null,
         ) catch |e| {
             copyErrorOut(e, err, cap);
             return false;

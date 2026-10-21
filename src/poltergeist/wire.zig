@@ -331,6 +331,9 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 // A terminal whose tab the new one is opened in (task 1571).
                 .beside = try optionalIdParam(params, "beside"),
                 .worktree = (try optionalString(aa, params, "worktree")) orelse "",
+                // The group the worker goes in (task 1971); left out, the
+                // caller's own.
+                .group = (try optionalString(aa, params, "group")) orelse "",
             },
         },
         .worktree_status => .{ .worktree_status = .{
@@ -1281,6 +1284,12 @@ pub const Response = union(enum) {
         /// the stack it would otherwise have joined (task 1958,
         /// `rpc.hereBesideStack`). Null is nothing to say, and is left out.
         note: ?[]const u8 = null,
+
+        /// The group a launched worker is put in once its agent is heard
+        /// (task 1971, `rpc.Opened.joins`), and why it is put in none when
+        /// the caller might have expected one. Null is left out.
+        joins: ?[]const u8 = null,
+        join_note: ?[]const u8 = null,
     },
     /// A task's number, answering `task_create`.
     task: u64,
@@ -1630,6 +1639,14 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             if (v.note) |note| {
                 try s.objectField("note");
                 try s.write(note);
+            }
+            if (v.joins) |g| {
+                try s.objectField("joins");
+                try s.write(g);
+            }
+            if (v.join_note) |n| {
+                try s.objectField("join_note");
+                try s.write(n);
             }
         },
         .actions => |list| {
@@ -3555,6 +3572,23 @@ test "tidying: terminal_tab_move and role_launch's beside are read" {
         );
         defer p.deinit();
         try testing.expectEqual(@as(?Bus.Id, 0x2a), p.value.role_launch.beside);
+    }
+}
+
+test "1971: role_launch reads `group`, and an absent one is empty" {
+    {
+        var p = try parse(
+            \\{"method":"role_launch","params":{"key":"hand","group":"shop-web"}}
+        );
+        defer p.deinit();
+        try testing.expectEqualStrings("shop-web", p.value.role_launch.group);
+    }
+    {
+        var p = try parse(
+            \\{"method":"role_launch","params":{"key":"hand"}}
+        );
+        defer p.deinit();
+        try testing.expectEqualStrings("", p.value.role_launch.group);
     }
 }
 

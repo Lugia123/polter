@@ -695,6 +695,11 @@ pub const Request = union(Method) {
         /// As `terminal_open`'s. Not with `in`, which starts the role where
         /// that terminal already stands.
         worktree: []const u8 = "",
+        /// The group the worker is put in once its agent is heard (task
+        /// 1971). Empty is "the one I supervise": the caller's group when
+        /// it supervises exactly one, and none -- said in the reply --
+        /// when it supervises several.
+        group: []const u8 = "",
     },
     worktree_status: struct { name: []const u8 = "", repo: []const u8 = "" },
     worktree_remove: struct { name: []const u8, repo: []const u8 = "" },
@@ -5503,6 +5508,10 @@ pub const Opened = struct {
     /// Under `auto`, the caller's own worker pane that was looked at to be
     /// used again and was not, and why. See `PassedOver`.
     passed_over: ?PassedOver = null,
+    /// The group its agent is put in once it is heard (task 1971), or null.
+    joins: ?[]const u8 = null,
+    /// Why it is put in no group, when the caller might have expected one.
+    join_note: ?[]const u8 = null,
     /// Under `here`, the terminal whose pane `auto` would have stacked this
     /// one onto -- the caller's stack, which this pane is not in (task
     /// 1958). Null when `auto` would have split it off the caller too, or
@@ -5914,6 +5923,8 @@ pub const Host = struct {
             /// A terminal whose tab the new one is opened in, as a pane --
             /// never a tab (task 1571). Null for `place` to decide.
             beside: ?Bus.Id,
+            /// `role_launch`'s `group`: empty for the caller's own (task 1971).
+            group: []const u8,
         ) anyerror!Opened,
 
         /// Find or make the worktree `name` of the repository `cwd` is in
@@ -6690,8 +6701,9 @@ pub const Host = struct {
         place: Placement,
         into: ?Bus.Id,
         beside: ?Bus.Id,
+        group: []const u8,
     ) anyerror!Opened {
-        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place, into, beside);
+        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place, into, beside, group);
     }
 
     fn quietMs(self: Host, id: Bus.Id) u64 {
@@ -7917,7 +7929,7 @@ fn dispatchOne(
                 .go => |t| t,
                 .stop => |no| return no,
             };
-            const opened = host.personaLaunch(alloc, caller, p.key, p.cli, if (tree) |t| t.dir else p.cwd, p.place, p.in, p.beside) catch |err| return switch (err) {
+            const opened = host.personaLaunch(alloc, caller, p.key, p.cli, if (tree) |t| t.dir else p.cwd, p.place, p.in, p.beside, p.group) catch |err| return switch (err) {
                 // Starting it in a terminal that is already open (`in`).
                 error.UnknownTerminal => hostFailure(
                     "UnknownTerminal",
@@ -8016,6 +8028,8 @@ fn dispatchOne(
                     .placed = opened.placed,
                     .passed_over = opened.passed_over,
                     .worktree = if (tree) |t| t.answer else null,
+                    .joins = opened.joins,
+                    .join_note = opened.join_note,
                     // Only a split beside a stack it would have joined: a
                     // `here` that fell back to a tab says so in `fallback`.
                     .note = if (opened.stack) |stack| if (opened.placed == .split)
@@ -10891,7 +10905,11 @@ const FakeHost = struct {
         place: Placement,
         into: ?Bus.Id = null,
         beside: ?Bus.Id = null,
+        group: []const u8 = "",
     } = null,
+    /// What the app would say of the group a launch joins (task 1971).
+    role_joins: ?[]const u8 = null,
+    role_join_note: ?[]const u8 = null,
     clis_refreshed: bool = false,
     role_tab_late: bool = false,
 
@@ -10904,6 +10922,9 @@ const FakeHost = struct {
     set_to: ?struct { id: Bus.Id, ms: u64 } = null,
     read_count: usize = 0,
     refuse: bool = false,
+    /// What the app does on an agent's first request when a launch named
+    /// its group (task 1971): puts it in, so `refuse` no longer holds.
+    joins_on_arrival: bool = false,
     /// `setThreshold` answers as the App does for an id no surface has.
     no_such_terminal: bool = false,
 
@@ -11876,6 +11897,7 @@ const FakeHost = struct {
     /// `claimStanding` and where `dispatch` calls it, not a stand-in.
     fn agentArrived(ctx: *anyopaque, bus: *Bus, id: Bus.Id) void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.joins_on_arrival) self.refuse = false;
         const store = self.personas orelse return;
         _ = store.claimStanding(bus, id, self.now_ms);
     }
@@ -11943,10 +11965,11 @@ const FakeHost = struct {
         place: Placement,
         into: ?Bus.Id,
         beside: ?Bus.Id,
+        group: []const u8,
     ) anyerror!Opened {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.role_error) |e| return e;
-        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into, .beside = beside };
+        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into, .beside = beside, .group = group };
         if (beside != null) return .{ .id = null, .placed = .split };
         if (into) |there| return .{ .id = there, .placed = .{ .reused = .asked } };
         // What the app's placement would answer: `tab` is a tab, `here` a
@@ -11964,6 +11987,8 @@ const FakeHost = struct {
             .placed = placed,
             // The app's `WorkerColumn.lastHere`, asked only under `here`.
             .stack = if (place == .here) self.role_stack else null,
+            .joins = self.role_joins,
+            .join_note = self.role_join_note,
         };
     }
 
@@ -17010,6 +17035,58 @@ test "1958: a worker launched here is split off as asked, and the reply says whe
     var server: FakeHost = .{ .open_result = null, .open_placed = .split };
     const pane = try dispatch(alloc, &b, server.host(), term(boss), .{ .terminal_open = .{ .cwd = "/tmp", .place = .here } });
     try testing.expect(pane.opened.note == null);
+}
+
+test "1971: role_launch hands the group to the host and says which one the worker joins, or why none" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Left out: empty, the app's "the one you supervise".
+    var mine: FakeHost = .{ .role_joins = "shop-web" };
+    const into_mine = try dispatch(alloc, &b, mine.host(), term(boss), .{ .role_launch = .{ .key = "archer", .cwd = "/tmp" } });
+    try testing.expectEqualStrings("", mine.role_launched.?.group);
+    try testing.expectEqualStrings("shop-web", into_mine.opened.joins.?);
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&out.writer, into_mine);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"joins\":\"shop-web\"") != null);
+
+    // Named: passed on as named.
+    var named: FakeHost = .{};
+    _ = try dispatch(alloc, &b, named.host(), term(boss), .{ .role_launch = .{ .key = "archer", .cwd = "/tmp", .group = "api-server" } });
+    try testing.expectEqualStrings("api-server", named.role_launched.?.group);
+
+    // None, and why: said in the reply.
+    var several: FakeHost = .{ .role_join_note = "not put in a group: you supervise more than one" };
+    const none = try dispatch(alloc, &b, several.host(), term(boss), .{ .role_launch = .{ .key = "archer", .cwd = "/tmp" } });
+    try testing.expect(none.opened.joins == null);
+    var said: std.Io.Writer.Allocating = .init(alloc);
+    try wire.writeResponse(&said.writer, none);
+    try testing.expect(std.mem.indexOf(u8, said.written(), "\"join_note\":\"not put in a group") != null);
+    try testing.expect(std.mem.indexOf(u8, said.written(), "\"joins\"") == null);
+}
+
+test "1971: a worker's first request is judged after its arrival puts it in its group" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Its first call is a group_read. The app puts it in the group when it
+    // is heard (`App.launchGroupArrived`, from `arrived`); the read is
+    // answered after that, as a member's.
+    var host: FakeHost = .{ .refuse = true, .joins_on_arrival = true };
+    const first = try dispatch(alloc, &b, host.host(), term(worker), .{ .group_read = .{ .group = "shop-web" } });
+    try testing.expect(first != .failed);
+
+    // Without the launch naming the group, the same read is NotAMember --
+    // what the demo's workers got until their supervisor's group_add.
+    var before: FakeHost = .{ .refuse = true };
+    const refused = try dispatch(alloc, &b, before.host(), term(worker), .{ .group_read = .{ .group = "shop-web" } });
+    try testing.expect(refused == .failed);
 }
 
 test "role_launch in: started in a terminal that is already open, under the rules of anything that types into one" {
