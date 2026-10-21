@@ -781,6 +781,7 @@ pub fn deinit(self: *App) void {
         var it = self.resource_history.slots.keyIterator();
         while (it.next()) |id| ids.append(self.alloc, id.*) catch break;
         for (ids.items) |id| if (self.resource_history.take(id)) |c| self.writeHistorySlot(c);
+        self.keepHistoryOpen();
     }
     self.resource_history.deinit(self.alloc);
     if (self.resource_history_file) |*f| f.deinit(self.alloc);
@@ -1286,6 +1287,27 @@ fn recordResourceHistory(self: *App, usage: []const poltergeistpkg.ledger.Usage)
         const closed = self.resource_history.note(self.alloc, u.id, wall, offset, level, u.mem, u.procs) catch continue;
         if (closed) |c| self.writeHistorySlot(c);
     }
+    self.keepHistoryOpen();
+}
+
+/// The half hours still open, onto the disk as they stand: rewritten only
+/// when one's level or peak moved (`File.keepOpen`).
+fn keepHistoryOpen(self: *App) void {
+    const f = &(self.resource_history_file orelse return);
+    var out: std.Io.Writer.Allocating = .init(self.alloc);
+    defer out.deinit();
+    var it = self.resource_history.slots.iterator();
+    while (it.next()) |kv| poltergeistpkg.ResourceHistory.writeSlot(&out.writer, .{ .pane = kv.key_ptr.*, .slot = kv.value_ptr.* }) catch return;
+    f.keepOpen(self.alloc, out.written());
+}
+
+/// A pane closed: its half hour written now, not when the sampler next
+/// misses it.
+fn historyPaneGone(self: *App, id: poltergeistpkg.Bus.Id) void {
+    const c = self.resource_history.take(id) orelse return;
+    self.writeHistorySlot(c);
+    self.keepHistoryOpen();
+    log.info("resources: 0x{x} closed, its half hour written", .{id});
 }
 
 fn writeHistorySlot(self: *App, c: poltergeistpkg.ResourceHistory.Closed) void {
@@ -1477,9 +1499,18 @@ fn finishResourceStop(self: *App, id: poltergeistpkg.Bus.Id, k: ResourceKill, ou
     const aa = arena.allocator();
     const top = k.top[0..k.top_len];
     const said = judge.killText(aa, resourceTr, k.event, k.for_ms, top, k.top_count) catch "";
-    log.warn("resources: stopped 0x{x}: {s}; {d} sent SIGTERM, {d} still there after {d} ms and sent SIGKILL", .{
-        id, judge.killText(aa, judge.english, k.event, k.for_ms, top, k.top_count) catch "", out.termed, out.killed, poltergeistpkg.Stopper.grace_ms,
-    });
+    const english = judge.killText(aa, judge.english, k.event, k.for_ms, top, k.top_count) catch "";
+    // Windows has no gentle stop to wait out: `stopAgent` used
+    // `TerminateProcess` on each at once.
+    if (comptime builtin.os.tag == .windows) {
+        log.warn("resources: stopped 0x{x}: {s}; {d} ended with TerminateProcess", .{ id, english, out.killed });
+    } else {
+        log.warn("resources: stopped 0x{x}: {s}; {d} sent SIGTERM, {d} still there after {d} ms and sent SIGKILL", .{
+            id, english, out.termed, out.killed, poltergeistpkg.Stopper.grace_ms,
+        });
+    }
+    // A new round for the pane: what its lines do next is news.
+    if (self.resource_judges.getPtr(id)) |j| judge.afterKill(&j.state);
     if (self.findSurfaceByID(id)) |surface| {
         const note = std.fmt.allocPrint(aa, "\u{2500}\u{2500} {s} \u{2500}\u{2500}", .{said}) catch "";
         surface.noteKilled(note);
@@ -1498,7 +1529,10 @@ fn finishResourceStop(self: *App, id: poltergeistpkg.Bus.Id, k: ResourceKill, ou
         var line: std.Io.Writer.Allocating = .init(aa);
         var a: [32]u8 = undefined;
         var b: [32]u8 = undefined;
-        line.writer.print("Polter stopped the agent in 0x{x}: ", .{id}) catch {};
+        // An agent only when Polter knows which CLI it was; otherwise it
+        // was some program, as a `node` typed at the prompt is.
+        const what: []const u8 = if (cli.len > 0) "the agent" else "what was running";
+        line.writer.print("Polter stopped {s} in 0x{x}: ", .{ what, id }) catch {};
         switch (k.event.metric) {
             .memory => line.writer.print("memory {s} over its kill line {s}", .{ judge.bytesText(&a, k.event.value), judge.bytesText(&b, k.event.at) }) catch {},
             .processes => line.writer.print("{d} processes over its kill line {d}", .{ k.event.value, k.event.at }) catch {},
@@ -1509,7 +1543,7 @@ fn finishResourceStop(self: *App, id: poltergeistpkg.Bus.Id, k: ResourceKill, ou
             poltergeistpkg.agent_cli.writeLaunchWords(&line.writer, role, cli, .{ .group = null, .session = agent.session_id.get() }) catch {};
         }
         // `tellSurface` takes under 255 bytes and drops the rest unsaid.
-        const short = std.fmt.allocPrint(aa, "Polter stopped the agent in 0x{x} at its kill line; its tasks are blocked.", .{id}) catch "";
+        const short = std.fmt.allocPrint(aa, "Polter stopped {s} in 0x{x} at its kill line; its tasks are blocked.", .{ what, id }) catch "";
         self.tellSurface(boss, if (line.written().len < 255) line.written() else short);
     }
 
@@ -4721,6 +4755,8 @@ pub fn ensureChatLog(self: *App, want: bool) void {
     // The resource history (task 1993): written only, like the stats.
     if (poltergeistpkg.ResourceHistory.File.init(self.alloc, io, state_dir)) |f| {
         self.resource_history_file = f;
+        // The half hours the last run was stopped in, before any of ours.
+        if (self.resource_history_file) |*h| h.recover(self.alloc);
     } else |err| {
         log.warn("poltergeist: could not set up the resource history err={}", .{err});
     }
@@ -13242,6 +13278,7 @@ pub fn deleteSurface(self: *App, rt_surface: *apprt.Surface) void {
             self.seat_judged.gone(poltergeistpkg.Bus.idOf(rt_surface.core()));
             if (self.launch_groups.fetchRemove(poltergeistpkg.Bus.idOf(rt_surface.core()))) |kv| self.alloc.free(kv.value);
             _ = self.launching.remove(poltergeistpkg.Bus.idOf(rt_surface.core()));
+            self.historyPaneGone(poltergeistpkg.Bus.idOf(rt_surface.core()));
             self.controlRoomTouch();
             continue;
         }

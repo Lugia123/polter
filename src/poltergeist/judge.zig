@@ -20,7 +20,8 @@
 //!
 //! The person is told of the same line of the same pane at most once in ten
 //! minutes (`tell_person`); every crossing is still an event, for the log
-//! and the history. A kill is always told.
+//! and the history. A kill is always told, and starts the count again
+//! (`afterKill`): what comes after it is news.
 //!
 //! Pure: limits, a reading, the time and two flags in; events out. The
 //! state is the caller's, one per pane, and goes back to `.fresh` whenever
@@ -180,6 +181,15 @@ fn metric(
         t.told_ms = now_ms;
         v.add(.{ .metric = which, .line = .kill, .what = .kill, .value = value, .at = at, .tell_person = true });
     }
+}
+
+/// The pane's agent was stopped: whatever its lines do next, the person is
+/// told of it as of the first time (P4b). Seen on the machine: a pane
+/// stopped at 22:43 and shielded at 22:47 crossed its kill line again, and
+/// the person was not told it was withheld.
+pub fn afterKill(state: *State) void {
+    for (&state.memory) |*t| t.told_ms = null;
+    for (&state.processes) |*t| t.told_ms = null;
 }
 
 /// Keeps the line's wait and its arming; true for how long it has been over.
@@ -475,6 +485,28 @@ test "1993: typing holds a kill back until the person stops, and a protected pan
         .{ .t = 10, .gb = 16, .want = "w0! x!", .guard = shielded },
         .{ .t = 20, .gb = 40, .want = "", .guard = shielded },
     });
+}
+
+test "1993: after a kill the pane's lines are told to the person again, even within ten minutes" {
+    const l = try lim("{\"memory\": {\"warn\": [\"8G\"], \"kill\": \"10G\"}}");
+    const shielded: Guard = .{ .protected = true, .typing = false };
+    var s: State = .fresh;
+    _ = step(&s, &l, .{ .mem = 11 * G, .procs = 3 }, 0, 32 * G, .none);
+    const killed = step(&s, &l, .{ .mem = 11 * G, .procs = 3 }, 10_000, 32 * G, .none);
+    try testing.expect(killed.kill() != null);
+    afterKill(&s);
+    // The shell is left with little; four minutes on, shielded now, it
+    // climbs over both lines again.
+    _ = step(&s, &l, .{ .mem = 0, .procs = 1 }, 12_000, 32 * G, .none);
+    _ = step(&s, &l, .{ .mem = 11 * G, .procs = 3 }, 250_000, 32 * G, shielded);
+    const v = step(&s, &l, .{ .mem = 11 * G, .procs = 3 }, 260_000, 32 * G, shielded);
+    try testing.expectEqual(@as(usize, 2), v.all().len);
+    try testing.expectEqual(Event.What.warn, v.all()[0].what);
+    const warned_told = v.all()[0].tell_person;
+    try testing.expect(warned_told);
+    try testing.expectEqual(Event.What.withheld, v.all()[1].what);
+    const withheld_told = v.all()[1].tell_person;
+    try testing.expect(withheld_told);
 }
 
 test "1993: process counts are judged like memory, and a share follows the machine" {

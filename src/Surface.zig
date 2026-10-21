@@ -9024,15 +9024,15 @@ pub fn resourcePane(self: *Surface) ?poltergeistpkg.ledger.Pane {
 }
 
 /// Polter stopped this pane's agent at its kill line (task 1993): put the
-/// modes it may have left on back to a shell's, and write `text` on a row
-/// of its own (`termio.killnote`). Under the terminal's lock, from the app
-/// thread, as `passwordInput` touches the terminal.
+/// modes it may have left on back to a shell's, and write `text` above the
+/// prompt the shell may already have drawn (`termio.killnote`). Under the
+/// terminal's lock, from the app thread, as `passwordInput` touches the
+/// terminal.
 pub fn noteKilled(self: *Surface, text: []const u8) void {
     {
         self.renderer_state.mutex.lockUncancelable(global.io());
         defer self.renderer_state.mutex.unlock(global.io());
-        termio.killnote.reset(&self.io.terminal);
-        if (termio.killnote.isPlain(text)) termio.killnote.write(&self.io.terminal, text);
+        termio.killnote.put(&self.io.terminal, text);
     }
     self.queueRender() catch {};
 }
