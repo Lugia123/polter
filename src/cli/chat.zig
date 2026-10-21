@@ -68,6 +68,12 @@ pub const Options = struct {
     /// the list as it would without it, and says so.
     group: ?[]const u8 = null,
 
+    /// With `--group`: the window is that group's and no other's -- the
+    /// control room's chat page, one window per group (task 2015). No list
+    /// of groups, and nothing changes the group: not a click, not an arrow,
+    /// not Tab, and `d` does not take it off the list.
+    embedded: bool = false,
+
     pub fn deinit(self: Options) void {
         _ = self;
     }
@@ -117,6 +123,7 @@ pub fn run(alloc: Allocator) !u8 {
     const chat = try Chat.create(alloc, io, &host, &tty_buf);
     defer chat.destroy();
     chat.wanted = opts.group;
+    if (opts.embedded) chat.pinned = opts.group;
 
     try chat.run();
     return 0;
@@ -534,6 +541,11 @@ const Chat = struct {
     /// for in it; null after that, so a person who picks another group is
     /// not moved back.
     wanted: ?[]const u8 = null,
+
+    /// `--embedded` with `--group`: the group held on every poll, wherever
+    /// the list happens to put it -- an index would follow the list's order
+    /// to another group. Null when not embedded.
+    pinned: ?[]const u8 = null,
 
     /// The panel's history for the group being looked at, and the name of
     /// the group it belongs to.
@@ -1049,6 +1061,22 @@ const Chat = struct {
 
         if (self.current >= self.groups.items.len) self.current = 0;
 
+        // Embedded: the one group, every poll. Missing -- deleted, renamed --
+        // is said for as long as it is.
+        if (self.pinned) |name| {
+            if (wantedIndex(self.groups.items, name)) |i| {
+                self.current = i;
+            } else {
+                self.wanted = null;
+                const said = missingGroupText(arena, name);
+                const n = @min(said.len, self.err_buf.len);
+                @memcpy(self.err_buf[0..n], said[0..n]);
+                self.err = self.err_buf[0..n];
+                self.err_hold = err_polls;
+                return;
+            }
+        }
+
         // Once, on the first list: the group the window was opened for.
         if (self.wanted) |want| {
             self.wanted = null;
@@ -1389,7 +1417,9 @@ const Chat = struct {
                 // box below already guards against. Two answers to one
                 // question is one too many.
                 if (key.matches('d', .{})) {
-                    self.askForget();
+                    // One group's window does not take its group off the
+                    // list it does not show.
+                    if (self.pinned == null) self.askForget();
                     return;
                 }
 
@@ -1419,23 +1449,15 @@ const Chat = struct {
                     return;
                 }
 
-                if (key.matches(vaxis.Key.tab, .{})) {
-                    self.selectGroup(self.current +| 1);
-                    return;
-                }
-                if (key.matches(vaxis.Key.tab, .{ .shift = true })) {
-                    self.selectGroup(self.current -| 1);
-                    return;
-                }
-
-                // Up and down move through the groups, which is what the
-                // arrows mean everywhere else in a two-pane list.
-                if (key.matches(vaxis.Key.down, .{})) {
-                    self.selectGroup(self.current +| 1);
-                    return;
-                }
-                if (key.matches(vaxis.Key.up, .{})) {
-                    self.selectGroup(self.current -| 1);
+                // Tab and the arrows move through the groups, which is
+                // what they mean everywhere else in a two-pane list --
+                // and nothing when the window is one group's.
+                if (groupMove(key, self.pinned != null)) |move| {
+                    switch (move) {
+                        .next => self.selectGroup(self.current +| 1),
+                        .prev => self.selectGroup(self.current -| 1),
+                        .stay => {},
+                    }
                     return;
                 }
 
@@ -1768,6 +1790,7 @@ const Chat = struct {
                     }
                 }
 
+                if (self.pinned != null) return;
                 if (col < self.groups_left or col >= self.groups_right) return;
 
                 if (groupAt(self.group_rows.items, row)) |i| {
@@ -1813,7 +1836,7 @@ const Chat = struct {
         // Narrow windows drop the side column rather than squeezing it:
         // eighteen columns of group names beside twelve of message is two
         // unreadable panes instead of one readable one.
-        const side_width: u16 = if (win.width >= 60) 24 else 0;
+        const side_width = sideWidth(win.width, self.pinned != null);
 
         if (side_width > 0) {
             const groups_height = @min(
@@ -3325,6 +3348,28 @@ fn wantedIndex(groups: []const Group, want: []const u8) ?usize {
     return null;
 }
 
+const GroupMove = enum { next, prev, stay };
+
+/// What a key does to the selected group: next or previous, `stay` for a
+/// group key in a window that is one group's, null for any other key.
+fn groupMove(key: vaxis.Key, pinned: bool) ?GroupMove {
+    const move: GroupMove = if (key.matches(vaxis.Key.tab, .{}) or key.matches(vaxis.Key.down, .{}))
+        .next
+    else if (key.matches(vaxis.Key.tab, .{ .shift = true }) or key.matches(vaxis.Key.up, .{}))
+        .prev
+    else
+        return null;
+    return if (pinned) .stay else move;
+}
+
+/// The groups' and members' column: none in a narrow window -- eighteen
+/// columns of group names beside twelve of message is two unreadable
+/// panes instead of one readable one -- and none in one group's window.
+fn sideWidth(width: u16, pinned: bool) u16 {
+    if (pinned) return 0;
+    return if (width >= 60) 24 else 0;
+}
+
 /// What the window says when `--group` names no group.
 fn missingGroupText(alloc: Allocator, want: []const u8) []const u8 {
     return fill(alloc, tr("No group is called \"{0}\"; here are all of them"), &.{want});
@@ -3813,6 +3858,22 @@ test "2015: --group opens at that group, and a name no group has says so and ope
         "No group is called \"nope\"; here are all of them",
         missingGroupText(arena.allocator(), "nope"),
     );
+}
+
+test "2015: one group's window has no list of groups and no key that changes the group" {
+    // The control room's chat page.
+    try testing.expectEqual(@as(u16, 0), sideWidth(120, true));
+    try testing.expectEqual(@as(?GroupMove, .stay), groupMove(.{ .codepoint = vaxis.Key.down }, true));
+    try testing.expectEqual(@as(?GroupMove, .stay), groupMove(.{ .codepoint = vaxis.Key.up }, true));
+    try testing.expectEqual(@as(?GroupMove, .stay), groupMove(.{ .codepoint = vaxis.Key.tab }, true));
+    try testing.expectEqual(@as(?GroupMove, .stay), groupMove(.{ .codepoint = vaxis.Key.tab, .mods = .{ .shift = true } }, true));
+    // The window of every group, as it was.
+    try testing.expectEqual(@as(u16, 24), sideWidth(120, false));
+    try testing.expectEqual(@as(u16, 0), sideWidth(50, false));
+    try testing.expectEqual(@as(?GroupMove, .next), groupMove(.{ .codepoint = vaxis.Key.down }, false));
+    try testing.expectEqual(@as(?GroupMove, .prev), groupMove(.{ .codepoint = vaxis.Key.tab, .mods = .{ .shift = true } }, false));
+    // Any other key is not a group key either way.
+    try testing.expectEqual(@as(?GroupMove, null), groupMove(.{ .codepoint = 'x' }, true));
 }
 
 test "a tab is named once, in one language" {
