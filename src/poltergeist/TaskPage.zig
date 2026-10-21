@@ -52,6 +52,8 @@ pub const Event = struct {
     progress: Tasks.Progress,
     /// The owner as of this line, by name; empty for nobody.
     owner: []const u8,
+    /// For `reowned`: `<cli> <session>` it went by (task 1978).
+    via: []const u8 = "",
 };
 
 pub const Said = struct {
@@ -110,6 +112,7 @@ pub const words = struct {
     pub const op_cancelled = i18n.N_("Cancelled it");
     pub const op_edited = i18n.N_("Changed its title");
     pub const op_compacted = i18n.N_("(What came before was merged)");
+    pub const op_reowned = i18n.N_("Back after a restart, the same session ({1})");
     pub const gap = i18n.N_("{1} min later");
     pub const closed_title = i18n.N_("{1} closed");
     pub const hint_pick = i18n.N_("Pick a task");
@@ -128,6 +131,7 @@ pub const words = struct {
         op_blocked, op_done,      op_queued,   op_closed,      op_cancelled,
         op_edited,  op_compacted, gap,         closed_title,   hint_pick,
         hint_fold,  hint_open,    hint_filter, hint_only_open, hint_with_closed,
+        op_reowned,
     };
 };
 
@@ -288,7 +292,7 @@ fn detail(arena: Allocator, in: In, t: Task) Allocator.Error!Detail {
             try log.append(arena, .{ .entry = "gap", .text = try fill(arena, tr(words.gap), &.{try num(arena, @divFloor(e.at_ms - p, 60_000))}) });
         };
         prev = e.at_ms;
-        const by_owner = e.op == .progressed;
+        const by_owner = e.op == .progressed or e.op == .reowned;
         try log.append(arena, .{
             .entry = "event",
             .at = try clock(arena, e.at_ms, in.offset_ms),
@@ -334,6 +338,7 @@ fn opText(arena: Allocator, tr: Tr, e: Event) Allocator.Error![]const u8 {
         .cancelled => tr(words.op_cancelled),
         .edited => tr(words.op_edited),
         .compacted => tr(words.op_compacted),
+        .reowned => try fill(arena, tr(words.op_reowned), &.{e.via}),
     };
 }
 
@@ -431,6 +436,21 @@ fn baseIn() In {
         .offset_ms = plus8,
         .tr = judge.english,
     };
+}
+
+test "1978: a task taken up after a restart says so, by the one that has it, and by which session" {
+    const events = sample_events ++ [_]Event{
+        .{ .at_ms = noon - 1 * minute, .op = .reowned, .task = 215, .progress = .working, .owner = "api-2", .via = "claude-code 55a835df" },
+    };
+    var in = baseIn();
+    in.open_task = 215;
+    in.events = &events;
+    var got = try rendered(in);
+    defer got.deinit();
+    const log = got.root.object.get("open").?.array.items[1].object.get("detail").?.object.get("log").?.array.items;
+    const back = log[log.len - 1];
+    try testing.expectEqualStrings("api-2", str(back, "who"));
+    try testing.expectEqualStrings("Back after a restart, the same session (claude-code 55a835df)", str(back, "text"));
 }
 
 test "2015: the open tasks in number order, each with its state, owner and how long it has been quiet" {

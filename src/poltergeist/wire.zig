@@ -1593,6 +1593,12 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.write(e.state);
                 try s.objectField("progress");
                 try s.write(e.progress);
+                if (e.reowned) |r| {
+                    try s.objectField("from");
+                    try writeId(&s, r.from);
+                    try s.objectField("via");
+                    try s.write(r.via);
+                }
                 try s.endObject();
             }
             try s.endArray();
@@ -2968,6 +2974,24 @@ test "task_history parses its cursor and its limit, and may omit both" {
     defer bare.deinit();
     try testing.expectEqual(@as(u64, 0), bare.value.task_history.before_seq);
     try testing.expectEqual(@as(u64, 0), bare.value.task_history.limit);
+}
+
+test "1978: a reowned line in a panel history reply says where it came from and by which session" {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const events = [_]rpc.TaskEvent{
+        .{ .seq = 8, .at_ms = 1, .op = "reowned", .task = 93, .title = "t", .owner = 0x3333, .state = "open", .progress = "working", .reowned = .{ .from = 0x2222, .via = "claude-code 55a835df" } },
+        .{ .seq = 9, .at_ms = 2, .op = "progressed", .task = 93, .title = "t", .owner = 0x3333, .state = "open", .progress = "done" },
+    };
+    try writeResponse(&w, .{ .task_events = .{ .events = &events, .more = false } });
+    const out = w.buffered();
+    const second = std.mem.indexOf(u8, out, "\"seq\":9").?;
+    const from = std.mem.indexOf(u8, out, "\"from\":\"0x0000000000002222\"").?;
+    try testing.expect(from < second);
+    const via = std.mem.indexOf(u8, out, "\"via\":\"claude-code 55a835df\"").?;
+    try testing.expect(via < second);
+    // Only on the line that has it.
+    try testing.expect(std.mem.indexOf(u8, out[second..], "\"from\"") == null);
 }
 
 test "a panel history reply carries the event, its cursor and its clock" {

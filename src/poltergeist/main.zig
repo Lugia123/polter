@@ -85,6 +85,7 @@ pub const StatsLog = @import("StatsLog.zig");
 pub const Retention = @import("Retention.zig");
 pub const SessionLog = @import("SessionLog.zig");
 pub const TerminalMeta = @import("TerminalMeta.zig");
+pub const Reclaim = @import("Reclaim.zig");
 pub const Records = @import("Records.zig");
 pub const Sweeper = @import("Sweeper.zig");
 pub const RecordTools = @import("RecordTools.zig");
@@ -158,6 +159,7 @@ test {
     _ = Retention;
     _ = SessionLog;
     _ = TerminalMeta;
+    _ = Reclaim;
     _ = Records;
     _ = Sweeper;
     _ = RecordTools;

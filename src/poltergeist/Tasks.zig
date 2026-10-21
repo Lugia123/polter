@@ -378,6 +378,25 @@ pub fn forget(self: *Tasks, id: Id) void {
     }
 }
 
+/// Every open task `from` has, handed to `to` (task 1978): the terminal
+/// came back after a restart as the same agent session under a new id.
+/// Closed and cancelled ones keep the owner they were finished under.
+/// The ids moved are added to `moved`, in panel order.
+pub fn reown(
+    self: *Tasks,
+    alloc: Allocator,
+    from: Id,
+    to: Id,
+    moved: *std.ArrayListUnmanaged(TaskId),
+) Allocator.Error!void {
+    if (from == nobody or from == to) return;
+    for (self.list.items) |*t| {
+        if (t.owner != from or t.state != .open) continue;
+        try moved.append(alloc, t.id);
+        t.owner = to;
+    }
+}
+
 /// How many of a group's tasks are still open: what deleting the group
 /// would take with it that nobody has finished (task 1659).
 pub fn openInGroup(self: *const Tasks, group: []const u8) usize {
@@ -783,6 +802,35 @@ test "a terminal closing leaves the work behind, without an owner" {
 
     try testing.expectEqual(nobody, t.get(id).?.owner);
     try testing.expectEqual(State.open, t.get(id).?.state);
+}
+
+test "1978: a terminal back as the same session takes its open tasks, and not its finished ones" {
+    var t = testTasks();
+    defer t.deinit();
+
+    const open = try t.create("build", "one", .other);
+    const stuck = try t.create("build", "two", .other);
+    const done = try t.create("build", "three", .other);
+    const theirs = try t.create("build", "four", .other);
+    try t.assign(open, worker_a);
+    try t.assign(stuck, worker_a);
+    try t.setProgress(stuck, worker_a, .blocked);
+    try t.assign(done, worker_a);
+    try t.close(done);
+    try t.assign(theirs, worker_b);
+
+    var moved: std.ArrayListUnmanaged(TaskId) = .empty;
+    defer moved.deinit(testing.allocator);
+    try t.reown(testing.allocator, worker_a, 0x9999, &moved);
+
+    try testing.expectEqualSlices(TaskId, &.{ open, stuck }, moved.items);
+    try testing.expectEqual(@as(Id, 0x9999), t.get(open).?.owner);
+    try testing.expectEqual(@as(Id, 0x9999), t.get(stuck).?.owner);
+    try testing.expectEqual(Progress.blocked, t.get(stuck).?.progress);
+    try testing.expectEqual(worker_a, t.get(done).?.owner);
+    try testing.expectEqual(worker_b, t.get(theirs).?.owner);
+    // And the new terminal is now the one whose word moves it.
+    try t.setProgress(open, 0x9999, .working);
 }
 
 test "a group going takes its tasks with it" {

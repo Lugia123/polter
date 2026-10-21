@@ -90,6 +90,11 @@ pub const Table = enum {
     /// was in, so a pane that has closed keeps its row in that group's grid
     /// (task 2015). Written to `resources/names.json` at the next reading.
     resource_names,
+
+    /// `Reclaim.groups`: the groups each terminal of an earlier run never
+    /// left, for the one that comes back as its session to go back into
+    /// (task 1978). Read at startup, held until claimed.
+    reclaim_groups,
 };
 
 /// An open file or directory handle that points into a place a rename

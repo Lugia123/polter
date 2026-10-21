@@ -5894,6 +5894,10 @@ msgstr "改了标题"
 msgid "(What came before was merged)"
 msgstr "（这之前的经过已合并）"
 
+#: src/poltergeist/TaskPage.zig:115
+msgid "Back after a restart, the same session ({1})"
+msgstr "重启后凭同一会话接回（{1}）"
+
 #: src/poltergeist/TaskPage.zig:113
 msgid "{1} min later"
 msgstr "隔了 {1} 分钟"

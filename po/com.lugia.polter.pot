@@ -6758,6 +6758,10 @@ msgstr ""
 msgid "(What came before was merged)"
 msgstr ""
 
+#: src/poltergeist/TaskPage.zig:115
+msgid "Back after a restart, the same session ({1})"
+msgstr ""
+
 #: src/poltergeist/TaskPage.zig:113
 msgid "{1} min later"
 msgstr ""

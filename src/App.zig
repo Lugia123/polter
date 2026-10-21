@@ -122,6 +122,13 @@ session_log: ?poltergeistpkg.SessionLog = null,
 /// tab, role (task 1511). See `TerminalMeta`.
 terminal_meta: ?poltergeistpkg.TerminalMeta = null,
 
+/// Who each terminal of an earlier run was, by the agent session it ran
+/// last, so that one back as the same session takes up its tasks and its
+/// groups (task 1978). Built once per process, the first time the state
+/// is opened, out of what earlier runs wrote: opened again later it would
+/// hand out what has already been taken up.
+reclaim: ?poltergeistpkg.Reclaim = null,
+
 /// What goes round -- logs, transcripts, screenshots -- kept to its limits
 /// on a thread of its own: at start and every hour (task 1511). Started by
 /// the first terminal, whether or not the chat log is on.
@@ -846,6 +853,7 @@ pub fn deinit(self: *App) void {
     if (self.stats_log) |*l| l.deinit();
     if (self.session_log) |*l| l.deinit();
     if (self.terminal_meta) |*m| m.deinit();
+    if (self.reclaim) |*r| r.deinit();
     if (self.sweeper) |*w| w.deinit();
     if (self.sweep_state_dir) |d| self.alloc.free(d);
     if (self.sweep_shots_dir) |d| self.alloc.free(d);
@@ -2239,6 +2247,7 @@ fn controlActDeleteGroup(ctx: *anyopaque, group: []const u8) anyerror!void {
         .mention_retries => self.mention_retries.dropGroup(group),
         .control_asks => self.control_asks.forget(self.alloc, group),
         .resource_names => self.resource_names.dropGroup(self.alloc, group),
+        .reclaim_groups => if (self.reclaim) |*r| r.dropGroup(group),
     };
 
     if (self.poltergeist_state_dir) |dir| {
@@ -3736,6 +3745,7 @@ fn renderTasks(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]c
                 .task = e.task,
                 .progress = std.meta.stringToEnum(poltergeistpkg.Tasks.Progress, e.progress) orelse .queued,
                 .owner = try self.memberName(arena, r.group, e.owner),
+                .via = e.via,
             });
         }
     }
@@ -5298,15 +5308,18 @@ pub fn ensureChatLog(self: *App, want: bool) void {
     } else |err| {
         log.warn("poltergeist: could not open the terminal notes err={}", .{err});
     }
+    if (self.reclaim == null) self.reclaim = readReclaim(self.alloc, io, state_dir);
 
     // And the groups those tasks are filed under. **Before this, the panel
     // came back and the group it belongs to did not** -- last night's tasks
     // on screen under a group that no longer existed. The shells go back
     // first-class, out of the record directories that are already there.
     //
-    // Names and notes only. Nobody is put back in a group; who was in it is
-    // a judgement about which terminal on screen is which, and that is the
-    // supervisor's to make out of `session_recall`. See `GroupLog.zig`.
+    // Names and notes only. Nobody is put back in a group here; who was in
+    // it is a judgement about which terminal on screen is which, and that is
+    // the supervisor's to make out of `session_recall`. See `GroupLog.zig`.
+    // The one exception is not a judgement: an agent that says the session
+    // an old member ended on goes back in (`reclaimSession`, task 1978).
     if (poltergeistpkg.GroupLog.open(self.alloc, io, state_dir)) |l| {
         self.group_log = l;
         self.restoreChatGroups();
@@ -11935,6 +11948,7 @@ fn chatRename(
         .mention_retries => try self.mention_retries.renameGroup(group, to),
         .control_asks => try self.control_asks.renameGroup(self.alloc, group, to),
         .resource_names => try self.resource_names.renameGroup(self.alloc, group, to),
+        .reclaim_groups => if (self.reclaim) |*r| try r.renameGroup(group, to),
     };
 
     self.reopenStoreHandles();
@@ -12205,6 +12219,7 @@ fn taskHistory(
         .owner = e.owner,
         .state = e.state,
         .progress = e.progress,
+        .reowned = if (e.from != poltergeistpkg.Tasks.nobody) .{ .from = e.from, .via = e.via } else null,
     };
     alloc.free(page.events);
 
@@ -12478,6 +12493,154 @@ test "a group's creator is written down as having joined it, the person at the k
     try testing.expectEqualStrings("supervisor", s.role);
 }
 
+/// What earlier runs wrote about their terminals, as `Reclaim` reads it.
+/// Null when nothing could be read: then nothing is taken up.
+fn readReclaim(alloc: Allocator, io: std.Io, state_dir: []const u8) ?poltergeistpkg.Reclaim {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const notes = poltergeistpkg.TerminalMeta.read(arena.allocator(), io, state_dir) catch return null;
+    const record = poltergeistpkg.SessionLog.read(arena.allocator(), io, state_dir) catch return null;
+    return poltergeistpkg.Reclaim.build(alloc, notes, record.stints) catch null;
+}
+
+/// A terminal said a session that a terminal of an earlier run ended on
+/// (task 1978): it is that agent, back under a new id. Its open tasks are
+/// its again and it is back in the groups it never left, each written
+/// down and said in the group.
+fn reclaimSession(self: *App, id: poltergeistpkg.Bus.Id, cli: []const u8, session_id: []const u8) void {
+    const Reclaim = poltergeistpkg.Reclaim;
+    const r = if (self.reclaim) |*v| v else return;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const live = self.liveTerminals(a) catch return;
+    const got = r.claim(a, id, cli, session_id, live) catch return;
+    if (got.terminals.len == 0) return;
+
+    const moved = self.reownTasks(a, id, got.terminals, cli, session_id) catch return;
+
+    // The same way `group_add` puts a terminal in a group, with nothing
+    // from before: the agent read what it read in its earlier life.
+    var joined: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (got.groups) |group| {
+        if (!self.chat.exists(group) or self.chat.isMember(group, id)) continue;
+        chatAdd(self, group, id, .none) catch |err| {
+            log.info("poltergeist: {x} could not go back in {s} err={}", .{ id, group, err });
+            continue;
+        };
+        joined.append(a, group) catch {};
+    }
+
+    var via_buf: [96]u8 = undefined;
+    const via = poltergeistpkg.TaskLog.viaText(&via_buf, cli, session_id);
+    log.info("poltergeist: {x} is back as {s}: {d} task(s), {d} group(s)", .{ id, via, moved.len, joined.items.len });
+
+    // Said in each group it is now in that this touched.
+    var back: std.ArrayListUnmanaged(Reclaim.Task) = .empty;
+    for (moved) |task| if (self.tasks.get(task)) |t| back.append(a, .{ .id = task, .group = t.group }) catch {};
+    const said = Reclaim.groupsToTell(a, joined.items, back.items) catch return;
+    for (said) |group| {
+        if (!self.chat.isMember(group, id)) continue;
+        var text: std.Io.Writer.Allocating = .init(a);
+        Reclaim.notice(&text.writer, .{
+            .id = id,
+            .via = via,
+            .was = got.terminals,
+            .group = group,
+            .tasks = back.items,
+            .rejoined = Reclaim.contains(joined.items, group),
+        }) catch continue;
+        const now: u64 = @intCast(self.poltergeistWallMs());
+        if (self.chat.post(group, id, text.written(), now)) |posted| {
+            self.logChat(group, posted.seq, id, now, false, text.written());
+        } else |err| {
+            log.warn("poltergeist: could not say in {s} that {x} is back err={}", .{ group, id, err });
+        }
+    }
+    self.tellTerminalsAboutMessages();
+    self.controlRoomTouch();
+}
+
+/// Every open task the old terminals had, handed to `id` and written down
+/// as `reowned` with the session it went by. The ids moved, in `alloc`.
+fn reownTasks(
+    self: *App,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+    was: []const poltergeistpkg.Bus.Id,
+    cli: []const u8,
+    session_id: []const u8,
+) Allocator.Error![]const poltergeistpkg.Tasks.TaskId {
+    const at = self.taskWallMs();
+    var moved: std.ArrayListUnmanaged(poltergeistpkg.Tasks.TaskId) = .empty;
+    for (was) |old| {
+        const before = moved.items.len;
+        try self.tasks.reown(alloc, old, id, &moved);
+        for (moved.items[before..]) |task| {
+            // A fresh stretch, the same as a task handed over.
+            _ = self.poltergeist_nudged.remove(task);
+            const t = self.tasks.get(task) orelse continue;
+            if (self.task_log) |*l| l.appendReowned(at, t, .{ .from = old, .cli = cli, .session_id = session_id });
+        }
+    }
+    return moved.items;
+}
+
+test "1978: tasks taken up are written as reowned, with the session they went by, and stay taken up after a restart" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const P = poltergeistpkg;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-reown-{x}", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    var app: App = undefined;
+    app.alloc = alloc;
+    app.tasks = .init(alloc, .{});
+    defer app.tasks.deinit();
+    app.poltergeist_nudged = .empty;
+    defer app.poltergeist_nudged.deinit(alloc);
+    app.task_log = try P.TaskLog.open(alloc, io, dir);
+    defer app.task_log.?.deinit();
+
+    const mine = try app.tasks.create("build", "mine", .feature);
+    try app.tasks.assign(mine, 0xa);
+    const done = try app.tasks.create("build", "done", .feature);
+    try app.tasks.assign(done, 0xa);
+    try app.tasks.close(done);
+    try app.poltergeist_nudged.put(alloc, mine, {});
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const moved = try app.reownTasks(arena.allocator(), 0x100, &.{0xa}, "claude-code", "55a835df-016b-41d7-829e-f4c3c2cec25d");
+    try testing.expectEqualSlices(P.Tasks.TaskId, &.{mine}, moved);
+    try testing.expect(!app.poltergeist_nudged.contains(mine));
+
+    const page = try app.task_log.?.history(alloc, "build", 0, 50);
+    defer P.TaskLog.freePage(alloc, page);
+    const last = page.events[page.events.len - 1];
+    try testing.expectEqualStrings("reowned", last.op);
+    try testing.expectEqual(mine, last.task);
+    try testing.expectEqual(@as(P.Tasks.Id, 0x100), last.owner);
+    try testing.expectEqual(@as(P.Tasks.Id, 0xa), last.from);
+    try testing.expectEqualStrings("claude-code 55a835df", last.via);
+
+    // The next run replays the record: the task is the new terminal's.
+    var again: P.Tasks = .init(alloc, .{});
+    defer again.deinit();
+    app.task_log.?.restore(&again);
+    try testing.expectEqual(@as(P.Tasks.Id, 0x100), again.get(mine).?.owner);
+}
+
 /// An agent said which session it is: beside its transcript, and in every
 /// group it is in, when that is news.
 fn noteAgentSession(self: *App, id: poltergeistpkg.Bus.Id, ev: poltergeistpkg.agent_event.Event) void {
@@ -12486,6 +12649,7 @@ fn noteAgentSession(self: *App, id: poltergeistpkg.Bus.Id, ev: poltergeistpkg.ag
     const path = ev.transcript_path orelse "";
     const at = self.poltergeistWallMs();
     if (!m.agent(id, at, ev.cli, sid, path)) return;
+    self.reclaimSession(id, ev.cli, sid);
     const l = if (self.session_log) |*v| v else return;
     var it = self.chat.groups.iterator();
     while (it.next()) |kv| {

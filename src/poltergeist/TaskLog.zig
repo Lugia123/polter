@@ -77,7 +77,24 @@ pub const Op = enum {
     /// Written by `compact`: the task as it stands, standing in for the
     /// days of its history that were cleared (task 1511).
     compacted,
+    /// The owner came back after a restart as the same agent session in a
+    /// terminal with a new id, and the task went with it (task 1978). The
+    /// line says which terminal it came from and which session it went by:
+    /// see `Reowned`.
+    reowned,
 };
+
+/// What a `reowned` line adds to the task: who had it, and the session
+/// that says the new terminal is the same agent.
+pub const Reowned = struct {
+    from: Tasks.Id,
+    cli: []const u8,
+    session_id: []const u8,
+};
+
+/// How much of a session id a line keeps. Enough to find the session by,
+/// not the whole string: the whole one is in the terminal's notes.
+pub const session_prefix_len = 8;
 
 /// Open the record under a state directory, making it if it is not there.
 pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error!TaskLog {
@@ -125,7 +142,7 @@ pub fn compact(self: *TaskLog, tasks: *const Tasks, at_ms: i64) struct { files: 
         var buf: std.Io.Writer.Allocating = .init(self.alloc);
         defer buf.deinit();
         var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
-        render(&s, last.get(t.id) orelse at_ms, .compacted, t) catch return .{ .files = 0, .bytes = 0 };
+        render(&s, last.get(t.id) orelse at_ms, .compacted, t, null) catch return .{ .files = 0, .bytes = 0 };
         buf.writer.writeByte('\n') catch return .{ .files = 0, .bytes = 0 };
         self.tree.write(t.group, at_ms, buf.written());
     }
@@ -214,11 +231,21 @@ pub fn deinit(self: *TaskLog) void {
 /// which the record explicitly tolerates, see `daylog` -- still says what
 /// the task is called and who has it.
 pub fn append(self: *TaskLog, at_ms: i64, op: Op, task: Tasks.Task) void {
+    self.appendLine(at_ms, op, task, null);
+}
+
+/// A `reowned` line: the task, already under its new owner, and where it
+/// came from.
+pub fn appendReowned(self: *TaskLog, at_ms: i64, task: Tasks.Task, r: Reowned) void {
+    self.appendLine(at_ms, .reowned, task, r);
+}
+
+fn appendLine(self: *TaskLog, at_ms: i64, op: Op, task: Tasks.Task, r: ?Reowned) void {
     var buf: std.Io.Writer.Allocating = .init(self.alloc);
     defer buf.deinit();
 
     var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
-    render(&s, at_ms, op, task) catch |err| {
+    render(&s, at_ms, op, task, r) catch |err| {
         log.warn("task log: could not render err={}", .{err});
         return;
     };
@@ -232,6 +259,7 @@ fn render(
     at_ms: i64,
     op: Op,
     task: Tasks.Task,
+    reowned: ?Reowned,
 ) std.Io.Writer.Error!void {
     try s.beginObject();
     try s.objectField("at_ms");
@@ -261,7 +289,21 @@ fn render(
     // that is only on some lines is a field the replay has to guess at.
     try s.objectField("kind");
     try s.write(@tagName(task.kind));
+
+    if (reowned) |r| {
+        try s.objectField("from");
+        try s.write(std.fmt.bufPrint(&idbuf, "0x{x:0>16}", .{r.from}) catch unreachable);
+        var via: [96]u8 = undefined;
+        try s.objectField("via");
+        try s.write(viaText(&via, r.cli, r.session_id));
+    }
     try s.endObject();
+}
+
+/// `<cli> <first eight of the session id>`, as a `reowned` line says it.
+pub fn viaText(buf: []u8, cli: []const u8, session_id: []const u8) []const u8 {
+    const sid = session_id[0..@min(session_id.len, session_prefix_len)];
+    return std.fmt.bufPrint(buf, "{s} {s}", .{ cli, sid }) catch sid;
 }
 
 /// One line of the record, read back.
@@ -290,6 +332,10 @@ pub const Event = struct {
     owner: Tasks.Id,
     state: []const u8,
     progress: []const u8,
+    /// For `reowned`: the terminal that had it, and `<cli> <session>` the
+    /// line went by. `nobody` and "" on every other line.
+    from: Tasks.Id = Tasks.nobody,
+    via: []const u8 = "",
 };
 
 pub const Page = struct {
@@ -401,6 +447,7 @@ fn freeEvent(alloc: Allocator, e: Event) void {
     alloc.free(e.title);
     alloc.free(e.state);
     alloc.free(e.progress);
+    alloc.free(e.via);
 }
 
 /// One line into an `Event`, or null for a line that is not one.
@@ -448,6 +495,13 @@ fn parseEvent(alloc: Allocator, line: []const u8) Allocator.Error!?Event {
     const state = try alloc.dupe(u8, str(obj, "state") orelse "");
     errdefer alloc.free(state);
     const progress = try alloc.dupe(u8, str(obj, "progress") orelse "");
+    errdefer alloc.free(progress);
+    const via = try alloc.dupe(u8, str(obj, "via") orelse "");
+
+    const from: Tasks.Id = if (str(obj, "from")) |t|
+        std.fmt.parseUnsigned(Tasks.Id, t, 0) catch Tasks.nobody
+    else
+        Tasks.nobody;
 
     return .{
         .seq = 0,
@@ -458,6 +512,8 @@ fn parseEvent(alloc: Allocator, line: []const u8) Allocator.Error!?Event {
         .owner = owner,
         .state = state,
         .progress = progress,
+        .from = from,
+        .via = via,
     };
 }
 

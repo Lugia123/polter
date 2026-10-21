@@ -5402,6 +5402,9 @@ pub const TaskEvent = struct {
     owner: Bus.Id,
     state: []const u8,
     progress: []const u8,
+    /// For `reowned` (task 1978): the terminal that had it and the session
+    /// it went by, as `<cli> <first 8 of the session id>`. Null otherwise.
+    reowned: ?struct { from: Bus.Id, via: []const u8 } = null,
 };
 
 pub const TaskPage = struct {

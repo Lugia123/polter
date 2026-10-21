@@ -56,6 +56,7 @@ GROUP_NAME_FILES = {
     "src/poltergeist/GroupLog.zig": "group.json inside chat/<group>/ (group_stores.Root.chat)",
     "src/poltergeist/GroupRename.zig": "the rename itself",
     "src/poltergeist/MentionRetry.zig": "mentions waiting to be typed again, each naming its group (group_stores.Table.mention_retries)",
+    "src/poltergeist/Reclaim.zig": "the groups each terminal of an earlier run never left, as values (group_stores.Table.reclaim_groups): renamed with their group, dropped on delete, held in memory until claimed (task 1978)",
     "src/poltergeist/ResourceNames.zig": "the group each pane in the resource history was in, as a value (group_stores.Table.resource_names): renamed with its group, dropped on delete, written to resources/names.json at the next reading",
     "src/poltergeist/ResourcePage.zig": "the performance page's answer: says the group's name back to the host; stores nothing",
     "src/poltergeist/TaskPage.zig": "the task page's answer: says the group's name back to the host; stores nothing",
@@ -110,6 +111,8 @@ MAP_FIELDS = {
     ("src/poltergeist/TerminalMeta.zig", "last"): "keyed by terminal id",
     ("src/poltergeist/Bus.zig", "pending_limits"): "keyed by terminal id: the supervisor whose launch asked for the lines, taken by its next worker (task 1993)",
     ("src/poltergeist/ResourceHistory.zig", "slots"): "keyed by terminal id: each pane's open half hour (task 1993)",
+    ("src/poltergeist/Reclaim.zig", "by_session"): "keyed by CLI and agent session id",
+    ("src/poltergeist/Reclaim.zig", "groups"): "keyed by terminal id; group names are values in it: group_stores.Table.reclaim_groups",
     ("src/poltergeist/ResourceNames.zig", "entries"): "keyed by terminal id; the group's name is a value in it: group_stores.Table.resource_names",
     ("src/poltergeist/ResourceHistory.zig", "gone"): "keyed by terminal id: panes closed since a reading last named them (task 2015)",
 }
