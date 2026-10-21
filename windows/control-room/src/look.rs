@@ -648,6 +648,170 @@ pub mod highlight {
     pub const TAB_EDGE: f64 = 1.5;
 }
 
+/// One terminal's card on the performance page (task 2015): head, body, foot, one grid for every card and every state, so nothing moves with what is in it.
+pub mod perf_card {
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const WIDTH: f64 = 242.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const HEIGHT: f64 = 196.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const RADIUS: f64 = 6.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const PAD_X: f64 = 14.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const PAD_Y: f64 = 12.0;
+    /// The name, the role, the badge.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const HEAD: f64 = 20.0;
+    /// Between head and body, and body and foot.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const GAP: f64 = 8.0;
+    /// The dial and the four rows beside it.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const BODY: f64 = 116.0;
+    /// CPU and processes at the left, the time it has run at the right.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const FOOT: f64 = 20.0;
+    /// The dial's square.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const DIAL: f64 = 104.0;
+    /// From the dial to the rows: the rows' left edge is the card's one alignment line.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const DIAL_GAP: f64 = 14.0;
+    /// The rows' width.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const COLUMN: f64 = 96.0;
+    /// Use: the value at `font_value`, then the rest.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const ROW1: f64 = 24.0;
+    /// Trend.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const ROW2: f64 = 20.0;
+    /// State, in six to eight characters.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const ROW3: f64 = 20.0;
+    /// The curve.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const ROW4: f64 = 28.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const ROW_GAP: f64 = 8.0;
+    /// The arc's width.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const DIAL_STROKE: f64 = 7.0;
+    /// How far round the arc goes; the gap is at the bottom.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const DIAL_OPEN_DEGREES: f64 = 240.0;
+    /// From the dial's top to the words in the arc's gap.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const DIAL_CAP_TOP: f64 = 86.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const DIAL_CAP_HEIGHT: f64 = 20.0;
+    /// L1: the number in the dial.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const FONT_BIG: f64 = 24.0;
+    /// L2: the value in row 1. Everything else is L3, `font.body`.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const FONT_VALUE: f64 = 15.0;
+    /// The level badge at the head's right end.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const BADGE_HEIGHT: f64 = 20.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const BADGE_RADIUS: f64 = 4.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const BADGE_PAD_X: f64 = 6.0;
+    /// Between two cards, across and down. As many to a row as fit the page's width; the width never stretches.
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub const BETWEEN: f64 = 16.0;
+}
+
+/// The history grid at the top of the performance page: one row per terminal, a cell per half hour (24 hours) or per four hours (7 days).
+pub mod perf_grid {
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const CELL: f64 = 13.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const CELL_GAP: f64 = 3.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const CELL_RADIUS: f64 = 3.0;
+    /// 7 days: six cells to a day, a group.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const DAY_GROUP: f64 = 6.0;
+    /// 7 days: what a group adds to `cell_gap` before the next. 24 hours is not grouped.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const GROUP_GAP: f64 = 7.0;
+    /// The terminal's name before its row.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const LABEL_WIDTH: f64 = 132.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const LABEL_GAP: f64 = 12.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const ROW_GAP: f64 = 4.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const ROW_HEIGHT: f64 = 18.0;
+    /// The title, the subtitle and the legend.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const HEAD_HEIGHT: f64 = 20.0;
+    /// From the head to the first row.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const ROWS_TOP: f64 = 8.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const LEGEND_SWATCH: f64 = 11.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const LEGEND_GAP: f64 = 4.0;
+    /// From the last row to the times under it.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const AXIS_GAP: f64 = 6.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const AXIS_HEIGHT: f64 = 18.0;
+    /// A cell's hover, drawn to the cell's left.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const TIP_RADIUS: f64 = 6.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const TIP_PAD_Y: f64 = 10.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const TIP_PAD_X: f64 = 12.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const TIP_LINE_HEIGHT: f64 = 20.0;
+    /// From the hover's right edge to the cell.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const TIP_OFFSET: f64 = 8.0;
+}
+
+/// The performance page as a whole (task 2015).
+pub mod perf_page {
+    /// Round the page, inside the right column.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const PADDING: f64 = 12.0;
+    /// Inside the box with the machine line and the grid, top and bottom.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const SUMMARY_PAD_Y: f64 = 12.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const SUMMARY_PAD_X: f64 = 16.0;
+    /// In that box, between the machine line and the grid.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const SUMMARY_LAYER_GAP: f64 = 10.0;
+    /// The machine line: memory, swap, pressure, the group's count, the 24-hour/7-day switch.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const MACHINE_HEIGHT: f64 = 32.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const MACHINE_ITEM_GAP: f64 = 20.0;
+    /// Between "24 hours" and "7 days".
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const SEG_GAP: f64 = 16.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const SEG_HEIGHT: f64 = 28.0;
+    /// The line under the one chosen.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const SEG_RULE: f64 = 2.0;
+    /// From the box to the line over the cards.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const CARDS_TITLE_TOP: f64 = 12.0;
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const CARDS_TITLE_HEIGHT: f64 = 20.0;
+    /// From that line to the first row of cards.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub const CARDS_TOP: f64 = 8.0;
+}
+
 /// The system symbols the glyphs are. Working is the system's progress spinner, which has no symbol name. `held` is the supervisor's ruling (the design says only `a pause glyph`).
 pub mod symbol {
     pub const WAITING: &str = "bubble.left.fill";
@@ -872,6 +1036,92 @@ pub struct Theme {
     /// The highlight card's hairline, inside its accent ring.
     /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
     pub highlight_card_edge: Rgba,
+    /// Performance page, a level (`tone`) the core hands over: no reading -- an empty cell of the grid. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_none: Rgba,
+    /// A grid cell that stayed under every line. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_ok: Rgba,
+    /// The dial of a card under every line. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_ok_arc: Rgba,
+    /// The first warn line: the arc, the grid cell. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_warn1: Rgba,
+    /// Words at that level: rows 2 and 3, the badge. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_warn1_text: Rgba,
+    /// The card's edge and the badge's. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_warn1_edge: Rgba,
+    /// The badge's ground. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_warn1_badge: Rgba,
+    /// The second warn line. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_warn2: Rgba,
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_warn2_text: Rgba,
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_warn2_edge: Rgba,
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_warn2_badge: Rgba,
+    /// The design draws two warn lines; a third and a fourth are drawn as the second. Here, not in a host, so no host decides it.
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_warn3: Rgba,
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_warn3_text: Rgba,
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_warn3_edge: Rgba,
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_warn3_badge: Rgba,
+    /// As `level_warn3`.
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_warn4: Rgba,
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_warn4_text: Rgba,
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_warn4_edge: Rgba,
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_warn4_badge: Rgba,
+    /// The kill line counted on a terminal that may not be stopped: drawn as the second warn line, never the red of a stop.
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_withheld: Rgba,
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_withheld_text: Rgba,
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_withheld_edge: Rgba,
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub level_withheld_badge: Rgba,
+    /// Stopped at its kill line. Light: `problem`'s.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_killed: Rgba,
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_killed_text: Rgba,
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_killed_edge: Rgba,
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub level_killed_badge: Rgba,
+    /// The dial's track under the arc. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub perf_dial_track: Rgba,
+    /// The last minutes' curve in row 4. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub perf_curve: Rgba,
+    /// Under the curve.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub perf_curve_fill: Rgba,
+    /// A card's ground, and the box with the grid. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub perf_card: Rgba,
+    /// Their hairline.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub perf_card_edge: Rgba,
+    /// A grid cell's hover, to its left. Light: undesigned.
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub perf_tip: Rgba,
+    /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
+    pub perf_tip_edge: Rgba,
     /// The status word on this surface: `problem_text` when light, `problem_text` when dark.
     /// Source: design v17, CHANGES.md.
     pub problem_text_on_row: Rgba,
@@ -974,6 +1224,40 @@ pub const LIGHT: Theme = Theme {
     highlight_scrim: Rgba { r: 30, g: 32, b: 36, a: 0.46 },
     highlight_card: Rgba { r: 255, g: 255, b: 255, a: 0.96 },
     highlight_card_edge: Rgba { r: 0, g: 0, b: 0, a: 0.12 },
+    level_none: Rgba { r: 0, g: 0, b: 0, a: 0.05 },
+    level_ok: Rgba { r: 0, g: 0, b: 0, a: 0.14 },
+    level_ok_arc: Rgba { r: 84, g: 85, b: 87, a: 1.0 },
+    level_warn1: Rgba { r: 201, g: 154, b: 28, a: 1.0 },
+    level_warn1_text: Rgba { r: 138, g: 101, b: 0, a: 1.0 },
+    level_warn1_edge: Rgba { r: 201, g: 154, b: 28, a: 0.5 },
+    level_warn1_badge: Rgba { r: 201, g: 154, b: 28, a: 0.13 },
+    level_warn2: Rgba { r: 217, g: 104, b: 42, a: 1.0 },
+    level_warn2_text: Rgba { r: 169, g: 72, b: 15, a: 1.0 },
+    level_warn2_edge: Rgba { r: 217, g: 104, b: 42, a: 0.55 },
+    level_warn2_badge: Rgba { r: 217, g: 104, b: 42, a: 0.14 },
+    level_warn3: Rgba { r: 217, g: 104, b: 42, a: 1.0 },
+    level_warn3_text: Rgba { r: 169, g: 72, b: 15, a: 1.0 },
+    level_warn3_edge: Rgba { r: 217, g: 104, b: 42, a: 0.55 },
+    level_warn3_badge: Rgba { r: 217, g: 104, b: 42, a: 0.14 },
+    level_warn4: Rgba { r: 217, g: 104, b: 42, a: 1.0 },
+    level_warn4_text: Rgba { r: 169, g: 72, b: 15, a: 1.0 },
+    level_warn4_edge: Rgba { r: 217, g: 104, b: 42, a: 0.55 },
+    level_warn4_badge: Rgba { r: 217, g: 104, b: 42, a: 0.14 },
+    level_withheld: Rgba { r: 217, g: 104, b: 42, a: 1.0 },
+    level_withheld_text: Rgba { r: 169, g: 72, b: 15, a: 1.0 },
+    level_withheld_edge: Rgba { r: 217, g: 104, b: 42, a: 0.55 },
+    level_withheld_badge: Rgba { r: 217, g: 104, b: 42, a: 0.14 },
+    level_killed: Rgba { r: 219, g: 28, b: 34, a: 1.0 },
+    level_killed_text: Rgba { r: 192, g: 21, b: 27, a: 1.0 },
+    level_killed_edge: Rgba { r: 219, g: 28, b: 34, a: 0.55 },
+    level_killed_badge: Rgba { r: 219, g: 28, b: 34, a: 0.15 },
+    perf_dial_track: Rgba { r: 0, g: 0, b: 0, a: 0.08 },
+    perf_curve: Rgba { r: 84, g: 85, b: 87, a: 1.0 },
+    perf_curve_fill: Rgba { r: 0, g: 0, b: 0, a: 0.06 },
+    perf_card: Rgba { r: 0, g: 0, b: 0, a: 0.03 },
+    perf_card_edge: Rgba { r: 0, g: 0, b: 0, a: 0.1 },
+    perf_tip: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
+    perf_tip_edge: Rgba { r: 0, g: 0, b: 0, a: 0.14 },
     problem_text_on_row: Rgba { r: 172, g: 3, b: 17, a: 1.0 },
     problem_text_on_row_selected: Rgba { r: 172, g: 3, b: 17, a: 1.0 },
     problem_text_on_window_tab_selected: Rgba { r: 172, g: 3, b: 17, a: 1.0 },
@@ -1064,6 +1348,40 @@ pub const DARK: Theme = Theme {
     highlight_scrim: Rgba { r: 0, g: 0, b: 0, a: 0.58 },
     highlight_card: Rgba { r: 40, g: 44, b: 52, a: 0.97 },
     highlight_card_edge: Rgba { r: 255, g: 255, b: 255, a: 0.14 },
+    level_none: Rgba { r: 255, g: 255, b: 255, a: 0.035 },
+    level_ok: Rgba { r: 255, g: 255, b: 255, a: 0.14 },
+    level_ok_arc: Rgba { r: 222, g: 225, b: 232, a: 1.0 },
+    level_warn1: Rgba { r: 232, g: 193, b: 90, a: 1.0 },
+    level_warn1_text: Rgba { r: 237, g: 203, b: 110, a: 1.0 },
+    level_warn1_edge: Rgba { r: 232, g: 193, b: 90, a: 0.5 },
+    level_warn1_badge: Rgba { r: 232, g: 193, b: 90, a: 0.13 },
+    level_warn2: Rgba { r: 240, g: 138, b: 75, a: 1.0 },
+    level_warn2_text: Rgba { r: 245, g: 162, b: 115, a: 1.0 },
+    level_warn2_edge: Rgba { r: 240, g: 138, b: 75, a: 0.55 },
+    level_warn2_badge: Rgba { r: 240, g: 138, b: 75, a: 0.14 },
+    level_warn3: Rgba { r: 240, g: 138, b: 75, a: 1.0 },
+    level_warn3_text: Rgba { r: 245, g: 162, b: 115, a: 1.0 },
+    level_warn3_edge: Rgba { r: 240, g: 138, b: 75, a: 0.55 },
+    level_warn3_badge: Rgba { r: 240, g: 138, b: 75, a: 0.14 },
+    level_warn4: Rgba { r: 240, g: 138, b: 75, a: 1.0 },
+    level_warn4_text: Rgba { r: 245, g: 162, b: 115, a: 1.0 },
+    level_warn4_edge: Rgba { r: 240, g: 138, b: 75, a: 0.55 },
+    level_warn4_badge: Rgba { r: 240, g: 138, b: 75, a: 0.14 },
+    level_withheld: Rgba { r: 240, g: 138, b: 75, a: 1.0 },
+    level_withheld_text: Rgba { r: 245, g: 162, b: 115, a: 1.0 },
+    level_withheld_edge: Rgba { r: 240, g: 138, b: 75, a: 0.55 },
+    level_withheld_badge: Rgba { r: 240, g: 138, b: 75, a: 0.14 },
+    level_killed: Rgba { r: 252, g: 79, b: 78, a: 1.0 },
+    level_killed_text: Rgba { r: 255, g: 123, b: 133, a: 1.0 },
+    level_killed_edge: Rgba { r: 252, g: 79, b: 78, a: 0.55 },
+    level_killed_badge: Rgba { r: 252, g: 79, b: 78, a: 0.15 },
+    perf_dial_track: Rgba { r: 255, g: 255, b: 255, a: 0.08 },
+    perf_curve: Rgba { r: 180, g: 184, b: 187, a: 1.0 },
+    perf_curve_fill: Rgba { r: 255, g: 255, b: 255, a: 0.06 },
+    perf_card: Rgba { r: 255, g: 255, b: 255, a: 0.04 },
+    perf_card_edge: Rgba { r: 255, g: 255, b: 255, a: 0.1 },
+    perf_tip: Rgba { r: 44, g: 49, b: 56, a: 1.0 },
+    perf_tip_edge: Rgba { r: 255, g: 255, b: 255, a: 0.14 },
     problem_text_on_row: Rgba { r: 252, g: 79, b: 78, a: 1.0 },
     problem_text_on_row_selected: Rgba { r: 239, g: 242, b: 246, a: 1.0 },
     problem_text_on_window_tab_selected: Rgba { r: 239, g: 242, b: 246, a: 1.0 },
