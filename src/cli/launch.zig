@@ -284,6 +284,22 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
     for (launch.notes) |n| try err_out.print("  {s}\n", .{n});
     try err_out.flush();
 
+    // The terminal's title says what it is wearing (task 1970). Until now it
+    // was the line typed to get here -- shell integration's preexec titles
+    // a terminal with the command being run -- so a CLI that never titles
+    // itself (Antigravity) kept `'/…/Polter.app/…' +launch …`, full path
+    // and all, on its window, tab and pane. A CLI that titles itself still
+    // replaces this, and a name somebody chose outranks both
+    // (`apprt/title.zig`).
+    title: {
+        var out_file: std.Io.File = .stdout();
+        if (!(out_file.isTty(io) catch false)) break :title;
+        var title_buf: [512]u8 = undefined;
+        var out_writer = out_file.writerStreaming(io, &title_buf);
+        writeTitle(&out_writer.interface, p.name, adapter.label) catch break :title;
+        out_writer.interface.flush() catch {};
+    }
+
     for (launch.env) |kv| try env.put(kv[0], kv[1]);
 
     // The adapter put hooks in the CLI's settings: tell this terminal's
@@ -440,6 +456,35 @@ fn expectHooks(
     hook.deliver(io, socket_path, token, ev) catch |err| {
         std.log.scoped(.launch).warn("could not say hooks are expected err={t}", .{err});
     };
+}
+
+/// The OSC 2 that titles a launched terminal `<role> · <CLI>` (task 1970).
+/// Control characters in either name are left out: one would end the
+/// sequence early, or start another.
+fn writeTitle(w: *std.Io.Writer, role: []const u8, cli: []const u8) std.Io.Writer.Error!void {
+    try w.writeAll("\x1b]2;");
+    try writePrintable(w, role);
+    try w.writeAll(" · ");
+    try writePrintable(w, cli);
+    try w.writeAll("\x07");
+}
+
+fn writePrintable(w: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void {
+    for (text) |c| if (c >= 0x20 and c != 0x7f) try w.writeByte(c);
+}
+
+test "1970: a launched terminal is titled with its role and CLI, not the line that started it" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeTitle(&out.writer, "Polter Tester", "Antigravity CLI");
+    try std.testing.expectEqualStrings("\x1b]2;Polter Tester · Antigravity CLI\x07", out.written());
+
+    // A name with a BEL or an ESC in it cannot end the title or start a
+    // sequence of its own.
+    var odd: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer odd.deinit();
+    try writeTitle(&odd.writer, "a\x07b\x1b]0;c", "x\ny");
+    try std.testing.expectEqualStrings("\x1b]2;ab]0;c · xy\x07", odd.written());
 }
 
 /// Tell this terminal's Polter which group the agent about to start is for
