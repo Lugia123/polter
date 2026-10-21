@@ -91,12 +91,21 @@ pub fn slotStart(at_ms: i64, offset_ms: i64) i64 {
 /// they stand (`File.keepOpen`): an app that stops is seldom told so.
 slots: std.AutoHashMapUnmanaged(u64, Slot) = .empty,
 
+/// Panes closed since a reading last named them (task 2015). The reading
+/// on its way when a pane closes still has it -- read as nothing, its
+/// processes gone -- and would open its slot again, to be written a second
+/// time with nothing in it when the next reading misses it (seen on the
+/// machine, #2026). A closed pane's readings are dropped until one does
+/// not name it.
+gone: std.AutoHashMapUnmanaged(u64, void) = .empty,
+
 /// What to write: whatever a reading closed.
 pub const Closed = struct { pane: u64, slot: Slot };
 
 /// A reading of `pane` at `at_ms`. Returns the slot it closed, if the
 /// reading is in a new one.
 pub fn note(self: *ResourceHistory, alloc: Allocator, pane: u64, at_ms: i64, offset_ms: i64, level: Level, mem: u64, procs: u32) Allocator.Error!?Closed {
+    if (self.gone.contains(pane)) return null;
     const start = slotStart(at_ms, offset_ms);
     const e = try self.slots.getOrPut(alloc, pane);
     if (!e.found_existing) {
@@ -127,8 +136,29 @@ pub fn take(self: *ResourceHistory, pane: u64) ?Closed {
     return .{ .pane = kv.key, .slot = kv.value };
 }
 
+/// `pane` closed: its slot, to be written now, and no slot for it again.
+pub fn close(self: *ResourceHistory, alloc: Allocator, pane: u64) ?Closed {
+    // Not remembered: the stray reading may write the empty line, which
+    // the reader takes at its highest anyway (`ResourceGrid`).
+    self.gone.put(alloc, pane, {}) catch {};
+    return self.take(pane);
+}
+
+/// A reading came that names only `read`: the closed panes it no longer
+/// names are done with.
+pub fn settle(self: *ResourceHistory, read: []const u64) void {
+    var it = self.gone.keyIterator();
+    while (it.next()) |pane| {
+        if (std.mem.indexOfScalar(u64, read, pane.*) != null) continue;
+        // Removing under the iterator is safe for this map: it only marks
+        // the slot, and the iterator skips marked slots.
+        self.gone.removeByPtr(pane);
+    }
+}
+
 pub fn deinit(self: *ResourceHistory, alloc: Allocator) void {
     self.slots.deinit(alloc);
+    self.gone.deinit(alloc);
 }
 
 // ------------------------------------------------------------------ lines
@@ -566,4 +596,26 @@ test "1993: a start puts the last run's open half hours into their days, and ski
     const written = try rd.readFileAlloc(io, today_name, testing.allocator, .limited(4096));
     defer testing.allocator.free(written);
     try testing.expectEqualStrings(lines_buf[0 .. good.len + second.len], written);
+}
+
+test "2015: a closed pane's half hour is written once, the reading still on its way dropped" {
+    var h: ResourceHistory = .{};
+    defer h.deinit(testing.allocator);
+    const at: i64 = 1792584000000;
+    _ = try h.note(testing.allocator, 0x54ce, at, 0, .ok, 2212248, 1);
+    const closed = h.close(testing.allocator, 0x54ce).?;
+    try testing.expectEqual(@as(u64, 2212248), closed.slot.mem);
+
+    // The reading taken before the close names it, its processes gone.
+    h.settle(&.{ 0x54ce, 0x1 });
+    try testing.expectEqual(@as(?Closed, null), try h.note(testing.allocator, 0x54ce, at + 2000, 0, .ok, 0, 0));
+    const reopened = h.take(0x54ce);
+    try testing.expectEqual(@as(?Closed, null), reopened);
+
+    // The next reading does not name it: done with. Were the id ever
+    // given to a new pane, that pane would be read.
+    h.settle(&.{0x1});
+    try testing.expectEqual(@as(usize, 0), h.gone.count());
+    _ = try h.note(testing.allocator, 0x54ce, at + 4000, 0, .ok, 7, 1);
+    try testing.expect(h.take(0x54ce) != null);
 }

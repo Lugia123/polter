@@ -1282,6 +1282,12 @@ fn recordResourceHistory(self: *App, usage: []const poltergeistpkg.ledger.Usage)
         while (it.next()) |id| if (!self.resource_usage.contains(id.*)) gone.append(self.alloc, id.*) catch break;
         for (gone.items) |id| if (self.resource_history.take(id)) |c| self.writeHistorySlot(c);
     }
+    {
+        var read: std.ArrayListUnmanaged(u64) = .empty;
+        defer read.deinit(self.alloc);
+        for (usage) |u| read.append(self.alloc, u.id) catch break;
+        self.resource_history.settle(read.items);
+    }
     for (usage) |u| {
         const level: History.Level = if (self.resource_judges.getPtr(u.id)) |j| History.levelOf(&j.state) else .ok;
         const closed = self.resource_history.note(self.alloc, u.id, wall, offset, level, u.mem, u.procs) catch continue;
@@ -1304,7 +1310,7 @@ fn keepHistoryOpen(self: *App) void {
 /// A pane closed: its half hour written now, not when the sampler next
 /// misses it.
 fn historyPaneGone(self: *App, id: poltergeistpkg.Bus.Id) void {
-    const c = self.resource_history.take(id) orelse return;
+    const c = self.resource_history.close(self.alloc, id) orelse return;
     self.writeHistorySlot(c);
     self.keepHistoryOpen();
     log.info("resources: 0x{x} closed, its half hour written", .{id});
