@@ -228,6 +228,19 @@ resource_recent: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, poltergeistpkg.
 /// The readings' count, each point's `seq`: a page asks for what came
 /// after the last it has.
 resource_seq: u64 = 0,
+/// Each pane's last stop, for its card and its group's dot (task 2015).
+resource_killed: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, poltergeistpkg.ResourcePage.Killed) = .empty,
+/// Each pane's level at the last reading: a change of one is a change of
+/// the control room's snapshot (`ControlRoom.Input.resource_levels`).
+resource_tones: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, poltergeistpkg.ResourcePage.Tone) = .empty,
+/// What each pane in the history is called, and in which group
+/// (`ResourceNames`, `<state>/resources/names.json`).
+resource_names: poltergeistpkg.ResourceNames = .{},
+/// The last answer `controlPage` gave and the request it was for, held for
+/// a host's second call when the first could not take it.
+page_req: std.ArrayListUnmanaged(u8) = .empty,
+page_out: std.ArrayListUnmanaged(u8) = .empty,
+page_held: bool = false,
 /// When the readings were last written to the log (`resources_log_every_ms`).
 resources_logged_ms: ?u64 = null,
 /// Each judged pane's judge, and the lines it was judging by: lines that
@@ -774,6 +787,11 @@ pub fn deinit(self: *App) void {
     self.resource_sampler = null;
     self.resource_usage.deinit(self.alloc);
     self.resource_recent.deinit(self.alloc);
+    self.resource_killed.deinit(self.alloc);
+    self.resource_tones.deinit(self.alloc);
+    self.resource_names.deinit(self.alloc);
+    self.page_req.deinit(self.alloc);
+    self.page_out.deinit(self.alloc);
     // A stop still waiting out its grace calls back into this App: wait
     // for it rather than have it write into freed memory.
     {
@@ -1507,6 +1525,14 @@ fn finishResourceStops(self: *App) void {
 
 fn finishResourceStop(self: *App, id: poltergeistpkg.Bus.Id, k: ResourceKill, out: poltergeistpkg.Stopper.Outcome) void {
     const judge = poltergeistpkg.judge;
+    // For its card and its group's dot, ten minutes (task 2015).
+    self.resource_killed.put(self.alloc, id, .{
+        .at_ms = self.poltergeistWallMs(),
+        .metric = k.event.metric,
+        .value = k.event.value,
+        .at = k.event.at,
+    }) catch {};
+    self.noteResourceTones();
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     defer arena.deinit();
     const aa = arena.allocator();
@@ -1620,6 +1646,7 @@ fn useResourceReading(self: *App, usage: []const poltergeistpkg.ledger.Usage) vo
     self.keepRecent(usage);
     self.logResources(usage);
     self.judgeResources(usage);
+    self.noteResourceTones();
 }
 
 /// The reading into each pane's last five minutes; a pane it does not
@@ -1639,6 +1666,65 @@ fn keepRecent(self: *App, usage: []const poltergeistpkg.ledger.Usage) void {
         if (!r.found_existing) r.value_ptr.* = .{};
         r.value_ptr.push(.{ .seq = self.resource_seq, .at_ms = wall, .mem = u.mem }, u.cpu_ns, u.started_ms);
     }
+    self.keepResourceNames(wall);
+}
+
+/// Each read pane's name and group, for the history's rows once it has
+/// closed; written only when one changed.
+fn keepResourceNames(self: *App, wall: i64) void {
+    for (self.control_room.route_rows) |row| {
+        for (row.members, row.titles) |id, title| {
+            if (!self.resource_usage.contains(id)) continue;
+            self.resource_names.note(self.alloc, id, title, row.group, wall) catch continue;
+        }
+    }
+    self.resource_names.prune(self.alloc, wall);
+    if (!self.resource_names.dirty) return;
+    const f = &(self.resource_history_file orelse return);
+    const bytes = self.resource_names.encode(self.alloc) catch return;
+    defer self.alloc.free(bytes);
+    f.keepNames(bytes);
+}
+
+/// A pane's level as its group's dot and its card say it (task 2015):
+/// `none` unread, `killed` for ten minutes after a stop, else its judge's.
+fn resourceTone(self: *App, id: poltergeistpkg.Bus.Id, wall: i64) poltergeistpkg.ResourcePage.Tone {
+    const Page = poltergeistpkg.ResourcePage;
+    if (!self.resource_usage.contains(id)) return .none;
+    if (self.resource_killed.get(id)) |k| if (wall - k.at_ms <= Page.killed_shown_ms) return .killed;
+    const j = self.resource_judges.getPtr(id) orelse return .ok;
+    return Page.toneOf(poltergeistpkg.ResourceHistory.levelOf(&j.state));
+}
+
+/// Every read pane's level, for the snapshot.
+fn resourceLevels(self: *App, alloc: Allocator) Allocator.Error![]const poltergeistpkg.ControlRoom.ResourceLevel {
+    const wall = self.poltergeistWallMs();
+    const out = try alloc.alloc(poltergeistpkg.ControlRoom.ResourceLevel, self.resource_usage.count());
+    var it = self.resource_usage.keyIterator();
+    var i: usize = 0;
+    while (it.next()) |id| : (i += 1) out[i] = .{ .id = id.*, .tone = self.resourceTone(id.*, wall) };
+    return out;
+}
+
+/// After a reading: when any pane's level moved, the control room's dots
+/// did too.
+fn noteResourceTones(self: *App) void {
+    const wall = self.poltergeistWallMs();
+    var changed = false;
+    var it = self.resource_tones.iterator();
+    while (it.next()) |kv| if (!self.resource_usage.contains(kv.key_ptr.*)) {
+        changed = true;
+        self.resource_tones.removeByPtr(kv.key_ptr);
+    };
+    var ut = self.resource_usage.keyIterator();
+    while (ut.next()) |id| {
+        const tone = self.resourceTone(id.*, wall);
+        const gop = self.resource_tones.getOrPut(self.alloc, id.*) catch continue;
+        if (gop.found_existing and gop.value_ptr.* == tone) continue;
+        gop.value_ptr.* = tone;
+        changed = true;
+    }
+    if (changed) self.controlRoomTouch();
 }
 
 /// Every pane's job, read now, as one reading (Windows).
@@ -1824,6 +1910,7 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .fix_sent = &self.control_fix_sent,
         .asks = &self.control_asks,
         .take_over = self.takeOverIn(),
+        .resource_levels = self.resourceLevels(alloc) catch return,
         .now_ms = now_ms,
         .wall_ms = @intCast(@max(0, wall_ms)),
     }, if (dirty) .event else .timer) catch |err| {
@@ -2151,6 +2238,7 @@ fn controlActDeleteGroup(ctx: *anyopaque, group: []const u8) anyerror!void {
         .stats_last => if (self.stats_log) |*l| l.dropGroup(group),
         .mention_retries => self.mention_retries.dropGroup(group),
         .control_asks => self.control_asks.forget(self.alloc, group),
+        .resource_names => self.resource_names.dropGroup(self.alloc, group),
     };
 
     if (self.poltergeist_state_dir) |dir| {
@@ -3548,6 +3636,164 @@ fn poltergeistMembership(
 
 /// The control room's snapshot as JSON; `ControlRoom.zig` has the shape.
 /// Borrowed until the next `tick`. Empty before the first one.
+/// One page of the control room's right side (task 2015,
+/// `ghostty_app_control_page`): the answer to `req`, as JSON; empty for "no
+/// answer yet". Borrowed until the next call.
+///
+/// An answer that did not fit the host's buffer (`cap`) is held, and the
+/// same request asked again gets those bytes and not a new reading -- so a
+/// host may ask for the length first and then for the page.
+pub fn controlPage(self: *App, req: []const u8, cap: usize) []const u8 {
+    if (self.page_held and std.mem.eql(u8, self.page_req.items, req)) {
+        self.page_held = false;
+        return self.page_out.items;
+    }
+    self.page_held = false;
+    self.page_req.clearRetainingCapacity();
+    self.page_out.clearRetainingCapacity();
+    self.page_req.appendSlice(self.alloc, req) catch return "";
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const out = self.renderPage(arena.allocator(), req) catch |err| out: {
+        log.warn("control room: could not work out a page err={}", .{err});
+        break :out "";
+    };
+    self.page_out.appendSlice(self.alloc, out) catch return "";
+    self.page_held = out.len > 0 and out.len + 1 > cap;
+    return self.page_out.items;
+}
+
+const PageRequest = struct {
+    page: []const u8 = "",
+    group: []const u8 = "",
+    span: []const u8 = "day",
+    since: u64 = 0,
+    open_task: ?u64 = null,
+    closed: bool = false,
+};
+
+fn renderPage(self: *App, arena: Allocator, req: []const u8) Allocator.Error![]const u8 {
+    const r = std.json.parseFromSliceLeaky(PageRequest, arena, req, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return "{\"error\":\"BadRequest\"}",
+    };
+    if (std.mem.eql(u8, r.page, "resources")) return self.renderResources(arena, r);
+    // The task page is task 2015 Q4's: no answer yet.
+    if (std.mem.eql(u8, r.page, "tasks")) return "";
+    return "{\"error\":\"BadRequest\"}";
+}
+
+/// The terminals of the group a page is about, in the order to draw them:
+/// its supervisor, the others as the group lists them, the person's own
+/// last.
+const PagePane = struct { id: poltergeistpkg.Bus.Id, name: []const u8, role: poltergeistpkg.ResourcePage.Role };
+
+fn pagePanes(self: *App, arena: Allocator, group: []const u8) Allocator.Error!?[]const PagePane {
+    const row = for (self.control_room.route_rows) |r| {
+        if (std.mem.eql(u8, r.group, group)) break r;
+    } else return null;
+    var out: std.ArrayListUnmanaged(PagePane) = .empty;
+    for (row.members, row.titles) |id, title| {
+        const steward = if (row.steward) |s| s == id else false;
+        if (steward) try out.insert(arena, 0, .{ .id = id, .name = title, .role = .supervisor });
+    }
+    for (row.members, row.titles, row.own) |id, title, own| {
+        const steward = if (row.steward) |s| s == id else false;
+        if (!steward and !own) try out.append(arena, .{ .id = id, .name = title, .role = .worker });
+    }
+    for (row.members, row.titles, row.own) |id, title, own| {
+        const steward = if (row.steward) |s| s == id else false;
+        if (!steward and own) try out.append(arena, .{ .id = id, .name = title, .role = .own });
+    }
+    return out.items;
+}
+
+const GoneNames = struct {
+    names: *const poltergeistpkg.ResourceNames,
+    group: []const u8,
+
+    fn of(ctx: *const anyopaque, id: u64) ?[]const u8 {
+        const self: *const GoneNames = @ptrCast(@alignCast(ctx));
+        const e = self.names.get(id) orelse return null;
+        if (!std.mem.eql(u8, e.group, self.group)) return null;
+        return e.name;
+    }
+};
+
+fn renderResources(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]const u8 {
+    const Page = poltergeistpkg.ResourcePage;
+    const Grid = poltergeistpkg.ResourceGrid;
+    const procscan = poltergeistpkg.procscan;
+    const panes_in = try self.pagePanes(arena, r.group) orelse return "{\"error\":\"NoSuchGroup\"}";
+    const span = std.meta.stringToEnum(Grid.Span, r.span) orelse return "{\"error\":\"BadRequest\"}";
+    const wall = self.poltergeistWallMs();
+    const offset = poltergeistpkg.daylog.localOffsetMs(wall);
+
+    const panes = try arena.alloc(Page.Pane, panes_in.len);
+    for (panes_in, panes) |p, *out| {
+        const level: poltergeistpkg.ResourceHistory.Level = if (self.resource_judges.getPtr(p.id)) |j| poltergeistpkg.ResourceHistory.levelOf(&j.state) else .ok;
+        out.* = .{
+            .id = p.id,
+            .name = p.name,
+            .role = p.role,
+            .usage = self.resource_usage.get(p.id),
+            .lim = self.poltergeist.limitsOf(p.id),
+            .level = level,
+            .recent = self.resource_recent.getPtr(p.id),
+            .killed = self.resource_killed.get(p.id),
+        };
+    }
+
+    // The history: every day file, and the half hours still open.
+    const days: []const u8 = if (self.resource_history_file) |f|
+        (if (std.fs.path.dirname(f.dir)) |state| try Grid.readDays(arena, f.io, state) else "")
+    else
+        "";
+    var open: std.ArrayListUnmanaged(poltergeistpkg.ResourceHistory.Closed) = .empty;
+    var it = self.resource_history.slots.iterator();
+    while (it.next()) |kv| try open.append(arena, .{ .pane = kv.key_ptr.*, .slot = kv.value_ptr.* });
+    const grid = try Grid.build(arena, span, wall, offset, days, open.items);
+    const day_grid = if (span == .day) grid else try Grid.build(arena, .day, wall, offset, days, open.items);
+    const gone: GoneNames = .{ .names = &self.resource_names, .group = r.group };
+
+    // The day's stops and warnings among this group's terminals, living
+    // and gone: cells with one in them.
+    var kills: usize = 0;
+    var warns: usize = 0;
+    for (day_grid.rows) |row| {
+        const mine = for (panes_in) |p| {
+            if (p.id == row.pane) break true;
+        } else GoneNames.of(&gone, row.pane) != null;
+        if (!mine) continue;
+        for (row.cells) |cell| if (cell.mark) |m| switch (m.what) {
+            .kill => kills += 1,
+            .warn, .withheld => warns += 1,
+        };
+    }
+
+    return Page.render(arena, .{
+        .group = r.group,
+        .seq = self.resource_seq,
+        .since = r.since,
+        .now_ms = wall,
+        .offset_ms = offset,
+        .period_ms = @intCast(poltergeistpkg.ResourceSampler.period_ms),
+        .machine = .{
+            .used = procscan.machineUsed(),
+            .phys = procscan.physicalMemory(),
+            .swap = procscan.swapUsed(),
+            .pressure = procscan.pressureLevel(),
+        },
+        .panes = panes,
+        .grid = &grid,
+        .kills_24h = kills,
+        .warns_24h = warns,
+        .gone_name = GoneNames.of,
+        .gone_ctx = &gone,
+        .tr = resourceTr,
+    });
+}
+
 pub fn controlSnapshotJson(self: *const App) []const u8 {
     return self.control_room.json;
 }
@@ -4791,7 +5037,16 @@ pub fn ensureChatLog(self: *App, want: bool) void {
     if (poltergeistpkg.ResourceHistory.File.init(self.alloc, io, state_dir)) |f| {
         self.resource_history_file = f;
         // The half hours the last run was stopped in, before any of ours.
-        if (self.resource_history_file) |*h| h.recover(self.alloc);
+        if (self.resource_history_file) |*h| {
+            h.recover(self.alloc);
+            if (h.readNames(self.alloc)) |bytes| {
+                defer self.alloc.free(bytes);
+                if (poltergeistpkg.ResourceNames.decode(self.alloc, bytes)) |n| {
+                    self.resource_names.deinit(self.alloc);
+                    self.resource_names = n;
+                } else |_| {}
+            }
+        }
     } else |err| {
         log.warn("poltergeist: could not set up the resource history err={}", .{err});
     }
@@ -11463,6 +11718,7 @@ fn chatRename(
         .stats_last => if (self.stats_log) |*l| try l.renameGroup(group, to),
         .mention_retries => try self.mention_retries.renameGroup(group, to),
         .control_asks => try self.control_asks.renameGroup(self.alloc, group, to),
+        .resource_names => try self.resource_names.renameGroup(self.alloc, group, to),
     };
 
     self.reopenStoreHandles();

@@ -5545,6 +5545,231 @@ msgid "Memory pressure is critical. Holding the most: {1}"
 msgstr "内存压力已到严重。占用最多的：{1}"
 
 
+#: src/poltergeist/ResourcePage.zig:111
+msgid "Machine"
+msgstr "整机"
+
+#: src/poltergeist/ResourcePage.zig:112
+msgid "/ {1}"
+msgstr "/ {1}"
+
+#: src/poltergeist/ResourcePage.zig:113
+msgid "Swap {1}"
+msgstr "交换 {1}"
+
+#: src/poltergeist/ResourcePage.zig:114
+msgid "Memory pressure {1}"
+msgstr "内存压力 {1}"
+
+#: src/poltergeist/ResourcePage.zig:115
+msgid "normal"
+msgstr "正常"
+
+#: src/poltergeist/ResourcePage.zig:116
+msgid "high"
+msgstr "偏高"
+
+#: src/poltergeist/ResourcePage.zig:117
+msgid "critical"
+msgstr "紧张"
+
+#: src/poltergeist/ResourcePage.zig:118
+msgid "{1} terminals in this group"
+msgstr "这一群 {1} 个终端"
+
+#: src/poltergeist/ResourcePage.zig:119
+msgid "In 24 hours: stopped {1} times · {2} warnings"
+msgstr "24 小时内中断 {1} 次 · 预警 {2} 次"
+
+#: src/poltergeist/ResourcePage.zig:120
+msgid "Now {1} terminals · {2} warning · {3} stopped"
+msgstr "现在 {1} 个终端 · {2} 个在预警 · {3} 个已中断"
+
+#: src/poltergeist/ResourcePage.zig:121
+msgid "Every 2 s · a full dial is the line written in its gap"
+msgstr "每 2 秒更新 · 表盘满格 = 缺口里写的那条线"
+
+#: src/poltergeist/ResourcePage.zig:122
+msgid "24 hours"
+msgstr "24 小时"
+
+#: src/poltergeist/ResourcePage.zig:123
+msgid "7 days"
+msgstr "7 天"
+
+#: src/poltergeist/ResourcePage.zig:124
+msgid "Last 24 hours"
+msgstr "最近 24 小时"
+
+#: src/poltergeist/ResourcePage.zig:125
+msgid "Last 7 days"
+msgstr "最近 7 天"
+
+#: src/poltergeist/ResourcePage.zig:126
+msgid "A cell is 30 minutes, coloured by the highest level in it"
+msgstr "每格 30 分钟，颜色是那段时间里最高的档位"
+
+#: src/poltergeist/ResourcePage.zig:127
+msgid "A cell is 4 hours, coloured by the highest level in it"
+msgstr "每格 4 小时，颜色是那段时间里最高的档位"
+
+#: src/poltergeist/ResourcePage.zig:128
+msgid "Absent"
+msgstr "不在"
+
+#: src/poltergeist/ResourcePage.zig:129
+msgid "Normal"
+msgstr "正常"
+
+#: src/poltergeist/ResourcePage.zig:130
+msgid "Warning {1}"
+msgstr "预警 {1}"
+
+#: src/poltergeist/ResourcePage.zig:131
+msgid "Stopped"
+msgstr "中断"
+
+#: src/poltergeist/ResourcePage.zig:132
+msgid "Yesterday {1}"
+msgstr "昨天 {1}"
+
+#: src/poltergeist/ResourcePage.zig:133
+msgid "Now"
+msgstr "现在"
+
+#: src/poltergeist/ResourcePage.zig:134
+msgid "{1}  {2} was stopped"
+msgstr "{1}  {2} 被中断"
+
+#: src/poltergeist/ResourcePage.zig:135
+msgid "{1}  {2} was over its kill line, not stopped"
+msgstr "{1}  {2} 过了中断线，没有中断"
+
+#: src/poltergeist/ResourcePage.zig:136
+msgid "{1}  {2} went over warn line {3}"
+msgstr "{1}  {2} 过了预警线 {3}"
+
+#: src/poltergeist/ResourcePage.zig:137
+msgid "{1}  {2} held at most {3}"
+msgstr "{1}  {2} 最多占了 {3}"
+
+#: src/poltergeist/ResourcePage.zig:138
+msgid "Memory {1}, over the kill line {2} for {3} s"
+msgstr "内存 {1}，过了中断线 {2}，持续 {3} 秒"
+
+#: src/poltergeist/ResourcePage.zig:139
+msgid "Memory {1}, over 1.5 times the kill line {2}"
+msgstr "内存 {1}，超过中断线 {2} 的 1.5 倍"
+
+#: src/poltergeist/ResourcePage.zig:140
+msgid "Memory {1}, over the warn line {2}"
+msgstr "内存 {1}，过了预警线 {2}"
+
+#: src/poltergeist/ResourcePage.zig:141
+msgid "{1} processes, over the kill line {2} for {3} s"
+msgstr "{1} 个进程，过了中断线 {2}，持续 {3} 秒"
+
+#: src/poltergeist/ResourcePage.zig:142
+msgid "{1} processes, over 1.5 times the kill line {2}"
+msgstr "{1} 个进程，超过中断线 {2} 的 1.5 倍"
+
+#: src/poltergeist/ResourcePage.zig:143
+msgid "{1} processes, over the warn line {2}"
+msgstr "{1} 个进程，过了预警线 {2}"
+
+#: src/poltergeist/ResourcePage.zig:144
+msgid "Largest: {1} ×{2}"
+msgstr "最大的进程：{1} ×{2}"
+
+#: src/poltergeist/ResourcePage.zig:145
+msgid "You and the supervisor were told"
+msgstr "已通知你和总管"
+
+#: src/poltergeist/ResourcePage.zig:146
+msgid "The supervisor was told, with the command to resume"
+msgstr "总管已收到通知和接回命令"
+
+#: src/poltergeist/ResourcePage.zig:147
+msgid "You were told"
+msgstr "已通知你"
+
+#: src/poltergeist/ResourcePage.zig:148
+msgid "Nobody was told: told of it under ten minutes before"
+msgstr "没有通知：十分钟内已经说过"
+
+#: src/poltergeist/ResourcePage.zig:150
+msgid "Your terminal"
+msgstr "你的终端"
+
+#: src/poltergeist/ResourcePage.zig:152
+msgid "Over, not stopped"
+msgstr "过线未中断"
+
+#: src/poltergeist/ResourcePage.zig:153
+msgid "Stopped {1}"
+msgstr "已中断 {1}"
+
+#: src/poltergeist/ResourcePage.zig:154
+msgid "Kill line {1}"
+msgstr "中断线 {1}"
+
+#: src/poltergeist/ResourcePage.zig:155
+msgid "Machine {1}"
+msgstr "整机 {1}"
+
+#: src/poltergeist/ResourcePage.zig:156
+msgid "↗ +{1}/min"
+msgstr "↗ +{1}/分"
+
+#: src/poltergeist/ResourcePage.zig:157
+msgid "↘ −{1}/min"
+msgstr "↘ −{1}/分"
+
+#: src/poltergeist/ResourcePage.zig:158
+msgid "→ Steady"
+msgstr "→ 平稳"
+
+#: src/poltergeist/ResourcePage.zig:159
+msgid "↓ Stopped"
+msgstr "↓ 已停"
+
+#: src/poltergeist/ResourcePage.zig:160
+msgid "About {1} min to the line"
+msgstr "约 {1} 分后到线"
+
+#: src/poltergeist/ResourcePage.zig:161
+msgid "{1} to go"
+msgstr "还差 {1}"
+
+#: src/poltergeist/ResourcePage.zig:162
+msgid "No kill line"
+msgstr "不设中断线"
+
+#: src/poltergeist/ResourcePage.zig:163
+msgid "Stopped at {1}"
+msgstr "{1} 被中断"
+
+#: src/poltergeist/ResourcePage.zig:164
+msgid "Over the line"
+msgstr "已过线"
+
+#: src/poltergeist/ResourcePage.zig:165
+msgid "CPU {1} cores · {2} processes"
+msgstr "CPU {1} 核 · {2} 进程"
+
+#: src/poltergeist/ResourcePage.zig:166
+msgid "{1} processes"
+msgstr "{1} 进程"
+
+#: src/poltergeist/ResourcePage.zig:167
+msgid "Ran {1}"
+msgstr "运行 {1}"
+
+#: src/poltergeist/ResourcePage.zig:168
+msgid "Resume command given to the supervisor"
+msgstr "接回命令已给总管"
+
+
 #~ msgid "Filter by key"
 #~ msgstr "按键名筛选"
 

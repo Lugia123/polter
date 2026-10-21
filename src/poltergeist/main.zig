@@ -44,6 +44,8 @@ pub const Stopper = @import("stopper.zig");
 pub const ResourceHistory = @import("ResourceHistory.zig");
 pub const ResourceGrid = @import("ResourceGrid.zig");
 pub const ResourceRecent = @import("ResourceRecent.zig");
+pub const ResourcePage = @import("ResourcePage.zig");
+pub const ResourceNames = @import("ResourceNames.zig");
 pub const Feed = @import("Feed.zig");
 pub const GroupLog = @import("GroupLog.zig");
 pub const GroupRename = @import("GroupRename.zig");
@@ -140,6 +142,8 @@ test {
     _ = ResourceHistory;
     _ = ResourceGrid;
     _ = ResourceRecent;
+    _ = ResourcePage;
+    _ = ResourceNames;
     _ = Feed;
     _ = GroupLog;
     _ = GroupRename;

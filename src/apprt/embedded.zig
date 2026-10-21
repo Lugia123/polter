@@ -2206,9 +2206,8 @@ pub const CAPI = struct {
     /// request hands back the same answer, so a host may ask for the length
     /// first.
     ///
-    /// **Zero, every time, for now**: the pages are filled in by task 2015
-    /// Q3 and Q4. Zero is "no answer yet", which a host draws as nothing
-    /// already, so a host can be built and run against this before then.
+    /// Zero is "no answer yet": the task page until task 2015 Q4, and any
+    /// page before the core has a reading. A host draws nothing then.
     export fn ghostty_app_control_page(
         app: *App,
         req: [*]const u8,
@@ -2216,12 +2215,8 @@ pub const CAPI = struct {
         buf: ?[*]u8,
         cap: usize,
     ) usize {
-        _ = app;
-        _ = req;
-        _ = len;
-        _ = buf;
-        _ = cap;
-        return 0;
+        const room = if (buf != null) cap else 0;
+        return copyJsonOut(app.core_app.controlPage(req[0..len], room), buf, cap);
     }
 
     /// The group a click on a notification raised from terminal `id` (a

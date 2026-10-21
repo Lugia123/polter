@@ -258,6 +258,8 @@ pub const File = struct {
     /// puts them into their days on the next start. A quit, a crash or a
     /// kill loses the last reading at most.
     pub const open_name = "open.jsonl";
+    /// What each pane in the history was called (`ResourceNames`).
+    pub const names_name = "names.json";
 
     pub fn init(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error!File {
         return .{ .io = io, .dir = try std.fs.path.join(alloc, &.{ state_dir, "resources" }) };
@@ -280,32 +282,58 @@ pub const File = struct {
             // Written again on the next change.
             self.kept.clearRetainingCapacity();
         };
+        self.writeWhole(open_name, bytes);
+    }
+
+    /// `ResourceNames`'s bytes as `names_name`, whole (task 2015). The
+    /// caller asks only when a name changed (`ResourceNames.dirty`).
+    pub fn keepNames(self: *File, bytes: []const u8) void {
+        self.writeWhole(names_name, bytes);
+    }
+
+    /// What the last run's `keepNames` left, in `alloc`; null for none.
+    pub fn readNames(self: *File, alloc: Allocator) ?[]u8 {
+        var d = self.openDir() catch return null;
+        defer d.close(self.io);
+        return d.readFileAlloc(self.io, names_name, alloc, .limited(4 << 20)) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => {
+                log.warn("could not read the names of the panes in the history err={}", .{err});
+                return null;
+            },
+        };
+    }
+
+    /// `bytes` as `name`, written beside it and renamed over it; empty
+    /// deletes it.
+    fn writeWhole(self: *File, name: []const u8, bytes: []const u8) void {
         var d = self.openDir() catch |err| {
-            log.warn("could not keep the open half hours in {s} err={}", .{ self.dir, err });
+            log.warn("could not write {s} in {s} err={}", .{ name, self.dir, err });
             return;
         };
         defer d.close(self.io);
         if (bytes.len == 0) {
-            d.deleteFile(self.io, open_name) catch |err| switch (err) {
+            d.deleteFile(self.io, name) catch |err| switch (err) {
                 error.FileNotFound => {},
-                else => log.warn("could not delete the open half hours err={}", .{err}),
+                else => log.warn("could not delete {s} err={}", .{ name, err }),
             };
             return;
         }
-        const tmp = open_name ++ ".tmp";
+        var tmp_buf: [64]u8 = undefined;
+        const tmp = std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{name}) catch return;
         {
             var f = d.createFile(self.io, tmp, .{}) catch |err| {
-                log.warn("could not keep the open half hours err={}", .{err});
+                log.warn("could not write {s} err={}", .{ name, err });
                 return;
             };
             defer f.close(self.io);
             f.writeStreamingAll(self.io, bytes) catch |err| {
-                log.warn("could not keep the open half hours err={}", .{err});
+                log.warn("could not write {s} err={}", .{ name, err });
                 return;
             };
         }
-        d.rename(tmp, d, open_name, self.io) catch |err| {
-            log.warn("could not keep the open half hours err={}", .{err});
+        d.rename(tmp, d, name, self.io) catch |err| {
+            log.warn("could not write {s} err={}", .{ name, err });
             d.deleteFile(self.io, tmp) catch {};
         };
     }

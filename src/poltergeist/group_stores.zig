@@ -85,6 +85,11 @@ pub const Table = enum {
     /// `ControlAsk.asks`: how the control room's last ask of the group's
     /// supervisor went (task 1671).
     control_asks,
+
+    /// `ResourceNames.entries`: the group each pane in the resource history
+    /// was in, so a pane that has closed keeps its row in that group's grid
+    /// (task 2015). Written to `resources/names.json` at the next reading.
+    resource_names,
 };
 
 /// An open file or directory handle that points into a place a rename

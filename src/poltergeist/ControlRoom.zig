@@ -396,6 +396,7 @@ const Tasks = @import("Tasks.zig");
 const ControlFix = @import("ControlFix.zig");
 const ControlAsk = @import("ControlAsk.zig");
 const TakeOver = @import("TakeOver.zig");
+const ResourcePage = @import("ResourcePage.zig");
 
 pub const Id = Bus.Id;
 
@@ -579,17 +580,43 @@ pub const RouteRow = struct {
     group: []const u8,
     steward: ?Id,
     members: []const Id,
+    /// Beside `members`: each one's title, and whether nobody is minding an
+    /// agent in it -- a terminal of the person's own -- for the
+    /// performance page (task 2015, `App.controlPage`).
+    titles: []const []const u8,
+    own: []const bool,
 };
+
+/// One terminal's resource level, as `Input.resource_levels` gives it.
+pub const ResourceLevel = struct { id: Id, tone: ResourcePage.Tone };
+
+/// The highest level among `ids` (`Tone`'s order: none, ok, the warn
+/// lines, withheld, killed).
+pub fn resourceLevelOf(levels: []const ResourceLevel, ids: []const Id) ResourcePage.Tone {
+    var best: ResourcePage.Tone = .none;
+    for (ids) |id| for (levels) |l| {
+        if (l.id == id and @intFromEnum(l.tone) > @intFromEnum(best)) best = l.tone;
+    };
+    return best;
+}
 
 pub fn routeRows(arena: Allocator, groups: []const GroupRow) Allocator.Error![]const RouteRow {
     const out = try arena.alloc(RouteRow, groups.len);
     for (groups, out) |g, *r| {
         const members = try arena.alloc(Id, g.members.len);
-        for (g.members, members) |m, *id| id.* = m.id.id;
+        const titles = try arena.alloc([]const u8, g.members.len);
+        const own = try arena.alloc(bool, g.members.len);
+        for (g.members, members, titles, own) |m, *id, *t, *o| {
+            id.* = m.id.id;
+            t.* = try arena.dupe(u8, m.title);
+            o.* = m.kind == .unattended;
+        }
         r.* = .{
             .group = try arena.dupe(u8, g.name),
             .steward = if (g.steward) |h| h.id else null,
             .members = members,
+            .titles = titles,
+            .own = own,
         };
     }
     return out;
@@ -731,6 +758,10 @@ pub const Input = struct {
     /// No default: a caller that forgot it would show a take-over that is
     /// under way as one that can be started.
     take_over: ?TakeOverIn,
+    /// Each terminal's resource level now (task 2015): a group's is the
+    /// highest of its members', the dot before its performance tab. No
+    /// default: a caller that forgot it would show no group with a reading.
+    resource_levels: []const ResourceLevel,
     /// The bus's clock, and the real one.
     now_ms: u64,
     wall_ms: u64,
@@ -1459,6 +1490,9 @@ pub const GroupRow = struct {
     /// 1671): still being tried, typed in, or given up on, and as which
     /// message. Null when none was made since the start.
     ask: ?ControlAsk.Ask,
+    /// The highest resource level among its terminals (task 2015): `none`
+    /// when none of them is read, which is not `ok`.
+    resource_level: ResourcePage.Tone,
 };
 
 pub const LoneRow = struct {
@@ -2665,6 +2699,7 @@ fn build(arena: Allocator, in: Input) Allocator.Error!Built {
                 .record_dir = record_dir,
                 .fix = fix,
                 .ask = in.asks.of(name),
+                .resource_level = resourceLevelOf(in.resource_levels, all),
             },
         });
     }
@@ -3018,6 +3053,7 @@ const World = struct {
     fix_sent: ControlFix.Sent = .{},
     asks: ControlAsk = .{},
     take_over: ?TakeOverIn = null,
+    resource_levels: []const ResourceLevel = &.{},
 
     fn init() World {
         return .{
@@ -3119,6 +3155,7 @@ const World = struct {
             .fix_sent = &self.fix_sent,
             .asks = &self.asks,
             .take_over = self.take_over,
+            .resource_levels = self.resource_levels,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
         };
@@ -3264,6 +3301,13 @@ fn fixtureWorld() !World {
     // input line had a draft in it: being tried again (task 1671).
     try w.asks.asked(testing.allocator, "web-app", 41, error.DraftInLine, true);
 
+    // Resource levels (task 2015): web-app's worker warning, mobile's
+    // stopped, billing's never read -- every kind of dot the hosts draw.
+    w.resource_levels = &.{
+        .{ .id = 0xa1, .tone = .ok },
+        .{ .id = 0xb1, .tone = .warn2 },
+        .{ .id = 0xb7, .tone = .killed },
+    };
     return w;
 }
 
@@ -3319,6 +3363,15 @@ test "ControlRoom snapshot: the fixture is what the fixture's world comes to" {
         std.debug.print("\n<<<control_snapshot.json\n{s}\n>>>control_snapshot.json\n", .{json});
         return error.TestFixtureOutOfDate;
     }
+}
+
+test "2015: a group's resource level is its highest terminal's, and none when none of them is read" {
+    const levels = [_]ResourceLevel{ .{ .id = 1, .tone = .ok }, .{ .id = 2, .tone = .warn2 }, .{ .id = 3, .tone = .killed }, .{ .id = 4, .tone = .withheld } };
+    try testing.expectEqual(ResourcePage.Tone.warn2, resourceLevelOf(&levels, &.{ 1, 2 }));
+    try testing.expectEqual(ResourcePage.Tone.killed, resourceLevelOf(&levels, &.{ 4, 3, 1 }));
+    try testing.expectEqual(ResourcePage.Tone.withheld, resourceLevelOf(&levels, &.{ 1, 4 }));
+    try testing.expectEqual(ResourcePage.Tone.none, resourceLevelOf(&levels, &.{ 9, 10 }));
+    try testing.expectEqual(ResourcePage.Tone.none, resourceLevelOf(&levels, &.{}));
 }
 
 test "ControlRoom: the question of joining the project of the group's name is put only while that is what is in the way (#1713)" {
@@ -3813,9 +3866,9 @@ test "ControlRoom notifyRows: a worker's prompt over a supervisor that also wait
 test "ControlRoom groupToShow: a supervisor goes to the group it minds, a worker to its group, anyone else to no group" {
     // `web` comes first, and the supervisor of `api` is a member there too:
     // the group it minds still wins, in either order.
-    const web: RouteRow = .{ .group = "web", .steward = 0xc1, .members = &.{ 0xc1, 0xa1, 0xd1 } };
-    const api: RouteRow = .{ .group = "api", .steward = 0xa1, .members = &.{ 0xa1, 0xb1 } };
-    const unminded: RouteRow = .{ .group = "loose", .steward = null, .members = &.{0xf1} };
+    const web: RouteRow = .{ .group = "web", .steward = 0xc1, .members = &.{ 0xc1, 0xa1, 0xd1 }, .titles = &.{ "", "", "" }, .own = &.{ false, false, false } };
+    const api: RouteRow = .{ .group = "api", .steward = 0xa1, .members = &.{ 0xa1, 0xb1 }, .titles = &.{ "", "" }, .own = &.{ false, false } };
+    const unminded: RouteRow = .{ .group = "loose", .steward = null, .members = &.{0xf1}, .titles = &.{""}, .own = &.{false} };
     for ([_][]const RouteRow{ &.{ web, api, unminded }, &.{ unminded, api, web } }) |rows| {
         const a1 = groupToShow(rows, 0xa1);
         try testing.expectEqualStrings("api", a1 orelse return error.TestUnexpectedResult);
@@ -3830,7 +3883,7 @@ test "ControlRoom groupToShow: a supervisor goes to the group it minds, a worker
         try testing.expect(lone == null);
     }
     // In two groups and supervising neither: the first, in the room's order.
-    const twice = groupToShow(&.{ web, .{ .group = "ops", .steward = 0xc2, .members = &.{ 0xc2, 0xd1 } } }, 0xd1);
+    const twice = groupToShow(&.{ web, .{ .group = "ops", .steward = 0xc2, .members = &.{ 0xc2, 0xd1 }, .titles = &.{ "", "" }, .own = &.{ false, false } } }, 0xd1);
     try testing.expectEqualStrings("web", twice orelse return error.TestUnexpectedResult);
     try testing.expect(groupToShow(&.{}, 0xa1) == null);
 }

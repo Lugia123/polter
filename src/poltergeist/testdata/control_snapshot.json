@@ -171,7 +171,8 @@
         "seq": 41,
         "state": "retrying",
         "code": "DraftInLine"
-      }
+      },
+      "resource_level": "warn2"
     },
     {
       "name": "web-app-docs",
@@ -303,7 +304,8 @@
       },
       "record_dir": "/state/chat/web-app-docs",
       "fix": "none",
-      "ask": null
+      "ask": null,
+      "resource_level": "ok"
     },
     {
       "name": "mobile",
@@ -450,7 +452,8 @@
       },
       "record_dir": "/state/chat/mobile",
       "fix": "none",
-      "ask": null
+      "ask": null,
+      "resource_level": "killed"
     },
     {
       "name": "billing",
@@ -580,7 +583,8 @@
       },
       "record_dir": "/state/chat/billing",
       "fix": "none",
-      "ask": null
+      "ask": null,
+      "resource_level": "none"
     },
     {
       "name": "docs-site",
@@ -736,7 +740,8 @@
       },
       "record_dir": "/state/chat/docs-site",
       "fix": "offered",
-      "ask": null
+      "ask": null,
+      "resource_level": "none"
     },
     {
       "name": "infra",
@@ -866,7 +871,8 @@
       },
       "record_dir": "/state/chat/infra",
       "fix": "none",
-      "ask": null
+      "ask": null,
+      "resource_level": "none"
     },
     {
       "name": "design-system",
@@ -1017,7 +1023,8 @@
       },
       "record_dir": "/state/chat/design-system",
       "fix": "none",
-      "ask": null
+      "ask": null,
+      "resource_level": "none"
     },
     {
       "name": "notes",
@@ -1145,7 +1152,8 @@
       },
       "record_dir": "/state/chat/notes",
       "fix": "none",
-      "ask": null
+      "ask": null,
+      "resource_level": "none"
     }
   ],
   "archived": [],

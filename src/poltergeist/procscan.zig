@@ -98,6 +98,86 @@ pub fn physicalMemory() ?u64 {
     return v;
 }
 
+/// What the machine's memory holds in use, bytes, or null where it is not
+/// read (task 2015, the performance page's first line). macOS: what
+/// Activity Monitor calls "Memory Used" -- app memory (internal pages less
+/// the purgeable), wired, and compressed -- from `host_statistics64`.
+/// Windows: the physical memory less what is available.
+pub fn machineUsed() ?u64 {
+    if (builtin.os.tag == .windows) {
+        var m: MemoryStatusEx = std.mem.zeroes(MemoryStatusEx);
+        m.dwLength = @sizeOf(MemoryStatusEx);
+        if (win.GlobalMemoryStatusEx(&m) == .FALSE) return null;
+        return m.ullTotalPhys -| m.ullAvailPhys;
+    }
+    if (builtin.os.tag != .macos) return null;
+    var vm: VmStatistics64 = undefined;
+    var count: u32 = @sizeOf(VmStatistics64) / @sizeOf(u32);
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, &vm, &count) != 0) return null;
+    var page: u64 = 0;
+    var len: usize = @sizeOf(u64);
+    if (std.c.sysctlbyname("hw.pagesize", &page, &len, null, 0) != 0) return null;
+    const app = @as(u64, vm.internal_page_count) -| vm.purgeable_count;
+    return (app + vm.wire_count + vm.compressor_page_count) * page;
+}
+
+/// Swap in use, bytes; null where it is not read (Windows: its page file is
+/// not a figure a person reads as swap).
+pub fn swapUsed() ?u64 {
+    if (builtin.os.tag != .macos) return null;
+    var x: XswUsage = undefined;
+    var len: usize = @sizeOf(XswUsage);
+    if (std.c.sysctlbyname("vm.swapusage", &x, &len, null, 0) != 0) return null;
+    return x.xsu_used;
+}
+
+/// `vm_statistics64` (mach/vm_statistics.h).
+const VmStatistics64 = extern struct {
+    free_count: u32,
+    active_count: u32,
+    inactive_count: u32,
+    wire_count: u32,
+    zero_fill_count: u64,
+    reactivations: u64,
+    pageins: u64,
+    pageouts: u64,
+    faults: u64,
+    cow_faults: u64,
+    lookups: u64,
+    hits: u64,
+    purges: u64,
+    purgeable_count: u32,
+    speculative_count: u32,
+    decompressions: u64,
+    compressions: u64,
+    swapins: u64,
+    swapouts: u64,
+    compressor_page_count: u32,
+    throttled_count: u32,
+    external_page_count: u32,
+    internal_page_count: u32,
+    total_uncompressed_pages_in_compressor: u64,
+};
+
+/// `struct xsw_usage` (sys/sysctl.h).
+const XswUsage = extern struct {
+    xsu_total: u64,
+    xsu_avail: u64,
+    xsu_used: u64,
+    xsu_pagesize: u32,
+    xsu_encrypted: bool,
+};
+
+comptime {
+    // The SDK's sizes: 152 (`HOST_VM_INFO64_COUNT` is 38 natural_t) and 32.
+    std.debug.assert(@sizeOf(VmStatistics64) == 152);
+    std.debug.assert(@sizeOf(XswUsage) == 32);
+}
+
+const HOST_VM_INFO64: c_int = 4;
+extern "c" fn mach_host_self() u32;
+extern "c" fn host_statistics64(host: u32, flavor: c_int, info: *anyopaque, count: *u32) c_int;
+
 /// The kernel's memory pressure level, `kern.memorystatus_vm_pressure_level`:
 /// 1 normal, 2 warn, 4 critical. Null where it is not read.
 pub fn pressureLevel() ?u32 {
@@ -227,6 +307,17 @@ test "procscan: this process is in the reading, with its parent and some memory"
     try testing.expect(physicalMemory().? > 1 << 30);
     const level = pressureLevel().?;
     try testing.expect(level == 1 or level == 2 or level == 4);
+}
+
+test "2015: the machine's memory in use is under all of it, and swap is read" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const testing = std.testing;
+    const phys = physicalMemory().?;
+    const used = machineUsed().?;
+    // A machine running this holds something, and not more than it has.
+    try testing.expect(used > 256 << 20);
+    try testing.expect(used < phys);
+    _ = swapUsed().?;
 }
 
 test "2015: a process's CPU time is in nanoseconds, and its start is when it started" {

@@ -3524,7 +3524,7 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
 
     // Started for a group: all three, named.
     var w: std.Io.Writer = .fixed(&buf);
-    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .membership = .{
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .membership = .{
         .groups = &.{ "web-app", "billing" },
         .supervisor_of = &.{"web-app"},
         .started_for = "web-app",
@@ -3549,7 +3549,7 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
 
     // In nothing and started for nothing: said, as empty lists and a null.
     w = .fixed(&buf);
-    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .membership = .{
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .membership = .{
         .groups = &.{},
         .supervisor_of = &.{},
         .started_for = null,
@@ -3563,7 +3563,7 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
 
     // Not `me`, or a host that could not say: none of the three keys.
     w = .fixed(&buf);
-    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null } });
+    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null } });
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "started_for") == null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "supervisor_of") == null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"groups\"") == null);
