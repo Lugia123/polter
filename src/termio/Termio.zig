@@ -1299,6 +1299,11 @@ pub fn getProcessInfo(self: *Termio, comptime info: ProcessInfo) ?ProcessInfo.Ty
     return self.backend.getProcessInfo(info);
 }
 
+/// The pid of the process this terminal started (task 1993).
+pub fn childPid(self: *const Termio) ?u64 {
+    return self.backend.childPid();
+}
+
 /// See `backend.Backend.shellBusy`.
 pub fn shellBusy(self: *Termio) ?bool {
     return self.backend.shellBusy();

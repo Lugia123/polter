@@ -8995,6 +8995,26 @@ pub fn getProcessInfo(self: *Surface, comptime info: ProcessInfo) ?ProcessInfo.T
     return self.io.getProcessInfo(info);
 }
 
+/// What the resource sampler splits the machine by for this pane (task
+/// 1993): the process the terminal started, and its terminal's device as
+/// a process's `e_tdev` reads it. Null when the child is not started or
+/// this platform does not account by pid (Windows: by Job Object).
+///
+/// Read on the app thread while the IO thread owns the subprocess, as
+/// `getProcessInfo` already is: both are set once when the child starts.
+pub fn resourcePane(self: *Surface) ?poltergeistpkg.ledger.Pane {
+    const root = self.io.childPid() orelse return null;
+    const tty: ?u32 = tty: {
+        if (comptime builtin.os.tag != .macos) break :tty null;
+        const name = self.getProcessInfo(.tty_name) orelse break :tty null;
+        var st: std.c.Stat = undefined;
+        // `std.c.stat` has no macOS arm64 binding in this Zig; `fstatat` does.
+        if (std.c.fstatat(std.c.AT.FDCWD, name.ptr, &st, 0) != 0) break :tty null;
+        break :tty @bitCast(st.rdev);
+    };
+    return .{ .id = self.id, .root = std.math.cast(u32, root) orelse return null, .tty = tty };
+}
+
 test "a tool close never closes a readonly terminal, and never asks" {
     const testing = std.testing;
 

@@ -1569,6 +1569,19 @@ const Subprocess = struct {
         return pty.getProcessInfo(info);
     }
 
+    /// The pid of the process this terminal started (on macOS,
+    /// `/usr/bin/login`), for accounting its tree (task 1993). Null before
+    /// it is started, for a Flatpak host command, and on Windows, where a
+    /// pane is accounted by its Job Object instead.
+    pub fn childPid(self: *const Subprocess) ?u64 {
+        if (comptime builtin.os.tag == .windows) return null;
+        const p = self.process orelse return null;
+        return switch (p) {
+            .fork_exec => |cmd| if (cmd.pid) |pid| @intCast(pid) else null,
+            .flatpak => null,
+        };
+    }
+
     /// Whether the shell is running a command, where the shell cannot mark
     /// its prompt and this can be asked of its child processes instead
     /// (#991, `shell_busy`). Null everywhere else -- every POSIX platform,
@@ -2520,6 +2533,11 @@ fn appendEnvAlways(
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Exec, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.subprocess.getProcessInfo(info);
+}
+
+/// See `Subprocess.childPid`.
+pub fn childPid(self: *const Exec) ?u64 {
+    return self.subprocess.childPid();
 }
 
 /// See `Subprocess.shellBusy`.

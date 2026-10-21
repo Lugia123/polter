@@ -214,6 +214,16 @@ links_due: std.atomic.Value(bool) = .init(false),
 /// ever is never has the thread.
 notice_wake: ?poltergeistpkg.ControlWake = null,
 
+/// The thread reading every pane's process tree (task 1993, #1985), and
+/// what it last read: memory and process count by terminal. Started on the
+/// first tick, like the stall watch. Nothing is judged from these yet.
+resource_sampler: ?poltergeistpkg.ResourceSampler = null,
+/// The sampler saying a reading is ready. Set off the app thread.
+resources_due: std.atomic.Value(bool) = .init(false),
+resource_usage: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, poltergeistpkg.ledger.Usage) = .empty,
+/// When the readings were last written to the log (`resources_log_every_ms`).
+resources_logged_ms: ?u64 = null,
+
 /// The thread that reads each account's allowance off disk, and the flag it
 /// raises when what it read is new (`poltergeist/QuotaWatch.zig`). Null
 /// until the control room first works anything out.
@@ -737,6 +747,9 @@ pub fn deinit(self: *App) void {
     self.notice_wake = null;
     if (self.quota_watch) |*w| w.stop();
     self.quota_watch = null;
+    if (self.resource_sampler) |*w| w.stop();
+    self.resource_sampler = null;
+    self.resource_usage.deinit(self.alloc);
 
     // Clean up all our surfaces
     for (self.surfaces.items) |surface| surface.deinit();
@@ -873,6 +886,16 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
             break :thread null;
         };
     }
+
+    // The resource sampler (task 1993): started once, like the stall watch.
+    if (self.resource_sampler == null and !self.poltergeist_stopping.load(.acquire)) {
+        self.resource_sampler = .{ .io = global.io(), .alloc = std.heap.smp_allocator, .fire = resourcesDue, .ctx = self };
+        self.resource_sampler.?.start() catch |err| {
+            log.warn("resources: no sampler; its thread could not start err={}", .{err});
+            self.resource_sampler = null;
+        };
+    }
+    if (self.resources_due.swap(false, .acq_rel)) self.takeResourceReading();
 
     // Drain our mailbox
     try self.drainMailbox(rt_app);
@@ -1109,6 +1132,63 @@ fn identitiesChanged(ctx: *anyopaque) void {
 }
 
 /// The wake thread's whole job: raise the flag and get `tick` called.
+/// The resource sampler has a reading (task 1993). Off the app thread.
+fn resourcesDue(ctx: *anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.poltergeist_stopping.load(.acquire)) return;
+    self.resources_due.store(true, .release);
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
+/// How often the readings go to the log, as one line of the largest panes.
+const resources_log_every_ms: u64 = 60 * std.time.ms_per_s;
+
+/// Keep the sampler's reading, and tell it which panes to read next: the
+/// panes change between readings, so each reading is split by the panes
+/// as they were when the one before it was taken.
+fn takeResourceReading(self: *App) void {
+    const sampler = &(self.resource_sampler orelse return);
+    if (sampler.take()) |usage| {
+        defer sampler.alloc.free(usage);
+        self.resource_usage.clearRetainingCapacity();
+        for (usage) |u| self.resource_usage.put(self.alloc, u.id, u) catch break;
+        self.logResources(usage);
+    }
+
+    var panes: std.ArrayListUnmanaged(poltergeistpkg.ledger.Pane) = .empty;
+    defer panes.deinit(self.alloc);
+    for (self.surfaces.items) |v| {
+        const surface = v.core();
+        if (self.isChatSurface(surface.id)) continue;
+        const pane = surface.resourcePane() orelse continue;
+        panes.append(self.alloc, pane) catch return;
+    }
+    sampler.setPanes(panes.items) catch |err| log.warn("resources: could not hand the sampler its panes err={}", .{err});
+}
+
+/// One line a minute: the three panes holding the most. What a reading
+/// was, for anybody looking back at a night; nothing acts on it yet.
+fn logResources(self: *App, usage: []const poltergeistpkg.ledger.Usage) void {
+    const now_ms = self.poltergeistElapsedMs();
+    if (self.resources_logged_ms) |at| if (now_ms -| at < resources_log_every_ms) return;
+    self.resources_logged_ms = now_ms;
+    var top: [3]?poltergeistpkg.ledger.Usage = .{ null, null, null };
+    for (usage) |u| {
+        var i: usize = 0;
+        while (i < top.len) : (i += 1) {
+            if (top[i] == null or u.mem > top[i].?.mem) {
+                var k = top.len - 1;
+                while (k > i) : (k -= 1) top[k] = top[k - 1];
+                top[i] = u;
+                break;
+            }
+        }
+    }
+    for (top) |t| if (t) |u| log.info("resources: 0x{x} {d} MB in {d} processes, most in {s} x{d} ({d} MB)", .{
+        u.id, u.mem >> 20, u.procs, u.topName(), u.top_count, u.top_mem >> 20,
+    });
+}
+
 fn controlRoomDue(ctx: *anyopaque) void {
     const self: *App = @ptrCast(@alignCast(ctx));
     if (self.poltergeist_stopping.load(.acquire)) return;

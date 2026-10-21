@@ -111,6 +111,13 @@ pub const Backend = union(Kind) {
         };
     }
 
+    /// The pid of the process the terminal started (task 1993).
+    pub fn childPid(self: *const Backend) ?u64 {
+        return switch (self.*) {
+            .exec => |*exec| exec.childPid(),
+        };
+    }
+
     /// Whether the shell is running a command, where that can be told from
     /// its child processes (#991). Null where it cannot.
     pub fn shellBusy(self: *Backend) ?bool {
