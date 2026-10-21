@@ -1549,6 +1549,10 @@ msgstr "受阻"
 msgid "closed"
 msgstr "已关闭"
 
+#: src/cli/chat.zig:3330
+msgid "No group is called \"{0}\"; here are all of them"
+msgstr "没有叫「{0}」的群，下面是全部的群"
+
 #: src/cli/chat.zig:1881
 msgid "Take the group \"{0}\" off this list?"
 msgstr "把群「{0}」从列表里移除？"

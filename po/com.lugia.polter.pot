@@ -1535,6 +1535,10 @@ msgstr ""
 msgid "closed"
 msgstr ""
 
+#: src/cli/chat.zig:3330
+msgid "No group is called \"{0}\"; here are all of them"
+msgstr ""
+
 #: src/cli/chat.zig:1881
 msgid "Take the group \"{0}\" off this list?"
 msgstr ""

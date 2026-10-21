@@ -63,6 +63,11 @@ pub const Options = struct {
     /// Token identifying this terminal. Defaults to `GHOSTTY_POLTER_TOKEN`.
     token: ?[]const u8 = null,
 
+    /// The group to open at (task 2015): the control room's chat page runs
+    /// one of these per group, `--group=<name>`. A name no group has opens
+    /// the list as it would without it, and says so.
+    group: ?[]const u8 = null,
+
     pub fn deinit(self: Options) void {
         _ = self;
     }
@@ -111,6 +116,7 @@ pub fn run(alloc: Allocator) !u8 {
     var tty_buf: [4096]u8 = undefined;
     const chat = try Chat.create(alloc, io, &host, &tty_buf);
     defer chat.destroy();
+    chat.wanted = opts.group;
 
     try chat.run();
     return 0;
@@ -523,6 +529,11 @@ const Chat = struct {
 
     groups: std.ArrayListUnmanaged(Group) = .empty,
     current: usize = 0,
+
+    /// `--group`, until the first list has come in and it has been looked
+    /// for in it; null after that, so a person who picks another group is
+    /// not moved back.
+    wanted: ?[]const u8 = null,
 
     /// The panel's history for the group being looked at, and the name of
     /// the group it belongs to.
@@ -1037,6 +1048,22 @@ const Chat = struct {
         }
 
         if (self.current >= self.groups.items.len) self.current = 0;
+
+        // Once, on the first list: the group the window was opened for.
+        if (self.wanted) |want| {
+            self.wanted = null;
+            if (wantedIndex(self.groups.items, want)) |i| {
+                self.selectGroup(i);
+            } else {
+                const said = missingGroupText(arena, want);
+                const n = @min(said.len, self.err_buf.len);
+                @memcpy(self.err_buf[0..n], said[0..n]);
+                self.err = self.err_buf[0..n];
+                self.err_hold = err_polls;
+                // Held, not cleared below by this same successful poll.
+                return;
+            }
+        }
 
         if (self.err_hold > 0) {
             self.err_hold -= 1;
@@ -3291,6 +3318,18 @@ fn tr(comptime msgid: [:0]const u8) []const u8 {
     return std.mem.span(internal_os.i18n._(msgid.ptr));
 }
 
+/// Where `--group` puts the selection: the index of the group of that
+/// name, or null when there is none.
+fn wantedIndex(groups: []const Group, want: []const u8) ?usize {
+    for (groups, 0..) |g, i| if (std.mem.eql(u8, g.name, want)) return i;
+    return null;
+}
+
+/// What the window says when `--group` names no group.
+fn missingGroupText(alloc: Allocator, want: []const u8) []const u8 {
+    return fill(alloc, tr("No group is called \"{0}\"; here are all of them"), &.{want});
+}
+
 /// A translated string with values put into it.
 ///
 /// **Why not `std.fmt`.** A format string has to be known at compile time
@@ -3758,6 +3797,22 @@ test "the next batch joins onto the oldest message held" {
     const seam = Chat.seamOf(&msgs);
     try testing.expect(std.meta.activeTag(seam) == .before);
     try testing.expectEqual(@as(u64, 41), seam.before);
+}
+
+test "2015: --group opens at that group, and a name no group has says so and opens at the first" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const groups = [_]Group{ .{ .name = "billing" }, .{ .name = "web-app" }, .{ .name = "docs-site" } };
+    try testing.expectEqual(@as(?usize, 1), wantedIndex(&groups, "web-app"));
+    // Names are matched whole: no group is a prefix of another's.
+    try testing.expectEqual(@as(?usize, null), wantedIndex(&groups, "web"));
+    try testing.expectEqual(@as(?usize, null), wantedIndex(&groups, "nope"));
+    try testing.expectEqual(@as(?usize, null), wantedIndex(&.{}, "web-app"));
+    // No locale in a test: the msgid, filled.
+    try testing.expectEqualStrings(
+        "No group is called \"nope\"; here are all of them",
+        missingGroupText(arena.allocator(), "nope"),
+    );
 }
 
 test "a tab is named once, in one language" {
