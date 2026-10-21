@@ -5087,7 +5087,8 @@ pub fn typePoltergeistText(self: *Surface, text: []const u8, submit: bool) !void
 }
 
 pub fn typePoltergeistTextAs(self: *Surface, text: []const u8, submit: bool, who: Typist) !void {
-    if (text.len == 0) return;
+    const plan = sendPlan(text, submit);
+    if (!plan.type_text and !plan.press_return) return;
 
     // **The end of a bracketed paste, refused whatever the target is
     // doing.** It is how a paste is escaped from: the receiving program
@@ -5162,7 +5163,13 @@ pub fn typePoltergeistTextAs(self: *Surface, text: []const u8, submit: bool, who
     // multi-line text is only ever sent with 2004 on (refused above
     // otherwise) and is encoded here directly. Reading the mode is not what
     // makes the multi-line case safe, sending the frame is.
-    if (!multiline) {
+    if (!plan.type_text) {
+        // Only the return (task 2016): `text: ""` with `submit` presses it,
+        // as the tool says submit does. It used to return at the top on an
+        // empty text and press nothing, so the one way a supervisor could
+        // read the description -- "press return afterwards" -- did nothing
+        // and said it had.
+    } else if (!multiline) {
         try self.textCallback(text);
     } else {
         var data_duped: ?[]u8 = null;
@@ -5211,7 +5218,7 @@ pub fn typePoltergeistTextAs(self: *Surface, text: []const u8, submit: bool, who
     // ⚠️ **And it goes in before the `keyCallback` below, not after** -- the
     // return's write is queued by that call, so a delay queued afterwards
     // would land on the wrong side of it.
-    self.queueIo(.{ .write_delay = submitDelayMs() }, .unlocked);
+    if (plan.gap) self.queueIo(.{ .write_delay = submitDelayMs() }, .unlocked);
 
     // `keyCallback` stamps `last_key_time`, and this key is ours, not the
     // user's. Leaving the stamp would have Poltergeist mistake its own
@@ -5253,6 +5260,31 @@ pub fn typePoltergeistTextAs(self: *Surface, text: []const u8, submit: bool, who
         );
         return error.NotSubmitted;
     }
+}
+
+/// What a `terminal_send` does with `text` and `submit` (task 2016): type
+/// the text, press return after it, and wait between the two -- the gap is
+/// for a paste the program has to finish reading, so with nothing pasted
+/// there is none.
+const SendPlan = struct { type_text: bool, press_return: bool, gap: bool };
+
+fn sendPlan(text: []const u8, submit: bool) SendPlan {
+    const typed = text.len > 0;
+    return .{ .type_text = typed, .press_return = submit, .gap = typed and submit };
+}
+
+test "2016: an empty text with submit presses return alone; with neither, nothing" {
+    const testing = std.testing;
+    const only_return = sendPlan("", true);
+    try testing.expect(!only_return.type_text);
+    try testing.expect(only_return.press_return);
+    try testing.expect(!only_return.gap);
+    const nothing = sendPlan("", false);
+    try testing.expect(!nothing.type_text and !nothing.press_return);
+    const line = sendPlan("继续", true);
+    try testing.expect(line.type_text and line.press_return and line.gap);
+    const draft = sendPlan("继续", false);
+    try testing.expect(draft.type_text and !draft.press_return and !draft.gap);
 }
 
 /// Whether the return after a typed line became bytes for the program:

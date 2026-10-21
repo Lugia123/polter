@@ -839,7 +839,7 @@ const tools = [_]Tool{
             "Same reach rule as terminal_read: unmarked terminals are open to anyone, " ++
             "marked ones to supervisors, shielded ones to nobody.",
         .schema =
-        \\{"type":"object","properties":{"id":{"type":"string"},"text":{"type":"string"},"submit":{"type":"boolean","description":"Press return afterwards; defaults to true"}},"required":["id","text"]}
+        \\{"type":"object","properties":{"id":{"type":"string"},"text":{"type":"string"},"submit":{"type":"boolean","description":"Press return afterwards; defaults to true. With an empty text it presses return alone."}},"required":["id","text"]}
         ,
     },
     .{
