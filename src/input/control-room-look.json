@@ -377,7 +377,9 @@
       "_doc": "One terminal's card on the performance page (task 2015): head, body, foot, one grid for every card and every state, so nothing moves with what is in it.",
       "width": 242,
       "height": 196,
-      "radius": 6,
+      "radius": { "v": 6, "doc": "The card's corner as first set, the same on both hosts. Kept for what reads it; a host draws `radius_mac` or `radius_windows`." },
+      "radius_mac": { "v": 10, "src": "perf-2015", "doc": "The card's corner on macOS: the mac picture's (the supervisor, 2026-10-22), as the task page's ground splits." },
+      "radius_windows": { "v": 6, "src": "perf-2015", "doc": "The card's corner on Windows." },
       "pad_x": 14,
       "pad_y": 12,
       "head": { "v": 20, "doc": "The name, the role, the badge." },
@@ -404,6 +406,7 @@
       "curve_stroke": { "v": 1.25, "src": "perf-v4-svg", "doc": "The curve in row 4." },
       "curve_dash": { "v": 2, "src": "perf-v4-svg", "doc": "The dashed line at the kill line's height over the curve: a dash, then `curve_gap`." },
       "curve_gap": { "v": 3, "src": "perf-v4-svg" },
+      "line_stroke": { "v": 1, "src": "perf-v4-svg", "doc": "That dashed line's width." },
       "font_big": { "v": 24, "doc": "L1: the number in the dial." },
       "font_value": { "v": 15, "doc": "L2: the value in row 1. Everything else is L3, `font.body`." },
       "badge_height": { "v": 20, "doc": "The level badge at the head's right end." },
@@ -498,7 +501,12 @@
       "key_font": { "v": 13, "doc": "The key, in the terminal's face." },
       "key_radius": 10,
       "key_pad_x": 8,
-      "key_gap": { "v": 6, "doc": "From a key to its words." }
+      "key_gap": { "v": 6, "doc": "From a key to its words." },
+      "body_line_height": { "v": 20, "doc": "A line of the task's words and of the group's messages." },
+      "key_height": { "v": 20, "doc": "A key's box in the hints." },
+      "glyph_stroke": { "v": 1.25, "doc": "The six task glyphs' line, at `side.glyph`." },
+      "gap_dash": { "v": 2, "doc": "The log's track through \"18 minutes later\": a dash, then `gap_dash_gap`." },
+      "gap_dash_gap": 2
     }
   },
 

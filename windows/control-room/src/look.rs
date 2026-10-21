@@ -654,8 +654,15 @@ pub mod perf_card {
     pub const WIDTH: f64 = 242.0;
     /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
     pub const HEIGHT: f64 = 196.0;
+    /// The card's corner as first set, the same on both hosts. Kept for what reads it; a host draws `radius_mac` or `radius_windows`.
     /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
     pub const RADIUS: f64 = 6.0;
+    /// The card's corner on macOS: the mac picture's (the supervisor, 2026-10-22), as the task page's ground splits.
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub const RADIUS_MAC: f64 = 10.0;
+    /// The card's corner on Windows.
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub const RADIUS_WINDOWS: f64 = 6.0;
     /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
     pub const PAD_X: f64 = 14.0;
     /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
@@ -728,6 +735,9 @@ pub mod perf_card {
     pub const CURVE_DASH: f64 = 2.0;
     /// Source: design #1985 ui-v4, src/perf4.py: the dial's and the curve's drawing, read for task 2039 W2 (seq 166).
     pub const CURVE_GAP: f64 = 3.0;
+    /// That dashed line's width.
+    /// Source: design #1985 ui-v4, src/perf4.py: the dial's and the curve's drawing, read for task 2039 W2 (seq 166).
+    pub const LINE_STROKE: f64 = 1.0;
     /// L1: the number in the dial.
     /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
     pub const FONT_BIG: f64 = 24.0;
@@ -950,6 +960,20 @@ pub mod task_page {
     /// From a key to its words.
     /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
     pub const KEY_GAP: f64 = 6.0;
+    /// A line of the task's words and of the group's messages.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const BODY_LINE_HEIGHT: f64 = 20.0;
+    /// A key's box in the hints.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const KEY_HEIGHT: f64 = 20.0;
+    /// The six task glyphs' line, at `side.glyph`.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const GLYPH_STROKE: f64 = 1.25;
+    /// The log's track through "18 minutes later": a dash, then `gap_dash_gap`.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const GAP_DASH: f64 = 2.0;
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const GAP_DASH_GAP: f64 = 2.0;
 }
 
 /// The six task glyphs, by the system symbol macOS draws; Windows draws the same shape by name (`glyph.rs`), at `side.glyph`.
