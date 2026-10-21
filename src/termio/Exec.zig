@@ -1466,6 +1466,19 @@ const Subprocess = struct {
         if (command.pid) |pid| {
             switch (builtin.os.tag) {
                 .windows => {
+                    // Its whole job, when it has one (task 1993): the shell
+                    // and everything it started. Stopping the shell alone left
+                    // the rest running after the tab was gone.
+                    if (command.job) |job| {
+                        defer {
+                            internal_os.job.win.close(job);
+                            command.job = null;
+                        }
+                        if (internal_os.job.win.terminate(job)) {
+                            _ = try command.wait(false);
+                            return;
+                        }
+                    }
                     if (windows.exp.kernel32.TerminateProcess(pid, 0) == windows.FALSE) {
                         return windows.unexpectedError(windows.GetLastError());
                     }
@@ -1573,6 +1586,40 @@ const Subprocess = struct {
     /// `/usr/bin/login`), for accounting its tree (task 1993). Null before
     /// it is started, for a Flatpak host command, and on Windows, where a
     /// pane is accounted by its Job Object instead.
+    /// Windows: what the terminal's job holds now (task 1993, `os/job.zig`).
+    /// Null elsewhere -- macOS is read by `procscan` -- and before the shell
+    /// is started.
+    pub fn resourceReading(self: *const Subprocess, alloc: Allocator) ?internal_os.job.Reading {
+        if (comptime builtin.os.tag != .windows) return null;
+        const p = self.process orelse return null;
+        const job = switch (p) {
+            .fork_exec => |cmd| cmd.job orelse return null,
+            .flatpak => return null,
+        };
+        const members = internal_os.job.win.members(alloc, job) catch return null;
+        defer alloc.free(members);
+        return internal_os.job.summarise(members);
+    }
+
+    /// Windows: stop everything in the terminal's job but the shell and the
+    /// console host, for the kill line (task 1993). How many were stopped;
+    /// null where this is not how a pane is stopped.
+    pub fn stopAgent(self: *const Subprocess, alloc: Allocator) ?u32 {
+        if (comptime builtin.os.tag != .windows) return null;
+        const p = self.process orelse return null;
+        const cmd = switch (p) {
+            .fork_exec => |found| found,
+            .flatpak => return null,
+        };
+        const job = cmd.job orelse return null;
+        const shell = cmd.pid orelse return null;
+        const members = internal_os.job.win.members(alloc, job) catch return null;
+        defer alloc.free(members);
+        const pids = internal_os.job.stoppable(alloc, members, internal_os.job.win.pidOf(shell)) catch return null;
+        defer alloc.free(pids);
+        return internal_os.job.win.stop(pids);
+    }
+
     pub fn childPid(self: *const Subprocess) ?u64 {
         if (comptime builtin.os.tag == .windows) return null;
         const p = self.process orelse return null;
@@ -2538,6 +2585,16 @@ pub fn getProcessInfo(self: *Exec, comptime info: ProcessInfo) ?ProcessInfo.Type
 /// See `Subprocess.childPid`.
 pub fn childPid(self: *const Exec) ?u64 {
     return self.subprocess.childPid();
+}
+
+/// See `Subprocess.resourceReading`.
+pub fn resourceReading(self: *const Exec, alloc: Allocator) ?internal_os.job.Reading {
+    return self.subprocess.resourceReading(alloc);
+}
+
+/// See `Subprocess.stopAgent`.
+pub fn stopAgent(self: *const Exec, alloc: Allocator) ?u32 {
+    return self.subprocess.stopAgent(alloc);
 }
 
 /// See `Subprocess.shellBusy`.

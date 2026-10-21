@@ -30,6 +30,7 @@ const mem = std.mem;
 const linux = std.os.linux;
 const posix = std.posix;
 const debug = std.debug;
+const log = std.log.scoped(.command);
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const File = std.Io.File;
@@ -110,6 +111,12 @@ data: ?*anyopaque = null,
 
 /// Process ID is set after start is called.
 pid: ?posix.system.pid_t = null,
+
+/// Windows: the Job Object the process was started in (task 1993,
+/// `os/job.zig`), and everything it starts with it. Null when the system
+/// would not make one. Owned: `Exec.killCommand` stops and closes it.
+job: if (builtin.os.tag == .windows) ?windows.HANDLE else void =
+    if (builtin.os.tag == .windows) null else {},
 
 /// The various methods a process may exit.
 pub const Exit = if (builtin.os.tag == .windows) union(enum) {
@@ -485,6 +492,10 @@ fn startWindows(self: *Command, arena: Allocator) !void {
 
     var flags: windows.DWORD = windows.CREATE_UNICODE_ENVIRONMENT;
     if (attribute_list != null) flags |= windows.EXTENDED_STARTUPINFO_PRESENT;
+    // Started suspended into a job of its own, so that nothing it starts
+    // can get out before it is in (task 1993). Without a job, as before.
+    const job = internal_os.job.win.create();
+    if (job != null) flags |= internal_os.job.CREATE_SUSPENDED;
 
     var process_information: windows.PROCESS_INFORMATION = undefined;
     // Shared with the plugins' spawns: a shell lives as long as its tab, and
@@ -506,7 +517,21 @@ fn startWindows(self: *Command, arena: Allocator) !void {
     );
     windows.spawnTrace("shell CreateProcessW", .end, 0);
     windows.unlockSpawn(global.io());
-    if (created == windows.FALSE) return spawnError(windows.GetLastError());
+    if (created == windows.FALSE) {
+        const err = windows.GetLastError();
+        if (job) |j| internal_os.job.win.close(j);
+        return spawnError(err);
+    }
+
+    if (job) |j| {
+        if (internal_os.job.win.adopt(j, process_information.hProcess, process_information.hThread)) {
+            self.job = j;
+        } else {
+            log.warn("could not put the shell in a job; closing its tab will stop the shell only", .{});
+            internal_os.job.win.close(j);
+        }
+    }
+    _ = windows.exp.kernel32.CloseHandle(process_information.hThread);
 
     self.pid = process_information.hProcess;
 }

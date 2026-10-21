@@ -1304,6 +1304,16 @@ pub fn childPid(self: *const Termio) ?u64 {
     return self.backend.childPid();
 }
 
+/// See `backend.Backend.resourceReading`.
+pub fn resourceReading(self: *const Termio, alloc: std.mem.Allocator) ?@import("../os/main.zig").job.Reading {
+    return self.backend.resourceReading(alloc);
+}
+
+/// See `backend.Backend.stopAgent`.
+pub fn stopAgent(self: *const Termio, alloc: std.mem.Allocator) ?u32 {
+    return self.backend.stopAgent(alloc);
+}
+
 /// See `backend.Backend.shellBusy`.
 pub fn shellBusy(self: *Termio) ?bool {
     return self.backend.shellBusy();

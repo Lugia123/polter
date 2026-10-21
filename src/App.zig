@@ -1189,10 +1189,9 @@ fn takeResourceReading(self: *App) void {
     const sampler = &(self.resource_sampler orelse return);
     if (sampler.take()) |usage| {
         defer sampler.alloc.free(usage);
-        self.resource_usage.clearRetainingCapacity();
-        for (usage) |u| self.resource_usage.put(self.alloc, u.id, u) catch break;
-        self.logResources(usage);
-        self.judgeResources(usage);
+        // Windows: no process table to split; each pane's job is read here,
+        // on the app thread, as `shellBusy` reads its shell (task 1993 P6).
+        if (comptime builtin.os.tag == .windows) self.takeJobReadings() else self.useResourceReading(usage);
     }
 
     var panes: std.ArrayListUnmanaged(poltergeistpkg.ledger.Pane) = .empty;
@@ -1371,6 +1370,30 @@ fn resourceSupervisor(self: *App, id: poltergeistpkg.Bus.Id) ?poltergeistpkg.Bus
 /// own (`Stopper`). The rest is `finishResourceStops`.
 fn resourceKill(self: *App, surface: *Surface, u: poltergeistpkg.ledger.Usage, lim: poltergeistpkg.limits.Limits, e: poltergeistpkg.judge.Event) void {
     if (self.resource_kills.contains(u.id)) return;
+    // Windows: the pane's job, everything in it but the shell and the
+    // console host, stopped at once -- there is no `SIGTERM` to wait out.
+    // The rest is the same as below, from `resourceStopped` on.
+    if (comptime builtin.os.tag == .windows) {
+        const note: ResourceKill = .{
+            .event = e,
+            .for_ms = switch (e.metric) {
+                .memory => lim.memory.for_ms,
+                .processes => lim.processes.for_ms,
+            },
+            .top = u.top,
+            .top_len = u.top_len,
+            .top_count = u.top_count,
+        };
+        self.resource_kills.put(self.alloc, u.id, note) catch return;
+        self.writeHistoryEvent(u, e, note.for_ms, .{ .person = true, .supervisor = self.resourceSupervisor(u.id) != null });
+        const stopped = surface.io.stopAgent(self.alloc) orelse 0;
+        log.warn("resources: stopped {d} processes in 0x{x}'s job, {s} {d} over {d}{s}", .{
+            stopped, u.id, @tagName(e.metric), e.value, e.at, if (e.isFast()) " (fast)" else "",
+        });
+        _ = self.resource_stops_running.fetchAdd(1, .acq_rel);
+        resourceStopped(self, u.id, .{ .termed = 0, .killed = stopped });
+        return;
+    }
     const pane = surface.resourcePane() orelse return;
     const procs = poltergeistpkg.procscan.scan(self.alloc) catch return;
     defer self.alloc.free(procs);
@@ -1542,6 +1565,34 @@ fn resourcePressure(self: *App, usage: []const poltergeistpkg.ledger.Usage, p: p
     // A warning about the machine, held to the person's hours like a pane's.
     if (!self.resourceWarningAllowed()) return;
     _ = self.raiseSystemNotification(from, resourceTr(judge.words.pressure_title), body);
+}
+
+fn useResourceReading(self: *App, usage: []const poltergeistpkg.ledger.Usage) void {
+    self.resource_usage.clearRetainingCapacity();
+    for (usage) |u| self.resource_usage.put(self.alloc, u.id, u) catch break;
+    self.logResources(usage);
+    self.judgeResources(usage);
+}
+
+/// Every pane's job, read now, as one reading (Windows).
+fn takeJobReadings(self: *App) void {
+    var usage: std.ArrayListUnmanaged(poltergeistpkg.ledger.Usage) = .empty;
+    defer usage.deinit(self.alloc);
+    for (self.surfaces.items) |v| {
+        const surface = v.core();
+        if (self.isChatSurface(surface.id)) continue;
+        const r = surface.io.resourceReading(self.alloc) orelse continue;
+        usage.append(self.alloc, .{
+            .id = surface.id,
+            .mem = r.mem,
+            .procs = r.procs,
+            .top = r.top,
+            .top_len = r.top_len,
+            .top_count = r.top_count,
+            .top_mem = r.top_mem,
+        }) catch return;
+    }
+    self.useResourceReading(usage.items);
 }
 
 /// One line a minute: the three panes holding the most. What a reading

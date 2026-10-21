@@ -21,7 +21,8 @@
 //! own parent link (`ledger.zig`).
 //!
 //! Elsewhere nothing is read (an empty table): Windows accounts a pane by
-//! the Job Object it runs in, and Linux is not a target of this feature.
+//! the Job Object it runs in (`os/job.zig`), and Linux is not a target of
+//! this feature.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -54,8 +55,37 @@ pub fn scan(alloc: Allocator) Allocator.Error![]Proc {
     };
 }
 
-/// The machine's physical memory in bytes, or null where it is not read.
+/// `MEMORYSTATUSEX` (sysinfoapi.h), for the Windows reading below.
+const MemoryStatusEx = extern struct {
+    dwLength: u32,
+    dwMemoryLoad: u32,
+    ullTotalPhys: u64,
+    ullAvailPhys: u64,
+    ullTotalPageFile: u64,
+    ullAvailPageFile: u64,
+    ullTotalVirtual: u64,
+    ullAvailVirtual: u64,
+    ullAvailExtendedVirtual: u64,
+};
+
+comptime {
+    std.debug.assert(@sizeOf(MemoryStatusEx) == 64);
+}
+
+const win = if (builtin.os.tag == .windows) struct {
+    extern "kernel32" fn GlobalMemoryStatusEx(lpBuffer: *MemoryStatusEx) callconv(.winapi) std.os.windows.BOOL;
+} else struct {};
+
+/// The machine's physical memory in bytes, or null where it is not read:
+/// `hw.memsize` on macOS, `GlobalMemoryStatusEx` on Windows (task 1993 P6,
+/// for lines drawn as a share of the machine).
 pub fn physicalMemory() ?u64 {
+    if (builtin.os.tag == .windows) {
+        var m: MemoryStatusEx = std.mem.zeroes(MemoryStatusEx);
+        m.dwLength = @sizeOf(MemoryStatusEx);
+        if (win.GlobalMemoryStatusEx(&m) == .FALSE) return null;
+        return m.ullTotalPhys;
+    }
     if (builtin.os.tag != .macos) return null;
     var v: u64 = 0;
     var len: usize = @sizeOf(u64);

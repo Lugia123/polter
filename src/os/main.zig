@@ -31,6 +31,7 @@ pub const windows = @import("windows.zig");
 pub const macos = @import("macos.zig");
 pub const default_shell = @import("default_shell.zig");
 pub const shell = @import("shell.zig");
+pub const job = @import("job.zig");
 pub const stderr = @import("stderr.zig");
 pub const uri = @import("uri.zig");
 
@@ -71,6 +72,7 @@ test {
     _ = uri;
     _ = default_shell;
     _ = shell;
+    _ = job;
 
     if (comptime builtin.os.tag == .linux) {
         _ = kernel_info;

@@ -118,6 +118,20 @@ pub const Backend = union(Kind) {
         };
     }
 
+    /// Windows: the terminal's job, read now (task 1993).
+    pub fn resourceReading(self: *const Backend, alloc: std.mem.Allocator) ?@import("../os/main.zig").job.Reading {
+        return switch (self.*) {
+            .exec => |*exec| exec.resourceReading(alloc),
+        };
+    }
+
+    /// Windows: stop all of the terminal's job but its shell (task 1993).
+    pub fn stopAgent(self: *const Backend, alloc: std.mem.Allocator) ?u32 {
+        return switch (self.*) {
+            .exec => |*exec| exec.stopAgent(alloc),
+        };
+    }
+
     /// Whether the shell is running a command, where that can be told from
     /// its child processes (#991). Null where it cannot.
     pub fn shellBusy(self: *Backend) ?bool {
