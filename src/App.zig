@@ -3869,6 +3869,147 @@ fn renderResources(self: *App, arena: Allocator, r: PageRequest) Allocator.Error
     });
 }
 
+/// Only what `controlPage` reaches, as task 1730's tests build an `App`: a
+/// whole one wants the runtime's surfaces, which a test build has none of.
+const PageWorld = struct {
+    app: App,
+
+    fn init(self: *PageWorld, alloc: Allocator) !void {
+        const P = poltergeistpkg;
+        self.app = undefined;
+        const app = &self.app;
+        app.alloc = alloc;
+        app.page_req = .empty;
+        app.page_out = .empty;
+        app.page_held = false;
+        app.control_room = .init(alloc);
+        app.resource_usage = .empty;
+        app.resource_judges = .empty;
+        app.resource_recent = .empty;
+        app.resource_killed = .empty;
+        app.resource_history = .{};
+        app.resource_history_file = null;
+        app.resource_names = .{};
+        app.resource_seq = 1;
+        app.poltergeist = .init(alloc, .{});
+        app.chat = .init(alloc, .{});
+        app.tasks = .init(alloc, .{});
+        app.task_log = null;
+        app.chat_log = null;
+
+        // web-app: its supervisor 0xa1 and a worker 0xb1, both read; the
+        // supervisor's half hour open now.
+        try app.chat.create("web-app", 0xa1);
+        app.control_room.route_rows = &.{.{
+            .group = "web-app",
+            .steward = 0xa1,
+            .members = &.{ 0xa1, 0xb1 },
+            .titles = &.{ "design-system", "ocr-mask" },
+            .own = &.{ false, false },
+        }};
+        try app.resource_usage.put(alloc, 0xa1, .{ .id = 0xa1, .mem = 1 << 30, .procs = 6 });
+        try app.resource_usage.put(alloc, 0xb1, .{ .id = 0xb1, .mem = 3 << 30, .procs = 9 });
+        const now = app.poltergeistWallMs();
+        _ = try app.resource_history.note(alloc, 0xa1, now, P.daylog.localOffsetMs(now), .warn1, 1 << 30, 6);
+
+        // Its tasks: one being done by the worker, one closed.
+        const t1 = try app.tasks.create("web-app", "PATCH /api/tasks takes a list of ids", .feature);
+        try app.tasks.assign(t1, 0xb1);
+        const t2 = try app.tasks.create("web-app", "List and filter", .feature);
+        try app.tasks.close(t2);
+    }
+
+    fn deinit(self: *PageWorld) void {
+        const app = &self.app;
+        const alloc = app.alloc;
+        app.page_req.deinit(alloc);
+        app.page_out.deinit(alloc);
+        app.control_room.route_rows = &.{};
+        app.control_room.deinit();
+        app.resource_usage.deinit(alloc);
+        app.resource_judges.deinit(alloc);
+        app.resource_recent.deinit(alloc);
+        app.resource_killed.deinit(alloc);
+        app.resource_history.deinit(alloc);
+        app.resource_names.deinit(alloc);
+        app.poltergeist.deinit();
+        app.chat.deinit();
+        app.tasks.deinit();
+    }
+
+    /// The page for `req`, as a host gets it with a buffer big enough,
+    /// parsed into `arena`.
+    fn ask(self: *PageWorld, arena: Allocator, req: []const u8) !std.json.Value {
+        const out = self.app.controlPage(req, 1 << 20);
+        return std.json.parseFromSliceLeaky(std.json.Value, arena, out, .{});
+    }
+};
+
+test "2015: control_page answers a group's 24 hours and 7 days, its tasks, and refuses a span it does not know" {
+    const testing = std.testing;
+    var w: PageWorld = undefined;
+    try w.init(testing.allocator);
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Each span: its own count of cells, in every terminal's row.
+    const Want = struct { span: []const u8, cells: i64 };
+    for ([_]Want{ .{ .span = "day", .cells = 48 }, .{ .span = "week", .cells = 42 } }) |want| {
+        const req = try std.fmt.allocPrint(a, "{{\"page\":\"resources\",\"group\":\"web-app\",\"span\":\"{s}\",\"since\":0}}", .{want.span});
+        const v = try w.ask(a, req);
+        const grid = v.object.get("grid").?.object;
+        try testing.expectEqualStrings(want.span, grid.get("span").?.string);
+        try testing.expectEqual(want.cells, grid.get("cells").?.integer);
+        const panes = grid.get("panes").?.array.items;
+        try testing.expectEqual(@as(usize, 2), panes.len);
+        for (panes) |pane| {
+            const n: i64 = @intCast(pane.object.get("cells").?.array.items.len);
+            try testing.expectEqual(want.cells, n);
+        }
+        // The supervisor's open half hour is in its last cell either way.
+        const last = panes[0].object.get("cells").?.array.items;
+        try testing.expectEqualStrings("warn1", last[last.len - 1].string);
+        // The supervisor first, by its title.
+        try testing.expectEqualStrings("design-system", v.object.get("cards").?.array.items[0].object.get("name").?.string);
+    }
+
+    // The task page: the open task with its owner by name, the closed
+    // one counted.
+    {
+        const v = try w.ask(a, "{\"page\":\"tasks\",\"group\":\"web-app\",\"closed\":false}");
+        const open = v.object.get("open").?.array.items;
+        try testing.expectEqual(@as(usize, 1), open.len);
+        try testing.expectEqualStrings("ocr-mask", open[0].object.get("owner").?.string);
+        try testing.expectEqual(@as(i64, 1), v.object.get("closed_count").?.integer);
+    }
+
+    // What it will not answer.
+    try testing.expectEqualStrings("{\"error\":\"BadRequest\"}", w.app.controlPage("{\"page\":\"resources\",\"group\":\"web-app\",\"span\":\"month\"}", 1 << 20));
+    try testing.expectEqualStrings("{\"error\":\"NoSuchGroup\"}", w.app.controlPage("{\"page\":\"resources\",\"group\":\"nope\",\"span\":\"day\"}", 1 << 20));
+    try testing.expectEqualStrings("{\"error\":\"BadRequest\"}", w.app.controlPage("not json", 1 << 20));
+}
+
+test "2015: control_page holds an answer that did not fit, for the same request asked again" {
+    const testing = std.testing;
+    var w: PageWorld = undefined;
+    try w.init(testing.allocator);
+    defer w.deinit();
+    const req = "{\"page\":\"resources\",\"group\":\"web-app\",\"span\":\"day\",\"since\":0}";
+
+    // A host asks for the length first (no buffer): the answer is held...
+    const first = try testing.allocator.dupe(u8, w.app.controlPage(req, 0));
+    defer testing.allocator.free(first);
+    try testing.expect(first.len > 0);
+    // ...and the same request then gets those bytes, not a new reading.
+    w.app.resource_seq += 1;
+    try testing.expectEqualStrings(first, w.app.controlPage(req, first.len + 1));
+    // Taken: the next ask is a new reading.
+    const third = w.app.controlPage(req, 1 << 20);
+    try testing.expect(!std.mem.eql(u8, first, third));
+}
+
 pub fn controlSnapshotJson(self: *const App) []const u8 {
     return self.control_room.json;
 }

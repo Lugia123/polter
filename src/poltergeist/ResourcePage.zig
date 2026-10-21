@@ -833,6 +833,40 @@ test "2015: a grid cell's hover says what stopped, why, the largest process and 
     for (rows[0].object.get("cells").?.array.items) |t| try testing.expectEqualStrings("none", t.string);
 }
 
+/// `key` of `o`, which must be there and hold null.
+fn expectNull(o: std.json.ObjectMap, key: []const u8) !void {
+    const v = o.get(key) orelse {
+        std.debug.print("{s} is missing; it should be there as null\n", .{key});
+        return error.TestExpectedEqual;
+    };
+    try testing.expect(v == .null);
+}
+
+test "2015: a field the core has no value for is there, as null -- never left out" {
+    // Windows reads no swap; a machine may not say its pressure. A host
+    // that finds the key holding null draws nothing there (API.md §2.0).
+    const usage: ledger.Usage = .{ .id = 0x7, .mem = 400 * mib, .procs = 2 };
+    const panes = [_]Pane{.{ .id = 0x7, .name = "a", .role = .worker, .usage = usage, .lim = .none, .level = .ok, .recent = null, .killed = null }};
+    var grid = try Grid.build(testing.allocator, .day, noon, plus8, "", &.{});
+    defer grid.deinit(testing.allocator);
+    var in = baseIn(&panes, &grid);
+    in.machine = .{ .used = null, .phys = null, .swap = null, .pressure = null };
+    var got = try rendered(in);
+    defer got.deinit();
+    const machine = got.root.object.get("machine").?.object;
+    try expectNull(machine, "pressure_tone");
+    const text = machine.get("text").?.object;
+    for ([_][]const u8{ "mem", "mem_of", "swap", "pressure" }) |key| try expectNull(text, key);
+    const c = got.card(0);
+    try expectNull(c, "role");
+    try expectNull(c, "badge");
+    try expectNull(c, "line_at");
+    try expectNull(c.get("lines").?.object, "r2");
+    const raw = c.get("raw").?.object;
+    try expectNull(raw, "cpu_milli");
+    try expectNull(raw, "run_s");
+}
+
 test "2015: every sentence of the performance page is in po/zh_CN.po" {
     var threaded: std.Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
