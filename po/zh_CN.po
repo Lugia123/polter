@@ -5894,10 +5894,6 @@ msgstr "重启后凭同一会话接回（{1}）"
 msgid "{1} min later"
 msgstr "隔了 {1} 分钟"
 
-#: src/poltergeist/TaskPage.zig:114
-msgid "{1} closed"
-msgstr "关了的 {1} 条"
-
 #: src/poltergeist/TaskPage.zig:115
 msgid "Pick a task"
 msgstr "选任务"
@@ -5910,17 +5906,65 @@ msgstr "收起这条的经过"
 msgid "Open its story"
 msgstr "展开这条的经过"
 
-#: src/poltergeist/TaskPage.zig:118
-msgid "Filter"
-msgstr "筛选"
+#: src/poltergeist/TaskPage.zig
+msgid "{1} closed or cancelled tasks hidden"
+msgstr "已隐藏 {1} 条已关闭或已取消的任务"
 
-#: src/poltergeist/TaskPage.zig:119
-msgid "Open ones only"
-msgstr "只看开着的"
+#: src/poltergeist/TaskPage.zig
+msgid "{1} closed or cancelled"
+msgstr "已关闭或已取消的 {1} 条"
 
-#: src/poltergeist/TaskPage.zig:120
-msgid "Closed ones too"
-msgstr "也看关了的"
+#: src/poltergeist/TaskPage.zig
+msgid "{1} more closed with \"{2}\" in the title"
+msgstr "已关闭的里还有 {1} 条标题含「{2}」"
+
+#: src/poltergeist/TaskPage.zig
+msgid "or click this row to show them"
+msgstr "或点这一行显示"
+
+#: src/poltergeist/TaskPage.zig
+msgid "Hide"
+msgstr "隐藏"
+
+#: src/poltergeist/TaskPage.zig
+msgid "Show the {1} closed"
+msgstr "显示已关闭的 {1} 条"
+
+#: src/poltergeist/TaskPage.zig
+msgid "Hide the closed"
+msgstr "隐藏已关闭的"
+
+#: src/poltergeist/TaskPage.zig
+msgid "Filter by title"
+msgstr "按标题筛选"
+
+#: src/poltergeist/TaskPage.zig
+msgid "Pick among the results"
+msgstr "在结果里选"
+
+#: src/poltergeist/TaskPage.zig
+msgid "Clear the filter"
+msgstr "清空筛选"
+
+#: src/poltergeist/TaskPage.zig
+msgid "{1} / {2}"
+msgstr "{1} / {2} 条"
+
+#: src/poltergeist/TaskPage.zig
+msgid "Clear filter"
+msgstr "清空"
+
+#: src/poltergeist/TaskPage.zig
+msgid "No task has \"{1}\" in its title"
+msgstr "没有标题里含「{1}」的任务"
+
+#: src/poltergeist/TaskPage.zig
+msgid "{1} closed ones have \"{2}\" in the title; press c to show them. Press Esc to clear the filter."
+msgstr "已关闭的里有 {1} 条标题含「{2}」，按 c 显示。按 Esc 清空筛选。"
+
+#: src/poltergeist/TaskPage.zig
+msgid "The closed ones were searched too. Press Esc to clear the filter."
+msgstr "已关闭的也找过了。按 Esc 清空筛选。"
 
 
 #~ msgid "Filter by key"

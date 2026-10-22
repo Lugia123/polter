@@ -6758,10 +6758,6 @@ msgstr ""
 msgid "{1} min later"
 msgstr ""
 
-#: src/poltergeist/TaskPage.zig:114
-msgid "{1} closed"
-msgstr ""
-
 #: src/poltergeist/TaskPage.zig:115
 msgid "Pick a task"
 msgstr ""
@@ -6774,14 +6770,62 @@ msgstr ""
 msgid "Open its story"
 msgstr ""
 
-#: src/poltergeist/TaskPage.zig:118
-msgid "Filter"
+#: src/poltergeist/TaskPage.zig
+msgid "{1} closed or cancelled tasks hidden"
 msgstr ""
 
-#: src/poltergeist/TaskPage.zig:119
-msgid "Open ones only"
+#: src/poltergeist/TaskPage.zig
+msgid "{1} closed or cancelled"
 msgstr ""
 
-#: src/poltergeist/TaskPage.zig:120
-msgid "Closed ones too"
+#: src/poltergeist/TaskPage.zig
+msgid "{1} more closed with \"{2}\" in the title"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "or click this row to show them"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "Hide"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "Show the {1} closed"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "Hide the closed"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "Filter by title"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "Pick among the results"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "Clear the filter"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "{1} / {2}"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "Clear filter"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "No task has \"{1}\" in its title"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "{1} closed ones have \"{2}\" in the title; press c to show them. Press Esc to clear the filter."
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig
+msgid "The closed ones were searched too. Press Esc to clear the filter."
 msgstr ""

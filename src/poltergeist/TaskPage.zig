@@ -74,6 +74,11 @@ pub const In = struct {
     open_task: ?u64,
     said: []const Said,
     closed: bool,
+    /// What the filter box holds (task 2083): null with no box, "" with
+    /// one just opened. Titles are matched here, ASCII case ignored, so the
+    /// page's every word -- the count, the "nothing has it" -- is written
+    /// where the matching is done.
+    filter: ?[]const u8 = null,
     now_ms: i64,
     offset_ms: i64,
     tr: Tr,
@@ -114,24 +119,42 @@ pub const words = struct {
     pub const op_compacted = i18n.N_("(What came before was merged)");
     pub const op_reowned = i18n.N_("Back after a restart, the same session ({1})");
     pub const gap = i18n.N_("{1} min later");
-    pub const closed_title = i18n.N_("{1} closed");
     pub const hint_pick = i18n.N_("Pick a task");
     pub const hint_fold = i18n.N_("Fold its story");
     pub const hint_open = i18n.N_("Open its story");
-    pub const hint_filter = i18n.N_("Filter");
-    pub const hint_only_open = i18n.N_("Open ones only");
-    pub const hint_with_closed = i18n.N_("Closed ones too");
+    // The closed ones' row and the c key's word on it (task 2083,
+    // `polter-artifacts/2083/v1`): hidden by default, and said to be.
+    pub const closed_hidden = i18n.N_("{1} closed or cancelled tasks hidden");
+    pub const closed_shown = i18n.N_("{1} closed or cancelled");
+    pub const closed_matched = i18n.N_("{1} more closed with \"{2}\" in the title");
+    pub const closed_show_row = i18n.N_("or click this row to show them");
+    pub const closed_hide_row = i18n.N_("Hide");
+    pub const hint_show_closed = i18n.N_("Show the {1} closed");
+    pub const hint_hide_closed = i18n.N_("Hide the closed");
+    // The filter: f opens it, Esc clears it (task 2083).
+    pub const hint_filter = i18n.N_("Filter by title");
+    pub const hint_pick_match = i18n.N_("Pick among the results");
+    pub const hint_clear = i18n.N_("Clear the filter");
+    pub const filter_count = i18n.N_("{1} / {2}");
+    pub const filter_clear = i18n.N_("Clear filter");
+    pub const no_match = i18n.N_("No task has \"{1}\" in its title");
+    // Each a whole sentence pair, so that a language puts the space between
+    // them, or none, as it does.
+    pub const no_match_closed = i18n.N_("{1} closed ones have \"{2}\" in the title; press c to show them. Press Esc to clear the filter.");
+    pub const no_match_searched = i18n.N_("The closed ones were searched too. Press Esc to clear the filter.");
 
     pub const all = [_][:0]const u8{
-        head_id,    head_state,   head_title,  head_owner,     head_idle,
-        queued,     working,      blocked,     done,           closed,
-        cancelled,  nobody,       just_now,    minutes,        hours,
-        yesterday,  days,         body_title,  log_title,      said_title,
-        supervisor, op_created,   op_assigned, op_unassigned,  op_working,
-        op_blocked, op_done,      op_queued,   op_closed,      op_cancelled,
-        op_edited,  op_compacted, gap,         closed_title,   hint_pick,
-        hint_fold,  hint_open,    hint_filter, hint_only_open, hint_with_closed,
-        op_reowned,
+        head_id,         head_state,        head_title,       head_owner,       head_idle,
+        queued,          working,           blocked,          done,             closed,
+        cancelled,       nobody,            just_now,         minutes,          hours,
+        yesterday,       days,              body_title,       log_title,        said_title,
+        supervisor,      op_created,        op_assigned,      op_unassigned,    op_working,
+        op_blocked,      op_done,           op_queued,        op_closed,        op_cancelled,
+        op_edited,       op_compacted,      gap,              hint_pick,        hint_fold,
+        hint_open,       op_reowned,        closed_hidden,    closed_shown,     closed_matched,
+        closed_show_row, closed_hide_row,   hint_show_closed, hint_hide_closed, hint_filter,
+        hint_pick_match, hint_clear,        filter_count,     filter_clear,     no_match,
+        no_match_closed, no_match_searched,
     };
 };
 
@@ -142,11 +165,19 @@ const Row = struct {
     glyph: Glyph,
     state: []const u8,
     title: []const u8,
+    /// With a filter (task 2083): `title` cut where the filter is in it,
+    /// for the host to draw the `hit` pieces marked. Null with no filter,
+    /// or an empty one: the host draws `title`. Cut here rather than given
+    /// as offsets, because the two hosts count a string in different units
+    /// and the rule for what matches is in one place, this one.
+    title_parts: ?[]const Part = null,
     owner: []const u8,
     idle: []const u8,
     emph: bool,
     detail: ?Detail = null,
 };
+
+const Part = struct { text: []const u8, hit: bool };
 
 const Detail = struct {
     body_title: []const u8,
@@ -181,11 +212,37 @@ const Out = struct {
     goal_lines: []const []const u8,
     head: struct { id: []const u8, state: []const u8, title: []const u8, owner: []const u8, idle: []const u8 },
     open: []const Row,
-    closed_title: []const u8,
+    /// The closed ones' row: what it says, and the key beside it. Null
+    /// when there is no row -- nothing closed, or nothing closed matching.
+    closed_title: ?[]const u8,
+    closed_key: ?Hint,
+    /// The closed ones the row stands for: all of them, or with a filter
+    /// the ones matching it.
     closed_count: usize,
     closed: []const Row,
-    hints: []const struct { key: []const u8, text: []const u8 },
+    /// The keys along the bottom, left to right, and the c key's at its
+    /// right end -- null when nothing is closed.
+    hints: []const Hint,
+    hint_closed: ?Hint,
+    filter: ?Filter,
+    /// No open task matches a filter: what to say instead of the list.
+    no_match: ?NoMatch,
 };
+
+const Hint = struct { key: []const u8, text: []const u8 };
+
+const Filter = struct {
+    /// The grey words in an empty box.
+    prompt: []const u8,
+    /// What the box holds, as given.
+    text: []const u8,
+    /// "4 / 9": matching open tasks of all the open ones; null while the
+    /// box is empty.
+    count: ?[]const u8,
+    clear: Hint,
+};
+
+const NoMatch = struct { title: []const u8, detail: []const u8 };
 
 // ------------------------------------------------------------ the saying
 
@@ -202,8 +259,12 @@ pub fn render(arena: Allocator, in: In) Allocator.Error![]u8 {
         }
     }.lt);
 
+    const q = in.filter orelse "";
+    var open_count: usize = 0;
     for (sorted) |t| {
         const shut = t.state != .open;
+        if (!shut) open_count += 1;
+        if (!titleHas(t.title, q)) continue;
         if (shut) closed_count += 1;
         if (shut and !in.closed) continue;
         var row: Row = .{
@@ -215,28 +276,65 @@ pub fn render(arena: Allocator, in: In) Allocator.Error![]u8 {
             .idle = try idle(arena, tr, lastAt(in.events, t.id), in.now_ms, in.offset_ms),
             .emph = in.open_task == t.id,
         };
+        if (q.len > 0) row.title_parts = try titleParts(arena, t.title, q);
         if (in.open_task == t.id) row.detail = try detail(arena, in, t);
         try (if (shut) &closed else &open).append(arena, row);
     }
     // The newest closed first: what was just finished is what is looked for.
     std.mem.reverse(Row, closed.items);
 
-    const Hint = @typeInfo(@FieldType(Out, "hints")).pointer.child;
+    const n_closed = try num(arena, closed_count);
+    const filtering = q.len > 0;
+    // The row is there when it stands for something; with a filter, only
+    // when some closed ones match it -- and not when no open one does,
+    // where `no_match` says it instead (2083/v1, 04-filter).
+    const row_title: ?[]const u8 = if (closed_count == 0 or (filtering and open.items.len == 0))
+        null
+    else if (in.closed)
+        try fill(arena, tr(words.closed_shown), &.{n_closed})
+    else if (filtering)
+        try fill(arena, tr(words.closed_matched), &.{ n_closed, q })
+    else
+        try fill(arena, tr(words.closed_hidden), &.{n_closed});
+    const all_closed = sorted.len - open_count;
+    const hint_closed: ?Hint = if (all_closed == 0) null else .{
+        .key = "c",
+        .text = if (in.closed) tr(words.hint_hide_closed) else try fill(arena, tr(words.hint_show_closed), &.{try num(arena, all_closed)}),
+    };
+    const enter: Hint = .{ .key = "Enter", .text = tr(if (in.open_task != null) words.hint_fold else words.hint_open) };
+    const hints: []const Hint = if (in.filter != null)
+        try arena.dupe(Hint, &.{ .{ .key = "↑↓", .text = tr(words.hint_pick_match) }, enter, .{ .key = "Esc", .text = tr(words.hint_clear) } })
+    else
+        try arena.dupe(Hint, &.{ .{ .key = "↑↓", .text = tr(words.hint_pick) }, enter, .{ .key = "f", .text = tr(words.hint_filter) } });
+
     const out: Out = .{
         .group = in.group,
         .goal = in.goal,
         .goal_lines = try goalLines(arena, in.goal),
         .head = .{ .id = tr(words.head_id), .state = tr(words.head_state), .title = tr(words.head_title), .owner = tr(words.head_owner), .idle = tr(words.head_idle) },
         .open = open.items,
-        .closed_title = try fill(arena, tr(words.closed_title), &.{try num(arena, closed_count)}),
+        .closed_title = row_title,
+        .closed_key = if (row_title == null) null else .{
+            .key = "c",
+            .text = tr(if (in.closed) words.closed_hide_row else words.closed_show_row),
+        },
         .closed_count = closed_count,
         .closed = closed.items,
-        .hints = try arena.dupe(Hint, &.{
-            .{ .key = "↑↓", .text = tr(words.hint_pick) },
-            .{ .key = "Enter", .text = tr(if (in.open_task != null) words.hint_fold else words.hint_open) },
-            .{ .key = "f", .text = tr(words.hint_filter) },
-            .{ .key = "c", .text = tr(if (in.closed) words.hint_only_open else words.hint_with_closed) },
-        }),
+        .hints = hints,
+        .hint_closed = hint_closed,
+        .filter = if (in.filter == null) null else .{
+            .prompt = tr(words.hint_filter),
+            .text = q,
+            .count = if (filtering) try fill(arena, tr(words.filter_count), &.{ try num(arena, open.items.len), try num(arena, open_count) }) else null,
+            .clear = .{ .key = "Esc", .text = tr(words.filter_clear) },
+        },
+        .no_match = if (!filtering or open.items.len > 0) null else .{
+            .title = try fill(arena, tr(words.no_match), &.{q}),
+            .detail = if (closed_count > 0 and !in.closed)
+                try fill(arena, tr(words.no_match_closed), &.{ n_closed, q })
+            else
+                tr(words.no_match_searched),
+        },
     };
     return std.json.Stringify.valueAlloc(arena, out, .{});
 }
@@ -251,6 +349,27 @@ fn goalLines(arena: Allocator, goal: []const u8) Allocator.Error![]const []const
         if (t.len > 0) try out.append(arena, t);
     }
     return out.items;
+}
+
+/// `title` in pieces, each `q` in it a `hit`, ASCII case ignored; every
+/// piece is whole characters, because a valid `q` found in valid UTF-8 can
+/// only start and end where characters do.
+fn titleParts(arena: Allocator, title: []const u8, q: []const u8) Allocator.Error![]const Part {
+    var out: std.ArrayListUnmanaged(Part) = .empty;
+    var at: usize = 0;
+    while (std.ascii.indexOfIgnoreCasePos(title, at, q)) |hit| {
+        if (hit > at) try out.append(arena, .{ .text = title[at..hit], .hit = false });
+        try out.append(arena, .{ .text = title[hit .. hit + q.len], .hit = true });
+        at = hit + q.len;
+    }
+    if (at < title.len) try out.append(arena, .{ .text = title[at..], .hit = false });
+    return out.items;
+}
+
+/// Whether `title` has `q` in it, ASCII case ignored; an empty `q` is in
+/// every title.
+fn titleHas(title: []const u8, q: []const u8) bool {
+    return q.len == 0 or std.ascii.indexOfIgnoreCase(title, q) != null;
 }
 
 fn glyphOf(t: Task) Glyph {
@@ -514,7 +633,7 @@ test "2015: the open tasks in number order, each with its state, owner and how l
     try testing.expectEqualStrings("—", str(open[2], "idle"));
     // Closed and cancelled are counted, not listed, until asked for.
     try testing.expectEqual(@as(i64, 3), got.root.object.get("closed_count").?.integer);
-    try testing.expectEqualStrings("3 closed", str(got.root, "closed_title"));
+    try testing.expectEqualStrings("3 closed or cancelled tasks hidden", str(got.root, "closed_title"));
     try testing.expectEqual(@as(usize, 0), got.root.object.get("closed").?.array.items.len);
     try testing.expectEqualStrings("Bulk editing for the task list.", str(got.root, "goal"));
     try testing.expectEqualStrings("Open its story", str(got.root.object.get("hints").?.array.items[1], "text"));
@@ -561,7 +680,141 @@ test "2015: the closed ones, asked for, come newest first" {
     try testing.expectEqual(@as(i64, 213), closed[0].object.get("id").?.integer);
     try testing.expectEqualStrings("closed", str(closed[0], "glyph"));
     try testing.expectEqualStrings("cancelled", str(closed[2], "glyph"));
-    try testing.expectEqualStrings("Open ones only", str(got.root.object.get("hints").?.array.items[3], "text"));
+    try testing.expectEqualStrings("3 closed or cancelled", str(got.root, "closed_title"));
+    try testing.expectEqualStrings("Hide", str(got.root.object.get("closed_key").?, "text"));
+    try testing.expectEqualStrings("Hide the closed", str(got.root.object.get("hint_closed").?, "text"));
+}
+
+test "2083: the closed ones are hidden by default and the page says so, on their row and at the end of the keys" {
+    var got = try rendered(baseIn());
+    defer got.deinit();
+    const root = got.root;
+    try testing.expectEqualStrings("3 closed or cancelled tasks hidden", str(root, "closed_title"));
+    const row_key = root.object.get("closed_key").?;
+    try testing.expectEqualStrings("c", str(row_key, "key"));
+    try testing.expectEqualStrings("or click this row to show them", str(row_key, "text"));
+    try testing.expectEqualStrings("Show the 3 closed", str(root.object.get("hint_closed").?, "text"));
+    const hints = root.object.get("hints").?.array.items;
+    try testing.expectEqual(@as(usize, 3), hints.len);
+    try testing.expectEqualStrings("Pick a task", str(hints[0], "text"));
+    try testing.expectEqualStrings("f", str(hints[2], "key"));
+    try testing.expectEqualStrings("Filter by title", str(hints[2], "text"));
+    try testing.expect(root.object.get("filter").? == .null);
+    try testing.expect(root.object.get("no_match").? == .null);
+
+    // Nothing closed: no row, and no c at the end of the keys.
+    const only_open = [_]Task{sample_tasks[0]};
+    var in = baseIn();
+    in.tasks = &only_open;
+    var none = try rendered(in);
+    defer none.deinit();
+    try testing.expect(none.root.object.get("closed_title").? == .null);
+    try testing.expect(none.root.object.get("closed_key").? == .null);
+    try testing.expect(none.root.object.get("hint_closed").? == .null);
+}
+
+test "2083: a filter keeps the titles that have it, case ignored, and the page counts and words it" {
+    var in = baseIn();
+    // Just opened: everything, the prompt, no count yet, Esc to leave.
+    in.filter = "";
+    var empty = try rendered(in);
+    defer empty.deinit();
+    const box = empty.root.object.get("filter").?;
+    try testing.expectEqualStrings("Filter by title", str(box, "prompt"));
+    try testing.expect(box.object.get("count").? == .null);
+    try testing.expectEqualStrings("Esc", str(box.object.get("clear").?, "key"));
+    try testing.expectEqual(@as(usize, 3), empty.root.object.get("open").?.array.items.len);
+    // An empty box marks nothing: the host draws the titles as they are.
+    try testing.expect(empty.root.object.get("open").?.array.items[0].object.get("title_parts").? == .null);
+    const keys = empty.root.object.get("hints").?.array.items;
+    try testing.expectEqualStrings("Pick among the results", str(keys[0], "text"));
+    try testing.expectEqualStrings("Esc", str(keys[2], "key"));
+    try testing.expectEqualStrings("Clear the filter", str(keys[2], "text"));
+
+    // "LIST" is in #215's title and, among the closed, #213's.
+    in.filter = "LIST";
+    var got = try rendered(in);
+    defer got.deinit();
+    const open = got.root.object.get("open").?.array.items;
+    try testing.expectEqual(@as(usize, 1), open.len);
+    try testing.expectEqual(@as(i64, 215), open[0].object.get("id").?.integer);
+    // The title in pieces, the hit as the title has it, not as typed.
+    const parts_v = open[0].object.get("title_parts").?;
+    try testing.expect(parts_v != .null);
+    const parts = parts_v.array.items;
+    try testing.expectEqual(@as(usize, 3), parts.len);
+    try testing.expectEqualStrings("PATCH /api/tasks takes a ", str(parts[0], "text"));
+    try testing.expect(!parts[0].object.get("hit").?.bool);
+    try testing.expectEqualStrings("list", str(parts[1], "text"));
+    try testing.expect(parts[1].object.get("hit").?.bool);
+    try testing.expectEqualStrings(" of ids", str(parts[2], "text"));
+    try testing.expectEqualStrings("1 / 3", str(got.root.object.get("filter").?, "count"));
+    try testing.expectEqual(@as(i64, 1), got.root.object.get("closed_count").?.integer);
+    try testing.expectEqualStrings("1 more closed with \"LIST\" in the title", str(got.root, "closed_title"));
+    // The c at the end of the keys is about all of them, filter or not.
+    try testing.expectEqualStrings("Show the 3 closed", str(got.root.object.get("hint_closed").?, "text"));
+    try testing.expect(got.root.object.get("no_match").? == .null);
+
+    // Shown, the closed ones are filtered too.
+    in.closed = true;
+    var shown = try rendered(in);
+    defer shown.deinit();
+    const closed = shown.root.object.get("closed").?.array.items;
+    try testing.expectEqual(@as(usize, 1), closed.len);
+    try testing.expectEqual(@as(i64, 213), closed[0].object.get("id").?.integer);
+    const closed_parts = closed[0].object.get("title_parts").?.array.items;
+    try testing.expectEqualStrings("List", str(closed_parts[0], "text"));
+    try testing.expect(closed_parts[0].object.get("hit").?.bool);
+}
+
+test "2083: a title is cut at every hit, in whole characters, and Chinese is matched as it is" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Twice, at the ends.
+    const ends = try titleParts(a, "ab-x-AB", "ab");
+    try testing.expectEqual(@as(usize, 3), ends.len);
+    try testing.expectEqualStrings("ab", ends[0].text);
+    try testing.expect(ends[0].hit);
+    try testing.expectEqualStrings("-x-", ends[1].text);
+    try testing.expect(!ends[1].hit);
+    try testing.expectEqualStrings("AB", ends[2].text);
+    try testing.expect(ends[2].hit);
+    // Chinese: the hit is whole characters, and so is what is around it.
+    const zh = try titleParts(a, "给任务列表加批量编辑", "批量");
+    try testing.expectEqual(@as(usize, 3), zh.len);
+    try testing.expectEqualStrings("给任务列表加", zh[0].text);
+    try testing.expectEqualStrings("批量", zh[1].text);
+    try testing.expect(zh[1].hit);
+    try testing.expectEqualStrings("编辑", zh[2].text);
+    for (zh) |part| try testing.expect(std.unicode.utf8ValidateSlice(part.text));
+    // Not in it: the title whole, unmarked.
+    const none = try titleParts(a, "Multi-select", "zebra");
+    try testing.expectEqual(@as(usize, 1), none.len);
+    try testing.expect(!none[0].hit);
+}
+
+test "2083: a filter nothing open has says so, and whether the closed ones have it" {
+    var in = baseIn();
+    // Only closed ones have "routes": said, with c to show them.
+    in.filter = "routes";
+    var hidden = try rendered(in);
+    defer hidden.deinit();
+    try testing.expectEqual(@as(usize, 0), hidden.root.object.get("open").?.array.items.len);
+    const said = hidden.root.object.get("no_match").?;
+    try testing.expectEqualStrings("No task has \"routes\" in its title", str(said, "title"));
+    try testing.expectEqualStrings("1 closed ones have \"routes\" in the title; press c to show them. Press Esc to clear the filter.", str(said, "detail"));
+    try testing.expectEqualStrings("0 / 3", str(hidden.root.object.get("filter").?, "count"));
+    // Said there, so not said again on a row of its own.
+    try testing.expect(hidden.root.object.get("closed_title").? == .null);
+    try testing.expect(hidden.root.object.get("closed_key").? == .null);
+
+    // Nothing anywhere: the closed ones were looked at too, and no row.
+    in.filter = "zebra";
+    var nothing = try rendered(in);
+    defer nothing.deinit();
+    try testing.expectEqualStrings("The closed ones were searched too. Press Esc to clear the filter.", str(nothing.root.object.get("no_match").?, "detail"));
+    try testing.expect(nothing.root.object.get("closed_title").? == .null);
 }
 
 test "2015: #21 is not in #215, and #215 is in #215, and in #215's end" {

@@ -3683,6 +3683,8 @@ const PageRequest = struct {
     since: u64 = 0,
     open_task: ?u64 = null,
     closed: bool = false,
+    /// The task page's filter box (task 2083): absent with none.
+    filter: ?[]const u8 = null,
 };
 
 fn renderPage(self: *App, arena: Allocator, req: []const u8) Allocator.Error![]const u8 {
@@ -3777,6 +3779,7 @@ fn renderTasks(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]c
         .open_task = r.open_task,
         .said = said.items,
         .closed = r.closed,
+        .filter = r.filter,
         .now_ms = wall,
         .offset_ms = poltergeistpkg.daylog.localOffsetMs(wall),
         .tr = resourceTr,
