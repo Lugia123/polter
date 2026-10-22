@@ -82,6 +82,33 @@ pub const View = struct {
     identified: agent_cli.Identified,
 };
 
+/// What a terminal's agent is and which session it is in, as an adapter
+/// said it: the same two things a hook says, for `TerminalMeta.agent`.
+pub const Said = struct { cli: []const u8, session: []const u8 };
+
+/// The session to write down for a terminal from what its adapter said
+/// (task 2084), or null.
+///
+/// **A hook's word comes first**: a terminal whose hooks are live says its
+/// session on every event, with the transcript beside it, and this would
+/// write the same session again without one -- a change the record would
+/// take for a new session, every time the two took turns.
+///
+/// **Without hooks this is the only word there is.** A CLI started by hand
+/// (`claude --resume` typed into a terminal a project put back) has none,
+/// so nothing ever wrote its session down, and the next run could not
+/// take back what that terminal held: #1978's reclaim found only the
+/// terminals before it. The session is not a guess -- the claude-code
+/// adapter reads `CLAUDE_CODE_SESSION_ID` from the sidecar's environment.
+pub fn sessionToNote(v: ?View, hooks_live: bool) ?Said {
+    if (hooks_live) return null;
+    const w = v orelse return null;
+    if (w.state != .known) return null;
+    const session = w.identified.session orelse return null;
+    if (session.len == 0) return null;
+    return .{ .cli = w.key, .session = session };
+}
+
 pub fn init(alloc: Allocator) Identities {
     return .{ .alloc = alloc };
 }
@@ -293,6 +320,34 @@ fn writeAnswer(w: *std.Io.Writer, i: agent_cli.Identified) std.Io.Writer.Error!v
 // ------------------------------------------------------------------- tests
 
 const testing = std.testing;
+
+fn identifiedAs(state: State, session: ?[]const u8) View {
+    return .{
+        .state = state,
+        .key = "claude-code",
+        .label = "Claude Code",
+        .identified = .{ .me = state == .known, .session = session, .session_written_ms = null, .quit = null },
+    };
+}
+
+test "2084: an adapter's session is written down only when no hook is saying one" {
+    // Typed by hand, no hooks: the adapter's word is the only one.
+    const maybe = sessionToNote(identifiedAs(.known, "s-1"), false);
+    try testing.expect(maybe != null);
+    const said = maybe.?;
+    try testing.expectEqualStrings("claude-code", said.cli);
+    try testing.expectEqualStrings("s-1", said.session);
+    // Hooks live: theirs, with the transcript beside it.
+    try testing.expect(sessionToNote(identifiedAs(.known, "s-1"), true) == null);
+    // Nothing to write: not known yet, known without a session, never asked.
+    try testing.expect(sessionToNote(identifiedAs(.asking, null), false) == null);
+    try testing.expect(sessionToNote(identifiedAs(.unknown, null), false) == null);
+    try testing.expect(sessionToNote(identifiedAs(.known, null), false) == null);
+    try testing.expect(sessionToNote(identifiedAs(.known, ""), false) == null);
+    // Only a `known` answer is one: a session beside any other state is not.
+    try testing.expect(sessionToNote(identifiedAs(.unknown, "s-1"), false) == null);
+    try testing.expect(sessionToNote(null, false) == null);
+}
 
 test "Identities: what an ask sends identify carries the sidecar's pid it was given (task 1749)" {
     var ids: Identities = .init(testing.allocator);

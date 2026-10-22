@@ -259,6 +259,55 @@ test "1978: a session said again is the terminal that ran it last, with the grou
     try testing.expectEqualStrings("review", got.groups[1]);
 }
 
+test "2084: a session taken back twice, the second time by hand with no hooks, is found where it ran last" {
+    const Identities = @import("Identities.zig");
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-reclaim-{x}", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    // The first run: 0xa, started through Polter, says its session by hook.
+    {
+        var m = try TerminalMeta.open(alloc, io, dir);
+        defer m.deinit();
+        try testing.expect(m.agent(0xa, 10, "claude-code", "s-1", "/x/s-1.jsonl"));
+    }
+    // The second: `claude --resume s-1` typed into 0xb, which no hook
+    // reaches. Its adapter says the session; this is all that writes it.
+    {
+        var m = try TerminalMeta.open(alloc, io, dir);
+        defer m.deinit();
+        const view: Identities.View = .{
+            .state = .known,
+            .key = "claude-code",
+            .label = "Claude Code",
+            .identified = .{ .me = true, .session = "s-1", .session_written_ms = null, .quit = null },
+        };
+        if (Identities.sessionToNote(view, false)) |said| _ = m.agent(0xb, 20, said.cli, said.session, "");
+    }
+
+    // The third: 0xc says s-1. 0xb is where it ran last, and 0xb's groups
+    // are the ones it goes back into.
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const notes = try TerminalMeta.read(arena.allocator(), io, dir);
+    var r = try build(alloc, notes, &.{ stint("old", 0xa, 15), stint("build", 0xb, null) });
+    defer r.deinit();
+    const got = try r.claim(arena.allocator(), 0xc, "claude-code", "s-1", &.{0xc});
+    const ran_last = std.mem.indexOfScalar(u64, got.terminals, 0xb) != null;
+    try testing.expect(ran_last);
+    try testing.expectEqual(@as(usize, 1), got.groups.len);
+    try testing.expectEqualStrings("build", got.groups[0]);
+}
+
 test "1978: a group renamed or deleted before the claim is gone back into by its new name, or not at all" {
     var r = try build(testing.allocator, &.{note(0xa, 10, "s-1")}, &.{
         stint("build", 0xa, null),

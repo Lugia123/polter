@@ -1824,6 +1824,10 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     const dirty = self.control_dirty or quota_new or identity_new;
     if (!due and !dirty) return;
 
+    // An agent with no hooks has just been identified: its session, if it
+    // said one, is written down here, as a hook's is (task 2084).
+    if (identity_new) self.noteIdentifiedSessions();
+
     // Something happened in a terminal, which is when an allowance moves:
     // have the files read. Not when the only news is that they were read.
     if (self.control_dirty) self.quotaWatch().kick();
@@ -12682,16 +12686,39 @@ test "1978: tasks taken up are written as reowned, with the session they went by
 /// group it is in, when that is news.
 fn noteAgentSession(self: *App, id: poltergeistpkg.Bus.Id, ev: poltergeistpkg.agent_event.Event) void {
     const sid = ev.session_id orelse return;
+    self.noteSession(id, ev.cli, sid, ev.transcript_path orelse "");
+}
+
+/// The sessions only an adapter knows (task 2084): agents with no hooks,
+/// said by `Identities` instead (`Identities.sessionToNote` says when).
+/// Written down and reclaimed by, exactly as a hook's would be.
+fn noteIdentifiedSessions(self: *App) void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for (self.surfaces.items) |v| {
+        const id = poltergeistpkg.Bus.idOf(v.core());
+        if (self.isChatSurface(id)) continue;
+        const view = self.identities.view(global.io(), a, id) catch continue;
+        const hooks_live = self.poltergeist.agentOf(id).hooks == .live;
+        const said = poltergeistpkg.Identities.sessionToNote(view, hooks_live) orelse continue;
+        self.noteSession(id, said.cli, said.session, "");
+    }
+}
+
+/// A terminal's agent is in `session_id`: beside its transcript, and in
+/// every group it is in, when that is news -- and, when an agent of an
+/// earlier run ended in it, that agent is back (`reclaimSession`).
+fn noteSession(self: *App, id: poltergeistpkg.Bus.Id, cli: []const u8, sid: []const u8, path: []const u8) void {
     const m = if (self.terminal_meta) |*v| v else return;
-    const path = ev.transcript_path orelse "";
     const at = self.poltergeistWallMs();
-    if (!m.agent(id, at, ev.cli, sid, path)) return;
-    self.reclaimSession(id, ev.cli, sid);
+    if (!m.agent(id, at, cli, sid, path)) return;
+    self.reclaimSession(id, cli, sid);
     const l = if (self.session_log) |*v| v else return;
     var it = self.chat.groups.iterator();
     while (it.next()) |kv| {
         if (!self.chat.isMember(kv.key_ptr.*, id)) continue;
-        l.agent(kv.key_ptr.*, at, id, .{ .cli = ev.cli, .session_id = sid, .transcript_path = path });
+        l.agent(kv.key_ptr.*, at, id, .{ .cli = cli, .session_id = sid, .transcript_path = path });
     }
 }
 
