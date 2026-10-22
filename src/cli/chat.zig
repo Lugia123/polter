@@ -1716,6 +1716,13 @@ const Chat = struct {
     }
 
     fn selectView(self: *Chat, view: View) void {
+        // **One group's window is its conversation and nothing else** (task
+        // 2081, the person's call, 10-22): the control room has its own
+        // tasks page beside the chat page, and a second, smaller task panel
+        // inside the chat is one more thing to keep in step. Refused here,
+        // where every way of switching -- the keys and the tabs' clicks --
+        // arrives, rather than at each of them.
+        if (!mayShow(view, self.pinned != null)) return;
         if (self.view == view) return;
         self.view = view;
         self.scroll = 0;
@@ -2100,7 +2107,10 @@ const Chat = struct {
     fn drawConversation(self: *Chat, win: vaxis.Window) !void {
         if (win.height == 0 or win.width < 8) return;
 
-        self.drawTabs(win);
+        // No tabs in one group's window (task 2081, `selectView`): there is
+        // nothing to switch to, and the row they took goes to the header.
+        const top = headerTop(self.pinned != null);
+        if (top > 0) self.drawTabs(win);
 
         const name = if (self.groups.items.len > 0)
             self.groups.items[self.current].name
@@ -2110,15 +2120,15 @@ const Chat = struct {
         _ = win.printSegment(.{
             .text = name,
             .style = .{ .fg = c_title, .bold = true },
-        }, .{ .row_offset = 1, .col_offset = 1 });
+        }, .{ .row_offset = top, .col_offset = 1 });
 
         // The brief is what this group is *for*, so it sits with the name
         // rather than in the scroll where it would leave the screen. It
         // stays put across both tabs: it says what the group is about, and
         // that is as true of the work as of the talk.
-        var head_height: u16 = 2;
+        var head_height: u16 = top + 1;
         const brief = self.currentBrief();
-        if (brief.len > 0 and win.height > 4) {
+        if (brief.len > 0 and win.height > top + 3) {
             // Two lines of it at most: a brief long enough to fill the
             // screen is one the supervisor should have trimmed, and this
             // is not the place to read it in full.
@@ -2127,7 +2137,7 @@ const Chat = struct {
                 _ = win.printSegment(.{
                     .text = line,
                     .style = .{ .fg = c_dim, .italic = true },
-                }, .{ .row_offset = @intCast(2 + i), .col_offset = 1, .wrap = .none });
+                }, .{ .row_offset = @intCast(top + 1 + i), .col_offset = 1, .wrap = .none });
                 head_height += 1;
             }
         }
@@ -3376,6 +3386,18 @@ fn groupMove(key: vaxis.Key, pinned: bool) ?GroupMove {
     return if (pinned) .stay else move;
 }
 
+/// Whether a window may show `view`: any of the three, or, in one group's
+/// window, its conversation alone (task 2081).
+fn mayShow(view: Chat.View, pinned: bool) bool {
+    return !pinned or view == .chat;
+}
+
+/// The row the group's name goes on: under the tabs, or the first row of a
+/// window that has none (task 2081).
+fn headerTop(pinned: bool) u16 {
+    return if (pinned) 0 else 1;
+}
+
 /// The groups' and members' column: none in a narrow window -- eighteen
 /// columns of group names beside twelve of message is two unreadable
 /// panes instead of one readable one -- and none in one group's window.
@@ -3896,6 +3918,18 @@ test "2043: a brief of several lines keeps to its two rows, and no row holds a n
     const crlf = try briefRows(a, "one\r\n\r\ntwo", 80, 2);
     try testing.expectEqual(@as(usize, 2), crlf.len);
     try testing.expectEqualStrings("two", crlf[1]);
+}
+
+test "2081: one group's window shows its conversation and nothing else, and has no row of tabs" {
+    try testing.expect(mayShow(.chat, true));
+    try testing.expect(!mayShow(.tasks, true));
+    try testing.expect(!mayShow(.stats, true));
+    // The conversations view run on its own keeps all three.
+    try testing.expect(mayShow(.tasks, false));
+    try testing.expect(mayShow(.stats, false));
+    // The name takes the tabs' row.
+    try testing.expectEqual(@as(u16, 0), headerTop(true));
+    try testing.expectEqual(@as(u16, 1), headerTop(false));
 }
 
 test "2015: one group's window has no list of groups and no key that changes the group" {
