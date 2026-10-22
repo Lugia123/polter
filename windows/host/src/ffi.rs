@@ -24,19 +24,19 @@ pub type Inspector = *mut c_void;
 // --- action tags we care about (values generated from ghostty.h) ---
 pub const ACTION_QUIT: u32 = 0;
 pub const ACTION_CLOSE_TAB: u32 = 3;
-pub const ACTION_PRESENT_TERMINAL: u32 = 22;
-pub const ACTION_INITIAL_SIZE: u32 = 25;
-pub const ACTION_CELL_SIZE: u32 = 26;
-pub const ACTION_RENDER: u32 = 28;
-pub const ACTION_SET_TITLE: u32 = 34;
-pub const ACTION_MOUSE_SHAPE: u32 = 39;
-pub const ACTION_MOUSE_VISIBILITY: u32 = 40;
-pub const ACTION_RENDERER_HEALTH: u32 = 42;
-pub const ACTION_RELOAD_CONFIG: u32 = 50;
-pub const ACTION_CONFIG_CHANGE: u32 = 51;
-pub const ACTION_CLOSE_WINDOW: u32 = 52;
-pub const ACTION_RING_BELL: u32 = 53;
-pub const ACTION_SHOW_CHILD_EXITED: u32 = 59;
+pub const ACTION_PRESENT_TERMINAL: u32 = 21;
+pub const ACTION_INITIAL_SIZE: u32 = 24;
+pub const ACTION_CELL_SIZE: u32 = 25;
+pub const ACTION_RENDER: u32 = 27;
+pub const ACTION_SET_TITLE: u32 = 33;
+pub const ACTION_MOUSE_SHAPE: u32 = 38;
+pub const ACTION_MOUSE_VISIBILITY: u32 = 39;
+pub const ACTION_RENDERER_HEALTH: u32 = 41;
+pub const ACTION_RELOAD_CONFIG: u32 = 49;
+pub const ACTION_CONFIG_CHANGE: u32 = 50;
+pub const ACTION_CLOSE_WINDOW: u32 = 51;
+pub const ACTION_RING_BELL: u32 = 52;
+pub const ACTION_SHOW_CHILD_EXITED: u32 = 58;
 
 // --- M6-a batch: the "capability parity" actions this host now implements.
 //
@@ -49,10 +49,10 @@ pub const ACTION_NEW_WINDOW: u32 = 1;
 pub const ACTION_NEW_TAB: u32 = 2;
 pub const ACTION_NEW_SPLIT: u32 = 4;
 pub const ACTION_TOGGLE_QUICK_TERMINAL: u32 = 10;
-pub const ACTION_GOTO_SPLIT: u32 = 17;
-pub const ACTION_RESIZE_SPLIT: u32 = 19;
-pub const ACTION_EQUALIZE_SPLITS: u32 = 20;
-pub const ACTION_TOGGLE_SPLIT_ZOOM: u32 = 21;
+pub const ACTION_GOTO_SPLIT: u32 = 16;
+pub const ACTION_RESIZE_SPLIT: u32 = 18;
+pub const ACTION_EQUALIZE_SPLITS: u32 = 19;
+pub const ACTION_TOGGLE_SPLIT_ZOOM: u32 = 20;
 pub const ACTION_TOGGLE_MAXIMIZE: u32 = 6;
 /// `Action.Key.toggle_command_palette`, the 12th member of that enum.
 /// Verified against `src/apprt/action.zig` the same way the rest of this
@@ -61,30 +61,31 @@ pub const ACTION_TOGGLE_COMMAND_PALETTE: u32 = 11;
 // Search and the pending-key indicator. Ordinals derived the same way as the
 // rest of this table: parse the 72 members of `Action.Key` in
 // `src/apprt/action.zig` in order and take the index.
-pub const ACTION_OPEN_CONFIG: u32 = 43;
-pub const ACTION_KEY_SEQUENCE: u32 = 47;
-pub const ACTION_READONLY: u32 = 67;
-pub const ACTION_KEY_TABLE: u32 = 48;
-pub const ACTION_START_SEARCH: u32 = 63;
-pub const ACTION_END_SEARCH: u32 = 64;
-pub const ACTION_SEARCH_TOTAL: u32 = 65;
-pub const ACTION_SEARCH_SELECTED: u32 = 66;
+pub const ACTION_OPEN_CONFIG: u32 = 42;
+pub const ACTION_KEY_SEQUENCE: u32 = 46;
+pub const ACTION_READONLY: u32 = 66;
+pub const ACTION_KEY_TABLE: u32 = 47;
+pub const ACTION_START_SEARCH: u32 = 62;
+pub const ACTION_END_SEARCH: u32 = 63;
+pub const ACTION_SEARCH_TOTAL: u32 = 64;
+pub const ACTION_SEARCH_SELECTED: u32 = 65;
 pub const ACTION_TOGGLE_FULLSCREEN: u32 = 7;
-pub const ACTION_MOVE_TAB: u32 = 15;
-pub const ACTION_GOTO_TAB: u32 = 16;
-pub const ACTION_SIZE_LIMIT: u32 = 23;
-pub const ACTION_RESET_WINDOW_SIZE: u32 = 24;
-pub const ACTION_SET_TAB_TITLE: u32 = 35;
-pub const ACTION_PWD: u32 = 38;
-pub const ACTION_COPY_TITLE_TO_CLIPBOARD: u32 = 68;
-/// The five below are the tags `cb_action` used to fall through to `_ => false`
+pub const ACTION_MOVE_TAB: u32 = 14;
+pub const ACTION_GOTO_TAB: u32 = 15;
+pub const ACTION_SIZE_LIMIT: u32 = 22;
+pub const ACTION_RESET_WINDOW_SIZE: u32 = 23;
+pub const ACTION_SET_TAB_TITLE: u32 = 34;
+pub const ACTION_PWD: u32 = 37;
+pub const ACTION_COPY_TITLE_TO_CLIPBOARD: u32 = 67;
+/// The four below are the tags `cb_action` used to fall through to `_ => false`
 /// on. **A falling-through tag is not a silent no-op**: `binding_action`
 /// returns false and the menu row does nothing, which reads as a broken menu.
 /// Counted the same way as the rest -- the whole `ghostty_action_tag_e` was
 /// parsed and checked against the six constants already here before these were
 /// taken from it.
-pub const ACTION_TOGGLE_POLTERGEIST_CHAT: u32 = 12;
-/// `toggle_visibility`, the member straight after `toggle_poltergeist_chat`.
+/// `toggle_visibility`, the member straight after `toggle_command_palette`
+/// since task 2080 took `toggle_poltergeist_chat` out from between them --
+/// which moved every tag after it down by one, all of them below.
 ///
 /// **This number is machine-checked**, along with every other one in this
 /// file, by `test "the Windows host's action tags"` in `src/apprt/action.zig`,
@@ -93,100 +94,102 @@ pub const ACTION_TOGGLE_POLTERGEIST_CHAT: u32 = 12;
 /// deleted: that test's own comment argues against it by name, because the
 /// header is already pinned to the enum, and one fact with two readers is the
 /// shape this repository has opened tasks about.
-pub const ACTION_TOGGLE_VISIBILITY: u32 = 13;
-pub const ACTION_INSPECTOR: u32 = 29;
-pub const ACTION_PROMPT_TITLE: u32 = 37;
-pub const ACTION_FLOAT_WINDOW: u32 = 45;
+pub const ACTION_TOGGLE_VISIBILITY: u32 = 12;
+pub const ACTION_INSPECTOR: u32 = 28;
+pub const ACTION_PROMPT_TITLE: u32 = 36;
+pub const ACTION_FLOAT_WINDOW: u32 = 44;
 /// The three tags after `copy_title_to_clipboard`, counted off
 /// `ghostty_action_tag_e` in `include/ghostty.h`. **The count was checked
 /// against a tag that was already here**: `copy_title_to_clipboard` comes out
 /// at 68 by the same counting, which is what says the counting is right.
-pub const ACTION_MOVE_TAB_TO_NEW_WINDOW: u32 = 69;
-pub const ACTION_POLTERGEIST_MARK: u32 = 70;
-pub const ACTION_POLTERGEIST_CLOSE: u32 = 71;
-pub const ACTION_POLTERGEIST_TAB_PANES: u32 = 72;
+/// (67, and these three one lower each, since task 2080 took
+/// `toggle_poltergeist_chat` out of the enum.)
+pub const ACTION_MOVE_TAB_TO_NEW_WINDOW: u32 = 68;
+pub const ACTION_POLTERGEIST_MARK: u32 = 69;
+pub const ACTION_POLTERGEIST_CLOSE: u32 = 70;
+pub const ACTION_POLTERGEIST_TAB_PANES: u32 = 71;
 /// `Action.Key.poltergeist_layout`, appended after `poltergeist_tab_panes`.
 /// ⚠️ **Appended, like every one before it**: inserting anywhere else
 /// renumbers the tags after it and this host then dispatches into a different
 /// action's arm, with no crash and no wrong-looking log line.
-pub const ACTION_POLTERGEIST_LAYOUT: u32 = 73;
+pub const ACTION_POLTERGEIST_LAYOUT: u32 = 72;
 /// `Action.Key.history_filename`, appended after `poltergeist_layout`
 /// (task 531). ⚠️ **Appended, like every one before it** -- see the note
 /// on `ACTION_POLTERGEIST_LAYOUT` above; the same renumbering risk
 /// applies to every tag after this one too.
-pub const ACTION_HISTORY_FILENAME: u32 = 74;
+pub const ACTION_HISTORY_FILENAME: u32 = 73;
 
 /// `Action.Key.poltergeist_grouping`, appended after `history_filename`
 /// (task 581). ⚠️ **Appended, like every one before it** -- see the note on
 /// `ACTION_POLTERGEIST_LAYOUT`; the renumbering it describes is exactly what
 /// this task hit on its first attempt, and `apprt/action.zig`'s
 /// "the Windows host's action tags" test is what caught it.
-pub const ACTION_POLTERGEIST_GROUPING: u32 = 75;
+pub const ACTION_POLTERGEIST_GROUPING: u32 = 74;
 
 /// `Action.Key.screenshot`, appended after `poltergeist_grouping`
 /// (task 1081, `dev-docs/poltergeist/screenshot.md`). ⚠️ **Appended, like
 /// every one before it** -- see the note on `ACTION_POLTERGEIST_LAYOUT`.
 /// Checked by `the Windows host's action tags` in `src/apprt/action.zig`.
-pub const ACTION_SCREENSHOT: u32 = 76;
+pub const ACTION_SCREENSHOT: u32 = 75;
 
 /// `Action.Key.poltergeist_screenshot`, appended after `screenshot`
 /// (task 1087; the contract is `dev-docs/poltergeist/screenshot.md`, 10.1).
 /// ⚠️ **Appended, like every one before it.** Only the ordinal is here: the
 /// out struct, its accessor and the arm in `cb_action` are task 1088's.
-pub const ACTION_POLTERGEIST_SCREENSHOT: u32 = 77;
+pub const ACTION_POLTERGEIST_SCREENSHOT: u32 = 76;
 
 /// `Action.Key.control_room_changed`, appended after `poltergeist_screenshot`
 /// (task 1366; `dev-docs/poltergeist/control-room.md`, 5.4). ⚠️ **Appended,
 /// like every one before it.** Only the ordinal is here: the payload is one
 /// `uint64_t rev`, and the arm in `cb_action` belongs to the task that
 /// builds the control room on this host.
-pub const ACTION_CONTROL_ROOM_CHANGED: u32 = 78;
+pub const ACTION_CONTROL_ROOM_CHANGED: u32 = 77;
 
 /// `Action.Key.toggle_poltergeist_control_room`, appended after
 /// `control_room_changed` (task 1375; `dev-docs/poltergeist/control-room.md`,
 /// 3.1). ⚠️ **Appended, like every one before it.** Only the ordinal is
 /// here: the control room is not built on this host, so the arm in
 /// `cb_action` answers that and the palette hides the row.
-pub const ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM: u32 = 79;
+pub const ACTION_TOGGLE_POLTERGEIST_CONTROL_ROOM: u32 = 78;
 /// `Action.Key.control_room_alert`, appended after
 /// `toggle_poltergeist_control_room` (task 1505; the design's section 9).
 /// ⚠️ **Appended, like every one before it.** The payload is one pointer to
 /// a [`ControlRoomAlert`]; the arm in `cb_action` raises the tray balloon.
-pub const ACTION_CONTROL_ROOM_ALERT: u32 = 80;
+pub const ACTION_CONTROL_ROOM_ALERT: u32 = 79;
 /// `Binding.zig`'s `pane_stack`, appended after `control_room_alert`.
 /// Several terminals in one pane, one in front. Not built on this host --
 /// the split tree here has no stacks -- so the arm in `cb_action` answers
 /// that and the palette hides the rows. (Its branch was written while it
 /// was 80; the two branches met in a merge with the same number and no
 /// conflict, which is why the order is said here.)
-pub const ACTION_PANE_STACK: u32 = 81;
+pub const ACTION_PANE_STACK: u32 = 80;
 /// `Action.Key.polter_tab_move`, appended after `pane_stack` (task 1571):
 /// move a whole tab within its strip or into another window's. ⚠️
 /// **Appended, like every one before it.** The payload is
 /// `ghostty_action_polter_tab_move_s`; see `Action::as_polter_tab_move`.
-pub const ACTION_POLTER_TAB_MOVE: u32 = 82;
+pub const ACTION_POLTER_TAB_MOVE: u32 = 81;
 /// `Action.Key.polter_highlight`, appended after `polter_tab_move` (task
 /// 1690): light a terminal for the person to find. The payload is
 /// `ghostty_action_polter_highlight_s`; see `Action::as_polter_highlight`.
-pub const ACTION_POLTER_HIGHLIGHT: u32 = 83;
+pub const ACTION_POLTER_HIGHLIGHT: u32 = 82;
 /// `Action.Key.poltergeist_pane`, appended after `polter_highlight` (task
 /// 1699/1700, `pane-color-interface.md` §3): what a person has marked on one
 /// terminal -- its colour, whether workers may start in it, and the flag its
 /// tab draws for it. ⚠️ **Appended, like every one before it.** The payload
 /// is `ghostty_action_poltergeist_pane_s`; see `Action::as_poltergeist_pane`.
-pub const ACTION_POLTERGEIST_PANE: u32 = 84;
+pub const ACTION_POLTERGEIST_PANE: u32 = 83;
 /// `Action.Key.poltergeist_new_stacked`, appended after `poltergeist_pane`
 /// (task 1797): a new terminal stacked in front of the target's, where a
 /// supervisor's next worker goes. ⚠️ **Appended, like every one before
 /// it.** The payload is `ghostty_action_poltergeist_new_stacked_s`; see
 /// `Action::as_poltergeist_new_stacked`.
-pub const ACTION_POLTERGEIST_NEW_STACKED: u32 = 85;
+pub const ACTION_POLTERGEIST_NEW_STACKED: u32 = 84;
 /// `Action.Key.poltergeist_move_pane`, appended after
 /// `poltergeist_new_stacked` (task 1797, `terminal_stack`): move the target's
 /// terminal onto another's stack or beside it. ⚠️ **Appended, like every one
 /// before it.** The payload is `ghostty_action_poltergeist_move_pane_s`; see
 /// `Action::as_poltergeist_move_pane`.
-pub const ACTION_POLTERGEIST_MOVE_PANE: u32 = 86;
+pub const ACTION_POLTERGEIST_MOVE_PANE: u32 = 85;
 
 // --- The terminal-semantics and appearance batch (task 273, second group).
 //
@@ -196,19 +199,20 @@ pub const ACTION_POLTERGEIST_MOVE_PANE: u32 = 86;
 // order in `src/apprt/action.zig` (72 members) and `ghostty_action_tag_e`'s
 // member order in `include/ghostty.h`; the anchors are
 // `copy_title_to_clipboard` = 68 and `move_tab_to_new_window` = 69, which
-// come out right in both. That is the whole of what says these numbers are
+// come out right in both. (Both one lower since task 2080; so is every
+// ordinal above 12 in this file.) That is the whole of what says these numbers are
 // right -- **a wrong ordinal here compiles, links, and silently dispatches
 // one action into another action's arm.**
-pub const ACTION_TOGGLE_BACKGROUND_OPACITY: u32 = 14;
-pub const ACTION_SCROLLBAR: u32 = 27;
-pub const ACTION_DESKTOP_NOTIFICATION: u32 = 33;
-pub const ACTION_MOUSE_OVER_LINK: u32 = 41;
-pub const ACTION_QUIT_TIMER: u32 = 44;
-pub const ACTION_COLOR_CHANGE: u32 = 49;
-pub const ACTION_SELECTION_CHANGED: u32 = 54;
-pub const ACTION_OPEN_URL: u32 = 58;
-pub const ACTION_PROGRESS_REPORT: u32 = 60;
-pub const ACTION_COMMAND_FINISHED: u32 = 62;
+pub const ACTION_TOGGLE_BACKGROUND_OPACITY: u32 = 13;
+pub const ACTION_SCROLLBAR: u32 = 26;
+pub const ACTION_DESKTOP_NOTIFICATION: u32 = 32;
+pub const ACTION_MOUSE_OVER_LINK: u32 = 40;
+pub const ACTION_QUIT_TIMER: u32 = 43;
+pub const ACTION_COLOR_CHANGE: u32 = 48;
+pub const ACTION_SELECTION_CHANGED: u32 = 53;
+pub const ACTION_OPEN_URL: u32 = 57;
+pub const ACTION_PROGRESS_REPORT: u32 = 59;
+pub const ACTION_COMMAND_FINISHED: u32 = 61;
 
 // `ghostty_action_open_url_kind_e`. **`OSC8` is the one that matters**: it is
 // the only kind whose URL was chosen by whatever is running in the terminal
@@ -252,10 +256,10 @@ pub const QUIT_TIMER_STOP: i32 = 1;
 /// action tags"` runs 86 tests where an unmatched filter runs 85, so the
 /// difference is this one executing.
 pub const ACTION_CLOSE_ALL_WINDOWS: u32 = 5;
-pub const ACTION_GOTO_WINDOW: u32 = 18;
-pub const ACTION_SET_WINDOW_TITLE: u32 = 36;
-pub const ACTION_UNDO: u32 = 55;
-pub const ACTION_REDO: u32 = 56;
+pub const ACTION_GOTO_WINDOW: u32 = 17;
+pub const ACTION_SET_WINDOW_TITLE: u32 = 35;
+pub const ACTION_UNDO: u32 = 54;
+pub const ACTION_REDO: u32 = 55;
 
 // --- Actions this host answers with a **refusal**, not an implementation.
 //
@@ -280,16 +284,16 @@ pub const ACTION_REDO: u32 = 56;
 // which names the action a wrong number would dispatch instead.
 pub const ACTION_TOGGLE_TAB_OVERVIEW: u32 = 8;
 pub const ACTION_TOGGLE_WINDOW_DECORATIONS: u32 = 9;
-pub const ACTION_SHOW_GTK_INSPECTOR: u32 = 30;
-pub const ACTION_RENDER_INSPECTOR: u32 = 31;
-pub const ACTION_EXPORT_TERMINAL_IO: u32 = 32;
-pub const ACTION_CHECK_FOR_UPDATES: u32 = 57;
+pub const ACTION_SHOW_GTK_INSPECTOR: u32 = 29;
+pub const ACTION_RENDER_INSPECTOR: u32 = 30;
+pub const ACTION_EXPORT_TERMINAL_IO: u32 = 31;
+pub const ACTION_CHECK_FOR_UPDATES: u32 = 56;
 
 /// `secure_input`. **Not in the ledger above**: this one is implemented.
 ///
 /// Ordinal counted off `ghostty_action_tag_e` and checked by
 /// `the Windows host's action tags` in `src/apprt/action.zig`.
-pub const ACTION_SECURE_INPUT: u32 = 46;
+pub const ACTION_SECURE_INPUT: u32 = 45;
 
 // --- Actions this host **owes**: it does not perform them, and the arm says
 // so by name with the task that carries the work.
@@ -312,7 +316,7 @@ pub const ACTION_SECURE_INPUT: u32 = 46;
 // `ACTION_TOGGLE_VISIBILITY` (13) is **not repeated here** either: task 302
 // implemented it and declared it in the block above, and the two changes met
 // in the merge.
-pub const ACTION_SHOW_ON_SCREEN_KEYBOARD: u32 = 61;
+pub const ACTION_SHOW_ON_SCREEN_KEYBOARD: u32 = 60;
 
 /// `ghostty_action_secure_input_e`, whose members are `on, off, toggle` in
 /// that order (`src/apprt/action.zig`'s `SecureInput`, pinned to the header by

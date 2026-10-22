@@ -1011,14 +1011,6 @@ msgid ""
 "into it. Its tab wears a lock while the shield stands. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:606 windows/host/src/menu.rs:371
-msgid "Terminal Conversations"
-msgstr ""
-
-#: src/input/command.zig:607
-msgid "Open a terminal showing what the terminals have said to each other."
-msgstr ""
-
 #: src/input/command.zig:612 windows/host/src/menu.rs:364
 #: windows/control-room/src/rules.rs:165
 msgid "Control Room"

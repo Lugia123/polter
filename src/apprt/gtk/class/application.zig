@@ -817,7 +817,6 @@ pub const Application = extern struct {
             .check_for_updates,
             .undo,
             .redo,
-            .toggle_poltergeist_chat,
             .screenshot,
             .poltergeist_screenshot,
             .control_room_changed,

@@ -118,10 +118,6 @@ pub const Action = union(Key) {
     /// Toggle the command palette.
     toggle_command_palette,
 
-    /// Toggle the window showing what the terminals have said to each
-    /// other. See `dev-docs/poltergeist/chatui.md`.
-    toggle_poltergeist_chat,
-
     /// Toggle the visibility of all Ghostty terminal windows.
     toggle_visibility,
 
@@ -526,7 +522,6 @@ pub const Action = union(Key) {
         toggle_window_decorations,
         toggle_quick_terminal,
         toggle_command_palette,
-        toggle_poltergeist_chat,
         toggle_visibility,
         toggle_background_opacity,
         move_tab,

@@ -647,12 +647,6 @@ fn actionCommands(action: Action.Key) []const Command {
         .poltergeist_set_workers,
         => comptime &.{},
 
-        .poltergeist_toggle_chat => comptime &.{.{
-            .action = .poltergeist_toggle_chat,
-            .title = i18n.N_("Terminal Conversations"),
-            .description = i18n.N_("Open a terminal showing what the terminals have said to each other."),
-        }},
-
         .poltergeist_toggle_control_room => comptime &.{.{
             .action = .poltergeist_toggle_control_room,
             .title = i18n.N_("Control Room"),

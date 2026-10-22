@@ -168,8 +168,8 @@ belongs to whoever is minding it: its supervisor, with
 
 `terminal_action` will refuse the whole `poltergeist_*` family —
 `poltergeist_toggle_watch`, `poltergeist_toggle_held`,
-`poltergeist_toggle_shielded`, `poltergeist_supervisor`,
-`poltergeist_toggle_chat` — with `NotPermitted`. They are real actions; they
+`poltergeist_toggle_shielded`, `poltergeist_supervisor` — with
+`NotPermitted`. They are real actions; they
 are simply not on this surface, so they do not appear in
 `terminal_actions()` either.
 

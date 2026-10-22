@@ -7736,7 +7736,7 @@ pub const Keybinds = struct {
                     .{ .global = true },
                 );
 
-                // **Polter's own five, and binding them widens a permission
+                // **Polter's own four, and binding them widens a permission
                 // on purpose. Read this before changing any of it.**
                 //
                 // `terminal_action` answers `NotPermitted` for this whole
@@ -7766,7 +7766,7 @@ pub const Keybinds = struct {
                 // `dev-docs/windows/keys.md` §3.7, thirty rows of "the key works
                 // and the menu cannot say so". `performable` buys something
                 // only where an action can decline and let the key through;
-                // these five are toggles with no such state, so it would cost
+                // these four are toggles with no such state, so it would cost
                 // the menu hint and buy nothing.
                 //
                 // **The letters were chosen by construction, not by
@@ -7775,7 +7775,7 @@ pub const Keybinds = struct {
                 // `b h l r s u y` appear with `ctrl+shift` nowhere else in
                 // this function, so no later `put` can take one back; a
                 // chord silently lost to a later binding is exactly the
-                // defect task 336 fixed. (macOS has the same five letters
+                // defect task 336 fixed. (macOS has the same four letters
                 // since task 1551, on `⌃⌘`, in its own block.)
                 //
                 // ⚠️ **That argument was not enough on its own.** This host
@@ -7790,7 +7790,13 @@ pub const Keybinds = struct {
                 //
                 // English initial where it was free (`s`upervisor, `h`eld), a
                 // word from the row's own meaning where it was not
-                // (`l` for 聊天, e`y`e, `b`lock).
+                // (e`y`e, `b`lock).
+                //
+                // **There were five.** `ctrl+shift+l` opened the terminal
+                // conversations window until task 2080 took that window out
+                // of the menus (the person's call, 10-22): the chat lives in
+                // the control room now, and `polter +chat` still runs in a
+                // terminal. The chord goes back to the terminal.
                 try self.set.put(
                     alloc,
                     .{ .key = .{ .unicode = 's' }, .mods = .{ .ctrl = true, .shift = true } },
@@ -7800,11 +7806,6 @@ pub const Keybinds = struct {
                     alloc,
                     .{ .key = .{ .unicode = 'h' }, .mods = .{ .ctrl = true, .shift = true } },
                     .{ .poltergeist_toggle_held = {} },
-                );
-                try self.set.put(
-                    alloc,
-                    .{ .key = .{ .unicode = 'l' }, .mods = .{ .ctrl = true, .shift = true } },
-                    .{ .poltergeist_toggle_chat = {} },
                 );
                 try self.set.put(
                     alloc,
@@ -8510,7 +8511,7 @@ pub const Keybinds = struct {
 
         // Mac-specific keyboard bindings.
         if (comptime builtin.target.os.tag.isDarwin()) {
-            // **Polter's five, with Windows' letters** (task 1551) -- read the
+            // **Polter's four, with Windows' letters** (task 1551) -- read the
             // Windows block's note on these first: binding them opens the
             // same side door there (a supervisor's `terminal_key` can
             // synthesise a chord that `terminal_action` refuses), and the
@@ -8536,11 +8537,6 @@ pub const Keybinds = struct {
                 alloc,
                 .{ .key = .{ .unicode = 'h' }, .mods = .{ .super = true, .ctrl = true } },
                 .{ .poltergeist_toggle_held = {} },
-            );
-            try self.set.put(
-                alloc,
-                .{ .key = .{ .unicode = 'l' }, .mods = .{ .super = true, .ctrl = true } },
-                .{ .poltergeist_toggle_chat = {} },
             );
             try self.set.put(
                 alloc,
@@ -9277,7 +9273,29 @@ pub const Keybinds = struct {
         }
     }
 
-    // **Polter's five on macOS (task 1551), and through `getTrigger`** --
+    // **The conversations window's chord is gone, and nothing took it**
+    // (task 2080): `⌃⌘L` on macOS and `ctrl+shift+l` on Windows reach the
+    // terminal again.
+    test "2080: the chord that opened the conversations window is bound to nothing" {
+        const mods: inputpkg.Mods = switch (comptime builtin.target.os.tag) {
+            .macos => .{ .super = true, .ctrl = true },
+            .windows => .{ .ctrl = true, .shift = true },
+            else => return error.SkipZigTest,
+        };
+
+        const testing = std.testing;
+        var arena = ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var keybinds: Keybinds = .{};
+        try keybinds.init(alloc);
+
+        const bound = keybinds.set.get(.{ .key = .{ .unicode = 'l' }, .mods = mods });
+        try testing.expect(bound == null);
+    }
+
+    // **Polter's four on macOS (task 1551), and through `getTrigger`** --
     // the reverse map, which is what the Agents menu asks
     // (`AppDelegate.syncMenuShortcut`). Same letters as Windows, `⌃⌘`.
     test "Keybinds: macOS gives the agent toggles Windows' letters on ctrl+cmd" {
@@ -9294,7 +9312,6 @@ pub const Keybinds = struct {
         for ([_]struct { a: inputpkg.Binding.Action, c: u21 }{
             .{ .a = .{ .poltergeist_supervisor = {} }, .c = 's' },
             .{ .a = .{ .poltergeist_toggle_held = {} }, .c = 'h' },
-            .{ .a = .{ .poltergeist_toggle_chat = {} }, .c = 'l' },
             .{ .a = .{ .poltergeist_toggle_watch = {} }, .c = 'y' },
             .{ .a = .{ .poltergeist_toggle_shielded = {} }, .c = 'b' },
         }) |want| {
@@ -9387,7 +9404,7 @@ pub const Keybinds = struct {
         // be a key that does nothing.
         try testing.expect(keybinds.set.getTrigger(.{ .paste_from_selection = {} }) == null);
 
-        // **Polter's five, and the assertion is `getTrigger`, not `get`.**
+        // **Polter's four, and the assertion is `getTrigger`, not `get`.**
         //
         // `get` would only say the chord is bound. `getTrigger` reads the
         // *reverse* map, which is what a menu asks -- so this is the one
@@ -9397,7 +9414,6 @@ pub const Keybinds = struct {
         for ([_]struct { a: inputpkg.Binding.Action, c: u21 }{
             .{ .a = .{ .poltergeist_supervisor = {} }, .c = 's' },
             .{ .a = .{ .poltergeist_toggle_held = {} }, .c = 'h' },
-            .{ .a = .{ .poltergeist_toggle_chat = {} }, .c = 'l' },
             .{ .a = .{ .poltergeist_toggle_watch = {} }, .c = 'y' },
             .{ .a = .{ .poltergeist_toggle_shielded = {} }, .c = 'b' },
         }) |want| {

@@ -813,10 +813,6 @@ pub const Action = union(enum) {
     /// would be a way for an agent to grant itself the thing this governs.
     poltergeist_toggle_authorise,
 
-    /// Show or hide the window with what the terminals have said to each
-    /// other.
-    poltergeist_toggle_chat,
-
     /// Go to the control room: the one tab that lists every group by who is
     /// waiting for you (`dev-docs/poltergeist/control-room.md`). There is
     /// one in the application. If it is open this selects it, wherever it
@@ -1759,7 +1755,6 @@ pub const Action = union(enum) {
             .poltergeist_toggle_workers_refused,
             .poltergeist_toggle_authorise,
             .poltergeist_toggle_worker_mentions,
-            .poltergeist_toggle_chat,
             .poltergeist_persona_set,
             .poltergeist_persona_clear,
             .poltergeist_persona_skill,

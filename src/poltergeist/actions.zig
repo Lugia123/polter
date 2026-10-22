@@ -133,7 +133,6 @@ pub fn selfSafeTag(tag: std.meta.Tag(inputpkg.Binding.Action)) bool {
         .poltergeist_toggle_workers_refused,
         .poltergeist_toggle_authorise,
         .poltergeist_toggle_worker_mentions,
-        .poltergeist_toggle_chat,
         .poltergeist_toggle_control_room,
 
         // The four persona actions. Same footing as the five above: an
@@ -533,7 +532,7 @@ test "Polter's own controls are governed, and the family is found by shape" {
     try testing.expect(governed("poltergeist_toggle_watch"));
     try testing.expect(governed("poltergeist_toggle_held"));
     try testing.expect(governed("poltergeist_toggle_shielded"));
-    try testing.expect(governed("poltergeist_toggle_chat"));
+    try testing.expect(governed("poltergeist_toggle_control_room"));
 
     // Ordinary menu items are not.
     try testing.expect(!governed("new_tab"));

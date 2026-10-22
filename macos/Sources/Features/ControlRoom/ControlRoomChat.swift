@@ -16,8 +16,10 @@ import SwiftUI
 ///    takes the ones that are its (`closedByCore`);
 ///  * the model prunes the chats of groups gone from the snapshot (`prune`).
 ///
-/// **What it speaks as** is the person: `poltergeistChat`, the flag the
-/// menu's chat tab sets (`Ghostty.App.openChat`).
+/// **What it speaks as** is the person: `poltergeistChat`, which tells the
+/// core that requests from this surface speak for the person at the
+/// keyboard. This is the one place that sets it since task 2080 took the
+/// menu's own chat tab out.
 ///
 /// Four are kept; past that the one looked at longest ago goes. A chat
 /// whose program ended is **not opened again until the person asks**

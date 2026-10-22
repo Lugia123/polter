@@ -281,7 +281,7 @@ poltergeist-mcp = true
 4. 让被监督那个静置超过 `poltergeist-quiescence-after`（默认 3 分钟）。
 5. 看总管终端有没有收到 `[poltergeist] terminal 0x... has gone quiet`。
 
-要试 MCP，把 `polter +mcp` 配给总管里的 agent 当 MCP server（socket 与 token 已经在它的环境变量里，不用配）。要试群聊，让总管调 `group_create` / `group_add`，再用 **Agents → Terminal Conversations** 打开界面（等同 `polter +chat`）。
+要试 MCP，把 `polter +mcp` 配给总管里的 agent 当 MCP server（socket 与 token 已经在它的环境变量里，不用配）。要试群聊，让总管调 `group_create` / `group_add`，再在总控台的「群聊」页签里看，或者在任意终端里敲 `polter +chat`（菜单项「Terminal Conversations」在任务 2080 去掉了）。
 
 **没跑通的话**：先看日志（`GHOSTTY_LOG` 的用法见 [preview-manual.md](../preview-manual.md)），`poltergeist:` 前缀的行会说明它认为自己在做什么。
 

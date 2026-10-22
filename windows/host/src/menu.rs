@@ -471,13 +471,9 @@ const AGENTS_ROWS: &[Row] = &[
     // control room's own tab in front there is none: there the row does
     // nothing -- which is also what going to the tab already in front is.
     act(n_("Control Room"), "poltergeist_toggle_control_room"),
-    sep(),
-    // §3.2 called this `poltergeist_conversations`; the core publishes
-    // `poltergeist_toggle_chat`.
-    // The chat is a TUI (`polter +chat`), so opening it is opening a terminal
-    // with a command and one flag set -- and both of those are `create_pane`'s
-    // to set, in `tabs.rs`. The tag is handled and says so.
-    act(n_("Terminal Conversations"), "poltergeist_toggle_chat"),
+    // "Terminal Conversations" sat here until task 2080 (the person's call,
+    // 10-22): the chat is the control room's chat page now, and `polter
+    // +chat` still runs in any terminal.
     sep(),
     toggle(n_("Make This Terminal a Supervisor"), "poltergeist_supervisor", Flag::Supervisor, Ready::Always),
     toggle(n_("Supervise This Terminal"), "poltergeist_toggle_watch", Flag::Watched, Ready::Always),

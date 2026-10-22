@@ -97,7 +97,7 @@ An agent CLI, on your `PATH`, and on it **at the moment Polter starts**. Claude 
 2. **Set the Supervisor:** Go to the menu: `Agents → Make This Terminal a Supervisor`.
 3. **Test the Connection:** Ask the agent: *"Call the `me` tool and tell me what it says."* If it replies with a terminal ID, you are ready! *(If it says it has no such tool, stop here and check the [FAQ](#faq)).*
 4. **Give the Command:** Tell the supervisor what you want to build. It will handle opening tabs and assigning tasks on its own. 
-5. **Review Later:** Let it work. Later, go to `Agents → Terminal Conversations` (or run `polter +chat`) to see what they discussed. Press `tab` or `shift+tab` to cycle views: the conversation, the task panel, and the night's stats.
+5. **Review Later:** Let it work. Later, open the control room's chat tab (or run `polter +chat`) to see what they discussed. Press `tab` or `shift+tab` to cycle views: the conversation, the task panel, and the night's stats.
 
 ### Compared to Alternatives
 

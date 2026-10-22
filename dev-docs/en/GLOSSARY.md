@@ -168,8 +168,10 @@ this true.**
    the capability layer (matching `main.zig:1`), and `poltergeist` untouched
    wherever it is an identifier.
 
-2. **Group chat, or Terminal Conversations?** The menu item and `polter +chat`
-   open what every other document calls the group chat (`README.md:243`). A
+2. **Group chat, or Terminal Conversations?** The menu item (removed in task
+   2080; the control room's chat page and `polter +chat` remain) and
+   `polter +chat` open what every other document calls the group chat
+   (`README.md:243`). A
    reader looking for "group chat" in the menu will not find it. The English
    side is at least consistent with itself; the Chinese side of the same split
    is worse, and is somebody else's to resolve.

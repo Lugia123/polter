@@ -82,7 +82,6 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuTerminalInspector: NSMenuItem?
     @IBOutlet private var menuCommandPalette: NSMenuItem?
 
-    @IBOutlet private var menuPoltergeistChat: NSMenuItem?
     @IBOutlet private var menuPoltergeistControlRoom: NSMenuItem?
     @IBOutlet private var menuPoltergeistSupervisor: NSMenuItem?
     @IBOutlet private var menuPoltergeistWatch: NSMenuItem?
@@ -1567,12 +1566,11 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "inspector:toggle", menuItem: self.menuTerminalInspector)
         syncMenuShortcut(config, action: "toggle_command_palette", menuItem: self.menuCommandPalette)
 
-        // Supervisor, watch and shield ship with `⌃⌘S`, `⌃⌘Y` and `⌃⌘B`
-        // and chat with `⌃⌘L` -- the letters Windows has on Ctrl+Shift
-        // (task 1551; `Config.zig` says why not `⌘⇧`). The control room and
-        // the authorise switch have no default, so their rows show a
-        // shortcut only when somebody binds one.
-        syncMenuShortcut(config, action: "poltergeist_toggle_chat", menuItem: self.menuPoltergeistChat)
+        // Supervisor, watch and shield ship with `⌃⌘S`, `⌃⌘Y` and `⌃⌘B` --
+        // the letters Windows has on Ctrl+Shift (task 1551; `Config.zig`
+        // says why not `⌘⇧`). The control room and the authorise switch have
+        // no default, so their rows show a shortcut only when somebody binds
+        // one.
         syncMenuShortcut(config, action: "poltergeist_toggle_control_room", menuItem: self.menuPoltergeistControlRoom)
         syncMenuShortcut(config, action: "poltergeist_supervisor", menuItem: self.menuPoltergeistSupervisor)
         syncMenuShortcut(config, action: "poltergeist_toggle_watch", menuItem: self.menuPoltergeistWatch)

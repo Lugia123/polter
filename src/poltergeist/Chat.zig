@@ -1876,7 +1876,7 @@ pub fn unread(self: *const Chat, name: []const u8, id: Id) usize {
 ///
 /// ⚠️ **What this costs, and it is a real cost**: an unmarked terminal is no
 /// longer told, including one a person is sitting at. They keep the
-/// conversations window (`poltergeist_toggle_chat`), which is where a person
+/// control room's chat page and `polter +chat`, which is where a person
 /// reads a group; what they lose is a nudge in a terminal. **A released
 /// agent loses nothing it was going to act on.**
 ///

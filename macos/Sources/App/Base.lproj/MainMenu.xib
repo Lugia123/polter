@@ -70,7 +70,6 @@
                 <outlet property="menuSplitRight" destination="VUR-Ld-nLx" id="RxO-Zw-ovb"/>
                 <outlet property="menuSplitUp" destination="Ggp-7N-GbX" id="YJF-uq-S4Y"/>
                 <outlet property="menuTerminalInspector" destination="QwP-M5-fvh" id="wJi-Dh-S9f"/>
-                <outlet property="menuPoltergeistChat" destination="pg1-Ch-At1" id="pg1-Ou-Tl1"/>
                 <outlet property="menuPoltergeistControlRoom" destination="pgK-Cr-Rm1" id="pgK-Ou-Tl1"/>
                 <outlet property="menuPoltergeistSupervisor" destination="pg3-Su-Pv1" id="pg3-Ou-Tl1"/>
                 <outlet property="menuPoltergeistWatch" destination="pg4-Wa-Tc1" id="pg4-Ou-Tl1"/>
@@ -424,12 +423,6 @@
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="poltergeistToggleControlRoom:" target="-1" id="pgK-Cr-Rm2"/>
-                                </connections>
-                            </menuItem>
-                            <menuItem title="Terminal Conversations" id="pg1-Ch-At1">
-                                <modifierMask key="keyEquivalentModifierMask"/>
-                                <connections>
-                                    <action selector="poltergeistToggleChat:" target="-1" id="pg1-Ch-At2"/>
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="pg2-Sp-Ar1"/>

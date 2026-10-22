@@ -353,6 +353,8 @@ macOS 上五个 poltergeist 动作 —— 开群聊、指定总管、监督本�
 
 绑了键的人，菜单项右边会照常显示自己绑的那个键（走 `syncMenuShortcut`）。
 
+> 任务 2080（用户 10-22 定）：菜单项「Terminal Conversations」、它的键位和 `poltergeist_toggle_chat` 这个动作都已去掉。下面这张图记的是当时的流程；今天打开群聊的路是总控台的「群聊」页签，或者在终端里敲 `polter +chat`。
+
 ```text
 用户按下 poltergeist_toggle_chat（键绑定或菜单 Agents → Terminal Conversations）
         │

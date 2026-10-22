@@ -349,7 +349,7 @@ mod tests {
         assert!(is_agent_gate("poltergeist_supervisor"));
         assert!(is_agent_gate("poltergeist_toggle_watch"));
         assert!(is_agent_gate("poltergeist_toggle_shielded"));
-        assert!(is_agent_gate("poltergeist_toggle_chat"));
+        assert!(is_agent_gate("poltergeist_toggle_control_room"));
         assert!(is_agent_gate("poltergeist_something_added_later"));
         assert!(!is_agent_gate("toggle_shielded"));
         assert!(!is_agent_gate("new_tab"));

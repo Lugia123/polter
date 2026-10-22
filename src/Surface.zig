@@ -7851,12 +7851,6 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             return true;
         },
 
-        .poltergeist_toggle_chat => return try self.rt_app.performAction(
-            .{ .surface = self },
-            .toggle_poltergeist_chat,
-            {},
-        ),
-
         .poltergeist_persona_set => |key| {
             // `key` or `key,cli`. What it does -- wear the role, start the
             // CLI here, or start it in a new tab -- is decided by the app
