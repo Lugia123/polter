@@ -184,6 +184,7 @@ FIXTURE = "src/poltergeist/testdata/control_snapshot.json"
 LOOK = "src/input/control-room-look.json"
 SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomList.swift",
+    "macos/Sources/Features/ControlRoom/ControlRoomPageLayout.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",

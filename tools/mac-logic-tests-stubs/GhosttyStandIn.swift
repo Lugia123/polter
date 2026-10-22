@@ -1,4 +1,5 @@
 import AppKit
+import os
 
 // Stand-ins for `tools/mac-logic-tests`. NOT part of the app: this file is
 // only ever compiled into the throwaway package that script builds.
@@ -12,6 +13,11 @@ import AppKit
 // needs a terminal's view to do anything is one the list leaves out.
 
 enum Ghostty {
+    /// The app's log, which `GhosttyPackageMeta.swift` declares beside the
+    /// core: the files taken say what they did through it (the control
+    /// room's pages, task 2015). Nothing here reads it.
+    static let logger = Logger(subsystem: "polter.mac-logic-tests", category: "stand-in")
+
     final class SurfaceView: NSView, Codable, Identifiable {
         let id: UUID
 

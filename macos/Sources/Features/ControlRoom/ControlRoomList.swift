@@ -103,6 +103,10 @@ struct ControlRoomList: Equatable {
         /// What became of the control room's last ask of its supervisor
         /// (task 1671); nil when none was made since the core started.
         var ask: AskState?
+        /// The worst any of its terminals is doing now (task 2015, API.md
+        /// §1): the dot before the right side's "Performance". `.none` from
+        /// a core before it said, and when nothing is measured.
+        var resourceLevel: ControlRoomResourceLevel = .none
     }
 
     /// How the control room's last ask of a group's supervisor went (task
@@ -874,6 +878,9 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         var project: Project?
         /// Task 1671. Null when the group was not asked anything.
         var ask: Ask?
+        /// Task 2015. Absent from a core before it said; a value this build
+        /// does not know fails the decode.
+        var resource_level: ControlRoomResourceLevel?
 
         struct Ask: Decodable, Equatable {
             var seq: UInt64
@@ -1199,7 +1206,8 @@ extension ControlRoomList {
                     deleteCost: group.delete_cost,
                     ask: group.ask.flatMap { a in
                         AskState.Stage(rawValue: a.state).map { AskState(seq: a.seq, stage: $0, code: a.code) }
-                    })))
+                    },
+                    resourceLevel: group.resource_level ?? .none)))
         }
         let rows = groups + lone
         self.init(

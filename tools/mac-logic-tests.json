@@ -45,10 +45,32 @@
       "macos/Sources/Features/ControlRoom/ControlRoomGroupAlerts.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomRowMenuItems.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomModel+RowMenu.swift",
-      "macos/Sources/Features/ControlRoom/ControlRoomSource.swift",
+      {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomSource.swift",
+        "drop": [
+          "var pageSource: ControlRoomPageSource = .none",
+          "var chatContainer: ControlRoomChatContainer?"
+        ],
+        "why": "without the model's two handles on the right side's pages (task 2015): the pages' source asks the core (ControlRoomPerfPage.swift, out) and the chat page's container holds real terminals (ControlRoomChat.swift, out); no test here is about either"
+      },
       "macos/Sources/Features/ControlRoom/ControlRoomStartChoice.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomSupervisorFrame.swift",
-      "macos/Sources/Features/ControlRoom/ControlRoomView.swift",
+      {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomView.swift",
+        "drop": [
+          "ControlRoomPageBody(page: page, model: model)"
+        ],
+        "why": "without the line that draws a page other than the supervisor's over the right side (task 2015): the pages ask the core or hold terminals (ControlRoomPerfPage.swift, ControlRoomChat.swift, out)"
+      },
+      "macos/Sources/Features/ControlRoom/ControlRoomPageLayout.swift",
+      {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomPages.swift",
+        "until": "/// What a page other than the supervisor's shows, where the supervisor's",
+        "why": "the tabs over the right side, the model's pages and what a frame is told of them, which PaneFrameView.swift draws; from the marker on is the page body, which draws the three pages, and they ask the core (ControlRoomPerfPage.swift) or hold terminals (ControlRoomChat.swift)"
+      },
+      "macos/Sources/Features/ControlRoom/ControlRoomResources.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomTasks.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatRules.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomRetentionNotice.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomFixLine.swift",
       "macos/Sources/Features/ControlRoom/NotificationClick.swift",
@@ -150,6 +172,18 @@
         "why": "imports GhosttyKit: it is the window controller, and holds the core's app and the terminals' views"
       },
       {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomChat.swift",
+        "why": "imports GhosttyKit: it makes the chat page's real terminals, a surface a group, and tells the core which are in sight; what it decides without a view is ControlRoomChatRules.swift, which is in"
+      },
+      {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomPerfPage.swift",
+        "why": "imports GhosttyKit: it asks the core for the performance page (ghostty_app_control_page); its numbers and its reading are ControlRoomResources.swift, which is in"
+      },
+      {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomTasksPage.swift",
+        "why": "asks the core through ControlRoomPerfPage.swift's source, which imports GhosttyKit; its reading, its columns and its keys are ControlRoomTasks.swift, which is in"
+      },
+      {
         "path": "macos/Sources/Features/ControlRoom/ControlRoomLender.swift",
         "why": "imports GhosttyKit: it moves a real terminal view between windows"
       },
@@ -186,6 +220,12 @@
       "macos/Tests/ControlRoom/ControlRoomStartChoiceTests.swift",
       "macos/Tests/ControlRoom/ControlRoomSupervisorTitleTests.swift",
       "macos/Tests/ControlRoom/ControlRoomWindowSizeTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomChatRulesTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomPageStripTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomPagesM6Tests.swift",
+      "macos/Tests/ControlRoom/ControlRoomPerfTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomRound4Tests.swift",
+      "macos/Tests/ControlRoom/ControlRoomTasksTests.swift",
       "macos/Tests/ControlRoom/NotificationClickTests.swift",
       "macos/Tests/ControlRoom/PaneFrameChromeTests.swift",
       "macos/Tests/ControlRoom/PaneFrameBarFitTests.swift",

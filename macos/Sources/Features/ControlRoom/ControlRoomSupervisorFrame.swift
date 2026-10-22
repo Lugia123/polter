@@ -19,10 +19,13 @@ struct ControlRoomSupervisorFrame<Content: View>: View {
     var caption: String?
     /// The terminal inside has the keyboard.
     var focused: Bool
+    /// The right side's pages over it, when a group is selected (task 2015).
+    var pages: PaneFramePages?
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        PaneFrameView(wears: .supervisor, title: title.map(PaneFrame.Title.init), caption: caption, focused: focused, content: content)
+        PaneFrameView(wears: .supervisor, title: title.map(PaneFrame.Title.init), caption: caption, focused: focused,
+                      pages: pages, content: content)
     }
 }
 

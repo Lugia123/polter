@@ -1246,3 +1246,15 @@
 
 /* 项目：关联时这个群的总管已经通过别的群有项目了（task 1713） */
 "This group's supervisor already has a project through another group. One supervisor, one project." = "This group's supervisor already has a project through another group. One supervisor, one project.";
+
+/* 总控台：右栏页签，群聊 */
+"Chat" = "Chat";
+
+/* 总控台：右栏页签，任务 */
+"Tasks" = "Tasks";
+
+/* 总控台：右栏页签，性能 */
+"Performance" = "Performance";
+
+/* 总控台：群聊页，聊天程序结束以后 */
+"The chat has ended. Click here to open it again." = "The chat has ended. Click here to open it again.";

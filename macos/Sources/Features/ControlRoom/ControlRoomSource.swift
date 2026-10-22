@@ -154,6 +154,30 @@ final class ControlRoomModel: ObservableObject {
     /// The person asked, on the right-hand side, for the terminal they had
     /// taken back.
     var askForTerminal: () -> Void = {}
+    /// Which page of the right side each group has in front (task 2015,
+    /// Q5; API.md §4): the host's, for the life of the process, never the
+    /// core's. A group not in here is on its supervisor's page.
+    @Published var pages: [String: ControlRoomPage] = [:]
+    /// Called as the supervisor's page is left: the terminal there stays
+    /// lent and is hidden, and the controller takes the keyboard out of it
+    /// first, so that nothing is typed into a terminal nobody can see.
+    var leavingSupervisorPage: () -> Void = {}
+    /// Called as the chat page is left, for the same reason: its chat stays
+    /// open and is hidden, and the keyboard is taken out of it first.
+    var leavingChatPage: () -> Void = {}
+    /// What Return does while the task page has the keyboard; nil while it
+    /// has not. Taken by the window's content view before anything else
+    /// sees the key (`ControlRoomController`, task 2039 round 4).
+    var taskPageReturn: (() -> Void)?
+    /// What the right side's pages ask the core (task 2015); nothing until
+    /// the controller hands it the core.
+    var pageSource: ControlRoomPageSource = .none
+    /// The chat page's terminals (task 2015); nil until the controller
+    /// makes it.
+    var chatContainer: ControlRoomChatContainer?
+    /// The groups whose chat's program ended, which the chat page shows
+    /// one sentence for until the person asks again.
+    @Published var chatEnded: Set<String> = []
     /// Return on the list: go to the selected group's supervisor in its own
     /// tab, with the keyboard -- what Return does on Windows' list
     /// (`control_room.rs::go_to_supervisor`), task 1551.

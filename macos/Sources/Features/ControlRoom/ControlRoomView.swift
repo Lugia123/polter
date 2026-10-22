@@ -42,26 +42,32 @@ struct ControlRoomView: View {
             }
             // The supervisor's frame, whatever is in it: the terminal, or
             // a sentence saying why there is none.
+            // The page in front for the selected group (task 2015); nil with
+            // no pages, and then the right side is as it was.
+            let page = model.pageInFront
+            let onSupervisorPage = page?.showsTerminal ?? true
             ControlRoomSupervisorFrame(
                 title: bar.title,
                 caption: bar.caption,
-                focused: model.detailHasKeyboard
+                focused: model.detailHasKeyboard,
+                pages: page.map { PaneFramePages(current: $0, level: model.selectedLevel, select: { model.show($0) }) }
             ) {
                 VStack(spacing: 0) {
                 // The group's project, under the title bar and over the
                 // terminal (task 1713): beside the `ZStack`, never round
                 // it, so the terminal's holder is the same view with or
                 // without it.
-                if let group = model.selection, model.detail.terminal != nil, let facts = model.selectedRow?.facts {
+                if onSupervisorPage, let group = model.selection, model.detail.terminal != nil, let facts = model.selectedRow?.facts {
                     ProjectLinkStrip(
                         group: group, tie: facts.projectTie, why: facts.projectWhy, hands: model.projectHands,
                         tell: { model.say($0, under: group, delivered: false) })
                 }
                 ZStack {
                     // Always there, so the terminal's view is never
-                    // rebuilt by a redraw of this one.
-                    DetailHost(container: detail)
-                    if model.detail.terminal == nil {
+                    // rebuilt by a redraw of this one -- and on another page
+                    // hidden, not taken out (task 2015).
+                    DetailHost(container: detail, hidden: !onSupervisorPage)
+                    if onSupervisorPage, model.detail.terminal == nil {
                         ControlRoomDetailMessage(
                             detail: model.detail,
                             askFor: model.askForTerminal,
@@ -76,6 +82,10 @@ struct ControlRoomView: View {
                                 model.startSupervisor(for: group, role: role, cwd: cwd, session: session, cli: cli)
                             },
                             goToTerminal: model.goToTerminal)
+                    }
+                    // Another page in front, over the hidden terminal.
+                    if let page, !page.showsTerminal {
+                        ControlRoomPageBody(page: page, model: model)
                     }
                 }
                 }
@@ -108,8 +118,13 @@ struct ControlRoomView: View {
     /// The AppKit container, as it is: SwiftUI only gives it room.
     private struct DetailHost: NSViewRepresentable {
         let container: ControlRoomDetailContainer
+        /// Another page is in front: the terminal stays lent and in its
+        /// holder, out of sight.
+        var hidden = false
 
         func makeNSView(context: Context) -> ControlRoomDetailContainer { container }
-        func updateNSView(_ view: ControlRoomDetailContainer, context: Context) {}
+        func updateNSView(_ view: ControlRoomDetailContainer, context: Context) {
+            if view.isHidden != hidden { view.isHidden = hidden }
+        }
     }
 }

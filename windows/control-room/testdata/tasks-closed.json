@@ -1,0 +1,154 @@
+{
+ "page": "tasks",
+ "group": "web-app",
+ "goal": "给任务列表加批量编辑：frontend 做多选和工具条，api 做 PATCH /api/tasks，tests 补用例。",
+ "head": {
+  "id": "号",
+  "state": "状态",
+  "title": "标题",
+  "owner": "负责人",
+  "idle": "多久没动"
+ },
+ "open": [
+  {
+   "id": 214,
+   "glyph": "done",
+   "state": "做完待关",
+   "title": "列表加多选和「改负责人」工具条",
+   "owner": "frontend",
+   "idle": "17 分钟",
+   "emph": false
+  },
+  {
+   "id": 215,
+   "glyph": "working",
+   "state": "在做",
+   "title": "PATCH /api/tasks 接受一组 id",
+   "owner": "api",
+   "idle": "2 分钟",
+   "emph": false
+  },
+  {
+   "id": 216,
+   "glyph": "working",
+   "state": "在做",
+   "title": "批量编辑的用例：空选择、混合状态、不存在的 id",
+   "owner": "tests",
+   "idle": "6 分钟",
+   "emph": false
+  },
+  {
+   "id": 217,
+   "glyph": "blocked",
+   "state": "卡住",
+   "title": "分页测试在 CI 上偶发失败",
+   "owner": "tests",
+   "idle": "41 分钟",
+   "emph": false
+  },
+  {
+   "id": 218,
+   "glyph": "queued",
+   "state": "排着",
+   "title": "批量编辑以后是乐观更新还是重新拉取？",
+   "owner": "未指派",
+   "idle": "1 小时",
+   "emph": false
+  },
+  {
+   "id": 219,
+   "glyph": "queued",
+   "state": "排着",
+   "title": "「改负责人」工具条的键盘操作",
+   "owner": "未指派",
+   "idle": "1 小时",
+   "emph": false
+  }
+ ],
+ "closed_title": "关了的 8 条",
+ "closed_count": 8,
+ "closed": [
+  {
+   "id": 213,
+   "glyph": "closed",
+   "state": "关了",
+   "title": "/api/tasks 的列表与筛选",
+   "owner": "api",
+   "idle": "昨天"
+  },
+  {
+   "id": 212,
+   "glyph": "closed",
+   "state": "关了",
+   "title": "应用外壳与路由",
+   "owner": "frontend",
+   "idle": "昨天"
+  },
+  {
+   "id": 211,
+   "glyph": "closed",
+   "state": "关了",
+   "title": "会话到期后多活了一个时钟周期",
+   "owner": "api",
+   "idle": "昨天"
+  },
+  {
+   "id": 210,
+   "glyph": "closed",
+   "state": "关了",
+   "title": "会话续期的时钟注入，方便测试",
+   "owner": "api",
+   "idle": "2 天前"
+  },
+  {
+   "id": 209,
+   "glyph": "closed",
+   "state": "关了",
+   "title": "登录页的错误提示",
+   "owner": "frontend",
+   "idle": "2 天前"
+  },
+  {
+   "id": 208,
+   "glyph": "closed",
+   "state": "关了",
+   "title": "登录表单",
+   "owner": "frontend",
+   "idle": "3 天前"
+  },
+  {
+   "id": 207,
+   "glyph": "closed",
+   "state": "关了",
+   "title": "密码重置邮件",
+   "owner": "api",
+   "idle": "3 天前"
+  },
+  {
+   "id": 206,
+   "glyph": "closed",
+   "state": "关了",
+   "title": "项目骨架",
+   "owner": "frontend",
+   "idle": "4 天前"
+  }
+ ],
+ "hints": [
+  {
+   "key": "↑↓",
+   "text": "选任务"
+  },
+  {
+   "key": "Enter",
+   "text": "展开这条的经过"
+  },
+  {
+   "key": "f",
+   "text": "筛选"
+  },
+  {
+   "key": "c",
+   "text": "只看开着的"
+  }
+ ]
+}

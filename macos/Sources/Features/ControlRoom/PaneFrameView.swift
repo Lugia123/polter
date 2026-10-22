@@ -30,11 +30,13 @@ struct PaneFrameView<Content: View>: View {
     /// See `PaneFrameChrome.stack`. **Nothing passes one yet.**
     var stack: PaneStack?
     var stackActions = PaneStackActions()
+    /// See `PaneFrameChrome.pages`.
+    var pages: PaneFramePages?
     @ViewBuilder var content: () -> Content
 
     var body: some View {
         content().modifier(PaneFrameChrome(wears: wears, title: title, caption: caption, focused: focused, well: well, cover: cover,
-                                           stack: stack, stackActions: stackActions))
+                                           stack: stack, stackActions: stackActions, pages: pages))
     }
 }
 
@@ -90,6 +92,13 @@ struct PaneFrameChrome: ViewModifier {
     /// empty, and what is framed is the same view either way.
     var stack: PaneStack?
     var stackActions = PaneStackActions()
+    /// The control room's pages (task 2015, `ControlRoomPages.swift`): like
+    /// a stack, the title gives way to a strip of tabs -- four fixed ones,
+    /// with no plus and nothing to close -- and the bar's right end goes to
+    /// the strip's. Only on the control room's supervisor frame. Like
+    /// `stack`, one more layer over the frame, there or empty: what is
+    /// framed is the same view either way.
+    var pages: PaneFramePages?
     /// The pane's close button is showing over the title's left end, which
     /// the split view lays there (task 1642): the title is cut away under
     /// its disc. Never in the control room.
@@ -215,7 +224,12 @@ struct PaneFrameChrome: ViewModifier {
     /// supervisor's border, the frame's own edges for the other two.
     @ViewBuilder
     private func strip(_ theme: Look.Theme) -> some View {
-        if let wears, let stack {
+        if wears != nil, let pages {
+            // Its own arithmetic from the frame's edge, the border inside it
+            // (`ControlRoomPageStripLayout`), so no padding here.
+            ControlRoomPageStripView(current: pages.current, level: pages.level, title: title,
+                                     well: ground(theme), select: pages.select)
+        } else if let wears, let stack {
             PaneStackStripView(stack: stack, wears: wears, title: title, well: ground(theme), actions: stackActions)
                 .padding(.horizontal, Self.room(for: wears).leading)
                 .background {
@@ -243,7 +257,8 @@ struct PaneFrameChrome: ViewModifier {
                     // Under a strip the bar is still there and says
                     // nothing: taking it out would be one more thing that
                     // changes shape when a pane gains a stack.
-                    PaneFrameBar(wears: wears, title: stack == nil ? title : nil, caption: stack == nil ? caption : nil)
+                    PaneFrameBar(wears: wears, title: stack == nil && pages == nil ? title : nil,
+                                 caption: stack == nil && pages == nil ? caption : nil)
                         .frame(height: Self.room(for: wears).top)
                         .padding(.horizontal, padding)
                         // Over the name's start while it shows, and taking

@@ -359,6 +359,11 @@ extension Ghostty.Notification {
     /// Close the calling surface.
     static let ghosttyCloseSurface = Notification.Name("com.mitchellh.ghostty.closeSurface")
 
+    /// The calling surface's program ended (`show_child_exited`), whatever
+    /// the surface then shows: the control room's chat page says so at once
+    /// rather than when a key closes the surface (task 2015, group seq 250).
+    static let ghosttyChildExited = Notification.Name("PolterChildExited")
+
     /// Focus previous/next split. Has a SplitFocusDirection in the userinfo.
     static let ghosttyFocusSplit = Notification.Name("com.mitchellh.ghostty.focusSplit")
     static let SplitDirectionKey = ghosttyFocusSplit.rawValue

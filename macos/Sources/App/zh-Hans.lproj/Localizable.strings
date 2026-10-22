@@ -1285,3 +1285,15 @@
 
 /* 项目：关联时这个群的总管已经通过别的群有项目了（task 1713） */
 "This group's supervisor already has a project through another group. One supervisor, one project." = "这个群的总管已经通过别的群有了项目。一个总管只管一个项目。";
+
+/* 总控台：右栏页签，群聊 */
+"Chat" = "群聊";
+
+/* 总控台：右栏页签，任务 */
+"Tasks" = "任务";
+
+/* 总控台：右栏页签，性能 */
+"Performance" = "性能";
+
+/* 总控台：群聊页，聊天程序结束以后 */
+"The chat has ended. Click here to open it again." = "聊天已结束，点这里重新打开。";

@@ -108,6 +108,11 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
                     // looked at (`ControlRoomSeenTracker.listChanged`).
                     self.seen?.listChanged(to: self.model.rowBeingLookedAt)
                     self.syncDetail()
+                    // A group gone from the snapshot takes its chat with it;
+                    // before the first snapshot nothing is known gone.
+                    if let rows = self.model.list?.rows {
+                        self.model.chatContainer?.prune { group in rows.contains { $0.id == group } }
+                    }
                 }
             }
         model.onCardsInSight = { [weak self] cards in
@@ -124,7 +129,38 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             })
         }
         model.askForTerminal = { [weak self] in self?.lend(.askedFor) }
+        model.leavingSupervisorPage = { [weak self] in
+            guard let self, let view = self.lender.lent, view.isFirstResponder else { return }
+            self.window?.makeFirstResponder(nil)
+            view.focusDidChange(false)
+            Ghostty.logger.notice("control room: the supervisor's page left with the keyboard in its terminal; taken out")
+            // To the list, as out of a chat (task 2039, M4b): with the
+            // window holding it the arrow keys went nowhere until a click.
+            self.giveListTheKeyboardIfNobodyHasIt()
+        }
         model.goToSupervisor = { [weak self] in self?.goToSupervisor() }
+        model.pageSource = .core(ghostty)
+        // The chat page's terminals: the core closing one of them arrives
+        // as every surface's close does, and only the container knows it
+        // is one (task 2015, M4a).
+        let chats = ControlRoomChatContainer(ghostty)
+        chats.onEnded = { [weak self] ended in self?.model.chatEnded = ended }
+        // Out of a chat, the keyboard goes to the list, as on Windows the
+        // panel takes it: arrow keys move among the groups at once.
+        chats.onKeyboardLeft = { [weak self] in self?.giveListTheKeyboardIfNobodyHasIt() }
+        model.leavingChatPage = { [weak chats] in chats?.leavingPage() }
+        model.chatContainer = chats
+        // Its program ending is enough: the core keeps the surface until a
+        // key is pressed in it, and the page would show the exited program
+        // until then (group seq 250).
+        for name in [Ghostty.Notification.ghosttyCloseSurface, Ghostty.Notification.ghosttyChildExited] {
+            appActivity.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak chats] note in
+                MainActor.assumeIsolated {
+                    guard let view = note.object as? Ghostty.SurfaceView else { return }
+                    _ = chats?.closedByCore(view)
+                }
+            })
+        }
         model.goToTerminal = { id in
             guard let view = ControlRoomLender.surface(for: id) else { return }
             view.window?.makeKeyAndOrderFront(nil)
@@ -214,6 +250,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         noteSelection()
         giveListTheKeyboardIfNobodyHasIt()
         syncLentFocus()
+        model.chatContainer?.syncFocus()
         reportPresence()
         // And once more after this turn of the run loop: becoming key is
         // said before the activation it is part of has finished.
@@ -236,6 +273,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
 
     func windowDidResignKey(_ notification: Notification) {
         syncLentFocus()
+        model.chatContainer?.syncFocus()
         reportPresence()
     }
 
@@ -251,6 +289,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         WindowOpsTally.count(.occlusionFlips)
         // In sight: borrow. Out of sight: give back, and say why.
         syncDetail()
+        model.chatContainer?.windowVisibilityChanged()
         reportPresence()
     }
 
@@ -550,7 +589,10 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             window.tab.attributedTitle = NSAttributedString(string: name, attributes: attributes)
         }
         let content = KeyForwardingHostingView(rootView: ControlRoomView(model: model, detail: detail))
-        content.onKeyEquivalent = { [weak self] in self?.goToTab(for: $0) ?? false }
+        content.onKeyEquivalent = { [weak self] in
+            guard let self else { return false }
+            return self.goToTab(for: $0) || self.taskPageTakesReturn($0)
+        }
         watchingResponder = window.observe(\.firstResponder) { [weak self] _, _ in
             DispatchQueue.main.async { self?.syncLentFocus() }
         }
@@ -634,6 +676,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         reportPresence()
         appActivity.forEach(NotificationCenter.default.removeObserver)
         appActivity = []
+        model.chatContainer?.closeAll()
         lend(.closing)
         detail.giveBack()
         lender.onReclaim = nil
@@ -647,6 +690,19 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
 
     /// "Go to tab N", pressed while this tab is selected. See
     /// `ControlRoomRules.tabIndex`.
+    /// Return on the task page, before any view inside the window can take
+    /// it as a key equivalent (`ControlRoomTasks.returnIsThePages`).
+    private func taskPageTakesReturn(_ event: NSEvent) -> Bool {
+        let relevant: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+        let text = window?.firstResponder is NSText
+        guard ControlRoomTasks.returnIsThePages(
+            keyCode: event.keyCode, modifiers: event.modifierFlags.intersection(relevant).rawValue,
+            pageHasKeyboard: model.taskPageReturn != nil, textHasKeyboard: text),
+            let act = model.taskPageReturn else { return false }
+        act()
+        return true
+    }
+
     private func goToTab(for event: NSEvent) -> Bool {
         guard let window, let windows = window.tabGroup?.windows else { return false }
         let relevant: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
