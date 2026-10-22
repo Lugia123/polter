@@ -173,6 +173,12 @@ const Out = struct {
     page: []const u8 = "tasks",
     group: []const u8,
     goal: []const u8,
+    /// `goal` a line to an item (task 2060): split at its newlines, the
+    /// empty ones left out. A host draws these as the rows under the
+    /// group's name and wraps each to its own width, as the chat's brief
+    /// does (`briefRows`, task 2043). `goal` drawn on one line ran the
+    /// lines together -- "…工具条- api: …".
+    goal_lines: []const []const u8,
     head: struct { id: []const u8, state: []const u8, title: []const u8, owner: []const u8, idle: []const u8 },
     open: []const Row,
     closed_title: []const u8,
@@ -219,6 +225,7 @@ pub fn render(arena: Allocator, in: In) Allocator.Error![]u8 {
     const out: Out = .{
         .group = in.group,
         .goal = in.goal,
+        .goal_lines = try goalLines(arena, in.goal),
         .head = .{ .id = tr(words.head_id), .state = tr(words.head_state), .title = tr(words.head_title), .owner = tr(words.head_owner), .idle = tr(words.head_idle) },
         .open = open.items,
         .closed_title = try fill(arena, tr(words.closed_title), &.{try num(arena, closed_count)}),
@@ -232,6 +239,18 @@ pub fn render(arena: Allocator, in: In) Allocator.Error![]u8 {
         }),
     };
     return std.json.Stringify.valueAlloc(arena, out, .{});
+}
+
+/// The goal's lines: split at LF and CRLF, each trimmed at its ends, the
+/// empty ones left out.
+fn goalLines(arena: Allocator, goal: []const u8) Allocator.Error![]const []const u8 {
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    var lines = std.mem.splitAny(u8, goal, "\r\n");
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t");
+        if (t.len > 0) try out.append(arena, t);
+    }
+    return out.items;
 }
 
 fn glyphOf(t: Task) Glyph {
@@ -451,6 +470,32 @@ test "1978: a task taken up after a restart says so, by the one that has it, and
     const back = log[log.len - 1];
     try testing.expectEqualStrings("api-2", str(back, "who"));
     try testing.expectEqualStrings("Back after a restart, the same session (claude-code 55a835df)", str(back, "text"));
+}
+
+test "2060: a goal of several lines is handed over a line to an item, none of them joined, none empty" {
+    var in = baseIn();
+    // The brief the Windows page ran together as "…工具条- api: …".
+    in.goal = "第 5 轮进行中（2026-10-22）：\r\n- frontend：列表多选和工具条\n\n- api: PATCH /api/tasks  \n";
+    var got = try rendered(in);
+    defer got.deinit();
+    const lines = got.root.object.get("goal_lines").?.array.items;
+    try testing.expectEqual(@as(usize, 3), lines.len);
+    try testing.expectEqualStrings("第 5 轮进行中（2026-10-22）：", lines[0].string);
+    try testing.expectEqualStrings("- frontend：列表多选和工具条", lines[1].string);
+    try testing.expectEqualStrings("- api: PATCH /api/tasks", lines[2].string);
+    // `goal` is still the brief as written, for a host that reads it.
+    try testing.expectEqualStrings(in.goal, str(got.root, "goal"));
+
+    // One line is one item; no brief is none.
+    var one = try rendered(baseIn());
+    defer one.deinit();
+    const only = one.root.object.get("goal_lines").?.array.items;
+    try testing.expectEqual(@as(usize, 1), only.len);
+    try testing.expectEqualStrings("Bulk editing for the task list.", only[0].string);
+    in.goal = "";
+    var none = try rendered(in);
+    defer none.deinit();
+    try testing.expectEqual(@as(usize, 0), none.root.object.get("goal_lines").?.array.items.len);
 }
 
 test "2015: the open tasks in number order, each with its state, owner and how long it has been quiet" {

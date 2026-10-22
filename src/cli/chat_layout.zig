@@ -102,14 +102,55 @@ pub fn wrap(
 
         // Prefer a word break, but only when it is not so far back that the
         // row would be mostly empty.
-        const at = if (last_space) |sp|
+        var at = if (last_space) |sp|
             (if (sp * 3 >= cut * 2) sp else cut)
         else
             cut;
 
+        // **No row starts with a full stop** (task 2060): a mark that closes
+        // what came before it takes the character before it down to the next
+        // row, the way CJK text is set -- "在。" goes down together rather
+        // than leaving "。" at the head of a row of its own. Back, not
+        // forward: the row it would hang off is already full. Never back to
+        // an empty row, which would loop. A space in the row is the better
+        // place to go back to: "defgh." goes down whole rather than as "h.".
+        if (noLineStart(std.mem.trimStart(u8, rest[at..], " "))) {
+            if (last_space) |sp| if (sp > 0 and sp < at) {
+                at = sp;
+            };
+        }
+        while (noLineStart(std.mem.trimStart(u8, rest[at..], " "))) {
+            const back = prevChar(rest, at);
+            if (back == 0) break;
+            at = back;
+        }
+
         try out.append(alloc, rest[0..at]);
         rest = std.mem.trimStart(u8, rest[at..], " ");
     }
+}
+
+/// Marks that close what came before them and so may not open a row.
+const no_line_start = "。，、；：？！）】」』》〉〕］｝”’…．％～·.,;:?!)]}%";
+
+/// Whether `text` starts with a mark no row may start with.
+fn noLineStart(text: []const u8) bool {
+    if (text.len == 0) return false;
+    const n = std.unicode.utf8ByteSequenceLength(text[0]) catch return false;
+    if (n > text.len) return false;
+    var it = std.unicode.Utf8Iterator{ .bytes = no_line_start, .i = 0 };
+    while (it.nextCodepointSlice()) |mark| if (std.mem.eql(u8, mark, text[0..n])) return true;
+    return false;
+}
+
+/// Where the character before `at` starts.
+fn prevChar(text: []const u8, at: usize) usize {
+    var i = at;
+    while (i > 0) {
+        i -= 1;
+        if (text[i] & 0xC0 != 0x80) break;
+    }
+    return i;
 }
 
 /// How many rows a body of text needs at this width.
@@ -216,6 +257,54 @@ test "height counts the rows a message will actually take" {
 
     // "one" | "two three" "four five" "six" | "" | "seven"
     try testing.expectEqual(@as(usize, 6), rows);
+}
+
+test "2060: a full stop does not open a row; the character before it goes down with it" {
+    var rows: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer rows.deinit(testing.allocator);
+
+    // Ten columns hold five characters, and the sixth is the full stop: the
+    // break falls just before it. Seen on Windows, where "在" stayed and "。"
+    // opened the next row.
+    try wrap(testing.allocator, &rows, "一二三四在。返回", 10, measureTest);
+    try testing.expectEqual(@as(usize, 2), rows.items.len);
+    try testing.expectEqualStrings("一二三四", rows.items[0]);
+    try testing.expectEqualStrings("在。返回", rows.items[1]);
+
+    // A comma and a closing bracket as well.
+    rows.clearRetainingCapacity();
+    try wrap(testing.allocator, &rows, "一二三四五，六七", 10, measureTest);
+    try testing.expectEqualStrings("五，六七", rows.items[1]);
+    rows.clearRetainingCapacity();
+    try wrap(testing.allocator, &rows, "（一二三四五）六", 12, measureTest);
+    try testing.expectEqualStrings("五）六", rows.items[1]);
+
+    // A line that fits is not touched.
+    rows.clearRetainingCapacity();
+    try wrap(testing.allocator, &rows, "一二三四。", 10, measureTest);
+    try testing.expectEqual(@as(usize, 1), rows.items.len);
+}
+
+test "2060: going back for a mark prefers a space, and never empties a row" {
+    var rows: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer rows.deinit(testing.allocator);
+
+    // The word goes down whole, not "abc defg" and "h.".
+    try wrap(testing.allocator, &rows, "abc defgh.", 9, measureTest);
+    try testing.expectEqualStrings("abc", rows.items[0]);
+    try testing.expectEqualStrings("defgh.", rows.items[1]);
+
+    // Nothing but marks: each row still takes at least one, and it ends.
+    rows.clearRetainingCapacity();
+    try wrap(testing.allocator, &rows, "。。。。。。", 4, measureTest);
+    var joined: std.ArrayListUnmanaged(u8) = .empty;
+    defer joined.deinit(testing.allocator);
+    for (rows.items) |r| {
+        try testing.expect(r.len > 0);
+        try testing.expect(measureTest(r) <= 4);
+        try joined.appendSlice(testing.allocator, r);
+    }
+    try testing.expectEqualStrings("。。。。。。", joined.items);
 }
 
 test "a pane with no width asks for no rows" {
