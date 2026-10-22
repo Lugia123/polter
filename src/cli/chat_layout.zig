@@ -81,16 +81,34 @@ pub fn wrap(
         // width; bytes do not.
         var cut: usize = 0;
         var last_space: ?usize = null;
+        // Where a row may end short of `cut`: before a space, or beside a
+        // wide character -- CJK text breaks between any two of its
+        // characters, and has no spaces to break at (task 2105).
+        var last_break: ?usize = null;
+        var prev_wide = false;
+        // Nor after an opening bracket (避尾): 「（」 goes down with what it
+        // opens.
+        var prev_opens = false;
         var it = std.unicode.Utf8Iterator{ .bytes = rest, .i = 0 };
         while (it.nextCodepointSlice()) |slice| {
+            const start = it.i - slice.len;
             const next = it.i;
+            const wide = measure(slice) >= 2;
+            // Before the fit test: the character that does not fit may be
+            // the wide one, and the row may end right before it.
+            if (start > 0 and !prev_opens and (wide or prev_wide)) last_break = start;
             if (measure(rest[0..next]) > width) break;
             cut = next;
+            prev_wide = wide;
+            prev_opens = noLineEnd(slice);
 
             // Recorded *before* the space, not after: breaking after it
             // leaves a trailing space on the row, which shows up as a
             // ragged right edge nobody typed.
-            if (slice.len == 1 and slice[0] == ' ') last_space = next - slice.len;
+            if (slice.len == 1 and slice[0] == ' ') {
+                last_space = start;
+                last_break = start;
+            }
         }
 
         // Nothing fit, which means one character is wider than the pane.
@@ -100,10 +118,14 @@ pub fn wrap(
             cut = if (one.nextCodepointSlice()) |s| s.len else rest.len;
         }
 
-        // Prefer a word break, but only when it is not so far back that the
-        // row would be mostly empty.
-        var at = if (last_space) |sp|
-            (if (sp * 3 >= cut * 2) sp else cut)
+        // Where the row runs out is a break when a wide character is on
+        // either side of it. Otherwise it is inside a word: go back to the
+        // last break, but only when it is not so far back that the row
+        // would be mostly empty. **Only a space was a break before task
+        // 2105**, so a Chinese line with one stray space in it ended at
+        // that space -- "第 6" and then the rest.
+        var at = if (last_break) |b|
+            (if (b * 3 >= cut * 2) b else cut)
         else
             cut;
 
@@ -114,7 +136,10 @@ pub fn wrap(
         // forward: the row it would hang off is already full. Never back to
         // an empty row, which would loop. A space in the row is the better
         // place to go back to: "defgh." goes down whole rather than as "h.".
-        if (noLineStart(std.mem.trimStart(u8, rest[at..], " "))) {
+        // Only inside a word: before a wide character, one character back
+        // is the break, and a space further back would empty the row for
+        // nothing ("第 6 轮……在。").
+        if (noLineStart(std.mem.trimStart(u8, rest[at..], " ")) and !wideBefore(rest, at, measure)) {
             if (last_space) |sp| if (sp > 0 and sp < at) {
                 at = sp;
             };
@@ -133,6 +158,16 @@ pub fn wrap(
 /// Marks that close what came before them and so may not open a row.
 const no_line_start = "。，、；：？！）】」』》〉〕］｝”’…．％～·.,;:?!)]}%";
 
+/// Marks that open what comes after them and so may not end a row.
+const no_line_end = "（【「『《〈〔［｛“‘([{";
+
+/// Whether `char` is one a row may not end with.
+fn noLineEnd(char: []const u8) bool {
+    var it = std.unicode.Utf8Iterator{ .bytes = no_line_end, .i = 0 };
+    while (it.nextCodepointSlice()) |mark| if (std.mem.eql(u8, mark, char)) return true;
+    return false;
+}
+
 /// Whether `text` starts with a mark no row may start with.
 fn noLineStart(text: []const u8) bool {
     if (text.len == 0) return false;
@@ -141,6 +176,12 @@ fn noLineStart(text: []const u8) bool {
     var it = std.unicode.Utf8Iterator{ .bytes = no_line_start, .i = 0 };
     while (it.nextCodepointSlice()) |mark| if (std.mem.eql(u8, mark, text[0..n])) return true;
     return false;
+}
+
+/// Whether the character before `at` is a wide one.
+fn wideBefore(text: []const u8, at: usize, measure: Measure) bool {
+    if (at == 0) return false;
+    return measure(text[prevChar(text, at)..at]) >= 2;
 }
 
 /// Where the character before `at` starts.
@@ -305,6 +346,60 @@ test "2060: going back for a mark prefers a space, and never empties a row" {
         try joined.appendSlice(testing.allocator, r);
     }
     try testing.expectEqualStrings("。。。。。。", joined.items);
+}
+
+test "2105: Chinese with a stray space breaks where the row is full, not at the space" {
+    var rows: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer rows.deinit(testing.allocator);
+
+    // The goal 0x8d10 read on Windows: one space, after "6". Sixteen columns
+    // hold up to the comma; the space is no reason to stop at "第 6".
+    try wrap(testing.allocator, &rows, "第 6 轮进行中，收尾文案和用例", 16, measureTest);
+    try testing.expectEqualStrings("第 6 轮进行中，", rows.items[0]);
+    try testing.expectEqualStrings("收尾文案和用例", rows.items[1]);
+}
+
+test "2105: a space near the end of a Chinese row is not where it ends either" {
+    var rows: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer rows.deinit(testing.allocator);
+
+    // The chat's body as round six read it: the second row stopped at a
+    // space well short of the width. The space is in the row's last third,
+    // so the old rule took it; the row holds one more character.
+    try wrap(testing.allocator, &rows, "进行中进行中 收尾文案", 16, measureTest);
+    try testing.expectEqualStrings("进行中进行中 收", rows.items[0]);
+    try testing.expectEqualStrings("尾文案", rows.items[1]);
+}
+
+test "2105: between Chinese and a word, the break is at their edge, and the word stays whole" {
+    var rows: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer rows.deinit(testing.allocator);
+
+    // Twelve columns run out inside "hello": not cut there, but where the
+    // Chinese ends.
+    try wrap(testing.allocator, &rows, "中文中文hello world", 12, measureTest);
+    try testing.expectEqualStrings("中文中文", rows.items[0]);
+    try testing.expectEqualStrings("hello world", rows.items[1]);
+}
+
+test "2105: an opening bracket goes down with what it opens" {
+    var rows: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer rows.deinit(testing.allocator);
+
+    // The goal of round five, twenty columns: the hosts' goal tests have
+    // the same two rows.
+    try wrap(testing.allocator, &rows, "第 5 轮进行中（2026-10-22）：", 20, measureTest);
+    try testing.expectEqualStrings("第 5 轮进行中", rows.items[0]);
+    try testing.expectEqualStrings("（2026-10-22）：", rows.items[1]);
+}
+
+test "2105: a full stop's character goes down with it, and a space further back is not where the row ends" {
+    var rows: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer rows.deinit(testing.allocator);
+
+    try wrap(testing.allocator, &rows, "第 6 轮进行中在。返回", 16, measureTest);
+    try testing.expectEqualStrings("第 6 轮进行中", rows.items[0]);
+    try testing.expectEqualStrings("在。返回", rows.items[1]);
 }
 
 test "a pane with no width asks for no rows" {
