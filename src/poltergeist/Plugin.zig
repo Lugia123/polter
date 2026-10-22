@@ -339,6 +339,11 @@ pub const Manifest = struct {
     /// see `StartupSays`. Empty for a plugin that declares nothing.
     startup_says: StartupSays = .none,
 
+    /// What this plugin's CLI leaves on its screen when a permission box
+    /// was declined without a word -- see `DeclinedSays`. Empty for a
+    /// plugin that declares nothing.
+    declined_says: DeclinedSays = .none,
+
     /// The parameter by that name, if the manifest declares one.
     pub fn param(self: Manifest, name: []const u8) ?ParamSpec {
         for (self.params) |p| if (std.mem.eql(u8, p.name, name)) return p;
@@ -556,6 +561,100 @@ pub const StartupSays = struct {
         return self.verdict(screen) == .ready;
     }
 };
+
+/// What a CLI leaves on its screen when its permission box was declined
+/// and no hook said so (task 2021).
+///
+/// ```json
+/// "declined_says": { "contains": ["Interrupted · What should Claude do instead?", "User rejected update to"],
+///                    "turn_from": "❯ ", "box": ["Esc to cancel"],
+///                    "turn_done_starts": "✻ ", "turn_done_has": " · done " }
+/// ```
+///
+/// **For the one way out of a box no hook reports.** Claude Code's box
+/// declined with Esc, or with No and nothing typed, ends the turn and fires
+/// nothing (#879): the state stays `awaiting_approval`, the column and the
+/// pane say "awaiting approval" for as long as the terminal is open, and
+/// every line typed into it is refused with `ApprovalOnScreen` although the
+/// person is long out of the box. Declined with something typed, the turn
+/// goes on and its hooks say so; approved, likewise.
+///
+/// Read only after the last prompt line (`turn_from` and something after
+/// it): a turn's marks stay on the screen under the next one, and a box
+/// declined two turns ago is not this one. When no prompt line is on the
+/// screen at all, the prompt has scrolled off above it and the whole screen
+/// is after it. Within that, all three: one of `contains`, none of `box`
+/// (a box still up -- the next one in the same turn), and the line the CLI
+/// draws when a turn is over (`turn_done_starts` at its start and
+/// `turn_done_has` in it). That line comes after every turn, declined or
+/// not, so on its own it says nothing; it is what says the decline is the
+/// end and not something the agent is about to go on from.
+///
+/// Measured with Claude Code 2.1.304 on the mac test account, 2026-10-22:
+/// six declines and one approval, the screen text in each (task 2021).
+pub const DeclinedSays = struct {
+    contains: []const []const u8,
+    turn_from: []const u8,
+    box: []const []const u8,
+    turn_done_starts: []const u8,
+    turn_done_has: []const u8,
+
+    pub const none: DeclinedSays = .{ .contains = &.{}, .turn_from = "", .box = &.{}, .turn_done_starts = "", .turn_done_has = "" };
+
+    pub fn declared(self: DeclinedSays) bool {
+        return self.contains.len > 0 and self.turn_from.len > 0 and
+            self.turn_done_starts.len > 0 and self.turn_done_has.len > 0;
+    }
+
+    /// The declared text that says the box on `screen` was declined and
+    /// the turn is over, or null.
+    pub fn declinedSaid(self: DeclinedSays, screen: []const u8) ?[]const u8 {
+        if (!self.declared()) return null;
+        const turn = self.lastTurn(screen);
+        var done = false;
+        var it = std.mem.splitScalar(u8, turn, '\n');
+        while (it.next()) |line| {
+            for (self.box) |b| if (std.mem.indexOf(u8, line, b) != null) return null;
+            const lead = std.mem.trimStart(u8, line, " \t");
+            if (std.mem.startsWith(u8, lead, self.turn_done_starts) and
+                std.mem.indexOf(u8, lead, self.turn_done_has) != null) done = true;
+        }
+        if (!done) return null;
+        for (self.contains) |text| if (std.mem.indexOf(u8, turn, text) != null) return text;
+        return null;
+    }
+
+    /// What follows the last line that is a prompt: `turn_from` at its
+    /// start and something after it. The input box at the bottom is the
+    /// same mark with nothing after it, and is not one.
+    fn lastTurn(self: DeclinedSays, screen: []const u8) []const u8 {
+        var from: usize = 0;
+        var at: usize = 0;
+        var it = std.mem.splitScalar(u8, screen, '\n');
+        while (it.next()) |line| {
+            const end = at + line.len;
+            defer at = end + 1;
+            // At the start of the row: the same mark indented is a box's
+            // highlighted option, not a prompt.
+            if (!std.mem.startsWith(u8, line, self.turn_from)) continue;
+            // NBSP is what some prompts draw where a space would be.
+            const rest = std.mem.trim(u8, line[self.turn_from.len..], " \t\r\xc2\xa0");
+            if (rest.len > 0) from = @min(end + 1, screen.len);
+        }
+        return screen[from..];
+    }
+};
+
+/// What says a box was declined on the screen of a terminal whose CLI is
+/// `cli`, or null when it declares nothing to go by.
+pub fn declinedFor(manifests: []const Manifest, cli: []const u8) ?DeclinedSays {
+    for (manifests) |m| {
+        if (!std.mem.eql(u8, m.key, cli)) continue;
+        if (!m.declined_says.declared()) return null;
+        return m.declined_says;
+    }
+    return null;
+}
 
 /// What `cli` shows on its way up, for a terminal with no agent connected
 /// yet, or null when it declares nothing to go by -- in which case such a
@@ -1050,7 +1149,45 @@ pub fn load(
         .screen_says = try screenSaysOf(arena, key, obj),
         .hooks_report_approval = hooksReportApprovalOf(key, obj),
         .startup_says = try startupSaysOf(arena, key, obj),
+        .declined_says = try declinedSaysOf(arena, key, obj),
     };
+}
+
+/// `declined_says`, or `.none` with a warning for a section that does not
+/// read: every key is needed, since a decline read with one of them missing
+/// would be read off a screen nobody said how to read.
+fn declinedSaysOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Allocator.Error!DeclinedSays {
+    const section = switch (obj.get("declined_says") orelse return .none) {
+        .object => |o| o,
+        else => {
+            log.warn("plugin {s}: declined_says is not an object; ignored", .{key});
+            return .none;
+        },
+    };
+    const out: DeclinedSays = .{
+        .contains = try sectionTexts(arena, key, "declined_says", section, "contains"),
+        .turn_from = try sectionText(arena, key, section, "turn_from"),
+        .box = try sectionTexts(arena, key, "declined_says", section, "box"),
+        .turn_done_starts = try sectionText(arena, key, section, "turn_done_starts"),
+        .turn_done_has = try sectionText(arena, key, section, "turn_done_has"),
+    };
+    if (!out.declared() or out.box.len == 0) {
+        log.warn("plugin {s}: declined_says needs contains, turn_from, box, turn_done_starts and turn_done_has; ignored", .{key});
+        return .none;
+    }
+    return out;
+}
+
+fn sectionText(arena: Allocator, key: []const u8, section: std.json.ObjectMap, name: []const u8) Allocator.Error![]const u8 {
+    const t = switch (section.get(name) orelse return "") {
+        .string => |t| t,
+        else => "",
+    };
+    if (t.len == 0 or t.len > ScreenSays.max_text_bytes) {
+        log.warn("plugin {s}: declined_says.{s} is not a short text; ignored", .{ key, name });
+        return "";
+    }
+    return arena.dupe(u8, t);
 }
 
 /// `startup_says`, or `.none` with a warning for a section that does not
@@ -1082,15 +1219,19 @@ fn startupFlag(key: []const u8, section: std.json.ObjectMap, name: []const u8) b
 }
 
 fn startupTexts(arena: Allocator, key: []const u8, section: std.json.ObjectMap, name: []const u8) Allocator.Error![]const []const u8 {
+    return sectionTexts(arena, key, "startup_says", section, name);
+}
+
+fn sectionTexts(arena: Allocator, key: []const u8, what: []const u8, section: std.json.ObjectMap, name: []const u8) Allocator.Error![]const []const u8 {
     const list = switch (section.get(name) orelse return &.{}) {
         .array => |a| a.items,
         else => {
-            log.warn("plugin {s}: startup_says.{s} is not a list; ignored", .{ key, name });
+            log.warn("plugin {s}: {s}.{s} is not a list; ignored", .{ key, what, name });
             return &.{};
         },
     };
     if (list.len > ScreenSays.max_texts) {
-        log.warn("plugin {s}: startup_says.{s} has more than {d}; ignored", .{ key, name, ScreenSays.max_texts });
+        log.warn("plugin {s}: {s}.{s} has more than {d}; ignored", .{ key, what, name, ScreenSays.max_texts });
         return &.{};
     }
     const out = try arena.alloc([]const u8, list.len);
@@ -1100,7 +1241,7 @@ fn startupTexts(arena: Allocator, key: []const u8, section: std.json.ObjectMap, 
             else => "",
         };
         if (t.len == 0 or t.len > ScreenSays.max_text_bytes) {
-            log.warn("plugin {s}: startup_says.{s} has an empty, long or non-text item; ignored", .{ key, name });
+            log.warn("plugin {s}: {s}.{s} has an empty, long or non-text item; ignored", .{ key, what, name });
             return &.{};
         }
         o.* = try arena.dupe(u8, t);
@@ -4081,4 +4222,223 @@ test "1668: the shipped Codex manifest declares the boxes Codex 0.163 draws" {
     try testing.expect(says.awaitsApproval("  Would you like to make the following edits?\n"));
     // Its idle prompt is not a box.
     try testing.expect(!says.awaitsApproval("› Ask Codex to do anything\n  ? for shortcuts\n"));
+}
+
+// -- task 2021: a box declined at the terminal -------------------------------
+//
+// The screens are what 0x373c read off Claude Code 2.1.304 on the mac test
+// account on 2026-10-22, five seconds after each answer (the group's seq
+// 314): the part after the last prompt, as measured, over the bottom every
+// one of them ended on. Read through the shipped plugin.json, so what is
+// tested is what is declared.
+
+const claude_bottom =
+    \\
+    \\
+    \\
+    \\
+    \\
+    \\
+    \\
+    \\
+    \\
+    \\
+    \\
+    \\
+    \\○ low · /effort
+    \\────────────────────────────────────────────────────────────────────────────────
+    \\❯ 
+    \\────────────────────────────────────────────────────────────────────────────────
+    \\  ⏸ manual mode on
+;
+
+fn shippedDeclined(arena: Allocator) !DeclinedSays {
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const text = std.Io.Dir.cwd().readFileAlloc(threaded.io(), "plugins/claude-code/plugin.json", arena, .limited(1024 * 1024)) catch |err| {
+        std.debug.print("cannot read plugins/claude-code/plugin.json ({t}). Run `zig build test` from the repository root.\n", .{err});
+        return error.ShippedPluginUnreadable;
+    };
+    const obj = (try std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{})).object;
+    const says = try declinedSaysOf(arena, "claude-code", obj);
+    try testing.expect(says.declared());
+    return says;
+}
+
+test "2021: a Bash box declined with Esc, or with No and nothing typed, is read as declined" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const says = try shippedDeclined(arena.allocator());
+
+    const esc =
+        \\❯ Use the Bash tool to run exactly this command: ls -la /tmp | head -3
+        \\  Thought for 1s, listed 1 directory, ran 1 shell command
+        \\  ⎿  Interrupted · What should Claude do instead?
+        \\
+        \\✻ Worked for 1s · done 6:23
+    ++ claude_bottom;
+    try testing.expectEqualStrings("Interrupted · What should Claude do instead?", says.declinedSaid(esc).?);
+
+    const no =
+        \\❯ Use the Bash tool to run exactly this command: ls -la /var | head -3
+        \\  Thought for 1s, listed 1 directory, ran 1 shell command
+        \\  ⎿  Interrupted · What should Claude do instead?
+        \\
+        \\✻ Brewed for 0s · done 6:26
+    ++ claude_bottom;
+    try testing.expectEqualStrings("Interrupted · What should Claude do instead?", says.declinedSaid(no).?);
+}
+
+test "2021: an edit box declined with Esc, or with No and nothing typed, is read as declined" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const says = try shippedDeclined(arena.allocator());
+
+    const esc =
+        \\❯ Change the first line of README.md to "# Shop Web (edit test)"
+        \\⏺ Update(README.md)
+        \\  ⎿  User rejected update to README.md
+        \\      1 -# shop-web
+        \\      1 +# Shop Web (edit test)
+        \\      2
+        \\      3  A tiny demo shop.
+        \\
+        \\✻ Baked for 1s · done 6:28
+    ++ claude_bottom;
+    try testing.expectEqualStrings("User rejected update to", says.declinedSaid(esc).?);
+
+    // Its prompt scrolled off above a long diff: everything on the screen
+    // is after it.
+    const no =
+        \\⏺ Update(README.md)
+        \\  ⎿  User rejected update to README.md
+        \\      1 -# shop-web
+        \\      1 +# Shop Web (edit test)
+        \\      2
+        \\      3  A tiny demo shop.
+        \\
+        \\✻ Crunched for 0s · done 6:29
+    ++ claude_bottom;
+    try testing.expectEqualStrings("User rejected update to", says.declinedSaid(no).?);
+}
+
+test "2021: declined with feedback, or approved, the Bash box is not read as declined" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const says = try shippedDeclined(arena.allocator());
+
+    const feedback =
+        \\❯ Use the Bash tool to run exactly this command: ls -la /usr | head -3
+        \\  Thought for 1s, listed 1 directory
+        \\⏺ OK
+        \\✻ Churned for 1s · done 6:27
+    ++ claude_bottom;
+    try testing.expectEqual(@as(?[]const u8, null), says.declinedSaid(feedback));
+
+    const approved =
+        \\❯ Use the Bash tool to run exactly this command: ls -la /tmp | head -3
+        \\  Thought for 2s, listed 1 directory, ran 1 shell command
+        \\⏺ Ran it. Output:
+        \\  lrwxr-xr-x@ 1 root  wheel  11  5月 21 16:57 /tmp -> private/tmp
+        \\✻ Worked for 2s · done 6:31
+    ++ claude_bottom;
+    try testing.expectEqual(@as(?[]const u8, null), says.declinedSaid(approved));
+}
+
+test "2021: an edit declined with feedback reads as declined -- its hooks have ended the wait already" {
+    // The screen alone cannot tell this one from a plain No: the same
+    // line is there. What tells them apart is that its turn went on and
+    // `Stop` fired, so the state is no longer a hook's wait and the screen
+    // is never read for it (`Bus.wantsDeclined`).
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const says = try shippedDeclined(arena.allocator());
+    const feedback =
+        \\❯ Change the first line of README.md to "# Shop Web (edit test)"
+        \\⏺ Update(README.md)
+        \\  ⎿  User rejected update to README.md
+        \\      1 -# shop-web
+        \\      1 +# Shop Web (edit test)
+        \\⏺ OK
+        \\✻ Cooked for 1s · done 6:30
+    ++ claude_bottom;
+    try testing.expectEqualStrings("User rejected update to", says.declinedSaid(feedback).?);
+}
+
+test "2021: a box declined turns ago, under this turn's box still open, is not this one" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const says = try shippedDeclined(arena.allocator());
+
+    const open =
+        \\❯ Use the Bash tool to run exactly this command: ls -la /tmp | head -3
+        \\  Thought for 1s, listed 1 directory, ran 1 shell command
+        \\  ⎿  Interrupted · What should Claude do instead?
+        \\
+        \\✻ Worked for 1s · done 6:23
+        \\
+        \\❯ Use the Bash tool to run exactly this command: ls -la /etc | head -3
+        \\
+        \\⏺ Bash(ls -la /etc | head -3)
+        \\
+        \\ Bash command
+        \\
+        \\   ls -la /etc | head -3
+        \\
+        \\ Do you want to proceed?
+        \\ ❯ 1. Yes
+        \\   2. Yes, and don't ask again for ls commands in this project
+        \\   3. Yes, and allow reading from etc/ from this project
+        \\   4. No
+        \\
+        \\ Esc to cancel · Tab to amend
+    ;
+    try testing.expectEqual(@as(?[]const u8, null), says.declinedSaid(open));
+
+    // The same, with the earlier decline and this turn's box in one turn:
+    // the box being up is what says it is not over.
+    const same_turn =
+        \\❯ Edit README.md, then run ls
+        \\⏺ Update(README.md)
+        \\  ⎿  User rejected update to README.md
+        \\⏺ Bash(ls)
+        \\ Do you want to proceed?
+        \\ ❯ 1. Yes
+        \\   2. No
+        \\ Esc to cancel · Tab to amend
+        \\✻ Worked for 1s · done 6:23
+    ;
+    try testing.expectEqual(@as(?[]const u8, null), says.declinedSaid(same_turn));
+
+    // Declined, and the turn's end not drawn yet.
+    const drawing =
+        \\❯ Use the Bash tool to run exactly this command: ls -la /tmp | head -3
+        \\  ⎿  Interrupted · What should Claude do instead?
+    ++ claude_bottom;
+    try testing.expectEqual(@as(?[]const u8, null), says.declinedSaid(drawing));
+
+    // And the earlier turn's decline, under a turn that is over and was not.
+    const after =
+        \\❯ Use the Bash tool to run exactly this command: ls -la /tmp | head -3
+        \\  ⎿  Interrupted · What should Claude do instead?
+        \\✻ Worked for 1s · done 6:23
+        \\❯ What is in /tmp?
+        \\⏺ A symlink to private/tmp.
+        \\✻ Worked for 2s · done 6:24
+    ++ claude_bottom;
+    try testing.expectEqual(@as(?[]const u8, null), says.declinedSaid(after));
+}
+
+test "2021: declined_says that leaves a key out is not read at all" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const no_box = (try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"declined_says":{"contains":["Interrupted · What should Claude do instead?"],"turn_from":"❯ ","turn_done_starts":"✻ ","turn_done_has":" · done "}}
+    , .{})).object;
+    try testing.expect(!(try declinedSaysOf(a, "x", no_box)).declared());
+    const no_done = (try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"declined_says":{"contains":["Interrupted · What should Claude do instead?"],"turn_from":"❯ ","box":["Esc to cancel"]}}
+    , .{})).object;
+    try testing.expect(!(try declinedSaysOf(a, "x", no_done)).declared());
 }

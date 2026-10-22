@@ -4216,6 +4216,9 @@ fn poltergeistReport(
     // once per event per terminal is how a helpful signal turns into noise
     // that gets ignored or switched off.
     _ = self.poltergeist.report(from, event, now_ms);
+    // A screen that went still on a declined box: the turn is over, and
+    // said so before the quiet report goes anywhere (task 2021).
+    _ = self.considerDeclined(from, now_ms);
 
     // Before the hand-over, so anything worked out this pass rides out in
     // the same line rather than waiting a whole interval behind it.
@@ -4255,6 +4258,7 @@ fn poltergeistHeartbeat(
     self.poltergeist.noteQuiet(from, quiet_ms, now_ms);
     self.capturePermissionBox(from, now_ms);
     self.considerScreenApproval(from, now_ms);
+    _ = self.considerDeclined(from, now_ms);
     self.notePoltergeistAgentsHere();
     _ = self.considerLaunches(now_ms);
     _ = self.poltergeist.considerCalls(now_ms);
@@ -4309,6 +4313,36 @@ fn considerScreenApproval(self: *App, id: poltergeistpkg.Bus.Id, now_ms: u64) vo
     if (self.poltergeist.noteScreenApproval(id, said, now_ms)) {
         log.info("poltergeist: approval box on screen id={x}", .{id});
     }
+}
+
+/// Read a box declined at the terminal off the screen (task 2021): Esc, or
+/// No with nothing typed, ends Claude Code's turn and fires no hook (#879),
+/// so the wait its `PermissionRequest` put in place would stand for as
+/// long as the terminal is open. Asked on every heartbeat and every quiet
+/// report -- the screen moves while the box goes and then goes still --
+/// and before a line is typed in (`approvalOnScreen`), which is the one
+/// that cannot wait for either. Read only when the bus wants it (a hook's
+/// wait, past the redraw grace) and the CLI's plugin declares how.
+///
+/// Answers whether the wait was ended.
+fn considerDeclined(self: *App, id: poltergeistpkg.Bus.Id, now_ms: u64) bool {
+    if (!self.poltergeist.wantsDeclined(id, now_ms)) return false;
+    // A copy, kept for as long as the name read out of it is used.
+    const agent = self.poltergeist.agentOf(id);
+    const cli = agent.cli.get() orelse return false;
+    self.ensurePlugins();
+    const says = poltergeistpkg.Plugin.declinedFor(self.poltergeist_says, cli) orelse return false;
+    const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+        log.debug("poltergeist: could not read for a declined box id={x} err={}", .{ id, err });
+        return false;
+    };
+    defer self.alloc.free(screen);
+    const said = says.declinedSaid(screen) orelse return false;
+    _ = self.poltergeist.noteDeclined(id, said, now_ms);
+    log.info("poltergeist: approval box declined at the terminal id={x} said=\"{s}\"", .{ id, said });
+    self.refreshPoltergeistTabs();
+    self.controlRoomTouch();
+    return true;
 }
 
 /// Remind one worker that printing is not reporting, once, when it stops.
@@ -10310,6 +10344,9 @@ fn poltergeistStartupReach(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) poltergei
 /// box (terminal_key, terminal_answer_prompt) do not ask this.
 pub fn approvalOnScreen(self: *App, id: poltergeistpkg.Bus.Id) bool {
     // A copy, kept for as long as the name read out of it is used.
+    // A box declined at the terminal is not on the screen, whatever the
+    // last hook said (task 2021).
+    if (self.considerDeclined(id, self.poltergeistElapsedMs())) return false;
     const agent = self.poltergeist.agentOf(id);
     if (agent.known() and agent.state == .awaiting_approval) return true;
     if (agent.hooks != .live) return false;

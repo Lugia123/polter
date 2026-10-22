@@ -10,6 +10,18 @@
       ]
     }
   },
+  "declined_says": {
+    "contains": [
+      "Interrupted · What should Claude do instead?",
+      "User rejected update to"
+    ],
+    "turn_from": "❯ ",
+    "box": [
+      "Esc to cancel"
+    ],
+    "turn_done_starts": "✻ ",
+    "turn_done_has": " · done "
+  },
   "exec": "provision.sh",
   "exec_windows": "provision.ps1",
   "timeout_ms": 20000,

@@ -2871,6 +2871,56 @@ pub fn noteScreenApproval(self: *Bus, id: Id, said: ?[]const u8, now_ms: u64) bo
     return true;
 }
 
+/// What a turn that ended on a box declined at the terminal says as its
+/// `detail` (task 2021): no hook said it ended, the screen did.
+pub const declined_at_terminal = "declined at the terminal";
+
+/// Whether this terminal's screen is to be read for a box that was
+/// declined (task 2021): its hooks said it waits on an approval, and the
+/// box has had `event_redraw_grace_ms` to be drawn -- before that, the
+/// screen may still be the last turn's. Only a hook's wait: a title's or a
+/// screen's ends by itself the moment it is no longer shown.
+pub fn wantsDeclined(self: *const Bus, id: Id, now_ms: u64) bool {
+    const e = self.entries.get(id) orelse return false;
+    const a = e.agent;
+    if (a.hooks != .live or a.said_by != .hooks or a.state != .awaiting_approval) return false;
+    return now_ms >= a.eventMs() + event_redraw_grace_ms;
+}
+
+/// The screen of a terminal `wantsDeclined` picked shows its box declined,
+/// with `said` the declared text that shows it (`Plugin.DeclinedSays`):
+/// its turn is over, as `turn_ended` would have said had a hook fired.
+/// The wait goes from the box; what was asked is not answered, so nothing
+/// may answer it now (`promptStanding` refuses: a new event moment).
+///
+/// Answers whether anything went in the box.
+pub fn noteDeclined(self: *Bus, id: Id, said: []const u8, now_ms: u64) bool {
+    if (!self.wantsDeclined(id, now_ms)) return false;
+    const e = self.entries.getPtr(id).?;
+    const a = &e.agent;
+    a.state = .ended;
+    a.since_ms = now_ms;
+    a.last_event_ms = now_ms;
+    a.detail.set(declined_at_terminal);
+    a.note.set(said);
+    a.box = null;
+    a.waiting_on_background = false;
+    // The turn's edge, as `turn_ended` is one.
+    if (a.tools) |n| {
+        if (n != 0) a.tool_ms = now_ms;
+        a.tools = 0;
+    }
+    if (a.pending) |kind| if (isWaiting(kind)) {
+        a.pending = null;
+        a.handed = 0;
+    };
+
+    if (e.role != .watched or e.duty == .off) return false;
+    a.pending = .turn_ended;
+    a.handed = 0;
+    return true;
+}
+
 pub fn wantsBoxPrint(self: *const Bus, id: Id, now_ms: u64) bool {
     const e = self.entries.get(id) orelse return false;
     const a = e.agent;
@@ -4017,7 +4067,11 @@ fn writeAgent(
 ) std.Io.Writer.Error!void {
     const ago_s = (now_ms -| a.eventMs()) / std.time.ms_per_s;
     switch (kind) {
-        .turn_ended => {
+        .turn_ended => if (sameText(a.detail.get(), declined_at_terminal)) {
+            // Not the last turn's answer: the turn ended on the box.
+            try w.print("{s}0x{x:0>16} turn ended {d}s ago, its approval {s}", .{ sep, id, ago_s, declined_at_terminal });
+            if (a.note.get()) |note| try w.print(": \"{s}\"", .{note});
+        } else {
             try w.print("{s}0x{x:0>16} turn ended {d}s ago", .{ sep, id, ago_s });
             if (a.waiting_on_background) try w.writeAll(" (background tasks running)");
             const text = if (turn) |t| t.text else "";
@@ -6795,6 +6849,63 @@ test "hooks: an approval declined with feedback is over at the agent's next tool
 
     _ = try b.agentEvent(worker, toolDone("Edit"), 30_000);
     try testing.expectEqual(AgentState.in_turn, b.agentOf(worker).state);
+}
+
+test "2021: a box declined at the terminal ends the turn, says so, and the old prompt can no longer be answered" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var buf: [512]u8 = undefined;
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+    var ask = hookEv(.awaiting_approval);
+    ask.detail = "Bash";
+    ask.note = "ls -la /tmp | head -3";
+    _ = try b.agentEvent(worker, ask, 2_000);
+    const since = b.agentOf(worker).since_ms;
+    const event = b.agentOf(worker).eventMs();
+
+    // Inside the redraw grace the screen may still be the last turn's.
+    try testing.expect(!b.wantsDeclined(worker, 2_000 + event_redraw_grace_ms - 1));
+    try testing.expect(!b.noteDeclined(worker, "Interrupted", 2_000 + event_redraw_grace_ms - 1));
+    try testing.expectEqual(AgentState.awaiting_approval, b.agentOf(worker).state);
+
+    const at = 2_000 + event_redraw_grace_ms;
+    try testing.expect(b.wantsDeclined(worker, at));
+    try testing.expect(b.noteDeclined(worker, "Interrupted · What should Claude do instead?", at));
+    const a = b.agentOf(worker);
+    try testing.expectEqual(AgentState.ended, a.state);
+    try testing.expectEqualStrings(declined_at_terminal, a.detail.get().?);
+    try testing.expect(!b.wantsDeclined(worker, at + 60_000));
+    try testing.expect(!b.promptStanding(worker, since, event, at, null));
+
+    const line = b.drain(boss, at, &buf, .none) orelse return error.TestExpectedNotice;
+    try testing.expect(std.mem.indexOf(u8, line, "turn ended 0s ago, its approval declined at the terminal: \"Interrupted · What should Claude do instead?\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "awaiting approval") == null);
+}
+
+test "2021: a wait the hooks ended, or the screen's or a title's, is never read for a decline" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 1_000);
+    _ = try b.agentEvent(worker, hookEv(.awaiting_approval), 2_000);
+    // Declined with feedback: the turn went on and ended by its hooks.
+    _ = try b.agentEvent(worker, hookEv(.turn_ended), 3_000);
+    try testing.expect(!b.wantsDeclined(worker, 60_000));
+    try testing.expect(!b.noteDeclined(worker, "User rejected update to", 60_000));
+
+    // Hooks live, but the wait is the screen's (task 1682): that box goes
+    // when the screen stops showing it, not by this.
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 61_000);
+    _ = try b.agentEvent(worker, hookEv(.tool_started), 62_000);
+    try testing.expect(b.noteScreenApproval(worker, "Allow this command?", 63_000));
+    try testing.expectEqual(AgentState.awaiting_approval, b.agentOf(worker).state);
+    try testing.expect(!b.wantsDeclined(worker, 120_000));
+
+    // A CLI with no hooks, waiting by its title.
+    const codex: Id = 0x3333;
+    try b.watch(codex, boss);
+    _ = try b.noteTitle(codex, "codex", "[ ! ] codex", 1_000);
+    try testing.expectEqual(AgentState.awaiting_approval, b.agentOf(codex).state);
+    try testing.expect(!b.wantsDeclined(codex, 60_000));
 }
 
 test "hooks: a subagent's approval is ended by that subagent's tool call, not the main agent's" {
