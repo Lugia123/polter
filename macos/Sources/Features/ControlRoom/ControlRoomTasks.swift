@@ -329,10 +329,12 @@ enum ControlRoomTasks {
         return closes(chars[k]) ? n : k
     }
 
-    /// `text` in lines `width` wide: at the last space that fits, or where
-    /// the room ends when there is none, never a closing mark first. The
-    /// Windows host's `layout::wrap` with `tasks_scene::wrapped`'s
-    /// measuring, step for step, so that the two hosts break a goal alike.
+    /// `text` in lines `width` wide: where the room ends when that is between
+    /// words or beside a Chinese, Japanese or Korean character, otherwise at
+    /// the last space or such character before it (`breakAt`, task 2105),
+    /// never a closing mark first. The Windows host's `layout::wrap` with
+    /// `tasks_scene::wrapped`'s measuring, step for step, so that the two
+    /// hosts break a goal alike.
     static func wrap(_ text: String, width: CGFloat, measure: (String) -> CGFloat) -> [String] {
         var out: [String] = []
         for para in text.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -348,14 +350,7 @@ enum ControlRoomTasks {
                 let total = rest.count
                 let n = min(max(breakBefore(rest, lo), 1), total)
                 if n >= total { break }
-                let cut: Int
-                if rest[n].isWhitespace {
-                    cut = n
-                } else if let at = rest[0..<n].lastIndex(where: \.isWhitespace), at != 0 {
-                    cut = at
-                } else {
-                    cut = n
-                }
+                let cut = breakAt(rest, n)
                 var head = Array(rest[0..<cut])
                 while let last = head.last, last.isWhitespace { head.removeLast() }
                 out.append(String(head))
@@ -364,6 +359,49 @@ enum ControlRoomTasks {
             out.append(String(rest))
         }
         return out
+    }
+
+    /// Where a line of `s` ends when the room runs out at `end` (task 2105):
+    /// there, when the next character is a space or either side of it is
+    /// Chinese, Japanese or Korean, and not after an opening bracket (避尾);
+    /// inside a word, at the last space or edge of such a character before
+    /// it; at `end` when there is neither. The Windows host's
+    /// `layout::break_at`, step for step. **Only a space was a break
+    /// before**: a Chinese goal with one space in it broke as 「第 5」.
+    static func breakAt(_ s: [Character], _ end: Int) -> Int {
+        let next: Character? = end < s.count ? s[end] : nil
+        let prev: Character? = end > 0 ? s[end - 1] : nil
+        let free = !(prev.map(opens) ?? false)
+        if next?.isWhitespace ?? true { return end }
+        if free && ((prev.map(wide) ?? false) || (next.map(wide) ?? false)) { return end }
+        var last: Int?
+        var at = 1
+        while at < end {
+            let c = s[at], before = s[at - 1]
+            if !opens(before) && (c.isWhitespace || wide(c) || wide(before)) { last = at }
+            at += 1
+        }
+        return last ?? end
+    }
+
+    /// Whether `c` is from a script that breaks between any two characters
+    /// -- Chinese, Japanese, Korean -- or one of their full-width marks. The
+    /// Windows host's `layout::wide`, the same ranges.
+    static func wide(_ c: Character) -> Bool {
+        guard let v = c.unicodeScalars.first?.value else { return false }
+        switch v {
+        case 0x1100...0x115F, 0x2E80...0x303E, 0x3041...0x33FF, 0x3400...0x4DBF, 0x4E00...0x9FFF,
+             0xA000...0xA4CF, 0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFF60,
+             0xFFE0...0xFFE6, 0x20000...0x3FFFD:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// What may not end a line (避尾) -- the Windows host's `layout::opens`.
+    static func opens(_ c: Character) -> Bool {
+        "（【「『《〈〔［｛“‘([{".contains(c)
     }
 
     /// Where the arrow keys go from `selected`: one on, one back, held at

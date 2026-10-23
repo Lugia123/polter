@@ -921,6 +921,9 @@ mod tests {
         let first = wrapped(&lines[0], &style, 10.0 * 16.0, &nominal);
         assert!(first.len() >= 2, "{first:?}");
         assert_eq!(narrow, first[..2].to_vec(), "the first line's rows, nothing of the second");
+        // Before the bracket, not at the one space (task 2105; it was 「第 5」):
+        // the rows the mac host's `theGoalIsItsLinesEachWrappedAndTwoRowsAtMost` has.
+        assert_eq!(narrow, vec!["第 5 轮进行中".to_string(), "（2026-10-22）：".to_string()]);
         // None, no rows; one short line, one row.
         assert!(goal_rows(&[], &style, 1000.0, &nominal).is_empty());
         assert_eq!(goal_rows(&lines[3..], &style, 1000.0, &nominal), vec![lines[3].clone()]);

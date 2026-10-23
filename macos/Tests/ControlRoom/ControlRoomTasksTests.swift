@@ -166,13 +166,24 @@ struct TasksTests {
         let lines = ["第 5 轮进行中（2026-10-22）：", "", "- frontend：列表多选和工具条", "- api: PATCH /api/tasks"]
         #expect(T.goalRows(lines, width: 1000, measure: Self.nominal) == [lines[0], lines[2]])
         // The first line wrapping to two leaves no room for the second --
-        // and breaks where the Windows host breaks it.
-        #expect(T.goalRows(lines, width: 160, measure: Self.nominal) == ["第 5", "轮进行中（2026-10-2"])
+        // and breaks where the Windows host breaks it: before the bracket,
+        // not at the one space (task 2105; it was 「第 5」).
+        #expect(T.goalRows(lines, width: 160, measure: Self.nominal) == ["第 5 轮进行中", "（2026-10-22）："])
         #expect(T.goalRows([], width: 1000, measure: Self.nominal) == [])
         #expect(T.goalRows([lines[3]], width: 1000, measure: Self.nominal) == [lines[3]])
         // A closing mark never begins a row: the character before goes
         // down with it (推出), as `tasks_scene::break_before`.
         #expect(T.wrap("一二三四五。六七", width: 5 * 16, measure: Self.nominal) == ["一二三四", "五。六七"])
+    }
+
+    /// Task 2105, the same three as the Windows host's `layout::wrap_tests`:
+    /// Chinese breaks where the row is full, a word stays whole at its edge
+    /// with Chinese, and words still break at their last space.
+    @Test func chineseBreaksWhereTheRowIsFullAndAWordStaysWhole() {
+        let cell = CGFloat(ControlRoomLook.StackTab.nominalCellWidth)
+        #expect(T.wrap("第 6 轮进行中，收尾文案和用例", width: 16 * cell, measure: Self.nominal) == ["第 6 轮进行中，", "收尾文案和用例"])
+        #expect(T.wrap("中文中文hello world", width: 12 * cell, measure: Self.nominal) == ["中文中文", "hello world"])
+        #expect(T.wrap("the quick brown fox", width: 10 * cell, measure: Self.nominal) == ["the quick", "brown fox"])
     }
 
     @Test func theGoalLinesAreRead() throws {

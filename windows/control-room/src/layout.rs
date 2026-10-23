@@ -81,10 +81,12 @@ pub fn nominal_lines(text: &str) -> usize {
 /// Break `text` into lines, given how much of a string fits on one.
 ///
 /// `fits` is the host's measurement: how many characters from the start of
-/// what it is handed fit in the width a row gives. A line breaks after the
-/// last space that fits and drops it; with no space to break at -- a path,
-/// a long flag -- it breaks where the room ends. Text that is empty is one
-/// empty line: a step has a line whether or not there is anything on it.
+/// what it is handed fit in the width a row gives. A line breaks where the
+/// room ends when that is between words or beside a Chinese, Japanese or
+/// Korean character; inside a word, at the last space or such character
+/// before it (`break_at`), and with neither -- a path, a long flag -- where
+/// the room ends. Text that is empty is one empty line: a step has a line
+/// whether or not there is anything on it.
 ///
 /// A host that draws with a system call that wraps for it does not need
 /// this. GDI's wraps at the font's own line height, not the row's
@@ -102,16 +104,56 @@ pub fn wrap(text: &str, fits: &dyn Fn(&str) -> usize) -> Vec<String> {
             break;
         }
         let end: usize = rest.char_indices().nth(n).map_or(rest.len(), |(at, _)| at);
-        let head = &rest[..end];
-        // After the last space that fits, unless the very next character is
-        // one (then the whole of `head` is a word's end already).
-        let next_is_space = rest[end..].starts_with(char::is_whitespace);
-        let cut = if next_is_space { end } else { head.rfind(char::is_whitespace).map_or(end, |at| if at == 0 { end } else { at }) };
+        let cut = break_at(rest, end);
         out.push(rest[..cut].trim_end().to_string());
         rest = rest[cut..].trim_start();
     }
     out.push(rest.to_string());
     out
+}
+
+/// Where a line of `s` ends when the room runs out at byte `end` (task
+/// 2105): there, when the next character is a space or either side of it
+/// is Chinese, Japanese or Korean -- text in those breaks between any two
+/// characters. Otherwise the room ran out inside a word: at the last space
+/// before it, or the last edge of such a character, so the word goes down
+/// whole; at `end` when there is neither. **Never after an opening
+/// bracket** (避尾, the other half of `tasks_scene::closes`): 「（」 goes
+/// down with what it opens.
+///
+/// **Only a space was a break before, and any space back to the start of
+/// the line.** A Chinese line with one space in it ended there: a group's
+/// goal drawn as 「第 6」 and the rest on the next line (0x8d10, round six).
+pub fn break_at(s: &str, end: usize) -> usize {
+    let next = s[end..].chars().next();
+    let prev = s[..end].chars().next_back();
+    let free = !prev.is_some_and(opens);
+    if next.is_none_or(char::is_whitespace) || (free && (prev.is_some_and(wide) || next.is_some_and(wide))) {
+        return end;
+    }
+    let mut last = None;
+    let mut before: Option<char> = None;
+    for (at, c) in s[..end].char_indices() {
+        if at > 0 && !before.is_some_and(opens) && (c.is_whitespace() || wide(c) || before.is_some_and(wide)) {
+            last = Some(at);
+        }
+        before = Some(c);
+    }
+    last.unwrap_or(end)
+}
+
+/// What may not end a line (避尾): an opening bracket or quote.
+pub fn opens(c: char) -> bool {
+    "（【「『《〈〔［｛“‘([{".contains(c)
+}
+
+/// Whether `c` is from a script that breaks between any two characters --
+/// Chinese, Japanese, Korean -- or is one of their full-width marks.
+pub fn wide(c: char) -> bool {
+    matches!(c as u32,
+        0x1100..=0x115F | 0x2E80..=0x303E | 0x3041..=0x33FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF
+        | 0xA000..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFF60
+        | 0xFFE0..=0xFFE6 | 0x20000..=0x3FFFD)
 }
 
 /// What is drawn on each of the `lines` lines a step has: its wrapped
@@ -763,5 +805,53 @@ mod sight_tests {
         assert_eq!(early, Some(("just-made".to_string(), None)));
         assert_ne!(after.sight_key(Some("just-made")), early);
         assert_eq!(at.sight_key(None), None);
+    }
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+
+    /// How many characters from the start fit in `width` columns: one
+    /// column for a narrow character, two for a wide one -- the shape of
+    /// the host's measurement, without a font.
+    fn fits(width: usize) -> impl Fn(&str) -> usize {
+        move |s: &str| {
+            let mut used = 0;
+            let mut n = 0;
+            for c in s.chars() {
+                used += if wide(c) { 2 } else { 1 };
+                if used > width {
+                    break;
+                }
+                n += 1;
+            }
+            n
+        }
+    }
+
+    /// Task 2105: the goal 0x8d10 read on Windows, one space in it.
+    #[test]
+    fn chinese_with_a_stray_space_breaks_where_the_row_is_full() {
+        assert_eq!(wrap("第 6 轮进行中，收尾文案和用例", &fits(16)), ["第 6 轮进行中，", "收尾文案和用例"]);
+    }
+
+    /// An opening bracket goes down with what it opens: the goal of round
+    /// five, twenty columns wide, as both hosts' goal tests have it.
+    #[test]
+    fn an_opening_bracket_does_not_end_a_line() {
+        assert_eq!(wrap("第 5 轮进行中（2026-10-22）：", &fits(20)), ["第 5 轮进行中", "（2026-10-22）："]);
+    }
+
+    #[test]
+    fn between_chinese_and_a_word_the_break_is_at_their_edge() {
+        assert_eq!(wrap("中文中文hello world", &fits(12)), ["中文中文", "hello world"]);
+    }
+
+    /// Words break at spaces, as before.
+    #[test]
+    fn words_still_break_at_the_last_space() {
+        assert_eq!(wrap("the quick brown fox", &fits(10)), ["the quick", "brown fox"]);
+        assert_eq!(wrap("supercalifragilistic", &fits(6)), ["superc", "alifra", "gilist", "ic"]);
     }
 }
