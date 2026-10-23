@@ -575,6 +575,12 @@ fn drainMailbox(
                 // project saved now should still get it.
                 .capture_scrollback => |v| cb.io.captureScrollback(v.path),
                 .scrollback_journal => |v| cb.io.setScrollbackJournal(v.path),
+                // Counted here too, or the app waits its whole budget on a
+                // terminal whose shell has ended.
+                .quitting => |done| {
+                    cb.io.writeDownBeforeQuit();
+                    _ = done.fetchAdd(1, .release);
+                },
                 else => {},
             }
             msg.deinit();
@@ -657,6 +663,10 @@ fn drainMailbox(
                 defer if (v.path) |path| v.alloc.free(path);
                 io.setScrollbackJournal(v.path);
                 self.armJournal(cb);
+            },
+            .quitting => |done| {
+                io.writeDownBeforeQuit();
+                _ = done.fetchAdd(1, .release);
             },
             .start_synchronized_output => self.startSynchronizedOutput(cb),
             .linefeed_mode => |v| self.flags.linefeed_mode = v,

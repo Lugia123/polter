@@ -2697,6 +2697,14 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// The application is quitting (task 2086): every terminal writes down
+    /// its last screenful and scrollback, which `ghostty_app_free` would
+    /// have had them do and which no host calls as it quits. Waits a second
+    /// at most. Nothing is torn down; the host quits as it would have.
+    export fn ghostty_app_quitting(v: *App) void {
+        v.core_app.writeDownBeforeQuit();
+    }
+
     export fn ghostty_app_free(v: *App) void {
         const core_app = v.core_app;
         v.terminate();

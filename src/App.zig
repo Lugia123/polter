@@ -73,6 +73,13 @@ poltergeist_agent_clis: poltergeistpkg.agent_cli.Cache,
 identities: poltergeistpkg.Identities,
 identity_changed: std.atomic.Value(bool) = .init(false),
 
+/// The terminals that have written down their last screenful and
+/// scrollback as the application quits (task 2086,
+/// `writeDownBeforeQuit`). Here and not on that function's stack: an IO
+/// thread later than the wait still counts on it, after the wait has given
+/// up and returned, and the app is never freed as it quits.
+quit_written: std.atomic.Value(u32) = .init(0),
+
 /// "Let the control room take over?" under way (task 1635,
 /// `takeOverStep`), and the last one that stopped without taking over.
 take_over: ?TakeOverRun = null,
@@ -929,6 +936,74 @@ pub fn deinit(self: *App) void {
     // should gracefully close all surfaces.
     assert(self.font_grid_set.count() == 0);
     self.font_grid_set.deinit();
+}
+
+/// How long quitting waits for the terminals to write down their last
+/// screenful and scrollback, all of them together. A terminal is a file
+/// write or two; one that has not answered in this long is stuck, and
+/// quitting must not be.
+pub const quit_write_wait_ms: u64 = 1000;
+
+/// The application is quitting, and neither host frees it as it does
+/// (task 2086, `polter-artifacts/2020/app-deinit-at-quit.md`): so
+/// `deinit`'s per-terminal close never comes, and with it went each
+/// terminal's last screenful of transcript and up to five seconds of its
+/// scrollback journal. Each terminal's IO thread writes them now; this
+/// waits for all of them, `quit_write_wait_ms` at most. The hosts call it
+/// as they quit (`ghostty_app_quitting`), and nothing else is torn down.
+pub fn writeDownBeforeQuit(self: *App) void {
+    self.quit_written.store(0, .release);
+    var asked: u32 = 0;
+    for (self.surfaces.items) |rt| {
+        rt.core().writeDownBeforeQuit(&self.quit_written);
+        asked += 1;
+    }
+    const io = global.io();
+    const all = waitCounted(&self.quit_written, asked, quit_write_wait_ms, io);
+    log.info("quitting: {d} of {d} terminal(s) wrote down their last screenful and scrollback{s}", .{
+        self.quit_written.load(.acquire),
+        asked,
+        if (all) "" else "; the rest were not waited for",
+    });
+}
+
+/// Whether `counter` reaches `want` within `budget_ms`.
+fn waitCounted(counter: *const std.atomic.Value(u32), want: u32, budget_ms: u64, io: std.Io) bool {
+    const step_ms = 5;
+    var waited: u64 = 0;
+    while (counter.load(.acquire) < want) : (waited += step_ms) {
+        if (waited >= budget_ms) return false;
+        io.sleep(.fromMilliseconds(step_ms), .awake) catch return false;
+    }
+    return true;
+}
+
+test "2086: quitting waits until every terminal has counted, and no longer than its budget" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Nobody asked; everybody answered.
+    var counter: std.atomic.Value(u32) = .init(0);
+    try std.testing.expect(waitCounted(&counter, 0, 0, io));
+    counter.store(2, .release);
+    try std.testing.expect(waitCounted(&counter, 2, 0, io));
+
+    // One short: given up at the budget, not waited on for ever.
+    counter.store(1, .release);
+    try std.testing.expect(!waitCounted(&counter, 2, 20, io));
+
+    // The last one counted from another thread while this one waits.
+    counter.store(1, .release);
+    const Late = struct {
+        fn run(c: *std.atomic.Value(u32), lio: std.Io) void {
+            lio.sleep(.fromMilliseconds(30), .awake) catch {};
+            _ = c.fetchAdd(1, .release);
+        }
+    };
+    const t = try std.Thread.spawn(.{}, Late.run, .{ &counter, io });
+    defer t.join();
+    try std.testing.expect(waitCounted(&counter, 2, 2_000, io));
 }
 
 pub fn destroy(self: *App) void {

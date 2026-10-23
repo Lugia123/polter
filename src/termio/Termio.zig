@@ -1093,6 +1093,18 @@ pub fn finishTranscript(self: *Termio) void {
     }
 }
 
+/// The application is quitting and this terminal will not close (task
+/// 2086): write down what closing would have -- the journal's last write,
+/// flushed, as `Thread.finishCaptures` makes it, and the last screenful of
+/// the transcript, as `finishTranscript` does when the shell ends. On the
+/// IO thread, which owns the journal. The process goes on after this, so a
+/// line the terminal prints in the moment left is a line the transcript,
+/// now closed, does not get; it is the screenful that mattered.
+pub fn writeDownBeforeQuit(self: *Termio) void {
+    self.journalScrollback(true);
+    self.finishTranscript();
+}
+
 /// Process output from readdata but the lock is already held.
 fn processOutputLocked(self: *Termio, buf: []const u8) void {
     // Count pty output for Poltergeist. This runs on the reader thread while

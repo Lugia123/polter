@@ -1262,6 +1262,13 @@ pub fn captureScrollback(self: *Surface, path: []const u8) Allocator.Error!void 
     } }, .unlocked);
 }
 
+/// The application is quitting (task 2086): have the IO thread write down
+/// this terminal's last screenful and scrollback, and count one on `done`
+/// when it has (`termio.Termio.writeDownBeforeQuit`).
+pub fn writeDownBeforeQuit(self: *Surface, done: *std.atomic.Value(u32)) void {
+    self.queueIo(.{ .quitting = done }, .unlocked);
+}
+
 /// Queue a message for the IO thread, taking ownership of `msg`.
 ///
 /// We centralize all our logic into this spot so we can intercept

@@ -1618,6 +1618,31 @@ fn tick_core(api: &Api, app: *mut c_void) -> bool {
     true
 }
 
+/// Whether `core_quitting` has run, so the two ways out do it once.
+static QUIT_WRITTEN: AtomicBool = AtomicBool::new(false);
+
+/// The process is leaving (task 2086): each terminal writes down its last
+/// screenful and scrollback, which closing it would have and which this
+/// host never does on the way out -- the core is not freed, so its
+/// terminals are not closed. Once, from the first of the two ways out: the
+/// main loop ending, and the session ending (`WM_ENDSESSION`). Not from
+/// inside a tick: the core is not re-entrant, and a session ending in the
+/// middle of one is said instead of risked.
+fn core_quitting(why: &str) {
+    let app = APP.load(Ordering::Acquire);
+    if app.is_null() || QUIT_WRITTEN.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    if IN_TICK.load(Ordering::Acquire) {
+        // process-wide: about the process leaving, not a window
+        plogf!("[main] quitting ({why}) inside a tick; the terminals' last screenfuls are not written down");
+        return;
+    }
+    // process-wide: about the process leaving, not a window
+    plogf!("[main] quitting ({why}): the terminals write down their last screenful and scrollback");
+    unsafe { (api().app_quitting)(app) };
+}
+
 /// How often the modal ticker looks, in ms. The main loop goes round every
 /// 8 ms, so a period this long that saw no turn of it is not a slow turn.
 const MODAL_TICK_MS: u32 = 50;
@@ -5133,6 +5158,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             WM_ENDSESSION => {
                 if wp.0 != 0 {
                     project_session::save_all();
+                    core_quitting("the session is ending");
                 }
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
@@ -5720,6 +5746,7 @@ fn load_api() -> Option<Api> {
             config_free: sym!(internal, "ghostty_config_free"),
             app_new: sym!(internal, "ghostty_app_new"),
             app_tick: sym!(internal, "ghostty_app_tick"),
+            app_quitting: sym!(internal, "ghostty_app_quitting"),
             surface_config_new: sym!(internal, "ghostty_surface_config_new"),
             surface_new: sym!(internal, "ghostty_surface_new"),
             app_last_error: sym!(internal, "ghostty_app_last_error"),
@@ -8421,6 +8448,7 @@ fn main() {
     // about to make not quit.
     let open_tabs = tabs::count(hwnd);
     session::flush_if_dirty(hwnd);
+    core_quitting("the main loop ended");
     // process-wide: the process is leaving; by this point no window is left
     // for the line to be about
     plogf!("[main] exiting: session flushed, {} tabs were open", open_tabs);

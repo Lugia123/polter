@@ -121,6 +121,13 @@ pub const Message = union(enum) {
     /// freed.
     scrollback_journal: ScrollbackJournal,
 
+    /// The application is quitting (task 2086): write down now what this
+    /// terminal would write down as it closed -- the transcript's last
+    /// screenful and the scrollback journal's last write -- and count one on
+    /// the counter when done (`App.writeDownBeforeQuit`). Neither host frees
+    /// the app as it quits, so closing never comes.
+    quitting: *std.atomic.Value(u32),
+
     /// Write where the data fits in the union.
     write_small: WriteReq.Small,
 

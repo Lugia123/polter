@@ -1719,6 +1719,9 @@ pub struct Api {
     pub config_free: unsafe extern "C" fn(Config),
     pub app_new: unsafe extern "C" fn(*const RuntimeConfig, Config) -> App,
     pub app_tick: unsafe extern "C" fn(App),
+    /// The application is quitting (task 2086): every terminal writes down
+    /// its last screenful and scrollback. Waits a second at most.
+    pub app_quitting: unsafe extern "C" fn(App),
     pub surface_config_new: unsafe extern "C" fn() -> UnsizedSurfaceConfig,
     pub surface_new: unsafe extern "C" fn(App, *const SurfaceConfig) -> Surface,
     /// Why the last `surface_new` on this app returned null, or "" (#18).

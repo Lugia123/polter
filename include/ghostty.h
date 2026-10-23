@@ -1759,6 +1759,7 @@ GHOSTTY_API ghostty_string_s ghostty_config_open_path(void);
 GHOSTTY_API ghostty_app_t ghostty_app_new(const ghostty_runtime_config_s*,
                                              ghostty_config_t);
 GHOSTTY_API void ghostty_app_free(ghostty_app_t);
+GHOSTTY_API void ghostty_app_quitting(ghostty_app_t);
 // The personas the user has defined, for building a menu from. Same "write
 // what fits, return the real total" rule as above; `buf` may be NULL when
 // `cap` is 0. The strings belong to the core and are valid until the next

@@ -656,6 +656,15 @@ class AppDelegate: NSObject,
         // change does not depend on the order the windows close in.
         TerminalController.saveBoundProjectsBeforeQuit()
 
+        // Each terminal writes down its last screenful and scrollback
+        // (task 2086). Closing it would have, and quitting closes nothing:
+        // the app is not freed, and AppKit's closing of the windows comes
+        // after this with the process already on its way out. Waits a
+        // second at most.
+        if let app = ghostty.app {
+            ghostty_app_quitting(app)
+        }
+
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
         // more selective and only remove surface-targeted notifications.
