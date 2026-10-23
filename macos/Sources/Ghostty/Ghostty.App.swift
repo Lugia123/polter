@@ -948,6 +948,14 @@ extension Ghostty {
             // OSC 8 targets are producer-controlled terminal output. Keep them
             // out of the unrestricted generic opener so unsafe local files and
             // deceptive targets cannot reach Launch Services directly.
+            //
+            // **The core has already decided** (task 2122,
+            // `src/os/link_policy.zig`): only http, https and mailto reach
+            // here. `openUntrustedURL` let `file:` through to the default
+            // application -- an OSC 8 link to `file:///etc/hosts` opened in
+            // TextEdit -- so its `file` and custom-scheme branches are no
+            // longer reached for OSC 8; what is left of it is a second look
+            // at a web or mail address.
             if action.kind == .osc8 {
                 return openUntrustedURL(action.url)
             }

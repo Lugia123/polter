@@ -216,8 +216,9 @@ pub const ACTION_COMMAND_FINISHED: u32 = 61;
 
 // `ghostty_action_open_url_kind_e`. **`OSC8` is the one that matters**: it is
 // the only kind whose URL was chosen by whatever is running in the terminal
-// rather than by the person at the keyboard, so it is the only one this host
-// refuses to hand to the shell unconditionally. See `links.rs`.
+// rather than by the person at the keyboard. The core decides which of those
+// may be opened and offers this host none of the rest (task 2122,
+// `src/os/link_policy.zig`); see `links.rs`.
 pub const OPEN_URL_KIND_UNKNOWN: i32 = 0;
 pub const OPEN_URL_KIND_TEXT: i32 = 1;
 pub const OPEN_URL_KIND_HTML: i32 = 2;

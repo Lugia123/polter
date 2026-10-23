@@ -6600,21 +6600,56 @@ fn openUrl(
     self: *Surface,
     action: apprt.action.OpenUrl,
 ) !void {
-    // If the apprt handles it then we're done.
-    if (try self.rt_app.performAction(
+    // **Refused here, before any host hears of it** (task 2122,
+    // `internal_os.link_policy`): an OSC 8 link the terminal chose may only
+    // be http, https or mailto, on every host. A refusal is not "not
+    // handled" -- it is never offered and never opened.
+    switch (internal_os.link_policy.verdict(action.kind == .osc8, action.url)) {
+        .open => {},
+        .refuse => |why| {
+            log.warn("refused to open url={s} kind={t}: {s}", .{ action.url, action.kind, why });
+            return;
+        },
+    }
+
+    const handled = try self.rt_app.performAction(
         .{ .surface = self },
         .open_url,
         action,
-    )) return;
-
-    // apprt didn't handle it, fallback to our simple cross-platform
-    // URL opener. We log a warning because we want well-behaved
-    // apprts to handle this themselves.
-    log.warn("apprt did not handle open URL action, falling back to default opener", .{});
-    try internal_os.open(
-        action.kind,
-        action.url,
     );
+    switch (afterHost(handled, action.kind)) {
+        .done => {},
+        .not_opened => log.warn("the host did not open an OSC 8 link, and it is not opened another way url={s}", .{action.url}),
+        .fall_back => {
+            // apprt didn't handle it, fallback to our simple cross-platform
+            // URL opener. We log a warning because we want well-behaved
+            // apprts to handle this themselves.
+            log.warn("apprt did not handle open URL action, falling back to default opener", .{});
+            try internal_os.open(
+                action.kind,
+                action.url,
+            );
+        },
+    }
+}
+
+/// What follows the host's answer to an `open_url` (task 2122). **A link
+/// the terminal chose is never opened by the core**: the host saying no is
+/// the host's decision, and the fallback opener is the unrestricted one --
+/// on Windows, `rundll32 url.dll,FileProtocolHandler`, which opened a
+/// `file:` link 73 ms after the host refused it. Only what the person
+/// chose falls back, as it always did.
+fn afterHost(handled: bool, kind: apprt.action.OpenUrl.Kind) enum { done, not_opened, fall_back } {
+    if (handled) return .done;
+    return if (kind == .osc8) .not_opened else .fall_back;
+}
+
+test "2122: an OSC 8 link the host did not open is not opened by the core; what the person chose still falls back" {
+    try std.testing.expectEqual(.done, afterHost(true, .osc8));
+    try std.testing.expectEqual(.not_opened, afterHost(false, .osc8));
+    try std.testing.expectEqual(.fall_back, afterHost(false, .unknown));
+    try std.testing.expectEqual(.fall_back, afterHost(false, .text));
+    try std.testing.expectEqual(.done, afterHost(true, .unknown));
 }
 
 /// Return the URI for an OSC8 hyperlink at the given position or null

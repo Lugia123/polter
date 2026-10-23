@@ -53,6 +53,7 @@ pub const expandHome = homedir.expandHome;
 pub const ensureLocale = locale.ensureLocale;
 pub const clickInterval = mouse.clickInterval;
 pub const open = openpkg.open;
+pub const link_policy = @import("link_policy.zig");
 pub const OpenType = openpkg.Type;
 pub const pipe = pipepkg.pipe;
 pub const resourcesDir = resourcesdir.resourcesDir;
@@ -64,6 +65,7 @@ pub const getConfigEditCommand = edit.getConfigEditCommand;
 test {
     _ = hostname;
     _ = openpkg;
+    _ = link_policy;
     _ = file;
     _ = stderr;
     _ = edit;

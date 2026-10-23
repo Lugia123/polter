@@ -1613,8 +1613,8 @@ mod tests {
 
     /// **These run on Windows and nowhere else.** `polter-host` does not build
     /// for the machine this port is written on, so unlike the rules in
-    /// `polter-split-tree`, `polter-droppath`, `polter-cliargs` and
-    /// `polter-urlpolicy`, nothing here is checked by `cargo test` while it is
+    /// `polter-split-tree`, `polter-droppath` and `polter-cliargs`, nothing
+    /// here is checked by `cargo test` while it is
     /// being written. Said out loud because **a `#[test]` that never runs looks
     /// exactly like one that passes.**
     ///
