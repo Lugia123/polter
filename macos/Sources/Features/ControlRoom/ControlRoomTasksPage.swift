@@ -180,10 +180,22 @@ struct ControlRoomTasksPage: View {
     private func list(_ a: Tasks.Answer, width: CGFloat, theme: Look.Theme) -> some View {
         let cols = Tasks.columns(width: width)
         return VStack(alignment: .leading, spacing: 0) {
-            Text(a.goal)
-                .foregroundStyle(theme.textSecondary.color)
-                .lineLimit(1).truncationMode(.tail)
-                .frame(width: width, height: CGFloat(Metrics.goalHeight), alignment: .leading)
+            // The goal a line at a time, two rows at most (#2060); a second
+            // row makes it a line taller, as on Windows.
+            let face = SafeFace(size: CGFloat(Look.Font.body))
+            let goalShown = Tasks.goalRows(a.goal_lines, width: width) { SafeTextMeasure.width($0, in: face) }
+            let pad = CGFloat(Metrics.goalHeight - Metrics.bodyLineHeight) / 2
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(goalShown.enumerated()), id: \.offset) { _, row in
+                    Text(row)
+                        .foregroundStyle(theme.textSecondary.color)
+                        .lineLimit(1)
+                        .frame(width: width, height: CGFloat(Metrics.bodyLineHeight), alignment: .leading)
+                }
+            }
+            .padding(.vertical, pad)
+            .frame(width: width, height: CGFloat(Metrics.goalHeight) + CGFloat(max(goalShown.count - 1, 0)) * CGFloat(Metrics.bodyLineHeight),
+                   alignment: .topLeading)
             // From the left, as each line is: the cells are placed by
             // offset, which does not size the stack, and centred it was
             // as far right as the line was wider than its widest cell

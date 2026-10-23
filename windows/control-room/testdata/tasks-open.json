@@ -2,6 +2,9 @@
  "page": "tasks",
  "group": "web-app",
  "goal": "给任务列表加批量编辑：frontend 做多选和工具条，api 做 PATCH /api/tasks，tests 补用例。",
+ "goal_lines": [
+  "给任务列表加批量编辑：frontend 做多选和工具条，api 做 PATCH /api/tasks，tests 补用例。"
+ ],
  "head": {
   "id": "号",
   "state": "状态",

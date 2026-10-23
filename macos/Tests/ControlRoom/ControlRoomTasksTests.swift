@@ -80,6 +80,35 @@ struct TasksTests {
         #expect(T.color(.closed, theme: t) == t.taskClosed)
         #expect(T.color(.cancelled, theme: t) == t.taskCancelled)
     }
+
+    /// The Windows host's nominal widths (`perf_scene` tests' `nominal`): a
+    /// cell a character, two a wide one, `StackTab.nominalCellWidth` each.
+    static func nominal(_ s: String) -> CGFloat {
+        CGFloat(s.unicodeScalars.reduce(0) { $0 + ($1.value >= 0x2E80 ? 2 : 1) }) * CGFloat(ControlRoomLook.StackTab.nominalCellWidth)
+    }
+
+    /// The goal a line at a time (#2060), as the chat's brief is: each line
+    /// wrapped on its own, the empty ones skipped, two rows at most. The
+    /// rows the Windows host's `tasks_scene::goal_rows` gives for the same
+    /// lines and widths.
+    @Test func theGoalIsItsLinesEachWrappedAndTwoRowsAtMost() {
+        let lines = ["第 5 轮进行中（2026-10-22）：", "", "- frontend：列表多选和工具条", "- api: PATCH /api/tasks"]
+        #expect(T.goalRows(lines, width: 1000, measure: Self.nominal) == [lines[0], lines[2]])
+        // The first line wrapping to two leaves no room for the second --
+        // and breaks where the Windows host breaks it.
+        #expect(T.goalRows(lines, width: 160, measure: Self.nominal) == ["第 5", "轮进行中（2026-10-2"])
+        #expect(T.goalRows([], width: 1000, measure: Self.nominal) == [])
+        #expect(T.goalRows([lines[3]], width: 1000, measure: Self.nominal) == [lines[3]])
+        // A closing mark never begins a row: the character before goes
+        // down with it (推出), as `tasks_scene::break_before`.
+        #expect(T.wrap("一二三四五。六七", width: 5 * 16, measure: Self.nominal) == ["一二三四", "五。六七"])
+    }
+
+    @Test func theGoalLinesAreRead() throws {
+        let t = try T.decode(open())
+        #expect(t.goal_lines == [t.goal])
+        #expect(t.missing == [])
+    }
 }
 
 /// Both sides one type, so that a literal takes the other side's -- what

@@ -27,6 +27,8 @@ pub struct TaskAt {
 pub struct Layout {
     pub width: f64,
     pub goal: Rect,
+    /// The goal's rows as drawn, at most `GOAL_ROWS` (`goal_rows`).
+    pub goal_rows: Vec<String>,
     pub head: Rect,
     pub tasks: Vec<TaskAt>,
     /// The closed tasks' line: pressing it opens or folds them.
@@ -75,6 +77,31 @@ fn words(text: &str, style: Style, side: Side, gap: f64) -> Part {
 
 /// `text` broken into lines `width` wide in `style`: at its own line ends
 /// first, then where the words run out of room (`layout::wrap`).
+/// The most rows the goal takes: the chat's brief takes as many (`briefRows`
+/// in chat.zig, #2043), and the mac host's `ControlRoomTasks.goalRows` too.
+pub const GOAL_ROWS: usize = 2;
+
+/// The goal's rows `width` wide: each of the core's lines wrapped on its own
+/// (#2060: the lines run together read "…工具条- api: …"), the empty ones
+/// skipped, and no more than `GOAL_ROWS` in all -- a first line that wraps
+/// to two leaves no room for the second. What does not fit is not drawn:
+/// the group's brief is in the chat and in the list's row, whole.
+pub fn goal_rows(lines: &[String], style: &Style, width: f64, measure: Measure) -> Vec<String> {
+    // The goal's text lines as drawn -- not the list's rows.
+    let mut shown = Vec::new();
+    for line in lines {
+        if shown.len() >= GOAL_ROWS {
+            break;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        shown.extend(wrapped(line, style, width, measure));
+    }
+    shown.truncate(GOAL_ROWS);
+    shown
+}
+
 pub fn wrapped(text: &str, style: &Style, width: f64, measure: Measure) -> Vec<String> {
     let fits = |s: &str| -> usize {
         // The most characters from the start that fit: found by halving.
@@ -261,8 +288,11 @@ pub fn layout(t: &Tasks, width: f64, height: f64, scroll: f64, theme: &Theme, sc
     let x0 = k::PAD_X;
     let inner = (width - 2.0 * k::PAD_X).max(0.0);
     let mut y = -scroll;
-    let goal = Rect { x: x0, y, w: inner, h: k::GOAL_HEIGHT };
-    y += k::GOAL_HEIGHT;
+    // A row more than one makes the goal a line taller each.
+    let goal_shown = goal_rows(&t.goal_lines, &l3(theme.text_secondary), inner, measure);
+    let goal_h = k::GOAL_HEIGHT + goal_shown.len().saturating_sub(1) as f64 * k::BODY_LINE_HEIGHT;
+    let goal = Rect { x: x0, y, w: inner, h: goal_h };
+    y += goal_h;
     let head = Rect { x: x0, y, w: inner, h: k::ROW_HEIGHT };
     y += k::ROW_HEIGHT;
     let mut tasks = Vec::new();
@@ -305,7 +335,7 @@ pub fn layout(t: &Tasks, width: f64, height: f64, scroll: f64, theme: &Theme, sc
     let content_height = y + scroll + keys_h;
     let keys_w = keys_width(t, theme, measure);
     let keys = Rect { x: k::HINTS_LEFT, y: height - k::HINTS_BOTTOM - k::HINTS_HEIGHT, w: keys_w, h: k::HINTS_HEIGHT };
-    Layout { width, goal, head, tasks, section, glass, detail: drawn, keys, content_height }
+    Layout { width, goal, goal_rows: goal_shown, head, tasks, section, glass, detail: drawn, keys, content_height }
 }
 
 fn key_style(theme: &Theme) -> Style {
@@ -402,8 +432,11 @@ pub fn build(t: &Tasks, at: &Layout, theme: &Theme, scale: f64, selected: Option
     let (hair, amount) = scene::hairline(scale);
     let rule = scene::over(ground, theme.stack_tab_separator, amount);
     let mut out = Vec::new();
-    if scene::draws(&t.goal) {
-        out.push(Draw::Item(Item::Text { rect: at.goal, text: t.goal.clone(), style: l3(theme.text_secondary), align: Align::Left }));
+    // The goal's rows, a line each, in the middle of the goal's height.
+    let pad = (k::GOAL_HEIGHT - k::BODY_LINE_HEIGHT) / 2.0;
+    for (i, row) in at.goal_rows.iter().enumerate() {
+        let rect = Rect { y: at.goal.y + pad + i as f64 * k::BODY_LINE_HEIGHT, h: k::BODY_LINE_HEIGHT, ..at.goal };
+        out.push(Draw::Item(Item::Text { rect, text: row.clone(), style: l3(theme.text_secondary), align: Align::Left }));
     }
     // The heading, and a rule under it.
     let [_, id, state, title, owner, idle] = columns(at.head);
@@ -611,6 +644,50 @@ mod tests {
         assert_eq!(after_return(None, None, Some(7)), (Some(7), Some(7)));
         assert_eq!(after_return(None, None, None), (None, None));
         assert_eq!(after_press(3, Some(3)), (Some(3), None));
+    }
+
+    /// The goal a line at a time (#2060), as the chat's brief is
+    /// (`briefRows`): each line wrapped on its own, the empty ones skipped,
+    /// two rows at most.
+    #[test]
+    fn the_goal_is_its_lines_each_wrapped_and_two_rows_at_most() {
+        let style = l3(DARK.text_secondary);
+        let lines: Vec<String> = ["第 5 轮进行中（2026-10-22）：", "", "- frontend：列表多选和工具条", "- api: PATCH /api/tasks"].iter().map(|s| s.to_string()).collect();
+        // Wide: the first two lines, not run together, and no third.
+        assert_eq!(goal_rows(&lines, &style, 1000.0, &nominal), vec![lines[0].clone(), lines[2].clone()]);
+        // The first line wrapping to two leaves no room for the second.
+        let narrow = goal_rows(&lines, &style, 10.0 * 16.0, &nominal);
+        let first = wrapped(&lines[0], &style, 10.0 * 16.0, &nominal);
+        assert!(first.len() >= 2, "{first:?}");
+        assert_eq!(narrow, first[..2].to_vec(), "the first line's rows, nothing of the second");
+        // None, no rows; one short line, one row.
+        assert!(goal_rows(&[], &style, 1000.0, &nominal).is_empty());
+        assert_eq!(goal_rows(&lines[3..], &style, 1000.0, &nominal), vec![lines[3].clone()]);
+    }
+
+    /// One row keeps the goal's height; a second makes it a line taller,
+    /// and what is under it moves down by as much.
+    #[test]
+    fn a_second_goal_row_makes_the_goal_a_line_taller() {
+        let mut t = decode(OPEN).unwrap();
+        let one = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        assert_eq!((one.goal.h, one.head.y, one.goal_rows.len()), (k::GOAL_HEIGHT, k::GOAL_HEIGHT, 1));
+        t.goal_lines = vec!["第 5 轮进行中（2026-10-22）：".into(), "- frontend：列表多选和工具条".into(), "- api: PATCH /api/tasks".into()];
+        let two = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        assert_eq!(two.goal_rows.len(), 2);
+        assert_eq!(two.goal.h, k::GOAL_HEIGHT + k::BODY_LINE_HEIGHT);
+        assert_eq!(two.head.y, one.head.y + k::BODY_LINE_HEIGHT);
+        // What is drawn is those rows, a line apart, and not `goal`.
+        let d = build(&t, &two, &DARK, 1.0, None, &nominal);
+        let rows: Vec<(f64, String)> = d.iter().filter_map(|x| match x {
+            Draw::Item(Item::Text { rect, text, .. }) if rect.y < two.head.y => Some((rect.y, text.clone())),
+            _ => None,
+        }).collect();
+        assert_eq!(rows.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), vec!["第 5 轮进行中（2026-10-22）：", "- frontend：列表多选和工具条"]);
+        assert_eq!(rows[1].0 - rows[0].0, k::BODY_LINE_HEIGHT);
+        t.goal_lines.clear();
+        let none = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        assert_eq!((none.goal.h, none.goal_rows.len()), (k::GOAL_HEIGHT, 0), "no goal keeps its room");
     }
 
     /// The state's symbol stands in the middle of its column.

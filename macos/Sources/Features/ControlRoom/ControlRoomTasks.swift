@@ -84,6 +84,10 @@ enum ControlRoomTasks {
     struct Answer: Decodable, Equatable {
         var group: String
         var goal: String
+        /// The goal as the person wrote it, a line each -- trimmed, the
+        /// empty ones gone (`TaskPage.goalLines`, #2060). What the page
+        /// draws, each line wrapped on its own (`goalRows`).
+        var goal_lines: [String] = []
         var head: Head
         var open: [Task]
         var closed_title: String
@@ -128,7 +132,12 @@ enum ControlRoomTasks {
             let h = (h as? Reader.Object) ?? [:], p = Reader.at("hints", i)
             return Hint(key: r.text(h, p, "key"), text: r.text(h, p, "text"))
         }
-        return Answer(group: group, goal: r.text(v, "", "goal"), head: head, open: open,
+        let goalLines = r.list(v, "", "goal_lines").enumerated().compactMap { i, l -> String? in
+            if let s = l as? String { return s }
+            r.miss(Reader.at("goal_lines", i))
+            return nil
+        }
+        return Answer(group: group, goal: r.text(v, "", "goal"), goal_lines: goalLines, head: head, open: open,
                       closed_title: r.text(v, "", "closed_title"), closed_count: r.int(v, "", "closed_count") ?? 0,
                       closed: closed, hints: hints, missing: r.missing)
     }
@@ -203,6 +212,80 @@ enum ControlRoomTasks {
     static func afterReturn(selected: UInt64?, open: UInt64?, first: UInt64?) -> (selected: UInt64?, open: UInt64?) {
         guard let s = selected ?? first else { return (nil, open) }
         return (s, open == s ? nil : s)
+    }
+
+    /// The most rows the goal takes: the chat's brief takes as many
+    /// (`briefRows` in chat.zig, #2043), and the Windows host's
+    /// `tasks_scene::GOAL_ROWS`.
+    static let goalRowLimit = 2
+
+    /// The goal's rows `width` wide: each of the core's lines wrapped on its
+    /// own (#2060: run together they read "…工具条- api: …"), the empty ones
+    /// skipped, no more than `goalRowLimit` in all -- a first line that
+    /// wraps to two leaves no room for the second. The Windows host's
+    /// `tasks_scene::goal_rows`, wrapped the same way (`wrap`).
+    static func goalRows(_ lines: [String], width: CGFloat, measure: (String) -> CGFloat) -> [String] {
+        // The goal's text lines as drawn -- not the list's rows.
+        var shown: [String] = []
+        for line in lines {
+            if shown.count >= goalRowLimit { break }
+            if line.allSatisfy(\.isWhitespace) { continue }
+            shown += wrap(line, width: width, measure: measure)
+        }
+        return Array(shown.prefix(goalRowLimit))
+    }
+
+    /// What may not begin a line (避头) -- the Windows host's
+    /// `tasks_scene::closes`, the same marks.
+    static func closes(_ c: Character) -> Bool {
+        "。，、．：；！？）」』】〉》〕｝…—”’%,.;:!?)]}".contains(c)
+    }
+
+    /// Where a line of `chars` ends when `n` fit: earlier when the next line
+    /// would begin with a closing mark, the character before going down with
+    /// it (推出) -- the Windows host's `tasks_scene::break_before`.
+    static func breakBefore(_ chars: [Character], _ n: Int) -> Int {
+        guard n > 0, n < chars.count else { return n }
+        var k = n
+        while k > 1 && closes(chars[k]) { k -= 1 }
+        return closes(chars[k]) ? n : k
+    }
+
+    /// `text` in lines `width` wide: at the last space that fits, or where
+    /// the room ends when there is none, never a closing mark first. The
+    /// Windows host's `layout::wrap` with `tasks_scene::wrapped`'s
+    /// measuring, step for step, so that the two hosts break a goal alike.
+    static func wrap(_ text: String, width: CGFloat, measure: (String) -> CGFloat) -> [String] {
+        var out: [String] = []
+        for para in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            var rest = Array(para)
+            while let last = rest.last, last.isWhitespace { rest.removeLast() }
+            while !rest.isEmpty && out.count < 1000 {
+                // How many fit, then pushed off a closing mark.
+                var lo = 0, hi = rest.count
+                while lo < hi {
+                    let mid = (lo + hi + 1) / 2
+                    if measure(String(rest[0..<mid])) <= width { lo = mid } else { hi = mid - 1 }
+                }
+                let total = rest.count
+                let n = min(max(breakBefore(rest, lo), 1), total)
+                if n >= total { break }
+                let cut: Int
+                if rest[n].isWhitespace {
+                    cut = n
+                } else if let at = rest[0..<n].lastIndex(where: \.isWhitespace), at != 0 {
+                    cut = at
+                } else {
+                    cut = n
+                }
+                var head = Array(rest[0..<cut])
+                while let last = head.last, last.isWhitespace { head.removeLast() }
+                out.append(String(head))
+                rest = Array(rest[cut...].drop(while: \.isWhitespace))
+            }
+            out.append(String(rest))
+        }
+        return out
     }
 
     /// Where the arrow keys go from `selected`: one on, one back, held at

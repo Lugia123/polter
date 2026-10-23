@@ -92,6 +92,11 @@ pub struct Task {
 pub struct Tasks {
     pub group: String,
     pub goal: String,
+    /// The goal as the person wrote it, a line each -- trimmed, the empty
+    /// ones gone (`TaskPage.goalLines`, #2060). What the page draws, each
+    /// line wrapped on its own (`tasks_scene::goal_rows`); `goal` is the
+    /// same words run together.
+    pub goal_lines: Vec<String>,
     pub head: Head,
     pub open: Vec<Task>,
     pub closed_title: String,
@@ -213,6 +218,13 @@ pub fn decode_value(v: &Value) -> Res<Tasks> {
     Ok(Tasks {
         group: group.clone(),
         goal: r.text(v, "", "goal"),
+        goal_lines: r.list(v, "", "goal_lines").iter().enumerate().filter_map(|(i, l)| match l {
+            Value::Str(s) => Some(s.clone()),
+            _ => {
+                r.miss(at("goal_lines", i));
+                None
+            }
+        }).collect(),
         head,
         open,
         closed_title: r.text(v, "", "closed_title"),
