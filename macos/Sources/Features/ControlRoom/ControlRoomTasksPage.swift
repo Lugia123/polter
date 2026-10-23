@@ -80,7 +80,9 @@ final class ControlRoomTasksFeed: ObservableObject {
             // A task the core no longer has is neither selected nor open.
             if let s = selected, !a.inOrder.contains(where: { $0.id == s }) { selected = nil }
             if let o = openTask, !a.inOrder.contains(where: { $0.id == o }) { openTask = nil }
-            answer = a
+            // **Only when it differs** (#2082): every snapshot asks again,
+            // and a page told its answer changed works every line out anew.
+            if answer != a { answer = a }
             said = nil
             // What the core left out, said when it changes (group seq 309).
             if a.missing != saidMissing {
@@ -112,7 +114,12 @@ struct ControlRoomTasksPage: View {
     typealias Metrics = Look.TaskPage
 
     var group: String
-    @ObservedObject var model: ControlRoomModel
+    /// **Not observed** (#2082): the body draws nothing of the model's,
+    /// and observed, every change the model publishes -- a snapshot, the
+    /// lent terminal, a row's line -- worked the whole page out again,
+    /// all of it, in the middle of a scroll. The page has what it wants of
+    /// the model by `onReceive` and the page source.
+    let model: ControlRoomModel
     @StateObject private var feed: ControlRoomTasksFeed
     @FocusState private var hasKeyboard: Bool
 
@@ -179,7 +186,10 @@ struct ControlRoomTasksPage: View {
 
     private func list(_ a: Tasks.Answer, width: CGFloat, theme: Look.Theme) -> some View {
         let cols = Tasks.columns(width: width)
-        return VStack(alignment: .leading, spacing: 0) {
+        // **Lazy** (#2082): a line is made when it comes into sight, so a
+        // scroll step, or a new answer, costs the lines on the screen and
+        // not every line of a list hundreds long.
+        return LazyVStack(alignment: .leading, spacing: 0) {
             // The goal a line at a time, two rows at most (#2060); a second
             // row makes it a line taller, as on Windows.
             let face = SafeFace(size: CGFloat(Look.Font.body))
