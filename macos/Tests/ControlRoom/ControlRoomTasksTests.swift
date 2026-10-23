@@ -36,9 +36,14 @@ struct TasksTests {
         #expect(same(c.inOrder.count, 14))
     }
 
-    @Test func testAGlyphOrALineThisBuildDoesNotKnowIsAnError() throws {
-        #expect(throws: (any Error).self) { try T.decode(replaced(open(), "\"glyph\": \"working\"", "\"glyph\": \"sleeping\"")) }
-        #expect(throws: (any Error).self) { try T.decode(replaced(open(), "\"entry\": \"gap\"", "\"entry\": \"pause\"")) }
+    /// A glyph or a kind of line this build does not know: that symbol, or
+    /// that line, is left out and said -- no longer the page (group seq 309).
+    @Test func aGlyphOrALineThisBuildDoesNotKnowCostsOnlyItsItem() throws {
+        let g = try T.decode(replaced(open(), "\"glyph\": \"working\"", "\"glyph\": \"sleeping\""))
+        #expect(g.open.filter { $0.glyph == nil }.count == 1)
+        #expect(g.missing.contains { $0.hasSuffix(".glyph") })
+        let e = try T.decode(replaced(open(), "\"entry\": \"gap\"", "\"entry\": \"pause\""))
+        #expect(e.missing.contains { $0.hasSuffix(".entry") })
         #expect(throws: T.DecodeError.refused("NoSuchTask")) { try T.decode(Data("{\"error\":\"NoSuchTask\"}".utf8)) }
     }
 

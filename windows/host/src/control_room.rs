@@ -46,7 +46,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use polter_control_room::act::{self, Dwell, SeenMarker};
@@ -56,7 +56,11 @@ use polter_control_room::lend::{Detail, Effect, Event, Lending, Place};
 use polter_control_room::list::{self, List, Selection};
 use polter_control_room::look::{self, selection, side, status, Rgba, Theme};
 use polter_control_room::rules;
+use polter_control_room::perf::{self, Span};
+use polter_control_room::perf_scene::{self, Draw};
 use polter_control_room::pulse;
+use polter_control_room::{tasks, tasks_scene};
+use polter_control_room::rightpage::{self, Page};
 use polter_control_room::scene::{self, Align, Face, Item, Lit, Part, Piece, Side, Style, View};
 use polter_control_room::slide;
 use polter_control_room::snapshot::Shown;
@@ -75,6 +79,9 @@ const TIMER_SLIDE: usize = 1;
 const TIMER_SEEN: usize = 2;
 /// Once a second while a line under a row is due to fold away (task 1661).
 const TIMER_UNDER: usize = 3;
+/// The performance page asks the core again (task 2015, Q8): every
+/// `period_ms` of its answer, two seconds, only while the page is in front.
+const TIMER_PERF: usize = 4;
 
 /// How many mask pixels a device pixel is drawn from, each way. GDI's
 /// shapes have hard edges; a shape drawn this much larger and averaged down
@@ -361,6 +368,775 @@ thread_local! {
     /// selection that is not this one -- made here, by the core, or by a
     /// screen reader -- is brought into sight at the next paint.
     static REVEALED: RefCell<Option<(String, Option<(f64, f64)>)>> = const { RefCell::new(None) };
+    /// Which page of the right side each group has in front (task 2015,
+    /// Q6; `polter-artifacts/2015/API.md` §4): the host's, by the group's
+    /// name, for the life of the process -- never the core's. A group not
+    /// in here is on its supervisor's page. **Not in `State`**, for the
+    /// reason `SCROLLED` is not: `tabs::layout` asks it.
+    static PAGES: RefCell<std::collections::HashMap<String, Page>> = RefCell::new(std::collections::HashMap::new());
+}
+
+// ------------------------------------------------- the right side's pages
+
+/// The page `group` has in front.
+fn page_of(group: &str) -> Page {
+    PAGES.with(|p| p.borrow().get(group).copied().unwrap_or_default())
+}
+
+/// Whether the right side's page in front is the one that shows the
+/// supervisor's terminal: what `tabs::layout` asks before it places the
+/// lent pane, which it hides on any other page. With nothing selected, or a
+/// terminal on its own, there are no pages, and a lent terminal is shown.
+pub(crate) fn shows_terminal() -> bool {
+    selection().is_none_or(|g| page_of(&g).shows_terminal())
+}
+
+/// What the pages are told for the selected group: its page, how wide each
+/// tab wants to be in the fonts the painter draws with, and the dot's
+/// level from the snapshot.
+fn page_view(hwnd: HWND, scale: f64, theme: &Theme, group: &str, level: polter_control_room::level::Level) -> rightpage::View {
+    let page = page_of(group);
+    let mut wants = [0.0; 4];
+    let dc = unsafe { GetDC(Some(hwnd)) };
+    for p in Page::ALL {
+        let label = tr(p.label());
+        let style = rightpage::label_style(theme, p == page);
+        let w = unsafe { measure_words(dc, scale, &[(label.as_str(), style)]) }.first().copied().unwrap_or(0.0);
+        wants[p.index()] = rightpage::want(w, rightpage::mark(p, level, theme, p == page).is_some());
+    }
+    unsafe { ReleaseDC(Some(hwnd), dc) };
+    rightpage::View { page, wants, level }
+}
+
+/// The right side as it is drawn and pressed: `rightpage::build` with the
+/// selected group's pages. **Every place that asks where something on the
+/// right is -- the paint, a press, the take-over button -- asks this**, so
+/// that the strip moving the side down cannot move it for one and not the
+/// others.
+#[allow(clippy::too_many_arguments)]
+fn right_paged(
+    hwnd: HWND,
+    g: &Geometry,
+    detail: &Detail,
+    row: Option<&list::Row>,
+    snapshot: &polter_control_room::snapshot::Snapshot,
+    theme: &Theme,
+    in_terminal: bool,
+    translate: &dyn Fn(&str) -> String,
+    notice: Option<&polter_control_room::project_notice::Band>,
+) -> rightpage::Paged {
+    let view = row.map(|r| page_view(hwnd, g.scale, theme, &r.id, snapshot.resource_level(&r.id)));
+    rightpage::build(detail, row, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, translate, notice, view.as_ref())
+}
+
+// ------------------------------------------------- the performance page
+
+/// What the performance page has (task 2015, Q8): the group it is open on,
+/// the span its grid shows, the last answer and the curves kept across
+/// answers (`perf::Curves`), how far it is scrolled, the cell the pointer
+/// is on, and where the last paint put it.
+struct Perf {
+    group: String,
+    span: Span,
+    data: Option<perf::Resources>,
+    curves: perf::Curves,
+    scroll: f64,
+    hovered: Option<(usize, usize)>,
+    /// The page's rectangle in the panel's points and its layout, as the
+    /// last paint drew them: what the pointer is measured against.
+    drawn: Option<(Rect, perf_scene::Layout)>,
+    /// The timer runs, at this period.
+    armed: Option<u32>,
+    /// Why the last ask had no answer, said once until it changes.
+    said: Option<String>,
+    /// What the last answer lacked, as last said (`perf_fetch`).
+    said_missing: Vec<String>,
+    /// The last `perf_scene::drew_line` written (`paint_perf`).
+    drew: Option<String>,
+}
+
+thread_local! {
+    static PERF: RefCell<Option<Perf>> = const { RefCell::new(None) };
+}
+
+/// The group whose performance page is in front, when one is: selected,
+/// a group, on that page, with the panel showing.
+fn perf_group(hwnd: HWND) -> Option<String> {
+    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return None;
+    }
+    let group = selection()?;
+    if page_of(&group) != Page::Performance {
+        return None;
+    }
+    let pages = source::with(|data| match data {
+        Data::Ready(r) => r.list.row(&group).is_some_and(|row| rightpage::has_pages(&detail(), Some(row))),
+        Data::NotYet | Data::Unreadable(_) => false,
+    });
+    pages.then_some(group)
+}
+
+/// Start the page's timer, or stop it, for what is in front now; a group
+/// it was not open on starts again from nothing and is asked at once. Any
+/// number of times: with nothing changed, nothing is done.
+fn perf_sync(hwnd: HWND) {
+    let want = perf_group(hwnd);
+    let Some(group) = want else {
+        let was = PERF.with(|p| p.borrow_mut().as_mut().and_then(|p| p.armed.take()));
+        if was.is_some() {
+            let _ = unsafe { KillTimer(Some(hwnd), TIMER_PERF) };
+            wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] performance page out of sight; its timer is stopped");
+        }
+        return;
+    };
+    let start = PERF.with(|p| {
+        let mut p = p.borrow_mut();
+        let span = p.as_ref().map(|x| x.span).unwrap_or_default();
+        match p.as_mut() {
+            Some(x) if x.group == group => x.armed.is_none(),
+            _ => {
+                *p = Some(Perf { group: group.clone(), span, data: None, curves: perf::Curves::default(), scroll: 0.0, hovered: None, drawn: None, armed: None, said: None, said_missing: Vec::new(), drew: None });
+                true
+            }
+        }
+    });
+    if start {
+        perf_arm(hwnd, 2000);
+        wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] performance page of {:?} in front; asking every 2 s", group);
+        perf_fetch(hwnd);
+    }
+}
+
+fn perf_arm(hwnd: HWND, period: u32) {
+    let period = period.max(250);
+    let again = PERF.with(|p| p.borrow_mut().as_mut().map(|x| x.armed.replace(period) != Some(period)).unwrap_or(false));
+    if again {
+        unsafe { SetTimer(Some(hwnd), TIMER_PERF, period, None) };
+    }
+}
+
+/// Ask the core for the page now, and keep what it says. Not while the
+/// window is behind another (API.md §2.1: "窗口在前台时"); the timer goes
+/// on, and the next tick in front asks.
+/// What an answer lacked, as one line: the first dozen paths and how many
+/// more (`reader`).
+fn missing_words(missing: &[String]) -> String {
+    const SHOWN: usize = 12;
+    let mut out = missing.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+    if missing.len() > SHOWN {
+        out.push_str(&format!(" and {} more", missing.len() - SHOWN));
+    }
+    out
+}
+
+fn perf_fetch(hwnd: HWND) {
+    if !in_front(hwnd) {
+        return;
+    }
+    let Some(ask) = PERF.with(|p| p.borrow().as_ref().map(|x| perf::request(&x.group, x.span, x.curves.since))) else { return };
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let answer = source::page(&ask).and_then(|text| perf::decode(&text).map_err(|e| format!("{e:?}")));
+    let period = PERF.with(|p| {
+        let mut p = p.borrow_mut();
+        let x = p.as_mut()?;
+        match answer {
+            // An answer about another group -- the selection moved between
+            // asking and now -- is not this page's.
+            Ok(r) if r.group == x.group => {
+                // What the core left out, said when it changes (group seq
+                // 309): those items are not drawn, and the rest is.
+                // absence: means the last answer lacked nothing, or lacked
+                // what the line before said -- it is written on a change.
+                if r.missing != x.said_missing {
+                    if !r.missing.is_empty() {
+                        wlogf!(frame, "[control-room] performance page of {:?}: the answer is missing {}; those are not drawn", x.group, missing_words(&r.missing));
+                    }
+                    x.said_missing = r.missing.clone();
+                }
+                x.curves.take(&r);
+                let period = r.period_ms as u32;
+                x.data = Some(r);
+                x.said = None;
+                Some(period)
+            }
+            Ok(_) => None,
+            Err(why) => {
+                if x.said.as_deref() != Some(why.as_str()) {
+                    wlogf!(frame, "[control-room] performance page of {:?}: no answer ({})", x.group, why);
+                    x.said = Some(why);
+                }
+                None
+            }
+        }
+    });
+    if let Some(period) = period {
+        perf_arm(hwnd, period);
+    }
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+/// The pointer, at (x, y) in the panel's pixels or gone: the cell it is
+/// on, and the panel drawn again when that changed.
+fn perf_hover(hwnd: HWND, at: Option<(i32, i32)>) {
+    if at.is_some() {
+        let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
+        let _ = unsafe { TrackMouseEvent(&mut track) };
+    }
+    let scale = geometry(hwnd).scale;
+    let changed = PERF.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(x) = p.as_mut() else { return false };
+        let cell = match (at, &x.drawn, &x.data) {
+            (Some((px, py)), Some((page, lay)), Some(r)) => lay.cell_at(px as f64 / scale - page.x, py as f64 / scale - page.y, r.grid.cells),
+            _ => None,
+        };
+        let changed = cell != x.hovered;
+        x.hovered = cell;
+        changed
+    });
+    if changed {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+}
+
+/// The wheel over the page scrolls it, a notch three rows of the grid.
+/// Whether it was over the page.
+fn perf_wheel(hwnd: HWND, x: i32, y: i32, delta: i32) -> bool {
+    let scale = geometry(hwnd).scale;
+    let moved = PERF.with(|p| {
+        let mut p = p.borrow_mut();
+        let x_ = p.as_mut()?;
+        let (page, lay) = x_.drawn.as_ref()?;
+        let (px, py) = (x as f64 / scale, y as f64 / scale);
+        if px < page.x || px >= page.x + page.w || py < page.y || py >= page.y + page.h {
+            return None;
+        }
+        let by = polter_control_room::panestack::scroll(0, delta, WHEEL_ROWS * polter_control_room::look::perf_grid::ROW_HEIGHT);
+        x_.scroll = (x_.scroll + by).clamp(0.0, lay.max_scroll(page.h));
+        x_.hovered = None;
+        Some(())
+    });
+    if moved.is_some() {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+    moved.is_some()
+}
+
+/// A press on the span buttons: the grid shows the other span, from
+/// nothing -- the curves too, since `since` was the old span's. Whether it
+/// was on one.
+fn perf_press(hwnd: HWND, x: i32, y: i32) -> bool {
+    let scale = geometry(hwnd).scale;
+    let picked = PERF.with(|p| {
+        let mut p = p.borrow_mut();
+        let x_ = p.as_mut()?;
+        let (page, lay) = x_.drawn.as_ref()?;
+        let span = lay.span_at(x as f64 / scale - page.x, y as f64 / scale - page.y)?;
+        if span != x_.span {
+            x_.span = span;
+            x_.curves.clear();
+            x_.data = None;
+            x_.hovered = None;
+        }
+        Some(span)
+    });
+    let Some(span) = picked else { return false };
+    wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] performance page shows {}", span.name());
+    perf_fetch(hwnd);
+    true
+}
+
+/// The performance page, inside `page` of the right side `at`, when it is
+/// the page in front and there is an answer to draw. Clipped to the page:
+/// the page scrolls under its edges.
+unsafe fn paint_perf(dc: HDC, at: Px, page: Rect, theme: &Theme) {
+    if selection().map(|g| page_of(&g)) != Some(Page::Performance) {
+        // Not in front: where it was last drawn is no longer anywhere, so
+        // the wheel, a press and the pointer go to the page that is
+        // (0x4881, group seq 221: the task page did not scroll because the
+        // performance page, drawn earlier, took the wheel).
+        PERF.with(|p| {
+            if let Some(x) = p.borrow_mut().as_mut() {
+                x.drawn = None;
+                x.hovered = None;
+            }
+        });
+        return;
+    }
+    let scale = at.scale;
+    let measuring = RefCell::new(Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() });
+    let measure = |text: &str, style: &Style| -> f64 {
+        if !scene::draws(text) {
+            return 0.0;
+        }
+        let font = measuring.borrow_mut().get(style);
+        unsafe { text_width(dc, font, text) as f64 / scale.max(0.1) }
+    };
+    let origin = Px { scale, ox: at.ox + at.len(page.x), oy: at.oy + at.len(page.y) };
+    let mut fonts = Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() };
+    PERF.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(x) = p.as_mut() else { return };
+        let Some(r) = x.data.as_ref() else {
+            x.drawn = None;
+            return;
+        };
+        let lay = perf_scene::layout(r, page.w, x.scroll, theme, &measure);
+        // A page grown shorter scrolls no further than its end.
+        let max = lay.max_scroll(page.h);
+        let lay = if x.scroll > max {
+            x.scroll = max;
+            perf_scene::layout(r, page.w, x.scroll, theme, &measure)
+        } else {
+            lay
+        };
+        // What the core sent of the grid and what is laid out of it, as the
+        // mac host writes it (group seq 315), when it changes.
+        // absence: means it has not changed since the line before.
+        let drew = perf_scene::drew_line(r, &lay);
+        if x.drew.as_deref() != Some(drew.as_str()) {
+            // process-wide: the control room's panel, of which the process has one; a paint names no frame
+            plogf!("[control-room] performance page of {:?}: {}", x.group, drew);
+            x.drew = Some(drew);
+        }
+        let draws = perf_scene::build(r, &x.curves, &lay, theme, scale, x.hovered, &measure);
+        let clip = origin.rect(Rect { x: 0.0, y: 0.0, w: page.w, h: page.h });
+        unsafe {
+            let saved = SaveDC(dc);
+            IntersectClipRect(dc, clip.left, clip.top, clip.right, clip.bottom);
+            paint_draws(dc, origin, &draws, &mut fonts);
+            let _ = RestoreDC(dc, saved);
+        }
+        // Where it was drawn, in the panel's points.
+        let right = Rect { x: at.ox as f64 / scale, y: at.oy as f64 / scale, w: 0.0, h: 0.0 };
+        x.drawn = Some((Rect { x: right.x + page.x, y: right.y + page.y, ..page }, lay));
+    });
+}
+
+/// `perf_scene`'s list: its items by the scene's painter, and the arcs and
+/// lines that only the page has, with GDI's geometric pens -- round at the
+/// ends, as the design's strokes are.
+unsafe fn paint_draws(dc: HDC, at: Px, draws: &[Draw], fonts: &mut Fonts) {
+    let pen = |color: Rgba, width: f64, dash: Option<(f64, f64)>| unsafe {
+        let brush = LOGBRUSH { lbStyle: BS_SOLID, lbColor: rgb(color), lbHatch: 0 };
+        let w = (width * at.scale).round().max(1.0) as u32;
+        match dash {
+            Some((on, off)) => {
+                let pattern = [(on * at.scale).round().max(1.0) as u32, (off * at.scale).round().max(1.0) as u32];
+                ExtCreatePen(PS_GEOMETRIC | PS_USERSTYLE | PS_ENDCAP_FLAT, w, &brush, Some(&pattern))
+            }
+            None => ExtCreatePen(PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND | PS_JOIN_ROUND, w, &brush, None),
+        }
+    };
+    let px = |p: (f64, f64)| POINT { x: at.ox + at.len(p.0), y: at.oy + at.len(p.1) };
+    for d in draws {
+        match d {
+            Draw::Item(item) => unsafe { paint_items(dc, at, std::slice::from_ref(item), fonts, 0.0) },
+            // `AngleArc` counts up anticlockwise and draws a line to where
+            // the arc starts from where the pen is: the pen is put there
+            // first, and the angles are turned round for a screen.
+            Draw::Arc { centre, radius, from, sweep, width, color } => unsafe {
+                let pen = pen(*color, *width, None);
+                let old = SelectObject(dc, pen.into());
+                let start = perf_scene::on_circle(*centre, *radius, *from);
+                let c = px(*centre);
+                let s = px(start);
+                let _ = MoveToEx(dc, s.x, s.y, None);
+                let _ = AngleArc(dc, c.x, c.y, at.len(*radius).max(0) as u32, -(*from as f32), -(*sweep as f32));
+                SelectObject(dc, old);
+                let _ = DeleteObject(pen.into());
+            },
+            Draw::Stroke { points, width, color, dash } => unsafe {
+                let pen = pen(*color, *width, *dash);
+                let old = SelectObject(dc, pen.into());
+                let pts: Vec<POINT> = points.iter().map(|p| px(*p)).collect();
+                let _ = Polyline(dc, &pts);
+                SelectObject(dc, old);
+                let _ = DeleteObject(pen.into());
+            },
+            Draw::Area { points, color } => unsafe {
+                let brush = CreateSolidBrush(rgb(*color));
+                let old_brush = SelectObject(dc, brush.into());
+                let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+                let pts: Vec<POINT> = points.iter().map(|p| px(*p)).collect();
+                let _ = Polygon(dc, &pts);
+                SelectObject(dc, old_pen);
+                SelectObject(dc, old_brush);
+                let _ = DeleteObject(brush.into());
+            },
+        }
+    }
+}
+
+// ------------------------------------------------------- the task page
+
+/// What the task page has (task 2015, Q10): the group it is open on, the
+/// task the arrow keys are on and whether its detail is open, whether the
+/// closed ones are listed, the last answer, how far it is scrolled, where
+/// the last paint put it, and whether the keys are the page's.
+struct TaskPage {
+    group: String,
+    selected: Option<u64>,
+    /// The task whose detail is open: not always the selected one
+    /// (`tasks_scene::after_return`).
+    open_task: Option<u64>,
+    closed: bool,
+    data: Option<tasks::Tasks>,
+    scroll: f64,
+    drawn: Option<(Rect, tasks_scene::Layout)>,
+    /// The person pressed on the page: ↑↓, Enter and c are its, until they
+    /// press on the list.
+    keys: bool,
+    /// Asked since the page last came in front.
+    asked: bool,
+    said: Option<String>,
+    /// What the last answer lacked, as last said (`tasks_fetch`).
+    said_missing: Vec<String>,
+}
+
+thread_local! {
+    static TASKS: RefCell<Option<TaskPage>> = const { RefCell::new(None) };
+}
+
+/// The group whose task page is in front, when one is.
+fn tasks_group(hwnd: HWND) -> Option<String> {
+    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return None;
+    }
+    let group = selection()?;
+    if page_of(&group) != Page::Tasks {
+        return None;
+    }
+    let pages = source::with(|data| match data {
+        Data::Ready(r) => r.list.row(&group).is_some_and(|row| rightpage::has_pages(&detail(), Some(row))),
+        Data::NotYet | Data::Unreadable(_) => false,
+    });
+    pages.then_some(group)
+}
+
+/// The page came in front, or another group's did: asked once. Out of
+/// sight, it is asked again the next time it comes back.
+fn tasks_sync(hwnd: HWND) {
+    let Some(group) = tasks_group(hwnd) else {
+        TASKS.with(|t| {
+            if let Some(t) = t.borrow_mut().as_mut() {
+                t.asked = false;
+                t.keys = false;
+            }
+        });
+        return;
+    };
+    let ask = TASKS.with(|t| {
+        let mut t = t.borrow_mut();
+        match t.as_mut() {
+            Some(x) if x.group == group => !x.asked,
+            _ => {
+                *t = Some(TaskPage { group, selected: None, open_task: None, closed: false, data: None, scroll: 0.0, drawn: None, keys: false, asked: false, said: None, said_missing: Vec::new() });
+                true
+            }
+        }
+    });
+    if ask {
+        tasks_fetch(hwnd);
+    }
+}
+
+/// Ask the core for the page as it is set now, when it is in front; keep
+/// what it says. The task asked open that the core no longer has is shut.
+fn tasks_fetch(hwnd: HWND) {
+    if tasks_group(hwnd).is_none() {
+        return;
+    }
+    let Some(ask) = TASKS.with(|t| t.borrow().as_ref().map(|x| tasks::request(&x.group, x.open_task, x.closed))) else { return };
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let answer = source::page(&ask).and_then(|text| tasks::decode(&text).map_err(|e| format!("{e:?}")));
+    TASKS.with(|t| {
+        let mut t = t.borrow_mut();
+        let Some(x) = t.as_mut() else { return };
+        x.asked = true;
+        match answer {
+            Ok(r) if r.group == x.group => {
+                // A task the core no longer has is neither selected nor open.
+                if x.selected.is_some_and(|s| !r.in_order().any(|task| task.id == s)) {
+                    x.selected = None;
+                }
+                if x.open_task.is_some_and(|s| !r.in_order().any(|task| task.id == s)) {
+                    x.open_task = None;
+                }
+                // What the core left out, said when it changes (group seq 309).
+                // absence: means the last answer lacked nothing, or what the
+                // line before said -- it is written on a change.
+                if r.missing != x.said_missing {
+                    if !r.missing.is_empty() {
+                        wlogf!(frame, "[control-room] task page of {:?}: the answer is missing {}; those are not drawn", x.group, missing_words(&r.missing));
+                    }
+                    x.said_missing = r.missing.clone();
+                }
+                x.data = Some(r);
+                x.said = None;
+            }
+            Ok(_) => {}
+            Err(why) => {
+                if x.said.as_deref() != Some(why.as_str()) {
+                    wlogf!(frame, "[control-room] task page of {:?}: no answer ({})", x.group, why);
+                    x.said = Some(why);
+                }
+            }
+        }
+    });
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+/// A press on the page: on a task, it is selected and its detail opened --
+/// or shut, pressed again; on the closed tasks' line, they are listed or
+/// folded. Any press on the page gives it the keys; one anywhere else takes
+/// them back. Whether it was on the page.
+fn tasks_press(hwnd: HWND, x: i32, y: i32) -> bool {
+    let scale = geometry(hwnd).scale;
+    let what = TASKS.with(|t| {
+        let mut t = t.borrow_mut();
+        let p = t.as_mut()?;
+        let Some((page, lay)) = p.drawn.as_ref() else {
+            p.keys = false;
+            return None;
+        };
+        let (px, py) = (x as f64 / scale - page.x, y as f64 / scale - page.y);
+        if px < 0.0 || py < 0.0 || px >= page.w || py >= page.h {
+            p.keys = false;
+            return None;
+        }
+        p.keys = true;
+        if lay.on_section(px, py) {
+            p.closed = !p.closed;
+            return Some(format!("closed tasks {}", if p.closed { "listed" } else { "folded" }));
+        }
+        if let Some(id) = lay.task_at(px, py) {
+            (p.selected, p.open_task) = tasks_scene::after_press(id, p.open_task);
+            return Some(format!("task #{id} {}", if p.open_task == Some(id) { "opened" } else { "shut" }));
+        }
+        Some(String::new())
+    });
+    let Some(what) = what else { return false };
+    if !what.is_empty() {
+        wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] task page: {}", what);
+        tasks_fetch(hwnd);
+    }
+    true
+}
+
+/// ↑↓ move among the tasks (the open one's detail follows the selection
+/// when it is open), Enter opens or shuts the selected one's detail, c lists
+/// or folds the closed ones; f is shown and not done yet (API.md §2.2).
+/// Only once the page has the keys. Whether it took the key.
+fn tasks_key(hwnd: HWND, key: u16) -> bool {
+    const KEY_C: u16 = b'C' as u16;
+    let took = TASKS.with(|t| {
+        let mut t = t.borrow_mut();
+        let p = t.as_mut()?;
+        if !p.keys {
+            return None;
+        }
+        let data = p.data.as_ref()?;
+        if key == VK_UP.0 || key == VK_DOWN.0 {
+            p.selected = tasks_scene::step(data, p.selected, key == VK_DOWN.0);
+        } else if key == VK_RETURN.0 {
+            (p.selected, p.open_task) = tasks_scene::after_return(p.selected, p.open_task, tasks_scene::step(data, None, true));
+            // What was done to which, as the mac host says it.
+            if let Some(s) = p.selected {
+                let done = if p.open_task == Some(s) { "opened" } else { "shut" };
+                return Some(Some(format!("Return: task #{s} {done}")));
+            }
+        } else if key == KEY_C {
+            p.closed = !p.closed;
+        } else {
+            return None;
+        }
+        Some(None)
+    });
+    if let Some(Some(said)) = &took {
+        wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] task page: {}", said);
+    }
+    if took.is_some() {
+        tasks_fetch(hwnd);
+    }
+    took.is_some()
+}
+
+fn tasks_wheel(hwnd: HWND, x: i32, y: i32, delta: i32) -> bool {
+    let scale = geometry(hwnd).scale;
+    let moved = TASKS.with(|t| {
+        let mut t = t.borrow_mut();
+        let p = t.as_mut()?;
+        let (page, lay) = p.drawn.as_ref()?;
+        let (px, py) = (x as f64 / scale, y as f64 / scale);
+        if px < page.x || px >= page.x + page.w || py < page.y || py >= page.y + page.h {
+            return None;
+        }
+        let by = polter_control_room::panestack::scroll(0, delta, WHEEL_ROWS * polter_control_room::look::task_page::ROW_HEIGHT);
+        p.scroll = (p.scroll + by).clamp(0.0, lay.max_scroll(page.h));
+        Some(())
+    });
+    if moved.is_some() {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+    moved.is_some()
+}
+
+/// The task page, inside `page` of the right side `at`, when it is the page
+/// in front and there is an answer to draw.
+unsafe fn paint_tasks(dc: HDC, at: Px, page: Rect, theme: &Theme) {
+    if selection().map(|g| page_of(&g)) != Some(Page::Tasks) {
+        // Not in front: as `paint_perf` says.
+        TASKS.with(|t| {
+            if let Some(x) = t.borrow_mut().as_mut() {
+                x.drawn = None;
+            }
+        });
+        return;
+    }
+    let scale = at.scale;
+    let measuring = RefCell::new(Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() });
+    let measure = |text: &str, style: &Style| -> f64 {
+        if !scene::draws(text) {
+            return 0.0;
+        }
+        let font = measuring.borrow_mut().get(style);
+        unsafe { text_width(dc, font, text) as f64 / scale.max(0.1) }
+    };
+    let origin = Px { scale, ox: at.ox + at.len(page.x), oy: at.oy + at.len(page.y) };
+    let mut fonts = Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() };
+    TASKS.with(|t| {
+        let mut t = t.borrow_mut();
+        let Some(p) = t.as_mut() else { return };
+        let Some(data) = p.data.as_ref() else {
+            p.drawn = None;
+            return;
+        };
+        let mut lay = tasks_scene::layout(data, page.w, page.h, p.scroll, theme, scale, &measure);
+        let max = lay.max_scroll(page.h);
+        if p.scroll > max {
+            p.scroll = max;
+            lay = tasks_scene::layout(data, page.w, page.h, p.scroll, theme, scale, &measure);
+        }
+        let draws = tasks_scene::build(data, &lay, theme, scale, p.selected, &measure);
+        let clip = origin.rect(Rect { x: 0.0, y: 0.0, w: page.w, h: page.h });
+        unsafe {
+            let saved = SaveDC(dc);
+            IntersectClipRect(dc, clip.left, clip.top, clip.right, clip.bottom);
+            paint_draws(dc, origin, &draws, &mut fonts);
+            let _ = RestoreDC(dc, saved);
+        }
+        let right = (at.ox as f64 / scale, at.oy as f64 / scale);
+        p.drawn = Some((Rect { x: right.0 + page.x, y: right.1 + page.y, ..page }, lay));
+    });
+}
+
+// ------------------------------------------------------- the chat page
+
+/// The group whose chat page is in front, when one is: what
+/// `chat_page::place` puts a chat in front for. Asked by `tabs::layout`
+/// after its lock.
+pub(crate) fn chat_group() -> Option<String> {
+    let hwnd = panel()?;
+    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return None;
+    }
+    let group = selection()?;
+    if page_of(&group) != Page::Chat {
+        return None;
+    }
+    let pages = source::with(|data| match data {
+        Data::Ready(r) => r.list.row(&group).is_some_and(|row| rightpage::has_pages(&detail(), Some(row))),
+        Data::NotYet | Data::Unreadable(_) => false,
+    });
+    pages.then_some(group)
+}
+
+/// The chat page of a group whose chat ended: one sentence in the middle of
+/// the page, which a press anywhere on the page answers (`chat_reopen_press`).
+unsafe fn paint_chat_ended(dc: HDC, at: Px, page: Rect, theme: &Theme, fonts: &mut Fonts, t: f64) {
+    let Some(group) = selection().filter(|g| page_of(g) == Page::Chat) else { return };
+    if !crate::chat_page::ended(&group) {
+        return;
+    }
+    let line = Rect { x: page.x, y: page.y + page.h / 2.0 - side::HEADER_HEIGHT / 2.0, w: page.w, h: side::HEADER_HEIGHT };
+    let items = [
+        Item::Fill { rect: page, color: theme.terminal_background },
+        Item::Text { rect: line, text: tr(rightpage::msg::CHAT_ENDED), style: scene::body_style(theme.text_secondary), align: Align::Centre },
+    ];
+    unsafe { paint_items(dc, at, &items, fonts, t) };
+}
+
+/// A press on the chat page of a group whose chat ended opens it again.
+/// Whether it was one.
+fn chat_reopen_press(hwnd: HWND, x: i32, y: i32) -> bool {
+    let Some(group) = selection().filter(|g| page_of(g) == Page::Chat) else { return false };
+    if !crate::chat_page::ended(&group) {
+        return false;
+    }
+    let g = geometry(hwnd);
+    let (px, py) = (x as f64 / g.scale - g.room.right.x, y as f64 / g.scale - g.room.right.y);
+    let page = polter_control_room::scene::terminal_rect(g.room.right.w, g.room.right.h);
+    if px < page.x || py < page.y || px >= page.x + page.w || py >= page.y + page.h {
+        return false;
+    }
+    crate::chat_page::reopen(&group);
+    crate::tabs::layout(unsafe { GetAncestor(hwnd, GA_ROOT) });
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    true
+}
+
+/// Before a paint: when the chat that should be in front is not the one
+/// that is -- another group selected on its chat page -- the window is laid
+/// out again, which places it.
+fn chat_sync(hwnd: HWND) {
+    let want = chat_group();
+    if !crate::chat_page::settled(&want) {
+        crate::tabs::layout(unsafe { GetAncestor(hwnd, GA_ROOT) });
+    }
+}
+
+/// The page whose tab is at (x, y) in the panel's pixels, when there is a
+/// strip of tabs there.
+fn tab_at(hwnd: HWND, x: i32, y: i32) -> Option<Page> {
+    let g = geometry(hwnd);
+    let (px, py) = (x as f64 / g.scale - g.room.right.x, y as f64 / g.scale - g.room.right.y);
+    let detail = detail();
+    let selected = selection()?;
+    let theme = look::theme(dark(hwnd));
+    source::with(|data| {
+        let Data::Ready(r) = data else { return None };
+        let row = r.list.row(&selected)?;
+        right_paged(hwnd, &g, &detail, Some(row), &r.snapshot, theme, false, &|s| tr(s), None).strip?.hit(px, py)
+    })
+}
+
+/// Bring `page` to the front for the selected group. Leaving the
+/// supervisor's page hides its terminal (`tabs::layout` asks
+/// `shows_terminal`) and takes the keyboard out of it first: the terminal
+/// stays lent, and typing would otherwise go on into a window nobody can
+/// see (`tabs::typing_pane` reads only the loan's keyboard flag).
+fn show_page(hwnd: HWND, page: Page) {
+    let Some(group) = selection() else { return };
+    if page_of(&group) == page {
+        return;
+    }
+    PAGES.with(|p| p.borrow_mut().insert(group.clone(), page));
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    if !page.shows_terminal() && crate::tabs::keyboard_in_lent(frame) {
+        crate::tabs::keyboard_on_the_list(frame);
+        unsafe {
+            let _ = SetFocus(Some(hwnd));
+        }
+    }
+    wlogf!(frame, "[control-room] {:?}: page {:?} in front", group, page);
+    crate::tabs::layout(frame);
+    // As on every press (`WM_LBUTTONDOWN`): with the panel holding the
+    // keyboard, the input method's document has none.
+    if unsafe { GetFocus() } == hwnd {
+        crate::ime_focus(false);
+    }
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
 /// Scroll the rows to `to` points, kept to what they can be. A chip on its
@@ -463,6 +1239,16 @@ pub fn create(frame: HWND, hinst: HINSTANCE, bounds: TreeRect) -> Option<HWND> {
                 return None;
             }
         };
+        // **No input method on the panel itself** (group seq 243, 245, 246):
+        // it takes no text, but it had the thread's default input context,
+        // so a letter pressed on it started a composition -- through IMM,
+        // which the TSF document handed away in `WM_SETFOCUS` never sees --
+        // and the arrow keys after it went to the candidate window, not the
+        // list. 9b5794ea5 did the same. The fields made on it are windows of
+        // their own and keep their contexts; the overlay of `shot.rs` does
+        // the same for the same reason.
+        let _ = windows::Win32::UI::Input::Ime::ImmAssociateContext(hwnd, windows::Win32::UI::Input::Ime::HIMC::default());
+        wlogf!(frame, "[control-room] its panel {:?} has no input context", hwnd.0);
         PANEL.store(hwnd.0 as isize, Ordering::Release);
         PAINTED.store(false, Ordering::Release);
         let kept = KEPT.with(|k| k.borrow().clone());
@@ -510,6 +1296,16 @@ pub fn snapshot_changed() {
     follow_asks(hwnd);
     // The supervisor the core names may have changed, or gone.
     sync_loan(hwnd);
+    // A task may have moved: the task page asks again (API.md §2.2).
+    tasks_fetch(hwnd);
+    // A chat whose group is gone -- deleted, renamed, archived -- goes too.
+    crate::chat_page::prune(|g| {
+        source::with(|data| match data {
+            Data::Ready(r) => r.list.row(g).is_some(),
+            // Nothing known is not the same as gone: kept.
+            Data::NotYet | Data::Unreadable(_) => true,
+        })
+    });
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
@@ -1092,7 +1888,13 @@ fn start_scene(g: &Geometry, theme: &Theme) -> scene::Start {
             refusal: picks.refusal.as_deref(),
             home: &home,
         };
-        scene::build_start(&detail, row, g.room.right.w, theme, &view, &|s| tr(s))
+        // As wide as the terminal would be when the side has pages and no
+        // supervisor is shown here (`rightpage::start_width`).
+        let start = scene::build_start(&detail, row, rightpage::start_width(g.room.right.w, &detail, row), theme, &view, &|s| tr(s));
+        // Under the strip of pages with the sentence over it, and gone on
+        // another page (task 2015, Q6): what is pressed moves with it.
+        let page = row.map_or(Page::Supervisor, |r| page_of(&r.id));
+        rightpage::place_start(start, &detail, row, page)
     })
 }
 
@@ -2220,6 +3022,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             report_presence(hwnd);
             LRESULT(0)
         }
+        // A chat's program ended (`chat_page::closed_by_core`): put away,
+        // and the window laid out again without it.
+        crate::chat_page::WM_CHAT_GONE => {
+            crate::chat_page::gone(wp.0 as u64);
+            crate::tabs::layout(unsafe { GetAncestor(hwnd, GA_ROOT) });
+            LRESULT(0)
+        }
         WM_ROOM_RECLAIM => {
             let terminal = RECLAIMED.lock().ok().and_then(|mut r| r.take());
             if let Some(terminal) = terminal {
@@ -2358,6 +3167,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         // a list that fits has nothing to scroll and leaves it be.
         WM_MOUSEWHEEL => {
             let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as i32;
+            // Over the performance page, the wheel scrolls it (task 2015).
+            let mut at = POINT { x: (lp.0 & 0xFFFF) as i16 as i32, y: ((lp.0 >> 16) & 0xFFFF) as i16 as i32 };
+            let _ = unsafe { ScreenToClient(hwnd, &mut at) };
+            if perf_wheel(hwnd, at.x, at.y, delta) || tasks_wheel(hwnd, at.x, at.y, delta) {
+                return LRESULT(0);
+            }
             let g = geometry(hwnd);
             // The paint it asks for tells the core which cards are in sight.
             source::with(|data| {
@@ -2382,10 +3197,54 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             let (x, y) = point(lp);
             click(hwnd, x, y);
+            // **The panel takes no text, so while it has the keyboard the
+            // input method's document has none** -- said on every press, not
+            // only when the keyboard arrives (`WM_SETFOCUS`). With the panel
+            // already holding the keyboard a press sends no `WM_SETFOCUS`,
+            // and 0x4881 found (group seq 224, 230) that after the task page
+            // was shown and a task pressed, every key was taken by the input
+            // method's pump and none reached the panel -- the task page's
+            // keys and the list's alike -- with no focus line in the log.
+            if unsafe { GetFocus() } == hwnd {
+                crate::ime_focus(false);
+            }
+            LRESULT(0)
+        }
+        // Where the keyboard went when the panel lost it, and what it is:
+        // the line the reading above did not have.
+        WM_KILLFOCUS => {
+            let to = HWND(wp.0 as *mut c_void);
+            let what = if to.0.is_null() {
+                "nothing"
+            } else if crate::chat_page::owns(to) {
+                "a chat"
+            } else if !crate::tabs::surface_of(to).is_null() {
+                "a terminal"
+            } else if to == unsafe { GetAncestor(hwnd, GA_ROOT) } {
+                "the window itself"
+            } else {
+                "another window"
+            };
+            wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[focus] the control room's panel lost the keyboard to {:?} ({})", to.0, what);
+            LRESULT(0)
+        }
+        // Which cell of the performance page's grid the pointer is on, for
+        // what the core says of it (task 2015); off the panel, none.
+        WM_MOUSEMOVE => {
+            let (x, y) = point(lp);
+            perf_hover(hwnd, Some((x, y)));
+            LRESULT(0)
+        }
+        windows::Win32::UI::Controls::WM_MOUSELEAVE => {
+            perf_hover(hwnd, None);
             LRESULT(0)
         }
         WM_KEYDOWN => {
             let key = wp.0 as u16;
+            // The task page's own keys, once the person has pressed on it.
+            if tasks_key(hwnd, key) {
+                return LRESULT(0);
+            }
             let step = if key == VK_UP.0 {
                 Some(-1)
             } else if key == VK_DOWN.0 {
@@ -2440,6 +3299,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
         }
         WM_SETFOCUS => {
+            wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[focus] the control room's panel took the keyboard from {:?}", wp.0 as *mut c_void);
+            // The keyboard is on the list now -- out of a chat, when it came
+            // from one (task 2015).
+            crate::chat_page::focus_went_to(hwnd, HWND(wp.0 as *mut c_void));
             // The one TSF document manager of this thread belongs to the
             // terminals; hand it back while a window that takes no text has
             // the keyboard (`palette.rs` has the contract). A pane's own
@@ -2494,6 +3357,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                 }
                 TIMER_SEEN => seen_due(hwnd),
+                TIMER_PERF => perf_fetch(hwnd),
                 TIMER_UNDER => {
                     if !prune_under() {
                         let _ = unsafe { KillTimer(Some(hwnd), TIMER_UNDER) };
@@ -2508,7 +3372,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_SLIDE);
                 let _ = KillTimer(Some(hwnd), TIMER_SEEN);
+                let _ = KillTimer(Some(hwnd), TIMER_PERF);
             }
+            PERF.with(|p| *p.borrow_mut() = None);
+            // The chats are the control room's: they go with its panel.
+            crate::chat_page::close_all();
             // Closed is not in front: nothing on it is in sight any more.
             say_presence(polter_control_room::alert::Presence::default());
             STATE.with(|s| {
@@ -2562,7 +3430,7 @@ fn take_over_at(hwnd: HWND, x: i32, y: i32) -> Option<(String, String)> {
     source::with(|data| {
         let Data::Ready(r) = data else { return None };
         let row = r.list.row(&selected)?;
-        let right = scene::build_right(&detail, Some(row), g.room.right.w, g.room.right.h, theme, g.scale, false, &|s| tr(s));
+        let right = right_paged(hwnd, &g, &detail, Some(row), &r.snapshot, theme, false, &|s| tr(s), None).right;
         let bar = right.take_over?;
         let (rx, ry) = (px - g.room.right.x, py - g.room.right.y);
         if !inside(bar, rx, ry) {
@@ -2624,6 +3492,11 @@ fn take_over(hwnd: HWND, group: &str, question: &str) {
 fn notice_band(hwnd: HWND, width: f64, scale: f64, theme: &look::Theme) -> Option<polter_control_room::project_notice::Band> {
     use polter_control_room::{project_link, project_notice, project_words};
     if !matches!(detail(), Detail::Terminal(_)) {
+        return None;
+    }
+    // Only on the supervisor's page (`rightpage::build` draws it nowhere
+    // else): so it neither moves a hidden terminal nor takes a press.
+    if !shows_terminal() {
         return None;
     }
     let selected = selection()?;
@@ -2719,6 +3592,19 @@ fn notice_press(hwnd: HWND, x: i32, y: i32) -> bool {
 fn click(hwnd: HWND, x: i32, y: i32) {
     if let Some((group, question)) = take_over_at(hwnd, x, y) {
         take_over(hwnd, &group, &question);
+        return;
+    }
+    if let Some(page) = tab_at(hwnd, x, y) {
+        show_page(hwnd, page);
+        return;
+    }
+    if perf_press(hwnd, x, y) {
+        return;
+    }
+    if tasks_press(hwnd, x, y) {
+        return;
+    }
+    if chat_reopen_press(hwnd, x, y) {
         return;
     }
     if notice_press(hwnd, x, y) {
@@ -2872,13 +3758,12 @@ fn press_at(hwnd: HWND, x: i32, y: i32) -> Option<scene::Press> {
     let detail = detail();
     let selected = selection();
     let theme = look::theme(dark(hwnd));
-    let go = source::with(|data| {
-        let row = match data {
-            Data::Ready(r) => selected.as_deref().and_then(|id| r.list.row(id)),
-            Data::NotYet => None,
-            Data::Unreadable(_) => None,
-        };
-        scene::build_right(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, false, &|s| tr(s)).press
+    let go = source::with(|data| match data {
+        Data::Ready(r) => {
+            let row = selected.as_deref().and_then(|id| r.list.row(id));
+            right_paged(hwnd, &g, &detail, row, &r.snapshot, theme, false, &|s| tr(s), None).right.press
+        }
+        Data::NotYet | Data::Unreadable(_) => scene::build_right(&detail, None, g.room.right.w, g.room.right.h, theme, g.scale, false, &|s| tr(s)).press,
     });
     go.filter(|(r, _)| inside(*r, px - g.room.right.x, py - g.room.right.y)).map(|(_, p)| p)
 }
@@ -2974,6 +3859,11 @@ impl Drop for Fonts {
 }
 
 fn paint(hwnd: HWND) {
+    // Before the paint begins: the performance page's timer started or
+    // stopped for what is in front now, and its first answer asked for.
+    perf_sync(hwnd);
+    tasks_sync(hwnd);
+    chat_sync(hwnd);
     let mut ps = PAINTSTRUCT::default();
     let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
     let mut rc = RECT::default();
@@ -3048,7 +3938,7 @@ fn paint(hwnd: HWND) {
         }
         // What shows through the chip while it slides, and the chip's box.
         let mut under_chip: Option<(RECT, Vec<Item>)> = None;
-        let (items, right) = source::with(|data| match data {
+        let (items, right, page_rect) = source::with(|data| match data {
             Data::Ready(r) => {
                 let list: &List = &r.list;
                 let lay = list_layout(hwnd, list, g.room.panel.h);
@@ -3109,11 +3999,13 @@ fn paint(hwnd: HWND) {
                 // The allowance block at the panel's bottom (task 1755).
                 items.extend(scene::build_quota(list, &lay, &view, crate::projects_ui::local_offset() * 1000, &translate));
                 let band = notice_band(hwnd, g.room.right.w, g.scale, theme);
-                (items, scene::build_right_with(&detail, row, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, &translate, band.as_ref()))
+                let paged = right_paged(hwnd, &g, &detail, row, &r.snapshot, theme, in_terminal, &translate, band.as_ref());
+                (items, paged.right, paged.page)
             }
             Data::NotYet => (
                 scene::build_message(side::WIDTH, g.room.panel.h, theme, g.scale, tr(scene::msg::NOT_YET)),
                 scene::build_right(&detail, None, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, &translate),
+                None,
             ),
             Data::Unreadable(why) => (
                 scene::build_message(
@@ -3124,6 +4016,7 @@ fn paint(hwnd: HWND) {
                     list::fill(&tr(scene::msg::UNREADABLE), why),
                 ),
                 scene::build_right(&detail, None, g.room.right.w, g.room.right.h, theme, g.scale, in_terminal, &translate),
+                None,
             ),
         });
         paint_items(mem, at, &items, &mut fonts, t);
@@ -3187,6 +4080,12 @@ fn paint(hwnd: HWND) {
             // Under the sentence of a group with no supervisor: what
             // starting one offers.
             paint_items(mem, at, &offered.items, &mut fonts, t);
+            // The page in front, when it is one the panel draws (task 2015).
+            if let Some(page) = page_rect {
+                paint_perf(mem, at, page, theme);
+                paint_tasks(mem, at, page, theme);
+                paint_chat_ended(mem, at, page, theme, &mut fonts, t);
+            }
             // While the last session is looked for, its spinner turns
             // (task 1741).
             if scene::moves(&offered.items) {

@@ -7,7 +7,8 @@ import CoreGraphics
 /// host's `tasks_scene::columns`, from the same `task_page` keys.
 ///
 /// **Every word is the core's**, and so is the order of the tasks. A glyph
-/// or a kind of history line this build does not know fails the decode.
+/// or a kind of history line this build does not know is left out and said
+/// (`ControlRoomAnswerReader`).
 enum ControlRoomTasks {
     enum Glyph: String, Decodable, Equatable, CaseIterable {
         case queued, working, blocked, done, closed, cancelled
@@ -61,7 +62,9 @@ enum ControlRoomTasks {
 
     struct Task: Decodable, Equatable, Identifiable {
         var id: UInt64
-        var glyph: Glyph
+        /// Nil when the core named none, or one this build does not know:
+        /// no symbol is drawn.
+        var glyph: Glyph?
         var state: String
         var title: String
         var owner: String
@@ -88,6 +91,9 @@ enum ControlRoomTasks {
         /// Empty unless asked for with `closed: true`.
         var closed: [Task]
         var hints: [Hint]
+        /// What the answer should have said and did not, by path; none of
+        /// it is drawn (`ControlRoomAnswerReader`). The page writes it down.
+        var missing: [String] = []
 
         /// Every task in the order drawn: what the arrow keys go through.
         var inOrder: [Task] { open + closed }
@@ -95,14 +101,70 @@ enum ControlRoomTasks {
 
     enum DecodeError: Error, Equatable {
         case refused(String)
+        case unreadable
+        case noGroup
     }
 
+    typealias Reader = ControlRoomAnswerReader
+
+    /// The answer, read field by field (`ControlRoomAnswerReader`): only
+    /// what is not JSON, `{"error": …}` and an answer that does not say
+    /// whose group it is fail; everything else missing is left out of what
+    /// is drawn and named in `missing`. The Windows host's `tasks::decode`.
     static func decode(_ data: Data) throws -> Answer {
-        struct Refusal: Decodable { var error: String }
-        if let refusal = try? JSONDecoder().decode(Refusal.self, from: data) {
-            throw DecodeError.refused(refusal.error)
+        guard let v = (try? JSONSerialization.jsonObject(with: data)) as? Reader.Object else { throw DecodeError.unreadable }
+        if let e = v["error"] as? String { throw DecodeError.refused(e) }
+        guard let group = v["group"] as? String else { throw DecodeError.noGroup }
+        let r = Reader()
+        let head = r.obj(v, "", "head").map { h in
+            Head(id: r.text(h, "head", "id"), state: r.text(h, "head", "state"), title: r.text(h, "head", "title"),
+                 owner: r.text(h, "head", "owner"), idle: r.text(h, "head", "idle"))
+        } ?? Head(id: "", state: "", title: "", owner: "", idle: "")
+        func tasks(_ key: String) -> [Task] {
+            r.list(v, "", key).enumerated().compactMap { i, t in readTask(r, (t as? Reader.Object) ?? [:], Reader.at(key, i)) }
         }
-        return try JSONDecoder().decode(Answer.self, from: data)
+        let (open, closed) = (tasks("open"), tasks("closed"))
+        let hints = r.list(v, "", "hints").enumerated().map { i, h -> Hint in
+            let h = (h as? Reader.Object) ?? [:], p = Reader.at("hints", i)
+            return Hint(key: r.text(h, p, "key"), text: r.text(h, p, "text"))
+        }
+        return Answer(group: group, goal: r.text(v, "", "goal"), head: head, open: open,
+                      closed_title: r.text(v, "", "closed_title"), closed_count: r.int(v, "", "closed_count") ?? 0,
+                      closed: closed, hints: hints, missing: r.missing)
+    }
+
+    /// One task, or nil without its `id`: what the arrow keys and the open
+    /// detail are kept by -- not made up.
+    private static func readTask(_ r: Reader, _ v: Reader.Object, _ path: String) -> Task? {
+        guard let id = r.int(v, path, "id") else { return nil }
+        let detail = r.nullableObj(v, path, "detail").map { readDetail(r, $0, Reader.join(path, "detail")) }
+        return Task(id: id, glyph: r.named(v, path, "glyph", as: Glyph.self), state: r.text(v, path, "state"),
+                    title: r.text(v, path, "title"), owner: r.text(v, path, "owner"), idle: r.text(v, path, "idle"),
+                    emph: r.bool(v, path, "emph") ?? false, detail: detail)
+    }
+
+    private static func readDetail(_ r: Reader, _ v: Reader.Object, _ path: String) -> Detail {
+        let lp = Reader.join(path, "log")
+        let log = r.list(v, path, "log").enumerated().compactMap { i, l -> LogLine? in
+            let l = (l as? Reader.Object) ?? [:], p = Reader.at(lp, i)
+            switch l["entry"] as? String {
+            case "event":
+                return .event(at: r.nullableText(l, p, "at"), who: r.nullableText(l, p, "who"), text: r.text(l, p, "text"), last: r.bool(l, p, "last") ?? false)
+            case "gap":
+                return .gap(text: r.text(l, p, "text"))
+            default:
+                // A kind of line this build does not know: that line is left out.
+                r.miss(Reader.join(p, "entry"))
+                return nil
+            }
+        }
+        let sp = Reader.join(path, "said")
+        let said = r.list(v, path, "said").enumerated().map { i, x -> Said in
+            let x = (x as? Reader.Object) ?? [:], p = Reader.at(sp, i)
+            return Said(at: r.text(x, p, "at"), who: r.text(x, p, "who"), text: r.text(x, p, "text"))
+        }
+        return Detail(body_title: r.text(v, path, "body_title"), body: r.text(v, path, "body"), log_title: r.text(v, path, "log_title"),
+                      log: log, said_title: r.text(v, path, "said_title"), said: said)
     }
 
     /// The request: `openTask` is the one whose detail is wanted, `closed`

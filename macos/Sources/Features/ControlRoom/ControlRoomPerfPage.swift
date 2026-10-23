@@ -97,6 +97,8 @@ final class ControlRoomPerfFeed: ObservableObject {
     private var drew: String?
     /// What the canvas last said it drew (`canvasDrew`).
     private var canvasSaid: String?
+    /// What the last answer lacked, as last said.
+    private var saidMissing: [String] = []
     let source: ControlRoomPageSource
 
     init(source: ControlRoomPageSource) {
@@ -174,6 +176,14 @@ final class ControlRoomPerfFeed: ObservableObject {
             curves.take(a)
             answer = a
             said = nil
+            // What the core left out, said when it changes (group seq 309):
+            // those items are not drawn, and the rest is.
+            if a.missing != saidMissing {
+                if !a.missing.isEmpty {
+                    Ghostty.logger.notice("control room: performance page of \(group, privacy: .public): the answer is missing \(ControlRoomAnswerReader.words(a.missing), privacy: .public); those are not drawn")
+                }
+                saidMissing = a.missing
+            }
             // What the core said of the grid and what the page drew of it
             // (group seq 264, 265: a week drawn as 48 ungrouped cells --
             // the core's or the host's?). When it changes, and after each
@@ -514,9 +524,12 @@ struct ControlRoomPerfCard: View {
                 .overlay(RoundedRectangle(cornerRadius: CGFloat(Card.radiusMac), style: .continuous)
                     .strokeBorder(ink?.edge.color ?? theme.perfCardEdge.color, lineWidth: ink == nil ? CGFloat(Look.Line.hairline) : 1))
             head(ink: ink).place(g.head)
-            dial(g, ink: ink)
-            Text(card.dial.cap).foregroundStyle(theme.textTertiary.color).lineLimit(1)
-                .frame(width: g.cap.width, height: g.cap.height).place(g.cap)
+            // Only when the core said how full it is (`ControlRoomResources.readCard`).
+            if let d = card.dial {
+                dial(d, g, ink: ink)
+                Text(d.cap).foregroundStyle(theme.textTertiary.color).lineLimit(1)
+                    .frame(width: g.cap.width, height: g.cap.height).place(g.cap)
+            }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 if let r1 = card.lines.r1 {
                     Text(r1.value).font(.system(size: CGFloat(Card.fontValue), weight: .semibold)).foregroundStyle(theme.text.color)
@@ -567,17 +580,17 @@ struct ControlRoomPerfCard: View {
             .lineLimit(1).truncationMode(.tail)
     }
 
-    private func dial(_ g: PerfLayout.CardGrid, ink: Res.Level.Ink?) -> some View {
+    private func dial(_ d: Res.Dial, _ g: PerfLayout.CardGrid, ink: Res.Level.Ink?) -> some View {
         let centre = CGPoint(x: g.dial.midX, y: g.dial.midY)
         let radius = CGFloat(Card.dialRadius)
         let from = Card.dialStartDegrees, sweep = Card.dialOpenDegrees
-        let fill = min(max(card.dial.fraction, 0), 1)
+        let fill = min(max(d.fraction, 0), 1)
         func arc(_ to: Double) -> Path {
             // Increasing angles, drawn clockwise on the screen (y down).
             Path { p in p.addArc(center: centre, radius: radius, startAngle: .degrees(from), endAngle: .degrees(from + to), clockwise: false) }
         }
         let stroke = StrokeStyle(lineWidth: CGFloat(Card.dialStroke), lineCap: .round)
-        var ticks: [(Double, Look.RGBA)] = card.dial.ticks.enumerated().compactMap { i, t in
+        var ticks: [(Double, Look.RGBA)] = d.ticks.enumerated().compactMap { i, t in
             (i == 0 ? Res.Level.warn1 : Res.Level.warn2).ink(theme).map { (t, $0.base) }
         }
         if card.line_at != nil, let k = Res.Level.killed.ink(theme) { ticks.append((1, k.base)) }
@@ -596,9 +609,9 @@ struct ControlRoomPerfCard: View {
                 .stroke(tick.1.color, style: StrokeStyle(lineWidth: CGFloat(Card.dialTickStroke), lineCap: .round))
             }
             HStack(alignment: .firstTextBaseline, spacing: 1) {
-                Text(card.dial.big).font(bigFace)
+                Text(d.big).font(bigFace)
                     .foregroundStyle(card.tone == .killed ? (ink?.text ?? theme.text).color : theme.text.color)
-                Text(card.dial.unit).foregroundStyle(theme.textSecondary.color)
+                Text(d.unit).foregroundStyle(theme.textSecondary.color)
             }
             .frame(width: g.dial.width, height: 28)
             .place(CGRect(x: g.dial.minX, y: centre.y - 14, width: g.dial.width, height: 28))

@@ -193,6 +193,72 @@ fn read() -> Data {
     }
 }
 
+/// What one of the right side's pages shows (task 2015, API.md §2):
+/// `request` is the page's JSON request, and the answer is the core's JSON,
+/// or why there is none -- `NoExport` from a core without the call,
+/// `NotReady` before it has worked anything out. Either way a test
+/// machine's fake answer is read in its place (`test_answer`), when one is
+/// named. App thread only.
+pub fn page(request: &str) -> Result<String, String> {
+    let Some(api) = crate::api_opt() else { return Err("NotReady".into()) };
+    let Some(ask) = api.app_control_page else { return test_answer(request) };
+    let app = crate::app_opt();
+    if app.is_null() {
+        return Err("NotReady".into());
+    }
+    // Twice with the same request: the length, then the same answer into a
+    // buffer that holds it (the core keeps what it worked out between).
+    let need = unsafe { ask(app, request.as_ptr(), request.len(), std::ptr::null_mut(), 0) };
+    if need == 0 {
+        // The core has the call and nothing to say yet -- 5001485cb's stub
+        // says nothing ever (group seq 243): a fake answer stands in for
+        // it, as for a core without the call; without one, not ready.
+        return test_answer(request).map_err(|why| if why == "NoExport" { "NotReady".into() } else { why });
+    }
+    let mut buf = vec![0u8; need + 1];
+    let wrote = unsafe { ask(app, request.as_ptr(), request.len(), buf.as_mut_ptr(), buf.len()) };
+    if wrote == 0 || wrote > need {
+        return Err("it changed size between asking and reading".into());
+    }
+    String::from_utf8(buf[..wrote].to_vec()).map_err(|_| "it is not UTF-8".into())
+}
+
+/// **For a test machine only, and only while the core has no answer** --
+/// no `ghostty_app_control_page`, or one that says nothing yet (task 2039;
+/// the mac host's rule, group seq 245): a page's answer read from the
+/// file `POLTER_TEST_RESOURCES_JSON` (the performance page) or
+/// `POLTER_TEST_TASKS_JSON` (the task page) names -- the fake answers in
+/// `windows/control-room/testdata/` -- so that the pages can be measured on
+/// a real machine before the core can answer. The first use of each is in
+/// the log. A core with an answer is never second-guessed: neither
+/// variable is read then.
+fn test_answer(request: &str) -> Result<String, String> {
+    static SAID_RESOURCES: AtomicBool = AtomicBool::new(false);
+    static SAID_TASKS: AtomicBool = AtomicBool::new(false);
+    let (var, said) = if request.contains(r#""page":"resources""#) {
+        ("POLTER_TEST_RESOURCES_JSON", &SAID_RESOURCES)
+    } else if request.contains(r#""page":"tasks""#) {
+        ("POLTER_TEST_TASKS_JSON", &SAID_TASKS)
+    } else {
+        return Err("NoExport".into());
+    };
+    let Some(path) = std::env::var_os(var) else { return Err("NoExport".into()) };
+    // absence: depends -- it is said the first time only; the file is read
+    // on every ask after that and not said again.
+    if !said.swap(true, Ordering::Relaxed) {
+        // process-wide: the variable is the process's, not a window's
+        plogf!("[control-room] the core has no answer for a page: it is reading {:?} ({}); said once", path, var);
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{var}: {e}"))?;
+    // The fake answers are about a group called web-app: it is said to be
+    // about the group asked for, or the page would not take it.
+    let group = match polter_control_room::json::parse(request).ok().as_ref().and_then(|v| v.get("group")) {
+        Some(polter_control_room::json::Value::Str(g)) => g.clone(),
+        _ => return Err("BadRequest".into()),
+    };
+    Ok(text.replacen("\"group\": \"web-app\"", &format!("\"group\": {}", polter_control_room::json::quote(&group)), 1))
+}
+
 /// Read what there is. The closure must not call back into this module.
 pub fn with<R>(f: impl FnOnce(&Data) -> R) -> R {
     DATA.with(|d| f(&d.borrow()))

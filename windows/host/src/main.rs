@@ -100,6 +100,7 @@
 //! 3 = console), not a successful build. See `subsystems()` in `build.rs`.
 
 mod capture;
+mod chat_page;
 mod close_scope;
 mod control_room;
 mod control_room_keys;
@@ -1763,6 +1764,29 @@ fn composing_now() -> Option<bool> {
     })
 }
 
+/// The input method's state for the window with the keyboard, as IMM sees
+/// it: `composing` above is our own TSF document's, and a composition on a
+/// window that document is not focused on -- the control room's panel had
+/// one (group seq 243, 246) -- is in IMM and nowhere else. `imm=none` is
+/// the window having no input context at all.
+fn imm_state() -> String {
+    use windows::Win32::UI::Input::Ime::{ImmGetCompositionStringW, ImmGetContext, ImmGetOpenStatus, ImmReleaseContext, GCS_COMPSTR};
+    unsafe {
+        let focus = windows::Win32::UI::Input::KeyboardAndMouse::GetFocus();
+        if focus.0.is_null() {
+            return "imm=n/a (no focus)".into();
+        }
+        let himc = ImmGetContext(focus);
+        if himc.0.is_null() {
+            return format!("imm=none (focus {:?})", focus.0);
+        }
+        let open = ImmGetOpenStatus(himc).as_bool();
+        let bytes = ImmGetCompositionStringW(himc, GCS_COMPSTR, None, 0);
+        let _ = ImmReleaseContext(focus, himc);
+        format!("imm=open:{} comp:{} (focus {:?})", open, bytes.max(0) / 2, focus.0)
+    }
+}
+
 /// Log the keyboard layout when it changes, at the moment a key goes past.
 ///
 /// **Not a `WM_INPUTLANGCHANGE` handler**, deliberately: that message goes to
@@ -2832,6 +2856,13 @@ extern "C" fn cb_close_surface(ud: *mut c_void, confirm: bool) {
     // send a shell that exited in window 2 to close a pane in window 1, which
     // has one: it would close *some other pane*, because pane ids are unique
     // and the lookup would simply find nothing to remove.
+    //
+    // **A chat on the control room's chat page is in no tab** (task 2015,
+    // `chat_page.rs`): its program ending is put away there, and never
+    // reaches the lookup below, which would find no window and say so.
+    if chat_page::closed_by_core(id) {
+        return;
+    }
     match tabs::frame_of_pane(id) {
         // ⚠️ **The second argument is the core's answer, and it used to be
         // thrown away** (it was spelled `_confirm`). `Surface.close` computes
@@ -3847,6 +3878,11 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         }
         ACTION_SHOW_CHILD_EXITED => {
             alogf!(origin, "[action] show_child_exited");
+            // A chat's program ending is its page's to say, at once
+            // (task 2015).
+            if let Some(s) = target_surface(&target) {
+                crate::chat_page::child_exited(s);
+            }
             true
         }
 
@@ -5064,6 +5100,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if !s.is_null() {
                     (api().surface_set_content_scale)(s, scale, scale);
                 }
+                // The control room's chats in this window too (task 2015).
+                chat_page::rescale(hwnd, scale);
                 tabs::layout(hwnd);
                 wlogf!(hwnd, "[win] dpi changed -> scale {}", scale);
                 LRESULT(0)
@@ -5712,6 +5750,15 @@ fn load_api() -> Option<Api> {
             surface_poltergeist_id: sym!(internal, "ghostty_surface_poltergeist_id"),
             app_control_snapshot: sym!(internal, "ghostty_app_control_snapshot"),
             app_control_act: sym!(internal, "ghostty_app_control_act"),
+            // Optional (`Api::app_control_page`): asked for by name, and its
+            // absence said once rather than ending the load.
+            app_control_page: {
+                let p = GetProcAddress(internal, s!("ghostty_app_control_page"));
+                if p.is_none() {
+                    logf!("optional symbol ghostty_app_control_page missing: the control room's pages will have no data");
+                }
+                p.map(|p| std::mem::transmute(p))
+            },
             app_control_presence: sym!(internal, "ghostty_app_control_presence"),
             app_notification_group: sym!(internal, "ghostty_app_notification_group"),
             app_key: sym!(internal, "ghostty_app_key"),
@@ -7969,10 +8016,11 @@ fn main() {
                                 plogf!(
                                     "[key] pump swallowed msg=0x{:x} vk=0x{:02x} \
                                      (removed from the queue and never returned; \
-                                     composing={:?} {})",
+                                     composing={:?} {} {})",
                                     id.0,
                                     id.1 as u16,
                                     composing_now(),
+                                    imm_state(),
                                     crate::keys::binding_probe(
                                         id.0,
                                         WPARAM(id.1),

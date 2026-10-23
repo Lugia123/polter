@@ -17,7 +17,8 @@
    "title": "列表加多选和「改负责人」工具条",
    "owner": "frontend",
    "idle": "17 分钟",
-   "emph": false
+   "emph": false,
+   "detail": null
   },
   {
    "id": 215,
@@ -26,7 +27,8 @@
    "title": "PATCH /api/tasks 接受一组 id",
    "owner": "api",
    "idle": "2 分钟",
-   "emph": false
+   "emph": false,
+   "detail": null
   },
   {
    "id": 216,
@@ -35,7 +37,8 @@
    "title": "批量编辑的用例：空选择、混合状态、不存在的 id",
    "owner": "tests",
    "idle": "6 分钟",
-   "emph": false
+   "emph": false,
+   "detail": null
   },
   {
    "id": 217,
@@ -44,7 +47,8 @@
    "title": "分页测试在 CI 上偶发失败",
    "owner": "tests",
    "idle": "41 分钟",
-   "emph": false
+   "emph": false,
+   "detail": null
   },
   {
    "id": 218,
@@ -53,7 +57,8 @@
    "title": "批量编辑以后是乐观更新还是重新拉取？",
    "owner": "未指派",
    "idle": "1 小时",
-   "emph": false
+   "emph": false,
+   "detail": null
   },
   {
    "id": 219,
@@ -62,7 +67,8 @@
    "title": "「改负责人」工具条的键盘操作",
    "owner": "未指派",
    "idle": "1 小时",
-   "emph": false
+   "emph": false,
+   "detail": null
   }
  ],
  "closed_title": "关了的 8 条",
@@ -74,7 +80,9 @@
    "state": "关了",
    "title": "/api/tasks 的列表与筛选",
    "owner": "api",
-   "idle": "昨天"
+   "idle": "昨天",
+   "emph": false,
+   "detail": null
   },
   {
    "id": 212,
@@ -82,7 +90,9 @@
    "state": "关了",
    "title": "应用外壳与路由",
    "owner": "frontend",
-   "idle": "昨天"
+   "idle": "昨天",
+   "emph": false,
+   "detail": null
   },
   {
    "id": 211,
@@ -90,7 +100,9 @@
    "state": "关了",
    "title": "会话到期后多活了一个时钟周期",
    "owner": "api",
-   "idle": "昨天"
+   "idle": "昨天",
+   "emph": false,
+   "detail": null
   },
   {
    "id": 210,
@@ -98,7 +110,9 @@
    "state": "关了",
    "title": "会话续期的时钟注入，方便测试",
    "owner": "api",
-   "idle": "2 天前"
+   "idle": "2 天前",
+   "emph": false,
+   "detail": null
   },
   {
    "id": 209,
@@ -106,7 +120,9 @@
    "state": "关了",
    "title": "登录页的错误提示",
    "owner": "frontend",
-   "idle": "2 天前"
+   "idle": "2 天前",
+   "emph": false,
+   "detail": null
   },
   {
    "id": 208,
@@ -114,7 +130,9 @@
    "state": "关了",
    "title": "登录表单",
    "owner": "frontend",
-   "idle": "3 天前"
+   "idle": "3 天前",
+   "emph": false,
+   "detail": null
   },
   {
    "id": 207,
@@ -122,7 +140,9 @@
    "state": "关了",
    "title": "密码重置邮件",
    "owner": "api",
-   "idle": "3 天前"
+   "idle": "3 天前",
+   "emph": false,
+   "detail": null
   },
   {
    "id": 206,
@@ -130,7 +150,9 @@
    "state": "关了",
    "title": "项目骨架",
    "owner": "frontend",
-   "idle": "4 天前"
+   "idle": "4 天前",
+   "emph": false,
+   "detail": null
   }
  ],
  "hints": [

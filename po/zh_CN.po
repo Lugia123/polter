@@ -1757,6 +1757,14 @@ msgstr "群聊"
 msgid "Tasks"
 msgstr "任务"
 
+#: windows/control-room/src/rightpage.rs:36
+msgid "Performance"
+msgstr "性能"
+
+#: windows/control-room/src/rightpage.rs:40
+msgid "The chat has ended. Click here to open it again."
+msgstr "聊天已结束，点这里重新打开。"
+
 #: src/cli/chat.zig:3065
 msgid "Stats"
 msgstr "统计"

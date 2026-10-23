@@ -180,6 +180,10 @@ pub enum Side {
     /// is cut short with an ellipsis, and with no room at all is left out.
     /// Of several, the leftmost gives way first.
     Squeezed,
+    /// Placed as `Squeezed` is, but **whole or not at all**: one that does
+    /// not fit is left out, never cut to "…" (group seq 315: the page
+    /// strip's "不认得的 C…").
+    Whole,
     /// From the right like `Trail`, but left out -- all of them -- when with
     /// them the first leading part would not be whole: what a line gives up
     /// before what leads it. A supervisor's status word, which goes before
@@ -237,6 +241,13 @@ pub fn place_line(left: i32, right: i32, parts: &[(Side, i32, i32)]) -> Vec<Opti
     let mut end = trail;
     let mut room = true;
     for (i, (side, gap, width)) in parts.iter().enumerate().rev() {
+        if *side == Side::Whole {
+            if end - (lead + gap) >= *width {
+                out[i] = Some(Placed { left: end - width, right: end, cut: false });
+                end -= width + gap;
+            }
+            continue;
+        }
         if *side == Side::Squeezed && room {
             let has = (end - (lead + gap)).min(*width);
             if has <= 0 {
@@ -2236,6 +2247,20 @@ pub fn build_right_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Side::Whole` (group seq 315): whole, or left out -- never cut.
+    #[test]
+    fn a_whole_part_is_whole_or_not_there() {
+        // A trailing word of 40 and a whole note of 100 before it, a gap of 8.
+        let parts = [(Side::Whole, 8, 100), (Side::Trail, 0, 40)];
+        let wide = place_line(0, 300, &parts);
+        assert_eq!(wide[0], Some(Placed { left: 160, right: 260, cut: false }), "against the word; its gap is on its left");
+        // 147 is a point short of 100 + 8 + 40: the note goes, the word stays.
+        let narrow = place_line(0, 147, &parts);
+        assert_eq!(narrow[0], None);
+        assert_eq!(narrow[1], Some(Placed { left: 107, right: 147, cut: false }));
+        assert!(place_line(0, 148, &parts)[0].is_some_and(|p| !p.cut));
+    }
     use crate::look;
     use crate::snapshot;
 

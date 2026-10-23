@@ -19,6 +19,12 @@
 //! | [`tabstrip`] | the window tab strip's track and the chip on the selected tab, in whole pixels |
 //! | [`swatch`] | the two rows of colour dots in a pane's menu: where each dot is, which one a click or a key means |
 //! | [`tabmarks`] | the flag and the dots a window tab carries for its coloured panes, in whole pixels |
+//! | [`level`] | how bad it is for a terminal or a group (task 2015), and the look's colours for each level |
+//! | [`perf`] | the performance page's data: the core's `resources` answer, read, and the curves kept between answers |
+//! | [`perf_scene`] | the performance page laid out and drawn: the overview, the history grid, a card a terminal |
+//! | [`rightpage`] | the right side's four pages: the tabs over it, which is pressed, where a page goes |
+//! | [`tasks`] | the task page's data: the core's `tasks` answer, read |
+//! | [`tasks_scene`] | the task page laid out and drawn: the goal, the tasks, the open one's detail, the keys |
 //! | [`scene`] | everything the panel draws, as a list of rectangles, words and glyphs for a host to paint |
 //! | [`pane`] | which frame a pane of a split terminal tab wears, where it and the terminal in it go, and what it draws |
 //! | [`pane_color`] | the colour a person gives a pane: its value in the core's enum, its name, its three looks |
@@ -59,6 +65,9 @@ pub mod lone;
 pub mod look;
 pub mod pane;
 pub mod pane_color;
+pub mod level;
+pub mod perf;
+pub mod perf_scene;
 pub mod project_link;
 pub mod project_mark;
 pub mod project_notice;
@@ -67,6 +76,8 @@ pub mod panestack;
 pub mod pulse;
 pub mod quota;
 pub mod reach;
+pub mod reader;
+pub mod rightpage;
 pub mod rowmenu;
 pub mod rules;
 pub mod scene;
@@ -76,6 +87,8 @@ pub mod stackstrip;
 pub mod swatch;
 pub mod tabmarks;
 pub mod tabstrip;
+pub mod tasks;
+pub mod tasks_scene;
 pub mod toast;
 
 #[cfg(test)]

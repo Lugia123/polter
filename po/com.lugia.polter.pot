@@ -1743,6 +1743,14 @@ msgstr ""
 msgid "Tasks"
 msgstr ""
 
+#: windows/control-room/src/rightpage.rs:36
+msgid "Performance"
+msgstr ""
+
+#: windows/control-room/src/rightpage.rs:40
+msgid "The chat has ended. Click here to open it again."
+msgstr ""
+
 #: src/cli/chat.zig:3065
 msgid "Stats"
 msgstr ""

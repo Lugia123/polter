@@ -590,6 +590,12 @@ pub struct Group {
     /// 1671); none when none was made since the core started, or from a
     /// core before it said.
     pub ask: Option<AskState>,
+    /// The worst any of its terminals is doing right now (task 2015,
+    /// `polter-artifacts/2015/API.md` §1): what the dot before the right
+    /// side's "Performance" tab is drawn in. `None` from a core from before
+    /// it said, and from one that has measured nothing -- not the same as
+    /// `Ok`.
+    pub resource_level: crate::level::Level,
 }
 
 /// A group's tie to a project as the core says it (`ControlRoom.ProjectOut`):
@@ -951,6 +957,12 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// `group`'s `resource_level` (task 2015), found by its name; `None`
+    /// for a name the snapshot has no group by.
+    pub fn resource_level(&self, group: &str) -> crate::level::Level {
+        self.groups.iter().find(|g| g.name == group).map_or(crate::level::Level::None, |g| g.resource_level)
+    }
+
     /// Put every word beside a glyph into the person's language: a group's,
     /// a terminal's, its pane title's and a lone terminal's (task 1522);
     /// and a row's line, where it is one of the core's own sentences (task
@@ -1157,6 +1169,13 @@ fn group(v: &Value, path: &str) -> Res<Group> {
         muted: muted_of(v, path)?,
         delete_cost: delete_cost_of(v, path)?,
         ask: ask_of(v, path)?,
+        resource_level: match v.get("resource_level") {
+            None => crate::level::Level::None,
+            Some(_) => {
+                let l = text(v, path, "resource_level")?;
+                crate::level::Level::parse(&l).ok_or(DecodeError::UnknownValue(format!("{path}.resource_level={l}")))?
+            }
+        },
         record_dir: if v.get("record_dir").is_some() { opt_text(v, path, "record_dir")? } else { None },
         project_name: match v.get("project") {
             Some(p) if p.get("name").is_some() => opt_text(p, &format!("{path}.project"), "name")?,

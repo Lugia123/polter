@@ -2225,6 +2225,11 @@ pub fn layout(frame: HWND) {
     // lock too -- working it out reads the snapshot, the projects and the
     // panel's geometry, and the panel's geometry is this lock's.
     let notice_h = crate::control_room::notice_height();
+    // Whether the control room's right side has its supervisor's page in
+    // front (task 2015, Q6): on any other page the lent terminal is hidden,
+    // not given back, and the page is drawn where it was. Asked before the
+    // lock, as the line above is, and for the same reason.
+    let terminal_page = crate::control_room::shows_terminal();
     // The terminals whose being stacked behind another changed, for the
     // core: `(pane, surface, visible)`. Worked out under the lock, said
     // after it.
@@ -2232,13 +2237,14 @@ pub fn layout(frame: HWND) {
     // Pure work under the lock, Windows calls after it: `SetWindowPos` sends
     // WM_SIZE back into this thread, which takes the same lock.
     #[allow(clippy::type_complexity)]
-    let (place, hide, orphans, shape_changed, room, lent_placed): (
+    let (place, hide, orphans, shape_changed, room, lent_placed, chat_rect): (
         Vec<(PaneId, HWND, TreeRect)>,
         Vec<(PaneId, HWND)>,
         Vec<PaneId>,
         bool,
         Option<(HWND, Option<TreeRect>)>,
         Option<HWND>,
+        Option<TreeRect>,
     ) = {
         let mut orphans: Vec<PaneId> = Vec::new();
         // The dividers' width, for the panes to keep clear of (#58). Asked of
@@ -2261,7 +2267,7 @@ pub fn layout(frame: HWND) {
         // panel draws its frame from, so the frame and the terminal cannot
         // disagree about where the terminal is.
         let on_loan = win.shown_on_loan();
-        let loan_rect: Option<TreeRect> = on_loan.and_then(|_| {
+        let loan_rect: Option<TreeRect> = on_loan.filter(|_| terminal_page).and_then(|_| {
             use polter_control_room::{layout::Room, scene};
             let scale = win.scale.max(0.1);
             // Narrower while the group's brief is open beside it (task 1661).
@@ -2274,6 +2280,20 @@ pub fn layout(frame: HWND) {
             // A side too narrow for a terminal shows none.
             (w >= 1.0 && h >= 1.0).then(|| TreeRect::new(bounds.x + px(side.x + t.x), bounds.y + px(side.y + t.y), w, h))
         });
+        // Where the right side's page goes (task 2015): the chat page's
+        // terminal is put there, when the control room is in front
+        // (`chat_page::place`, after the lock). The same arithmetic as the
+        // lent terminal's, with nothing said about a project above it --
+        // that is the supervisor's page's.
+        let page_rect: Option<TreeRect> = {
+            use polter_control_room::{layout::Room, scene};
+            let scale = win.scale.max(0.1);
+            let side = Room::new(bounds.w / scale, bounds.h / scale).with_note(crate::control_room::note_open()).right;
+            let t = scene::terminal_rect(side.w, side.h);
+            let px = |v: f64| (v * scale).round();
+            let (w, h) = (px(t.w), px(t.h));
+            (w >= 1.0 && h >= 1.0).then(|| TreeRect::new(bounds.x + px(side.x + t.x), bounds.y + px(side.y + t.y), w, h))
+        };
         let mut lent_placed: Option<HWND> = None;
         // The frames of the tab in front; none when that is not a
         // terminal's tab.
@@ -2419,8 +2439,9 @@ pub fn layout(frame: HWND) {
         // its stack** (task 1611, `Tree::behind_for_core`): it used to be
         // skipped here, so one lent from behind was never told it could be
         // seen and the control room's side showed what was there before.
-        // Given back, it is behind again and told so.
-        let lent = win.shown_on_loan().map(|l| l.pane);
+        // Given back, it is behind again and told so; and so it is while
+        // another page of the right side is in front (task 2015, Q6).
+        let lent = win.shown_on_loan().filter(|_| terminal_page).map(|l| l.pane);
         for tab in win.tabs.iter_mut() {
             let Some(term) = tab.terminal_mut() else { continue };
             let tree = term.tree.clone();
@@ -2436,7 +2457,12 @@ pub fn layout(frame: HWND) {
         win.last_layout = Some(shape);
         win.pane_frames = frames;
 
-        (place, hide, orphans, shape_changed, room, lent_placed)
+        // Only with the control room in front.
+        let chat_rect = match room {
+            Some((_, Some(_))) => page_rect,
+            Some((_, None)) | None => None,
+        };
+        (place, hide, orphans, shape_changed, room, lent_placed, chat_rect)
     };
 
     for id in orphans {
@@ -2636,6 +2662,9 @@ pub fn layout(frame: HWND) {
         }
         let _ = InvalidateRect(Some(frame), None, false);
     }
+    // The chat page's terminal, over the panel like the lent one; or every
+    // chat hidden. With the lock dropped: placing one may make it.
+    crate::chat_page::place(frame, chat_rect);
 
     // The window's caption follows the tab in front, and the control room
     // in and out of the front. From here for the dividers' reason just
@@ -2947,6 +2976,13 @@ fn create_pane(
             .and_then(crate::project::Slot::from_restore_path)
             .map(|slot| crate::journal::hold(id, s as usize, slot)),
     })
+}
+
+/// An identity for a chat on the control room's chat page (`chat_page.rs`):
+/// from the same counter as panes and tabs, because it is what
+/// `cb_close_surface` is handed, and it must not be any pane's.
+pub(crate) fn chat_id() -> u64 {
+    take_id()
 }
 
 /// The next identity. Shared by panes and tabs; see `TabId`.
@@ -7145,14 +7181,21 @@ pub fn focus_active(frame: HWND) {
         Room(isize),
         Nothing,
     }
+    // The chat in front, when the keyboard was last in it (task 2015).
+    // Asked before the guard: it is another module's state.
+    let chat = crate::chat_page::keyboard_hwnd();
     let target = match window(frame) {
         Some(w) => match w.tabs.get(w.active).map(|t| t.front()) {
             Some(Front::Pane(p)) => Target::Pane(p.hwnd),
-            // With a terminal shown in the control room and the person
-            // having clicked in it, the keyboard is the terminal's.
-            Some(Front::Room(hwnd)) => match w.shown_on_loan().filter(|l| l.keyboard).and_then(|_| w.typing_pane()) {
-                Some(p) => Target::Pane(p.hwnd),
-                None => Target::Room(hwnd),
+            // With the chat page in front and the keyboard last in its
+            // chat, the chat's; with a terminal shown in the control room
+            // and the person having clicked in it, the terminal's.
+            Some(Front::Room(hwnd)) => match chat {
+                Some(c) => Target::Pane(c),
+                None => match w.shown_on_loan().filter(|l| l.keyboard).and_then(|_| w.typing_pane()) {
+                    Some(p) => Target::Pane(p.hwnd),
+                    None => Target::Room(hwnd),
+                },
             },
             Some(Front::NoPane) => Target::Nothing,
             None => Target::Nothing,
@@ -7642,6 +7685,12 @@ pub fn surface_of(hwnd: HWND) -> Surface {
     if let Some(surface) = found {
         return surface as Surface;
     }
+    // A chat on the control room's chat page is in no tab either, and is the
+    // same window class (task 2015).
+    let chat = crate::chat_page::surface_of(hwnd);
+    if !chat.is_null() {
+        return chat;
+    }
     // The quick terminal's surface lives in its own module but uses this same
     // window class and window procedure, so the lookup falls through to it.
     crate::quick::surface_of(hwnd)
@@ -7736,6 +7785,12 @@ pub fn focus_pane_at(hwnd: HWND) {
 /// or gone to (`go_to_terminal`), which takes a terminal the control room
 /// is showing back to its own tab (task 1611).
 fn focus_pane_reached(hwnd: HWND, reach: polter_control_room::lend::Reach) {
+    // A chat on the control room's chat page is in no tab (task 2015): its
+    // own module gives it the keyboard.
+    if crate::chat_page::owns(hwnd) {
+        crate::chat_page::take_keyboard(hwnd);
+        return;
+    }
     let Some((frame, tab_idx, id)) = pane_of(hwnd) else {
         // process-wide: without `pane_of` there is no frame to tag the line
         // with, and which window this pane belonged to is exactly the fact
@@ -9806,6 +9861,9 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             // clicks, not at the speed of `WM_MOUSEMOVE` -- so unlike the
             // divider drag line, absence here is evidence.
             WM_SETFOCUS => {
+                // Whether the keyboard is now in a chat of the control
+                // room's (task 2015), or has left one.
+                crate::chat_page::focus_went_to(hwnd, HWND(wp.0 as *mut c_void));
                 crate::ime_set_window(hwnd);
                 // ⚠️ `ime_focus` ends in `ITfThreadMgr::SetFocus`, which is
                 // unbounded. **By the readings of 2026-09-09 it is not in the

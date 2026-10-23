@@ -105,6 +105,16 @@ struct ControlRoomPageStripView: View {
     /// The supervisor's state, and the take-over button last, at the right
     /// end -- as the bar wrote them.
     private func status(_ title: PaneFrame.Title, theme: Look.Theme) -> some View {
+        // The note whole or not at all (group seq 315, the Windows host's
+        // `Side::Whole`): on the strip it is the first to go, and a note cut
+        // to "不认得的 C…" says less than none.
+        ViewThatFits(in: .horizontal) {
+            statusRow(title, note: true, theme: theme)
+            statusRow(title, note: false, theme: theme)
+        }
+    }
+
+    private func statusRow(_ title: PaneFrame.Title, note withNote: Bool, theme: Look.Theme) -> some View {
         HStack(spacing: CGFloat(Look.Pane.barGap)) {
             Spacer(minLength: 0)
             // A supervisor started by hand says so, in the attention ink --
@@ -112,12 +122,11 @@ struct ControlRoomPageStripView: View {
             // and on Windows (`Side::Squeezed`). 0x373c, group seq 231: the
             // strip drew nothing where the bar said "不认得的 CLI，状态未知",
             // because only the status and the glyph were carried over.
-            if let note = title.note, !note.isEmpty {
+            if withNote, let note = title.note, !note.isEmpty {
                 Text(note)
                     .foregroundStyle(theme.attentionText.color)
                     .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(-1)
+                    .fixedSize()
             }
             if let said = title.takeOver?.status {
                 Text(said)

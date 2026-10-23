@@ -814,6 +814,12 @@ enum ControlRoomLook {
         /// Round the page, inside the right column.
         /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
         static let padding: Double = 12.0
+        /// An answer with no `seq` (the core's mistake, API.md §2.0): the next request's `since`, so that the next answer is a whole one. Both hosts read this, not a number of their own (group seq 311).
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let missingSeq: Double = 0.0
+        /// An answer with no `period_ms`: how often the page asks meanwhile, in milliseconds -- what the core asks for today. Both hosts read this (group seq 311).
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let missingPeriodMs: Double = 2000.0
         /// Inside the box with the machine line and the grid, top and bottom.
         /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
         static let summaryPadY: Double = 12.0

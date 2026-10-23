@@ -18,6 +18,8 @@ final class ControlRoomTasksFeed: ObservableObject {
 
     private var group: String?
     private var said: String?
+    /// What the last answer lacked, as last said.
+    private var saidMissing: [String] = []
     let source: ControlRoomPageSource
 
     init(source: ControlRoomPageSource) {
@@ -80,6 +82,13 @@ final class ControlRoomTasksFeed: ObservableObject {
             if let o = openTask, !a.inOrder.contains(where: { $0.id == o }) { openTask = nil }
             answer = a
             said = nil
+            // What the core left out, said when it changes (group seq 309).
+            if a.missing != saidMissing {
+                if !a.missing.isEmpty {
+                    Ghostty.logger.notice("control room: task page of \(group, privacy: .public): the answer is missing \(ControlRoomAnswerReader.words(a.missing), privacy: .public); those are not drawn")
+                }
+                saidMissing = a.missing
+            }
         case .success:
             break
         case let .failure(why):
@@ -250,13 +259,16 @@ struct ControlRoomTasksPage: View {
                     .fill(theme.perfCard.color)
                     .frame(width: width, height: CGFloat(Metrics.rowHeight))
             }
-            Image(systemName: Tasks.symbol(task.glyph))
-                .font(.system(size: CGFloat(Look.Side.glyph) - 2))
-                .foregroundStyle(Tasks.color(task.glyph, theme: theme).color)
-                // In the middle of its column (0x4881 found the Windows
-                // host's at the column's left, group seq 221).
-                .frame(width: cols[0].width, height: CGFloat(Metrics.rowHeight))
-                .offset(x: cols[0].x)
+            // None when the core named no glyph this build knows.
+            if let glyph = task.glyph {
+                Image(systemName: Tasks.symbol(glyph))
+                    .font(.system(size: CGFloat(Look.Side.glyph) - 2))
+                    .foregroundStyle(Tasks.color(glyph, theme: theme).color)
+                    // In the middle of its column (0x4881 found the Windows
+                    // host's at the column's left, group seq 221).
+                    .frame(width: cols[0].width, height: CGFloat(Metrics.rowHeight))
+                    .offset(x: cols[0].x)
+            }
             cell("#\(task.id)", cols[1], .leading).font(.system(size: CGFloat(Look.Font.body), weight: weight, design: .monospaced))
                 .foregroundStyle(side.color)
             cell(task.state, cols[2], .leading).fontWeight(weight).foregroundStyle(main.color)

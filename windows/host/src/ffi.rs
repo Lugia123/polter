@@ -1992,6 +1992,16 @@ pub struct Api {
     /// person did in the control room. False with the refusal's name in
     /// `err` when it was not done. App thread only.
     pub app_control_act: unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> bool,
+    /// `ghostty_app_control_page(app, req, len, buf, cap)` (task 2015,
+    /// `polter-artifacts/2015/API.md` §2): what one of the control room's
+    /// right-hand pages shows, asked as JSON and answered as JSON, by the
+    /// persona buffer rule -- asked twice with the same request, the second
+    /// answer is the first one's bytes. Zero: not ready. App thread only.
+    ///
+    /// **Optional, unlike everything above**: a core from before that task
+    /// has no such export, and every other symbol missing stops the host
+    /// (`load_api`). Without it the pages say nothing; the host still runs.
+    pub app_control_page: Option<unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> usize>,
     /// `ghostty_surface_persona_launch(surface, key, len, cli, len, err, cap)`.
     pub surface_persona_launch:
         unsafe extern "C" fn(Surface, *const u8, usize, *const u8, usize, *mut u8, usize) -> bool,

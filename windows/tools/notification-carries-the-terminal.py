@@ -159,7 +159,9 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 one terminal; its surface says which pane carries them.
 #  29 (task 1797): ACTION_POLTERGEIST_MOVE_PANE joined. It moves one
 #                 terminal, and only its surface says which pane goes.
-MIN_CARRYING_ARMS = 29
+#  30 (task 2039): ACTION_SHOW_CHILD_EXITED joined. A chat's program
+#                 ended, and only its surface says which chat.
+MIN_CARRYING_ARMS = 30
 
 # The notifications that carry no address **today**, by `TAG -> module::fn`.
 #

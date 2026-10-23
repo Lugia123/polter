@@ -9,7 +9,8 @@ import CoreGraphics
 ///
 /// **Every word is the core's**, already in the person's language; the
 /// numbers that come with them are only for the arc, the curve and the
-/// grid. A tone, a span or a row this build cannot read fails the decode.
+/// grid. A tone, a span or a row this build cannot read is left out and
+/// said (`ControlRoomAnswerReader`).
 /// No SwiftUI here: what can be wrong without looking wrong is tested in a
 /// package of its own.
 enum ControlRoomResources {
@@ -121,7 +122,8 @@ enum ControlRoomResources {
         var role: String?
         var badge: Toned?
         var tone: Level
-        var dial: Dial
+        /// Nil when the core did not say how full it is: no dial is drawn.
+        var dial: Dial?
         var lines: Lines
         var foot: Foot
         /// The kill line in bytes; nil when unset.
@@ -143,30 +145,181 @@ enum ControlRoomResources {
         var now_note: String
         var grid: Grid
         var cards: [Card]
+        /// What the answer should have said and did not -- or said as
+        /// something else -- by path; none of it is drawn
+        /// (`ControlRoomAnswerReader`). The page writes it down.
+        var missing: [String] = []
     }
 
     enum DecodeError: Error, Equatable {
         /// The core's own refusal: never an empty page.
         case refused(String)
-        /// A pane with not exactly `grid.cells` cells, or a point that is
-        /// not `[ms, bytes]`: it would be drawn against the wrong times.
-        case shape(String)
+        /// Not JSON, or not an object.
+        case unreadable
+        /// No `group`: nobody's page.
+        case noGroup
     }
 
-    /// The answer, read.
+    typealias Reader = ControlRoomAnswerReader
+
+    /// The answer, read field by field (`ControlRoomAnswerReader`): only
+    /// what is not JSON, `{"error": …}` -- never an empty page -- and an
+    /// answer that does not say whose group it is fail; everything else
+    /// missing is left out of what is drawn and named in `missing`. The
+    /// Windows host's `perf::decode`, field for field.
     static func decode(_ data: Data) throws -> Answer {
-        struct Refusal: Decodable { var error: String }
-        if let refusal = try? JSONDecoder().decode(Refusal.self, from: data) {
-            throw DecodeError.refused(refusal.error)
+        guard let v = (try? JSONSerialization.jsonObject(with: data)) as? Reader.Object else { throw DecodeError.unreadable }
+        if let e = v["error"] as? String { throw DecodeError.refused(e) }
+        guard let group = v["group"] as? String else { throw DecodeError.noGroup }
+        let r = Reader()
+        let machine: Machine
+        if let m = r.obj(v, "", "machine") {
+            let tp = "machine.text"
+            let t = r.obj(m, "machine", "text")
+            func nullable(_ key: String) -> String? { t.flatMap { r.nullableText($0, tp, key) } }
+            let (label, mem, memOf, swap, pressure) = (nullable("label"), nullable("mem"), nullable("mem_of"), nullable("swap"), nullable("pressure"))
+            machine = Machine(text: .init(label: label, mem: mem, mem_of: memOf, swap: swap, pressure: pressure,
+                                          panes: t.map { r.text($0, tp, "panes") } ?? "", day: t.map { r.text($0, tp, "day") } ?? ""),
+                              pressure_tone: r.nullableNamed(m, "machine", "pressure_tone", as: Level.self))
+        } else {
+            machine = Machine(text: .init(label: nil, mem: nil, mem_of: nil, swap: nil, pressure: nil, panes: "", day: ""), pressure_tone: nil)
         }
-        let a = try JSONDecoder().decode(Answer.self, from: data)
-        for pane in a.grid.panes where pane.cells.count != a.grid.cells {
-            throw DecodeError.shape("grid.panes[\(pane.id)].cells")
+        let grid = r.obj(v, "", "grid").map { readGrid(r, $0, "grid") }
+            ?? Grid(span: .day, title: "", subtitle: "", spans: [], legend: [], cells: 0, axis: [], panes: [])
+        // An element that is not an object reads as an empty one: what it
+        // lacks is said by name, as on Windows.
+        let cards = r.list(v, "", "cards").enumerated().compactMap { i, c in readCard(r, (c as? Reader.Object) ?? [:], Reader.at("cards", i)) }
+        return Answer(
+            group: group,
+            seq: r.int(v, "", "seq") ?? UInt64(ControlRoomLook.PerfPage.missingSeq),
+            full: r.bool(v, "", "full") ?? false,
+            period_ms: r.int(v, "", "period_ms") ?? UInt64(ControlRoomLook.PerfPage.missingPeriodMs),
+            now_ms: r.int(v, "", "now_ms") ?? 0,
+            machine: machine,
+            now_line: r.text(v, "", "now_line"),
+            now_note: r.text(v, "", "now_note"),
+            grid: grid,
+            cards: cards,
+            missing: r.missing)
+    }
+
+    private static func toned(_ r: Reader, _ v: Reader.Object, _ path: String) -> Toned {
+        Toned(tone: r.nullableNamed(v, path, "tone", as: Level.self), text: r.text(v, path, "text"))
+    }
+
+    private static func nullableToned(_ r: Reader, _ v: Reader.Object, _ path: String, _ key: String) -> Toned? {
+        r.nullableObj(v, path, key).map { toned(r, $0, Reader.join(path, key)) }
+    }
+
+    /// One card, or nil without its `id` -- what its curve is kept under.
+    private static func readCard(_ r: Reader, _ v: Reader.Object, _ path: String) -> Card? {
+        let id = r.text(v, path, "id")
+        guard !id.isEmpty else { return nil }
+        let dp = Reader.join(path, "dial")
+        // No fill, no dial: an empty arc would be read as a reading of 0.
+        let dial: Dial? = r.obj(v, path, "dial").flatMap { d in
+            guard let fraction = r.number(d, dp, "fraction") else { return nil }
+            let tp = Reader.join(dp, "ticks")
+            let ticks = r.list(d, dp, "ticks").enumerated().compactMap { i, t -> Double? in
+                if let n = t as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() { return n.doubleValue }
+                r.miss(Reader.at(tp, i))
+                return nil
+            }
+            return Dial(fraction: fraction, ticks: ticks, big: r.text(d, dp, "big"), unit: r.text(d, dp, "unit"), cap: r.text(d, dp, "cap"))
         }
-        for card in a.cards where card.points.contains(where: { $0.count != 2 }) {
-            throw DecodeError.shape("cards[\(card.id)].points")
+        let lp = Reader.join(path, "lines")
+        let lines: Lines
+        if let l = r.obj(v, path, "lines") {
+            let up = Reader.join(lp, "r1")
+            let r1 = r.nullableObj(l, lp, "r1").map { Lines.Usage(value: r.text($0, up, "value"), rest: r.text($0, up, "rest")) }
+            lines = Lines(r1: r1, r2: nullableToned(r, l, lp, "r2"), r3: nullableToned(r, l, lp, "r3"))
+        } else {
+            lines = Lines(r1: nil, r2: nil, r3: nil)
         }
-        return a
+        let fp = Reader.join(path, "foot")
+        let foot = r.obj(v, path, "foot").map { Foot(left: r.text($0, fp, "left"), right: r.text($0, fp, "right")) } ?? Foot(left: "", right: "")
+        let pp = Reader.join(path, "points")
+        let points = r.list(v, path, "points").enumerated().compactMap { i, p -> [UInt64]? in
+            if let pair = p as? [Any], pair.count == 2,
+               let t = pair[0] as? NSNumber, let b = pair[1] as? NSNumber,
+               CFGetTypeID(t) != CFBooleanGetTypeID(), CFGetTypeID(b) != CFBooleanGetTypeID() {
+                return [t.uint64Value, b.uint64Value]
+            }
+            r.miss(Reader.at(pp, i))
+            return nil
+        }
+        return Card(id: id, name: r.text(v, path, "name"), role: r.nullableText(v, path, "role"),
+                    badge: nullableToned(r, v, path, "badge"),
+                    tone: r.named(v, path, "tone", as: Level.self) ?? .none,
+                    dial: dial, lines: lines, foot: foot,
+                    line_at: r.nullableInt(v, path, "line_at"), points: points)
+    }
+
+    /// The grid. Without its span or its count of cells it has no rows, no
+    /// axis and no legend -- nothing can be placed -- and its title is
+    /// still said.
+    private static func readGrid(_ r: Reader, _ v: Reader.Object, _ path: String) -> Grid {
+        let span = r.named(v, path, "span", as: Span.self)
+        let cells = r.int(v, path, "cells").map { Int($0) }
+        let title = r.text(v, path, "title"), subtitle = r.text(v, path, "subtitle")
+        // No buttons from a core that writes none -- and, every key being
+        // there (§2.0), said.
+        let sp = Reader.join(path, "spans")
+        let spans = r.list(v, path, "spans").enumerated().compactMap { i, e -> SpanWords? in
+            let e = (e as? Reader.Object) ?? [:]
+            let ep = Reader.at(sp, i)
+            let s = r.named(e, ep, "span", as: Span.self)
+            let t = r.text(e, ep, "text")
+            return s.map { SpanWords(span: $0, text: t) }
+        }
+        guard let span, let cells else {
+            return Grid(span: .day, title: title, subtitle: subtitle, spans: spans, legend: [], cells: 0, axis: [], panes: [])
+        }
+        let lp = Reader.join(path, "legend")
+        let legend = r.list(v, path, "legend").enumerated().compactMap { i, e -> Legend? in
+            let e = (e as? Reader.Object) ?? [:]
+            let ep = Reader.at(lp, i)
+            guard let level = r.named(e, ep, "tone", as: Level.self) else { return nil }
+            return Legend(tone: level, text: r.text(e, ep, "text"))
+        }
+        let ap = Reader.join(path, "axis")
+        let axis = r.list(v, path, "axis").enumerated().compactMap { i, a -> Cell? in
+            let a = (a as? Reader.Object) ?? [:]
+            let ep = Reader.at(ap, i)
+            guard let cell = r.int(a, ep, "cell") else { return nil }
+            return Cell(cell: Int(cell), text: r.text(a, ep, "text"))
+        }
+        let pp = Reader.join(path, "panes")
+        let panes = r.list(v, path, "panes").enumerated().compactMap { i, row -> Pane? in
+            let p = Reader.at(pp, i)
+            let row = (row as? Reader.Object) ?? [:]
+            let cp = Reader.join(p, "cells")
+            // A cell this build cannot read is drawn as having no level.
+            let rowCells: [Level] = r.list(row, p, "cells").enumerated().map { k, c in
+                if let s = c as? String, let l = Level(rawValue: s) { return l }
+                r.miss(Reader.at(cp, k))
+                return .none
+            }
+            // Exactly as many as the grid has (API.md §2.1): a row that is
+            // not would be drawn against the wrong times -- left out.
+            guard rowCells.count == cells else {
+                if row["cells"] != nil { r.miss(cp) }
+                return nil
+            }
+            let hp = Reader.join(p, "hover")
+            let hover = r.list(row, p, "hover").enumerated().compactMap { k, h -> Hover? in
+                let ep = Reader.at(hp, k)
+                let h = (h as? Reader.Object) ?? [:]
+                guard let cell = r.int(h, ep, "cell") else { return nil }
+                let linp = Reader.join(ep, "lines")
+                let lines = r.list(h, ep, "lines").enumerated().map { j, l -> Toned in
+                    toned(r, (l as? Reader.Object) ?? [:], Reader.at(linp, j))
+                }
+                return Hover(cell: Int(cell), lines: lines)
+            }
+            return Pane(id: r.text(row, p, "id"), name: r.text(row, p, "name"), cells: rowCells, hover: hover)
+        }
+        return Grid(span: span, title: title, subtitle: subtitle, spans: spans, legend: legend, cells: cells, axis: axis, panes: panes)
     }
 
     /// The request for `group`'s page: `since` the last answer's `seq`, 0

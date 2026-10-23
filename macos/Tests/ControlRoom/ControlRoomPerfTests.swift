@@ -31,24 +31,37 @@ struct PerfTests {
         let ocr = a.cards.first { $0.name == "ocr-mask" }!
         #expect(ocr.tone == .killed)
         #expect(ocr.badge?.tone == .killed)
-        #expect(ocr.dial.fraction > 1)
+        #expect((ocr.dial?.fraction ?? 0) > 1)
         #expect(same(ocr.points.count, 150))
         let me = a.cards.first { $0.role == "你的终端" }!
         #expect(me.line_at == nil)
-        #expect(me.dial.ticks.isEmpty)
+        #expect(me.dial?.ticks.isEmpty == true)
         let w = try R.decode(week())
         #expect(w.grid.span == .week)
         #expect(same(w.grid.cells, 42))
     }
 
-    @Test func testAToneOrSpanThisBuildDoesNotKnowIsAnError() throws {
+    /// A value this build does not know costs what it is drawn as, and is
+    /// said -- no longer the page (group seq 309). The Windows host's
+    /// expectations.
+    @Test func aToneOrSpanThisBuildDoesNotKnowCostsOnlyItsItem() throws {
         let d = try day()
-        #expect(throws: (any Error).self) { try R.decode(edited(d, after: "\"cards\"", "\"tone\": \"warn2\"", "\"tone\": \"warn9\"")) }
-        #expect(throws: (any Error).self) { try R.decode(edited(d, after: "\"grid\"", "\"span\": \"day\"", "\"span\": \"month\"")) }
-        #expect(throws: (any Error).self) { try R.decode(edited(d, after: "\"panes\": [", "\"none\",", "\"gone\",")) }
-        #expect(throws: (any Error).self) { try R.decode(edited(d, after: "\"panes\": [", "\"none\",", "")) }
-        #expect(throws: Never.self) { try R.decode(edited(d, after: "\"panes\": [", "\"none\",", "\"ok\",")) }
+        let whole = try R.decode(d)
+        #expect(whole.missing == [])
+        let card = try R.decode(edited(d, after: "\"cards\"", "\"tone\": \"warn2\"", "\"tone\": \"warn9\""))
+        #expect(card.missing.contains { $0.hasPrefix("cards[") && $0.hasSuffix(".tone") }, Comment(rawValue: "\(card.missing)"))
+        let span = try R.decode(edited(d, after: "\"grid\"", "\"span\": \"day\"", "\"span\": \"month\""))
+        #expect(span.missing.contains("grid.span"))
+        #expect(span.grid.panes.isEmpty && span.grid.axis.isEmpty, "no grid without its span")
+        #expect(!span.cards.isEmpty, "and the rest is drawn")
+        let gone = try R.decode(edited(d, after: "\"panes\": [", "\"none\",", "\"gone\","))
+        #expect(gone.missing.contains { $0.hasPrefix("grid.panes[0].cells[") }, Comment(rawValue: "\(gone.missing)"))
+        let short = try R.decode(edited(d, after: "\"panes\": [", "\"none\",", ""))
+        #expect(short.grid.panes.count == whole.grid.panes.count - 1)
+        #expect(short.missing.contains("grid.panes[0].cells"))
+        #expect(try R.decode(edited(d, after: "\"panes\": [", "\"none\",", "\"ok\",")).missing == [])
         #expect(throws: R.DecodeError.refused("NoSuchGroup")) { try R.decode(Data("{\"error\":\"NoSuchGroup\"}".utf8)) }
+        #expect(throws: R.DecodeError.noGroup) { try R.decode(edited(d, after: "{", "\"group\":", "\"gruop\":")) }
     }
 
     @Test func testTheRequestQuotesTheGroup() {

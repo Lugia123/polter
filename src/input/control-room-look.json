@@ -442,6 +442,8 @@
       "_src": "perf-v4",
       "_doc": "The performance page as a whole (task 2015).",
       "padding": { "v": 12, "doc": "Round the page, inside the right column." },
+      "missing_seq": { "v": 0, "src": "undesigned", "doc": "An answer with no `seq` (the core's mistake, API.md §2.0): the next request's `since`, so that the next answer is a whole one. Both hosts read this, not a number of their own (group seq 311)." },
+      "missing_period_ms": { "v": 2000, "src": "undesigned", "doc": "An answer with no `period_ms`: how often the page asks meanwhile, in milliseconds -- what the core asks for today. Both hosts read this (group seq 311)." },
       "summary_pad_y": { "v": 12, "doc": "Inside the box with the machine line and the grid, top and bottom." },
       "summary_pad_x": 16,
       "summary_layer_gap": { "v": 10, "doc": "In that box, between the machine line and the grid." },

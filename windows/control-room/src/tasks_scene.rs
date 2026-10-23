@@ -1,0 +1,740 @@
+//! The task page, laid out and drawn (task 2015, Q10; the design's v9
+//! `main-tasks`, without its Stats and Files tabs): the group's goal, the
+//! columns' heading, the open tasks -- the one open lifted on a pane of
+//! glass with its wording, its history and what the group said of it -- the
+//! closed ones folded under a line, and the keys at the bottom.
+//!
+//! The same shape as `perf_scene`: a list of `Draw`s a host paints, from
+//! the core's words (`tasks`) and the host's measurements. Lengths are
+//! points from the page's top left, the page scrolled up by `scroll`; the
+//! keys at the bottom stay where they are.
+
+use crate::layout::{self, Rect};
+use crate::look::{font, side, task_page as k, task_symbol, Rgba, Theme};
+use crate::perf_scene::{Draw, Measure};
+use crate::scene::{self, Align, Face, Item, Part, Piece, Side, Style};
+use crate::tasks::{Detail, Glyph, LogLine, Task, Tasks};
+
+/// A task's line on the page.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskAt {
+    pub id: u64,
+    pub rect: Rect,
+    pub closed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layout {
+    pub width: f64,
+    pub goal: Rect,
+    pub head: Rect,
+    pub tasks: Vec<TaskAt>,
+    /// The closed tasks' line: pressing it opens or folds them.
+    pub section: Rect,
+    /// The glass round the open task and its detail; none when none is open.
+    pub glass: Option<Rect>,
+    /// What the detail draws, worked out here because how tall it is
+    /// depends on how its words wrap.
+    pub detail: Vec<Draw>,
+    /// The keys' bar, at the bottom of a page `height` tall, unscrolled.
+    pub keys: Rect,
+    pub content_height: f64,
+}
+
+impl Layout {
+    pub fn max_scroll(&self, height: f64) -> f64 {
+        (self.content_height - height).max(0.0)
+    }
+
+    /// The task whose line is under `(x, y)`.
+    pub fn task_at(&self, x: f64, y: f64) -> Option<u64> {
+        self.tasks.iter().find(|t| x >= t.rect.x && x < t.rect.x + t.rect.w && y >= t.rect.y && y < t.rect.y + t.rect.h).map(|t| t.id)
+    }
+
+    pub fn on_section(&self, x: f64, y: f64) -> bool {
+        let s = self.section;
+        x >= s.x && x < s.x + s.w && y >= s.y && y < s.y + s.h
+    }
+}
+
+fn l3(color: Rgba) -> Style {
+    Style { size: font::BODY, weight: font::WEIGHT_BODY, face: Face::Ui, color }
+}
+
+fn mono(color: Rgba) -> Style {
+    Style { face: Face::Mono, ..l3(color) }
+}
+
+fn strong(style: Style) -> Style {
+    Style { weight: font::WEIGHT_EMPHASIS, ..style }
+}
+
+fn words(text: &str, style: Style, side: Side, gap: f64) -> Part {
+    Part { piece: Piece::Words { text: text.to_string(), style }, side, gap }
+}
+
+/// `text` broken into lines `width` wide in `style`: at its own line ends
+/// first, then where the words run out of room (`layout::wrap`).
+pub fn wrapped(text: &str, style: &Style, width: f64, measure: Measure) -> Vec<String> {
+    let fits = |s: &str| -> usize {
+        // The most characters from the start that fit: found by halving.
+        let chars: Vec<(usize, char)> = s.char_indices().collect();
+        let (mut lo, mut hi) = (0usize, chars.len());
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            let end = chars.get(mid).map_or(s.len(), |(at, _)| *at);
+            if measure(&s[..end], style) <= width {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        lo
+    };
+    let pushed = |s: &str| break_before(s, fits(s));
+    text.split('\n').flat_map(|para| layout::wrap(para, &pushed)).collect()
+}
+
+/// What may not begin a line (Chinese and Japanese line breaking, 避头): a
+/// full stop, a comma, a closing bracket and their kin.
+pub fn closes(c: char) -> bool {
+    "。，、．：；！？）」』】〉》〕｝…—”’%,.;:!?)]}".contains(c)
+}
+
+/// Where a line of `s` ends when `n` characters fit: there, unless the next
+/// line would begin with what may not begin one (group seq 223: 0x4881
+/// found a 。 alone at the start of a line) -- then earlier, so that **the
+/// character before goes down with it** (推出, group seq 276). W5 hung the
+/// mark on the line before instead, and that line, a character too wide,
+/// was cut to an ellipsis. A line cannot be pushed out to nothing: when
+/// every character but the first would have to go, it ends at `n` after
+/// all.
+pub fn break_before(s: &str, n: usize) -> usize {
+    let chars: Vec<char> = s.chars().collect();
+    if n == 0 || n >= chars.len() {
+        return n;
+    }
+    let mut k = n;
+    while k > 1 && closes(chars[k]) {
+        k -= 1;
+    }
+    if closes(chars[k]) { n } else { k }
+}
+
+/// A press on task `id`: it is selected, and opened -- or shut, when it is
+/// the open one. `(selected, open)`.
+pub fn after_press(id: u64, open: Option<u64>) -> (Option<u64>, Option<u64>) {
+    (Some(id), if open == Some(id) { None } else { Some(id) })
+}
+
+/// Enter with `selected` (or, with none, `first`) and `open`: the selected
+/// one opened when it is not the open one -- the open one, if another, shut
+/// by that -- and shut when it is. ↑↓ move only the selection. **The
+/// selection and the open one are two things** (group seq 290, the mac
+/// host's reading; this host had the same one flag): with one flag for "the
+/// selected one is open", ↓ carried the opening to the next task and Enter
+/// then shut it. The mac host's `ControlRoomTasks.afterReturn`.
+pub fn after_return(selected: Option<u64>, open: Option<u64>, first: Option<u64>) -> (Option<u64>, Option<u64>) {
+    match selected.or(first) {
+        None => (None, open),
+        Some(s) => (Some(s), if open == Some(s) { None } else { Some(s) }),
+    }
+}
+
+/// The columns of a task's line inside `row`: glyph, id, state, title,
+/// owner, idle.
+pub fn columns(row: Rect) -> [Rect; 6] {
+    let x0 = row.x + k::ROW_PAD_X;
+    let right = row.x + row.w - k::ROW_PAD_X;
+    let col = |x: f64, w: f64| Rect { x, y: row.y, w: w.max(0.0), h: row.h };
+    let glyph = col(x0, k::COL_GLYPH);
+    let id = col(glyph.x + glyph.w, k::COL_ID);
+    let state = col(id.x + id.w, k::COL_STATE);
+    let idle = col(right - k::COL_IDLE, k::COL_IDLE);
+    let owner = col(idle.x - k::COL_OWNER, k::COL_OWNER);
+    let title = col(state.x + state.w, owner.x - (state.x + state.w));
+    [glyph, id, state, title, owner, idle]
+}
+
+/// The column labels' small heading at `at`, `w` wide: its words, and a
+/// rule from after them to the end.
+fn label(text: &str, at: (f64, f64), w: f64, theme: &Theme, scale: f64, measure: Measure) -> Vec<Draw> {
+    let style = l3(theme.text_secondary);
+    let tw = measure(text, &style);
+    let (hair, amount) = scene::hairline(scale);
+    let rule_x = at.0 + tw + k::HEADING_RULE_GAP;
+    let mut out = vec![Draw::Item(Item::Text { rect: Rect { x: at.0, y: at.1, w: tw, h: k::HEADING_HEIGHT }, text: text.to_string(), style, align: Align::Left })];
+    if rule_x < at.0 + w {
+        out.push(Draw::Item(Item::Fill {
+            rect: Rect { x: rule_x, y: at.1 + k::HEADING_HEIGHT / 2.0, w: at.0 + w - rule_x, h: hair },
+            color: scene::over(theme.terminal_background, theme.stack_tab_separator, amount),
+        }));
+    }
+    out
+}
+
+/// What the open task shows under its line, from `(x0, y0)` in a space
+/// `w` wide; and how tall it is.
+pub fn detail(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, scale: f64, measure: Measure) -> (Vec<Draw>, f64) {
+    let mut out = Vec::new();
+    let left_w = k::DETAIL_LEFT_WIDTH.min(((w - k::DETAIL_COLUMN_GAP) / 2.0).max(0.0)).max(0.0);
+    let right_x = x0 + left_w + k::DETAIL_COLUMN_GAP;
+    let right_w = (x0 + w - right_x).max(0.0);
+    let body = l3(theme.text);
+
+    // Left: the wording, then the history.
+    let mut y = y0;
+    out.extend(label(&d.body_title, (x0, y), left_w, theme, scale, measure));
+    y += k::HEADING_HEIGHT;
+    for line in wrapped(&d.body, &body, left_w, measure) {
+        if scene::draws(&line) {
+            out.push(Draw::Item(Item::Text { rect: Rect { x: x0, y, w: left_w, h: k::BODY_LINE_HEIGHT }, text: line, style: body, align: Align::Left }));
+        }
+        y += k::BODY_LINE_HEIGHT;
+    }
+    y += k::BODY_BOTTOM;
+    out.extend(label(&d.log_title, (x0, y), left_w, theme, scale, measure));
+    y += k::HEADING_HEIGHT;
+    let rail_x = x0 + k::LOG_TIME + k::LOG_TRACK_X;
+    let rail_color = scene::over(theme.terminal_background, theme.text_tertiary, 0.6);
+    let n = d.log.len();
+    for (i, l) in d.log.iter().enumerate() {
+        match l {
+            LogLine::Event { at, who, text, last } => {
+                let h = k::LOG_ROW;
+                // The rail runs through every line, from the first dot down
+                // to the last.
+                let top = if i == 0 { y + h / 2.0 } else { y };
+                let bottom = if i + 1 == n { y + h / 2.0 } else { y + h };
+                out.push(Draw::Stroke { points: vec![(rail_x, top), (rail_x, bottom)], width: 0.5, color: rail_color, dash: None });
+                let dot = Rect { x: rail_x - k::LOG_DOT / 2.0, y: y + k::LOG_DOT_TOP, w: k::LOG_DOT, h: k::LOG_DOT };
+                let (fill, edge) = if *last { (theme.text, None) } else { (theme.terminal_background, Some(theme.text_secondary)) };
+                out.push(Draw::Item(Item::Round { rect: dot, radius: k::LOG_DOT / 2.0, color: fill, edge }));
+                let row = |cx: f64, cw: f64| Rect { x: cx, y, w: cw, h };
+                if let Some(at) = at {
+                    out.push(Draw::Item(Item::Text { rect: row(x0, k::LOG_TIME), text: at.clone(), style: mono(theme.text_secondary), align: Align::Left }));
+                }
+                let who_x = x0 + k::LOG_TIME + k::LOG_TRACK;
+                if let Some(who) = who {
+                    out.push(Draw::Item(Item::Text { rect: row(who_x, k::LOG_WHO), text: who.clone(), style: mono(theme.text_secondary), align: Align::Left }));
+                }
+                let text_x = who_x + k::LOG_WHO;
+                out.push(Draw::Item(Item::Text { rect: row(text_x, (x0 + left_w - text_x).max(0.0)), text: text.clone(), style: body, align: Align::Left }));
+                y += h;
+            }
+            LogLine::Gap { text } => {
+                let h = k::LOG_GAP_ROW;
+                out.push(Draw::Stroke { points: vec![(rail_x, y), (rail_x, y + h)], width: 0.5, color: rail_color, dash: Some((k::GAP_DASH, k::GAP_DASH_GAP)) });
+                let who_x = x0 + k::LOG_TIME + k::LOG_TRACK;
+                out.push(Draw::Item(Item::Text { rect: Rect { x: who_x, y, w: (x0 + left_w - who_x).max(0.0), h }, text: text.clone(), style: l3(theme.text_secondary), align: Align::Left }));
+                y += h;
+            }
+        }
+    }
+    let left_h = y - y0;
+
+    // Right: what the group said of it, newest last.
+    let mut y = y0;
+    out.extend(label(&d.said_title, (right_x, y), right_w, theme, scale, measure));
+    y += k::HEADING_HEIGHT;
+    for s in &d.said {
+        out.push(Draw::Item(Item::Line {
+            rect: Rect { x: right_x, y, w: right_w, h: k::BODY_LINE_HEIGHT },
+            parts: vec![words(&s.at, mono(theme.text_secondary), Side::Lead, 0.0), words(&s.who, strong(mono(theme.text)), Side::Lead, k::SAID_HEAD_GAP)],
+        }));
+        y += k::BODY_LINE_HEIGHT;
+        for line in wrapped(&s.text, &body, right_w, measure) {
+            if scene::draws(&line) {
+                out.push(Draw::Item(Item::Text { rect: Rect { x: right_x, y, w: right_w, h: k::BODY_LINE_HEIGHT }, text: line, style: body, align: Align::Left }));
+            }
+            y += k::BODY_LINE_HEIGHT;
+        }
+        y += k::SAID_BOTTOM;
+    }
+    let right_h = y - y0;
+    (out, left_h.max(right_h))
+}
+
+/// `t`'s page `width` by `height`, scrolled up by `scroll`.
+#[allow(clippy::too_many_arguments)]
+pub fn layout(t: &Tasks, width: f64, height: f64, scroll: f64, theme: &Theme, scale: f64, measure: Measure) -> Layout {
+    let x0 = k::PAD_X;
+    let inner = (width - 2.0 * k::PAD_X).max(0.0);
+    let mut y = -scroll;
+    let goal = Rect { x: x0, y, w: inner, h: k::GOAL_HEIGHT };
+    y += k::GOAL_HEIGHT;
+    let head = Rect { x: x0, y, w: inner, h: k::ROW_HEIGHT };
+    y += k::ROW_HEIGHT;
+    let mut tasks = Vec::new();
+    let mut glass = None;
+    let mut drawn = Vec::new();
+    for task in &t.open {
+        let open = task.detail.as_ref();
+        if open.is_some() {
+            y += k::DETAIL_MARGIN_Y;
+        }
+        let rect = Rect { x: x0, y, w: inner, h: k::ROW_HEIGHT };
+        tasks.push(TaskAt { id: task.id, rect, closed: false });
+        y += k::ROW_HEIGHT;
+        if let Some(d) = open {
+            let (draws, h) = detail(
+                d,
+                x0 + k::DETAIL_PAD_LEFT,
+                y + k::DETAIL_PAD_TOP,
+                (inner - k::DETAIL_PAD_LEFT - k::DETAIL_PAD_RIGHT).max(0.0),
+                theme,
+                scale,
+                measure,
+            );
+            drawn = draws;
+            y += k::DETAIL_PAD_TOP + h + k::DETAIL_PAD_BOTTOM;
+            glass = Some(Rect { x: x0, y: rect.y, w: inner, h: y - rect.y });
+            y += k::DETAIL_MARGIN_Y;
+        }
+    }
+    y += k::CLOSED_TOP;
+    let section = Rect { x: x0, y, w: inner, h: k::ROW_HEIGHT };
+    y += k::ROW_HEIGHT;
+    for task in &t.closed {
+        tasks.push(TaskAt { id: task.id, rect: Rect { x: x0, y, w: inner, h: k::ROW_HEIGHT }, closed: true });
+        y += k::ROW_HEIGHT;
+    }
+    // Room under the last line for the keys, so it can be scrolled clear
+    // of them.
+    let keys_h = k::HINTS_HEIGHT + 2.0 * k::HINTS_BOTTOM;
+    let content_height = y + scroll + keys_h;
+    let keys_w = keys_width(t, theme, measure);
+    let keys = Rect { x: k::HINTS_LEFT, y: height - k::HINTS_BOTTOM - k::HINTS_HEIGHT, w: keys_w, h: k::HINTS_HEIGHT };
+    Layout { width, goal, head, tasks, section, glass, detail: drawn, keys, content_height }
+}
+
+fn key_style(theme: &Theme) -> Style {
+    Style { size: k::KEY_FONT, ..mono(theme.text) }
+}
+
+fn keys_width(t: &Tasks, theme: &Theme, measure: Measure) -> f64 {
+    let mut w = k::HINTS_PAD_LEFT + k::HINTS_PAD_RIGHT;
+    for (i, (key, what)) in t.hints.iter().enumerate() {
+        if i > 0 {
+            w += k::HINTS_GAP;
+        }
+        w += measure(key, &key_style(theme)) + 2.0 * k::KEY_PAD_X + k::KEY_GAP + measure(what, &l3(theme.text_secondary));
+    }
+    w
+}
+
+/// A state's symbol and colour, from the look (`strings.task_symbol`,
+/// `colors.task_<state>`): the same data the macOS host draws by.
+pub fn symbol_of(g: Glyph, theme: &Theme) -> (&'static str, Rgba) {
+    match g {
+        Glyph::Queued => (task_symbol::QUEUED, theme.task_queued),
+        Glyph::Working => (task_symbol::WORKING, theme.task_working),
+        Glyph::Blocked => (task_symbol::BLOCKED, theme.task_blocked),
+        Glyph::Done => (task_symbol::DONE, theme.task_done),
+        Glyph::Closed => (task_symbol::CLOSED, theme.task_closed),
+        Glyph::Cancelled => (task_symbol::CANCELLED, theme.task_cancelled),
+    }
+}
+
+/// The symbol the look names, in a box `side::GLYPH` square about `c`,
+/// drawn as the system symbol of that name is on macOS: `circle` a ring;
+/// `clock` a ring with a clock's hands; `minus.circle`, `checkmark.circle`
+/// and `xmark.circle` a ring with a bar, a tick, a cross; `checkmark` a
+/// tick alone. A name this build cannot draw draws nothing
+/// (`every_symbol_the_look_names_is_drawn` holds the look to these).
+pub fn symbol(name: &str, c: (f64, f64), color: Rgba) -> Vec<Draw> {
+    let r = side::GLYPH / 2.0 - 1.5;
+    let w = k::GLYPH_STROKE;
+    let stroke = |pts: Vec<(f64, f64)>| Draw::Stroke { points: pts.into_iter().map(|(dx, dy)| (c.0 + dx, c.1 + dy)).collect(), width: w, color, dash: None };
+    let tick = |s: f64| stroke(vec![(-0.55 * s, 0.0), (-0.15 * s, 0.4 * s), (0.6 * s, -0.4 * s)]);
+    let (ringed, inner) = match name.strip_suffix(".circle") {
+        Some(inner) => (true, inner),
+        None if name == "circle" || name == "clock" => (true, name),
+        None => (false, name),
+    };
+    let mut out = Vec::new();
+    if ringed {
+        out.push(Draw::Arc { centre: c, radius: r, from: 0.0, sweep: 360.0, width: w, color });
+    }
+    match inner {
+        "circle" => {}
+        "clock" => out.push(stroke(vec![(0.0, -0.55 * r), (0.0, 0.0), (0.45 * r, 0.3 * r)])),
+        "minus" => out.push(stroke(vec![(-0.5 * r, 0.0), (0.5 * r, 0.0)])),
+        "checkmark" => out.push(tick(if ringed { 0.75 * r } else { r })),
+        "xmark" => {
+            out.push(stroke(vec![(-0.4 * r, -0.4 * r), (0.4 * r, 0.4 * r)]));
+            out.push(stroke(vec![(0.4 * r, -0.4 * r), (-0.4 * r, 0.4 * r)]));
+        }
+        _ => return Vec::new(),
+    }
+    out
+}
+
+/// One task's line in `row`: glyph, id, state, title, owner, idle; bold
+/// when it is the open one, faint when it is closed.
+fn task_line(task: &Task, row: Rect, closed: bool, theme: &Theme) -> Vec<Draw> {
+    let [g, id, state, title, owner, idle] = columns(row);
+    let (main, side) = if closed { (theme.text_tertiary, theme.text_tertiary) } else if task.emph { (theme.text, theme.text) } else { (theme.text, theme.text_secondary) };
+    let w = |s: Style| if task.emph { strong(s) } else { s };
+    // In the middle of its column (0x4881, group seq 221: it stood at the
+    // column's left, 37–49 in a column 36–62); none when the core named no
+    // glyph this build knows (`tasks::task`).
+    let mut out = match task.glyph {
+        Some(glyph) => {
+            let (name, color) = symbol_of(glyph, theme);
+            symbol(name, (g.x + g.w / 2.0, g.y + g.h / 2.0), color)
+        }
+        None => Vec::new(),
+    };
+    let text = |rect: Rect, t: String, style: Style, align: Align| Draw::Item(Item::Text { rect, text: t, style, align });
+    out.push(text(id, format!("#{}", task.id), w(mono(side)), Align::Left));
+    out.push(text(state, task.state.clone(), w(l3(main)), Align::Left));
+    out.push(text(title, task.title.clone(), w(l3(main)), Align::Left));
+    out.push(text(owner, task.owner.clone(), w(mono(side)), Align::Left));
+    out.push(text(idle, task.idle.clone(), w(l3(side)), Align::Right));
+    out
+}
+
+/// The page under `at`. `selected` is the task the arrow keys are on,
+/// lit when it is not the open one.
+pub fn build(t: &Tasks, at: &Layout, theme: &Theme, scale: f64, selected: Option<u64>, measure: Measure) -> Vec<Draw> {
+    let ground = theme.terminal_background;
+    let (hair, amount) = scene::hairline(scale);
+    let rule = scene::over(ground, theme.stack_tab_separator, amount);
+    let mut out = Vec::new();
+    if scene::draws(&t.goal) {
+        out.push(Draw::Item(Item::Text { rect: at.goal, text: t.goal.clone(), style: l3(theme.text_secondary), align: Align::Left }));
+    }
+    // The heading, and a rule under it.
+    let [_, id, state, title, owner, idle] = columns(at.head);
+    let h = &t.head;
+    for (rect, words_, align) in [(id, &h.id, Align::Left), (state, &h.state, Align::Left), (title, &h.title, Align::Left), (owner, &h.owner, Align::Left), (idle, &h.idle, Align::Right)] {
+        out.push(Draw::Item(Item::Text { rect, text: words_.clone(), style: l3(theme.text_secondary), align }));
+    }
+    out.push(Draw::Item(Item::Fill { rect: Rect { y: at.head.y + at.head.h - hair, h: hair, ..at.head }, color: rule }));
+
+    if let Some(g) = at.glass {
+        out.push(Draw::Item(Item::Round { rect: g, radius: k::DETAIL_RADIUS_WINDOWS, color: scene::over(ground, theme.perf_card, 1.0), edge: Some(scene::over(ground, theme.perf_card_edge, 1.0)) }));
+    }
+    let tasks: Vec<&Task> = t.in_order().collect();
+    for (k, (task, place)) in tasks.iter().zip(&at.tasks).enumerate() {
+        // A hairline between two lines, but not round the glass.
+        let after_glass = k > 0 && tasks[k - 1].detail.is_some();
+        let first_closed = place.closed && (k == 0 || !at.tasks[k - 1].closed);
+        if k > 0 && task.detail.is_none() && !after_glass && !first_closed {
+            out.push(Draw::Item(Item::Fill { rect: Rect { h: hair, ..place.rect }, color: rule }));
+        }
+        if selected == Some(task.id) && task.detail.is_none() {
+            out.push(Draw::Item(Item::Round { rect: place.rect, radius: k::DETAIL_RADIUS_WINDOWS, color: scene::over(ground, theme.perf_card, 1.0), edge: None }));
+        }
+        out.extend(task_line(task, place.rect, place.closed, theme));
+    }
+    out.extend(at.detail.iter().cloned());
+
+    // The closed tasks' line: its words, and a rule to the end.
+    let style = l3(theme.text_secondary);
+    let tw = measure(&t.closed_title, &style);
+    let s = at.section;
+    out.push(Draw::Item(Item::Text { rect: Rect { x: s.x + k::ROW_PAD_X, w: tw, ..s }, text: t.closed_title.clone(), style, align: Align::Left }));
+    let rule_x = s.x + k::ROW_PAD_X + tw + k::CLOSED_RULE_GAP;
+    if rule_x < s.x + s.w {
+        out.push(Draw::Item(Item::Fill { rect: Rect { x: rule_x, y: s.y + s.h / 2.0, w: s.x + s.w - rule_x, h: hair }, color: rule }));
+    }
+
+    // The keys, over the page at its bottom left.
+    let k = at.keys;
+    out.push(Draw::Item(Item::Round { rect: k, radius: k::HINTS_RADIUS, color: theme.perf_tip, edge: Some(scene::over(theme.perf_tip, theme.perf_tip_edge, 1.0)) }));
+    let mut kx = k.x + k::HINTS_PAD_LEFT;
+    for (i, (key, what)) in t.hints.iter().enumerate() {
+        if i > 0 {
+            kx += k::HINTS_GAP;
+        }
+        let kw = measure(key, &key_style(theme)) + 2.0 * k::KEY_PAD_X;
+        let kb = Rect { x: kx, y: k.y + (k.h - k::KEY_HEIGHT) / 2.0, w: kw, h: k::KEY_HEIGHT };
+        out.push(Draw::Item(Item::Round { rect: kb, radius: k::KEY_RADIUS, color: scene::over(theme.perf_tip, theme.perf_card_edge, 1.0), edge: None }));
+        out.push(Draw::Item(Item::Text { rect: kb, text: key.clone(), style: key_style(theme), align: Align::Centre }));
+        kx += kw + k::KEY_GAP;
+        let ww = measure(what, &l3(theme.text_secondary));
+        out.push(Draw::Item(Item::Text { rect: Rect { x: kx, y: k.y, w: ww, h: k.h }, text: what.clone(), style: l3(theme.text_secondary), align: Align::Left }));
+        kx += ww;
+    }
+    // Nothing empty handed on (`scene::draws`).
+    out.into_iter()
+        .filter(|d| !matches!(d, Draw::Item(Item::Text { text, .. }) if !scene::draws(text)))
+        .collect()
+}
+
+/// Where the arrow keys go from `selected` among the tasks in order: one
+/// on, one back, held at the ends; the first when none is selected.
+pub fn step(t: &Tasks, selected: Option<u64>, down: bool) -> Option<u64> {
+    let ids: Vec<u64> = t.in_order().map(|x| x.id).collect();
+    let first = *ids.first()?;
+    let Some(at) = selected.and_then(|s| ids.iter().position(|i| *i == s)) else { return Some(first) };
+    let to = if down { (at + 1).min(ids.len() - 1) } else { at.saturating_sub(1) };
+    Some(ids[to])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::look::DARK;
+    use crate::tasks::decode;
+    use crate::tasks::tests::{CLOSED, NULLS, OPEN};
+
+    fn nominal(s: &str, style: &Style) -> f64 {
+        let cells: usize = s.chars().map(|c| if c as u32 >= 0x2E80 { 2 } else { 1 }).sum();
+        cells as f64 * crate::look::stack_tab::NOMINAL_CELL_WIDTH * style.size / font::BODY
+    }
+
+    fn texts(d: &[Draw]) -> Vec<(Rect, String)> {
+        d.iter()
+            .filter_map(|d| match d {
+                Draw::Item(Item::Text { rect, text, .. }) => Some((*rect, text.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_columns_stand_as_v9_has_them_and_the_title_takes_the_rest() {
+        let [g, id, st, title, owner, idle] = columns(Rect { x: 24.0, y: 0.0, w: 1000.0, h: 28.0 });
+        assert_eq!((g.x, g.w), (36.0, 26.0));
+        assert_eq!((id.x, id.w), (62.0, 60.0));
+        assert_eq!((st.x, st.w), (122.0, 104.0));
+        assert_eq!(title.x, 226.0);
+        assert_eq!((idle.x + idle.w, idle.w), (1012.0, 96.0));
+        assert_eq!((owner.x + owner.w, owner.w), (idle.x, 120.0));
+        assert_eq!(title.x + title.w, owner.x);
+    }
+
+    #[test]
+    fn the_open_task_is_lifted_with_its_detail_and_the_others_follow_it() {
+        let t = decode(OPEN).unwrap();
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        assert_eq!((at.goal.y, at.head.y), (0.0, 28.0));
+        assert_eq!(at.tasks[0].rect.y, 56.0);
+        // #215 is second: a margin of glass before it.
+        assert_eq!(at.tasks[1].rect.y, 56.0 + 28.0 + 6.0);
+        let g = at.glass.expect("glass round the open task");
+        assert_eq!(g.y, at.tasks[1].rect.y);
+        assert_eq!(at.tasks[2].rect.y, g.y + g.h + 6.0);
+        // Rows after it are 28 apart, then the closed line 4 below.
+        assert_eq!(at.tasks[3].rect.y, at.tasks[2].rect.y + 28.0);
+        assert_eq!(at.section.y, at.tasks[5].rect.y + 28.0 + 4.0);
+        // The detail starts inside the glass at its padding.
+        let first = texts(&at.detail)[0].0;
+        assert_eq!((first.x, first.y), (24.0 + 38.0, at.tasks[1].rect.y + 28.0 + 4.0));
+    }
+
+    #[test]
+    fn the_detail_is_as_tall_as_its_taller_column() {
+        let t = decode(OPEN).unwrap();
+        let d = t.open[1].detail.as_ref().unwrap();
+        let (_, h) = detail(d, 0.0, 0.0, 1000.0, &DARK, 1.0, &nominal);
+        // Left: label, three lines of wording, room, label, seven events and two gaps.
+        let left = 24.0 + 3.0 * 20.0 + 12.0 + 24.0 + 7.0 * 24.0 + 2.0 * 20.0;
+        assert_eq!(h, left);
+        // A short history: the messages are the taller column, and the
+        // detail is as tall as they are -- at least a heading and four
+        // messages of a line, a line and the room under each.
+        let mut short = d.clone();
+        short.log.truncate(1);
+        let short_left = 24.0 + 3.0 * 20.0 + 12.0 + 24.0 + 24.0;
+        let (_, h) = detail(&short, 0.0, 0.0, 1000.0, &DARK, 1.0, &nominal);
+        assert!(h >= 24.0 + 4.0 * (20.0 + 20.0 + 12.0) && h > short_left, "{h}");
+    }
+
+    #[test]
+    fn a_line_breaks_where_the_words_run_out_and_at_its_own_ends() {
+        let style = l3(DARK.text);
+        let lines = wrapped("aaaa bbbb cccc\ndd", &style, 9.0 * 8.0, &nominal);
+        assert_eq!(lines, vec!["aaaa bbbb", "cccc", "dd"]);
+        for l in &lines {
+            assert!(nominal(l, &style) <= 72.0);
+        }
+        // Ten cells wide: "aaaa bbbb c" is eleven and does not fit.
+        assert_eq!(wrapped("aaaa bbbb c dd", &style, 80.0, &nominal), vec!["aaaa bbbb", "c dd"]);
+    }
+
+    #[test]
+    fn a_full_stop_or_a_closing_bracket_never_begins_a_line() {
+        // Six fit; the seventh is 。: the line ends a character early, and
+        // that character goes down with it.
+        assert_eq!(break_before("一二三四五六。七", 6), 5);
+        // A run of them -- 」。 -- takes the one before the run down.
+        assert_eq!(break_before("一二三四」。五", 4), 3);
+        // Nothing to push: where it fits.
+        assert_eq!(break_before("一二三四五六七", 6), 6);
+        assert_eq!(break_before("一二三", 3), 3, "all of it fits");
+        // A line is not pushed out to nothing.
+        assert_eq!(break_before("一。。。", 1), 1);
+        // Through `wrapped`, 0x4881's line (group seq 274): five fit, the
+        // sixth is 。 -- 五 goes down with it, and no line is wider than
+        // five, so nothing is cut short.
+        let style = l3(DARK.text);
+        let lines = wrapped("一二三四五。六七", &style, 5.0 * 16.0, &nominal);
+        assert_eq!(lines, vec!["一二三四".to_string(), "五。六七".to_string()]);
+        let five = 5.0 * 16.0;
+        assert!(lines.iter().all(|x| nominal(x, &style) <= five + 1e-9), "{lines:?}");
+        assert!(lines.iter().all(|x| !x.starts_with('。')));
+    }
+
+    /// A history whose lines have no time and no who (API.md §2.0) is
+    /// drawn: its words, its dots, no empty text in their place.
+    #[test]
+    fn a_history_without_times_or_whos_is_drawn() {
+        let drawn = |json: &str| {
+            let t = decode(json).unwrap();
+            let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+            format!("{:?}", build(&t, &at, &DARK, 1.0, None, &nominal))
+        };
+        let (with, without) = (drawn(OPEN), drawn(NULLS));
+        assert!(without.contains("建了这条任务"));
+        // The history's times are gone; what the group said keeps its own.
+        let times = |s: &str| s.matches("\"13:02\"").count();
+        let log_times = decode(OPEN).unwrap().open.iter().filter_map(|x| x.detail.as_ref()).flat_map(|d| d.log.iter()).filter(|l| matches!(l, LogLine::Event { at: Some(a), .. } if a == "13:02")).count();
+        assert!(log_times > 0);
+        assert_eq!(times(&with) - times(&without), log_times);
+    }
+
+    /// The mac host's 0x373c steps (group seq 289): press #2 (opened), ↓ to
+    /// #3, Enter -- #3 opened, #2 shut; Enter again shuts #3.
+    #[test]
+    fn enter_acts_on_the_selected_task() {
+        let (mut selected, mut open) = after_press(2, None);
+        assert_eq!((selected, open), (Some(2), Some(2)));
+        selected = Some(3);
+        (selected, open) = after_return(selected, open, Some(2));
+        assert_eq!((selected, open), (Some(3), Some(3)));
+        (selected, open) = after_return(selected, open, Some(2));
+        assert_eq!((selected, open), (Some(3), None));
+        assert_eq!(after_return(None, None, Some(7)), (Some(7), Some(7)));
+        assert_eq!(after_return(None, None, None), (None, None));
+        assert_eq!(after_press(3, Some(3)), (Some(3), None));
+    }
+
+    /// The state's symbol stands in the middle of its column.
+    #[test]
+    fn the_symbol_is_in_the_middle_of_its_column() {
+        let t = decode(OPEN).unwrap();
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let d = build(&t, &at, &DARK, 1.0, None, &nominal);
+        let [g, ..] = columns(at.tasks[0].rect);
+        let ring = d.iter().find_map(|x| match x {
+            Draw::Arc { centre, .. } if centre.1 == at.tasks[0].rect.y + at.tasks[0].rect.h / 2.0 => Some(*centre),
+            _ => None,
+        });
+        assert_eq!(ring.map(|c| c.0), Some(g.x + g.w / 2.0));
+    }
+
+    #[test]
+    fn the_rail_runs_from_the_first_dot_to_the_last_and_a_gap_is_dashed() {
+        let t = decode(OPEN).unwrap();
+        let d = t.open[1].detail.as_ref().unwrap();
+        let (draws, _) = detail(d, 0.0, 100.0, 1000.0, &DARK, 1.0, &nominal);
+        let rails: Vec<(f64, f64, bool)> = draws
+            .iter()
+            .filter_map(|d| match d {
+                Draw::Stroke { points, dash, .. } if points[0].0 == points[1].0 => Some((points[0].1, points[1].1, dash.is_some())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rails.len(), 9);
+        assert_eq!(rails.iter().filter(|r| r.2).count(), 2);
+        let ev_top = 100.0 + 24.0 + 3.0 * 20.0 + 12.0 + 24.0;
+        assert_eq!(rails[0].0, ev_top + 12.0, "from the first dot");
+        let last = rails.last().unwrap();
+        assert_eq!(last.1, last.0 + 12.0, "to the last dot");
+        // Each piece starts where the one before it ended.
+        for w in rails.windows(2) {
+            assert_eq!(w[0].1, w[1].0);
+        }
+    }
+
+    #[test]
+    fn a_press_finds_its_task_and_the_closed_line() {
+        let t = decode(CLOSED).unwrap();
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        assert!(at.glass.is_none());
+        let r = at.tasks[7].rect;
+        assert_eq!(at.task_at(r.x + 1.0, r.y + 1.0), Some(t.closed[1].id));
+        assert!(at.tasks[7].closed && !at.tasks[0].closed);
+        assert!(at.on_section(at.section.x + 2.0, at.section.y + 2.0));
+        assert_eq!(at.task_at(at.section.x + 2.0, at.section.y + 2.0), None);
+        // The closed ones follow their line.
+        assert_eq!(at.tasks[6].rect.y, at.section.y + 28.0);
+    }
+
+    #[test]
+    fn the_arrows_go_through_the_tasks_in_order_and_stop_at_the_ends() {
+        let t = decode(CLOSED).unwrap();
+        assert_eq!(step(&t, None, true), Some(214));
+        assert_eq!(step(&t, Some(214), false), Some(214));
+        assert_eq!(step(&t, Some(219), true), Some(213), "on into the closed ones");
+        assert_eq!(step(&t, Some(206), true), Some(206));
+        assert_eq!(step(&t, Some(999), true), Some(214), "one no longer there starts again");
+    }
+
+    #[test]
+    fn the_keys_sit_at_the_bottom_left_and_scrolled_the_page_moves_under_them() {
+        let t = decode(OPEN).unwrap();
+        let a = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let b = layout(&t, 1200.0, 800.0, 50.0, &DARK, 1.0, &nominal);
+        assert_eq!((a.keys.x, a.keys.y, a.keys.h), (12.0, 800.0 - 12.0 - 32.0, 32.0));
+        assert_eq!(a.keys, b.keys);
+        assert_eq!(b.tasks[3].rect.y, a.tasks[3].rect.y - 50.0);
+        assert_eq!(a.content_height, b.content_height);
+        assert_eq!(a.content_height, a.section.y + 28.0 + 32.0 + 24.0);
+    }
+
+    #[test]
+    fn every_word_drawn_is_the_cores_or_a_tasks_number() {
+        let t = decode(OPEN).unwrap();
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let d = build(&t, &at, &DARK, 1.0, None, &nominal);
+        let mut said: Vec<String> = texts(&d).into_iter().map(|(_, s)| s).collect();
+        for d in &d {
+            if let Draw::Item(Item::Line { parts, .. }) = d {
+                for p in parts {
+                    if let Piece::Words { text, .. } = &p.piece {
+                        said.push(text.clone());
+                    }
+                }
+            }
+        }
+        for s in &said {
+            let number = s.strip_prefix('#').is_some_and(|n| n.parse::<u64>().is_ok());
+            // The wording comes back a line at a time.
+            assert!(number || OPEN.contains(s.as_str()), "{s:?} is not the core's");
+        }
+        assert!(said.iter().any(|s| s == "#215"));
+    }
+
+    #[test]
+    fn every_symbol_the_look_names_is_drawn_and_each_state_its_own() {
+        let all = [Glyph::Queued, Glyph::Working, Glyph::Blocked, Glyph::Done, Glyph::Closed, Glyph::Cancelled];
+        let drawn: Vec<Vec<Draw>> = all
+            .iter()
+            .map(|g| {
+                let (name, color) = symbol_of(*g, &DARK);
+                symbol(name, (7.0, 7.0), color)
+            })
+            .collect();
+        for (g, d) in all.iter().zip(&drawn) {
+            assert!(!d.is_empty(), "{g:?}: the look names a symbol this build cannot draw");
+        }
+        for i in 0..all.len() {
+            for k in i + 1..all.len() {
+                assert_ne!(drawn[i], drawn[k], "{:?} and {:?}", all[i], all[k]);
+            }
+        }
+        // A ringed name has a ring and the bare tick none.
+        assert!(symbol("checkmark", (0.0, 0.0), DARK.text).iter().all(|d| !matches!(d, Draw::Arc { .. })));
+        assert!(symbol("checkmark.circle", (0.0, 0.0), DARK.text).iter().any(|d| matches!(d, Draw::Arc { .. })));
+        assert!(symbol("star.fill", (0.0, 0.0), DARK.text).is_empty());
+        assert!(symbol("star.circle", (0.0, 0.0), DARK.text).is_empty(), "not a ring alone for a ringed name it cannot draw");
+        // In the state's own colour.
+        assert!(matches!(&drawn[1][0], Draw::Arc { color, .. } if *color == DARK.task_working));
+
+    }
+}

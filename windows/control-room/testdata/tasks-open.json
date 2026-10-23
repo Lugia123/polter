@@ -17,7 +17,8 @@
    "title": "列表加多选和「改负责人」工具条",
    "owner": "frontend",
    "idle": "17 分钟",
-   "emph": false
+   "emph": false,
+   "detail": null
   },
   {
    "id": 215,
@@ -122,7 +123,8 @@
    "title": "批量编辑的用例：空选择、混合状态、不存在的 id",
    "owner": "tests",
    "idle": "6 分钟",
-   "emph": false
+   "emph": false,
+   "detail": null
   },
   {
    "id": 217,
@@ -131,7 +133,8 @@
    "title": "分页测试在 CI 上偶发失败",
    "owner": "tests",
    "idle": "41 分钟",
-   "emph": false
+   "emph": false,
+   "detail": null
   },
   {
    "id": 218,
@@ -140,7 +143,8 @@
    "title": "批量编辑以后是乐观更新还是重新拉取？",
    "owner": "未指派",
    "idle": "1 小时",
-   "emph": false
+   "emph": false,
+   "detail": null
   },
   {
    "id": 219,
@@ -149,7 +153,8 @@
    "title": "「改负责人」工具条的键盘操作",
    "owner": "未指派",
    "idle": "1 小时",
-   "emph": false
+   "emph": false,
+   "detail": null
   }
  ],
  "closed_title": "关了的 8 条",

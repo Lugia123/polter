@@ -2127,3 +2127,42 @@ fn a_groups_tie_why_and_ask_are_read_as_the_core_wrote_them() {
     let row = l.rows().find(|r| r.project_name.as_deref() == Some("infra")).expect("its row");
     assert_eq!(row.project.as_ref().map(|p| p.tie.as_str()), Some("bound"));
 }
+
+/// Task 2015's `resource_level` on a group (`polter-artifacts/2015/API.md`
+/// §1): read where the core says it -- the fixture says it since Q3
+/// (635a1834f) -- `None` from a core before it said, and a value this build
+/// does not know is an error, not a quiet `None`.
+#[test]
+fn a_groups_resource_level_is_read_and_an_unknown_one_is_an_error() {
+    use crate::level::Level;
+    let s = snapshot::decode(FIXTURE).unwrap();
+    let level = |name: &str| s.groups.iter().find(|g| g.name == name).map(|g| g.resource_level);
+    assert_eq!(level("web-app"), Some(Level::Warn2));
+    assert_eq!(level("web-app-docs"), Some(Level::Ok));
+    assert_eq!(level("mobile"), Some(Level::Killed));
+    assert_eq!(s.resource_level("web-app"), Level::Warn2);
+    assert_eq!(s.resource_level("no-such-group"), Level::None);
+    assert!(s.groups.iter().filter(|g| !["web-app", "web-app-docs", "mobile"].contains(&g.name.as_str())).all(|g| g.resource_level == Level::None));
+
+    // A core before Q3 wrote none: every group's is `None`.
+    let mut before = String::new();
+    for line in FIXTURE.lines() {
+        if line.trim_start().starts_with("\"resource_level\"") {
+            // The key is the last of its object: the comma before it goes.
+            if before.ends_with(",\n") {
+                before.truncate(before.len() - 2);
+                before.push('\n');
+            }
+            continue;
+        }
+        before.push_str(line);
+        before.push('\n');
+    }
+    assert!(!before.contains("resource_level"));
+    let b = snapshot::decode(&before).unwrap();
+    assert!(b.groups.iter().all(|g| g.resource_level == Level::None));
+
+    let said = |v: &str| FIXTURE.replacen("\"resource_level\": \"warn2\"", &format!("\"resource_level\": \"{v}\""), 1);
+    assert_eq!(snapshot::decode(&said("killed")).unwrap().resource_level("web-app"), Level::Killed);
+    assert!(snapshot::decode(&said("warn9")).is_err());
+}
