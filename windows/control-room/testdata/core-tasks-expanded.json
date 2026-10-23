@@ -1,0 +1,152 @@
+{
+  "page": "tasks",
+  "group": "web-app",
+  "goal": "Bulk editing for the task list.",
+  "goal_lines": [
+    "Bulk editing for the task list."
+  ],
+  "head": {
+    "id": "号",
+    "state": "状态",
+    "title": "标题",
+    "owner": "负责人",
+    "idle": "多久没动"
+  },
+  "open": [
+    {
+      "id": 214,
+      "glyph": "done",
+      "state": "做完待关",
+      "title": "Multi-select",
+      "title_parts": null,
+      "owner": "frontend",
+      "idle": "17 分钟",
+      "emph": false,
+      "detail": null
+    },
+    {
+      "id": 215,
+      "glyph": "working",
+      "state": "在做",
+      "title": "PATCH /api/tasks takes a list of ids",
+      "title_parts": null,
+      "owner": "api",
+      "idle": "2 分钟",
+      "emph": true,
+      "detail": {
+        "body_title": "任务原文",
+        "body": "#215 to api: PATCH /api/tasks takes a list of ids, all or nothing.",
+        "log_title": "经过",
+        "log": [
+          {
+            "entry": "event",
+            "at": "19:25",
+            "who": "总管",
+            "text": "建了这条任务",
+            "last": false
+          },
+          {
+            "entry": "event",
+            "at": "19:25",
+            "who": "总管",
+            "text": "派给 api",
+            "last": false
+          },
+          {
+            "entry": "event",
+            "at": "19:26",
+            "who": "api",
+            "text": "开始做",
+            "last": false
+          },
+          {
+            "entry": "gap",
+            "at": null,
+            "who": null,
+            "text": "隔了 18 分钟",
+            "last": false
+          },
+          {
+            "entry": "event",
+            "at": "19:44",
+            "who": "api",
+            "text": "报卡住",
+            "last": false
+          },
+          {
+            "entry": "event",
+            "at": "19:47",
+            "who": "api",
+            "text": "开始做",
+            "last": false
+          },
+          {
+            "entry": "gap",
+            "at": null,
+            "who": null,
+            "text": "隔了 11 分钟",
+            "last": false
+          },
+          {
+            "entry": "event",
+            "at": "19:58",
+            "who": "总管",
+            "text": "改了标题",
+            "last": true
+          }
+        ],
+        "said_title": "群里提到 #215 的消息",
+        "said": [
+          {
+            "at": "19:25",
+            "who": "Supervisor",
+            "text": "#215 to api: PATCH /api/tasks takes a list of ids, all or nothing."
+          },
+          {
+            "at": "19:44",
+            "who": "api",
+            "text": "#215 stuck: one id is closed already."
+          }
+        ]
+      }
+    },
+    {
+      "id": 218,
+      "glyph": "queued",
+      "state": "排着",
+      "title": "Optimistic or refetch?",
+      "title_parts": null,
+      "owner": "未指派",
+      "idle": "—",
+      "emph": false,
+      "detail": null
+    }
+  ],
+  "closed_title": "已隐藏 3 条已关闭或已取消的任务",
+  "closed_key": {
+    "key": "c",
+    "text": "或点这一行显示"
+  },
+  "closed_count": 3,
+  "closed": [],
+  "hints": [
+    {
+      "key": "↑↓",
+      "text": "选任务"
+    },
+    {
+      "key": "Enter",
+      "text": "收起这条的经过"
+    },
+    {
+      "key": "f",
+      "text": "按标题筛选"
+    }
+  ],
+  "hint_closed": {
+    "key": "c",
+    "text": "显示已关闭的 3 条"
+  },
+  "filter": null,
+  "no_match": null
+}

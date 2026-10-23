@@ -123,6 +123,6 @@ struct ControlRoomEveryKeyTests {
     }
 
     @Test func testEveryTasksKey() throws {
-        try check(files: ["tasks-open.json", "tasks-closed.json", "tasks-nulls.json"], unread: Self.unreadTasks) { try ControlRoomTasks.decode($0).missing }
+        try check(files: ["tasks-open.json", "tasks-closed.json", "tasks-nulls.json", "tasks-filter.json", "tasks-nomatch.json", "core-tasks-filtered.json", "core-tasks-no_match.json", "core-tasks-expanded.json", "core-tasks-closed_shown.json"], unread: Self.unreadTasks) { try ControlRoomTasks.decode($0).missing }
     }
 }

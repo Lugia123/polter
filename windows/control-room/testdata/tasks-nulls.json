@@ -18,6 +18,7 @@
    "glyph": "done",
    "state": "做完待关",
    "title": "列表加多选和「改负责人」工具条",
+   "title_parts": null,
    "owner": "frontend",
    "idle": "17 分钟",
    "emph": false,
@@ -28,6 +29,7 @@
    "glyph": "working",
    "state": "在做",
    "title": "PATCH /api/tasks 接受一组 id",
+   "title_parts": null,
    "owner": "api",
    "idle": "2 分钟",
    "emph": true,
@@ -59,7 +61,10 @@
      },
      {
       "entry": "gap",
-      "text": "隔了 18 分钟"
+      "at": null,
+      "who": null,
+      "text": "隔了 18 分钟",
+      "last": false
      },
      {
       "entry": "event",
@@ -84,7 +89,10 @@
      },
      {
       "entry": "gap",
-      "text": "隔了 13 分钟"
+      "at": null,
+      "who": null,
+      "text": "隔了 13 分钟",
+      "last": false
      },
      {
       "entry": "event",
@@ -125,6 +133,7 @@
    "glyph": "working",
    "state": "在做",
    "title": "批量编辑的用例：空选择、混合状态、不存在的 id",
+   "title_parts": null,
    "owner": "tests",
    "idle": "6 分钟",
    "emph": false,
@@ -135,6 +144,7 @@
    "glyph": "blocked",
    "state": "卡住",
    "title": "分页测试在 CI 上偶发失败",
+   "title_parts": null,
    "owner": "tests",
    "idle": "41 分钟",
    "emph": false,
@@ -145,6 +155,7 @@
    "glyph": "queued",
    "state": "排着",
    "title": "批量编辑以后是乐观更新还是重新拉取？",
+   "title_parts": null,
    "owner": "未指派",
    "idle": "1 小时",
    "emph": false,
@@ -155,14 +166,16 @@
    "glyph": "queued",
    "state": "排着",
    "title": "「改负责人」工具条的键盘操作",
+   "title_parts": null,
    "owner": "未指派",
    "idle": "1 小时",
    "emph": false,
    "detail": null
   }
  ],
- "closed_title": "关了的 8 条",
- "closed_count": 8,
+ "closed_title": null,
+ "closed_key": null,
+ "closed_count": 0,
  "closed": [],
  "hints": [
   {
@@ -175,12 +188,11 @@
   },
   {
    "key": "f",
-   "text": "筛选"
-  },
-  {
-   "key": "c",
-   "text": "也看关了的"
+   "text": "按标题筛选"
   }
  ],
+ "hint_closed": null,
+ "filter": null,
+ "no_match": null,
  "later": 1
 }

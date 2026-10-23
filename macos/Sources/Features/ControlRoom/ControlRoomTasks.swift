@@ -69,6 +69,11 @@ enum ControlRoomTasks {
         var title: String
         var owner: String
         var idle: String
+        /// The title cut where the filter found it (#2083): the pieces
+        /// `hit` drawn bold on a ground of their own. Nil with no filter:
+        /// the title is drawn as it is. **Cut by the core**, which alone
+        /// knows how the filter matches; the page only draws the pieces.
+        var title_parts: [TitlePart]?
         /// Its line in bold: the open one.
         var emph: Bool?
         var detail: Detail?
@@ -81,6 +86,27 @@ enum ControlRoomTasks {
         var text: String
     }
 
+    struct TitlePart: Decodable, Equatable {
+        var text: String
+        var hit: Bool
+    }
+
+    /// The filter box (#2083): what it says while empty, what is typed,
+    /// how many it found ("4 / 9 条", nil while empty) and the key that
+    /// clears it.
+    struct Filter: Decodable, Equatable {
+        var prompt: String
+        var text: String
+        var count: String?
+        var clear: Hint
+    }
+
+    /// What the page says when no open task matches (#2083).
+    struct NoMatch: Decodable, Equatable {
+        var title: String
+        var detail: String
+    }
+
     struct Answer: Decodable, Equatable {
         var group: String
         var goal: String
@@ -90,11 +116,23 @@ enum ControlRoomTasks {
         var goal_lines: [String] = []
         var head: Head
         var open: [Task]
-        var closed_title: String
+        /// The closed tasks' line, and the key at its right (#2083: "已隐藏
+        /// 8 条已关闭或已取消的任务" · c "或点这一行显示"). Nil when there is
+        /// no such line: none closed, or none the filter found.
+        var closed_title: String?
+        var closed_key: Hint?
         var closed_count: UInt64
         /// Empty unless asked for with `closed: true`.
         var closed: [Task]
         var hints: [Hint]
+        /// The key kept at the strip's right end (#2083, plan A): whether
+        /// the closed ones are shown, and how to change it. Nil when none is
+        /// closed.
+        var hint_closed: Hint?
+        /// Nil without a filter box.
+        var filter: Filter?
+        /// Nil unless filtering found no open task.
+        var no_match: NoMatch?
         /// What the answer should have said and did not, by path; none of
         /// it is drawn (`ControlRoomAnswerReader`). The page writes it down.
         var missing: [String] = []
@@ -128,9 +166,19 @@ enum ControlRoomTasks {
             r.list(v, "", key).enumerated().compactMap { i, t in readTask(r, (t as? Reader.Object) ?? [:], Reader.at(key, i)) }
         }
         let (open, closed) = (tasks("open"), tasks("closed"))
-        let hints = r.list(v, "", "hints").enumerated().map { i, h -> Hint in
-            let h = (h as? Reader.Object) ?? [:], p = Reader.at("hints", i)
-            return Hint(key: r.text(h, p, "key"), text: r.text(h, p, "text"))
+        func hint(_ h: Reader.Object, _ p: String) -> Hint {
+            Hint(key: r.text(h, p, "key"), text: r.text(h, p, "text"))
+        }
+        let hints = r.list(v, "", "hints").enumerated().map { i, h in
+            hint((h as? Reader.Object) ?? [:], Reader.at("hints", i))
+        }
+        let filter = r.nullableObj(v, "", "filter").map { f in
+            Filter(prompt: r.text(f, "filter", "prompt"), text: r.text(f, "filter", "text"),
+                   count: r.nullableText(f, "filter", "count"),
+                   clear: r.obj(f, "filter", "clear").map { hint($0, "filter.clear") } ?? Hint(key: "", text: ""))
+        }
+        let noMatch = r.nullableObj(v, "", "no_match").map { m in
+            NoMatch(title: r.text(m, "no_match", "title"), detail: r.text(m, "no_match", "detail"))
         }
         let goalLines = r.list(v, "", "goal_lines").enumerated().compactMap { i, l -> String? in
             if let s = l as? String { return s }
@@ -138,8 +186,12 @@ enum ControlRoomTasks {
             return nil
         }
         return Answer(group: group, goal: r.text(v, "", "goal"), goal_lines: goalLines, head: head, open: open,
-                      closed_title: r.text(v, "", "closed_title"), closed_count: r.int(v, "", "closed_count") ?? 0,
-                      closed: closed, hints: hints, missing: r.missing)
+                      closed_title: r.nullableText(v, "", "closed_title"),
+                      closed_key: r.nullableObj(v, "", "closed_key").map { hint($0, "closed_key") },
+                      closed_count: r.int(v, "", "closed_count") ?? 0,
+                      closed: closed, hints: hints,
+                      hint_closed: r.nullableObj(v, "", "hint_closed").map { hint($0, "hint_closed") },
+                      filter: filter, no_match: noMatch, missing: r.missing)
     }
 
     /// One task, or nil without its `id`: what the arrow keys and the open
@@ -147,9 +199,26 @@ enum ControlRoomTasks {
     private static func readTask(_ r: Reader, _ v: Reader.Object, _ path: String) -> Task? {
         guard let id = r.int(v, path, "id") else { return nil }
         let detail = r.nullableObj(v, path, "detail").map { readDetail(r, $0, Reader.join(path, "detail")) }
+        // Null with no filter; a list of pieces with one. A piece that is
+        // not one is left out and said, and the rest still drawn.
+        let partsPath = Reader.join(path, "title_parts")
+        let parts: [TitlePart]?
+        if v["title_parts"] is NSNull {
+            parts = nil
+        } else if let list = v["title_parts"] as? [Any] {
+            parts = list.enumerated().compactMap { i, x -> TitlePart? in
+                let x = (x as? Reader.Object) ?? [:], p = Reader.at(partsPath, i)
+                let text = r.text(x, p, "text")
+                guard let hit = r.bool(x, p, "hit") else { return nil }
+                return TitlePart(text: text, hit: hit)
+            }
+        } else {
+            r.miss(partsPath)
+            parts = nil
+        }
         return Task(id: id, glyph: r.named(v, path, "glyph", as: Glyph.self), state: r.text(v, path, "state"),
                     title: r.text(v, path, "title"), owner: r.text(v, path, "owner"), idle: r.text(v, path, "idle"),
-                    emph: r.bool(v, path, "emph") ?? false, detail: detail)
+                    title_parts: parts, emph: r.bool(v, path, "emph") ?? false, detail: detail)
     }
 
     private static func readDetail(_ r: Reader, _ v: Reader.Object, _ path: String) -> Detail {
@@ -160,6 +229,10 @@ enum ControlRoomTasks {
             case "event":
                 return .event(at: r.nullableText(l, p, "at"), who: r.nullableText(l, p, "who"), text: r.text(l, p, "text"), last: r.bool(l, p, "last") ?? false)
             case "gap":
+                // The core writes every key on every line (API.md §2.0):
+                // a gap's `at` and `who` null, its `last` false. Read, so
+                // that one gone is said, and not drawn.
+                _ = (r.nullableText(l, p, "at"), r.nullableText(l, p, "who"), r.bool(l, p, "last"))
                 return .gap(text: r.text(l, p, "text"))
             default:
                 // A kind of line this build does not know: that line is left out.
@@ -177,11 +250,16 @@ enum ControlRoomTasks {
     }
 
     /// The request: `openTask` is the one whose detail is wanted, `closed`
-    /// whether the closed ones are listed.
-    static func request(group: String, openTask: UInt64?, closed: Bool) -> String {
+    /// whether the closed ones are listed, `filter` what is typed in the
+    /// filter box -- "" while it is open and empty, nil with no box
+    /// (#2083: **the core filters**, asked again at every change), and
+    /// `selected` the one the arrow keys are on -- what Enter's hint speaks
+    /// of: "fold" for the open one, "open" for another.
+    static func request(group: String, openTask: UInt64?, closed: Bool, filter: String? = nil, selected: UInt64? = nil) -> String {
         let quoted = ControlRoomPageRequest.quoted(group)
-        let open = openTask.map { ",\"open_task\":\($0)" } ?? ""
-        return "{\"page\":\"tasks\",\"group\":\(quoted)\(open),\"closed\":\(closed)}"
+        let open = (openTask.map { ",\"open_task\":\($0)" } ?? "") + (selected.map { ",\"selected\":\($0)" } ?? "")
+        let typed = filter.map { ",\"filter\":\(ControlRoomPageRequest.quoted($0))" } ?? ""
+        return "{\"page\":\"tasks\",\"group\":\(quoted)\(open),\"closed\":\(closed)\(typed)}"
     }
 
     /// Whether a key-down is the task page's Return: Return or keypad Enter
@@ -298,7 +376,10 @@ enum ControlRoomTasks {
     }
 
     /// The columns of a task's line `width` wide, from its left: glyph, id,
-    /// state, title, owner, idle -- as `(x, width)`.
+    /// state, title, owner, idle -- as `(x, width)`. **Narrow, the idle
+    /// column goes** (#2083): when the title would be narrower than
+    /// `title_min`, the idle column is 0 wide -- not drawn -- and the owner
+    /// takes `col_owner_narrow`. The Windows host's `tasks_scene::columns`.
     static func columns(width: CGFloat) -> [(x: CGFloat, width: CGFloat)] {
         typealias Metrics = ControlRoomLook.TaskPage
         let x0 = CGFloat(Metrics.rowPadX)
@@ -306,8 +387,10 @@ enum ControlRoomTasks {
         let glyph = (x0, CGFloat(Metrics.colGlyph))
         let id = (glyph.0 + glyph.1, CGFloat(Metrics.colId))
         let state = (id.0 + id.1, CGFloat(Metrics.colState))
-        let idle = (right - CGFloat(Metrics.colIdle), CGFloat(Metrics.colIdle))
-        let owner = (idle.0 - CGFloat(Metrics.colOwner), CGFloat(Metrics.colOwner))
+        let wide = right - (state.0 + state.1) - CGFloat(Metrics.colOwner + Metrics.colIdle) >= CGFloat(Metrics.titleMin)
+        let idleWidth = wide ? CGFloat(Metrics.colIdle) : 0
+        let idle = (right - idleWidth, idleWidth)
+        let owner = (idle.0 - CGFloat(wide ? Metrics.colOwner : Metrics.colOwnerNarrow), CGFloat(wide ? Metrics.colOwner : Metrics.colOwnerNarrow))
         let title = (state.0 + state.1, max(owner.0 - (state.0 + state.1), 0))
         return [glyph, id, state, title, owner, idle].map { (x: $0.0, width: max($0.1, 0)) }
     }

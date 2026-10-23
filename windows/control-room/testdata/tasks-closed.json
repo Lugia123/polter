@@ -18,6 +18,7 @@
    "glyph": "done",
    "state": "做完待关",
    "title": "列表加多选和「改负责人」工具条",
+   "title_parts": null,
    "owner": "frontend",
    "idle": "17 分钟",
    "emph": false,
@@ -28,6 +29,7 @@
    "glyph": "working",
    "state": "在做",
    "title": "PATCH /api/tasks 接受一组 id",
+   "title_parts": null,
    "owner": "api",
    "idle": "2 分钟",
    "emph": false,
@@ -38,6 +40,7 @@
    "glyph": "working",
    "state": "在做",
    "title": "批量编辑的用例：空选择、混合状态、不存在的 id",
+   "title_parts": null,
    "owner": "tests",
    "idle": "6 分钟",
    "emph": false,
@@ -48,6 +51,7 @@
    "glyph": "blocked",
    "state": "卡住",
    "title": "分页测试在 CI 上偶发失败",
+   "title_parts": null,
    "owner": "tests",
    "idle": "41 分钟",
    "emph": false,
@@ -58,6 +62,7 @@
    "glyph": "queued",
    "state": "排着",
    "title": "批量编辑以后是乐观更新还是重新拉取？",
+   "title_parts": null,
    "owner": "未指派",
    "idle": "1 小时",
    "emph": false,
@@ -68,13 +73,18 @@
    "glyph": "queued",
    "state": "排着",
    "title": "「改负责人」工具条的键盘操作",
+   "title_parts": null,
    "owner": "未指派",
    "idle": "1 小时",
    "emph": false,
    "detail": null
   }
  ],
- "closed_title": "关了的 8 条",
+ "closed_title": "已关闭或已取消的 8 条",
+ "closed_key": {
+  "key": "c",
+  "text": "隐藏"
+ },
  "closed_count": 8,
  "closed": [
   {
@@ -82,6 +92,7 @@
    "glyph": "closed",
    "state": "关了",
    "title": "/api/tasks 的列表与筛选",
+   "title_parts": null,
    "owner": "api",
    "idle": "昨天",
    "emph": false,
@@ -92,6 +103,7 @@
    "glyph": "closed",
    "state": "关了",
    "title": "应用外壳与路由",
+   "title_parts": null,
    "owner": "frontend",
    "idle": "昨天",
    "emph": false,
@@ -102,6 +114,7 @@
    "glyph": "closed",
    "state": "关了",
    "title": "会话到期后多活了一个时钟周期",
+   "title_parts": null,
    "owner": "api",
    "idle": "昨天",
    "emph": false,
@@ -112,6 +125,7 @@
    "glyph": "closed",
    "state": "关了",
    "title": "会话续期的时钟注入，方便测试",
+   "title_parts": null,
    "owner": "api",
    "idle": "2 天前",
    "emph": false,
@@ -122,6 +136,7 @@
    "glyph": "closed",
    "state": "关了",
    "title": "登录页的错误提示",
+   "title_parts": null,
    "owner": "frontend",
    "idle": "2 天前",
    "emph": false,
@@ -132,6 +147,7 @@
    "glyph": "closed",
    "state": "关了",
    "title": "登录表单",
+   "title_parts": null,
    "owner": "frontend",
    "idle": "3 天前",
    "emph": false,
@@ -142,6 +158,7 @@
    "glyph": "closed",
    "state": "关了",
    "title": "密码重置邮件",
+   "title_parts": null,
    "owner": "api",
    "idle": "3 天前",
    "emph": false,
@@ -152,6 +169,7 @@
    "glyph": "closed",
    "state": "关了",
    "title": "项目骨架",
+   "title_parts": null,
    "owner": "frontend",
    "idle": "4 天前",
    "emph": false,
@@ -169,11 +187,13 @@
   },
   {
    "key": "f",
-   "text": "筛选"
-  },
-  {
-   "key": "c",
-   "text": "只看开着的"
+   "text": "按标题筛选"
   }
- ]
+ ],
+ "hint_closed": {
+  "key": "c",
+  "text": "隐藏已关闭的"
+ },
+ "filter": null,
+ "no_match": null
 }

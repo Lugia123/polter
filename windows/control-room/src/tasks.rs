@@ -83,9 +83,34 @@ pub struct Task {
     pub title: String,
     pub owner: String,
     pub idle: String,
+    /// The title cut where the filter found it (#2083): `(words, hit)`, the
+    /// hits drawn bold on a ground of their own. None with no filter: the
+    /// title is drawn as it is. **Cut by the core**, which alone knows how
+    /// the filter matches; the page only draws the pieces.
+    pub title_parts: Option<Vec<(String, bool)>>,
     /// Its line in bold: the open one.
     pub emph: bool,
     pub detail: Option<Detail>,
+}
+
+/// A key and what it does.
+pub type Hint = (String, String);
+
+/// The filter box (#2083): what it says while empty, what is typed, how
+/// many it found ("4 / 9 条", none while empty) and the key that clears it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Filter {
+    pub prompt: String,
+    pub text: String,
+    pub count: Option<String>,
+    pub clear: Hint,
+}
+
+/// What the page says when no open task matches (#2083).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoMatch {
+    pub title: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,12 +124,24 @@ pub struct Tasks {
     pub goal_lines: Vec<String>,
     pub head: Head,
     pub open: Vec<Task>,
-    pub closed_title: String,
+    /// The closed tasks' line, and the key at its right (#2083: "已隐藏 8
+    /// 条已关闭或已取消的任务" · c "或点这一行显示"). None when there is no
+    /// such line: none closed, or none the filter found.
+    pub closed_title: Option<String>,
+    pub closed_key: Option<Hint>,
     pub closed_count: u64,
     /// Empty unless asked for with `closed: true`.
     pub closed: Vec<Task>,
     /// `(key, what it does)`, in order.
-    pub hints: Vec<(String, String)>,
+    pub hints: Vec<Hint>,
+    /// The key kept at the strip's right end (#2083, plan A): whether the
+    /// closed ones are shown, and how to change it. None when none is
+    /// closed.
+    pub hint_closed: Option<Hint>,
+    /// None without a filter box.
+    pub filter: Option<Filter>,
+    /// None unless filtering found no open task.
+    pub no_match: Option<NoMatch>,
     /// What the answer should have said and did not, by path; none of it is
     /// drawn (`reader`). The host writes it down.
     pub missing: Vec<String>,
@@ -119,10 +156,19 @@ impl Tasks {
 }
 
 /// The request for `group`'s page: `open_task` is the one whose detail is
-/// wanted, `closed` whether the closed ones are listed (API.md §2.2).
-pub fn request(group: &str, open_task: Option<u64>, closed: bool) -> String {
-    let open = open_task.map_or(String::new(), |n| format!(r#","open_task":{n}"#));
-    format!(r#"{{"page":"tasks","group":{}{},"closed":{}}}"#, json::quote(group), open, closed)
+/// wanted, `closed` whether the closed ones are listed, `filter` what is
+/// typed in the filter box -- "" while it is open and empty, none with no
+/// box (API.md §2.2; #2083: **the core filters**, asked at every change).
+/// `selected` is the one the arrow keys are on: what Enter's hint speaks of,
+/// "fold" for the open one and "open" for another.
+pub fn request(group: &str, open_task: Option<u64>, closed: bool, filter: Option<&str>, selected: Option<u64>) -> String {
+    let open = open_task.map_or(String::new(), |n| format!(r#","open_task":{n}"#)) + &selected.map_or(String::new(), |n| format!(r#","selected":{n}"#));
+    let typed = filter.map_or(String::new(), |f| format!(r#","filter":{}"#, json::quote(f)));
+    format!(r#"{{"page":"tasks","group":{}{},"closed":{}{}}}"#, json::quote(group), open, closed, typed)
+}
+
+fn hint(r: &mut Reader, v: &Value, path: &str) -> Hint {
+    (r.text(v, path, "key"), r.text(v, path, "text"))
 }
 
 fn said(r: &mut Reader, v: &Value, path: &str) -> Said {
@@ -140,7 +186,13 @@ fn detail(r: &mut Reader, v: &Value, path: &str) -> Detail {
                 text: r.text(l, &p, "text"),
                 last: r.boolean(l, &p, "last").unwrap_or(false),
             }),
-            Some(Value::Str(e)) if e == "gap" => Some(LogLine::Gap { text: r.text(l, &p, "text") }),
+            Some(Value::Str(e)) if e == "gap" => {
+                // The core writes every key on every line (API.md §2.0): a
+                // gap's `at` and `who` null, its `last` false. Read, so
+                // that one gone is said, and not drawn.
+                let _ = (r.nullable_text(l, &p, "at"), r.nullable_text(l, &p, "who"), r.boolean(l, &p, "last"));
+                Some(LogLine::Gap { text: r.text(l, &p, "text") })
+            }
             // A kind of line this build does not know: that line is left out.
             _ => {
                 r.miss(join(&p, "entry"));
@@ -171,11 +223,27 @@ fn task(r: &mut Reader, v: &Value, path: &str) -> Option<Task> {
     if glyph.is_none() {
         r.miss(join(path, "glyph"));
     }
+    // Null with no filter; a list of pieces with one. A piece that is not
+    // one is left out and said, and the rest still drawn.
+    let pp = join(path, "title_parts");
+    let title_parts = match v.get("title_parts") {
+        Some(Value::Null) => None,
+        Some(Value::Arr(items)) => Some(items.iter().enumerate().filter_map(|(i, x)| {
+            let p = at(&pp, i);
+            let text = r.text(x, &p, "text");
+            r.boolean(x, &p, "hit").map(|hit| (text, hit))
+        }).collect()),
+        _ => {
+            r.miss(pp);
+            None
+        }
+    };
     Some(Task {
         id,
         glyph,
         state: r.text(v, path, "state"),
         title: r.text(v, path, "title"),
+        title_parts,
         owner: r.text(v, path, "owner"),
         idle: r.text(v, path, "idle"),
         emph: r.boolean(v, path, "emph").unwrap_or(false),
@@ -211,10 +279,16 @@ pub fn decode_value(v: &Value) -> Res<Tasks> {
     };
     let mut tasks = |key: &str| -> Vec<Task> { r.list(v, "", key).iter().enumerate().filter_map(|(i, t)| task(&mut r, t, &at(key, i))).collect() };
     let (open, closed) = (tasks("open"), tasks("closed"));
-    let hints = r.list(v, "", "hints").iter().enumerate().map(|(i, h)| {
-        let p = at("hints", i);
-        (r.text(h, &p, "key"), r.text(h, &p, "text"))
-    }).collect();
+    let hints = r.list(v, "", "hints").iter().enumerate().map(|(i, h)| hint(&mut r, h, &at("hints", i))).collect();
+    let closed_key = r.nullable_obj(v, "", "closed_key").map(|h| hint(&mut r, h, "closed_key"));
+    let hint_closed = r.nullable_obj(v, "", "hint_closed").map(|h| hint(&mut r, h, "hint_closed"));
+    let filter = r.nullable_obj(v, "", "filter").map(|f| Filter {
+        prompt: r.text(f, "filter", "prompt"),
+        text: r.text(f, "filter", "text"),
+        count: r.nullable_text(f, "filter", "count"),
+        clear: r.obj(f, "filter", "clear").map(|c| hint(&mut r, c, "filter.clear")).unwrap_or_default(),
+    });
+    let no_match = r.nullable_obj(v, "", "no_match").map(|m| NoMatch { title: r.text(m, "no_match", "title"), detail: r.text(m, "no_match", "detail") });
     Ok(Tasks {
         group: group.clone(),
         goal: r.text(v, "", "goal"),
@@ -227,10 +301,14 @@ pub fn decode_value(v: &Value) -> Res<Tasks> {
         }).collect(),
         head,
         open,
-        closed_title: r.text(v, "", "closed_title"),
+        closed_title: r.nullable_text(v, "", "closed_title"),
+        closed_key,
         closed_count: r.int(v, "", "closed_count").unwrap_or(0),
         closed,
         hints,
+        hint_closed,
+        filter,
+        no_match,
         missing: r.missing,
     })
 }
@@ -242,6 +320,16 @@ pub(crate) mod tests {
     pub(crate) const OPEN: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tasks-open.json"));
     pub(crate) const CLOSED: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tasks-closed.json"));
     pub(crate) const NULLS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tasks-nulls.json"));
+    pub(crate) const FILTER: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tasks-filter.json"));
+    pub(crate) const NOMATCH: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tasks-nomatch.json"));
+    /// The core's own answers (#2083, 0x1c0de's `polter-artifacts/2083/examples`,
+    /// made by TaskPage.zig on fbec483e3 + core-task-page-words.patch).
+    pub(crate) const CORE: [&str; 4] = [
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/core-tasks-filtered.json")),
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/core-tasks-no_match.json")),
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/core-tasks-expanded.json")),
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/core-tasks-closed_shown.json")),
+    ];
 
     /// The keys the host does not read, and why.
     const UNREAD: [(&str, &str); 2] = [
@@ -259,7 +347,7 @@ pub(crate) mod tests {
         let unread = |p: &str| p.split('.').any(|part| UNREAD.iter().any(|(k, _)| part.split('[').next() == Some(*k)));
         let measure = |s: &str, _: &crate::scene::Style| s.chars().count() as f64 * 7.0;
         let (mut checked, mut unsaid) = (0, Vec::<String>::new());
-        for fixture in [OPEN, CLOSED, NULLS] {
+        for fixture in [OPEN, CLOSED, NULLS, FILTER, NOMATCH].into_iter().chain(CORE) {
             let v = json::parse(fixture).unwrap();
             // Whole, nothing is missing: what is said below is the edit's.
             assert_eq!(decode_value(&v).unwrap().missing, Vec::<String>::new());
@@ -285,7 +373,7 @@ pub(crate) mod tests {
                         }
                     }
                     let at = crate::tasks_scene::layout(&t, 600.0, 700.0, 0.0, &crate::look::DARK, 1.0, &measure);
-                    let _ = crate::tasks_scene::build(&t, &at, &crate::look::DARK, 1.0, None, &measure);
+                    let _ = crate::tasks_scene::build(&t, &at, &crate::look::DARK, 1.0, None, true, None, &measure);
                     checked += 1;
                 }
             }
@@ -321,7 +409,8 @@ pub(crate) mod tests {
         assert_eq!(d.log.iter().filter(|l| matches!(l, LogLine::Gap { .. })).count(), 2);
         assert!(matches!(d.log.last(), Some(LogLine::Event { last: true, .. })));
         assert_eq!(d.said.len(), 4);
-        assert_eq!(t.hints.len(), 4);
+        // c is no longer among them: it is at the strip's right (#2083).
+        assert_eq!(t.hints.len(), 3);
         let c = decode(CLOSED).unwrap();
         assert_eq!(c.closed.len(), 8);
         assert!(c.closed.iter().all(|x| x.glyph == Some(Glyph::Closed) && !x.emph));
@@ -342,7 +431,68 @@ pub(crate) mod tests {
 
     #[test]
     fn the_request_says_the_open_task_only_when_there_is_one() {
-        assert_eq!(request("web-app", Some(215), false), r#"{"page":"tasks","group":"web-app","open_task":215,"closed":false}"#);
-        assert_eq!(request("a\"b", None, true), r#"{"page":"tasks","group":"a\"b","closed":true}"#);
+        assert_eq!(request("g", Some(215), false, None, Some(218)), r#"{"page":"tasks","group":"g","open_task":215,"selected":218,"closed":false}"#);
+        assert_eq!(request("web-app", Some(215), false, None, None), r#"{"page":"tasks","group":"web-app","open_task":215,"closed":false}"#);
+        assert_eq!(request("a\"b", None, true, None, None), r#"{"page":"tasks","group":"a\"b","closed":true}"#);
+        // #2083: the filter box's words, "" while it is empty.
+        assert_eq!(request("g", None, false, Some(""), None), r#"{"page":"tasks","group":"g","closed":false,"filter":""}"#);
+        assert_eq!(request("g", None, false, Some("批\"量"), None), r#"{"page":"tasks","group":"g","closed":false,"filter":"批\"量"}"#);
+    }
+
+    /// #2083: the closed tasks' line and its key, the strip's right-hand
+    /// key -- the core's words, read as they are.
+    #[test]
+    fn the_closed_line_and_its_keys_are_the_cores() {
+        let t = decode(OPEN).unwrap();
+        assert_eq!(t.closed_title.as_deref(), Some("已隐藏 8 条已关闭或已取消的任务"));
+        assert_eq!(t.closed_key, Some(("c".into(), "或点这一行显示".into())));
+        assert_eq!(t.hint_closed, Some(("c".into(), "显示已关闭的 8 条".into())));
+        assert!(t.filter.is_none() && t.no_match.is_none());
+        assert!(t.open.iter().all(|x| x.title_parts.is_none()));
+        let c = decode(CLOSED).unwrap();
+        assert_eq!(c.closed_title.as_deref(), Some("已关闭或已取消的 8 条"));
+        assert_eq!(c.hint_closed.map(|h| h.1).as_deref(), Some("隐藏已关闭的"));
+        // None closed: no line, and nothing said of it at the right.
+        let n = decode(NULLS).unwrap();
+        assert!(n.closed_title.is_none() && n.closed_key.is_none() && n.hint_closed.is_none());
+    }
+
+    /// #2083: the core's own answers read whole: nothing missing, and the
+    /// shape the fake ones have.
+    #[test]
+    fn the_cores_own_answers_are_read_whole() {
+        let [filtered, no_match, expanded, closed_shown] = CORE.map(|c| decode(c).unwrap());
+        for t in [&filtered, &no_match, &expanded, &closed_shown] {
+            assert!(t.missing.is_empty(), "{:?}", t.missing);
+            assert_eq!(t.hints.len(), 3);
+        }
+        let parts = filtered.open[0].title_parts.as_ref().unwrap();
+        assert_eq!(parts.iter().map(|p| p.0.as_str()).collect::<String>(), filtered.open[0].title);
+        assert!(parts.iter().any(|p| p.1));
+        assert!(filtered.filter.is_some() && no_match.no_match.is_some() && no_match.open.is_empty());
+        assert!(expanded.open.iter().any(|x| x.detail.is_some()) && expanded.filter.is_none());
+        assert!(!closed_shown.closed.is_empty() && closed_shown.closed_key.is_some());
+    }
+
+    /// #2083: **the core filters** and cuts each title where it found the
+    /// words; the page draws the pieces and says what the core says.
+    #[test]
+    fn a_filtered_answer_is_read_piece_by_piece() {
+        let t = decode(FILTER).unwrap();
+        let f = t.filter.as_ref().unwrap();
+        assert_eq!((f.prompt.as_str(), f.text.as_str(), f.count.as_deref()), ("按标题筛选", "批量", Some("2 / 6 条")));
+        assert_eq!(f.clear, ("Esc".into(), "清空".into()));
+        assert_eq!(t.open.iter().map(|x| x.id).collect::<Vec<_>>(), [216, 218]);
+        for task in &t.open {
+            let parts = task.title_parts.as_ref().unwrap();
+            assert_eq!(parts.iter().map(|p| p.0.as_str()).collect::<String>(), task.title);
+            assert_eq!(parts.iter().filter(|p| p.1).map(|p| p.0.as_str()).collect::<Vec<_>>(), ["批量"]);
+        }
+        assert!(t.closed_title.is_none());
+        assert!(t.missing.is_empty(), "{:?}", t.missing);
+        let m = decode(NOMATCH).unwrap();
+        assert!(m.open.is_empty());
+        assert_eq!(m.no_match, Some(NoMatch { title: "没有标题里含「弹窗」的任务".into(), detail: "已关闭的也找过了。按 Esc 清空筛选。".into() }));
+        assert!(m.missing.is_empty());
     }
 }

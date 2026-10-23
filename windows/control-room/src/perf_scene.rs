@@ -132,6 +132,10 @@ pub enum Draw {
     Stroke { points: Vec<(f64, f64)>, width: f64, color: Rgba, dash: Option<(f64, f64)> },
     /// The polygon `points` closes, filled.
     Area { points: Vec<(f64, f64)>, color: Rgba },
+    /// `color` over what is there, whole at one edge of `rect` and gone at
+    /// the other: the top one when `from_top`. What says a list goes on
+    /// past its edge (#2083).
+    Fade { rect: Rect, color: Rgba, from_top: bool },
 }
 
 /// Where the page's parts are.

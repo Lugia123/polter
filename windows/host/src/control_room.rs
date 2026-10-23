@@ -754,6 +754,19 @@ unsafe fn paint_draws(dc: HDC, at: Px, draws: &[Draw], fonts: &mut Fonts) {
                 SelectObject(dc, old);
                 let _ = DeleteObject(pen.into());
             },
+            // A row of device pixels at a time, each a little less of the
+            // colour than the one nearer the edge (#2083).
+            Draw::Fade { rect, color, from_top } => unsafe {
+                let r = at.rect(*rect);
+                let h = (r.bottom - r.top).max(0);
+                for i in 0..h {
+                    let amount = 1.0 - (i as f64 + 0.5) / h as f64;
+                    let y = if *from_top { r.top + i } else { r.bottom - 1 - i };
+                    blend(dc, r.left, y, r.right - r.left, 1, *color, amount, &|m| {
+                        let _ = PatBlt(m, 0, 0, (r.right - r.left) * SS, SS, WHITENESS);
+                    });
+                }
+            },
             Draw::Area { points, color } => unsafe {
                 let brush = CreateSolidBrush(rgb(*color));
                 let old_brush = SelectObject(dc, brush.into());
@@ -792,10 +805,256 @@ struct TaskPage {
     said: Option<String>,
     /// What the last answer lacked, as last said (`tasks_fetch`).
     said_missing: Vec<String>,
+    /// What is typed in the filter box: "" while it is open and empty,
+    /// none with no box (#2083). **The core filters**: it goes in the
+    /// request, asked again at every change.
+    filter: Option<String>,
+    /// What the pointer is on (#2083).
+    hover: Option<tasks_scene::Hover>,
+    /// The selected task to be brought back into sight at the next paint,
+    /// a line's room round it: the filter cleared, the list back whole
+    /// (round 6, F5: it was left wherever the shorter list had been).
+    reveal: bool,
+}
+
+/// The filter box's text control (#2083), as the name field's
+/// (`NameField`): kept apart from `TASKS`, which its procedure would
+/// otherwise borrow on every message while the page's code holds it.
+struct FilterField {
+    edit: isize,
+    font: isize,
+    brush: isize,
+    old_proc: isize,
 }
 
 thread_local! {
     static TASKS: RefCell<Option<TaskPage>> = const { RefCell::new(None) };
+    static FILTER_FIELD: RefCell<Option<FilterField>> = const { RefCell::new(None) };
+}
+
+/// The filter box said Escape (0), Return (1), ↑ (2) or ↓ (3). Posted, so
+/// that the field is not destroyed inside its own procedure.
+const WM_ROOM_FILTER: u32 = WM_APP + 73;
+/// The filter box's control id, for its `EN_CHANGE`.
+const ID_FILTER_FIELD: u16 = 0x7104;
+
+fn filter_edit() -> Option<isize> {
+    FILTER_FIELD.with(|f| f.borrow().as_ref().map(|x| x.edit))
+}
+
+/// The box's control goes; what it held is let go of.
+fn drop_filter_field() {
+    let Some(field) = FILTER_FIELD.with(|f| f.borrow_mut().take()) else { return };
+    unsafe {
+        let _ = DestroyWindow(HWND(field.edit as *mut c_void));
+        let _ = DeleteObject(HFONT(field.font as *mut c_void).into());
+        let _ = DeleteObject(HBRUSH(field.brush as *mut c_void).into());
+    }
+}
+
+/// f: the filter box opens, empty, with the keyboard; the page is asked
+/// with it. Its control is put where the layout says at the next paint.
+fn begin_filter(hwnd: HWND) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    TASKS.with(|t| {
+        if let Some(p) = t.borrow_mut().as_mut() {
+            if p.filter.is_none() {
+                p.filter = Some(String::new());
+            }
+        }
+    });
+    if filter_edit().is_none() {
+        let g = geometry(hwnd);
+        unsafe {
+            let hinst: HINSTANCE = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).map(Into::into).unwrap_or_default();
+            let made = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("EDIT"),
+                PCWSTR::null(),
+                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+                0,
+                0,
+                1,
+                1,
+                Some(hwnd),
+                Some(HMENU(ID_FILTER_FIELD as usize as *mut c_void)),
+                Some(hinst),
+                None,
+            );
+            let edit = match made {
+                Ok(h) => h,
+                Err(e) => {
+                    wlogf!(frame, "[control-room] task page: the filter box could not be made: {e:?}");
+                    return;
+                }
+            };
+            let dpi = (g.scale * 96.0).round() as i32;
+            let font = crate::uifont::make(dpi, look::font::BODY.round() as i32, look::font::WEIGHT_BODY.round() as i32, crate::uifont::ui_face());
+            SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+            let brush = CreateSolidBrush(rgb(look::theme(dark(hwnd)).terminal_background));
+            let old_proc = GetWindowLongPtrW(edit, GWLP_WNDPROC);
+            FILTER_FIELD.with(|f| *f.borrow_mut() = Some(FilterField { edit: edit.0 as isize, font: font.0 as isize, brush: brush.0 as isize, old_proc }));
+            let proc_: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT = filter_proc;
+            SetWindowLongPtrW(edit, GWLP_WNDPROC, proc_ as usize as isize);
+        }
+    }
+    if let Some(edit) = filter_edit() {
+        unsafe {
+            let _ = SetFocus(Some(HWND(edit as *mut c_void)));
+        }
+    }
+    wlogf!(frame, "[control-room] task page: filter box opened");
+    tasks_fetch(hwnd);
+}
+
+/// Esc, or the key beside the box: the box goes, and what it found with
+/// it; the keys come back to the page.
+fn end_filter(hwnd: HWND) {
+    let had = TASKS.with(|t| {
+        let mut t = t.borrow_mut();
+        let p = t.as_mut()?;
+        p.keys = true;
+        p.reveal = true;
+        p.filter.take()
+    });
+    drop_filter_field();
+    unsafe {
+        let _ = SetFocus(Some(hwnd));
+    }
+    if had.is_some() {
+        wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] task page: filter cleared");
+        tasks_fetch(hwnd);
+    }
+}
+
+/// What is typed changed: the page is asked again with it.
+fn filter_changed(hwnd: HWND) {
+    let Some(edit) = filter_edit() else { return };
+    let mut buf = [0u16; 256];
+    let n = unsafe { GetWindowTextW(HWND(edit as *mut c_void), &mut buf) }.max(0) as usize;
+    let text = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
+    let changed = TASKS.with(|t| {
+        let mut t = t.borrow_mut();
+        let p = t.as_mut()?;
+        (p.filter.as_deref() != Some(text.as_str())).then(|| {
+            p.filter = Some(text);
+            // The list the words leave is shorter: the selected one is
+            // brought back into sight with it (round 7b, b2').
+            p.reveal = true;
+        })
+    });
+    if changed.is_some() {
+        tasks_fetch(hwnd);
+    }
+}
+
+unsafe extern "system" fn filter_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let old = FILTER_FIELD.with(|f| f.borrow().as_ref().map(|x| x.old_proc));
+    let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+    unsafe {
+        if msg == WM_KEYDOWN {
+            let said = match wp.0 as u16 {
+                k if k == VK_ESCAPE.0 => Some(0),
+                k if k == VK_RETURN.0 => Some(1),
+                k if k == VK_UP.0 => Some(2),
+                k if k == VK_DOWN.0 => Some(3),
+                _ => None,
+            };
+            if let Some(said) = said {
+                let _ = PostMessageW(Some(parent), WM_ROOM_FILTER, WPARAM(said), LPARAM(0));
+                return LRESULT(0);
+            }
+        }
+        // Otherwise the edit control beeps on Return and Escape.
+        if msg == WM_CHAR && (wp.0 == 0x0D || wp.0 == 0x1B) {
+            return LRESULT(0);
+        }
+        let r = match old {
+            Some(old) => CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(old), hwnd, msg, wp, lp),
+            None => DefWindowProcW(hwnd, msg, wp, lp),
+        };
+        // The empty box says what goes in it -- the core's words -- painted
+        // as the name field's is (`paint_name_placeholder`).
+        if msg == WM_PAINT && GetWindowTextLengthW(hwnd) == 0 {
+            paint_filter_prompt(hwnd, parent);
+        }
+        if (msg == WM_CHAR || msg == WM_PASTE || msg == WM_KEYDOWN) && GetWindowTextLengthW(hwnd) <= 1 {
+            let _ = InvalidateRect(Some(hwnd), None, true);
+        }
+        r
+    }
+}
+
+/// The core's «按标题筛选», in the page's tertiary text, where typing begins.
+fn paint_filter_prompt(edit: HWND, panel: HWND) {
+    let font = FILTER_FIELD.with(|f| f.borrow().as_ref().map(|x| x.font));
+    let prompt = TASKS.with(|t| t.borrow().as_ref().and_then(|p| p.data.as_ref()).and_then(|d| d.filter.as_ref()).map(|f| f.prompt.clone()));
+    let (Some(font), Some(prompt)) = (font, prompt) else { return };
+    unsafe {
+        let mut rc = RECT::default();
+        SendMessageW(edit, windows::Win32::UI::Controls::EM_GETRECT, None, Some(LPARAM(&mut rc as *mut RECT as isize)));
+        let dc = GetDC(Some(edit));
+        if dc.is_invalid() {
+            return;
+        }
+        SetBkMode(dc, TRANSPARENT);
+        draw_text(dc, HFONT(font as *mut c_void), look::theme(dark(panel)).text_tertiary, &prompt, rc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        ReleaseDC(Some(edit), dc);
+    }
+}
+
+/// ↑ or ↓ on the page or in its filter box: the selection moves, and the
+/// list scrolls to keep a line's room past it (#2083).
+fn tasks_step(hwnd: HWND, down: bool) {
+    let moved = TASKS.with(|t| {
+        let mut t = t.borrow_mut();
+        let p = t.as_mut()?;
+        let data = p.data.as_ref()?;
+        p.selected = tasks_scene::step(data, p.selected, down);
+        if let (Some(id), Some((_, lay))) = (p.selected, p.drawn.as_ref()) {
+            p.scroll = lay.follow(id, p.scroll);
+        }
+        Some(())
+    });
+    if moved.is_some() {
+        tasks_fetch(hwnd);
+    }
+}
+
+/// Return on the page or in its filter box: the selected task opened or
+/// shut (`tasks_scene::after_return`).
+fn tasks_return(hwnd: HWND) {
+    let said = TASKS.with(|t| {
+        let mut t = t.borrow_mut();
+        let p = t.as_mut()?;
+        let data = p.data.as_ref()?;
+        (p.selected, p.open_task) = tasks_scene::after_return(p.selected, p.open_task, tasks_scene::step(data, None, true));
+        p.selected.map(|s| format!("Return: task #{s} {}", if p.open_task == Some(s) { "opened" } else { "shut" }))
+    });
+    if let Some(said) = said {
+        wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] task page: {}", said);
+        tasks_fetch(hwnd);
+    }
+}
+
+/// The pointer, at (x, y) in the panel's pixels or gone: what of the task
+/// page it is on (#2083), drawn again when that changed.
+fn tasks_hover(hwnd: HWND, at: Option<(i32, i32)>) {
+    let scale = geometry(hwnd).scale;
+    let changed = TASKS.with(|t| {
+        let mut t = t.borrow_mut();
+        let Some(p) = t.as_mut() else { return false };
+        let now = match (at, p.drawn.as_ref()) {
+            (Some((x, y)), Some((page, lay))) => lay.hover_at(x as f64 / scale - page.x, y as f64 / scale - page.y),
+            _ => None,
+        };
+        let changed = now != p.hover;
+        p.hover = now;
+        changed
+    });
+    if changed {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
 }
 
 /// The group whose task page is in front, when one is.
@@ -822,20 +1081,28 @@ fn tasks_sync(hwnd: HWND) {
             if let Some(t) = t.borrow_mut().as_mut() {
                 t.asked = false;
                 t.keys = false;
+                t.filter = None;
             }
         });
+        // Out of sight, the filter box goes, and the filter with it.
+        drop_filter_field();
         return;
     };
-    let ask = TASKS.with(|t| {
+    let (ask, another) = TASKS.with(|t| {
         let mut t = t.borrow_mut();
         match t.as_mut() {
-            Some(x) if x.group == group => !x.asked,
+            Some(x) if x.group == group => (!x.asked, false),
             _ => {
-                *t = Some(TaskPage { group, selected: None, open_task: None, closed: false, data: None, scroll: 0.0, drawn: None, keys: false, asked: false, said: None, said_missing: Vec::new() });
-                true
+                *t = Some(TaskPage { group, selected: None, open_task: None, closed: false, data: None, scroll: 0.0, drawn: None, keys: false, asked: false, said: None, said_missing: Vec::new(), filter: None, hover: None, reveal: false });
+                (true, true)
             }
         }
     });
+    // Another group's page: its filter box goes with the old one -- with
+    // `TASKS` let go, since destroying the box sends messages back here.
+    if another {
+        drop_filter_field();
+    }
     if ask {
         tasks_fetch(hwnd);
     }
@@ -847,7 +1114,7 @@ fn tasks_fetch(hwnd: HWND) {
     if tasks_group(hwnd).is_none() {
         return;
     }
-    let Some(ask) = TASKS.with(|t| t.borrow().as_ref().map(|x| tasks::request(&x.group, x.open_task, x.closed))) else { return };
+    let Some(ask) = TASKS.with(|t| t.borrow().as_ref().map(|x| tasks::request(&x.group, x.open_task, x.closed, x.filter.as_deref(), x.selected))) else { return };
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
     let answer = source::page(&ask).and_then(|text| tasks::decode(&text).map_err(|e| format!("{e:?}")));
     TASKS.with(|t| {
@@ -856,12 +1123,27 @@ fn tasks_fetch(hwnd: HWND) {
         x.asked = true;
         match answer {
             Ok(r) if r.group == x.group => {
-                // A task the core no longer has is neither selected nor open.
-                if x.selected.is_some_and(|s| !r.in_order().any(|task| task.id == s)) {
-                    x.selected = None;
-                }
+                let was = x.selected;
+                // A task the core no longer has is neither selected nor open;
+                // while filtering, the first it found is selected (#2083) --
+                // **only when the selected one is not found** (group seq 35).
+                x.selected = tasks_scene::reselect(&r, x.selected, x.filter.is_some());
                 if x.open_task.is_some_and(|s| !r.in_order().any(|task| task.id == s)) {
                     x.open_task = None;
+                }
+                // **And the list goes to it** (round 7b, b2': the selection
+                // moved to the first result and the list stayed where it
+                // was) -- the list follows the selected one, always.
+                if x.filter.is_some() && x.selected != was {
+                    x.reveal = true;
+                }
+                // Which answer moved the selection, said when one does
+                // (round 7d, 4: it went off #104 to the first found while
+                // #104 was still on the list).
+                // absence: means no answer moved it; the arrow keys, a
+                // press and Return move it without an answer's say.
+                if x.selected != was {
+                    wlogf!(frame, "[control-room] task page: the answer to {:?} moved the selection {:?} -> {:?} ({} found)", x.filter, was, x.selected, r.in_order().count());
                 }
                 // What the core left out, said when it changes (group seq 309).
                 // absence: means the last answer lacked nothing, or what the
@@ -893,6 +1175,7 @@ fn tasks_fetch(hwnd: HWND) {
 /// them back. Whether it was on the page.
 fn tasks_press(hwnd: HWND, x: i32, y: i32) -> bool {
     let scale = geometry(hwnd).scale;
+    let had_keys = TASKS.with(|t| t.borrow().as_ref().is_some_and(|p| p.keys));
     let what = TASKS.with(|t| {
         let mut t = t.borrow_mut();
         let p = t.as_mut()?;
@@ -906,7 +1189,10 @@ fn tasks_press(hwnd: HWND, x: i32, y: i32) -> bool {
             return None;
         }
         p.keys = true;
-        if lay.on_section(px, py) {
+        if lay.on_clear(px, py) {
+            return Some("clear".to_string());
+        }
+        if lay.on_section(px, py) || lay.on_hint_closed(px, py) {
             p.closed = !p.closed;
             return Some(format!("closed tasks {}", if p.closed { "listed" } else { "folded" }));
         }
@@ -916,7 +1202,17 @@ fn tasks_press(hwnd: HWND, x: i32, y: i32) -> bool {
         }
         Some(String::new())
     });
+    // **The keys coming or going is drawn at once** (round 7, C2: a press
+    // off the page left the chip lit until something else drew the page
+    // again): the chip and its outline are what says where the keys are.
+    if TASKS.with(|t| t.borrow().as_ref().is_some_and(|p| p.keys)) != had_keys {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
     let Some(what) = what else { return false };
+    if what == "clear" {
+        end_filter(hwnd);
+        return true;
+    }
     if !what.is_empty() {
         wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] task page: {}", what);
         tasks_fetch(hwnd);
@@ -924,42 +1220,37 @@ fn tasks_press(hwnd: HWND, x: i32, y: i32) -> bool {
     true
 }
 
-/// ↑↓ move among the tasks (the open one's detail follows the selection
-/// when it is open), Enter opens or shuts the selected one's detail, c lists
-/// or folds the closed ones; f is shown and not done yet (API.md §2.2).
-/// Only once the page has the keys. Whether it took the key.
+/// ↑↓ move among the tasks, keeping a line's room past the selected one
+/// in sight; Enter opens or shuts the selected one's detail; c lists or
+/// folds the closed ones; f opens the filter box and Esc clears it
+/// (API.md §2.2, #2083). Only once the page has the keys. Whether it took
+/// the key.
 fn tasks_key(hwnd: HWND, key: u16) -> bool {
     const KEY_C: u16 = b'C' as u16;
-    let took = TASKS.with(|t| {
-        let mut t = t.borrow_mut();
-        let p = t.as_mut()?;
-        if !p.keys {
-            return None;
-        }
-        let data = p.data.as_ref()?;
-        if key == VK_UP.0 || key == VK_DOWN.0 {
-            p.selected = tasks_scene::step(data, p.selected, key == VK_DOWN.0);
-        } else if key == VK_RETURN.0 {
-            (p.selected, p.open_task) = tasks_scene::after_return(p.selected, p.open_task, tasks_scene::step(data, None, true));
-            // What was done to which, as the mac host says it.
-            if let Some(s) = p.selected {
-                let done = if p.open_task == Some(s) { "opened" } else { "shut" };
-                return Some(Some(format!("Return: task #{s} {done}")));
+    const KEY_F: u16 = b'F' as u16;
+    let (keys, filtering) = TASKS.with(|t| t.borrow().as_ref().map_or((false, false), |p| (p.keys && p.data.is_some(), p.filter.is_some())));
+    if !keys {
+        return false;
+    }
+    if key == VK_UP.0 || key == VK_DOWN.0 {
+        tasks_step(hwnd, key == VK_DOWN.0);
+    } else if key == VK_RETURN.0 {
+        tasks_return(hwnd);
+    } else if key == KEY_C {
+        TASKS.with(|t| {
+            if let Some(p) = t.borrow_mut().as_mut() {
+                p.closed = !p.closed;
             }
-        } else if key == KEY_C {
-            p.closed = !p.closed;
-        } else {
-            return None;
-        }
-        Some(None)
-    });
-    if let Some(Some(said)) = &took {
-        wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] task page: {}", said);
-    }
-    if took.is_some() {
+        });
         tasks_fetch(hwnd);
+    } else if key == KEY_F {
+        begin_filter(hwnd);
+    } else if key == VK_ESCAPE.0 && filtering {
+        end_filter(hwnd);
+    } else {
+        return false;
     }
-    took.is_some()
+    true
 }
 
 fn tasks_wheel(hwnd: HWND, x: i32, y: i32, delta: i32) -> bool {
@@ -973,7 +1264,7 @@ fn tasks_wheel(hwnd: HWND, x: i32, y: i32, delta: i32) -> bool {
             return None;
         }
         let by = polter_control_room::panestack::scroll(0, delta, WHEEL_ROWS * polter_control_room::look::task_page::ROW_HEIGHT);
-        p.scroll = (p.scroll + by).clamp(0.0, lay.max_scroll(page.h));
+        p.scroll = (p.scroll + by).clamp(0.0, lay.max_scroll());
         Some(())
     });
     if moved.is_some() {
@@ -1005,6 +1296,7 @@ unsafe fn paint_tasks(dc: HDC, at: Px, page: Rect, theme: &Theme) {
     };
     let origin = Px { scale, ox: at.ox + at.len(page.x), oy: at.oy + at.len(page.y) };
     let mut fonts = Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() };
+    let mut typed_at: Option<RECT> = None;
     TASKS.with(|t| {
         let mut t = t.borrow_mut();
         let Some(p) = t.as_mut() else { return };
@@ -1013,12 +1305,27 @@ unsafe fn paint_tasks(dc: HDC, at: Px, page: Rect, theme: &Theme) {
             return;
         };
         let mut lay = tasks_scene::layout(data, page.w, page.h, p.scroll, theme, scale, &measure);
-        let max = lay.max_scroll(page.h);
+        let max = lay.max_scroll();
         if p.scroll > max {
             p.scroll = max;
             lay = tasks_scene::layout(data, page.w, page.h, p.scroll, theme, scale, &measure);
         }
-        let draws = tasks_scene::build(data, &lay, theme, scale, p.selected, &measure);
+        if std::mem::take(&mut p.reveal) {
+            if let Some(id) = p.selected {
+                let to = lay.reveal(id, p.scroll);
+                if to != p.scroll {
+                    p.scroll = to;
+                    lay = tasks_scene::layout(data, page.w, page.h, p.scroll, theme, scale, &measure);
+                }
+            }
+        }
+        // Where the filter box's control goes: moved once `TASKS` is let
+        // go, since moving it sends messages back here (`filter_proc`
+        // reads the page for its prompt).
+        let edit = filter_edit().map(|e| HWND(e as *mut c_void));
+        typed_at = lay.filter.as_ref().map(|f| origin.rect(f.typed));
+        let keys = p.keys || edit.is_some_and(|e| unsafe { GetFocus() } == e);
+        let draws = tasks_scene::build(data, &lay, theme, scale, p.selected, keys, p.hover, &measure);
         let clip = origin.rect(Rect { x: 0.0, y: 0.0, w: page.w, h: page.h });
         unsafe {
             let saved = SaveDC(dc);
@@ -1029,6 +1336,11 @@ unsafe fn paint_tasks(dc: HDC, at: Px, page: Rect, theme: &Theme) {
         let right = (at.ox as f64 / scale, at.oy as f64 / scale);
         p.drawn = Some((Rect { x: right.0 + page.x, y: right.1 + page.y, ..page }, lay));
     });
+    if let (Some(edit), Some(r)) = (filter_edit(), typed_at) {
+        unsafe {
+            let _ = MoveWindow(HWND(edit as *mut c_void), r.left, r.top, (r.right - r.left).max(1), (r.bottom - r.top).max(1), true);
+        }
+    }
 }
 
 // ------------------------------------------------------- the chat page
@@ -3046,6 +3358,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             report_presence(hwnd);
             LRESULT(0)
         }
+        // The task page's filter box said Escape, Return, ↑ or ↓ (#2083).
+        WM_ROOM_FILTER => {
+            match wp.0 {
+                0 => end_filter(hwnd),
+                1 => tasks_return(hwnd),
+                n => tasks_step(hwnd, n == 3),
+            }
+            LRESULT(0)
+        }
         // The name field said Return (1), or Escape / lost the keyboard (0).
         WM_ROOM_NAME => {
             if wp.0 == 1 {
@@ -3062,6 +3383,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             match (id, code) {
                 (ID_NOTE_SAVE, BN_CLICKED) => save_note(hwnd),
                 (ID_NOTE_DISCARD, BN_CLICKED) => close_note(hwnd),
+                (ID_FILTER_FIELD, EN_CHANGE) => filter_changed(hwnd),
                 (ID_NOTE_FIELD, EN_CHANGE) => {
                     // The count and whether it is saved, and the left
                     // button's words.
@@ -3111,6 +3433,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             unsafe {
                 SetTextColor(dc, rgb(theme.text));
                 SetBkColor(dc, rgb(theme.window_base));
+            }
+            LRESULT(brush)
+        }
+        // The filter box on the page's own ground, in its ink.
+        WM_CTLCOLOREDIT if filter_edit() == Some(lp.0) => {
+            let theme = look::theme(dark(hwnd));
+            let brush = FILTER_FIELD.with(|f| f.borrow().as_ref().map(|x| x.brush)).unwrap_or(0);
+            let dc = HDC(wp.0 as *mut c_void);
+            unsafe {
+                SetTextColor(dc, rgb(theme.text));
+                SetBkColor(dc, rgb(theme.terminal_background));
             }
             LRESULT(brush)
         }
@@ -3233,10 +3566,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_MOUSEMOVE => {
             let (x, y) = point(lp);
             perf_hover(hwnd, Some((x, y)));
+            tasks_hover(hwnd, Some((x, y)));
             LRESULT(0)
         }
         windows::Win32::UI::Controls::WM_MOUSELEAVE => {
             perf_hover(hwnd, None);
+            tasks_hover(hwnd, None);
             LRESULT(0)
         }
         WM_KEYDOWN => {

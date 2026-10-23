@@ -1,0 +1,51 @@
+{
+ "page": "tasks",
+ "group": "web-app",
+ "goal": "给任务列表加批量编辑：frontend 做多选和工具条，api 做 PATCH /api/tasks，tests 补用例。",
+ "goal_lines": [
+  "给任务列表加批量编辑：frontend 做多选和工具条，api 做 PATCH /api/tasks，tests 补用例。"
+ ],
+ "head": {
+  "id": "号",
+  "state": "状态",
+  "title": "标题",
+  "owner": "负责人",
+  "idle": "多久没动"
+ },
+ "open": [],
+ "closed_title": null,
+ "closed_key": null,
+ "closed_count": 0,
+ "closed": [],
+ "hints": [
+  {
+   "key": "↑↓",
+   "text": "在结果里选"
+  },
+  {
+   "key": "Enter",
+   "text": "展开这条的经过"
+  },
+  {
+   "key": "Esc",
+   "text": "清空筛选"
+  }
+ ],
+ "hint_closed": {
+  "key": "c",
+  "text": "显示已关闭的 8 条"
+ },
+ "filter": {
+  "prompt": "按标题筛选",
+  "text": "弹窗",
+  "count": "0 / 6 条",
+  "clear": {
+   "key": "Esc",
+   "text": "清空"
+  }
+ },
+ "no_match": {
+  "title": "没有标题里含「弹窗」的任务",
+  "detail": "已关闭的也找过了。按 Esc 清空筛选。"
+ }
+}

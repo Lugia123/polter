@@ -1,0 +1,111 @@
+{
+  "page": "tasks",
+  "group": "web-app",
+  "goal": "Bulk editing for the task list.",
+  "goal_lines": [
+    "Bulk editing for the task list."
+  ],
+  "head": {
+    "id": "号",
+    "state": "状态",
+    "title": "标题",
+    "owner": "负责人",
+    "idle": "多久没动"
+  },
+  "open": [
+    {
+      "id": 214,
+      "glyph": "done",
+      "state": "做完待关",
+      "title": "Multi-select",
+      "title_parts": null,
+      "owner": "frontend",
+      "idle": "17 分钟",
+      "emph": false,
+      "detail": null
+    },
+    {
+      "id": 215,
+      "glyph": "working",
+      "state": "在做",
+      "title": "PATCH /api/tasks takes a list of ids",
+      "title_parts": null,
+      "owner": "api",
+      "idle": "2 分钟",
+      "emph": false,
+      "detail": null
+    },
+    {
+      "id": 218,
+      "glyph": "queued",
+      "state": "排着",
+      "title": "Optimistic or refetch?",
+      "title_parts": null,
+      "owner": "未指派",
+      "idle": "—",
+      "emph": false,
+      "detail": null
+    }
+  ],
+  "closed_title": "已关闭或已取消的 3 条",
+  "closed_key": {
+    "key": "c",
+    "text": "隐藏"
+  },
+  "closed_count": 3,
+  "closed": [
+    {
+      "id": 213,
+      "glyph": "closed",
+      "state": "关了",
+      "title": "List and filter",
+      "title_parts": null,
+      "owner": "api",
+      "idle": "—",
+      "emph": false,
+      "detail": null
+    },
+    {
+      "id": 212,
+      "glyph": "closed",
+      "state": "关了",
+      "title": "Shell and routes",
+      "title_parts": null,
+      "owner": "frontend",
+      "idle": "—",
+      "emph": false,
+      "detail": null
+    },
+    {
+      "id": 211,
+      "glyph": "cancelled",
+      "state": "取消了",
+      "title": "Dropped",
+      "title_parts": null,
+      "owner": "未指派",
+      "idle": "—",
+      "emph": false,
+      "detail": null
+    }
+  ],
+  "hints": [
+    {
+      "key": "↑↓",
+      "text": "选任务"
+    },
+    {
+      "key": "Enter",
+      "text": "展开这条的经过"
+    },
+    {
+      "key": "f",
+      "text": "按标题筛选"
+    }
+  ],
+  "hint_closed": {
+    "key": "c",
+    "text": "隐藏已关闭的"
+  },
+  "filter": null,
+  "no_match": null
+}

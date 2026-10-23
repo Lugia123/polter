@@ -1,0 +1,76 @@
+{
+  "page": "tasks",
+  "group": "web-app",
+  "goal": "Bulk editing for the task list.",
+  "goal_lines": [
+    "Bulk editing for the task list."
+  ],
+  "head": {
+    "id": "号",
+    "state": "状态",
+    "title": "标题",
+    "owner": "负责人",
+    "idle": "多久没动"
+  },
+  "open": [
+    {
+      "id": 215,
+      "glyph": "working",
+      "state": "在做",
+      "title": "PATCH /api/tasks takes a list of ids",
+      "title_parts": [
+        {
+          "text": "PATCH /api/tasks takes a ",
+          "hit": false
+        },
+        {
+          "text": "list",
+          "hit": true
+        },
+        {
+          "text": " of ids",
+          "hit": false
+        }
+      ],
+      "owner": "api",
+      "idle": "2 分钟",
+      "emph": false,
+      "detail": null
+    }
+  ],
+  "closed_title": "已关闭的里还有 1 条标题含「list」",
+  "closed_key": {
+    "key": "c",
+    "text": "或点这一行显示"
+  },
+  "closed_count": 1,
+  "closed": [],
+  "hints": [
+    {
+      "key": "↑↓",
+      "text": "在结果里选"
+    },
+    {
+      "key": "Enter",
+      "text": "展开这条的经过"
+    },
+    {
+      "key": "Esc",
+      "text": "清空筛选"
+    }
+  ],
+  "hint_closed": {
+    "key": "c",
+    "text": "显示已关闭的 3 条"
+  },
+  "filter": {
+    "prompt": "按标题筛选",
+    "text": "list",
+    "count": "1 / 3 条",
+    "clear": {
+      "key": "Esc",
+      "text": "清空"
+    }
+  },
+  "no_match": null
+}

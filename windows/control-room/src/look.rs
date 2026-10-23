@@ -941,24 +941,15 @@ pub mod task_page {
     pub const SAID_HEAD_GAP: f64 = 12.0;
     /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
     pub const SAID_BOTTOM: f64 = 12.0;
-    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
-    pub const HINTS_BOTTOM: f64 = 12.0;
-    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
-    pub const HINTS_LEFT: f64 = 12.0;
-    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
-    pub const HINTS_HEIGHT: f64 = 32.0;
-    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
-    pub const HINTS_RADIUS: f64 = 16.0;
-    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
-    pub const HINTS_PAD_LEFT: f64 = 6.0;
-    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
-    pub const HINTS_PAD_RIGHT: f64 = 16.0;
     /// Between one key and its words and the next.
     /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
     pub const HINTS_GAP: f64 = 16.0;
     /// The key, in the terminal's face.
     /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
     pub const KEY_FONT: f64 = 13.0;
+    /// The same on Windows, where no word may be smaller than the menu's (14; the user's rule, seq 88 of #2083). The key's box keeps `key_height` and grows as wide as its words.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const KEY_FONT_WINDOWS: f64 = 14.0;
     /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
     pub const KEY_RADIUS: f64 = 10.0;
     /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
@@ -980,6 +971,53 @@ pub mod task_page {
     pub const GAP_DASH: f64 = 2.0;
     /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
     pub const GAP_DASH_GAP: f64 = 2.0;
+    /// #2083 (design 2083/v1, plan A): the keys' strip of its own under the list, a hairline along its top; the list ends where it begins.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const BAR_HEIGHT: f64 = 40.0;
+    /// The strip's keys from the page's sides.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const BAR_PAD_X: f64 = 24.0;
+    /// #2083 (plan S2): the upright bar at the selected task's left, in the main text colour, so that the selection is seen on any ground.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const MARK_WIDTH: f64 = 3.0;
+    /// From the line's left to the bar.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const MARK_X: f64 = 3.0;
+    /// The bar short of the line's top and bottom by this.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const MARK_INSET_Y: f64 = 6.0;
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const MARK_RADIUS: f64 = 1.5;
+    /// #2083: over the filter box, under the goal. The box is `row_height` tall.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const FILTER_TOP: f64 = 4.0;
+    /// Under the filter box.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const FILTER_BOTTOM: f64 = 8.0;
+    /// From the filter box to the key that clears it.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const FILTER_GAP: f64 = 12.0;
+    /// Inside the filter box, left and right.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const FILTER_PAD_X: f64 = 10.0;
+    /// #2083: narrower than this, the title takes the "idle" column's room too, and that column is not drawn.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const TITLE_MIN: f64 = 200.0;
+    /// The owner's column when the idle one is not drawn.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const COL_OWNER_NARROW: f64 = 96.0;
+    /// #2083: a fade at the list's top or bottom edge while there is more of it that way.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const EDGE_FADE: f64 = 16.0;
+    /// Under the words of a title the filter found.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const HIT_RADIUS: f64 = 3.0;
+    /// #2083: over the words that say nothing matched.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const NO_MATCH_TOP: f64 = 24.0;
+    /// Between their two lines.
+    /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
+    pub const NO_MATCH_GAP: f64 = 4.0;
 }
 
 /// The six task glyphs, by the system symbol macOS draws; Windows draws the same shape by name (`glyph.rs`), at `side.glyph`.
@@ -1192,6 +1230,9 @@ pub struct Theme {
     pub worker_edge_inner: Rgba,
     /// Source: design v17, src/tokens-l.css and src/tokens-d.css.
     pub stack_tab_separator: Rgba,
+    /// #2083: under the words of a task's title the filter found (`title_parts[].hit`).
+    /// Source: design 2083 v1 (task 2083), CHANGES.md and src/task.css, as the user ruled it on 2026-10-23: plan A (the keys' strip under the list) and S2 (the chip with a bar at its left); its hit ground is design 2081 v1's neutral n2.
+    pub task_hit: Rgba,
     /// Measured: an unselected row as it comes out over the panel. For contrast, not for painting.
     /// Source: design v17, src/contrast.md (measured off the rendered pictures).
     pub surface_row: Rgba,
@@ -1417,6 +1458,7 @@ pub const LIGHT: Theme = Theme {
     worker_edge: Rgba { r: 0, g: 0, b: 0, a: 0.22 },
     worker_edge_inner: Rgba { r: 0, g: 0, b: 0, a: 0.0 },
     stack_tab_separator: Rgba { r: 0, g: 0, b: 0, a: 0.16 },
+    task_hit: Rgba { r: 230, g: 232, b: 236, a: 1.0 },
     surface_row: Rgba { r: 244, g: 246, b: 248, a: 1.0 },
     surface_row_selected: Rgba { r: 253, g: 253, b: 253, a: 1.0 },
     surface_window_tab: Rgba { r: 217, g: 219, b: 222, a: 1.0 },
@@ -1548,6 +1590,7 @@ pub const DARK: Theme = Theme {
     worker_edge: Rgba { r: 0, g: 0, b: 0, a: 0.6 },
     worker_edge_inner: Rgba { r: 255, g: 255, b: 255, a: 0.1 },
     stack_tab_separator: Rgba { r: 255, g: 255, b: 255, a: 0.15 },
+    task_hit: Rgba { r: 57, g: 62, b: 69, a: 1.0 },
     surface_row: Rgba { r: 31, g: 34, b: 37, a: 1.0 },
     surface_row_selected: Rgba { r: 60, g: 64, b: 67, a: 1.0 },
     surface_window_tab: Rgba { r: 15, g: 17, b: 18, a: 1.0 },
