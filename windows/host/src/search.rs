@@ -847,17 +847,16 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     escape();
                     return LRESULT(0);
                 }
-                VK_RETURN => {
-                    // Shift+Enter walks backwards, the convention every find
-                    // bar uses.
-                    navigate(!(GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000 != 0));
-                    return LRESULT(0);
+                // Enter and F3 walk the matches, Shift backwards -- the same
+                // way for both (task 2120: Shift+F3 walked forwards), and
+                // the way the previous button goes (`navigate(false)`).
+                key => {
+                    let shift = GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000 != 0;
+                    if let Some(next) = polter_control_room::findbar::walks(key.0, shift) {
+                        navigate(next);
+                        return LRESULT(0);
+                    }
                 }
-                VK_F3 => {
-                    navigate(true);
-                    return LRESULT(0);
-                }
-                _ => {}
             },
 
             // Otherwise the edit control beeps on Enter and Escape.

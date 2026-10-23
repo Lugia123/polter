@@ -53,6 +53,7 @@ pub mod alert;
 pub mod chrome;
 pub mod confirm;
 pub mod elsewhere;
+pub mod findbar;
 pub mod glyph;
 pub mod highlight;
 pub mod hint_bar;
