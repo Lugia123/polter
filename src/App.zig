@@ -3682,6 +3682,8 @@ const PageRequest = struct {
     span: []const u8 = "day",
     since: u64 = 0,
     open_task: ?u64 = null,
+    /// The task page's selected one (task 2083): what Enter's hint speaks of.
+    selected: ?u64 = null,
     closed: bool = false,
     /// The task page's filter box (task 2083): absent with none.
     filter: ?[]const u8 = null,
@@ -3777,6 +3779,7 @@ fn renderTasks(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]c
         .tasks = tasks,
         .events = events.items,
         .open_task = r.open_task,
+        .selected = r.selected,
         .said = said.items,
         .closed = r.closed,
         .filter = r.filter,

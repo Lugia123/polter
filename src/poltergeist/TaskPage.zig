@@ -72,6 +72,11 @@ pub const In = struct {
     /// The one shown open, if any, and what the group said of it -- already
     /// only the messages that name it (`mentions`), oldest first.
     open_task: ?u64,
+    /// The one the arrow keys are on (task 2083), for what Enter says it
+    /// will do to it: fold when it is the open one, open it when not. Null
+    /// from a host that does not say: Enter then says fold while any is
+    /// open, as before.
+    selected: ?u64 = null,
     said: []const Said,
     closed: bool,
     /// What the filter box holds (task 2083): null with no box, "" with
@@ -301,7 +306,10 @@ pub fn render(arena: Allocator, in: In) Allocator.Error![]u8 {
         .key = "c",
         .text = if (in.closed) tr(words.hint_hide_closed) else try fill(arena, tr(words.hint_show_closed), &.{try num(arena, all_closed)}),
     };
-    const enter: Hint = .{ .key = "Enter", .text = tr(if (in.open_task != null) words.hint_fold else words.hint_open) };
+    // What Enter does to the selected one (round 6, F5: with #308 selected
+    // and #306 open, it said "fold this one").
+    const folds = if (in.open_task) |id| (in.selected orelse id) == id else false;
+    const enter: Hint = .{ .key = "Enter", .text = tr(if (folds) words.hint_fold else words.hint_open) };
     const hints: []const Hint = if (in.filter != null)
         try arena.dupe(Hint, &.{ .{ .key = "↑↓", .text = tr(words.hint_pick_match) }, enter, .{ .key = "Esc", .text = tr(words.hint_clear) } })
     else
@@ -589,6 +597,40 @@ test "1978: a task taken up after a restart says so, by the one that has it, and
     const back = log[log.len - 1];
     try testing.expectEqualStrings("api-2", str(back, "who"));
     try testing.expectEqualStrings("Back after a restart, the same session (claude-code 55a835df)", str(back, "text"));
+}
+
+test "2083: Enter says it folds only the selected one when that one is open" {
+    const enter = struct {
+        fn said(in: In) ![]const u8 {
+            var got = try rendered(in);
+            defer got.deinit();
+            const hint = got.root.object.get("hints").?.array.items[1];
+            return testing.allocator.dupe(u8, str(hint, "text"));
+        }
+    };
+    var in = baseIn();
+    in.open_task = 215;
+    // The open one selected: fold.
+    in.selected = 215;
+    const fold = try enter.said(in);
+    defer testing.allocator.free(fold);
+    try testing.expectEqualStrings(words.hint_fold, fold);
+    // Another selected: open it.
+    in.selected = 218;
+    const other = try enter.said(in);
+    defer testing.allocator.free(other);
+    try testing.expectEqualStrings(words.hint_open, other);
+    // Not said: as before, fold while one is open.
+    in.selected = null;
+    const unsaid = try enter.said(in);
+    defer testing.allocator.free(unsaid);
+    try testing.expectEqualStrings(words.hint_fold, unsaid);
+    // None open: open.
+    in.open_task = null;
+    in.selected = 215;
+    const none = try enter.said(in);
+    defer testing.allocator.free(none);
+    try testing.expectEqualStrings(words.hint_open, none);
 }
 
 test "2060: a goal of several lines is handed over a line to an item, none of them joined, none empty" {
