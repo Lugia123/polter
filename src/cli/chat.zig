@@ -32,6 +32,7 @@ const Allocator = std.mem.Allocator;
 const transport = @import("../poltergeist/transport.zig");
 const hook = @import("hook.zig");
 const vaxis = @import("vaxis");
+const console_wake = @import("console_wake.zig");
 const layout = @import("chat_layout.zig");
 const chat_stats = @import("chat_stats.zig");
 const args = @import("args.zig");
@@ -836,7 +837,7 @@ const Chat = struct {
     fn run(self: *Chat) !void {
         var loop: vaxis.Loop(Event) = .init(self.io, &self.tty, &self.vx);
         try loop.start();
-        defer loop.stop();
+        defer stopReading(&loop, Waker{ .tty = &self.tty });
 
         const writer = self.tty.writer();
         try self.vx.enterAltScreen(writer);
@@ -3386,6 +3387,36 @@ fn groupMove(key: vaxis.Key, pinned: bool) ?GroupMove {
     return if (pinned) .stay else move;
 }
 
+/// Stop the loop that reads the keys, and have its thread actually stop
+/// (task 2059): the flag first, then the thread woken, then the wait.
+///
+/// **In that order, and the order is the fix.** `loop.stop()` raises the
+/// flag and waits for the thread, which leaves its read only when input
+/// arrives. On Windows nothing it sends brings any (`console_wake`), so `q`
+/// left the view waiting -- not drawing, not gone -- until the next key.
+/// The thread is woken here with input of our own, and only after the flag
+/// is up: woken before it, the thread would read that input, find the flag
+/// still down and go back to waiting.
+fn stopReading(loop: anytype, waker: anytype) void {
+    loop.should_quit = true;
+    waker.wake();
+    loop.stop();
+}
+
+/// Wakes the key-reading thread out of its read: on Windows by putting a
+/// key into the console's input; elsewhere there is nothing to do, the
+/// terminal answers vaxis' own request.
+const Waker = struct {
+    tty: *vaxis.Tty,
+
+    fn wake(self: Waker) void {
+        // vaxis' Windows tty only exists outside its tests.
+        if (comptime builtin.os.tag == .windows and !builtin.is_test) {
+            if (!console_wake.wake(self.tty.stdin)) log.warn("could not wake the key reader; leaving waits for the next key", .{});
+        }
+    }
+};
+
 /// Whether a window may show `view`: any of the three, or, in one group's
 /// window, its conversation alone (task 2081).
 fn mayShow(view: Chat.View, pinned: bool) bool {
@@ -3918,6 +3949,30 @@ test "2043: a brief of several lines keeps to its two rows, and no row holds a n
     const crlf = try briefRows(a, "one\r\n\r\ntwo", 80, 2);
     try testing.expectEqual(@as(usize, 2), crlf.len);
     try testing.expectEqualStrings("two", crlf[1]);
+}
+
+test "2059: the key reader is woken with the flag already up, and only then waited for" {
+    const Fake = struct {
+        should_quit: bool = false,
+        // What the reader thread would see when the wake arrives.
+        quit_when_woken: ?bool = null,
+        stopped_after_wake: bool = false,
+
+        fn stop(self: *@This()) void {
+            self.stopped_after_wake = self.quit_when_woken != null;
+        }
+    };
+    const FakeWaker = struct {
+        loop: *Fake,
+        fn wake(self: @This()) void {
+            self.loop.quit_when_woken = self.loop.should_quit;
+        }
+    };
+    var loop: Fake = .{};
+    stopReading(&loop, FakeWaker{ .loop = &loop });
+    try testing.expectEqual(@as(?bool, true), loop.quit_when_woken);
+    try testing.expect(loop.stopped_after_wake);
+    _ = console_wake;
 }
 
 test "2081: one group's window shows its conversation and nothing else, and has no row of tabs" {
