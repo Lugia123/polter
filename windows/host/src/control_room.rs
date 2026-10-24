@@ -1226,8 +1226,8 @@ fn tasks_press(hwnd: HWND, x: i32, y: i32) -> bool {
 /// (API.md §2.2, #2083). Only once the page has the keys. Whether it took
 /// the key.
 fn tasks_key(hwnd: HWND, key: u16) -> bool {
-    const KEY_C: u16 = b'C' as u16;
-    const KEY_F: u16 = b'F' as u16;
+    const VK_C: u16 = b'C' as u16;
+    const VK_F: u16 = b'F' as u16;
     let (keys, filtering) = TASKS.with(|t| t.borrow().as_ref().map_or((false, false), |p| (p.keys && p.data.is_some(), p.filter.is_some())));
     if !keys {
         return false;
@@ -1236,14 +1236,14 @@ fn tasks_key(hwnd: HWND, key: u16) -> bool {
         tasks_step(hwnd, key == VK_DOWN.0);
     } else if key == VK_RETURN.0 {
         tasks_return(hwnd);
-    } else if key == KEY_C {
+    } else if key == VK_C {
         TASKS.with(|t| {
             if let Some(p) = t.borrow_mut().as_mut() {
                 p.closed = !p.closed;
             }
         });
         tasks_fetch(hwnd);
-    } else if key == KEY_F {
+    } else if key == VK_F {
         begin_filter(hwnd);
     } else if key == VK_ESCAPE.0 && filtering {
         end_filter(hwnd);
