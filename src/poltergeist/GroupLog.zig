@@ -247,6 +247,24 @@ pub fn projectNotNow(self: *GroupLog, name: []const u8, times: u8) void {
     });
 }
 
+/// How many bytes this group's record takes on disk: every day file of it,
+/// summed (task 2149: the group's own card says how big its record is).
+///
+/// A group with no record answers zero, which is the truth rather than a
+/// failure -- a group made and never spoken in has no directory.
+pub fn recordBytes(self: *const GroupLog, alloc: Allocator, name: []const u8) u64 {
+    var days = self.tree.days(alloc, name) catch return 0;
+    defer days.deinit(alloc);
+    var total: u64 = 0;
+    for (days.items) |d| {
+        const path = self.tree.partPath(alloc, name, d.day, d.part) catch continue;
+        defer alloc.free(path);
+        const st = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch continue;
+        total += st.size;
+    }
+    return total;
+}
+
 /// Take a group off the list, leaving every word ever said in it in place.
 ///
 /// The note is carried over rather than blanked. Taking a group off the

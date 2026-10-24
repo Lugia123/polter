@@ -96,6 +96,18 @@ pub const Table = enum {
     /// (task 1978). Read at startup, held until claimed.
     reclaim_groups,
 
+    /// `Overall`'s rows (task 2149): each chat row carries the group its
+    /// chat was started with, and a dead row is kept for 24 hours. Renamed
+    /// with its group; dropped on delete.
+    ///
+    /// **Renaming is not optional even though a row's name is read every
+    /// time.** A chat's name comes from the arguments the control room
+    /// started it with, and those go on saying the old name until that
+    /// surface is started again -- so without this, a renamed group's chat
+    /// row reads under its old name and `resource_overview` says the group
+    /// has no chat (`own.chat_mib` 0), while the group it was renamed to
+    /// has one, on screen, in front of the person.
+    overall_rows,
     /// `Alarms.list`: each alarm names the group whose supervisor it rings
     /// for (task 2148). Written to `alarms.json` when it changes.
     alarms,

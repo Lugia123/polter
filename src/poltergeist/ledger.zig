@@ -121,6 +121,32 @@ pub fn account(alloc: Allocator, procs: []const Proc, panes: []const Pane) Alloc
     return out;
 }
 
+/// The indices into `procs` that are `pane`'s, in `alloc`: the same walk
+/// `account` does, for a caller that needs the processes rather than their
+/// sum (task 2149, which splits a pane's tree into the worker's and its
+/// sidecars').
+///
+/// `claimed` is not shared across calls here -- each call walks one pane --
+/// so a caller with several panes checks them in the order it wants the
+/// first to win, the way `account` does.
+pub fn members(alloc: Allocator, procs: []const Proc, panes: []const Pane, which: usize) Allocator.Error![]u32 {
+    var kids = try kidsOf(alloc, procs);
+    defer freeKids(alloc, &kids);
+    const claimed = try alloc.alloc(bool, procs.len);
+    defer alloc.free(claimed);
+    @memset(claimed, false);
+
+    // The panes before `which` claim theirs first, so a process is counted
+    // in one pane at most -- the rule this file is built on.
+    var mine: std.ArrayListUnmanaged(u32) = .empty;
+    defer mine.deinit(alloc);
+    for (panes[0 .. which + 1]) |pane| {
+        mine.clearRetainingCapacity();
+        try walk(alloc, procs, &kids, claimed, pane, &mine);
+    }
+    return alloc.dupe(u32, mine.items);
+}
+
 /// The indices into `procs` that are `pane`'s, appended to `mine`: the
 /// rules at the top of this file. `claimed` is shared across panes so that
 /// a process is counted once.

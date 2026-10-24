@@ -131,6 +131,16 @@ pub fn swapUsed() ?u64 {
     return x.xsu_used;
 }
 
+/// How much swap there is in all, bytes; null where it is not read (task
+/// 2149: the page shows "18.6 / 24 GB").
+pub fn swapTotal() ?u64 {
+    if (builtin.os.tag != .macos) return null;
+    var x: XswUsage = undefined;
+    var len: usize = @sizeOf(XswUsage);
+    if (std.c.sysctlbyname("vm.swapusage", &x, &len, null, 0) != 0) return null;
+    return x.xsu_total;
+}
+
 /// `vm_statistics64` (mach/vm_statistics.h).
 const VmStatistics64 = extern struct {
     free_count: u32,
@@ -167,6 +177,113 @@ const XswUsage = extern struct {
     xsu_pagesize: u32,
     xsu_encrypted: bool,
 };
+
+/// `struct statfs` (sys/mount.h), as far as `f_bavail` -- the free space a
+/// person may actually use, which is what macOS runs out of.
+///
+/// **The 64-bit-inode layout, which is the one `statfs$INODE64` fills in.**
+/// The plain `statfs` symbol is the old 32-bit-inode one on x86_64, whose
+/// struct starts `short f_otype; short f_oflags; long f_bsize; …` -- so
+/// `f_bavail` is not at 24 there but at 40, and reading this layout
+/// through it gives `f_bsize` from two flags and `f_bavail` from
+/// `f_blocks`. On Intel that made free space read as the whole disk times
+/// a nonsense unit, and the 15 GB line could never come true -- the one
+/// thing this reading is for. arm64 has only the 64-bit symbol, which is
+/// why a reading taken there says nothing about x86_64.
+///
+/// The layout, measured against the SDK on this machine: `f_bsize` at 0,
+/// `f_blocks` at 8, `f_bfree` at 16, `f_bavail` at 24, 2168 bytes in all.
+const StatfsPrefix = extern struct {
+    f_bsize: u32,
+    f_iosize: i32,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+};
+
+comptime {
+    std.debug.assert(@sizeOf(StatfsPrefix) == 32);
+    std.debug.assert(@offsetOf(StatfsPrefix, "f_bavail") == 24);
+}
+
+// `sys/mount.h` marks `statfs` `__DARWIN_INODE64(statfs)`, which is what
+// `$INODE64` names on x86_64 and is not needed on arm64 -- the same split
+// `std.c.stat` makes (`std/c.zig`, `.x86_64 => private.@"stat$INODE64"`).
+//
+// **Both declarations are named after the C symbols**, inside a private
+// struct so that neither collides with this file's own names: a Zig
+// `extern` declaration's *identifier* is the linker symbol it asks for, so
+// a declaration called `statfsSymbol` links against a symbol of that name
+// and fails with `undefined symbol: _statfsSymbol`.
+const statfs_c = struct {
+    extern "c" fn statfs(path: [*:0]const u8, buf: *anyopaque) c_int;
+    extern "c" fn @"statfs$INODE64"(path: [*:0]const u8, buf: *anyopaque) c_int;
+};
+
+fn statfs(path: [*:0]const u8, buf: *anyopaque) c_int {
+    // Comptime, so only the branch this target takes is analysed and only
+    // its symbol is asked for.
+    return switch (builtin.cpu.arch) {
+        .x86_64 => statfs_c.@"statfs$INODE64"(path, buf),
+        else => statfs_c.statfs(path, buf),
+    };
+}
+
+/// This process's pid, the way each platform spells it.
+///
+/// **Not `std.c.getpid()` at a call site.** `std.c.pid_t` is a HANDLE on
+/// Windows, so `@intCast(std.c.getpid())` is a compile error there (task
+/// 2149's review, #3) -- and the callers want a `u32` pid on every
+/// platform. One place decides it; the Windows spelling is the same one
+/// `pty.zig` and `cli/mcp.zig` use.
+pub fn selfPid() u32 {
+    if (builtin.os.tag == .windows) return std.os.windows.GetCurrentProcessId();
+    return @intCast(std.c.getpid());
+}
+
+/// Free space on the volume `/` is on, bytes; null where it is not read.
+///
+/// The startup disk, not the state directory: what the person runs out of
+/// is the machine's disk, and a swap file, a build cache and the state
+/// directory all come out of the same one (task 2149, handoff §2).
+///
+/// **The 64-bit-inode symbol on x86_64, and that is not the same call.**
+/// `sys/mount.h` marks `statfs` `__DARWIN_INODE64(statfs)`, so on x86_64 the
+/// plain symbol is the old 32-bit-inode one and `statfs$INODE64` is the one
+/// that fills in `StatfsPrefix`. Measured on this machine, running the
+/// x86_64 build under Rosetta and printing the fields:
+///
+/// | | `f_bsize` | `f_blocks` | `f_bavail` |
+/// |---|---|---|---|
+/// | `statfs$INODE64` | 4096 | 242824745 | 9230352 |
+/// | `statfs` | 0 | 4096 | 242824745 |
+///
+/// The second row's `f_bsize` is `f_otype | f_oflags` and its `f_bavail` is
+/// really `f_blocks` -- free space read as *ten times the disk's whole
+/// size*, so the 15 GB line could never come true. arm64 has only the
+/// 64-bit symbol, which is why the reading taken there says nothing about
+/// this. See the test at the foot of the file, which is the floor.
+pub fn diskFree() ?u64 {
+    if (builtin.os.tag != .macos) return null;
+    var buf: [4096]u8 align(8) = undefined;
+    if (statfs("/", &buf) != 0) return null;
+    const st: *const StatfsPrefix = @ptrCast(@alignCast(&buf));
+    const unit: u64 = if (st.f_bsize == 0) 4096 else st.f_bsize;
+    return st.f_bavail *| unit;
+}
+
+/// What `diskFree` reads, for the test below: the three fields it is built
+/// from, so a test can say *which* of them was misread rather than only
+/// that the answer was wrong.
+const StatfsFields = struct { bsize: u32, blocks: u64, bavail: u64 };
+
+fn statfsFields() ?StatfsFields {
+    if (builtin.os.tag != .macos) return null;
+    var buf: [4096]u8 align(8) = undefined;
+    if (statfs("/", &buf) != 0) return null;
+    const st: *const StatfsPrefix = @ptrCast(@alignCast(&buf));
+    return .{ .bsize = st.f_bsize, .blocks = st.f_blocks, .bavail = st.f_bavail };
+}
 
 comptime {
     // The SDK's sizes: 152 (`HOST_VM_INFO64_COUNT` is 38 natural_t) and 32.
@@ -317,7 +434,65 @@ test "2015: the machine's memory in use is under all of it, and swap is read" {
     // A machine running this holds something, and not more than it has.
     try testing.expect(used > 256 << 20);
     try testing.expect(used < phys);
-    _ = swapUsed().?;
+    const swap = swapUsed().?;
+    try testing.expect(swap <= swapTotal().?);
+}
+
+test "2149: this process's pid is read the same way everywhere" {
+    // **The one caller of `selfPid`, so that the function's Windows
+    // spelling is analysed at all.** A `pub fn` nothing calls is never
+    // compiled for a target it is not called on, so a check that this file
+    // builds for Windows said the same thing about the broken
+    // `@intCast(std.c.getpid())` and about the fix -- a ruler that reads
+    // the same for both answers is not a ruler.
+    const testing = std.testing;
+    const me = selfPid();
+    try testing.expect(me > 0);
+    if (builtin.os.tag != .windows) {
+        // Not the kernel's own account of another process: this one.
+        try testing.expectEqual(@as(u32, @intCast(std.c.getpid())), me);
+    }
+}
+
+test "2149: the disk is read through the 64-bit-inode layout, not the old 32-bit one" {
+    // **The floor for the `statfs$INODE64` split.** On x86_64 the plain
+    // `statfs` symbol fills in the old struct -- `short f_otype; short
+    // f_oflags; long f_bsize; ...` -- so `f_bsize` reads as the two flags
+    // and `f_bavail` as `f_blocks`. Measured under Rosetta with the symbol
+    // swapped back, the three fields came out
+    // `bsize=0 blocks=4096 bavail=242824745` against the right layout's
+    // `bsize=4096 blocks=242824745 bavail=9230352`: free space read as ten
+    // times the whole disk, and the 15 GB line could never come true.
+    //
+    // The fields, not only the product: a test that read the wrong layout
+    // would otherwise have to be told which of the three was wrong.
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const testing = std.testing;
+    const f = statfsFields() orelse return error.NotRead;
+    // A real unit. Zero is what the old layout gives, and it is also what
+    // `diskFree` papers over with its 4096 default -- so this is the only
+    // place that can see it.
+    try testing.expect(f.bsize > 0);
+    try testing.expect(f.bsize <= 1 << 20);
+    // Free space is a share of the volume, never more than it.
+    try testing.expect(f.bavail > 0);
+    try testing.expect(f.bavail <= f.blocks);
+    // And the product is a plausible disk: the same shape the other disk
+    // test asks for. The old layout gives ~10x the volume's size here.
+    const free = diskFree().?;
+    try testing.expect(free > 1 << 30);
+    try testing.expect(free < 8 << 40);
+}
+
+test "2149: the startup disk has room, and it is less than the volume's size" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const testing = std.testing;
+    const free = diskFree().?;
+    // A machine running this has some room; and free space is a share of
+    // the disk rather than all of it. Not "more than zero", which a
+    // misread layout would also satisfy.
+    try testing.expect(free > 1 << 30);
+    try testing.expect(free < 8 << 40);
 }
 
 test "2015: a process's CPU time is in nanoseconds, and its start is when it started" {

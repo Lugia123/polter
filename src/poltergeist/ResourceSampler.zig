@@ -25,7 +25,7 @@ ctx: *anyopaque,
 
 mutex: Io.Mutex = .init,
 panes: []ledger.Pane = &.{},
-result: ?[]ledger.Usage = null,
+result: ?Reading = null,
 stopping: bool = false,
 generation: std.atomic.Value(u32) = .init(0),
 thread: ?std.Thread = null,
@@ -49,7 +49,10 @@ pub fn stop(self: *ResourceSampler) void {
     }
     self.alloc.free(self.panes);
     self.panes = &.{};
-    if (self.result) |r| self.alloc.free(r);
+    if (self.result) |r| {
+        self.alloc.free(r.usage);
+        self.alloc.free(r.procs);
+    }
     self.result = null;
 }
 
@@ -62,9 +65,23 @@ pub fn setPanes(self: *ResourceSampler, panes: []const ledger.Pane) Allocator.Er
     self.panes = copy;
 }
 
-/// The latest reading, if one came since the last take. The caller owns
-/// it and frees it with `alloc`.
-pub fn take(self: *ResourceSampler) ?[]ledger.Usage {
+/// One reading: each pane's totals, and the process table they came from.
+///
+/// **Both, from the same scan.** The overall reading (task 2149) needs the
+/// processes themselves -- which of them is an embedded chat and which an
+/// MCP sidecar is a question about arguments, not about sums -- and a second
+/// `procscan.scan` for it would be a second reading of a machine that had
+/// moved on, two seconds' worth of disagreement between two pages of the
+/// same thing.
+pub const Reading = struct {
+    usage: []ledger.Usage,
+    /// The whole process table, as it was read.
+    procs: []procscan.Proc,
+};
+
+/// The latest reading, if one came since the last take. The caller owns it
+/// and frees both of its parts with `alloc`.
+pub fn take(self: *ResourceSampler) ?Reading {
     self.mutex.lockUncancelable(self.io);
     defer self.mutex.unlock(self.io);
     const r = self.result;
@@ -99,12 +116,15 @@ fn read(self: *ResourceSampler) Allocator.Error!void {
     // No panes: no reading, but still a turn of the app's, which hands the
     // panes over -- the first reading of a session starts with none.
     const procs = if (panes.len == 0) try self.alloc.alloc(procscan.Proc, 0) else try procscan.scan(self.alloc);
-    defer self.alloc.free(procs);
+    errdefer self.alloc.free(procs);
     const usage = try ledger.account(self.alloc, procs, panes);
 
     self.mutex.lockUncancelable(self.io);
-    if (self.result) |old| self.alloc.free(old);
-    self.result = usage;
+    if (self.result) |old| {
+        self.alloc.free(old.usage);
+        self.alloc.free(old.procs);
+    }
+    self.result = .{ .usage = usage, .procs = procs };
     self.mutex.unlock(self.io);
     _ = self.readings.fetchAdd(1, .monotonic);
     self.fire(self.ctx);
@@ -131,8 +151,16 @@ test "1993: the sampler reads this process's tree and says so" {
     var waited: u32 = 0;
     while (c.n.load(.acquire) == 0 and waited < 5_000) : (waited += 10) try Io.sleep(threaded.io(), .fromMilliseconds(10), .awake);
     const got = s.take() orelse return error.NoReading;
-    defer testing.allocator.free(got);
-    try testing.expectEqual(@as(u64, 0x1993), got[0].id);
-    try testing.expect(got[0].procs >= 1);
-    try testing.expect(got[0].mem > 1 << 20);
+    defer testing.allocator.free(got.usage);
+    defer testing.allocator.free(got.procs);
+    try testing.expectEqual(@as(u64, 0x1993), got.usage[0].id);
+    try testing.expect(got.usage[0].procs >= 1);
+    try testing.expect(got.usage[0].mem > 1 << 20);
+    // The table the totals came from travels with them (task 2149): this
+    // process is in it.
+    const me: u32 = @intCast(std.c.getpid());
+    const mine = for (got.procs) |p| {
+        if (p.pid == me) break p;
+    } else return error.NotFound;
+    try testing.expect(mine.footprint > 1 << 20);
 }

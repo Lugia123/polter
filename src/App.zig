@@ -296,6 +296,14 @@ resource_judges: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, ResourceJudge) 
 resource_pressure: poltergeistpkg.judge.PressureState = .fresh,
 /// Panes being stopped: what their note will say once `Stopper` is done.
 resource_kills: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, ResourceKill) = .empty,
+/// What Polter itself costs and whether the machine is running out (task
+/// 2149). One allocation, taken when the sampler starts and never grown --
+/// see `Overall`'s own note, and the test that reads the byte counter.
+resource_overall: ?*poltergeistpkg.Overall = null,
+/// The panes the last reading was split by, with the chat surfaces among
+/// them: what `resource_overview` needs to say which terminal a sidecar
+/// belongs to (task 2149 §1).
+resource_all_panes: []poltergeistpkg.ledger.Pane = &.{},
 /// Seven days of each pane's levels, by half hour (task 1993, #1985 §9):
 /// the slots in memory, and the day file they go into.
 resource_history: poltergeistpkg.ResourceHistory = .{},
@@ -856,6 +864,10 @@ pub fn deinit(self: *App) void {
     self.quota_watch = null;
     if (self.resource_sampler) |*w| w.stop();
     self.resource_sampler = null;
+    if (self.resource_overall) |o| o.destroy();
+    self.resource_overall = null;
+    self.alloc.free(self.resource_all_panes);
+    self.resource_all_panes = &.{};
     self.resource_usage.deinit(self.alloc);
     self.resource_recent.deinit(self.alloc);
     self.resource_killed.deinit(self.alloc);
@@ -1104,6 +1116,15 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
             log.warn("resources: no sampler; its thread could not start err={}", .{err});
             self.resource_sampler = null;
         };
+        // The overall reading (task 2149): one allocation, here, and never
+        // another -- which is what makes "the monitor does not grow" a
+        // thing that can be read off `monitorBytes`.
+        if (self.resource_overall == null) {
+            self.resource_overall = poltergeistpkg.Overall.create(self.alloc) catch |err| b: {
+                log.warn("resources: no overall reading err={}", .{err});
+                break :b null;
+            };
+        }
     }
     if (self.resources_due.swap(false, .acq_rel)) self.takeResourceReading();
     if (self.resource_stopped_due.swap(false, .acq_rel)) self.finishResourceStops();
@@ -1370,22 +1391,92 @@ const resources_log_every_ms: u64 = 60 * std.time.ms_per_s;
 /// as they were when the one before it was taken.
 fn takeResourceReading(self: *App) void {
     const sampler = &(self.resource_sampler orelse return);
-    if (sampler.take()) |usage| {
-        defer sampler.alloc.free(usage);
+    if (sampler.take()) |got| {
+        defer sampler.alloc.free(got.usage);
+        defer sampler.alloc.free(got.procs);
+        // The whole reading, both halves of it: the per-terminal totals,
+        // and the process table they came from, which the overall reading
+        // (task 2149) is worked out of. One scan, so the two pages cannot
+        // disagree about a machine that moved between them.
+        self.useOverallReading(got.procs);
         // Windows: no process table to split; each pane's job is read here,
         // on the app thread, as `shellBusy` reads its shell (task 1993 P6).
-        if (comptime builtin.os.tag == .windows) self.takeJobReadings() else self.useResourceReading(usage);
+        if (comptime builtin.os.tag == .windows) self.takeJobReadings() else self.useResourceReading(got.usage);
     }
 
+    // The panes for the next reading: the chat surfaces among them, so the
+    // overall reading can tell a group's chat from a worker's terminal.
+    // The per-terminal page leaves the chats out, and that split is made
+    // where the page is built, not here.
     var panes: std.ArrayListUnmanaged(poltergeistpkg.ledger.Pane) = .empty;
     defer panes.deinit(self.alloc);
     for (self.surfaces.items) |v| {
         const surface = v.core();
-        if (self.isChatSurface(surface.id)) continue;
         const pane = surface.resourcePane() orelse continue;
         panes.append(self.alloc, pane) catch return;
     }
-    sampler.setPanes(panes.items) catch |err| log.warn("resources: could not hand the sampler its panes err={}", .{err});
+    const kept = self.alloc.dupe(poltergeistpkg.ledger.Pane, panes.items) catch return;
+    self.alloc.free(self.resource_all_panes);
+    self.resource_all_panes = kept;
+    var readable: std.ArrayListUnmanaged(poltergeistpkg.ledger.Pane) = .empty;
+    defer readable.deinit(self.alloc);
+    for (panes.items) |p| {
+        if (self.isChatSurface(p.id)) continue;
+        readable.append(self.alloc, p) catch return;
+    }
+    sampler.setPanes(readable.items) catch |err| log.warn("resources: could not hand the sampler its panes err={}", .{err});
+}
+
+/// Fold one reading's process table into the overall reading (task 2149):
+/// which of Polter's processes is a chat, which a sidecar, and what the
+/// machine is spending.
+fn useOverallReading(self: *App, procs: []const poltergeistpkg.procscan.Proc) void {
+    const overall = self.resource_overall orelse return;
+    const wall = self.poltergeistWallMs();
+    const read = poltergeistpkg.OverallRead.build(self.alloc, procs, self.resource_all_panes, procargsClassify, null) catch |err| {
+        log.warn("resources: could not read Polter's own processes err={}", .{err});
+        return;
+    };
+    defer self.alloc.free(read);
+
+    // The main process is this one, and it is not any pane's: its row is
+    // what the whole program holds, sidecars and chats excluded, because
+    // those are their own rows -- a sidecar's parent is the agent CLI, not
+    // Polter. Which pid this is, on this platform, is `procscan.selfPid`.
+    const me: u32 = poltergeistpkg.procscan.selfPid();
+    var main: poltergeistpkg.Overall.PaneReading = .{
+        .id = 0,
+        .root_pid = me,
+        .mem = 0,
+        .procs = 1,
+    };
+    for (procs) |p| if (p.pid == me) {
+        main.mem = p.footprint;
+        main.cpu_ns = p.cpu_ns;
+        // When this process started, so a Polter restarted under the same
+        // pid is another process (handoff §4 rule 7).
+        main.start_ms = p.start_ms;
+    };
+
+    overall.sample(.{
+        .now_ms = wall,
+        .start_ms = wall - @as(i64, @intCast(self.poltergeistElapsedMs())),
+        .machine = .{
+            .mem_total = poltergeistpkg.procscan.physicalMemory(),
+            .mem_used = poltergeistpkg.procscan.machineUsed(),
+            .swap_used = poltergeistpkg.procscan.swapUsed(),
+            .swap_total = poltergeistpkg.procscan.swapTotal(),
+            .disk_free = poltergeistpkg.procscan.diskFree(),
+        },
+        .main = main,
+        .panes = read,
+    });
+}
+
+/// Which of Polter's own a process is, from its arguments (`procargs.zig`).
+/// A process of another user cannot be read, which is `other`.
+fn procargsClassify(_: ?*anyopaque, pid: u32, _: []const u8) poltergeistpkg.procargs.Seen {
+    return poltergeistpkg.procargs.classify(pid);
 }
 
 const ResourceJudge = struct {
@@ -2410,6 +2501,7 @@ fn controlActDeleteGroup(ctx: *anyopaque, group: []const u8) anyerror!void {
         .control_asks => self.control_asks.forget(self.alloc, group),
         .resource_names => self.resource_names.dropGroup(self.alloc, group),
         .reclaim_groups => if (self.reclaim) |*r| r.dropGroup(group),
+        .overall_rows => if (self.resource_overall) |o| o.forgetGroup(group),
         .alarms => {
             self.alarmsHeld().dropGroup(group);
             self.saveAlarms();
@@ -9120,6 +9212,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .callSilentMs = poltergeistCallSilent,
         .nowMs = poltergeistNow,
         .resourceUsage = poltergeistResourceUsage,
+        .resourceOverview = poltergeistResourceOverview,
         .openTerminals = poltergeistOpenTerminals,
         .openTerminal = poltergeistOpenTerminal,
         .worktreePrepare = poltergeistWorktreePrepare,
@@ -11067,6 +11160,83 @@ fn poltergeistResourceUsage(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) ?polterg
     return self.resource_usage.get(id);
 }
 
+/// Which group a terminal is in, for the overall reading's sidecar rows
+/// (task 2149): read from the control room's rows, the same place the
+/// performance page reads a terminal's group from.
+fn overallGroupOfPane(ctx: ?*const anyopaque, pane: u64) []const u8 {
+    const self: *const App = @ptrCast(@alignCast(ctx orelse return ""));
+    for (self.control_room.route_rows) |row| {
+        for (row.members) |m| if (m == pane) return row.group;
+    }
+    return "";
+}
+
+/// `resource_overview`'s answer (task 2149): Polter's own processes, the
+/// machine, and what the core knows that no process table does.
+fn poltergeistResourceOverview(ctx: *anyopaque, alloc: Allocator, req: poltergeistpkg.rpc.Request) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const p = req.resource_overview;
+    const overall = self.resource_overall orelse return error.NoReading;
+
+    // A group asked for has to be a group: answering an empty list for a
+    // name nobody has would read as "it costs nothing".
+    if (p.group.len > 0 and !self.chat.exists(p.group)) return error.NoSuchGroup;
+
+    var facts: std.ArrayListUnmanaged(poltergeistpkg.OverallPage.GroupFacts) = .empty;
+    defer facts.deinit(alloc);
+    for (self.control_room.route_rows) |row| {
+        var tasks: u32 = 0;
+        var tasks_open: u32 = 0;
+        if (self.tasks.inGroup(alloc, row.group)) |list| {
+            defer alloc.free(list);
+            tasks = @intCast(list.len);
+            for (list) |t| if (t.state == .open) {
+                tasks_open += 1;
+            };
+        } else |_| {}
+        const record: u64 = if (self.group_log) |*l| l.recordBytes(alloc, row.group) else 0;
+        // The group page's segment bar: three widths in MiB, from the same
+        // reading the performance page draws its cards from. **The fourth
+        // (the group's own chat) is not here**: it is a row in `Overall`,
+        // and this file hands no reading to it.
+        var supervisor_mib: u64 = 0;
+        var workers_mib: u64 = 0;
+        var yours_mib: u64 = 0;
+        for (row.members, row.own) |id, own| {
+            const usage = self.resource_usage.get(id) orelse continue;
+            const mib = usage.mem >> 20;
+            if (own) {
+                yours_mib += mib;
+            } else if (row.steward) |s| {
+                if (s == id) supervisor_mib += mib else workers_mib += mib;
+            } else {
+                workers_mib += mib;
+            }
+        }
+        try facts.append(alloc, .{
+            .group = row.group,
+            .tasks = tasks,
+            .tasks_open = tasks_open,
+            .record_bytes = record,
+            .supervisor_mib = supervisor_mib,
+            .workers_mib = workers_mib,
+            .yours_mib = yours_mib,
+        });
+    }
+
+    const wall = self.poltergeistWallMs();
+    return poltergeistpkg.OverallPage.render(alloc, overall, .{
+        .now_ms = wall,
+        .offset_ms = poltergeistpkg.daylog.localOffsetMs(wall),
+        .mem_total = poltergeistpkg.procscan.physicalMemory(),
+        .groups = facts.items,
+        .groupOfPane = overallGroupOfPane,
+        .ctx = self,
+        .only_group = p.group,
+        .only_pid = p.pid,
+    });
+}
+
 /// Every terminal on screen, with where it is and what it is called.
 ///
 /// The chat interface is left out: it is a window onto the conversation,
@@ -12558,6 +12728,7 @@ fn chatRename(
         .control_asks => try self.control_asks.renameGroup(self.alloc, group, to),
         .resource_names => try self.resource_names.renameGroup(self.alloc, group, to),
         .reclaim_groups => if (self.reclaim) |*r| try r.renameGroup(group, to),
+        .overall_rows => if (self.resource_overall) |o| o.renameGroup(group, to),
         .alarms => {
             try self.alarmsHeld().renameGroup(group, to);
             self.saveAlarms();

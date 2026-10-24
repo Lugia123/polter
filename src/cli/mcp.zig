@@ -1091,6 +1091,26 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "resource_overview",
+        .description = "What Polter itself costs, and whether this machine is running out. " ++
+            "Three answers in one: `machine` (memory, swap and its trend, free disk and the " ++
+            "line below which macOS starts closing applications), `polter` (every process of " ++
+            "Polter's own -- `kind` `main`, `chat` for an embedded group chat, `sidecar` for " ++
+            "an agent CLI's `polter +mcp`, and `monitor` for this feature itself -- with " ++
+            "`pid`, `group`, `mem_mib`, `cpu_ds`, `growth` and `last_24h`), and `groups` " ++
+            "(each group's own total, its chat, its task count and its record's size). " ++
+            "**Read `growth.rising` rather than deciding for yourself**: it is a rise over " ++
+            "the last hour that is sustained and not one jump, and the number to quote is " ++
+            "`growth.slope_mib_per_h`. Pass `group` for one group's processes, or `pid` for " ++
+            "one process, which also brings its 24 hours of points. Read only, and any " ++
+            "terminal may call it -- a worker is the one that gets killed when the disk " ++
+            "runs out. This is what to read when the machine has gone slow, or when a " ++
+            "group's own chat is the thing eating it.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string","description":"Only this group's processes"},"pid":{"type":"integer","description":"Only this process, with its 24 hours of points"}}}
+        ,
+    },
+    .{
         .name = "config_get",
         .description = "What the user has configured. Give a key to see just that setting " ++
             "-- `poltergeist-notice-interval`, `poltergeist-notify-window`, " ++

@@ -154,6 +154,7 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | `session_recall()`          | 无         | 上次关机前写下的现场材料，只读，没有任何东西照它接线 | 总管     |
 | `skill_read(name)`          | skill 名   | 那份 skill 的正文                                  | 全部     |
 | `config_get(key?)`          | 配置键，省略为全部 | 用户配了什么，只读                        | 总管     |
+| `resource_overview(group?, pid?)` | 群名，或进程号 | Polter 自己各进程（总管、内嵌群聊、MCP 边车、监控自己）的内存、CPU、「在涨」判定与最近 24 小时；整机内存/交换区/磁盘，磁盘带 15 GB 线；每个群的合计、任务数与记录大小。给 `group` 只要那一群，给 `pid` 只要那一个进程并带 24 小时的点 | 全部 |
 | `plugin_list(key?)`         | 插件名，省略为全部 | 每插件一行：装没装、开没开、**订阅了什么**、声明调什么、参数以什么形式配着；有实例在跑的另带 `state` / `cursor` / `failures` / `restart_pending`（在跑的那份是用另一套设置起的，重启后才生效）；这一版没发却留在 bundle 里的带 `stray: true` | 总管 |
 
 **`plugin_list` 的脱敏规则，三条，穷尽：**

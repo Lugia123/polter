@@ -283,6 +283,16 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .key = (try optionalString(aa, params, "key")) orelse "",
         } },
 
+        .resource_overview => .{ .resource_overview = .{
+            .group = (try optionalString(aa, params, "group")) orelse "",
+            // **A pid that does not fit is refused, not cast.** `@intCast`
+            // here was a panic -- Debug and ReleaseSafe both -- on a
+            // `{"pid": 4294967296}` from any terminal, and this tool is
+            // callable by every plugin as well. A request that cannot be
+            // answered as asked is an error, not a crash.
+            .pid = std.math.cast(u32, try optionalU64(params, "pid", 0)) orelse return error.BadParams,
+        } },
+
         // The screenshot tools carry each parameter as the JSON it arrived
         // as; `screenshot.zig` decides what a value may be. The names were
         // checked above, against the same structs.
@@ -3518,6 +3528,31 @@ test "role_launch in: a terminal that is already open is named by its id, and a 
     // Not "none": that would open a terminal nobody asked for.
     try testing.expectError(error.BadParams, parse("{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":\"that one\"}}"));
     try testing.expectError(error.BadParams, parse("{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":true}}"));
+}
+
+test "2149: a pid too big for u32 is refused, not cast" {
+    // Review #5: `@intCast` here was a panic in Debug and ReleaseSafe, on a
+    // request any terminal (and every plugin) can send. The reading is the
+    // exit: a refused request, not a dead host.
+    for ([_][]const u8{
+        "{\"method\":\"resource_overview\",\"params\":{\"pid\":4294967296}}",
+        "{\"method\":\"resource_overview\",\"params\":{\"pid\":-1}}",
+        "{\"method\":\"resource_overview\",\"params\":{\"pid\":\"7\"}}",
+        "{\"method\":\"resource_overview\",\"params\":{\"pid\":1.5}}",
+    }) |json| {
+        try testing.expectError(error.BadParams, parse(json));
+    }
+    // And the ones that do fit are read as themselves, so a guard that
+    // refused everything would not pass this.
+    for ([_]struct { json: []const u8, want: u32 }{
+        .{ .json = "{\"method\":\"resource_overview\",\"params\":{\"pid\":7}}", .want = 7 },
+        .{ .json = "{\"method\":\"resource_overview\",\"params\":{\"pid\":4294967295}}", .want = 4294967295 },
+        .{ .json = "{\"method\":\"resource_overview\",\"params\":{}}", .want = 0 },
+    }) |c| {
+        var p = try parse(c.json);
+        defer p.deinit();
+        try testing.expectEqual(c.want, p.value.resource_overview.pid);
+    }
 }
 
 test "wire: a screenshot call carries each parameter as the JSON it arrived as" {

@@ -195,6 +195,18 @@ pub const Method = enum {
     /// itself off duty -- rather than discovering it by being refused.
     config_get,
 
+    /// What Polter itself costs and whether the machine is running out
+    /// (task 2149): the main process, every embedded group chat, every MCP
+    /// sidecar, the swap and the free disk space, with each one's last
+    /// hour and last day.
+    ///
+    /// **Read only, and open to every terminal.** The per-terminal readings
+    /// already reach an agent through `terminal_list`'s `resources`, and
+    /// "is this machine about to run out of disk" is something a worker
+    /// needs to know as much as its supervisor does -- it is the one that
+    /// will be killed when the system starts closing applications.
+    resource_overview,
+
     /// Which of Polter's tools this terminal may see, and the version of
     /// the answer.
     ///
@@ -547,6 +559,14 @@ pub const LimitsParam = union(enum) {
     bad: []const u8,
 };
 
+/// What `resource_overview` was asked (task 2149 §5): a group's processes
+/// alone, or one process with its 24 hours of points. Both empty is the
+/// whole answer.
+pub const ResourceOverview = struct {
+    group: []const u8 = "",
+    pid: u32 = 0,
+};
+
 pub const Request = union(Method) {
     me,
     terminal_list,
@@ -691,6 +711,11 @@ pub const Request = union(Method) {
     plugin_test: struct { key: []const u8 },
 
     config_get: struct { key: []const u8 = "" },
+    /// What `resource_overview` answers (task 2149 §5): a group's
+    /// processes alone, or one process with its 24 hours of points.
+    /// Named rather than inline: the host answers it and the tests ask it,
+    /// and an anonymous struct cannot be written down at either end.
+    resource_overview: ResourceOverview,
     persona_face,
     terminal_capabilities: struct { id: Bus.Id },
     persona_slot: struct { slot: []const u8 },
@@ -1125,9 +1150,11 @@ pub fn callableByPlugin(method: Method) bool {
         .terminal_keys,
 
         // Reading. The configuration and the skills are instructions and
-        // settings, not reach.
+        // settings, not reach. What the machine is spending is a reading of
+        // the same kind: it names no terminal and reaches none.
         .config_get,
         .skill_read,
+        .resource_overview,
         => true,
 
         // **Closed to plugins**, and this one is closed because the
@@ -1479,6 +1506,14 @@ pub fn requiresSupervisor(method: Method) bool {
         // refusing would mean an agent cannot find out why it was nudged.
         .skill_read => false,
 
+        // **Open, and saying why is the point.** This reads what Polter
+        // itself and the machine are spending -- no terminal is named and
+        // none is reached. A worker is the one that gets killed when the
+        // system runs out of disk, so "is this machine about to run out"
+        // is as much its question as its supervisor's; refusing it would
+        // be keeping the reading from the party the reading is about.
+        .resource_overview => false,
+
         // Looking at the screen is not arranging the work, and a worker
         // asked to fix a layout bug has to be able to see it. What governs
         // these is the user's `screenshot-agent-access`, not standing.
@@ -1679,8 +1714,10 @@ pub fn targetsTerminal(method: Method) bool {
         .worktree_status,
         .worktree_remove,
 
-        // Names a setting, not a terminal.
+        // Names a setting or a group of the machine's own processes, not a
+        // terminal.
         .config_get,
+        .resource_overview,
         .screenshot_windows,
         .screenshot_capture,
         .screenshot_annotate,
@@ -1806,6 +1843,8 @@ pub fn target(req: Request) ?Bus.Id {
         .worktree_status,
         .worktree_remove,
         .config_get,
+        // Names a group or a pid, neither of which is a terminal.
+        .resource_overview,
         // `screenshot_capture` may name a terminal, as `terminal`: whose
         // window to photograph is not reach into that terminal, and the one
         // rule about it -- never a shielded one -- is checked where the
@@ -1902,6 +1941,7 @@ pub fn selfPermitted(req: Request) bool {
         .notify_user,
         .skill_read,
         .config_get,
+        .resource_overview,
         .screenshot_windows,
         .screenshot_capture,
         .screenshot_annotate,
@@ -2186,6 +2226,7 @@ pub fn promptReach(method: Method) enum {
         .notify_user,
         .skill_read,
         .config_get,
+        .resource_overview,
         .screenshot_windows,
         .screenshot_capture,
         .screenshot_annotate,
@@ -2930,6 +2971,57 @@ test "a setting can be asked for by name, and a wrong name says so" {
         } });
         try testing.expectEqualStrings("NoSuchKey", res.failed.code);
     }
+}
+
+test "2149: any terminal may ask what Polter is spending, and the host is told what was asked" {
+    // **Open to a worker, which is the decision worth holding down.** A
+    // worker is the one that gets killed when the system runs out of disk,
+    // so the reading is as much its question as its supervisor's. What
+    // makes it safe is that the tool names no terminal and reaches none --
+    // which is what `targetsTerminal` says, and a test below checks against
+    // that same answer rather than against this prose.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(worker), .{
+        .resource_overview = .{ .group = "web-app", .pid = 77 },
+    });
+    try testing.expect(res.json.len > 0);
+    // The whole request arrives, both fields: a tool that dropped `group`
+    // would answer about every group and look fine.
+    try testing.expectEqualStrings("web-app", fake.overview_asked.group);
+    try testing.expectEqual(@as(u32, 77), fake.overview_asked.pid);
+}
+
+test "2149: a group nobody has is named as such, not answered with an empty list" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .overview_refusal = error.NoSuchGroup };
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .resource_overview = .{ .group = "nope" },
+    });
+    try testing.expectEqualStrings("NoSuchGroup", res.failed.code);
+
+    // And a host that cannot read the readings at all says that, rather
+    // than answering with a machine that looks idle.
+    fake.overview_refusal = error.NoReading;
+    const none = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .resource_overview = .{} });
+    try testing.expectEqualStrings("HostRefused", none.failed.code);
+}
+
+test "2149: the overview names no terminal, so it is not under the self-target or shield gates" {
+    // Derived, not typed: `targetsTerminal` is an exhaustive switch over
+    // `Method` with no `else`, and this is that answer applied to the one
+    // method. If somebody moves the method to the other side, this reds.
+    try testing.expect(!targetsTerminal(.resource_overview));
+    try testing.expectEqual(@as(?Bus.Id, null), target(.{ .resource_overview = .{ .pid = 1 } }));
+    try testing.expect(!requiresSupervisor(.resource_overview));
 }
 
 test "a key matches the whole name, not a prefix of it" {
@@ -6179,6 +6271,17 @@ pub const Host = struct {
         /// when there is none: not started, or not read on this platform.
         resourceUsage: *const fn (ctx: *anyopaque, id: Bus.Id) ?ledger.Usage,
 
+        /// What `resource_overview` answers (task 2149): Polter's own
+        /// processes, the machine, and what the core knows that the process
+        /// table does not. The JSON is built by the host -- it is the only
+        /// side that has the reading, the groups and their records -- and
+        /// belongs to the caller's allocator.
+        resourceOverview: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            req: Request,
+        ) anyerror![]const u8,
+
         /// Start or stop sampling a terminal's screen.
         ///
         /// Separate from the bus entry because they are separate facts: the
@@ -6861,6 +6964,10 @@ pub const Host = struct {
         return self.vtable.resourceUsage(self.ctx, id);
     }
 
+    fn resourceOverview(self: Host, alloc: std.mem.Allocator, req: Request) anyerror![]const u8 {
+        return self.vtable.resourceOverview(self.ctx, alloc, req);
+    }
+
     fn openTerminals(self: Host, alloc: std.mem.Allocator) anyerror![]const Place {
         return self.vtable.openTerminals(self.ctx, alloc);
     }
@@ -7437,6 +7544,7 @@ pub fn isAgentCall(method: Method) bool {
         .alarm_cancel,
         .task_list,
         .task_history,
+        .resource_overview,
         => true,
     };
 }
@@ -7968,6 +8076,18 @@ fn dispatchOne(
             return .{ .text = text };
         },
 
+        .resource_overview => |p| {
+            // The host builds it: it is the side holding the reading, the
+            // groups and their records. Every failure here is the host's,
+            // and it is told as itself rather than as a generic refusal.
+            const json = host.resourceOverview(alloc, req) catch |err| return switch (err) {
+                error.NoSuchGroup => hostFailure("NoSuchGroup", "there is no group by that name."),
+                error.LogsClosed => hostFailure("LogsClosed", "the state directory could not be opened, so the groups and their records are not known."),
+                else => hostFailure("HostRefused", "what Polter is spending could not be read"),
+            };
+            _ = p;
+            return .{ .json = json };
+        },
         .terminal_open => |p| {
             // Refused before anything is opened: a terminal opened without
             // the lines that were asked for would run unjudged.
@@ -11237,6 +11357,10 @@ const FakeHost = struct {
     /// The one reading `resourceUsage` answers with, for its own id (task
     /// 1993).
     usage: ?ledger.Usage = null,
+    /// What `resourceOverview` was last asked, and what it fails with (task
+    /// 2149).
+    overview_asked: ResourceOverview = .{},
+    overview_refusal: ?anyerror = null,
     /// What the app does on an agent's first request when a launch named
     /// its group (task 1971): puts it in, so `refuse` no longer holds.
     joins_on_arrival: bool = false,
@@ -11555,6 +11679,7 @@ const FakeHost = struct {
             .callSilentMs = callSilentMs,
             .nowMs = nowMs,
             .resourceUsage = resourceUsage,
+            .resourceOverview = resourceOverview,
             .openTerminals = openTerminals,
             .setWatching = setWatching,
             .stoodDown = stoodDown,
@@ -12349,6 +12474,15 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const u = self.usage orelse return null;
         return if (u.id == id) u else null;
+    }
+
+    /// The fake's answer, so a test can see the request arrive and can say
+    /// what comes back -- including a machine with its disk under the line.
+    fn resourceOverview(ctx: *anyopaque, alloc: std.mem.Allocator, req: Request) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.overview_asked = req.resource_overview;
+        if (self.overview_refusal) |why| return why;
+        return std.fmt.allocPrint(alloc, "{{\"asked\":{d},\"json\":true}}", .{self.overview_asked.pid});
     }
 
     fn openTerminals(

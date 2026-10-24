@@ -321,6 +321,43 @@ screenshot also needs Accessibility. Without them you get
 up on your behalf** — say so to the user; taking one screenshot themselves
 is what raises the system's prompt.
 
+## When the machine itself is the problem: `resource_overview`
+
+Before you go hunting for which of your own commands is eating the machine,
+ask what Polter and the machine are spending. `resource_overview` is one
+call and it is open to every terminal, because a worker is the one that gets
+killed when the system decides it is out of disk.
+
+It answers three things at once. `machine` is the whole computer: memory in
+use, swap and whether it is climbing, free space on the startup disk and the
+line below which macOS starts closing applications. `polter` is every
+process of Polter's own — `kind: "main"` for the program itself,
+`"chat"` for an embedded group chat, `"sidecar"` for an agent CLI's
+`polter +mcp`, and `"monitor"` for the thing doing this measuring — each with
+its `pid`, its `group`, its memory and its `growth`. `groups` is each
+group's own total, its chat, its task count and the size of its record.
+
+**Read `growth.rising`, do not work it out yourself.** It is a rise over the
+last hour that was sustained and not one jump, and the figure to quote back
+to anybody is `growth.slope_mib_per_h`. A process that took 2 GB at startup
+and has held it ever since is not leaking, and this is the function that
+knows the difference.
+
+**A process that died is still listed, and `alive` says so.** A row nothing
+names any more is kept for 24 hours -- the morning after a crash is when you
+want to know what died -- so `mem_mib` on such a row is what it held when it
+stopped, and `died_at` is when that was. Read `alive` before saying anything
+about a process that is not in the table's live half.
+
+The rest is for the page the person looks at, and is handed over complete so
+that no host works it out a second time: `groups[].parts` is the four widths
+of the bar it draws (they add up to `total_mib`), `own` is the group's own
+card including its chat's `growth`, and `polter.series` is the stacked chart
+-- three layers of cells over 24 hours and over a week.
+
+Pass `group` to see one group's processes alone, or `pid` for one process,
+which also brings its last 24 hours of points.
+
 ## Looking back: `record_list`, `record_search`, `record_read`
 
 Polter keeps a transcript of every terminal: **what scrolled out of its
