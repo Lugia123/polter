@@ -5,6 +5,7 @@
 
 <p align="center">
   <b>A terminal multiplexer and orchestrator for AI agents.</b><br>
+  <b>Polter is a terminal for macOS and Windows, built on Ghostty, in which one Claude Code session supervises the coding agents running in your other tabs: it reads their screens, types into them, and is told how long each has been still.</b><br>
   <sub>Put one Claude Code session in charge of the others. Polter is a terminal that lets you run multiple coding agents in parallel. One agent acts as the Supervisor: via MCP, it reads the screens of other tabs, types into them, opens new tabs, and manages them while you step away.</sub>
 </p>
 
@@ -101,16 +102,16 @@ An agent CLI, on your `PATH`, and on it **at the moment Polter starts**. Claude 
 
 ### Compared to Alternatives
 
-*(Data read on 2026-10-04, based on each project's official docs)*
+*(Data read on 2026-10-04 for the first five columns and on 2026-10-24 for herdr, Warp and Orca, from each project's official docs or repository. "—" means nothing was read for that cell.)*
 
-| Feature | Polter | tmux | Claude Code (Sub-agents) | [Claude Squad](https://github.com/smtg-ai/claude-squad) | [cmux](https://github.com/manaflow-ai/cmux) |
-| --- | --- | --- | --- | --- | --- |
-| **What is it?** | Terminal built on Ghostty, with MCP server | Terminal multiplexer | Feature inside one Claude Code session | TUI using tmux and git worktrees | Ghostty-based macOS terminal |
-| **Who watches agents?** | Another AI (Supervisor) | You | The parent AI session | You, in one window | You (via notifications) |
-| **What is a worker?** | Independent session in a terminal tab | Whatever runs in a pane | A sub-agent of the parent session | Independent session in a git worktree | Whatever runs in a pane |
-| **If it stops moving?** | Supervisor is told how long it’s been idle | Bell rings (if configured) | — | — | Notification rings |
-| **File Isolation?** | None (They share your checkout) | None | Parent directory (or worktree if asked) | Separate git worktree and branch each | None |
-| **Platforms** | macOS, Windows | Unix-like systems | Wherever Claude Code runs | Requires tmux and `gh` | macOS |
+| Feature | Polter | tmux | Claude Code (Sub-agents) | [Claude Squad](https://github.com/smtg-ai/claude-squad) | [cmux](https://github.com/manaflow-ai/cmux) | [herdr](https://github.com/ogulcancelik/herdr) | [Warp](https://docs.warp.dev) | [Orca](https://github.com/stablyai/orca) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **What is it?** | Terminal built on Ghostty, with MCP server | Terminal multiplexer | Feature inside one Claude Code session | TUI using tmux and git worktrees | Ghostty-based macOS terminal | Terminal-based agent multiplexer, written in Rust | Terminal with a built-in agent (Oz); also runs third-party CLI agents | Desktop app that runs several coding agents side by side |
+| **Who watches agents?** | Another AI (Supervisor) | You | The parent AI session | You, in one window | You (via notifications) | You, from per-agent status (blocked, working, done, idle) | — | You (via notifications) |
+| **What is a worker?** | Independent session in a terminal tab | Whatever runs in a pane | A sub-agent of the parent session | Independent session in a git worktree | Whatever runs in a pane | Agent or process in a pane | — | Independent agent in its own git worktree |
+| **If it stops moving?** | Supervisor is told how long it’s been idle | Bell rings (if configured) | — | — | Notification rings | Status shows blocked or idle | — | Notification when an agent finishes |
+| **File Isolation?** | None (They share your checkout) | None | Parent directory (or worktree if asked) | Separate git worktree and branch each | None | — | — | Separate git worktree each |
+| **Platforms** | macOS, Windows | Unix-like systems | Wherever Claude Code runs | Requires tmux and `gh` | macOS | Linux, macOS | macOS, Windows, Linux | macOS, Windows, Linux |
 
 **What Polter does not have:** It gives workers no worktree of their own, and it has no browser pane (which cmux has). If isolation per task is what you need, Claude Squad's model is the one built for it.
 
@@ -155,10 +156,25 @@ Not if all you want is to split one job up inside one session. A sub-agent belon
 It doesn't. It measures one thing—how long a screen has been unchanged—and parses no CLI's output. Whether that means it's stuck or just thinking is the supervisor's call.
 
 **6. Is this related to Poltergeist?**
-No. `steipete/poltergeist` is a file watcher and build tool, and its wrapper command is also called `polter`. The two projects share a ghost theme and nothing else; `poltergeist-*` here is only the prefix of this project's settings.
+No. `steipete/poltergeist` is a file watcher and build tool, and its wrapper command is also called `polter`. Polter is also not Polter Finance (a DeFi protocol) or polter.io (an API mocking tool); the name only shares the ghost theme. The two projects share a ghost theme and nothing else; `poltergeist-*` here is only the prefix of this project's settings.
 
 **7. How do I write a plugin?**
 A directory, a `plugin.json`, and an executable. Twenty lines of shell is a complete plugin.
+
+**8. Is there a Ghostty-based terminal that runs on Windows?**
+Yes. Polter is built on Ghostty and ships a no-installer zip for Windows 10+ (x64), as well as a macOS 13+ build.
+
+**9. How do I know which Claude Code session is waiting for my input?**
+The supervisor is told how long each screen has been still. An agent started from a Role also reports through hooks when its turn ends, and a permission prompt is left to the supervisor to deal with.
+
+**10. How do I get notified when Claude Code or Codex is stuck on an approval?**
+The supervisor answers the prompts it can judge and brings the rest to you with a system notification. You can turn this off per tab.
+
+**11. Does it need an account or the cloud?**
+No account. All data stays on your computer under `$XDG_STATE_HOME/polter/`, and Polter sends nothing to the cloud.
+
+**12. Claude Code already has sub-agents — why Polter?**
+A Polter worker is an independent terminal session, not a sub-agent, and the supervisor can read its screen and is told how long it has been still.
 
 ### Contact
 
@@ -167,7 +183,7 @@ A directory, a `plugin.json`, and an executable. Twenty lines of shell is a comp
 
 ### Relationship to Ghostty
 
-Everything that makes this a good terminal is [Ghostty](https://github.com/ghostty-org/ghostty)'s doing. Polter is a fork, not a rewrite: the renderer, the VT implementation, the font stack, and the native UI are all theirs, and upstream changes get merged in.
+Everything that makes this a good terminal is [Ghostty](https://github.com/ghostty-org/ghostty)'s doing. Polter is built on Ghostty rather than rewritten from scratch: the renderer, the VT implementation, the font stack, and the native UI are all theirs, and upstream changes get merged in.
 
 So everything about the terminal itself belongs upstream: escape sequences, performance, configuration, keybindings, `libghostty`. See [ghostty.org/docs](https://ghostty.org/docs) and read `ghostty` as `polter`.
 

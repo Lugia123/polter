@@ -1,0 +1,21 @@
+# Polter
+
+> Polter is a terminal for macOS and Windows, built on Ghostty, in which one Claude Code session supervises the coding agents running in your other tabs: it reads their screens, types into them, and is told how long each has been still.
+
+Polter is not a sub-agent framework: workers are independent terminal sessions, and their output is written to disk line by line. It needs no account and sends nothing to the cloud; data lives under `$XDG_STATE_HOME/polter/`. It is not affiliated with the Ghostty project, with `steipete/poltergeist`, with Polter Finance, or with polter.io.
+
+## Docs
+
+- [README (English)](https://github.com/Lugia123/polter/blob/main/README.md): what it is, features, install, quick start, comparisons, FAQ
+- [README (中文)](https://github.com/Lugia123/polter/blob/main/README_CN.md): 中文说明
+- [MCP terminal control](https://github.com/Lugia123/polter/blob/main/docs/mcp-terminal-control.md): the MCP tools that read and drive terminals
+- [Demo video and site](https://lugia123.github.io/polter/): the 80-second film
+
+## Download
+
+- [Latest release](https://github.com/Lugia123/polter/releases/latest): macOS 13+ (universal zip) and Windows 10+ (x64 zip, no installer)
+
+## Optional
+
+- [Issues](https://github.com/Lugia123/polter/issues): bugs and feature requests
+- [Developer docs](https://github.com/Lugia123/polter/blob/main/dev-docs/README.md): build instructions and design notes
