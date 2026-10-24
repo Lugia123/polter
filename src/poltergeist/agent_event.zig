@@ -30,6 +30,13 @@ pub const Kind = enum {
     /// in the group (`App.launchJoin`) -- only when the group's supervisor
     /// is the one that launched it.
     launched_for_group,
+    /// Not a hook either: `+launch --launcher=<key>` saying the agent it is
+    /// about to start goes through a launcher of the person's own (task
+    /// 2156, `Launchers`). `detail` is the launcher's key, `cli` the CLI
+    /// underneath. Moves nothing on the bus: the host keeps it by terminal,
+    /// for `terminal_list`, the session record and the line a supervisor
+    /// types to bring the agent back.
+    launched_with,
     session_started,
     turn_started,
     turn_ended,

@@ -138,6 +138,10 @@ struct PaneStackStripView: View {
             name += CGFloat(Look.Pane.nameRoleGap)
                 + SafeTextMeasure.width(role, in: roleFont()).rounded(.up)
         }
+        if let model = member.model {
+            name += CGFloat(Look.Pane.nameRoleGap)
+                + SafeTextMeasure.width(model, in: roleFont()).rounded(.up)
+        }
         return 2 * CGFloat(t.paddingX) + name + CGFloat(t.gap) + CGFloat(Look.Side.glyph)
     }
 
@@ -345,6 +349,12 @@ struct PaneStackStripView: View {
                         .layoutPriority(1)
                     if let role = member.role {
                         Text(role)
+                            .font(Self.roleFont().swiftUI)
+                            .foregroundStyle(otherInk)
+                            .lineLimit(1)
+                    }
+                    if let model = member.model {
+                        Text(model)
                             .font(Self.roleFont().swiftUI)
                             .foregroundStyle(otherInk)
                             .lineLimit(1)

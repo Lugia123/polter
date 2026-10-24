@@ -186,7 +186,7 @@ enum ConfigFormRules {
         case .polter: "polter"
         case .screenshot: "screenshot"
         case .logs: "logs"
-        case .all, .keybinds, .advanced, .about: nil
+        case .all, .keybinds, .advanced, .about, .agentCli: nil
         }
     }
 

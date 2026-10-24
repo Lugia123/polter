@@ -1258,3 +1258,27 @@
 
 /* 总控台：群聊页，聊天程序结束以后 */
 "The chat has ended. Click here to open it again." = "The chat has ended. Click here to open it again.";
+
+/* Settings › General › Agent CLI (task 2156) */
+"Give it a name." = "Give it a name.";
+"Pick the CLI it runs." = "Pick the CLI it runs.";
+"The command needs a full path (~/ is fine)." = "The command needs a full path (~/ is fine).";
+"\"%@\" is not a variable name: letters, digits and _." = "\"%@\" is not a variable name: letters, digits and _.";
+"That CLI has no plugin here." = "That CLI has no plugin here.";
+"That name can't be used. Try another." = "That name can't be used. Try another.";
+"Couldn't write the file; nothing was changed." = "Couldn't write the file; nothing was changed.";
+"Not saved (%@)." = "Not saved (%@).";
+"CLI" = "CLI";
+"Source" = "Source";
+"Command" = "Command";
+"Your own" = "Your own";
+"Preset (plugin)" = "Preset (plugin)";
+"Started by its plugin" = "Started by its plugin";
+"A full path; ~/ is fine. Keep a token in your command rather than here." = "A full path; ~/ is fine. Keep a token in your command rather than here.";
+"Variables" = "Variables";
+"Arguments" = "Arguments";
+"A new one is off for every role. Switched on, a role starts in it with the skills, MCP servers and model it has for that CLI." = "A new one is off for every role. Switched on, a role starts in it with the skills, MCP servers and model it has for that CLI.";
+"Add an Agent CLI of your own" = "Add an Agent CLI of your own";
+"Delete it" = "Delete it";
+"Saved." = "Saved.";
+"%@ custom model" = "%@ custom model";

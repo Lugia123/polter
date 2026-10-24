@@ -69,6 +69,7 @@ pub const PluginLog = @import("PluginLog.zig");
 pub const notes = @import("notes.zig");
 pub const notify = @import("notify.zig");
 pub const persona = @import("persona.zig");
+pub const Launchers = @import("Launchers.zig");
 pub const official = @import("official.zig");
 pub const PersonaStore = @import("PersonaStore.zig");
 pub const PersonaWaits = @import("PersonaWaits.zig");
@@ -168,6 +169,7 @@ test {
     _ = quota;
     _ = QuotaWatch;
     _ = persona;
+    _ = Launchers;
     _ = PersonaStore;
     _ = PersonaWaits;
     _ = Plugin;

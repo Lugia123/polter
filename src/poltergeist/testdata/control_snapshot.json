@@ -1208,6 +1208,8 @@
         "is": "agent",
         "role": "polter-supervisor",
         "cli": "claude-code",
+        "launcher": null,
+        "launcher_name": null,
         "session": "s",
         "worker_of": null
       },
@@ -1239,6 +1241,8 @@
         "is": "agent",
         "role": "",
         "cli": "claude-code",
+        "launcher": null,
+        "launcher_name": null,
         "session": "s",
         "worker_of": null
       },
@@ -1270,6 +1274,8 @@
         "is": "agent",
         "role": "",
         "cli": "",
+        "launcher": null,
+        "launcher_name": null,
         "session": "",
         "worker_of": null
       },
@@ -1301,6 +1307,8 @@
         "is": "agent",
         "role": "",
         "cli": "claude-code",
+        "launcher": null,
+        "launcher_name": null,
         "session": "s",
         "worker_of": null
       },
@@ -1332,6 +1340,8 @@
         "is": "agent",
         "role": "",
         "cli": "claude-code",
+        "launcher": null,
+        "launcher_name": null,
         "session": "s",
         "worker_of": null
       },
@@ -1363,6 +1373,8 @@
         "is": "agent",
         "role": "",
         "cli": "claude-code",
+        "launcher": null,
+        "launcher_name": null,
         "session": "s",
         "worker_of": null
       },
@@ -1394,6 +1406,8 @@
         "is": "agent",
         "role": "",
         "cli": "claude-code",
+        "launcher": null,
+        "launcher_name": null,
         "session": "s",
         "worker_of": null
       },
@@ -1425,6 +1439,8 @@
         "is": "agent",
         "role": "dev-worker",
         "cli": "claude-code",
+        "launcher": null,
+        "launcher_name": null,
         "session": "s",
         "worker_of": "0x00000000000000a1"
       },
@@ -1456,6 +1472,8 @@
         "is": "unknown",
         "role": null,
         "cli": null,
+        "launcher": null,
+        "launcher_name": null,
         "session": null,
         "worker_of": null
       },
@@ -1487,6 +1505,8 @@
         "is": "agent",
         "role": "",
         "cli": "claude-code",
+        "launcher": null,
+        "launcher_name": null,
         "session": "s",
         "worker_of": null
       },
@@ -1518,6 +1538,8 @@
         "is": "agent",
         "role": "",
         "cli": "claude-code",
+        "launcher": null,
+        "launcher_name": null,
         "session": "s",
         "worker_of": null
       },
@@ -1549,6 +1571,8 @@
         "is": "none",
         "role": null,
         "cli": null,
+        "launcher": null,
+        "launcher_name": null,
         "session": null,
         "worker_of": null
       },

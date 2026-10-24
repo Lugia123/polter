@@ -40,6 +40,16 @@ struct PaneStackRulesTests {
         #expect(stack.plainStyle == Rules.Choices.plainStyle)
     }
 
+    @Test func aTabSaysTheAgentCliItsTerminalWasStartedThroughAsItsFrameDoes() throws {
+        let s = try snapshot()
+        let mine = PaneFrameTests.through("claude-deepseek-flash", name: "Claude · DeepSeek flash", at: worker,
+                                          in: try #require(s.terminals))
+        let stack = Rules.stack(
+            members: [Member(terminal: worker, ownName: ""), Member(terminal: supervisor, ownName: "")],
+            shown: 1, terminals: mine, pulses: [])
+        #expect(stack.members.map(\.model) == ["Claude · DeepSeek flash custom model", nil])
+    }
+
     @Test func aTerminalTheCoreDoesNotListIsAnOrdinaryOneUnderItsViewsName() throws {
         let s = try snapshot()
         let stack = Rules.stack(

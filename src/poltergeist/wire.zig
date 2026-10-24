@@ -328,6 +328,25 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .role_delete => .{ .role_delete = .{
             .key = try requireString(aa, params, "key"),
         } },
+        .launcher_list => .launcher_list,
+        // An object written back out as text, as `role_put` carries a role:
+        // the host reads it with the function that reads launchers.json.
+        .launcher_put => .{ .launcher_put = .{
+            .launcher = blk: {
+                const given = params orelse return error.BadParams;
+                const v = given.get("launcher") orelse return error.BadParams;
+                if (v != .object) return error.BadParams;
+                break :blk try std.json.Stringify.valueAlloc(aa, v, .{});
+            },
+        } },
+        .launcher_delete => .{ .launcher_delete = .{
+            .key = try requireString(aa, params, "key"),
+        } },
+        .role_launcher_set => .{ .role_launcher_set = .{
+            .role = try requireString(aa, params, "role"),
+            .launcher = try requireString(aa, params, "launcher"),
+            .on = try requireBool(params, "on"),
+        } },
         .role_clis => .{ .role_clis = .{
             .refresh = optionalBool(params, "refresh", false),
         } },
@@ -2367,7 +2386,7 @@ fn writeAgent(s: *std.json.Stringify, view: AgentView) std.Io.Writer.Error!void 
         try s.write(ms);
     }
     // Absent when nothing said them, on `quiet_ms`'s terms.
-    inline for (.{ "session_id", "cli", "detail", "note" }) |name| {
+    inline for (.{ "session_id", "cli", "launcher", "detail", "note" }) |name| {
         if (@field(a, name).get()) |v| {
             try s.objectField(name);
             try s.write(v);

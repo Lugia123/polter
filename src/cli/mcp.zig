@@ -1194,6 +1194,34 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "launcher_list",
+        .description = "The Agent CLIs -- what Settings › General › Agent CLI lists, called launchers in these tools: the preset ones (each agent CLI a plugin manages, with whether it can run here) and the person's own -- a name, the CLI underneath (`base`), the command that starts it, which roles it is switched on for, and its environment variables **by name only**; values are never shown, here or anywhere but the settings form. A role starts through one of the person's own with role_launch, `cli` set to its key. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "launcher_put",
+        .description = "Add an Agent CLI of the person's own (Settings › General › Agent CLI; a launcher in these tools), or change one by its key. `base` is the agent CLI underneath (a preset key); `command` is the program that starts it -- the person's own wrapper, which keeps any token itself and in the end runs the real CLI with the arguments it was given. **Absolute path** (`~/` is expanded): a Polter started from the Dock has almost no PATH. On Windows a `.ps1` is run through PowerShell and a `.cmd`/`.bat` through `cmd /c`. `env` and `args` are added on top of what the base CLI's plugin builds. Nothing is checked for tokens. A new one is switched off for every role (role_launcher_set); an edit keeps its switches. The change is said in your groups, variables by name. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"launcher":{"type":"object","description":"key, name, base, command; optional env as [{name, value}] and args as [string]"}},"required":["launcher"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "launcher_delete",
+        .description = "Delete an Agent CLI of the person's own (a launcher in these tools); its role switches go with it. A session started through it and brought back later starts on its base CLI, and says so. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "role_launcher_set",
+        .description = "Switch an Agent CLI of the person's own (a launcher in these tools) on or off for a role. Switched on, the role starts through it with its own choices for the base CLI -- skills, MCP servers, model. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"role":{"type":"string"},"launcher":{"type":"string"},"on":{"type":"boolean"}},"required":["role","launcher","on"],"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "role_put",
         .description = "Add a role to the library, or replace the one with the same key " ++
             "in place. `role` is one object: {key, name, description?, instructions?, " ++

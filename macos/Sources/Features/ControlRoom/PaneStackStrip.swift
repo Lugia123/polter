@@ -40,6 +40,9 @@ struct PaneStack: Equatable {
 
         /// The colour the user set on it (task 1699); `.none` for none.
         var color: PaneColor = .none
+        /// What its frame's title says where the CLI's name would be
+        /// (`PaneFrame.Title.model`, task 2156); nil for most.
+        var model: String?
 
         /// The colour its mark is drawn in on its tab -- the flag when it
         /// is the supervisor, a dot when it was given a colour -- or nil

@@ -555,6 +555,13 @@ struct PaneFrameBar: View {
                         .foregroundStyle(secondaryColor(theme))
                         .fixedSize()
                 }
+                // Where the CLI's name would be (task 2156); goes with the
+                // role word, before the name is cut.
+                if role, let model = title.model {
+                    Text(model)
+                        .foregroundStyle(secondaryColor(theme))
+                        .fixedSize()
+                }
             }
             Spacer(minLength: CGFloat(Look.Pane.barGap))
             if hookless == .said, let note = title.note {

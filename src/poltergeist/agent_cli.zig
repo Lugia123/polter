@@ -1042,6 +1042,9 @@ pub fn recognise(
 pub const LaunchFor = struct {
     group: ?[]const u8,
     session: ?[]const u8,
+    /// A launcher of the person's own the CLI is started through (task
+    /// 2156): `--launcher=` on the line, the CLI word being its base.
+    launcher: ?[]const u8 = null,
 
     pub const none: LaunchFor = .{ .group = null, .session = null };
 };
@@ -1067,6 +1070,7 @@ pub fn writeLaunchWords(
     if (extra.session) |id| {
         if (isSessionToken(id)) try w.print(" --resume={s}", .{id});
     }
+    if (extra.launcher) |key| try w.print(" --launcher={s}", .{key});
 }
 
 /// Whether `s` can be a session's id on a launch line and in a launch

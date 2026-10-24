@@ -41,9 +41,13 @@ enum PaneFrame {
         /// none, and for every title that is not a pane's. The host knows
         /// it, not the snapshot: the split view sets it from the surface.
         var color: PaneColor = .none
+        /// "<Agent CLI> custom model" for a terminal started through an
+        /// Agent CLI of the person's own (task 2156, `customModel`); nil
+        /// for every other.
+        var model: String?
 
         init(name: String, shown: ControlRoomSnapshot.Terminal.Bar.Shown, word: String, says: Kind? = nil, note: String? = nil,
-             takeOver: ControlRoomList.TakeOverTitle? = nil, badged: Bool = false, color: PaneColor = .none) {
+             takeOver: ControlRoomList.TakeOverTitle? = nil, badged: Bool = false, color: PaneColor = .none, model: String? = nil) {
             self.name = name
             self.shown = shown
             self.word = word
@@ -52,6 +56,7 @@ enum PaneFrame {
             self.takeOver = takeOver
             self.badged = badged
             self.color = color
+            self.model = model
         }
 
         /// The control room's own frame: the supervisor's status, which is
@@ -157,11 +162,23 @@ enum PaneFrame {
             let shown = listed.bar?.shown ?? .init(listed.shown)
             let wears = listed.pane ?? .plain
             return Drawn(wears: wears, title: Title(name: listed.title, shown: shown, word: ControlRoomList.say(listed.bar?.text ?? listed.text),
-                                                    badged: true))
+                                                    badged: true, model: customModel(listed.who)))
         }
             ?? Drawn(wears: .plain, title: Title(name: ownName, shown: .none, word: "", badged: true))
         if drawn.wears == .plain, place.alone { return nil }
         return drawn
+    }
+
+    /// What a terminal started through an Agent CLI of the person's own
+    /// says where its CLI's name would be (task 2156): that Agent CLI's
+    /// name, and "custom model" -- it is not spending the CLI account's
+    /// allowance. Its key when the core said no name; nil when it was not
+    /// started through one.
+    static func customModel(_ who: ControlRoomSnapshot.Terminal.Who?) -> String? {
+        guard let who, who.is == .agent, let key = who.launcher, !key.isEmpty else { return nil }
+        let name = who.launcher_name.flatMap { $0.isEmpty ? nil : $0 } ?? key
+        return String(localized: "\(name) custom model",
+                      comment: "分屏框与层叠标签：走用户自己的 Agent CLI 起的终端，写在 CLI 名的位置；%@ 是那个 Agent CLI 的名字")
     }
 
     /// The ground of a badge, for the colour the pane is shown in: the

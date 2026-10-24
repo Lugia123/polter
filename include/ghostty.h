@@ -1817,6 +1817,13 @@ GHOSTTY_API uintptr_t ghostty_app_notification_group(ghostty_app_t, uint64_t, ch
 GHOSTTY_API uintptr_t ghostty_app_persona_catalog(ghostty_app_t, char*, uintptr_t);
 GHOSTTY_API bool ghostty_app_persona_put(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API bool ghostty_app_persona_delete(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+// The Agent CLI page (task 2156): the presets, every role, and launchers.json
+// -- values and all, for the settings form alone. _put takes one launcher
+// object, its roles as the form has them; _delete takes a key. Same rules as
+// the persona calls above.
+GHOSTTY_API uintptr_t ghostty_app_launchers(ghostty_app_t, char*, uintptr_t);
+GHOSTTY_API bool ghostty_app_launcher_put(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+GHOSTTY_API bool ghostty_app_launcher_delete(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 // Official roles and skills (the ones Polter ships). What a person changes in
 // one is kept as an override and can be put back; these calls are the role
 // library's alone -- no agent tool reaches them.

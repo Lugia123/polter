@@ -282,6 +282,15 @@ pub const Method = enum {
     /// so nothing gets into the file that the file would refuse.
     role_put,
 
+    /// The agent launchers of the person's own (task 2156, `Launchers`):
+    /// listed with the preset ones, put, deleted, and switched on or off
+    /// for a role. What anybody but the settings form is shown of one has
+    /// its variables by name only.
+    launcher_list,
+    launcher_put,
+    launcher_delete,
+    role_launcher_set,
+
     /// Delete a role. Terminals wearing it are taken out of it.
     role_delete,
 
@@ -694,6 +703,12 @@ pub const Request = union(Method) {
     /// `role` is the role object as JSON text; the wire layer writes it
     /// back out from the object the caller sent.
     role_put: struct { role: []const u8 },
+    launcher_list,
+    /// The launcher, as JSON written back out as text, the way `role_put`
+    /// carries a role.
+    launcher_put: struct { launcher: []const u8 },
+    launcher_delete: struct { key: []const u8 },
+    role_launcher_set: struct { role: []const u8, launcher: []const u8, on: bool },
     role_delete: struct { key: []const u8 },
     role_clis: struct { refresh: bool = false },
     role_launch: struct {
@@ -1148,6 +1163,10 @@ pub fn callableByPlugin(method: Method) bool {
         // was said of plugins, and roles decide what an agent may use.
         .role_list,
         .role_put,
+        .launcher_list,
+        .launcher_put,
+        .launcher_delete,
+        .role_launcher_set,
         .role_delete,
         .role_clis,
         .role_launch,
@@ -1537,6 +1556,10 @@ pub fn requiresSupervisor(method: Method) bool {
         // powers over it and to nobody else (roles.md part eleven).
         .role_list,
         .role_put,
+        .launcher_list,
+        .launcher_put,
+        .launcher_delete,
+        .role_launcher_set,
         .role_delete,
         .role_clis,
         .role_launch,
@@ -1654,6 +1677,10 @@ pub fn targetsTerminal(method: Method) bool {
         // existing one.
         .role_list,
         .role_put,
+        .launcher_list,
+        .launcher_put,
+        .launcher_delete,
+        .role_launcher_set,
         .role_delete,
         .role_clis,
         .role_launch,
@@ -1773,6 +1800,10 @@ pub fn target(req: Request) ?Bus.Id {
         .session_file,
         .role_list,
         .role_put,
+        .launcher_list,
+        .launcher_put,
+        .launcher_delete,
+        .role_launcher_set,
         .role_delete,
         .role_clis,
 
@@ -1882,6 +1913,10 @@ pub fn selfPermitted(req: Request) bool {
         .worktree_remove,
         .role_list,
         .role_put,
+        .launcher_list,
+        .launcher_put,
+        .launcher_delete,
+        .role_launcher_set,
         .role_delete,
         .role_clis,
         .role_launch,
@@ -2108,6 +2143,10 @@ pub fn promptReach(method: Method) enum {
         // answered -- the same reach as `terminal_open`, not `terminal_send`.
         .role_list,
         .role_put,
+        .launcher_list,
+        .launcher_put,
+        .launcher_delete,
+        .role_launcher_set,
         .role_delete,
         .role_clis,
         .role_launch,
@@ -2785,6 +2824,10 @@ test "only what changes the arrangement needs the supervisor" {
             .terminal_open,
             .role_list,
             .role_put,
+            .launcher_list,
+            .launcher_put,
+            .launcher_delete,
+            .role_launcher_set,
             .role_delete,
             .role_clis,
             .role_launch,
@@ -5876,6 +5919,15 @@ pub const Host = struct {
             group: []const u8,
         ) void,
 
+        /// List, put, delete or switch a launcher of the person's own
+        /// (task 2156). The answer is JSON, values of variables left out.
+        launchers: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            by: Bus.Id,
+            op: LauncherOp,
+        ) anyerror![]const u8,
+
         /// Whether an agent is listening in this terminal right now.
         ///
         /// **A fact, not a policy.** What to do about a `false` is decided
@@ -6714,6 +6766,10 @@ pub const Host = struct {
         return self.vtable.personaCatalog(self.ctx, alloc);
     }
 
+    fn launchers(self: Host, alloc: std.mem.Allocator, by: Bus.Id, op: LauncherOp) anyerror![]const u8 {
+        return self.vtable.launchers(self.ctx, alloc, by, op);
+    }
+
     fn personaPut(self: Host, json: []const u8) anyerror!void {
         return self.vtable.personaPut(self.ctx, json);
     }
@@ -7187,7 +7243,7 @@ pub fn showsAnAgent(req: Request) bool {
         // does not compile until somebody has said whether hearing it
         // means an agent is there.
         .agent_event => |ev| switch (ev.event) {
-            .hooks_expected, .launch_failed, .launched_for_group => false,
+            .hooks_expected, .launch_failed, .launched_for_group, .launched_with => false,
             .session_started,
             .turn_started,
             .turn_resumed,
@@ -7304,6 +7360,10 @@ pub fn isAgentCall(method: Method) bool {
         .worktree_remove,
         .role_list,
         .role_put,
+        .launcher_list,
+        .launcher_put,
+        .launcher_delete,
+        .role_launcher_set,
         .role_delete,
         .role_clis,
         .role_launch,
@@ -7932,6 +7992,11 @@ fn dispatchOne(
             return .ok;
         },
 
+        .launcher_list => return launcherAnswer(host.launchers(alloc, caller, .list)),
+        .launcher_put => |p| return launcherAnswer(host.launchers(alloc, caller, .{ .put = p.launcher })),
+        .launcher_delete => |p| return launcherAnswer(host.launchers(alloc, caller, .{ .delete = p.key })),
+        .role_launcher_set => |p| return launcherAnswer(host.launchers(alloc, caller, .{ .role = .{ .role = p.role, .launcher = p.launcher, .on = p.on } })),
+
         .role_delete => |p| {
             host.personaDelete(p.key) catch |err| return roleWriteFailure(err);
             return .ok;
@@ -8025,6 +8090,10 @@ fn dispatchOne(
                 error.NotSetUpForCli => hostFailure(
                     "NotSetUpForCli",
                     "this role is not set up for that CLI. role_list shows which it is set up for.",
+                ),
+                error.LauncherNotOn => hostFailure(
+                    "LauncherNotOn",
+                    "that Agent CLI is not switched on for this role. role_launcher_set switches it on.",
                 ),
                 error.NoCli => hostFailure(
                     "NoCli",
@@ -10379,6 +10448,32 @@ fn parseKind(name: []const u8) ?Tasks.Kind {
 /// Separate from `chatFailure` rather than folded into it because the
 /// answers are different sentences: "that is not your task" is something a
 /// worker can act on, and "no group by that name" is not.
+/// What a launcher call asks the host (task 2156).
+pub const LauncherOp = union(enum) {
+    list,
+    /// The launcher as JSON text.
+    put: []const u8,
+    delete: []const u8,
+    role: struct { role: []const u8, launcher: []const u8, on: bool },
+};
+
+fn launcherAnswer(answer: anyerror![]const u8) wire.Response {
+    const text = answer catch |err| return switch (err) {
+        error.BadLauncher => hostFailure("BadParams", "that does not read as an Agent CLI: it needs key, name, base and command, env as [{name,value}] and args as strings."),
+        error.BadKey => hostFailure("BadParams", "an Agent CLI's key is 1 to 64 of a-z, 0-9 and -."),
+        error.BadName => hostFailure("BadParams", "a launcher needs a name."),
+        error.UnknownBase => hostFailure("UnknownBase", "base must be an agent CLI this machine has a plugin for. launcher_list shows them as the preset ones."),
+        error.CommandNotAbsolute => hostFailure("BadParams", "command must be an absolute path (or start with ~/): a Polter started from the Dock has almost no PATH."),
+        error.BadEnvName => hostFailure("BadParams", "an environment variable's name is letters, digits and _, not starting with a digit."),
+        error.KeyTaken => hostFailure("KeyTaken", "that key is a preset launcher's."),
+        error.NoSuchLauncher => hostFailure("NoSuchLauncher", "no Agent CLI of the person's own by that key. launcher_list shows them."),
+        error.NoSuchPersona => hostFailure("NoSuchRole", "there is no role with that key. role_list has them."),
+        error.WriteFailed => hostFailure("WriteFailed", "could not write launchers.json; nothing was changed."),
+        else => hostFailure("LaunchersFailed", "could not read or change the launchers."),
+    };
+    return .{ .json = text };
+}
+
 fn taskFailure(err: anyerror) wire.Response {
     return switch (err) {
         error.LogsClosed => chatFailure(err),
@@ -11338,6 +11433,7 @@ const FakeHost = struct {
             .agentHeard = agentHeard,
             .launchFailed = launchFailed,
             .launchedForGroup = launchedForGroup,
+            .launchers = launchers,
             .personaCatalog = personaCatalog,
             .personaPut = personaPut,
             .personaDelete = personaDelete,
@@ -12035,6 +12131,16 @@ const FakeHost = struct {
     fn membership(ctx: *anyopaque, _: std.mem.Allocator, _: Bus.Id) anyerror!wire.Membership {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return self.membership_is orelse error.NoSuchGroup;
+    }
+
+    fn launchers(ctx: *anyopaque, alloc: std.mem.Allocator, by: Bus.Id, op: LauncherOp) anyerror![]const u8 {
+        _ = ctx;
+        _ = by;
+        return switch (op) {
+            .list => try alloc.dupe(u8, "{\"launchers\":[]}"),
+            .delete => error.NoSuchLauncher,
+            else => try alloc.dupe(u8, "{}"),
+        };
     }
 
     fn launchedForGroup(ctx: *anyopaque, id: Bus.Id, group: []const u8) void {
@@ -15728,6 +15834,18 @@ test "a shielded terminal cannot be given work" {
     try testing.expectEqualStrings("Shielded", res.failed.code);
 }
 
+test "2156: the launchers are a supervisor's to change, and a worker is refused before the host is asked" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    for ([_]Method{ .launcher_list, .launcher_put, .launcher_delete, .role_launcher_set }) |m| {
+        try testing.expect(requiresSupervisor(m));
+        try testing.expect(!callableByPlugin(m));
+    }
+    const refused = authorize(&b, term(worker), .{ .launcher_delete = .{ .key = "x" } });
+    try testing.expectError(error.NotPermitted, refused);
+    try authorize(&b, term(boss), .{ .launcher_delete = .{ .key = "x" } });
+}
+
 test "no panel tool is a plugin's" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -16431,7 +16549,7 @@ test "launched standing: only the launcher's own word is not an agent" {
     for (std.enums.values(AgentEvent.Kind)) |kind| {
         const shows = showsAnAgent(.{ .agent_event = hookEvent(kind) });
         // The three a launcher sends for itself are the three that are not.
-        try testing.expectEqual(kind != .hooks_expected and kind != .launch_failed and kind != .launched_for_group, shows);
+        try testing.expectEqual(kind != .hooks_expected and kind != .launch_failed and kind != .launched_for_group and kind != .launched_with, shows);
     }
     try testing.expect(showsAnAgent(.me));
     try testing.expect(showsAnAgent(.terminal_list));
@@ -18928,7 +19046,7 @@ test "ControlRoom resume: the host hears what an agent's hooks said, after the b
     // there is what the host does next.
     try testing.expectEqualStrings("s-9", b.agentOf(worker).session_id.get().?);
 
-    for ([_]AgentEvent.Kind{ .hooks_expected, .launch_failed, .launched_for_group }) |kind| {
+    for ([_]AgentEvent.Kind{ .hooks_expected, .launch_failed, .launched_for_group, .launched_with }) |kind| {
         fake.heard = null;
         _ = try dispatch(testing.allocator, &b, fake.host(), term(worker), .{ .agent_event = hookEvent(kind) });
         try testing.expect(fake.heard == null);

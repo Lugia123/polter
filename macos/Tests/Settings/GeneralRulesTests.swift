@@ -9,7 +9,7 @@ struct GeneralRulesTests {
     /// then the three that need no form.
     @Test func theGroupsAreTheSpecsInItsOrder() {
         #expect(GeneralGroup.allCases.map(\.rawValue) == [
-            "appearance", "font", "terminal", "windows", "polter", "logs", "all", "screenshot", "keybinds", "advanced", "about",
+            "appearance", "font", "terminal", "windows", "polter", "agentCli", "logs", "all", "screenshot", "keybinds", "advanced", "about",
         ])
     }
 

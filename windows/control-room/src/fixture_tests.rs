@@ -996,7 +996,7 @@ fn who_the_core_says_is_in_a_terminal_is_read_as_one_of_three_and_never_guessed(
     assert!(snapshot::decode(&odd).is_err());
 
     // A core from before it said this: nothing, not a made-up "unknown".
-    let block = "      \"who\": {\n        \"is\": \"none\",\n        \"role\": null,\n        \"cli\": null,\n        \"session\": null,\n        \"worker_of\": null\n      },\n";
+    let block = "      \"who\": {\n        \"is\": \"none\",\n        \"role\": null,\n        \"cli\": null,\n        \"launcher\": null,\n        \"launcher_name\": null,\n        \"session\": null,\n        \"worker_of\": null\n      },\n";
     assert!(FIXTURE.contains(block), "the fixture no longer writes the block this test cuts");
     let before = snapshot::decode(&FIXTURE.replacen(block, "", 1)).unwrap();
     assert_eq!(before.terminals.iter().find(|t| t.id == "0x00000000000000c2").unwrap().who, None);

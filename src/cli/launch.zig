@@ -65,6 +65,7 @@ const Plugin = @import("../poltergeist/Plugin.zig");
 const AgentEvent = @import("../poltergeist/agent_event.zig");
 const hook = @import("hook.zig");
 const Chat = @import("../poltergeist/Chat.zig");
+const Launchers = @import("../poltergeist/Launchers.zig");
 
 pub const Options = struct {
     pub fn deinit(self: Options) void {
@@ -161,6 +162,8 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
             error.BadGroup => "Polter: `--group=` needs a group's name.\n",
             error.BadSession => "Polter: `--resume=` needs a session's id, " ++
                 "in letters, digits, `.`, `_` and `-`.\n",
+            error.BadLauncher => "Polter: `--launcher=` needs the key of an Agent CLI of your own, " ++
+                "in lower-case letters, digits and `-`.\n",
             else => "Polter: `+launch` needs a role.\n",
         });
         try err_out.writeAll(usage);
@@ -208,13 +211,59 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
     defer env.deinit();
     const adapters = agent_cli.discover(aa, io, &env);
 
+    // --- a launcher of the person's own (task 2156)
+    //
+    // Named by `--launcher=`, or by its key where the CLI goes -- the
+    // app types the first, a person may well type the second. The CLI
+    // underneath is the launcher's base; the role's choices for that CLI
+    // are what it starts with.
+    var launcher: ?Launchers.Launcher = null;
+    var named_cli = parsed.cli;
+    {
+        const lpath = try Launchers.pathBeside(aa, path);
+        const lbytes: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(io, lpath, aa, .limited(Launchers.max_bytes)) catch null;
+        const lset: Launchers.Set = if (lbytes) |b| set: {
+            const got = Launchers.parseLeaky(aa, b) catch {
+                try err_out.print("Polter: {s} does not read; starting without the Agent CLIs of your own in it.\n", .{lpath});
+                break :set .{};
+            };
+            if (got.skipped > 0) try err_out.print("Polter: {d} Agent CLI(s) in {s} did not read and were left out.\n", .{ got.skipped, lpath });
+            break :set got.set;
+        } else .{};
+        const wanted: ?[]const u8 = parsed.launcher orelse if (parsed.cli) |c|
+            (if (agent_cli.find(adapters, c) == null and lset.find(c) != null) c else null)
+        else
+            null;
+        if (wanted) |key| {
+            if (lset.find(key)) |l| {
+                if (!l.enabledFor(p.key)) {
+                    try err_out.print(
+                        "Polter: the Agent CLI \"{s}\" is not switched on for the role \"{s}\". " ++
+                            "Switch it on in Settings › General › Agent CLI.\n",
+                        .{ l.name, p.name },
+                    );
+                    return 1;
+                }
+                launcher = l;
+                named_cli = l.base;
+            } else if (parsed.launcher != null) {
+                // Gone since this session started: go on with the CLI
+                // underneath, and say so (`--resume` after a delete).
+                try err_out.print(
+                    "Polter: the Agent CLI \"{s}\" is no longer there; starting {s} as its plugin starts it.\n",
+                    .{ key, parsed.cli orelse "the role's CLI" },
+                );
+            }
+        }
+    }
+
     // Named, or the role's default by the app's own rule
     // (`Persona.defaultCli`): of the CLIs it is set up for, the only one
     // with an adapter here. The app always names one on the line it types;
     // this is for a person typing `polter +launch <role>`, who is the one
     // asking and has no CLI of their own to go by.
-    const choice: persona.CliChoice = if (parsed.cli) |key|
-        p.cli(key) orelse {
+    const choice: persona.CliChoice = if (named_cli) |key|
+        p.cli(key) orelse (if (launcher != null) persona.CliChoice{ .cli = key } else null) orelse {
             try err_out.print(
                 "Polter: the role \"{s}\" is not set up for {s}.\n",
                 .{ p.name, key },
@@ -276,9 +325,16 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
         return 1;
     };
 
+    // Through a launcher of the person's own: its command where the CLI's
+    // program was, its arguments after the rest, its variables on top of
+    // the adapter's (task 2156). The adapter built everything else.
+    var argv = launch.argv;
+    if (launcher) |l| argv = try Launchers.rewrite(aa, launch.argv, l, if (builtin.os.tag == .windows) .windows else .posix);
+
     // One line before the CLI takes the screen, so that what this terminal
     // is wearing is on it in words, not only in a tab mark.
     try err_out.print("Polter · {s} · {s}", .{ p.name, adapter.label });
+    if (launcher) |l| try err_out.print(" · {s}", .{l.name});
     if (launch.summary) |s| try err_out.print(" — {s}", .{s});
     try err_out.writeAll("\n");
     for (launch.notes) |n| try err_out.print("  {s}\n", .{n});
@@ -301,6 +357,7 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
     }
 
     for (launch.env) |kv| try env.put(kv[0], kv[1]);
+    if (launcher) |l| for (l.env) |e| try env.put(e.name, e.value);
 
     // The adapter put hooks in the CLI's settings: tell this terminal's
     // Polter to expect them, so that hearing nothing from them for long
@@ -313,12 +370,15 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
     // group once it is heard, when the group's supervisor is the one that
     // launched it. Best effort, like the line above.
     if (parsed.group) |g| sayGroup(io, &env, adapter.key, g);
+    // Which launcher (task 2156): the session is to go on through the same
+    // one, and an agent that never connects is told about differently.
+    if (launcher) |l| sayLauncher(io, &env, adapter.key, l.key, l.name);
 
     if (comptime std.process.can_replace) {
-        const err = std.process.replace(io, .{ .argv = launch.argv, .environ_map = &env });
+        const err = std.process.replace(io, .{ .argv = argv, .environ_map = &env });
         // It only comes back when the CLI was not started.
         if (err == error.FileNotFound) progress.why = .not_found;
-        try err_out.print("Polter: could not start {s} ({t}).", .{ launch.argv[0], err });
+        try err_out.print("Polter: could not start {s} ({t}).", .{ argv[0], err });
         if (err == error.FileNotFound) try err_out.print(" Is {s} installed?", .{adapter.bin});
         try err_out.writeAll("\n");
         return 127;
@@ -336,14 +396,14 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
     // handed back as ours, so the shell sees what it would have seen had
     // the CLI been typed.
     var child = std.process.spawn(io, .{
-        .argv = launch.argv,
+        .argv = argv,
         .environ_map = &env,
         .stdin = .inherit,
         .stdout = .inherit,
         .stderr = .inherit,
     }) catch |err| {
         if (err == error.FileNotFound) progress.why = .not_found;
-        try err_out.print("Polter: could not start {s} ({t}).", .{ launch.argv[0], err });
+        try err_out.print("Polter: could not start {s} ({t}).", .{ argv[0], err });
         if (err == error.FileNotFound) try err_out.print(" Is {s} installed?", .{adapter.bin});
         try err_out.writeAll("\n");
         return 127;
@@ -352,7 +412,7 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
     progress.started = true;
     const began: std.Io.Timestamp = .now(io, .awake);
     const term = child.wait(io) catch |err| {
-        try err_out.print("Polter: lost track of {s} ({t}).\n", .{ launch.argv[0], err });
+        try err_out.print("Polter: lost track of {s} ({t}).\n", .{ argv[0], err });
         return 1;
     };
     const code: u8 = switch (term) {
@@ -501,6 +561,22 @@ fn sayGroup(io: std.Io, env: *const std.process.Environ.Map, cli: []const u8, gr
     };
 }
 
+/// Tell this terminal's Polter which launcher of the person's own the
+/// agent about to start goes through (`AgentEvent.Kind.launched_with`,
+/// task 2156).
+fn sayLauncher(io: std.Io, env: *const std.process.Environ.Map, cli: []const u8, key: []const u8, name: []const u8) void {
+    const socket_path = env.get("GHOSTTY_POLTER_SOCKET") orelse return;
+    const token = env.get("GHOSTTY_POLTER_TOKEN") orelse return;
+    var ev: AgentEvent.Event = .none;
+    ev.event = .launched_with;
+    ev.cli = cli;
+    ev.detail = key;
+    ev.note = name;
+    hook.deliver(io, socket_path, token, ev) catch |err| {
+        std.log.scoped(.launch).warn("could not say which launcher the agent goes through err={t}", .{err});
+    };
+}
+
 /// Why `agent_cli.discover` offered no adapter for `key`, in the words the
 /// person needs -- which are different for "there is no such plugin" and
 /// "the plugin is here, but its adapter cannot run on this system".
@@ -608,7 +684,7 @@ const Console = struct {
 
 const usage =
     \\
-    \\    polter +launch <role> [<cli>] [--group=<name>] [--resume=<session>] [-- <arg>...]
+    \\    polter +launch <role> [<cli>] [--group=<name>] [--resume=<session>] [--launcher=<key>] [-- <arg>...]
     \\
 ;
 
@@ -620,11 +696,14 @@ const Parsed = struct {
     group: ?[]const u8,
     /// The session to go on with; null for a new one.
     session: ?[]const u8,
+    /// A launcher of the person's own to start the CLI through (task
+    /// 2156, `Launchers`); null for the CLI as its plugin starts it.
+    launcher: ?[]const u8 = null,
     /// What came after `--`, for the CLI, in order. Empty without one.
     passthrough: []const []const u8,
 };
 
-const ParseError = error{ NoRole, ExtraArgument, BadGroup, BadSession };
+const ParseError = error{ NoRole, ExtraArgument, BadGroup, BadSession, BadLauncher };
 
 /// `<role> [<cli>] [-- <arg>...]` after our own `+launch` token.
 ///
@@ -665,6 +744,7 @@ fn parseRest(args: []const []const u8) ParseError!Parsed {
     var n: usize = 0;
     var group: ?[]const u8 = null;
     var session: ?[]const u8 = null;
+    var launcher: ?[]const u8 = null;
     for (args[0..split]) |a| {
         if (cut(a, "--group=")) |v| {
             if (!Chat.isValidName(v)) return error.BadGroup;
@@ -672,6 +752,9 @@ fn parseRest(args: []const []const u8) ParseError!Parsed {
         } else if (cut(a, "--resume=")) |v| {
             if (!agent_cli.isSessionToken(v)) return error.BadSession;
             session = v;
+        } else if (cut(a, "--launcher=")) |v| {
+            if (!Launchers.isValidKey(v)) return error.BadLauncher;
+            launcher = v;
         } else {
             if (n == 0 and !persona.isValidKey(a)) return error.NoRole;
             if (n == words.len) return error.ExtraArgument;
@@ -686,6 +769,7 @@ fn parseRest(args: []const []const u8) ParseError!Parsed {
         .cli = if (n == 2) words[1] else null,
         .group = group,
         .session = session,
+        .launcher = launcher,
         .passthrough = passthrough,
     };
 }
@@ -706,6 +790,13 @@ fn withPassthrough(
     var out = choice;
     out.args = try std.mem.concat(aa, []const u8, &.{ choice.args, passthrough });
     return out;
+}
+
+test "2156: +launch takes a launcher's key as its own word, and refuses one that is not a key" {
+    const got = try parseRest(&.{ "polter-tester", "claude-code", "--launcher=claude-deepseek-flash" });
+    try std.testing.expectEqualStrings("claude-deepseek-flash", got.launcher.?);
+    try std.testing.expectEqualStrings("claude-code", got.cli.?);
+    try std.testing.expectError(error.BadLauncher, parseRest(&.{ "x", "--launcher=Bad Key" }));
 }
 
 test "+launch: no `--` is a role and an optional CLI, nothing passed through" {

@@ -8,7 +8,7 @@ import Foundation
 /// The groups of the General section, in list order (§7.1). The raw values
 /// are what a route's `item` names.
 enum GeneralGroup: String, CaseIterable, Identifiable {
-    case appearance, font, terminal, windows, polter, logs, all, screenshot, keybinds, advanced, about
+    case appearance, font, terminal, windows, polter, agentCli, logs, all, screenshot, keybinds, advanced, about
 
     var id: String { rawValue }
 
@@ -19,6 +19,9 @@ enum GeneralGroup: String, CaseIterable, Identifiable {
         case .terminal: String(localized: "Terminal", comment: "设置窗口·通用：分组，终端")
         case .windows: String(localized: "Windows & Tabs", comment: "设置窗口·通用：分组，窗口与标签")
         case .polter: "Polter"
+        // Not translated, in any language (task 2156): the name the person
+        // sees for the agent CLIs, preset and their own.
+        case .agentCli: "Agent CLI"
         case .logs: String(localized: "Log Management", comment: "设置窗口·通用：分组，日志管理")
         case .all: String(localized: "All Options", comment: "设置窗口·通用：分组，全部选项")
         case .screenshot: String(localized: "Screenshot", comment: "设置窗口·通用：分组，截图")
@@ -33,7 +36,7 @@ enum GeneralGroup: String, CaseIterable, Identifiable {
     var needsForm: Bool {
         switch self {
         case .appearance, .font, .terminal, .windows, .polter, .logs, .all, .screenshot: true
-        case .keybinds, .advanced, .about: false
+        case .keybinds, .advanced, .about, .agentCli: false
         }
     }
 }

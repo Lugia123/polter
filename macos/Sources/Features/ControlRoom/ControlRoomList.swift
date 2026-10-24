@@ -736,7 +736,8 @@ struct ControlRoomSnapshot: Decodable, Equatable {
         /// project's pane keeps. `role`, `cli` and `session` are the
         /// core's words as it wrote them -- for an agent an empty string
         /// is that part not known, and for the other two all three are
-        /// nil. Read and carried; nothing here draws it.
+        /// nil. Read and carried; only `launcher` is drawn (task 2156,
+        /// `PaneFrame.customModel`).
         struct Who: Decodable, Equatable {
             /// `unknown` is not `none`: the core could not tell, which is
             /// not nobody. A value this does not know is an error.
@@ -748,6 +749,13 @@ struct ControlRoomSnapshot: Decodable, Equatable {
             var `is`: Is
             var role: String?
             var cli: String?
+            /// The Agent CLI of the person's own it was started through
+            /// (task 2156); nil for the CLI as its plugin starts it, and in
+            /// a snapshot from before the core said it.
+            var launcher: String?
+            /// What the person calls it, as it was when the agent started;
+            /// nil with `launcher`, and when nothing was said.
+            var launcher_name: String?
             var session: String?
             /// The supervisor this one was opened for as a worker, in this
             /// run.

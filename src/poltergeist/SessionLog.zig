@@ -47,6 +47,10 @@ tree: daylog.GroupTree,
 pub const Member = struct {
     role: []const u8 = "",
     cli: []const u8 = "",
+    /// The launcher of the person's own it was started through (task
+    /// 2156); empty for the CLI as its plugin starts it. What a supervisor
+    /// bringing it back types after `--launcher=`.
+    launcher: []const u8 = "",
     cwd: []const u8 = "",
     title: []const u8 = "",
     session_id: []const u8 = "",
@@ -56,6 +60,8 @@ pub const Member = struct {
 /// An agent in a member terminal started, or said, a session.
 pub const Agent = struct {
     cli: []const u8,
+    /// As `Member.launcher`.
+    launcher: []const u8 = "",
     session_id: []const u8,
     transcript_path: []const u8,
 };
@@ -302,6 +308,10 @@ fn render(s: *std.json.Stringify, group: []const u8, at_ms: i64, line: Line) std
             try s.write(j.member.role);
             try s.objectField("cli");
             try s.write(j.member.cli);
+            if (j.member.launcher.len > 0) {
+                try s.objectField("launcher");
+                try s.write(j.member.launcher);
+            }
             try s.objectField("cwd");
             try s.write(j.member.cwd);
             try s.objectField("title");
@@ -322,6 +332,10 @@ fn render(s: *std.json.Stringify, group: []const u8, at_ms: i64, line: Line) std
             try terminalField(s, a.terminal);
             try s.objectField("cli");
             try s.write(a.agent.cli);
+            if (a.agent.launcher.len > 0) {
+                try s.objectField("launcher");
+                try s.write(a.agent.launcher);
+            }
             try s.objectField("session_id");
             try s.write(a.agent.session_id);
             try s.objectField("transcript_path");
@@ -367,6 +381,9 @@ pub const Session = struct {
     terminal: u64,
     at_ms: i64,
     cli: []const u8,
+    /// The launcher of the person's own it went through; empty for none
+    /// (task 2156).
+    launcher: []const u8 = "",
     session_id: []const u8,
     transcript_path: []const u8,
 };
@@ -473,6 +490,7 @@ fn apply(
             .terminal = terminal,
             .at_ms = at_ms,
             .cli = str(obj, "cli") orelse "",
+            .launcher = str(obj, "launcher") orelse "",
             .session_id = sid,
             .transcript_path = str(obj, "transcript_path") orelse "",
         });
@@ -493,6 +511,7 @@ fn apply(
             .terminal = terminal,
             .at_ms = at_ms,
             .cli = str(obj, "cli") orelse "",
+            .launcher = str(obj, "launcher") orelse "",
             .session_id = str(obj, "session_id") orelse "",
             .transcript_path = str(obj, "transcript_path") orelse "",
         });

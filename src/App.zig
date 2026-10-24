@@ -3668,7 +3668,7 @@ fn poltergeistAgentHeard(
         .awaiting_input,
         => .only_a_change,
         // Not an agent speaking: the launcher's own two, and a file.
-        .hooks_expected, .launch_failed, .launched_for_group, .allowance_written, .context_reported => return,
+        .hooks_expected, .launch_failed, .launched_for_group, .launched_with, .allowance_written, .context_reported => return,
         // Said after every tool call, and about the turn rather than the
         // session: what this keeps (who, which session) the events above
         // have already said, and walking the groups on each tool call
@@ -6879,7 +6879,192 @@ pub const LaunchPersonaError = error{
 };
 
 /// A role and the CLI to start it in, checked against the library.
-const LaunchChoice = struct { key: []const u8, cli: []const u8 };
+// --------------------------------------------- the person's launchers (2156)
+
+fn launchersPath(alloc: Allocator) ![]const u8 {
+    const personas = try poltergeistpkg.PersonaStore.defaultPath(alloc);
+    defer alloc.free(personas);
+    return poltergeistpkg.Launchers.pathBeside(alloc, personas);
+}
+
+/// The launchers of the person's own, read now; none when there is no file
+/// or it does not read (said in the log). In `aa`.
+fn launcherSet(self: *App, aa: Allocator) poltergeistpkg.Launchers.Set {
+    _ = self;
+    const path = launchersPath(aa) catch return .{};
+    const bytes = std.Io.Dir.cwd().readFileAlloc(global.io(), path, aa, .limited(poltergeistpkg.Launchers.max_bytes)) catch return .{};
+    const got = poltergeistpkg.Launchers.parseLeaky(aa, bytes) catch {
+        log.warn("launchers: {s} does not read; none are offered", .{path});
+        return .{};
+    };
+    if (got.skipped > 0) log.warn("launchers: {d} in {s} did not read and were left out", .{ got.skipped, path });
+    return got.set;
+}
+
+/// Written whole and atomically, owner-only: it may hold a token the
+/// person chose to write into it.
+fn writeLauncherSet(aa: Allocator, set: poltergeistpkg.Launchers.Set) !void {
+    const io = global.io();
+    const path = try launchersPath(aa);
+    var buf: std.Io.Writer.Allocating = .init(aa);
+    try poltergeistpkg.Launchers.writeFile(&buf.writer, set);
+    const dir = std.fs.path.dirname(path) orelse return error.WriteFailed;
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    var d = std.Io.Dir.cwd().openDir(io, dir, .{}) catch return error.WriteFailed;
+    defer d.close(io);
+    var atomic = d.createFileAtomic(io, std.fs.path.basename(path), .{
+        .permissions = if (builtin.os.tag != .windows and std.posix.mode_t != u0) .fromMode(0o600) else .default_file,
+        .replace = true,
+    }) catch return error.WriteFailed;
+    defer atomic.deinit(io);
+    atomic.file.writeStreamingAll(io, buf.written()) catch return error.WriteFailed;
+    atomic.replace(io) catch return error.WriteFailed;
+}
+
+/// The agent CLIs this machine has a plugin for: the preset launchers, and
+/// what a launcher of the person's own may stand on.
+fn presetLaunchers(aa: Allocator) ![]const poltergeistpkg.agent_cli.Found {
+    var env = try global.environMap();
+    defer env.deinit();
+    return poltergeistpkg.agent_cli.survey(aa, global.io(), &env);
+}
+
+/// A line in every group `by` supervises, and in the log, saying what was
+/// changed -- names only (task 2156: "改动要留痕").
+fn launcherTrace(self: *App, by: poltergeistpkg.Bus.Id, text: []const u8) void {
+    log.info("launchers: {x} {s}", .{ by, text });
+    const now: u64 = @intCast(@max(self.poltergeistWallMs(), 0));
+    var it = self.chat.groups.iterator();
+    while (it.next()) |kv| {
+        if (kv.value_ptr.created_by != by) continue;
+        _ = self.chat.post(kv.key_ptr.*, by, text, now) catch {};
+    }
+}
+
+/// The Agent CLI page of the settings window (task 2156): every preset with
+/// whether it can run here, the person's own **with their values** -- this
+/// is the one place those are shown, the form that edits them -- and every
+/// role, for the switches. In `alloc`.
+pub fn settingsLaunchersJson(self: *App, alloc: Allocator) ![]u8 {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const set = self.launcherSet(aa);
+    const found = try presetLaunchers(aa);
+    self.ensurePersonas();
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
+    try w.writeAll("{\"presets\":[");
+    for (found, 0..) |f, i| try w.print("{s}{{\"key\":{f},\"name\":{f},\"standing\":\"{t}\"}}", .{ if (i == 0) "" else ",", std.json.fmt(f.adapter.key, .{}), std.json.fmt(f.adapter.label, .{}), f.standing });
+    try w.writeAll("],\"roles\":[");
+    for (self.personas.set.personas, 0..) |p, i| try w.print("{s}{{\"key\":{f},\"name\":{f}}}", .{ if (i == 0) "" else ",", std.json.fmt(p.key, .{}), std.json.fmt(p.name, .{}) });
+    try w.writeAll("],\"file\":");
+    try poltergeistpkg.Launchers.writeFile(w, set);
+    try w.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+/// The settings form saving one Agent CLI of the person's own, its role
+/// switches as the form has them.
+pub fn settingsPutLauncher(self: *App, json: []const u8) !void {
+    const L = poltergeistpkg.Launchers;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var l = L.parseOneLeaky(aa, json) catch return error.BadLauncher;
+    var env = try global.environMap();
+    defer env.deinit();
+    l.command = try L.expandHome(aa, l.command, env.get("HOME") orelse env.get("USERPROFILE"));
+    const found = try presetLaunchers(aa);
+    const bases = try aa.alloc([]const u8, found.len);
+    for (found, bases) |f, *b| b.* = f.adapter.key;
+    try L.validate(l, bases);
+    try writeLauncherSet(aa, try L.put(aa, self.launcherSet(aa), l, false));
+    log.info("launchers: the settings window saved {s} (base {s}, {d} variable(s), {d} role(s))", .{ l.key, l.base, l.env.len, l.roles.len });
+}
+
+pub fn settingsDeleteLauncher(self: *App, key: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    try writeLauncherSet(aa, try poltergeistpkg.Launchers.delete(aa, self.launcherSet(aa), key));
+    log.info("launchers: the settings window deleted {s}", .{key});
+}
+
+fn poltergeistLaunchers(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    by: poltergeistpkg.Bus.Id,
+    op: poltergeistpkg.rpc.LauncherOp,
+) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const L = poltergeistpkg.Launchers;
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const set = self.launcherSet(aa);
+    const found = try presetLaunchers(aa);
+    const bases = try aa.alloc([]const u8, found.len);
+    for (found, bases) |f, *b| b.* = f.adapter.key;
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
+    switch (op) {
+        .list => {
+            try w.writeAll("{\"presets\":[");
+            for (found, 0..) |f, i| try w.print("{s}{{\"key\":{f},\"name\":{f},\"standing\":\"{t}\"}}", .{ if (i == 0) "" else ",", std.json.fmt(f.adapter.key, .{}), std.json.fmt(f.adapter.label, .{}), f.standing });
+            try w.writeAll("],\"custom\":[");
+            for (set.launchers, 0..) |l, i| {
+                if (i > 0) try w.writeAll(",");
+                try L.writeSafe(w, l);
+            }
+            try w.writeAll("]}");
+        },
+        .put => |text| {
+            var l = L.parseOneLeaky(aa, text) catch |err| return switch (err) {
+                error.OutOfMemory => err,
+                else => error.BadLauncher,
+            };
+            var env = try global.environMap();
+            defer env.deinit();
+            l.command = try L.expandHome(aa, l.command, env.get("HOME") orelse env.get("USERPROFILE"));
+            // A new one is off for every role; an edit keeps its switches.
+            l.roles = &.{};
+            try L.validate(l, bases);
+            const was = set.find(l.key) != null;
+            const next = try L.put(aa, set, l, true);
+            try writeLauncherSet(aa, next);
+            var line: std.Io.Writer.Allocating = .init(aa);
+            try line.writer.print("{s} the Agent CLI {s} (\"{s}\", on {s}, variables: ", .{ if (was) "Changed" else "Added", l.key, l.name, l.base });
+            for (l.env, 0..) |e, i| try line.writer.print("{s}{s}", .{ if (i == 0) "" else ", ", e.name });
+            if (l.env.len == 0) try line.writer.writeAll("none");
+            try line.writer.writeAll(").");
+            self.launcherTrace(by, line.written());
+            try L.writeSafe(w, next.find(l.key).?);
+        },
+        .delete => |key| {
+            const next = try L.delete(aa, set, key);
+            try writeLauncherSet(aa, next);
+            self.launcherTrace(by, try std.fmt.allocPrint(aa, "Deleted the Agent CLI {s}; the roles it was on for no longer have it.", .{key}));
+            try w.print("{{\"deleted\":{f}}}", .{std.json.fmt(key, .{})});
+        },
+        .role => |r| {
+            self.ensurePersonas();
+            if (self.personas.set.find(r.role) == null) return error.NoSuchPersona;
+            const next = try L.setRole(aa, set, r.launcher, r.role, r.on);
+            try writeLauncherSet(aa, next);
+            self.launcherTrace(by, try std.fmt.allocPrint(aa, "Switched the Agent CLI {s} {s} for the role {s}.", .{ r.launcher, if (r.on) "on" else "off", r.role }));
+            try L.writeSafe(w, next.find(r.launcher).?);
+        },
+    }
+    return out.toOwnedSlice();
+}
+
+/// `cli` is always an agent CLI's key; a launcher of the person's own is
+/// `launcher`, started on its base (task 2156).
+const LaunchChoice = struct { key: []const u8, cli: []const u8, launcher: ?[]const u8 = null };
 
 /// Everything that can be refused about a launch, refused before anything
 /// opens or is typed: a role that does not exist, that is not set up for
@@ -6900,8 +7085,26 @@ fn resolveLaunch(
 ) !LaunchChoice {
     self.ensurePersonas();
     const p = self.personas.set.find(key) orelse return error.NoSuchPersona;
-    if (p.clis.len == 0) return error.NoCli;
-    if (cli.len > 0 and p.cli(cli) == null) return error.NotSetUpForCli;
+    // A launcher of the person's own, by its key where the CLI goes (task
+    // 2156): switched on for this role, and started on its base with the
+    // role's choices for that CLI -- every check below is the base's.
+    // A role need not be set up for the base itself: it then starts with
+    // nothing chosen for it, as `+launch` does.
+    var via: ?[]const u8 = null;
+    var asked = cli;
+    if (cli.len > 0 and p.cli(cli) == null) {
+        var arena: std.heap.ArenaAllocator = .init(self.alloc);
+        defer arena.deinit();
+        if (self.launcherSet(arena.allocator()).find(cli)) |l| {
+            if (!l.enabledFor(p.key)) return error.LauncherNotOn;
+            via = try alloc.dupe(u8, l.key);
+            asked = try alloc.dupe(u8, l.base);
+        }
+    }
+    if (via == null) {
+        if (p.clis.len == 0) return error.NoCli;
+        if (cli.len > 0 and p.cli(cli) == null) return error.NotSetUpForCli;
+    }
 
     // Which CLIs have an adapter here. This reads the plugin directories
     // and their manifests and starts nothing -- whether an adapter can run
@@ -6922,7 +7125,7 @@ fn resolveLaunch(
         (if (id == poltergeistpkg.Chat.user_id) null else self.poltergeist.agentOf(id).cli.get())
     else
         null;
-    const chosen: []const u8 = if (cli.len > 0) cli else try p.defaultCli(keys, own);
+    const chosen: []const u8 = if (asked.len > 0) asked else try p.defaultCli(keys, own);
     // Two refusals, because the person does two different things about
     // them: a plugin that is off is a switch in Plugins; one whose adapter
     // nothing here can run, or no plugin at all, no switch fixes.
@@ -6935,7 +7138,7 @@ fn resolveLaunch(
         }
         break;
     } else return error.CliUnavailable;
-    return .{ .key = try alloc.dupe(u8, p.key), .cli = try alloc.dupe(u8, chosen) };
+    return .{ .key = try alloc.dupe(u8, p.key), .cli = try alloc.dupe(u8, chosen), .launcher = via };
 }
 
 fn isAnyOf(keys: []const []const u8, key: []const u8) bool {
@@ -6987,7 +7190,9 @@ fn launchLineFor(
         }
     }
     try line.writer.writeAll("'");
-    try poltergeistpkg.agent_cli.writeLaunchWords(&line.writer, choice.key, choice.cli, extra);
+    var with = extra;
+    if (choice.launcher) |l| with.launcher = l;
+    try poltergeistpkg.agent_cli.writeLaunchWords(&line.writer, choice.key, choice.cli, with);
     return line.written();
 }
 
@@ -8621,6 +8826,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .agentHeard = poltergeistAgentHeard,
         .launchFailed = poltergeistLaunchFailed,
         .launchedForGroup = poltergeistLaunchedForGroup,
+        .launchers = poltergeistLaunchers,
         .personaCatalog = poltergeistPersonaCatalog,
         .personaPut = poltergeistPersonaPut,
         .personaDelete = poltergeistPersonaDelete,
@@ -12488,6 +12694,7 @@ fn heldMember(
     return .{
         .role = role,
         .cli = held.cli.get() orelse "",
+        .launcher = held.launcher.get() orelse "",
         .cwd = footing.cwd,
         .title = footing.title,
         .session_id = held.session_id.get() orelse "",
@@ -12799,7 +13006,7 @@ fn noteSession(self: *App, id: poltergeistpkg.Bus.Id, cli: []const u8, sid: []co
     var it = self.chat.groups.iterator();
     while (it.next()) |kv| {
         if (!self.chat.isMember(kv.key_ptr.*, id)) continue;
-        l.agent(kv.key_ptr.*, at, id, .{ .cli = cli, .session_id = sid, .transcript_path = path });
+        l.agent(kv.key_ptr.*, at, id, .{ .cli = cli, .launcher = self.poltergeist.agentOf(id).launcher.get() orelse "", .session_id = sid, .transcript_path = path });
     }
 }
 

@@ -502,6 +502,15 @@ pub const Agent = struct {
     /// with a standing approval by (`resumes`).
     agent_id: Small(64),
     cli: Small(32),
+    /// The launcher of the person's own this agent was started through, by
+    /// key (task 2156, `+launch --launcher=`); empty for the CLI as its
+    /// plugin starts it. Set by `launched_with`, cleared by the next
+    /// launch's `hooks_expected`.
+    launcher: Small(64),
+    /// What the person called that launcher when it was started (the
+    /// event's `note`): what a host writes where the CLI's name would be,
+    /// with "custom model" after it. Empty with `launcher`.
+    launcher_name: Small(64),
     detail: Small(64),
     note: Small(160),
     /// How long what `note` is the start of was: the whole command, the
@@ -595,6 +604,8 @@ pub const Agent = struct {
         .session_id = .{},
         .agent_id = .{},
         .cli = .{},
+        .launcher = .{},
+        .launcher_name = .{},
         .detail = .{},
         .note = .{},
         .note_bytes = 0,
@@ -2399,7 +2410,15 @@ pub fn agentEvent(
         // An agent that has spoken is there; a launch line typed at it
         // came to nothing, and that is not news about it.
         if (e.agent.hooks == .live) return false;
-        if (e.agent.hooks == .expected) e.agent = .none;
+        if (e.agent.hooks == .expected) {
+            // What the failed launch went through stays: it is half of
+            // what the line about the failure says (task 2156).
+            const through = e.agent.launcher;
+            const through_name = e.agent.launcher_name;
+            e.agent = .none;
+            e.agent.launcher = through;
+            e.agent.launcher_name = through_name;
+        }
         // **And whoever watches it is told** (task 1667). The line on the
         // screen said why to whoever looks at the tab; a supervisor that
         // ran `role_launch` is not looking at it, and used to hear nothing
@@ -2423,6 +2442,17 @@ pub fn agentEvent(
     // `+launch` saying which group its agent is for (task 1844): the
     // host's to keep, nothing here moves.
     if (ev.event == .launched_for_group) return false;
+
+    // `+launch` saying it starts the agent through a launcher of the
+    // person's own (task 2156): kept, for `terminal_list` and for what a
+    // failed launch is said to be; nothing else moves.
+    if (ev.event == .launched_with) {
+        try self.register(id);
+        const a = &self.entries.getPtr(id).?.agent;
+        a.launcher.set(ev.detail);
+        a.launcher_name.set(ev.note);
+        return false;
+    }
 
     // **How full the window is: kept, and nothing else moves** (task 1779).
     // Said by the status line, which the CLI runs on its own schedule,
@@ -2467,13 +2497,15 @@ pub fn agentEvent(
     if (ev.session_id) |sid| a.session_id.set(sid);
 
     const state: AgentState, const notice: ?AgentNotice = switch (ev.event) {
-        .launch_failed, .tool_started, .context_reported, .launched_for_group => unreachable,
+        .launch_failed, .tool_started, .context_reported, .launched_for_group, .launched_with => unreachable,
         .hooks_expected => {
             // A second launch in the same terminal starts the wait again;
             // a terminal already live stays live -- it has proved its
             // hooks, and a later launch line typed into it is not the
             // agent that proved them, but it will say `session_started`
             // soon enough if it is.
+            // `.none` also takes what the last launch went through
+            // (`launcher`, task 2156): it is not this one's.
             a.* = .none;
             a.hooks = .expected;
             a.expected_ms = if (AgentEvent.heardAtFirstTurn(ev.detail)) null else now_ms;
@@ -4162,7 +4194,13 @@ fn writeAgent(
             ),
             // Not "at its shell": what is in the terminal is not known,
             // only that nothing connected from it (task 1712).
-            .no_agent => try w.print(
+            .no_agent => if (a.launcher.get()) |key| try w.print(
+                // Through a launcher of the person's own (task 2156): the
+                // likeliest reason is its command not handing the CLI the
+                // arguments that connect it.
+                "{s}0x{x:0>16} launch failed {d}s ago (no_agent): no agent in {d}s via Agent CLI {s}; its command may not pass the arguments on to the CLI",
+                .{ sep, id, ago_s, launch_agent_wait_ms / std.time.ms_per_s, key },
+            ) else try w.print(
                 "{s}0x{x:0>16} launch failed {d}s ago (no_agent): no agent connected within {d}s of the launch; terminal_read shows what is there",
                 .{ sep, id, ago_s, launch_agent_wait_ms / std.time.ms_per_s },
             ),
@@ -6274,6 +6312,32 @@ test "hooks: a CLI gone at once says its exit code to whoever watches it (task 1
     const line2 = b.drain(boss, 1_000, &buf, .none) orelse return error.TestUnexpectedResult;
     const code2 = std.mem.indexOf(u8, line2, "exit code 2") != null;
     try testing.expect(code2);
+}
+
+test "2156: a launch through a person's launcher that no agent came from says the command may be why" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(worker, firstTurnExpected(), 0);
+    var with = hookEv(.launched_with);
+    with.detail = "claude-deepseek-flash";
+    with.note = "Claude · DeepSeek flash";
+    const moved = try b.agentEvent(worker, with, 10);
+    try testing.expect(!moved);
+    try testing.expectEqualStrings("claude-deepseek-flash", b.agentOf(worker).launcher.get().?);
+    try testing.expectEqualStrings("Claude · DeepSeek flash", b.agentOf(worker).launcher_name.get().?);
+    var none = hookEv(.launch_failed);
+    none.detail = "no_agent";
+    _ = try b.agentEvent(worker, none, launch_agent_wait_ms);
+    var buf: [255]u8 = undefined;
+    const line = b.drain(boss, launch_agent_wait_ms + 1, &buf, .none) orelse return error.TestUnexpectedResult;
+    const said = std.mem.indexOf(u8, line, "may not pass the arguments on to the CLI") != null;
+    try testing.expect(said);
+    // A failed launch keeps what it went through, name and all.
+    try testing.expectEqualStrings("Claude · DeepSeek flash", b.agentOf(worker).launcher_name.get().?);
+    // The next launch is not through it.
+    _ = try b.agentEvent(worker, firstTurnExpected(), launch_agent_wait_ms + 2);
+    try testing.expect(b.agentOf(worker).launcher.get() == null);
+    try testing.expect(b.agentOf(worker).launcher_name.get() == null);
 }
 
 test "hooks: a launch no agent came from is said to have failed at the minute, once (task 1712)" {

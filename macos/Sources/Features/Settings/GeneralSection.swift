@@ -13,6 +13,8 @@ final class GeneralModel: ObservableObject {
     @Published var status: String?
     /// Log Management's figures (task 1511).
     let logs = LogManagementModel()
+    /// The Agent CLI page (task 2156).
+    let agentCli = AgentCliModel()
 
     func select(_ group: GeneralGroup) {
         guard group != self.group else { return }
@@ -242,6 +244,8 @@ struct GeneralView: View {
     private var detailContent: some View {
         if model.group == .logs {
             LogManagementPage(model: model, logs: model.logs)
+        } else if model.group == .agentCli {
+            AgentCliPage(model: model.agentCli)
         } else if model.group.needsForm {
             ConfigFormPage(model: model, group: model.group)
         } else if let ghostty = model.ghostty {
@@ -258,7 +262,16 @@ struct GeneralView: View {
     // MARK: Bar
 
     /// Status on the left, the group's own actions on the right (§2.3a).
+    @ViewBuilder
     private var bar: some View {
+        if model.group == .agentCli {
+            AgentCliBar(model: model.agentCli)
+        } else {
+            standardBar
+        }
+    }
+
+    private var standardBar: some View {
         HStack(spacing: L.rowGap) {
             if let status = model.status {
                 Text(status)

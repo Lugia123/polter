@@ -1297,3 +1297,27 @@
 
 /* 总控台：群聊页，聊天程序结束以后 */
 "The chat has ended. Click here to open it again." = "聊天已结束，点这里重新打开。";
+
+/* Settings › General › Agent CLI (task 2156) */
+"Give it a name." = "给它起个名字。";
+"Pick the CLI it runs." = "选它跑的是哪个 CLI。";
+"The command needs a full path (~/ is fine)." = "启动命令要写完整路径（可以用 ~/）。";
+"\"%@\" is not a variable name: letters, digits and _." = "「%@」不是变量名：只能有字母、数字和 _。";
+"That CLI has no plugin here." = "这台机器上没有这个 CLI 的插件。";
+"That name can't be used. Try another." = "这个名字用不了，换一个。";
+"Couldn't write the file; nothing was changed." = "文件写不进去，什么都没改。";
+"Not saved (%@)." = "没有保存（%@）。";
+"CLI" = "CLI";
+"Source" = "来源";
+"Command" = "启动命令";
+"Your own" = "自定义";
+"Preset (plugin)" = "预设（插件）";
+"Started by its plugin" = "由插件启动";
+"A full path; ~/ is fine. Keep a token in your command rather than here." = "要写完整路径，可以用 ~/。令牌建议放在启动命令里。";
+"Variables" = "环境变量";
+"Arguments" = "参数";
+"A new one is off for every role. Switched on, a role starts in it with the skills, MCP servers and model it has for that CLI." = "新加的 Agent CLI 对所有角色默认关。打开以后，这个角色沿用它在底子 CLI 下的 skill、MCP 和模型。";
+"Add an Agent CLI of your own" = "新建一个自定义 Agent CLI";
+"Delete it" = "删除它";
+"Saved." = "已保存。";
+"%@ custom model" = "%@ 自定义模型";

@@ -284,7 +284,7 @@
 //!   "ungrouped": [ { "id", "title", "attention", "needs_me", "unseen",
 //!       "shown", "word", "text", "waiter", "reason", "what" } ],
 //!   "terminals": [ { the member fields but `role`, and "event_ms",
-//!       "who":{"is":"agent","role":"dev-worker","cli":"claude-code",
+//!       "who":{"is":"agent","role":"dev-worker","cli":"claude-code","launcher":null,"launcher_name":null,
 //!              "session":"…","worker_of":"0x…"|null},
 //!                             who is working in it (`WhoOut`). is:
 //!                             agent | none (nobody: no agent, and the
@@ -1600,6 +1600,16 @@ pub const WhoOut = struct {
     is: Is,
     role: ?[]const u8,
     cli: ?[]const u8,
+    /// The launcher of the person's own this agent was started through
+    /// (task 2156); null for the CLI as its plugin starts it. A host says
+    /// "custom model" for such a terminal's allowance rather than the CLI
+    /// account's, which it is not spending.
+    launcher: ?[]const u8,
+    /// What the person calls that launcher, as it was when the agent was
+    /// started: the host writes it where the CLI's name would go, with
+    /// "custom model" after it. Null with `launcher`, and when it was
+    /// started with no name said.
+    launcher_name: ?[]const u8,
     session: ?[]const u8,
     /// The supervisor this one was opened for as a worker in this run
     /// (`Bus.Entry.worker_of`), whoever is in it now; null when it was not.
@@ -1628,11 +1638,13 @@ pub fn whoOf(arena: Allocator, bus: *const Bus, t: Terminal) Allocator.Error!Who
         .unknown;
     const worker_of: ?Hex = .opt(bus.workerOf(t.id));
     return switch (kind) {
-        .unknown, .none => .{ .is = kind, .role = null, .cli = null, .session = null, .worker_of = worker_of },
+        .unknown, .none => .{ .is = kind, .role = null, .cli = null, .launcher = null, .launcher_name = null, .session = null, .worker_of = worker_of },
         .agent => .{
             .is = .agent,
             .role = try arena.dupe(u8, t.role),
             .cli = try arena.dupe(u8, a.cli.get() orelse t.launched_cli),
+            .launcher = if (a.launcher.get()) |l| try arena.dupe(u8, l) else null,
+            .launcher_name = if (a.launcher.get() != null) (if (a.launcher_name.get()) |n| try arena.dupe(u8, n) else null) else null,
             .session = try arena.dupe(u8, a.session_id.get() orelse ""),
             .worker_of = worker_of,
         },
@@ -6296,13 +6308,13 @@ test "Projects: who is in a terminal is an agent, nobody, or not known -- and no
 
     const json = try writeAlloc(aa, s, .{});
     try testing.expect(std.mem.indexOf(u8, json,
-        \\"who":{"is":"agent","role":"polter-supervisor","cli":"claude-code","session":"s","worker_of":null}
+        \\"who":{"is":"agent","role":"polter-supervisor","cli":"claude-code","launcher":null,"launcher_name":null,"session":"s","worker_of":null}
     ) != null);
     try testing.expect(std.mem.indexOf(u8, json,
-        \\"who":{"is":"none","role":null,"cli":null,"session":null,"worker_of":"0x00000000000000a1"}
+        \\"who":{"is":"none","role":null,"cli":null,"launcher":null,"launcher_name":null,"session":null,"worker_of":"0x00000000000000a1"}
     ) != null);
     try testing.expect(std.mem.indexOf(u8, json,
-        \\"who":{"is":"unknown","role":null,"cli":null,"session":null,"worker_of":"0x00000000000000a1"}
+        \\"who":{"is":"unknown","role":null,"cli":null,"launcher":null,"launcher_name":null,"session":null,"worker_of":"0x00000000000000a1"}
     ) != null);
 }
 

@@ -2321,6 +2321,36 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// The Agent CLI page (task 2156): `App.settingsLaunchersJson`, values
+    /// and all -- for the settings form, which is the one place they are
+    /// shown. Same buffer rule as `ghostty_app_persona_catalog`.
+    export fn ghostty_app_launchers(app: *App, buf: ?[*]u8, cap: usize) usize {
+        const core = app.core_app;
+        const json = core.settingsLaunchersJson(core.alloc) catch
+            return copyJsonOut("{\"presets\":[],\"roles\":[],\"file\":{\"launchers\":[]}}", buf, cap);
+        defer core.alloc.free(json);
+        return copyJsonOut(json, buf, cap);
+    }
+
+    /// Add or replace one Agent CLI of the person's own, its role switches
+    /// as given. False, with the reason's name in `err`, when it was not
+    /// written; nothing changes then.
+    export fn ghostty_app_launcher_put(app: *App, json: [*]const u8, len: usize, err: ?[*]u8, cap: usize) bool {
+        app.core_app.settingsPutLauncher(json[0..len]) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
+    export fn ghostty_app_launcher_delete(app: *App, key: [*]const u8, len: usize, err: ?[*]u8, cap: usize) bool {
+        app.core_app.settingsDeleteLauncher(key[0..len]) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
     export fn ghostty_app_persona_delete(
         app: *App,
         key: [*]const u8,

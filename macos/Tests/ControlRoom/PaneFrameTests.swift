@@ -302,4 +302,32 @@ struct PaneFrameTests {
         #expect(!PaneFrame.edged(terminal: supervisor, at: alone, in: all))
         #expect(!PaneFrame.edged(terminal: supervisor, at: Place(enabled: false, quickTerminal: true, alone: true), in: all))
     }
+
+    // MARK: An Agent CLI of the person's own (task 2156)
+
+    /// The fixture's terminals with `id` started through the Agent CLI
+    /// `key`, called `name`.
+    static func through(_ key: String?, name: String?, at id: String,
+                        in all: [ControlRoomSnapshot.Terminal]) -> [ControlRoomSnapshot.Terminal] {
+        all.map { t in
+            guard t.id == id else { return t }
+            var t = t
+            t.who?.launcher = key
+            t.who?.launcher_name = name
+            return t
+        }
+    }
+
+    @Test func aTerminalStartedThroughAnAgentCliSaysItsNameAndCustomModelWhereTheCliWouldBe() throws {
+        let all = try terminals()
+        let mine = Self.through("claude-deepseek-flash", name: "Claude · DeepSeek flash", at: worker, in: all)
+        let b = PaneFrame.drawn(terminal: worker, ownName: "", at: split, in: mine)
+        #expect(b?.title.model == "Claude · DeepSeek flash custom model")
+        // Its key when the core said no name.
+        let keyed = Self.through("claude-deepseek-flash", name: nil, at: worker, in: all)
+        #expect(PaneFrame.drawn(terminal: worker, ownName: "", at: split, in: keyed)?.title.model == "claude-deepseek-flash custom model")
+        // Nothing for one its plugin started, nor for another terminal.
+        #expect(PaneFrame.drawn(terminal: worker, ownName: "", at: split, in: all)?.title.model == nil)
+        #expect(PaneFrame.drawn(terminal: supervisor, ownName: "", at: split, in: mine)?.title.model == nil)
+    }
 }

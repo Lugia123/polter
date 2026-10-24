@@ -66,7 +66,8 @@ enum PaneStackRules {
                 role: title?.roleWord(in: frame?.wears ?? .plain),
                 terminal: member.terminal,
                 key: member.key,
-                color: member.color)
+                color: member.color,
+                model: title?.model)
         }
         let urgent: [Int] = pulses.compactMap { waiting in
             members.firstIndex { $0.terminal == waiting }
