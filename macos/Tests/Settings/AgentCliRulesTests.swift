@@ -69,6 +69,23 @@ struct AgentCliRulesTests {
         #expect(R.args(fromLine: "  --a  b ") == ["--a", "b"])
     }
 
+    /// **The roles the drafts carries are the roles that are sent** (this
+    /// slice): the Agent CLI page is where they are ticked, and the core
+    /// takes them at their word (`settingsPutLauncher`, `keep_roles`
+    /// false). A form that dropped them here could untick nothing.
+    @Test func theRolesTickedForOnThePageAreTheOnesSent() throws {
+        let page = try #require(R.decode(Self.json))
+        var c = try #require(page.file.launchers.first)
+        #expect(c.roles == ["polter-tester"])
+        c.roles = ["polter-tester", "polter-supervisor"]
+        let more = try JSONDecoder().decode(R.Custom.self, from: Data(R.putJSON(c, in: page).utf8))
+        #expect(more.roles == ["polter-tester", "polter-supervisor"])
+        // Unticked on the page: sent unticked, which is what the core reads.
+        c.roles = []
+        let none = try JSONDecoder().decode(R.Custom.self, from: Data(R.putJSON(c, in: page).utf8))
+        #expect(none.roles.isEmpty)
+    }
+
     // MARK: Deleting the selected one (task 2164)
 
     @MainActor final class Holder: AgentCliDraftHolder {

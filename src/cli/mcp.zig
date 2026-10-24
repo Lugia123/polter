@@ -1277,7 +1277,9 @@ const tools = [_]Tool{
             "`stale` true means nothing has been read yet, `refreshing` true means a " ++
             "newer answer is on its way -- ask again in a few seconds. Pass refresh: " ++
             "true after installing something. Items marked `locked` are always kept " ++
-            "(Polter's own server). Supervisor only.",
+            "(Polter's own server). The Agent CLIs of the person's own are not here: " ++
+            "launcher_list has them, and a role starts through one with role_launch's " ++
+            "`cli` set to its key. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"refresh":{"type":"boolean","description":"Defaults to false"}},"additionalProperties":false}
         ,

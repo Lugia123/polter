@@ -68,6 +68,11 @@ personas_attempted: bool = false,
 /// reports it. Filled on a thread of its own; see `agent_cli.Cache`.
 poltergeist_agent_clis: poltergeistpkg.agent_cli.Cache,
 
+/// How many turns of the app loop have gone by. `ownClis` reads
+/// launchers.json once per round and keeps the answer in an arena, because
+/// what it hands out points into it (`poltergeist_own_round`).
+own_round: u64 = 0,
+
 /// Who a hand-started agent is, by its adapter's word (task 1635); asked on
 /// a thread, and `identity_changed` is raised when an answer is kept.
 identities: poltergeistpkg.Identities,
@@ -346,6 +351,23 @@ poltergeist_plugins: []const poltergeistpkg.Plugin.Manifest = &.{},
 /// `poltergeist_plugin_arena`, read with `poltergeist_plugins`.
 poltergeist_cli_standings: []const poltergeistpkg.ControlRoom.CliStanding = &.{},
 poltergeist_plugin_arena: ?std.heap.ArenaAllocator = null,
+/// The Agent CLIs of the person's own as the control room offers them (task
+/// 2156 v3, `ownClis`): keys, names, bases and roles -- never a command or
+/// a variable. In `poltergeist_own_arena`.
+///
+/// **Read once per round and cached by the file's size and time**
+/// (`ownClis`). What is handed out points into `poltergeist_own_arena`, so
+/// **nothing may replace it while a round is using what it read**: a second
+/// read inside one round would have to free the arena the first read's
+/// slices live in. `poltergeist_own_round` is which round the cache belongs
+/// to, and a read re-stats the file only when the round has moved on.
+poltergeist_own_clis: []const poltergeistpkg.ControlRoom.OwnCli = &.{},
+poltergeist_own_arena: ?std.heap.ArenaAllocator = null,
+/// The round `poltergeist_own_clis` was read in, and the file's size and
+/// time as it was then. A later read within the same round answers with the
+/// cache without touching the file at all.
+poltergeist_own_round: u64 = std.math.maxInt(u64),
+poltergeist_own_seen: ?struct { size: u64, mtime: i96 } = null,
 
 /// Every installed plugin that declares what its CLI's title says
 /// (`Plugin.TitleSays`, task 1656) -- **switched on or not**. Reading a
@@ -878,6 +900,7 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_log_problem) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
+    if (self.poltergeist_own_arena) |*a| a.deinit();
     for (self.poltergeist_alerts.items) |line| self.alloc.free(line);
     self.poltergeist_alerts.deinit(self.alloc);
     if (self.poltergeist_log_dir) |d| self.alloc.free(d);
@@ -1018,6 +1041,11 @@ pub fn destroy(self: *App) void {
 /// events. This should be called by the application runtime on every loop
 /// tick.
 pub fn tick(self: *App, rt_app: *apprt.App) !void {
+    // **A new round** (task 2156 v3): everything this turn asks about the
+    // person's own Agent CLIs gets one answer, and that answer is not freed
+    // under anybody while the turn is using it (`ownClis`).
+    self.ownClisRound();
+
     // Started here, on the first tick, because `self` has its address by
     // now and keeps it until `deinit` stops the thread.
     if (self.stall_watch_thread == null) {
@@ -1968,10 +1996,14 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     var quota_buf: [std.enums.values(poltergeistpkg.quota.Family).len]poltergeistpkg.quota.Reading = undefined;
     const quota_read: []const poltergeistpkg.quota.Reading =
         if (self.quota_watch) |*w| w.readings(&quota_buf) else &.{};
+    // **What the person has of their own, read once** (task 2156 v3): all
+    // five things below that need it are handed this one answer, so that
+    // none of them can be holding an answer a later read freed.
+    const own = self.ownClis();
     // The roles a supervisor can be started in: the ones that make a
     // terminal a supervisor and have a CLI to start. In the set's order,
     // which puts the one Polter ships first.
-    const roles = self.controlStartRoles(alloc) catch return;
+    const roles = self.controlStartRoles(alloc, own) catch return;
     const cli_resume = self.controlCliResume(alloc) catch return;
     const projects = self.projectsWork(alloc, now_ms) catch return;
 
@@ -1989,9 +2021,10 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .retention_waiting = if (self.sweeper) |*w| w.waitingBytes() else null,
         .supervisor_roles = roles,
         .cli_resume = cli_resume,
-        .cli_standings = self.controlCliStandings(alloc) catch return,
+        .cli_standings = self.controlCliStandings(alloc, own) catch return,
         .projects = projects,
-        .cli_names = self.controlCliNames(alloc) catch return,
+        .cli_names = self.controlCliNames(alloc, own) catch return,
+        .own_clis = own,
         .home = self.controlHome(),
         .record_root = if (self.group_log) |*l| l.dir else "",
         .fix_sent = &self.control_fix_sent,
@@ -2420,6 +2453,10 @@ fn controlActStartSupervisor(
     const alloc = arena.allocator();
 
     const last = self.chat.lastSupervisorOf(group);
+    // **Once for the whole start** (task 2156 v3): what the person has of
+    // their own does not change under a single action, and reading it twice
+    // would free the answer the first read handed out.
+    const own = self.ownClis();
 
     // The role: the one named, or the one the snapshot named as the
     // default.
@@ -2427,27 +2464,29 @@ fn controlActStartSupervisor(
     const p = if (role_asked.len > 0)
         self.personas.set.find(role_asked) orelse return error.NoSuchPersona
     else p: {
-        const roles = try self.controlStartRoles(alloc);
+        const roles = try self.controlStartRoles(alloc, own);
         const role = ControlRoom.startRoleOf(roles, last) orelse return error.NoSupervisorRole;
         break :p self.personas.set.find(role.key) orelse return error.NoSupervisorRole;
     };
     if (!p.polter.supervisor) return error.NotASupervisorRole;
-    if (p.clis.len == 0) return error.NoCli;
+    // What it can be started in: its CLIs and the person's own ticked for
+    // it, alike (task 2156 v3).
+    const role = try self.startRoleOf(alloc, p, own);
+    if (role.clis.len == 0) return error.NoCli;
 
     // The CLI: the one picked, or the snapshot's default by the same
-    // function -- of the role's CLIs whose plugin is on, the last
-    // supervisor's, else the first. Whether the picked one can start here
-    // is `resolveLaunch`'s to refuse, with its reason.
+    // function -- of the role's CLIs whose plugin is on, the one the last
+    // supervisor was started in, else the first. Whether the picked one
+    // can start here is `resolveLaunch`'s to refuse, with its reason.
     const cli: []const u8 = if (cli_asked.len > 0)
-        (p.cli(cli_asked) orelse return error.NotSetUpForCli).cli
+        (for (role.clis) |c| {
+            if (std.mem.eql(u8, c, cli_asked)) break c;
+        } else return error.NotSetUpForCli)
     else cli: {
-        const cli_keys = try alloc.alloc([]const u8, p.clis.len);
-        for (p.clis, cli_keys) |c, *k| k.* = c.cli;
-        const role: ControlRoom.StartRole = .{ .key = p.key, .name = p.name, .clis = cli_keys };
-        const here = try ControlRoom.startClisOf(alloc, role, try self.controlCliStandings(alloc));
+        const here = try ControlRoom.startClisOf(alloc, role, try self.controlCliStandings(alloc, own));
         // None of the role's can start: `resolveLaunch` says which reason,
         // asked of its first.
-        break :cli ControlRoom.startCliOf(here, last) orelse p.clis[0].cli;
+        break :cli ControlRoom.startCliOf(here, last, own) orelse role.clis[0];
     };
 
     // A group that has a project is started in it: the pane has its own
@@ -2459,15 +2498,17 @@ fn controlActStartSupervisor(
     const dir_z: [:0]const u8 = if (cwd.len > 0) try startDirZ(alloc, cwd) else "";
 
     const rt_app = self.poltergeist_rt_app orelse return error.NoRuntime;
-    const choice = try self.resolveLaunch(alloc, p.key, cli, null);
+    var choice = try self.resolveLaunch(alloc, p.key, cli, null, own);
     const now_ms = self.poltergeistElapsedMs();
 
     // Whether it goes on with the last session. Asked for the role and the
     // CLI this start uses, which the person may have picked since the
-    // snapshot was drawn.
+    // snapshot was drawn -- by the key it was picked by, which for one of
+    // the person's own is its own (task 2156 v3).
     const go_on = ControlRoom.resumeOf(.{
         .last = last,
-        .cli = choice.cli,
+        .cli = choice.launcher orelse choice.cli,
+        .own = own,
         .cli_resume = try self.controlCliResume(alloc),
         .held = ControlRoom.sessionHeld(&self.poltergeist, try self.liveTerminals(alloc), last.session),
         .last_try_failed = fails: {
@@ -2476,6 +2517,10 @@ fn controlActStartSupervisor(
         },
     });
     const resuming = session_asked == .last and go_on.can;
+    // Going on with a session started through one of the person's own that
+    // has since been deleted: on its CLI, with the key that is gone on the
+    // line, so that `+launch` says so in the terminal (task 2156 v3).
+    if (resuming) choice.launcher = ControlRoom.goOnThrough(choice.launcher, choice.cli, last);
     const line = try launchLineFor(alloc, choice, .{
         .group = group,
         .session = if (resuming) last.session else null,
@@ -3520,16 +3565,27 @@ fn poltergeistGroupProject(
 /// a supervisor and have a CLI to start, each with the CLIs it is set up
 /// for. In the set's order, which puts the one Polter ships first. The
 /// snapshot and the start both read this, so they name the same default.
-fn controlStartRoles(self: *App, alloc: Allocator) Allocator.Error![]const poltergeistpkg.ControlRoom.StartRole {
+fn controlStartRoles(self: *App, alloc: Allocator, own: []const poltergeistpkg.ControlRoom.OwnCli) Allocator.Error![]const poltergeistpkg.ControlRoom.StartRole {
     self.ensurePersonas();
     var roles: std.ArrayListUnmanaged(poltergeistpkg.ControlRoom.StartRole) = .empty;
     for (self.personas.set.personas) |p| {
-        if (!p.polter.supervisor or p.clis.len == 0) continue;
-        const clis = try alloc.alloc([]const u8, p.clis.len);
-        for (p.clis, clis) |c, *k| k.* = c.cli;
-        try roles.append(alloc, .{ .key = p.key, .name = p.name, .clis = clis });
+        if (!p.polter.supervisor) continue;
+        const role = try self.startRoleOf(alloc, p, own);
+        if (role.clis.len == 0) continue;
+        try roles.append(alloc, role);
     }
     return roles.items;
+}
+
+/// The Agent CLIs `p` can be started in, as one list (task 2156 v3): the
+/// CLIs it is set up for, then each of the person's own ticked for it.
+/// **Every place a CLI is picked for a role reads this**, so a preset and
+/// one of the person's own are offered, defaulted and refused alike.
+fn startRoleOf(self: *App, alloc: Allocator, p: poltergeistpkg.persona.Persona, own: []const poltergeistpkg.ControlRoom.OwnCli) Allocator.Error!poltergeistpkg.ControlRoom.StartRole {
+    _ = self;
+    const clis = try alloc.alloc([]const u8, p.clis.len);
+    for (p.clis, clis) |c, *k| k.* = c.cli;
+    return poltergeistpkg.ControlRoom.withOwn(alloc, .{ .key = p.key, .name = p.name, .clis = clis }, own);
 }
 
 /// Which agent CLIs can go on with a session, as far as their adapters
@@ -3543,10 +3599,84 @@ fn controlStartRoles(self: *App, alloc: Allocator) Allocator.Error![]const polte
 /// adapter's own label, as last read. Empty until a read has finished
 /// (`controlCliResume` starts one); the snapshot then says a CLI has no
 /// name, and a host writes its key.
-fn controlCliNames(self: *App, alloc: Allocator) Allocator.Error![]const poltergeistpkg.ControlRoom.CliName {
+fn controlCliNames(self: *App, alloc: Allocator, own: []const poltergeistpkg.ControlRoom.OwnCli) Allocator.Error![]const poltergeistpkg.ControlRoom.CliName {
     const read = try self.poltergeist_agent_clis.names(global.io(), alloc);
     const out = try alloc.alloc(poltergeistpkg.ControlRoom.CliName, read.len);
     for (read, out) |n, *o| o.* = .{ .key = n.key, .label = n.label };
+    return poltergeistpkg.ControlRoom.namesWithOwn(alloc, out, own);
+}
+
+/// The Agent CLIs of the person's own, as the control room offers them
+/// (task 2156 v3). **Read at most once per round** (see `ownClisNeedsRead`):
+/// what comes back are slices into `poltergeist_own_arena`, and a second
+/// read in the same round would have to free the arena the first one's
+/// answer is in -- a `use-after-free` for everything already holding it.
+/// `startRoleOf`, `controlCliNames`, `controlCliStandings`, `resolveLaunch`
+/// and the snapshot all ask inside one round.
+///
+/// A round is ended by `ownClisRound`, which the app loop calls once per
+/// turn: the next round re-stats launchers.json, and reads it again only
+/// when its size or time has moved since.
+fn ownClis(self: *App) []const poltergeistpkg.ControlRoom.OwnCli {
+    if (!ownClisNeedsRead(self.own_round, self.poltergeist_own_round)) return self.poltergeist_own_clis;
+    // From here on this round's answer is this call's: no later read in
+    // this round will replace it, so nothing anybody takes now goes stale.
+    self.poltergeist_own_round = self.own_round;
+
+    var tmp: std.heap.ArenaAllocator = .init(self.alloc);
+    defer tmp.deinit();
+    const path = launchersPath(tmp.allocator()) catch return self.poltergeist_own_clis;
+    const st = std.Io.Dir.cwd().statFile(global.io(), path, .{}) catch {
+        self.setOwnClis(null, null);
+        return &.{};
+    };
+    if (self.poltergeist_own_seen) |seen| {
+        if (seen.size == st.size and seen.mtime == st.mtime.nanoseconds) return self.poltergeist_own_clis;
+    }
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    const own = ownClisOf(arena.allocator(), self.launcherSet(tmp.allocator())) catch {
+        arena.deinit();
+        return self.poltergeist_own_clis;
+    };
+    self.setOwnClis(arena, own);
+    self.poltergeist_own_seen = .{ .size = st.size, .mtime = st.mtime.nanoseconds };
+    return own;
+}
+
+/// Whether this round still has to read launchers.json (task 2156 v3's
+/// must-fix): **not when it already did**, whatever the file has done since.
+///
+/// **Reading again is what frees the answer somebody is holding**, so the
+/// question is not "has the file moved" but "does this round already have an
+/// answer". A round is one turn of the app loop (`ownClisRound`); inside it
+/// the person's own Agent CLIs are one fact, and a file written by another
+/// process halfway through it is seen at the next turn.
+fn ownClisNeedsRead(round: u64, kept_round: u64) bool {
+    return round != kept_round;
+}
+
+/// Move to the next round: the next `ownClis` looks at launchers.json
+/// again. Called once at the top of each turn of the app loop, so that
+/// everything one turn asks gets one answer, and nothing is freed under
+/// anybody within it.
+fn ownClisRound(self: *App) void {
+    self.own_round +%= 1;
+}
+
+fn setOwnClis(self: *App, arena: ?std.heap.ArenaAllocator, own: ?[]const poltergeistpkg.ControlRoom.OwnCli) void {
+    if (self.poltergeist_own_arena) |*a| a.deinit();
+    self.poltergeist_own_arena = arena;
+    self.poltergeist_own_clis = own orelse &.{};
+    self.poltergeist_own_seen = null;
+}
+
+fn ownClisOf(aa: Allocator, set: poltergeistpkg.Launchers.Set) Allocator.Error![]const poltergeistpkg.ControlRoom.OwnCli {
+    const out = try aa.alloc(poltergeistpkg.ControlRoom.OwnCli, set.launchers.len);
+    for (set.launchers, out) |l, *o| {
+        const roles = try aa.alloc([]const u8, l.roles.len);
+        for (l.roles, roles) |r, *d| d.* = try aa.dupe(u8, r);
+        o.* = .{ .key = try aa.dupe(u8, l.key), .name = try aa.dupe(u8, l.name), .base = try aa.dupe(u8, l.base), .roles = roles };
+    }
     return out;
 }
 
@@ -3562,11 +3692,13 @@ fn controlCliNames(self: *App, alloc: Allocator) Allocator.Error![]const polterg
 /// (`ControlRoom.installedHere`). Before a read nobody knows, and it is
 /// offered as before. The same answer for the snapshot, the control
 /// room's start and `resolveLaunch`.
-fn controlCliStandings(self: *App, alloc: Allocator) Allocator.Error!?[]const poltergeistpkg.ControlRoom.CliStanding {
+fn controlCliStandings(self: *App, alloc: Allocator, own: []const poltergeistpkg.ControlRoom.OwnCli) Allocator.Error!?[]const poltergeistpkg.ControlRoom.CliStanding {
     self.ensurePlugins();
     if (self.poltergeist_plugin_arena == null) return null;
     const missing = try self.poltergeist_agent_clis.notInstalled(global.io(), alloc);
-    return try poltergeistpkg.ControlRoom.installedHere(alloc, self.poltergeist_cli_standings, missing);
+    const here = try poltergeistpkg.ControlRoom.installedHere(alloc, self.poltergeist_cli_standings, missing);
+    // The person's own stand as their bases do (task 2156 v3).
+    return try poltergeistpkg.ControlRoom.standingsWithOwn(alloc, here, own);
 }
 
 fn controlCliResume(self: *App, alloc: Allocator) Allocator.Error!poltergeistpkg.ControlRoom.CliResume {
@@ -3630,6 +3762,9 @@ fn noteSupervisor(self: *App, id: poltergeistpkg.Bus.Id, keep: enum { write, onl
             .dir_from = if (footing.cwd.len > 0) .supervisor else was.dir_from,
             .role = role,
             .cli = cli,
+            // The Agent CLI of the person's own it went through, so that
+            // going on with its session goes through it again (task 2156 v3).
+            .launcher = agent.launcher.get() orelse "",
             .session = Chat.sessionToWrite(agent.session_id.get(), was, self.chat.resumingIn(name, id)),
             .heard_ms = wall_ms,
         };
@@ -6980,8 +7115,23 @@ pub fn settingsPutLauncher(self: *App, json: []const u8) !void {
     const bases = try aa.alloc([]const u8, found.len);
     for (found, bases) |f, *b| b.* = f.adapter.key;
     try L.validate(l, bases);
+    // **The roles the form carried are the roles it gets** (this slice): the
+    // Agent CLI page is where they are ticked until the role library takes
+    // them over, so a form that unticked one has to untick it here too.
     try writeLauncherSet(aa, try L.put(aa, self.launcherSet(aa), l, false));
     log.info("launchers: the settings window saved {s} (base {s}, {d} variable(s), {d} role(s))", .{ l.key, l.base, l.env.len, l.roles.len });
+}
+
+/// The role library switching one Agent CLI of the person's own on or off
+/// for a role, as `role_launcher_set` does (task 2156 v3).
+pub fn settingsRoleLauncherSet(self: *App, role: []const u8, key: []const u8, on: bool) !void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    self.ensurePersonas();
+    if (self.personas.set.find(role) == null) return error.NoSuchPersona;
+    try writeLauncherSet(aa, try poltergeistpkg.Launchers.setRole(aa, self.launcherSet(aa), key, role, on));
+    log.info("launchers: the role library switched {s} {s} for the role {s}", .{ key, if (on) "on" else "off", role });
 }
 
 pub fn settingsDeleteLauncher(self: *App, key: []const u8) !void {
@@ -7082,6 +7232,7 @@ fn resolveLaunch(
     key: []const u8,
     cli: []const u8,
     by: ?poltergeistpkg.Bus.Id,
+    own: []const poltergeistpkg.ControlRoom.OwnCli,
 ) !LaunchChoice {
     self.ensurePersonas();
     const p = self.personas.set.find(key) orelse return error.NoSuchPersona;
@@ -7101,9 +7252,40 @@ fn resolveLaunch(
             asked = try alloc.dupe(u8, l.base);
         }
     }
+    // None named, and the role has some of the person's own ticked (task
+    // 2156 v3): those count as its CLIs do. Which one is `ControlRoom.pickOwn`,
+    // so that what it decides can be read without an App.
+    if (cli.len == 0) {
+        const by_via: []const u8 = if (by) |id|
+            (if (id == poltergeistpkg.Chat.user_id) "" else self.poltergeist.agentOf(id).launcher.get() orelse "")
+        else
+            "";
+        const by_cli: ?[]const u8 = if (by) |id|
+            (if (id == poltergeistpkg.Chat.user_id) null else self.poltergeist.agentOf(id).cli.get())
+        else
+            null;
+        var ticked: std.ArrayListUnmanaged(poltergeistpkg.ControlRoom.OwnCli) = .empty;
+        for (own) |o| for (o.roles) |r| {
+            if (std.mem.eql(u8, r, p.key)) try ticked.append(alloc, o);
+        };
+        if (poltergeistpkg.ControlRoom.pickOwn(
+            ticked.items,
+            p.clis.len,
+            by_via,
+            by_cli,
+            if (by_cli) |c| p.cli(c) != null else false,
+        )) |pick| switch (pick) {
+            .own => |o| {
+                via = try alloc.dupe(u8, o.key);
+                asked = try alloc.dupe(u8, o.base);
+            },
+            .cli => |c| asked = try alloc.dupe(u8, c),
+            .choose => return error.ChooseCli,
+        };
+    }
     if (via == null) {
         if (p.clis.len == 0) return error.NoCli;
-        if (cli.len > 0 and p.cli(cli) == null) return error.NotSetUpForCli;
+        if (asked.len > 0 and p.cli(asked) == null) return error.NotSetUpForCli;
     }
 
     // Which CLIs have an adapter here. This reads the plugin directories
@@ -7121,11 +7303,13 @@ fn resolveLaunch(
     for (surveyed) |f| if (f.standing == .ok and !isAnyOf(missing, f.adapter.key)) try ok.append(alloc, f.adapter.key);
     const keys = ok.items;
 
-    const own: ?[]const u8 = if (by) |id|
+    // The asker's own CLI, for `defaultCli`: named apart from `own`, which
+    // is what the person has of their own.
+    const asker_cli: ?[]const u8 = if (by) |id|
         (if (id == poltergeistpkg.Chat.user_id) null else self.poltergeist.agentOf(id).cli.get())
     else
         null;
-    const chosen: []const u8 = if (asked.len > 0) asked else try p.defaultCli(keys, own);
+    const chosen: []const u8 = if (asked.len > 0) asked else try p.defaultCli(keys, asker_cli);
     // Two refusals, because the person does two different things about
     // them: a plugin that is off is a switch in Plugins; one whose adapter
     // nothing here can run, or no plugin at all, no switch fixes.
@@ -7509,12 +7693,18 @@ const TakeOverRun = struct {
     tries: u8 = poltergeistpkg.TakeOver.settle_tries,
     /// The CLI to start again, and the session it goes on with.
     cli: []u8,
+    /// The Agent CLI of the person's own the supervisor that quit was started
+    /// through, by key (task 2156 v3); empty for the CLI as its plugin starts
+    /// it. Taken at the press, while its agent is still there to be asked:
+    /// nothing says it once the agent has gone.
+    launcher: []u8,
     session: ?[]u8,
 
     fn deinit(self: *TakeOverRun, alloc: Allocator) void {
         alloc.free(self.group);
         alloc.free(self.screen);
         alloc.free(self.cli);
+        alloc.free(self.launcher);
         if (self.session) |sid| alloc.free(sid);
     }
 };
@@ -7556,11 +7746,16 @@ fn controlActTakeOver(ctx: *anyopaque, group: []const u8) anyerror!void {
         .at_ms = now_ms + poltergeistpkg.TakeOver.settle_ms,
         .screen = &.{},
         .cli = &.{},
+        .launcher = &.{},
         .session = null,
     };
     errdefer run.deinit(self.alloc);
     run.screen = try self.alloc.dupe(u8, screen);
     run.cli = try self.alloc.dupe(u8, v.key);
+    // What it was started through (task 2156 v3), asked here, at the press:
+    // the agent is still there to be asked, and the bus forgets it when the
+    // CLI quits (`Bus.noteLeft`).
+    run.launcher = try self.alloc.dupe(u8, self.poltergeist.agentOf(id).launcher.get() orelse "");
     if (v.identified.session) |sid| run.session = try self.alloc.dupe(u8, sid);
     self.take_over = run;
     // Asked again now, whatever its age: the answer the settling step reads
@@ -7735,9 +7930,15 @@ fn takeOverLaunch(self: *App, aa: Allocator, now_ms: u64) !void {
     const Store = poltergeistpkg.PersonaStore;
     self.ensurePersonas();
     const last = self.chat.lastSupervisorOf(run.group);
-    const roles = try self.controlStartRoles(aa);
+    // Once for the whole take-over, as the start does (task 2156 v3).
+    const own = self.ownClis();
+    const roles = try self.controlStartRoles(aa, own);
     const role = ControlRoom.startRoleOf(roles, last) orelse return error.NoSupervisorRole;
-    const choice = try self.resolveLaunch(aa, role.key, run.cli, null);
+    // Through what the supervisor that quit was started through, while it is
+    // still there and still ticked for this role (task 2156 v3): a take-over
+    // is the same start the person made, put back. On its CLI otherwise.
+    const cli = ControlRoom.takeOverThrough(run.launcher, run.cli, own, role.key);
+    const choice = try self.resolveLaunch(aa, role.key, cli, null, own);
     const line = try launchLineFor(aa, choice, .{ .group = run.group, .session = run.session });
 
     self.chat.beginStart(run.group, now_ms, now_ms + Store.pending_launch_ms, run.session != null, .directory) catch {};
@@ -8081,7 +8282,7 @@ pub fn launchPersona(
     /// null for a launch that is not a supervisor's -- a person's click.
     group: ?[]const u8,
 ) anyerror!poltergeistpkg.rpc.Opened {
-    const choice = try self.resolveLaunch(alloc, key, cli, by);
+    const choice = try self.resolveLaunch(alloc, key, cli, by, self.ownClis());
     // **Its group, on the line** (task 1971): `+launch --group=` tells
     // Polter before the CLI starts, and the agent is put in the group when
     // it is heard -- before its first request is answered (`arrived`), so
@@ -8559,7 +8760,7 @@ pub fn choosePersona(self: *App, id: poltergeistpkg.Bus.Id, arg: []const u8) any
     // Half a line in front of the person is not "at the prompt" for this:
     // the launch would be typed into the middle of it, so it gets a tab.
     if (!new_tab and surface.isAtShellPrompt() and !surface.draftFor(.person)) {
-        const choice = try self.resolveLaunch(aa, key, cli, id);
+        const choice = try self.resolveLaunch(aa, key, cli, id, self.ownClis());
         // The person's own click: the keys that opened this tab are not an
         // agent intruding (#1202).
         try self.startRoleIn(id, id, choice, try launchLine(aa, choice), .person);
@@ -15326,4 +15527,28 @@ test "task 1730: the burst, measured over the sizes and costs it can have" {
             }
         }
     }
+}
+
+test "2156 v3: the person's own Agent CLIs are read once a round, so nothing a round took is freed under it" {
+    const testing = std.testing;
+
+    // A round that has not read yet reads; one that has, does not --
+    // **whatever the file has done since**, because reading again is what
+    // would free the answer everything in the round is holding.
+    try testing.expect(ownClisNeedsRead(7, std.math.maxInt(u64)));
+    try testing.expect(ownClisNeedsRead(7, 6));
+    try testing.expect(!ownClisNeedsRead(7, 7));
+    // The first round of all reads, and so does the round after a wrap.
+    try testing.expect(ownClisNeedsRead(0, std.math.maxInt(u64)));
+    try testing.expect(ownClisNeedsRead(0, std.math.maxInt(u64) - 1));
+
+    // Moving the round on is what asks for the next read.
+    var app: App = undefined;
+    app.own_round = 0;
+    app.poltergeist_own_round = 0;
+    try testing.expect(!ownClisNeedsRead(app.own_round, app.poltergeist_own_round));
+    app.ownClisRound();
+    try testing.expect(ownClisNeedsRead(app.own_round, app.poltergeist_own_round));
+    app.ownClisRound();
+    try testing.expect(app.own_round == 2);
 }

@@ -739,7 +739,15 @@ pub const Input = struct {
     /// What each agent CLI is called to a person, by its adapter's own
     /// word. Empty when none has been read; a key that is not here has no
     /// name, and the snapshot says so. No default, for the reason above.
+    /// The Agent CLIs of the person's own are in it under their own names
+    /// (`namesWithOwn`), as they are in `supervisor_roles` and
+    /// `cli_standings` (`withOwn`, `standingsWithOwn`).
     cli_names: []const CliName,
+    /// The Agent CLIs of the person's own (task 2156 v3), for what their
+    /// keys run and what a last supervisor was started in. No default: a
+    /// caller that forgot it would go on with a session in the CLI under
+    /// the person's own gateway.
+    own_clis: []const OwnCli,
     /// The person's home directory, where a supervisor is started when
     /// nothing says better. Empty when it is not known.
     home: []const u8,
@@ -861,6 +869,155 @@ pub const CliName = struct {
     label: []const u8,
 };
 
+/// An Agent CLI of the person's own, as the control room offers it (task
+/// 2156 v3): which CLI it runs and which roles it is ticked for -- never
+/// its command or its variables. **Offered as a preset is**: in a role's
+/// list by its own key, under its own name, standing as its base does, so
+/// every host that draws a role's CLIs draws these with no change.
+pub const OwnCli = struct {
+    key: []const u8,
+    name: []const u8,
+    base: []const u8,
+    roles: []const []const u8,
+
+    fn ticked(self: OwnCli, role: []const u8) bool {
+        for (self.roles) |r| if (std.mem.eql(u8, r, role)) return true;
+        return false;
+    }
+};
+
+/// The CLI `key` runs: an own one's base, or `key` itself.
+pub fn baseOf(own: []const OwnCli, key: []const u8) []const u8 {
+    for (own) |o| if (std.mem.eql(u8, o.key, key)) return o.base;
+    return key;
+}
+
+/// What `last` was started in, as a key a role's list holds: the Agent CLI
+/// of the person's own it went through, while that is still there; else its
+/// CLI -- which is also where a start goes on when that one has been
+/// deleted (and `+launch` says so, given the key that is gone).
+///
+/// ⚠️ **This looks at the file and not at the role's ticks** (see the
+/// slice's README): an own one that is still there but has been unticked
+/// for this role answers with its own key, and `startCliOf` then falls to
+/// the role's first CLI, which need not be its base. Deleting and unticking
+/// therefore behave differently today. Saying both the same way, out loud,
+/// is the next slice's work.
+pub fn startedIn(last: Chat.LastSupervisor, own: []const OwnCli) []const u8 {
+    if (last.launcher.len > 0) for (own) |o| {
+        if (std.mem.eql(u8, o.key, last.launcher)) return o.key;
+    };
+    return last.cli;
+}
+
+/// The Agent CLI of the person's own a start that goes on with `last`'s
+/// session goes through, given what was `picked` for `cli`. Picked by the
+/// same rule as the start (`startedIn`), that one is already `picked` while
+/// it is there. **Once deleted, the key that is gone**: the start is on its
+/// CLI, and `+launch`, handed a key it cannot find, says so in the terminal
+/// and starts the CLI as its plugin does (task 2156 v3).
+///
+/// ⚠️ **Handed a key for one that was only unticked this would stop the
+/// launch**: `+launch` refuses an Agent CLI that is not switched on for the
+/// role. Telling that case apart is the next slice's work.
+pub fn goOnThrough(picked: ?[]const u8, cli: []const u8, last: Chat.LastSupervisor) ?[]const u8 {
+    if (picked != null or last.launcher.len == 0) return picked;
+    if (!std.mem.eql(u8, cli, last.cli)) return picked;
+    return last.launcher;
+}
+
+/// The Agent CLI of the person's own a supervisor that quit was started
+/// through, while it is still there **and still ticked for `role`**; else
+/// `cli`, as its plugin starts it (task 2156 v3).
+///
+/// The take-over case of `goOnThrough`: nobody asked for this start -- it is
+/// the control room putting back the supervisor that quit -- so there is no
+/// key to say "gone" to. Starting through one that is no longer ticked would
+/// be starting it in something the person has since taken away, and starting
+/// through a deleted one is refused anyway; `cli` is what both fall back to.
+///
+/// ⚠️ **This fall-back is silent, and goes on with the old session.** Both
+/// are the next slice's work (see the README): saying in the group which CLI
+/// the take-over went in and why, and not continuing a session that was
+/// opened through a gateway in the CLI underneath it.
+pub fn takeOverThrough(run_launcher: []const u8, cli: []const u8, own: []const OwnCli, role: []const u8) []const u8 {
+    if (run_launcher.len == 0) return cli;
+    for (own) |o| {
+        if (std.mem.eql(u8, o.key, run_launcher) and o.ticked(role)) return o.key;
+    }
+    return cli;
+}
+
+/// Which Agent CLI a start that named none goes through (task 2156 v3, the
+/// person's rule 3): one of the person's own ticked for the role and
+/// nothing else to go on -- the role is set up for no preset at all and
+/// exactly one own one is ticked -- is that one; else the one the asker
+/// itself was started through; else the asker's own CLI when the role is
+/// set up for it; else somebody has to say which. Null when the role has
+/// none of the person's own ticked, and then nothing is decided here.
+///
+/// `own` is every Agent CLI of the person's own ticked for the role, in the
+/// file's order and one each. `by` is the terminal that asked, as the two
+/// things it can have: the Agent CLI of the person's own it was started
+/// through (`by_via`, empty for the CLI as its plugin starts it) and its CLI
+/// (`by_cli`). `role_takes_by_cli` is whether that CLI is one the role is
+/// set up for -- asked by the caller, which has the role.
+pub const Pick = union(enum) {
+    /// Through this Agent CLI of the person's own; its `base` is what runs.
+    own: OwnCli,
+    /// In this CLI, as its plugin starts it.
+    cli: []const u8,
+    /// More than one could, and nothing says which: the person chooses.
+    choose,
+};
+
+pub fn pickOwn(own: []const OwnCli, role_clis: usize, by_via: []const u8, by_cli: ?[]const u8, role_takes_by_cli: bool) ?Pick {
+    if (own.len == 0) return null;
+    if (role_clis == 0 and own.len == 1) return .{ .own = own[0] };
+    for (own) |o| {
+        if (std.mem.eql(u8, o.key, by_via)) return .{ .own = o };
+    }
+    if (by_via.len == 0) {
+        if (by_cli) |c| if (role_takes_by_cli) return .{ .cli = c };
+    }
+    return .choose;
+}
+
+/// `role` with every Agent CLI of the person's own ticked for it, after the
+/// CLIs it is set up for, in the file's order.
+pub fn withOwn(arena: Allocator, role: StartRole, own: []const OwnCli) Allocator.Error!StartRole {
+    var clis: std.ArrayList([]const u8) = .empty;
+    try clis.appendSlice(arena, role.clis);
+    for (own) |o| if (o.ticked(role.key)) try clis.append(arena, o.key);
+    return .{ .key = role.key, .name = role.name, .clis = clis.items };
+}
+
+/// `names` with each own one's name.
+pub fn namesWithOwn(arena: Allocator, names: []const CliName, own: []const OwnCli) Allocator.Error![]const CliName {
+    if (own.len == 0) return names;
+    var out: std.ArrayList(CliName) = .empty;
+    try out.appendSlice(arena, names);
+    for (own) |o| try out.append(arena, .{ .key = o.key, .label = o.name });
+    return out.items;
+}
+
+/// `standings` with each own one standing as its base does: a base whose
+/// plugin is off holds its own ones back too, for the same reason, and the
+/// host says so where it would have offered them. Null stays null.
+pub fn standingsWithOwn(arena: Allocator, standings: ?[]const CliStanding, own: []const OwnCli) Allocator.Error!?[]const CliStanding {
+    const all = standings orelse return null;
+    if (own.len == 0) return all;
+    var out: std.ArrayList(CliStanding) = .empty;
+    try out.appendSlice(arena, all);
+    for (own) |o| {
+        const base = for (all) |s| {
+            if (std.mem.eql(u8, s.key, o.base)) break s.standing;
+        } else continue; // no plugin for its base: held back as `no_plugin`
+        try out.append(arena, .{ .key = o.key, .standing = base });
+    }
+    return out.items;
+}
+
 /// The name `key` goes by; null when there is no key, nobody names it, or
 /// the name it was given is empty. **Never the key standing in for a
 /// name**: a host that is handed null writes the key and knows it did.
@@ -931,9 +1088,10 @@ pub fn installedHere(
 /// The CLI a role is started in, of those it can be here (`startClisOf`):
 /// the last supervisor's when it is one of them, else the first. Null for
 /// none.
-pub fn startCliOf(clis: []const []const u8, last: Chat.LastSupervisor) ?[]const u8 {
-    if (last.cli.len > 0) for (clis) |c| {
-        if (std.mem.eql(u8, c, last.cli)) return c;
+pub fn startCliOf(clis: []const []const u8, last: Chat.LastSupervisor, own: []const OwnCli) ?[]const u8 {
+    const was = startedIn(last, own);
+    if (was.len > 0) for (clis) |c| {
+        if (std.mem.eql(u8, c, was)) return c;
     };
     return if (clis.len > 0) clis[0] else null;
 }
@@ -967,8 +1125,12 @@ pub fn sessionHeld(bus: *const Bus, open: []const Id, session: []const u8) bool 
 /// offered and what the launch line then carries cannot be two answers.
 pub fn resumeOf(q: struct {
     last: Chat.LastSupervisor,
-    /// The CLI it would be started in; null when there is none.
+    /// The CLI it would be started in -- an Agent CLI of the person's own
+    /// by its key; null when there is none.
     cli: ?[]const u8,
+    /// What those keys run (task 2156 v3): a session goes on only in what
+    /// started it (`startedIn`), and whether that can is its base's answer.
+    own: []const OwnCli,
     cli_resume: CliResume,
     /// `sessionHeld` of the last session.
     held: bool,
@@ -980,11 +1142,12 @@ pub fn resumeOf(q: struct {
         if (q.last.session.len == 0) break :why .no_session;
         if (q.last_try_failed) break :why .last_try_failed;
         const cli = q.cli orelse break :why .cli_differs;
-        if (!std.mem.eql(u8, cli, q.last.cli)) break :why .cli_differs;
+        if (!std.mem.eql(u8, cli, startedIn(q.last, q.own))) break :why .cli_differs;
+        const base = baseOf(q.own, cli);
         switch (q.cli_resume) {
             .unread => break :why .clis_unread,
             .read => |keys| for (keys) |k| {
-                if (std.mem.eql(u8, k, cli)) break;
+                if (std.mem.eql(u8, k, base)) break;
             } else break :why .cli_cannot_resume,
         }
         if (q.held) break :why .session_in_use;
@@ -2335,13 +2498,14 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
         .{ .dir = "", .from = .none };
 
     const role = startRoleOf(in.supervisor_roles, last);
-    const cli = if (role) |r| startCliOf(try startClisOf(arena, r, in.cli_standings), last) else null;
+    const cli = if (role) |r| startCliOf(try startClisOf(arena, r, in.cli_standings), last, in.own_clis) else null;
 
     const open = try arena.alloc(Id, in.terminals.len);
     for (in.terminals, open) |t, *o| o.* = t.id;
     const go_on = resumeOf(.{
         .last = last,
         .cli = cli,
+        .own = in.own_clis,
         .cli_resume = in.cli_resume,
         .held = sessionHeld(in.bus, open, last.session),
         .last_try_failed = start.state == .failed and start.resuming,
@@ -2359,6 +2523,7 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
         const this_one = resumeOf(.{
             .last = last,
             .cli = c,
+            .own = in.own_clis,
             .cli_resume = in.cli_resume,
             .held = sessionHeld(in.bus, open, last.session),
             .last_try_failed = start.state == .failed and start.resuming,
@@ -2379,8 +2544,10 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
         .cwd_from = cwd.from,
         .last = .{
             .role = if (last.role.len > 0) try arena.dupe(u8, last.role) else null,
-            .cli = if (last.cli.len > 0) try arena.dupe(u8, last.cli) else null,
-            .cli_label = if (cliLabelOf(in.cli_names, last.cli)) |l| try arena.dupe(u8, l) else null,
+            // What it was started in: an Agent CLI of the person's own
+            // that is still there, by its key (task 2156 v3).
+            .cli = if (startedIn(last, in.own_clis).len > 0) try arena.dupe(u8, startedIn(last, in.own_clis)) else null,
+            .cli_label = if (cliLabelOf(in.cli_names, startedIn(last, in.own_clis))) |l| try arena.dupe(u8, l) else null,
             .heard_ms = last.heard_ms,
         },
         .@"resume" = go_on,
@@ -3061,6 +3228,7 @@ const World = struct {
     cli_standings: ?[]const CliStanding = &.{.{ .key = "claude-code", .standing = .ok }},
     projects: ProjectsIn = .unknown,
     cli_names: []const CliName = &.{.{ .key = "claude-code", .label = "Claude Code" }},
+    own_clis: []const OwnCli = &.{},
     home: []const u8 = "/Users/me",
     fix_sent: ControlFix.Sent = .{},
     asks: ControlAsk = .{},
@@ -3162,6 +3330,7 @@ const World = struct {
             .cli_standings = self.cli_standings,
             .projects = self.projects,
             .cli_names = self.cli_names,
+            .own_clis = self.own_clis,
             .home = self.home,
             .record_root = "/state/chat",
             .fix_sent = &self.fix_sent,
@@ -3269,6 +3438,7 @@ fn fixtureWorld() !World {
         .dir_from = .none,
         .role = "polter-supervisor",
         .cli = "claude-code",
+        .launcher = "",
         .session = "s",
         .heard_ms = 1_699_999_340_000,
     });
@@ -3279,6 +3449,7 @@ fn fixtureWorld() !World {
         .dir_from = .none,
         .role = "polter-supervisor",
         .cli = "kimi",
+        .launcher = "",
         .session = "s-kimi",
         .heard_ms = 1_699_900_000_000,
     });
@@ -3287,6 +3458,7 @@ fn fixtureWorld() !World {
         .dir_from = .none,
         .role = "polter-supervisor",
         .cli = "codex",
+        .launcher = "",
         .session = "s-before",
         .heard_ms = 1_699_913_600_000,
     });
@@ -5759,13 +5931,14 @@ test "ControlRoom resume: whether a start goes on with the last session, one rea
         .dir_from = .supervisor,
         .role = "polter-supervisor",
         .cli = "claude-code",
+        .launcher = "",
         .session = "s-1",
         .heard_ms = 1,
     };
     const can_all: CliResume = .{ .read = &.{ "codex", "claude-code" } };
 
     // Everything in place: it can, and there is no reason.
-    const yes = resumeOf(.{ .last = whole, .cli = "claude-code", .cli_resume = can_all, .held = false, .last_try_failed = false });
+    const yes = resumeOf(.{ .last = whole, .cli = "claude-code", .own = &.{}, .cli_resume = can_all, .held = false, .last_try_failed = false });
     try testing.expect(yes.can);
     try testing.expectEqual(ResumeOut.Why.none, yes.why);
 
@@ -5808,14 +5981,14 @@ test "ControlRoom resume: whether a start goes on with the last session, one rea
         .{ .held = true, .why = .session_in_use },
     };
     for (cells) |c| {
-        const got = resumeOf(.{ .last = c.last, .cli = c.cli, .cli_resume = c.cli_resume, .held = c.held, .last_try_failed = c.last_try_failed });
+        const got = resumeOf(.{ .last = c.last, .cli = c.cli, .own = &.{}, .cli_resume = c.cli_resume, .held = c.held, .last_try_failed = c.last_try_failed });
         try testing.expectEqual(c.why, got.why);
         try testing.expect(!got.can);
     }
 
     // The order, where two apply: what is missing is said before what
     // would not have mattered.
-    const two = resumeOf(.{ .last = silent, .cli = "codex", .cli_resume = .unread, .held = true, .last_try_failed = true });
+    const two = resumeOf(.{ .last = silent, .cli = "codex", .own = &.{}, .cli_resume = .unread, .held = true, .last_try_failed = true });
     try testing.expectEqual(ResumeOut.Why.no_session, two.why);
 }
 
@@ -5878,6 +6051,7 @@ test "1810: a session whose agent has left its still-open terminal can be gone o
         .dir_from = .supervisor,
         .role = "night-lead",
         .cli = "claude-code",
+        .launcher = "",
         .session = "s-1",
         .heard_ms = 1_700_000_000_000,
     });
@@ -5920,24 +6094,24 @@ test "ControlRoom resume: the role and the CLI a start uses are the last supervi
 
     // Nothing written down: the first role, and its first CLI.
     try testing.expectEqualStrings("polter-supervisor", startRoleOf(&roles, last).?.key);
-    try testing.expectEqualStrings("codex", startCliOf(roles[1].clis, last).?);
+    try testing.expectEqualStrings("codex", startCliOf(roles[1].clis, last, &.{}).?);
 
     // The role it wore, and the CLI it was -- not the role's first.
     last.role = "night-lead";
     last.cli = "claude-code";
     const role = startRoleOf(&roles, last).?;
     try testing.expectEqualStrings("night-lead", role.key);
-    try testing.expectEqualStrings("claude-code", startCliOf(role.clis, last).?);
+    try testing.expectEqualStrings("claude-code", startCliOf(role.clis, last, &.{}).?);
 
     // A role that is gone, or no longer one to start a supervisor in, and
     // a CLI the role is no longer set up for: the first of each again.
     last.role = "deleted";
     last.cli = "gemini";
     try testing.expectEqualStrings("polter-supervisor", startRoleOf(&roles, last).?.key);
-    try testing.expectEqualStrings("codex", startCliOf(roles[1].clis, last).?);
+    try testing.expectEqualStrings("codex", startCliOf(roles[1].clis, last, &.{}).?);
 
     try testing.expectEqual(@as(?StartRole, null), startRoleOf(&.{}, last));
-    try testing.expectEqual(@as(?[]const u8, null), startCliOf(&.{}, last));
+    try testing.expectEqual(@as(?[]const u8, null), startCliOf(&.{}, last, &.{}));
 }
 
 test "ControlRoom resume: the snapshot says what a group's last supervisor was and whether a start goes on with its session" {
@@ -5961,6 +6135,7 @@ test "ControlRoom resume: the snapshot says what a group's last supervisor was a
         .dir_from = .supervisor,
         .role = "night-lead",
         .cli = "claude-code",
+        .launcher = "",
         .session = "s-1",
         .heard_ms = 1_700_000_000_000,
     });
@@ -6112,6 +6287,145 @@ test "1744: a machine with only agy: the start offers agy, says why Claude Code 
     try testing.expectEqual(HeldBackOut.Why.not_installed, why);
     // And no CLI that is not here is asked whether it goes on with a session.
     for (after.resume_by_cli) |r| try testing.expect(!std.mem.eql(u8, r.cli, "claude-code"));
+}
+
+test "2156 v3: a role's own Agent CLIs are offered as its CLIs are -- listed, named, held back for their base's reason -- and the one it was started in is the default" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    const own = [_]OwnCli{
+        .{ .key = "claude-deepseek-flash", .name = "Claude · DeepSeek flash", .base = "claude-code", .roles = &.{"polter-supervisor"} },
+        .{ .key = "codex-proxy", .name = "Codex via proxy", .base = "codex", .roles = &.{"polter-supervisor"} },
+        .{ .key = "for-workers", .name = "Workers only", .base = "claude-code", .roles = &.{"dev-worker"} },
+    };
+    const plugins = [_]CliStanding{
+        .{ .key = "claude-code", .standing = .ok },
+        .{ .key = "codex", .standing = .plugin_off },
+    };
+    const role: StartRole = .{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{"claude-code"} };
+    const roles = [_]StartRole{try withOwn(aa, role, &own)};
+    w.roles = &roles;
+    w.cli_names = try namesWithOwn(aa, &.{.{ .key = "claude-code", .label = "Claude Code" }}, &own);
+    w.cli_standings = try standingsWithOwn(aa, &plugins, &own);
+    w.own_clis = &own;
+    w.cli_resume = .{ .read = &.{"claude-code"} };
+
+    try w.chat.restoreShell("g2156", "", 0, .none);
+    _ = try w.chat.setLastSupervisor("g2156", .{
+        .dir = "",
+        .dir_from = .none,
+        .role = "polter-supervisor",
+        .cli = "claude-code",
+        .launcher = "claude-deepseek-flash",
+        .session = "s-2156",
+        .heard_ms = 1,
+    });
+    const s = (try room.compute(aa, w.input(1_000))).snapshot;
+
+    // Offered: its CLI and its own one whose base is here, under its name.
+    const offered = s.supervisor_roles[0];
+    try testing.expectEqual(@as(usize, 2), offered.clis.len);
+    try testing.expectEqualStrings("claude-code", offered.clis[0].key);
+    try testing.expectEqualStrings("claude-deepseek-flash", offered.clis[1].key);
+    try testing.expectEqualStrings("Claude · DeepSeek flash", offered.clis[1].label.?);
+    // Held back, not hidden: the one whose base's plugin is off, for that.
+    try testing.expectEqual(@as(usize, 1), offered.held_back.len);
+    try testing.expectEqualStrings("codex-proxy", offered.held_back[0].key);
+    try testing.expectEqual(HeldBackOut.Why.plugin_off, offered.held_back[0].why);
+
+    // The default is what the last supervisor was started in, and it is
+    // the one that goes on with the session; its base does not.
+    const sup = (try rowNamed(s, "g2156")).supervisor;
+    try testing.expectEqualStrings("claude-deepseek-flash", sup.cli.?);
+    try testing.expectEqualStrings("claude-deepseek-flash", sup.last.cli.?);
+    try testing.expect(sup.@"resume".can);
+    for (sup.resume_by_cli) |r| {
+        const through = std.mem.eql(u8, r.cli, "claude-deepseek-flash");
+        try testing.expectEqual(through, r.can);
+    }
+}
+
+test "2156 v3: going on with a session started through one of the person's own goes through it again -- and, once it is deleted, through the key that is gone" {
+    const agent_cli = @import("agent_cli.zig");
+    const own = [_]OwnCli{.{ .key = "claude-deepseek-flash", .name = "DS", .base = "claude-code", .roles = &.{"polter-supervisor"} }};
+    const last: Chat.LastSupervisor = .{
+        .dir = "/w",
+        .dir_from = .supervisor,
+        .role = "polter-supervisor",
+        .cli = "claude-code",
+        .launcher = "claude-deepseek-flash",
+        .session = "s-2156",
+        .heard_ms = 1,
+    };
+    const can: CliResume = .{ .read = &.{"claude-code"} };
+    const q = struct {
+        fn go(l: Chat.LastSupervisor, cli: []const u8, o: []const OwnCli, r: CliResume) ResumeOut {
+            return resumeOf(.{ .last = l, .cli = cli, .own = o, .cli_resume = r, .held = false, .last_try_failed = false });
+        }
+    };
+
+    // While it is there: it, and only it, goes on.
+    try testing.expectEqualStrings("claude-deepseek-flash", startedIn(last, &own));
+    try testing.expect(q.go(last, "claude-deepseek-flash", &own, can).can);
+    try testing.expectEqual(ResumeOut.Why.cli_differs, q.go(last, "claude-code", &own, can).why);
+    // Whether it can is its base's answer.
+    try testing.expectEqual(ResumeOut.Why.cli_cannot_resume, q.go(last, "claude-deepseek-flash", &own, .{ .read = &.{"codex"} }).why);
+
+    // The line that goes on carries it.
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const through = goOnThrough("claude-deepseek-flash", "claude-code", last);
+    try agent_cli.writeLaunchWords(&w, "polter-supervisor", "claude-code", .{ .group = "g", .session = last.session, .launcher = through });
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), " --resume=s-2156") != null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), " --launcher=claude-deepseek-flash") != null);
+
+    // Deleted: its CLI goes on with the session, and the line still names
+    // the key that is gone, for `+launch` to say so.
+    try testing.expectEqualStrings("claude-code", startedIn(last, &.{}));
+    try testing.expect(q.go(last, "claude-code", &.{}, can).can);
+    try testing.expectEqualStrings("claude-deepseek-flash", goOnThrough(null, "claude-code", last).?);
+
+    // Started as its plugin starts it: nothing to go through.
+    var plain = last;
+    plain.launcher = "";
+    try testing.expectEqual(@as(?[]const u8, null), goOnThrough(null, "claude-code", plain));
+    try testing.expect(q.go(plain, "claude-code", &own, can).can);
+}
+
+test "2156 v3: a start that names no CLI takes the one own one the role is ticked for, else what the asker goes through, else it asks -- and a take-over puts back the one that quit was started through" {
+    const ds: OwnCli = .{ .key = "claude-deepseek-flash", .name = "DS", .base = "claude-code", .roles = &.{"polter-supervisor"} };
+    const mm: OwnCli = .{ .key = "minimax", .name = "MiniMax", .base = "claude-code", .roles = &.{"polter-supervisor"} };
+    const only_ds = [_]OwnCli{ds};
+    const both = [_]OwnCli{ ds, mm };
+
+    // The role is set up for no preset at all and one own one is ticked: it.
+    try testing.expectEqualStrings("claude-deepseek-flash", pickOwn(&only_ds, 0, "", null, false).?.own.key);
+    // Two ticked, and nothing says which: the person chooses.
+    try testing.expectEqual(Pick.choose, pickOwn(&both, 0, "", null, false).?);
+    // The asker's own Agent CLI, when the role is ticked for it.
+    try testing.expectEqualStrings("minimax", pickOwn(&both, 1, "minimax", "claude-code", true).?.own.key);
+    // The asker is the CLI as its plugin starts it, and the role is set up
+    // for that CLI: that one -- the role's presets are the caller's to
+    // default, not this function's.
+    try testing.expectEqualStrings("claude-code", pickOwn(&both, 1, "", "claude-code", true).?.cli);
+    // Ticked, but the role is not set up for the asker's CLI: no answer.
+    try testing.expectEqual(Pick.choose, pickOwn(&both, 1, "", "codex", false).?);
+    // Nothing of the person's own is ticked: nothing decided here.
+    try testing.expectEqual(@as(?Pick, null), pickOwn(&.{}, 1, "", "claude-code", true));
+
+    // A take-over: the one the quit supervisor was started through, while it
+    // is still ticked for the role.
+    try testing.expectEqualStrings("claude-deepseek-flash", takeOverThrough("claude-deepseek-flash", "claude-code", &only_ds, "polter-supervisor"));
+    // No longer there, or no longer ticked for this role: its CLI.
+    try testing.expectEqualStrings("claude-code", takeOverThrough("gone", "claude-code", &only_ds, "polter-supervisor"));
+    try testing.expectEqualStrings("claude-code", takeOverThrough("claude-deepseek-flash", "claude-code", &.{}, "polter-supervisor"));
+    // Started as its plugin starts it: nothing to put back.
+    try testing.expectEqualStrings("claude-code", takeOverThrough("", "claude-code", &only_ds, "polter-supervisor"));
 }
 
 test "Projects: the snapshot says which project each group has, what starting it does, and what the host is to do" {

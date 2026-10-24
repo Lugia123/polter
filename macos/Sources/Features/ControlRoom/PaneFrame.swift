@@ -63,7 +63,7 @@ enum PaneFrame {
         /// one of the row's glyphs, and the word the title brings with it.
         init(_ supervisor: ControlRoomList.SupervisorTitle) {
             self.init(name: supervisor.name, shown: .init(supervisor.shown), word: supervisor.word, says: supervisor.says,
-                      note: supervisor.note, takeOver: supervisor.takeOver)
+                      note: supervisor.note, takeOver: supervisor.takeOver, model: supervisor.model)
         }
 
         /// The word after the name on the bar of a frame that is `wears`:

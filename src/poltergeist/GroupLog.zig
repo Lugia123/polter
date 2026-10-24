@@ -355,7 +355,7 @@ fn render(s: *std.json.Stringify, entry: Entry) std.Io.Writer.Error!void {
             try s.objectField("dir_from");
             try s.write(@tagName(sup.dir_from));
         }
-        inline for (.{ "role", "cli", "session" }) |key| {
+        inline for (.{ "role", "cli", "launcher", "session" }) |key| {
             if (@field(sup, key).len > 0) {
                 try s.objectField(key);
                 try s.write(@field(sup, key));
@@ -516,6 +516,9 @@ fn supervisorIn(obj: std.json.ObjectMap) LastSupervisor {
             out.dir = textIn(o, "dir");
             out.role = textIn(o, "role");
             out.cli = textIn(o, "cli");
+            // Absent from a record written before task 2156 v3: its CLI as
+            // its plugin starts it.
+            out.launcher = textIn(o, "launcher");
             out.session = textIn(o, "session");
             out.heard_ms = if (o.get("heard_ms")) |v| msOf(v) else null;
             if (out.dir.len > 0) {
@@ -1199,6 +1202,9 @@ test "ControlRoom resume: a group's last supervisor is written down whole and ou
         .dir_from = .supervisor,
         .role = "polter-supervisor",
         .cli = "claude-code",
+        // Through an Agent CLI of the person's own (task 2156 v3): kept, so
+        // going on with the session goes through it again.
+        .launcher = "claude-deepseek-flash",
         .session = "eed9173b-c1fc-4493-aa00-187bacdc94cf",
         .heard_ms = 1_700_000_000_123,
     };
@@ -1241,6 +1247,7 @@ fn expectLast(want: LastSupervisor, got: LastSupervisor) !void {
     try testing.expectEqual(want.dir_from, got.dir_from);
     try testing.expectEqualStrings(want.role, got.role);
     try testing.expectEqualStrings(want.cli, got.cli);
+    try testing.expectEqualStrings(want.launcher, got.launcher);
     try testing.expectEqualStrings(want.session, got.session);
     try testing.expectEqual(want.heard_ms, got.heard_ms);
 }
@@ -1285,6 +1292,7 @@ test "ControlRoom resume: what nobody knows of a last supervisor is a key that i
         .dir_from = .supervisor,
         .role = "",
         .cli = "",
+        .launcher = "",
         .session = "",
         .heard_ms = 42,
     };
@@ -1358,6 +1366,8 @@ test "ControlRoom resume: a record from before there was a section reads its dir
     try testing.expectEqual(LastSupervisor.DirFrom.supervisor, m.supervisor.dir_from);
     try testing.expectEqualStrings("", m.supervisor.role);
     try testing.expectEqualStrings("claude-code", m.supervisor.cli);
+    // Written before task 2156 v3: no Agent CLI of the person's own.
+    try testing.expectEqualStrings("", m.supervisor.launcher);
     try testing.expectEqualStrings("s-1", m.supervisor.session);
     try testing.expectEqual(@as(?u64, null), m.supervisor.heard_ms);
 }

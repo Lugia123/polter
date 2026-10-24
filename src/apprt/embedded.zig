@@ -2351,6 +2351,16 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// The role library ticking or unticking an Agent CLI of the person's
+    /// own for a role (task 2156 v3).
+    export fn ghostty_app_role_launcher_set(app: *App, role: [*]const u8, role_len: usize, key: [*]const u8, key_len: usize, on: bool, err: ?[*]u8, cap: usize) bool {
+        app.core_app.settingsRoleLauncherSet(role[0..role_len], key[0..key_len], on) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
     export fn ghostty_app_persona_delete(
         app: *App,
         key: [*]const u8,

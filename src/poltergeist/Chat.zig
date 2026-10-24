@@ -1281,6 +1281,11 @@ pub const LastSupervisor = struct {
     /// The key of its agent CLI (`agent_cli.Adapter.key`); empty when not
     /// known.
     cli: []const u8,
+    /// The Agent CLI of the person's own it was started through, by key
+    /// (task 2156 v3); empty for `cli` as its plugin starts it. **No
+    /// default**: going on with a session started through one, without it,
+    /// is going on with it under somebody else's account.
+    launcher: []const u8,
     /// The session its CLI said it was in, as the CLI wrote it; empty
     /// when it never said.
     session: []const u8,
@@ -1304,13 +1309,14 @@ pub const LastSupervisor = struct {
         .dir_from = .none,
         .role = "",
         .cli = "",
+        .launcher = "",
         .session = "",
         .heard_ms = null,
     };
 
     pub fn isNone(self: LastSupervisor) bool {
         return self.dir.len == 0 and self.role.len == 0 and self.cli.len == 0 and
-            self.session.len == 0 and self.heard_ms == null;
+            self.launcher.len == 0 and self.session.len == 0 and self.heard_ms == null;
     }
 
     /// Whether everything but `heard_ms` is the same.
@@ -1319,6 +1325,7 @@ pub const LastSupervisor = struct {
             std.mem.eql(u8, self.dir, other.dir) and
             std.mem.eql(u8, self.role, other.role) and
             std.mem.eql(u8, self.cli, other.cli) and
+            std.mem.eql(u8, self.launcher, other.launcher) and
             std.mem.eql(u8, self.session, other.session);
     }
 
@@ -1330,12 +1337,15 @@ pub const LastSupervisor = struct {
         errdefer alloc.free(role);
         const cli = try alloc.dupe(u8, self.cli);
         errdefer alloc.free(cli);
+        const launcher = try alloc.dupe(u8, self.launcher);
+        errdefer alloc.free(launcher);
         const session = try alloc.dupe(u8, self.session);
         return .{
             .dir = dir,
             .dir_from = self.dir_from,
             .role = role,
             .cli = cli,
+            .launcher = launcher,
             .session = session,
             .heard_ms = self.heard_ms,
         };
@@ -1346,6 +1356,7 @@ pub const LastSupervisor = struct {
         alloc.free(self.dir);
         alloc.free(self.role);
         alloc.free(self.cli);
+        alloc.free(self.launcher);
         alloc.free(self.session);
     }
 };
@@ -3970,6 +3981,7 @@ test "ControlRoom resume: a group's last supervisor is replaced whole, and says 
         .dir_from = .supervisor,
         .role = "polter-supervisor",
         .cli = "claude-code",
+        .launcher = "",
         .session = "s-1",
         .heard_ms = 100,
     };
@@ -4054,7 +4066,7 @@ test "1810: a supervisor started to go on with a session keeps it written down u
     var chat = testChat();
     defer chat.deinit();
     try chat.restoreShell("build", "", 0, .none);
-    const was: LastSupervisor = .{ .dir = "/w1", .dir_from = .supervisor, .role = "polter-supervisor", .cli = "codex", .session = "01a152e8", .heard_ms = 1 };
+    const was: LastSupervisor = .{ .dir = "/w1", .dir_from = .supervisor, .role = "polter-supervisor", .cli = "codex", .launcher = "", .session = "01a152e8", .heard_ms = 1 };
 
     // What the agent said wins, whatever the start was.
     try testing.expectEqualStrings("s-new", sessionToWrite("s-new", was, true));

@@ -89,6 +89,40 @@ struct ControlRoomStartChoiceTests {
         #expect(Actions.request(for: .startSupervisor(group: "g"))["cli"] == nil)
     }
 
+    /// An Agent CLI of the person's own is offered as a preset is (task
+    /// 2156): the core puts it in the role's list under its own name, so
+    /// the row shows it and picking it sends its key.
+    @Test func anAgentCliOfThePersonsOwnIsOfferedAndSentByItsKey() throws {
+        var s = start(lastCli: "claude-deepseek-flash", label: "Claude · DeepSeek flash")
+        s.last?.cli = "claude-deepseek-flash"
+        s.last?.byCli = [.init(cli: "claude-code", can: false, why: .cliDiffers),
+                         .init(cli: "claude-deepseek-flash", can: true, why: .none)]
+        let role = ControlRoomList.SupervisorRole(
+            key: "polter-supervisor", name: "Polter Supervisor",
+            clis: [.init(key: "claude-code", label: "Claude Code"),
+                   .init(key: "claude-deepseek-flash", label: "Claude · DeepSeek flash")])
+        // The core's own default is the one it was started in, and it is the
+        // one "Go on" is about.
+        let none = Choice.cliChoice(s, roles: [role], role: nil, picked: nil)
+        #expect(none.shown && none.room == 2)
+        #expect(none.picked == "claude-deepseek-flash")
+        #expect(none.resume == .live)
+        #expect(none.clis.map(\.key) == ["claude-code", "claude-deepseek-flash"])
+        // Picked, its key is what the start carries.
+        let picked = Choice.cliChoice(s, roles: [role], role: nil, picked: "claude-deepseek-flash")
+        #expect(picked.picked == "claude-deepseek-flash")
+        let request = Actions.request(for: .startSupervisor(group: "g", session: nil, cli: picked.picked))
+        #expect(request["cli"] as? String == "claude-deepseek-flash")
+        // Its base's plugin off: it is held back, and said so rather than
+        // hidden.
+        var off = role
+        off.heldBack = [.init(key: "claude-deepseek-flash", label: "Claude · DeepSeek flash", why: .pluginOff)]
+        off.clis = [.init(key: "claude-code", label: "Claude Code")]
+        var last = s
+        last.last?.lastCli = "claude-deepseek-flash"
+        #expect(Choice.cliChoice(last, roles: [off], role: nil, picked: nil).clis.map(\.key) == ["claude-code"])
+    }
+
     // MARK: The choice
 
     @Test func theChoiceIsOfferedOnlyWhenTheCoreSaysTheLastSessionCanBeGoneOnWith() {

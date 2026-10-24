@@ -409,6 +409,11 @@ struct ControlRoomList: Equatable {
         var note: String?
         /// What the frame offers about taking it over; nil for every other.
         var takeOver: TakeOverTitle?
+        /// "<Agent CLI> custom model" for a supervisor started through an
+        /// Agent CLI of the person's own (task 2156, `PaneFrame.customModel`);
+        /// nil for every other, and for a snapshot from before the core said
+        /// which Agent CLI a terminal went through.
+        var model: String? = nil
     }
 
     /// "Let the control room take over?" as the title bar has it: whether
@@ -1105,7 +1110,14 @@ extension ControlRoomList {
 extension ControlRoomList {
     /// What the title of `group`'s supervisor frame says; nil when the core
     /// names no supervisor, or lists no such member.
-    static func supervisorTitle(of group: ControlRoomSnapshot.Group) -> SupervisorTitle? {
+    ///
+    /// `who` is what the core says of the group's steward as a terminal
+    /// (`ControlRoomSnapshot.Terminal.who`): the title says "custom model"
+    /// where the CLI's name would be when that one was started through an
+    /// Agent CLI of the person's own (task 2156). Nil for a snapshot that
+    /// does not list the terminal, and then nothing is said.
+    static func supervisorTitle(of group: ControlRoomSnapshot.Group,
+                                who: ControlRoomSnapshot.Terminal.Who? = nil) -> SupervisorTitle? {
         guard let steward = group.steward,
               let member = group.members?.first(where: { $0.id == steward }) else { return nil }
         // Always the supervisor's own member, as the core wrote it. Whether
@@ -1122,7 +1134,8 @@ extension ControlRoomList {
                                        offered: take.state == "offer" || take.state == "failed",
                                        confirm: take.confirm.map { said($0) },
                                        status: take.status.map { said($0) })
-                               })
+                               },
+                               model: PaneFrame.customModel(who))
     }
 
     /// One of the core's own sentences in the person's language, its
@@ -1153,6 +1166,11 @@ extension ControlRoomList {
         // that terminal; plain for one it does not list.
         func pane(of terminal: String) -> ControlRoomSnapshot.Terminal.Pane {
             snapshot.terminals?.first { $0.id == terminal }?.pane ?? .plain
+        }
+        // What the core says of a terminal (`who`); nil for one it does not
+        // list, and for a snapshot from before it said.
+        func who(of terminal: String?) -> ControlRoomSnapshot.Terminal.Who? {
+            terminal.flatMap { id in snapshot.terminals?.first { $0.id == id }?.who }
         }
         // A terminal on its own, after the groups, in the section its own
         // `needs_me` says -- the same test a group's row is put by.
@@ -1188,7 +1206,7 @@ extension ControlRoomList {
                 others: group.more,
                 pulses: breathing != nil && breathing == group.name,
                 unseen: group.unseen ?? false,
-                supervisor: Self.supervisorTitle(of: group),
+                supervisor: Self.supervisorTitle(of: group, who: who(of: group.steward)),
                 target: group.attention.flatMap { attention in
                     attention.terminal.map {
                         Target(terminal: $0, sinceMs: attention.since_ms, eventMs: attention.event_ms)

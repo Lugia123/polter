@@ -462,6 +462,15 @@ test "2156: a new launcher is off for every role, and its switches go when it do
     edited.name = "renamed";
     set = try put(aa, set, edited, true);
     try testing.expect(set.find(deepseek.key).?.enabledFor("polter-tester"));
+    // **A form that carries the roles is taken at its word** (this slice):
+    // the Agent CLI page is where they are ticked, so an edit that unticked
+    // one has to untick it here -- `keep_roles` false, which is what
+    // `settingsPutLauncher` asks for.
+    set = try put(aa, set, edited, true);
+    set = try put(aa, set, edited, false);
+    try testing.expect(!set.find(deepseek.key).?.enabledFor("polter-tester"));
+    set = try setRole(aa, set, deepseek.key, "polter-tester", true);
+
     // A role that is gone is dropped from the switches.
     const f = try forgetRolesNotIn(aa, set, &.{"polter-supervisor"});
     try testing.expectEqual(@as(usize, 1), f.dropped);
