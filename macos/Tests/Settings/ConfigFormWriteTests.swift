@@ -63,6 +63,14 @@ struct ConfigFormWriteTests {
         if !done() { Issue.record("not reached in \(turns) turns of the run loop", sourceLocation: sourceLocation) }
     }
 
+    /// The main run loop for `turns` slices of 0.05 s, waiting for nothing
+    /// in particular: room for something that should *not* happen to show
+    /// that it did not. Not `settle { false }`, which now says it was never
+    /// reached -- every time, because nothing was asked of it.
+    private func pause(turns: Int = 60) {
+        for _ in 0 ..< turns { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    }
+
     private func appFontSize(_ ghostty: Ghostty.App) -> Float? {
         guard let cfg = ghostty.config.config else { return nil }
         var v: Float = 0
@@ -233,7 +241,7 @@ struct ConfigFormWriteTests {
 
         settings.selectGeneralGroup(.about)
         ghostty.reloadConfig()
-        settle { false }  // three seconds for the reload and its follow-up to run out
+        pause()  // sixty turns for the reload and its follow-up to run out
         #expect(settings.shown?.section == .general)
         #expect(settings.shown?.group == .about)
     }
