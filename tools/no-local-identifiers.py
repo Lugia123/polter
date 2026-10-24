@@ -257,6 +257,7 @@ KNOWN = {
     # so the name in these URLs is the same public identity the bundle id
     # and the copyright line already carry.
     "docs/index.html": "links to this fork's own repository and releases page",
+    "docs/llms.txt": "links to this fork's own repository, releases page and site",
     "README_CN.md": "links to the releases page of this fork's own repository",
     "macos/Sources/App/AppDelegate.swift": "links to the fork's public documentation",
     # **This one is here rather than skipped, and the difference matters.**
