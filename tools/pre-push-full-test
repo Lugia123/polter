@@ -32,6 +32,38 @@ the full one, and "remember not to pass the flag" is not a guard. So:
 The tests run under `tools/zig-test-watchdog`, so a hung runner becomes a
 failure with a stack instead of a build that never returns.
 
+**Picking up where the last run fell (task 2154).** A full run takes an
+hour, most of it one Zig test binary, and the first answer is often "one
+gate is red" or "the Swift tests are red" -- after which the fix touches
+nothing the rest of the run read. So the run is four steps, and the three
+slow ones can be remembered:
+
+  * `core`  -- `zig build test -Demit-xcframework=false -Demit-macos-app=false`:
+    every Zig test with full integrity checks, nothing of the macOS host;
+  * `macos` -- `zig build test-macos`: the macOS host's xcodebuild tests,
+    the part of `zig build test` the first step leaves out;
+  * `logic` -- `tools/mac-logic-tests`;
+  * `gates` -- every gate. **Always run**: they are quick, and they read
+    the whole tree.
+
+A step that passes on a **clean** tree writes down the commit it passed at
+(`zig-test-watchdog/full-test-stamps.json`). The next run skips it only
+when the tree is clean again and **every path changed since that commit is
+one the step does not read**. What a step does not read is a short list
+of top-level directories (`NOT_READ`), and the Zig code reads files under
+`windows/` and `macos/` -- the tests at run time (`windows/host/src/keys.rs`,
+the Localizable.strings files...), the build itself (the translation
+template walks all of `windows/host/src`, and the macOS app is built with
+it) -- so every repository path named in a string literal under `src/` is
+taken back out of that list, for every step: read off the source on every
+run, not kept by hand, and not narrowed to the steps that are believed to
+read it, because that belief is the thing nobody checks. When in doubt a step runs:
+a dirty tree, different extra arguments, an unknown commit, or any path
+outside the list.
+
+`--plan` prints what would run and what would be skipped, and why, and
+runs nothing. `--all` ignores the stamps.
+
 Run:  tools/pre-push-full-test [extra zig build args]
       (from the repository root; extra args go to `zig build test`)
 Exit: 0 only when the tests passed with full checks, the macOS logic tests
@@ -40,6 +72,7 @@ Exit: 0 only when the tests passed with full checks, the macOS logic tests
 """
 
 import glob
+import json
 import os
 import re
 import subprocess
@@ -54,8 +87,141 @@ def git(*args):
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
 
 
+STAMPS = os.path.join(OUT, "full-test-stamps.json")
+HEAD_SHA = [""]
+
+# Top-level paths a step never reads. Anything else changed since the
+# stamp makes the step run again.
+NOT_READ = {
+    "core": ["windows/", "macos/", "dev-docs/", "docs/", ".github/"],
+    "macos": ["windows/", "dev-docs/", "docs/", ".github/"],
+    "logic": ["windows/", "dev-docs/", "docs/", ".github/", "src/", "pkg/", "vendor/"],
+}
+
+
+def paths_named_in_src():
+    """Repository paths under windows/ and macos/ that the Zig sources name
+    in a string literal: the tests read them at run time, so a change to one
+    is a change to the core step's input."""
+    named = set()
+    lit = re.compile(r'"((?:windows|macos)/[^"\\]*)"')
+    for path in glob.glob(os.path.join(ROOT, "src", "**", "*"), recursive=True):
+        if not os.path.isfile(path):
+            continue
+        try:
+            text = open(path, encoding="utf-8").read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        named.update(lit.findall(text))
+    return named
+
+
+def load_stamps():
+    try:
+        return json.load(open(STAMPS, encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_stamps(stamps):
+    with open(STAMPS, "w", encoding="utf-8") as f:
+        json.dump(stamps, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def decide(extra, dirty, run_all):
+    """For each remembered step: (skip, why)."""
+    stamps = load_stamps()
+    named = paths_named_in_src()
+    out = {}
+    for name in ("core", "macos", "logic"):
+        st = stamps.get(name)
+        if run_all:
+            out[name] = (False, "--all")
+        elif dirty:
+            out[name] = (False, "the tree is not clean")
+        elif not st:
+            out[name] = (False, "no earlier pass written down")
+        elif st.get("args") != extra:
+            out[name] = (False, f"passed with other arguments {st.get('args')}")
+        else:
+            base = st["commit"]
+            if git("merge-base", "--is-ancestor", base, "HEAD").returncode != 0:
+                out[name] = (False, f"passed at {base[:9]}, which is not an ancestor of HEAD")
+                continue
+            changed = [l for l in git("diff", "--name-only", base, "HEAD").stdout.splitlines() if l]
+            read = []
+            for c in changed:
+                outside = not any(c.startswith(p) for p in NOT_READ[name])
+                in_src = any(c == n or c.startswith(n.rstrip("/") + "/") for n in named)
+                if outside or in_src:
+                    read.append(c)
+            if read:
+                out[name] = (False, f"{len(read)} of {len(changed)} changed path(s) since "
+                                    f"{base[:9]} are its input, e.g. {read[0]}")
+            else:
+                out[name] = (True, f"passed at {base[:9]} ({st.get('log', '?')}); "
+                                   f"none of the {len(changed)} changed path(s) is its input")
+    out["gates"] = (False, "always run")
+    return out
+
+
+def run_zig(log, log_path, args, name, problems, want_integrity):
+    cmd = [os.path.join(ROOT, "tools", "zig-test-watchdog"), "--out", OUT, "--",
+           "zig", "build", *args, "--summary", "all"]
+    print(f"{name}: running {' '.join(cmd[4:])}")
+    log.write(f"\n## step {name}: {' '.join(cmd[4:])}\n")
+    log.flush()
+    mark = os.path.getsize(log_path)
+    p = subprocess.run(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+    log.flush()
+    with open(log_path, encoding="utf-8", errors="replace") as f:
+        f.seek(mark)
+        text = f.read()
+    summary = re.search(r"^Build Summary:[^\n]*", text, re.M)
+    print(f"{name}: exit {p.returncode}; {summary.group(0) if summary else 'no Build Summary line'}")
+    before = len(problems)
+    if p.returncode != 0:
+        problems.append(f"{name}: the test run exited {p.returncode} (3 = hung and killed by the watchdog)")
+    if not summary:
+        problems.append(f"{name}: no Build Summary line: the build did not report what it ran")
+    if want_integrity:
+        sampled = re.search(r"integrity: sampled[^\n]*", text)
+        if sampled:
+            problems.append(f"{name}: the tests ran with sampled integrity checks ({sampled.group(0)})")
+        elif "integrity: full" not in text:
+            problems.append(f"{name}: the output never said `integrity: full`, so it is not known "
+                            "that the integrity checks ran on every call")
+        else:
+            print(f"{name}: integrity: full (read from the test output)")
+    return len(problems) == before
+
+
+def run_logic(log_path, problems):
+    if sys.platform != "darwin":
+        print("logic: NOT RUN -- this is not macOS, and they are the macOS host's")
+        return False
+    m = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "mac-logic-tests")],
+                       cwd=ROOT, capture_output=True, text=True)
+    said = [l for l in (m.stdout + m.stderr).splitlines() if l.startswith(("OK:", "FAIL:"))]
+    with open(log_path, "a", encoding="utf-8") as log:
+        log.write(f"\n## tools/mac-logic-tests: exit {m.returncode}\n{m.stdout}{m.stderr}")
+    print(f"logic: exit {m.returncode}; {said[-1] if said else 'it said neither OK nor FAIL'}")
+    before = len(problems)
+    if m.returncode != 0:
+        problems.append(f"tools/mac-logic-tests exited {m.returncode} (1 = a test failed or the "
+                        f"package did not build, 2 = its list and the tree disagree or no test ran, "
+                        f"3 = no swift)")
+    elif not said or not said[-1].startswith("OK:"):
+        problems.append("tools/mac-logic-tests exited 0 without saying OK")
+    return len(problems) == before
+
+
 def main() -> int:
     extra = sys.argv[1:]
+    plan_only = "--plan" in extra
+    run_all = "--all" in extra
+    extra = [a for a in extra if a not in ("--plan", "--all")]
     refused = [a for a in extra if "integrity-sample" in a]
     refused += [f"{k}={v}" for k, v in os.environ.items() if "integrity-sample" in v]
     if refused:
@@ -79,6 +245,7 @@ def main() -> int:
         print("REFUSED: not a git checkout -- this run has to say which tree it tested.")
         return 2
     dirty = [l for l in status.stdout.splitlines() if l.strip()]
+    HEAD_SHA[0] = head.stdout.strip()
     first = (f"# tree: HEAD {head.stdout.strip()}; git status --porcelain: "
              f"{len(dirty)} line(s)")
 
@@ -92,49 +259,39 @@ def main() -> int:
                   f"`git status --porcelain`, listed in the log). Running anyway; "
                   f"the result describes this tree, not HEAD.")
 
-        cmd = [os.path.join(ROOT, "tools", "zig-test-watchdog"), "--out", OUT, "--",
-               "zig", "build", "test", "--summary", "all", *extra]
-        print(f"running: {' '.join(cmd[3:])}  (log: {os.path.relpath(log_path, ROOT)})")
+        problems = []
+        plan = decide(extra, dirty, run_all)
+        for name, (skip, why) in plan.items():
+            print(f"{name}: {'SKIP' if skip else 'RUN'} -- {why}")
+            log.write(f"# step {name}: {'skip' if skip else 'run'} -- {why}\n")
+        if plan_only:
+            return 0
         log.flush()
-        p = subprocess.run(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
-        test_rc = p.returncode
 
-    text = open(log_path, encoding="utf-8", errors="replace").read()
-    summary = re.search(r"^Build Summary:[^\n]*", text, re.M)
-    full = "integrity: full" in text
-    sampled = re.search(r"integrity: sampled[^\n]*", text)
+        passed = {}
+        if not plan["core"][0]:
+            ok = run_zig(log, log_path, ["test", "-Demit-xcframework=false",
+                                         "-Demit-macos-app=false", *extra],
+                         "core", problems, want_integrity=True)
+            passed["core"] = ok
+        if not plan["macos"][0]:
+            if sys.platform == "darwin":
+                passed["macos"] = run_zig(log, log_path, ["test-macos", *extra],
+                                          "macos", problems, want_integrity=False)
+            else:
+                print("macos: NOT RUN -- this is not macOS")
+        if not plan["logic"][0]:
+            log.flush()
+            passed["logic"] = run_logic(log_path, problems)
 
-    problems = []
-    print(f"tests: exit {test_rc}; {summary.group(0) if summary else 'no Build Summary line'}")
-    if test_rc != 0:
-        problems.append(f"the test run exited {test_rc} (3 = hung and killed by the watchdog)")
-    if not summary:
-        problems.append("no Build Summary line: the build did not report what it ran")
-    if sampled:
-        problems.append(f"the tests ran with sampled integrity checks ({sampled.group(0)})")
-    elif not full:
-        problems.append("the output never said `integrity: full`, so it is not known "
-                        "that the integrity checks ran on every call")
-    else:
-        print("integrity: full (read from the test output)")
-
-    # The macOS host's logic tests. After the Zig run so that the two builds
-    # do not fight over the machine; before the gates, which are quick.
-    if sys.platform == "darwin":
-        m = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "mac-logic-tests")],
-                           cwd=ROOT, capture_output=True, text=True)
-        said = [l for l in (m.stdout + m.stderr).splitlines() if l.startswith(("OK:", "FAIL:"))]
-        with open(log_path, "a", encoding="utf-8") as log:
-            log.write(f"\n## tools/mac-logic-tests: exit {m.returncode}\n{m.stdout}{m.stderr}")
-        print(f"mac logic tests: exit {m.returncode}; {said[-1] if said else 'it said neither OK nor FAIL'}")
-        if m.returncode != 0:
-            problems.append(f"tools/mac-logic-tests exited {m.returncode} (1 = a test failed or the "
-                            f"package did not build, 2 = its list and the tree disagree or no test ran, "
-                            f"3 = no swift)")
-        elif not said or not said[-1].startswith("OK:"):
-            problems.append("tools/mac-logic-tests exited 0 without saying OK")
-    else:
-        print("mac logic tests: NOT RUN -- this is not macOS, and they are the macOS host's")
+    if not dirty:
+        stamps = load_stamps()
+        for name, ok in passed.items():
+            if ok:
+                stamps[name] = {"commit": HEAD_SHA[0], "args": extra,
+                                "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                "log": os.path.relpath(log_path, ROOT)}
+        save_stamps(stamps)
 
     gates = sorted(glob.glob(os.path.join(ROOT, "tools", "*.py"))) + \
         sorted(glob.glob(os.path.join(ROOT, "windows", "tools", "*.py")))
@@ -167,7 +324,12 @@ def main() -> int:
             print(f"FAIL: {pr}")
         print(f"(full log: {os.path.relpath(log_path, ROOT)})")
         return 1
-    print("OK: full tests with every integrity check, the macOS logic tests, and every gate, passed")
+    skipped = [n for n, (skip, _) in plan.items() if skip]
+    if skipped:
+        print(f"OK: every gate passed, and the steps that ran passed; skipped as unchanged "
+              f"since their last pass: {', '.join(skipped)} (the reasons are above and in the log)")
+    else:
+        print("OK: full tests with every integrity check, the macOS logic tests, and every gate, passed")
     return 0
 
 

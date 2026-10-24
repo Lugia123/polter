@@ -74,6 +74,10 @@ pub fn build(b: *std.Build) !void {
         "Run the app under valgrind",
     );
     const test_step = b.step("test", "Run tests");
+    // Only the macOS host's xcodebuild tests -- the part of `test` that
+    // `-Demit-xcframework=false -Demit-macos-app=false` leaves out -- so
+    // tools/pre-push-full-test can run and remember the two halves apart.
+    const test_macos_step = b.step("test-macos", "Run the macOS host's xcodebuild tests");
     const test_lib_vt_step = b.step(
         "test-lib-vt",
         "Run libghostty-vt tests",
@@ -404,6 +408,7 @@ pub fn build(b: *std.Build) !void {
             // If we have no test filters, install the tests too
             if (test_filters.len == 0) {
                 macos_app_native_only.addTestStepDependencies(test_step);
+                macos_app_native_only.addTestStepDependencies(test_macos_step);
             }
         }
     }
