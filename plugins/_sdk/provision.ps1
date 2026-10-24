@@ -296,7 +296,7 @@ function Invoke-PolterBounded {
 # **This is the other kind of host, and it is not the same job wearing a
 # different hat.** A CLI with an `mcp add` subcommand owns its own file: its
 # format, its locking, its migrations are its problem. A host without one
-# makes them ours. opencode and DeepSeek-TUI are in that position.
+# makes them ours. opencode and Antigravity are in that position.
 #
 # The three properties that make it survivable are the `sh` version's, word
 # for word:
@@ -466,7 +466,7 @@ function Invoke-PolterProvision {
 
     # `-CommandType Application` so a function or alias somebody left in scope
     # cannot pass for an installed CLI. On Windows the thing found is usually
-    # `qwen.cmd` or `claude.cmd` rather than an `.exe`; both are Applications.
+    # `claude.cmd` rather than an `.exe`; both are Applications.
     $found = Get-Command $script:PolterHostBin -CommandType Application -ErrorAction SilentlyContinue
     if (-not $found) {
         Write-PolterLog "status=absent -- no ``$script:PolterHostBin`` on PATH ($env:PATH). Nothing to do; not an error."

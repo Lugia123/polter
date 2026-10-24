@@ -1,4 +1,0 @@
-{
-  "name": "Kimi CLI",
-  "description": "把 Polter 的 MCP 服务注册到月之暗面的 Kimi CLI。不装 skill：它的 skill 目录还没确认；Polter 的指引照样能通过 skill_read 和 MCP 握手里的工具表拿到。"
-}

@@ -3449,9 +3449,9 @@ fn fixtureWorld() !World {
         .dir = "",
         .dir_from = .none,
         .role = "polter-supervisor",
-        .cli = "kimi",
+        .cli = "opencode",
         .launcher = "",
-        .session = "s-kimi",
+        .session = "s-opencode",
         .heard_ms = 1_699_900_000_000,
     });
     _ = try w.chat.setLastSupervisor("notes", .{
@@ -3472,15 +3472,15 @@ fn fixtureWorld() !World {
     // snapshot says rather than drops.
     // And a fourth whose adapter says its program is not on this machine
     // (task 1744), which `legacy`'s last supervisor was in.
-    w.roles = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{ "claude-code", "codex", "other-cli", "kimi" } }};
+    w.roles = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{ "claude-code", "codex", "other-cli", "opencode" } }};
     w.cli_standings = &.{
         .{ .key = "claude-code", .standing = .ok },
         .{ .key = "codex", .standing = .ok },
         .{ .key = "other-cli", .standing = .plugin_off },
-        .{ .key = "kimi", .standing = .not_installed },
+        .{ .key = "opencode", .standing = .not_installed },
     };
-    w.cli_resume = .{ .read = &.{ "claude-code", "codex", "kimi" } };
-    w.cli_names = &.{ .{ .key = "claude-code", .label = "Claude Code" }, .{ .key = "codex", .label = "Codex" }, .{ .key = "kimi", .label = "Kimi" } };
+    w.cli_resume = .{ .read = &.{ "claude-code", "codex", "opencode" } };
+    w.cli_names = &.{ .{ .key = "claude-code", .label = "Claude Code" }, .{ .key = "codex", .label = "Codex" }, .{ .key = "opencode", .label = "opencode" } };
 
     // The control room asked web-app's supervisor for a report, and the
     // input line had a draft in it: being tried again (task 1671).

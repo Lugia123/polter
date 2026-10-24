@@ -47,7 +47,7 @@ body:
   - type: input
     attributes:
       label: Which agent CLI
-      description: Claude Code, Codex, Gemini, Qwen, opencode, Kimi, DeepSeek… and its version if you have it.
+      description: Claude Code, Codex, opencode, Antigravity, or any other MCP client… and its version if you have it.
       placeholder: "Claude Code 2.x"
 
   - type: textarea

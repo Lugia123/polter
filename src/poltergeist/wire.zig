@@ -3166,9 +3166,9 @@ test "a plugin's note for a person is written only where one was set" {
         // What the settings window reads: the same note, and the same
         // reason as a template to say.
         .{
-            .key = "kimi",
-            .name = "Kimi CLI",
-            .note = "kimi is dormant",
+            .key = "opencode",
+            .name = "opencode",
+            .note = "opencode is dormant",
             .note_say = .{ .key = .dormant, .template = report.NoteSay.templateOf(.dormant), .args = &.{"3"} },
         },
     };

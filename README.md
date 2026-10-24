@@ -49,7 +49,7 @@ The supervisor is not polling. Polter actively pushes a notice when a screen has
 *   **Idle Detection:** Polter tracks how long each screen has been inactive and tells the supervisor if a worker is stuck.
 *   **Roles & Projects:** Save your favorite agent settings (skills, prompts, models) as Roles. Save your workspace (tabs, directories, history) as Projects and load them later (macOS and Windows only).
 *   **Hooks:** An agent started from a Role tells Polter when its turn ends and what it said. The supervisor is notified directly, rather than waiting to read a still screen. (Claude Code, Codex and OpenCode; Antigravity on macOS only. Other CLIs are monitored by screen activity.)
-*   **Plugins:** Polter ships with 7 provisioning plugins out of the box.
+*   **Plugins:** Polter ships with 4 provisioning plugins out of the box.
 *   **Prompts go to the supervisor:** A worker stopped on a permission prompt is the supervisor's to deal with, in every tab: it answers the ones it can judge and brings the rest to you, with a system notification. You say no per tab (`Agents → Let a Supervisor Answer Prompts Here`), by shielding the tab, or for all of them (`poltergeist-may-authorise = false`).
 *   **One Settings Window:** Roles, projects, plugins, and configs are managed in one place (`Settings…`).
 *   **Multilingual:** UI supports English and Chinese (follows your system setting or the `Language` menu).
@@ -144,7 +144,7 @@ You can change settings in the `Settings…` menu. Some useful ones:
 Three causes: the plugin is off, `claude` wasn't on your `PATH` when Polter started, or `poltergeist-register-mcp` is off. The registration points at whichever build started last.
 
 **2. Does it work with other AI tools besides Claude Code?**
-The server uses standard MCP, so any MCP client can run it, and 7 provisioning plugins ship with it. Four of them go further: Claude Code, Codex and OpenCode on macOS and Windows, and Antigravity (`agy`) on macOS only. Polter starts these from a Role and hears their hooks, and the built-in Supervisor and Tester roles come for Claude Code, Codex and Antigravity. The other three (DeepSeek-TUI, Kimi CLI, Qwen Code) only have the MCP server registered for them: they can use the tools, and are watched by screen activity alone.
+The server uses standard MCP, so any MCP client can run it, and 4 provisioning plugins ship with it: Claude Code, Codex, OpenCode and Antigravity (`agy`). Claude Code, Codex and OpenCode run on macOS and Windows; Antigravity is macOS only. Polter starts these from a Role and hears their hooks, and the built-in Supervisor and Tester roles come for Claude Code, Codex and Antigravity. Three more (DeepSeek-TUI, Kimi CLI, Qwen Code) shipped until 2026-10-25 and were taken back out: none of them had ever been run against the CLI it registers with, so their failures would have arrived as yours. A plugin is a directory under `plugins/` plus one line in `src/build/GhosttyResources.zig`; they come back the day somebody measures them.
 
 **3. Isn't this just tmux?**
 No. `tmux` arranges panes and leaves the watching to you. Polter tells one agent how long each of the others has been still and lets it read their screens and type into them.

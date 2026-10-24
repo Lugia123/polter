@@ -10,8 +10,8 @@ import Testing
 struct PluginNoteSayTests {
     private static let listJSON = """
         {"ok":true,"plugins":[
-          {"key":"kimi","name":"Kimi CLI","enabled":true,"params":[],
-           "state":"dormant","cursor":0,"failures":7,"note":"kimi is dormant: it failed to start 7 time(s)",
+          {"key":"opencode","name":"opencode","enabled":true,"params":[],
+           "state":"dormant","cursor":0,"failures":7,"note":"opencode is dormant: it failed to start 7 time(s)",
            "note_say":{"key":"dormant","template":"It failed to start {1} time(s) and is now tried every fifteen minutes. Polter's log says why.","args":["7"]}},
           {"key":"codex","name":"Codex CLI","enabled":false,"params":[],
            "note":"codex is installed but switched off"}
@@ -32,15 +32,15 @@ struct PluginNoteSayTests {
 
     @Test func theNoteStaysAndTheReasonIsSaidInTheBundlesLanguage() throws {
         let list = try #require(PluginCoreStatus.parse(Self.listJSON))
-        let kimi = try #require(list["kimi"])
-        #expect(kimi.note == "kimi is dormant: it failed to start 7 time(s)")
-        #expect(kimi.noteSay?.args == ["7"])
+        let opencode = try #require(list["opencode"])
+        #expect(opencode.note == "opencode is dormant: it failed to start 7 time(s)")
+        #expect(opencode.noteSay?.args == ["7"])
 
         let (zh, root) = try bundle("""
             "It failed to start {1} time(s) and is now tried every fifteen minutes. Polter's log says why." = "启动失败 {1} 次，现在每 15 分钟试一次。原因见 Polter 的日志。";
             """)
         defer { try? FileManager.default.removeItem(at: root) }
-        #expect(kimi.shownNote(in: zh) == "启动失败 7 次，现在每 15 分钟试一次。原因见 Polter 的日志。")
+        #expect(opencode.shownNote(in: zh) == "启动失败 7 次，现在每 15 分钟试一次。原因见 Polter 的日志。")
     }
 
     /// No translation: the English template, filled. No `note_say` at all
@@ -49,7 +49,7 @@ struct PluginNoteSayTests {
         let list = try #require(PluginCoreStatus.parse(Self.listJSON))
         let (empty, root) = try bundle("")
         defer { try? FileManager.default.removeItem(at: root) }
-        #expect(list["kimi"]?.shownNote(in: empty)
+        #expect(list["opencode"]?.shownNote(in: empty)
                 == "It failed to start 7 time(s) and is now tried every fifteen minutes. Polter's log says why.")
         #expect(list["codex"]?.noteSay == nil)
         #expect(list["codex"]?.shownNote(in: empty) == "codex is installed but switched off")

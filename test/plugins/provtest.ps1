@@ -78,8 +78,8 @@ function Invoke-Plugin {
 
     # **Read on background threads, and give the whole thing a deadline.**
     # `ReadToEnd()` on its own has no timeout: the first `-Real` run met a
-    # `qwen mcp list` that never returned, and the suite sat there for eight
-    # minutes until it was killed by hand. A test harness that can hang
+    # a real CLI's `mcp list` that never returned, and the suite sat there
+    # for eight minutes until it was killed by hand. A test harness that can hang
     # forever turns "the CLI is wedged" into "the run is still going", and
     # those need to look different.
     $outTask = $p.StandardOutput.ReadToEndAsync()
@@ -148,14 +148,21 @@ $home1 = Join-Path $Root ([char]0x5F20 + [char]0x4E09 + '-home')
 New-Item -ItemType Directory -Path $home1 -Force | Out-Null
 
 # Stub CLIs.
+#
+# **`codex` is deliberately not among them**, so group 1 has a shipped host
+# whose program is not on PATH. `claude` and `opencode` are here because
+# groups 2, 4, 5 and 6b drive them.
 $okCmd = "@echo off`r`necho stub ok`r`nexit /b 0`r`n"
 $failCmd = "@echo off`r`necho something went wrong 1>&2`r`nexit /b 3`r`n"
 [System.IO.File]::WriteAllText((Join-Path $Bin 'opencode.cmd'), $okCmd, $Utf8)
-[System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $okCmd, $Utf8)
-[System.IO.File]::WriteAllText((Join-Path $Bin 'deepseek.cmd'), $okCmd, $Utf8)
+[System.IO.File]::WriteAllText((Join-Path $Bin 'claude.cmd'), $okCmd, $Utf8)
 
 Write-Host "== 1. absent: a host whose CLI is not installed =="
-$r = Invoke-Plugin -Key 'kimi' -Hello (New-Hello 'kimi') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
+# `codex` rather than the `kimi` this used to be: task 2207 took kimi's
+# plugin out, and of the four that stay this is the one no stub is put on
+# PATH for. What the group asserts is unchanged -- a shipped host whose
+# program is absent says `status=absent` and is not an error.
+$r = Invoke-Plugin -Key 'codex' -Hello (New-Hello 'codex') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
 Check '1 absent -- both lines acknowledged true' (($r.Stdout -join ' ') -eq '{"ok":true} {"ok":true}') ($r.Stdout -join ' | ')
 Check '1 absent -- the log says status=absent' ($r.Stderr -match 'status=absent') $r.Stderr
 Assert-StdoutClean '1 absent' $r
@@ -209,17 +216,31 @@ if (Test-Path $cfg) {
     Remove-Item $cfg -Force
 }
 
-Write-Host "== 3. deepseek: the other json host, different shape =="
-$dcfg = Join-Path $home1 '.deepseek\mcp.json'
-$r = Invoke-Plugin -Key 'deepseek' -Hello (New-Hello 'deepseek') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
-Check '3 deepseek -- the config was created' (Test-Path $dcfg) $dcfg
-if (Test-Path $dcfg) {
-    $d = ConvertFrom-Json ([System.IO.File]::ReadAllText($dcfg, $Utf8))
-    Check '3 deepseek -- key is `mcpServers`, command is a string with args beside it' ($d.mcpServers.polter.command -is [string] -and @($d.mcpServers.polter.args).Count -eq 1) (ConvertTo-Json $d -Depth 10 -Compress)
-}
+# --- group 3 is gone, and why ------------------------------------------------
+#
+# It was `deepseek`: "the other json host, different shape" -- a second
+# Windows host whose entry is edited in a config file rather than through an
+# `mcp add`, asserted on the shape of the entry it wrote.
+#
+# Task 2207 removed deepseek, and **the class it stood for has no second
+# member on Windows any more**: `opencode` is the only host left whose
+# `provision.ps1` edits a config file (`antigravity`, the other one, ships
+# `provision.sh` only and is macOS-only). Group 2 already drives opencode
+# over the same ground, entry shape included, so the row was folded into it
+# rather than pointed at a host that would have made it a duplicate.
+#
+# What is lost, plainly: **a shape fragment that stops being distinctive now
+# has one fewer neighbour to be caught by.** `Resident.zig`'s
+# "the hosts that edit a config file" says the same thing about the `sh`
+# side (task 2207).
 
 Write-Host "== 4. skills: rendering, stamping, idempotence, pruning =="
-$skillsDir = Join-Path $home1 '.qwen\skills'
+# `opencode` rather than the `qwen-code` this used to be (task 2207): of the
+# hosts left it is the one whose skills directory is a plain directory under
+# the home, which is all this group needs. Its `Get-HostSkillsSharedDir`
+# (`~/.claude/skills`) is not there in this fixture, so its own directory is
+# the one used -- the shared branch has its own test (`skills-off.py`).
+$skillsDir = Join-Path $home1 '.config\opencode\skills'
 $mine = Join-Path $skillsDir 'polter-mine\SKILL.md'
 
 # A stale one this plugin wrote, and one it did not.
@@ -229,7 +250,7 @@ New-Item -ItemType Directory -Path (Join-Path $skillsDir 'polter-keep') -Force |
 [System.IO.File]::WriteAllText((Join-Path $skillsDir 'polter-keep\SKILL.md'), "---`nname: polter-keep`n---`nmine`n", $Utf8)
 [System.IO.File]::WriteAllText((Join-Path $skillsDir 'polter-keep\notes.md'), "not ours`n", $Utf8)
 
-$r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
+$r = Invoke-Plugin -Key 'opencode' -Hello (New-Hello 'opencode') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
 Check '4 skills -- acknowledged true' (($r.Stdout -join ' ') -eq '{"ok":true} {"ok":true}') ($r.Stdout -join ' | ')
 Check '4 skills -- the skill was installed' (Test-Path $mine) $mine
 if (Test-Path $mine) {
@@ -244,11 +265,11 @@ if (Test-Path $mine) {
 
     Write-Host "-- 4b. same build again writes nothing"
     Start-Sleep -Milliseconds 1200
-    $r2 = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
+    $r2 = Invoke-Plugin -Key 'opencode' -Hello (New-Hello 'opencode') -Batches @((New-Batch $home1 '1.0.0' $skillSrc))
     Check '4b skills -- not rewritten' ((Get-Item $mine).LastWriteTimeUtc -eq $stamp) ''
 
     Write-Host "-- 4c. a different build rewrites it and the stamp follows"
-    $r3 = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') -Batches @((New-Batch $home1 '9.9.9' $skillSrc))
+    $r3 = Invoke-Plugin -Key 'opencode' -Hello (New-Hello 'opencode') -Batches @((New-Batch $home1 '9.9.9' $skillSrc))
     $raw3 = [System.IO.File]::ReadAllText($mine, $Utf8)
     Check '4c skills -- the stamp is the new build' ($raw3 -match "(?m)^polter-build: 9\.9\.9$") $raw3
     Check '4c skills -- exactly one stamp' ((([regex]::Matches($raw3, '(?m)^polter-build: ')).Count) -eq 1) $raw3
@@ -259,14 +280,14 @@ Check '4d prune -- one with a second file is left alone' (Test-Path (Join-Path $
 Write-Host "== 5. skills=no is a parameter that does something =="
 $home2 = Join-Path $Root 'home-noskills'
 New-Item -ItemType Directory -Path $home2 -Force | Out-Null
-$r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code' 'user' 'no') -Batches @((New-Batch $home2 '1.0.0' $skillSrc))
-Check '5 skills=no -- nothing was installed' (-not (Test-Path (Join-Path $home2 '.qwen\skills'))) ''
+$r = Invoke-Plugin -Key 'opencode' -Hello (New-Hello 'opencode' 'user' 'no') -Batches @((New-Batch $home2 '1.0.0' $skillSrc))
+Check '5 skills=no -- nothing was installed' (-not (Test-Path (Join-Path $home2 '.config\opencode\skills'))) ''
 
 Write-Host "== 6. a registration that fails is loud =="
-[System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $failCmd, $Utf8)
+[System.IO.File]::WriteAllText((Join-Path $Bin 'claude.cmd'), $failCmd, $Utf8)
 $home3 = Join-Path $Root 'home-fail'
 New-Item -ItemType Directory -Path $home3 -Force | Out-Null
-$r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') -Batches @((New-Batch $home3 '1.0.0' $skillSrc))
+$r = Invoke-Plugin -Key 'claude-code' -Hello (New-Hello 'claude-code') -Batches @((New-Batch $home3 '1.0.0' $skillSrc))
 Check '6 failed -- acknowledged false' (($r.Stdout | Select-Object -Last 1) -eq '{"ok":false}') ($r.Stdout -join ' | ')
 # The exact sequence, not "a tell somewhere before the last ok". An
 # acknowledgement written too early is still followed by a tell and another
@@ -276,24 +297,36 @@ Check '6 failed -- the sequence is exactly greeting-ack, report, refusal' ($seq 
 Check '6 failed -- the log says status=failed step=mcp' ($r.Stderr -match 'status=failed step=mcp') $r.Stderr
 Check '6 failed -- the CLI own complaint survived to the log' ($r.Stderr -match 'something went wrong') $r.Stderr
 Assert-StdoutClean '6 failed' $r
-[System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $okCmd, $Utf8)
+[System.IO.File]::WriteAllText((Join-Path $Bin 'claude.cmd'), $okCmd, $Utf8)
 
 Write-Host "== 6b. the mcp add line keeps ``-e`` after the positional arguments =="
 #
-# **This is a real bug that was in both `.sh` and `.ps1` from the day they
-# were written, and every test passed anyway.**
+# **A command line was wrong on every platform for as long as the file had
+# existed, and every test passed anyway.**
 #
-# `qwen mcp add` and `gemini mcp add` take `<name> <command> [args...]`, and
-# their `-e` is an *array* option: yargs makes it greedy, and `--` ends
-# parsing, so what follows is not counted as a positional either. With `-e` in
-# the middle the parser saw one positional and refused the call outright --
-# `Not enough non-option arguments: got 1, need at least 2`.
+# The host it was found on was `qwen-code`, whose `mcp add` took
+# `<name> <command> [args...]` with an *array* `-e`: yargs makes an array
+# option greedy and `--` ends parsing, so what followed the `--` was not
+# counted as a positional either, and the call was refused with
+# `Not enough non-option arguments: got 1, need at least 2`. That host's
+# plugin is gone (task 2207). **The hazard did not go with it, and it has
+# two ends**: `--` is what stops the served command from being read as one
+# of the CLI's own options, and it is also what stops anything written after
+# it from being read as an option at all.
+#
+# So the rule this group holds is the pair, and the two ways to get it wrong
+# are opposite: **the version marker, an option, before the terminator; the
+# served command and its argument, positionals of the served side, after
+# it.** `claude-code` is the host it now runs against -- it is the one left
+# in the tree whose registration goes through a CLI that has a `--`, which
+# is the whole subject.
 #
 # What is asserted is the argv **this repository generates**, which is the
-# part we own and the part that was wrong. That `qwen` accepts this shape was
-# measured separately (qwen 0.15.11, 2026-09-01, exit 0 with the written entry
-# read back). The same rule is pinned on the `.sh` side by a Zig test, so the
-# two ports cannot drift apart.
+# part we own. It does **not** prove `claude` accepts that shape: that is
+# somebody else's parser and no stub can speak for it. The same rule is
+# pinned on the `.sh` side by a Zig test (`Resident.zig`, "the mcp add line
+# keeps the option and the served command on their own sides of `` `--` ``"),
+# so the two ports cannot drift apart.
 $argvLog = Join-Path $Root 'argv.txt'
 # A batch file rather than a PowerShell script, because that is what npm
 # installs and what the plugin will actually find on PATH.
@@ -303,8 +336,8 @@ $argvLog = Join-Path $Root 'argv.txt'
 # obviously right and is wrong on Windows: **`cmd` treats `=` as an argument
 # separator**, on a par with space, comma and semicolon. So
 # `POLTER_REGISTERED=1.2.3` arrived at the assertion as two arguments and 6b
-# failed -- while the real call was fine, as the real `qwen` run proved by
-# writing the whole value into its config.
+# failed -- while the real call was fine, as the real CLI run that found the
+# bug proved by writing the whole value into its config.
 #
 # That is worth more than the bug it caused: **the observer was corrupting
 # what it observed**, and it did so in the direction of looking like a defect
@@ -319,17 +352,17 @@ $recorder = (@'
 (echo %*)>>"%POLTER_TEST_ARGV%"
 exit /b 0
 '@) -replace "`n", "`r`n"
-[System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $recorder, $Utf8)
+[System.IO.File]::WriteAllText((Join-Path $Bin 'claude.cmd'), $recorder, $Utf8)
 
 $homeArgv = Join-Path $Root 'home-argv'
 New-Item -ItemType Directory -Path $homeArgv -Force | Out-Null
-$r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') `
+$r = Invoke-Plugin -Key 'claude-code' -Hello (New-Hello 'claude-code') `
     -Batches @((New-Batch $homeArgv '1.2.3' $skillSrc)) -ArgvLog $argvLog
 
 if (-not (Test-Path -LiteralPath $argvLog)) {
     Check '6b argv -- the stub recorded something' $false 'no argv.txt was written'
 } else {
-    # One line per invocation. The plugin calls `mcp list` and `mcp remove`
+    # One line per invocation. The plugin calls `mcp remove` and `mcp get`
     # before `mcp add`, and asserting against the wrong one of those would
     # pass for the wrong reason.
     $lines = @([System.IO.File]::ReadAllText($argvLog, $Utf8) -split "`r?`n" | Where-Object { $_.Trim() })
@@ -339,21 +372,22 @@ if (-not (Test-Path -LiteralPath $argvLog)) {
 
     if ($add.Count -ge 1) {
         $line = $add[0]
+        # The literal `New-Batch` puts on the line by default, not a
+        # variable: there is no script-scope `$Exe` here, and `Set-StrictMode`
+        # makes reading one an error rather than an empty string.
         $iExe = $line.IndexOf('C:\app\polter.exe')
         $iMcp = $line.IndexOf('+mcp')
         $iE = $line.IndexOf(' -e ')
+        # Matched with spaces around it, so `--scope` is not mistaken for it.
+        $iDash = $line.IndexOf(' -- ')
 
         Check '6b argv -- the served exe and +mcp are both on the line' (($iExe -ge 0) -and ($iMcp -ge 0)) $line
         # The rule, stated as the rule rather than as a literal command line:
         # a literal would break on any innocuous addition and teach nobody why.
-        Check '6b argv -- `-e` comes after the served exe' (($iE -ge 0) -and ($iE -gt $iExe)) $line
-        Check '6b argv -- `-e` comes after +mcp' (($iE -ge 0) -and ($iE -gt $iMcp)) $line
-        # And no `--`. It used to be there, to keep a future flag on the served
-        # side from being read as one of the CLI's own -- but it is what stops
-        # the positionals being counted, so it had to go. That protection now
-        # rests on `+mcp` not looking like an option. Matched with spaces
-        # around it so `--scope` is not mistaken for it.
-        Check '6b argv -- no `--` separator' ($line -notmatch ' -- ') $line
+        Check '6b argv -- the `--` terminator is on the line' ($iDash -ge 0) $line
+        Check '6b argv -- `-e` comes before the terminator' (($iE -ge 0) -and ($iDash -ge 0) -and ($iE -lt $iDash)) $line
+        Check '6b argv -- the served exe comes after the terminator' (($iExe -ge 0) -and ($iDash -ge 0) -and ($iExe -gt $iDash)) $line
+        Check '6b argv -- +mcp comes after the terminator' (($iMcp -ge 0) -and ($iDash -ge 0) -and ($iMcp -gt $iDash)) $line
         # **`=` and all.** This is the assertion the tokenising recorder broke:
         # it saw two arguments where the CLI sees one. Kept as an exact
         # substring so that reverting the recorder goes red here again.
@@ -361,22 +395,44 @@ if (-not (Test-Path -LiteralPath $argvLog)) {
     }
 }
 
-[System.IO.File]::WriteAllText((Join-Path $Bin 'qwen.cmd'), $okCmd, $Utf8)
+[System.IO.File]::WriteAllText((Join-Path $Bin 'claude.cmd'), $okCmd, $Utf8)
 
 Write-Host "== 7. a greeting that is not one =="
-$r = Invoke-Plugin -Key 'kimi' -Hello '{"nope":1}' -Batches @()
+$r = Invoke-Plugin -Key 'claude-code' -Hello '{"nope":1}' -Batches @()
 Check '7 bad greeting -- acknowledged false' (($r.Stdout -join ' ') -eq '{"ok":false}') ($r.Stdout -join ' | ')
 Check '7 bad greeting -- exit 2' ($r.Exit -eq 2) "exit=$($r.Exit)"
 
 Write-Host "== 8. an empty batch is a heartbeat =="
-$r = Invoke-Plugin -Key 'kimi' -Hello (New-Hello 'kimi') -Batches @('{"cursor":0,"through":0,"events":[]}')
+$r = Invoke-Plugin -Key 'claude-code' -Hello (New-Hello 'claude-code') -Batches @('{"cursor":0,"through":0,"events":[]}')
 Check '8 heartbeat -- acknowledged true' (($r.Stdout -join ' ') -eq '{"ok":true} {"ok":true}') ($r.Stdout -join ' | ')
 
 if ($Real) {
-    Write-Host "== 9. the real Qwen Code on this machine =="
+    Write-Host "== 9. the real opencode on this machine =="
+    #
+    # **`opencode`, because it is the only host left that can be confirmed
+    # this way.** The route needs the CLI installed on the machine and one of
+    # two things: it honours `$HOME` (a scratch home, the real config never
+    # opened) or a config file that nothing else on the machine rewrites
+    # while the run is happening. `claude-code` has neither -- every run of
+    # it goes through `claude mcp add`, and `~/.claude.json` changes on its
+    # own every few minutes on a machine running Claude Code, which is what
+    # the byte-for-byte backup check below would trip over. `opencode` is
+    # edited in a file of its own that nothing else writes.
+    #
+    # **This group used to be `qwen-code`** (task 2207). What it establishes
+    # is unchanged and is still not "the agent reached Polter": it is the
+    # four things that are the plugin's own job -- the call the plugin makes
+    # runs and exits zero, the entry appears in the CLI's own config, the
+    # CLI **itself** reports it back, and the skill lands in its skills
+    # directory.
     $realHome = $env:USERPROFILE
     $exe = 'C:\app\polter-host.exe'
-    $qcfgPath = Join-Path $realHome '.qwen\settings.json'
+    $cfgPath = Join-Path $realHome '.config\opencode\opencode.json'
+    $skillsOwn = Join-Path $realHome '.config\opencode\skills'
+    # Where opencode reads Polter's skills instead, when they are already
+    # there: its `provision.ps1` says `~/.claude/skills` is the one copy and
+    # installs none of its own (`Get-HostSkillsSharedDir`, task 1806).
+    $skillsShared = Join-Path $realHome '.claude\skills'
 
     # A copy taken before anything is written, named so it is obvious who
     # left it and easy to put back by hand.
@@ -388,38 +444,48 @@ if ($Real) {
     # different path than the one that matters. A backup that verifies itself
     # on the path it actually guards is worth more than one that was watched
     # working somewhere else.
-    $bak = Join-Path $realHome ('.qwen\settings.json.polter-bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-    Copy-Item -LiteralPath $qcfgPath -Destination $bak -Force
+    #
+    # A config that is not there at all is the normal case for a fresh
+    # machine, and then there is nothing to back up and nothing to lose.
+    $bak = $null
+    if (Test-Path -LiteralPath $cfgPath) {
+        $bak = Join-Path $realHome ('.config\opencode\opencode.json.polter-bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        Copy-Item -LiteralPath $cfgPath -Destination $bak -Force
 
-    $srcBytes = [System.IO.File]::ReadAllBytes($qcfgPath)
-    $bakBytes = [System.IO.File]::ReadAllBytes($bak)
-    $identical = ($srcBytes.Length -eq $bakBytes.Length) -and
-                 (@(Compare-Object $srcBytes $bakBytes -SyncWindow 0).Count -eq 0)
+        $srcBytes = [System.IO.File]::ReadAllBytes($cfgPath)
+        $bakBytes = [System.IO.File]::ReadAllBytes($bak)
+        $identical = ($srcBytes.Length -eq $bakBytes.Length) -and
+                     (@(Compare-Object $srcBytes $bakBytes -SyncWindow 0).Count -eq 0)
 
-    # Recorded in the log itself, so the log is a second copy of the facts
-    # even if both files are later lost.
-    $sha = (Get-FileHash -LiteralPath $qcfgPath -Algorithm SHA256).Hash
-    Write-Host "backup:   $bak"
-    Write-Host "original: $($srcBytes.Length) bytes, sha256 $sha"
+        # Recorded in the log itself, so the log is a second copy of the
+        # facts even if both files are later lost.
+        $sha = (Get-FileHash -LiteralPath $cfgPath -Algorithm SHA256).Hash
+        Write-Host "backup:   $bak"
+        Write-Host "original: $($srcBytes.Length) bytes, sha256 $sha"
 
-    Check '9a real qwen -- the backup is byte for byte the original' $identical "src=$($srcBytes.Length) bak=$($bakBytes.Length)"
-    if (-not $identical) {
-        Write-Host "ABORTING before any write: there is no usable backup."
-        Write-Host ""
-        Write-Host "RESULT passed=$script:Pass failed=$script:Fail"
-        exit 1
+        Check '9a real opencode -- the backup is byte for byte the original' $identical "src=$($srcBytes.Length) bak=$($bakBytes.Length)"
+        if (-not $identical) {
+            Write-Host "ABORTING before any write: there is no usable backup."
+            Write-Host ""
+            Write-Host "RESULT passed=$script:Pass failed=$script:Fail"
+            exit 1
+        }
+    } else {
+        Write-Host "no $cfgPath yet -- nothing to back up"
+        $sha = '(none)'
     }
 
     # What the prune step could reach in a real home, said before it runs.
     # Only `polter-*` directories are ever candidates, and only ones this
     # plugin would recognise as its own.
-    $realSkills = Join-Path $realHome '.qwen\skills'
     $atRisk = @()
-    if (Test-Path -LiteralPath $realSkills) {
-        $atRisk = @(Get-ChildItem -LiteralPath $realSkills -Directory -Filter 'polter-*' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    foreach ($dir in @($skillsOwn, $skillsShared)) {
+        if (Test-Path -LiteralPath $dir) {
+            $atRisk += @(Get-ChildItem -LiteralPath $dir -Directory -Filter 'polter-*' -ErrorAction SilentlyContinue | ForEach-Object { "$dir\$($_.Name)" })
+        }
     }
     Write-Host "existing polter-* skills that pruning could touch: $(if ($atRisk.Count) { $atRisk -join ', ' } else { '(none)' })"
-    $r = Invoke-Plugin -Key 'qwen-code' -Hello (New-Hello 'qwen-code') `
+    $r = Invoke-Plugin -Key 'opencode' -Hello (New-Hello 'opencode') `
         -Batches @((New-Batch $realHome '0.0.0-provtest' $skillSrc $exe)) `
         -PathPrepend $env:PATH
     Write-Host "stdout: $($r.Stdout -join ' | ')"
@@ -428,32 +494,48 @@ if ($Real) {
     if (($r.Stdout -join ' ') -match 'TIMED OUT') {
         Write-Host ""
         Write-Host "The plugin never finished talking to the real CLI. Nothing below"
-        Write-Host "this line ran, and the backup above is still good. Run"
-        Write-Host "qwenprobe.ps1 before trying again."
+        Write-Host "this line ran, and the backup above is still good. The CLI hung,"
+        Write-Host "and the next step is a probe of that CLI, not of this plugin."
         Write-Host ""
         Write-Host "RESULT passed=$script:Pass failed=$script:Fail"
         exit 1
     }
-    $d = ConvertFrom-Json ([System.IO.File]::ReadAllText($qcfgPath, $Utf8))
-    $has = $null -ne $d.PSObject.Properties['mcpServers'] -and $null -ne $d.mcpServers.PSObject.Properties['polter']
-    Check '9 real qwen -- polter is registered in ~/.qwen/settings.json' $has ''
-    if ($has) { Write-Host ("      entry: " + (ConvertTo-Json $d.mcpServers.polter -Depth 10 -Compress)) }
 
-    # What Qwen Code itself says it has, which is the only answer that counts:
+    if (-not (Test-Path -LiteralPath $cfgPath)) {
+        # Absent, not failed: the plugin says `status=absent` and writes
+        # nothing when the CLI is not on PATH. Reported as that, because
+        # "nothing was written" and "it wrote nothing it should have" look
+        # the same on disk.
+        Write-Host "no $cfgPath after the run -- is opencode installed on this machine?"
+        Check '9 real opencode -- the CLI was on PATH' ($r.Stderr -notmatch 'status=absent') $r.Stderr
+    } else {
+        $d = ConvertFrom-Json ([System.IO.File]::ReadAllText($cfgPath, $Utf8))
+        $has = $null -ne $d.PSObject.Properties['mcp'] -and $null -ne $d.mcp.PSObject.Properties['polter']
+        Check '9 real opencode -- polter is registered in ~/.config/opencode/opencode.json' $has ''
+        if ($has) { Write-Host ("      entry: " + (ConvertTo-Json $d.mcp.polter -Depth 10 -Compress)) }
+    }
+
+    # What opencode itself says it has, which is the only answer that counts:
     # a key in a file we wrote proves we can write files.
     $env:PATH = "$env:APPDATA\npm;$env:PATH"
-    Write-Host "-- qwen mcp list --"
-    & qwen mcp list 2>&1 | ForEach-Object { Write-Host "      $_" }
-    Check '9 real qwen -- the skill landed in ~/.qwen/skills' (Test-Path (Join-Path $realHome '.qwen\skills\polter-mine\SKILL.md')) ''
+    Write-Host "-- opencode mcp list --"
+    & opencode mcp list 2>&1 | ForEach-Object { Write-Host "      $_" }
+    $ownSkill = Test-Path (Join-Path $skillsOwn 'polter-mine\SKILL.md')
+    $sharedSkill = Test-Path (Join-Path $skillsShared 'polter-mine\SKILL.md')
+    Check '9 real opencode -- the skill landed, in one of the two places the plugin says' ($ownSkill -or $sharedSkill) "own=$ownSkill shared=$sharedSkill"
+    # Only one of them, and which one is not this group's to assume: the
+    # plugin picks, and says which in its own log.
+    Check '9 real opencode -- and in exactly one of them' (-not ($ownSkill -and $sharedSkill)) "own=$ownSkill shared=$sharedSkill"
+    if ($r.Stderr -match 'skills=shared') { Write-Host "      the plugin says: shared" }
 
     # Left in place rather than tidied away: the registration is the point of
     # this run, and a cleanup that ran before anybody looked would take the
     # evidence with it. Said out loud so nobody has to reconstruct it.
     Write-Host ""
     Write-Host "-- left on this machine, and how to undo it --"
-    Write-Host '   ~/.qwen/settings.json       mcpServers.polter -- undo with: qwen mcp remove polter'
-    Write-Host '   ~/.qwen/skills/polter-mine  a test skill -- delete the directory'
-    Write-Host "   $bak  the backup -- delete once you are happy"
+    Write-Host '   ~/.config/opencode/opencode.json   mcp.polter -- undo with: opencode mcp remove polter'
+    Write-Host '   the polter-mine skill              delete the directory it is in'
+    if ($bak) { Write-Host "   $bak  the backup -- delete once you are happy" }
 }
 
 Write-Host ""

@@ -49,7 +49,7 @@
 *   **发呆检测：** Polter 记着每个屏幕多久没动过，一旦卡住，立刻通报总管。
 *   **角色与项目：** 常用的 AI 启动参数（技能、提示词、模型）存成“角色 (Role)”；“项目”则把当前所有标签页、目录和历史记录一起存档，下次一键恢复（macOS 与 Windows 都支持）。
 *   **消息钩子 (Hooks)：** 由角色启动的智能体在一轮对话结束时，会主动告诉 Polter 自己说了什么。总管直接收到通知，不必等屏幕静下来。（支持 Claude Code、Codex 和 OpenCode；Antigravity 目前只有 macOS 版；其他工具依旧靠监听屏幕活动来监控。）
-*   **内置插件：** 发行版开箱即带 7 个配置插件。
+*   **内置插件：** 发行版开箱即带 4 个配置插件。
 *   **确认提示归总管：** worker 撞上权限确认就交给总管，所有标签页一视同仁：总管自己能判断的就自己答，判断不了的推到你面前，顺带发一条系统通知。你可以只对单个标签页说不（`Agent → 允许总管在此回答提示`）、把标签页护起来，或者干脆对全部说不（`poltergeist-may-authorise = false`）。
 *   **统一设置：** 角色、项目、插件和配置文件都在同一个设置窗口里集中管理。
 *   **中英双语：** 菜单和窗口默认跟随系统语言，也能在 `Language` 里手动切。
@@ -143,7 +143,7 @@ mv Polter.app /Applications/
 三种可能：插件被禁用了；Polter 启动那一刻 `claude` 不在 `PATH` 里；或者你在设置里关掉了 `poltergeist-register-mcp`。注册表指向的永远是最近一次启动时的构建版本。
 
 **2. 除了 Claude Code 还能用别的 AI 工具吗？**
-服务端走的是标准 MCP 协议，任何 MCP 客户端都能接进来，发行版自带 7 个配置插件。其中 4 个接得更深：Claude Code、Codex 和 OpenCode 都支持 macOS 和 Windows，Antigravity（`agy`）只有 macOS。Polter 能按角色启动它们、收到它们的钩子，内置的总管和测试员角色给 Claude Code、Codex 和 Antigravity 用。另外 3 个（DeepSeek-TUI、Kimi CLI、Qwen Code）只负责帮它们登记 MCP 服务：工具能用，但监控只能靠屏幕活动。
+服务端走的是标准 MCP 协议，任何 MCP 客户端都能接进来，发行版自带 4 个配置插件：Claude Code、Codex、OpenCode、Antigravity（`agy`）。前三家 macOS 和 Windows 都有，Antigravity 只有 macOS。Polter 能按角色启动它们、收到它们的钩子，内置的总管和测试员角色给 Claude Code、Codex 和 Antigravity 用。另有 3 个（DeepSeek-TUI、Kimi CLI、Qwen Code）2026-10-25 之前随包发过，已经摘掉：这三家谁都没在它登记的那个 CLI 上跑过一次，留着的话它们的失败会以你的故障的形状到来。插件就是 `plugins/` 下一个目录加 `src/build/GhosttyResources.zig` 里一行，谁量过谁把它们加回来。
 
 **3. 这不就是 tmux 吗？**
 不是。`tmux` 只负责分屏，盯着屏幕的活儿还得你来干。Polter 是把其它节点的发呆时间报给某一个智能体，并让它能读别的屏幕、敲别的键盘。

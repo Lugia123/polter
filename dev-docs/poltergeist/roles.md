@@ -63,11 +63,11 @@
 | --- | --- | --- | --- |
 | `claude-code` | ✅ **热** | ✅ **热** | 🔬 真机实测 |
 | `gemini` | ✅ 热 | — | 📖 源码 |
-| `qwen-code` | ⚠️ 主客户端没接 | ✅ 另有运行时通道 | 📖 源码 |
 | `codex` | ❌ **冷** | ？未测 | 🔬 真机实测（有效阴性） |
 | `opencode` | ⚠️ 收到了没人消费 | — 无 skill 概念 | 📖 源码 |
-| `kimi` | ？未知 | — 无 skill 概念 | 文档没写 |
-| `deepseek` | ？未知 | — 无 skill 概念 | 未查 |
+
+> `qwen-code`（温）、`kimi`、`deepseek` 三家的插件 2026-10-25 摘掉了（task 2207）；
+> 下面凡提到它们的地方都是当时读源码的读数，留着是因为它讲过的话仍然成立。
 
 后四家在 [provisioning.md](provisioning.md) 的宿主表里 `host_skills_dir()`
 本来就返回空串——Polter 从不往那儿装 skill，所以「技能」这一维对它们
@@ -346,8 +346,8 @@ tab 里自己敲了别的命令，标记就开始撒谎，而**一个过期的�
 | 级别 | 谁 | 换装怎么发生 |
 | --- | --- | --- |
 | **热** | claude-code、gemini | 槽位改工具集 + `list_changed`，**当场生效** |
-| **温** | qwen-code | 走它自己的运行时接口（`/skills`、`serve` 的扩展刷新） |
-| **冷** | codex、opencode、kimi、deepseek | **只能重启** |
+| **温** | （无随包插件） | 走它自己的运行时接口（`/skills`、`serve` 的扩展刷新）——qwen-code 是这一类，2026-10-25 摘掉了插件，级别还在 |
+| **冷** | codex、opencode | **只能重启** |
 
 **冷的那几家，菜单上直说「下次启动生效」。** 不要让它长得像已经生效了。
 这和 [provisioning.md](provisioning.md) 第七节那个
@@ -362,9 +362,7 @@ tab 里自己敲了别的命令，标记就开始撒谎，而**一个过期的�
 | claude-code | `--settings`（`enabledPlugins`）、`--strict-mcp-config --mcp-config`、`--plugin-dir`、`--append-system-prompt-file` | 🔬 前三个实测过 |
 | codex | `-p/--profile`、`-c mcp_servers.*.enabled/enabled_tools/disabled_tools` | 📖 help + 二进制 |
 | gemini | `-e/--extensions`、`--allowed-mcp-server-names` | 📖 help |
-| qwen-code | `--system-prompt` / `--append-system-prompt` / `--mcp-config` / `--allowed-mcp-server-names` / `-e` | 📖 help |
 | opencode | `--standalone`、`OPENCODE_CONFIG_CONTENT`（`permission` 里 deny 掉 skill 和 `<server>_*`，模型写进 `model`；2.0 没有 `-m`）、`--prompt`、`-s` | 🔬 实测（#1777 在 1.2.10，#1806 在 2.0.32，`test/opencode-adapter/hooks-against-opencode.py`） |
-| kimi / deepseek | 待核 | — |
 
 **重启会丢上下文。** `claude --continue` 能带着同一段对话用新参数重开，
 如果成立，冷宿主的换装体验会完全不同。**没验证过**，是第十节的待定项。

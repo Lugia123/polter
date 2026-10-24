@@ -5073,9 +5073,10 @@ pub fn mayTypeAs(self: *Surface, who: Typist) !void {
 /// is part of that.
 ///
 /// Windows starts higher because the receiving program's own guard is
-/// explicitly platform-gated: qwen sets `pasteWorkaround` on `win32` and
-/// then refuses to submit for 500ms after a paste. The floor sits above
-/// that window on purpose.
+/// explicitly platform-gated: the CLI this was measured on set
+/// `pasteWorkaround` on `win32` and then refused to submit for 500ms after a
+/// paste (that plugin is gone, task 2207; the measurement and the window it
+/// describes are not). The floor sits above that window on purpose.
 pub const submit_delay_ms: struct { min: u64, max: u64 } = if (builtin.os.tag == .windows)
     .{ .min = 600, .max = 1000 }
 else
@@ -5214,9 +5215,10 @@ pub fn typePoltergeistTextAs(self: *Surface, text: []const u8, submit: bool, who
     // The return has always been its own `keyCallback` (below), and its
     // bytes have always been their own write -- what was missing was the
     // pause between them. The receiving program decides whether a return
-    // submits the line or belongs to a paste by **when** it arrived: qwen
-    // refuses to submit for 500ms after a paste, in as many words, in
-    // `InputPrompt.tsx`. The whole argument, including the four root causes
+    // submits the line or belongs to a paste by **when** it arrived: the CLI
+    // this was measured on refused to submit for 500ms after a paste, in as
+    // many words, in its own `InputPrompt.tsx` (task 2207 removed that
+    // plugin; what it taught about the gap between text and return stays). The whole argument, including the four root causes
     // this was mistaken for first, is in
     // `dev-docs/windows/terminal-send-not-submitted.md`.
     //

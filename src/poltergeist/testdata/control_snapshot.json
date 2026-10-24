@@ -610,8 +610,8 @@
         "cwd_from": "home",
         "last": {
           "role": "polter-supervisor",
-          "cli": "kimi",
-          "cli_label": "Kimi",
+          "cli": "opencode",
+          "cli_label": "opencode",
           "heard_ms": 1699900000000
         },
         "resume": {
@@ -1668,8 +1668,8 @@
           "why": "plugin_off"
         },
         {
-          "key": "kimi",
-          "label": "Kimi",
+          "key": "opencode",
+          "label": "opencode",
           "why": "not_installed"
         }
       ]

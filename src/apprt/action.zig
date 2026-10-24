@@ -2265,7 +2265,10 @@ pub const PoltergeistMark = struct {
         unknown = 0,
         /// Swaps its tools the moment it is told. claude-code, gemini.
         hot = 1,
-        /// Has a runtime channel of its own. qwen-code.
+        /// Has a runtime channel of its own. No shipped plugin is this any
+        /// more (task 2207 took the last one out), and the state stays
+        /// because the C enum is a contract: a host with a channel of its own
+        /// is a shape that exists whether or not one ships today.
         warm = 2,
         /// Only a restart. codex, opencode, and the two unmeasured ones.
         cold = 3,

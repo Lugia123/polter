@@ -10051,8 +10051,8 @@ fn assignAndTell(
 /// null when there is a box to press at (task 1668).
 ///
 /// **It used to press blind.** A return at no box at all goes into whatever
-/// is there -- once the default of an upgrade dialog (qwen, on the test
-/// machine). Now something has to say a box is up:
+/// is there -- once the default of an upgrade dialog (on the test machine,
+/// and the CLI is gone now but the case is not). Now something has to say a box is up:
 /// - the agent's own word, when it has one (hooks live, or a title its
 ///   plugin declares): waiting on an approval, or not;
 /// - else the screen, by the texts the CLI's plugin declares

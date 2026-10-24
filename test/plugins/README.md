@@ -5,6 +5,15 @@ Manual tests for `plugins/*/provision.ps1` and `plugins/_sdk/provision.ps1`
 cannot execute a `.sh` and refuses the plugins with `error.InvalidExe`. See
 `dev-docs/windows/development.md` 5.3 and `dev-docs/poltergeist/provisioning.md`.
 
+> **The hosts these name changed on 2026-10-25 (task 2207).** `qwen-code`,
+> `kimi` and `deepseek` are gone, and every group below that used them was
+> pointed at a host that stayed rather than deleted: the suite is the record
+> of what the SDK promises, and it outlives any one host. Two things did not
+> survive the move, and both are said where they happened: the **second
+> Windows host of the config-editing family** (group 3, only `opencode` is
+> left) and **the second row of the two-host shape comparison** in
+> `Resident.zig`. `qwenprobe.ps1` is marked stale at its own head.
+
 **These run on Windows only**, which is why they are here and not in the Zig
 test suite: `zig build test` runs on a machine with no PowerShell on it, and
 the one end-to-end test that does drive a shipped plugin
@@ -19,7 +28,7 @@ only `.md`, so anything dropped into `plugins/` ships to users.
 
 | | |
 | --- | --- |
-| `provtest.ps1` | The suite. 42 assertions across the protocol, the two host families, skills, and the failure paths. |
+| `provtest.ps1` | The suite, across the protocol, the host families, skills, and the failure paths. **The last recorded Windows run reported 42**; task 2207 folded group 3 into group 2 (**two `Check`s out**) and stated 6b's rule as a pair (**one in**), so the next run should report 41. Written from the call sites rather than from a run — **take the number from the run, not from here.** |
 | `mutate.ps1` | The floor under the suite: six injections, each run against `provtest.ps1`, each reverted afterwards. |
 | `probe.ps1` | For when an injection survives — runs a plugin by hand and prints its raw stdout and stderr instead of an assertion's verdict. |
 | `archivetest.ps1` | `plugins/archive/archive.ps1` over batches of one, two, none, `null`, missing, and an object that is not a list. **Not Windows-only**: it starts the plugin under whichever PowerShell runs it, so `pwsh -NoProfile -File test/plugins/archivetest.ps1` works on macOS (7.x) and `powershell -File` on the test machine (5.1). The batch of one is the case that was lost (#1696). |
@@ -77,12 +86,22 @@ child process. One of the fake homes has a non-ASCII name, because
 `%USERPROFILE%` containing one is ordinary on Windows and the console code
 page is not UTF-8.
 
-`-Real` runs the `qwen-code` plugin against the Qwen Code actually installed
-on the machine and the user's real `%USERPROFILE%`. It copies
-`.qwen\settings.json` to `.qwen\settings.json.polter-bak-<timestamp>` before
-anything is written, prints the path, the original's size and its SHA-256,
-**compares the copy to the original byte for byte, and aborts the run without
-writing anything if they differ**.
+`-Real` runs the `opencode` plugin against the opencode actually installed on
+the machine and the user's real `%USERPROFILE%`. It copies
+`.config\opencode\opencode.json` to a `.polter-bak-<timestamp>` beside it
+before anything is written, prints the path, the original's size and its
+SHA-256, **compares the copy to the original byte for byte, and aborts the run
+without writing anything if they differ**. A config that is not there at all —
+a fresh machine — is not a failure: there is nothing to back up and nothing to
+lose.
+
+**This group used to be `qwen-code`, and the host it moved to is not
+arbitrary** (task 2207). The route needs a CLI whose config **nothing else on
+the machine rewrites while the run is happening**, and `claude-code` is the one
+that fails that: every run of it goes through `claude mcp add` and
+`~/.claude.json` changes on its own every few minutes on a machine running
+Claude Code — which is exactly what the byte-for-byte backup check trips over.
+`opencode` is edited in a file of its own.
 
 That check is there rather than a rehearsal of the backup against a fake home,
 and the difference is the point: the backup is the only thing between this run
@@ -91,48 +110,58 @@ than the one that matters. A backup that verifies itself on the path it
 actually guards is worth more than one that was watched working elsewhere.
 
 The run also prints, before pruning can happen, which `polter-*` directories
-already exist under `~/.qwen/skills` — those are the only ones pruning could
-ever reach — and, at the end, exactly what it left behind and how to undo it.
+already exist under both places the plugin could put them — `~/.config/opencode/skills`
+and `~/.claude/skills`, which opencode also reads — those are the only ones
+pruning could ever reach — and, at the end, exactly what it left behind and how
+to undo it.
 It does not tidy up after itself: the registration is the point of the run,
 and a cleanup that ran before anybody looked would take the evidence with it.
 
 **It cannot show that the agent reaches Polter, and should not be reported as
-though it does.** The registration names an executable that does not exist on
-Windows yet — nothing there serves `+mcp`. What `-Real` establishes is the
-four things that are the plugin's own job:
+though it does.** What `-Real` establishes is the four things that are the
+plugin's own job:
 
-- `qwen mcp add` runs and exits zero
-- `mcpServers.polter` appears in `~/.qwen/settings.json`
-- `qwen mcp list` reports it back, from Qwen Code's own mouth
-- the skill lands in `~/.qwen/skills/polter-*/SKILL.md`
+- the call the plugin makes runs and exits zero
+- `mcp.polter` appears in `~/.config/opencode/opencode.json`
+- `opencode mcp list` reports it back, from opencode's own mouth
+- the skill lands in a `polter-*/SKILL.md`, in one of the two directories the
+  plugin may choose, and in only one of them
 
 The far end is somebody else's milestone.
 
 ## The `mcp add` argument order (group 6b)
 
-`qwen mcp add` and `gemini mcp add` take `<name> <command> [args...]`, and
-their `-e` is an *array* option: yargs makes it greedy, and `--` ends parsing,
-so what follows is not counted as a positional either. With `-e` written in
-the middle the parser saw one positional and refused the whole call —
-`Not enough non-option arguments: got 1, need at least 2`.
+The host it was found on was `qwen-code`: its `mcp add` took
+`<name> <command> [args...]` with an *array* `-e`, yargs makes an array option
+greedy, and `--` ends parsing — so what followed the terminator was not counted
+as a positional either. With `-e` written in the middle the parser saw one
+positional and refused the whole call — `Not enough non-option arguments: got
+1, need at least 2`. That was wrong on every platform from the day the files
+were written, in both the `.sh` and the `.ps1`, and every test passed.
 
-That was wrong on every platform from the day the files were written, in both
-the `.sh` and the `.ps1`, and every test passed. Group 6b puts a batch file on
-`PATH` that records the argv it was handed and asserts the ordering rule; the
-`.sh` side is pinned by a Zig test (`Resident.zig`, "the mcp add line keeps
-`-e` after the positional arguments"), which runs `qwen-code` (it ran `gemini`
-as well until that plugin was removed in #1681).
+**That host's plugin is gone (task 2207) and the hazard did not go with it: it
+has two ends.** `--` is what stops the served command from being read as one of
+the CLI's own options, and it is also what stops anything written after it from
+being read as an option at all. So group 6b now states the rule as the pair —
+**the version marker, an option, before the terminator; the served command and
+its argument, positionals of the served side, after it** — and it runs
+`claude-code`, the host left whose registration goes through a CLI with a `--`.
+The `.sh` side is pinned by a Zig test (`Resident.zig`, "the mcp add line keeps
+the option and the served command on their own sides of `` `--` ``").
 
 **What those tests prove is the argv this repository generates** — the part we
-own and the part that was wrong. They do not prove the CLI accepts that shape;
-no stub can speak for somebody else's parser. That half was measured against
-qwen 0.15.11 on 2026-09-01: exit 0, with the entry it wrote read back and
-checked rather than the exit code alone. Two claims, two kinds of evidence, and
-the tests freeze a dated belief about what the CLI wants — if upstream changes,
-they stay green while production breaks, which is why the version and date are
-written into the test rather than left implicit.
+own. They do **not** prove the CLI accepts that shape; no stub can speak for
+somebody else's parser. The rule is written as a rule rather than as a literal
+command line for that reason, and because the tests freeze a dated belief: if
+upstream changes, they stay green while production breaks.
 
 ## `qwenprobe.ps1`
+
+> ⚠️ **STALE SINCE 2026-10-25 (task 2207).** The `qwen-code` plugin was removed
+> from this repository, so nothing in the tree calls the CLI this probes and no
+> run of it says anything about what we ship. **Kept, not deleted**: it is the
+> one artefact of a hang that no assertion could have diagnosed, from a machine
+> with a real Qwen Code on it. Point it at whatever CLI hangs next.
 
 Written after the first `-Real` run hung on `qwen mcp list` with no `node`
 process alive and nothing written. Two causes with completely different next
@@ -334,35 +363,43 @@ bug which hid it. Those are three different findings and only one of them is
 
 ## Handing this line on
 
-Five of the seven host plugins have been confirmed by the CLI they target. What
-follows is what a seventh confirmation needs, and what each of the six actually
+> **Rewritten under task 2207, 2026-10-25.** The percentage that used to open
+> this section ("five of the seven") is the kind of number that keeps being
+> true after it stops being true, so it is gone: **every host that ships today
+> is confirmed by the CLI it targets**, and the ones that were not are the ones
+> that were removed. What a *new* host needs is below, and it is the same list
+> it always was.
+
+What follows is what a confirmation needs, and what each host actually
 established, because the two columns are not the same and were reported as one
 for longer than they should have been.
 
 ### Confirming a host needs three things, and all three are checkable first
 
-1. **That CLI installed on a machine you can drive.** `deepseek` and `kimi`
-   are unconfirmed for this reason alone — not for any doubt about the code.
+1. **That CLI installed on a machine you can drive.** This alone is why
+   `deepseek` and `kimi` were never confirmed — not any doubt about the code —
+   and it is what sent their plugins back out of the tree (task 2207).
 2. **It honours `$HOME`.** Four have been checked — `claude-code`, `codex`,
    `gemini`, `opencode` — and all four do, each checked separately rather than
    inferred from the last. It is what makes the whole exercise free: the run
    happens in a scratch home and the real configuration is never opened.
 
-   **`qwen-code` is confirmed without this**, by the other route: its run was
+   **`qwen-code` was confirmed without this**, by the other route: its run was
    against the real home on the Windows machine, with the config copied first
    and the copy compared to the original byte for byte **before** anything was
    written, and the run set to abort if they differed. That route works and is
    the one to use when a scratch home is not available — but it is not
-   evidence about `qwen`'s `$HOME` handling, which remains unknown.
+   evidence about that CLI's `$HOME` handling, which stayed unknown. **It is
+   also the route `-Real` uses today, against `opencode`** (see above).
 
    Either way, hash the real config before and after. And the question that
    settles it is not "did the file change" but "is the string I wrote in
    there": on a machine running Claude Code, `~/.claude.json` changes on its
    own every few minutes.
 3. **A read-only subcommand that reports what it has.** `claude mcp get`,
-   `codex mcp get`, `qwen mcp list`, `opencode mcp list`. Without one, the
-   shape can only be confirmed by writing it and hoping — which is the state
-   `deepseek` is in even if somebody installs it.
+   `codex mcp get`, `opencode mcp list`, `agy plugin list --json`. Without one,
+   the shape can only be confirmed by writing it and hoping — which is the
+   state `deepseek` was in even if somebody installed it.
 
 Two smaller notes that cost time: a CLI may refuse to run at all until it is
 authenticated (`gemini` wants `GEMINI_API_KEY` set to *anything* before `mcp
@@ -371,15 +408,18 @@ helper.
 
 ### What is actually established, per host
 
-**Registration** — does that CLI accept what we write?
+**Registration** — does that CLI accept what we write? **The hosts that ship,
+and the ones just removed, in one table, because the removed ones are the
+answer to "why is this column empty".**
 
 | Host | Judged by | Version marker |
 | --- | --- | --- |
 | `claude-code` | `claude mcp get` prints every field | **value echoed** |
 | `codex` | `codex mcp get` prints every field | key echoed, **value masked**; the value is confirmed by the TOML `codex mcp add` itself wrote |
-| `qwen-code` | `qwen mcp list` (Windows, real machine) | not echoed — inferred |
 | `opencode` | `opencode mcp list` finds it and tries to spawn it | not echoed — inferred |
-| `deepseek`, `kimi` | — | not installed anywhere available |
+| `antigravity` | `agy plugin list --json` lists the plugin with its MCP component | not echoed — inferred |
+| `qwen-code` *(removed)* | `qwen mcp list` (Windows, real machine) | not echoed — inferred |
+| `deepseek`, `kimi` *(removed)* | — | not installed anywhere available |
 
 **Skills** — does that CLI read the directory we install into? **A different
 question with a different answer**, and combining the two columns is why this
@@ -389,7 +429,13 @@ one went unexamined for so long.
 | --- | --- | --- |
 | `claude-code` | `~/.claude/skills/` | **end to end.** The `polter-*` skills this plugin installed are loaded and listed by a running Claude Code — not "it says it sees them", it is using them |
 | `codex` | `~/.codex/skills/` | the directory is codex's own (it holds a `.system/` created at codex's install). **Whether it loads what we put there is untested**, and codex has no read-only skills command to ask |
-| the other four | — | `host_skills_dir` returns nothing on purpose. Writing into a guessed directory leaves litter on somebody's machine |
+| `opencode` | `~/.config/opencode/skills/` | its own documentation and a run against 2.0.32 (#1777, #1806), **including the rule that a copy already under `~/.claude/skills` is the only one** |
+| `antigravity` | `~/.gemini/config/plugins/polter/skills/` | `agy plugin list --json` lists them as part of the plugin (task 1682) |
+
+**No shipped host returns nothing from `host_skills_dir` any more.** Writing
+into a guessed directory leaves litter on somebody's machine, so the hosts
+whose directory was a guess were removed with their plugins rather than kept
+with an empty column (task 2207).
 
 ### Where the far end still is not
 

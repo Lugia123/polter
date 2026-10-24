@@ -161,6 +161,17 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
     // line changing. Naming what ships makes both of those a diff somebody
     // reads. A new plugin nobody adds a line for is absent, which is the
     // loud direction: it is noticed the first time somebody looks for it.
+    //
+    // **Three came off this list on 2026-10-25 (task 2207).** `deepseek`,
+    // `kimi` and `qwen-code` shipped without ever having been run against
+    // the CLI they register with -- two of the three have never seen a
+    // machine that had that CLI on it at all (`dev-docs/poltergeist/
+    // provisioning.md` said so in its own table: "完全未验"). A plugin that
+    // cannot be tested is a plugin whose failures arrive as the user's, so
+    // they are out until somebody measures them and adds their line back.
+    // **The directories are gone too**, not merely unlisted: leaving them
+    // would leave a reader unable to tell "in the tree and not shipping"
+    // from "deleted".
     {
         const shipped = [_][]const u8{
             "_sdk",
@@ -168,10 +179,7 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
             "archive",
             "claude-code",
             "codex",
-            "deepseek",
-            "kimi",
             "opencode",
-            "qwen-code",
         };
 
         for (shipped) |key| {

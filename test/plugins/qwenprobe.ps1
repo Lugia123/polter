@@ -1,5 +1,13 @@
 # Can Qwen Code run non-interactively on this machine at all?
 #
+# ⚠️ **STALE SINCE 2026-10-25 (task 2207).** The `qwen-code` plugin was removed
+# from this repository -- it had never been run against Qwen Code -- so nothing
+# in the tree calls the CLI this probes, and no run of it will tell you
+# anything about what we ship. **Kept rather than deleted because of what it
+# is**: the one artefact of a hang that no assertion could have diagnosed, from
+# a machine with a real Qwen Code on it. Do not point it at a plugin; point it
+# at whatever CLI hangs next.
+#
 # `-Real` hung with no `node` process alive and not one byte written. That has
 # two causes with completely different next steps -- **this CLI cannot run
 # without a terminal here**, or **we are calling it wrong** -- and the run

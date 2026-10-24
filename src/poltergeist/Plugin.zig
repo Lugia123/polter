@@ -409,7 +409,7 @@ pub fn titleAwaitsApproval(manifests: []const Manifest, title: []const u8) ?[]co
 /// terminal whose agent has said nothing -- no hooks, no title. It used to
 /// press its keys anyway, and a return pressed at no box at all is a
 /// return into whatever is there: it once chose the default of an upgrade
-/// dialog (qwen, on the test machine). Now it presses only when the screen
+/// dialog (on the test machine). Now it presses only when the screen
 /// shows a box its CLI's plugin declares; with no declaration it refuses.
 ///
 /// Text, fixed, from the CLI's own source or measured on its screen; looked
@@ -2413,16 +2413,16 @@ test "a manifest is read, and its exec made absolute" {
 // The four cells of task 1683: no list, named in the list, not named in it,
 // and a user's directory of the same name as a stray.
 test "a bundled plugin directory with no SHIPPED list is not called anything" {
-    try testing.expectEqual(Shipped.Verdict.unknown, Shipped.unknown.of(true, "gemini"));
+    try testing.expectEqual(Shipped.Verdict.unknown, Shipped.unknown.of(true, "antigravity"));
     try testing.expectEqual(Shipped.Verdict.unknown, Shipped.unknown.of(true, "codex"));
 }
 
 test "a bundled plugin directory the SHIPPED list names was shipped" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const list = try Shipped.parse(arena.allocator(), "_sdk\narchive\r\ncodex\n\n  kimi  \n");
+    const list = try Shipped.parse(arena.allocator(), "_sdk\narchive\r\ncodex\n\n  opencode  \n");
     try testing.expectEqual(@as(usize, 4), list.names.?.len);
-    for ([_][]const u8{ "_sdk", "archive", "codex", "kimi" }) |name| {
+    for ([_][]const u8{ "_sdk", "archive", "codex", "opencode" }) |name| {
         try testing.expectEqual(Shipped.Verdict.shipped, list.of(true, name));
     }
 }
@@ -3446,7 +3446,7 @@ test "the launch table, read from both sides of the system it switches on" {
 
     // --- Windows ----------------------------------------------------------
     {
-        const argv = (try launchArgvFor(alloc, .windows, "C:\\p\\qwen-code\\provision.ps1")).?;
+        const argv = (try launchArgvFor(alloc, .windows, "C:\\p\\antigravity\\provision.ps1")).?;
         defer alloc.free(argv);
 
         try testing.expectEqual(@as(usize, 7), argv.len);
@@ -3460,7 +3460,7 @@ test "the launch table, read from both sides of the system it switches on" {
         // `powershell -Command "..."` echoes the command instead of running
         // it. And the path comes last, as `-File`'s argument.
         try testing.expectEqualStrings("-File", argv[5]);
-        try testing.expectEqualStrings("C:\\p\\qwen-code\\provision.ps1", argv[6]);
+        try testing.expectEqualStrings("C:\\p\\antigravity\\provision.ps1", argv[6]);
     }
 
     {
@@ -3752,7 +3752,7 @@ test "agent_cli: each system is given the adapter it can start" {
 test "agent_cli: a CLI key is exactly a key personas.json accepts" {
     const persona = @import("persona.zig");
     const samples = [_][]const u8{
-        "claude-code", "codex",   "qwen-code",   "a",
+        "claude-code", "codex",   "opencode",    "a",
         "",            "Claude",  "claude_code", "claude.code",
         "x" ** 32,     "x" ** 33,
     };
@@ -4181,16 +4181,16 @@ test "1668: a declared screen text says a box is up only in the bottom rows" {
 
 test "1668: which CLI it is decides whose screen texts are read, and silence is not a no" {
     const codex: Manifest = .{ .key = "codex", .exec = "p", .screen_says = .{ .awaiting_approval = &.{" to run tool \""}, .next_option = .arrow_down } };
-    const qwen: Manifest = .{ .key = "qwen-code", .exec = "p" };
-    const all = [_]Manifest{ qwen, codex };
+    const silent: Manifest = .{ .key = "opencode", .exec = "p" };
+    const all = [_]Manifest{ silent, codex };
     const box = "  Allow the polter MCP server to run tool \"me\"?\n  › 1. Allow\n";
     const none = "› Ask Codex to do anything\n";
 
     try testing.expectEqual(ScreenVerdict.box, screenVerdict(&all, "codex", box));
     try testing.expectEqual(ScreenVerdict.no_box, screenVerdict(&all, "codex", none));
     // A CLI that declares nothing: whatever is on the screen, not known.
-    try testing.expectEqual(ScreenVerdict.unknown, screenVerdict(&all, "qwen-code", box));
-    try testing.expectEqual(ScreenVerdict.unknown, screenVerdict(&all, "gemini", none));
+    try testing.expectEqual(ScreenVerdict.unknown, screenVerdict(&all, "opencode", box));
+    try testing.expectEqual(ScreenVerdict.unknown, screenVerdict(&all, "antigravity", none));
     // Not known which CLI: a declared box showing is a box; its absence is
     // not a no.
     try testing.expectEqual(ScreenVerdict.box, screenVerdict(&all, null, box));

@@ -1742,15 +1742,27 @@ mod shipped_manifest_tests {
     // **Baked in from the real plugin directory, not written here.** A fixture
     // of my own would carry my own mistake: this parser read
     // `schema.properties` for weeks, and a fixture written against it would
-    // have had a `schema` key and passed. These four files are somebody
-    // else's, they are what ships, and they are the only thing in reach that
-    // can say the reader is looking in the wrong place.
+    // have had a `schema` key and passed. These files are somebody else's,
+    // they are what ships, and they are the only thing in reach that can say
+    // the reader is looking in the wrong place. **Five of them now** (task
+    // 2207: `kimi`'s left with its plugin).
     const ANTIGRAVITY: &str = include_str!("../../../plugins/antigravity/plugin.json");
     const ARCHIVE: &str = include_str!("../../../plugins/archive/plugin.json");
     const CLAUDE_CODE: &str = include_str!("../../../plugins/claude-code/plugin.json");
     const CODEX: &str = include_str!("../../../plugins/codex/plugin.json");
-    const KIMI: &str = include_str!("../../../plugins/kimi/plugin.json");
     const OPENCODE: &str = include_str!("../../../plugins/opencode/plugin.json");
+
+    // **The one manifest here that nobody else wrote, and it is here because
+    // no shipped one declares nothing any more.** This row was `kimi` until
+    // task 2207 removed it; every remaining manifest declares at least one
+    // parameter, so the property "a manifest with no parameters reads as
+    // zero, not as a failure" would have gone untested while the table stayed
+    // entirely real. Written out instead, and the cost is stated: this one
+    // cannot tell the parser that it is reading the wrong field, only that it
+    // counts what it reads.
+    const NONE_DECLARED: &str = r#"{"key":"bare","name":"Bare","version":"1.0.0",
+        "description":"declares no parameters","exec":"provision.sh",
+        "wants":{"events":["provision"],"calls":[],"groups":[],"network":false,"exec":[]}}"#;
 
     fn parse(key: &str, text: &str) -> Plugin {
         parse_manifest(key, std::path::Path::new("."), text).expect("a shipped manifest parses")
@@ -1783,9 +1795,6 @@ mod shipped_manifest_tests {
             names("archive", ARCHIVE),
             names("claude-code", CLAUDE_CODE),
             names("codex", CODEX),
-            // And one that really does declare none, so a parser that answered
-            // "two" to everything would not pass either.
-            names("kimi", KIMI),
             names("opencode", OPENCODE),
         ];
         let expected: Vec<(String, Vec<String>)> = [
@@ -1793,13 +1802,27 @@ mod shipped_manifest_tests {
             ("archive", &["dir", "sign_key"][..]),
             ("claude-code", &["rules", "scope", "skills"][..]),
             ("codex", &["approve_tools", "manual_out_of_daemon", "rules", "skills"][..]),
-            ("kimi", &[][..]),
             ("opencode", &["rules", "skills"][..]),
         ]
         .iter()
         .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))
         .collect();
         assert_eq!(found, expected, "a shipped manifest's parameters changed");
+
+        // **And the shape the table can no longer carry.** It used to have a
+        // row taken from `kimi`, the one shipped manifest that declared
+        // nothing, so "a manifest with no parameters reads as zero and not as
+        // a failure" was asserted against a real file. No shipped manifest is
+        // like that any more (task 2207), and **a fabricated one cannot go in
+        // the table**: `windows/tools/shipped-params-agree.py` reads that
+        // table and pairs every name in it with a file on disk, so a made-up
+        // key there is a gate failure -- correctly, because a name with no
+        // file is exactly what a typo looks like. So it is asserted here
+        // instead. See `NONE_DECLARED` for what this costs.
+        assert!(
+            parse("bare", NONE_DECLARED).params.is_empty(),
+            "a manifest that declares nothing must read as nothing, not as a failure"
+        );
     }
 
     /// The shapes, from the same outside ruler: a closed set is a dropdown and
@@ -1822,14 +1845,14 @@ mod shipped_manifest_tests {
         let a = parse("archive", ARCHIVE);
         assert!(!a.summary.is_empty(), "archive has no summary");
         assert!(a.summary.starts_with("Keeps an extra copy"), "{}", a.summary);
-        assert!(!parse("kimi", KIMI).summary.is_empty(), "kimi has no summary");
+        assert!(!parse("opencode", OPENCODE).summary.is_empty(), "opencode has no summary");
     }
 
     /// And what it subscribes to, from the same files.
     #[test]
     fn a_shipped_manifest_says_what_it_wants() {
         assert_eq!(parse("archive", ARCHIVE).events, vec!["chat".to_string()]);
-        assert_eq!(parse("kimi", KIMI).events, vec!["provision".to_string()]);
+        assert_eq!(parse("opencode", OPENCODE).events, vec!["provision".to_string()]);
     }
 }
 
@@ -1853,11 +1876,11 @@ mod runtime_tests {
         assert_eq!(m["slack"].note, "installed but switched off");
         // #1644: the settings window's document carries the reason to say.
         let said = parse_runtimes(
-            r#"{"ok":true,"plugins":[{"key":"kimi","enabled":true,"state":"dormant","failures":7,"note":"x",
+            r#"{"ok":true,"plugins":[{"key":"opencode","enabled":true,"state":"dormant","failures":7,"note":"x",
                 "note_say":{"key":"dormant","template":"It failed to start {1} time(s)","args":["7"]}}]}"#,
         )
         .expect("parses");
-        assert_eq!(said["kimi"].note_say, Some(("It failed to start {1} time(s)".to_string(), vec!["7".to_string()])));
+        assert_eq!(said["opencode"].note_say, Some(("It failed to start {1} time(s)".to_string(), vec!["7".to_string()])));
         assert!(parse_runtimes("not json").is_none());
         assert!(parse_runtimes(r#"{"ok":true}"#).is_none());
     }

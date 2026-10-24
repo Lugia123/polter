@@ -1316,11 +1316,11 @@ test "a plugin failure is said in the interface's language, key and count filled
         );
     }
     {
-        const said = try alertIn(alloc, chineseForTest, "kimi", .{
+        const said = try alertIn(alloc, chineseForTest, "opencode", .{
             .events = &.{.provision},
         }, .dormant, 11);
         defer alloc.free(said);
-        try testing.expect(std.mem.startsWith(u8, said, "polter：插件「kimi」已经失败 11 次"));
+        try testing.expect(std.mem.startsWith(u8, said, "polter：插件「opencode」已经失败 11 次"));
     }
     // And the English path is the msgids, unchanged: `alert` is `english`.
     {

@@ -4327,40 +4327,56 @@ test "an installed skill says which build wrote it, and only changes when that d
     try testing.expect(std.mem.indexOf(u8, third, "1.2.3-feature-v0-3-+01d879ed9") == null);
 }
 
-test "the mcp add line keeps `-e` after the positional arguments" {
+test "the mcp add line keeps the option and the served command on their own sides of `--`" {
     // **This exists because a command line was wrong on every platform for
     // as long as the file had existed, and every test passed anyway.**
     //
-    // `qwen mcp add` takes `<name> <command> [args...]`, and its `-e` is an
-    // *array* option. yargs makes an array option
-    // greedy, and `--` ends parsing, so what follows it is not counted as a
-    // positional either. Written the obvious way --
+    // `qwen mcp add` took `<name> <command> [args...]`, and its `-e` was an
+    // *array* option: yargs makes an array option greedy, and `--` ends
+    // parsing, so what followed it was not counted as a positional either.
+    // Written the obvious way --
     //
     //     qwen mcp add --scope user polter -e KEY=V -- <exe> +mcp
     //
     // -- the parser saw one positional and refused the whole call with
-    // `Not enough non-option arguments: got 1, need at least 2`. The fix is
-    // to put `-e` last, after the positionals.
+    // `Not enough non-option arguments: got 1, need at least 2`. That host is
+    // gone (task 2207) and no plugin in the tree has that parser any more.
+    //
+    // **The hazard it was about did not go with it, and it has two ends.**
+    // `--` is what stops the served command from being read as one of the
+    // CLI's own options -- and it is also what stops anything written after
+    // it from being read as an option at all. So the rule this test holds is
+    // now stated as the pair: **the version marker, an option, comes before
+    // the terminator; the command and its argument, positionals of the served
+    // side, come after it.** Each of those is a real way to get the line
+    // wrong, and they are wrong in opposite directions.
     //
     // **What this test proves, and what it does not.** It drives the shipped
     // script through the real protocol with a stub on `PATH` that records the
-    // argv it was handed, and asserts the ordering rule. That is the argv
-    // *this repository generates*, which is the thing that was broken and the
-    // thing we own.
+    // argv it was handed, and asserts that ordering. That is the argv *this
+    // repository generates*, which is the part we own.
     //
-    // It does **not** prove that `qwen` accepts that shape -- that is somebody
-    // else's parser, and no stub can speak for it. That half was measured on
-    // qwen 0.15.11 on 2026-09-01: exit 0, and the entry it wrote read back and
-    // checked rather than the exit code alone.
+    // It does **not** prove that `claude` accepts that shape -- that is
+    // somebody else's parser, and no stub can speak for it. What is claimed
+    // about `claude` is only what its own documentation says about `--`, and
+    // that half is not asserted here.
     //
     // So the honest limit is this: **the test freezes what we believe the CLI
-    // wants.** If that upstream changes, this stays green while production
-    // breaks, exactly as it did before -- which is why the belief is dated and
-    // versioned here instead of being left implicit.
+    // wants, dated by the commit that last changed it.** If that upstream
+    // changes, this stays green while production breaks -- which is why the
+    // rule is written down as a rule and not as a literal command line.
+    // **This test is the ordering half, and it is one of two.** The other is
+    // `a registration that is already current is not written again`, which
+    // counts how many times `mcp add` was issued. **They are separate on
+    // purpose and neither stands for the other**: this one reads the argv
+    // once it happens, that one asks whether it happened at all -- and the
+    // night the counting test was written, every test so far had been of this
+    // kind, so a plugin that re-registered on every launch passed all of them.
     //
-    // This used to run `gemini` too, the same upstream with the same line.
-    // That plugin was removed in task 1681 (Gemini CLI stopped serving
-    // personal accounts on 2026-06-18), so the table below has one row.
+    // **This test used to run `qwen-code` and `gemini`; both are gone** (task
+    // 2207, task 1681), so the table below has one row and it is
+    // `claude-code` -- the only host left whose registration goes through a
+    // CLI that has a `--`.
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -4369,8 +4385,18 @@ test "the mcp add line keeps `-e` after the positional arguments" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const hosts: []const struct { key: []const u8, bin: []const u8, src: []const u8 } = &.{
-        .{ .key = "qwen-code", .bin = "qwen", .src = @embedFile("plugin_qwen_code_sh") },
+    // **`claude-code` rather than `qwen-code`** (task 2207: qwen-code's
+    // plugin was removed). The subject is unchanged -- a plugin that puts the
+    // served command behind a `--` -- and `claude-code` is the host that still
+    // does it through a CLI. `opencode` and `antigravity` are the other two
+    // that read their registration back, and they edit the file instead of
+    // calling a CLI, so there is no `mcp add` line of theirs to read.
+    const hosts: []const struct {
+        key: []const u8,
+        bin: []const u8,
+        src: []const u8,
+    } = &.{
+        .{ .key = "claude-code", .bin = "claude", .src = @embedFile("plugin_claude_code_sh") },
     };
 
     for (hosts) |host| {
@@ -4400,33 +4426,28 @@ test "the mcp add line keeps `-e` after the positional arguments" {
             try sdk.writeStreamingAll(io, @embedFile("plugin_sdk_provision_sh"));
             sdk.close(io);
 
-            // One argument per line, so an argument containing a space cannot be
-            // read as two. The marker separates invocations: the plugin calls
-            // `mcp list` and `mcp remove` before it calls `mcp add`, and asserting
-            // against the wrong one of those would pass for the wrong reason.
+            // One argument per line, so an argument containing a space cannot
+            // be read as two -- `POLTER_REGISTERED=1.2.3` and the `--` are
+            // both whole arguments and both matter. The marker separates
+            // invocations: the plugin calls `mcp get` and `mcp remove` before
+            // it calls `mcp add`, and asserting against the wrong one of those
+            // would pass for the wrong reason.
             //
-            // **The Windows half of this test records differently, on
-            // purpose.** There the stub is a `.cmd`, and `cmd` treats `=` as
-            // an argument separator, so recording argument by argument split
-            // `POLTER_REGISTERED=1.2.3` in two and failed an assertion about
-            // a call that was in fact correct -- the observer corrupting what
-            // it observed. It records the raw command line instead. Here
-            // `"$@"` splits nothing and is the more faithful of the two, so
-            // the two recorders are deliberately not the same; what is the
-            // same is the rule each of them asserts.
+            // **The Windows half offsets this against a stub recording the raw
+            // command line, and the two are deliberately not the same.** There
+            // `cmd` treats `=` as an argument separator, so recording argument
+            // by argument split `POLTER_REGISTERED=1.2.3` in two and failed an
+            // assertion about a call that was in fact correct -- the observer
+            // corrupting what it observed. Here `"$@"` splits nothing and is
+            // the more faithful of the two; what is the same on both sides is
+            // the rule each of them asserts.
             try d.createDirPath(io, "bin");
             var c = try d.createFile(
                 io,
                 try std.fmt.allocPrint(alloc, "bin/{s}", .{host.bin}),
                 fixtureMode(0o755),
             );
-            try c.writeStreamingAll(io,
-                \\#!/bin/sh
-                \\{ echo "--CALL--"; for a in "$@"; do echo "$a"; done; } >> "$POLTER_TEST_ARGV"
-                \\{ echo "ENV HOME=$HOME"; command -v python3 || echo "ENV NOPYTHON"; ls -l "$HOME/.$(basename "$0")/settings.json" 2>&1; } >> "$POLTER_TEST_ARGV"
-                \\exit 0
-                \\
-            );
+            try c.writeStreamingAll(io, mcp_add_stub);
             c.close(io);
 
             var sk = try d.createFile(io, "mine.md", .{});
@@ -4447,7 +4468,8 @@ test "the mcp add line keeps `-e` after the positional arguments" {
 
         const text = try std.Io.Dir.cwd().readFileAlloc(io, argv_log, alloc, .unlimited);
 
-        // The `mcp add` invocation, and only it.
+        // The `mcp add` invocation, and only it. The last one, because a run
+        // that registers twice would otherwise be read as its first attempt.
         var add: ?[]const []const u8 = null;
         {
             var calls = std.mem.splitSequence(u8, text, "--CALL--\n");
@@ -4480,21 +4502,31 @@ test "the mcp add line keeps `-e` after the positional arguments" {
         const exe = find(argv, "/nowhere/polter") orelse return error.TheServedExeIsNotOnTheLine;
         const mcp = find(argv, "+mcp") orelse return error.TheServedArgumentIsNotOnTheLine;
         const e = find(argv, "-e") orelse return error.TheVersionMarkerIsNotOnTheLine;
+        const scope = find(argv, "--scope") orelse return error.TheScopeIsNotOnTheLine;
+        const dash = find(argv, "--") orelse return error.TheTerminatorIsNotOnTheLine;
 
         // The rule, stated as the rule rather than as a literal command line: a
         // literal would break on any innocuous addition and teach nobody why.
-        try testing.expect(e > exe);
-        try testing.expect(e > mcp);
+        // **The option goes before the terminator**, or the CLI reads it as one
+        // of the served command's arguments.
+        try testing.expect(e < dash);
+        try testing.expect(scope < dash);
 
-        // And no `--`. It used to be here, to keep a future flag on the served
-        // side from being read as one of the CLI's own -- but it is what stops
-        // the positionals being counted, so it had to go. That protection now
-        // rests on `+mcp` not looking like an option, which is written down in
-        // the plugin beside the line.
-        try testing.expect(find(argv, "--") == null);
+        // **And the served command and its argument go after it**, or nothing
+        // stops a future flag of theirs from being read as one of the CLI's
+        // own. The two halves are wrong in opposite directions, which is why
+        // both are asserted rather than only the one that was ever broken.
+        try testing.expect(exe > dash);
+        try testing.expect(mcp > dash);
 
         // The value went with the flag rather than being lost between the two.
         try testing.expect(find(argv, "POLTER_REGISTERED=1.2.3") != null);
+
+        // And the option sits after the positional argument it is a flag for,
+        // which is where the host's own parser wants it -- the arrangement
+        // that was wrong when this test was written.
+        const name = find(argv, "polter") orelse return error.TheServerNameIsNotOnTheLine;
+        try testing.expect(e > name);
     }
 }
 
@@ -4514,13 +4546,18 @@ test "a registration that is already current is not written again" {
     // looked like once it happened. So this counts the invocations instead:
     // same build twice is one, a new build is two.
     //
+    // **This is the counting half of a pair**, and its sibling above is the
+    // ordering half. Neither covers the other: an argv read once says nothing
+    // about how many times it was written, and a count says nothing about
+    // which side of `--` anything ended up on.
+    //
     // The stub emulates the one thing about the real CLI that matters here --
     // that `mcp add` leaves the entry, marker and all, in the config the
     // plugin now reads back. Measured against gemini 0.33.1 before being
     // written this way: run 1 registers, run 2 is silent, run 3 with a new
     // version registers again and the marker moves. (The gemini plugin was
-    // removed in task 1681; `qwen-code` carries the same code and is what
-    // this runs now.)
+    // removed in task 1681; the row below was `qwen-code` until task 2207
+    // removed that too, which is why it is `claude-code` now.)
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -4534,7 +4571,7 @@ test "a registration that is already current is not written again" {
         bin: []const u8,
         src: []const u8,
     } = &.{
-        .{ .key = "qwen-code", .bin = "qwen", .src = @embedFile("plugin_qwen_code_sh") },
+        .{ .key = "claude-code", .bin = "claude", .src = @embedFile("plugin_claude_code_sh") },
     };
 
     for (hosts) |host| {
@@ -4648,12 +4685,15 @@ test "another installation's registration is left alone, and said out loud" {
     defer threaded.deinit();
     const io = threaded.io();
 
+    // **`claude-code` rather than `qwen-code`** (task 2207), for the reason
+    // the staleness test above gives: it is the host left in the tree that
+    // registers through a CLI and reads its entry back through the same CLI.
     const hosts: []const struct {
         key: []const u8,
         bin: []const u8,
         src: []const u8,
     } = &.{
-        .{ .key = "qwen-code", .bin = "qwen", .src = @embedFile("plugin_qwen_code_sh") },
+        .{ .key = "claude-code", .bin = "claude", .src = @embedFile("plugin_claude_code_sh") },
     };
 
     for (hosts) |host| {
@@ -4774,20 +4814,24 @@ test "another installation's registration is left alone, and said out loud" {
 }
 
 test "the hosts that edit a config file, and the four properties they promise" {
-    // **The half of the SDK nothing had ever run.** `opencode` and
-    // `deepseek` have no `mcp add` to call, so they edit the user's file
-    // themselves -- `polter_json_edit` and `polter_json_read` -- and that is
-    // a different job from shelling out, with different ways to ruin
-    // somebody's day. Until this test there was no automated coverage of it
-    // at all on the platform it ships to: the PowerShell port had five
-    // assertions over the same ground and the `sh` original had none.
+    // **The half of the SDK nothing had ever run.** Hosts with no `mcp add`
+    // to call edit the user's file themselves -- `polter_json_edit` and
+    // `polter_json_read` -- and that is a different job from shelling out,
+    // with different ways to ruin somebody's day. Until this test there was
+    // no automated coverage of it at all on the platform it ships to: the
+    // PowerShell port had five assertions over the same ground and the `sh`
+    // original had none.
     //
     // They are also the plugins that override a **fourth** hook, `config()`
-    // -- `antigravity` the third of them since task 1682. They write to
-    // different paths and disagree about the shape of the entry, so the
-    // test runs every one and checks each one's own
-    // shape -- an assertion that only proved the SDK would let exactly the
-    // difference that makes them separate plugins drift unnoticed.
+    // (`antigravity` joined them in task 1682; `deepseek` left with the rest
+    // of the unmeasured hosts in task 2207). They write to different paths
+    // and disagree about the shape of the entry, so the test runs every one
+    // and checks each one's own shape -- an assertion that only proved the
+    // SDK would let exactly the difference that makes them separate plugins
+    // drift unnoticed. **Two rows is now the whole population**, which makes
+    // that check weaker than it was: the shape fragment each one carries is
+    // the only thing keeping them apart, and there is no longer a third to
+    // catch a fragment that stopped being distinctive.
     //
     // Four properties, and the first three are the ones written down in
     // `_sdk/provision.sh` as the reason this code exists at all:
@@ -4813,7 +4857,7 @@ test "the hosts that edit a config file, and the four properties they promise" {
         cfg: []const u8,
         src: []const u8,
         /// A fragment only this host's shape contains. `opencode` keys on
-        /// `mcp` and writes `command` as a list with a `type`; `deepseek`
+        /// `mcp` and writes `command` as a list with a `type`; `antigravity`
         /// keys on `mcpServers` and writes `command` as a string with `args`
         /// beside it. Copying one into the other produces a file its reader
         /// accepts and ignores, which is the failure this pins.
@@ -4828,16 +4872,8 @@ test "the hosts that edit a config file, and the four properties they promise" {
             // without the marker the sidecar cannot say which CLI started it.
             .shape = "\"POLTER_AGENT_CLI\": \"opencode\"",
         },
-        .{
-            .key = "deepseek",
-            .bin = "deepseek",
-            .cfg = ".deepseek/mcp.json",
-            .src = @embedFile("plugin_deepseek_sh"),
-            .shape = "\"args\": [",
-        },
-        // `deepseek`'s shape, and the marker only this one writes into the
-        // entry's `env` (task 1682): without it the sidecar cannot say
-        // which CLI started it.
+        // The marker only this one writes into the entry's `env` (task
+        // 1682): without it the sidecar cannot say which CLI started it.
         .{
             .key = "antigravity",
             .bin = "agy",
@@ -5309,19 +5345,30 @@ test "a plugin's child gets the environment the host prepared, not the host's ow
 /// anyway. The POSIX side is unchanged, and it is load-bearing there: the
 /// scripts below are about to be run by the plugin host, and without the
 /// executable bit they cannot be.
-/// A stand-in for a `mcp add` CLI: it records what it was called with, and on
-/// `add` it leaves behind the entry the real one leaves, marker included.
-/// That last part is the whole point -- the staleness check reads it back.
+/// A stand-in for a CLI with `mcp add` / `mcp get` / `mcp remove`: it records
+/// what it was called with, keeps the entry the real one would keep, and
+/// prints it back for `get`. That last part is the whole point -- the
+/// staleness check asks the CLI rather than reading a file, so a stub that
+/// only wrote would make every launch look stale.
 ///
-/// It works out its own config directory from `$0`, so one literal serves
-/// any host and nothing has to be formatted into it. `qwen` -> `.qwen`
-/// happens to hold; that is a convenience of the fixture, not a claim about
-/// the product.
+/// **It used to fall out of `$0` for free, and that is why it grew.** The
+/// host it was written for, `qwen-code`, read its config file itself
+/// (`polter_json_read "$home/.qwen/settings.json"`), and the stub wrote
+/// `$HOME/.$(basename "$0")/settings.json` -- `qwen` -> `.qwen` held, and
+/// nothing had to be formatted in. With qwen-code gone (task 2207) the host
+/// left is `claude-code`, whose `host_mcp_current` runs `claude mcp get
+/// polter`; so the store is one path for every host and `mcp get` is a verb
+/// this stub has to answer.
+///
+/// It is deliberately not a model of `claude`: no scope handling, no
+/// formatting, no exit codes beyond zero. The plugin is only ever handed
+/// substrings of what it prints.
 const mcp_add_stub =
     \\#!/bin/sh
     \\{ echo "--CALL--"; for a in "$@"; do echo "$a"; done; } >> "$POLTER_TEST_ARGV"
-    \\if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "add" ]; then
-    \\  dir="$HOME/.$(basename "$0")"
+    \\store="$HOME/.polter-mcp-stub"
+    \\case "${1:-}${2:+ $2}" in
+    \\"mcp add")
     \\  exe=""
     \\  marker=""
     \\  for a in "$@"; do
@@ -5330,9 +5377,16 @@ const mcp_add_stub =
     \\      /*) exe=$a ;;
     \\    esac
     \\  done
-    \\  mkdir -p "$dir"
-    \\  printf '{"mcpServers":{"polter":{"command":"%s","args":["+mcp"],"env":{"POLTER_REGISTERED":"%s"}}}}\n' "$exe" "$marker" > "$dir/settings.json"
-    \\fi
+    \\  mkdir -p "$store"
+    \\  printf '{"mcpServers":{"polter":{"command":"%s","args":["+mcp"],"env":{"POLTER_REGISTERED":"%s"}}}}\n' "$exe" "$marker" > "$store/polter.json"
+    \\  ;;
+    \\"mcp get")
+    \\  cat "$store/polter.json" 2>/dev/null || true
+    \\  ;;
+    \\"mcp remove")
+    \\  rm -f "$store/polter.json"
+    \\  ;;
+    \\esac
     \\exit 0
     \\
 ;

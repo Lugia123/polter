@@ -14,8 +14,8 @@ param(
     [string[]]$Only = @(),
 
     # Print what each entry's dispatch key actually is and run nothing.
-    # **Type and bytes, not the value**: "it prints as qwen", "it is a
-    # one-element array holding qwen" and "it has an invisible character on
+    # **Type and bytes, not the value**: "it prints as claude", "it is a
+    # one-element array holding claude" and "it has an invisible character on
     # the end" look identical on screen and behave differently in `-eq`.
     [switch]$Probe
 )
@@ -28,10 +28,17 @@ $Utf8 = New-Object System.Text.UTF8Encoding($false)
 # SDK, because that is where the shared behaviour lives. The 6b ones land in
 # a host plugin, because what they attack is that plugin's own command line.
 # Keeping one hard-coded target is why the 6b assertions had no floor at all.
-$Qwen = Join-Path (Split-Path -Parent (Split-Path -Parent $Sdk)) 'qwen-code\provision.ps1'
+#
+# **`claude-code` since task 2207.** It was `qwen-code`, the host whose
+# `mcp add` first showed the ordering bug; that plugin is gone, and of the
+# four that stay this is the only one whose registration goes through a CLI
+# with a `--`, which is the whole subject of the 6b injections. The rule the
+# assertions hold changed with it (see `$M7To` below), and so did three of
+# the five injections: `--` used to be the fault, and now it is required.
+$HostPlugin = Join-Path (Split-Path -Parent (Split-Path -Parent $Sdk)) 'claude-code\provision.ps1'
 
 $Original = @{}
-foreach ($f in @($Sdk, $Qwen)) { $Original[$f] = [System.IO.File]::ReadAllText($f, $Utf8) }
+foreach ($f in @($Sdk, $HostPlugin)) { $Original[$f] = [System.IO.File]::ReadAllText($f, $Utf8) }
 
 # **M7's two strings live here, not inline in the table.** A here-string whose
 # closing `'@` has anything after it on the line -- `'@ }) },` -- does not
@@ -42,27 +49,30 @@ foreach ($f in @($Sdk, $Qwen)) { $Original[$f] = [System.IO.File]::ReadAllText($
 #
 # Every terminator below is alone on its line. That is the whole fix.
 $M7From = @'
-        $Exe, '+mcp',
-        '-e', "$VersionKey=$Version"
+        '-e', "$VersionKey=$Version",
+        '--', $Exe, '+mcp'
 '@
 
+# The marker moves to the served side of the terminator. The CLI then reads
+# it as an argument of the command it is being asked to serve rather than as
+# one of its own, which is the same defect the original bug was one end of.
 $M7To = @'
-        '-e', "$VersionKey=$Version",
-        $Exe, '+mcp'
+        '--', $Exe, '+mcp',
+        '-e', "$VersionKey=$Version"
 '@
 
 # M10 / M11 -- the two 6b assertions that still had no floor. Same rule as
 # above: terminators alone on their lines, and the trailing comma of every
 # array element stays on that element's own last line.
 $M10From = @'
-        '-e', "$VersionKey=$Version"
+        '--', $Exe, '+mcp'
     )
 '@
 
 $M10To = @'
-        '-e', "$VersionKey=$Version"
+        '--', $Exe, '+mcp'
     )
-    Invoke-PolterCli 'qwen' @('mcp', 'add', '--scope', 'user', 'polter', $Exe, '+mcp', '-e', "$VersionKey=$Version")
+    Invoke-PolterCli 'claude' @('mcp', 'add', '--scope', 'user', 'polter', $Exe, '+mcp', '-e', "$VersionKey=$Version")
 '@
 
 $mutations = @(
@@ -70,9 +80,13 @@ $mutations = @(
        Pairs = @(@{ From = '    [System.IO.File]::WriteAllText($tmp, $text, $script:PolterUtf8)'
                     To   = '    $text | Out-File -LiteralPath $tmp -Encoding UTF8 -NoNewline' }) },
 
+    # **The anchor was stale on HEAD, and it fails loudly** (`ANCHOR MISSING`),
+    # which is why it went unnoticed: the SDK dropped the `$exe` half of this
+    # test and nothing repointed the two copies of the anchor (`probe.ps1` had
+    # the same one). Repointed 2026-10-25, while task 2207 was in here anyway.
     @{ Name = 'M2a idempotence, MCP: the registration is always considered stale'
-       Pairs = @(@{ From = '    $stale = -not ($current.Contains($exe) -and $current.Contains($version))'
-                    To   = '    $stale = $true' }) },
+       Pairs = @(@{ From = '                $stale = -not $current.Contains($version)'
+                    To   = '                $stale = $true' }) },
 
     @{ Name = 'M2b idempotence, skills: the "only when it differs" test removed'
        Pairs = @(@{ From = '            if ($existing.TrimEnd("`r", "`n") -eq $rendered) { continue }'
@@ -113,8 +127,11 @@ $mutations = @(
     # this round with a new implementation, a new set of assertions, and
     # nothing measuring whether the second could catch the first being wrong
     # -- which is the combination the whole exercise is for. Each injection is
-    # a form somebody could plausibly write, and each is the exact shape the
-    # real `qwen` refuses with `Not enough non-option arguments`.
+    # a form somebody could plausibly write. The first was the shape the real
+    # CLI this was found on refused outright (`Not enough non-option
+    # arguments`); the rest are the two ends of the same rule, which the host
+    # that replaced it states as a pair -- an option before the terminator,
+    # the served command's positionals after.
 
     # WARNING: **Keep each element's trailing comma on the element's own last line.**
     # An earlier edit left the comma from the entry above stranded on a line by
@@ -131,17 +148,17 @@ $mutations = @(
     # Five machine windows. What finally showed it was printing
     # `$m.GetType().FullName` with a working entry beside it in the same
     # output: `System.Object[]` against `System.Collections.Hashtable`.
-    @{ Name = 'M7 6b: `-e` moves back in front of the positional arguments'
-       File = 'qwen'
+    @{ Name = 'M7 6b: `-e` moves past the terminator, onto the served side'
+       File = 'host'
        Pairs = @(@{ From = $M7From; To = $M7To }) },
 
-    @{ Name = 'M8 6b: the `--` separator comes back'
-       File = 'qwen'
-       Pairs = @(@{ From = "        `$Exe, '+mcp',"
-                    To   = "        '--', `$Exe, '+mcp'," }) },
+    @{ Name = 'M8 6b: the `--` terminator is dropped'
+       File = 'host'
+       Pairs = @(@{ From = "        '-e', `"`$VersionKey=`$Version`",`n        '--', `$Exe, '+mcp'`n"
+                    To   = "        '-e', `"`$VersionKey=`$Version`",`n        `$Exe, '+mcp'`n" }) },
 
     @{ Name = 'M9 6b: the marker is split into two arguments'
-       File = 'qwen'
+       File = 'host'
        Pairs = @(@{ From = "        '-e', `"`$VersionKey=`$Version`""
                     To   = "        '-e', `$VersionKey, `$Version" }) },
 
@@ -151,13 +168,13 @@ $mutations = @(
     # had existed. An assertion guarding a bug that really happened, with no
     # floor under it, is worse than one guarding a hypothetical.
     @{ Name = 'M10 6b: mcp add is issued twice'
-       File = 'qwen'
+       File = 'host'
        Pairs = @(@{ From = $M10From; To = $M10To }) },
 
     @{ Name = 'M11 6b: the served +mcp argument is dropped'
-       File = 'qwen'
-       Pairs = @(@{ From = "        `$Exe, '+mcp',"
-                    To   = "        `$Exe," }) }
+       File = 'host'
+       Pairs = @(@{ From = "        '--', `$Exe, '+mcp'"
+                    To   = "        '--', `$Exe" }) }
 )
 
 function Invoke-Suite {
@@ -188,7 +205,7 @@ if ($Probe) {
         Write-Host ("  Name by property : " + $(if ($null -eq $byProp) { '<null>' } else { $byProp.Substring(0, [Math]::Min(6, $byProp.Length)) }))
         Write-Host ("  Name by indexer  : " + $(if ($null -eq $byIdx) { '<null>' } else { $byIdx.Substring(0, [Math]::Min(6, $byIdx.Length)) }))
         $v = $m['File']
-        Write-Host ("  File by indexer  : " + $(if ($null -eq $v) { '<null>' } else { "[$v] type=" + $v.GetType().FullName + " count=" + @($v).Count + " bytes=[" + (([int[]][char[]][string]$v) -join ',') + "] eq-qwen=" + ($v -eq 'qwen') }))
+        Write-Host ("  File by indexer  : " + $(if ($null -eq $v) { '<null>' } else { "[$v] type=" + $v.GetType().FullName + " count=" + @($v).Count + " bytes=[" + (([int[]][char[]][string]$v) -join ',') + "] eq-host=" + ($v -eq 'host') }))
     }
     exit 0
 }
@@ -213,7 +230,7 @@ foreach ($m in $mutations) {
     # first thing to check when it reports ANCHOR MISSING, and it was the one
     # thing the earlier diagnostics assumed instead of showing.
     $target = $Sdk
-    if ($m['File'] -eq 'qwen') { $target = $Qwen }
+    if ($m['File'] -eq 'host') { $target = $HostPlugin }
     Write-Host "  target: $target"
 
     $t = $Original[$target]
@@ -256,7 +273,7 @@ Write-Host "=== restored, pristine again ==="
 $f = Invoke-Suite
 Write-Host "  $($f.Result)"
 $f.Fails | ForEach-Object { Write-Host "    red: $_" }
-foreach ($f in @($Sdk, $Qwen)) {
+foreach ($f in @($Sdk, $HostPlugin)) {
     $ok = ([System.IO.File]::ReadAllText($f, $Utf8)) -eq $Original[$f]
     Write-Host "  $(Split-Path -Leaf (Split-Path -Parent $f))/$(Split-Path -Leaf $f) matches the original: $ok"
 }

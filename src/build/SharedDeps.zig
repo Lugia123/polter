@@ -273,38 +273,24 @@ pub fn add(
         .root_source_file = b.path("plugins/opencode/plugin.json"),
     });
 
-    // And `qwen-code`, for one property that has nothing to do with skills:
-    // **the command line it builds for `qwen mcp add`.** That argument order
-    // was wrong from the day the file was written -- `-e` is an array option
-    // and swallowed the rest of the line -- and nothing noticed for as long
-    // as nobody ran it against a real `qwen`. What the test beside it asserts
-    // is the shape of the argv this repository generates, which is the part
-    // this repository owns; that the shape is one `qwen` accepts was measured
-    // separately, against qwen 0.15.11. Two claims, two kinds of evidence.
-    step.root_module.addAnonymousImport("plugin_qwen_code_sh", .{
-        .root_source_file = b.path("plugins/qwen-code/provision.sh"),
-    });
-
-    // **And the two hosts that edit a config file instead of calling an
+    // **And the hosts that edit a config file instead of calling an
     // `mcp add`.** They are the other half of the SDK -- `polter_json_edit`,
     // `polter_json_read`, and the `python3` those two need -- and until this
     // was added not one line of that half had ever been run by a test on the
     // platform it ships to. The PowerShell port had five assertions over it
     // and the `sh` original had none, which is the wrong way round.
     //
-    // Both, not one: they are the only two plugins that override a fourth
-    // hook, and they disagree about the shape of what they write. Embedding
-    // one would assert the SDK and let the declarations drift.
+    // **Both of them, and the pair is down to two** (task 2207: `deepseek`
+    // was the third and is gone). They are the plugins that override a
+    // fourth hook, and they disagree about the shape of what they write.
+    // Embedding one would assert the SDK and let the declarations drift.
     step.root_module.addAnonymousImport("plugin_opencode_sh", .{
         .root_source_file = b.path("plugins/opencode/provision.sh"),
     });
-    step.root_module.addAnonymousImport("plugin_deepseek_sh", .{
-        .root_source_file = b.path("plugins/deepseek/provision.sh"),
-    });
 
-    // And `antigravity`, the third of them (task 1682): the same `mcpServers`
-    // shape as `deepseek`, in a file of its own under `~/.gemini`, with the
-    // marker that says which CLI the entry serves.
+    // And `antigravity` (task 1682): the same `mcpServers` shape, in a file
+    // of its own under `~/.gemini`, with the marker that says which CLI the
+    // entry serves.
     step.root_module.addAnonymousImport("plugin_antigravity_sh", .{
         .root_source_file = b.path("plugins/antigravity/provision.sh"),
     });

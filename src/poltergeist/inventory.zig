@@ -22,10 +22,13 @@
 //!     are what a person needs to recognise a server; the secrets are not,
 //!     and a list that carried them would end up on a screen, in a log, and
 //!     in an agent's context. Only key *names* leave this file.
-//!   * **It does not guess a path.** Four of the seven hosts have no
+//!   * **It does not guess a path.** One of the four hosts has no
 //!     confirmed skills directory (see `provisioning.md` section four, and
-//!     the `printf ''` in their `provision.sh`). Those report
+//!     the `printf ''` in its `provision.sh`). It reports
 //!     `unknown_location`, which is not the same answer as `absent`.
+//!     **All four confirmed their MCP location once the three unmeasured
+//!     hosts left (task 2207)** -- kimi's was the last guess, and it went
+//!     with its plugin rather than being kept as a row nobody can check.
 //!
 //! # Four states, because two of them get confused
 //!
@@ -61,13 +64,19 @@ const max_config_bytes = 8 * 1024 * 1024;
 /// `POLTER_HOST_KEY` in each `plugins/<host>/provision.sh`, so that a host
 /// added there and not here is a name that does not resolve rather than a
 /// row that silently goes missing.
+///
+/// **Three left on 2026-10-25 (task 2207)**: `deepseek`, `kimi` and
+/// `qwen-code` shipped without having been run against the CLI they
+/// register with, and this enum is the row an inventory screen draws for
+/// each -- a row for a plugin that no longer ships would be a permanent
+/// "not installed" that means "we deleted it". **A host is added back here
+/// in the same commit as its plugin's line in
+/// `src/build/GhosttyResources.zig`**, or the two disagree about what is
+/// shipped and nothing catches it.
 pub const Host = enum {
     claude_code,
     codex,
-    qwen_code,
     opencode,
-    deepseek,
-    kimi,
     antigravity,
 
     /// What `plugins/<host>/provision.sh` calls `POLTER_HOST_LABEL`.
@@ -75,10 +84,7 @@ pub const Host = enum {
         return switch (self) {
             .claude_code => "Claude Code",
             .codex => "Codex CLI",
-            .qwen_code => "Qwen Code",
             .opencode => "opencode",
-            .deepseek => "DeepSeek-TUI",
-            .kimi => "Kimi CLI",
             .antigravity => "Antigravity CLI",
         };
     }
@@ -89,10 +95,7 @@ pub const Host = enum {
         return switch (self) {
             .claude_code => "claude",
             .codex => "codex",
-            .qwen_code => "qwen",
             .opencode => "opencode",
-            .deepseek => "deepseek",
-            .kimi => "kimi",
             .antigravity => "agy",
         };
     }
@@ -130,19 +133,18 @@ const McpFile = struct {
     shape: Shape,
 };
 
-/// `null` when nobody has confirmed it. Kimi is the one: `provisioning.md`
-/// has "TOML" and "待核" in the same row, and a guessed path read is a row
-/// on a screen that says "nothing installed" on no evidence at all.
+/// `null` when nobody has confirmed it. **All four are confirmed now.** It
+/// used to be Kimi, whose row in `provisioning.md` carried "TOML" and "待核"
+/// together, and a guessed path read is a row on a screen that says
+/// "nothing installed" on no evidence at all. That host and its guess were
+/// removed with it (task 2207).
 fn mcpFile(host: Host) ?McpFile {
     return switch (host) {
         .claude_code => .{ .rel_path = ".claude.json", .key = "mcpServers", .shape = .json_object },
         .codex => .{ .rel_path = ".codex/config.toml", .key = "mcp_servers", .shape = .toml_tables },
-        .qwen_code => .{ .rel_path = ".qwen/settings.json", .key = "mcpServers", .shape = .json_object },
         // Nested under `mcp`, and the structure differs as well -- for a
         // list of names that does not matter, for anything more it does.
         .opencode => .{ .rel_path = ".config/opencode/opencode.json", .key = "mcp", .shape = .json_object },
-        .deepseek => .{ .rel_path = ".deepseek/mcp.json", .key = "mcpServers", .shape = .json_object },
-        .kimi => null,
         // Not Gemini CLI's `settings.json` beside it: Antigravity reads its
         // servers from a file of their own (task 1682, "docs/mcp"). Polter's
         // own entry is not here but in its plugin's file, so nothing in this
@@ -152,8 +154,8 @@ fn mcpFile(host: Host) ?McpFile {
 }
 
 /// The user-level skills directory, or `null` where `host_skills_dir`
-/// returns the empty string. Four of the seven do, and the comment beside
-/// each of them says why: *"写文件进一个猜出来的目录，比一个都不写更糟"*.
+/// returns the empty string. One of the four does, and the comment beside
+/// it says why: *"写文件进一个猜出来的目录，比一个都不写更糟"*.
 /// Reading has the milder version of the same problem -- a guess that finds
 /// nothing reports "no skills" and looks like an answer.
 fn skillsDir(host: Host) ?[]const u8 {
@@ -164,7 +166,7 @@ fn skillsDir(host: Host) ?[]const u8 {
         // ships puts a person's own skills (task 1682). Not where Polter's
         // go: those are in its own Antigravity plugin, beside this.
         .antigravity => ".gemini/config/skills",
-        .qwen_code, .opencode, .deepseek, .kimi => null,
+        .opencode => null,
     };
 }
 
@@ -895,13 +897,19 @@ test "inventory: an empty home is absent everywhere, and absent is not failed" {
         try testing.expect(h.plugins.status != .failed);
     }
 
-    // Kimi's MCP location is the unconfirmed one, and it must not be
-    // reported as "nothing installed".
-    try testing.expectEqual(Status.unknown_location, Fixture.find(report, .kimi).mcp.status);
+    // **`unknown_location` still has to be reported where it is true, and
+    // empty home is not one of those places.** All four hosts' MCP
+    // locations are confirmed now (kimi's guess went with its plugin, task
+    // 2207), so this asserts over the sections that still can be unknown:
+    // where a host keeps its skills, and where two of them keep plugins.
     try testing.expectEqual(Status.absent, Fixture.find(report, .claude_code).mcp.status);
     try testing.expectEqual(
         Status.unknown_location,
         Fixture.find(report, .opencode).skills.status,
+    );
+    try testing.expectEqual(
+        Status.unknown_location,
+        Fixture.find(report, .opencode).plugins.status,
     );
 }
 
@@ -1005,12 +1013,15 @@ test "inventory: a file that is there and unreadable is failed, not absent" {
     var fix: Fixture = try .init(testing.allocator, io);
     defer fix.deinit(testing.allocator);
 
-    try fix.write(testing.allocator, ".qwen/settings.json", "{ this is not json");
+    // Unparseable JSON where a host keeps its servers. `opencode` rather
+    // than `qwen-code`: the same failure on a host that still ships (task
+    // 2207).
+    try fix.write(testing.allocator, ".config/opencode/opencode.json", "{ this is not json");
 
     var report = try scan(testing.allocator, io, .{ .home = fix.home });
     defer report.deinit();
 
-    const g = Fixture.find(report, .qwen_code).mcp;
+    const g = Fixture.find(report, .opencode).mcp;
     try testing.expectEqual(Status.failed, g.status);
     try testing.expect(g.detail != null);
     try testing.expect(g.path != null);
@@ -1191,7 +1202,7 @@ test "inventory: the four states survive serialization" {
     var fix: Fixture = try .init(testing.allocator, io);
     defer fix.deinit(testing.allocator);
 
-    try fix.write(testing.allocator, ".qwen/settings.json", "{ not json");
+    try fix.write(testing.allocator, ".config/opencode/opencode.json", "{ not json");
     try fix.write(testing.allocator, ".claude.json", "{\"mcpServers\":{\"a\":{}}}");
 
     var report = try scan(testing.allocator, io, .{ .home = fix.home });
@@ -1263,14 +1274,16 @@ test "inventory: a host that is installed and unreadable makes the budget a floo
     var fix: Fixture = try .init(testing.allocator, io);
     defer fix.deinit(testing.allocator);
 
-    try fix.write(testing.allocator, ".claude.json",
-        \\{"mcpServers":{"polter:argus":{}}}
+    // One slot under a host that reads fine, so `max` has a number to be a
+    // floor *of* -- a floor of zero would pass for the wrong reason.
+    try fix.write(testing.allocator, ".codex/config.toml",
+        \\[mcp_servers."polter:argus"]
     );
     // Present, installed, and unparseable.
-    try fix.write(testing.allocator, ".qwen/settings.json", "{ not json");
+    try fix.write(testing.allocator, ".claude.json", "{ not json");
 
     try fix.mkdirs(testing.allocator, "bin");
-    try fix.write(testing.allocator, "bin/qwen", "#!/bin/sh\n");
+    try fix.write(testing.allocator, "bin/claude", "#!/bin/sh\n");
     const bin = try std.fmt.allocPrint(
         testing.allocator,
         "{s}{c}bin",
@@ -1286,7 +1299,7 @@ test "inventory: a host that is installed and unreadable makes the budget a floo
         defer report.deinit();
         const budget = report.slotBudget();
         try testing.expectEqual(@as(usize, 1), budget.max);
-        // Qwen is on PATH and its config could not be read, so nobody
+        // `claude` is on PATH and its config could not be read, so nobody
         // knows how many slots it has. `max` is a floor.
         try testing.expect(!budget.complete);
     }

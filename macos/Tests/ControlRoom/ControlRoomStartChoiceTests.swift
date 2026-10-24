@@ -345,15 +345,15 @@ struct ControlRoomStartChoiceTests {
     /// The last supervisor's CLI is not installed here (task 1744): not
     /// found, and the hover says why.
     @Test func notFoundBecauseItsCliIsGoneSaysSoOnHover() {
-        var (s, roles) = twoClis(last: "kimi", byCli: [.init(cli: "claude-code", can: false, why: .cliDiffers),
+        var (s, roles) = twoClis(last: "opencode", byCli: [.init(cli: "claude-code", can: false, why: .cliDiffers),
                                                        .init(cli: "codex", can: false, why: .cliDiffers)])
-        s.last?.lastCliLabel = "Kimi"
-        roles[0].heldBack = [.init(key: "kimi", label: "Kimi", why: .notInstalled)]
+        s.last?.lastCliLabel = "opencode"
+        roles[0].heldBack = [.init(key: "opencode", label: "opencode", why: .notInstalled)]
         let c = Choice.cliChoice(s, roles: roles, role: nil, picked: nil)
         #expect(c.resume == .missing)
         #expect(Choice.startEnabled(c, picked: nil))
         #expect(Choice.sessionSent(c, picked: nil) == nil)
-        #expect(Choice.resumeTooltip(c, last: s.last) == "Kimi, which the last supervisor used, is not installed on this machine.")
+        #expect(Choice.resumeTooltip(c, last: s.last) == "opencode, which the last supervisor used, is not installed on this machine.")
     }
 
     /// Never a supervisor: nothing to look for, so nothing waits.

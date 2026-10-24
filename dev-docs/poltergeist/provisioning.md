@@ -54,8 +54,12 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 
 | 族 | 怎么注册 | 谁 |
 | --- | --- | --- |
-| **A. 有 `x mcp add` 子命令** | 调命令，不碰文件 | claude, codex, qwen, kimi |
-| **B. 只能改 JSON 配置** | 读→合并→写 | opencode, deepseek, antigravity |
+| **A. 有 `x mcp add` 子命令** | 调命令，不碰文件 | claude, codex |
+| **B. 只能改 JSON 配置** | 读→合并→写 | opencode, antigravity |
+
+> 这一格原先还有 `qwen` / `kimi`（A 族）和 `deepseek`（B 族），三家的插件
+> 2026-10-25 摘掉了（task 2207）。**B 族现在在 Windows 上只剩 `opencode`**：
+> `antigravity` 只有 `provision.sh`，是 macOS 专属，这一点在第四节的表里看得出来。
 
 > **B 族的判据是「能不能非交互地调用」，不是「有没有那个子命令」。**
 > `opencode mcp add` **是存在的**（2026-09-01 实测 opencode 1.2.10），但它是一个
@@ -71,19 +75,22 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 更全部变成我们的债。B 族要做，但它是**另一种东西**，不能和 A 族用同一份代码假装
 一样。
 
-## 四、七个宿主
+## 四、四个宿主
 
-已核实的部分来自各家官方文档（2026-08-30 查）。**没有一条是我实机跑过的**，
-这一点在实现时必须重新验。
+> **2026-10-25（task 2207）：这一节原先有七行。** `qwen-code`、`kimi`、`deepseek`
+> 三家摘掉了——它们的 `host_skills_dir` 一个是「待核」、两个是空的，谁都没在各自的
+> CLI 上跑过一次，于是它们的失败会以用户的故障的形状到来。**下面保留的四行是全
+> 部人口**，下面凡提到那三家都是当时读文档/读源码的读数，留着是因为那些话仍然
+> 成立（比如「DeepSeek 没有官方 CLI」）。
+
+已核实的部分来自各家官方文档（2026-08-30 查），加上后来各家单独核过的行。
+**没有一条是我实机跑过的**，这一点在实现时必须重新验。
 
 | key | 宿主 | 族 | MCP 落点 | 顶层键 | skill 目录 |
 | --- | --- | --- | --- | --- | --- |
 | `claude-code` | Claude Code | A | `~/.claude.json` | `mcpServers` | `~/.claude/skills/` |
 | `codex` | OpenAI Codex CLI | A | `~/.codex/config.toml` | `mcp_servers` **(TOML，下划线)** | `~/.codex/skills/` |
-| `qwen-code` | 阿里 Qwen Code | A | `~/.qwen/settings.json` | `mcpServers` | 待核 |
-| `kimi` | 月之暗面 Kimi CLI | A | TOML | 待核 | 待核 |
 | `opencode` | opencode | B | `~/.config/opencode/opencode.json` | `mcp` **(嵌套，不是 mcpServers)** | `~/.config/opencode/skills/`（#1777 核过，见下） |
-| `deepseek` | DeepSeek-TUI | B | `~/.deepseek/mcp.json` | 待核 | 待核 |
 | `antigravity` | Google Antigravity CLI（`agy`） | B（见下） | `~/.gemini/config/plugins/polter/mcp_config.json` | `mcpServers` | `~/.gemini/config/plugins/polter/skills/` |
 
 三点要记住：
@@ -115,10 +122,12 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
   Claude Code 那边插件不预先批准任何东西：它的批准框会触发 `PermissionRequest`
   钩子，Polter 能看到；Codex 没有钩子，框弹出来 Polter 什么也看不到。两边差在这里。
 - **opencode 的键是 `mcp`，结构也不同**，不是换个文件名的 `mcpServers`。
-- **Qwen Code 和 Gemini CLI 是一系**，形状一样。这不是巧合，是两家共用一份上
-  游。这一系原本还有两家，插件都已删除：iFlow CLI 2026-04-17 停止服务；
-  Gemini CLI 2026-06-18 起不再服务个人账号（#1681），它在上表里那一行是
-  `A`、`~/.gemini/settings.json`、`mcpServers`、`~/.gemini/skills/`。
+- **Qwen Code 和 Gemini CLI 是一系**，形状一样。这不是巧合，是两家共用一份上游。
+  这一系已经一个插件都不剩：iFlow CLI 2026-04-17 停止服务、Gemini CLI 2026-06-18
+  起不再服务个人账号（#1681，它在上表里那一行是 `A`、`~/.gemini/settings.json`、
+  `mcpServers`、`~/.gemini/skills/`），`qwen-code` 在 task 2207 摘掉。
+  **它们共有过的那条规则还在**（`mcp add` 的位置参数与贪婪的数组选项 `-e`），
+  现在由 `claude-code` 承担，见 [plugin/provisioning.md](plugin/provisioning.md)。
 - **Antigravity CLI（`agy`）和 Gemini CLI 共用 `~/.gemini`，但不共用文件**（#1682）。
   **Polter 只写一个目录：它自己的 Antigravity 插件 `~/.gemini/config/plugins/polter/`**，
   里面是 `plugin.json`（清单，没有它整个目录不被加载）、`mcp_config.json`、`hooks.json`
@@ -142,18 +151,21 @@ Polter 把 socket 和 token 放进每个终端的环境变量，这就是「够�
 
 ### DeepSeek 是个例外，要单独说
 
+> **它的插件 2026-10-25 摘掉了（task 2207）**，这一节留着，因为它讲的是一件
+> 与那个插件无关的事：**「这家 CLI」有时候不是一个上游。**
+
 **DeepSeek 没有官方 CLI。** 2026 年 8 月发的 V4-Pro 是模型。终端 agent 全是第三
 方的：`DeepSeek-TUI`（Hmbown，`deepseek` 命令，`~/.deepseek/mcp.json`）、
-`DeepSeekCode`（Claude Code 的 fork）、`Deep Code CLI`。我们对着
-DeepSeek-TUI 写。
+`DeepSeekCode`（Claude Code 的 fork）、`Deep Code CLI`。当时对着 DeepSeek-TUI 写。
 
 **这一条的风险和别的不是一个量级**：第三方项目改配置形状不会通知任何人，坏了我
-们才知道，而用户会以为是 Polter 坏了。所以它的失败必须比别家更响。
+们才知道，而用户会以为是 Polter 坏了。所以它的失败必须比别家更响——**而当时没有
+任何办法让它更响，这也是它被摘掉的理由之一：一个响不了的插件，不该随包发。**
 
 ## 五、设计：SDK 出实现，插件出答案
 
-379 行 × 7 份是不能接受的，但「七个插件合成一个」也不行——一个失败会连坐其余六
-个，而且 `wants.exec` 是按二进制声明的，合起来就得声明全部七个。
+379 行 × N 份是不能接受的，但「几个插件合成一个」也不行——一个失败会连坐其余几
+个，而且 `wants.exec` 是按二进制声明的，合起来就得声明全部。
 
 所以：**`plugins/_sdk/provision.sh` 是实现，每个宿主插件退化成一份声明。**
 
@@ -215,10 +227,13 @@ host_rules_file() { printf '%s/.claude/CLAUDE.md' "$home"; }   # 空 = 这家不
 
 ## 六、默认只开 Claude Code
 
-六个插件全开会让每台机器上有四五个在「静默地什么都没做」——那不是坏，但它会把
+> **这一节和下一节里出现的「六个」「七个」是写这些理由的时候随包的数量**，当时还
+> 没摘（task 2207）。**现在随包四个**，理由一条没变，只是被放大的倍数小了。
+
+插件全开会让每台机器上有几个在「静默地什么都没做」——那不是坏，但它会把
 日志变成噪音，而噪音里藏不住真正的失败。
 
-**所以默认只有 `claude-code` 是开的，其余五个装了但关着。**
+**所以默认只有 `claude-code` 是开的，其余三个装了但关着。**
 
 代价必须说清楚：**默认关 = 在用户找到那个菜单之前，对任何非 Claude Code 用户都不
 生效。** 一个装了 Codex 的人打开 Polter，什么也不会发生，而且没有任何东西告诉他
@@ -373,9 +388,9 @@ powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <绝对路�
 > 是 disclosure；这里的 `exec` 是「启动哪个文件」。两个名字已经在读者脑子里撞过一次，
 > 新键落地时值得在注释里点一句。
 >
-> 顺带：`deepseek` / `opencode` 的 `wants.exec` 里有 `python3`，那是 `.sh` 版编辑 JSON
-> 用的；PowerShell 版语言里就有 JSON，Windows 上不需要它。`wants` 是一份跨系统的
-> 清单，不影响运行，但拍板时值得知道**它已经在携带某些系统上不成立的信息**。
+> 顺带：`opencode` 的 `wants.exec` 里有 `python3`，那是 `.sh` 版编辑 JSON 用的；
+> PowerShell 版语言里就有 JSON，Windows 上不需要它。`wants` 是一份跨系统的清单，
+> 不影响运行，但拍板时值得知道**它已经在携带某些系统上不成立的信息**。
 
 **（二）`src/poltergeist/Resident.zig`，唯一拼 argv 的地方**
 （原来是 `.argv = &.{self.exec}`）。
@@ -539,15 +554,18 @@ C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但
 
 1. ~~**七家一家都没有真机验过。**~~ **2026-09-01：六家验过了**，判据是**那家 CLI
    自己报出 polter**，不是「配置文件写进去了」——后者只证明我们会写文件。
+   （下表是当时七家的读数。**现在随包的是四家**，task 2207 摘掉了 `qwen-code` /
+   `kimi` / `deepseek`；留下来的四行里 `claude-code` / `codex` / `opencode` /
+   `antigravity` 都在。）
 
    | 宿主 | 状态 |
    | --- | --- |
    | `claude-code` | **最完整**：`claude mcp get` 逐格回显 scope / type / command / args / **env** |
-   | `qwen-code` | Windows 真机，`qwen mcp list` 报出 polter；**env 不回显，那格是推断** |
-   | `gemini` | 写入内容读回核对 + 四遍幂等契约；env 由文件读回，非 CLI 回显 |
+   | `qwen-code` | Windows 真机，`qwen mcp list` 报出 polter；**env 不回显，那格是推断**。插件 2026-10-25 摘掉 |
+   | `gemini` | 写入内容读回核对 + 四遍幂等契约；env 由文件读回，非 CLI 回显。插件 #1681 摘掉 |
    | `opencode` | `opencode mcp list` 认出条目并尝试 spawn（`ENOENT` 是假路径，不是拒绝）；`environment` / `enabled` 仍是推断 |
    | `codex` | `codex mcp get` 逐格回显；**`env` 的键回显、值被打码**（那是它的对：env 里通常放密钥），值由它自己写的 TOML 确认 |
-   | `deepseek` / `kimi` | **完全未验**，两台机器都没装 |
+   | `deepseek` / `kimi` | **完全未验**，两台机器都没装。插件 2026-10-25 摘掉 |
 
    **`env` 那一格此前没有任何一家确认过**——`qwen`/`gemini` 的 `mcp list` 根本不打 env
    （那正是 staleness 那个 bug 的成因），`opencode` 也没回显。`claude mcp get` 是第一个。
@@ -563,7 +581,10 @@ C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但
    「我写的那个特征串在不在里面」**：跑 `claude-code` 那次真配置的 sha 确实变了，
    而定案靠的是「本次的版本戳和假 exe 路径一个都不在里面」，变化来自另外两个
    活着的 `claude` 会话进程。**「变了吗」分辨不了方向，「我写的东西在里面吗」才可以。**
-2. **三家的 skill 目录仍然是空的**（`qwen-code` `kimi` `deepseek`）。
+2. ~~**三家的 skill 目录仍然是空的**（`qwen-code` `kimi` `deepseek`）。~~ **这三家
+   的插件 2026-10-25 摘掉了（task 2207），随包的四家里 `opencode` 和
+   `antigravity` 都有核过的目录，`claude-code` 和 `codex` 也都有，所以
+   `host_skills_dir` 返回空串的家已经没有了。**
    `opencode` 在 #1777 补上了：`~/.config/opencode/skills/`。⚠️ 它**也读
    `~/.claude/skills/**`**，所以 Claude Code 插件装的 polter-* 它本来就看得到。
    #1806（opencode 2.0.32）起：`~/.claude/skills` 里已经有 Polter 的 skill 时，
@@ -579,9 +600,10 @@ C 的代价要说清楚：`load()` 的返回类型要能表达「读成功了但
 3. **第六节那条「探测到就提示一次」还没做。** 没有它，默认关就意味着装了 Codex
    的人永远不知道这里有东西。这是目前最大的一个缺口，而且它和插件本身无关——它
    属于宿主那一侧。
-4. `deepseek` 对着的是第三方的 DeepSeek-TUI。它改配置形状不会通知任何人，届时用
-   户会以为是 Polter 坏了。没有别的办法，只有让它失败得响一点。
-5. ~~**`exec_<os>` 没拍板，所以 Windows 上那 7 份 `provision.ps1` 宿主够不着。**~~
+4. ~~`deepseek` 对着的是第三方的 DeepSeek-TUI。它改配置形状不会通知任何人，届时用
+   户会以为是 Polter 坏了。~~ **这正是它被摘掉的理由之一（task 2207）**：没有别的
+   办法，只有让它失败得响一点，而响不了的插件不该随包发。
+5. ~~**`exec_<os>` 没拍板，所以 Windows 上那几份 `provision.ps1` 宿主够不着。**~~
    **已裁决并落地（用户，2026-09-01；`8c969495d`）:加 `exec_<os>`，`os` 字段继续
    不加。** 见第九节。
 

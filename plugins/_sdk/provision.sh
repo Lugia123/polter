@@ -189,7 +189,7 @@ polter_bounded() {
 # **This is the other kind of host, and it is not the same job wearing a
 # different hat.** A CLI with an `mcp add` subcommand owns its own file: its
 # format, its locking, its migrations are its problem. A host without one
-# makes them ours. opencode and DeepSeek-TUI are in that position.
+# makes them ours. opencode and Antigravity are in that position.
 #
 # So the three properties that make it survivable are here rather than copied
 # into each of them:

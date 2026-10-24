@@ -147,7 +147,7 @@ CANARY = '''
         let expected: Vec<(String, Vec<String>)> = [
             ("archive", &["dir", "sign_key"][..]),
             // ("ghost", &["boo"][..]),
-            ("kimi", &[][..]),
+            ("bare", &[][..]),
         ]
         .iter()
         .collect();
@@ -162,7 +162,7 @@ def self_test() -> None:
         print("FAIL: the probe cannot find a table it wrote itself; the anchor "
               "in `expectation` no longer matches the shape in plugins.rs.")
         sys.exit(1)
-    if table != {"archive": ["dir", "sign_key"], "kimi": []}:
+    if table != {"archive": ["dir", "sign_key"], "bare": []}:
         print(f"FAIL: a commented-out entry was counted as one, or a real one "
               f"was lost: {table}")
         sys.exit(1)

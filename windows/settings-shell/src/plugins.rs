@@ -721,7 +721,7 @@ mod tests {
             running: true,
             failures: 7,
             restart_pending: false,
-            note: "kimi is dormant".into(),
+            note: "opencode is dormant".into(),
             note_say: Some(("It failed to start {1} time(s)".into(), vec!["7".into()])),
         };
         assert_eq!(said.shown_note(translate, fill), "启动失败 7 次");

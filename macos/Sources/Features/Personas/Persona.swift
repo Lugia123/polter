@@ -115,10 +115,14 @@ enum PersonaHostClass: Equatable {
     /// `notifications/tools/list_changed`, the running agent re-equips.
     case hot
 
-    /// qwen-code: through its own runtime interface, not the MCP one.
+    /// The host's own runtime interface, not the MCP one. **No shipped
+    /// plugin is this any more** (task 2207), and the case stays because
+    /// the C enum does: unknown/hot/warm/cold is a contract with the core,
+    /// and a host with a channel of its own is a shape that exists whether
+    /// or not one ships today.
     case warm
 
-    /// codex, opencode, kimi, deepseek: only a restart.
+    /// codex, opencode: only a restart.
     case cold
 
     /// Sync with: `ghostty_action_poltergeist_host_class_e`.

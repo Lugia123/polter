@@ -12,8 +12,11 @@ $mutations = @(
     @{
         Name = 'M2a idempotence, MCP: always considered stale'
         Pairs = @(
-            @{ From = '    $stale = -not ($current.Contains($exe) -and $current.Contains($version))'
-               To   = '    $stale = $true' }
+            # Repointed 2026-10-25 (task 2207): the SDK dropped the `$exe`
+            # half of this test, so the anchor had stopped matching and this
+            # injection reported ANCHOR MISSING instead of measuring anything.
+            @{ From = '                $stale = -not $current.Contains($version)'
+               To   = '                $stale = $true' }
         )
     },
     @{

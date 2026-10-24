@@ -1,14 +1,18 @@
-# 注册插件（六个，一份实现）
+# 注册插件（四个，一份实现）
 
-`claude-code` `codex` `qwen-code` `kimi` `opencode` `deepseek`
+`claude-code` `codex` `opencode` `antigravity`
 
-六个插件做的是同一件事，实现只有一份：`plugins/_sdk/provision.sh`。每个插件本身
+> 2026-10-25（task 2207）：`qwen-code` `kimi` `deepseek` 三个摘掉了。三家都没在各自
+> 的 CLI 上跑过一次，留着的话它们的失败会以用户的故障的形状到来。加回来 = 一个目录
+> 加 `GhosttyResources.zig` 里一行，加之前先量。
+
+四个插件做的是同一件事，实现只有一份：`plugins/_sdk/provision.sh`。每个插件本身
 是一份**声明**——去 PATH 上找哪个二进制、这家怎么注册 MCP、它把 skill 放在哪。
 `plugins/claude-code/provision.sh` 五十来行，其余的更短。
 
 **为什么各家仍是独立插件而不是一个带宿主表的插件**：合成一个的话，第一个失败会
-连坐其余五个，而且 `wants.exec` 得声明全部六个二进制——等于每台机器都在声明它用
-不到的五个 CLI。共用的是实现，不是身份。各自有自己的开关、自己的日志、自己在插件
+连坐其余三个，而且 `wants.exec` 得声明全部四个二进制——等于每台机器都在声明它用
+不到的三个 CLI。共用的是实现，不是身份。各自有自己的开关、自己的日志、自己在插件
 界面里的一行。
 
 选型、各家的落点、以及为什么不做纯 IDE 的那些，见
@@ -16,7 +20,7 @@
 
 ## 默认只有 Claude Code 是开的
 
-`enabled` 本来就默认 `false`，六个插件各自带一份 `settings.json` 把意图写在文件
+`enabled` 本来就默认 `false`，四个插件各自带一份 `settings.json` 把意图写在文件
 里。只有 `claude-code` 那份是 `true`。
 
 代价是实打实的：**一个装了 Codex 的人打开 Polter，什么也不会发生，而且没有任何东
@@ -50,8 +54,8 @@
 
 | 族 | 怎么注册 | 谁 |
 | --- | --- | --- |
-| 有 `x mcp add` | 调命令，不碰文件 | claude-code, codex, qwen-code, kimi |
-| 只能改 JSON | 读→改→原子换 | opencode, deepseek |
+| 有 `x mcp add` | 调命令，不碰文件 | claude-code, codex |
+| 只能改 JSON | 读→改→原子换 | opencode, antigravity |
 
 **这两件不是同一件事换个帽子。** 有子命令的 CLI 自己拥有那个文件——格式、加锁、
 迁移都是它的事；没有子命令的，这些就成了我们的债。所以第二族走
@@ -71,14 +75,19 @@
 - **Codex**：TOML，表名是 `mcp_servers`（**下划线**），别家是 JSON 的 `mcpServers`。
 - **opencode**：键是 `mcp`，条目里 `command` 是**数组**，不是 `command` 字符串加
   `args`。
-- **Qwen Code 是 gemini-cli 的 fork**，所以和 Gemini CLI 同形。这一形状原先还有两家：
-  iFlow CLI 2026-04-17 停止服务、Gemini CLI 2026-06-18 起不再服务个人账号（#1681），
-  两个插件都随之删除，现在只剩 `qwen-code` 一家。
+- **Antigravity 走 `mcpServers`，但写在它自己的插件目录下**（`~/.gemini/config/plugins/
+  polter/mcp_config.json`，task 1682），所以用户的 `~/.gemini` 里一个字都不改到。
+
+**`qwen-code` 和 `gemini` 共有过的那一形状**（`mcp add` 的位置参数 + 贪婪的数组选项
+`-e`）曾经值一条单独的规则，现在树里没有插件用它了；那条规则连同它的两个测试在
+task 2207 之后挪到了 `claude-code` 上，见 `Resident.zig`。
 
 ## skill 装不了不是失败
 
-`qwen-code` `kimi` `opencode` `deepseek` 的 skill 目录**没有核实过**，所以
-`host_skills_dir` 返回空，那一步跳过。**这是降级，不是失败**：
+`opencode` 的 skill 目录是核实过的（任务 1777、1806；opencode 2.0.32）。**四个插件
+里只有一个的 `host_skills_dir` 还是空的**——`antigravity` 用的是它自己插件目录里的
+`skills/`，随 `agy` 的插件发现一起走（task 1682）。目录一旦核实不了就返回空、跳过那
+一步。**这是降级，不是失败**：
 
 - skill 正文本来就能通过 `skill_read` 这个 MCP 工具拿到；
 - `initialize` 的 `instructions` 里那张工具族地图是协议字段，**任何 MCP 客户端都吃**。
