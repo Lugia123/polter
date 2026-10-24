@@ -40,14 +40,47 @@ const Action = @import("ghostty.zig").Action;
 const global = @import("../global.zig");
 const internal_os = @import("../os/main.zig");
 
+/// The agent socket's server, for the tests at the bottom that drive a real
+/// one. `poltergeist/` never imports this direction, so there is no cycle.
+/// Lazy like every `@import`: nothing here is analysed unless a test uses it.
+const Server = @import("../poltergeist/Server.zig");
+
 const log = std.log.scoped(.chat);
 
-/// Longest line the host will read or write.
-// Matches the sidecar (`cli/mcp.zig`). A reply larger than this is
-// `StreamTooLong` and a connection that never recovers, so the server caps
-// what it sends (`rpc.read_budget_bytes`) and this is the headroom for the
-// JSON escaping on top of it.
+/// Longest request line this client writes, and the reader's fill window.
+///
+/// **Not a cap on what it reads** -- see `max_reply`. This started out as
+/// both, and the two are not the same question: a request here is a few
+/// hundred bytes, while a reply is `task_list`'s answer and grows with the
+/// night's work.
 const max_line = 256 * 1024;
+
+/// Longest reply this client will read, exactly.
+///
+/// **A reply has no useful length, so there is no useful small ceiling.**
+/// Reading a line with `takeDelimiter` reads only as far as the reader's
+/// buffer, and with that buffer at `max_line` a panel of about a thousand
+/// tasks was a `StreamTooLong` -- measured on Windows at 456,777 bytes for
+/// 2,005 tasks. Worse than the one window that asked: the stream then held
+/// half a line, so every call after it read from the middle of the last
+/// reply, and the whole chat page (every group, not only the one whose
+/// panel was big) went down with the process.
+///
+/// So a reply is read to its newline however long that is, up to this. It
+/// is a ceiling rather than a budget: 64 MiB is far past anything this
+/// protocol produces and still finite, so a host that has gone wrong cannot
+/// make the client allocate without end. Past it `call` answers
+/// `error.ReplyTooLong` -- after discarding the rest of the line, so the
+/// next call starts on a line boundary -- and `chat` shows one failed poll
+/// instead of exiting.
+///
+/// **A reply of exactly this many bytes is read.** `streamDelimiterLimit`
+/// counts the bytes it has *not* taken, so handing it this number refuses a
+/// line of this length whose newline is the next byte; `readLine` passes one
+/// more and the figure here means what it says. A cap that were really one
+/// byte smaller than its name is the kind of thing somebody later measures
+/// and cannot account for.
+const max_reply = 64 * 1024 * 1024;
 
 /// How often to ask the host what is new.
 ///
@@ -176,6 +209,27 @@ const Host = struct {
     reader: transport.Reader,
     writer: transport.Writer,
 
+    /// Where a reply is read to, growing to hold it as far as `reply_cap`.
+    ///
+    /// **The reader's buffer is a window, not a ceiling.** A reply had to
+    /// fit in it because it was read with `takeDelimiter`, which reads only
+    /// as far as the buffer; the growth is what makes the length of a reply
+    /// the host's business rather than this client's (task 2150).
+    ///
+    /// Reused rather than taken afresh: this is a poll loop, and a
+    /// `task_list` answer arrives every half second. It is not shrunk back
+    /// afterwards -- one big panel leaves the capacity in hand for the next
+    /// poll, which is the reuse being asked for.
+    reply_buf: std.Io.Writer.Allocating,
+
+    /// How long a reply may be, `max_reply` in every case but a test's.
+    ///
+    /// A field rather than the constant itself for one reason: the recovery
+    /// after an over-long reply is what keeps the connection usable, and
+    /// walking that path for real would mean moving 64 MiB per test. The
+    /// test moves the ceiling down instead.
+    reply_cap: usize = max_reply,
+
     /// The pipe to Polter, **through `transport`**.
     ///
     /// **This used to be `net.UnixAddress.init(path)`, and on Windows that could
@@ -213,15 +267,19 @@ const Host = struct {
             .write_buf = write_buf,
             .reader = stream.reader(io, read_buf),
             .writer = stream.writer(io, write_buf),
+            .reply_buf = .init(alloc),
         };
+        errdefer self.reply_buf.deinit();
 
         try self.writer.interface.print(
             \\{{"method":"auth","params":{{"token":"{s}"}}}}
         ++ "\n", .{token});
         try self.writer.interface.flush();
 
-        const reply = (try self.reader.interface.takeDelimiter('\n')) orelse
-            return error.EndOfStream;
+        // Through the same reader as every reply: the opening line is
+        // short, but a second way of reading lines is a second place for
+        // the ceiling to come back.
+        const reply = try self.readLine();
         // Full and refused are two answers (task 1736): see `hook.admitted`.
         hook.admitted(reply) catch |err| switch (err) {
             error.AgentsFull => {
@@ -241,20 +299,89 @@ const Host = struct {
         self.stream.close(self.io);
         self.alloc.free(self.read_buf);
         self.alloc.free(self.write_buf);
+        self.reply_buf.deinit();
         self.* = undefined;
     }
 
-    /// One request, one reply. The reply borrows the read buffer and is
-    /// only valid until the next call, so callers copy what they keep.
+    /// One request, one reply. The reply borrows `reply_buf` and is only
+    /// valid until the next call, so a caller that keeps one copies it.
+    ///
+    /// ⚠️ **This used to say `callJson` was safe from that because it parses
+    /// with `alloc_if_needed`, and that was wrong.** `callJson` parses into
+    /// `std.json.Value`, and `Value`'s own parser allocates every string
+    /// whatever the option says (`json/dynamic.zig`: `alloc_always`), so
+    /// nothing parsed out of a reply is a slice of it. The conclusion the
+    /// old sentence was reaching for still holds and for a different
+    /// reason: a parsed value lives in the arena and is not invalidated by
+    /// the next call, while the raw slice `call` returns is.
+    ///
+    /// The correction matters in both directions. Read one way it invites
+    /// copies nobody needs; read the other it suggests the question has
+    /// been checked here, when `parseFromSlice` of a concrete type -- where
+    /// `alloc_if_needed` really does apply -- has not been.
     fn call(self: *Host, line: []const u8) ![]const u8 {
         try self.writer.interface.writeAll(line);
         try self.writer.interface.writeByte('\n');
         try self.writer.interface.flush();
 
-        // `takeDelimiter` consumes the newline; the exclusive form leaves
-        // it and every later call comes back empty forever.
-        return (try self.reader.interface.takeDelimiter('\n')) orelse
-            error.EndOfStream;
+        return self.readLine();
+    }
+
+    /// One reply line, however long it is (up to `reply_cap` bytes).
+    ///
+    /// **`takeDelimiter` was here and is why this had a ceiling.** It reads
+    /// only as far as the reader's buffer and answers `StreamTooLong`
+    /// beyond it, so a `task_list` for a group with a thousand tasks on it
+    /// took down `polter +chat --embedded` -- and not only the one group:
+    /// the half-line left in the stream made every later call read from the
+    /// middle of a reply, so every group's page failed together (task 2150,
+    /// 456,777 bytes for 2,005 tasks on Windows).
+    ///
+    /// `streamDelimiterLimit` streams through the reader instead of
+    /// peeking in it, so the writer it is handed is what grows. The cap is
+    /// a guard against a host that has gone wrong, not a budget: past it,
+    /// the rest of the line is discarded -- so the next call still starts
+    /// on a line boundary -- and `error.ReplyTooLong` goes to this one
+    /// caller, which the poll loop shows like any other failed poll.
+    ///
+    /// The limit handed over is `reply_cap + 1` because the function counts
+    /// what it has *left*, so a line of exactly `reply_cap` bytes with its
+    /// newline just behind it would otherwise be refused. `max_reply` is
+    /// what it says it is; see there.
+    fn readLine(self: *Host) ![]const u8 {
+        self.reply_buf.clearRetainingCapacity();
+        _ = self.reader.interface.streamDelimiterLimit(
+            &self.reply_buf.writer,
+            '\n',
+            .limited(self.reply_cap +| 1),
+        ) catch |err| switch (err) {
+            error.ReadFailed => return error.ReadFailed,
+            error.WriteFailed => return error.OutOfMemory,
+            error.StreamTooLong => {
+                // Unbounded on purpose. Discarding to the newline is the
+                // whole of "the next call does not read half a line", and
+                // the only peer that can make this walk a long way is one
+                // that just sent us more than `reply_cap` in one line.
+                // Its own failure is not reported on top of this one: a
+                // stream that ended here leaves nothing to resynchronise.
+                _ = self.reader.interface.discardDelimiterInclusive('\n') catch 0;
+                return error.ReplyTooLong;
+            },
+        };
+
+        // `streamDelimiter` leaves the delimiter in the stream, unlike
+        // `takeDelimiter`, which consumed it. Leaving it here is the other
+        // half of the same bug: every call would then read an empty line
+        // and hand the same reply to nobody. **It is also how the stream
+        // ending is noticed**: `streamDelimiterLimit` reports a stream that
+        // ended without its newline as the byte count it did read, so the
+        // missing delimiter is what says `EndOfStream` here.
+        _ = self.reader.interface.takeByte() catch |err| switch (err) {
+            error.EndOfStream => return error.EndOfStream,
+            error.ReadFailed => return error.ReadFailed,
+        };
+
+        return self.reply_buf.written();
     }
 
     /// A request whose reply is parsed. The returned value owns nothing:
@@ -925,7 +1052,13 @@ const Chat = struct {
         try loop.pollEvent();
 
         var last_poll: std.Io.Timestamp = .now(self.io, .awake);
-        try self.refresh();
+        // **Shown, not returned (task 2150).** A failed first poll used to
+        // end the run -- and so the process -- which is how an over-long
+        // reply was reported: a window that closed instead of one that
+        // said which poll had failed and asked again half a second later.
+        self.refresh() catch |err| {
+            self.err = @errorName(err);
+        };
 
         while (!self.should_quit) {
             // Events first, so typing stays responsive regardless of what
@@ -1048,6 +1181,14 @@ const Chat = struct {
             // The panel, whole. Tolerated rather than required: a host
             // that does not know the tool leaves the tab empty, which is
             // the honest picture, not a reason to take the window down.
+            //
+            // **But not silently**, because `ReplyTooLong` is the error
+            // this arm is most likely to meet and an empty panel is
+            // exactly what somebody would take for "nothing to do"
+            // (2150's `REVIEW.md`, suggestion 3). A failure that is not
+            // the tool being absent is said out loud on the error line;
+            // the tab still stays up, which is the part the silence was
+            // for.
             {
                 var buf: [256]u8 = undefined;
                 const line = try std.fmt.bufPrint(
@@ -1055,7 +1196,18 @@ const Chat = struct {
                     "{{\"method\":\"task_list\",\"params\":{{\"group\":\"{s}\"}}}}",
                     .{name},
                 );
-                const v = self.host.callJson(arena, line) catch std.json.Value.null;
+                const v = self.host.callJson(arena, line) catch |err| switch (err) {
+                    error.ReplyTooLong => blk: {
+                        // Held for `err_polls`, not merely set: this poll
+                        // succeeds as a whole, and the tail of `refresh`
+                        // clears an error whose hold has run out -- so a
+                        // bare assignment would be wiped in the same pass
+                        // and nobody would ever read it.
+                        self.showErr("this group's panel is larger than this window will read (ReplyTooLong)");
+                        break :blk std.json.Value.null;
+                    },
+                    else => std.json.Value.null,
+                };
                 try fillTasks(&group, store, panel, v);
             }
 
@@ -1715,6 +1867,16 @@ const Chat = struct {
         // Copied into a buffer of our own: the reply is about to be freed
         // with the scratch arena, and the complaint has to outlive it.
         const message = stringField(v, "message") orelse "the host refused";
+        self.showErr(message);
+    }
+
+    /// Put a sentence on the error line, for `err_polls` polls.
+    ///
+    /// Copied into `err_buf`, which is the one owned string `err` may point
+    /// at (see the field): everything else it is set to is an `@errorName`
+    /// or a literal. So this is the way to show a message that came out of
+    /// a reply, which does not outlive the arena it was parsed in.
+    fn showErr(self: *Chat, message: []const u8) void {
         const kept = @min(message.len, self.err_buf.len);
         @memcpy(self.err_buf[0..kept], message[0..kept]);
         self.err = self.err_buf[0..kept];
@@ -4227,7 +4389,6 @@ test "cycling the filter reaches every one of them and comes back" {
 // not merely none.
 test "last night's members come from where the core says, not from beside the socket (#1524)" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
-    const Server = @import("../poltergeist/Server.zig");
     const wire = @import("../poltergeist/wire.zig");
     const alloc = testing.allocator;
 
@@ -4372,4 +4533,277 @@ test "2147: a poll that fails before the switch leaves the half on screen alone"
     _ = try panel.begin().dupe(u8, "xxxxxxxxx");
     _ = try panel.begin().dupe(u8, "yyyyyyyyy");
     try testing.expectEqualStrings("on screen", shown);
+}
+
+/// A core that answers each request with the next line it was given.
+///
+/// `Server` rather than a hand-made fake, for the reason the test above uses
+/// it: what is under test is how a *reply* is read off a socket, so the other
+/// end has to be a real socket with a real writer. **The strings handed in are
+/// the `text` payload of the reply**, which `wire` wraps as
+/// `{"ok":true,"text":"…"}` -- so a long one here is a long reply line, which
+/// is the thing 2150 is about.
+const Replier = struct {
+    io: std.Io,
+    lines: []const []const u8,
+    served: std.atomic.Value(usize) = .init(0),
+
+    fn submit(ctx: *anyopaque, pending: *Server.Pending) void {
+        const self: *Replier = @ptrCast(@alignCast(ctx));
+        defer pending.release();
+        const i = self.served.fetchAdd(1, .acq_rel);
+        if (i >= self.lines.len) {
+            pending.complete(self.io, .{ .failed = .{
+                .code = "NoMore",
+                .message = "the test handed out fewer lines than it was asked for",
+            } });
+            return;
+        }
+        pending.complete(self.io, .{ .text = self.lines[i] });
+    }
+};
+
+/// A `Server` and a `Host` connected to it, torn down in one call.
+///
+/// The socket is named the way a client is handed one in real life
+/// (`Server.defaultPath`), so this runs on both systems: a path in a
+/// directory on POSIX, a pipe name on Windows. The directory is made on
+/// POSIX only, because on Windows there is no directory to make and the
+/// string is ignored.
+const LineHarness = struct {
+    threaded: std.Io.Threaded,
+    io: std.Io,
+    dir: [:0]u8,
+    sock: []u8,
+    replier: *Replier,
+    server: Server,
+    host: Host,
+
+    fn init(self: *LineHarness, lines: []const []const u8) !void {
+        const alloc = testing.allocator;
+
+        self.threaded = .init(alloc, .{});
+        errdefer self.threaded.deinit();
+        const io = self.threaded.io();
+        self.io = io;
+
+        var raw: [6]u8 = undefined;
+        io.random(&raw);
+        self.dir = try std.fmt.allocPrintSentinel(alloc, "/tmp/pg-chat-2150-{x}", .{&raw}, 0);
+        errdefer alloc.free(self.dir);
+        // The cleanup is deferred outside the block that makes it: inside,
+        // it only armed on a failure from `createDirPath`, and every later
+        // step of `init` could fail and leave the directory behind.
+        if (builtin.os.tag != .windows) {
+            errdefer std.Io.Dir.cwd().deleteTree(io, self.dir) catch {};
+            try std.Io.Dir.cwd().createDirPath(io, self.dir);
+        }
+
+        self.sock = try Server.defaultPath(alloc, io, self.dir);
+        errdefer alloc.free(self.sock);
+
+        self.replier = try alloc.create(Replier);
+        errdefer alloc.destroy(self.replier);
+        self.replier.* = .{ .io = io, .lines = lines };
+
+        self.server = try .init(alloc, io, self.sock, .{
+            .ctx = self.replier,
+            .func = Replier.submit,
+        }, Server.default_max_connections);
+        errdefer self.server.deinit();
+        try self.server.start();
+
+        const token = try self.server.issueToken(0x2150);
+        self.host = try .connect(alloc, io, self.sock, token);
+    }
+
+    fn deinit(self: *LineHarness) void {
+        self.host.deinit();
+        self.server.deinit();
+        testing.allocator.destroy(self.replier);
+        testing.allocator.free(self.sock);
+        if (builtin.os.tag != .windows) {
+            std.Io.Dir.cwd().deleteTree(self.io, self.dir) catch {};
+        }
+        testing.allocator.free(self.dir);
+        self.threaded.deinit();
+    }
+};
+
+test "2150: a reply longer than the reader's buffer is read to its newline, and the next call still answers" {
+    const alloc = testing.allocator;
+
+    // **Bigger than the buffer the read used to be confined to.** 256 KiB is
+    // what a reply had to fit in; a group with about a thousand tasks on its
+    // panel answered with more than that (456,777 bytes for 2,005 tasks,
+    // measured on Windows), and the client exited on `StreamTooLong`. The
+    // measured one was a panel; a long string is the same line, and the test
+    // does not have to build a thousand tasks to produce it.
+    const big = try alloc.alloc(u8, max_line + 64 * 1024);
+    defer alloc.free(big);
+    @memset(big, 'x');
+    try testing.expect(big.len > max_line);
+
+    var h: LineHarness = undefined;
+    try h.init(&.{ big, "second" });
+    defer h.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+
+    // The whole line, not a truncation of it and not an error.
+    //
+    // **The call is an assertion of its own, and deliberately so.** The
+    // failure this test is written from is the call itself answering
+    // `error.StreamTooLong`, so on the old read the test never reaches the
+    // length check below. Caught and compared rather than left to `try`, so
+    // the red line names the error rather than reading as a stack trace out
+    // of the standard library.
+    var failed: ?anyerror = null;
+    const first = h.host.callJson(arena.allocator(), "{\"method\":\"me\"}") catch |err| blk: {
+        failed = err;
+        break :blk std.json.Value.null;
+    };
+    try testing.expectEqual(@as(?anyerror, null), failed);
+
+    const got = stringField(first, "text") orelse return error.TestExpectedText;
+    try testing.expectEqual(big.len, got.len);
+    try testing.expect(std.mem.allEqual(u8, got, 'x'));
+
+    // **And the connection is still usable, which is the other half.** The
+    // failure this is written from did not only lose the one reply: the
+    // stream was left holding part of a line, so every call after it read
+    // from the middle of the last one and the whole chat page -- every
+    // group, not only the group whose panel was big -- failed together.
+    const second = try h.host.callJson(arena.allocator(), "{\"method\":\"me\"}");
+    try testing.expectEqualStrings("second", stringField(second, "text") orelse
+        return error.TestExpectedText);
+}
+
+test "2150: a reply past the cap is refused, and the next call starts on a line boundary" {
+    const alloc = testing.allocator;
+
+    // A line well past the cap, then a short one. The cap is moved down
+    // rather than the payload moved up: the recovery that keeps the
+    // connection usable is the part worth testing, and it is the same
+    // recovery however long the line was.
+    const over = try alloc.alloc(u8, 32 * 1024);
+    defer alloc.free(over);
+    @memset(over, 'y');
+
+    var h: LineHarness = undefined;
+    try h.init(&.{ over, "after" });
+    defer h.deinit();
+    h.host.reply_cap = 8 * 1024;
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+
+    // This one call is answered with an error; the window shows it as a
+    // failed poll (`Chat.run`), where it used to be the whole process.
+    try testing.expectError(
+        error.ReplyTooLong,
+        h.host.callJson(arena.allocator(), "{\"method\":\"me\"}"),
+    );
+
+    // The rest of that line was discarded, so what is read next is the next
+    // reply. Without the discard this would be the tail of the long one,
+    // and `callJson` would fail on it as malformed JSON instead.
+    //
+    // **An assertion rather than a `try`, for the same reason test 1's
+    // first call is one.** Read through `try`, a broken discard fails as a
+    // parse error out of the standard library and this test's red line
+    // names nothing of its own -- so the floor for the discard would be a
+    // stack trace rather than a sentence. The review of this patch asked
+    // for exactly this (2150's `REVIEW.md`, suggestion 2).
+    var after_failed: ?anyerror = null;
+    const after = h.host.callJson(arena.allocator(), "{\"method\":\"me\"}") catch |err| blk: {
+        after_failed = err;
+        break :blk std.json.Value.null;
+    };
+    try testing.expectEqual(@as(?anyerror, null), after_failed);
+    try testing.expectEqualStrings("after", stringField(after, "text") orelse
+        return error.TestExpectedText);
+}
+
+test "2150: a line of exactly the cap is read, and one byte more is not" {
+    const alloc = testing.allocator;
+
+    // **The boundary, because `streamDelimiterLimit` counts what is left
+    // rather than what it took.** Handing it `reply_cap` refuses a line of
+    // exactly that many bytes with its newline one byte behind, so the
+    // read passes `reply_cap + 1` and this is what holds that down. The
+    // two are built the same way on purpose: `cap` and `cap + 1` bytes of
+    // payload, and the same short line after each, so what differs is only
+    // where the newline falls.
+    const cap = 8 * 1024;
+    // The reply wraps the payload as `{"ok":true,"text":"…"}`, so a line
+    // of exactly `cap` bytes carries `cap - wrap` payload bytes. Counted
+    // rather than guessed at: `wrap` is measured off a zero-length one.
+    const empty = "{\"ok\":true,\"text\":\"\"}";
+    const wrap = empty.len;
+
+    const at_cap = try alloc.alloc(u8, cap - wrap);
+    defer alloc.free(at_cap);
+    @memset(at_cap, 'a');
+    const one_more = try alloc.alloc(u8, cap - wrap + 1);
+    defer alloc.free(one_more);
+    @memset(one_more, 'b');
+
+    // Four replies on one connection, in order: the two long ones and the
+    // short line after each. One connection on purpose -- "the next call
+    // still answers" is a claim about a stream that was pushed past the cap
+    // and came back, and a fresh connection would not test it.
+    var both: LineHarness = undefined;
+    try both.init(&.{ at_cap, "tail-a", one_more, "tail-b" });
+    defer both.deinit();
+    both.host.reply_cap = cap;
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // A line of exactly `reply_cap` bytes: read whole, and the connection
+    // carries on. This is the half a cap one byte short would fail, and the
+    // assertion is where that would be named.
+    var at_cap_failed: ?anyerror = null;
+    const ok = both.host.callJson(aa, "{\"method\":\"me\"}") catch |err| blk: {
+        at_cap_failed = err;
+        break :blk std.json.Value.null;
+    };
+    try testing.expectEqual(@as(?anyerror, null), at_cap_failed);
+    try testing.expectEqual(cap - wrap, (stringField(ok, "text") orelse
+        return error.TestExpectedText).len);
+
+    var failed: ?anyerror = null;
+    const tail = both.host.callJson(aa, "{\"method\":\"me\"}") catch |err| blk: {
+        failed = err;
+        break :blk std.json.Value.null;
+    };
+    try testing.expectEqual(@as(?anyerror, null), failed);
+    try testing.expectEqualStrings("tail-a", stringField(tail, "text") orelse
+        return error.TestExpectedText);
+
+    // One byte more, and the answer flips. Said as its own assertion so
+    // that a cap that drifted by one is named here rather than showing up
+    // as a length mismatch somewhere else.
+    var refused: ?anyerror = null;
+    _ = both.host.callJson(aa, "{\"method\":\"me\"}") catch |err| blk: {
+        refused = err;
+        break :blk std.json.Value.null;
+    };
+    try testing.expectEqual(@as(?anyerror, error.ReplyTooLong), refused);
+
+    // And the stream is still on a line boundary after that refusal. Also
+    // asserted rather than read through `try`: this call is the one that
+    // reads the leftovers of the discarded line, so it is the second place
+    // a broken discard shows up, and it should name itself here too.
+    var final_failed: ?anyerror = null;
+    const last = both.host.callJson(aa, "{\"method\":\"me\"}") catch |err| blk: {
+        final_failed = err;
+        break :blk std.json.Value.null;
+    };
+    try testing.expectEqual(@as(?anyerror, null), final_failed);
+    try testing.expectEqualStrings("tail-b", stringField(last, "text") orelse
+        return error.TestExpectedText);
 }
