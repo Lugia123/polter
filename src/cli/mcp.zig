@@ -6,6 +6,7 @@ const global = @import("../global.zig");
 const transport = @import("../poltergeist/transport.zig");
 const poltergeist_server = @import("../poltergeist/Server.zig");
 const agent_cli = @import("../poltergeist/agent_cli.zig");
+const readline = @import("readline.zig");
 const builtin = @import("builtin");
 
 const log = std.log.scoped(.mcp);
@@ -120,8 +121,30 @@ const initialize_result =
     \\"}
 ;
 
-/// Longest reply we will read from the host. Screen dumps are the large
-/// case, and the host caps them below this.
+/// Longest line this sidecar reads off stdin, and how it stops.
+///
+/// ⚠️ **The read used to be `takeDelimiter` into a buffer of this size, and
+/// that killed the process** (task 2170): a request of 262,144 bytes or more
+/// answered with `polter: +mcp failed: StreamTooLong` and exit 1, taking the
+/// agent's whole MCP server with it. A request is bounded on this side --
+/// `Server.max_request_bytes` is what the host reads -- so the cap is
+/// `readline.max_request`, and what happens past it is an answer rather than an
+/// exit.
+///
+/// The read itself is `readline.readLine`: see `readline.zig` for what a full buffer
+/// costs and why the cap is exactly what it says it is.
+const max_request_in = readline.max_request;
+
+/// Longest reply we will read from the host, and the reader's fill window.
+///
+/// ⚠️ **The size of the reader's buffer was the only limit there was, and
+/// the comment here used to justify it with "screen dumps are the large
+/// case, and the host caps them below this".** The second half was not true
+/// (task 2170): `skill_read` hands back a skill's whole text, `skill_store`
+/// lets that be a megabyte, and a reply of 262,144 bytes or more left the
+/// connection permanently unreadable -- every later call answered "could not
+/// reach polter" while the host was answering correctly. The reply's own
+/// ceiling is `readline.max_reply`, and `Host.call` is where it is applied.
 const max_line = 256 * 1024;
 
 /// Longest request the host will read. Kept in step with
@@ -266,6 +289,103 @@ fn parentIsCodexDaemon(alloc: Allocator, io: std.Io) bool {
     return isCodexDaemonCommand(ran.stdout);
 }
 
+/// What one read of a request line came to.
+///
+/// **Four answers rather than one error and a slice**, because the two that
+/// are not lines want opposite things done about them: `end` is the client
+/// closing and means stop, and `too_long` and `empty` mean carry on with the
+/// next line (task 2170).
+const Request = union(enum) {
+    /// A request line, without its newline.
+    line: []const u8,
+    /// The client closed its end of stdin. Nothing more is coming.
+    end,
+    /// A line with nothing on it. Not an answer, not the end.
+    empty,
+    /// The line was longer than `max_request_in`. **It has already been
+    /// discarded** -- `readLine` does that -- so all that is left is to say
+    /// so, which the caller does under its own lock (see `Handler`).
+    too_long,
+};
+
+/// Read one request line, or say which of the three other things happened.
+///
+/// **Nothing is written here**, and that is deliberate: the answer to an
+/// over-long line is the caller's to write, because only the caller knows
+/// what lock the protocol stream is under (see `Handler`).
+fn nextRequest(
+    reader: *std.Io.Reader,
+    in: *std.Io.Writer.Allocating,
+) !Request {
+    const req_line = readline.readLine(reader, in, max_request_in) catch |err| switch (err) {
+        error.EndOfStream => return .end,
+        error.LineTooLong => return .too_long,
+        error.ReadFailed => return error.ReadFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    if (req_line.len == 0) return .empty;
+    return .{ .line = req_line };
+}
+
+/// Report a line that was too long, where the caller's lock is held.
+///
+/// The id is null because it cannot be known: the line was too long to parse,
+/// and the id is inside the part that was not read. JSON-RPC reserves null
+/// for exactly this.
+fn writeTooLong(out: *std.Io.Writer, aa: Allocator) void {
+    writeError(out, .null, aa, -32600, too_long_line) catch |err| {
+        log.warn("mcp: could not report an over-long line err={}", .{err});
+    };
+}
+
+/// What to do with one read. Two callbacks rather than one, because a line
+/// that was too long is not a line: the caller has to say something back
+/// about it, and **that write belongs under whatever lock the caller writes
+/// under** -- in `serve` the notifier thread writes stdout too (task 2170).
+///
+/// The over-long reply is written by the handler and not by `nextRequest` for
+/// exactly that reason. It was written in `nextRequest` first, and that put a
+/// write to the protocol stream outside the mutex every other write holds.
+const Handler = struct {
+    ctx: *anyopaque,
+    /// A request line, without its newline.
+    line: *const fn (ctx: *anyopaque, line: []const u8) void,
+    /// A line longer than `max_request_in`. Already discarded by the read; it
+    /// has to be answered here.
+    too_long: *const fn (ctx: *anyopaque) void,
+};
+
+/// Read request lines and hand each one to `handle`, until the client stops.
+///
+/// **The whole loop, so that both stdin readers are one piece of code**
+/// (task 2170). `serve` and `serveUnclaimed` differ only in what they do with
+/// a line; what they must agree on is the four answers a read can give, and
+/// the copy that got that wrong was wrong in a way only a 262,144-byte line
+/// could show you.
+///
+/// A reader rather than the process's own stdin, and the answering left to
+/// the handler, so that a test can drive the whole loop over a real socket
+/// -- see the tests at the bottom.
+fn pumpRequests(
+    alloc: Allocator,
+    reader: *std.Io.Reader,
+    handle: Handler,
+) !u8 {
+    var in: std.Io.Writer.Allocating = .init(alloc);
+    defer in.deinit();
+
+    while (true) {
+        const req = try nextRequest(reader, &in);
+        switch (req) {
+            // The client closed its end. Nothing more is coming.
+            .end => return 0,
+            .empty => continue,
+            .too_long => handle.too_long(handle.ctx),
+            .line => |l| handle.line(handle.ctx, l),
+        }
+    }
+}
+
 /// The MCP server a sidecar is when it will not claim a terminal: it starts,
 /// it lists `me`, and every call is answered with `unclaimed` -- so the agent
 /// learns why it has no Polter and what to do, instead of a server that
@@ -277,14 +397,39 @@ fn serveUnclaimed(alloc: Allocator, io: std.Io) !u8 {
     var stdout: std.Io.File = .stdout();
     var reader = stdin.reader(io, &in_buf);
     var writer = stdout.writerStreaming(io, &out_buf);
-    while (true) {
-        const line = (try reader.interface.takeDelimiter('\n')) orelse return 0;
-        if (line.len == 0) continue;
-        handleUnclaimed(alloc, &writer.interface, line) catch |err| {
+    // **An over-long line is answered, not fatal** (task 2170), which
+    // `pumpRequests` does. This process has no Polter to reach, but it is
+    // still the only thing answering an agent, and taking it down with one
+    // long line would say "the server did not start" about a server that was
+    // there.
+    var ctx: Unclaimed = .{ .alloc = alloc, .out = &writer.interface };
+    return pumpRequests(alloc, &reader.interface, .{
+        .ctx = &ctx,
+        .line = Unclaimed.line,
+        .too_long = Unclaimed.tooLong,
+    });
+}
+
+/// What `pumpRequests` does with a line for a sidecar that claimed nothing.
+///
+/// Nothing here writes under a lock, because nothing else in this process
+/// writes to stdout: it has no host and so no notifier thread.
+const Unclaimed = struct {
+    alloc: Allocator,
+    out: *std.Io.Writer,
+
+    fn line(ctx: *anyopaque, l: []const u8) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        handleUnclaimed(self.alloc, self.out, l) catch |err| {
             log.warn("mcp: could not answer while unclaimed err={}", .{err});
         };
     }
-}
+
+    fn tooLong(ctx: *anyopaque) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        writeTooLong(self.out, self.alloc);
+    }
+};
 
 /// One line off stdin, read as a JSON-RPC request -- or answered as the
 /// reason it is not one (task 1705).
@@ -337,6 +482,16 @@ const unreadable_line = "parse error: that line is not JSON, so it was not run. 
     "such as \\0 or \\e -- write a control character as \\u001b.";
 const not_a_request = "invalid request: a JSON-RPC request is an object with a " ++
     "string \"method\" and an \"id\". It was not run.";
+/// Said instead of dying, for a request line longer than `max_request_in`.
+///
+/// ⚠️ **The id is null because it cannot be known**: the line was too long to
+/// parse, and the id is in the part that was not read. JSON-RPC has a null id
+/// for exactly this. Before task 2170 this case was not answered at all -- it
+/// was `polter: +mcp failed: StreamTooLong` on stderr and exit 1.
+const too_long_line = "that line is too long to read. The tools themselves are " ++
+    "fine: it was discarded, and the next line will be read as usual. A request " ++
+    "this long is almost always a call whose arguments should have been a file, " ++
+    "or a terminal_send whose text should have been smaller.";
 
 fn handleUnclaimed(alloc: Allocator, out: *std.Io.Writer, line: []const u8) !void {
     var arena: std.heap.ArenaAllocator = .init(alloc);
@@ -528,6 +683,34 @@ pub const Host = struct {
     reader: transport.Reader,
     writer: transport.Writer,
 
+    /// Where a reply is read to, growing to hold it as far as `reply_cap`.
+    ///
+    /// **The reader's buffer is a window, not a ceiling** (task 2170). A
+    /// reply had to fit in `read_buf` because it was read with
+    /// `takeDelimiter`, which reads only as far as the buffer; the growth is
+    /// what makes the length of a reply the host's business rather than this
+    /// client's.
+    ///
+    /// One buffer for the life of the connection, cleared per call and free
+    /// to keep its capacity -- the same arrangement `cli/chat.zig` uses, and
+    /// for the same reason: a sidecar answers tool call after tool call on
+    /// one socket, and the bytes of the last reply are worth reusing.
+    ///
+    /// **What it holds is only valid until the next `call`** -- the returned
+    /// slice is `written()` on this, not a copy. Every caller either parses
+    /// it into its own arena before the next call or copies it
+    /// (`notifier`).
+    reply_buf: std.Io.Writer.Allocating,
+
+    /// How long a reply may be, `readline.max_reply` in every case but a
+    /// test's.
+    ///
+    /// A field rather than the constant itself for the reason `cli/chat.zig`
+    /// gives: the recovery after an over-long reply is what keeps the
+    /// connection usable, and walking that path for real would mean moving
+    /// 64 MiB per test. The test moves the ceiling down instead.
+    reply_cap: usize = readline.max_reply,
+
     /// The pipe to Polter, **through `transport`**.
     ///
     /// **This used to be `net.UnixAddress.init(path)`, and on Windows that could
@@ -584,7 +767,9 @@ pub const Host = struct {
             .write_buf = write_buf,
             .reader = stream.reader(io, read_buf),
             .writer = stream.writer(io, write_buf),
+            .reply_buf = .init(alloc),
         };
+        errdefer self.reply_buf.deinit();
 
         // Prove who we are before anything else. The host closes the
         // connection if this does not check out -- and one turned away for
@@ -593,12 +778,14 @@ pub const Host = struct {
         // (task 1736). The answer says why; read it before the write's
         // error is allowed to speak.
         const sent = sendAuth(&self.writer.interface, token, kind, extra);
-        const reply = (self.reader.interface.takeDelimiter('\n') catch |err| {
+        // **Through the same reader as every reply**, and that is not
+        // tidiness: this line was a second `takeDelimiter` into the same
+        // `max_line` buffer, so it was a second place the ceiling could come
+        // back (task 2170). A handshake answer is short, which is a reason
+        // nobody would have found the copy by reading either of them.
+        const reply = readline.readLine(&self.reader.interface, &self.reply_buf, self.reply_cap) catch |err| {
             try sent;
             return err;
-        }) orelse {
-            try sent;
-            return error.EndOfStream;
         };
         // **The third one on this path, and the worst of them.** Before this
         // the server closed a refused connection without a word, so the
@@ -696,19 +883,26 @@ pub const Host = struct {
         self.stream.close(self.io);
         self.alloc.free(self.read_buf);
         self.alloc.free(self.write_buf);
+        self.reply_buf.deinit();
         self.* = undefined;
     }
 
-    /// Send one request line and return the reply line. The reply borrows
-    /// the read buffer and is valid until the next call.
-    pub fn call(self: *Host, line: []const u8) ![]const u8 {
-        try self.writer.interface.writeAll(line);
+    /// Send one request line and return the reply line, however long it is.
+    ///
+    /// The reply borrows `reply_buf` and is valid until the next call.
+    ///
+    /// ⚠️ **`takeDelimiter` was here, and it is the whole of task 2170.**
+    /// It reads only as far as `read_buf` and answers `StreamTooLong` past
+    /// it, leaving the rest of that line in the stream -- so the call after
+    /// it read from the middle of the previous reply and failed the same
+    /// way, for the rest of the connection's life. Measured: a reply of
+    /// 262,144 bytes and up did that, and every later tool call answered
+    /// "could not reach polter" while the host was answering correctly.
+    pub fn call(self: *Host, req: []const u8) ![]const u8 {
+        try self.writer.interface.writeAll(req);
         try self.writer.interface.writeByte('\n');
         try self.writer.interface.flush();
-        // `takeDelimiter` consumes the newline; the exclusive form leaves it
-        // and every later call returns an empty slice forever.
-        return (try self.reader.interface.takeDelimiter('\n')) orelse
-            error.EndOfStream;
+        return readline.readLine(&self.reader.interface, &self.reply_buf, self.reply_cap);
     }
 };
 
@@ -1914,7 +2108,20 @@ fn notifier(
             .{epoch},
         ) catch return;
 
-        const reply = host.call(request) catch return;
+        // ⚠️ **A reply that was merely too long does not end this thread**
+        // (task 2170). It used to be one `catch return` for every error, so
+        // a single over-long reply stopped the notifier for the rest of the
+        // process's life: no `notifications/tools/list_changed` ever again,
+        // and nothing anywhere saying so. The line is discarded by the read,
+        // so the next round asks a real question.
+        //
+        // Anything else is the connection itself, and there is nothing to
+        // continue with: `EndOfStream` and `ReadFailed` are the socket, and
+        // this loop's whole purpose is one socket.
+        const reply = host.call(request) catch |err| switch (err) {
+            error.LineTooLong => continue,
+            else => return,
+        };
 
         // The reply borrows the host's read buffer, which the next call
         // reuses. Anything compared across iterations has to be copied.
@@ -2014,22 +2221,50 @@ fn serve(
         log.warn("mcp: could not start the persona notifier err={}", .{err});
     }
 
-    while (true) {
-        // A null line is end of stdin: the client closed, so we are done.
-        const line = (try reader.interface.takeDelimiter('\n')) orelse return 0;
-        if (line.len == 0) continue;
-
-        {
-            // The notifier may write between replies, never inside one.
-            shared.mutex.lockUncancelable(io);
-            defer shared.mutex.unlock(io);
-
-            handleOne(alloc, host, &writer.interface, line) catch |err| {
-                log.warn("mcp: could not handle a message err={}", .{err});
-            };
-        }
-    }
+    // ⚠️ **An over-long line is answered, not fatal** (task 2170). The read
+    // here used to be `takeDelimiter` into `in_buf`, and a request of
+    // 262,144 bytes or more left this loop as `error.StreamTooLong` -- out
+    // of `serve`, out of `run`, to `polter: +mcp failed: StreamTooLong` on
+    // stderr and exit 1. **The agent's whole MCP server died** for one bad
+    // line, and because the read came before the size check inside
+    // `handleOne`, that polite refusal never got a chance to be said.
+    var ctx: Claimed = .{ .alloc = alloc, .host = host, .shared = &shared };
+    return pumpRequests(alloc, &reader.interface, .{
+        .ctx = &ctx,
+        .line = Claimed.line,
+        .too_long = Claimed.tooLong,
+    });
 }
+
+/// What `pumpRequests` does with a line for a sidecar that has a Polter.
+const Claimed = struct {
+    alloc: Allocator,
+    host: *Host,
+    shared: *Shared,
+
+    fn line(ctx: *anyopaque, l: []const u8) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        // The notifier may write between replies, never inside one.
+        self.shared.mutex.lockUncancelable(self.shared.io);
+        defer self.shared.mutex.unlock(self.shared.io);
+
+        handleOne(self.alloc, self.host, self.shared.out, l) catch |err| {
+            log.warn("mcp: could not handle a message err={}", .{err});
+        };
+    }
+
+    /// **Under the same lock as every other write** (task 2170). The notifier
+    /// thread writes a `tools/list_changed` notification to this same stream,
+    /// so an answer written outside the mutex could land in the middle of
+    /// one. Only the read is lock-free, and it is in `pumpRequests`.
+    fn tooLong(ctx: *anyopaque) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        self.shared.mutex.lockUncancelable(self.shared.io);
+        defer self.shared.mutex.unlock(self.shared.io);
+
+        writeTooLong(self.shared.out, self.alloc);
+    }
+};
 
 fn handleOne(
     alloc: Allocator,
@@ -2147,6 +2382,13 @@ fn handleOne(
         const reply = host.call(request) catch |err| {
             return writeToolError(out, id, aa, switch (err) {
                 error.EndOfStream => "polter closed the connection",
+                // ⚠️ **Said apart from the rest** (task 2170). Everything
+                // else here is the connection, and the connection is gone;
+                // this one is one reply that was too long, and the tools go
+                // on working the moment it is asked again. Folding it into
+                // "could not reach polter" was true and useless: an agent
+                // reads that as Polter being down and stops asking.
+                error.LineTooLong => "that answer was too long for me to read, so it was dropped. Nothing was changed by the call; asking again will not help, and a smaller request -- a page of the record rather than all of it -- will.",
                 else => "could not reach polter",
             });
         };
@@ -2587,4 +2829,326 @@ test "mcp: a line that is not a request is answered, not dropped (task 1705)" {
     try std.testing.expectEqual(@as(i64, 9), no_method.object.get("id").?.integer);
     try std.testing.expectEqual(@as(i64, -32600), no_method.object.get("error").?.object.get("code").?.integer);
     try std.testing.expect(lines.next() == null);
+}
+
+/// A real socket with a real other end, which is what the two facts of task
+/// 2170 are about: a read that fills up, and a stream that has to be usable
+/// afterwards. A `Reader` over a slice would compile and prove neither --
+/// `readline.zig`'s own tests use one, and they are about the reading rather
+/// than about a connection surviving it.
+///
+/// Named through `Server.defaultPath`, so this runs on both systems: a path in
+/// a directory on POSIX, a pipe name on Windows.
+const SocketPair = struct {
+    threaded: std.Io.Threaded,
+    io: std.Io,
+    dir: [:0]u8,
+    name: []u8,
+    listener: transport.Listener,
+    /// The ends that have been handed out, so `deinit` closes them. **Set by
+    /// `init`, not by a field default**: the tests declare this `undefined`
+    /// and then call `init`, which does not apply defaults -- a default here
+    /// would leave `deinit` closing whatever was on the stack, and it did
+    /// (`closeFd` answering `BADF` with `unreachable` in Debug).
+    ///
+    /// Which ends a test needs is the test's business: the reply test has the
+    /// `Host` open its own connection (that is what `Host.connectWith` does,
+    /// and going around it would leave its handshake -- a read this change
+    /// touched -- untested), while the request test hands both ends out.
+    ours: ?transport.Conn,
+    theirs: ?transport.Conn,
+
+    fn init(self: *SocketPair) !void {
+        const alloc = std.testing.allocator;
+
+        self.ours = null;
+        self.theirs = null;
+        self.threaded = .init(alloc, .{});
+        errdefer self.threaded.deinit();
+        const io = self.threaded.io();
+        self.io = io;
+
+        var raw: [6]u8 = undefined;
+        io.random(&raw);
+        self.dir = try std.fmt.allocPrintSentinel(alloc, "/tmp/pg-mcp-2170-{x}", .{&raw}, 0);
+        errdefer alloc.free(self.dir);
+        if (builtin.os.tag != .windows) {
+            errdefer std.Io.Dir.cwd().deleteTree(io, self.dir) catch {};
+            try std.Io.Dir.cwd().createDirPath(io, self.dir);
+        }
+
+        self.name = try poltergeist_server.defaultPath(alloc, io, self.dir);
+        errdefer alloc.free(self.name);
+
+        self.listener = try transport.bind(alloc, io, self.name);
+        errdefer self.listener.deinit(io);
+    }
+
+    /// The client end. Connecting before anything accepts is fine -- the
+    /// connection waits in the listener's backlog -- and that is what lets
+    /// `Server`-side and `Host`-side start in either order.
+    fn connect(self: *SocketPair) !transport.Conn {
+        self.ours = try transport.connect(self.io, self.name);
+        return self.ours.?;
+    }
+
+    /// The server end of one connection. **Called from the thread that will
+    /// serve it**, so that a `Host` connecting does not have to wait for a
+    /// main thread that is waiting for the `Host`.
+    fn accept(self: *SocketPair) !transport.Conn {
+        self.theirs = try self.listener.accept(self.io);
+        return self.theirs.?;
+    }
+
+    fn deinit(self: *SocketPair) void {
+        if (self.theirs) |c| c.close(self.io);
+        if (self.ours) |c| c.close(self.io);
+        self.listener.deinit(self.io);
+        transport.unlink(self.io, self.name);
+        std.testing.allocator.free(self.name);
+        if (builtin.os.tag != .windows) {
+            std.Io.Dir.cwd().deleteTree(self.io, self.dir) catch {};
+        }
+        std.testing.allocator.free(self.dir);
+        self.threaded.deinit();
+    }
+};
+
+/// The other end of a `SocketPair`: accepts one connection, then answers each
+/// request with the next line it was handed.
+///
+/// **Its own thread, and it is the thread that accepts**, because neither side
+/// of these tests may wait on the other: the `Host` waits for the handshake
+/// answer and the answer waits for a `Host` to accept, and 65 KiB does not fit
+/// in a socket buffer, so a writer nobody is reading blocks for ever.
+const Answerer = struct {
+    pair: *SocketPair,
+    lines: []const []const u8,
+    /// Set once every line has been written, which is what the test waits for.
+    done: std.atomic.Value(bool) = .init(false),
+    /// The write failed, so a later assertion about the reply would be about
+    /// something else. Read by the test rather than only kept.
+    failed: std.atomic.Value(bool) = .init(false),
+
+    fn run(self: *Answerer) void {
+        defer self.done.store(true, .release);
+        const conn = self.pair.accept() catch return;
+        const io = self.pair.io;
+        var read_buf: [4096]u8 = undefined;
+        var reader = conn.reader(io, &read_buf);
+        var write_buf: [4096]u8 = undefined;
+        var writer = conn.writer(io, &write_buf);
+
+        for (self.lines) |l| {
+            const req = (reader.interface.takeDelimiter('\n') catch return) orelse return;
+            if (req.len == 0) return;
+            writer.interface.writeAll(l) catch {
+                self.failed.store(true, .release);
+                return;
+            };
+            writer.interface.writeByte('\n') catch {
+                self.failed.store(true, .release);
+                return;
+            };
+            writer.interface.flush() catch {
+                self.failed.store(true, .release);
+                return;
+            };
+        }
+    }
+};
+
+test "2170: an over-long reply off the socket is read whole, and the connection is still usable" {
+    if (!transport.available) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+
+    // **262,144 is the measured threshold** with `max_line` at 256 KiB: with
+    // the old read, a reply of 262,143 bytes came back and one of 262,144 did
+    // not (task 2170's `FINDINGS.md`). Built at that number rather than near
+    // it, so the test is the reading and not an approximation of it.
+    const big_len = 262 * 1024 - "{\"ok\":true,\"text\":\"\"}".len;
+    const big = try alloc.alloc(u8, big_len);
+    defer alloc.free(big);
+    @memset(big, 'x');
+    const big_line = try std.fmt.allocPrint(alloc, "{{\"ok\":true,\"text\":\"{s}\"}}", .{big});
+    defer alloc.free(big_line);
+    try std.testing.expectEqual(@as(usize, 262 * 1024), big_line.len);
+
+    var pair: SocketPair = undefined;
+    try pair.init();
+    defer pair.deinit();
+
+    // **The first line answers `auth`, not a call.** `Host.connectWith` reads
+    // a reply before it lets anything else through, so an answerer that
+    // counted only the calls would be one line behind -- and the handshake
+    // read is one of the reads this patch changed.
+    var answerer: Answerer = .{
+        .pair = &pair,
+        .lines = &.{ "{\"ok\":true}", big_line, "{\"ok\":true,\"text\":\"after\"}" },
+    };
+    const answers = try std.Thread.spawn(.{}, Answerer.run, .{&answerer});
+
+    // **Through `Host.connectWith`, handshake and all.** That handshake reads
+    // a line too, and this patch moved it onto `readline.readLine`; a test
+    // that built its own connection would leave that read unexercised.
+    // Registered in this order so that LIFO runs `host.deinit` first: closing
+    // the connection is what an answerer still waiting on a read is woken by,
+    // and joining before it would be waiting on the thing we are holding open.
+    defer answers.join();
+    var host: Host = try .connectWith(alloc, pair.io, pair.name, "tok", .agent, "");
+    defer host.deinit();
+
+    // **The whole line, not an error.** With the old read this call was
+    // `error.StreamTooLong`, which `Host.call`'s caller turns into "could not
+    // reach polter" -- and every call after it failed the same way, for the
+    // rest of the connection's life.
+    var failed: ?anyerror = null;
+    const first = host.call("{\"method\":\"me\"}") catch |err| blk: {
+        failed = err;
+        break :blk "";
+    };
+    try std.testing.expectEqual(@as(?anyerror, null), failed);
+    try std.testing.expectEqual(big_line.len, first.len);
+
+    // **And the connection still works.** This is the half that makes the
+    // discard worth having: without it the second call would read the tail of
+    // the first line rather than the second reply.
+    var second_failed: ?anyerror = null;
+    const second = host.call("{\"method\":\"me\"}") catch |err| blk: {
+        second_failed = err;
+        break :blk "";
+    };
+    try std.testing.expectEqual(@as(?anyerror, null), second_failed);
+    try std.testing.expectEqualStrings("{\"ok\":true,\"text\":\"after\"}", second);
+    try std.testing.expect(!answerer.failed.load(.acquire));
+}
+
+test "2170: a request line past the cap is answered with an error, and the loop keeps going" {
+    if (!transport.available) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+
+    var pair: SocketPair = undefined;
+    try pair.init();
+    defer pair.deinit();
+
+    // `max_request_in` is 64 KiB, and this is refused by the read long before
+    // `handleOne`'s own size check: the read comes first, and on the old code
+    // that ordering is why the polite refusal never got a chance to be said --
+    // `error.StreamTooLong` left the process instead, and the agent's whole
+    // MCP server went with it (task 2170).
+    const over = try alloc.alloc(u8, max_request_in + 1024);
+    defer alloc.free(over);
+    @memset(over, 'z');
+
+    const ours = try pair.connect();
+    const theirs = try pair.accept();
+
+    var reader_buf: [4096]u8 = undefined;
+    var reader = theirs.reader(pair.io, &reader_buf);
+    var out_buf: [64 * 1024]u8 = undefined;
+    var writer = theirs.writer(pair.io, &out_buf);
+    var client_buf: [4096]u8 = undefined;
+    var client_reader = ours.reader(pair.io, &client_buf);
+    var client_out: [4096]u8 = undefined;
+    var client_writer = ours.writer(pair.io, &client_out);
+
+    // **The loop both stdin readers are**, driven over the socket, with a
+    // handler that records which line it was handed.
+    var handled: LineCounter = .{ .out = &writer.interface, .alloc = alloc };
+    var pump = std.Thread.spawn(.{}, pumpThread, .{
+        alloc, &reader.interface, &handled,
+    }) catch return error.SkipZigTest;
+
+    // Written after the loop is running, for the reason `Answerer` exists: a
+    // 65 KiB write nobody is reading blocks.
+    try client_writer.interface.writeAll(over);
+    try client_writer.interface.writeByte('\n');
+    try client_writer.interface.writeAll(ping_line);
+    try client_writer.interface.writeByte('\n');
+    try client_writer.interface.flush();
+
+    // The answer to the over-long line. **Its id is null because it cannot be
+    // known**: the line was too long to parse, and the id is inside the part
+    // that was not read. JSON-RPC reserves null for exactly this.
+    //
+    // Parsed into an arena, because `parseFromSliceLeaky` into `std.json.Value`
+    // copies every string (`.alloc_always`) and has no `deinit` -- see the
+    // note on `Host.callJson`. Against `std.testing.allocator` that is ten
+    // reported leaks rather than a failure of the thing under test.
+    const first_reply = (try client_reader.interface.takeDelimiter('\n')) orelse
+        return error.NoReply;
+    var json: std.heap.ArenaAllocator = .init(alloc);
+    defer json.deinit();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, json.allocator(), first_reply, .{});
+    try std.testing.expectEqual(@as(i64, -32600), parsed.object.get("error").?.object.get("code").?.integer);
+    try std.testing.expect(parsed.object.get("id").? == .null);
+
+    // The client is done, so the loop reads its end of stream and returns.
+    // **That it returned at all is a reading**: on the old code this was
+    // `error.StreamTooLong` out of `serve`, and the process exited 1.
+    //
+    // `shutdownConn` rather than `close`: `SocketPair.deinit` owns both
+    // descriptors, and closing one twice would be closing a number somebody
+    // else may hold by then.
+    transport.shutdownConn(ours, pair.io);
+    pump.join();
+
+    // **And the line after the long one was the request**, not the tail of it.
+    // That is the discard doing its work; without it the second line would be
+    // the last few kilobytes of a 65 KiB run of `z`.
+    try std.testing.expectEqual(@as(usize, 1), handled.count);
+    try std.testing.expectEqualStrings(ping_line, handled.kept[0..handled.kept_len]);
+}
+
+const ping_line = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}";
+
+/// What `pumpRequests` handed on, as the test's handler sees it.
+///
+/// The one line is kept whole rather than only counted, so the test can say
+/// *which* line arrived: "one line, and it was the request" is the fact, and a
+/// count alone would also be satisfied by one line that was the tail of the
+/// long one.
+const LineCounter = struct {
+    /// How many lines reached the handler. **The over-long line is not one of
+    /// them** -- it goes to `too_long` -- so this is 1 when the discard works
+    /// and 0 when the read never resynchronised.
+    count: usize = 0,
+    /// The first (and, here, only) line handed over, kept because a count
+    /// cannot tell the request from a tail.
+    kept: [ping_line.len]u8 = undefined,
+    kept_len: usize = 0,
+    /// The answer to an over-long line, written where the handler writes --
+    /// which is the point of `Handler.too_long` being the handler's job.
+    out: *std.Io.Writer,
+    alloc: Allocator,
+};
+
+fn pumpThread(
+    alloc: Allocator,
+    reader: *std.Io.Reader,
+    ctx: *anyopaque,
+) void {
+    _ = pumpRequests(alloc, reader, .{
+        .ctx = ctx,
+        .line = countLine,
+        .too_long = countLineTooLong,
+    }) catch {};
+}
+
+fn countLine(ctx: *anyopaque, l: []const u8) void {
+    const self: *LineCounter = @ptrCast(@alignCast(ctx));
+    if (self.count == 0) {
+        if (l.len == self.kept.len) {
+            @memcpy(&self.kept, l);
+            self.kept_len = l.len;
+        } else {
+            self.kept_len = 0;
+        }
+    }
+    self.count += 1;
+}
+
+fn countLineTooLong(ctx: *anyopaque) void {
+    const self: *LineCounter = @ptrCast(@alignCast(ctx));
+    writeTooLong(self.out, self.alloc);
 }

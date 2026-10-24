@@ -40,6 +40,14 @@ const Action = @import("ghostty.zig").Action;
 const global = @import("../global.zig");
 const internal_os = @import("../os/main.zig");
 
+/// Reading one line off the socket, however long it is (task 2170).
+///
+/// **Before this the reading lived here, and `cli/mcp.zig` had a second copy
+/// of it** -- one ceiling, two places, and the second one only fixed when
+/// somebody noticed it. `readline.zig` says what the ceiling was and what it
+/// cost.
+const readline = @import("readline.zig");
+
 /// The agent socket's server, for the tests at the bottom that drive a real
 /// one. `poltergeist/` never imports this direction, so there is no cycle.
 /// Lazy like every `@import`: nothing here is analysed unless a test uses it.
@@ -55,32 +63,12 @@ const log = std.log.scoped(.chat);
 /// night's work.
 const max_line = 256 * 1024;
 
-/// Longest reply this client will read, exactly.
+/// How long a reply may be, `readline.max_reply` in every case but a test's.
 ///
-/// **A reply has no useful length, so there is no useful small ceiling.**
-/// Reading a line with `takeDelimiter` reads only as far as the reader's
-/// buffer, and with that buffer at `max_line` a panel of about a thousand
-/// tasks was a `StreamTooLong` -- measured on Windows at 456,777 bytes for
-/// 2,005 tasks. Worse than the one window that asked: the stream then held
-/// half a line, so every call after it read from the middle of the last
-/// reply, and the whole chat page (every group, not only the one whose
-/// panel was big) went down with the process.
-///
-/// So a reply is read to its newline however long that is, up to this. It
-/// is a ceiling rather than a budget: 64 MiB is far past anything this
-/// protocol produces and still finite, so a host that has gone wrong cannot
-/// make the client allocate without end. Past it `call` answers
-/// `error.ReplyTooLong` -- after discarding the rest of the line, so the
-/// next call starts on a line boundary -- and `chat` shows one failed poll
-/// instead of exiting.
-///
-/// **A reply of exactly this many bytes is read.** `streamDelimiterLimit`
-/// counts the bytes it has *not* taken, so handing it this number refuses a
-/// line of this length whose newline is the next byte; `readLine` passes one
-/// more and the figure here means what it says. A cap that were really one
-/// byte smaller than its name is the kind of thing somebody later measures
-/// and cannot account for.
-const max_reply = 64 * 1024 * 1024;
+/// The number and the reasoning are in `readline.zig`: this is a reply, and a
+/// reply has no useful length, so the ceiling is a guard against a host that
+/// has gone wrong rather than a budget.
+const max_reply = readline.max_reply;
 
 /// How often to ask the host what is new.
 ///
@@ -329,59 +317,19 @@ const Host = struct {
 
     /// One reply line, however long it is (up to `reply_cap` bytes).
     ///
-    /// **`takeDelimiter` was here and is why this had a ceiling.** It reads
-    /// only as far as the reader's buffer and answers `StreamTooLong`
-    /// beyond it, so a `task_list` for a group with a thousand tasks on it
-    /// took down `polter +chat --embedded` -- and not only the one group:
-    /// the half-line left in the stream made every later call read from the
-    /// middle of a reply, so every group's page failed together (task 2150,
-    /// 456,777 bytes for 2,005 tasks on Windows).
+    /// The reading itself is `readline.readLine` (task 2170): what it does, why
+    /// the ceiling was there, and what a full buffer used to cost are all
+    /// written down once, in `readline.zig`. This is the name it has on this
+    /// struct, so that everything above reads as it did.
     ///
-    /// `streamDelimiterLimit` streams through the reader instead of
-    /// peeking in it, so the writer it is handed is what grows. The cap is
-    /// a guard against a host that has gone wrong, not a budget: past it,
-    /// the rest of the line is discarded -- so the next call still starts
-    /// on a line boundary -- and `error.ReplyTooLong` goes to this one
-    /// caller, which the poll loop shows like any other failed poll.
-    ///
-    /// The limit handed over is `reply_cap + 1` because the function counts
-    /// what it has *left*, so a line of exactly `reply_cap` bytes with its
-    /// newline just behind it would otherwise be refused. `max_reply` is
-    /// what it says it is; see there.
+    /// Only the error's name differs, and that name is this file's: `call`
+    /// and its callers say `ReplyTooLong`, which is what a reply being too
+    /// long is called from here.
     fn readLine(self: *Host) ![]const u8 {
-        self.reply_buf.clearRetainingCapacity();
-        _ = self.reader.interface.streamDelimiterLimit(
-            &self.reply_buf.writer,
-            '\n',
-            .limited(self.reply_cap +| 1),
-        ) catch |err| switch (err) {
-            error.ReadFailed => return error.ReadFailed,
-            error.WriteFailed => return error.OutOfMemory,
-            error.StreamTooLong => {
-                // Unbounded on purpose. Discarding to the newline is the
-                // whole of "the next call does not read half a line", and
-                // the only peer that can make this walk a long way is one
-                // that just sent us more than `reply_cap` in one line.
-                // Its own failure is not reported on top of this one: a
-                // stream that ended here leaves nothing to resynchronise.
-                _ = self.reader.interface.discardDelimiterInclusive('\n') catch 0;
-                return error.ReplyTooLong;
-            },
+        return readline.readLine(&self.reader.interface, &self.reply_buf, self.reply_cap) catch |err| switch (err) {
+            error.LineTooLong => error.ReplyTooLong,
+            else => |e| e,
         };
-
-        // `streamDelimiter` leaves the delimiter in the stream, unlike
-        // `takeDelimiter`, which consumed it. Leaving it here is the other
-        // half of the same bug: every call would then read an empty line
-        // and hand the same reply to nobody. **It is also how the stream
-        // ending is noticed**: `streamDelimiterLimit` reports a stream that
-        // ended without its newline as the byte count it did read, so the
-        // missing delimiter is what says `EndOfStream` here.
-        _ = self.reader.interface.takeByte() catch |err| switch (err) {
-            error.EndOfStream => return error.EndOfStream,
-            error.ReadFailed => return error.ReadFailed,
-        };
-
-        return self.reply_buf.written();
     }
 
     /// A request whose reply is parsed. The returned value owns nothing:
