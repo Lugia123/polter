@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// The Agent CLI page's data and rules (task 2156): what the core answers
 /// (`ghostty_app_launchers`), the table it shows, and a draft being edited.
@@ -127,5 +128,60 @@ enum AgentCliRules {
     static func argsLine(_ args: [String]) -> String { args.joined(separator: " ") }
     static func args(fromLine line: String) -> [String] {
         line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+    }
+}
+
+/// Who holds the draft the Agent CLI form edits (`AgentCliModel`), and the
+/// bindings its controls are given.
+///
+/// **No binding here unwraps the draft** (task 2164). Deleting the selected
+/// one sets the draft to nil, and SwiftUI reads the bindings of the form it
+/// is about to take away once more, while it lays the window out -- a
+/// `draft!` there stopped Polter dead, the first time anybody pressed
+/// Delete. The same goes for a variable's row: its fields are read once
+/// more after the row is removed, at an index that is no longer there. So
+/// a binding whose draft or row is gone reads what it was made with, and a
+/// write to it goes nowhere.
+@MainActor
+protocol AgentCliDraftHolder: AnyObject {
+    var draft: AgentCliRules.Custom? { get set }
+}
+
+extension AgentCliDraftHolder {
+    /// One field of the draft; `made` is what it read when the control was
+    /// made, which is what it reads when the draft is gone.
+    func field<T>(_ path: WritableKeyPath<AgentCliRules.Custom, T>, else made: T) -> Binding<T> {
+        Binding(
+            get: { [weak self] in self?.draft?[keyPath: path] ?? made },
+            set: { [weak self] v in self?.draft?[keyPath: path] = v })
+    }
+
+    /// One part of variable `i`, which may have been removed.
+    func variable(_ i: Int, _ path: WritableKeyPath<AgentCliRules.Env, String>, else made: String) -> Binding<String> {
+        Binding(
+            get: { [weak self] in
+                guard let env = self?.draft?.env, env.indices.contains(i) else { return made }
+                return env[i][keyPath: path]
+            },
+            set: { [weak self] v in
+                guard let self, let env = self.draft?.env, env.indices.contains(i) else { return }
+                self.draft?.env[i][keyPath: path] = v
+            })
+    }
+
+    /// Whether the draft is switched on for `role`.
+    func role(_ role: String, else made: Bool) -> Binding<Bool> {
+        Binding(
+            get: { [weak self] in self?.draft.map { $0.roles.contains(role) } ?? made },
+            set: { [weak self] on in
+                self?.draft?.roles.removeAll { $0 == role }
+                if on { self?.draft?.roles.append(role) }
+            })
+    }
+
+    /// Take variable `i` out, if it is still there.
+    func removeVariable(_ i: Int) {
+        guard let env = draft?.env, env.indices.contains(i) else { return }
+        draft?.env.remove(at: i)
     }
 }

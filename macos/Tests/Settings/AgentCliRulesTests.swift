@@ -68,4 +68,53 @@ struct AgentCliRulesTests {
         #expect(sent.args == ["-v"])
         #expect(R.args(fromLine: "  --a  b ") == ["--a", "b"])
     }
+
+    // MARK: Deleting the selected one (task 2164)
+
+    @MainActor final class Holder: AgentCliDraftHolder {
+        var draft: R.Custom?
+    }
+
+    /// What `AgentCliModel.delete` does to the form's draft, and what
+    /// SwiftUI does next: reads the bindings of the form it is taking away.
+    /// That read was a `draft!`, and Polter crashed on it.
+    @Test @MainActor func theFormsControlsAreReadOnceMoreAfterTheSelectedOneIsDeletedAndNothingCrashes() throws {
+        let page = try #require(R.decode(Self.json))
+        let saved = try #require(page.file.launchers.first)
+        let h = Holder()
+        h.draft = saved
+        let name = h.field(\.name, else: saved.name)
+        let args = h.field(\.args, else: saved.args)
+        let value = h.variable(0, \.value, else: saved.env[0].value)
+        let tester = h.role("polter-tester", else: true)
+        #expect(name.wrappedValue == "Claude · DeepSeek flash")
+
+        h.draft = nil
+
+        #expect(name.wrappedValue == "Claude · DeepSeek flash")
+        #expect(args.wrappedValue == ["--verbose"])
+        #expect(value.wrappedValue == "deepseek-flash")
+        #expect(tester.wrappedValue)
+        // And a write to a control that is going away goes nowhere.
+        name.wrappedValue = "typed late"
+        tester.wrappedValue = false
+        #expect(h.draft == nil)
+    }
+
+    /// A variable's row removed under its own fields: they are read again
+    /// at an index that is no longer there.
+    @Test @MainActor func aVariablesFieldsAreReadOnceMoreAfterItsRowIsRemoved() throws {
+        let page = try #require(R.decode(Self.json))
+        let h = Holder()
+        h.draft = try #require(page.file.launchers.first)
+        let name = h.variable(0, \.name, else: "ANTHROPIC_MODEL")
+        name.wrappedValue = "MODEL"
+        #expect(h.draft?.env.first?.name == "MODEL")
+        h.removeVariable(0)
+        #expect(h.draft?.env.isEmpty == true)
+        #expect(name.wrappedValue == "ANTHROPIC_MODEL")
+        name.wrappedValue = "late"
+        #expect(h.draft?.env.isEmpty == true)
+        h.removeVariable(0)
+    }
 }

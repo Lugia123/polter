@@ -7,7 +7,7 @@ import GhosttyKit
 /// form under it. What is written is the core's (`launchers.json`, through
 /// `ghostty_app_launcher_put` / `_delete`); nothing here looks at a token.
 @MainActor
-final class AgentCliModel: ObservableObject {
+final class AgentCliModel: ObservableObject, AgentCliDraftHolder {
     typealias R = AgentCliRules
 
     @Published private(set) var page: R.Page?
@@ -186,12 +186,10 @@ struct AgentCliPage: View {
 
     // MARK: The form
 
-    private func binding<T>(_ path: WritableKeyPath<R.Custom, T>) -> Binding<T> {
-        Binding(get: { model.draft![keyPath: path] }, set: { model.draft![keyPath: path] = $0 })
-    }
-
     private func form(_ draft: R.Custom, page: R.Page) -> some View {
-        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: L.labelGap, verticalSpacing: L.rowGap) {
+        // Read once more after the draft is gone (task 2164): never `draft!`.
+        let binding = { (path: WritableKeyPath<R.Custom, String>) in model.field(path, else: draft[keyPath: path]) }
+        return Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: L.labelGap, verticalSpacing: L.rowGap) {
             GridRow {
                 label(String(localized: "Name", comment: "Agent CLI 设置页：表单，名称"))
                 TextField("", text: binding(\.name)).textFieldStyle(.roundedBorder)
@@ -220,7 +218,9 @@ struct AgentCliPage: View {
             }
             GridRow {
                 label(String(localized: "Arguments", comment: "Agent CLI 设置页：表单，参数"))
-                TextField("", text: Binding(get: { R.argsLine(model.draft!.args) }, set: { model.draft!.args = R.args(fromLine: $0) }))
+                TextField("", text: Binding(
+                    get: { R.argsLine(model.field(\.args, else: draft.args).wrappedValue) },
+                    set: { model.field(\.args, else: draft.args).wrappedValue = R.args(fromLine: $0) }))
                     .textFieldStyle(.roundedBorder).font(SettingsFont.minimumMonospaced)
             }
             GridRow {
@@ -246,27 +246,22 @@ struct AgentCliPage: View {
         VStack(alignment: .leading, spacing: L.rowGap) {
             ForEach(draft.env.indices, id: \.self) { i in
                 HStack(spacing: L.rowGap) {
-                    TextField(String(localized: "Variable name", comment: "Agent CLI 设置页：环境变量名输入框的占位"), text: Binding(get: { model.draft!.env[i].name }, set: { model.draft!.env[i].name = $0 }))
+                    TextField(String(localized: "Variable name", comment: "Agent CLI 设置页：环境变量名输入框的占位"), text: model.variable(i, \.name, else: draft.env[i].name))
                         .textFieldStyle(.roundedBorder).frame(width: 200)
-                    TextField("", text: Binding(get: { model.draft!.env[i].value }, set: { model.draft!.env[i].value = $0 }))
+                    TextField("", text: model.variable(i, \.value, else: draft.env[i].value))
                         .textFieldStyle(.roundedBorder)
-                    Button { model.draft!.env.remove(at: i) } label: { Image(systemName: "minus") }
+                    Button { model.removeVariable(i) } label: { Image(systemName: "minus") }
                 }
                 .font(SettingsFont.minimumMonospaced)
             }
-            Button { model.draft!.env.append(.init(name: "", value: "")) } label: { Image(systemName: "plus") }
+            Button { model.draft?.env.append(.init(name: "", value: "")) } label: { Image(systemName: "plus") }
         }
     }
 
     private func roles(_ draft: R.Custom, page: R.Page) -> some View {
         HStack(spacing: L.rowGap * 2) {
             ForEach(page.roles, id: \.key) { role in
-                Toggle(role.name, isOn: Binding(
-                    get: { model.draft!.roles.contains(role.key) },
-                    set: { on in
-                        model.draft!.roles.removeAll { $0 == role.key }
-                        if on { model.draft!.roles.append(role.key) }
-                    }))
+                Toggle(role.name, isOn: model.role(role.key, else: draft.roles.contains(role.key)))
                     .toggleStyle(.checkbox)
             }
         }
