@@ -83,22 +83,53 @@ pub fn find_bar_at(pane: (i32, i32, i32, i32), size: (i32, i32), inset: i32) -> 
 /// What Esc in the find bar's box does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FindEscape {
-    /// End the search and close the bar.
+    /// End the search, close the bar, and give the keyboard back to the
+    /// terminal -- whose search it was.
     Close,
-    /// Give the keyboard back to the terminal and leave the bar open with its
-    /// needle and matches; Esc in the terminal then ends the search (the
-    /// core's own `escape` → `end_search` binding).
-    BackToTerminal,
+    /// **No bar of ours is up**, and this box somehow still has the keyboard:
+    /// give it back to the bar's terminal. The key itself is still taken --
+    /// a text box that forwards keys onward is a text box that types them --
+    /// so what this buys is the *next* Escape reaching the terminal, from a
+    /// state that should not have been reachable in the first place.
+    GiveBackTheKeyboard,
 }
 
-/// macOS (`SurfaceSearchOverlay`, `onExitCommand`): an empty box closes the
-/// bar; a box with something in it hands the keyboard back first, so a
-/// search is not thrown away by the key people press to get back to typing.
-pub fn find_escape(needle_empty: bool) -> FindEscape {
-    if needle_empty {
+/// Esc in the find bar's box: **the first press closes the bar** (task 2146).
+///
+/// # What changed, and why it was changed
+///
+/// This used to be the Mac's rule, copied over: an empty box closed the bar,
+/// and a box with a needle in it only handed the keyboard back, so the bar and
+/// its matches stayed up until Esc was pressed **again in the terminal**. On
+/// macOS that second half is `SurfaceSearchOverlay`'s `onExitCommand`
+/// (`Ghostty.moveFocus(to: surfaceView)`), and it reads well written down --
+/// one press goes back to typing without throwing the search away.
+///
+/// **On a machine it reads as a bar that will not close.** The Windows test
+/// rounds press Esc while walking the matches with F3 and Enter (#2141,
+/// #2120), so the box has a needle every time, so the bar stays up, and the
+/// only way out is the cross on its right. Two rounds in a row reported
+/// exactly that (#2146, round 8 b and c). Whoever presses Esc to get rid of
+/// something cannot be expected to know, and cannot be told by anything on
+/// screen, that what it does depends on what they had typed.
+///
+/// So the needle is no longer an input here at all, on either host: the bar is
+/// up or it is not, and Esc with it up closes it and hands the keyboard back.
+///
+/// # Why the flag is still taken rather than the function deleted
+///
+/// **`false` is a real state, not a formality.** "Esc with the bar up" and
+/// "Esc reaching this box's procedure with no bar up" look identical from a
+/// keyboard, and they are not the same event: the second is a box that should
+/// not have had the keyboard at all, which is how the keyboard got lost for
+/// good in `overlay.rs` (#1016: a hidden overlay kept it, and every key after
+/// that went nowhere). The two answers differ -- and the second one is the
+/// repair, not a courtesy -- so the state is answered instead of assumed away.
+pub fn find_escape(bar_up: bool) -> FindEscape {
+    if bar_up {
         FindEscape::Close
     } else {
-        FindEscape::BackToTerminal
+        FindEscape::GiveBackTheKeyboard
     }
 }
 
@@ -201,10 +232,22 @@ mod tests {
         assert_eq!(find_bar_at((100, 0, 300, 400), (340, 38), 8), (100, 8));
     }
 
+    /// Task 2146: **the first press closes the bar**, needle or no needle.
+    /// This was the Mac's rule (an empty box closed, a box with something in
+    /// it only handed the keyboard back), and on the machine it read as a bar
+    /// that would not close -- the test rounds press Esc while walking the
+    /// matches with F3, so the box always had a needle.
     #[test]
-    fn esc_closes_an_empty_bar_and_otherwise_goes_back_to_the_terminal() {
+    fn esc_closes_the_bar_on_the_first_press() {
         assert_eq!(find_escape(true), FindEscape::Close);
-        assert_eq!(find_escape(false), FindEscape::BackToTerminal);
+    }
+
+    /// The other answer: a box with the keyboard and no bar of ours up is a
+    /// state nobody should be in, and the repair is the keyboard going back
+    /// to the terminal.
+    #[test]
+    fn esc_at_a_box_with_no_bar_gives_the_keyboard_back() {
+        assert_eq!(find_escape(false), FindEscape::GiveBackTheKeyboard);
     }
 
     #[test]

@@ -381,10 +381,16 @@ extension Ghostty {
                         _ = surfaceView.navigateSearchToNext()
                     }
                     .onExitCommand {
-                        if searchState.needle.text.isEmpty {
-                            onClose()
-                        } else {
-                            Ghostty.moveFocus(to: surfaceView)
+                        // **Asked with the needle on purpose** (task 2146):
+                        // this used to branch on it -- empty closed the bar,
+                        // anything else only moved the focus -- so the second
+                        // press, in the terminal, was the one that closed it.
+                        // The rule does not read it now, and passing it here
+                        // is what makes the app's own call the shape the test
+                        // holds: the state that produced the finding, answered
+                        // the one way.
+                        switch SurfaceSearchEscape.action(needle: searchState.needle.text) {
+                        case .close: onClose()
                         }
                     }
                     .backport.onKeyPress(.return) { modifiers in

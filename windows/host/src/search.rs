@@ -41,7 +41,7 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::{plogf, wlogf};
+use crate::{hlogf, plogf, wlogf};
 
 /// `WM_APP + 1` is the tab op queue, `+ 2` the command palette.
 const WM_SEARCH_SHOW: u32 = WM_APP + 3;
@@ -550,17 +550,48 @@ pub fn keep_over_its_terminal(frame: HWND) {
     wlogf!(frame, "[search] moved to {},{} with its terminal", x, y);
 }
 
-/// Esc in the box (macOS's `onExitCommand`; the rule is
-/// `polter_control_room::hud::find_escape`): an empty box closes the bar, a
-/// box with a needle gives the keyboard back to the bar's terminal and leaves
-/// the bar and its matches up. Esc there ends the search through the core's
-/// own binding, and the bar closes on the `end_search` that sends.
+/// Esc in the box (task 2146; the rule is `hud::find_escape`): **the first
+/// press ends the search, closes the bar and gives the keyboard back to the
+/// bar's terminal.**
+///
+/// **What is in the box no longer decides it.** It used to: an empty box
+/// closed the bar, and a box with a needle in it only handed the keyboard
+/// back, leaving the bar -- and its matches -- up until Esc was pressed again
+/// in the terminal, as macOS's `onExitCommand` does. The rounds that walk the
+/// matches press Esc with a needle in the box every time (#2120, #2141), so
+/// on the machine that read as a bar that would not close (#2146, round 8 b
+/// and c), and the only way out was the cross. Torn out at the source:
+/// `hud::find_escape` does not take it any more, and neither host reads it.
 fn escape() {
     let Some(wins) = windows() else { return };
-    let empty = unsafe { GetWindowTextLengthW(wins.edit) } == 0;
-    match polter_control_room::hud::find_escape(empty) {
+    // **Whether a search of ours is on screen**, which is the whole of what
+    // is left to decide on. `Model::visible` and not `IsWindowVisible`: the
+    // question is whether there is a bar to close, and this is the flag
+    // `show`/`hide` keep for exactly that.
+    let up = STATE.with(|c| c.borrow().as_ref().map(|st| st.visible).unwrap_or(false));
+    // **Decided once.** The same answer goes into the line and into the
+    // branch: two calls could disagree, and a log line that disagrees with the
+    // branch it describes is worse than no line.
+    let answer = polter_control_room::hud::find_escape(up);
+    // **The reading this whole task needed and did not have**: whether an Esc
+    // press reached this box at all. `[key]` lines are for surface windows and
+    // are throttled, so an Esc that never arrived here and an Esc that arrived
+    // and closed nothing looked the same from a chair -- which is what makes
+    // `hud::find_escape`'s note worth a line at the call site. `hlogf!`
+    // because the box is not a frame; it walks up to the one it is in.
+    hlogf!(
+        wins.edit,
+        "[search] Esc in the box: bar {}, needle {} chars -> {:?}",
+        if up { "up" } else { "down" },
+        unsafe { GetWindowTextLengthW(wins.edit) },
+        answer
+    );
+    match answer {
         polter_control_room::hud::FindEscape::Close => end_from_host(),
-        polter_control_room::hud::FindEscape::BackToTerminal => {
+        // No bar of ours up -- yet the box has the keyboard. That state
+        // should not exist; the repair is the keyboard going back to the
+        // terminal, so the next Escape reaches it (`overlay.rs`, #1016).
+        polter_control_room::hud::FindEscape::GiveBackTheKeyboard => {
             let owner = OPEN_FOR.load(Ordering::Acquire);
             let pane = pane_for((owner != 0).then_some(owner));
             let me = hwnd();
