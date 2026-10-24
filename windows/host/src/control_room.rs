@@ -37,7 +37,7 @@
 //!  * **The selection is kept for the life of the process only**, not across
 //!    a restart.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Mutex;
@@ -797,8 +797,8 @@ struct TaskPage {
     data: Option<tasks::Tasks>,
     scroll: f64,
     drawn: Option<(Rect, tasks_scene::Layout)>,
-    /// The person pressed on the page: ↑↓, Enter and c are its, until they
-    /// press on the list.
+    /// The person pressed on the page, or chose its tab (task 2142): ↑↓,
+    /// Enter, c and f are its, until they press on the list.
     keys: bool,
     /// Asked since the page last came in front.
     asked: bool,
@@ -829,7 +829,14 @@ struct FilterField {
 
 thread_local! {
     static TASKS: RefCell<Option<TaskPage>> = const { RefCell::new(None) };
+    /// The task page's tab was chosen: the page has the keys once it is in
+    /// front (`tasks_sync`), which may be a page made for another group.
+    static TASKS_KEYS_COMING: Cell<bool> = const { Cell::new(false) };
     static FILTER_FIELD: RefCell<Option<FilterField>> = const { RefCell::new(None) };
+    /// The input method is composing in the filter box (task 2124): the box
+    /// holds no text yet, and its words are not to be drawn over what is
+    /// being composed. From `WM_IME_STARTCOMPOSITION` to `WM_IME_ENDCOMPOSITION`.
+    static FILTER_COMPOSING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The filter box said Escape (0), Return (1), ↑ (2) or ↓ (3). Posted, so
@@ -845,6 +852,7 @@ fn filter_edit() -> Option<isize> {
 /// The box's control goes; what it held is let go of.
 fn drop_filter_field() {
     let Some(field) = FILTER_FIELD.with(|f| f.borrow_mut().take()) else { return };
+    FILTER_COMPOSING.with(|c| c.set(false));
     unsafe {
         let _ = DestroyWindow(HWND(field.edit as *mut c_void));
         let _ = DeleteObject(HFONT(field.font as *mut c_void).into());
@@ -969,13 +977,22 @@ unsafe extern "system" fn filter_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         if msg == WM_CHAR && (wp.0 == 0x0D || wp.0 == 0x1B) {
             return LRESULT(0);
         }
+        const WM_IME_STARTCOMPOSITION: u32 = 0x010D;
+        const WM_IME_ENDCOMPOSITION: u32 = 0x010E;
         let r = match old {
             Some(old) => CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(old), hwnd, msg, wp, lp),
             None => DefWindowProcW(hwnd, msg, wp, lp),
         };
+        if msg == WM_IME_STARTCOMPOSITION || msg == WM_IME_ENDCOMPOSITION {
+            FILTER_COMPOSING.with(|c| c.set(msg == WM_IME_STARTCOMPOSITION));
+            // The words go (or come back) at once: the box is drawn again.
+            let _ = InvalidateRect(Some(hwnd), None, true);
+        }
         // The empty box says what goes in it -- the core's words -- painted
-        // as the name field's is (`paint_name_placeholder`).
-        if msg == WM_PAINT && GetWindowTextLengthW(hwnd) == 0 {
+        // as the name field's is (`paint_name_placeholder`); **not while the
+        // input method is composing** (task 2124: its words stood under the
+        // pinyin).
+        if msg == WM_PAINT && GetWindowTextLengthW(hwnd) == 0 && !FILTER_COMPOSING.with(|c| c.get()) {
             paint_filter_prompt(hwnd, parent);
         }
         if (msg == WM_CHAR || msg == WM_PASTE || msg == WM_KEYDOWN) && GetWindowTextLengthW(hwnd) <= 1 {
@@ -1077,6 +1094,7 @@ fn tasks_group(hwnd: HWND) -> Option<String> {
 /// sight, it is asked again the next time it comes back.
 fn tasks_sync(hwnd: HWND) {
     let Some(group) = tasks_group(hwnd) else {
+        TASKS_KEYS_COMING.with(|c| c.set(false));
         TASKS.with(|t| {
             if let Some(t) = t.borrow_mut().as_mut() {
                 t.asked = false;
@@ -1098,6 +1116,18 @@ fn tasks_sync(hwnd: HWND) {
             }
         }
     });
+    // Its tab just chosen: the keys are the page's (task 2142).
+    // absence: means the page is in front without its tab chosen just now
+    // -- it was already, or another group came to it -- and the keys are
+    // where they were.
+    if TASKS_KEYS_COMING.with(|c| c.replace(false)) {
+        TASKS.with(|t| {
+            if let Some(x) = t.borrow_mut().as_mut() {
+                x.keys = true;
+            }
+        });
+        wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[control-room] task page: its tab chosen, the keys are its");
+    }
     // Another group's page: its filter box goes with the old one -- with
     // `TASKS` let go, since destroying the box sends messages back here.
     if another {
@@ -1434,6 +1464,11 @@ fn show_page(hwnd: HWND, page: Page) {
         return;
     }
     PAGES.with(|p| p.borrow_mut().insert(group.clone(), page));
+    // The panel has the keyboard from the press on the tab; the task page
+    // has the keys once it is in front (task 2142).
+    if page.takes_the_keys() {
+        TASKS_KEYS_COMING.with(|c| c.set(true));
+    }
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
     if !page.shows_terminal() && crate::tabs::keyboard_in_lent(frame) {
         crate::tabs::keyboard_on_the_list(frame);

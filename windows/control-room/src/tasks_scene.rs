@@ -108,7 +108,9 @@ impl Layout {
     pub fn reveal(&self, id: u64, scroll: f64) -> f64 {
         let Some(t) = self.tasks.iter().find(|t| t.id == id) else { return scroll };
         if self.glass.is_some_and(|g| g.y == t.rect.y) {
-            return (scroll + t.rect.y - self.viewport.y).clamp(0.0, self.max_scroll());
+            // A line of room over it, as any other has (task 2124: at the
+            // top it was 16 points under the fade).
+            return (scroll + t.rect.y - self.viewport.y - k::ROW_HEIGHT).clamp(0.0, self.max_scroll());
         }
         self.follow(id, scroll)
     }
@@ -272,11 +274,16 @@ pub fn columns(row: Rect) -> [Rect; 6] {
     let col = |x: f64, w: f64| Rect { x, y: row.y, w: w.max(0.0), h: row.h };
     let glyph = col(x0, k::COL_GLYPH);
     let id = col(glyph.x + glyph.w, k::COL_ID);
-    let state = col(id.x + id.w, k::COL_STATE);
-    let wide = right - (state.x + state.w) - k::COL_OWNER - k::COL_IDLE >= k::TITLE_MIN;
-    let idle_w = if wide { k::COL_IDLE } else { 0.0 };
+    // **The title keeps `title_min`; the other columns give way for it**
+    // (task 2124: at a page 388 wide the title was 30 wide, the state and
+    // the owner having all they asked): the idle column first, then the
+    // owner, then the state -- the first of these that leaves the title its
+    // room, and the last when none does.
+    let room = right - (id.x + id.w);
+    let tiers = [(k::COL_STATE, k::COL_OWNER, k::COL_IDLE), (k::COL_STATE, k::COL_OWNER_NARROW, 0.0), (k::COL_STATE, 0.0, 0.0), (0.0, 0.0, 0.0)];
+    let (state_w, owner_w, idle_w) = tiers.iter().copied().find(|(s, o, i)| room - s - o - i >= k::TITLE_MIN).unwrap_or(tiers[3]);
+    let state = col(id.x + id.w, state_w);
     let idle = col(right - idle_w, idle_w);
-    let owner_w = if wide { k::COL_OWNER } else { k::COL_OWNER_NARROW };
     let owner = col(idle.x - owner_w, owner_w);
     let title = col(state.x + state.w, owner.x - (state.x + state.w));
     [glyph, id, state, title, owner, idle]
@@ -534,7 +541,7 @@ pub fn symbol(name: &str, c: (f64, f64), color: Rgba) -> Vec<Draw> {
 
 /// One task's line in `row`: glyph, id, state, title, owner, idle; bold
 /// when it is the open one, faint when it is closed.
-fn task_line(task: &Task, row: Rect, closed: bool, theme: &Theme, measure: Measure) -> Vec<Draw> {
+fn task_line(task: &Task, row: Rect, closed: bool, on_chip: Option<Rgba>, theme: &Theme, measure: Measure) -> Vec<Draw> {
     let [g, id, state, title, owner, idle] = columns(row);
     let (main, side) = if closed { (theme.text_tertiary, theme.text_tertiary) } else if task.emph { (theme.text, theme.text) } else { (theme.text, theme.text_secondary) };
     let w = |s: Style| if task.emph { strong(s) } else { s };
@@ -550,12 +557,17 @@ fn task_line(task: &Task, row: Rect, closed: bool, theme: &Theme, measure: Measu
     };
     let text = |rect: Rect, t: String, style: Style, align: Align| Draw::Item(Item::Text { rect, text: t, style, align });
     out.push(text(id, format!("#{}", task.id), w(mono(side)), Align::Left));
-    out.push(text(state, task.state.clone(), w(l3(main)), Align::Left));
+    // Not drawn when the page is too narrow for it (`columns`).
+    if state.w > 0.0 {
+        out.push(text(state, task.state.clone(), w(l3(main)), Align::Left));
+    }
     match &task.title_parts {
-        Some(parts) => out.extend(title_pieces(parts, title, w(l3(main)), theme, measure)),
+        Some(parts) => out.extend(title_pieces(parts, title, w(l3(main)), on_chip, theme, measure)),
         None => out.push(text(title, task.title.clone(), w(l3(main)), Align::Left)),
     }
-    out.push(text(owner, task.owner.clone(), w(mono(side)), Align::Left));
+    if owner.w > 0.0 {
+        out.push(text(owner, task.owner.clone(), w(mono(side)), Align::Left));
+    }
     // None when the page is too narrow for it (`columns`).
     if idle.w > 0.0 {
         out.push(text(idle, task.idle.clone(), w(l3(side)), Align::Right));
@@ -566,7 +578,7 @@ fn task_line(task: &Task, row: Rect, closed: bool, theme: &Theme, measure: Measu
 /// A title in the core's pieces (#2083): one after another from the
 /// column's left, those the filter found bold on a ground of their own;
 /// the one that reaches the column's end cut there, and none after it.
-fn title_pieces(parts: &[(String, bool)], col: Rect, style: Style, theme: &Theme, measure: Measure) -> Vec<Draw> {
+fn title_pieces(parts: &[(String, bool)], col: Rect, style: Style, on_chip: Option<Rgba>, theme: &Theme, measure: Measure) -> Vec<Draw> {
     let mut out = Vec::new();
     let mut x = col.x;
     let end = col.x + col.w;
@@ -574,17 +586,37 @@ fn title_pieces(parts: &[(String, bool)], col: Rect, style: Style, theme: &Theme
         if x >= end {
             break;
         }
-        let style = if *hit { strong(style) } else { style };
+        let mut style = if *hit { strong(style) } else { style };
         let w = measure(words, &style).min(end - x);
         let rect = Rect { x, w, ..col };
         if *hit {
             let ground = Rect { x, y: col.y + (col.h - k::BODY_LINE_HEIGHT) / 2.0, w, h: k::BODY_LINE_HEIGHT };
-            out.push(Draw::Item(Item::Round { rect: ground, radius: k::HIT_RADIUS, color: theme.task_hit, edge: None }));
+            // **On the chip it is turned over** (task 2124: `task_hit` is
+            // the chip's own colour, and only the bold was left of it): the
+            // main text colour for the ground and the chip's for the words,
+            // which is 15:1 in light and 9:1 in dark, and holds for either
+            // since no one ground clears 3:1 to the chip and 4.5:1 to the
+            // words in dark at once.
+            let color = if let Some(chip) = on_chip {
+                style.color = chip;
+                theme.text
+            } else {
+                theme.task_hit
+            };
+            out.push(Draw::Item(Item::Round { rect: ground, radius: k::HIT_RADIUS, color, edge: None }));
         }
         out.push(Draw::Item(Item::Text { rect, text: words.clone(), style, align: Align::Left }));
         x += w;
     }
     out
+}
+
+const WHITE: Rgba = Rgba { r: 255, g: 255, b: 255, a: 1.0 };
+
+/// What the chip is made of over `ground`: the group list's tint of white
+/// with the keyboard here, the ground itself without it.
+pub fn chip_colour(ground: Rgba, theme: &Theme, keys: bool) -> Rgba {
+    if keys { scene::over(ground, WHITE, theme.selection_tint) } else { ground }
 }
 
 /// The arrow keys' task (#2083, plan S2): the group list's chip -- its
@@ -593,7 +625,6 @@ fn title_pieces(parts: &[(String, bool)], col: Rect, style: Style, theme: &Theme
 /// (1.01 to the page, the design's reading); with the keyboard elsewhere,
 /// an outline and the bar. **Never a grey ground.**
 pub fn chip(rect: Rect, ground: Rgba, theme: &Theme, keys: bool, lifted: bool) -> Vec<Draw> {
-    const WHITE: Rgba = Rgba { r: 255, g: 255, b: 255, a: 1.0 };
     const BLACK: Rgba = Rgba { r: 0, g: 0, b: 0, a: 1.0 };
     let mut out = Vec::new();
     if keys {
@@ -602,7 +633,7 @@ pub fn chip(rect: Rect, ground: Rgba, theme: &Theme, keys: bool, lifted: bool) -
                 .into_iter()
                 .map(|(rect, radius, color)| Draw::Item(Item::Round { rect, radius, color, edge: None })),
         );
-        let color = scene::over(ground, WHITE, theme.selection_tint);
+        let color = chip_colour(ground, theme, keys);
         let toward = if theme.selection_edge < 0.0 { BLACK } else { WHITE };
         out.push(Draw::Item(Item::Round { rect, radius: radius::ROW, color, edge: Some(scene::over(color, toward, theme.selection_edge.abs())) }));
     } else {
@@ -683,7 +714,7 @@ pub fn build(t: &Tasks, at: &Layout, theme: &Theme, scale: f64, selected: Option
         } else if hover == Some(Hover::Task(task.id)) {
             out.push(hover_ground(place.rect, under, theme));
         }
-        out.extend(task_line(task, place.rect, place.closed, theme, measure));
+        out.extend(task_line(task, place.rect, place.closed, lit.then(|| chip_colour(under, theme, keys)), theme, measure));
     }
     out.extend(at.detail.iter().cloned());
 
@@ -1074,7 +1105,8 @@ mod tests {
         let to = at.reveal(open.id, 0.0);
         assert!(to <= at.max_scroll());
         let after = layout(&t, 1200.0, 300.0, to, &DARK, 1.0, &nominal);
-        assert_eq!(after.tasks[1].rect.y, after.viewport.y);
+        // A line of room over it, as any other has (task 2124).
+        assert_eq!(after.tasks[1].rect.y, after.viewport.y + 28.0);
         // Any other: as the arrow keys bring it.
         let low = layout(&t, 1200.0, 300.0, 200.0, &DARK, 1.0, &nominal);
         assert_eq!(low.reveal(low.tasks[0].id, 200.0), low.follow(low.tasks[0].id, 200.0));
@@ -1136,6 +1168,69 @@ mod tests {
         let lifted = rounds(&build(&t, &at, &DARK, 1.0, Some(at.tasks[2].id), true, Some(Hover::Task(at.tasks[2].id)), &nominal));
         let low = |v: &[(Rect, Rgba, Option<Rgba>)]| v.iter().filter(|x| x.0.w > r.w).map(|x| x.0.y + x.0.h).fold(0.0, f64::max);
         assert!(low(&lifted) > low(&lit));
+    }
+
+    fn ratio(a: Rgba, b: Rgba) -> f64 {
+        let lin = |c: u8| {
+            let c = c as f64 / 255.0;
+            if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        let l = |c: Rgba| 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+        let (x, y) = (l(a).max(l(b)), l(a).min(l(b)));
+        (x + 0.05) / (y + 0.05)
+    }
+
+    /// Task 2124: on the selected row the found words' ground was the
+    /// chip's own colour, only the bold left of it. **Turned over there**:
+    /// the ground to the chip is at least 3:1, the words on it at least
+    /// 4.5:1 -- in both themes, with the keyboard here or not.
+    #[test]
+    fn the_found_words_on_the_chip_are_seen() {
+        let t = decode(crate::tasks::tests::FILTER).unwrap();
+        for theme in [&DARK, &crate::look::LIGHT] {
+            for keys in [true, false] {
+                let at = layout(&t, 1200.0, 800.0, 0.0, theme, 1.0, &nominal);
+                let d = build(&t, &at, theme, 1.0, Some(at.tasks[0].id), keys, None, &nominal);
+                let chip = chip_colour(theme.terminal_background, theme, keys);
+                let ground = d.iter().find_map(|x| match x {
+                    Draw::Item(Item::Round { rect, color, .. }) if rect.h == k::BODY_LINE_HEIGHT && rect.y > at.tasks[0].rect.y && rect.y < at.tasks[0].rect.y + at.tasks[0].rect.h => Some(*color),
+                    _ => None,
+                });
+                let ground = ground.expect("a ground under the found words");
+                assert_ne!(ground, theme.task_hit, "the chip's own colour, dark={} keys={keys}", theme.dark);
+                assert!(ratio(ground, chip) >= 3.0, "ground to chip {:.2}, dark={} keys={keys}", ratio(ground, chip), theme.dark);
+                let words = d.iter().find_map(|x| match x {
+                    Draw::Item(Item::Text { rect, style, text, .. }) if text.contains("批量") && rect.y == at.tasks[0].rect.y && style.weight == font::WEIGHT_EMPHASIS => Some(style.color),
+                    _ => None,
+                }).expect("the found words");
+                assert!(ratio(words, ground) >= 4.5, "words on ground {:.2}, dark={} keys={keys}", ratio(words, ground), theme.dark);
+            }
+        }
+    }
+
+    /// Task 2124: at a page 388 wide the title was 30 wide. **The title keeps
+    /// `title_min`**; the idle column goes first, then the owner, then the
+    /// state -- and what is gone is not drawn.
+    #[test]
+    fn the_title_keeps_its_room_and_the_other_columns_give_way() {
+        let row = |w: f64| columns(Rect { x: 0.0, y: 0.0, w, h: 28.0 });
+        let at388 = row(388.0 - 48.0);
+        assert!(at388[3].w >= 200.0, "the title is {} wide", at388[3].w);
+        assert_eq!((at388[2].w, at388[4].w, at388[5].w), (0.0, 0.0, 0.0));
+        // Wide enough for the state but not the owner.
+        let mid = row(500.0);
+        assert!(mid[3].w >= 200.0 && mid[2].w == 104.0 && mid[4].w == 0.0, "{:?}", mid.map(|r| r.w));
+        // None of them overlaps the next, whatever the width.
+        for w in [150.0, 300.0, 340.0, 420.0, 520.0, 629.0, 800.0, 1200.0] {
+            let c = row(w);
+            for pair in [(2, 3), (3, 4), (4, 5)] {
+                assert!(c[pair.0].x + c[pair.0].w <= c[pair.1].x + 0.001 || c[pair.0].w == 0.0 || c[pair.1].w == 0.0, "width {w}: {:?}", c.map(|r| (r.x, r.w)));
+            }
+        }
+        let t = decode(OPEN).unwrap();
+        let at = layout(&t, 388.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let said: Vec<String> = texts(&build(&t, &at, &DARK, 1.0, None, true, None, &nominal)).into_iter().map(|(_, s)| s).collect();
+        assert!(!said.contains(&"状态".to_string()) && !said.contains(&"负责人".to_string()) && !said.contains(&"多久没动".to_string()), "{said:?}");
     }
 
     /// #2083: filtering, the box under the goal and the list under it; each

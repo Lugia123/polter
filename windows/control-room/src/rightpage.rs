@@ -78,6 +78,16 @@ impl Page {
     pub fn shows_terminal(self) -> bool {
         self == Page::Supervisor
     }
+
+    /// Whether choosing this page's tab gives the page the keys -- its own
+    /// ↑↓, Enter, c and f, ahead of the group list's ↑↓. **The task page**
+    /// (task 2142: the first f after its tab was chosen did nothing, and
+    /// the log said nothing; a press on the list was needed first). The
+    /// supervisor's page gives the keys to its terminal its own way; the
+    /// performance page has none.
+    pub fn takes_the_keys(self) -> bool {
+        self == Page::Tasks
+    }
 }
 
 /// What stands before a tab's name: the supervisor's flag on its own tab,
@@ -402,6 +412,13 @@ mod tests {
         // The design's Windows page: 总管 with its flag, then three plain
         // names, the last with its dot.
         [nominal_want("总管", true), nominal_want("群聊", false), nominal_want("任务", false), nominal_want("性能", true)]
+    }
+
+    /// Task 2142: the task page's tab hands it the keys; no other does.
+    #[test]
+    fn choosing_the_task_page_gives_it_the_keys() {
+        let taking: Vec<Page> = Page::ALL.into_iter().filter(|p| p.takes_the_keys()).collect();
+        assert_eq!(taking, vec![Page::Tasks]);
     }
 
     #[test]
