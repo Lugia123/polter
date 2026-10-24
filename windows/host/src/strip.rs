@@ -2450,6 +2450,67 @@ impl TabCmd {
     }
 }
 
+/// Which of the window tab's own rows a table row is, for the rule that
+/// leaves two of them off a stack's tab menu (task 2163). `None` for the
+/// rows that are not about the window's tabs at all.
+///
+/// ⚠️ **Every `TabCmd` is named here, and that is half of the point.** It used
+/// to end in `_ => None`, which is the shape this fix exists to remove: a row
+/// added to `TabCmd` -- "close the tabs to the left of this one", say --
+/// would answer `None` in silence, `show_tab_menu` would put it on a stack's
+/// tab beside `Close Others`, and the bug this task fixed would come back
+/// under a new name with the compiler saying nothing. Nor would
+/// `control-room-hosts-agree` see it: that gate compares `WindowRow`, not
+/// `TabCmd`. Named arms make the next row a compile error here instead -- the
+/// bargain `checked` and `on_control_room` strike, and this repository's rule
+/// at the root `CLAUDE.md` §验证 6.
+///
+/// **The other half is the `const _` below**: naming all thirteen says a row
+/// was considered, not that it was pointed at the right one.
+const fn window_row_of(cmd: TabCmd) -> Option<polter_control_room::panestack::WindowRow> {
+    use polter_control_room::panestack::WindowRow;
+    match cmd {
+        TabCmd::Close => Some(WindowRow::Close),
+        TabCmd::CloseOthers => Some(WindowRow::CloseOthers),
+        TabCmd::CloseRight => Some(WindowRow::CloseRight),
+        TabCmd::MoveToNewWindow => Some(WindowRow::MoveToNewWindow),
+        TabCmd::Rename
+        | TabCmd::Supervisor
+        | TabCmd::Watch
+        | TabCmd::Shield
+        | TabCmd::WorkersRefused
+        | TabCmd::Authorise
+        | TabCmd::WorkerMentions
+        | TabCmd::SaveProject
+        | TabCmd::LoadProject => None,
+    }
+}
+
+/// **The map above, checked while compiling.** Naming all thirteen arms is not
+/// the same as pointing them at the right rows: `CloseOthers => Some(Close)`
+/// compiles and would put "Close Other Tabs" out of a stack's tab menu while
+/// leaving "Close to the Right" on it -- exactly the pair of words being
+/// confused in the first place.
+///
+/// So each of the four is asserted here, and `cargo check` evaluates it: a
+/// wrong row fails the build with `E0080` at the line that is wrong. That it
+/// is a `const` rather than a `#[test]` is the point of this file's own
+/// history: `polter-host`'s tests need Windows, and this must not wait for the
+/// Windows machine to be told. What the four arrows are pointed *at* is the
+/// other half -- `WindowRow::action` in `polter-control-room`, which names the
+/// host's action strings; this file's
+/// `the_menu_table_and_the_window_rows_agree_about_every_row` reads
+/// `TAB_MENU` itself and holds the two together wherever tests can run.
+const _: () = {
+    use polter_control_room::panestack::WindowRow;
+    assert!(matches!(window_row_of(TabCmd::Close), Some(WindowRow::Close)));
+    assert!(matches!(window_row_of(TabCmd::CloseOthers), Some(WindowRow::CloseOthers)));
+    assert!(matches!(window_row_of(TabCmd::CloseRight), Some(WindowRow::CloseRight)));
+    assert!(matches!(window_row_of(TabCmd::MoveToNewWindow), Some(WindowRow::MoveToNewWindow)));
+    assert!(window_row_of(TabCmd::Rename).is_none());
+    assert!(window_row_of(TabCmd::LoadProject).is_none());
+};
+
 /// Top level of the tab menu, in order. `None` is a separator.
 const TAB_MENU: &[Option<TabCmd>] = &[
     Some(TabCmd::Close),
@@ -2647,6 +2708,28 @@ fn show_tab_menu(frame: HWND, target: MenuTarget, x: i32, y: i32, pane: Option<P
         for (i, row) in TAB_MENU.iter().enumerate() {
             if room && !row.is_some_and(|cmd| cmd.on_control_room()) {
                 continue;
+            }
+            // **Two rows are left out of a stack's tab menu** (task 2163):
+            // `Close Other Tabs` and `Close Tabs to the Right` close other
+            // *window tabs*, and this menu already says `Close Others` and
+            // `Close to the Right` above them meaning the terminals of this
+            // stack. Which rows those are is the crate's rule, the same one
+            // the macOS host asks (`PolterPaneTabRules.windowRows`,
+            // `panestack::window_row_offered`).
+            //
+            // **Left out, and this one is a person's decision rather than
+            // `on_menu`'s** (2026-10-24; see that function for the other
+            // kind). The row is not "not built yet" and not "not now": it
+            // works, and on any other tab there it stays. It is left off
+            // here because on a stack's tab its words mean the wrong thing
+            // -- the report was somebody choosing it and losing the window's
+            // whole tab strip, which has no undo. Greying it would say "you
+            // could have this", and there is nothing to earn.
+            if let Some(window_row) = row.and_then(window_row_of) {
+                if !polter_control_room::panestack::window_row_offered(window_row, stack.is_some()) {
+                    wlogf!(frame, "[tabmenu] {:?} left off: this is a stack's tab, and its words above mean that stack's terminals", window_row);
+                    continue;
+                }
             }
             let Some(cmd) = row else {
                 let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -3769,6 +3852,55 @@ mod menu_inset_tests {
                     "{c:?} appears at more than one index, so an id would be ambiguous"
                 );
             }
+        }
+    }
+
+    /// The menu table and the window rows agree about every row: each menu row
+    /// carrying a window action maps to the row that action belongs to, and no
+    /// other row maps anywhere.
+    ///
+    /// **This is the half of the check that reads the real table.** The
+    /// compile-time `_` over `window_row_of` proves the map is right about the
+    /// four rows it names; this proves the map is right about the rows the menu
+    /// actually holds, and that nothing else has quietly become a window row.
+    /// A fifth window row added to `TAB_MENU` and to the crate would fail here
+    /// unless it is mapped too.
+    ///
+    /// ⚠️ **Runs on Windows only**: `polter-host` pulls in `windows`, which
+    /// does not build for a non-Windows target (see
+    /// `windows/tools/pure-crates-pass-their-tests.py`). What covers this off
+    /// Windows is the `const _` over `window_row_of`, which `cargo check`
+    /// evaluates.
+    #[test]
+    fn the_menu_table_and_the_window_rows_agree_about_every_row() {
+        use polter_control_room::panestack::WindowRow;
+        let window_actions: Vec<&str> = WindowRow::ALL.iter().map(|r| r.action()).collect();
+        let mut mapped = 0;
+        for cmd in TAB_MENU.iter().flatten() {
+            let row = window_row_of(*cmd);
+            assert_eq!(
+                row.is_some(),
+                window_actions.contains(&cmd.action()),
+                "{cmd:?} carries {:?}, and window_row_of said {row:?}",
+                cmd.action(),
+            );
+            if let Some(row) = row {
+                assert_eq!(
+                    row.action(),
+                    cmd.action(),
+                    "{cmd:?} carries {:?} and was mapped to {row:?}, whose action is {:?}",
+                    cmd.action(),
+                    row.action(),
+                );
+                mapped += 1;
+            }
+        }
+        assert_eq!(mapped, window_actions.len(), "every window row is in the menu table");
+        for action in &window_actions {
+            assert!(
+                TAB_MENU.iter().flatten().any(|c| c.action() == *action),
+                "{action} is a window row and no menu table row carries it",
+            );
         }
     }
 

@@ -40,6 +40,63 @@ enum PolterPaneTabRules {
         !closing(which, at: index, count: count).isEmpty
     }
 
+    /// The window tab's own rows, as they stand on a pane's title and on a
+    /// stack's tab (task 1582): the ones the system puts on its tab menu,
+    /// which this menu carries a copy of.
+    enum WindowRow: String, CaseIterable {
+        case close
+        case closeOthers = "close-others"
+        case closeRight = "close-right"
+        case moveToNewWindow = "move-to-new-window"
+
+        /// What this row is called, for the dump `tools/control-room-hosts-agree.py`
+        /// compares with the Windows host's. `windows/control-room`'s
+        /// `panestack::WindowRow::name` is the same string.
+        var name: String { rawValue }
+
+        /// Whether it closes *other* tabs of the window rather than this
+        /// one. These are the two a stack's tab leaves out, below.
+        ///
+        /// **A switch, not a `==` pair** (this repository's rule: make the
+        /// silence fail to compile). A new row added to `WindowRow` and left
+        /// out here would default to "closes this tab only" -- a claim about
+        /// what the row does that nobody made, and the one this whole fix is
+        /// about. Written this way, adding a row is a compile error until
+        /// somebody says which it is.
+        var closesOtherTabs: Bool {
+            switch self {
+            case .closeOthers, .closeRight: true
+            case .close, .moveToNewWindow: false
+            }
+        }
+    }
+
+    /// The window tab's rows this menu offers, in the order they are put on
+    /// the menu.
+    ///
+    /// **On a stack's tab the two that close *other* tabs of the window are
+    /// left out** (task 2163). They are not wrong -- the system's own tab
+    /// menu has both, and so does a plain pane's title -- but this menu
+    /// already carries the same words above them with a much narrower
+    /// meaning: `Close Others` and `Close to the Right` there close the other
+    /// terminals of *this* stack. `Close Other Tabs` beside
+    /// `Close Others` reads as the same offer and takes away every other tab
+    /// of the window, which is what was reported: a right-click in a stacked
+    /// pane chose it meaning this pane's terminals and lost the tab strip.
+    ///
+    /// Closing this tab, and moving it to a window of its own, are about
+    /// this tab and are not confusable with anything above them, so both
+    /// stay. A stack's tab is not the only way to either.
+    static func windowRows(stacked: Bool) -> [WindowRow] {
+        WindowRow.allCases.filter { windowRowOffered($0, stacked: stacked) }
+    }
+
+    /// Whether one window row is on the menu at all. The rule itself, which
+    /// the Windows host asks as `panestack::window_row_offered` too.
+    static func windowRowOffered(_ row: WindowRow, stacked: Bool) -> Bool {
+        stacked ? !row.closesOtherTabs : true
+    }
+
     /// Whether closing `members` of a stack of `count` takes the pane with
     /// it: every member goes. A pane left with one is an ordinary pane
     /// again, which `SplitTree.removing(member:)` already does.

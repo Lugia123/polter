@@ -35,8 +35,12 @@ extension TerminalController {
                 self.performAction("close_surface", on: view)
             })
 
-        if stacked, let stack = surfaceTree.stack(of: view),
-           let index = stack.members.firstIndex(where: { $0 === view }) {
+        // Whether this pane is really a stack's tab, decided here rather
+        // than taken from `stacked`: the name of a window row below depends
+        // on it (task 2163), and a caller that said `stacked` about a pane
+        // with no stack would have the wrong rows put on the menu.
+        let stack = stacked ? surfaceTree.stack(of: view) : nil
+        if let stack, let index = stack.members.firstIndex(where: { $0 === view }) {
             let entries: [(PolterPaneTabRules.Closing, String, String)] = [
                 (.others, String(localized: "Close Others", comment: "层叠标签右键菜单：关闭这一叠里的其他终端"), "xmark.square"),
                 (.right, String(localized: "Close to the Right", comment: "层叠标签右键菜单：关闭这一叠里右侧的终端"), "arrow.right.to.line"),
@@ -61,22 +65,34 @@ extension TerminalController {
         menu.addItem(.separator())
 
         // The window tab's own items, which the system puts on its menu.
-        let tabItems: [(String, String, Selector)] = [
-            (String(localized: "Close Tab", comment: "分屏标题右键菜单：关闭这一格所在的标签页"), "xmark", NSSelectorFromString("performClose:")),
-            (String(localized: "Close Other Tabs", comment: "分屏标题右键菜单：关闭其他标签页"), "xmark", NSSelectorFromString("performCloseOtherTabs:")),
-        ]
-        for (title, symbol, action) in tabItems {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-            item.target = window
-            item.setImageIfDesired(systemSymbolName: symbol)
-            menu.addItem(item)
+        // Which of them a stack's tab offers, and why two of the four are
+        // left out there, is `PolterPaneTabRules.windowRows` (task 2163).
+        for row in PolterPaneTabRules.windowRows(stacked: stack != nil) {
+            switch row {
+            case .close:
+                let item = NSMenuItem(
+                    title: String(localized: "Close Tab", comment: "分屏标题右键菜单：关闭这一格所在的标签页"),
+                    action: NSSelectorFromString("performClose:"), keyEquivalent: "")
+                item.target = window
+                item.setImageIfDesired(systemSymbolName: "xmark")
+                menu.addItem(item)
+            case .closeOthers:
+                let item = NSMenuItem(
+                    title: String(localized: "Close Other Tabs", comment: "分屏标题右键菜单：关闭其他标签页（关的是窗口的标签页，不是层叠里的终端；层叠的菜单里没有这一行）"),
+                    action: NSSelectorFromString("performCloseOtherTabs:"), keyEquivalent: "")
+                item.target = window
+                item.setImageIfDesired(systemSymbolName: "xmark")
+                menu.addItem(item)
+            case .closeRight:
+                menu.addItem(TerminalWindow.polterCloseTabsToTheRightItem(target: self))
+            case .moveToNewWindow:
+                let move = NSMenuItem(
+                    title: String(localized: "Move Tab to New Window", comment: "分屏标题右键菜单：把这一格所在的标签页移到新窗口"),
+                    action: NSSelectorFromString("moveTabToNewWindow:"), keyEquivalent: "")
+                move.target = window
+                menu.addItem(move)
+            }
         }
-        menu.addItem(TerminalWindow.polterCloseTabsToTheRightItem(target: self))
-        let move = NSMenuItem(
-            title: String(localized: "Move Tab to New Window", comment: "分屏标题右键菜单：把这一格所在的标签页移到新窗口"),
-            action: NSSelectorFromString("moveTabToNewWindow:"), keyEquivalent: "")
-        move.target = window
-        menu.addItem(move)
 
         // Without the tab's «Copy Terminal ID»: the row above is this pane's,
         // and the tab's would be a second one about the same thing.

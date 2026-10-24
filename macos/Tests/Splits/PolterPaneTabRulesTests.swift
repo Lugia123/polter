@@ -39,6 +39,42 @@ struct PolterPaneTabRulesTests {
         #expect(!Rules.closesPane([0, 1, 9], count: 3))
     }
 
+    /// A pane's title carries every one of the window tab's rows (task
+    /// 2163): a plain pane is where those rows ever were.
+    @Test func aPanesTitleCarriesEveryWindowRow() {
+        #expect(Rules.windowRows(stacked: false) == Rules.WindowRow.allCases)
+        #expect(Rules.windowRows(stacked: false).count == 4)
+    }
+
+    /// A stack's tab leaves out the two that close *other* window tabs
+    /// (task 2163). **This is the whole fix**: they were on that menu beside
+    /// `Close Others` and `Close to the Right`, which mean this stack's
+    /// terminals, and the report was somebody choosing the wrong one of the
+    /// pair and losing the tab strip.
+    @Test func aStacksTabLeavesOutTheTwoThatCloseOtherWindowTabs() {
+        #expect(Rules.windowRows(stacked: true) == [.close, .moveToNewWindow])
+        for row in Rules.WindowRow.allCases {
+            #expect(Rules.windowRowOffered(row, stacked: true) == !row.closesOtherTabs)
+            #expect(Rules.windowRowOffered(row, stacked: false))
+        }
+        // The narrow two on that menu are the stack's own, and they are not
+        // these: nothing named `closing` is a window row.
+        #expect(Rules.Closing.allCases.count == 3)
+        #expect(Rules.windowRows(stacked: true).contains(.closeOthers) == false)
+        #expect(Rules.windowRows(stacked: true).contains(.closeRight) == false)
+        // Closing this tab and moving it out stay: both are about this tab,
+        // not about other tabs.
+        #expect(Rules.windowRows(stacked: true).contains(.close))
+        #expect(Rules.windowRows(stacked: true).contains(.moveToNewWindow))
+    }
+
+    /// The names the dump goes by are the Windows host's, so the two hosts
+    /// can be held to each other row by row (`control-room-hosts-agree`).
+    @Test func everyWindowRowHasTheNameTheOtherHostKnowsItBy() {
+        #expect(Rules.WindowRow.allCases.map(\.name)
+            == ["close", "close-others", "close-right", "move-to-new-window"])
+    }
+
     @Test func aWheelThatOnlyTurnsUpAndDownScrollsTheTabsSideways() {
         // A mouse wheel: a line down moves the tabs on by a line's points.
         #expect(Rules.scroll(deltaX: 0, deltaY: -1, precise: false) == 16)

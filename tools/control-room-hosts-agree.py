@@ -193,6 +193,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomLending.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomQuota.swift",
     "macos/Sources/Features/ControlRoom/PaneStackStrip.swift",
+    "macos/Sources/Features/Splits/PolterPaneTabRules.swift",
     "macos/Sources/Features/Splits/PolterCloseCircle.swift",
     "macos/Sources/Features/ControlRoom/PaneFrame.swift",
     "macos/Sources/Features/Terminal/TabAccessory.swift",
@@ -968,6 +969,15 @@ for (n, c) in stripCases.enumerated() {
 for name in ["", "api", "frontend", "任务", "billing-worker"] {
     print("strip nominal \(quote(name)) plain=\(f(PaneStackStripLayout.nominalWidth(name: name, glyph: false))) "
         + "glyph=\(f(PaneStackStripLayout.nominalWidth(name: name, glyph: true)))")
+}
+// Which of the window tab's own rows a pane's menu carries, on a plain
+// pane's title and on a stack's tab (task 2163). Windows prints the same
+// from `panestack::WindowRow::ALL`, and this is the one place the two
+// hosts' sets of rows are held to each other.
+for stacked in [false, true] {
+    for row in PolterPaneTabRules.WindowRow.allCases {
+        print("window_row stacked=\(stacked) row=\(row.name) offered=\(PolterPaneTabRules.windowRowOffered(row, stacked: stacked))")
+    }
 }
 
 let lay = ControlRoomListLayout(list: list, height: CGFloat(height))

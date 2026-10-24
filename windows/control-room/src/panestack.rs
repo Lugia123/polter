@@ -172,6 +172,93 @@ pub fn closes_pane(members: &[usize], count: usize) -> bool {
     count > 0 && (0..count).all(|i| members.contains(&i))
 }
 
+/// The window tab's own rows, as they stand on a pane's title and on a
+/// stack's tab (task 1582): the ones the system puts on the window's tab
+/// menu, which both hosts carry a copy of. macOS's
+/// `PolterPaneTabRules.WindowRow`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowRow {
+    Close,
+    CloseOthers,
+    CloseRight,
+    MoveToNewWindow,
+}
+
+impl WindowRow {
+    pub const ALL: [WindowRow; 4] =
+        [WindowRow::Close, WindowRow::CloseOthers, WindowRow::CloseRight, WindowRow::MoveToNewWindow];
+
+    /// What the row is called, for the dump `tools/control-room-hosts-agree.py`
+    /// compares with the macOS host's; the same string as
+    /// `PolterPaneTabRules.WindowRow.name`.
+    pub fn name(self) -> &'static str {
+        match self {
+            WindowRow::Close => "close",
+            WindowRow::CloseOthers => "close-others",
+            WindowRow::CloseRight => "close-right",
+            WindowRow::MoveToNewWindow => "move-to-new-window",
+        }
+    }
+
+    /// Whether it closes *other* tabs of the window rather than this one.
+    ///
+    /// **A `match` over every variant, not a `matches!`** (this repository's
+    /// rule: make the silence fail to compile). A new row added to
+    /// `WindowRow` and left out of a `matches!` would default to "closes this
+    /// tab only" -- a claim about what the row does that nobody made, and the
+    /// one this whole fix is about. Written this way, adding a row is a
+    /// compile error until somebody says which it is.
+    pub fn closes_other_tabs(self) -> bool {
+        match self {
+            WindowRow::CloseOthers | WindowRow::CloseRight => true,
+            WindowRow::Close | WindowRow::MoveToNewWindow => false,
+        }
+    }
+
+    /// The name of the menu row this one is carried by, as the Windows host's
+    /// `TabCmd::action` spells it.
+    ///
+    /// **This is what ties the host's menu table to this enum**, and it is in
+    /// this crate rather than in the host because `polter-host` does not build
+    /// off Windows: a check written there runs on the Windows machine only.
+    /// The host's half is `strip.rs`'s `window_row_of`, which is checked
+    /// against these four strings twice -- once while compiling (a `const _`
+    /// that `cargo check` evaluates, so a menu row pointed at the wrong row of
+    /// this enum fails the build rather than shipping) and once by a test that
+    /// reads `TAB_MENU` itself.
+    ///
+    /// Exhaustive over the enum: a row added here and left out is a compile
+    /// error, not a row a host quietly stops recognising.
+    pub fn action(self) -> &'static str {
+        match self {
+            WindowRow::Close => "close_tab:this",
+            WindowRow::CloseOthers => "close_tab:other",
+            WindowRow::CloseRight => "close_tab:right",
+            WindowRow::MoveToNewWindow => "move_tab_to_new_window",
+        }
+    }
+}
+
+/// Whether a stack's tab's menu carries this window row (task 2163).
+///
+/// **The two that close *other* tabs of the window are left out there.**
+/// They are not wrong -- the window's own tab menu has both, and so does a
+/// plain pane's title -- but that menu already carries the same words above
+/// them with a much narrower meaning: `Close Others` and `Close to
+/// the Right` there close the other terminals of *this* stack (a whole
+/// pane). `Close Other Tabs` beside `Close Others` reads as the same offer
+/// and takes away every other tab of the window, which is what was
+/// reported: a right-click in a stacked pane chose it meaning this pane's
+/// terminals and lost the tab strip.
+///
+/// Closing this tab, and moving it to a window of its own, are about this
+/// tab and are not confusable with anything above them, so both stay. A
+/// stack's tab is not the only way to either. macOS asks the same rule as
+/// `PolterPaneTabRules.windowRowOffered`.
+pub fn window_row_offered(row: WindowRow, stacked: bool) -> bool {
+    !stacked || !row.closes_other_tabs()
+}
+
 /// How far a wheel moves the tabs sideways, in points: a sideways wheel as
 /// it is, and one that only turns up and down turned sideways. Windows says
 /// a wheel in 120ths of a notch; a notch is `line` points (macOS's 16).
@@ -653,6 +740,54 @@ mod tests {
         assert!(!closes_pane(&[], 0));
     }
 
+    /// A pane's title carries every one of the window tab's rows; a stack's
+    /// tab leaves out the two that close *other* window tabs (task 2163).
+    /// **This is the whole fix**: they were on that menu beside `Close
+    /// Others` and `Close to the Right`, which mean this stack's terminals,
+    /// so the two pairs of words read as one offer and the wrong one of them
+    /// took away the window's tab strip.
+    #[test]
+    fn a_stack_tab_leaves_out_the_two_that_close_other_window_tabs() {
+        let offered = |stacked| WindowRow::ALL.iter().filter(|r| window_row_offered(**r, stacked)).copied().collect::<Vec<_>>();
+        assert_eq!(offered(false), WindowRow::ALL);
+        assert_eq!(offered(true), [WindowRow::Close, WindowRow::MoveToNewWindow]);
+        for row in WindowRow::ALL {
+            assert_eq!(window_row_offered(row, true), !row.closes_other_tabs(), "{row:?}");
+            assert!(window_row_offered(row, false), "{row:?}");
+        }
+        // The narrow two on that menu are the stack's own, and nothing that
+        // closes a window tab is one of them.
+        assert!(WindowRow::CloseOthers.closes_other_tabs());
+        assert!(WindowRow::CloseRight.closes_other_tabs());
+        assert!(!WindowRow::Close.closes_other_tabs());
+        assert!(!WindowRow::MoveToNewWindow.closes_other_tabs());
+        for c in Closing::ALL {
+            assert!(!c.label().contains("Tab"), "{:?} is a window tab's words", c);
+        }
+    }
+
+    /// The names the dump goes by are the macOS host's, so the two hosts can
+    /// be held to each other row by row (`control-room-hosts-agree`).
+    #[test]
+    fn every_window_row_has_the_name_the_other_host_knows_it_by() {
+        let names: Vec<&str> = WindowRow::ALL.iter().map(|r| r.name()).collect();
+        assert_eq!(names, ["close", "close-others", "close-right", "move-to-new-window"]);
+    }
+
+    /// The four actions are the Windows host's own (`TabCmd::action`), spelled
+    /// exactly. **This is the side of that tie that can be checked off
+    /// Windows**, beside the host's compile-time check of the other side: a
+    /// string changed here and not in `strip.rs` (or the other way round) is a
+    /// menu row mapped to nothing.
+    #[test]
+    fn every_window_row_carries_the_action_the_hosts_menu_table_spells() {
+        let spelled: Vec<&str> = WindowRow::ALL.iter().map(|r| r.action()).collect();
+        assert_eq!(
+            spelled,
+            ["close_tab:this", "close_tab:other", "close_tab:right", "move_tab_to_new_window"]
+        );
+    }
+
     #[test]
     fn a_wheel_that_turns_up_and_down_scrolls_the_tabs_sideways() {
         // A notch away from the person goes back towards the start.
@@ -663,7 +798,6 @@ mod tests {
     }
 
     // ---- dropping onto a strip
-
     #[test]
     fn where_a_terminal_let_go_on_the_strip_goes_in() {
         // Three at 110 from 20: middles at 75, 185, 295.

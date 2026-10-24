@@ -1119,6 +1119,15 @@ fn main() {
     for name in ["", "api", "frontend", "任务", "billing-worker"] {
         println!("strip nominal {} plain={:.3} glyph={:.3}", quote(name), stackstrip::nominal_width(name, false), stackstrip::nominal_width(name, true));
     }
+    // Which of the window tab's own rows a pane's menu carries, on a plain
+    // pane's title and on a stack's tab (task 2163). macOS prints the same
+    // from `PolterPaneTabRules.windowRows`, and this is the one place the
+    // two hosts' sets of rows are held to each other.
+    for stacked in [false, true] {
+        for row in panestack::WindowRow::ALL {
+            println!("window_row stacked={stacked} row={} offered={}", row.name(), panestack::window_row_offered(row, stacked));
+        }
+    }
 
     let lay = ListLayout::new(&l, height);
     println!("size w={:.3} h={:.3}", lay.width, lay.height);
