@@ -18,6 +18,7 @@ pub const ControlAsk = @import("ControlAsk.zig");
 pub const ControlFix = @import("ControlFix.zig");
 pub const ControlNotify = @import("ControlNotify.zig");
 pub const ControlRoom = @import("ControlRoom.zig");
+pub const Alarms = @import("Alarms.zig");
 pub const ControlWake = @import("ControlWake.zig");
 pub const ShellSteps = @import("ShellSteps.zig");
 pub const Attention = @import("Attention.zig");
@@ -129,6 +130,7 @@ test {
     _ = ControlFix;
     _ = ControlNotify;
     _ = ControlRoom;
+    _ = Alarms;
     _ = ControlWake;
     _ = ShellSteps;
     _ = ChatLog;

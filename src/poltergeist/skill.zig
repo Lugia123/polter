@@ -438,6 +438,8 @@ test "the supervising skill names the tools it tells you to use" {
         "terminal_tab_move",
         // Task 1797: "tidy your workers" is done with it.
         "terminal_stack",
+        // Task 2148: the one wake a supervisor sets for itself.
+        "alarm_set",
 
         // Task 1689: the user asks "which one is it?", and the answer is to
         // show them rather than describe it.

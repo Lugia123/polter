@@ -42,6 +42,7 @@ ROOT = os.path.dirname(HERE)
 # -- what is allowed, and why -------------------------------------------------
 
 GROUP_NAME_FILES = {
+    "src/poltergeist/Alarms.zig": "a supervisor's alarms (task 2148): each names its group; group_stores.Table.alarms, re-keyed by App.chatRename and dropped with the group",
     "src/App.zig": "the host: takes a group's name from a request and finds the group",
     "src/cli/chat.zig": "the chat page: names groups to the socket; holds no storage",
     "src/cli/launch.zig": "`+launch --group=` (task 1844): says the name to the socket once, in a `launched_for_group` event, before the CLI starts; holds no storage. The host keeps it by terminal (App.launch_groups) only until that agent is heard, and a group renamed or deleted in between is judged as no group by that name and not joined",
@@ -89,6 +90,7 @@ TREE_FILES = {
 
 # (file, field name) -> what it is
 MAP_FIELDS = {
+    ("src/poltergeist/Alarms.zig", "heard"): "keyed by terminal id, not a group: when each terminal was last heard from (task 2148)",
     ("src/poltergeist/Chat.zig", "groups"): "keyed by group name: group_stores.Table.chat_groups",
     ("src/poltergeist/ControlAsk.zig", "asks"): "keyed by group name: group_stores.Table.control_asks",
     ("src/poltergeist/StatsLog.zig", "last"): "keyed by group name: group_stores.Table.stats_last",

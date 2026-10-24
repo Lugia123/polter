@@ -558,6 +558,21 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .task_list => .{ .task_list = .{
             .group = try requireString(aa, params, "group"),
         } },
+
+        // A number past `u32` is still a number of minutes, and too many:
+        // it is held at one past the limit so that the answer says so.
+        .alarm_set => .{ .alarm_set = .{
+            .group = try requireString(aa, params, "group"),
+            .minutes = @intCast(@min(try requireU64(params, "minutes"), std.math.maxInt(u32))),
+            .note = (try optionalString(aa, params, "note")) orelse "",
+        } },
+        .alarm_list => .{ .alarm_list = .{
+            .group = try requireString(aa, params, "group"),
+        } },
+        .alarm_cancel => .{ .alarm_cancel = .{
+            .group = try requireString(aa, params, "group"),
+            .id = try requireU64(params, "id"),
+        } },
     };
 
     return value;

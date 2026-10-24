@@ -233,6 +233,33 @@ links_due: std.atomic.Value(bool) = .init(false),
 /// ever is never has the thread.
 notice_wake: ?poltergeistpkg.ControlWake = null,
 
+/// The supervisors' alarms (task 2148), read from `alarms.json` the first
+/// time they are wanted.
+alarms: ?poltergeistpkg.Alarms = null,
+/// What wakes the app for an alarm or a silence reminder: one moment, the
+/// earliest of either (`considerSupervisorClocks`).
+alarm_wake: ?poltergeistpkg.ControlWake = null,
+alarm_due: std.atomic.Value(bool) = .init(false),
+/// Something that decides when the next alarm or reminder is due has
+/// changed -- a request arrived, so a group, a supervisor or a task may be
+/// new (`poltergeistRequest`, `controlAct`). Read and cleared by `tick`,
+/// which is where the clock is worked out again.
+///
+/// ⚠️ **Why this exists at all**: `arm` used to be reached from three
+/// places only -- the first tick, an alarm set or cancelled, and an alarm
+/// ringing. A group whose tasks appear after that first tick, with an alarm
+/// nobody has set, therefore had nothing to arm its first reminder, and the
+/// only thing that ever armed one was an alarm operation or a restart
+/// (measured 2026-10-24: first reminders 2 m 31 s and 5 m 27 s late on a
+/// one-minute setting, with no upper bound at all).
+alarm_dirty: bool = false,
+/// A warning about the alarm wake thread has already been written. It fails
+/// to start once and stays failed (`alarm_wake` stays null), and `tick`
+/// asks again every time it runs -- without this the log would carry one
+/// `alarms: no wake thread` line per tick for the life of the process,
+/// which is how a real warning stops being read.
+alarm_wake_warned: bool = false,
+
 /// The thread reading every pane's process tree (task 1993, #1985), and
 /// what it last read: memory and process count by terminal. Started on the
 /// first tick, like the stall watch, and judged against each pane's lines
@@ -306,6 +333,10 @@ poltergeist_notes_ms: ?u64 = null,
 /// milliseconds. Zero for either means that half says nothing.
 poltergeist_task_idle_ms: u64 = 0,
 poltergeist_group_quiet_ms: u64 = 0,
+
+/// `poltergeist-silence-remind-after`, in milliseconds; zero switches it off
+/// (task 2148).
+poltergeist_silence_remind_ms: u64 = 15 * std.time.ms_per_min,
 
 /// `poltergeist-worker-nudge-after`, in milliseconds. Zero switches it off.
 poltergeist_worker_nudge_ms: u64 = 0,
@@ -817,6 +848,10 @@ pub fn deinit(self: *App) void {
     self.control_wake = null;
     if (self.notice_wake) |*w| w.stop();
     self.notice_wake = null;
+    if (self.alarm_wake) |*w| w.stop();
+    self.alarm_wake = null;
+    if (self.alarms) |*al| al.deinit();
+    self.alarms = null;
     if (self.quota_watch) |*w| w.stop();
     self.quota_watch = null;
     if (self.resource_sampler) |*w| w.stop();
@@ -1094,6 +1129,17 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
             self.notePoltergeistAgentsHere();
             self.noticeRetryIn(poltergeistpkg.Bus.link_grace_ms + chat_notice_retry_margin_ms);
         }
+    }
+
+    // An alarm's moment, or a supervisor's quiet, has come (task 2148).
+    // Also the first tick, so that alarms a restart left behind are armed,
+    // and after any request or control-room act, which is where a group, a
+    // supervisor or a task comes from.
+    if (self.alarm_due.swap(false, .acq_rel) or
+        self.alarm_dirty or
+        self.alarm_wake == null)
+    {
+        if (!self.poltergeist_stopping.load(.acquire)) self.considerSupervisorClocks();
     }
 
     if (self.notice_due.swap(false, .acq_rel)) {
@@ -2145,6 +2191,10 @@ pub fn controlAct(self: *App, json: []const u8) anyerror!void {
     const act = try poltergeistpkg.ControlAct.parse(arena.allocator(), json);
     // Whatever comes of it, what the control room shows may have moved.
     defer self.controlRoomTouch();
+    // And a group, its supervisor or its panel may be new: when the next
+    // alarm or reminder is due is worked out again (task 2148). The
+    // `controlRoomTouch` above is what gets `tick` here to read it.
+    defer self.alarm_dirty = true;
 
     try poltergeistpkg.ControlAct.perform(
         act,
@@ -2360,6 +2410,10 @@ fn controlActDeleteGroup(ctx: *anyopaque, group: []const u8) anyerror!void {
         .control_asks => self.control_asks.forget(self.alloc, group),
         .resource_names => self.resource_names.dropGroup(self.alloc, group),
         .reclaim_groups => if (self.reclaim) |*r| r.dropGroup(group),
+        .alarms => {
+            self.alarmsHeld().dropGroup(group);
+            self.saveAlarms();
+        },
     };
 
     if (self.poltergeist_state_dir) |dir| {
@@ -4288,6 +4342,12 @@ pub fn applyPoltergeistSettings(self: *App, config: *const Config) void {
 
     self.poltergeist_task_idle_ms =
         config.@"poltergeist-task-idle-after".duration / std.time.ns_per_ms;
+    self.poltergeist_silence_remind_ms =
+        config.@"poltergeist-silence-remind-after".duration / std.time.ns_per_ms;
+    // The period a reminder is planned at just moved: work out the next
+    // moment again rather than wait for the one already armed, which was
+    // computed from the old value (task 2148).
+    self.alarm_dirty = true;
     self.poltergeist_group_quiet_ms =
         config.@"poltergeist-group-quiet-after".duration / std.time.ns_per_ms;
     self.poltergeist_worker_nudge_ms =
@@ -6600,6 +6660,25 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
     else
         false;
     poltergeistpkg.rpc.noteCall(&self.poltergeist, caller, pending.request, now_ms);
+    // An agent that is asking Polter things is alive and working, so a
+    // supervisor's quiet starts again here too, not only when a line is
+    // typed into its terminal (task 2148). A supervisor stuck on a
+    // condition is one that has stopped asking anything.
+    //
+    // ⚠️ **The same filter `noteCall` uses, and it has to be the same one.**
+    // `isAgentCall` is where the hooks and the sidecar are kept out
+    // (`agent_event`, `hook_context`, `persona_face`, `persona_slot`,
+    // `session_file`, `persona_wait`), and the reason is exactly this
+    // reminder's case: a CLI stuck in a retry loop sends an `agent_event`
+    // every time it gives up, so counting those would refresh its own
+    // silence clock for ever and the reminder would never come -- for the
+    // one terminal it exists for. Asking `isAgentCall` rather than writing
+    // a second list is what keeps the two answers from drifting.
+    if (poltergeistpkg.rpc.heardByAgent(caller, std.meta.activeTag(pending.request))) |id| self.noteHeard(id);
+    // And a request is where a group, a supervisor or a task comes from,
+    // so when the next alarm or reminder is due is worked out again
+    // (`alarm_dirty`). Cheap: it walks the groups and counts tasks.
+    self.alarm_dirty = true;
     if (was_silent) self.refreshPoltergeistTabs();
 
     // A launch that never got its agent, said on the next request from
@@ -9098,6 +9177,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .taskOwner = taskOwner,
         .taskCancel = taskCancel,
         .taskProgress = taskProgress,
+        .alarm = alarmOp,
         .taskList = taskList,
         .taskHistory = taskHistory,
     } };
@@ -12478,6 +12558,10 @@ fn chatRename(
         .control_asks => try self.control_asks.renameGroup(self.alloc, group, to),
         .resource_names => try self.resource_names.renameGroup(self.alloc, group, to),
         .reclaim_groups => if (self.reclaim) |*r| try r.renameGroup(group, to),
+        .alarms => {
+            try self.alarmsHeld().renameGroup(group, to);
+            self.saveAlarms();
+        },
     };
 
     self.reopenStoreHandles();
@@ -12638,6 +12722,335 @@ fn taskProgress(
 
     try self.tasks.setProgress(task, by, value);
     self.logTask(.progressed, task);
+}
+
+// ------------------------------------------------- alarms and quiet (2148)
+
+/// The alarms, read from the state directory the first time.
+fn alarmsHeld(self: *App) *poltergeistpkg.Alarms {
+    if (self.alarms == null) {
+        self.alarms = .init(self.alloc);
+        self.alarms.?.started_ms = self.poltergeistElapsedMs();
+        if (self.alarmsPath()) |path| {
+            defer self.alloc.free(path);
+            if (std.Io.Dir.cwd().readFileAlloc(global.io(), path, self.alloc, .limited(256 * 1024))) |bytes| {
+                defer self.alloc.free(bytes);
+                if (!self.alarms.?.load(bytes)) log.warn("alarms: {s} will not parse; starting with none", .{path});
+            } else |_| {}
+        }
+    }
+    return &self.alarms.?;
+}
+
+fn alarmsPath(self: *App) ?[]const u8 {
+    const dir = self.poltergeist_state_dir orelse return null;
+    return std.fs.path.join(self.alloc, &.{ dir, "alarms.json" }) catch null;
+}
+
+/// Written whole and atomically, owner-only, as `Session.write` does; a
+/// failure is logged and the alarms go on in memory.
+fn saveAlarms(self: *App) void {
+    const al = &(self.alarms orelse return);
+    const path = self.alarmsPath() orelse return;
+    defer self.alloc.free(path);
+    var buf: std.Io.Writer.Allocating = .init(self.alloc);
+    defer buf.deinit();
+    al.render(&buf.writer) catch return;
+    const io = global.io();
+    const dir = std.fs.path.dirname(path) orelse return;
+    var d = std.Io.Dir.cwd().openDir(io, dir, .{}) catch |err| {
+        log.warn("alarms: could not open {s} err={}", .{ dir, err });
+        return;
+    };
+    defer d.close(io);
+    var atomic = d.createFileAtomic(io, std.fs.path.basename(path), .{
+        .permissions = if (builtin.os.tag != .windows and std.posix.mode_t != u0) .fromMode(0o600) else .default_file,
+        .replace = true,
+    }) catch |err| {
+        log.warn("alarms: could not write err={}", .{err});
+        return;
+    };
+    defer atomic.deinit(io);
+    atomic.file.writeStreamingAll(io, buf.written()) catch |err| {
+        log.warn("alarms: could not write err={}", .{err});
+        return;
+    };
+    atomic.replace(io) catch |err| log.warn("alarms: could not commit err={}", .{err});
+}
+
+/// Everything `Alarms` needs about one group, read once: who made it, who
+/// is in it, which of them mind it, what is on its panel, and how long the
+/// supervisor's terminal has been quiet. Null when there is no such group.
+///
+/// **The supervisor is worked out from this, by `Alarms.supervisor`, which
+/// is the rule the whole product uses** (`ControlRoom.stewardAmong`).
+/// Round 1 read `Chat.created_by` alone, and that is a different question
+/// with a different answer: a group the person made from the control room
+/// has no `created_by` that is a supervisor at all, a group whose
+/// supervisor was replaced has a `created_by` that is not one any more, and
+/// after a restart the creating terminal is gone while the group and its
+/// alarms are not -- which is the case alarms are kept by group *for*.
+fn quietIn(
+    self: *App,
+    arena: Allocator,
+    group: []const u8,
+    now: u64,
+    wall: i64,
+) ?poltergeistpkg.Alarms.Quiet {
+    const al = self.alarmsHeld();
+    const members = self.chat.membersOf(arena, group) catch return null;
+
+    // Those of the members that mind the group (`ControlRoom.minds`): a
+    // supervisor whose agent has left holds a terminal nobody is listening
+    // in, and a line typed there reaches nobody.
+    var minding: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+    for (members) |id| {
+        if (id == poltergeistpkg.Chat.user_id) continue;
+        if (self.poltergeist.isSupervisor(id) and !self.poltergeist.agentHasLeft(id)) {
+            // `catch return null`, not `try`: this function's answer is
+            // optional (a group that cannot be read is one with nothing to
+            // say), and appending to an arena that is out of memory is the
+            // same "cannot say" -- a caller is a clock, and a clock that
+            // cannot be computed is a moment not armed, never a failure of
+            // the tick.
+            minding.append(arena, id) catch return null;
+        }
+    }
+
+    var q: poltergeistpkg.Alarms.Quiet = .{
+        .created_by = self.chat.createdBy(group) catch poltergeistpkg.Chat.user_id,
+        .members = members,
+        .minding = minding.items,
+        .unfinished = self.unfinishedIn(group),
+        // Filled in below, from whichever terminal the rule picks: it is
+        // the chosen one's agent and quiet that decide anything.
+        .agent_here = false,
+        .alarm_pending = al.pendingIn(group, wall),
+        .since_heard_ms = 0,
+        .after_ms = self.poltergeist_silence_remind_ms,
+    };
+    const sup = poltergeistpkg.Alarms.supervisor(q);
+    q.agent_here = if (sup) |s| self.agentPresent(s) else false;
+    q.since_heard_ms = if (sup) |s| al.quietOf(s, now) else 0;
+    return q;
+}
+
+/// The supervisor of `group` now, if it has one, by that same rule.
+fn groupSupervisor(self: *App, group: []const u8) ?poltergeistpkg.Bus.Id {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const q = self.quietIn(arena.allocator(), group, self.poltergeistElapsedMs(), self.poltergeistWallMs()) orelse return null;
+    return poltergeistpkg.Alarms.supervisor(q);
+}
+
+/// The local offset, for saying an alarm's moment as a time of day.
+fn alarmOffsetS(self: *App) i64 {
+    return @divFloor(poltergeistpkg.daylog.localOffsetMs(self.poltergeistWallMs()), std.time.ms_per_s);
+}
+
+/// `group`'s supervisor's own line in its group: no mention, so it is
+/// delivered to nobody (task 2148: the record says when it meant to look).
+fn alarmTrace(self: *App, ev: poltergeistpkg.Alarms.Event, a: poltergeistpkg.Alarms.Alarm, by: poltergeistpkg.Bus.Id) void {
+    var buf: [512]u8 = undefined;
+    const line = poltergeistpkg.Alarms.traceLine(&buf, ev, a, self.alarmOffsetS());
+    if (line.len == 0) return;
+    _ = self.chat.post(a.group, by, line, self.poltergeistWallMsU()) catch |err|
+        log.warn("alarms: could not say it in {s} err={}", .{ a.group, err });
+}
+
+fn poltergeistWallMsU(self: *App) u64 {
+    return @intCast(@max(self.poltergeistWallMs(), 0));
+}
+
+fn alarmOp(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    by: poltergeistpkg.Bus.Id,
+    op: poltergeistpkg.rpc.AlarmOp,
+) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const group = switch (op) {
+        inline else => |o| o.group,
+    };
+    if (!self.chat.exists(group)) return error.NoSuchGroup;
+    if (self.groupSupervisor(group) != by) return error.NotTheGroupsSupervisor;
+    const al = self.alarmsHeld();
+    const now = self.poltergeistWallMs();
+    const offset = self.alarmOffsetS();
+    switch (op) {
+        .set => |o| {
+            const a = try al.set(o.group, o.minutes, o.note, now);
+            self.saveAlarms();
+            self.alarmTrace(.set, a, by);
+            self.considerSupervisorClocks();
+            var line: [256]u8 = undefined;
+            const due = poltergeistpkg.Alarms.traceLine(&line, .set, a, offset);
+            return std.fmt.allocPrint(alloc, "Alarm {d} set. {s}", .{ a.id, due });
+        },
+        .list => {
+            var out: std.Io.Writer.Allocating = .init(alloc);
+            errdefer out.deinit();
+            var n: usize = 0;
+            for (al.list.items) |a| {
+                if (!std.mem.eql(u8, a.group, group)) continue;
+                var line: [256]u8 = undefined;
+                const what = poltergeistpkg.Alarms.traceLine(&line, .set, a, offset);
+                try out.writer.print("{s}{s}{s}", .{ if (n == 0) "" else "\n", what, if (a.due_ms <= now) " (due; waiting for an agent in the supervisor's terminal)" else "" });
+                n += 1;
+            }
+            if (n == 0) try out.writer.writeAll("No alarm is set for this group.");
+            return out.toOwnedSlice();
+        },
+        .cancel => |o| {
+            const a = al.cancel(o.group, o.id) orelse return error.NoSuchAlarm;
+            defer al.release(a);
+            self.saveAlarms();
+            self.alarmTrace(.cancelled, a, by);
+            self.considerSupervisorClocks();
+            return std.fmt.allocPrint(alloc, "Alarm {d} cancelled.", .{a.id});
+        },
+    }
+}
+
+/// Polter typed into terminal `id` (`Surface.typePoltergeistNotice`), or an
+/// agent in it called a Polter tool (`poltergeistRequest`): its supervisor
+/// is alive and its quiet starts again from now.
+pub fn noteHeard(self: *App, id: poltergeistpkg.Bus.Id) void {
+    self.alarmsHeld().noteHeard(id, self.poltergeistElapsedMs());
+}
+
+/// Ring what is due for a group that can be told, remind a supervisor that
+/// has heard nothing for too long, and arm the wake for the next of either
+/// (task 2148). On the app thread.
+fn considerSupervisorClocks(self: *App) void {
+    self.alarm_dirty = false;
+    const al = self.alarmsHeld();
+    const wall = self.poltergeistWallMs();
+    const now = self.poltergeistElapsedMs();
+    const offset = self.alarmOffsetS();
+
+    // Groups that are gone take their alarms with them.
+    const Exists = struct {
+        fn f(app: *App, group: []const u8) bool {
+            return app.chat.exists(group);
+        }
+        fn ready(app: *App, group: []const u8) bool {
+            const sup = app.groupSupervisor(group) orelse return false;
+            return app.agentPresent(sup) and app.findSurfaceByID(sup) != null;
+        }
+    };
+    var changed = al.forgetGroupsNotIn(self, Exists.f) > 0;
+
+    // And terminals that are gone take their quiet with them: the table is
+    // keyed by terminal id and would otherwise only grow (#2147's shape).
+    const Here = struct {
+        fn f(app: *App, id: u64) bool {
+            return app.findSurfaceByID(id) != null;
+        }
+    };
+    // Not `changed`: nothing about this is worth writing to `alarms.json`,
+    // which holds alarms and not quiet.
+    _ = al.forgetTerminalsNotIn(self, Here.f);
+
+    // Ring what is due, where somebody can hear it. A line not typed (the
+    // person is typing there) goes back and is tried again shortly.
+    var retry = false;
+    while (al.takeDue(wall, self, Exists.ready)) |a| {
+        const sup = self.groupSupervisor(a.group).?;
+        const surface = self.findSurfaceByID(sup).?;
+        var buf: [255]u8 = undefined;
+        const line = poltergeistpkg.Alarms.ringLine(&buf, a, wall, offset);
+        const typed = surface.typePoltergeistNotice(line) catch false;
+        if (!typed) {
+            al.restore(a) catch al.release(a);
+            retry = true;
+            break;
+        }
+        log.info("alarms: #{d} of {s} rang for {x}", .{ a.id, a.group, sup });
+        self.alarmTrace(.rang, a, sup);
+        al.release(a);
+        changed = true;
+    }
+    if (changed) self.saveAlarms();
+
+    // The quiet reminder, group by group. What each group comes to is
+    // `Alarms.plan`'s to decide, because both of round 1's defects were in
+    // that arithmetic and neither could be read here.
+    var next_quiet: ?u64 = null;
+    const after = self.poltergeist_silence_remind_ms;
+    // One arena for the loop, reset per group: `quietIn` allocates the
+    // member lists, and a group's list is dead the moment its turn is over.
+    var quiet_arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer quiet_arena.deinit();
+    var it = self.chat.groups.iterator();
+    while (it.next()) |kv| {
+        const group = kv.key_ptr.*;
+        defer _ = quiet_arena.reset(.retain_capacity);
+        const q = self.quietIn(quiet_arena.allocator(), group, now, wall) orelse continue;
+        const sup = poltergeistpkg.Alarms.supervisor(q) orelse continue;
+        var r = poltergeistpkg.Alarms.plan(q, now, poltergeistpkg.Alarms.waiting_recheck_ms);
+        if (r.say) {
+            const typed = if (self.findSurfaceByID(sup)) |surface| typed: {
+                var buf: [255]u8 = undefined;
+                const line = poltergeistpkg.Alarms.quietLine(&buf, group, after);
+                break :typed surface.typePoltergeistNotice(line) catch false;
+            } else false;
+            log.info("alarms: {s} quiet {d} ms, reminded {x} typed={}", .{ group, q.since_heard_ms, sup, typed });
+            if (!typed) {
+                // Nowhere it could be said: that is not a moment whose
+                // passing changes anything, so look again shortly rather
+                // than arm the moment that has already gone by.
+                retry = true;
+                r = .{ .say = false, .wake = now +| poltergeistpkg.Alarms.waiting_recheck_ms };
+            }
+        }
+        if (r.wake) |at| next_quiet = if (next_quiet) |t| @min(t, at) else at;
+    }
+
+    // The next moment: an alarm's, a quiet's, or a minute on while one is
+    // due with nobody to hear it or a line was refused.
+    var wake: ?u64 = next_quiet;
+    if (al.nextDue(wall)) |due| {
+        const at = now + @as(u64, @intCast(@max(due - wall, 0)));
+        wake = if (wake) |w| @min(w, at) else at;
+    }
+    if (retry or al.anyWaiting(wall)) {
+        const at = now + poltergeistpkg.Alarms.waiting_recheck_ms;
+        wake = if (wake) |w| @min(w, at) else at;
+    }
+    if (self.alarm_wake == null) {
+        self.alarm_wake = .{ .io = global.io(), .fire = alarmClockDue, .ctx = self };
+        self.alarm_wake.?.start() catch |err| {
+            // Once, not once per tick: see `alarm_wake_warned`.
+            if (!self.alarm_wake_warned) {
+                self.alarm_wake_warned = true;
+                log.warn("alarms: no wake thread; alarms ring only when something else happens err={}", .{err});
+            }
+            self.alarm_wake = null;
+            return;
+        };
+    }
+    self.alarm_wake.?.arm(wake, now);
+}
+
+/// Tasks of `group` not closed or cancelled -- `done` among them: the
+/// supervisor has still to check those (task 2148).
+///
+/// **Counted, not collected.** This used to build the whole panel for the
+/// group with `Tasks.inGroup` and throw it away, once per group per call --
+/// and in a Debug build each of those was an allocation with six frames of
+/// stack captured. The sample taken while the app thread burnt a core
+/// (2026-10-24, `§6`) is 770 of 965 samples inside here. The state it
+/// counts is the same one `Tasks.openInGroup` counts, so it is asked.
+fn unfinishedIn(self: *App, group: []const u8) usize {
+    return self.tasks.openInGroup(group);
+}
+
+fn alarmClockDue(ctx: *anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (self.poltergeist_stopping.load(.acquire)) return;
+    self.alarm_due.store(true, .release);
+    if (self.poltergeist_rt_app) |rt| rt.wakeup();
 }
 
 fn taskList(

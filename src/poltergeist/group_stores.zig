@@ -95,6 +95,10 @@ pub const Table = enum {
     /// left, for the one that comes back as its session to go back into
     /// (task 1978). Read at startup, held until claimed.
     reclaim_groups,
+
+    /// `Alarms.list`: each alarm names the group whose supervisor it rings
+    /// for (task 2148). Written to `alarms.json` when it changes.
+    alarms,
 };
 
 /// An open file or directory handle that points into a place a rename

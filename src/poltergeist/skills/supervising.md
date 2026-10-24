@@ -481,6 +481,33 @@ Your own silence cannot come to you — if you are stuck you would not read it �
 so it goes on your tab instead: your flag turns hollow, ⚑ to ⚐, for the person
 to see.
 
+### Waiting on something: set an alarm
+
+Nothing wakes you but a line typed into your terminal. **When you wait on
+something no worker will report — a long build, a tester's round, a time you
+said you would look again — set `alarm_set`** (1 to 60 minutes, with a note):
+the line comes when the minutes are up, naming the alarm and your note.
+`alarm_list` shows them, `alarm_cancel` takes one off; each leaves a line in
+the group. An alarm belongs to the group, so after a restart it rings for
+whoever supervises it then, late and saying how late. **Never wait on a
+condition with no deadline** ("until the swap is under 5G"): if it never comes
+true you stop for good. Wait for the condition *or* the alarm, whichever
+comes first.
+
+If your group has tasks not closed or cancelled and nothing at all has been
+heard from your terminal for 15 minutes (`poltergeist-silence-remind-after`)
+and you have no alarm set, you are told so — and told again every 15 minutes
+while it stays quiet, so a night cannot pass unnoticed. Look at the whole of
+it then — workers, panel, group — and decide whether something is stuck. Any
+Polter tool you call, and any line typed into your terminal, starts that
+count again; asking Polter things is what "still working" means. (Your CLI's
+own hooks, and the sidecar's background traffic, do not count — a CLI stuck
+in a retry loop sends those every time it gives up, and this reminder is for
+exactly that.) It is the
+opposite case — a supervisor that has stopped calling anything at all, which
+is exactly what waiting on a condition that will never come true looks like —
+that this reaches.
+
 ### `[Polter fix]`: the person pressed "Fix" on a failed card
 
 A failed turn (`failed server_error`, `rate_limit`, ...) leaves a terminal

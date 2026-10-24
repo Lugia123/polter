@@ -455,6 +455,14 @@ pub const Method = enum {
     /// arrangement.
     task_progress,
 
+    /// A supervisor's alarm for its group (task 2148): a line typed into
+    /// its terminal when the minutes are up, at most `Alarms.max_minutes`.
+    /// The group's supervisor's, and kept by group, so that it rings for
+    /// whoever that is after a restart.
+    alarm_set,
+    alarm_list,
+    alarm_cancel,
+
     /// The tasks in a group.
     ///
     /// **Two different answers to two different questions.** A supervisor
@@ -796,6 +804,9 @@ pub const Request = union(Method) {
     task_close: struct { task: u64 },
     task_cancel: struct { task: u64 },
     task_progress: struct { task: u64, progress: []const u8 },
+    alarm_set: struct { group: []const u8, minutes: u32, note: []const u8 = "" },
+    alarm_list: struct { group: []const u8 },
+    alarm_cancel: struct { group: []const u8, id: u64 },
     task_list: struct {
         group: []const u8,
 
@@ -1258,6 +1269,9 @@ pub fn callableByPlugin(method: Method) bool {
         .task_edit,
         .task_cancel,
         .task_progress,
+        .alarm_set,
+        .alarm_list,
+        .alarm_cancel,
         .task_list,
 
         // And a plugin has no group whose history it could be reading.
@@ -1588,6 +1602,12 @@ pub fn requiresSupervisor(method: Method) bool {
         .task_close,
         .task_edit,
         .task_cancel,
+        // A supervisor's own wake (task 2148): no worker has a group to
+        // set one for, and one set for somebody else's group would type
+        // into that group's supervisor.
+        .alarm_set,
+        .alarm_list,
+        .alarm_cancel,
         => true,
 
         // Reporting on your own work, and reading what you were given.
@@ -1694,6 +1714,9 @@ pub fn targetsTerminal(method: Method) bool {
         .task_edit,
         .task_cancel,
         .task_progress,
+        .alarm_set,
+        .alarm_list,
+        .alarm_cancel,
         .task_list,
         .task_history,
         => false,
@@ -1817,6 +1840,9 @@ pub fn target(req: Request) ?Bus.Id {
         .task_edit,
         .task_cancel,
         .task_progress,
+        .alarm_set,
+        .alarm_list,
+        .alarm_cancel,
         .task_list,
         .task_history,
         => null,
@@ -1927,6 +1953,9 @@ pub fn selfPermitted(req: Request) bool {
         .task_edit,
         .task_cancel,
         .task_progress,
+        .alarm_set,
+        .alarm_list,
+        .alarm_cancel,
         .task_list,
         .task_history,
 
@@ -2198,6 +2227,9 @@ pub fn promptReach(method: Method) enum {
         .task_close,
         .task_edit,
         .task_progress,
+        .alarm_set,
+        .alarm_list,
+        .alarm_cancel,
         .task_list,
         .task_history,
         .plugin_list,
@@ -2840,6 +2872,9 @@ test "only what changes the arrangement needs the supervisor" {
             .task_close,
             .task_edit,
             .task_cancel,
+            .alarm_set,
+            .alarm_list,
+            .alarm_cancel,
 
             // Rearranging a window is arranging, not operating.
             .terminal_layout,
@@ -6619,6 +6654,15 @@ pub const Host = struct {
             progress: []const u8,
         ) anyerror!void,
 
+        /// Set, list or cancel an alarm for a group `by` supervises
+        /// (task 2148); the answer is said to `by` as it is.
+        alarm: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            by: Bus.Id,
+            op: AlarmOp,
+        ) anyerror![]const u8,
+
         /// The tasks in a group.
         ///
         /// `whole_panel` decides which of the two questions is being
@@ -7128,6 +7172,10 @@ pub const Host = struct {
         return self.vtable.taskProgress(self.ctx, task, by, progress);
     }
 
+    fn alarm(self: Host, alloc: std.mem.Allocator, by: Bus.Id, op: AlarmOp) anyerror![]const u8 {
+        return self.vtable.alarm(self.ctx, alloc, by, op);
+    }
+
     fn taskList(
         self: Host,
         alloc: std.mem.Allocator,
@@ -7384,6 +7432,9 @@ pub fn isAgentCall(method: Method) bool {
         .task_close,
         .task_cancel,
         .task_progress,
+        .alarm_set,
+        .alarm_list,
+        .alarm_cancel,
         .task_list,
         .task_history,
         => true,
@@ -7397,9 +7448,23 @@ pub fn isAgentCall(method: Method) bool {
 /// made a terminal a supervisor, or had it put under watch, is counted on
 /// the entry that call created. A plugin is not a terminal and has no clock.
 pub fn noteCall(bus: *Bus, who: Bus.Caller, method: Method, now_ms: u64) void {
-    const id = who.terminalId() orelse return;
-    if (!isAgentCall(method)) return;
+    const id = heardByAgent(who, method) orelse return;
     bus.noteCall(id, now_ms);
+}
+
+/// The terminal whose **silence clocks** a request of this kind refreshes, or
+/// null when it refreshes none: the agent in `who` really calling a tool.
+///
+/// One function for two clocks, `Bus.noteCall`'s and the alarm reminder's
+/// (`App.noteHeard`), because they are one question -- "is this terminal's
+/// agent still working" -- and **two lists side by side would drift**. The
+/// hooks and the sidecar are excluded here for the reason `isAgentCall`
+/// states: a CLI stuck in a retry loop sends an `agent_event` every time it
+/// gives up, and counting those would keep its own clock fresh for ever --
+/// which is the one state both clocks exist to report.
+pub fn heardByAgent(who: Bus.Caller, method: Method) ?Bus.Id {
+    if (!isAgentCall(method)) return null;
+    return who.terminalId();
 }
 
 pub fn dispatch(
@@ -9263,6 +9328,10 @@ fn dispatchOne(
             return .ok;
         },
 
+        .alarm_set => |p| return alarmAnswer(host.alarm(alloc, caller, .{ .set = .{ .group = p.group, .minutes = p.minutes, .note = p.note } })),
+        .alarm_list => |p| return alarmAnswer(host.alarm(alloc, caller, .{ .list = .{ .group = p.group } })),
+        .alarm_cancel => |p| return alarmAnswer(host.alarm(alloc, caller, .{ .cancel = .{ .group = p.group, .id = p.id } })),
+
         .task_list => |p| {
             // **The two filters, chosen here and nowhere else.** A
             // supervisor is asking what the night's work looks like; a
@@ -10474,6 +10543,36 @@ fn launcherAnswer(answer: anyerror![]const u8) wire.Response {
     return .{ .json = text };
 }
 
+/// What an alarm call asks the host (task 2148).
+pub const AlarmOp = union(enum) {
+    set: struct { group: []const u8, minutes: u32, note: []const u8 },
+    list: struct { group: []const u8 },
+    cancel: struct { group: []const u8, id: u64 },
+};
+
+fn alarmAnswer(answer: anyerror![]const u8) wire.Response {
+    const text = answer catch |err| return switch (err) {
+        error.NoSuchGroup => hostFailure("NoSuchGroup", "no group by that name."),
+        error.NotTheGroupsSupervisor => hostFailure(
+            "NotPermitted",
+            "an alarm is for the supervisor of that group, which you are not.",
+        ),
+        error.BadMinutes => hostFailure(
+            "BadParams",
+            "an alarm is 1 to 60 minutes. For longer, have a worker report, or set " ++
+                "another alarm when this one rings.",
+        ),
+        error.TooManyAlarms => hostFailure(
+            "TooManyAlarms",
+            "a group holds 3 alarms at once. alarm_list shows them; alarm_cancel takes one off.",
+        ),
+        error.NoteTooLong => hostFailure("BadParams", "an alarm's note is 160 bytes at most."),
+        error.NoSuchAlarm => hostFailure("NoSuchAlarm", "no alarm by that number in that group. alarm_list shows them."),
+        else => taskFailure(err),
+    };
+    return .{ .text = text };
+}
+
 fn taskFailure(err: anyerror) wire.Response {
     return switch (err) {
         error.LogsClosed => chatFailure(err),
@@ -11504,6 +11603,7 @@ const FakeHost = struct {
             .taskOwner = taskOwner,
             .taskCancel = taskCancel,
             .taskProgress = taskProgress,
+            .alarm = alarm,
             .taskList = taskList,
             .taskHistory = taskHistory,
         } };
@@ -11665,6 +11765,16 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const panel = self.panel orelse return error.NotImplemented;
         return panel.cancel(task);
+    }
+
+    fn alarm(ctx: *anyopaque, alloc: std.mem.Allocator, by: Bus.Id, op: AlarmOp) anyerror![]const u8 {
+        _ = ctx;
+        _ = by;
+        return switch (op) {
+            .set => |s| try std.fmt.allocPrint(alloc, "set {d}", .{s.minutes}),
+            .list => try alloc.dupe(u8, "none"),
+            .cancel => error.NoSuchAlarm,
+        };
     }
 
     fn taskProgress(
@@ -15846,6 +15956,18 @@ test "2156: the launchers are a supervisor's to change, and a worker is refused 
     try authorize(&b, term(boss), .{ .launcher_delete = .{ .key = "x" } });
 }
 
+test "2148: an alarm is its group's supervisor's, and a worker is refused before the host is asked" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    for ([_]Method{ .alarm_set, .alarm_list, .alarm_cancel }) |m| {
+        try testing.expect(requiresSupervisor(m));
+        try testing.expect(!callableByPlugin(m));
+    }
+    const refused = authorize(&b, term(worker), .{ .alarm_set = .{ .group = "build", .minutes = 10 } });
+    try testing.expectError(error.NotPermitted, refused);
+    try authorize(&b, term(boss), .{ .alarm_set = .{ .group = "build", .minutes = 10 } });
+}
+
 test "no panel tool is a plugin's" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -18080,6 +18202,38 @@ test "1779: terminal_list says how full the context is, and says no number as no
     try testing.expect(std.mem.indexOf(u8, w.buffered(),
         \\"context":{"said":"used","used_percent":73,"age_ms":2000}
     ) != null);
+}
+
+test "2148: what counts as an agent calling is one answer, and the reminder asks it" {
+    // ⚠️ **Round 2's second defect.** The silence reminder's clock must not
+    // be refreshed by traffic the agent did not send, or the one terminal it
+    // exists for never gets it: a CLI stuck in a retry loop sends an
+    // `agent_event` every time it gives up. That is the same reason
+    // `isAgentCall` exists for `noteCall` (task 1503), so the reminder asks
+    // **that function** rather than keeping a second list that can drift
+    // from it.
+    //
+    // The assertion is about the pair, not the list: every method the app
+    // would not count as a call is a method the reminder does not count
+    // either, and the ones it does count are the ones a person would call
+    // calls.
+    for ([_]Method{ .agent_event, .hook_context, .persona_face, .persona_slot, .session_file, .persona_wait }) |m| {
+        try testing.expect(!isAgentCall(m));
+    }
+    for ([_]Method{ .me, .task_list, .group_read, .group_post, .alarm_set, .terminal_list, .notices }) |m| {
+        try testing.expect(isAgentCall(m));
+    }
+
+    // **And the door both clocks go through**: the agent's own terminal for
+    // a call, nobody for a hook, and nobody for a plugin (which is not a
+    // terminal and has no clock at all).
+    try testing.expectEqual(@as(?Bus.Id, worker), heardByAgent(term(worker), .group_read));
+    try testing.expectEqual(@as(?Bus.Id, worker), heardByAgent(term(worker), .task_progress));
+    try testing.expectEqual(@as(?Bus.Id, worker), heardByAgent(term(worker), .alarm_set));
+    try testing.expectEqual(@as(?Bus.Id, null), heardByAgent(term(worker), .agent_event));
+    try testing.expectEqual(@as(?Bus.Id, null), heardByAgent(term(worker), .hook_context));
+    try testing.expectEqual(@as(?Bus.Id, null), heardByAgent(term(worker), .persona_wait));
+    try testing.expectEqual(@as(?Bus.Id, null), heardByAgent(plug(&.{}), .group_read));
 }
 
 test "1779: hook_context is the asking terminal's, for its hooks: no tool, no call, no plugin" {

@@ -1590,6 +1590,17 @@ command: ?Command = null,
 /// line and the tab.
 @"poltergeist-calls-silent-after": Duration = .{ .duration = 15 * std.time.ns_per_min },
 
+/// How long a group's supervisor may go with nothing heard from its terminal
+/// -- no line typed into it by Polter (a quiet report, a group mention, an
+/// alarm) and no Polter tool called by the agent in it (`rpc.isAgentCall`:
+/// a CLI's own hooks and the sidecar's traffic are not calls) -- while its
+/// group has tasks not closed or cancelled, before it is reminded to look
+/// at the whole of it
+/// (task 2148). The reminder then repeats every this long while the silence
+/// lasts. Not while it has an alarm set: it said when it wants to be woken.
+/// Time the machine is asleep is not counted. `0` switches the reminder off.
+@"poltergeist-silence-remind-after": Duration = .{ .duration = 15 * std.time.ns_per_min },
+
 /// How long Polter's app thread may spend on one thing before it is written
 /// in the log.
 ///

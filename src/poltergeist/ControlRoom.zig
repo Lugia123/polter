@@ -393,6 +393,7 @@ const AgentEvent = @import("agent_event.zig");
 const ShellSteps = @import("ShellSteps.zig");
 const quota = @import("quota.zig");
 const Tasks = @import("Tasks.zig");
+const Alarms = @import("Alarms.zig");
 const ControlFix = @import("ControlFix.zig");
 const ControlAsk = @import("ControlAsk.zig");
 const TakeOver = @import("TakeOver.zig");
@@ -5121,6 +5122,81 @@ fn lastIn(dir: []const u8, from: Chat.LastSupervisor.DirFrom) Chat.LastSuperviso
 
 fn noRuns(_: *anyopaque, _: Id, _: ?Bus.Program) bool {
     return false;
+}
+
+test "2148: the alarm's rule for a group's supervisor is this file's rule, case for case" {
+    // ⚠️ **One rule, two implementations, and this is what keeps them one.**
+    // `Alarms.supervisor` (which the alarm and the silence reminder go by)
+    // is `stewardAmong` written again in another file, because an `Alarms`
+    // cannot reach an `App`. Neither file is read while the other is being
+    // edited, so the two are asserted equal here, on the states that
+    // differ -- every branch, not a happy path.
+    //
+    // The cases are the ones round 2 got wrong by reading `created_by`
+    // alone: the person's group, a take-over, and a restart.
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // (1) A supervisor made the group and still minds it.
+    try w.steward(0xa1, "own", 0x21, "own");
+    try w.hook(0xa1, .turn_started, null, 100);
+    w.bus.noteAgentHere(0xa1, true, .{ .pid = 9, .started = 1 }, 200);
+
+    // (2) The person's group (`created_by == user_id`), with a supervisor
+    //     the control room started into it.
+    try w.chat.create("people", Chat.user_id);
+    try w.terminal(0xb1, "boss", 0x22);
+    try w.bus.addSupervisor(0xb1);
+    try w.chat.add("people", 0xb1, .all, .{});
+    try w.hook(0xb1, .turn_started, null, 100);
+    w.bus.noteAgentHere(0xb1, true, .{ .pid = 10, .started = 1 }, 200);
+
+    // This one is asserted here rather than at the end: the take-over below
+    // stands 0xa1 down, and after that it is not "own"'s supervisor either.
+    try testing.expectEqual(@as(?Id, 0xa1), Alarms.supervisorOfGroup(a, &w.bus, &w.chat, "own"));
+
+    // (3) Taken over: 0xa1 made it and has since stood down, 0xa2 minds it
+    //     now. The standing down is what makes it a take-over -- a creator
+    //     that is still minding the group *is* the group's supervisor, and
+    //     this is the case the two rules could disagree about.
+    w.bus.removeSupervisor(0xa1);
+    try w.chat.create("taken", 0xa1);
+    try w.terminal(0xa2, "taker", 0x23);
+    try w.bus.addSupervisor(0xa2);
+    try w.chat.add("taken", 0xa2, .all, .{});
+    try w.hook(0xa2, .turn_started, null, 100);
+    w.bus.noteAgentHere(0xa2, true, .{ .pid = 11, .started = 1 }, 200);
+
+    // (4) A member that minds nobody: a supervisor whose agent has gone.
+    try w.chat.create("gone", 0xa1);
+    try w.terminal(0xa3, "left", 0x24);
+    try w.bus.addSupervisor(0xa3);
+    try w.chat.add("gone", 0xa3, .all, .{});
+    try w.hook(0xa3, .turn_started, null, 100);
+    w.bus.noteAgentHere(0xa3, false, null, 300);
+    var ctx: u8 = 0;
+    _ = w.bus.considerLinks(300 + Bus.link_grace_ms, &ctx, noRuns);
+
+    // (5) No supervisor in it at all.
+    try w.chat.create("plain", Chat.user_id);
+
+    for ([_][]const u8{ "own", "people", "taken", "gone", "plain", "no-such-group" }) |group| {
+        const members = w.chat.membersOf(a, group) catch &.{};
+        try testing.expectEqual(
+            stewardAmong(&w.bus, &w.chat, group, members),
+            Alarms.supervisorOfGroup(a, &w.bus, &w.chat, group),
+        );
+    }
+
+    // And the answers are the ones the cases say, so a pair of nulls does
+    // not pass for agreement.
+    try testing.expectEqual(@as(?Id, 0xb1), Alarms.supervisorOfGroup(a, &w.bus, &w.chat, "people"));
+    try testing.expectEqual(@as(?Id, 0xa2), Alarms.supervisorOfGroup(a, &w.bus, &w.chat, "taken"));
+    try testing.expectEqual(@as(?Id, null), Alarms.supervisorOfGroup(a, &w.bus, &w.chat, "gone"));
+    try testing.expectEqual(@as(?Id, null), Alarms.supervisorOfGroup(a, &w.bus, &w.chat, "plain"));
 }
 
 test "1762: a supervisor whose agent has left minds nothing, so one can be started; back with its next hook" {

@@ -4422,6 +4422,9 @@ pub fn typePoltergeistNotice(self: *Surface, text: []const u8) !bool {
         else => return err,
     };
     log.info("poltergeist: notice id={x} typed and submitted", .{self.id});
+    // Something reached this terminal: a supervisor's quiet starts again
+    // (task 2148, `App.considerSupervisorClocks`).
+    self.app.noteHeard(self.id);
     return true;
 }
 

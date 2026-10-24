@@ -1675,6 +1675,27 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "alarm_set",
+        .description = "Set yourself an alarm for a group you supervise: when the minutes are up, Polter types a line into your terminal naming the alarm and your note. **1 to 60 minutes** -- longer is refused; set another when it rings. Use it whenever you wait on something with no report to wake you: a build a worker is running, a tester's round, a time you said you would look again. A group holds 3 at once. Setting, cancelling and ringing each leave a line in the group, mentioning nobody. **Kept by group, not by terminal**: after a restart it rings for whoever then supervises the group; one due while the group has no supervisor, or none with an agent, waits and rings late, saying how late. While one is set you are not given the quiet reminder (`poltergeist-silence-remind-after`). Supervisor of that group only.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"},"minutes":{"type":"integer","minimum":1,"maximum":60},"note":{"type":"string","maxLength":160}},"required":["group","minutes"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "alarm_list",
+        .description = "The alarms set for a group you supervise: number, minutes, when each is due and its note; one past due says it is waiting for an agent in the supervisor's terminal. Supervisor of that group only.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"}},"required":["group"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "alarm_cancel",
+        .description = "Take an alarm off before it rings, by the number alarm_set or alarm_list gave. A line in the group says so. Supervisor of that group only.",
+        .schema =
+        \\{"type":"object","properties":{"group":{"type":"string"},"id":{"type":"integer"}},"required":["group","id"],"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "task_history",
         .description = "What happened to a group's panel, out of the record on disk. task_list says where each task stands now; this says when it got there -- created, assigned, progressed, closed, cancelled, each with a timestamp. This is what answers \"what happened last night\": how long a task has sat untouched, which ones were handed to a third terminal after two gave them back, how many were closed while you were asleep. Page it the way group_history is paged: pass the smallest `seq` you have seen as `before_seq` for the batch before it, and `more: false` means you have reached the beginning. Read the numbers; do not let them read you -- a task open for two days may be stalled or may be a standing lease that is *meant* to stay open, and nothing here can tell those apart.",
         .schema =
