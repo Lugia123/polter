@@ -485,8 +485,9 @@ const Group = struct {
     /// Unlike the messages, which accumulate behind a cursor, a task's
     /// state changes in place: there is no "what is new" to ask for, so
     /// the whole panel comes back each time and the old one is dropped.
-    /// It is short by construction -- one line per task -- so this costs
-    /// nothing worth a cursor.
+    /// Its strings live in `Chat.panel`, never in `store`: a copy of every
+    /// title and every progress note on every poll is what grew one
+    /// embedded window to 22G overnight (task 2147).
     tasks: std.ArrayListUnmanaged(Task) = .empty,
 
     /// Highest seq seen, so each poll asks only for what is new.
@@ -505,12 +506,75 @@ const Group = struct {
     history_done: bool = false,
 };
 
+/// Where the strings a poll replaces whole are kept: two arenas, taken in
+/// turn.
+///
+/// **Two, because a poll can fail half way.** One arena reset at the top of
+/// `refresh` frees what the screen is still drawing from when the next
+/// call fails, and the frame after the error reads freed memory. So a poll
+/// writes into the half nobody points at, and only once the groups list
+/// has been emptied -- after which every group on it is rebuilt from that
+/// half -- does it become the half that is read. A poll that fails before
+/// then leaves the old half where it was, and the next one reuses the same
+/// spare.
+const Panel = struct {
+    halves: [2]std.heap.ArenaAllocator,
+    live: u1 = 0,
+
+    fn init(alloc: Allocator) Panel {
+        return .{ .halves = .{ .init(alloc), .init(alloc) } };
+    }
+
+    fn deinit(self: *Panel) void {
+        for (&self.halves) |*half| half.deinit();
+    }
+
+    /// The spare half, emptied. Nothing on screen points into it.
+    fn begin(self: *Panel) Allocator {
+        const spare = &self.halves[self.live ^ 1];
+        _ = spare.reset(.retain_capacity);
+        return spare.allocator();
+    }
+
+    /// The groups now point only into what `begin` handed out.
+    fn commit(self: *Panel) void {
+        self.live ^= 1;
+    }
+};
+
+/// A group's members from a `group_members` reply. The list lives in
+/// `lists`, which keeps its capacity from poll to poll; the strings in
+/// `strings`, which the next poll but one throws away.
+fn fillMembers(group: *Group, lists: Allocator, strings: Allocator, v: std.json.Value) Allocator.Error!void {
+    for (arrayField(v, "members") catch &.{}) |item| {
+        const title = stringField(item, "title") orelse continue;
+        try group.members.append(lists, .{
+            .id = try strings.dupe(u8, stringField(item, "id") orelse ""),
+            .title = try strings.dupe(u8, title),
+        });
+    }
+}
+
+/// A group's panel from a `task_list` reply, kept the way `fillMembers`
+/// keeps the members.
+fn fillTasks(group: *Group, lists: Allocator, strings: Allocator, v: std.json.Value) Allocator.Error!void {
+    for (arrayField(v, "tasks") catch &.{}) |item| {
+        try group.tasks.append(lists, .{
+            .id = u64Field(item, "task"),
+            .title = try strings.dupe(u8, stringField(item, "title") orelse ""),
+            .owner = try strings.dupe(u8, stringField(item, "owner") orelse ""),
+            .state = try strings.dupe(u8, stringField(item, "state") orelse ""),
+            .progress = try strings.dupe(u8, stringField(item, "progress") orelse ""),
+        });
+    }
+}
+
 const Chat = struct {
     alloc: Allocator,
     io: std.Io,
     host: *Host,
 
-    /// Names and member lists, rebuilt on each refresh.
+    /// Replies and the names in them, for the length of one refresh.
     arena: std.heap.ArenaAllocator,
 
     /// Messages, which outlive a refresh.
@@ -521,6 +585,9 @@ const Chat = struct {
     /// frozen on the first screenful once replies started being capped --
     /// every poll asked from zero and got the same oldest batch back.
     store: std.heap.ArenaAllocator,
+
+    /// Briefs, members and tasks: everything a poll replaces whole.
+    panel: Panel,
 
     /// Strings made while drawing one frame, and nothing else.
     ///
@@ -803,6 +870,7 @@ const Chat = struct {
             .host = host,
             .arena = .init(alloc),
             .store = .init(alloc),
+            .panel = .init(alloc),
             .frame = .init(alloc),
             .events_arena = .init(alloc),
             .tty = try .init(io, tty_buf),
@@ -831,6 +899,7 @@ const Chat = struct {
         self.frame.deinit();
         self.arena.deinit();
         self.store.deinit();
+        self.panel.deinit();
         self.events_arena.deinit();
     }
 
@@ -933,6 +1002,7 @@ const Chat = struct {
         _ = self.arena.reset(.retain_capacity);
         const arena = self.arena.allocator();
         const store = self.store.allocator();
+        const panel = self.panel.begin();
 
         var names: std.ArrayListUnmanaged([]const u8) = .empty;
         var briefs: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -951,15 +1021,19 @@ const Chat = struct {
         defer kept.deinit(self.alloc);
         try kept.appendSlice(self.alloc, self.groups.items);
         self.groups.clearRetainingCapacity();
+        // Every group from here on is rebuilt from `panel` before it goes
+        // back on the list, so the half the screen was reading is free.
+        self.panel.commit();
 
         for (names.items, 0..) |name, gi| {
             var group: Group = for (kept.items) |old| {
                 if (std.mem.eql(u8, old.name, name)) break old;
             } else .{ .name = try store.dupe(u8, name) };
 
-            group.brief = briefs.items[gi];
+            group.brief = try panel.dupe(u8, briefs.items[gi]);
 
             group.members.clearRetainingCapacity();
+            group.tasks.clearRetainingCapacity();
             {
                 var buf: [256]u8 = undefined;
                 const line = try std.fmt.bufPrint(
@@ -968,19 +1042,12 @@ const Chat = struct {
                     .{name},
                 );
                 const v = try self.host.callJson(arena, line);
-                for (arrayField(v, "members") catch &.{}) |item| {
-                    const title = stringField(item, "title") orelse continue;
-                    try group.members.append(store, .{
-                        .id = try store.dupe(u8, stringField(item, "id") orelse ""),
-                        .title = try store.dupe(u8, title),
-                    });
-                }
+                try fillMembers(&group, store, panel, v);
             }
 
             // The panel, whole. Tolerated rather than required: a host
             // that does not know the tool leaves the tab empty, which is
             // the honest picture, not a reason to take the window down.
-            group.tasks.clearRetainingCapacity();
             {
                 var buf: [256]u8 = undefined;
                 const line = try std.fmt.bufPrint(
@@ -989,15 +1056,7 @@ const Chat = struct {
                     .{name},
                 );
                 const v = self.host.callJson(arena, line) catch std.json.Value.null;
-                for (arrayField(v, "tasks") catch &.{}) |item| {
-                    try group.tasks.append(store, .{
-                        .id = u64Field(item, "task"),
-                        .title = try store.dupe(u8, stringField(item, "title") orelse ""),
-                        .owner = try store.dupe(u8, stringField(item, "owner") orelse ""),
-                        .state = try store.dupe(u8, stringField(item, "state") orelse ""),
-                        .progress = try store.dupe(u8, stringField(item, "progress") orelse ""),
-                    });
-                }
+                try fillTasks(&group, store, panel, v);
             }
 
             // Asked repeatedly while the host says there is more, so a
@@ -4246,4 +4305,71 @@ test "a group session.json does not list has no members recalled (#1524)" {
     try testing.expectEqual(@as(usize, 0), out.items.len);
     try recalledIn(arena.allocator(), notes, "web", &out);
     try testing.expectEqual(@as(usize, 1), out.items.len);
+}
+
+test "2147: a window left open for many polls holds one panel's worth, not one per poll" {
+    const alloc = testing.allocator;
+
+    // A panel the size of a busy group's: titles and progress notes long
+    // enough that a copy per poll shows up in the arena's capacity.
+    var reply: std.ArrayListUnmanaged(u8) = .empty;
+    defer reply.deinit(alloc);
+    try reply.appendSlice(alloc, "{\"members\":[{\"id\":\"0x1\",\"title\":\"worker\"}],\"tasks\":[");
+    for (0..64) |i| {
+        if (i > 0) try reply.append(alloc, ',');
+        try reply.print(alloc, "{{\"task\":{d},\"title\":\"{s}\",\"owner\":\"0x1\",\"state\":\"open\",\"progress\":\"{s}\"}}", .{
+            i, "t" ** 200, "p" ** 400,
+        });
+    }
+    try reply.appendSlice(alloc, "]}");
+
+    var json: std.heap.ArenaAllocator = .init(alloc);
+    defer json.deinit();
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, json.allocator(), reply.items, .{});
+
+    var store: std.heap.ArenaAllocator = .init(alloc);
+    defer store.deinit();
+    var panel: Panel = .init(alloc);
+    defer panel.deinit();
+    var group: Group = .{ .name = "polter" };
+
+    // The shape of `refresh`: take the spare half, switch to it, rebuild.
+    var settled_store: usize = 0;
+    var settled_panel: usize = 0;
+    for (0..200) |round| {
+        const strings = panel.begin();
+        panel.commit();
+        group.members.clearRetainingCapacity();
+        group.tasks.clearRetainingCapacity();
+        try fillMembers(&group, store.allocator(), strings, v);
+        try fillTasks(&group, store.allocator(), strings, v);
+        if (round == 2) {
+            settled_store = store.queryCapacity();
+            settled_panel = panel.halves[0].queryCapacity() + panel.halves[1].queryCapacity();
+        }
+    }
+
+    const store_after = store.queryCapacity();
+    const panel_after = panel.halves[0].queryCapacity() + panel.halves[1].queryCapacity();
+    try testing.expectEqual(settled_store, store_after);
+    try testing.expectEqual(settled_panel, panel_after);
+    try testing.expectEqual(@as(usize, 64), group.tasks.items.len);
+    try testing.expectEqualStrings("p" ** 400, group.tasks.items[63].progress);
+    try testing.expectEqualStrings("worker", group.members.items[0].title);
+}
+
+test "2147: a poll that fails before the switch leaves the half on screen alone" {
+    var panel: Panel = .init(testing.allocator);
+    defer panel.deinit();
+
+    const first = panel.begin();
+    const shown = try first.dupe(u8, "on screen");
+    panel.commit();
+
+    // Two polls that fail before `commit`: each empties the spare, never
+    // the half `shown` is in. The same length as `shown`, so that emptying
+    // the wrong half would put these bytes exactly where it was.
+    _ = try panel.begin().dupe(u8, "xxxxxxxxx");
+    _ = try panel.begin().dupe(u8, "yyyyyyyyy");
+    try testing.expectEqualStrings("on screen", shown);
 }
