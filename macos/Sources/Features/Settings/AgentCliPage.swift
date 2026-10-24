@@ -122,7 +122,7 @@ struct AgentCliPage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: L.rowGap) {
-                Text("Agent CLI").fontWeight(.semibold)
+                Text(String(localized: "Agent CLI", comment: "Agent CLI 设置页：标题（名字，不翻译）")).fontWeight(.semibold)
                 table
                 if let draft = model.draft, let page = model.page {
                     form(draft, page: page)
@@ -246,7 +246,7 @@ struct AgentCliPage: View {
         VStack(alignment: .leading, spacing: L.rowGap) {
             ForEach(draft.env.indices, id: \.self) { i in
                 HStack(spacing: L.rowGap) {
-                    TextField("NAME", text: Binding(get: { model.draft!.env[i].name }, set: { model.draft!.env[i].name = $0 }))
+                    TextField(String(localized: "Variable name", comment: "Agent CLI 设置页：环境变量名输入框的占位"), text: Binding(get: { model.draft!.env[i].name }, set: { model.draft!.env[i].name = $0 }))
                         .textFieldStyle(.roundedBorder).frame(width: 200)
                     TextField("", text: Binding(get: { model.draft!.env[i].value }, set: { model.draft!.env[i].value = $0 }))
                         .textFieldStyle(.roundedBorder)
