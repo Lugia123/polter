@@ -26,6 +26,33 @@ struct ControlRoomListScrollTests {
         ((view as? NSScrollView).map { [$0] } ?? []) + view.subviews.flatMap(scrollViews)
     }
 
+    /// Until the list stops moving: its scroll view there and at the same
+    /// offset for `still` turns of the main actor in a row -- as long as
+    /// the fixed 15 turns this waited before, and longer while it scrolls
+    /// -- at most `turns` of them (task 2157). Counted, not timed, and
+    /// not counted on a fixed number either: in the whole suite the other
+    /// tests on the main actor run between these turns, and a scroll still
+    /// on its way was read as where it stopped. Not settled is a failure.
+    static func settle(_ host: NSView, still: Int = 15, turns: Int = 1000, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        var last: CGFloat?, same = 0
+        for _ in 0 ..< turns {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            host.layoutSubtreeIfNeeded()
+            let now = scrollViews(in: host).first?.contentView.bounds.origin.y
+            if let now, now == last {
+                same += 1
+                if same >= still { return }
+            } else {
+                same = 0
+            }
+            last = now
+        }
+        Issue.record("the list did not settle in \(turns) turns of the main actor", sourceLocation: sourceLocation)
+        throw Unsettled()
+    }
+
+    struct Unsettled: Error {}
+
     @Test func theSelectedRowIsScrolledWhollyIntoSight() async throws {
         var list = ControlRoomList.sample
         let one = list.quiet[0]
@@ -40,11 +67,8 @@ struct ControlRoomListScrollTests {
         host.frame = NSRect(x: 0, y: 0, width: 400, height: 824)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: true)
         window.contentView = host
-        func settle() async throws {
-            for _ in 0 ..< 15 {
-                try await Task.sleep(nanoseconds: 20_000_000)
-                host.layoutSubtreeIfNeeded()
-            }
+        func settle(sourceLocation: SourceLocation = #_sourceLocation) async throws {
+            try await Self.settle(host, sourceLocation: sourceLocation)
         }
         try await settle()
         let scrollView = try #require(Self.scrollViews(in: host).first)
@@ -112,11 +136,8 @@ struct ControlRoomListScrollTests {
         host.frame = NSRect(x: 0, y: 0, width: 400, height: 824)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: true)
         window.contentView = host
-        func settle() async throws {
-            for _ in 0 ..< 15 {
-                try await Task.sleep(nanoseconds: 20_000_000)
-                host.layoutSubtreeIfNeeded()
-            }
+        func settle(sourceLocation: SourceLocation = #_sourceLocation) async throws {
+            try await Self.settle(host, sourceLocation: sourceLocation)
         }
         try await settle()
         let scrollView = try #require(Self.scrollViews(in: host).first)

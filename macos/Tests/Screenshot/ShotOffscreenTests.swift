@@ -1626,10 +1626,25 @@ struct ShotOffscreenAutoScrollTests {
         var parked: Parked
     }
 
-    private func wait(_ seconds: TimeInterval = 240, until done: () -> Bool) async throws {
-        let end = Date().addingTimeInterval(seconds)
-        while !done(), Date() < end { try await Task.sleep(nanoseconds: 20_000_000) }
+    /// Until `done`, a turn of the main actor at a time, at most `turns` of
+    /// them (task 2157). **Counted, not timed**: in the whole suite every
+    /// test on the main actor shares it, and a step of the session's
+    /// (`DispatchQueue.main.asyncAfter`) waits behind the others' work, so
+    /// a deadline on the clock ran out while the session had had only a
+    /// few turns -- a different test red on each run, all of them waiting
+    /// ones. A turn spent waiting for the main actor is not counted here.
+    /// Not reached is a failure at the caller's line, not a silent return.
+    private func wait(turns: Int = 3000, until done: () -> Bool, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        for _ in 0 ..< turns {
+            if done() { return }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        if done() { return }
+        Issue.record("not reached in \(turns) turns of the main actor", sourceLocation: sourceLocation)
+        throw WaitedInVain()
     }
+
+    struct WaitedInVain: Error {}
 
     private func rows(_ image: ComposedImage) -> [UInt8] {
         guard let cg = image.cgImage(), let bytes = ShotRenderer.rgbx(of: cg) else { return [] }

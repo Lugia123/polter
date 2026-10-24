@@ -50,11 +50,17 @@ struct ConfigFormWriteTests {
 
     /// Let the reload that `set` asked for arrive (it comes back through
     /// the app's config-change action).
-    private func settle(until done: () -> Bool) {
-        let deadline = Date().addingTimeInterval(3)
-        while !done() && Date() < deadline {
+    /// Until `done`, the main run loop a slice at a time, at most `turns`
+    /// slices of 0.05 s (task 2157). **Counted, not timed**: in the whole
+    /// suite the run loop here also runs other tests' work on the main
+    /// actor, which used up a 3-second deadline before the reload had been
+    /// read. Not reached is recorded at the caller's line.
+    private func settle(turns: Int = 600, until done: () -> Bool, sourceLocation: SourceLocation = #_sourceLocation) {
+        for _ in 0 ..< turns {
+            if done() { return }
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
+        if !done() { Issue.record("not reached in \(turns) turns of the run loop", sourceLocation: sourceLocation) }
     }
 
     private func appFontSize(_ ghostty: Ghostty.App) -> Float? {
