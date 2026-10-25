@@ -68,6 +68,7 @@ const Allocator = std.mem.Allocator;
 const Action = @import("ghostty.zig").Action;
 const global = @import("../global.zig");
 const mcp = @import("mcp.zig");
+const readline = @import("readline.zig");
 
 const log = std.log.scoped(.mcp_slot);
 
@@ -76,9 +77,53 @@ const log = std.log.scoped(.mcp_slot);
 /// running to answer for itself.
 const protocol_version = "2024-11-05";
 
-/// Longest line either side may send. The host caps its own replies below
-/// this; an upstream's tool list is the large case here.
+/// The reader's fill window on every stream this file reads.
+///
+/// ⚠️ **This used to be the whole ceilling, and it was a bug** (task 2236,
+/// whose shape is `readline.zig`'s and #2170's). The reads were
+/// `takeDelimiter`, which reads only as far as the reader's buffer and
+/// answers `StreamTooLong` past it, so 1 MiB was how long a line could be --
+/// a number nobody chose, being the size of a buffer that exists for another
+/// reason. What it cost was different at each of the four call sites and
+/// every one of them was silent: the client's own request killed this
+/// process, an upstream's `initialize` reply was reported as a closed
+/// upstream, and an upstream's ordinary reply **ended the drain thread**,
+/// after which the upstream could say anything at all and the client would
+/// never hear it again.
+///
+/// Now it is a window: `readline.readLine` streams through it into a buffer
+/// that grows, so a line is however long it needs to be. The size is
+/// unchanged, because nothing here was ever short of memory -- what was
+/// wrong was treating a buffer as a limit.
 const max_line = 1024 * 1024;
+
+/// Longest line this process will read, and why it is not a number chosen
+/// here.
+///
+/// **Both sides of this file are other people's.** The client is an agent
+/// CLI sending JSON-RPC requests to be forwarded to an upstream MCP server;
+/// the upstream is a program this file did not write, and its answers are
+/// its own business. A tool call carrying a file's worth of arguments, and a
+/// `tools/list` carrying every tool an upstream has, are the ordinary large
+/// cases -- and neither has a length this file is entitled to decide. So the
+/// cap is `readline.max_reply`, the same "we are carrying bytes and not
+/// choosing how many" number `cli/mcp.zig` and `cli/chat.zig` read replies
+/// with: far past anything either protocol produces, and still finite, so a
+/// peer that has gone wrong cannot make this allocate without end.
+const max_read = readline.max_reply;
+
+/// What an over-long client request is answered with.
+///
+/// **An answer rather than an exit.** The old read left this process
+/// (`try` in `serve`, out of `run`) on a request of 1 MiB or more, and the
+/// agent's whole MCP server went with it. The id is null because it cannot
+/// be known: it is inside the part that was not read, and JSON-RPC reserves
+/// null for exactly this.
+const too_long_line = "that request is too long for this slot to read. The " ++
+    "upstream server is fine and the connection is still open: the line was " ++
+    "discarded to its newline, and the next one will be read as usual. A " ++
+    "request this long is almost always a call whose arguments should have " ++
+    "been a file.";
 
 /// How long to wait before reconnecting to Polter, and the ceiling that
 /// backoff climbs to.
@@ -665,6 +710,16 @@ const Slot = struct {
     /// Set once the client's stdin closes, to bring the watcher down.
     done: std.atomic.Value(bool) = .init(false),
 
+    /// How long a line from the client may be.
+    ///
+    /// A field rather than `max_read` itself for one reason, the same one
+    /// `cli/mcp.zig`'s `Host.reply_cap` has: **a test cannot otherwise reach
+    /// what happens past the cap.** Reaching it for real means writing 64 MiB
+    /// through a socket, and the branch that answers an over-long request
+    /// would then be exercised by nothing. Every product path uses the
+    /// constant.
+    read_cap: usize = max_read,
+
     /// Counts how many times the `min_wait_ms` floor actually slept.
     ///
     /// **An instrument, not a switch.** It is `null` in the product, so no
@@ -746,14 +801,74 @@ const Slot = struct {
             t.join();
         };
 
+        // **The client's requests are read with the shared reader** (task
+        // 2236). The read this replaces was `takeDelimiter` into a 1 MiB
+        // buffer with a `try`: a request of 1 MiB or more left `serve` as
+        // `error.StreamTooLong`, out of `run`, and the process exited --
+        // taking the agent's whole MCP server with it, for one long line.
+        // #2170 is the same failure one file over, and `readline.zig` has
+        // what a full buffer costs in general.
+        //
+        // The buffer is this slot's, for the life of the connection: the
+        // loop is a request at a time, and the capacity is worth keeping
+        // between them.
+        var in_buf: std.Io.Writer.Allocating = .init(self.alloc);
+        defer in_buf.deinit();
+
         while (true) {
-            const line = (try in.takeDelimiter('\n')) orelse break;
+            const line = readline.readLine(in, &in_buf, self.read_cap) catch |err| switch (err) {
+                // The client closed its end. Nothing more is coming.
+                error.EndOfStream => break,
+                // **Said, not fatal, and said about this line only.** The
+                // line has already been discarded to its newline by the
+                // read, so the next one is a real line and this loop goes on.
+                error.LineTooLong => {
+                    self.writeTooLong();
+                    continue;
+                },
+                // A read that failed is whatever is on the wire, which is
+                // not this loop's to fix. Neither is a buffer that could not
+                // grow.
+                error.ReadFailed => return error.ReadFailed,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
             if (line.len == 0) continue;
+            // ⚠️ **`handle` borrows `line`, which `in_buf` owns**, and the
+            // next turn of this loop reuses that buffer. Every caller below
+            // either writes the bytes out or copies them before returning
+            // (`init_request` is the one that keeps any), which is the same
+            // arrangement the `takeDelimiter` slice had.
             self.handle(line) catch |err| {
                 log.warn("mcp-slot: could not handle a message err={}", .{err});
             };
         }
         return 0;
+    }
+
+    /// Tell the client its last line was too long to read.
+    ///
+    /// The id is null because it cannot be known -- it is inside the part
+    /// that was not read -- and JSON-RPC reserves null for exactly this.
+    /// Written through `writeLine`, so it takes the same lock as everything
+    /// else this slot says.
+    fn writeTooLong(self: *Slot) void {
+        var buf: [512]u8 = undefined;
+        const line = std.fmt.bufPrint(
+            &buf,
+            \\{{"jsonrpc":"2.0","id":null,"error":{{"code":{d},"message":{f}}}}}
+        ,
+            .{ -32600, std.json.fmt(too_long_line, .{}) },
+        ) catch {
+            // Only if the message stopped fitting, which would be a change
+            // to the literal above rather than a runtime condition.
+            self.writeLine(
+                \\{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"that request is too long to read."}}
+            ) catch {};
+            return;
+        };
+        self.writeLine(line) catch |err| {
+            log.warn("mcp-slot: could not report an over-long request err={}", .{err});
+        };
     }
 
     /// One message from the client.
@@ -909,7 +1024,21 @@ const Slot = struct {
             .stdout = .pipe,
             .stderr = .inherit,
         });
-        errdefer _ = child.wait(self.io) catch {};
+
+        // **The upstream is killed, not waited for, on the way out** (task
+        // 2236: found by a floor, not by a test). This was
+        // `errdefer _ = child.wait(self.io) catch {}` and it could block for
+        // ever: an upstream that answered its `initialize` with a line this
+        // read could not take is *still running* and still writing into a
+        // pipe nobody is reading, so `wait` never returns and the slot never
+        // comes back -- with the client's connection open and nothing said.
+        // Measured: the floor that puts `takeDelimiter` back here hangs the
+        // test until it is killed by hand (241 = 128 + SIGTERM from `kill`),
+        // and the live stack is `startUpstream` -> `Child.wait` ->
+        // `__wait4_nocancel`, with the shell upstream blocked on its own
+        // write. `kill` is SIGTERM then a wait, so the process is not left
+        // behind either.
+        errdefer child.kill(self.io);
 
         const stdin = child.stdin.?;
         try stdin.writeStreamingAll(self.io, init_line);
@@ -918,10 +1047,37 @@ const Slot = struct {
         const buf = try self.alloc.alloc(u8, max_line);
         errdefer self.alloc.free(buf);
         var reader = child.stdout.?.readerStreaming(self.io, buf);
-        const reply = (try reader.interface.takeDelimiter('\n')) orelse
-            return error.UpstreamClosedAtInitialize;
 
-        try self.writeLine(try self.patchInitialize(reply));
+        // **The upstream's `initialize` result, however long it is** (task
+        // 2236). `takeDelimiter` read only as far as `buf`, and a result
+        // longer than that came back as `null` -- which this line turned
+        // into `error.UpstreamClosedAtInitialize`, so an upstream that was
+        // running perfectly and had simply said a lot was reported to the
+        // client as one that closed. An `initialize` result carries
+        // `instructions` and `serverInfo`, both of which upstreams write at
+        // whatever length suits them.
+        var reply_buf: std.Io.Writer.Allocating = .init(self.alloc);
+        defer reply_buf.deinit();
+        const reply = readline.readLine(&reader.interface, &reply_buf, max_read) catch |err| switch (err) {
+            error.EndOfStream => return error.UpstreamClosedAtInitialize,
+            // The one case that really is a broken upstream rather than a
+            // long line: it sent more than `max_read` without a newline.
+            // Reported as such rather than as "closed", because a caller
+            // reading this in a log needs to be able to tell them apart.
+            error.LineTooLong, error.ReadFailed, error.OutOfMemory => return error.UpstreamInitializeTooLong,
+        };
+
+        // ⚠️ **`patchInitialize` hands back either `reply` itself or a fresh
+        // allocation, and the fresh one has to be freed here** (task 2236:
+        // found by this task's own tests, which leaked one line per run --
+        // it is pre-existing at `92b66cd4d`, where this same statement had
+        // no `free` either). `writeLine` copies what it is handed, so the
+        // line is done with by the time it returns. The condition is the
+        // one the four `patchInitialize` tests use: the same pointer back
+        // means the upstream's bytes, which this function does not own.
+        const patched = try self.patchInitialize(reply);
+        defer if (patched.ptr != reply.ptr) self.alloc.free(patched);
+        try self.writeLine(patched);
         self.alloc.free(buf);
 
         self.upstream = .{ .child = child };
@@ -975,8 +1131,41 @@ const Slot = struct {
         };
 
         var reader = stdout.readerStreaming(self.io, buf);
+
+        // **The upstream's ordinary replies, however long they are** (task
+        // 2236). This is the worst of the four reads this patch changes, and
+        // the reason is what a failure did: `takeDelimiter` past `buf`
+        // answered `StreamTooLong`, `catch null` turned that into the same
+        // `null` a closed stdout gives, and so **one long line ended this
+        // thread for the rest of the connection's life**. The upstream went
+        // on answering; the client never heard another word; neither the
+        // process nor the connection looked wrong from either end. A
+        // `tools/list` or a `tools/call` result of 1 MiB or more did it.
+        //
+        // ⚠️ **Read with `self.read_cap`, not `max_read`** (task 2236, found
+        // by this task's own floor): with the product's 64 MiB here, the
+        // `LineTooLong` arm below was four orders of magnitude out of reach
+        // of any test -- the longest line a test can reasonably make an
+        // upstream write is about a megabyte, so `continue` and `break`
+        // looked identical and the floor came back green. The field is the
+        // one `Slot.read_cap` already documents for exactly this reason
+        // (`cli/mcp.zig`'s `Host.reply_cap` the same), and every product
+        // path still uses the constant.
+        var line_buf: std.Io.Writer.Allocating = .init(self.alloc);
+        defer line_buf.deinit();
+
         while (true) {
-            const line = (reader.interface.takeDelimiter('\n') catch null) orelse break;
+            const line = readline.readLine(&reader.interface, &line_buf, self.read_cap) catch |err| switch (err) {
+                // **A line that was too long is not a dead upstream.** The
+                // read discarded it to its newline, so the stream is on a
+                // line boundary and the next read is a real line: keep
+                // draining. An upstream that sends one is not one to stop
+                // listening to.
+                error.LineTooLong => continue,
+                // Everything else is the stream itself -- closed, or
+                // unreadable -- and there is nothing left to drain.
+                error.EndOfStream, error.ReadFailed, error.OutOfMemory => break,
+            };
             if (line.len == 0) continue;
             self.forgetOutstanding(line);
             self.writeLine(line) catch break;
@@ -1157,7 +1346,10 @@ const Slot = struct {
             .stdout = .pipe,
             .stderr = .inherit,
         });
-        errdefer _ = child.wait(self.io) catch {};
+        // **Killed, not waited for**, for the reason the early one states in
+        // full: after a short read the child is still running and still
+        // writing, so `wait` would block for ever (task 2236).
+        errdefer child.kill(self.io);
 
         const stdin = child.stdin.?;
         try stdin.writeStreamingAll(self.io, init_line);
@@ -1166,8 +1358,18 @@ const Slot = struct {
         const buf = try self.alloc.alloc(u8, max_line);
         defer self.alloc.free(buf);
         var reader = child.stdout.?.readerStreaming(self.io, buf);
-        _ = (try reader.interface.takeDelimiter('\n')) orelse
-            return error.UpstreamClosedAtInitialize;
+
+        // Read and dropped, and read the same way as the early one (task
+        // 2236): the same upstream answers the same `initialize` whatever
+        // moment it is started at, so a result too long for a fixed buffer
+        // would have been `null` here too -- and read as an upstream that
+        // closed the moment it was granted.
+        var reply_buf: std.Io.Writer.Allocating = .init(self.alloc);
+        defer reply_buf.deinit();
+        _ = readline.readLine(&reader.interface, &reply_buf, max_read) catch |err| switch (err) {
+            error.EndOfStream => return error.UpstreamClosedAtInitialize,
+            error.LineTooLong, error.ReadFailed, error.OutOfMemory => return error.UpstreamInitializeTooLong,
+        };
 
         // The handshake the client already completed with us, completed
         // again with the upstream on its behalf.
@@ -1728,6 +1930,10 @@ const SlotSide = struct {
     token: []const u8,
     name: []const u8,
     argv: []const []const u8,
+    /// What `serve` reads with. `max_read` in every test but the one that
+    /// asks what an over-long request is answered with, which cannot reach
+    /// 64 MiB.
+    read_cap: usize = max_read,
     failed: std.atomic.Value(bool) = .init(false),
     floor_hits: std.atomic.Value(u32) = .init(0),
 
@@ -1767,6 +1973,7 @@ const SlotSide = struct {
         };
         defer slot.deinit();
         slot.floor_hits = &self.floor_hits;
+        slot.read_cap = self.read_cap;
 
         const rbuf = self.alloc.alloc(u8, max_line) catch return;
         defer self.alloc.free(rbuf);
@@ -1803,6 +2010,67 @@ const upstream_script =
     \\done
 ;
 
+/// An upstream that answers `initialize` normally and, for anything else,
+/// says **how long that request's line was**.
+///
+/// This is the assertion behind "the client's own request got through whole"
+/// (task 2236): a request of 1 MiB or more used to end this process, so the
+/// reply could only ever come from a slot that had read all of it. The
+/// length is measured by the upstream, on the far side of the forwarding,
+/// rather than by anything that could have counted a prefix.
+///
+/// `${#line}` counts characters and the padding is ASCII, so it is the byte
+/// count.
+const upstream_echo_script =
+    \\touch "$1"
+    \\while IFS= read -r line; do
+    \\  case "$line" in
+    \\    *'"initialize"'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"stub-upstream","version":"1"}}}' ;;
+    \\    *) printf '{"jsonrpc":"2.0","id":2,"result":{"line_bytes":%d}}\n' "${#line}" ;;
+    \\  esac
+    \\done
+;
+
+/// An upstream whose **replies** are as long as the test says: `$2` bytes of
+/// padding in its `initialize` result, `$3` in its `tools/list` result.
+///
+/// Both are past this file's old 1 MiB read buffer when a test asks for it,
+/// which is the whole point (task 2236): the initialize one used to be
+/// reported as an upstream that closed, and an ordinary reply longer than
+/// the buffer used to end the drain thread for good.
+///
+/// **Anything else is answered short**, and that is what makes the fourth
+/// test a reading rather than an assumption: a request sent *after* the long
+/// reply can only be answered if the drain thread is still there to carry
+/// the answer, so a short reply arriving is itself the proof that the long
+/// one did not stop it.
+///
+/// ⚠️ **The padding is streamed, never held in a variable and never passed
+/// as an argument.** `printf '%s' "$pad"` with a megabyte in `pad` is an
+/// argument list of a megabyte, and macOS caps `argv` + `environ` at
+/// `ARG_MAX` (1 MiB) -- so the interesting sizes would fail the exec rather
+/// than reach the reader under test, and the failure would look like the
+/// code being wrong. `emit` writes the prefix, streams the zeros through
+/// `tr`, and writes the suffix.
+const upstream_big_script =
+    \\touch "$1"
+    \\emit() {
+    \\  printf '%s' "$2"
+    \\  if [ "$1" -gt 0 ]; then head -c "$1" /dev/zero | tr '\0' 'z'; fi
+    \\  printf '%s\n' "$3"
+    \\}
+    \\while IFS= read -r line; do
+    \\  case "$line" in
+    \\    *'"initialize"'*)
+    \\      emit "$2" '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"stub-upstream","version":"1"},"instructions":"' '"}}' ;;
+    \\    *'"tools/list"'*)
+    \\      emit "$3" '{"jsonrpc":"2.0","id":2,"result":{"pad":"' '"}}' ;;
+    \\    *)
+    \\      printf '{"jsonrpc":"2.0","id":3,"result":{"after_the_long_one":true}}\n' ;;
+    \\  esac
+    \\done
+;
+
 /// One end-to-end fixture: a stub Polter, a socket for the client, and a
 /// thread with the slot on it.
 const E2E = struct {
@@ -1818,6 +2086,10 @@ const E2E = struct {
     writer: transport.Writer,
     rbuf: []u8,
     wbuf: []u8,
+    /// Where `recv` reads a line to, growing as far as `readline.max_reply`.
+    /// One for the fixture's life, cleared per line, like every other read
+    /// in this file.
+    line_buf: std.Io.Writer.Allocating = undefined,
     watchdog: ?std.Thread = null,
     watchdog_stop: std.atomic.Value(bool) = .init(false),
     /// Set the moment the deadline thread cuts the connection.
@@ -1843,6 +2115,7 @@ const E2E = struct {
         io: std.Io,
         wanted: bool,
         argv: []const []const u8,
+        read_cap: usize,
     ) !*E2E {
         const self = try alloc.create(E2E);
         errdefer alloc.destroy(self);
@@ -1863,6 +2136,7 @@ const E2E = struct {
             .token = stub.token,
             .name = "argus",
             .argv = argv,
+            .read_cap = read_cap,
         };
 
         self.* = .{
@@ -1878,6 +2152,7 @@ const E2E = struct {
             .writer = undefined,
             .rbuf = try alloc.alloc(u8, max_line),
             .wbuf = try alloc.alloc(u8, 64 * 1024),
+            .line_buf = .init(alloc),
         };
         self.side.listener = &self.listener;
         self.thread = try std.Thread.spawn(.{}, SlotSide.run, .{self.side});
@@ -1911,6 +2186,7 @@ const E2E = struct {
         self.stub.deinit();
         self.alloc.free(self.rbuf);
         self.alloc.free(self.wbuf);
+        self.line_buf.deinit();
         self.alloc.free(self.client_path);
         self.alloc.destroy(self.side);
         self.alloc.destroy(self);
@@ -1924,11 +2200,23 @@ const E2E = struct {
 
     /// One line from the slot, or an error that says which kind of silence
     /// this was.
+    ///
+    /// **Read with the shared reader** (task 2236), because what it reads is
+    /// whatever the slot wrote -- which here means whatever an upstream was
+    /// made to write -- and the tests below ask it for lines past the
+    /// buffer. A fixture that could not read the line under test would fail
+    /// in its own read rather than in the code being tested.
     fn recv(self: *E2E) ![]const u8 {
-        const line = self.reader.interface.takeDelimiter('\n') catch |err| {
-            return self.blame(err);
+        const line = readline.readLine(
+            &self.reader.interface,
+            &self.line_buf,
+            readline.max_reply,
+        ) catch |err| switch (err) {
+            error.LineTooLong, error.OutOfMemory => return self.blame(error.ReplyTooLong),
+            error.ReadFailed => return self.blame(error.ReadFailed),
+            error.EndOfStream => return self.blame(error.ClientStreamClosed),
         };
-        return line orelse self.blame(error.ClientStreamClosed);
+        return line;
     }
 
     /// Turn "the stream ended" into one of the two things it can mean.
@@ -2009,7 +2297,7 @@ test "mcp-slot e2e: a withheld slot never starts its upstream, and a grant start
 
     // Start withheld: the persona this terminal wears does not include
     // `argus`.
-    var fx = E2E.start(alloc, io, false, argv) catch return error.SkipZigTest;
+    var fx = E2E.start(alloc, io, false, argv, max_read) catch return error.SkipZigTest;
     defer fx.deinit();
 
     // -- withheld ------------------------------------------------------
@@ -2103,7 +2391,7 @@ test "mcp-slot e2e: an upstream that will not start is not an empty tool list" {
     // Granted by the persona, and there is no such program.
     const argv: []const []const u8 = &.{"/nonexistent/polter-upstream-that-is-not-there"};
 
-    var fx = E2E.start(alloc, io, true, argv) catch return error.SkipZigTest;
+    var fx = E2E.start(alloc, io, true, argv, max_read) catch return error.SkipZigTest;
     defer fx.deinit();
 
     try fx.send(
@@ -2127,4 +2415,279 @@ test "mcp-slot e2e: an upstream that will not start is not an empty tool list" {
     // has to carry the difference -- and it has to say which of the two
     // silences this is, in so many words.
     try testing.expect(std.mem.indexOf(u8, listed, "角色") != null);
+}
+
+// -- task 2236: no line is bounded by a buffer ------------------------------
+//
+// Four reads in this file used to be `takeDelimiter` into a 1 MiB buffer,
+// and there is one test per read below. **Each measures the same thing -- a
+// line longer than that buffer arrives whole -- and they are four tests
+// rather than one because a failure at each of the four looked different
+// from the agent's side**: the client's own request killed this process, an
+// upstream's `initialize` was reported as an upstream that had closed, and
+// an ordinary reply ended the drain thread for good.
+
+/// `1 MiB + 4 KiB`: past the buffer those reads used to fill, and past it by
+/// more than any rounding could account for.
+const past_the_old_buffer = max_line + 4 * 1024;
+
+/// A line of exactly `want` bytes, shaped like a JSON-RPC request -- so that
+/// what is sent is a request that is merely long, rather than a wall of
+/// bytes that a test would be asking about for some other reason.
+fn bigRequest(alloc: Allocator, id: u32, want: usize) ![]u8 {
+    const head = try std.fmt.allocPrint(
+        alloc,
+        "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"tools/list\",\"pad\":\"",
+        .{id},
+    );
+    defer alloc.free(head);
+    const tail = "\"}";
+    if (want <= head.len + tail.len) return error.TooShort;
+    const out = try alloc.alloc(u8, want);
+    @memcpy(out[0..head.len], head);
+    @memset(out[head.len .. want - tail.len], 'z');
+    @memcpy(out[want - tail.len ..], tail);
+    return out;
+}
+
+test "2236: a client request past the buffer it used to fill reaches the upstream whole" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const sentinel = try std.fmt.allocPrint(alloc, "/tmp/pg-echo-{x}.touched", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteFile(io, sentinel) catch {};
+        alloc.free(sentinel);
+    }
+    const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_echo_script, "upstream", sentinel };
+
+    var fx = E2E.start(alloc, io, true, argv, max_read) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}
+    );
+    const init_reply = try fx.recv();
+    try testing.expect(std.mem.indexOf(u8, init_reply, "stub-upstream") != null);
+
+    const big = try bigRequest(alloc, 2, past_the_old_buffer);
+    defer alloc.free(big);
+    try fx.send(big);
+
+    const echoed = try fx.recv();
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, echoed, .{});
+    defer parsed.deinit();
+
+    const result = parsed.value.object.get("result") orelse {
+        // Printed, because "the upstream did not get a request" and "the
+        // answer was not the one expected" are different failures and the
+        // bytes say which.
+        std.debug.print(
+            "\nthe upstream did not get a request at all; it answered: {s}\n",
+            .{echoed[0..@min(echoed.len, 300)]},
+        );
+        return error.NoResult;
+    };
+
+    // **The number is the upstream's own count of the line it read.** With
+    // the old read this process left on the client's line before any of it
+    // could be forwarded, so there was no answer to count: what this asserts
+    // is that the whole line arrived on the far side, not merely that this
+    // side did not fail.
+    try testing.expectEqual(
+        @as(i64, @intCast(big.len)),
+        result.object.get("line_bytes").?.integer,
+    );
+}
+
+test "2236: a request past the cap is answered, and the line after it is a real line" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // A cap small enough to be reached, which the product's 64 MiB is not.
+    // The read, the discard and the answer are the same code either way --
+    // only the number differs.
+    const cap: usize = 4096;
+    var fx = E2E.start(alloc, io, false, &.{}, cap) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    const over = try bigRequest(alloc, 7, cap * 2);
+    defer alloc.free(over);
+    try fx.send(over);
+
+    const refused = try fx.recv();
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, refused, .{});
+    defer parsed.deinit();
+
+    // **Said, rather than this process leaving.** The old read was a `try`
+    // out of `serve` and exit 1, so nothing at all was written back.
+    const err = parsed.value.object.get("error") orelse {
+        std.debug.print("\nno error was written back; the line was: {s}\n", .{refused});
+        return error.NoError;
+    };
+    try testing.expectEqual(@as(i64, -32600), err.object.get("code").?.integer);
+    // The id is null because it cannot be known: it is inside the part that
+    // was not read. JSON-RPC reserves null for exactly this.
+    try testing.expect(parsed.value.object.get("id").? == .null);
+
+    // **And the line after it was a line.** This is the half that makes the
+    // discard worth having: without it this read would start in the middle
+    // of the over-long one and fail the same way, for ever.
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":8,"method":"tools/list"}
+    );
+    const next = try fx.recv();
+    try testing.expect(std.mem.indexOf(u8, next, "\"tools\":[]") != null);
+}
+
+test "2236: an upstream's initialize result past the buffer is forwarded, not called a closed upstream" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const sentinel = try std.fmt.allocPrint(alloc, "/tmp/pg-biginit-{x}.touched", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteFile(io, sentinel) catch {};
+        alloc.free(sentinel);
+    }
+    const long = try std.fmt.allocPrint(alloc, "{d}", .{past_the_old_buffer});
+    defer alloc.free(long);
+    // A long `initialize` result, and `0` bytes of padding on `tools/list`.
+    const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_big_script, "upstream", sentinel, long, "0" };
+
+    var fx = E2E.start(alloc, io, true, argv, max_read) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}
+    );
+    const reply = try fx.recv();
+
+    // **The upstream's own result, and not ours.** With the old read this
+    // line came back as `null` and was turned into
+    // `error.UpstreamClosedAtInitialize`, so the client was told the
+    // upstream had closed and was then answered by `localInitializeResult`
+    // -- which names `polter:<slot>` instead.
+    try testing.expect(std.mem.indexOf(u8, reply, "polter:argus") == null);
+    try testing.expect(std.mem.indexOf(u8, reply, "stub-upstream") != null);
+    // `patchInitialize` still did its one job, on the line it now really has.
+    try testing.expect(std.mem.indexOf(u8, reply, "\"listChanged\":true") != null);
+    // And the padding is all there: the line is longer than the buffer that
+    // used to cut it off.
+    try testing.expect(reply.len > past_the_old_buffer);
+}
+
+test "2236: an upstream's ordinary reply past the buffer arrives, and the drain goes on" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const sentinel = try std.fmt.allocPrint(alloc, "/tmp/pg-bigtools-{x}.touched", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteFile(io, sentinel) catch {};
+        alloc.free(sentinel);
+    }
+    const long = try std.fmt.allocPrint(alloc, "{d}", .{past_the_old_buffer});
+    defer alloc.free(long);
+    // A short `initialize` result, and a long `tools/list` one.
+    const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_big_script, "upstream", sentinel, "0", long };
+
+    var fx = E2E.start(alloc, io, true, argv, max_read) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}
+    );
+    _ = try fx.recv();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+    );
+    const long_reply = try fx.recv();
+    try testing.expect(long_reply.len > past_the_old_buffer);
+
+    // **The assertion the long line cannot make on its own.** `catch null`
+    // used to turn a `StreamTooLong` into the same `null` a closed stdout
+    // gives, so the drain thread ended -- while the upstream went on
+    // answering to a client that would never hear it again. A short reply
+    // to a request sent *after* the long one is only possible if the thread
+    // carrying replies is still running.
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":3,"method":"anything/else"}
+    );
+    const after = try fx.recv();
+    try testing.expect(std.mem.indexOf(u8, after, "\"after_the_long_one\":true") != null);
+}
+
+test "2236: a line past the cap is dropped, and the drain goes on" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const sentinel = try std.fmt.allocPrint(alloc, "/tmp/pg-capdrain-{x}.touched", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteFile(io, sentinel) catch {};
+        alloc.free(sentinel);
+    }
+    // Past the cap the drain is given below, and small enough that the
+    // upstream writes it without help.
+    const cap: usize = 4096;
+    const long = try std.fmt.allocPrint(alloc, "{d}", .{cap * 2});
+    defer alloc.free(long);
+    const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_big_script, "upstream", sentinel, "0", long };
+
+    var fx = E2E.start(alloc, io, true, argv, cap) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}
+    );
+    _ = try fx.recv();
+
+    // **An ordinary reply the drain cannot take whole, which the product's
+    // own 64 MiB cap puts out of reach.** This is the case the
+    // `error.LineTooLong => continue` arm is for, and the reason it is
+    // tested here with a reachable cap: with `max_read` the arm could be
+    // `break` and this file's tests said nothing (task 2236's floor D came
+    // back green exactly that way).
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+    );
+    // Nothing is forwarded for the dropped line -- that is what dropping
+    // means, and it is why the assertion below cannot be about it.
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":3,"method":"anything/else"}
+    );
+    const after = try fx.recv();
+    try testing.expect(std.mem.indexOf(u8, after, "\"after_the_long_one\":true") != null);
 }

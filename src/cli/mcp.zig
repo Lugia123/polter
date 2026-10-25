@@ -2115,11 +2115,21 @@ fn notifier(
         // and nothing anywhere saying so. The line is discarded by the read,
         // so the next round asks a real question.
         //
+        // ⚠️⚠️ **And it waits first** (task 2236). `continue` used to skip
+        // the floor at the bottom of this loop, which made the one path that
+        // does *not* park -- a host answering `LineTooLong` at once, every
+        // time -- the one path that spun as fast as the socket allowed. The
+        // floor is not an optimisation to be skipped when something went
+        // wrong; going wrong is the case it is for.
+        //
         // Anything else is the connection itself, and there is nothing to
         // continue with: `EndOfStream` and `ReadFailed` are the socket, and
         // this loop's whole purpose is one socket.
         const reply = host.call(request) catch |err| switch (err) {
-            error.LineTooLong => continue,
+            error.LineTooLong => {
+                floorWait(io, started) catch return;
+                continue;
+            },
             else => return,
         };
 
@@ -2147,18 +2157,31 @@ fn notifier(
         // condition that never stops being possible. A real change does not
         // come through here -- it wakes the parked request -- so this costs
         // nothing on the path that matters.
-        const spent_ms: u64 = @intCast(std.math.clamp(
-            started.durationTo(.now(io, .awake)).toMilliseconds(),
-            0,
-            std.math.maxInt(i64),
-        ));
-        if (spent_ms < min_wait_ms) {
-            std.Io.sleep(
-                io,
-                .fromMilliseconds(@intCast(min_wait_ms - spent_ms)),
-                .awake,
-            ) catch return;
-        }
+        //
+        // Extracted into `floorWait` so that the `LineTooLong` path above
+        // reaches the same floor rather than skipping it (task 2236).
+        floorWait(io, started) catch return;
+    }
+}
+
+/// Sleep out the rest of `min_wait_ms` since `started`, or say the sleep
+/// itself failed.
+///
+/// **A function so that there is one floor and not two.** The `catch return`
+/// inside it is the sleep failing -- the process is going away -- and the
+/// caller returns the same way it always did.
+fn floorWait(io: std.Io, started: std.Io.Timestamp) !void {
+    const spent_ms: u64 = @intCast(std.math.clamp(
+        started.durationTo(.now(io, .awake)).toMilliseconds(),
+        0,
+        std.math.maxInt(i64),
+    ));
+    if (spent_ms < min_wait_ms) {
+        try std.Io.sleep(
+            io,
+            .fromMilliseconds(@intCast(min_wait_ms - spent_ms)),
+            .awake,
+        );
     }
 }
 
@@ -2492,6 +2515,65 @@ test {
     // Nothing here runs without a socket and an agent on the other end, so
     // without this the whole file would go unchecked.
     std.testing.refAllDecls(@This());
+}
+
+test "2236: the notifier's floor is a floor whether or not anything went wrong" {
+    const io = std.testing.io;
+
+    // ⚠️ **The bug this is for was not that the floor did not work.** The
+    // ordinary path has always reached it. It was that `LineTooLong` --
+    // *the* path a host that answers at once takes, every time -- did a
+    // bare `continue` and skipped it, so the one case the floor exists for
+    // was the one case it did not run in (task 2236, inherited from 2170's
+    // own note).
+    //
+    // A round trip that took no time at all still waits out `min_wait_ms`.
+    // Generous below, exact above: the second half of that trade is why the
+    // other assertion here is written the way it is.
+    {
+        const started: std.Io.Timestamp = .now(io, .awake);
+        try floorWait(io, started);
+        const took: u64 = @intCast(started.durationTo(.now(io, .awake)).toMilliseconds());
+        if (took < min_wait_ms) {
+            std.debug.print(
+                "\nfloorWait returned after {d}ms with {d}ms of the floor left: there " ++
+                    "is no floor here, and the loop below it spins as fast as the " ++
+                    "socket allows.\n",
+                .{ took, min_wait_ms },
+            );
+            return error.NoFloor;
+        }
+    }
+
+    // And a round trip that already took its time does **not** wait again:
+    // a floor that also slowed down the honest case would be a poll
+    // interval. `min_wait_ms + 1 ms` back is past the floor by one.
+    //
+    // ⚠️ **Measured around the second `floorWait` alone, not around the
+    // block.** This was a whole-block `took < min_wait_ms + 100` first, and
+    // it went red on the first run -- next to three other agents' builds,
+    // where the explicit sleep above it ran long and the slack was gone.
+    // What the assertion is about is the *decision* inside `floorWait`
+    // ("already spent -- do not sleep"), so the clock is started after the
+    // sleep and the machine's own slowness lands on the other side of it.
+    {
+        const started: std.Io.Timestamp = .now(io, .awake);
+        io.sleep(
+            .fromMilliseconds(min_wait_ms + 1),
+            .awake,
+        ) catch return error.SkipZigTest;
+        const already_spent: std.Io.Timestamp = .now(io, .awake);
+        try floorWait(io, started);
+        const added: u64 = @intCast(already_spent.durationTo(.now(io, .awake)).toMilliseconds());
+        if (added >= min_wait_ms) {
+            std.debug.print(
+                "\nfloorWait slept {d}ms more after {d}ms had already been spent: " ++
+                    "the floor has become a poll interval.\n",
+                .{ added, min_wait_ms },
+            );
+            return error.FloorIsAnInterval;
+        }
+    }
 }
 
 test "the tool list matches the host's method names" {

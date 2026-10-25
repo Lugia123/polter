@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const Action = @import("ghostty.zig").Action;
 const global = @import("../global.zig");
 const hook = @import("hook.zig");
+const readline = @import("readline.zig");
 const rpc = @import("../poltergeist/rpc.zig");
 const transport = @import("../poltergeist/transport.zig");
 
@@ -14,8 +15,14 @@ const log = std.log.scoped(.hook_context);
 /// hold.
 const max_stdin_bytes = 1024 * 1024;
 
-/// Longest reply line read back: the text is a few hundred bytes, and a
-/// title or a group name is the only part of it that is not ours.
+/// The reader's fill window for the answer line.
+///
+/// ⚠️ **This was the ceiling and it is not any more** (task 2236). It read
+/// with `takeDelimiter`, so a line longer than this failed -- and the one
+/// part of the answer whose length is not ours is the terminal's own title,
+/// which `set_surface_title` lets anybody set to any length. `ask` reads
+/// the answer with `readline.readLine` now; this number is only how much is
+/// held in memory at a time, and the real limit is `readline.max_reply`.
 const max_reply = 64 * 1024;
 
 pub const Options = struct {
@@ -186,6 +193,11 @@ fn ask(
 
     // As `hook.deliver` does it, and for its reason (task 1736): a refusal
     // can be waiting before the token is written.
+    //
+    // `takeDelimiter` here is on purpose, and `hook.zig`'s note on
+    // `max_reply` is where the reasoning and the measurement live: an
+    // `auth` answer is one of `Server.zig`'s fixed sentences, about 100
+    // bytes at the most. The read below is the one that had to change.
     const sent = hook.sendAuth(w, token);
     const auth = (reader.interface.takeDelimiter('\n') catch |err| {
         try sent;
@@ -200,7 +212,30 @@ fn ask(
     try w.print("{{\"method\":\"hook_context\",\"params\":{{\"moment\":\"{t}\"}}}}\n", .{moment});
     try w.flush();
 
-    const reply = (try reader.interface.takeDelimiter('\n')) orelse return error.EndOfStream;
+    // **The one answer in this file whose length is not ours** (task 2236),
+    // so it is read with the shared reader rather than with `takeDelimiter`
+    // into `max_reply`.
+    //
+    // The text is `rpc.hookContextText`: fixed wording, this terminal's id,
+    // **its title**, and its group names. The groups are capped (`Chat`
+    // allows 48 bytes a name and 32 groups, so under 4 KiB even written
+    // twice), and for a long time that made 64 KiB look like plenty. What
+    // it missed is the title: the OSC 0/2 path truncates at 1024 bytes, but
+    // `set_surface_title` -- which any caller may send, and which
+    // `terminal_action` will carry -- goes through `apprt.Title.replace`
+    // and is not truncated at all. A title set that way can be as long as
+    // one request, so the answer can pass `max_reply`, and past it the read
+    // used to fail *after* the reply was the only thing on the wire -- a
+    // compaction with no context, and nothing anywhere saying why.
+    //
+    // Past `readline.max_reply` the answer is discarded to its newline and
+    // this fails for this call only; the next hook gets a clean stream.
+    var reply_buf: std.Io.Writer.Allocating = .init(aa);
+    defer reply_buf.deinit();
+    const reply = readline.readLine(&reader.interface, &reply_buf, readline.max_reply) catch |err| switch (err) {
+        error.EndOfStream => return error.EndOfStream,
+        error.LineTooLong, error.ReadFailed, error.OutOfMemory => return error.Refused,
+    };
     return textOf(aa, reply) orelse {
         log.warn("+hook-context: refused: {s}", .{reply[0..@min(reply.len, 200)]});
         return error.Refused;
@@ -389,4 +424,62 @@ test "1779: +hook-context with no Polter, or a token it does not know, prints no
     const wrong_token = answer(aa, io, argv, "{}", path, "0" ** Server.token_len);
     try testing.expect(wrong_token == null);
     try testing.expectEqual(@as(u8, 0xff), answers.moment.load(.acquire));
+}
+
+// -- task 2236: the answer is not bounded by a buffer -----------------------
+
+// The answer is mostly Polter's own wording, and the one part of it whose
+// length is not Polter's is the terminal's title. **`set_surface_title` does
+// not truncate**: the OSC 0/2 path stops at 1024 bytes
+// (`stream_terminal.zig`), but this one goes through `apprt.Title.replace`
+// and keeps whatever it is handed, and `terminal_action` will carry it. So a
+// title can be as long as one request, and this is what that makes of the
+// answer.
+//
+// The read used to be `takeDelimiter` into `max_reply` (64 KiB), and past
+// that the reply -- which is the only thing on the wire -- failed to be
+// read. The hook then printed nothing, so a compaction went ahead with no
+// context and nothing anywhere said why.
+test "2236: an answer longer than the read buffer is read, and its text comes out whole" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // Longer than `max_reply`, and longer than the *old* whole limit: this
+    // is the case that used to be a failure rather than a shorter answer.
+    const said = try std.fmt.allocPrint(aa, "[From Polter] {s}", .{"t" ** (max_reply + 4096)});
+
+    var answers: Answers = .{ .io = io, .said = said };
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const path = try std.fmt.allocPrintSentinel(alloc, "/tmp/pghc-long-{x}.sock", .{&raw}, 0);
+    defer alloc.free(path);
+    var server: Server = try .init(alloc, io, path, .{
+        .ctx = &answers,
+        .func = Answers.submit,
+    }, Server.default_max_connections);
+    defer server.deinit();
+    try server.start();
+    const token = try server.issueToken(0x2222);
+
+    const before = answer(aa, io, &.{ "--cli", "claude-code", "PreCompact" }, "{\"trigger\":\"manual\"}", path, token);
+
+    // **The whole text, measured here rather than trusted.** `render` adds
+    // a newline for this moment, so the answer is the text plus one byte --
+    // and an answer that had been cut anywhere would be shorter.
+    const got = before orelse {
+        std.debug.print(
+            "\n+hook-context printed nothing for a {d}-byte answer: the reply " ++
+                "was not read at all, which is what a full buffer used to do.\n",
+            .{said.len},
+        );
+        return error.NothingPrinted;
+    };
+    try testing.expectEqual(said.len + 1, got.len);
+    try testing.expectEqualStrings(said, got[0..said.len]);
 }

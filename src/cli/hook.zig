@@ -13,7 +13,33 @@ const log = std.log.scoped(.hook);
 /// is parsed; this only bounds what a runaway writer can make us hold.
 const max_stdin_bytes = 4 * 1024 * 1024;
 
-/// Longest reply line read back. The answer to `agent_event` is `ok`.
+/// The reader's fill window for the answer line, and **exactly enough** --
+/// which is why these two reads are still `takeDelimiter` (task 2236).
+///
+/// Everything else in this tree that read a line with `takeDelimiter` was
+/// reading bytes somebody else chose the length of, and `readline.zig` says
+/// what that cost. These two are not that: **both answers are Polter's own,
+/// and both are a fixed set of sentences.** Ten times over would still fit.
+///
+/// * The `auth` answer (see `deliver`) is `{"ok":true}` (12 bytes,
+///   `wire.writeResponse(.ok)`) or one of `Server.zig`'s three refusals,
+///   whose longest message is `"every agent slot on this socket is in use"`
+///   -- about 100 bytes all told. `Server.handshake` sends nothing else.
+/// * The `agent_event` answer is `.ok` (12 bytes; `rpc.zig`'s arm for that
+///   method only returns `.ok`) or `.failed`, whose message comes from
+///   `rpc.errorMessage` or `Server.refuse`. **Measured arm by arm**: the
+///   longest is `AuthoriseOff`, 849 bytes of text and 896 bytes once
+///   `std.json` has escaped it, and the `Shielded` case adds an 18-byte
+///   `0x…: ` prefix. `LogsClosed` -- the one failure that formats a
+///   directory path in -- cannot be reached from here: it needs a request
+///   that names a `group`, and an `agent_event` carries none.
+///
+/// So the worst case is a quarter of this buffer, and the reason it will
+/// stay that way is written down here rather than left as a measurement
+/// somebody has to redo. **If either answer ever grows a field whose length
+/// is not ours** -- a path from the client, an upstream's text -- this
+/// stops being true and the read has to move to `readline.readLine` like
+/// the rest. That is what this note is for.
 const max_reply = 4 * 1024;
 
 pub const Options = struct {
