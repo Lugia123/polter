@@ -473,6 +473,13 @@ pub const Action = union(enum) {
 
     /// Scroll to the given absolute row in the screen with 0 being
     /// the first row.
+    ///
+    /// A row past the end of the scrollback stops on the last row of it
+    /// rather than at the bottom: the row a host computes from a scroll
+    /// position can drift past the end while output grows the list under
+    /// it, and dropping the reader at the bottom is the one answer that
+    /// loses their place (task 2233). To go to the bottom, use
+    /// `scroll_to_bottom`.
     scroll_to_row: usize,
 
     /// Scroll the screen up by one page.

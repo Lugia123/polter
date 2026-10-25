@@ -10932,6 +10932,25 @@ fn poltergeistPerformAction(
         else => {},
     }
 
+    // **An action this tool runs is Poltergeist typing, seen from the
+    // viewport's side** (task 2233). A person's own `text:` / `csi:` /
+    // `cursor_key` key scrolls to the bottom, because they are about to type
+    // where the viewport should be; the same action aimed at somebody else's
+    // terminal by an agent is not that. Several of these branches scroll
+    // unconditionally, so an agent answering a box, sending a control
+    // sequence or pasting into a terminal whose owner had scrolled up to
+    // read was dragging them back to the bottom -- once per call, through
+    // the one door that was left.
+    //
+    // The flag is set here rather than inside `performBindingAction` itself,
+    // because that function is what the person's key goes through too, and
+    // their key must keep scrolling. Held across the call and restored after
+    // it, the way the two typing entry points in `Surface` do it, so an
+    // error return cannot leave it set.
+    const typing = surface.poltergeist_typing;
+    defer surface.poltergeist_typing = typing;
+    surface.poltergeist_typing = Surface.typingDuringAgentAction(typing, parsed);
+
     // The return says whether the terminal took it. False is not a failure
     // of ours -- `toggle_split_zoom` on a window with no splits does
     // nothing, and rightly -- but the agent asked for something to happen,

@@ -283,6 +283,42 @@ poltergeist_notice_refused: bool = false,
 /// instead of guessed at beforehand.
 poltergeist_keys_written: u64 = 0,
 
+/// The row the last `scroll_to_row` action actually put the viewport on.
+///
+/// **One request is not enough to read the next one** (task 2233). A host
+/// translates a scroll position into a row number, and the number can grow
+/// past the end of the list while output grows the list beneath it, so the
+/// action handler needs where the previous one landed to tell a drifting
+/// position from a request that went back. It records the row that was in
+/// effect, not the row that was asked for: a request that was pinned past
+/// the end landed one row above the live area. See `scrollRowFromHost`.
+scroll_to_row_last: ?usize = null,
+
+/// Whether Poltergeist is putting characters into this terminal right now,
+/// rather than the person at its keyboard.
+///
+/// **The distinction `last_key_time` already draws, kept for a second
+/// reader.** `typePoltergeistTextAs` and `sendPoltergeistKey` are Polter
+/// typing here; a key the person pressed is not. That difference already
+/// decides the keyboard clock -- Poltergeist must not read its own typing
+/// as somebody being here -- and this field is where the rest of it is
+/// kept, rather than spread across the callers.
+///
+/// ⚠️ **The viewport is the second reader (task 2233).** `scroll-to-bottom
+/// = keystroke` is documented as scrolling when *the user* presses a key
+/// that results in data being sent to the PTY, and an injected key is not
+/// the user pressing one. A notice, a supervisor's instruction, a mention
+/// or a role's launch line arriving at a terminal whose owner had scrolled
+/// up to read was dragging the viewport back to the bottom, once per line
+/// -- and the terminals that happens in are exactly the ones this feature
+/// is for, since every notice Poltergeist types comes through here.
+///
+/// **Both doors, not just the key.** An injected line is a paste and its
+/// submit is a key; both used to move the viewport, so this is held across
+/// the whole of `typePoltergeistTextAs` and around the one `keyCallback` in
+/// `sendPoltergeistKey`, and restored immediately after each.
+poltergeist_typing: bool = false,
+
 /// This terminal's own quiescence threshold, when it has been given one
 /// (`setPoltergeistThreshold`); null while it uses the configured one.
 poltergeist_threshold_ms: ?u64 = null,
@@ -3533,7 +3569,9 @@ pub fn keyCallback(
             try self.setSelection(null);
         }
 
-        if (self.config.scroll_to_bottom.keystroke) self.io.terminal.scrollViewport(.bottom);
+        if (viewportFollowsInput(self.config.scroll_to_bottom.keystroke, self.poltergeist_typing)) {
+            self.io.terminal.scrollViewport(.bottom);
+        }
 
         try self.queueRender();
     }
@@ -5159,6 +5197,15 @@ pub fn typePoltergeistTextAs(self: *Surface, text: []const u8, submit: bool, who
     // about what was asked for, and before any of it is sent.
     try self.mayTypeAs(who);
 
+    // **From here to the end of this function, Poltergeist is the one
+    // typing** (task 2233). The text is a paste and the return is a key,
+    // and both of them used to move the viewport: see `poltergeist_typing`.
+    // Restored on the way out so a later key -- the person's -- gets the
+    // ordinary rule, and so an error return cannot leave it set.
+    const typing = self.poltergeist_typing;
+    defer self.poltergeist_typing = typing;
+    self.poltergeist_typing = true;
+
     // **Both branches send the text framed when the target has bracketed
     // paste on -- the single-line one too.** `textCallback` is
     // `completeClipboardPaste`, which encodes with the terminal's own modes,
@@ -5306,6 +5353,292 @@ fn returnWasWritten(effect: InputEffect, written_before: u64, written_after: u64
     return effect == .consumed and written_after != written_before;
 }
 
+/// Whether the viewport follows input into the program.
+///
+/// **Both arguments are needed and neither is enough.** Input made into this
+/// terminal scrolls the viewport to the bottom -- `scroll-to-bottom =
+/// keystroke` for a key, and unconditionally for a paste, because a paste
+/// goes into the live line. `typing` is whether Poltergeist is the one
+/// making it, and a key Poltergeist typed is not the user pressing one: the
+/// config option says "when the user presses a key", and a notice arriving
+/// at somebody reading history must not move them (task 2233).
+///
+/// Separated from the callers so that what the tests pin is what runs: a
+/// `Surface` cannot be built in a test, so a rule left inline in
+/// `keyCallback` would be a rule nothing could hold.
+fn viewportFollowsInput(wants: bool, typing: bool) bool {
+    return wants and !typing;
+}
+
+/// Whether an action an agent asked for with `terminal_action` is one where
+/// What `poltergeist_typing` must be while an action an agent asked for with
+/// `terminal_action` runs: the flag as it stood, or true if this action is
+/// Poltergeist putting characters into the terminal.
+///
+/// **This is the whole of the third entry point, and it is here rather than
+/// in `App` because a rule left in the tool handler would be one nothing
+/// could hold** -- an `App` and a `Surface` cannot be built in a test. The
+/// handler reads the flag, asks this, and writes the answer back, so what the
+/// test pins and what runs are the same expression, and the one step it
+/// cannot pin is the assignment itself.
+///
+/// `current` rather than a plain overwrite: a `terminal_action` that is not
+/// typing must leave the flag as it found it, because a nested entry point
+/// may have set it for a longer stretch. A person's own key never reaches
+/// here at all -- that is the point of doing it in the tool handler -- so
+/// their `text:` / `csi:` / `cursor_key` still scroll.
+pub fn typingDuringAgentAction(current: bool, action: input.Binding.Action) bool {
+    return current or agentActionTypesIntoTheLine(action);
+}
+
+/// Whether this action is one where somebody's characters go into a terminal,
+/// and so where the viewport follows them to the bottom unless they are
+/// Poltergeist's rather than a person's (task 2233).
+///
+/// **The actions that scroll, which is not the same list as the actions that
+/// answer the typing guard.** `App.poltergeistPerformAction` lists the ones
+/// that need `poltergeistMayType` and leaves `cursor_key` out of it, rightly:
+/// a cursor key moves around inside the line rather than adding to it, so
+/// there is nothing there for the guard to protect. Here it is in, because
+/// the question is what the action *does* to the viewport, and a cursor key
+/// scrolls for the same reason the rest of them do. The two lists are written
+/// out separately rather than one derived from the other, so that the
+/// difference between them stays visible; a rename or an addition lands in
+/// whichever of them it belongs in, or in neither.
+///
+/// The four places in this file that scroll are `performBindingAction`'s
+/// three (`csi`/`esc`, `text`, `cursor_key`) and the paste completion's one,
+/// which is where `paste_from_*` and a `write_*_file` in its `paste` form
+/// end up. Every prong below is one of those or a way into one of them;
+/// nothing that scrolls is missing, and nothing here fails to.
+fn agentActionTypesIntoTheLine(action: input.Binding.Action) bool {
+    return switch (action) {
+        // Characters into this terminal's input, written straight through.
+        .text,
+        .csi,
+        .esc,
+        => true,
+
+        // **The entry the guard's list does not have.** A key that goes into
+        // the line rather than beside it.
+        .cursor_key => true,
+
+        // Read from a clipboard first, and then the same as the three above:
+        // `completeClipboardPaste` scrolls.
+        .paste_from_clipboard,
+        .paste_from_selection,
+        => true,
+
+        // Writing the screen out reaches the line only in its `paste` form,
+        // which pastes the path in -- the same act as `text`, so it counts
+        // for the same reason. The other two forms write a file and open one,
+        // and `writeScreenFile` never touches the viewport.
+        .write_screen_file, .write_scrollback_file, .write_selection_file => |v| v.action == .paste,
+
+        // Everything else is a terminal doing something to itself or to the
+        // window: a split, a tab, a zoom, a title. None of it is somebody
+        // typing, and the two scroll actions are in there deliberately --
+        // moving the viewport is what the terminal was asked to do, not
+        // evidence that a person is at the keyboard.
+        else => false,
+    };
+}
+
+test "2233: an agent's action does not move the viewport, the person's key does" {
+    const testing = std.testing;
+
+    // **The whole chain an agent's `terminal_action text:` goes down, in the
+    // same four steps the tool handler takes**: read the flag as it stands,
+    // ask `typingDuringAgentAction` what this action makes it, write it back,
+    // and let the scroll rule ask `viewportFollowsInput`. It ends on "the
+    // viewport stays where it is". The one step this cannot hold is the write
+    // itself -- that line is in `App`, and an `App` and a `Surface` cannot be
+    // built in a test -- so what is pinned here is every part of the rule,
+    // and the wiring of that one assignment is the part a real session has to
+    // show.
+    var flag = false;
+    flag = typingDuringAgentAction(flag, .{ .text = "hello" });
+    try testing.expect(flag);
+    try testing.expect(!viewportFollowsInput(true, flag));
+
+    // The same four steps for a key that is not typing, one line later: the
+    // flag stays as it was, and the same scroll rule now scrolls -- which is
+    // what the person's own key must keep doing.
+    flag = false;
+    flag = typingDuringAgentAction(flag, .new_tab);
+    try testing.expect(!flag);
+    try testing.expect(viewportFollowsInput(true, flag));
+
+    // And a call nested inside a longer stretch of Poltergeist typing does
+    // not clear it.
+    try testing.expect(typingDuringAgentAction(true, .new_tab));
+
+    // Each door on its own, so a prong that stops matching is named.
+    try testing.expect(agentActionTypesIntoTheLine(.{ .text = "hello" }));
+
+    // Every door an agent has into this terminal's input, one at a time.
+    // `.cursor_key` is the one that is easy to leave out: it adds nothing to
+    // the line, so it is the one entry the guard's list next door does not
+    // have, and the only reason it is here is what it does to the viewport.
+    try testing.expect(agentActionTypesIntoTheLine(.{ .csi = "0m" }));
+    try testing.expect(agentActionTypesIntoTheLine(.{ .esc = "x" }));
+    try testing.expect(agentActionTypesIntoTheLine(.{ .cursor_key = .{
+        .normal = "\x1b[A",
+        .application = "\x1bOA",
+    } }));
+    try testing.expect(agentActionTypesIntoTheLine(.paste_from_clipboard));
+    try testing.expect(agentActionTypesIntoTheLine(.paste_from_selection));
+
+    // Writing the screen out is in it only when it pastes the path in.
+    try testing.expect(agentActionTypesIntoTheLine(.{ .write_screen_file = .{
+        .action = .paste,
+        .emit = .plain,
+    } }));
+    try testing.expect(!agentActionTypesIntoTheLine(.{ .write_screen_file = .{
+        .action = .copy,
+        .emit = .plain,
+    } }));
+
+    // Everything else an agent may ask for is not somebody typing, and is
+    // where getting this list wrong would do harm rather than good: a split,
+    // a tab, a zoom. The two scroll actions are in there deliberately --
+    // moving the viewport is what the terminal was asked to do, not evidence
+    // that a person is at the keyboard.
+    try testing.expect(!agentActionTypesIntoTheLine(.{ .new_split = .right }));
+    try testing.expect(!agentActionTypesIntoTheLine(.new_tab));
+    try testing.expect(!agentActionTypesIntoTheLine(.toggle_split_zoom));
+    try testing.expect(!agentActionTypesIntoTheLine(.scroll_to_bottom));
+    try testing.expect(!agentActionTypesIntoTheLine(.{ .scroll_to_row = 42 }));
+}
+
+/// What row to hand to `PageList.scroll` for a row a host sent.
+///
+/// **Why this is not in PageList.** A row past the end of the list means the
+/// bottom there, and that is upstream's rule for upstream's callers (the
+/// libghostty-vt embedding API among them), so it is left alone. What is
+/// Polter's own is the host path: a host computing a row from a scroll
+/// position (`SurfaceScrollView.handleLiveScroll`, `vadjValueChanged`) can
+/// compute one past the end while output grows the document under an
+/// in-flight scroll, and answering that with the bottom yanks a reader who
+/// was scrolling history to the far end of a list they did not ask about
+/// (task 2233).
+///
+/// `requested > last` is what separates that drift from an explicit jump:
+/// a drifting row grows, so the answer is the last row of history -- one
+/// above the live area, the closest thing to what was asked for that exists.
+/// A row that did not grow past the previous one is handed over unchanged and
+/// gets PageList's own answer, which is also what happens when there is no
+/// history to pin. Both the numbers and the previous request are needed:
+/// the row alone cannot say which of the two happened.
+///
+/// `last` is where the previous request *landed*, not the number it asked
+/// for, and that is what keeps an overshooting drag that is pulled back from
+/// being answered with the bottom: asks 250 -> lands on 170, asks 220 -> the
+/// row moved but is still past the end, and 170 again. Comparing against the
+/// asked-for 250 instead would read the same request as going backwards, pass
+/// it through, and drop the person who was dragging *away* from the bottom
+/// onto it.
+///
+/// A free function because a `Surface` cannot be built in a test, so a rule
+/// left inline in the action handler would be a rule nothing could hold.
+fn scrollRowFromHost(requested: usize, last: ?usize, bar: terminal.Scrollbar) usize {
+    // The scrollbar's own numbers, which are the row space the hosts read
+    // and write, and the ones that special-case a terminal with no
+    // scrollback (where `total == len` and there is nothing to pin).
+    const active_top = bar.total -| bar.len;
+
+    // Nothing above the live area: no history row exists to pin, so the
+    // row goes over as it came and PageList answers the only thing there is.
+    if (active_top == 0) return requested;
+
+    // Inside the list, or exactly the live area's own first row: the row
+    // means what it says, and PageList's answer is the right one either way.
+    if (requested <= active_top) return requested;
+
+    // Past the end. `last` is where the previous request actually landed, so
+    // a stream that stays past the end -- each one a little further, as the
+    // document grows -- keeps meeting this test, and a request that went
+    // *backwards* while still past the end did not get there by drifting.
+    // The first request of a stream has nothing to have moved past, and a
+    // host only computes a row past the end while its document is growing,
+    // so it is the drift as well.
+    const moved_on = if (last) |l| requested > l else true;
+    if (moved_on) return active_top - 1;
+
+    return requested;
+}
+
+test "2233: a host row past the end of the list pins the last history row, not the bottom" {
+    const testing = std.testing;
+
+    // The 100x30 terminal with 171 history rows from task 2233's readings:
+    // total 201, viewport 30, so the live area's first row is 171 and the
+    // last row of history is 170.
+    const bar: terminal.Scrollbar = .{ .total = 201, .offset = 111, .len = 30 };
+
+    // A row inside history is handed over exactly as it came.
+    try testing.expectEqual(@as(usize, 111), scrollRowFromHost(111, 90, bar));
+
+    // The live area's own first row is the bottom, and stays the bottom.
+    try testing.expectEqual(@as(usize, 171), scrollRowFromHost(171, 170, bar));
+
+    // ⚠️ The cell that was wrong. Past the end: upstream drops the reader at
+    // the bottom, and 170 is the last row of history instead.
+    try testing.expectEqual(@as(usize, 170), scrollRowFromHost(172, 171, bar));
+
+    // **The stream keeps the same answer.** The drift arrives as a run of
+    // these, each computed against a document that grew again, and where the
+    // previous one landed is `170` -- so every later one meets the same test
+    // and lands in the same place. An answer that alternated would put the
+    // viewport on the bottom every other event.
+    try testing.expectEqual(@as(usize, 170), scrollRowFromHost(201, 170, bar));
+    try testing.expectEqual(@as(usize, 170), scrollRowFromHost(5201, 170, bar));
+    try testing.expectEqual(@as(usize, 170), scrollRowFromHost(5201, 170, bar));
+    try testing.expectEqual(@as(usize, 170), scrollRowFromHost(5000, 170, bar));
+
+    // The first request of a stream has no previous one, and a host only
+    // computes a row past the end while its document is growing.
+    try testing.expectEqual(@as(usize, 170), scrollRowFromHost(172, null, bar));
+
+    // **Dragging back is still past the end, and still stays put.** An
+    // overshooting drag pulled back a little asks for 220 after the previous
+    // one landed on 170: the row moved, but not off the end, and handing 220
+    // over would get the bottom -- which is what somebody dragging *away*
+    // from the bottom must not be given.
+    try testing.expectEqual(@as(usize, 170), scrollRowFromHost(220, 170, bar));
+
+    // And back into the list is an ordinary request again, both because the
+    // row means what it says and because the previous request is no longer
+    // involved once the row is inside.
+    try testing.expectEqual(@as(usize, 120), scrollRowFromHost(120, 170, bar));
+
+    // Giving up the place at the bottom is how a person says they want the
+    // bottom: a row at the live area's first row is handed over, and it goes
+    // back to following the live area from there down.
+    try testing.expectEqual(@as(usize, 171), scrollRowFromHost(171, 120, bar));
+
+    // No scrollback at all: there is no history row to pin.
+    const empty: terminal.Scrollbar = .{ .total = 30, .offset = 0, .len = 30 };
+    try testing.expectEqual(@as(usize, 9999), scrollRowFromHost(9999, 1, empty));
+}
+
+test "2233: input Poltergeist types does not move the viewport, the person's does" {
+    const testing = std.testing;
+
+    // The person, with the option on: the viewport follows, as it always has.
+    try testing.expect(viewportFollowsInput(true, false));
+
+    // Poltergeist, with the option on: it does not. This is the whole of
+    // task 2233's first half -- a notice, an instruction, a mention or a
+    // launch line arriving at a terminal whose owner had scrolled up.
+    try testing.expect(!viewportFollowsInput(true, true));
+
+    // The person with the option off: nothing to say, and Poltergeist with
+    // it off is the same answer by the same test.
+    try testing.expect(!viewportFollowsInput(false, false));
+    try testing.expect(!viewportFollowsInput(false, true));
+}
+
 test "notice delivery: a typed line counts as sent only when its return became bytes" {
     const testing = std.testing;
     try testing.expect(returnWasWritten(.consumed, 4, 5));
@@ -5420,6 +5753,15 @@ pub fn sendPoltergeistKey(
     // hold back the next notice on account of it.
     const stamp = self.last_key_time;
     defer self.last_key_time = stamp;
+
+    // **A key Poltergeist presses is not the person pressing one** (task
+    // 2233), said to `keyCallback` so its keystroke rule does not scroll a
+    // viewport that is reading history to the bottom -- `ctrl+c` at a worker
+    // whose owner had scrolled up was the same yank as a notice, through the
+    // other door.
+    const typing = self.poltergeist_typing;
+    defer self.poltergeist_typing = typing;
+    self.poltergeist_typing = true;
 
     const effect = try self.keyCallback(event);
     const wrote = self.poltergeist_keys_written != written_before;
@@ -7052,8 +7394,11 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 full_data,
             ), .unlocked);
 
-            // CSI/ESC triggers a scroll.
-            {
+            // CSI/ESC triggers a scroll -- for a key the person pressed.
+            // An agent's `terminal_action csi:` is Poltergeist typing here
+            // and does not move somebody who is reading history (task 2233);
+            // that flag is the one place the two are told apart.
+            if (viewportFollowsInput(true, self.poltergeist_typing)) {
                 self.renderer_state.mutex.lockUncancelable(global.io());
                 defer self.renderer_state.mutex.unlock(global.io());
                 self.scrollToBottom() catch |err| {
@@ -7079,8 +7424,10 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 text,
             ), .unlocked);
 
-            // Text triggers a scroll.
-            {
+            // Text triggers a scroll, the same two halves as CSI above: the
+            // person's own `text:` key scrolls, an agent's `terminal_action
+            // text:` is Poltergeist typing and does not (task 2233).
+            if (viewportFollowsInput(true, self.poltergeist_typing)) {
                 self.renderer_state.mutex.lockUncancelable(global.io());
                 defer self.renderer_state.mutex.unlock(global.io());
                 self.scrollToBottom() catch |err| {
@@ -7097,11 +7444,18 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 self.renderer_state.mutex.lockUncancelable(global.io());
                 defer self.renderer_state.mutex.unlock(global.io());
 
-                // With the lock held, we must scroll to the bottom.
-                // We always scroll to the bottom for these inputs.
-                self.scrollToBottom() catch |err| {
-                    log.warn("error scrolling to bottom err={}", .{err});
-                };
+                // With the lock held, these inputs scroll to the bottom --
+                // for a key the person pressed. An agent's `terminal_action
+                // cursor_key:` is Poltergeist typing and does not move a
+                // reader who is in the history (task 2233). It is in this
+                // family and not in the one that has to pass the typing
+                // guard: a cursor key moves around inside the line rather
+                // than adding to it.
+                if (viewportFollowsInput(true, self.poltergeist_typing)) {
+                    self.scrollToBottom() catch |err| {
+                        log.warn("error scrolling to bottom err={}", .{err});
+                    };
+                }
 
                 break :normal !self.io.terminal.modes.get(.cursor_keys);
             };
@@ -7448,7 +7802,33 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 self.renderer_state.mutex.lockUncancelable(global.io());
                 defer self.renderer_state.mutex.unlock(global.io());
                 const t: *terminal.Terminal = self.renderer_state.terminal;
-                t.screens.active.scroll(.{ .row = n });
+
+                // **The row a host computes from a scroll position is not
+                // always a row that exists** (task 2233). macOS
+                // (`SurfaceScrollView.handleLiveScroll`) and GTK
+                // (`vadjValueChanged`) both translate a pixel position into a
+                // row number and send it here, and macOS measures that
+                // position against the document height *as it is now* -- so
+                // while the program prints, the number keeps growing past the
+                // position the reader is actually looking at.
+                //
+                // PageList answers a row past the end of the list with the
+                // active area, which is the bottom: upstream's rule, and the
+                // right one for its own callers. Here, in Polter, a request
+                // that moved forward past the end is a drifting position
+                // rather than somebody asking for the bottom, and the bottom
+                // is the one answer that loses a reader their place. So the
+                // last history row is pinned instead, and the drift stays
+                // where the reader put it. `scrollRowFromHost` is the rule;
+                // it takes the previous request because that is what
+                // separates drift from an explicit jump.
+                const row = scrollRowFromHost(
+                    n,
+                    self.scroll_to_row_last,
+                    t.screens.active.pages.scrollbar(),
+                );
+                self.scroll_to_row_last = row;
+                t.screens.active.scroll(.{ .row = row });
             }
 
             try self.queueRender();
@@ -8682,11 +9062,16 @@ fn completeClipboardPaste(
             return error.UnsafePaste;
         }
 
-        // With the lock held, we must scroll to the bottom.
-        // We always scroll to the bottom for these inputs.
-        self.scrollToBottom() catch |err| {
-            log.warn("error scrolling to bottom err={}", .{err});
-        };
+        // A paste scrolls to the bottom -- the viewport follows input on its
+        // way into the program, and a paste goes into the live line. **Not
+        // when Poltergeist is the one pasting** (task 2233): a notice is
+        // typed into a terminal whose owner may be reading history, and it
+        // has no business moving it. See `poltergeist_typing`.
+        if (viewportFollowsInput(true, self.poltergeist_typing)) {
+            self.scrollToBottom() catch |err| {
+                log.warn("error scrolling to bottom err={}", .{err});
+            };
+        }
 
         break :encode_opts opts;
     };
