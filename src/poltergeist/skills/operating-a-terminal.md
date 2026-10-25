@@ -337,6 +337,26 @@ process of Polter's own — `kind: "main"` for the program itself,
 its `pid`, its `group`, its memory and its `growth`. `groups` is each
 group's own total, its chat, its task count and the size of its record.
 
+**Add a group's rows up by `category`, and heed `inside_main`.** Every row
+also carries `category`, which is which of the page's three groups it is
+drawn in: `"main"`, `"chats"` or `"sidecars"` (`kind` is still there and is
+the finer fact: four kinds into three groups). If you summarise
+`processes` yourself, group them by `category` — and **skip any row whose
+`inside_main` is true**: that is the monitor's own row, a couple of MiB
+living inside the main process, whose memory is already in the main
+process's row. Its row is marked, not the main process's, so counting it
+is what double-counts. `polter.sections` is the same three groups already
+counted and summed for you — `{category, count, total_mib}`, the monitor's
+row left out of both numbers — which is what the page's table headings read.
+
+**`polter.rise` is the one row that is climbing**, as the core judged it:
+`category`, `group`, `pid`, `since_s` and `since` (when it started, on
+Polter's clock and on the reader's), `rose_mib` and `slope_mib_per_h`. It is
+absent when nothing is rising, which is the ordinary case and not a fault.
+Quote that row rather than picking the biggest number yourself — the rule
+("began earliest, ties by how much it gained") is the core's and moves
+there alone.
+
 **Read `growth.rising`, do not work it out yourself.** It is a rise over the
 last hour that was sustained and not one jump, and the figure to quote back
 to anybody is `growth.slope_mib_per_h`. A process that took 2 GB at startup
@@ -353,7 +373,8 @@ The rest is for the page the person looks at, and is handed over complete so
 that no host works it out a second time: `groups[].parts` is the four widths
 of the bar it draws (they add up to `total_mib`), `own` is the group's own
 card including its chat's `growth`, and `polter.series` is the stacked chart
--- three layers of cells over 24 hours and over a week.
+-- three layers of cells over 24 hours and over a week, each layer named by
+`category`, with `now_s` the moment its right-hand edge is on.
 
 Pass `group` to see one group's processes alone, or `pid` for one process,
 which also brings its last 24 hours of points.

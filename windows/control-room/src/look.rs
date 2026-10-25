@@ -30,6 +30,9 @@ pub mod font {
     /// A group's name in the list.
     /// Source: design v14, GRID.md.
     pub const GROUP_NAME: f64 = 15.0;
+    /// A figure's number on the overall view, `.kpi .v`'s `font-size: var(--l1)`, 24px (task 2149).
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const KPI_VALUE: f64 = 24.0;
     /// Source: design v14, GRID.md.
     pub const WEIGHT_BODY: f64 = 400.0;
     /// Source: design v14, GRID.md.
@@ -444,6 +447,300 @@ pub mod quota {
     pub const NOTE_LINE_HEIGHT: f64 = 20.0;
     /// Source: design v19, way three: src/v19.css and CHANGES.md.
     pub const NOTE_PADDING_BOTTOM: f64 = 4.0;
+}
+
+/// The left panel's bottom line (task 2149, handoff §6): Polter's own cost and the machine's swap and free disk, and a small curve at the right. It stands under the group list and above the allowance block, and a press on it puts the overall view on the right.
+pub mod overall_entry {
+    /// One row: two lines of words and the curve.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const HEIGHT: f64 = 44.0;
+    /// Under it, before the allowance block.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const MARGIN_BOTTOM: f64 = 6.0;
+    /// Left, where a row's own name starts; the design's `0 12px 0 14px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PADDING_X: f64 = 14.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PADDING_RIGHT: f64 = 12.0;
+    /// Between the words and the curve.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const GAP: f64 = 8.0;
+    /// The chip it is drawn as, `radius.row`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const RADIUS: f64 = 6.0;
+    /// `perf5.css`'s `.pself .l2` line-height, used for both lines so that the two are one height and the chip centres them.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LINE_HEIGHT: f64 = 18.0;
+    /// Between its two lines of words. The design gives the second a line-height and no gap; a SwiftUI VStack needs one.
+    /// Source: not in the design: chosen while building the mac list, to be ruled on.
+    pub const LINE_GAP: f64 = 2.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CURVE_WIDTH: f64 = 56.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CURVE_HEIGHT: f64 = 20.0;
+    /// The mark at its left edge while it is the one in front.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const RAIL_WIDTH: f64 = 3.0;
+    /// Above and below that mark.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const RAIL_INSET: f64 = 10.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const RAIL_LEFT: f64 = 3.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const RAIL_RADIUS: f64 = 1.5;
+}
+
+/// The row under the history grid on the group's performance page (task 2149, handoff §6): the group's cost split into four, as a segmented bar and a four-entry legend, with a card for the group's own part at the right. Drawn only when the answer carries a group (`groups`); a page with none looks as it did.
+pub mod group_strip {
+    /// From the box with the machine line and the grid down to the row.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TOP: f64 = 12.0;
+    /// From the row down to the line over the cards.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const BOTTOM: f64 = 12.0;
+    /// The group-itself card at the right, `.comp`'s `300px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CARD_WIDTH: f64 = 300.0;
+    /// Between the bar's box and the card, `.comp`'s `12px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const GAP: f64 = 12.0;
+    /// Inside either box, `.comp .cb`'s `12px 16px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PAD_X: f64 = 16.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PAD_Y: f64 = 12.0;
+    /// The title's line: the bar's box and the card both have one.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const HEAD_HEIGHT: f64 = 18.0;
+    /// From the title down to the bar, `.segbar`'s `margin-top: 10px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const BAR_TOP: f64 = 10.0;
+    /// `.segbar`'s `height: 14px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const BAR_HEIGHT: f64 = 14.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const BAR_RADIUS: f64 = 4.0;
+    /// From the bar down to the legend, `.seglg`'s `margin-top: 8px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LEGEND_TOP: f64 = 8.0;
+    /// One legend line.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LEGEND_ROW: f64 = 18.0;
+    /// The four entries take two lines at the widths this row is drawn at; a fixed count, because a height that depended on measurement would move the cards under the reader.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LEGEND_ROWS: f64 = 2.0;
+    /// Between two entries, `.seglg`'s `column-gap: 16px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LEGEND_GAP_X: f64 = 16.0;
+    /// Between two lines of them, its `row-gap: 2px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LEGEND_GAP_Y: f64 = 2.0;
+    /// The square before each entry, `.seglg i`'s `10px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LEGEND_SWATCH: f64 = 10.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LEGEND_SWATCH_RADIUS: f64 = 2.0;
+    /// From the square to the words, `.seglg span`'s `gap: 6px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LEGEND_SWATCH_GAP: f64 = 6.0;
+    /// The card's big number, `.gown .m .v` at `font_value`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CARD_VALUE_HEIGHT: f64 = 21.0;
+    /// Between the card's lines: `.gown .m`'s `margin-top: 4px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CARD_LINE_GAP: f64 = 4.0;
+    /// Between the card's two feet, `.gown .f`'s `margin-top: 2px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CARD_FOOT_GAP: f64 = 2.0;
+    /// The "在涨" tag in the card's title row, `.gown .h .tag`'s `height: 20px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TAG_HEIGHT: f64 = 20.0;
+    /// Its `padding: 0 6px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TAG_PAD_X: f64 = 6.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TAG_RADIUS: f64 = 4.0;
+    /// The card's corner: the same ground as a terminal's card, `perf_card.radius_mac`.
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub const CARD_RADIUS: f64 = 10.0;
+    /// The bar's box likewise.
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub const BOX_RADIUS: f64 = 10.0;
+}
+
+/// The overall view (task 2149, handoff §6): the four figures at the top, the three stacked layers with the rise line and its sentence, the machine's two small curves, and the process table. It is drawn where the supervisor's terminal was, under the pane's own bar, and the bar's title is `Polter's own cost`.
+pub mod overall_page {
+    /// Inside the page, `.ov`'s `padding: 16px 20px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PAD_X: f64 = 20.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PAD_Y: f64 = 16.0;
+    /// Between the page's four bands, `.ov`'s `gap: 12px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const GAP: f64 = 12.0;
+    /// Inside a card, `.ov .glass`'s `padding: 12px 16px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CARD_PAD_X: f64 = 16.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CARD_PAD_Y: f64 = 12.0;
+    /// A card's corner: the same ground as a terminal's card.
+    /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+    pub const CARD_RADIUS: f64 = 10.0;
+    /// The hairline a card carries, the design's `inset 0 0 0 .5px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CARD_EDGE: f64 = 0.5;
+    /// The figures are four across, `.kpis`'s `repeat(4, minmax(0, 1fr))`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const KPI_COLUMNS: f64 = 4.0;
+    /// Between two figures, its `gap: 12px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const KPI_GAP: f64 = 12.0;
+    /// Between the two words of a figure's label, `.kpi .lb`'s `gap: 8px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const KPI_LABEL_GAP: f64 = 8.0;
+    /// A figure's number, `.kpi .v`'s `line-height: 32px` at `font.kpi_value`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const KPI_VALUE_HEIGHT: f64 = 32.0;
+    /// Above the number, its `margin-top: 2px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const KPI_VALUE_TOP: f64 = 2.0;
+    /// One line of a figure's words, the page's own `line-height: 20px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const KPI_LINE: f64 = 20.0;
+    /// Between the chart's title and the legend, `.chartc .h`'s `gap: 12px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CHART_HEAD_GAP: f64 = 12.0;
+    /// The chart's title row: the taller of the words and the span switch.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CHART_HEAD_HEIGHT: f64 = 24.0;
+    /// Between the legend's three entries and the switch, `.chartc .h .rt`'s `gap: 16px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const CHART_LEGEND_GAP: f64 = 16.0;
+    /// The square before a legend entry, `.lg5 i`'s `10px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LEGEND_SWATCH: f64 = 10.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LEGEND_SWATCH_RADIUS: f64 = 2.0;
+    /// From the square to the words, `.lg5`'s `gap: 6px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const LEGEND_SWATCH_GAP: f64 = 6.0;
+    /// The span switch's two buttons, `.seg5 span`'s `height: 24px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const SPAN_HEIGHT: f64 = 24.0;
+    /// Inside one button, its `padding: 0 10px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const SPAN_PAD_X: f64 = 10.0;
+    /// Around the two, `.seg5`'s `padding: 2px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const SPAN_PAD: f64 = 2.0;
+    /// Between the two, its `gap: 2px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const SPAN_GAP: f64 = 2.0;
+    /// A button's corner, `.seg5 span`'s `border-radius: 6px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const SPAN_RADIUS: f64 = 6.0;
+    /// The switch's own corner, `.seg5`'s `border-radius: 8px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const SPAN_BOX_RADIUS: f64 = 8.0;
+    /// The sentence under the title while something is rising, `.note2`'s line.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const RISE_NOTE_HEIGHT: f64 = 20.0;
+    /// Above it, its `margin-top: 4px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const RISE_NOTE_TOP: f64 = 4.0;
+    /// From the title row down to the chart, `.plot`'s `margin-top: 8px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PLOT_TOP: f64 = 8.0;
+    /// The chart's box, `plot`'s `h` with nothing rising.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PLOT_HEIGHT: f64 = 170.0;
+    /// The same while something is rising: the sentence takes the room back off the chart (`overall`).
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PLOT_HEIGHT_RISING: f64 = 150.0;
+    /// From the chart's box down to its hour labels, `plot`'s `top: h + 6`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PLOT_AXIS_GAP: f64 = 6.0;
+    /// One hour label: the page's line-height.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PLOT_LABEL_HEIGHT: f64 = 20.0;
+    /// The horizontal grid lines, at each quarter of the top of the scale and the floor.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PLOT_GRID_LINES: f64 = 5.0;
+    /// The column the y labels stand in, left of the chart, `plot`'s `left: 40px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const PLOT_GUTTER: f64 = 40.0;
+    /// The rise line is dashed, `stroke-dasharray: 3 3`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const RISE_DASH: f64 = 3.0;
+    /// From the rise line rightwards to its sentence.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const RISE_NOTE_GAP: f64 = 6.0;
+    /// A small curve's box, `mini`'s `h`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const MINI_HEIGHT: f64 = 56.0;
+    /// Between the two, `.minis`'s `gap: 12px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const MINI_GAP: f64 = 12.0;
+    /// Between a small curve's three groups of words, `.mini .h`'s `gap: 8px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const MINI_HEAD_GAP: f64 = 8.0;
+    /// Its head's line.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const MINI_HEAD_HEIGHT: f64 = 20.0;
+    /// From the head down to the curve, the svg's `margin-top: 6px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const MINI_TOP: f64 = 6.0;
+    /// The line the disk is judged against is dashed, `stroke-dasharray: 4 3`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const DISK_DASH: f64 = 4.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const DISK_DASH_GAP: f64 = 3.0;
+    /// From the table's box down to its head, `.ptab`'s `padding: 4px 0 0`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TABLE_TOP: f64 = 4.0;
+    /// The head's line, `.ptab th`'s `height: 28px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TABLE_HEAD_HEIGHT: f64 = 28.0;
+    /// One row, `.ptab td`'s `height: 28px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TABLE_ROW_HEIGHT: f64 = 28.0;
+    /// Inside a cell, `th`/`td`'s `padding: 0 8px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TABLE_PAD_X: f64 = 8.0;
+    /// A row's own name, indented under its group's, `.ptab td.nm`'s `padding-left: 26px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TABLE_NAME_INDENT: f64 = 26.0;
+    /// The triangle before an open group's name, `tr.g .tw`'s `14px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TABLE_TWIST: f64 = 14.0;
+    /// From it to the name, its `margin-right: 4px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TABLE_TWIST_GAP: f64 = 4.0;
+    /// Between a group's name and how many it has.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TABLE_GROUP_GAP: f64 = 8.0;
+    /// The bottom of the table fades out over this much, `.ptab.fade`'s `calc(100% - 20px)`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TABLE_FADE: f64 = 20.0;
+    /// The orange mark at the left edge of a row that is rising, `tr.leak`'s `inset 3px 0 0`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TABLE_LEAK_BAR: f64 = 3.0;
+    /// A row's own 24-hour curve, `.ptab svg.spk`'s `18px`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const TABLE_SPARK: f64 = 18.0;
+    /// The table's columns, the head's own `width`s: the row's name, the group it belongs to, its memory, its 24 hours, its CPU, its pid, and how long it has run.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const COL_NAME: f64 = 250.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const COL_GROUP: f64 = 130.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const COL_MEMORY: f64 = 110.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const COL_HISTORY: f64 = 170.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const COL_CPU: f64 = 80.0;
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub const COL_PID: f64 = 80.0;
 }
 
 /// The four status glyphs and how they move. Nothing moves under Reduce Motion.
@@ -1338,6 +1635,27 @@ pub struct Theme {
     /// Their hairline.
     /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
     pub perf_card_edge: Rgba,
+    /// The group strip's first segment: the supervisor's terminal, `.segbar .sv` (`--pf-seg-sup`). It is the darkest of the four, so the bar reads left to right from the one terminal there is exactly one of.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub seg_supervisor: Rgba,
+    /// The second: every other working terminal, `.segbar .wk` (`--pf-seg-wk`).
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub seg_workers: Rgba,
+    /// The third: the person's own terminals, `.segbar .me` (`--pf-seg-me`).
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub seg_yours: Rgba,
+    /// The fourth: the group's own part, `.segbar .gp` (`--pf-seg-grp`). The faintest, and the one outlined (`seg_own_edge`), as the design draws it.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub seg_own: Rgba,
+    /// That segment's outline, `.segbar .gp`'s `inset 0 0 0 1px` (`--pf-seg-grp-edge`).
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub seg_own_edge: Rgba,
+    /// The fourth segment while the group's own part is rising, and the tag's ground on the group-itself card: `.segbar .gp.up` and `.gown .tag` (`--pf-warn-fill`, `--k-warn2-bg`'s family). A ground, not a word: the words are `level_warn2_text`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub strip_warn: Rgba,
+    /// The same segment's and that card's outline while it is rising, `.segbar .gp.up`'s and `.gown.warn`'s `--pf-warn-edge`.
+    /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+    pub strip_warn_edge: Rgba,
     /// A grid cell's hover, to its left. Light: undesigned.
     /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
     pub perf_tip: Rgba,
@@ -1499,6 +1817,13 @@ pub const LIGHT: Theme = Theme {
     perf_curve_fill: Rgba { r: 0, g: 0, b: 0, a: 0.06 },
     perf_card: Rgba { r: 0, g: 0, b: 0, a: 0.03 },
     perf_card_edge: Rgba { r: 0, g: 0, b: 0, a: 0.1 },
+    seg_supervisor: Rgba { r: 0, g: 0, b: 0, a: 0.58 },
+    seg_workers: Rgba { r: 0, g: 0, b: 0, a: 0.26 },
+    seg_yours: Rgba { r: 0, g: 0, b: 0, a: 0.13 },
+    seg_own: Rgba { r: 0, g: 0, b: 0, a: 0.04 },
+    seg_own_edge: Rgba { r: 0, g: 0, b: 0, a: 0.5 },
+    strip_warn: Rgba { r: 200, g: 87, b: 27, a: 0.3 },
+    strip_warn_edge: Rgba { r: 200, g: 87, b: 27, a: 0.5 },
     perf_tip: Rgba { r: 255, g: 255, b: 255, a: 1.0 },
     perf_tip_edge: Rgba { r: 0, g: 0, b: 0, a: 0.14 },
     surface_perf_card: Rgba { r: 240, g: 241, b: 243, a: 1.0 },
@@ -1631,6 +1956,13 @@ pub const DARK: Theme = Theme {
     perf_curve_fill: Rgba { r: 255, g: 255, b: 255, a: 0.06 },
     perf_card: Rgba { r: 255, g: 255, b: 255, a: 0.04 },
     perf_card_edge: Rgba { r: 255, g: 255, b: 255, a: 0.1 },
+    seg_supervisor: Rgba { r: 255, g: 255, b: 255, a: 0.62 },
+    seg_workers: Rgba { r: 255, g: 255, b: 255, a: 0.3 },
+    seg_yours: Rgba { r: 255, g: 255, b: 255, a: 0.16 },
+    seg_own: Rgba { r: 255, g: 255, b: 255, a: 0.06 },
+    seg_own_edge: Rgba { r: 255, g: 255, b: 255, a: 0.55 },
+    strip_warn: Rgba { r: 240, g: 138, b: 75, a: 0.38 },
+    strip_warn_edge: Rgba { r: 240, g: 138, b: 75, a: 0.55 },
     perf_tip: Rgba { r: 44, g: 49, b: 56, a: 1.0 },
     perf_tip_edge: Rgba { r: 255, g: 255, b: 255, a: 0.14 },
     surface_perf_card: Rgba { r: 42, g: 47, b: 56, a: 1.0 },

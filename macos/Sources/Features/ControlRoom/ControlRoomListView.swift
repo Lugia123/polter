@@ -68,6 +68,19 @@ struct ControlRoomListView: View {
     var onToggleArchived: () -> Void = {}
     /// The menu a right-click on an archived group opens.
     var archivedMenu: (ControlRoomList.ArchivedGroup) -> NSMenu? = { _ in nil }
+    /// **The left panel's bottom line** (task 2149, handoff §6): the door it
+    /// asks the core's `overall` page through. Nil -- the default, and what
+    /// everything that is not the control room passes -- means the panel has
+    /// no such line, and then the rows run down to the allowance block as
+    /// they did.
+    var overallAsk: ControlRoomOverall.Ask?
+    /// **Whether the overall view is the one in front** (task 2149, slice
+    /// 2): that row is then the selected one, with the mark at its left
+    /// edge.
+    var overallInFront = false
+    /// A press on that row: open the overall view, or come back to the
+    /// selected group when it is already open and this is a second press.
+    var onOverall: () -> Void = {}
 
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -86,6 +99,11 @@ struct ControlRoomListView: View {
     @State private var scrolled: CGFloat = 0
     /// Moves the rows' scroll view.
     @State private var scroller = ControlRoomScroller()
+    /// The left panel's bottom line's readings, and whether the panel has
+    /// that line at all (`overallAsk`): a panel without one asks nothing and
+    /// draws nothing there, and its rows run down as they did.
+    @StateObject private var overall: ControlRoomOverallFeed
+    private let showsOverall: Bool
 
     /// `midSlide` draws the chip as it is in the air, this far from its
     /// row, and moves nothing: for still pictures of the slide.
@@ -104,7 +122,10 @@ struct ControlRoomListView: View {
          rowLines: [String: ControlRoomRowMenuState.RowLine] = [:],
          archivedOpen: Bool = false,
          onToggleArchived: @escaping () -> Void = {},
-         archivedMenu: @escaping (ControlRoomList.ArchivedGroup) -> NSMenu? = { _ in nil }) {
+         archivedMenu: @escaping (ControlRoomList.ArchivedGroup) -> NSMenu? = { _ in nil },
+         overallAsk: ControlRoomOverall.Ask? = nil,
+         overallInFront: Bool = false,
+         onOverall: @escaping () -> Void = {}) {
         self.list = list
         self._selection = selection
         self.onNewGroup = onNewGroup
@@ -124,6 +145,11 @@ struct ControlRoomListView: View {
         self.archivedOpen = archivedOpen
         self.onToggleArchived = onToggleArchived
         self.archivedMenu = archivedMenu
+        self.overallAsk = overallAsk
+        self.overallInFront = overallInFront
+        self.onOverall = onOverall
+        self.showsOverall = overallAsk != nil
+        _overall = StateObject(wrappedValue: ControlRoomOverallFeed(ask: overallAsk ?? { _ in .notReady }))
         self.away = midSlide ?? .zero
         self._lift = State(initialValue: midSlide == nil ? 0 : 1)
     }
@@ -152,6 +178,13 @@ struct ControlRoomListView: View {
                     header.place(layout.header)
                 }
                 rows(layout).place(layout.viewport)
+                // The left panel's bottom line: above the allowance block,
+                // and only while the panel has one (task 2149).
+                if showsOverall, let answer = overall.answer {
+                    ControlRoomOverallRow(answer: answer, width: layout.overallEntry.width,
+                                          selected: overallInFront, onPress: onOverall)
+                        .place(layout.overallEntry)
+                }
                 if let quota = list.quota {
                     ControlRoomQuotaView(quota: quota, still: still).place(layout.quota)
                 }
@@ -169,6 +202,10 @@ struct ControlRoomListView: View {
             }
             .onAppear { onInSight(layout.inSight(order: list.rows.map(\.id), scrolled: scrolled)) }
             .onChange(of: layout.inSight(order: list.rows.map(\.id), scrolled: scrolled)) { onInSight($0) }
+            // The line is asked for while it is in sight, and not otherwise:
+            // a control room nobody is looking at does not wake.
+            .onAppear { if showsOverall { overall.start() } }
+            .onDisappear { overall.stop() }
         }
         .frame(width: CGFloat(Look.Side.width))
         .background(ControlRoomSidePanel())
@@ -220,7 +257,10 @@ struct ControlRoomListView: View {
         ControlRoomListLayout(list: list, height: height, noteUnderHeader: noteUnderHeader,
                               needed: ControlRoomAskText.needed,
                               linesUnder: Set(lineTexts.keys),
-                              archived: list.archived.map(\.name), archivedOpen: archivedOpen)
+                              archived: list.archived.map(\.name), archivedOpen: archivedOpen,
+                              overallLineHeight: showsOverall
+                                  ? ControlRoomOverall.EntryLayout.height + CGFloat(Look.OverallEntry.marginBottom)
+                                  : 0)
     }
 
     /// A line under a row, its text where the row's name starts.

@@ -827,6 +827,59 @@
 "as of %@" = "%@ 的数";
 "%@: this account's allowance could not be read." = "读不到 %@ 的额度。";
 
+/* 总控台：左栏底部「Polter 自己」那一行（task 2149，设计 v2 的 .pself）。三个键是同一件事的三种写法：两个都读到、只读到交换区、只读到磁盘剩 */
+"Swap %@ · Disk %@ left" = "交换 %1$@ · 磁盘剩 %2$@";
+"Swap %@" = "交换 %@";
+"Disk %@ left" = "磁盘剩 %@";
+
+/* 总控台：群性能页（task 2149，设计 v2 的 .comp）：分段条、图例和「群自己」卡 */
+"This group's cost" = "这一群的占用";
+"GB, one segment each, width by memory" = "单位 GB，一段一个，宽度按内存";
+"Workers" = "worker";
+"Your terminals" = "你的终端";
+"The group itself" = "群自己";
+"Rising" = "在涨";
+"%@ an hour" = "每小时 %@";
+"Embedded chat %@ · rising since %@" = "内嵌群聊 %1$@ · %2$@ 起一直在涨";
+"Embedded chat %@ · process %d" = "内嵌群聊 %1$@ · 进程号 %2$d";
+"No embedded chat is running" = "没有内嵌群聊在跑";
+"Tasks %d (%d open) · Group record %@" = "任务 %1$d 张（开着 %2$d）· 群记录 %3$@";
+
+/* 总控台：整体视图（task 2149，设计 v2 的 02）：面积图的跨度切换 */
+"24 hours" = "最近 24 小时";
+"7 days" = "最近 7 天";
+
+/* 总控台：整体视图的进程表（task 2149，设计 v2 的 02）：每一行叫什么 */
+"of which: performance monitoring" = "其中：性能监控";
+"Chat %@" = "群聊 %@";
+"Sidecar for %@" = "边车 · %@";
+
+/* 总控台：整体视图（task 2149，设计 v2 的 02）：四块数字、面积图、两条小曲线、进程表 */
+"Polter's own cost" = "Polter 合计";
+"Polter CPU" = "Polter CPU";
+"Swap" = "交换区";
+"Disk left" = "磁盘剩";
+" cores" = " 核";
+"→ steady" = "→ 平稳";
+"not read" = "读不到";
+"Memory Polter is using" = "Polter 用的内存";
+"GB, three layers stacked, the top edge is the total" = "单位 GB，三层叠在一起，最上沿是合计";
+"the machine, last 24 hours" = "整机，最近 24 小时";
+"startup disk, dashed line = 15 GB" = "启动盘，虚线 = 15 GB";
+"below %@, the system starts closing apps" = "低于 %1$@ 系统会开始关应用";
+"%@ has been rising since %@: %@ in all, now %@ an hour" = "%2$@ 起 %1$@ 一直在涨：一共 %3$@，现在每小时 %4$@";
+"%@ an hour" = "每小时 %@";
+"ended %@" = "%@ 时结束";
+"The main process" = "主进程";
+"Embedded chats" = "内嵌群聊";
+"MCP sidecars" = "MCP 边车";
+"Process" = "进程";
+"Group" = "属于哪个群";
+"Memory" = "内存";
+"Last 24 hours" = "24 小时";
+"CPU" = "CPU";
+"Process ID" = "进程号";
+
 /* 分屏框：worker 那一格的标题带上，名字后面说明身份的字 */
 "Worker" = "worker";
 

@@ -363,14 +363,20 @@ enum ControlRoomResources {
     /// How long the curve shows: as many periods as a card keeps points.
     static func curveSpan(_ a: Answer) -> UInt64 { UInt64(keptPoints) * a.period_ms }
 
-    /// The last `spanMs` of `points` in `rect`: the line's points, and the
+    /// The last `span` of `points` in `rect`: the line's points, and the
     /// kill line's height. The top of the scale is a little over the kill
     /// line, or twice and more the highest point when there is none.
-    static func curve(_ points: [(UInt64, UInt64)], lineAt: UInt64?, rect: CGRect, nowMs: UInt64, spanMs: UInt64)
+    ///
+    /// **The unit is the points' own**, which is why the two are `now` and
+    /// `span` and not `nowMs`/`nowS`: the performance page's curves carry
+    /// milliseconds (`period_ms`, `[ms, bytes]`) and the overall view's carry
+    /// seconds (`polter.series.now_s`, `[second, MiB]`), and one function
+    /// draws both. It subtracts and divides; it never converts.
+    static func curve(_ points: [(UInt64, UInt64)], lineAt: UInt64?, rect: CGRect, now: UInt64, span: UInt64)
         -> (line: [CGPoint], killY: CGFloat?) {
-        let span = max(spanMs, 1)
-        let start = nowMs >= span ? nowMs - span : 0
-        let shown = points.filter { $0.0 >= start && $0.0 <= nowMs }
+        let span = max(span, 1)
+        let start = now >= span ? now - span : 0
+        let shown = points.filter { $0.0 >= start && $0.0 <= now }
         let highest = Double(shown.map(\.1).max() ?? 0)
         let top = lineAt.map { Double($0) * 1.08 } ?? max(highest * 2.2, 1)
         // Saturating: a point from before the window is at its left edge, never a wrapped number.
@@ -387,6 +393,7 @@ struct ControlRoomPerfLayout: Equatable {
     typealias Card = ControlRoomLook.PerfCard
     typealias Grid = ControlRoomLook.PerfGrid
     typealias Page = ControlRoomLook.PerfPage
+    typealias Strip = ControlRoomLook.GroupStrip
 
     var summary: CGRect
     /// The machine's line, inside it.
@@ -401,6 +408,12 @@ struct ControlRoomPerfLayout: Equatable {
     var axis: CGRect
     var cardsHead: CGRect
     var cards: [CGRect]
+    /// The group's own cost, split four ways, between the box above and the
+    /// cards below (task 2149, handoff §6). **Nil when the answer carried no
+    /// group**, and then nothing stands there and the cards are where they
+    /// were -- which is what the Windows host draws today, and what the
+    /// performance page's own expectations hold this layout to.
+    var strip: CGRect?
     /// How tall the page is, unscrolled.
     var contentHeight: CGFloat
 
@@ -486,7 +499,14 @@ struct ControlRoomPerfLayout: Equatable {
         }
     }
 
-    init(_ a: ControlRoomResources.Answer, width: CGFloat, scroll: CGFloat = 0) {
+    /// `stripHeight` is how high the group's own strip is (task 2149,
+    /// handoff §6), and **zero by default**: with no group in the answer
+    /// nothing stands between the box and the cards, the cards are where
+    /// they were, and every expectation written before the strip existed
+    /// still holds. The page passes `ControlRoomOverall.groupStripHeight`
+    /// when its overall reading carries a group for the one it is showing.
+    init(_ a: ControlRoomResources.Answer, width: CGFloat, scroll: CGFloat = 0,
+         stripHeight: CGFloat = 0) {
         let x0 = CGFloat(Page.padding)
         let inner = max(width - 2 * CGFloat(Page.padding), 0)
         let y0 = CGFloat(Page.padding) - scroll
@@ -499,7 +519,13 @@ struct ControlRoomPerfLayout: Equatable {
         let rowsH = panes == 0 ? 0 : n * CGFloat(Grid.rowHeight) + (n - 1) * CGFloat(Grid.rowGap)
         axis = CGRect(x: top.minX, y: rowsTop + rowsH + CGFloat(Grid.axisGap), width: top.width, height: CGFloat(Grid.axisHeight))
         summary = CGRect(x: x0, y: y0, width: inner, height: axis.maxY + CGFloat(Page.summaryPadY) - y0)
-        cardsHead = CGRect(x: x0 + CGFloat(Page.cardsTitleInset), y: summary.maxY + CGFloat(Page.cardsTitleTop),
+        strip = stripHeight > 0
+            ? CGRect(x: x0, y: summary.maxY + CGFloat(Strip.top), width: inner, height: stripHeight)
+            : nil
+        // The line over the cards is under whatever stands there: the strip
+        // when the page has one, the box when it does not.
+        cardsHead = CGRect(x: x0 + CGFloat(Page.cardsTitleInset),
+                           y: (strip?.maxY ?? summary.maxY) + CGFloat(stripHeight > 0 ? Strip.bottom : Page.cardsTitleTop),
                            width: max(inner - 2 * CGFloat(Page.cardsTitleInset), 0), height: CGFloat(Page.cardsTitleHeight))
         let cardsTop = cardsHead.maxY + CGFloat(Page.cardsTop)
         let cols = Self.columns(inner)

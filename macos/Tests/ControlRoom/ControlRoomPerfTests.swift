@@ -242,13 +242,13 @@ struct PerfTests {
         let rect = CGRect(x: 0, y: 0, width: 96, height: 28)
         let now: UInt64 = 1_000_000, g: UInt64 = 1 << 30
         let pts: [(UInt64, UInt64)] = [(now - 400_000, 5 * g), (now - 300_000, 0), (now - 150_000, 10 * g), (now, 30 * g)]
-        let c = R.curve(pts, lineAt: 19 * g, rect: rect, nowMs: now, spanMs: 300_000)
+        let c = R.curve(pts, lineAt: 19 * g, rect: rect, now: now, span: 300_000)
         #expect(c.line.map(\.x) == [0, 48, 96])
         #expect(same(c.line[0].y, 27))
         #expect(same(c.line[2].y, 1))
         #expect(abs((Double(c.killY!)) - (27 - 26 / 1.08)) <= 1e-9)
-        #expect(R.curve(pts, lineAt: nil, rect: rect, nowMs: now, spanMs: 300_000).killY == nil)
-        #expect(R.curve(Array(pts[3...]), lineAt: nil, rect: rect, nowMs: now, spanMs: 300_000).line.isEmpty)
+        #expect(R.curve(pts, lineAt: nil, rect: rect, now: now, span: 300_000).killY == nil)
+        #expect(R.curve(Array(pts[3...]), lineAt: nil, rect: rect, now: now, span: 300_000).line.isEmpty)
         #expect(try R.curveSpan(R.decode(day())) == 300_000)
     }
 }

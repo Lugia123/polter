@@ -76,6 +76,24 @@ struct ControlRoomPageSource {
     }
 }
 
+/// The same door in the spelling `ControlRoomOverall` can compile against
+/// (task 2149): that type and the row that draws it are built into
+/// `tools/mac-logic-tests` as well as into the application
+/// (`tools/mac-logic-tests.json`), and this file names `GhosttyKit`, so the
+/// two cannot share a type. The three outcomes stay three: **"nothing yet"
+/// is not a refusal**, and only the refusal is worth writing down.
+extension ControlRoomPageSource {
+    var overallAsk: ControlRoomOverall.Ask {
+        { request in
+            switch ask(request) {
+            case let .success(text): return .answer(text)
+            case .failure(.notReady): return .notReady
+            case let .failure(.unreadable(why)): return .refused(why)
+            }
+        }
+    }
+}
+
 /// The performance page's answers for one group, asked every `period_ms`
 /// while the page is in front and the application is active (API.md
 /// §2.1), and nothing asked otherwise.
@@ -223,20 +241,40 @@ struct ControlRoomPerfPage: View {
 
     var group: String
     @StateObject private var feed: ControlRoomPerfFeed
+    /// The group's own cost, split four ways (task 2149, handoff §6): the
+    /// same `overall` page the left panel's bottom line reads, this one
+    /// asked about the group the page is showing. **A second reader of one
+    /// page**, not a second page: both draw `ControlRoomOverall.decode` of
+    /// the core's one reading.
+    @StateObject private var overall: ControlRoomOverallFeed
+    /// Whether this page has that strip at all: no door to the core, no
+    /// strip, and the cards stand where they did.
+    private let showsStrip: Bool
 
     @Environment(\.colorScheme) private var scheme
 
-    init(group: String, source: ControlRoomPageSource) {
+    init(group: String, source: ControlRoomPageSource, overallAsk: ControlRoomOverall.Ask? = nil) {
         self.group = group
         _feed = StateObject(wrappedValue: ControlRoomPerfFeed(source: source))
+        _overall = StateObject(wrappedValue: ControlRoomOverallFeed(ask: overallAsk ?? { _ in .notReady }))
+        self.showsStrip = overallAsk != nil
     }
+
+    /// The group this page's strip is about, from the overall reading: nil
+    /// while there is none, and nil for an answer that is not about this
+    /// group -- a selection that moved between asking and now.
+    private var stripGroup: ControlRoomOverall.Group? {
+        overall.answer.flatMap { ControlRoomOverall.group($0, named: group) }
+    }
+
+    private var stripHeight: CGFloat { stripGroup == nil ? 0 : ControlRoomOverall.groupStripHeight }
 
     var body: some View {
         let theme = Look.theme(scheme)
         GeometryReader { proxy in
             ScrollView(.vertical) {
                 if let a = feed.answer {
-                    let at = PerfLayout(a, width: proxy.size.width)
+                    let at = PerfLayout(a, width: proxy.size.width, stripHeight: stripHeight)
                     content(a, at: at, theme: theme)
                         .frame(width: proxy.size.width, height: at.contentHeight, alignment: .topLeading)
                 } else {
@@ -247,9 +285,23 @@ struct ControlRoomPerfPage: View {
             .onChange(of: proxy.size.width) { feed.width = $0 }
         }
         .background(theme.terminalBackground.color)
-        .onAppear { feed.start(group: group) }
-        .onDisappear { feed.stop() }
-        .onChange(of: group) { feed.start(group: $0) }
+        .onAppear {
+            feed.start(group: group)
+            if showsStrip {
+                overall.request = ControlRoomOverall.groupRequest(group: group)
+                overall.start()
+            }
+        }
+        .onDisappear {
+            feed.stop()
+            overall.stop()
+        }
+        .onChange(of: group) {
+            feed.start(group: $0)
+            guard showsStrip else { return }
+            overall.request = ControlRoomOverall.groupRequest(group: $0)
+            overall.start()
+        }
     }
 
     @ViewBuilder
@@ -309,6 +361,15 @@ struct ControlRoomPerfPage: View {
             .lineLimit(1)
             .frame(width: at.cardsHead.width, height: at.cardsHead.height)
             .offset(x: at.cardsHead.minX, y: at.cardsHead.minY)
+            // The group's own cost, split four ways, between the box above
+            // and the cards below (task 2149, handoff §6). **Drawn only when
+            // the overall answer carries this group**, so a page whose core
+            // has nothing yet looks exactly as it did.
+            if let strip = at.strip, let g = stripGroup {
+                ControlRoomGroupOwnRow(group: g)
+                    .frame(width: strip.width, height: strip.height)
+                    .offset(x: strip.minX, y: strip.minY)
+            }
             ForEach(Array(zip(a.cards, at.cards).enumerated()), id: \.offset) { _, pair in
                 ControlRoomPerfCard(card: pair.0, points: feed.curves.points(pair.0.id), nowMs: a.now_ms,
                                     spanMs: Res.curveSpan(a), theme: theme)
@@ -620,7 +681,7 @@ struct ControlRoomPerfCard: View {
     }
 
     private func curve(_ rect: CGRect) -> some View {
-        let c = Res.curve(points, lineAt: card.line_at, rect: rect, nowMs: nowMs, spanMs: spanMs)
+        let c = Res.curve(points, lineAt: card.line_at, rect: rect, now: nowMs, span: spanMs)
         return ZStack(alignment: .topLeading) {
             if c.line.count >= 2 {
                 Path { p in

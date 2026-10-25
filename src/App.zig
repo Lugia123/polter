@@ -305,6 +305,13 @@ resource_kills: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, ResourceKill) = 
 /// 2149). One allocation, taken when the sampler starts and never grown --
 /// see `Overall`'s own note, and the test that reads the byte counter.
 resource_overall: ?*poltergeistpkg.Overall = null,
+/// A wall clock for the test that asks the two doors onto the overall
+/// answer -- the page's and `resource_overview`'s -- for one answer and
+/// compares them byte for byte (task 2149). Two reads of the real clock are
+/// a millisecond apart often enough, and the answer carries the moment it
+/// was made, so without this the test would be about the clock. Null in the
+/// app, which reads the real one.
+overall_wall_ms_for_test: ?i64 = null,
 /// The panes the last reading was split by, with the chat surfaces among
 /// them: what `resource_overview` needs to say which terminal a sidecar
 /// belongs to (task 2149 §1).
@@ -4108,7 +4115,30 @@ fn renderPage(self: *App, arena: Allocator, req: []const u8) Allocator.Error![]c
     if (std.mem.eql(u8, r.page, "resources")) return self.renderResources(arena, r);
     if (std.mem.eql(u8, r.page, "tasks")) return self.renderTasks(arena, r);
     if (std.mem.eql(u8, r.page, "workdirs")) return self.renderWorkdirs(arena, r);
+    if (std.mem.eql(u8, r.page, "overall")) return self.renderOverall(arena, r);
     return "{\"error\":\"BadRequest\"}";
+}
+
+/// The overall view's page (task 2149 §6, the third block of slice 2): the
+/// same answer `resource_overview` hands a supervisor, over the door the
+/// hosts already read their pages through (`ghostty_app_control_page`).
+///
+/// **`overallAnswer` is the one reading**, so what the page draws and what
+/// the tool says cannot drift apart -- a second path here would be a second
+/// answer, and the page's is the one somebody is looking at.
+///
+/// **Empty before the first reading is taken.** Zero bytes is this door's
+/// "no answer yet" and a host draws nothing then (`ControlRoomPageSource`):
+/// there is no page yet, and an empty one would be drawn as a machine that
+/// costs nothing.
+fn renderOverall(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]const u8 {
+    return self.overallAnswer(arena, r.group, 0) catch |err| switch (err) {
+        error.NoReading => "",
+        // As the performance page refuses one: a name nobody has is said,
+        // not answered with an empty list.
+        error.NoSuchGroup => "{\"error\":\"NoSuchGroup\"}",
+        error.OutOfMemory => error.OutOfMemory,
+    };
 }
 
 /// The terminals of the group a page is about, in the order to draw them:
@@ -4388,6 +4418,9 @@ const PageWorld = struct {
         app.resource_history_file = null;
         app.resource_names = .{};
         app.resource_sessions = .{};
+        app.resource_overall = null;
+        app.overall_wall_ms_for_test = null;
+        app.group_log = null;
         app.resource_seq = 1;
         app.poltergeist = .init(alloc, .{});
         app.chat = .init(alloc, .{});
@@ -4431,6 +4464,8 @@ const PageWorld = struct {
         app.resource_history.deinit(alloc);
         app.resource_names.deinit(alloc);
         app.resource_sessions.deinit(alloc);
+        if (app.resource_overall) |o| o.destroy();
+        app.resource_overall = null;
         app.poltergeist.deinit();
         app.chat.deinit();
         app.tasks.deinit();
@@ -4441,6 +4476,33 @@ const PageWorld = struct {
     fn ask(self: *PageWorld, arena: Allocator, req: []const u8) !std.json.Value {
         const out = self.app.controlPage(req, 1 << 20);
         return std.json.parseFromSliceLeaky(std.json.Value, arena, out, .{});
+    }
+
+    /// Give the page world a reading to answer from (task 2149): one
+    /// sample, at a moment fixed so that two answers can be compared.
+    fn sample(self: *PageWorld, alloc: Allocator) !void {
+        const app = &self.app;
+        const overall = try poltergeistpkg.Overall.create(alloc);
+        app.resource_overall = overall;
+        const start: i64 = 1_700_000_000_000;
+        const at: i64 = start + 5 * poltergeistpkg.Overall.hour_ms;
+        app.overall_wall_ms_for_test = at;
+
+        const chat = poltergeistpkg.Overall.PaneReading.named(0xc1, .chat, "web-app", 700 << 20, 2);
+        var panes: [1]poltergeistpkg.Overall.PaneReading = .{chat};
+        overall.sample(.{
+            .now_ms = at,
+            .start_ms = start,
+            .machine = .{
+                .mem_total = 32 << 30,
+                .mem_used = 20 << 30,
+                .swap_used = 18 << 30,
+                .swap_total = 24 << 30,
+                .disk_free = 9 << 30,
+            },
+            .main = .{ .id = 0, .root_pid = 4242, .mem = 512 << 20, .procs = 1 },
+            .panes = &panes,
+        });
     }
 };
 
@@ -4488,6 +4550,53 @@ test "2015: control_page answers a group's 24 hours and 7 days, its tasks, and r
     try testing.expectEqualStrings("{\"error\":\"BadRequest\"}", w.app.controlPage("{\"page\":\"resources\",\"group\":\"web-app\",\"span\":\"month\"}", 1 << 20));
     try testing.expectEqualStrings("{\"error\":\"NoSuchGroup\"}", w.app.controlPage("{\"page\":\"resources\",\"group\":\"nope\",\"span\":\"day\"}", 1 << 20));
     try testing.expectEqualStrings("{\"error\":\"BadRequest\"}", w.app.controlPage("not json", 1 << 20));
+}
+
+// The two doors onto the overall answer are one answer (task 2149, slice
+// 2): `resource_overview` -- what a supervisor's tool call gets -- and the
+// `overall` page, which is what the host draws. **Byte for byte**, because
+// a supervisor reading the tool's figures while somebody reads the page's
+// is exactly the case where two answers cost somebody an afternoon.
+//
+// The moment is fixed (`overall_wall_ms_for_test`): the answer carries
+// `at`, and two reads of the real clock a millisecond apart would make
+// this a test about the clock.
+test "2149: the overall page and resource_overview answer the same bytes" {
+    const testing = std.testing;
+    var w: PageWorld = undefined;
+    try w.init(testing.allocator);
+    defer w.deinit();
+    try w.sample(testing.allocator);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Every pair of arguments the page can ask for -- `resource_overview`
+    // has one more (`pid`, for one process and its 24 hours of points),
+    // which is the tool's alone and is not a page.
+    const Cases = struct { page: []const u8, group: []const u8 };
+    for ([_]Cases{
+        .{ .page = "{\"page\":\"overall\"}", .group = "" },
+        .{ .page = "{\"page\":\"overall\",\"group\":\"web-app\"}", .group = "web-app" },
+    }) |c| {
+        const tool = try poltergeistResourceOverview(&w.app, a, .{ .resource_overview = .{ .group = c.group } });
+        const page = w.app.controlPage(c.page, 1 << 20);
+        try testing.expectEqualStrings(tool, page);
+        // And it is the whole answer, not two empty buffers agreeing.
+        try testing.expect(std.mem.indexOf(u8, page, "\"processes\"") != null);
+    }
+
+    // A group nobody has is refused by both, and by name.
+    try testing.expectError(error.NoSuchGroup, poltergeistResourceOverview(&w.app, a, .{ .resource_overview = .{ .group = "nope" } }));
+    try testing.expectEqualStrings("{\"error\":\"NoSuchGroup\"}", w.app.controlPage("{\"page\":\"overall\",\"group\":\"nope\"}", 1 << 20));
+
+    // Before the first reading: empty, which is this door's "no answer yet"
+    // (a host draws nothing then), and not a page saying Polter costs 0.
+    const held = w.app.resource_overall;
+    w.app.resource_overall = null;
+    try testing.expectEqualStrings("", w.app.controlPage("{\"page\":\"overall\"}", 1 << 20));
+    try testing.expectError(error.NoReading, poltergeistResourceOverview(&w.app, a, .{ .resource_overview = .{} }));
+    w.app.resource_overall = held;
 }
 
 test "2015: control_page holds an answer that did not fit, for the same request asked again" {
@@ -11517,11 +11626,24 @@ fn overallGroupOfPane(ctx: ?*const anyopaque, pane: u64) []const u8 {
 fn poltergeistResourceOverview(ctx: *anyopaque, alloc: Allocator, req: poltergeistpkg.rpc.Request) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
     const p = req.resource_overview;
-    const overall = self.resource_overall orelse return error.NoReading;
+    return self.overallAnswer(alloc, p.group, p.pid);
+}
 
-    // A group asked for has to be a group: answering an empty list for a
-    // name nobody has would read as "it costs nothing".
-    if (p.group.len > 0 and !self.chat.exists(p.group)) return error.NoSuchGroup;
+/// The whole answer `resource_overview` gives and the overall page draws
+/// (task 2149): Polter's own processes, the machine, and what the core
+/// knows that no process table does.
+///
+/// **One function, because there is one answer.** The MCP tool and the page
+/// are two doors onto the same reading; a second walk here would be a
+/// second answer, and the page's is the one somebody is looking at while a
+/// supervisor quotes the tool's. `error.NoReading` before the first
+/// sampling, and `error.NoSuchGroup` for a name nobody has -- answering an
+/// empty list for one would read as "it costs nothing".
+///
+/// `group` empty is every group; `pid` zero is every process.
+fn overallAnswer(self: *App, alloc: Allocator, group: []const u8, pid: u32) (Allocator.Error || error{ NoReading, NoSuchGroup })![]const u8 {
+    const overall = self.resource_overall orelse return error.NoReading;
+    if (group.len > 0 and !self.chat.exists(group)) return error.NoSuchGroup;
 
     var facts: std.ArrayListUnmanaged(poltergeistpkg.OverallPage.GroupFacts) = .empty;
     defer facts.deinit(alloc);
@@ -11565,7 +11687,7 @@ fn poltergeistResourceOverview(ctx: *anyopaque, alloc: Allocator, req: poltergei
         });
     }
 
-    const wall = self.poltergeistWallMs();
+    const wall = self.overall_wall_ms_for_test orelse self.poltergeistWallMs();
     return poltergeistpkg.OverallPage.render(alloc, overall, .{
         .now_ms = wall,
         .offset_ms = poltergeistpkg.daylog.localOffsetMs(wall),
@@ -11573,8 +11695,8 @@ fn poltergeistResourceOverview(ctx: *anyopaque, alloc: Allocator, req: poltergei
         .groups = facts.items,
         .groupOfPane = overallGroupOfPane,
         .ctx = self,
-        .only_group = p.group,
-        .only_pid = p.pid,
+        .only_group = group,
+        .only_pid = pid,
     });
 }
 

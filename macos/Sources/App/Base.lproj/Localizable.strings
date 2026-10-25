@@ -813,6 +813,24 @@
 "as of %@" = "as of %@";
 "%@: this account's allowance could not be read." = "%@: this account's allowance could not be read.";
 
+/* 总控台：左栏底部「Polter 自己」那一行（task 2149，设计 v2 的 .pself）。三个键是同一件事的三种写法：两个都读到、只读到交换区、只读到磁盘剩 */
+"Swap %@ · Disk %@ left" = "Swap %@ · Disk %@ left";
+"Swap %@" = "Swap %@";
+"Disk %@ left" = "Disk %@ left";
+
+/* 总控台：群性能页（task 2149，设计 v2 的 .comp）：分段条、图例和「群自己」卡 */
+"This group's cost" = "This group's cost";
+"GB, one segment each, width by memory" = "GB, one segment each, width by memory";
+"Workers" = "Workers";
+"Your terminals" = "Your terminals";
+"The group itself" = "The group itself";
+"Rising" = "Rising";
+"%@ an hour" = "%@ an hour";
+"Embedded chat %@ · rising since %@" = "Embedded chat %@ · rising since %@";
+"Embedded chat %@ · process %d" = "Embedded chat %@ · process %d";
+"No embedded chat is running" = "No embedded chat is running";
+"Tasks %d (%d open) · Group record %@" = "Tasks %d (%d open) · Group record %@";
+
 /* 分屏框：worker 那一格的标题带上，名字后面说明身份的字 */
 "Worker" = "Worker";
 

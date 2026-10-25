@@ -204,6 +204,51 @@ extension ControlRoomModel {
     var selectedLevel: ControlRoomResourceLevel {
         selectedRow?.facts?.resourceLevel ?? .none
     }
+
+    // MARK: - The overall view (task 2149, slice 2)
+
+    /// **Whether the right side is showing the whole of Polter** (the
+    /// supervisor's ruling of 2026-10-25): it belongs to no group, so it
+    /// stands beside "a group is selected" rather than being a page of one.
+    /// Nil for every group, and then the right side is the group's own.
+    var overallInFront: Bool { showingOverall && overallAsk != nil }
+
+    /// **Whether a piece of the selected group's own side is drawn** (task
+    /// 2149, slice 2, the reviewer's second must-fix): its page has to be in
+    /// front **and** the whole of Polter must not be.
+    ///
+    /// One question, asked by every one of those pieces -- the project link
+    /// strip over the terminal, the "start a supervisor" sentence when there
+    /// is no terminal, the page body -- so that a piece added later has one
+    /// thing to ask rather than its own copy of the condition. The two that
+    /// only asked `onSupervisorPage` were drawn over the overall view: the
+    /// strip over the chart, and the sentence and its button visible and
+    /// clickable under a pane that had already taken the right side.
+    func groupSideDrawn(_ onSupervisorPage: Bool) -> Bool {
+        onSupervisorPage && !overallInFront
+    }
+
+    /// Show the overall view on the right side.
+    ///
+    /// **The group selection is left alone.** Coming back to a group puts
+    /// that group back on the page it was left on (`pages[group]`, which
+    /// nothing here writes), so nothing about a group's page has to be
+    /// remembered twice.
+    func showOverall() {
+        guard overallAsk != nil else { return }
+        guard !showingOverall else { return }
+        if pageInFront?.showsTerminal ?? false { leavingSupervisorPage() }
+        if pageInFront == .chat { leavingChatPage() }
+        showingOverall = true
+        Ghostty.logger.notice("control room: the overall view is in front")
+    }
+
+    /// Back to the selected group's own page, where it was left.
+    func leaveOverall() {
+        guard showingOverall else { return }
+        showingOverall = false
+        Ghostty.logger.notice("control room: the overall view is out of sight")
+    }
 }
 
 /// What a frame is told about the control room's pages
@@ -228,7 +273,7 @@ struct ControlRoomPageBody: View {
     var body: some View {
         switch page {
         case .performance:
-            ControlRoomPerfPage(group: model.selection ?? "", source: model.pageSource)
+            ControlRoomPerfPage(group: model.selection ?? "", source: model.pageSource, overallAsk: model.overallAsk)
         case .tasks:
             ControlRoomTasksPage(group: model.selection ?? "", model: model)
         case .chat:

@@ -1406,6 +1406,12 @@ struct ControlRoomListLayout: Equatable {
     /// list above it holds, so that it is there when the list is long. No
     /// height when the list has none.
     var quota: CGRect
+    /// The left panel's bottom line (task 2149): the application's own cost,
+    /// the machine's swap and free disk, and a small curve. Against the
+    /// panel's bottom, **above** the allowance block. Zero height when the
+    /// panel has none, and then nothing is drawn there and the rows run down
+    /// to the allowance block as they did.
+    var overallEntry: CGRect
     /// Where the rows are seen, in the panel: from under the header (and
     /// whatever is said under it) down to the allowance block, or to the
     /// panel's bottom when there is none. The rows are clipped to it and
@@ -1458,9 +1464,19 @@ struct ControlRoomListLayout: Equatable {
     /// `archivedOpen` whether the person opened their section. The Windows
     /// host's `ListLayout::measured_with` is the same arithmetic, and
     /// `tools/control-room-hosts-agree.py` holds the two to it.
+    ///
+    /// `overallLineHeight` is how high the left panel's bottom line is, with
+    /// the margin under it (task 2149), and **zero by default**: nothing
+    /// stands there and nothing moves, which is what the Windows host draws
+    /// today and what `tools/control-room-hosts-agree.py` holds the two
+    /// hosts to by comparing this layout line for line. The mac passes
+    /// `ControlRoomOverall.EntryLayout.height + Look.OverallEntry.marginBottom`
+    /// when the panel has the line; **the height and not the type**, so that
+    /// this file -- which that gate compiles -- names nothing new.
     init(list: ControlRoomList, height: CGFloat, noteUnderHeader: CGFloat = 0,
          needed: (String, Bool) -> Int = { text, _ in ControlRoomList.nominalLines(text) },
-         linesUnder: Set<String> = [], archived: [String] = [], archivedOpen: Bool = false) {
+         linesUnder: Set<String> = [], archived: [String] = [], archivedOpen: Bool = false,
+         overallLineHeight: CGFloat = 0) {
         let pad = CGFloat(Look.Space.sidePanelPadding)
         let width = CGFloat(Look.Side.width)
         let inner = width - 2 * pad
@@ -1544,7 +1560,15 @@ struct ControlRoomListLayout: Equatable {
         let quotaH = list.quota.map { ControlRoomQuotaLayout(quota: $0).height } ?? 0
         quota = CGRect(x: pad, y: height - pad - quotaH, width: inner, height: quotaH)
 
-        let listBottom = quotaH > 0 ? quota.minY : height
+        // The left panel's bottom line stands above the allowance block, and
+        // the rows stop above it (task 2149). Nothing is drawn and nothing
+        // moves when it has no height.
+        overallEntry = CGRect(x: pad, y: quota.minY - overallLineHeight, width: inner, height: overallLineHeight)
+
+        // The rows stop at whatever stands under them: the bottom line when
+        // it is there, otherwise the allowance block, otherwise the panel's
+        // bottom.
+        let listBottom = overallLineHeight > 0 ? overallEntry.minY : (quotaH > 0 ? quota.minY : height)
         viewport = CGRect(x: 0, y: listTop, width: width, height: max(0, listBottom - listTop))
         contentHeight = y + pad - listTop
     }

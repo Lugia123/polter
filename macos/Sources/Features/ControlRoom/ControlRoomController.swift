@@ -138,8 +138,11 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             // window holding it the arrow keys went nowhere until a click.
             self.giveListTheKeyboardIfNobodyHasIt()
         }
-        model.goToSupervisor = { [weak self] in self?.goToSupervisor() }
+        model.onGoToSupervisor = { [weak self] in self?.goToSupervisor() }
         model.pageSource = .core(ghostty)
+        // The left panel's bottom line reads through the same door (task
+        // 2149), so that the two cannot come to mean different pages.
+        model.overallAsk = model.pageSource.overallAsk
         // The chat page's terminals: the core closing one of them arrives
         // as every surface's close does, and only the container knows it
         // is one (task 2015, M4a).

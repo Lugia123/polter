@@ -15,7 +15,7 @@ struct ControlRoomView: View {
         let edge = CGFloat(Look.Space.windowEdge)
         let bar = ControlRoomList.detailBar(
             row: model.selectedRow, selection: model.selection,
-            holdsTerminal: model.detail.terminal != nil, title: model.supervisorTitle)
+            holdsTerminal: model.detail.terminal != nil && !model.overallInFront, title: model.supervisorTitle)
         HStack(spacing: CGFloat(Look.Space.betweenFrames)) {
             if let list = model.list {
                 ControlRoomListView(
@@ -35,7 +35,14 @@ struct ControlRoomView: View {
                     rowLines: model.rowLines,
                     archivedOpen: model.archivedOpen,
                     onToggleArchived: { model.archivedOpen.toggle() },
-                    archivedMenu: { model.menu(forArchived: $0) })
+                    archivedMenu: { model.menu(forArchived: $0) },
+                    // The left panel's bottom line (task 2149): nil until the
+                    // controller has the core, and then the panel has none.
+                    overallAsk: model.overallAsk,
+                    // A press opens the overall view; a second press, when it
+                    // is already in front, comes back to the group.
+                    overallInFront: model.overallInFront,
+                    onOverall: { model.overallInFront ? model.leaveOverall() : model.showOverall() })
             } else {
                 // No snapshot yet: the list's place, with nothing in it.
                 Color.clear.frame(width: CGFloat(Look.Side.width))
@@ -50,24 +57,39 @@ struct ControlRoomView: View {
                 title: bar.title,
                 caption: bar.caption,
                 focused: model.detailHasKeyboard,
-                pages: page.map { PaneFramePages(current: $0, level: model.selectedLevel, select: { model.show($0) }) }
+                // **The overall view has no tabs**: it is not a page of a
+                // group, so the strip over the right side is not drawn while
+                // it is in front (task 2149, slice 2).
+                pages: model.overallInFront ? nil : page.map {
+                    PaneFramePages(current: $0, level: model.selectedLevel, select: { model.show($0) })
+                }
             ) {
                 VStack(spacing: 0) {
                 // The group's project, under the title bar and over the
                 // terminal (task 1713): beside the `ZStack`, never round
                 // it, so the terminal's holder is the same view with or
                 // without it.
-                if onSupervisorPage, let group = model.selection, model.detail.terminal != nil, let facts = model.selectedRow?.facts {
+                //
+                // **And never while the whole of Polter is in front** (task
+                // 2149, slice 2, the reviewer's second must-fix): this bar
+                // draws over the page's top, which is where the overall
+                // view's first figure is.
+                if model.groupSideDrawn(onSupervisorPage), let group = model.selection, model.detail.terminal != nil, let facts = model.selectedRow?.facts {
                     ProjectLinkStrip(
                         group: group, tie: facts.projectTie, why: facts.projectWhy, hands: model.projectHands,
                         tell: { model.say($0, under: group, delivered: false) })
                 }
                 ZStack {
-                    // Always there, so the terminal's view is never
-                    // rebuilt by a redraw of this one -- and on another page
-                    // hidden, not taken out (task 2015).
-                    DetailHost(container: detail, hidden: !onSupervisorPage)
-                    if onSupervisorPage, model.detail.terminal == nil {
+                    // Always there, so the terminal's view is never rebuilt by
+                    // a redraw of this one -- and on another page hidden, not
+                    // taken out (task 2015).
+                    DetailHost(container: detail, hidden: !model.groupSideDrawn(onSupervisorPage))
+                    // **And not while the whole of Polter is in front** (task
+                    // 2149, slice 2, the reviewer's second must-fix): with no
+                    // terminal this sentence and its button were drawn under
+                    // the overall view's pane, visible and clickable, for as
+                    // long as that pane had no reading to cover them with.
+                    if model.groupSideDrawn(onSupervisorPage), model.detail.terminal == nil {
                         ControlRoomDetailMessage(
                             detail: model.detail,
                             askFor: model.askForTerminal,
@@ -83,8 +105,15 @@ struct ControlRoomView: View {
                             },
                             goToTerminal: model.goToTerminal)
                     }
+                    // **The whole of Polter, over everything** (task 2149,
+                    // slice 2): the selected group's pages are left as they
+                    // were, and coming back puts that group on the page it
+                    // was on.
+                    if model.overallInFront {
+                        ControlRoomOverallPane(ask: model.overallAsk)
+                    }
                     // Another page in front, over the hidden terminal.
-                    if let page, !page.showsTerminal {
+                    else if let page, !page.showsTerminal {
                         ControlRoomPageBody(page: page, model: model)
                     }
                 }

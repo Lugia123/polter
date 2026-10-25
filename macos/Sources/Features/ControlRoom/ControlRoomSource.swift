@@ -135,10 +135,39 @@ final class ControlRoomModel: ObservableObject {
     /// Written by `ControlRoomController`, which tells the core.
     var onCardsInSight: ([String]) -> Void = { _ in }
 
+    /// **The one place the overall view is closed on the way to a group**
+    /// (task 2149, slice 2; the supervisor's ruling of 2026-10-25).
+    ///
+    /// Four doors lead to a group: `choose` -- a press on a row, an arrow
+    /// key, and the two things that arrive as a press, the notification jump
+    /// (`ControlRoomController.show(_:selecting:)`) and a group just made
+    /// (`selectMadeGroup`) -- and `goToSupervisor`, which is the keyboard
+    /// going into a group's own terminal. Three of the four already come
+    /// through `choose`; the two that own a door of their own call this.
+    /// Written once so that a fifth door has one obvious thing to call, and
+    /// so that "going to a group puts that group's page back" is one rule
+    /// and not four copies that drift.
+    private func closeOverallForAGroup() {
+        guard showingOverall else { return }
+        leaveOverall()
+    }
+
     /// The person selected `id` (nil for nothing).
     func choose(_ id: String?) {
         selectionIsThePersons = true
         if selection != id { selection = id }
+        // **The person asking for a group takes the overall view out of
+        // front** (task 2149, slice 2), and this is the only place that is
+        // known: a press on a row in the list is asking for that group, and
+        // leaving the whole of Polter up over it would ignore the press.
+        //
+        // **Here and not in the listener**, which was the first try. The
+        // listener sees every snapshot, and a snapshot the list caused by
+        // itself -- the same group, still selected, arriving again every two
+        // seconds -- arrives with `selectionIsThePersons` already true, so
+        // the overall view closed itself a couple of seconds after it
+        // opened. Whether the *person* asked is a fact about this call.
+        closeOverallForAGroup()
         onChoose()
     }
 
@@ -172,6 +201,30 @@ final class ControlRoomModel: ObservableObject {
     /// What the right side's pages ask the core (task 2015); nothing until
     /// the controller hands it the core.
     var pageSource: ControlRoomPageSource = .none
+    /// The left panel's bottom line's door (task 2149), in the spelling
+    /// `ControlRoomOverall` can compile against; the controller fills it in
+    /// from `pageSource` (`ControlRoomPerfPage.overallAsk`). Nil -- until
+    /// then, and wherever there is no core -- means the panel carries no
+    /// such line, and its rows run down to the allowance block as they did.
+    ///
+    /// **A name of its own rather than a second spelling of `pageSource`**:
+    /// this file is compiled without the core as well
+    /// (`tools/mac-logic-tests.json`), and `ControlRoomPageSource` names
+    /// `GhosttyKit`.
+    var overallAsk: ControlRoomOverall.Ask?
+    /// **Whether the right side is showing the overall view instead of a
+    /// group** (task 2149, slice 2): the whole of Polter, which belongs to no
+    /// group, so it is a selection of its own and not a page of one.
+    ///
+    /// The supervisor's ruling of 2026-10-25: the overall view stands beside
+    /// "a group is selected" rather than being a fifth page of a group's --
+    /// and coming back to a group puts that group back on the page it was
+    /// left on (`pages`), which a fifth page would have had to remember
+    /// twice.
+    ///
+    /// **The host's, never the core's** (the same split as `pages`): which of
+    /// the two a person is looking at is not a fact about the machine.
+    @Published var showingOverall = false
     /// The chat page's terminals (task 2015); nil until the controller
     /// makes it.
     var chatContainer: ControlRoomChatContainer?
@@ -181,7 +234,18 @@ final class ControlRoomModel: ObservableObject {
     /// Return on the list: go to the selected group's supervisor in its own
     /// tab, with the keyboard -- what Return does on Windows' list
     /// (`control_room.rs::go_to_supervisor`), task 1551.
-    var goToSupervisor: () -> Void = {}
+    ///
+    /// **The doing is `onGoToSupervisor`**, which the controller fills in;
+    /// this is the door, and it is a door onto a group's terminal like a
+    /// press on a row is onto its page, so it closes the overall view the
+    /// same way (`closeOverallForAGroup`). Both callers -- the list's Return
+    /// and the row menu's "go to supervisor" -- come through here, and the
+    /// row menu's own press already goes through `choose` as well.
+    func goToSupervisor() {
+        closeOverallForAGroup()
+        onGoToSupervisor()
+    }
+    var onGoToSupervisor: () -> Void = {}
     /// Bring the tab of terminal `id` forward with the keyboard: where a
     /// supervisor being started is waiting for the person (task 1746).
     var goToTerminal: (String) -> Void = { _ in }
@@ -336,6 +400,10 @@ final class ControlRoomModel: ObservableObject {
             self.hasOpened = true
             if !start.isThePersons { self.selectionIsThePersons = false }
             if self.selection != start.id { self.selection = start.id }
+            // **The overall view is not touched here.** A snapshot the list
+            // caused by itself is not a person asking for a group, and the
+            // one place where it is known that a person did is `choose`
+            // (task 2149, slice 2).
             self.selectMadeGroup()
         }
     }

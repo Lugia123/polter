@@ -31,6 +31,9 @@ enum ControlRoomLook {
         /// A group's name in the list.
         /// Source: design v14, GRID.md.
         static let groupName: Double = 15.0
+        /// A figure's number on the overall view, `.kpi .v`'s `font-size: var(--l1)`, 24px (task 2149).
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let kpiValue: Double = 24.0
         /// Source: design v14, GRID.md.
         static let weightBody: Double = 400.0
         /// Source: design v14, GRID.md.
@@ -445,6 +448,300 @@ enum ControlRoomLook {
         static let noteLineHeight: Double = 20.0
         /// Source: design v19, way three: src/v19.css and CHANGES.md.
         static let notePaddingBottom: Double = 4.0
+    }
+
+    /// The left panel's bottom line (task 2149, handoff §6): Polter's own cost and the machine's swap and free disk, and a small curve at the right. It stands under the group list and above the allowance block, and a press on it puts the overall view on the right.
+    enum OverallEntry {
+        /// One row: two lines of words and the curve.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let height: Double = 44.0
+        /// Under it, before the allowance block.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let marginBottom: Double = 6.0
+        /// Left, where a row's own name starts; the design's `0 12px 0 14px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let paddingX: Double = 14.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let paddingRight: Double = 12.0
+        /// Between the words and the curve.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let gap: Double = 8.0
+        /// The chip it is drawn as, `radius.row`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let radius: Double = 6.0
+        /// `perf5.css`'s `.pself .l2` line-height, used for both lines so that the two are one height and the chip centres them.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let lineHeight: Double = 18.0
+        /// Between its two lines of words. The design gives the second a line-height and no gap; a SwiftUI VStack needs one.
+        /// Source: not in the design: chosen while building the mac list, to be ruled on.
+        static let lineGap: Double = 2.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let curveWidth: Double = 56.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let curveHeight: Double = 20.0
+        /// The mark at its left edge while it is the one in front.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let railWidth: Double = 3.0
+        /// Above and below that mark.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let railInset: Double = 10.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let railLeft: Double = 3.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let railRadius: Double = 1.5
+    }
+
+    /// The row under the history grid on the group's performance page (task 2149, handoff §6): the group's cost split into four, as a segmented bar and a four-entry legend, with a card for the group's own part at the right. Drawn only when the answer carries a group (`groups`); a page with none looks as it did.
+    enum GroupStrip {
+        /// From the box with the machine line and the grid down to the row.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let top: Double = 12.0
+        /// From the row down to the line over the cards.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let bottom: Double = 12.0
+        /// The group-itself card at the right, `.comp`'s `300px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let cardWidth: Double = 300.0
+        /// Between the bar's box and the card, `.comp`'s `12px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let gap: Double = 12.0
+        /// Inside either box, `.comp .cb`'s `12px 16px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let padX: Double = 16.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let padY: Double = 12.0
+        /// The title's line: the bar's box and the card both have one.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let headHeight: Double = 18.0
+        /// From the title down to the bar, `.segbar`'s `margin-top: 10px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let barTop: Double = 10.0
+        /// `.segbar`'s `height: 14px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let barHeight: Double = 14.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let barRadius: Double = 4.0
+        /// From the bar down to the legend, `.seglg`'s `margin-top: 8px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let legendTop: Double = 8.0
+        /// One legend line.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let legendRow: Double = 18.0
+        /// The four entries take two lines at the widths this row is drawn at; a fixed count, because a height that depended on measurement would move the cards under the reader.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let legendRows: Double = 2.0
+        /// Between two entries, `.seglg`'s `column-gap: 16px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let legendGapX: Double = 16.0
+        /// Between two lines of them, its `row-gap: 2px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let legendGapY: Double = 2.0
+        /// The square before each entry, `.seglg i`'s `10px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let legendSwatch: Double = 10.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let legendSwatchRadius: Double = 2.0
+        /// From the square to the words, `.seglg span`'s `gap: 6px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let legendSwatchGap: Double = 6.0
+        /// The card's big number, `.gown .m .v` at `font_value`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let cardValueHeight: Double = 21.0
+        /// Between the card's lines: `.gown .m`'s `margin-top: 4px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let cardLineGap: Double = 4.0
+        /// Between the card's two feet, `.gown .f`'s `margin-top: 2px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let cardFootGap: Double = 2.0
+        /// The "在涨" tag in the card's title row, `.gown .h .tag`'s `height: 20px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tagHeight: Double = 20.0
+        /// Its `padding: 0 6px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tagPadX: Double = 6.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tagRadius: Double = 4.0
+        /// The card's corner: the same ground as a terminal's card, `perf_card.radius_mac`.
+        /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+        static let cardRadius: Double = 10.0
+        /// The bar's box likewise.
+        /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+        static let boxRadius: Double = 10.0
+    }
+
+    /// The overall view (task 2149, handoff §6): the four figures at the top, the three stacked layers with the rise line and its sentence, the machine's two small curves, and the process table. It is drawn where the supervisor's terminal was, under the pane's own bar, and the bar's title is `Polter's own cost`.
+    enum OverallPage {
+        /// Inside the page, `.ov`'s `padding: 16px 20px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let padX: Double = 20.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let padY: Double = 16.0
+        /// Between the page's four bands, `.ov`'s `gap: 12px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let gap: Double = 12.0
+        /// Inside a card, `.ov .glass`'s `padding: 12px 16px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let cardPadX: Double = 16.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let cardPadY: Double = 12.0
+        /// A card's corner: the same ground as a terminal's card.
+        /// Source: task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit.
+        static let cardRadius: Double = 10.0
+        /// The hairline a card carries, the design's `inset 0 0 0 .5px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let cardEdge: Double = 0.5
+        /// The figures are four across, `.kpis`'s `repeat(4, minmax(0, 1fr))`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let kpiColumns: Double = 4.0
+        /// Between two figures, its `gap: 12px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let kpiGap: Double = 12.0
+        /// Between the two words of a figure's label, `.kpi .lb`'s `gap: 8px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let kpiLabelGap: Double = 8.0
+        /// A figure's number, `.kpi .v`'s `line-height: 32px` at `font.kpi_value`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let kpiValueHeight: Double = 32.0
+        /// Above the number, its `margin-top: 2px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let kpiValueTop: Double = 2.0
+        /// One line of a figure's words, the page's own `line-height: 20px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let kpiLine: Double = 20.0
+        /// Between the chart's title and the legend, `.chartc .h`'s `gap: 12px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let chartHeadGap: Double = 12.0
+        /// The chart's title row: the taller of the words and the span switch.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let chartHeadHeight: Double = 24.0
+        /// Between the legend's three entries and the switch, `.chartc .h .rt`'s `gap: 16px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let chartLegendGap: Double = 16.0
+        /// The square before a legend entry, `.lg5 i`'s `10px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let legendSwatch: Double = 10.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let legendSwatchRadius: Double = 2.0
+        /// From the square to the words, `.lg5`'s `gap: 6px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let legendSwatchGap: Double = 6.0
+        /// The span switch's two buttons, `.seg5 span`'s `height: 24px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let spanHeight: Double = 24.0
+        /// Inside one button, its `padding: 0 10px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let spanPadX: Double = 10.0
+        /// Around the two, `.seg5`'s `padding: 2px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let spanPad: Double = 2.0
+        /// Between the two, its `gap: 2px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let spanGap: Double = 2.0
+        /// A button's corner, `.seg5 span`'s `border-radius: 6px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let spanRadius: Double = 6.0
+        /// The switch's own corner, `.seg5`'s `border-radius: 8px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let spanBoxRadius: Double = 8.0
+        /// The sentence under the title while something is rising, `.note2`'s line.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let riseNoteHeight: Double = 20.0
+        /// Above it, its `margin-top: 4px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let riseNoteTop: Double = 4.0
+        /// From the title row down to the chart, `.plot`'s `margin-top: 8px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let plotTop: Double = 8.0
+        /// The chart's box, `plot`'s `h` with nothing rising.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let plotHeight: Double = 170.0
+        /// The same while something is rising: the sentence takes the room back off the chart (`overall`).
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let plotHeightRising: Double = 150.0
+        /// From the chart's box down to its hour labels, `plot`'s `top: h + 6`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let plotAxisGap: Double = 6.0
+        /// One hour label: the page's line-height.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let plotLabelHeight: Double = 20.0
+        /// The horizontal grid lines, at each quarter of the top of the scale and the floor.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let plotGridLines: Double = 5.0
+        /// The column the y labels stand in, left of the chart, `plot`'s `left: 40px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let plotGutter: Double = 40.0
+        /// The rise line is dashed, `stroke-dasharray: 3 3`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let riseDash: Double = 3.0
+        /// From the rise line rightwards to its sentence.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let riseNoteGap: Double = 6.0
+        /// A small curve's box, `mini`'s `h`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let miniHeight: Double = 56.0
+        /// Between the two, `.minis`'s `gap: 12px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let miniGap: Double = 12.0
+        /// Between a small curve's three groups of words, `.mini .h`'s `gap: 8px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let miniHeadGap: Double = 8.0
+        /// Its head's line.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let miniHeadHeight: Double = 20.0
+        /// From the head down to the curve, the svg's `margin-top: 6px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let miniTop: Double = 6.0
+        /// The line the disk is judged against is dashed, `stroke-dasharray: 4 3`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let diskDash: Double = 4.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let diskDashGap: Double = 3.0
+        /// From the table's box down to its head, `.ptab`'s `padding: 4px 0 0`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tableTop: Double = 4.0
+        /// The head's line, `.ptab th`'s `height: 28px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tableHeadHeight: Double = 28.0
+        /// One row, `.ptab td`'s `height: 28px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tableRowHeight: Double = 28.0
+        /// Inside a cell, `th`/`td`'s `padding: 0 8px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tablePadX: Double = 8.0
+        /// A row's own name, indented under its group's, `.ptab td.nm`'s `padding-left: 26px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tableNameIndent: Double = 26.0
+        /// The triangle before an open group's name, `tr.g .tw`'s `14px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tableTwist: Double = 14.0
+        /// From it to the name, its `margin-right: 4px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tableTwistGap: Double = 4.0
+        /// Between a group's name and how many it has.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tableGroupGap: Double = 8.0
+        /// The bottom of the table fades out over this much, `.ptab.fade`'s `calc(100% - 20px)`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tableFade: Double = 20.0
+        /// The orange mark at the left edge of a row that is rising, `tr.leak`'s `inset 3px 0 0`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tableLeakBar: Double = 3.0
+        /// A row's own 24-hour curve, `.ptab svg.spk`'s `18px`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let tableSpark: Double = 18.0
+        /// The table's columns, the head's own `width`s: the row's name, the group it belongs to, its memory, its 24 hours, its CPU, its pid, and how long it has run.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let colName: Double = 250.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let colGroup: Double = 130.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let colMemory: Double = 110.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let colHistory: Double = 170.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let colCpu: Double = 80.0
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        static let colPid: Double = 80.0
     }
 
     /// The four status glyphs and how they move. Nothing moves under Reduce Motion.
@@ -1338,6 +1635,27 @@ enum ControlRoomLook {
         /// Their hairline.
         /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
         var perfCardEdge: RGBA
+        /// The group strip's first segment: the supervisor's terminal, `.segbar .sv` (`--pf-seg-sup`). It is the darkest of the four, so the bar reads left to right from the one terminal there is exactly one of.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        var segSupervisor: RGBA
+        /// The second: every other working terminal, `.segbar .wk` (`--pf-seg-wk`).
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        var segWorkers: RGBA
+        /// The third: the person's own terminals, `.segbar .me` (`--pf-seg-me`).
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        var segYours: RGBA
+        /// The fourth: the group's own part, `.segbar .gp` (`--pf-seg-grp`). The faintest, and the one outlined (`seg_own_edge`), as the design draws it.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        var segOwn: RGBA
+        /// That segment's outline, `.segbar .gp`'s `inset 0 0 0 1px` (`--pf-seg-grp-edge`).
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        var segOwnEdge: RGBA
+        /// The fourth segment while the group's own part is rising, and the tag's ground on the group-itself card: `.segbar .gp.up` and `.gown .tag` (`--pf-warn-fill`, `--k-warn2-bg`'s family). A ground, not a word: the words are `level_warn2_text`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        var stripWarn: RGBA
+        /// The same segment's and that card's outline while it is rising, `.segbar .gp.up`'s and `.gown.warn`'s `--pf-warn-edge`.
+        /// Source: design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry).
+        var stripWarnEdge: RGBA
         /// A grid cell's hover, to its left. Light: undesigned.
         /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
         var perfTip: RGBA
@@ -1499,6 +1817,13 @@ enum ControlRoomLook {
         perfCurveFill: RGBA(r: 0, g: 0, b: 0, a: 0.06),
         perfCard: RGBA(r: 0, g: 0, b: 0, a: 0.03),
         perfCardEdge: RGBA(r: 0, g: 0, b: 0, a: 0.1),
+        segSupervisor: RGBA(r: 0, g: 0, b: 0, a: 0.58),
+        segWorkers: RGBA(r: 0, g: 0, b: 0, a: 0.26),
+        segYours: RGBA(r: 0, g: 0, b: 0, a: 0.13),
+        segOwn: RGBA(r: 0, g: 0, b: 0, a: 0.04),
+        segOwnEdge: RGBA(r: 0, g: 0, b: 0, a: 0.5),
+        stripWarn: RGBA(r: 200, g: 87, b: 27, a: 0.3),
+        stripWarnEdge: RGBA(r: 200, g: 87, b: 27, a: 0.5),
         perfTip: RGBA(r: 255, g: 255, b: 255, a: 1.0),
         perfTipEdge: RGBA(r: 0, g: 0, b: 0, a: 0.14),
         surfacePerfCard: RGBA(r: 240, g: 241, b: 243, a: 1.0),
@@ -1631,6 +1956,13 @@ enum ControlRoomLook {
         perfCurveFill: RGBA(r: 255, g: 255, b: 255, a: 0.06),
         perfCard: RGBA(r: 255, g: 255, b: 255, a: 0.04),
         perfCardEdge: RGBA(r: 255, g: 255, b: 255, a: 0.1),
+        segSupervisor: RGBA(r: 255, g: 255, b: 255, a: 0.62),
+        segWorkers: RGBA(r: 255, g: 255, b: 255, a: 0.3),
+        segYours: RGBA(r: 255, g: 255, b: 255, a: 0.16),
+        segOwn: RGBA(r: 255, g: 255, b: 255, a: 0.06),
+        segOwnEdge: RGBA(r: 255, g: 255, b: 255, a: 0.55),
+        stripWarn: RGBA(r: 240, g: 138, b: 75, a: 0.38),
+        stripWarnEdge: RGBA(r: 240, g: 138, b: 75, a: 0.55),
         perfTip: RGBA(r: 44, g: 49, b: 56, a: 1.0),
         perfTipEdge: RGBA(r: 255, g: 255, b: 255, a: 0.14),
         surfacePerfCard: RGBA(r: 42, g: 47, b: 56, a: 1.0),
