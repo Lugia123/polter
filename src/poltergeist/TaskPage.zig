@@ -80,9 +80,10 @@ pub const In = struct {
     said: []const Said,
     closed: bool,
     /// What the filter box holds (task 2083): null with no box, "" with
-    /// one just opened. Titles are matched here, ASCII case ignored, so the
-    /// page's every word -- the count, the "nothing has it" -- is written
-    /// where the matching is done.
+    /// one just opened. A title is matched here, ASCII case ignored, and so
+    /// is the task's number as the page draws it (task 2248, `matches`) --
+    /// so the page's every word -- the count, the "nothing has it" -- is
+    /// written where the matching is done.
     filter: ?[]const u8 = null,
     now_ms: i64,
     offset_ms: i64,
@@ -269,7 +270,7 @@ pub fn render(arena: Allocator, in: In) Allocator.Error![]u8 {
     for (sorted) |t| {
         const shut = t.state != .open;
         if (!shut) open_count += 1;
-        if (!titleHas(t.title, q)) continue;
+        if (!matches(t, q)) continue;
         if (shut) closed_count += 1;
         if (shut and !in.closed) continue;
         var row: Row = .{
@@ -374,10 +375,32 @@ fn titleParts(arena: Allocator, title: []const u8, q: []const u8) Allocator.Erro
     return out.items;
 }
 
-/// Whether `title` has `q` in it, ASCII case ignored; an empty `q` is in
-/// every title.
-fn titleHas(title: []const u8, q: []const u8) bool {
-    return q.len == 0 or std.ascii.indexOfIgnoreCase(title, q) != null;
+/// Whether `q` finds this task: **its number**, written the way the page
+/// draws it in the first column (`2149`, or `#2149`), or a piece of its
+/// title, ASCII case ignored. An empty `q` finds every task.
+///
+/// Task 2248: a person read a number off the page's own first column, typed
+/// it in the box, and was told nothing had it -- the number was the one
+/// thing the page shows that the filter never looked at.
+fn matches(t: Task, q: []const u8) bool {
+    if (q.len == 0) return true;
+    if (std.ascii.indexOfIgnoreCase(t.title, q) != null) return true;
+    return numberIs(t.id, q);
+}
+
+/// Whether `q` is `id`'s number: the digits, with or without the `#` the
+/// page draws in front of them.
+///
+/// **The digits as written, not a parsed value.** Nothing becomes an integer,
+/// so nothing can overflow and nothing is trimmed: `214` is neither #2149 nor
+/// #21490, and `02149` is not #2149.
+fn numberIs(id: u64, q: []const u8) bool {
+    if (q.len == 0) return false;
+    const digits = if (q[0] == '#') q[1..] else q;
+    if (digits.len == 0) return false;
+    var buf: [20]u8 = undefined;
+    const n = std.fmt.bufPrint(&buf, "{d}", .{id}) catch return false;
+    return std.mem.eql(u8, n, digits);
 }
 
 fn glyphOf(t: Task) Glyph {
@@ -857,6 +880,86 @@ test "2083: a filter nothing open has says so, and whether the closed ones have 
     defer nothing.deinit();
     try testing.expectEqualStrings("The closed ones were searched too. Press Esc to clear the filter.", str(nothing.root.object.get("no_match").?, "detail"));
     try testing.expect(nothing.root.object.get("closed_title").? == .null);
+}
+
+/// The complaint of task 2248, on the page itself: the number is in the
+/// page's own first column, and typing it back found nothing. `wrote` is
+/// what the person types; the two cells below are the two spellings.
+fn theNumberFinds2149(wrote: []const u8) !void {
+    const one = [_]Task{
+        .{ .id = 2149, .title = "resource_overview says what Polter is using", .state = .open, .progress = .working, .owner = "core" },
+    };
+    var in = baseIn();
+    in.tasks = &one;
+    in.filter = wrote;
+    var got = try rendered(in);
+    defer got.deinit();
+    const open = got.root.object.get("open").?.array.items;
+    try testing.expectEqual(@as(usize, 1), open.len);
+    try testing.expectEqual(@as(i64, 2149), open[0].object.get("id").?.integer);
+    try testing.expectEqualStrings("1 / 1", str(got.root.object.get("filter").?, "count"));
+    // The number is not in the title, so nothing in it is marked: the title
+    // is drawn as it is.
+    const parts = open[0].object.get("title_parts").?.array.items;
+    try testing.expectEqual(@as(usize, 1), parts.len);
+    try testing.expect(!parts[0].object.get("hit").?.bool);
+    try testing.expect(got.root.object.get("no_match").? == .null);
+}
+
+test "2248: 2149 finds #2149" {
+    try theNumberFinds2149("2149");
+}
+
+test "2248: #2149 finds #2149" {
+    try theNumberFinds2149("#2149");
+}
+
+test "2248: a number no task has says so, and a closed one is found and counted" {
+    var in = baseIn();
+    in.filter = "#9999";
+    var none = try rendered(in);
+    defer none.deinit();
+    try testing.expectEqual(@as(usize, 0), none.root.object.get("open").?.array.items.len);
+    try testing.expect(none.root.object.get("no_match").? != .null);
+
+    // A closed one, by its number: found, counted, and folded away with the
+    // rest until c.
+    in.filter = "213";
+    var shut = try rendered(in);
+    defer shut.deinit();
+    try testing.expectEqual(@as(usize, 0), shut.root.object.get("open").?.array.items.len);
+    try testing.expectEqual(@as(i64, 1), shut.root.object.get("closed_count").?.integer);
+
+    // A title is matched by its letters, as it was, case ignored.
+    in.filter = "MULTI";
+    var by_title = try rendered(in);
+    defer by_title.deinit();
+    const found = by_title.root.object.get("open").?.array.items;
+    try testing.expectEqual(@as(usize, 1), found.len);
+    try testing.expectEqual(@as(i64, 214), found[0].object.get("id").?.integer);
+}
+
+test "2248: a number finds that task, and neither a longer one nor a padded one" {
+    // **The digits as written.** #214 is a task of its own beside #2149, so a
+    // rule that looked for the number inside the id would answer "214" with
+    // two of them.
+    try testing.expect(numberIs(2149, "2149"));
+    try testing.expect(numberIs(2149, "#2149"));
+    try testing.expect(!numberIs(2149, "214"));
+    try testing.expect(!numberIs(2149, "21490"));
+    try testing.expect(!numberIs(2149, "02149"));
+    try testing.expect(!numberIs(2149, "2149 "));
+    try testing.expect(!numberIs(2149, "#"));
+    try testing.expect(!numberIs(2149, ""));
+
+    const t: Task = .{ .id = 2149, .title = "Filter by number", .state = .open, .progress = .working, .owner = "" };
+    try testing.expect(matches(t, "2149"));
+    try testing.expect(matches(t, "#2149"));
+    try testing.expect(matches(t, "filter"));
+    try testing.expect(!matches(t, "214"));
+    try testing.expect(!matches(t, "2150"));
+    // An empty box is every task, as it was.
+    try testing.expect(matches(t, ""));
 }
 
 test "2015: #21 is not in #215, and #215 is in #215, and in #215's end" {
