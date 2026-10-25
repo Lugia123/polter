@@ -120,6 +120,7 @@ MAP_FIELDS = {
     ("src/poltergeist/Reclaim.zig", "groups"): "keyed by terminal id; group names are values in it: group_stores.Table.reclaim_groups",
     ("src/poltergeist/ResourceNames.zig", "entries"): "keyed by terminal id; the group's name is a value in it: group_stores.Table.resource_names",
     ("src/poltergeist/ResourceHistory.zig", "gone"): "keyed by terminal id: panes closed since a reading last named them (task 2015)",
+    ("src/poltergeist/ResourcePage.zig", "entries"): "keyed by terminal id: which agent session each terminal ran, as the hash of the CLI and the session id (SessionTable, task 2234). A group's name is not in it -- a rename neither loses a row nor re-keys one",
 }
 
 FIELD_GROUP = re.compile(r"^\s*(pub\s+)?group\s*:\s*\[\]const u8")

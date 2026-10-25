@@ -17,6 +17,8 @@ const ledger = @import("ledger.zig");
 const History = @import("ResourceHistory.zig");
 const Grid = @import("ResourceGrid.zig");
 const Recent = @import("ResourceRecent.zig");
+const ResourceNames = @import("ResourceNames.zig");
+const TerminalMeta = @import("TerminalMeta.zig");
 const fill = @import("ControlRoom.zig").Say.fill;
 const i18n = @import("../os/i18n.zig");
 
@@ -104,8 +106,120 @@ pub const In = struct {
     /// that has closed; null when it was never written down.
     gone_name: *const fn (ctx: *const anyopaque, id: u64) ?[]const u8,
     gone_ctx: *const anyopaque,
+    /// Which rows are really one row: an agent session that has changed
+    /// terminal ids (task 2234). Null is "nothing known": every terminal
+    /// is a row of its own, which is what this page did before.
+    sessions: ?Sessions = null,
     tr: Tr,
 };
+
+/// Which terminal ids are the same row (task 2234).
+///
+/// A terminal's id is drawn afresh every run, so one agent session that has
+/// been `--resume`d three times is three ids and would be three rows -- six
+/// of them in the group on this machine. The agent's own session id is what
+/// says they are one, exactly as `Reclaim` says it for tasks and groups
+/// (`Reclaim.keyOf`), and that is the key `of` hands back.
+///
+/// **The name of a merged row is the title read latest** (`Sessions.seen`,
+/// which is the same rule `Reclaim` uses for which session a terminal ended
+/// on): a terminal renamed mid-session must not put the row back to the
+/// name it had when the session started.
+pub const Sessions = struct {
+    /// The same `key` for every terminal the same agent session ran in.
+    key: *const fn (ctx: ?*anyopaque, id: u64) u64,
+    /// When this terminal's name was last true; null when unknown, and
+    /// then the row that came first keeps its name.
+    seen: *const fn (ctx: ?*anyopaque, id: u64) ?i64,
+    ctx: ?*anyopaque,
+};
+
+/// Which terminal ran which agent session, and the one place that decides
+/// it (task 2234).
+///
+/// **A key of its own, not the id.** `keyOf` hands back the pane id itself
+/// for a terminal no session is known for, so a plain shell is a row of its
+/// own without a second table. A session's key is the hash of `<cli>` and
+/// the session id, the same two things `Reclaim.keyOf` joins.
+///
+/// **Only the key is kept here.** The name and when it was last true are
+/// `ResourceNames`' -- it already writes a title and a `seen_ms` per pane,
+/// and a second copy here would be a second thing to keep true.
+pub const SessionTable = struct {
+    entries: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+
+    pub fn deinit(self: *SessionTable, alloc: Allocator) void {
+        self.entries.deinit(alloc);
+        self.* = .{};
+    }
+
+    /// The terminal is running this agent session.
+    pub fn note(self: *SessionTable, alloc: Allocator, id: u64, cli: []const u8, session_id: []const u8) void {
+        if (session_id.len == 0) return;
+        self.entries.put(alloc, id, sessionKey(cli, session_id)) catch {};
+    }
+
+    /// Fill from what earlier runs wrote down, once at startup: the agent
+    /// session each terminal ended on (`TerminalMeta`). The last note for a
+    /// terminal is the one that counts, as it is in `Reclaim`.
+    pub fn seed(self: *SessionTable, alloc: Allocator, notes: []const TerminalMeta.Note) void {
+        var at: std.AutoHashMapUnmanaged(u64, i64) = .empty;
+        defer at.deinit(alloc);
+        for (notes) |n| {
+            if (n.kind != .agent or n.session_id.len == 0) continue;
+            const last = at.get(n.terminal);
+            if (last != null and last.? > n.at_ms) continue;
+            at.put(alloc, n.terminal, n.at_ms) catch {};
+            self.note(alloc, n.terminal, n.cli, n.session_id);
+        }
+    }
+
+    /// The row this terminal belongs to: its session's key, or the
+    /// terminal's own id when no session is known for it. Never zero, so
+    /// that a row whose id could not be read (`idOf`) joins nobody.
+    pub fn keyOf(self: *const SessionTable, id: u64) u64 {
+        if (id == 0) return 0;
+        return self.entries.get(id) orelse id;
+    }
+
+    /// Drop what `names` has forgotten (task 2234): a terminal that
+    /// `ResourceNames.prune` has taken out can never name a row again, so
+    /// its entry here is dead too. Without this the map only ever grows --
+    /// one 16-byte entry per terminal that ever ran an agent, plus every
+    /// one the startup `seed` reads out of `TerminalMeta`'s history.
+    /// Called from the one place the other table is pruned (`App.
+    /// keepResourceNames`), so the two are emptied together.
+    pub fn prune(self: *SessionTable, names: *const ResourceNames) void {
+        var it = self.entries.iterator();
+        while (it.next()) |kv| {
+            if (names.get(kv.key_ptr.*) != null) continue;
+            self.entries.removeByPtr(kv.key_ptr);
+        }
+    }
+
+    pub fn sessions(self: *const SessionTable) Sessions {
+        return .{ .key = &of, .seen = &null_seen, .ctx = @constCast(self) };
+    }
+
+    fn of(ctx: ?*anyopaque, id: u64) u64 {
+        const self: *const SessionTable = @ptrCast(@alignCast(ctx.?));
+        return self.keyOf(id);
+    }
+
+    fn null_seen(_: ?*anyopaque, _: u64) ?i64 {
+        return null;
+    }
+};
+
+/// `<cli> NUL <session id>`, hashed: `Reclaim.keyOf`'s two halves, so the
+/// two features answer "the same session" the same way.
+pub fn sessionKey(cli: []const u8, session_id: []const u8) u64 {
+    var h = std.hash.Wyhash.init(0x2234);
+    h.update(cli);
+    h.update(&.{0});
+    h.update(session_id);
+    return h.final();
+}
 
 pub const words = struct {
     pub const machine = i18n.N_("Machine");
@@ -228,11 +342,22 @@ const GridOut = struct {
     panes: []const Row,
 };
 
+/// What one row says of one cell, when it has something to say.
+const HoverNote = struct { cell: usize, lines: []const Line };
+
 const Row = struct {
     id: []const u8,
     name: []const u8,
     cells: []const Tone,
-    hover: []const struct { cell: usize, lines: []const Line },
+    hover: []const HoverNote,
+
+    /// What this row says of one cell, or null when it has no line for it.
+    /// (`mergeSessions` needs this: a merged cell's lines must be the ones
+    /// from the row whose reading set that cell's colour.)
+    fn hoverFor(self: Row, cell: usize) ?HoverNote {
+        for (self.hover) |h| if (h.cell == cell) return h;
+        return null;
+    }
 };
 
 const Card = struct {
@@ -450,6 +575,10 @@ fn gridOut(arena: Allocator, in: In) Allocator.Error!GridOut {
         try rows.append(arena, try rowOut(arena, in, r.pane, name));
     }
 
+    // One agent session, one row (task 2234): a terminal that came back
+    // under a new id is the same row, and its strips are read as one.
+    const listed = try mergeSessions(arena, in, rows.items);
+
     var axis: std.ArrayListUnmanaged(@typeInfo(@FieldType(GridOut, "axis")).pointer.child) = .empty;
     if (day) {
         try axis.append(arena, .{ .cell = 0, .text = try fill(arena, tr(words.yesterday), &.{try clock(arena, g.start_ms, in.offset_ms)}) });
@@ -483,7 +612,7 @@ fn gridOut(arena: Allocator, in: In) Allocator.Error!GridOut {
         .cell_ms = g.cellMs(),
         .cells = n,
         .axis = axis.items,
-        .panes = rows.items,
+        .panes = listed,
     };
 }
 
@@ -493,7 +622,7 @@ fn rowOut(arena: Allocator, in: In, id: u64, name: []const u8) Allocator.Error!R
     const n = g.span.cells();
     const tones = try arena.alloc(Tone, n);
     @memset(tones, .none);
-    var hover: std.ArrayListUnmanaged(@typeInfo(@FieldType(Row, "hover")).pointer.child) = .empty;
+    var hover: std.ArrayListUnmanaged(HoverNote) = .empty;
     const row = for (g.rows) |r| {
         if (r.pane == id) break r;
     } else null;
@@ -528,6 +657,110 @@ fn rowOut(arena: Allocator, in: In, id: u64, name: []const u8) Allocator.Error!R
         try hover.append(arena, .{ .cell = i, .lines = lines.items });
     };
     return .{ .id = try hex(arena, id), .name = name, .cells = tones, .hover = hover.items };
+}
+
+/// The rows of one agent session read as one row (task 2234).
+///
+/// Two terminals that ran the same session are the same terminal as far as
+/// this page is concerned -- one agent, one line of history -- so their
+/// strips are read as one: each cell takes the worse of what fell in it,
+/// exactly as `ResourceGrid.raise` reads two readings of the *same* pane.
+/// The name is the one read latest (`Sessions.seen`), which is `Reclaim`'s
+/// rule for which session a terminal ended on.
+///
+/// With no `sessions` the list comes back exactly as it was, so a caller
+/// that knows nothing about agent sessions draws what it drew before.
+fn mergeSessions(arena: Allocator, in: In, rows: []const Row) Allocator.Error![]const Row {
+    const s = in.sessions orelse return rows;
+    var out: std.ArrayListUnmanaged(Row) = .empty;
+
+    // The newest name per key, and which row wears it.
+    const Newest = struct { name: []const u8, at: i64, id: []const u8 };
+    var newest: std.AutoHashMapUnmanaged(u64, Newest) = .empty;
+    for (rows) |r| {
+        const id = idOf(r.id);
+        const key = rowKey(s, r.id, id);
+        const at = s.seen(s.ctx, id) orelse -1;
+        const gop = try newest.getOrPut(arena, key);
+        // The latest name wins; a tie goes to the row that came first --
+        // and `in.panes` come first, so a terminal that is here now is
+        // named after itself rather than after the run before it.
+        if (!gop.found_existing or at > gop.value_ptr.at) gop.value_ptr.* = .{ .name = r.name, .at = at, .id = r.id };
+    }
+
+    // The keys seen, in the order their first row came: the order the
+    // cards and the history are already in.
+    var order: std.ArrayListUnmanaged(u64) = .empty;
+    for (rows) |r| {
+        const key = rowKey(s, r.id, idOf(r.id));
+        if (contains(order.items, key)) continue;
+        try order.append(arena, key);
+    }
+
+    for (order.items) |key| {
+        var cells: []Tone = &.{};
+        // Which row each cell's colour came from, by index into `rows`.
+        var from: std.ArrayListUnmanaged(usize) = .empty;
+        for (rows, 0..) |r, i| {
+            if (rowKey(s, r.id, idOf(r.id)) != key) continue;
+            if (cells.len == 0) {
+                cells = try arena.dupe(Tone, r.cells);
+                try from.appendNTimes(arena, i, cells.len);
+            } else for (r.cells, 0..) |t, c| {
+                if (@intFromEnum(t) > @intFromEnum(cells[c])) {
+                    cells[c] = t;
+                    from.items[c] = i;
+                }
+            }
+        }
+        // The hover follows the colour it sits on (task 2234, the
+        // reviewer's third note): a cell's lines are the ones from the row
+        // whose reading set that cell's tone. The first row that has a line
+        // for the cell is the fallback, for a cell whose winner has none.
+        var cells_with_hover: std.ArrayListUnmanaged(usize) = .empty;
+        for (rows) |r| for (r.hover) |h| {
+            const already = for (cells_with_hover.items) |c| {
+                if (c == h.cell) break true;
+            } else false;
+            if (!already) try cells_with_hover.append(arena, h.cell);
+        };
+        var hover: std.ArrayListUnmanaged(HoverNote) = .empty;
+        for (cells_with_hover.items) |cell| {
+            const want = rows[from.items[cell]].hoverFor(cell);
+            const fallback = for (rows) |r| {
+                if (r.hoverFor(cell)) |h| break h;
+            } else null;
+            if (want orelse fallback) |h| try hover.append(arena, h);
+        }
+        const win = newest.get(key).?;
+        try out.append(arena, .{ .id = win.id, .name = win.name, .cells = cells, .hover = hover.items });
+    }
+    return out.items;
+}
+
+/// The row a row's id belongs to. A row whose id could not be read is not
+/// folded in with every other unreadable one -- it is keyed by its own
+/// text, so two of them stay two rows.
+fn rowKey(s: Sessions, text: []const u8, id: u64) u64 {
+    if (id != 0) return s.key(s.ctx, id);
+    return std.hash.Wyhash.hash(0x2234, text) | 1;
+}
+
+fn contains(keys: []const u64, key: u64) bool {
+    for (keys) |k| if (k == key) return true;
+    return false;
+}
+
+/// The terminal id a row's `id` string was made from (`hex`, which writes
+/// `"0x11"`; base 0 reads the prefix). ⚠️ `parseUnsigned(.., 16)` is **not**
+/// that: it refuses the `0x` and answers `error.InvalidCharacter`, so every
+/// row would read 0 -- which is exactly what the first cut of this did, and
+/// every id then joined every other id's session.
+///
+/// A row whose id is not an id at all gets 0, which `keyOf` keeps out of
+/// every session's key: its own row, joining nobody.
+fn idOf(text: []const u8) u64 {
+    return std.fmt.parseInt(u64, text, 0) catch 0;
 }
 
 fn markDetail(arena: Allocator, tr: Tr, mk: Grid.Mark) Allocator.Error![]const u8 {
@@ -615,6 +848,165 @@ const mib: u64 = 1 << 20;
 /// 2026-10-21 12:00 UTC: 20:00 at UTC+8.
 const noon: i64 = 1792584000000;
 const plus8: i64 = 8 * 3600 * 1000;
+
+test "2234: a session that came back under three terminal ids is one row, its three stretches read as one" {
+    // The same agent session, three runs, three ids -- and the newest id
+    // is the one the row is named after.
+    var table: SessionTable = .{};
+    defer table.deinit(testing.allocator);
+    for ([_]u64{ 0x11, 0x22, 0x33 }) |id| table.note(testing.allocator, id, "claude-code", "a66ecf7c-0000-4000-8000-000000000001");
+
+    // Three stretches of the day, each from a different id: 12:00, 14:00
+    // and 16:00 local (04:00, 06:00 and 08:00 UTC). The 24-hour grid runs
+    // from 20:30 the evening before, so those are cells 31, 35 and 39.
+    var buf: [3][200]u8 = undefined;
+    const ids = [_]u64{ 0x11, 0x22, 0x33 };
+    const levels = [_][]const u8{ "ok", "warn1", "warn2" };
+    var text: std.ArrayListUnmanaged(u8) = .empty;
+    defer text.deinit(testing.allocator);
+    for (ids, levels, 0..) |id, level, i| {
+        const at = noon - (8 - @as(i64, @intCast(i)) * 2) * 3600 * 1000;
+        const line = try std.fmt.bufPrint(&buf[i], "{{\"t\":\"slot\",\"pane\":\"0x{x}\",\"at\":{d},\"level\":\"{s}\",\"mem\":{d},\"procs\":1}}\n", .{ id, at, level, @as(u64, 1 + i) * gib });
+        try text.appendSlice(testing.allocator, line);
+    }
+    var grid = try Grid.build(testing.allocator, .day, noon, plus8, text.items, &.{});
+    defer grid.deinit(testing.allocator);
+
+    // 0x33 is the one running the session now; the other two are closed
+    // terminals whose names are still written down.
+    const panes = [_]Pane{.{ .id = 0x33, .name = "◐ Polter", .role = .worker, .usage = null, .lim = .none, .level = .ok, .recent = null, .killed = null }};
+    var in = baseIn(&panes, &grid);
+    in.gone_name = sessionGone;
+    in.sessions = table.sessions();
+    var got = try rendered(in);
+    defer got.deinit();
+
+    const rows = got.root.object.get("grid").?.object.get("panes").?.array.items;
+    // **One row, not three.** Without the merge this is 3.
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    // It wears the newest id and the name that terminal has now.
+    try testing.expectEqualStrings("0x33", str(rows[0].object, "id"));
+    try testing.expectEqualStrings("◐ Polter", str(rows[0].object, "name"));
+    // The three stretches are in the one strip, each at its own hour.
+    const cells = rows[0].object.get("cells").?.array.items;
+    try testing.expectEqual(@as(usize, 48), cells.len);
+    try testing.expectEqualStrings("none", cells[30].string);
+    try testing.expectEqualStrings("ok", cells[31].string);
+    try testing.expectEqualStrings("none", cells[34].string);
+    try testing.expectEqualStrings("warn1", cells[35].string);
+    try testing.expectEqualStrings("none", cells[38].string);
+    try testing.expectEqualStrings("warn2", cells[39].string);
+}
+
+/// The names of the closed terminals in the test above.
+fn sessionGone(_: *const anyopaque, id: u64) ?[]const u8 {
+    return switch (id) {
+        0x11 => "first run",
+        0x22 => "second run",
+        else => null,
+    };
+}
+
+// Two terminals that ran one session, one that ran another, and a shell
+// that ran none: **three** rows. The test above cannot say this -- one
+// session is all it has, so a `mergeSessions` that folded *different*
+// sessions together would read the same there (task 2234, the reviewer's
+// first note). Here the wrong merge has nowhere to hide: too few rows
+// means two sessions were read as one, too many means one session was read
+// as two.
+test "2234: two sessions and a shell are three rows, each row's own stretches in it" {
+    var table: SessionTable = .{};
+    defer table.deinit(testing.allocator);
+    for ([_]u64{ 0x11, 0x22 }) |id| table.note(testing.allocator, id, "claude-code", "a66ecf7c-0000-4000-8000-00000000000a");
+    table.note(testing.allocator, 0x33, "claude-code", "a66ecf7c-0000-4000-8000-00000000000b");
+    // 0x44 is a plain shell: no session, so a row of its own.
+
+    // One stretch each, at 12:00, 14:00, 16:00 and 18:00 local -- cells 31,
+    // 35, 39 and 43 of the 24-hour grid (see the test above).
+    const ids = [_]u64{ 0x11, 0x22, 0x33, 0x44 };
+    const levels = [_][]const u8{ "ok", "warn1", "warn2", "ok" };
+    var buf: [4][200]u8 = undefined;
+    var text: std.ArrayListUnmanaged(u8) = .empty;
+    defer text.deinit(testing.allocator);
+    for (ids, levels, 0..) |id, level, i| {
+        const at = noon - (8 - @as(i64, @intCast(i)) * 2) * 3600 * 1000;
+        const line = try std.fmt.bufPrint(&buf[i], "{{\"t\":\"slot\",\"pane\":\"0x{x}\",\"at\":{d},\"level\":\"{s}\",\"mem\":{d},\"procs\":1}}\n", .{ id, at, level, @as(u64, 1 + i) * gib });
+        try text.appendSlice(testing.allocator, line);
+    }
+    var grid = try Grid.build(testing.allocator, .day, noon, plus8, text.items, &.{});
+    defer grid.deinit(testing.allocator);
+
+    // The session's latest run and the shell are open now; the two earlier
+    // runs are closed terminals whose names are still written down.
+    const panes = [_]Pane{
+        .{ .id = 0x33, .name = "B one", .role = .worker, .usage = null, .lim = .none, .level = .ok, .recent = null, .killed = null },
+        .{ .id = 0x44, .name = "shell", .role = .worker, .usage = null, .lim = .none, .level = .ok, .recent = null, .killed = null },
+    };
+    var in = baseIn(&panes, &grid);
+    in.gone_name = sessionGone;
+    in.sessions = table.sessions();
+    var got = try rendered(in);
+    defer got.deinit();
+
+    const rows = got.root.object.get("grid").?.object.get("panes").?.array.items;
+    // **Three rows**: the two runs of one session are one row, the other
+    // session is another, and the shell is a third. Four would be the
+    // page before task 2234; one or two means two sessions were folded
+    // together, which the test above cannot see.
+    try testing.expectEqual(@as(usize, 3), rows.len);
+
+    const cells = struct {
+        fn of(row: std.json.Value) []std.json.Value {
+            return row.object.get("cells").?.array.items;
+        }
+    }.of;
+
+    // The session that came back: one row, both of its stretches in it, and
+    // nothing of anybody else's.
+    try testing.expectEqualStrings("0x11", str(rows[2].object, "id"));
+    try testing.expectEqualStrings("first run", str(rows[2].object, "name"));
+    try testing.expectEqualStrings("none", cells(rows[2])[30].string);
+    try testing.expectEqualStrings("ok", cells(rows[2])[31].string);
+    try testing.expectEqualStrings("none", cells(rows[2])[34].string);
+    try testing.expectEqualStrings("warn1", cells(rows[2])[35].string);
+    try testing.expectEqualStrings("none", cells(rows[2])[39].string);
+    try testing.expectEqualStrings("none", cells(rows[2])[43].string);
+
+    // The other session keeps its own stretch, and only it.
+    try testing.expectEqualStrings("0x33", str(rows[0].object, "id"));
+    try testing.expectEqualStrings("B one", str(rows[0].object, "name"));
+    try testing.expectEqualStrings("none", cells(rows[0])[31].string);
+    try testing.expectEqualStrings("none", cells(rows[0])[35].string);
+    try testing.expectEqualStrings("warn2", cells(rows[0])[39].string);
+    try testing.expectEqualStrings("none", cells(rows[0])[43].string);
+
+    // And the shell with no session is a row of its own, joined to nobody.
+    try testing.expectEqualStrings("0x44", str(rows[1].object, "id"));
+    try testing.expectEqualStrings("shell", str(rows[1].object, "name"));
+    try testing.expectEqualStrings("none", cells(rows[1])[31].string);
+    try testing.expectEqualStrings("none", cells(rows[1])[39].string);
+    try testing.expectEqualStrings("ok", cells(rows[1])[43].string);
+}
+
+test "2234: a row's id is read out of its hex text, so two rows are not folded together" {
+    // `hex` writes "0x11". Reading that back with base 16 refuses the
+    // prefix and answers 0 for **every** row -- and then every row is one
+    // row. This is the reading that tells the two apart, and it is here
+    // because the test above cannot: with `sessions` nil nothing is
+    // merged, so the mistake shows nowhere there.
+    try testing.expectEqual(@as(u64, 0x11), idOf("0x11"));
+    try testing.expectEqual(@as(u64, 0xdead), idOf("0xdead"));
+    try testing.expectEqual(@as(u64, 0), idOf("not an id"));
+    try testing.expectEqual(@as(u64, 0), idOf(""));
+    // Two different rows must not come out with the same key.
+    var table: SessionTable = .{};
+    defer table.deinit(testing.allocator);
+    const s = table.sessions();
+    try testing.expect(rowKey(s, "0x11", idOf("0x11")) != rowKey(s, "0x22", idOf("0x22")));
+    // And a row whose id could not be read joins nobody's session: it is
+    // keyed by its own text, not by the 0 every unreadable id gives.
+    try testing.expect(rowKey(s, "junk", idOf("junk")) != rowKey(s, "rubbish", idOf("rubbish")));
+}
 
 fn noName(_: *const anyopaque, _: u64) ?[]const u8 {
     return null;
@@ -834,8 +1226,7 @@ test "2015: a grid cell's hover says what stopped, why, the largest process and 
 }
 
 /// `key` of `o`, which must be there and hold null.
-fn expectNull(o: std.json.ObjectMap, key: []const u8) !void {
-    const v = o.get(key) orelse {
+fn expectNull(o: std.json.ObjectMap, key: []const u8) !void {    const v = o.get(key) orelse {
         std.debug.print("{s} is missing; it should be there as null\n", .{key});
         return error.TestExpectedEqual;
     };

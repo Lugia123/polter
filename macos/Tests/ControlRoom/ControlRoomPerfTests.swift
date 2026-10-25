@@ -126,20 +126,63 @@ struct PerfTests {
         #expect(at.cardsHead.minY == at.summary.maxY + 12)
         #expect(at.cards[0].minY == at.cardsHead.maxY + 8)
         #expect(same(at.cellsX, 172))
+        // A 1040-wide page has 840 of room for the cells (1040 less the
+        // page's and the box's padding and the names' 144) and needs 765 at
+        // the look's size -- so they are drawn 840/765 of the way up:
+        // 14.274509803921569 square with 3.2941176470588238 between, and the
+        // row runs to its end. Task 2234, the user: at 13 and 3 the last
+        // cell's right edge was at 172 + 752, 88 pt short of it.
         let c0 = at.cellRect(0, 0)!
-        #expect([c0.minX, c0.minY, c0.width] == [172, 96.5, 13])
-        let lastX: CGFloat = 172 + 752
-        #expect(at.cellRect(0, 47)!.minX == lastX)
+        #expect(same(c0.minX, 172))
+        #expect(abs((Double(c0.width)) - 14.274509803921569) <= 1e-9)
+        #expect(abs((Double(c0.minY)) - (94 + (18 - 14.274509803921569) / 2)) <= 1e-9)
+        #expect(abs((Double(at.cellRect(0, 47)!.maxX)) - (172 + 840)) <= 1e-9)
         #expect(at.contentHeight == at.cards[7].maxY + 12)
     }
 
+    /// The day boundaries and the gap between them, at the room the cells
+    /// need exactly (711 for a week: 42 of 13 with 41 of 3 and 6 of 7; 765
+    /// for a day) -- where nothing is scaled, so the numbers are the look's.
+    /// A wider room scales them up: `testAWideRoomDrawsTheCellsBiggerAndUsesItAll`.
     @Test func testTheWeekStandsInDaysWithAGapBetween() throws {
-        let w = L.Cells.fit(.week, count: 42, room: 2000)
+        let w = L.Cells.fit(.week, count: 42, room: 711)
         #expect(same(w.offset(5), 80))
         #expect(same(w.offset(6), 96 + 7))
         let weekEnd: CGFloat = 656 + 42
         #expect(w.offset(41) == weekEnd)
-        #expect(same(L.Cells.fit(.day, count: 48, room: 2000).offset(41), 656))
+        #expect(same(L.Cells.fit(.day, count: 48, room: 765).offset(41), 656))
+    }
+
+    /// Task 2234, the user: the grid did not grow with the window, so a wide
+    /// window left a wide empty right-hand side. The cells are drawn to the
+    /// room they have now -- up as well as down -- and no bigger than
+    /// `Pending.maxCell`.
+    @Test func testAWideRoomDrawsTheCellsBiggerAndUsesItAll() throws {
+        let a = try R.decode(day())
+        // A page 1200 wide leaves the cells 1000 (1200 less the page's and
+        // the box's padding and the names' 144), against the 765 they need
+        // at the look's size: 1000/765 of 13 is 16.99346405228758.
+        let at = L(a, width: 1200)
+        #expect(at.cells.size > 13)
+        #expect(abs((Double(at.cells.size)) - 1000 / 765 * 13) <= 1e-9)
+        // Filled to the room's end, the way the narrow end is: the last
+        // cell's right edge is `cellsX + 1000`, and none of them was
+        // dropped to fit the rest.
+        #expect(abs((Double(at.cellRect(0, 47)!.maxX)) - (Double(at.cellsX) + 1000)) <= 1e-9)
+        #expect(at.cellRect(0, 47)!.maxX <= at.summary.maxX)
+        #expect(same(at.cells.first, 0))
+        #expect(same(at.cells.drawn, 48))
+        // A window wider still stops the cell at `Pending.maxCell`: past
+        // that the empty side comes back, which is the cap and not the
+        // bug -- the user's number, to be looked at again if it reads as
+        // empty.
+        let wide = L(a, width: 3000)
+        #expect(same(wide.cells.size, L.Pending.maxCell))
+        #expect(wide.cellRect(0, 47)!.maxX < wide.summary.maxX, "past the cap the rest is left empty")
+        // A week too: 42 of 13 with 41 of 3 and 6 of 7 need 711, and at
+        // 1200 the room is 1000.
+        let w = try R.decode(week())
+        #expect(abs((Double(L(w, width: 1200).cells.size)) - 1000 / 711 * 13) <= 1e-9)
     }
 
     /// 0x4881, group seq 220 (the Windows host): at the window's first size
@@ -168,7 +211,10 @@ struct PerfTests {
         let at = L(try R.decode(day()), width: 1040)
         let c = at.cellRect(3, 10)!
         #expect(at.cell(at: CGPoint(x: c.minX + 1, y: c.minY + 1), cells: 48)! == (3, 10))
-        #expect(at.cell(at: CGPoint(x: c.minX + 13.5, y: c.minY + 1), cells: 48) == nil)
+        // The gap is `cells.gap` wide whatever the cells are scaled to
+        // (3.294 at this width), so a point past the cell's right edge is
+        // in it.
+        #expect(at.cell(at: CGPoint(x: c.maxX + 1, y: c.minY + 1), cells: 48) == nil)
         #expect(at.cell(at: CGPoint(x: c.minX + 1, y: c.minY - 1), cells: 48) == nil)
     }
 
@@ -176,7 +222,9 @@ struct PerfTests {
         let a = try R.decode(day())
         let p = L(a, width: 1040), q = L(a, width: 1040, scroll: 100)
         #expect(q.cards[5].minY == p.cards[5].minY - 100)
-        #expect(q.cellRect(1, 1)!.minY == p.cellRect(1, 1)!.minY - 100)
+        // Scaled cells put the middle of a row at a number that is not
+        // exact, so this is compared the way the other measurements are.
+        #expect(abs(Double(q.cellRect(1, 1)!.minY - (p.cellRect(1, 1)!.minY - 100))) <= 1e-9)
         #expect(p.contentHeight == q.contentHeight)
         #expect(same(p.maxScroll(p.contentHeight + 50), 0))
     }

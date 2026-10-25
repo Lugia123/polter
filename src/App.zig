@@ -282,6 +282,11 @@ resource_tones: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, poltergeistpkg.R
 /// What each pane in the history is called, and in which group
 /// (`ResourceNames`, `<state>/resources/names.json`).
 resource_names: poltergeistpkg.ResourceNames = .{},
+/// Which terminal ids ran the same agent session (task 2234): one row on
+/// the performance page per session, not one per id. Filled when an agent
+/// says its session (`noteSession`), and once at startup from what earlier
+/// runs wrote down.
+resource_sessions: poltergeistpkg.ResourcePage.SessionTable = .{},
 /// The last answer `controlPage` gave and the request it was for, held for
 /// a host's second call when the first could not take it.
 page_req: std.ArrayListUnmanaged(u8) = .empty,
@@ -873,6 +878,7 @@ pub fn deinit(self: *App) void {
     self.resource_killed.deinit(self.alloc);
     self.resource_tones.deinit(self.alloc);
     self.resource_names.deinit(self.alloc);
+    self.resource_sessions.deinit(self.alloc);
     self.page_req.deinit(self.alloc);
     self.page_out.deinit(self.alloc);
     // A stop still waiting out its grace calls back into this App: wait
@@ -1927,6 +1933,10 @@ fn keepResourceNames(self: *App, wall: i64) void {
         }
     }
     self.resource_names.prune(self.alloc, wall);
+    // The same terminals, gone from the session table too (task 2234): an
+    // id `ResourceNames` has forgotten can never name a row again, and
+    // without this its entry would stay for the life of the process.
+    self.resource_sessions.prune(&self.resource_names);
     if (!self.resource_names.dirty) return;
     const f = &(self.resource_history_file orelse return);
     const bytes = self.resource_names.encode(self.alloc) catch return;
@@ -4171,6 +4181,32 @@ const GoneNames = struct {
     }
 };
 
+/// Which terminal ran which agent session, and when each row's name was
+/// last true: the two hooks `ResourcePage` folds rows by (task 2234).
+///
+/// **Two things the app already keeps, read rather than copied.** The
+/// session table says which ids are one terminal (`resource_sessions`,
+/// 2234); the name's age is `ResourceNames`' own `seen_ms`, written every
+/// reading already, so a merged row can be named after the run that read
+/// it latest without a second copy of anything.
+const AppSessions = struct {
+    table: *const poltergeistpkg.ResourcePage.SessionTable,
+    names: *const poltergeistpkg.ResourceNames,
+
+    fn of(ctx: ?*anyopaque, id: u64) u64 {
+        const self: *const AppSessions = @ptrCast(@alignCast(ctx.?));
+        return self.table.keyOf(id);
+    }
+
+    /// Null when this terminal was never named: the row that came first
+    /// keeps its name then, which is the card's own reading of it.
+    fn seen(ctx: ?*anyopaque, id: u64) ?i64 {
+        const self: *const AppSessions = @ptrCast(@alignCast(ctx.?));
+        const e = self.names.get(id) orelse return null;
+        return e.seen_ms;
+    }
+};
+
 fn renderResources(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]const u8 {
     const Page = poltergeistpkg.ResourcePage;
     const Grid = poltergeistpkg.ResourceGrid;
@@ -4206,6 +4242,9 @@ fn renderResources(self: *App, arena: Allocator, r: PageRequest) Allocator.Error
     const grid = try Grid.build(arena, span, wall, offset, days, open.items);
     const day_grid = if (span == .day) grid else try Grid.build(arena, .day, wall, offset, days, open.items);
     const gone: GoneNames = .{ .names = &self.resource_names, .group = r.group };
+    // `var` so that `&app_sessions` is a `*AppSessions` the page's `?*anyopaque`
+    // takes; a `const` makes it `*const` and `@ptrCast` refuses to drop that.
+    var app_sessions: AppSessions = .{ .table = &self.resource_sessions, .names = &self.resource_names };
 
     // The day's stops and warnings among this group's terminals, living
     // and gone: cells with one in them.
@@ -4241,6 +4280,7 @@ fn renderResources(self: *App, arena: Allocator, r: PageRequest) Allocator.Error
         .warns_24h = warns,
         .gone_name = GoneNames.of,
         .gone_ctx = &gone,
+        .sessions = .{ .key = AppSessions.of, .seen = AppSessions.seen, .ctx = @ptrCast(&app_sessions) },
         .tr = resourceTr,
     });
 }
@@ -4266,6 +4306,7 @@ const PageWorld = struct {
         app.resource_history = .{};
         app.resource_history_file = null;
         app.resource_names = .{};
+        app.resource_sessions = .{};
         app.resource_seq = 1;
         app.poltergeist = .init(alloc, .{});
         app.chat = .init(alloc, .{});
@@ -4308,6 +4349,7 @@ const PageWorld = struct {
         app.resource_killed.deinit(alloc);
         app.resource_history.deinit(alloc);
         app.resource_names.deinit(alloc);
+        app.resource_sessions.deinit(alloc);
         app.poltergeist.deinit();
         app.chat.deinit();
         app.tasks.deinit();
@@ -5715,6 +5757,10 @@ pub fn ensureChatLog(self: *App, want: bool) void {
         log.warn("poltergeist: could not open the terminal notes err={}", .{err});
     }
     if (self.reclaim == null) self.reclaim = readReclaim(self.alloc, io, state_dir);
+    // Which session each terminal that is not here any more ran, once at
+    // startup: the performance page draws one row per session, and the ids
+    // of earlier runs are exactly what it has to fold together (task 2234).
+    self.seedResourceSessions(io, state_dir);
 
     // And the groups those tasks are filed under. **Before this, the panel
     // came back and the group it belongs to did not** -- last night's tasks
@@ -13609,6 +13655,19 @@ test "a group's creator is written down as having joined it, the person at the k
 
 /// What earlier runs wrote about their terminals, as `Reclaim` reads it.
 /// Null when nothing could be read: then nothing is taken up.
+/// The agent session each terminal of earlier runs ended on, read once, so
+/// the performance page can draw one row per session (task 2234). A file
+/// that cannot be read is left out, as a terminal with no session.
+///
+/// **The notes are the same ones `Reclaim` reads**, so this costs one pass
+/// over `<state>/terminals` at startup and nothing afterwards.
+fn seedResourceSessions(self: *App, io: std.Io, state_dir: []const u8) void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const notes = poltergeistpkg.TerminalMeta.read(arena.allocator(), io, state_dir) catch return;
+    self.resource_sessions.seed(self.alloc, notes);
+}
+
 fn readReclaim(alloc: Allocator, io: std.Io, state_dir: []const u8) ?poltergeistpkg.Reclaim {
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
@@ -13786,6 +13845,10 @@ fn noteSession(self: *App, id: poltergeistpkg.Bus.Id, cli: []const u8, sid: []co
     const m = if (self.terminal_meta) |*v| v else return;
     const at = self.poltergeistWallMs();
     if (!m.agent(id, at, cli, sid, path)) return;
+    // Which session this terminal runs, for the performance page: one row
+    // per session rather than one per id (task 2234). Written here, the
+    // one place every agent that says its session goes through.
+    self.resource_sessions.note(self.alloc, id, cli, sid);
     self.reclaimSession(id, cli, sid);
     const l = if (self.session_log) |*v| v else return;
     var it = self.chat.groups.iterator();

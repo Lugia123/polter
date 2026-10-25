@@ -410,18 +410,25 @@ struct ControlRoomPerfLayout: Equatable {
         max(Int(((inner + CGFloat(Card.between)) / (CGFloat(Card.width) + CGFloat(Card.between))).rounded(.down)), 1)
     }
 
-    /// **Not in the look yet**: the least a cell and the gap between two are
-    /// scaled to (group seq 223, the supervisor's numbers).
+    /// **Not in the look yet**: the least and the most a cell and the gap
+    /// between two are scaled to (group seq 223, the supervisor's numbers;
+    /// the most is task 2234's, the user's: 20, so a cell is no taller than
+    /// a row).
     enum Pending {
         static let minCell: CGFloat = 8
         static let minCellGap: CGFloat = 2
+        static let maxCell: CGFloat = 20
+        static let maxCellGap: CGFloat = 20
     }
 
     /// How the history's cells stand in the room the overview has for them
-    /// (`perf_scene::Cells` on Windows, the same rule): at the look's size
-    /// when they fit; scaled down together, square, no smaller than
-    /// `Pending.minCell` when they do not; and when even that is too wide,
-    /// the newest that fit, against the right end, from `first`.
+    /// (`perf_scene::Cells` on Windows, the same rule): scaled together,
+    /// square, so that they fill the room they have -- **up as well as
+    /// down** (task 2234: the room is a window that is dragged wider, and
+    /// cells that stopped growing left a wide empty right-hand side). No
+    /// smaller than `Pending.minCell` and no bigger than
+    /// `Pending.maxCell`; and when even the smallest are too wide, the
+    /// newest that fit, against the right end, from `first`.
     struct Cells: Equatable {
         var size: CGFloat
         var gap: CGFloat
@@ -445,11 +452,15 @@ struct ControlRoomPerfLayout: Equatable {
         static func fit(_ span: ControlRoomResources.Span, count: Int, room: CGFloat) -> Cells {
             let full = width(span, count: count, from: 0, size: CGFloat(Grid.cell), gap: CGFloat(Grid.cellGap), groupGap: CGFloat(Grid.groupGap))
             var size = CGFloat(Grid.cell), gap = CGFloat(Grid.cellGap), groupGap = CGFloat(Grid.groupGap)
-            if full > room, full > 0 {
+            if full > 0, full != room {
+                // One factor for all three, so a cell stays square and the
+                // gaps keep their proportion; clamped at both ends, so a
+                // room too small is narrowed by dropping the oldest cells
+                // below rather than by cells vanishing.
                 let k = room / full
-                size = max(size * k, Pending.minCell)
-                gap = max(gap * k, Pending.minCellGap)
-                groupGap = max(groupGap * k, Pending.minCellGap)
+                size = min(max(size * k, Pending.minCell), Pending.maxCell)
+                gap = min(max(gap * k, Pending.minCellGap), Pending.maxCellGap)
+                groupGap = min(max(groupGap * k, Pending.minCellGap), Pending.maxCellGap)
             }
             var first = 0
             while first + 1 < count && width(span, count: count, from: first, size: size, gap: gap, groupGap: groupGap) > room + 1e-9 {

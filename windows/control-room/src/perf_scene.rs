@@ -20,14 +20,20 @@ use crate::look::{font, perf_card as c, perf_grid as g, perf_page as p, Rgba, Th
 use crate::perf::{Card, Curves, Resources, Span, Toned};
 use crate::scene::{self, Align, Face, Item, Part, Piece, Side, Style};
 
-/// **Not in the look yet**: the least a history cell and the gap between
-/// two are scaled to (L3, 739abea4b, did not take them).
+/// **Not in the look yet**: the least and the most a history cell and the
+/// gap between two are scaled to (L3, 739abea4b, did not take them).
 pub mod x {
     /// The least a history cell and the gap between two are scaled to
     /// before only the newest cells are drawn (group seq 223, the
     /// supervisor's numbers after 0x4881's real-machine reading).
     pub const MIN_CELL: f64 = 8.0;
     pub const MIN_CELL_GAP: f64 = 2.0;
+    /// The most they are scaled to when the room is wider than the cells
+    /// need (task 2234, the user's number): 20, so a cell is no taller
+    /// than a row of the table under it. Same value as the mac host's
+    /// `ControlRoomPerfLayout.Pending.maxCell`.
+    pub const MAX_CELL: f64 = 20.0;
+    pub const MAX_CELL_GAP: f64 = 20.0;
 }
 
 /// How wide `text` is in `style`, in points: the host's fonts.
@@ -229,11 +235,19 @@ impl Cells {
 
     pub fn fit(span: Span, count: usize, room: f64) -> Cells {
         let full = Self::width(span, count, 0, g::CELL, g::CELL_GAP, g::GROUP_GAP);
-        let (size, gap, group_gap) = if full <= room || full == 0.0 {
+        let (size, gap, group_gap) = if full == 0.0 || full == room {
             (g::CELL, g::CELL_GAP, g::GROUP_GAP)
         } else {
+            // One factor for all three so a cell stays square, clamped at
+            // both ends: up as well as down (task 2234 -- the room is a
+            // window dragged wider, and cells that stopped growing left a
+            // wide empty right-hand side).
             let k = room / full;
-            ((g::CELL * k).max(x::MIN_CELL), (g::CELL_GAP * k).max(x::MIN_CELL_GAP), (g::GROUP_GAP * k).max(x::MIN_CELL_GAP))
+            (
+                (g::CELL * k).clamp(x::MIN_CELL, x::MAX_CELL),
+                (g::CELL_GAP * k).clamp(x::MIN_CELL_GAP, x::MAX_CELL_GAP),
+                (g::GROUP_GAP * k).clamp(x::MIN_CELL_GAP, x::MAX_CELL_GAP),
+            )
         };
         let mut first = 0;
         while first + 1 < count && Self::width(span, count, first, size, gap, group_gap) > room + 1e-9 {
@@ -874,14 +888,19 @@ mod tests {
         assert_eq!(at.cards_head.y, at.summary.y + at.summary.h + 12.0);
         assert_eq!(at.cards[0].y, at.cards_head.y + 20.0 + 8.0);
         assert_eq!(at.cards[0].x, 12.0);
-        // The cells: 13 square, 3 apart, in the middle of an 18 row, from
-        // after the names.
+        // The cells: the look's 13 square with 3 between need 765 of room,
+        // and a page 1040 wide has 840 -- so they are drawn 840/765 of the
+        // way up (14.27450980392157), in the middle of an 18 row, from
+        // after the names, and the row runs to the room's end (task 2234,
+        // the user: at 13 and 3 it stopped 88 pt short of it).
         assert_eq!(at.cells_x, 28.0 + 132.0 + 12.0);
         let c0 = at.cell_rect(0, 0).unwrap();
-        assert_eq!((c0.x, c0.y, c0.w), (at.cells_x, at.rows_top + 2.5, 13.0));
-        assert_eq!(at.cell_rect(0, 47).unwrap().x, at.cells_x + 47.0 * 16.0);
-        assert_eq!(at.cell_rect(2, 0).unwrap().y, c0.y + 2.0 * 22.0);
-        assert_eq!((at.cells.first, at.cells.size, at.cells.gap), (0, 13.0, 3.0), "all at the look's size where they fit");
+        assert_eq!(c0.x, at.cells_x);
+        assert!((c0.w - 840.0 / 765.0 * 13.0).abs() < 1e-9);
+        assert!((c0.y - (at.rows_top + (g::ROW_HEIGHT - c0.w) / 2.0)).abs() < 1e-9);
+        assert!((at.cell_rect(0, 47).unwrap().x + c0.w - (at.cells_x + 840.0)).abs() < 1e-9, "the room's end");
+        assert!((at.cell_rect(2, 0).unwrap().y - (c0.y + 2.0 * 22.0)).abs() < 1e-9);
+        assert_eq!(at.cells.first, 0, "all 48 fit the room, scaled");
         // The span buttons end at the line's right end, the second there.
         let (s0, s1) = (at.spans[0].1, at.spans[1].1);
         assert_eq!(s1.x + s1.w, at.top.x + at.top.w);
@@ -891,16 +910,26 @@ mod tests {
         assert_eq!(r.grid.panes.len(), at.panes);
     }
 
+    /// The day boundaries and the gap between them, at the rooms where the
+    /// cells need them exactly (a week: 42 of 13 with 41 of 3 and 6 of 7 =
+    /// 711; a day: 48 of 13 with 47 of 3 = 765) -- the rooms where nothing
+    /// is scaled, so the numbers are the look's. A wider room scales them
+    /// up: `a_page_wider_than_the_cells_need_draws_them_bigger_and_uses_it`.
     #[test]
     fn the_week_stands_in_days_with_a_gap_between() {
-        let w = Cells::fit(Span::Week, 42, 2000.0);
+        let w = Cells::fit(Span::Week, 42, 711.0);
+        assert_eq!((w.size, w.gap, w.group_gap), (g::CELL, g::CELL_GAP, g::GROUP_GAP), "nothing to scale");
         assert_eq!(w.offset(5), Some(5.0 * 16.0));
         assert_eq!(w.offset(6), Some(6.0 * 16.0 + 7.0));
         assert_eq!(w.offset(41), Some(41.0 * 16.0 + 6.0 * 7.0));
-        assert_eq!(Cells::fit(Span::Day, 48, 2000.0).offset(41), Some(41.0 * 16.0));
+        assert_eq!(Cells::fit(Span::Day, 48, 765.0).offset(41), Some(41.0 * 16.0));
+        // A group's gap stands between the sixth and the seventh at
+        // whatever the cells are scaled to (1040 wide: 840 of room).
         let r = decode(WEEK).unwrap();
         let at = layout(&r, 1040.0, 0.0, &DARK, &nominal);
-        assert_eq!(at.cell_rect(0, 6).unwrap().x - at.cell_rect(0, 5).unwrap().x, 16.0 + 7.0);
+        let between = at.cell_rect(0, 6).unwrap().x - at.cell_rect(0, 5).unwrap().x;
+        assert!((between - (at.cells.size + at.cells.gap + at.cells.group_gap)).abs() < 1e-9);
+        assert!(between > 16.0 + 7.0, "the room is wider than the cells need: {between}");
     }
 
     /// 0x4881, group seq 220: at the window's first size the 48 cells ran
@@ -997,15 +1026,25 @@ mod tests {
 
     /// The line both hosts write of what the core sent and what was laid
     /// out (group seq 315): a week in 42 cells and 7 days, a day in 48 and
-    /// one, a narrow day in its newest.
+    /// one, a narrow day in its newest -- and the size it says is the size
+    /// drawn, which is the room's as well as the look's (task 2234).
     #[test]
     fn the_drew_line_says_what_was_sent_and_what_is_laid_out() {
+        // 200 of the frame is the page's and the box's padding and the
+        // names, so a page 1388 wide leaves 1188 -- more than a week's 711
+        // and a day's 765 need, so both are drawn at the most a cell goes
+        // to, 20 (the look's 13 scaled by 1188/711 and 1188/765 and
+        // clamped). At 911 and 965 the rooms are exactly what they need and
+        // the line names the look's own 13.
         let w = decode(WEEK).unwrap();
         let at = layout(&w, 1388.0, 0.0, &DARK, &nominal);
-        assert!(drew_line(&w, &at).starts_with("answer span=week cells=42 first pane=42; drew 42 cells from 0 in 7 group(s), 13 pt"), "{}", drew_line(&w, &at));
+        assert_eq!(at.cells.size, x::MAX_CELL);
+        assert!(drew_line(&w, &at).starts_with("answer span=week cells=42 first pane=42; drew 42 cells from 0 in 7 group(s), 20 pt"), "{}", drew_line(&w, &at));
+        let at = layout(&w, 711.0 + 200.0, 0.0, &DARK, &nominal);
+        assert!(drew_line(&w, &at).ends_with("13 pt at width 911"), "{}", drew_line(&w, &at));
         let d = decode(DAY).unwrap();
         let at = layout(&d, 1388.0, 0.0, &DARK, &nominal);
-        assert!(drew_line(&d, &at).starts_with("answer span=day cells=48 first pane=48; drew 48 cells from 0 in 1 group(s)"));
+        assert!(drew_line(&d, &at).starts_with("answer span=day cells=48 first pane=48; drew 48 cells from 0 in 1 group(s), 20 pt"));
         let at = layout(&d, 588.0, 0.0, &DARK, &nominal);
         assert_eq!((at.cells.drawn(), at.cells.first), (39, 9));
         assert!(drew_line(&d, &at).ends_with("8 pt at width 588"), "{}", drew_line(&d, &at));
@@ -1055,12 +1094,46 @@ mod tests {
         assert_eq!(at.cell_at(at.cells_x + 1.0, at.rows_top + 5.0, 48), Some((0, c.first)));
     }
 
+    /// Task 2234, the user: the grid did not grow with the window, so a
+    /// wide window left a wide empty right-hand side. The cells are drawn
+    /// to the room they have now -- up as well as down -- and no bigger
+    /// than `x::MAX_CELL`.
+    #[test]
+    fn a_page_wider_than_the_cells_need_draws_them_bigger_and_uses_it() {
+        let r = decode(DAY).unwrap();
+        let room = |at: &Layout| at.top.w - g::LABEL_WIDTH - g::LABEL_GAP;
+        // A page 1200 wide leaves 1000 of room, against the day's 765 at
+        // the look's size: 1000/765 of 13 is 16.993464052287582.
+        let at = layout(&r, 1200.0, 0.0, &DARK, &nominal);
+        assert_eq!(room(&at), 1000.0);
+        assert!(at.cells.size > g::CELL);
+        assert!((at.cells.size - 1000.0 / 765.0 * 13.0).abs() < 1e-9);
+        // Filled to the room's end, the way the narrow end is: the last
+        // cell's right edge is the room's, and nothing was dropped.
+        let last = at.cell_rect(0, 47).unwrap();
+        assert!((last.x + last.w - (at.cells_x + 1000.0)).abs() < 1e-9, "{last:?}");
+        assert!(at.cells.first == 0 && at.cells.drawn() == 48);
+        // And no wider than the cap: past it the empty side comes back,
+        // which is `x::MAX_CELL` and not the bug.
+        let wide = layout(&r, 3000.0, 0.0, &DARK, &nominal);
+        assert_eq!(wide.cells.size, x::MAX_CELL);
+        assert!(wide.cell_rect(0, 47).unwrap().x + x::MAX_CELL < wide.cells_x + room(&wide), "past the cap the rest is left empty");
+        // A week too: 42 of 13 with 41 of 3 and 6 of 7 need 711, and 1200
+        // leaves 1000.
+        let w = decode(WEEK).unwrap();
+        let at = layout(&w, 1200.0, 0.0, &DARK, &nominal);
+        assert!((at.cells.size - 1000.0 / 711.0 * 13.0).abs() < 1e-9, "{}", at.cells.size);
+    }
+
     #[test]
     fn a_press_finds_its_cell_and_its_span_button_and_the_gaps_find_none() {
         let (_, at) = page(1040.0);
         let c = at.cell_rect(3, 10).unwrap();
         assert_eq!(at.cell_at(c.x + 1.0, c.y + 1.0, 48), Some((3, 10)));
-        assert_eq!(at.cell_at(c.x + 13.5, c.y + 1.0, 48), None, "the gap between cells");
+        // The gap is `cells.gap` wide whatever the cells are scaled to
+        // (3.294 of room 840 here), so a point just past the cell's right
+        // edge is between cells and finds none.
+        assert_eq!(at.cell_at(c.x + c.w + 1.0, c.y + 1.0, 48), None, "the gap between cells");
         assert_eq!(at.cell_at(c.x + 1.0, c.y - 1.0, 48), None, "above the cell in its row");
         let s = at.spans[1].1;
         assert_eq!(at.span_at(s.x + 1.0, s.y + 1.0), Some(Span::Week));
@@ -1073,7 +1146,10 @@ mod tests {
         let a = layout(&r, 1040.0, 0.0, &DARK, &nominal);
         let b = layout(&r, 1040.0, 100.0, &DARK, &nominal);
         assert_eq!(b.cards[5].y, a.cards[5].y - 100.0);
-        assert_eq!(b.cell_rect(1, 1).unwrap().y, a.cell_rect(1, 1).unwrap().y - 100.0);
+        // Scaled cells put the middle of a row at a number that is not
+        // exact (95.86274509803921 of 94 + 1.8627450980392126), so this is
+        // compared to within a point's last bits.
+        assert!((b.cell_rect(1, 1).unwrap().y - (a.cell_rect(1, 1).unwrap().y - 100.0)).abs() < 1e-9);
         assert_eq!(a.content_height, b.content_height);
         assert_eq!(a.max_scroll(a.content_height + 50.0), 0.0);
         assert_eq!(a.max_scroll(300.0), a.content_height - 300.0);
