@@ -311,6 +311,12 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
         env.get("HOME") orelse env.get("USERPROFILE"),
         mcpExecutable(aa, io),
         parsed.session,
+        // The switches on this plugin's own settings page, read here for
+        // the same reason `discover` above reads them: this is the one
+        // process that knows where the config directory is, and the
+        // adapter is handed the answer rather than the rule
+        // (`agent_cli.launchParams`).
+        agent_cli.launchParams(aa, io, &env, choice.cli),
     );
 
     const answer = switch (try agent_cli.ask(aa, io, &env, adapter, .launch, request.written())) {
@@ -928,7 +934,7 @@ test "+launch: the session named on the line is the one the adapter is sent, and
     }) |cell| {
         const parsed = try parseRest(cell[0]);
         var request: std.Io.Writer.Allocating = .init(aa);
-        try agent_cli.writeLaunchRequest(&request.writer, .{ .key = "r", .name = "R" }, choice, null, null, null, parsed.session);
+        try agent_cli.writeLaunchRequest(&request.writer, .{ .key = "r", .name = "R" }, choice, null, null, null, parsed.session, &.{});
         const json = try std.json.parseFromSliceLeaky(std.json.Value, aa, request.written(), .{});
         const sent = json.object.get("session").?;
         if (cell[1]) |want| {
@@ -957,6 +963,7 @@ test "+launch: what follows `--` reaches the adapter after the role's own args" 
         null,
         null,
         null,
+        &.{},
     );
     const json = try std.json.parseFromSliceLeaky(std.json.Value, aa, request.written(), .{});
     const args = json.object.get("cli").?.object.get("args").?.array.items;

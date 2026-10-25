@@ -79,6 +79,30 @@
           "no"
         ],
         "default": "yes"
+      },
+      "tui": {
+        "type": "string",
+        "title": "Which renderer a session Polter starts begins in",
+        "description": "fullscreen is Claude Code's flicker-free alt-screen renderer (the same as its own `tui: \"fullscreen\"`); classic is its main-screen renderer, which is what Claude Code calls `\"default\"`. follow writes neither, so a session Polter starts is rendered however your own ~/.claude/settings.json says -- pick this if you use /tui yourself and want Polter to stay out of it. Only sessions Polter starts are affected: your own settings file is read by this plugin and never written to.",
+        "enum": [
+          "follow",
+          "fullscreen",
+          "classic"
+        ],
+        "default": "fullscreen",
+        "to_session": true
+      },
+      "autoScrollEnabled": {
+        "type": "string",
+        "title": "Follow new output with the viewport",
+        "description": "on scrolls the conversation back to the bottom whenever new output arrives, so a session you scrolled up in is pulled down again; off leaves the viewport where you put it, with a \"1 new message\" badge to scroll down to. It only means anything in fullscreen, where Claude Code has a scrollback of its own to be scrolled. follow writes nothing, so your own setting decides. The default is off: measured on 2.1.310, on and off are the same while the viewport is at the bottom, and they differ only once you have scrolled up -- which is the case this is here for.",
+        "enum": [
+          "follow",
+          "on",
+          "off"
+        ],
+        "default": "off",
+        "to_session": true
       }
     }
   }

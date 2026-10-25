@@ -784,6 +784,8 @@ def launch(req):
     extra, settings, settings_file = split_settings(
         [a for a in (cli.get("args") or []) if isinstance(a, str)], notes)
 
+    plugin_switches(req, settings, settings_file, notes)
+
     # ⚠️ **One `--settings`, never two.** Measured: given twice, the second
     # replaces the first rather than merging with it, so a role whose extra
     # arguments carry their own `--settings` would silently switch every one
@@ -899,6 +901,97 @@ def claude_version():
     if p.returncode != 0 or not m:
         return None, "claude --version did not say a version"
     return tuple(int(g) for g in m.groups()), None
+
+
+# The switches on this plugin's own settings page that are about a session
+# rather than about registration (task 2235), as the *value in the settings
+# file* -> *what goes into --settings*.
+#
+# The left-hand side is this plugin's own vocabulary, chosen by whoever
+# wrote the page, and the right-hand side is Claude Code's -- the two are
+# **not** the same words and must not be made to be. `classic` is what
+# Claude Code's own documentation calls the main-screen renderer; the value
+# it takes is `"default"`. Naming the choice after the value would put
+# `"default"` on a menu beside `fullscreen`, where a person reads it as
+# "leave it alone" -- which is the third choice, `follow`, and the one that
+# writes nothing at all.
+SWITCHES = {
+    "tui": {"follow": None, "fullscreen": "fullscreen", "classic": "default"},
+    "autoScrollEnabled": {"follow": None, "on": True, "off": False},
+}
+
+
+def plugin_switches(req, settings, settings_file, notes):
+    """Fold this plugin's own switches into the `--settings` being built.
+
+    `req["params"]` is what the plugin's settings page holds, handed over by
+    Polter (`agent_cli.launchParams`): the adapter is told the answer rather
+    than the rule, so "which file wins" is decided in one place and not
+    again in another language on another platform.
+
+    **Absent means nothing to do**, and so does `follow`: an adapter is also
+    started by a `+launch` from a Polter older than this key, and that has
+    to be an ordinary session rather than a crash or a guess.
+
+    ⚠️ **A value this version does not know is left out with a note.**
+    Measured on 2.1.310: an inline `--settings` with one value the schema
+    rejects is **discarded whole**, so a hand-edited settings file that
+    says `"tui": "classic-value-does-not-exist"` would otherwise take the
+    session's `hooks`, its skill switches and its `statusLine` down with it
+    -- an agent with no Polter tools at all, from a typo on a page that has
+    nothing to do with either.
+
+    A `--settings` given as a *file* is not written to: the role's own
+    arguments win over everything, which is what that argument means, and
+    rewriting the file is what this adapter never does.
+
+    ⚠️ **A key the role's own inline `--settings` already carries is left
+    alone**, because the same thing is true of an inline one: the role wrote
+    it down for this session, on purpose, and the settings page is about
+    what a session starts with when the role says nothing. A role that pins
+    `{"tui": "default"}` to record its screen would otherwise have that
+    quietly overruled by a page it does not know exists.
+    """
+    if settings_file:
+        # `params` is whatever the request carried. **Not necessarily an
+        # object**: this is a JSON document an adapter is handed, and only
+        # Polter writes it today. A list here is "no settings", exactly as a
+        # missing key is -- reading `.get` off it would be this adapter
+        # dying on a request the PowerShell one shrugs at.
+        wanted = req.get("params")
+        if not isinstance(wanted, dict):
+            wanted = {}
+        if any(wanted.get(name) not in (None, "", "follow") for name in SWITCHES):
+            notes.append("These plugin settings are not applied: the role's --settings is a "
+                         "file, so there is nowhere to put them without writing to that file.")
+        return
+
+    params = req.get("params") if isinstance(req.get("params"), dict) else {}
+    for name, values in SWITCHES.items():
+        picked = params.get(name)
+        # Not set at all, or set to "follow": the person's own settings file
+        # decides, which is what writing nothing means.
+        if picked in (None, "", "follow"):
+            continue
+        # **A value that is not a string is said to be that, and not spelled
+        # out.** Polter writes this object from a settings file that holds
+        # strings only, so this is a hand-made request; echoing whatever is
+        # there would make this note's wording Python's `repr` on one side
+        # and PowerShell's on the other, which is a difference in the two
+        # adapters that no reader of either one could see.
+        if not isinstance(picked, str):
+            notes.append('Plugin setting "%s" is not a string, so it is left out.' % name)
+            continue
+        if picked not in values:
+            notes.append('Plugin setting "%s" is "%s", which this version does not know, so it '
+                         "is left out rather than put in front of Claude Code." % (name, picked))
+            continue
+        value = values[picked]
+        if value is None:
+            continue
+        # The role's own key wins -- see the docstring.
+        if name not in settings:
+            settings[name] = value
 
 
 def hooks_for(req, settings_file, notes):

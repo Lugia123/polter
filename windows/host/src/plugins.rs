@@ -827,7 +827,7 @@ fn read_settings(key: &str, dir: &Path) -> (bool, BTreeMap<String, String>) {
 /// their back.
 ///
 /// Without this, a plugin a release ships configured -- `claude-code` arrives
-/// as `{"enabled":true,"params":{"scope":"user","skills":"yes"}}` -- showed
+/// as `{"enabled":true,"params":{"scope":"user","skills":"yes",…}}` -- showed
 /// in this page as **off with empty fields** on a machine that had never
 /// configured it, while the core was running it from those very values. The
 /// page was the convincing one and it was the wrong one.
@@ -1800,7 +1800,7 @@ mod shipped_manifest_tests {
         let expected: Vec<(String, Vec<String>)> = [
             ("antigravity", &["hooks", "rules", "skills"][..]),
             ("archive", &["dir", "sign_key"][..]),
-            ("claude-code", &["rules", "scope", "skills"][..]),
+            ("claude-code", &["autoScrollEnabled", "rules", "scope", "skills", "tui"][..]),
             ("codex", &["approve_tools", "manual_out_of_daemon", "rules", "skills"][..]),
             ("opencode", &["rules", "skills"][..]),
         ]

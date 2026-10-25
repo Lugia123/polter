@@ -1161,6 +1161,98 @@ function Test-VersionBefore($A, $B) {
     return $false
 }
 
+# The switches on this plugin's own settings page that are about a session
+# rather than about registration (task 2235), as the *value in the settings
+# file* -> *what goes into --settings*. Kept in step with `SWITCHES` in
+# `adapter.py`, which the alignment fixtures hold this to.
+#
+# The left-hand side is this plugin's own vocabulary and the right-hand side
+# is Claude Code's; they are **not** the same words. `classic` is what Claude
+# Code's documentation calls the main-screen renderer, and the value it takes
+# is `"default"` -- naming the choice after the value would put `"default"`
+# on a menu beside `fullscreen`, where it reads as "leave it alone", which is
+# the third choice (`follow`) and the one that writes nothing.
+$script:Switches = @(
+    @('tui', @(@('fullscreen', 'fullscreen'), @('classic', 'default'))),
+    @('autoScrollEnabled', @(@('on', $true), @('off', $false)))
+)
+
+# Fold this plugin's own switches into the `--settings` being built. See
+# `plugin_switches` in `adapter.py`, which this follows line for line.
+#
+# The pairs are an ordered list rather than a hashtable on purpose:
+# PowerShell's `@{}` and `.ContainsKey` **ignore case**, where Python's `in`
+# does not, so a settings file saying `"TUI"` would be honoured here and
+# passed over there. Every comparison in this file is ordinal for that
+# reason; values are compared with `-ceq` below.
+function Add-PluginSwitches($Req, $Settings, [bool]$SettingsFile, $Notes) {
+    $params = Get-J $Req 'params'
+    if (-not (Test-JDict $params)) { $params = New-Map }
+
+    # What was written for each switch, and what kind of thing it was.
+    # **Absent and JSON `null` are the same answer** -- "not set" -- because
+    # that is what `params.get(name)` says in `adapter.py`: a key that is not
+    # there and a key holding a null both come back None, and telling those
+    # apart would be a second rule the two adapters would have to keep in
+    # step. A value that is there and is *not* a string is the other case,
+    # and it is neither "set" nor "not set" -- it is a request neither
+    # adapter honours, and both say so in the same words.
+    $text = @{}
+    $odd = @{}
+    foreach ($entry in $script:Switches) {
+        $name = $entry[0]
+        $raw = Get-J $params $name
+        $odd[$name] = (Test-JHas $params $name) -and (-not ($null -eq $raw)) -and (-not ($raw -is [string]))
+        $text[$name] = $(if ($raw -is [string]) { $raw } else { '' })
+    }
+
+    $wanted = $false
+    foreach ($entry in $script:Switches) {
+        $name = $entry[0]
+        if ($odd[$name]) { $wanted = $true; continue }
+        if ($text[$name] -cne '' -and $text[$name] -cne 'follow') { $wanted = $true }
+    }
+    if (-not $wanted) { return }
+
+    if ($SettingsFile) {
+        $Notes.Add("These plugin settings are not applied: the role's --settings is a file, so there is nowhere to put them without writing to that file.")
+        return
+    }
+
+    foreach ($entry in $script:Switches) {
+        $name = $entry[0]
+        if ($odd[$name]) {
+            # Not spelled out: `repr` on one side and PowerShell's own
+            # rendering on the other would be a difference between the two
+            # adapters that no reader of either could see.
+            $Notes.Add('Plugin setting "' + $name + '" is not a string, so it is left out.')
+            continue
+        }
+        $value = $text[$name]
+        # Not set at all, or set to "follow": the person's own settings file
+        # decides, which is what writing nothing means.
+        if ($value -ceq '' -or $value -ceq 'follow') { continue }
+        $found = $false
+        $mapped = $null
+        foreach ($pair in $entry[1]) {
+            if ($value -cne [string]$pair[0]) { continue }
+            $found = $true
+            $mapped = $pair[1]
+        }
+        if (-not $found) {
+            $Notes.Add('Plugin setting "' + $name + '" is "' + $value + '", which this version does not know, so it is left out rather than put in front of Claude Code.')
+            continue
+        }
+        # **A key the role's own inline `--settings` already carries is left
+        # alone**, because the role wrote it down for this session on
+        # purpose and the page is about what a session starts with when the
+        # role says nothing. `New-Map` is an `OrderedDictionary`, whose
+        # `Contains` is ordinal -- the same comparison `adapter.py` makes
+        # with `name not in settings`.
+        if (-not $Settings.Contains($name)) { $Settings[$name] = $mapped }
+    }
+}
+
 # The `hooks` block to add, or `$null` with a note saying why not.
 function Get-Hooks($Req, [bool]$SettingsFile, $Notes) {
     $screen = 'so this terminal is watched by its screen alone.'
@@ -1371,6 +1463,8 @@ function Get-Launch($Req) {
     $extra = $split[0]
     $settings = $split[1]
     $settingsFile = [bool]$split[2]
+
+    Add-PluginSwitches $Req $settings $settingsFile $notes
 
     # **One `--settings`, never two** -- see `adapter.py`.
     if ($overrides.Count -gt 0) {

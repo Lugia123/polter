@@ -257,6 +257,26 @@ pub const ParamSpec = struct {
     /// The tool surface will not write a plaintext value into one.
     secret: bool = false,
 
+    /// Declared `"to_session": true`: a value that belongs to a **session
+    /// this plugin starts**, not to the plugin's own resident half
+    /// (task 2235).
+    ///
+    /// **The author's declaration, and the reason there is one.** These are
+    /// the only parameters `agent_cli.launchParams` puts into a `launch`
+    /// request, and that request travels in an adapter's **argv** -- where
+    /// `ps` can read it and a crash report will keep it. Sending every
+    /// parameter of every plugin down that road is how a resident plugin's
+    /// API key ends up on a process list; sending only the ones whose
+    /// author said "this one is for a session" is how it does not.
+    ///
+    /// A value that is a `secret.zig` reference (`env:`, `keychain:`,
+    /// `cmd:`, `file:`) is **skipped there rather than resolved**: a
+    /// reference resolved into an argv is the plaintext it was avoiding.
+    /// A parameter read from a file as a literal is one whose author meant
+    /// a literal -- this annotation is not a way to smuggle a secret into
+    /// a command line, and a plugin that needs one has to fetch it itself.
+    to_session: bool = false,
+
     /// What a JSON Schema `enum` allows, empty when the value is open.
     /// A closed set is the one case where a configured value may be shown
     /// back to an agent: it cannot be holding a password.
@@ -1508,6 +1528,18 @@ pub fn settingsFor(
     environ_map: *const std.process.Environ.Map,
     key: []const u8,
 ) Settings {
+    return Settings.readFirst(alloc, io, settingsPaths(alloc, io, environ_map, key));
+}
+
+/// Every file `settingsFor` searches, the user's own first. **The one place
+/// that list is worked out**, so "which file wins" and "what this release
+/// ships" cannot come to be two different searches.
+fn settingsPaths(
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    key: []const u8,
+) []const []const u8 {
     var paths: std.ArrayListUnmanaged([]const u8) = .empty;
 
     if (internal_os.xdg.config(
@@ -1521,6 +1553,23 @@ pub fn settingsFor(
         } else |_| {}
     } else |_| {}
 
+    for (releasedSettingsPaths(alloc, io, environ_map, key)) |path| {
+        paths.append(alloc, path) catch {};
+    }
+
+    return paths.items;
+}
+
+/// The `settings.json` a release ships, one per directory on the search
+/// path, in `searchPath`'s order.
+fn releasedSettingsPaths(
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    key: []const u8,
+) []const []const u8 {
+    var paths: std.ArrayListUnmanaged([]const u8) = .empty;
+
     for (searchPath(alloc, io, environ_map)) |base| {
         if (std.fmt.allocPrint(
             alloc,
@@ -1531,7 +1580,53 @@ pub fn settingsFor(
         } else |_| {}
     }
 
-    return Settings.readFirst(alloc, io, paths.items);
+    return paths.items;
+}
+
+/// What a release ships for one plugin, on its own: the `settings.json`
+/// inside the plugin's own directory, first one on the search path that has
+/// one.
+///
+/// **The second file `settingsFor` would have read, read by itself.** A
+/// caller wanting "the value this release ships, whether or not the user's
+/// own file is in the way" cannot get it out of `settingsFor`, because a
+/// user file that exists wins outright and is never merged with it
+/// (`readFirst`). That is right for "which settings are in force" and wrong
+/// for one narrow question `agent_cli.launchParams` asks: a user who has a
+/// file written before this release added a parameter has no value for it
+/// at all, and a parameter of a kind that may only come from a declaration
+/// (`ParamSpec.to_session`) has no other place to get one.
+pub fn shippedSettingsFor(
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    key: []const u8,
+) Settings {
+    return Settings.readFirst(alloc, io, releasedSettingsPaths(alloc, io, environ_map, key));
+}
+
+/// The manifest of the plugin `key` names, from the first directory on the
+/// search path that has one, or `null`.
+///
+/// The directory is `<base>/<key>` -- **the same spelling `settingsFor`
+/// reads a shipped `settings.json` from.** The two have to agree about
+/// where a plugin's own directory is, or one launch reads defaults out of
+/// one plugin and takes its declarations from another.
+///
+/// `null` covers both "no directory" and "a directory whose manifest will
+/// not load", because both read the same way to a caller: nothing is
+/// declared, so nothing is declared to be for a session.
+pub fn manifestOf(
+    alloc: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    key: []const u8,
+) ?Manifest {
+    for (searchPath(alloc, io, environ_map)) |base| {
+        const dir = std.fmt.allocPrint(alloc, "{s}/{s}", .{ base, key }) catch continue;
+        return load(alloc, io, dir) catch continue;
+    }
+    return null;
 }
 
 fn stringField(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
@@ -1729,6 +1824,16 @@ fn specsOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) []const P
             // false -- which is safe only because the listing side never
             // shows a plaintext value whatever this says; see `rpc.Guard`.
             .secret = switch (field.get("secret") orelse .null) {
+                .bool => |b| b,
+                else => false,
+            },
+
+            // Whether this value belongs to a session the plugin starts,
+            // so that `agent_cli.launchParams` may put it in a `launch`
+            // request. **Not `true` for a value that is a
+            // `secret.zig` reference** -- see `ParamSpec.to_session`: the
+            // caller skips those rather than resolving them into an argv.
+            .to_session = switch (field.get("to_session") orelse .null) {
                 .bool => |b| b,
                 else => false,
             },

@@ -611,10 +611,27 @@ adapter inventory '{"version":1,"cwd":null|"/abs","home":"/abs"}'
              "group":"<plugin>","group_description":"…","locked":bool}]}
 
 adapter launch '{"version":1,"cwd":…,"home":…,"polter":…,"session":"<id>"|null,
+                 "params":{"<参数名>":"<值>",…},
                  "role":{"key","name","instructions"},
                  "cli":{"skills":{"default":bool,"except":[ids]},"mcp":{…},"model":…,"args":[…]}}'
 → {"version":1,"argv":["claude",…],"env":{},"summary":"…","notes":[…]}
 ```
+
+- **`params` 是插件自己那份设置里的参数值**（任务 #2235），和常驻那一半在握手里拿到的
+  是**同一份**：`Plugin.settingsFor` 一处决定「用户那份 `<config>/polter/plugins/<key>.json`
+  还是发行自带的 `settings.json` 生效」，`launch` 只是把这个答案原样送来（`agent_cli.launchParams`）。
+  **适配器不去读那两个文件**：那条规则每多一种语言、多一个平台实现一遍，就多一个会漂开的答案。
+  值一律是**字符串**（和 `hello` 行里的 `params` 同一个约定），布尔参数由适配器自己映射成
+  CLI 要的类型。⚠️ **这个键每次都写**，一个参数都没有时是 `{}`；同时**适配器必须容忍它不在**——
+  旧版 Polter 的 `+launch` 不会写它，那是「没有开关要设」，不是错误。
+  ⚠️ **只有 manifest 里标了 `"to_session": true` 的参数会出现在这里**，别的参数一律不来。
+  理由是这个请求走的是**适配器的 argv**（`agent_cli.ask` 把它拼在命令行上）：`ps` 能读到，
+  崩溃报告里也会留着，而插件的常驻那一半是经握手和 socket 拿到参数的，没有这个问题。
+  **值是字面量**：带 `env:` / `file:` / `keychain:` / `cmd:` 前缀的值**不被解析**，那一条被跳过
+  并记一行日志（解析出来就是那个引用本来要避开的明文）。所以标记 `to_session` 的参数应当是
+  「这个会话怎么跑」这一类（渲染方式、滚动方式），不是凭据。适配器对不认识的键不理会即可。
+  用户文件里**缺**的 `to_session` 参数，会从发行那份 `settings.json` 补上（只补这一类，
+  「用户文件整份生效」那条规则不动）。
 
 - **接着某个会话**（任务 #1486）：适配器在 `inventory` 里答 `"resume": true`，就是在说「`launch`
   收到 `session` 时我接得上」。只认 JSON 的 `true`；没说的 CLI 核心**从不**给它发非空的 `session`，

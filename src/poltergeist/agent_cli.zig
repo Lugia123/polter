@@ -47,6 +47,7 @@ const Plugin = @import("Plugin.zig");
 const persona = @import("persona.zig");
 const login_path = @import("login_path.zig");
 const reap = @import("reap.zig");
+const secret = @import("secret.zig");
 const global = @import("../global.zig");
 
 const log = std.log.scoped(.poltergeist);
@@ -393,6 +394,24 @@ fn run(
 // ------------------------------------------------------------------ launch
 
 /// The request `launch` is sent: the role, and its choices for this CLI.
+///
+/// `params` is the plugin's own configuration, already resolved, and it is
+/// **the same one the resident plugin is handed** (`Resident.renderHello`):
+/// `Plugin.settingsFor` decides which file wins, and a second reading of
+/// that rule in this file would be a second answer to "which settings are
+/// in force". `launch` gets it because a plugin's settings are not only
+/// about its resident half -- the switches a role's session starts with
+/// belong to the same page (task 2235, where the CLI's own renderer and
+/// auto-scroll switches have to reach the command line the adapter builds).
+///
+/// **Always written**, `{}` for none, and an adapter must work with it
+/// absent as well: an adapter written for this contract is also started by
+/// a `+launch` from an older Polter, and referring to a key that is not
+/// there is how that turns into a crash in somebody's terminal.
+///
+/// Required rather than defaulted, on purpose: a call site that forgot it
+/// would be a session started without the switches the person set, and
+/// silence is the one failure this shape cannot show.
 pub fn writeLaunchRequest(
     w: *std.Io.Writer,
     p: persona.Persona,
@@ -401,6 +420,7 @@ pub fn writeLaunchRequest(
     home: ?[]const u8,
     polter: ?[]const u8,
     session: ?[]const u8,
+    params: []const Plugin.Param,
 ) std.Io.Writer.Error!void {
     try w.print("{{\"version\":{d},\"cwd\":", .{contract_version});
     try writeOptional(w, cwd);
@@ -411,6 +431,18 @@ pub fn writeLaunchRequest(
     // could not be worked out; an adapter then configures no hooks.
     try w.writeAll(",\"polter\":");
     try writeOptional(w, polter);
+    // The plugin's own switches, as `Plugin.Param` name/value pairs --
+    // strings both sides, so a plugin's parameter is one kind of thing
+    // wherever it is read.
+    try w.writeAll(",\"params\":{");
+    for (params, 0..) |kv, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.print("{f}:{f}", .{
+            std.json.fmt(kv.name, .{}),
+            std.json.fmt(kv.value, .{}),
+        });
+    }
+    try w.writeAll("}");
     // The session to go on with, as the CLI itself named it through its
     // hooks; null for a new one. **Always written**, so an adapter reads
     // "new session" as a null it was sent rather than as a key it may or
@@ -448,6 +480,94 @@ pub fn writeLaunchRequest(
 
 fn writeOptional(w: *std.Io.Writer, v: ?[]const u8) std.Io.Writer.Error!void {
     if (v) |s| try w.print("{f}", .{std.json.fmt(s, .{})}) else try w.writeAll("null");
+}
+
+/// The switches this launch is started with: the plugin's own settings that
+/// its manifest declares are for a session, resolved to literals.
+///
+/// **One answer to "which settings are in force"**, and it is
+/// `Plugin.settingsFor`'s: the user's `<config>/polter/plugins/<key>.json`
+/// if there is one, else the `settings.json` a release ships. The adapter
+/// is never told to go and read either file itself -- a second reading of
+/// that rule in another language on another platform is a second answer,
+/// and the two would drift apart on the first machine where they mattered.
+///
+/// **Only parameters the manifest marks `"to_session": true`** (task 2235,
+/// `Plugin.ParamSpec`). This travels in an adapter's **argv** -- `ask` puts
+/// the request there -- so everything here is visible to `ps` and lands in
+/// any crash report that keeps a command line. A plugin's resident half
+/// takes its parameters through the handshake and a socket, where nothing
+/// else can read them; this half does not get that, and so the author has
+/// to say which values may go this way.
+///
+/// **A value that is a `secret.zig` reference is left out, not resolved.**
+/// Resolving `cmd:op read …` into this function would be the plaintext the
+/// reference existed to avoid, printed into a process list. `Resident`
+/// resolves because it must hand the value to the plugin's own process;
+/// here the destination is a command line, so a reference is refused with a
+/// warning and that one switch stays at the CLI's own default.
+///
+/// **A parameter the settings in force does not mention is read from the
+/// copy the release ships.** The user's file wins outright and is never
+/// merged (`Settings.readFirst`), which is what keeps an upgrade from
+/// quietly changing what somebody configured -- so a file written before a
+/// release added a parameter has no value for it, and without this the
+/// release's own default for it would never reach anyone who had ever
+/// opened the settings page. **This exception is only for `to_session`
+/// parameters**, and it only moves the value from one file to the launch:
+/// it does not touch `settingsFor`, whose answer stays "the first file that
+/// exists, whole".
+///
+/// Everything returned belongs to `arena`.
+pub fn launchParams(
+    arena: Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    key: []const u8,
+) []const Plugin.Param {
+    const manifest = Plugin.manifestOf(arena, io, environ_map, key) orelse return &.{};
+
+    // Nothing declared means nothing to send, and no files are read for it.
+    var declared = false;
+    for (manifest.params) |spec| {
+        if (spec.to_session) declared = true;
+    }
+    if (!declared) return &.{};
+
+    const settings = Plugin.settingsFor(arena, io, environ_map, key);
+    // Read at most once, and only if something is missing from the file in
+    // force: a plugin whose keys are all configured should not open a second
+    // file at the moment somebody is waiting for a terminal to start.
+    var shipped: ?Plugin.Settings = null;
+
+    var out: std.ArrayListUnmanaged(Plugin.Param) = .empty;
+    for (manifest.params) |spec| {
+        if (!spec.to_session) continue;
+
+        const value = findParam(settings.params, spec.name) orelse fallback: {
+            if (shipped == null) {
+                shipped = Plugin.shippedSettingsFor(arena, io, environ_map, key);
+            }
+            break :fallback findParam(shipped.?.params, spec.name) orelse continue;
+        };
+
+        if (secret.classify(value)) |p| {
+            log.warn(
+                "launch: {s}.{s} is a {s} reference, and what a launch sends is a command " ++
+                    "line, so this session starts without it",
+                .{ key, spec.name, @tagName(p) },
+            );
+            continue;
+        }
+
+        out.append(arena, .{ .name = spec.name, .value = value }) catch return out.items;
+    }
+    return out.items;
+}
+
+fn findParam(params: []const Plugin.Param, name: []const u8) ?[]const u8 {
+    for (params) |p| if (std.mem.eql(u8, p.name, name)) return p.value;
+    return null;
 }
 
 fn writeList(w: *std.Io.Writer, list: []const []const u8) std.Io.Writer.Error!void {
@@ -1155,7 +1275,7 @@ test "agent_cli: the launch request carries the role and one CLI's choices" {
     };
 
     var out: std.Io.Writer.Allocating = .init(aa);
-    try writeLaunchRequest(&out.writer, p, choice, "/tmp/x", null, "/Applications/Polter.app/Contents/MacOS/polter", null);
+    try writeLaunchRequest(&out.writer, p, choice, "/tmp/x", null, "/Applications/Polter.app/Contents/MacOS/polter", null, &.{});
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, out.written(), .{});
     const o = v.object;
@@ -1174,6 +1294,284 @@ test "agent_cli: the launch request carries the role and one CLI's choices" {
     try testing.expectEqualStrings("mcp:argus", cli.get("mcp").?.object.get("except").?.array.items[0].string);
     try testing.expectEqualStrings("sonnet", cli.get("model").?.string);
     try testing.expectEqualStrings("--verbose", cli.get("args").?.array.items[0].string);
+}
+
+test "2235: the launch request carries the plugin's own switches, and an empty one is still written" {
+    // **Written even when empty, and never left out.** An adapter is also
+    // started by a `+launch` from a Polter older than this key; that has to
+    // read as "no switches", which is a `{}` it was sent, rather than as a
+    // key it may or may not have been sent. The two are the same thing only
+    // if the older one is the one that never writes it -- so this adapter
+    // cannot tell them apart, and must not try.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const p: persona.Persona = .{ .key = "r", .name = "R" };
+    const choice: persona.CliChoice = .{ .cli = "claude-code" };
+
+    var out: std.Io.Writer.Allocating = .init(aa);
+    try writeLaunchRequest(
+        &out.writer,
+        p,
+        choice,
+        null,
+        null,
+        null,
+        null,
+        &.{ .{ .name = "tui", .value = "fullscreen" }, .{ .name = "autoScrollEnabled", .value = "off" } },
+    );
+    const o = (try std.json.parseFromSliceLeaky(std.json.Value, aa, out.written(), .{})).object;
+    // `orelse return error.…` rather than `.?`: this is what a floor run
+    // turns red, and a named error says which key went missing instead of
+    // arriving as an unwrap panic with an offset in it.
+    const params = o.get("params") orelse return error.NoParams;
+    try testing.expect(params == .object);
+    const tui = params.object.get("tui") orelse return error.NoTui;
+    const scroll = params.object.get("autoScrollEnabled") orelse return error.NoAutoScroll;
+    try testing.expectEqualStrings("fullscreen", tui.string);
+    try testing.expectEqualStrings("off", scroll.string);
+    // A parameter's value is text on the wire whichever side reads it, so
+    // "off" travels as a string and the adapter is what turns it into the
+    // boolean Claude Code takes. A JSON `false` here would be a second
+    // spelling of the same setting.
+    try testing.expect(scroll == .string);
+
+    var empty: std.Io.Writer.Allocating = .init(aa);
+    try writeLaunchRequest(&empty.writer, p, choice, null, null, null, null, &.{});
+    const e = (try std.json.parseFromSliceLeaky(std.json.Value, aa, empty.written(), .{})).object;
+    try testing.expectEqual(@as(usize, 0), e.get("params").?.object.count());
+}
+
+test "2235: a launch carries the switches the manifest marks for a session, and no others" {
+    // **One answer to "which settings are in force", narrowed to the ones
+    // whose author said they may travel.** The adapter is handed the values
+    // and never the rule: if it went and read
+    // `<config>/polter/plugins/<key>.json` itself, that rule would exist in
+    // Python and in PowerShell as well as here, and the first machine where
+    // the three disagreed would be the one nobody looked at.
+    //
+    // What may travel is the manifest's business, not this test's: a plugin
+    // whose parameters are all for its resident half must put **nothing** on
+    // a command line, however much its settings file holds.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const aa = arena.allocator();
+
+    const rig = try launchRig(aa, io, "2235-switches",
+        \\{"key":"zz-2235-cli","exec":"p.sh","agent_cli":{"label":"L","bin":"x","adapter":"a.py"},
+        \\ "params":{"type":"object","properties":{
+        \\   "tui":{"type":"string","enum":["follow","fullscreen","classic"],"to_session":true},
+        \\   "scope":{"type":"string"},
+        \\   "sign_key":{"type":"string","secret":true,"to_session":true}}}}
+    , .{ .env = &.{.{ "POLTER_TEST_SECRET", "from-the-environment" }} });
+    defer rig.deinit(io);
+
+    try rig.userSettings(io, aa,
+        \\{"enabled":true,"params":{"tui":"classic","scope":"user","sign_key":"env:POLTER_TEST_SECRET"}}
+    );
+
+    const got = launchParams(aa, io, &rig.env, "zz-2235-cli");
+    try testing.expectEqual(@as(usize, 1), got.len);
+    try testing.expectEqualStrings("tui", got[0].name);
+    try testing.expectEqualStrings("classic", got[0].value);
+    // **`scope` is not sent: the manifest did not mark it.** Its value would
+    // otherwise be in an adapter's argv, where `ps` reads it, for no reason
+    // the session can use.
+    //
+    // **`sign_key` is not sent either, and that is the point of `classify`
+    // here rather than `resolve`.** Resolving it would put the secret itself
+    // on the command line -- the plaintext the reference exists to avoid.
+}
+
+test "2235: a session switch the settings in force do not mention comes from the released copy" {
+    // **What keeps "the default is fullscreen" from being true only for
+    // somebody who has never opened the settings page.** The user's own file
+    // wins outright and is never merged, so a file written before this
+    // release has no `tui` at all -- and the release's own value is the only
+    // place a value can come from. Only for a `to_session` parameter, and
+    // only for building this one request: `settingsFor` still answers "the
+    // first file that exists, whole", which is checked right after.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const aa = arena.allocator();
+
+    const manifest =
+        \\{"key":"zz-2235-cli","exec":"p.sh","agent_cli":{"label":"L","bin":"x","adapter":"a.py"},
+        \\ "params":{"type":"object","properties":{
+        \\   "tui":{"type":"string","to_session":true},
+        \\   "autoScrollEnabled":{"type":"string","to_session":true},
+        \\   "scope":{"type":"string"}}}}
+    ;
+    const shipped =
+        \\{"enabled":true,"params":{"tui":"fullscreen","autoScrollEnabled":"off","scope":"shipped"}}
+    ;
+    // The user's file is exactly what an older release would have written:
+    // one key that predates this feature, and none of the new ones.
+    const theirs = "{\"enabled\":true,\"params\":{\"scope\":\"local\"}}";
+
+    const rig = try launchRig(aa, io, "2235-fallback", manifest, .{ .shipped = shipped });
+    defer rig.deinit(io);
+    try rig.userSettings(io, aa, theirs);
+
+    var by_name: std.StringHashMapUnmanaged([]const u8) = .empty;
+    for (launchParams(aa, io, &rig.env, "zz-2235-cli")) |kv| {
+        try by_name.put(aa, kv.name, kv.value);
+    }
+    try testing.expectEqualStrings("fullscreen", by_name.get("tui") orelse return error.NoTui);
+    try testing.expectEqualStrings("off", by_name.get("autoScrollEnabled") orelse return error.NoAutoScroll);
+    // **`scope` is not filled in from the released copy**: the rule is still
+    // the user's file whole, and only a parameter declared for a session is
+    // read from the other file. A `scope` of `shipped` here would be an
+    // upgrade changing what somebody configured.
+    try testing.expect(by_name.get("scope") == null);
+
+    // And the rule itself has not moved: both files are there, the user's
+    // wins, and nothing of the released one is folded in.
+    const settings = Plugin.settingsFor(aa, io, &rig.env, "zz-2235-cli");
+    try testing.expectEqual(@as(usize, 1), settings.params.len);
+    try testing.expectEqualStrings("local", settings.params[0].value);
+}
+
+test "2235: a session switch the settings in force do not mention, and no released copy either" {
+    // The released copy is the **second** file, and there may be none: a
+    // plugin the user put in their own directory has no `settings.json`, and
+    // a missing value must leave that one switch alone rather than fail the
+    // launch over it.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const aa = arena.allocator();
+
+    const rig = try launchRig(aa, io, "2235-no-shipped",
+        \\{"key":"zz-2235-cli","exec":"p.sh","agent_cli":{"label":"L","bin":"x","adapter":"a.py"},
+        \\ "params":{"type":"object","properties":{"tui":{"type":"string","to_session":true}}}}
+    , .{});
+    defer rig.deinit(io);
+    try rig.userSettings(io, aa, "{\"enabled\":true,\"params\":{\"tui\":\"classic\"}}");
+
+    const got = launchParams(aa, io, &rig.env, "zz-2235-cli");
+    try testing.expectEqual(@as(usize, 1), got.len);
+    try testing.expectEqualStrings("classic", got[0].value);
+}
+
+/// A launch under a plugin of this test's own: a directory the search path
+/// finds, a manifest in it, an optional released `settings.json`, and an
+/// environment pointing at both.
+///
+/// **A key and a directory of the test's own, never `claude-code`.** This
+/// tree ships one of those, so `settingsFor` would fall back to the
+/// `settings.json` in its directory and that is what would be measured --
+/// a test about the rule, reading a fixture.
+const LaunchRig = struct {
+    root: []const u8,
+    dir: []const u8,
+    env: std.process.Environ.Map,
+    arena: Allocator,
+
+    const Options = struct {
+        /// The `settings.json` a release would ship, or none.
+        shipped: ?[]const u8 = null,
+
+        /// Variables on top of `XDG_CONFIG_HOME` and `HOME`, for a test
+        /// about a value that is a `secret.zig` reference: what such a
+        /// reference resolves against is the environment the launch runs
+        /// in, and this is that.
+        env: []const [2][]const u8 = &.{},
+    };
+
+    fn deinit(self: *const LaunchRig, io: std.Io) void {
+        std.Io.Dir.cwd().deleteTree(io, self.root) catch {};
+    }
+
+    fn userSettings(self: *const LaunchRig, io: std.Io, aa: Allocator, json: []const u8) !void {
+        var f = try std.Io.Dir.cwd().createFile(
+            io,
+            try std.fmt.allocPrint(aa, "{s}/polter/plugins/{s}.json", .{ self.root, base }),
+            .{},
+        );
+        try f.writeStreamingAll(io, json);
+        f.close(io);
+    }
+
+    /// `zz-2235-cli`'s directory name, which is also its key everywhere
+    /// below.
+    const base = "zz-2235-cli";
+};
+
+fn launchRig(
+    aa: Allocator,
+    io: std.Io,
+    tag: []const u8,
+    manifest: []const u8,
+    opts: LaunchRig.Options,
+) !LaunchRig {
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const root = try std.fmt.allocPrint(aa, "/tmp/polter-{s}-{x}", .{ tag, &raw });
+    try std.Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(aa, "{s}/polter/plugins", .{root}));
+
+    const dir = try std.fmt.allocPrint(aa, "{s}/polter/plugins/{s}", .{ root, LaunchRig.base });
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    var d = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer d.close(io);
+    var m = try d.createFile(io, "plugin.json", .{});
+    try m.writeStreamingAll(io, manifest);
+    m.close(io);
+    if (opts.shipped) |json| {
+        var s = try d.createFile(io, "settings.json", .{});
+        try s.writeStreamingAll(io, json);
+        s.close(io);
+    }
+
+    var env: std.process.Environ.Map = .init(aa);
+    try env.put("XDG_CONFIG_HOME", root);
+    try env.put("HOME", root);
+    for (opts.env) |kv| try env.put(kv[0], kv[1]);
+
+    return .{ .root = root, .dir = dir, .env = env, .arena = aa };
+}
+
+test "2235: a plugin with nothing declared for a session sends nothing, reference or not" {
+    // **Two ways to send nothing, and neither is a failure.** No directory
+    // at all is the ordinary case for a request naming a key nothing here
+    // ships; a directory whose manifest marks no parameter `to_session` is
+    // a plugin whose values are all for its resident half, and the launch
+    // must not carry them however much its settings file holds -- what
+    // `ask` does with the request is put it in an argv, where `ps` reads it.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var a: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer a.deinit();
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const aa = a.allocator();
+
+    const rig = try launchRig(aa, io, "2235-none",
+        \\{"key":"zz-2235-cli","exec":"p.sh","agent_cli":{"label":"L","bin":"x","adapter":"a.py"},
+        \\ "params":{"type":"object","properties":{"scope":{"type":"string"},
+        \\   "sign_key":{"type":"string","secret":true}}}}
+    , .{});
+    defer rig.deinit(io);
+    try rig.userSettings(io, aa,
+        \\{"enabled":true,"params":{"scope":"user","sign_key":"cmd:printf hunter2"}}
+    );
+
+    try testing.expectEqual(@as(usize, 0), launchParams(aa, io, &rig.env, "zz-2235-cli").len);
+    // A key no plugin here has: nothing found is nothing, not a crash and
+    // not a guess at what some other plugin's settings might have said.
+    try testing.expectEqual(@as(usize, 0), launchParams(aa, io, &rig.env, "zz-2235-nothing").len);
 }
 
 test "1746: a launch answer can say Polter is to type the first prompt, and the event says so on" {
@@ -1392,7 +1790,7 @@ test "agent_cli: the shipped Claude Code adapter lists what is there and switche
         .args = &.{ "--settings", "{\"theme\":\"dark\"}" },
     };
     var req: std.Io.Writer.Allocating = .init(aa);
-    try writeLaunchRequest(&req.writer, p, choice, null, home, null, null);
+    try writeLaunchRequest(&req.writer, p, choice, null, home, null, null, &.{});
     const answer = switch (try ask(aa, io, &env, adapter, .launch, req.written())) {
         .ok => |j| j,
         .failed => |why| {
@@ -1508,7 +1906,7 @@ test "agent_cli: a role never switches off what belongs to the directory it is l
         .cli = "claude-code",
     };
     var req: std.Io.Writer.Allocating = .init(aa);
-    try writeLaunchRequest(&req.writer, p, choice, project, home, null, null);
+    try writeLaunchRequest(&req.writer, p, choice, project, home, null, null, &.{});
     const answer = switch (try ask(aa, io, &env, adapter, .launch, req.written())) {
         .ok => |j| j,
         .failed => |why| {
@@ -1621,7 +2019,7 @@ fn askHooks(aa: Allocator, io: std.Io, rig: HookRig, cell: HookCell) !?HookAnswe
         .args = cell.args,
     };
     var req: std.Io.Writer.Allocating = .init(aa);
-    try writeLaunchRequest(&req.writer, p, choice, null, rig.home, cell.polter, cell.session);
+    try writeLaunchRequest(&req.writer, p, choice, null, rig.home, cell.polter, cell.session, &.{});
     const adapter: Adapter = .{ .key = "claude-code", .label = "Claude Code", .bin = "claude", .adapter = rig.exec, .identify_env = &.{} };
     const answer = switch (try ask(aa, io, &env, adapter, .launch, req.written())) {
         .ok => |j| j,
@@ -2400,7 +2798,7 @@ fn askCodex(aa: Allocator, io: std.Io, rig: CodexRig, question: Question, reques
 
 fn codexLaunch(aa: Allocator, io: std.Io, rig: CodexRig, p: persona.Persona, choice: persona.CliChoice, session: ?[]const u8) !Launch {
     var req: std.Io.Writer.Allocating = .init(aa);
-    try writeLaunchRequest(&req.writer, p, choice, rig.project, rig.home, null, session);
+    try writeLaunchRequest(&req.writer, p, choice, rig.project, rig.home, null, session, &.{});
     return try parseLaunch(aa, try askCodex(aa, io, rig, .launch, req.written()));
 }
 

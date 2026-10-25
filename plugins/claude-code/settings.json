@@ -2,6 +2,8 @@
   "enabled": true,
   "params": {
     "scope": "user",
-    "skills": "yes"
+    "skills": "yes",
+    "tui": "fullscreen",
+    "autoScrollEnabled": "off"
   }
 }
