@@ -121,6 +121,9 @@ const Inner = enum {
     unresolved,
     out_of_scope,
     dotfile,
+    /// Inside the workdir, there, and not something to read: a device, a
+    /// socket, a pipe.
+    not_a_file,
 };
 
 pub const Kind = enum { file, directory };
@@ -178,6 +181,7 @@ pub const Request = struct {
             .out_of_scope => .out_of_scope,
             .dotfile => .dotfile,
             .unreadable => .unreadable,
+            .not_a_file => .not_a_file,
         };
     }
 };
@@ -241,7 +245,12 @@ pub fn resolve(arena: Allocator, io: Io, req: Request) Allocator.Error!Verdict {
     const kind: Kind = switch (st.kind) {
         .file => .file,
         .directory => .directory,
-        else => return .{ .refuse = .not_a_file },
+        // **Through `why()` like every other refusal.** This one used to be
+        // returned straight as `Refusal.not_a_file`, so the workdir and the
+        // path it was about never reached the log -- and "the page showed an
+        // empty file where a socket was" is exactly the kind of report that
+        // is diagnosed from that line.
+        else => return .{ .refuse = req.why(.not_a_file) },
     };
     return .{ .ok = .{
         .path = real,
@@ -620,6 +629,48 @@ test "2145 C2: a link out that cannot be walked is the same refusal as one that 
     // A link out that does resolve is the same word, so the word carries no
     // news either way.
     try expectRefused(.outside, try fx.ask(a, "to-here", blank));
+}
+
+test "2268: a socket in the workdir is refused, and that refusal is written down" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // **A file that is there and is not one to read.** It has to be really
+    // inside the workdir -- a link to `/dev/null` is refused earlier, for
+    // leaving the workdir, and never reaches the stat that decides this. A
+    // unix socket is the one such thing a test can make, and it is the shape
+    // the report looks like: a page that showed nothing where a socket was.
+    var addr: std.c.sockaddr.un = .{ .family = std.c.AF.UNIX, .path = undefined };
+    @memset(&addr.path, 0);
+    const named = try std.fmt.bufPrint(addr.path[0..], "{s}/sub/s.sock", .{fx.work});
+    const fd = std.c.socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
+    if (fd < 0) return error.SkipZigTest;
+    defer _ = std.c.close(fd);
+    const len: std.c.socklen_t = @intCast(@offsetOf(std.c.sockaddr.un, "path") + named.len + 1);
+    if (std.c.bind(fd, @ptrCast(&addr), len) != 0) return error.SkipZigTest;
+    const st = try fx.tmp.dir.statFile(testing.io, "w/sub/s.sock", .{});
+    try testing.expectEqual(Io.File.Kind.unix_domain_socket, st.kind);
+
+    const blank: Request = .{ .workdir = "", .path = "", .too_wide = false };
+    try expectRefused(.not_a_file, try fx.ask(a, "sub/s.sock", blank));
+
+    // **And the refusal is logged like every other one.** `why()` is what
+    // writes the workdir and the path into the log, so this answer has to
+    // come from there; returned straight it would be the one refusal a
+    // person could not diagnose. There is no way to read another scope's
+    // `log.debug` from a test, so this half is read off the source, the way
+    // `task 1730` reads `tick` (`App.zig`) -- and **off the part above the
+    // tests**, because the string below is in this file too and a check that
+    // could be satisfied by the test's own text would pass no matter what
+    // the arm did.
+    const src = @embedFile("Access.zig");
+    const tests_at = std.mem.indexOf(u8, src, "\n// ------------------------------------------------------------------ tests").?;
+    const code = src[0..tests_at];
+    const arm = "\n        else => return .{ .refuse = req.why(.not_a_file) },";
+    try testing.expect(std.mem.indexOf(u8, code, arm) != null);
 }
 
 test "2145 C2: inside() is about directories, and an empty root is under nothing" {

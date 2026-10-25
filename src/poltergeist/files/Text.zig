@@ -92,6 +92,30 @@ fn leadLen(c: u8) ?u3 {
     };
 }
 
+/// Whether the byte right after a lead is one that lead may be followed by.
+/// Four leads accept only part of the continuation range, and each of those
+/// parts spells something that cannot be a character at all:
+///
+/// - `E0 80..9F` is an overlong form (a code point written in more bytes than
+///   it needs);
+/// - `ED A0..BF` is a surrogate half, which UTF-8 does not carry;
+/// - `F0 80..8F` is the same overlong form one byte wider;
+/// - `F4 90..BF` is above U+10FFFF.
+///
+/// **This matters most when the sample was cut**, because "the rest is
+/// missing" is the one thing a sample can hide: `E0 80` cut short looks
+/// exactly like a character that got cut, and it is not one. Only the first
+/// continuation byte can be checked this way, and only when it is present.
+fn secondFits(lead: u8, second: u8) bool {
+    return switch (lead) {
+        0xE0 => second >= 0xA0 and second <= 0xBF,
+        0xED => second >= 0x80 and second <= 0x9F,
+        0xF0 => second >= 0x90 and second <= 0xBF,
+        0xF4 => second >= 0x80 and second <= 0x8F,
+        else => second >= 0x80 and second <= 0xBF,
+    };
+}
+
 /// Whether these bytes are UTF-8, allowing for the one thing a sample can
 /// hide: **a character cut by the end of the sample**, which is a valid
 /// leading byte followed by fewer continuation bytes than it wants, and
@@ -106,11 +130,18 @@ fn validUtf8(bytes: []const u8, truncated: bool) bool {
     var lead = bytes.len;
     while (lead > first) {
         lead -= 1;
-        const need = leadLen(bytes[lead]) orelse continue;
+        const lead_byte = bytes[lead];
+        const need = leadLen(lead_byte) orelse continue;
         const have = bytes.len - lead;
         // The sequence is all there, and the whole-slice check above already
         // said it is not valid: this is a broken byte, not a cut one.
         if (have >= need) return false;
+        // **A lead whose first continuation byte is already impossible is not
+        // a cut character.** `E0 80` and `ED A0` never spell anything, so a
+        // sample that ends after them is not hiding the rest of a character
+        // -- it is broken text. The other continuation bytes can still be
+        // missing; only the ones that are there are checked.
+        if (have >= 2 and !secondFits(lead_byte, bytes[lead + 1])) return false;
         if (!std.unicode.utf8ValidateSlice(bytes[0..lead])) continue;
         for (bytes[lead + 1 ..]) |c| {
             if (c & 0xC0 != 0x80) return false;
@@ -241,6 +272,19 @@ test "2145 C2: only a valid lead with its continuation bytes missing is forgiven
     // `C0` and `C1` would be an overlong form, and are not lead bytes either.
     try testing.expectEqual(Encoding.other, partSniff("ok\xC0").encoding);
     try testing.expectEqual(Encoding.other, partSniff("ok\xC1").encoding);
+    // **A lead whose first continuation byte is already impossible is not a
+    // cut character.** These spell nothing in any encoding: `E0 80` is an
+    // overlong form (a code point written in more bytes than it needs) and
+    // `ED A0` is a surrogate half. A rule that only asked "how many bytes are
+    // missing" forgave both, and a preview would then have shown them as
+    // UTF-8 text that merely got cut.
+    try testing.expectEqual(Encoding.other, partSniff("ok\xE0\x80").encoding);
+    try testing.expectEqual(Encoding.other, partSniff("ok\xED\xA0").encoding);
+    // The same two bytes one continuation further along are impossible too,
+    // and the *legal* neighbours of both are still forgiven -- otherwise this
+    // would just be refusing every `E0` and `ED` at the end of a sample.
+    try testing.expectEqual(Encoding.utf8, partSniff("ok\xE0\xA0").encoding);
+    try testing.expectEqual(Encoding.utf8, partSniff("ok\xED\x9F").encoding);
     // A non-UTF-8 byte further back than the cut can reach is broken.
     try testing.expectEqual(Encoding.other, partSniff("a\xFFb\xE4\xB8").encoding);
 }

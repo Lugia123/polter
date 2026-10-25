@@ -145,10 +145,23 @@ pub fn compute(
     // a link (`/home -> /usr/home`) or that is spelled with a trailing
     // separator is otherwise the one case that slips past `tooWide`, and the
     // rows it is compared against are real paths.
-    const home_real: ?[]const u8 = if (home) |h|
-        (if (std.Io.Dir.cwd().realPathFileAlloc(io, h, arena)) |real| real else |_| null)
-    else
-        null;
+    //
+    // **A home directory that cannot be made real does not become "no home
+    // directory".** Those are two different facts and they call for opposite
+    // answers: no home directory at all means there is nothing above to
+    // bound, so only a root is too wide; a home directory that is there but
+    // could not be looked at (it is on a volume that is not mounted, a
+    // permission says no) must still bound the rows above it, or `/Users`
+    // becomes readable because `$HOME` went missing. So the walk falling over
+    // falls back to the path **as spelled** (`std.fs.path.resolve`, which
+    // settles `.` and `..` but asks nothing of the filesystem) -- weaker than
+    // the real path, and still a bound.
+    const home_real: ?[]const u8 = if (home) |h| blk: {
+        // An empty home directory is the same as none (`App.controlHome`
+        // answers `""` when it cannot find one).
+        if (h.len == 0) break :blk null;
+        break :blk (if (std.Io.Dir.cwd().realPathFileAlloc(io, h, arena)) |real| real else |_| null) orelse try std.fs.path.resolve(arena, &.{h});
+    } else null;
 
     // This group's terminals, supervisor first, stable within a role.
     var mine: std.ArrayListUnmanaged(Term) = .empty;
@@ -541,6 +554,62 @@ test "2145 C1: a directory above the home directory is too wide, however far abo
     try testing.expectEqualStrings(sibling, dirs[2].path);
     try testing.expect(dirs[2].readable);
     try testing.expectEqual(@as(?Why, null), dirs[2].why);
+}
+
+test "2268: a home directory that cannot be made real still bounds the rows above it" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const users = try fx.dir(a, "Users");
+    const other = try fx.dir(a, "other");
+    // **`$HOME` pointing at a directory that is not there.** It is still the
+    // home directory as far as this is concerned -- the person's `~` -- and
+    // the directory above it must not become readable because the walk
+    // could not be made. `realpath` fails on it (nothing is at that path);
+    // the spelled-out path is what this falls back to. Note the fixture has
+    // to leave it absent: a home directory that exists would be made real
+    // and this would never reach the fallback at all.
+    const absent = try std.fs.path.join(a, &.{ fx.root, "Users", "absent" });
+    const terms = [_]Term{
+        .{ .id = 1, .title = "up", .role = .worker, .group = "g", .cwd = users },
+        .{ .id = 2, .title = "side", .role = .worker, .group = "g", .cwd = other },
+    };
+    const dirs = try compute(a, testing.io, "g", &terms, &.{}, absent);
+    try testing.expectEqual(@as(usize, 2), dirs.len);
+    try testing.expectEqualStrings(users, dirs[0].path);
+    try testing.expect(!dirs[0].readable);
+    try testing.expectEqual(Why.too_wide, dirs[0].why.?);
+    // **And it does not swallow everything.** A directory that is neither
+    // the home directory nor above it stays readable: the fallback bounds
+    // the rows above the home directory, it does not make every row wide.
+    try testing.expectEqualStrings(other, dirs[1].path);
+    try testing.expect(dirs[1].readable);
+}
+
+test "2268: no home directory at all is not the same as one that could not be looked at" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const users = try fx.dir(a, "Users");
+    const terms = [_]Term{.{ .id = 1, .title = "up", .role = .worker, .group = "g", .cwd = users }};
+    // With nothing known about a home directory there is nothing above to
+    // bound, and a directory that is merely high up is readable. This is the
+    // half the other test would otherwise cover up: the two facts have
+    // different answers, so a fallback that collapsed them would pass one of
+    // these and fail the other.
+    const dirs = try compute(a, testing.io, "g", &terms, &.{}, null);
+    try testing.expectEqual(@as(usize, 1), dirs.len);
+    try testing.expect(dirs[0].readable);
+    // An empty home directory is the same as none: `App.controlHome` answers
+    // `""` when it cannot find one, and `""` is not a directory above
+    // everything.
+    const empty = try compute(a, testing.io, "g", &terms, &.{}, "");
+    try testing.expectEqual(@as(usize, 1), empty.len);
+    try testing.expect(empty[0].readable);
 }
 
 test "2145 C1: a root is too wide even when no home directory is known" {
