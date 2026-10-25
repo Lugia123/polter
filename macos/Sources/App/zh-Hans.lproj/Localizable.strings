@@ -785,7 +785,8 @@
 "A new session will be started: the last session was in another CLI." = "会开一个新会话：上次的会话是另一个 CLI 的。";
 "Looking for the last session…" = "正在找上次的会话…";
 "Didn't find the last session" = "没找到上次的会话";
-"%@, which the last supervisor used, is not installed on this machine." = "上次用的 %@ 不在这台机器上。";
+"%@, which the last supervisor used, isn't installed on this machine." = "上次用的 %@ 没装在这台机器上。";
+"%@, which the last supervisor used, is the other major version: turn on the plugin for the version that is here." = "上次用的 %@ 装的是另一个大版本：请打开与本机版本对应的那个插件。";
 "Checking whether the last session can be gone on with…" = "正在确认能不能接着上次的会话…";
 "A new session will be started: this CLI cannot go on with an earlier session." = "会开一个新会话：这个 CLI 不能接着以前的会话。";
 "A new session will be started: an open terminal is in the last session now." = "会开一个新会话：上次的会话现在有一个开着的终端在用。";
@@ -1163,9 +1164,11 @@
 "That agent CLI's plugin is off. Turn it on in Plugins." = "这个 agent CLI 的插件关着。到「插件」里打开。";
 "That agent CLI can't be started on this machine." = "这台机器上启动不了这个 agent CLI。";
 "That agent CLI isn't installed on this machine." = "这个 agent CLI 没装在这台机器上。";
+"The agent CLI on this machine is not a version that plugin starts. Turn on the plugin for the version that is installed." = "这台机器上装的那个 agent CLI 不是这个插件服务的版本。请打开与本机版本对应的那个插件。";
 "%@ (plugin off)" = "%@（插件关着）";
 "%@ plugin is off: %@ won't be offered when this role is started. The settings stay in the role." = "%1$@ 插件关着：启动这个角色时不会出现 %2$@。设置留在角色里。";
 "%@ can't be started on this machine: nothing here can run its plugin. The settings stay in the role." = "这台机器上启动不了 %@：这里跑不起来它的插件。设置留在角色里。";
+"%@ here is the other major version: turn on the plugin for the version that is installed. The settings stay in the role." = "这台机器上的 %@ 是另一个大版本：请打开与本机版本对应的那个插件。设置留在角色里。";
 "%@ plugin is off, so what it has installed can't be read; the role's switches for %@ stay as they are." = "%1$@ 插件关着，读不到它装了什么；角色里 %2$@ 那边的开关原样留着。";
 "%@ only" = "仅 %@";
 "%@: its plugin couldn't list what's installed" = "%@：它的插件读不出装了什么";

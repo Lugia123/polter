@@ -1053,6 +1053,14 @@ fn basics_rows(v: &View, d: &Role) -> Vec<Row> {
             let mut cells = vec![check(format!("cli:{}", c.key), c.label.clone(), d.choice(&c.key).is_some(), e.clis)];
             if c.installed == Some(false) {
                 cells.push(short(tr("{} isn't on this machine's PATH").replace("{}", &c.bin), Tone::Warn, Font::Small));
+            } else if v.clis.held(&c.key).is_some_and(|h| h.why == roles::HeldWhy::WrongVersion) {
+                // Installed, and not the version this plugin starts (task
+                // 2237): the other plugin is the one to turn on, so the
+                // tick stays and the sentence says which of the two it is.
+                // The same sentence the panel below says (`missing_note`),
+                // so there is one wording and not two. The mac host's twin
+                // is `RoleLibraryView.cliPicker`.
+                cells.push(short(v.clis.missing_note(&c.key), Tone::Warn, Font::Small));
             }
             if c.error.is_some() {
                 cells.push(short(tr("Its plugin couldn't list what's installed"), Tone::Warn, Font::Small));

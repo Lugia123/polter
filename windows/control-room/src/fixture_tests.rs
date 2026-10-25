@@ -1801,6 +1801,7 @@ fn every_refusal_is_said_in_chinese() {
             | Refusal::CliOff
             | Refusal::CliUnavailable
             | Refusal::CliNotInstalled
+            | Refusal::CliWrongVersion
             | Refusal::NoSuchDirectory
             | Refusal::OpenFailed
             | Refusal::NoExecutable
@@ -1851,6 +1852,7 @@ fn every_refusal_is_said_in_chinese() {
         Refusal::CliOff,
         Refusal::CliUnavailable,
         Refusal::CliNotInstalled,
+        Refusal::CliWrongVersion,
         Refusal::NoSuchDirectory,
         Refusal::OpenFailed,
         Refusal::NoExecutable,
@@ -1876,7 +1878,7 @@ fn every_refusal_is_said_in_chinese() {
     ];
     // The list and the match agree on the count: the match alone proves
     // every variant is named, not that every one is in `all`.
-    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 47);
+    assert_eq!(all.iter().map(|r| format!("{:?}", listed(*r))).collect::<std::collections::BTreeSet<_>>().len(), 48);
 
     // msgid and msgstr, with the continuation lines `msgmerge` wraps long
     // ones into joined back up.

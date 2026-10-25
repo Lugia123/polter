@@ -180,6 +180,12 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
             "claude-code",
             "codex",
             "opencode",
+            // **The other major version, as its own plugin** (task 2237):
+            // `opencode` serves 1.x and this one 2.x, each declaring which
+            // it serves (`serves` in the adapter's inventory), so a machine
+            // with one of them has one row rather than two rows over one
+            // binary. Both ship: a person may have either version.
+            "opencode-v2",
         };
 
         for (shipped) |key| {

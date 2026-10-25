@@ -1751,6 +1751,7 @@ mod shipped_manifest_tests {
     const CLAUDE_CODE: &str = include_str!("../../../plugins/claude-code/plugin.json");
     const CODEX: &str = include_str!("../../../plugins/codex/plugin.json");
     const OPENCODE: &str = include_str!("../../../plugins/opencode/plugin.json");
+    const OPENCODE_V2: &str = include_str!("../../../plugins/opencode-v2/plugin.json");
 
     // **The one manifest here that nobody else wrote, and it is here because
     // no shipped one declares nothing any more.** This row was `kimi` until
@@ -1796,6 +1797,7 @@ mod shipped_manifest_tests {
             names("claude-code", CLAUDE_CODE),
             names("codex", CODEX),
             names("opencode", OPENCODE),
+            names("opencode-v2", OPENCODE_V2),
         ];
         let expected: Vec<(String, Vec<String>)> = [
             ("antigravity", &["hooks", "rules", "skills"][..]),
@@ -1803,6 +1805,7 @@ mod shipped_manifest_tests {
             ("claude-code", &["autoScrollEnabled", "rules", "scope", "skills", "tui"][..]),
             ("codex", &["approve_tools", "manual_out_of_daemon", "rules", "skills"][..]),
             ("opencode", &["rules", "skills"][..]),
+            ("opencode-v2", &["rules", "skills"][..]),
         ]
         .iter()
         .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))

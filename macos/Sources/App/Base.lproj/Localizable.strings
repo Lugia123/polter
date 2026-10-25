@@ -769,8 +769,10 @@
 "A new session will be started: the last session was in another CLI." = "A new session will be started: the last session was in another CLI.";
 "Looking for the last session…" = "Looking for the last session…";
 "Didn't find the last session" = "Didn't find the last session";
-"%@, which the last supervisor used, is not installed on this machine." = "%@, which the last supervisor used, is not installed on this machine.";
+"%@, which the last supervisor used, isn't installed on this machine." = "%@, which the last supervisor used, isn't installed on this machine.";
+"%@, which the last supervisor used, is the other major version: turn on the plugin for the version that is here." = "%@, which the last supervisor used, is the other major version: turn on the plugin for the version that is here.";
 "That agent CLI isn't installed on this machine." = "That agent CLI isn't installed on this machine.";
+"The agent CLI on this machine is not a version that plugin starts. Turn on the plugin for the version that is installed." = "The agent CLI on this machine is not a version that plugin starts. Turn on the plugin for the version that is installed.";
 "Checking whether the last session can be gone on with…" = "Checking whether the last session can be gone on with…";
 "A new session will be started: this CLI cannot go on with an earlier session." = "A new session will be started: this CLI cannot go on with an earlier session.";
 "A new session will be started: an open terminal is in the last session now." = "A new session will be started: an open terminal is in the last session now.";

@@ -5213,10 +5213,15 @@ msgstr "Agent CLI"
 msgid "The last session was {}'s; {} can't go on with it."
 msgstr "上次的会话是 {} 的，{} 接不上。"
 
-#: windows/control-room/src/scene.rs:105
+#: windows/control-room/src/scene.rs:132
 #, rust-format
-msgid "{}, which the last supervisor used, is not installed on this machine."
-msgstr "上次用的 {} 不在这台机器上。"
+msgid "{}, which the last supervisor used, isn't installed on this machine."
+msgstr "上次用的 {} 没装在这台机器上。"
+
+#: windows/control-room/src/scene.rs:138
+#, rust-format
+msgid "{}, which the last supervisor used, is the other major version: turn on the plugin for the version that is here."
+msgstr "上次用的 {} 装的是另一个大版本：请打开与本机版本对应的那个插件。"
 
 #: windows/control-room/src/scene.rs:110
 msgid "Looking for the last session…"
@@ -5246,10 +5251,18 @@ msgstr "这个 Agent CLI 在这台机器上起不来。"
 msgid "That agent CLI isn't installed on this machine."
 msgstr "这个 agent CLI 没装在这台机器上。"
 
+msgid "The agent CLI on this machine is not a version that plugin starts. Turn on the plugin for the version that is installed."
+msgstr "这台机器上装的那个 agent CLI 不是这个插件服务的版本。请打开与本机版本对应的那个插件。"
+
 #: windows/host/src/roles.rs:771
 #, rust-format
 msgid "The {} plugin is off: {} won't be offered when this role starts. Its settings stay in the role."
 msgstr "{} 插件关着：启动这个角色时不会出现 {}。设置留在角色里。"
+
+#: windows/host/src/roles.rs:775
+#, rust-format
+msgid "{} here is the other major version: turn on the plugin for the version that is installed. The settings stay in the role."
+msgstr "这台机器上的 {} 是另一个大版本：请打开与本机版本对应的那个插件。设置留在角色里。"
 
 #: windows/host/src/roles.rs:775
 #, rust-format

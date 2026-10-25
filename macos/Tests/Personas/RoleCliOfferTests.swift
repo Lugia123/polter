@@ -122,6 +122,32 @@ struct RoleCliOfferTests {
         #expect(RoleCliOffer.available(AgentCliSnapshot()) == nil)
     }
 
+    /// Task 2237: a CLI the core held back as the *other major version* is
+    /// not offered either -- it is on the machine and would refuse the
+    /// moment it were started -- and the note it says sends the person to a
+    /// plugin rather than to an installer. The Windows host's twin is
+    /// `roles::a_cli_of_the_other_major_version_is_not_offered`.
+    @Test func aCliOfTheOtherMajorVersionIsNotOffered() throws {
+        let read = try #require(AgentCliSnapshot(json: """
+            {"stale":false,"refreshing":false,"clis":[
+              {"key":"opencode","label":"opencode","bin":"opencode","error":null,"inventory":{"installed":true}},
+              {"key":"codex","label":"Codex","bin":"codex","error":null,"inventory":{"installed":true}}],
+             "held_back":[{"key":"opencode","label":"opencode","why":"wrong_version"}]}
+            """))
+        #expect(RoleCliOffer.available(read) == ["codex"])
+        // The reason is read off the list: the plugin's own sentence says
+        // "turn that plugin on", not "install it".
+        let why = try #require(read.heldBack.first { $0.key == "opencode" }?.why)
+        #expect(why == .wrongVersion)
+        let note = try #require(read.whyNot("opencode"))
+        #expect(note.contains("other major version"))
+        #expect(note.contains("turn on the plugin"))
+        // The three words are told apart: a reason it does not know is
+        // dropped rather than guessed at.
+        let odd = try #require(AgentCliSnapshot(json: #"{"stale":false,"clis":[],"held_back":[{"key":"opencode","label":"opencode","why":"something_else"}]}"#))
+        #expect(odd.heldBack.isEmpty)
+    }
+
     // MARK: - The row
 
     private final class Target: NSObject {

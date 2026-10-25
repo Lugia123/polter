@@ -1,0 +1,102 @@
+# Tell opencode that Polter is here. The Windows half.
+#
+# The implementation is in `_sdk/provision.ps1`; this file is the answers.
+# See dev-docs/poltergeist/provisioning.md and dev-docs/windows/development.md 5.3.
+
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot '..\_sdk\provision.ps1')
+
+# **`opencode`, not `opencode-v2`**: the key is the host, and the host is
+# opencode -- the same binary, the same `mcp` key, the same file. What the
+# split separates is which version a plugin serves, and the adapter's
+# inventory says that (`serves`), not this file. `provision.sh` has the rest.
+$PolterHostKey = 'opencode'
+$PolterHostLabel = 'opencode'
+$PolterHostBin = 'opencode'
+
+# **`opencode mcp add` exists as of opencode 1.2.10, and it still cannot be
+# used**: measured 2026-09-01, it takes no arguments and is an interactive
+# wizard -- with stdin closed it prints `Enter MCP server name` and waits.
+# A plugin that called it would hang until `timeout_ms` killed it. The `.sh`
+# beside this file carries the measurement, and the confirmation from
+# `opencode mcp list` that opencode reads the shape written below.
+#
+# **So this one edits the user's file**, with all the care that requires --
+# see `Edit-PolterJson`. It is also the host whose
+# shape is furthest from the rest: the key is `mcp`, not `mcpServers`, and an
+# entry is an object with `type` and `command` as a list, not a `command`
+# string with `args` beside it. Copying a sibling into this file produces a
+# config opencode reads and silently ignores.
+#
+# **This is where the two platforms stop being the same length.** The `sh`
+# version hands the edit to `python3` and fails outright when there is none;
+# here the parser is in the language, so this host has one fewer dependency on
+# Windows than it has anywhere else. `plugin.json` still declares `python3` in
+# `wants.exec` because that list is one list for all platforms -- it is
+# disclosure, not a requirement the host enforces per system.
+#
+# The path is `$HOME/.config/opencode/opencode.json` on every platform,
+# carried over from the `sh` version unchanged. **That is inherited, not
+# verified**: nobody has run opencode on Windows to see whether it looks under
+# `%USERPROFILE%\.config` or somewhere Windows-shaped like `%APPDATA%`. It is
+# the same claim the `sh` file already makes, so this file makes no new one.
+function Get-PolterOpencodeConfig {
+    Join-Path $script:PolterHome '.config\opencode\opencode.json'
+}
+
+# **Which CLI started the server** (task 1777): the entry's `environment`
+# carries it for `identify`, as the Codex and Antigravity entries do. Kept in
+# step with `provision.sh`, which has the reasons.
+$script:PolterOpencodeMarker = 'POLTER_AGENT_CLI'
+
+function Get-HostMcpCurrent {
+    Read-PolterJson (Get-PolterOpencodeConfig) {
+        param($d)
+        $entry = Get-PolterIn $d @('mcp', 'polter')
+        $command = Get-PolterIn $entry @('command')
+        $env = Get-PolterIn $entry @('environment', 'POLTER_REGISTERED')
+        $mark = Get-PolterIn $entry @('environment', $script:PolterOpencodeMarker)
+        "$env $mark " + (@($command) -join ' ')
+    }
+}
+
+# An entry this build wrote before it carried the marker is this build's, at
+# this version, and cannot say which CLI it serves.
+function Test-HostMcpComplete {
+    param([string]$Current)
+    return $Current.Contains(' opencode ')
+}
+
+function Register-HostMcp {
+    param($Version, $VersionKey, $Exe, $Scope)
+
+    Edit-PolterJson (Get-PolterOpencodeConfig) {
+        param($d)
+        if (-not $d.Contains('mcp')) { $d['mcp'] = [ordered]@{} }
+        $d['mcp']['polter'] = [ordered]@{
+            type = 'local'
+            command = @($Exe, '+mcp')
+            enabled = $true
+            environment = [ordered]@{
+                $VersionKey = $Version
+                $script:PolterOpencodeMarker = 'opencode'
+            }
+        }
+        $d
+    }
+}
+
+# **Confirmed** (tasks 1777, 1806; opencode 2.0.32): `~/.config/opencode/skills`.
+function Get-HostSkillsDir { Join-Path $script:PolterHome '.config\opencode\skills' }
+
+# opencode reads `~/.claude/skills` too, so Polter's skills there are the one
+# copy and none go here -- `provision.sh` says why (task 1806).
+function Get-HostSkillsSharedDir { Join-Path $script:PolterHome '.claude\skills' }
+
+# `~/.config/opencode/AGENTS.md`: opencode 2.0 reads no CLAUDE.md, so the file
+# hides nothing of the person's (task 1806). `provision.sh` has the reasons.
+function Get-HostRulesFile { Join-Path $script:PolterHome '.config\opencode\AGENTS.md' }
+
+Invoke-PolterProvisionMain

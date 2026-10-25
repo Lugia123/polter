@@ -338,12 +338,18 @@
 //!                             the start is then refused, with the reason.
 //!                             More than one is the "Agent CLI" row.
 //!       "held_back":[{"key":"other-cli","label":…|null,
-//!         "why":"plugin_off"|"cannot_run"|"no_plugin"|"not_installed"}]
+//!         "why":"plugin_off"|"cannot_run"|"no_plugin"|"not_installed"|
+//!               "wrong_version"}]
 //!                             set up in the role and not in `clis`, and
 //!                             why: a switch in Plugins, an adapter nothing
-//!                             here can run, no plugin at all, or its
-//!                             adapter says the program is not on this
-//!                             machine (task 1744)
+//!                             here can run, no plugin at all, its adapter
+//!                             saying the program is not on this machine
+//!                             (task 1744), or its adapter saying the
+//!                             program here is not one it serves -- the
+//!                             other major version is installed (task
+//!                             2237). **The last two are not one**: the
+//!                             first is "install it", the second is
+//!                             "install nothing, turn the other plugin on"
 //!   "choose_supervisor_role": false,
 //!                             whether there is a choice to offer: more
 //!                             than one. A host does not count them
@@ -823,17 +829,24 @@ pub const CliStanding = struct {
         /// task 1744): installing it does. Only ever from an inventory
         /// read (`installedHere`); before one, nobody knows, and it is `ok`.
         not_installed,
+        /// Switched on, its adapter runs, and its adapter says the program
+        /// on this machine is **not one it serves** (`"serves": false`,
+        /// task 2237): the person installs nothing -- the plugin for the
+        /// version that is here is the one to turn on. Kept apart from
+        /// `not_installed` because those are two different sentences and
+        /// two different things to do (`README.md`, "two answers").
+        wrong_version,
     };
 };
 
-/// A CLI a role is set up for and that is not offered, and why -- three
-/// reasons, because the person does three different things about them.
+/// A CLI a role is set up for and that is not offered, and why -- the
+/// reasons, because the person does something different about each.
 pub const HeldBackOut = struct {
     key: []const u8,
     label: ?[]const u8,
     why: Why,
 
-    pub const Why = enum { plugin_off, cannot_run, no_plugin, not_installed };
+    pub const Why = enum { plugin_off, cannot_run, no_plugin, not_installed, wrong_version };
 };
 
 /// Whether a start in this CLI goes on with the last session: `resumeOf`,
@@ -1056,32 +1069,56 @@ pub fn standingOf(standings: []const CliStanding, cli: []const u8) ?HeldBackOut.
         .plugin_off => .plugin_off,
         .cannot_run => .cannot_run,
         .not_installed => .not_installed,
+        .wrong_version => .wrong_version,
     };
     return .no_plugin;
 }
 
-/// `standings` with what an inventory read found missing (task 1744): a
-/// CLI that stands `ok` and whose adapter said its program is not here
-/// stands `not_installed`. `missing` null -- nothing read yet -- changes
-/// nothing: not known is not "missing", and the CLI is offered as before.
-/// Null standings stay null. In `arena` when anything changes.
+/// `standings` with what an inventory read found cannot start here (task
+/// 1744, task 2237): a CLI that stands `ok` and whose adapter said its
+/// program is not here stands `not_installed`; one whose adapter said the
+/// program here is a version it does not serve stands `wrong_version`.
+/// `cannot` null -- nothing read yet -- changes nothing: not known is not
+/// "missing" and is not "the wrong version", and the CLI is offered as
+/// before. Null standings stay null. In `arena` when anything changes.
 pub fn installedHere(
     arena: Allocator,
     standings: ?[]const CliStanding,
-    missing: ?[]const []const u8,
+    cannot: ?NotStartable,
 ) Allocator.Error!?[]const CliStanding {
     const all = standings orelse return null;
-    const gone = missing orelse return all;
-    if (gone.len == 0) return all;
+    const c = cannot orelse return all;
+    if (c.missing.len == 0 and c.wrong_version.len == 0) return all;
     const out = try arena.dupe(CliStanding, all);
     for (out) |*o| {
         if (o.standing != .ok) continue;
-        for (gone) |g| if (std.mem.eql(u8, g, o.key)) {
+        // Not installed first: an adapter that said that has no version to
+        // judge, and one key is never in both lists (`agent_cli.read`).
+        if (isAnyOf(c.missing, o.key)) {
             o.standing = .not_installed;
-            break;
-        };
+            continue;
+        }
+        if (isAnyOf(c.wrong_version, o.key)) o.standing = .wrong_version;
     }
     return out;
+}
+
+/// What an inventory read said about the CLIs whose programs are here but
+/// cannot be started: **two lists, because they are two answers for the
+/// person**. `missing` is task 1744's `installed: false` -- install it;
+/// `wrong_version` is task 2237's `serves: false` -- install nothing, turn
+/// the plugin for the version that is here on.
+///
+/// The core's own type rather than the cache's, so that the control room
+/// depends on nothing above it: `App` copies the cache's two lists in.
+pub const NotStartable = struct {
+    missing: []const []const u8 = &.{},
+    wrong_version: []const []const u8 = &.{},
+};
+
+fn isAnyOf(keys: []const []const u8, key: []const u8) bool {
+    for (keys) |k| if (std.mem.eql(u8, k, key)) return true;
+    return false;
 }
 
 /// The CLI a role is started in, of those it can be here (`startClisOf`):
@@ -6310,8 +6347,8 @@ test "1744: a CLI whose program an inventory found missing stands not_installed,
         .{ .key = "claude-code", .standing = .ok },
         .{ .key = "codex", .standing = .plugin_off },
     };
-    const both_missing = [_][]const u8{ "claude-code", "codex" };
-    const merged = (try installedHere(aa, &plugins, &both_missing)).?;
+    const both_missing: NotStartable = .{ .missing = &.{ "claude-code", "codex" } };
+    const merged = (try installedHere(aa, &plugins, both_missing)).?;
     const claude = standingOf(merged, "claude-code");
     try testing.expectEqual(@as(?HeldBackOut.Why, .not_installed), claude);
     // Here: still offered.
@@ -6326,8 +6363,47 @@ test "1744: a CLI whose program an inventory found missing stands not_installed,
     const claude_unread = standingOf(unread, "claude-code");
     try testing.expectEqual(@as(?HeldBackOut.Why, null), claude_unread);
     // The plugins not read: still nothing to say.
-    const no_plugins = try installedHere(aa, null, &both_missing);
+    const no_plugins = try installedHere(aa, null, both_missing);
     try testing.expect(no_plugins == null);
+}
+
+// **Two answers, and the whole point is that they are not one.** A CLI
+// whose program is missing and a CLI whose program is the wrong major
+// version are held back for reasons the person acts on differently, and a
+// host that read one of them as the other would tell them to do the wrong
+// thing (task 2237).
+test "2237: the wrong version is its own reason, and it is not the missing one" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const plugins = [_]CliStanding{
+        .{ .key = "claude-code", .standing = .ok },
+        .{ .key = "codex", .standing = .ok },
+        .{ .key = "opencode", .standing = .ok },
+        .{ .key = "antigravity", .standing = .ok },
+    };
+    const cannot: NotStartable = .{
+        .missing = &.{"claude-code"},
+        .wrong_version = &.{"opencode"},
+    };
+    const merged = (try installedHere(aa, &plugins, cannot)).?;
+    try testing.expectEqual(@as(?HeldBackOut.Why, .not_installed), standingOf(merged, "claude-code"));
+    try testing.expectEqual(@as(?HeldBackOut.Why, .wrong_version), standingOf(merged, "opencode"));
+    // The two CLIs that are fine keep standing, and every reason is still
+    // its own word rather than a number the two hosts would have to guess.
+    try testing.expectEqual(@as(?HeldBackOut.Why, null), standingOf(merged, "codex"));
+    try testing.expectEqual(@as(?HeldBackOut.Why, null), standingOf(merged, "antigravity"));
+
+    // A read that said only "wrong version", and one that said only
+    // "missing": each leaves the other's CLI alone.
+    const wrong_only = (try installedHere(aa, &plugins, .{ .wrong_version = &.{"codex"} })).?;
+    try testing.expectEqual(@as(?HeldBackOut.Why, .wrong_version), standingOf(wrong_only, "codex"));
+    try testing.expectEqual(@as(?HeldBackOut.Why, null), standingOf(wrong_only, "claude-code"));
+
+    // Nothing read yet, and a read that found neither: the plugins' word.
+    try testing.expectEqual(@as(?HeldBackOut.Why, null), standingOf((try installedHere(aa, &plugins, null)).?, "opencode"));
+    const neither: NotStartable = .{};
+    try testing.expectEqual(@as(?HeldBackOut.Why, null), standingOf((try installedHere(aa, &plugins, neither)).?, "opencode"));
 }
 
 test "1744: a machine with only agy: the start offers agy, says why Claude Code is not offered, and a failed start does not pick it again" {
@@ -6357,7 +6433,7 @@ test "1744: a machine with only agy: the start offers agy, says why Claude Code 
     try testing.expectEqualStrings("claude-code", before.cli.?);
 
     // Read: claude is not on this machine.
-    w.cli_standings = try installedHere(aa, &plugins, &.{"claude-code"});
+    w.cli_standings = try installedHere(aa, &plugins, .{ .missing = &.{"claude-code"} });
     const s = (try room.compute(aa, w.input(11_002))).snapshot;
     const after = (try rowNamed(s, "t1740")).supervisor;
     // The next start does not pick the CLI that failed for want of its
@@ -6374,6 +6450,69 @@ test "1744: a machine with only agy: the start offers agy, says why Claude Code 
     try testing.expectEqual(HeldBackOut.Why.not_installed, why);
     // And no CLI that is not here is asked whether it goes on with a session.
     for (after.resume_by_cli) |r| try testing.expect(!std.mem.eql(u8, r.cli, "claude-code"));
+}
+
+// **The two cells the split is for** (task 2237): one machine, one
+// `opencode` binary, and two plugins that both wrap it. Which one the
+// control room offers is decided by the version the one binary is, and the
+// other is held back for `wrong_version` -- not for `not_installed`, which
+// would tell the person to install something they already have.
+test "2237: a machine running opencode 2.x offers the 2.x plugin and holds the 1.x one back as the wrong version" {
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    // Both plugins shipped and switched on, as they are on a machine with
+    // neither plugin configured.
+    w.roles = &.{.{ .key = "polter-supervisor", .name = "Polter Supervisor", .clis = &.{ "opencode", "opencode-v2" } }};
+    w.cli_names = &.{
+        .{ .key = "opencode", .label = "opencode" },
+        .{ .key = "opencode-v2", .label = "opencode 2.x" },
+    };
+    const plugins = [_]CliStanding{
+        .{ .key = "opencode", .standing = .ok },
+        .{ .key = "opencode-v2", .standing = .ok },
+    };
+    try w.chat.restoreShell("t2237", "", 0, .none);
+
+    // `opencode --version` said 2.1.4: the 1.x plugin answers
+    // `"serves": false`, the 2.x one says nothing (it serves it).
+    w.cli_standings = try installedHere(aa, &plugins, .{ .wrong_version = &.{"opencode"} });
+    const two = (try room.compute(aa, w.input(1_000))).snapshot.supervisor_roles[0];
+    try testing.expectEqual(@as(usize, 1), two.clis.len);
+    try testing.expectEqualStrings("opencode-v2", two.clis[0].key);
+    // **By name, not by key**: the row a person reads says which major
+    // version this is (the split's whole point).
+    try testing.expectEqualStrings("opencode 2.x", two.clis[0].label.?);
+    try testing.expectEqual(@as(usize, 1), two.held_back.len);
+    try testing.expectEqualStrings("opencode", two.held_back[0].key);
+    try testing.expectEqual(HeldBackOut.Why.wrong_version, two.held_back[0].why);
+    // **Not the other reason**: this is the assertion that would pass if
+    // the two were one word, and it must not.
+    try testing.expect(two.held_back[0].why != .not_installed);
+
+    // And the same machine after `brew install opencode@1`: 1.9.3 on PATH,
+    // so the answers swap -- the other plugin is the one held back.
+    w.cli_standings = try installedHere(aa, &plugins, .{ .wrong_version = &.{"opencode-v2"} });
+    const onex = (try room.compute(aa, w.input(2_000))).snapshot.supervisor_roles[0];
+    try testing.expectEqual(@as(usize, 1), onex.clis.len);
+    try testing.expectEqualStrings("opencode", onex.clis[0].key);
+    try testing.expectEqual(@as(usize, 1), onex.held_back.len);
+    try testing.expectEqualStrings("opencode-v2", onex.held_back[0].key);
+    try testing.expectEqual(HeldBackOut.Why.wrong_version, onex.held_back[0].why);
+
+    // **A machine with no `opencode` at all is a third answer**, and it is
+    // not this one: both plugins say `installed: false`, and both are held
+    // back as that.
+    w.cli_standings = try installedHere(aa, &plugins, .{ .missing = &.{ "opencode", "opencode-v2" } });
+    const none = (try room.compute(aa, w.input(3_000))).snapshot.supervisor_roles[0];
+    try testing.expectEqual(@as(usize, 0), none.clis.len);
+    try testing.expectEqual(@as(usize, 2), none.held_back.len);
+    for (none.held_back) |h| try testing.expectEqual(HeldBackOut.Why.not_installed, h.why);
 }
 
 test "2156 v3: a role's own Agent CLIs are offered as its CLIs are -- listed, named, held back for their base's reason -- and the one it was started in is the default" {

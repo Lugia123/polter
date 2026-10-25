@@ -388,11 +388,45 @@ def unique_items(items):
     return out
 
 
+def serves_here(exe, version):
+    """Whether the opencode on this machine is one this plugin starts.
+
+    **This plugin serves 1.x, and only 1.x** (task 2237). 2.x has a plugin of
+    its own (`plugins/opencode-v2`), and on a machine running it this one
+    answers `"serves": false` so that the control room says "the other major
+    version is installed" rather than "not installed" -- two different things
+    for the person to do about them, and neither of them a switch.
+
+    No exe, no version to judge, and `installed` has already said the true
+    thing; a version that could not be read is *not knowing* rather than
+    knowing it is wrong, and is served.
+    """
+    if exe is None or version is None:
+        return True
+    return version < MIN_VERSION
+
+
 def inventory(req):
     items, notes = gather(req)
+    # ⚠️ **This runs `opencode --version`**, which the inventory did not use
+    # to. That is the price of `serves`: whether the program on PATH is one
+    # this plugin starts is not readable off the file system. It is the call
+    # `launch` already makes -- models fetch and autoupdate off, no session
+    # and no service started (`version_of`) -- and it is asked whatever the
+    # version turns out to be, because this one has to say *no* as well as
+    # yes. See `plugins/opencode-v2/adapter.py`, which reads the same field.
+    exe = on_path("opencode")
+    version = version_of(exe) if exe else None
+    serves = serves_here(exe, version)
+    if exe is not None and not serves:
+        notes.append(
+            "opencode %s is on this machine, and this plugin starts 1.x only. "
+            "The plugin for the version that is here is the one that serves it."
+            % ".".join(map(str, version)))
     return {
         "version": CONTRACT_VERSION,
-        "installed": on_path("opencode") is not None,
+        "installed": exe is not None,
+        "serves": serves,
         "resume": True,
         "options": [],
         "items": unique_items(items),

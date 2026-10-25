@@ -121,15 +121,21 @@ pub mod msg {
     /// than the one that session was in. The first `{}` is that session's
     /// CLI, the second the one picked.
     pub const LAST_SESSION_WAS: &str = n_("The last session was {}'s; {} can't go on with it.");
-    /// The CLI the last supervisor used is held back because its program
-    /// is not on this machine (task 1744). The `{}` is that CLI.
     /// Where "Go on with the last session" will be, while it is looked for
     /// (task 1741).
     pub const LOOKING: &str = n_("Looking for the last session…");
     /// Where it would be, when it was looked for and cannot be gone on with
     /// (task 1741). Why is said on hover.
     pub const DIDNT_FIND: &str = n_("Didn't find the last session");
-    pub const LAST_CLI_NOT_HERE: &str = n_("{}, which the last supervisor used, is not installed on this machine.");
+    /// The CLI the last supervisor used is held back because the program
+    /// it names is not on this machine (task 1744). The `{}` is that CLI.
+    pub const LAST_CLI_NOT_HERE: &str = n_("{}, which the last supervisor used, isn't installed on this machine.");
+    /// The same, for the other major version (task 2237): something *is*
+    /// installed, and what the person does about it is turn on the plugin
+    /// for the version that is here. **A second sentence, not the same one**
+    /// -- "install it" is the wrong thing to do about this one. The `{}` is
+    /// that CLI.
+    pub const LAST_CLI_OTHER_VERSION: &str = n_("{}, which the last supervisor used, is the other major version: turn on the plugin for the version that is here.");
     /// The directory, when the core names none: the new tab's own.
     pub const WHERE_THE_TAB_STARTS: &str = n_("Where the tab starts");
     /// The right side, for a row that is a terminal in no group: it is
@@ -1417,6 +1423,9 @@ pub struct CliChoice {
     /// The CLI the last supervisor used, by name, when the role holds it
     /// back because its program is not here (task 1744); none otherwise.
     pub last_gone: Option<String>,
+    /// Why it is held back, when `last_gone` is said (tasks 1744, 2237):
+    /// which of the reasons the person is told. None with `last_gone`.
+    pub last_gone_why: Option<crate::snapshot::HeldWhy>,
 }
 
 /// Whether a start in `cli` goes on with the last session, and why not:
@@ -1460,17 +1469,24 @@ pub fn cli_choice(
         .or_else(|| last.and_then(|l| l.last_cli.clone()).filter(|c| listed(c)))
         .or_else(|| clis.first().map(|c| c.key.clone()));
     let shown = clis.len() > 1;
-    let gone = key.and_then(|k| roles.iter().find(|r| r.key == k)).map_or(0, |r| r.held_back.iter().filter(|h| h.why == crate::snapshot::HeldWhy::NotInstalled).count());
+    let gone = key.and_then(|k| roles.iter().find(|r| r.key == k)).map_or(0, |r| r.held_back.iter().filter(|h| h.why.program_is_gone()).count());
     let room = if clis.len() + gone > 1 { clis.len() + gone } else { 0 };
     let Some(last) = last else {
-        return CliChoice { clis, shown, room, picked: chosen, resume: Resume::Hidden, why: ResumeWhy::NoRecord, last_gone: None };
+        return CliChoice { clis, shown, room, picked: chosen, resume: Resume::Hidden, why: ResumeWhy::NoRecord, last_gone: None, last_gone_why: None };
     };
-    // The last supervisor's CLI, held back because it is not installed here.
-    let last_gone = last.last_cli.as_deref().and_then(|was| {
+    // The last supervisor's CLI, held back because the program it names is
+    // not here to start -- not on the machine, or on it in the other major
+    // version (task 2237). **Which of the two is kept**: the two are two
+    // sentences for the person to act on (task 2237, review).
+    let gone_why = last
+        .last_cli
+        .as_deref()
+        .and_then(|was| key.and_then(|k| roles.iter().find(|r| r.key == k))?.held_back.iter().find(|h| h.key == was))
+        .filter(|h| h.why.program_is_gone())
+        .map(|h| h.why);
+    let last_gone = gone_why.and_then(|_| {
+        let was = last.last_cli.as_deref()?;
         let held = key.and_then(|k| roles.iter().find(|r| r.key == k))?.held_back.iter().find(|h| h.key == was)?;
-        if held.why != crate::snapshot::HeldWhy::NotInstalled {
-            return None;
-        }
         cli_name(Some(was), held.label.as_deref().or(last.last_cli_label.as_deref()))
     });
     let (can, why) = resume_for(last, chosen.as_deref());
@@ -1485,7 +1501,7 @@ pub fn cli_choice(
     } else {
         Resume::Hidden
     };
-    CliChoice { clis, shown, room, picked: chosen, resume, why: if can { ResumeWhy::None } else { why }, last_gone }
+    CliChoice { clis, shown, room, picked: chosen, resume, why: if can { ResumeWhy::None } else { why }, last_gone, last_gone_why: gone_why }
 }
 
 /// What the start sends for its session (`act::session_sent`): the one
@@ -1541,9 +1557,13 @@ pub fn resume_why(choice: &CliChoice, last: Option<&crate::snapshot::SupervisorL
     if choice.resume == Resume::Live {
         return None;
     }
-    // Its CLI is not on this machine: that, before which session it was.
+    // Its CLI cannot be started here, and **which of the two reasons it is
+    // decides the sentence** (tasks 1744, 2237): the program is not on this
+    // machine, so it is installed; or the program here is the other major
+    // version, so nothing is installed and the other plugin is turned on.
     if let Some(gone) = &choice.last_gone {
-        return Some((msg::LAST_CLI_NOT_HERE, vec![gone.clone()]));
+        let say = choice.last_gone_why.map_or(msg::LAST_CLI_NOT_HERE, |w| w.program_gone_say());
+        return Some((say, vec![gone.clone()]));
     }
     if choice.resume == Resume::Greyed && choice.why == ResumeWhy::CliDiffers {
         let last = last?;

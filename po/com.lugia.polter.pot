@@ -5476,9 +5476,14 @@ msgstr ""
 msgid "The last session was {}'s; {} can't go on with it."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:105
+#: windows/control-room/src/scene.rs:132
 #, rust-format
-msgid "{}, which the last supervisor used, is not installed on this machine."
+msgid "{}, which the last supervisor used, isn't installed on this machine."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:138
+#, rust-format
+msgid "{}, which the last supervisor used, is the other major version: turn on the plugin for the version that is here."
 msgstr ""
 
 #: windows/control-room/src/scene.rs:110
@@ -5509,12 +5514,20 @@ msgstr ""
 msgid "That agent CLI isn't installed on this machine."
 msgstr ""
 
+msgid "The agent CLI on this machine is not a version that plugin starts. Turn on the plugin for the version that is installed."
+msgstr ""
+
 #: windows/host/src/roles.rs:771
 #, rust-format
 msgid "The {} plugin is off: {} won't be offered when this role starts. Its settings stay in the role."
 msgstr ""
 
 #: windows/host/src/roles.rs:775
+#, rust-format
+msgid "{} here is the other major version: turn on the plugin for the version that is installed. The settings stay in the role."
+msgstr ""
+
+#: windows/host/src/roles.rs:779
 #, rust-format
 msgid "{} can't be started on this machine, so it won't be offered when this role starts. Its settings stay in the role."
 msgstr ""

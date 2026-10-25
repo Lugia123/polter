@@ -299,6 +299,30 @@ struct ControlRoomList: Equatable {
                 /// On, its adapter runs, and its adapter says the CLI's
                 /// program is not on this machine (task 1744).
                 case notInstalled = "not_installed"
+                /// On, its adapter runs, and its adapter says the program
+                /// here is not a version it serves (task 2237): the plugin
+                /// for the version that *is* here is the one to turn on.
+                /// Kept apart from `notInstalled`, which is "install it".
+                case wrongVersion = "wrong_version"
+
+                /// Whether the CLI's program is not here in a shape this
+                /// plugin starts -- either it is not on the machine at all
+                /// or it is the other major version. **Two reasons with two
+                /// sentences, and one consequence for a start**: nothing to
+                /// pick, and the "Agent CLI" line's room kept for it
+                /// (`ControlRoomStartChoice.cliChoice`).
+                ///
+                /// **Written out case by case on purpose** (task 2237,
+                /// review): a sixth reason added to this enum must make the
+                /// compiler name this line rather than quietly read as
+                /// "the program is here". The Windows twin is
+                /// `snapshot::HeldWhy::program_is_gone`.
+                var programIsGone: Bool {
+                    switch self {
+                    case .notInstalled, .wrongVersion: true
+                    case .pluginOff, .cannotRun, .noPlugin: false
+                    }
+                }
             }
 
             var key: String

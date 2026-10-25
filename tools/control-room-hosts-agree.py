@@ -655,7 +655,7 @@ for bits in 0..<8 {
 }
 for name in ["BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
              "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable",
-             "NotStartedByHand", "AlreadyTakingOver", "NotSetUpForCli", "CliOff", "CliUnavailable", "CliNotInstalled"] {
+             "NotStartedByHand", "AlreadyTakingOver", "NotSetUpForCli", "CliOff", "CliUnavailable", "CliNotInstalled", "CliWrongVersion"] {
     print("refusal \(name) says=\(quote(ControlRoomActions.Refusal(name: name).message))")
 }
 

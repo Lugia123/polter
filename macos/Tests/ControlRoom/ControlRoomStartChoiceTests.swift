@@ -342,18 +342,38 @@ struct ControlRoomStartChoiceTests {
         #expect(Choice.startEnabled(found, picked: nil))
     }
 
-    /// The last supervisor's CLI is not installed here (task 1744): not
-    /// found, and the hover says why.
-    @Test func notFoundBecauseItsCliIsGoneSaysSoOnHover() {
+    /// **The last supervisor's CLI cannot be started here, and which of the
+    /// two reasons it is decides the sentence** (tasks 1744, 2237): the
+    /// program is not on the machine, so go and install it; or the one here
+    /// is the other major version, so nothing is installed and the plugin
+    /// for the version that *is* here is the one to turn on. A single
+    /// sentence for both would send half the people to do the wrong thing.
+    /// Both leave the same hole in "go on with the last session".
+    @Test(arguments: [(ControlRoomList.SupervisorRole.HeldBack.Why.notInstalled,
+                       "opencode, which the last supervisor used, isn't installed on this machine."),
+                      (.wrongVersion,
+                       "opencode, which the last supervisor used, is the other major version: turn on the plugin for the version that is here.")])
+    func aCliTheLastSupervisorUsedThatCannotBeStartedSaysWhyOnHover(why: ControlRoomList.SupervisorRole.HeldBack.Why,
+                                                                     sentence: String) {
         var (s, roles) = twoClis(last: "opencode", byCli: [.init(cli: "claude-code", can: false, why: .cliDiffers),
-                                                       .init(cli: "codex", can: false, why: .cliDiffers)])
+                                                          .init(cli: "codex", can: false, why: .cliDiffers)])
         s.last?.lastCliLabel = "opencode"
-        roles[0].heldBack = [.init(key: "opencode", label: "opencode", why: .notInstalled)]
+        roles[0].heldBack = [.init(key: "opencode", label: "opencode", why: why)]
         let c = Choice.cliChoice(s, roles: roles, role: nil, picked: nil)
         #expect(c.resume == .missing)
         #expect(Choice.startEnabled(c, picked: nil))
         #expect(Choice.sessionSent(c, picked: nil) == nil)
-        #expect(Choice.resumeTooltip(c, last: s.last) == "opencode, which the last supervisor used, is not installed on this machine.")
+        #expect(Choice.resumeTooltip(c, last: s.last) == sentence)
+        // The reasons a start does *not* lose the last session over: the
+        // same CLI, held back because its plugin is off, is not "the
+        // program is gone", and no sentence is said about the session.
+        roles[0].heldBack = [.init(key: "opencode", label: "opencode", why: .pluginOff)]
+        let kept = Choice.cliChoice(s, roles: roles, role: nil, picked: nil)
+        #expect(kept.lastGone == nil)
+        for other in [ControlRoomList.SupervisorRole.HeldBack.Why.cannotRun, .noPlugin] {
+            roles[0].heldBack = [.init(key: "opencode", label: "opencode", why: other)]
+            #expect(Choice.cliChoice(s, roles: roles, role: nil, picked: nil).lastGone == nil)
+        }
     }
 
     /// Never a supervisor: nothing to look for, so nothing waits.

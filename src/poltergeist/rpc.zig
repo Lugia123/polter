@@ -8301,6 +8301,13 @@ fn dispatchOne(
                         "did not find it on the login shell's PATH. The person installs it; no " ++
                         "switch changes that. Nothing was opened.",
                 ),
+                error.CliWrongVersion => hostFailure(
+                    "CliWrongVersion",
+                    "the program on this machine is not a version that CLI's plugin serves: its " ++
+                        "adapter answered \"serves\": false, which is the other major version " ++
+                        "being installed. The person installs nothing; the plugin for the " ++
+                        "version that is here is the one to turn on. Nothing was opened.",
+                ),
                 error.ChooseCli => hostFailure(
                     "ChooseCli",
                     "this role is set up for more than one CLI that can start here, and none " ++
@@ -10230,12 +10237,24 @@ fn blindRefusal(alloc: std.mem.Allocator, bus: *const Bus, host: Host, id: Bus.I
 /// ⚠️ Not `/clear`, which 1.x took as `/new`'s alias: in 2.0 it is a command
 /// of its own that also closes the session's tabs (`tui/src/app.tsx` at
 /// v2.0.32, task 1806). So the replies say "clear sent", not which word.
+///
+/// **Two rows for opencode, one clear** (task 2237): the key a hook reports
+/// is the key of the plugin that started the session, and opencode 2.x has a
+/// plugin of its own (`plugins/opencode-v2`). Same binary, same `/new`, same
+/// confirmation, so the second row is made by `opencodeRow` rather than
+/// restating it; a third version would be one more call.
 const FreshCli = struct { cli: []const u8, command: []const u8, confirm: fresh_assign.Confirm };
+
+fn opencodeRow(cli: []const u8) FreshCli {
+    return .{ .cli = cli, .command = "/new", .confirm = .next_turn };
+}
+
 const fresh_clis = [_]FreshCli{
     .{ .cli = "claude-code", .command = "/clear", .confirm = .session_start },
     .{ .cli = "codex", .command = "/clear", .confirm = .next_turn },
     .{ .cli = "antigravity", .command = "/clear", .confirm = .next_turn },
-    .{ .cli = "opencode", .command = "/new", .confirm = .next_turn },
+    opencodeRow("opencode"),
+    opencodeRow("opencode-v2"),
 };
 
 /// The clear for this agent's CLI, or null for one with none.
@@ -10269,7 +10288,7 @@ pub fn freshRefusal(agent: ?Bus.Agent) ?struct { code: []const u8, message: []co
     };
     if (freshCli(a) == null) return .{
         .code = "FreshUnsupported",
-        .message = "only claude-code, codex, antigravity (/clear) and opencode (/new) can be cleared; that terminal's CLI " ++
+        .message = "only claude-code, codex, antigravity (/clear) and opencode, opencode-v2 (/new) can be cleared; that terminal's CLI " ++
             "is another. Nothing was typed and nothing was assigned; assign without fresh, " ++
             "or start a new worker for the task.",
     };
@@ -15368,6 +15387,32 @@ test "1806: opencode is cleared with /new and confirmed only by its next turn" {
     defer arena.deinit();
     var fake = panelFixture(&panel);
     freshAgent(&b, .idle, "opencode");
+    try testing.expect(freshRefusal(b.agentOf(worker).*) == null);
+
+    const id = try panel.create("build", "t", .bug);
+    _ = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+        .fresh = true,
+    } });
+    try testing.expectEqualStrings("/new", fake.sent.?.text);
+    try testing.expectEqual(fresh_assign.Confirm.next_turn, fake.parked_assign.?.confirm);
+}
+
+test "2237: the 2.x opencode plugin's key is cleared exactly as the 1.x one is" {
+    // **A session started by the 2.x plugin reports `opencode-v2`**
+    // (task 2237: the name a hook carries is its plugin's key), so the clear
+    // has to be found under that key too -- otherwise `task_assign fresh`
+    // would refuse `FreshUnsupported` for a terminal it can perfectly well
+    // clear, which is the one way this could be wrong in the field.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+    freshAgent(&b, .idle, "opencode-v2");
     try testing.expect(freshRefusal(b.agentOf(worker).*) == null);
 
     const id = try panel.create("build", "t", .bug);

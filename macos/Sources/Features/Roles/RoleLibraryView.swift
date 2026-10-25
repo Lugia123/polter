@@ -1029,6 +1029,16 @@ struct RoleLibraryView: View {
                             Text(String(format: String(localized: "%@ isn't on this machine's PATH", comment: "角色库：CLI 程序没找到，%@ 是程序名"), cli.bin))
                                 .font(SettingsFont.minimum)
                                 .foregroundStyle(.orange)
+                        } else if library.clis.standing(cli.key) == .wrongVersion(label: cli.label) {
+                            // Installed, and not the version this plugin
+                            // starts (task 2237): the other plugin is the
+                            // one to turn on, so the tick stays and the
+                            // sentence says which of the two it is -- the
+                            // same one the panel beside it says
+                            // (`whyNot`), so there is one wording, not two.
+                            Text(library.clis.whyNot(cli.key) ?? "")
+                                .font(SettingsFont.minimum)
+                                .foregroundStyle(.orange)
                         }
                         if cli.error != nil {
                             Text(String(localized: "Its plugin couldn't list what's installed", comment: "角色库：适配插件读取清单失败"))
@@ -1172,10 +1182,16 @@ struct RoleLibraryView: View {
     /// for it (task 2156 v5). The Launch button and the reason it is grey
     /// read the same list, so a role with only a launcher ticked can still
     /// be launched.
+    ///
+    /// What can start is `RoleCliOffer.available`, the same answer every
+    /// other start menu reads (task 2237): a CLI whose program is missing
+    /// or is the other major version is not a row the core would accept.
     private var launchKeys: [String] {
         guard let role = editor.draft else { return [] }
-        return (role.clis.map(\.cli).filter { library.clis.stale || library.clis.known($0) })
+        let all = role.clis.map(\.cli)
             + library.clis.own.filter { editor.ownTicked($0.key, role: role.key) }.map(\.key)
+        guard let offered = RoleCliOffer.available(library.clis) else { return all }
+        return all.filter { offered.contains($0) }
     }
 
     private var openInPicker: some View {

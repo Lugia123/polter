@@ -301,8 +301,19 @@ pub fn translate(
     if (std.mem.eql(u8, cli, "claude-code")) return claudeCode(arena, hook, obj);
     if (std.mem.eql(u8, cli, "codex")) return codex(arena, hook, obj);
     if (std.mem.eql(u8, cli, "antigravity")) return antigravity(arena, hook, obj);
-    if (std.mem.eql(u8, cli, "opencode")) return opencode(arena, hook, obj);
+    if (isOpencode(cli)) return opencode(arena, cli, hook, obj);
     return error.UnknownCli;
+}
+
+/// Whether this is one of opencode's plugins (task 2237). **`opencode-v2` is
+/// `opencode` here and nowhere else**: the two plugins are one CLI in two
+/// major versions -- the same event names, the same payloads, the same
+/// translation -- and what a session reports is the key of the plugin that
+/// started it (`plugins/opencode-v2/polter-hooks/`), so both keys arrive.
+/// The keys stay apart in the event (`Event.cli`), because a supervisor
+/// looking at a terminal should see which plugin it came through.
+pub fn isOpencode(cli: []const u8) bool {
+    return std.mem.eql(u8, cli, "opencode") or std.mem.eql(u8, cli, "opencode-v2");
 }
 
 /// Claude Code, 2.1.145 and later (adapters.md 3.1). Field names are the
@@ -659,7 +670,7 @@ fn errorText(arena: Allocator, obj: std.json.ObjectMap) Error!?[]const u8 {
 /// A turn is one `session.execution.*`: `started`, then exactly one of
 /// `succeeded`, `failed` (with the error) or `interrupted` (measured: no
 /// idle comes after any of them, and 2.0 says no `session.status` at all).
-fn opencode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error!Event {
+fn opencode(arena: Allocator, cli: []const u8, hook: []const u8, obj: std.json.ObjectMap) Error!Event {
     const kind = try requireString(obj, "type");
     if (!std.mem.eql(u8, kind, hook)) return error.UnknownEvent;
 
@@ -676,7 +687,7 @@ fn opencode(arena: Allocator, hook: []const u8, obj: std.json.ObjectMap) Error!E
     } else false;
 
     var ev: Event = .none;
-    ev.cli = "opencode";
+    ev.cli = cli;
     // A question's session is on its form; everything else says it itself.
     const form: ?std.json.ObjectMap = if (std.mem.eql(u8, hook, "form.created")) try requireObject(data, "form") else null;
     const sid = try requireString(form orelse data, "sessionID");
@@ -1669,6 +1680,103 @@ test "cutBytes never ends inside a character" {
 
 fn trOpencode(hook: []const u8, payload: []const u8) Error!Event {
     return translate(test_arena.allocator(), "opencode", hook, payload);
+}
+
+fn trOpencodeV2(hook: []const u8, payload: []const u8) Error!Event {
+    return translate(test_arena.allocator(), "opencode-v2", hook, payload);
+}
+
+/// Every field of two events **but `cli`**, compared. One `expect` per field
+/// so that a failure names the one that differs rather than "these are not
+/// equal". `cli` is out because it is the one field the two keys are meant
+/// to write differently; the cell that uses this checks it itself.
+fn expectSameEvent(a: Event, b: Event) !void {
+    try testing.expectEqual(a.event, b.event);
+    try testing.expectEqualStrings(a.session_id orelse "", b.session_id orelse "");
+    try testing.expectEqualStrings(a.agent_id orelse "", b.agent_id orelse "");
+    try testing.expectEqualStrings(a.transcript_path orelse "", b.transcript_path orelse "");
+    try testing.expectEqualStrings(a.detail orelse "", b.detail orelse "");
+    try testing.expectEqualStrings(a.note orelse "", b.note orelse "");
+    try testing.expectEqualStrings(a.text orelse "", b.text orelse "");
+    try testing.expectEqual(a.text_bytes, b.text_bytes);
+    try testing.expectEqualStrings(a.input orelse "", b.input orelse "");
+    try testing.expectEqual(a.input_bytes, b.input_bytes);
+    try testing.expectEqual(a.waiting_on_background, b.waiting_on_background);
+    try testing.expectEqual(a.context_used, b.context_used);
+}
+
+/// The payloads one translation is held against, one per shape the opencode
+/// table knows: what a v2 session hands `+hook`, read off opencode 2.0.32
+/// (task 1806) with the long fields shortened.
+const opencode_v2_payloads = [_]struct { hook: []const u8, payload: []const u8 }{
+    .{ .hook = "session.created", .payload =
+    \\{"type":"session.created","data":{"sessionID":"ses_ead83725affepDt7NFPUnmg2lK","slug":"swift-panda",
+    \\ "agent":"build","model":{"id":"m","providerID":"fake"},"version":"2.0.32"},"polter":{}}
+    },
+    .{ .hook = "session.execution.started", .payload =
+    \\{"type":"session.execution.started","data":{"sessionID":"ses_ead83725affepDt7NFPUnmg2lK"},"polter":{}}
+    },
+    .{ .hook = "session.execution.succeeded", .payload =
+    \\{"type":"session.execution.succeeded","data":{"sessionID":"ses_ead83725affepDt7NFPUnmg2lK"},
+    \\ "polter":{"answer":"pong from the stand-in model"}}
+    },
+    .{ .hook = "session.retry.scheduled", .payload =
+    \\{"type":"session.retry.scheduled","data":{"sessionID":"ses_ead83725affepDt7NFPUnmg2lK","attempt":2,
+    \\ "error":{"type":"provider.rate-limit","message":"probe 429","status":429}},"polter":{}}
+    },
+    .{ .hook = "permission.asked", .payload =
+    \\{"type":"permission.asked","data":{"id":"per_1","sessionID":"ses_ead83725affepDt7NFPUnmg2lK",
+    \\ "action":"shell","resources":["echo oc-probe"]},"polter":{}}
+    },
+    .{ .hook = "permission.asked", .payload =
+    \\{"type":"permission.asked","data":{"id":"per_2","sessionID":"ses_child","action":"edit",
+    \\ "resources":["src/a.zig"]},"polter":{"child":true}}
+    },
+    .{ .hook = "permission.replied", .payload =
+    \\{"type":"permission.replied","data":{"sessionID":"s","requestID":"per_1","reply":"once"},"polter":{}}
+    },
+    .{ .hook = "tool.execute.before", .payload =
+    \\{"type":"tool.execute.before","data":{"sessionID":"s","tool":"shell","id":"call_1"},"polter":{}}
+    },
+    .{ .hook = "session.execution.failed", .payload =
+    \\{"type":"session.execution.failed","data":{"sessionID":"s","error":{"type":"provider.invalid-request",
+    \\ "message":"probe 400","status":400}},"polter":{}}
+    },
+    .{ .hook = "session.execution.interrupted", .payload =
+    \\{"type":"session.execution.interrupted","data":{"sessionID":"s","reason":"user"},"polter":{}}
+    },
+};
+
+test "2237: an event that comes in as opencode-v2 translates exactly as it did as opencode" {
+    setup();
+    defer teardown();
+    // **`opencode-v2` is the second plugin's key** (task 2237). A session it
+    // starts reports that key -- the plugin is what runs `+hook`, and which
+    // plugin started a session is the whole reason the two are separate --
+    // so this is a payload path that really happens, not a hypothetical. The
+    // two translations have to be the same event: the same state, the same
+    // session, the same words.
+    for (opencode_v2_payloads) |c| {
+        const as_v1 = try trOpencode(c.hook, c.payload);
+        const as_v2 = try trOpencodeV2(c.hook, c.payload);
+        expectSameEvent(as_v1, as_v2) catch |err| {
+            std.debug.print("payload for {s} translated differently\n", .{c.hook});
+            return err;
+        };
+        // The one field that must **not** be the same: which CLI said it.
+        // Kept apart on purpose -- `Event.cli` is what a supervisor sees,
+        // and "this came through the 2.x plugin" is worth seeing.
+        try testing.expectEqualStrings("opencode", as_v1.cli);
+        try testing.expectEqualStrings("opencode-v2", as_v2.cli);
+    }
+
+    // And a key neither plugin has is still unknown: this is a table for
+    // opencode's two plugins, not a prefix match.
+    try testing.expect(!isOpencode("opencode-v3"));
+    try testing.expect(!isOpencode(""));
+    try testing.expect(isOpencode("opencode"));
+    try testing.expect(isOpencode("opencode-v2"));
+    try testing.expectError(error.UnknownCli, translate(test_arena.allocator(), "opencode-v3", "session.created", opencode_v2_payloads[0].payload));
 }
 
 // opencode payloads below are what `plugins/opencode/polter-hooks/` handed a

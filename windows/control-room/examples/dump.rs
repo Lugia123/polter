@@ -784,7 +784,7 @@ fn main() {
     for name in [
         "BadName", "GroupExists", "TooManyGroups", "HasSupervisor", "AlreadyStarting", "NoSupervisorRole", "NoSuchPersona",
         "NotASupervisorRole", "NoCli", "NotAbsolute", "NoSuchDirectory", "NotADirectory", "OpenFailed", "NoRuntime", "NoExecutable",
-        "NotStartedByHand", "AlreadyTakingOver", "NotSetUpForCli", "CliOff", "CliUnavailable", "CliNotInstalled",
+        "NotStartedByHand", "AlreadyTakingOver", "NotSetUpForCli", "CliOff", "CliUnavailable", "CliNotInstalled", "CliWrongVersion",
     ] {
         println!("refusal {name} says={}", quote(Refusal::parse(name).message()));
     }

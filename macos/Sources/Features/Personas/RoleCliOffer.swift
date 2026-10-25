@@ -46,10 +46,11 @@ enum RoleCliOffer: Hashable {
 
     /// The keys `ghostty_app_agent_clis` answered with, or `nil` while it
     /// has never been read -- less the ones whose adapter said the CLI's
-    /// program is not on this machine (`installed: false`, task 1744). One
-    /// that did not say, or whose inventory failed, is still offered: not
-    /// known is not "missing". The Windows host's twin is
-    /// `roles::CliSnapshot::available`.
+    /// program is not on this machine (`installed: false`, task 1744), and
+    /// less the ones the core holds back as the other major version
+    /// (`wrong_version`, task 2237). One that did not say, or whose
+    /// inventory failed, is still offered: not known is not "missing". The
+    /// Windows host's twin is `roles::CliSnapshot::available`.
     ///
     /// **The person's own are in here too** (task 2156 v5): the core puts
     /// them in the same answer (`AgentCliSnapshot.own`), and one stands as
@@ -57,7 +58,8 @@ enum RoleCliOffer: Hashable {
     /// otherwise be a row that answers "no adapter" when clicked.
     static func available(_ snapshot: AgentCliSnapshot) -> Set<String>? {
         guard !snapshot.stale else { return nil }
-        var out = Set(snapshot.clis.filter { $0.installed != false }.map(\.key))
+        let wrong = snapshot.heldBack.filter { $0.why == .wrongVersion }.map(\.key)
+        var out = Set(snapshot.clis.filter { $0.installed != false && !wrong.contains($0.key) }.map(\.key))
         for mine in snapshot.own where out.contains(mine.base) {
             out.insert(mine.key)
         }

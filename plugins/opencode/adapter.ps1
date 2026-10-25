@@ -913,11 +913,31 @@ function Get-UniqueItems($Items) {
     return , $out
 }
 
+# Whether the opencode on this machine is one this plugin starts: see
+# `serves_here` in adapter.py. **This plugin serves 1.x, and only 1.x**
+# (task 2237); 2.x has a plugin of its own, and on a machine running it this
+# one answers `serves: false` so that the control room says "the other major
+# version is installed" rather than "not installed".
+function Test-ServesHere($Start, $Version) {
+    if ($null -eq $Start -or $null -eq $Version) { return $true }
+    return (Test-OlderThan $Version $script:MinVersion)
+}
+
 function Get-Inventory($Req) {
     $g = Get-Gathered $Req
     $answer = New-Map
     $answer['version'] = $ContractVersion
-    $answer['installed'] = $null -ne (Resolve-OpencodeCommand)
+    # ⚠️ **This runs `opencode --version`**, which the inventory did not use
+    # to -- the price of `serves`, and the same call `launch` makes:
+    # autoupdate and the models fetch off, no session and no service started.
+    $start = Resolve-OpencodeCommand
+    $version = Get-OpencodeVersion $start
+    $serves = Test-ServesHere $start $version
+    if (($null -ne $start) -and (-not $serves)) {
+        $g[1].Add("opencode $($version -join '.') is on this machine, and this plugin starts 1.x only. The plugin for the version that is here is the one that serves it.")
+    }
+    $answer['installed'] = $null -ne $start
+    $answer['serves'] = $serves
     $answer['resume'] = $true
     $answer['options'] = New-List
     $answer['items'] = Get-UniqueItems $g[0]

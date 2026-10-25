@@ -3879,18 +3879,27 @@ fn ownClisOf(aa: Allocator, set: poltergeistpkg.Launchers.Set) Allocator.Error![
 /// or off), so that drawing the snapshot walks no directory and starts
 /// nothing. Null when the plugins could not be read.
 ///
-/// **And whether its program is here** (task 1744): one an adapter's last
-/// inventory said is not on the login shell's PATH stands `not_installed`
-/// (`ControlRoom.installedHere`). Before a read nobody knows, and it is
-/// offered as before. The same answer for the snapshot, the control
-/// room's start and `resolveLaunch`.
+/// **And whether it can be started at all** (tasks 1744, 2237): one an
+/// adapter's last inventory said is not on the login shell's PATH stands
+/// `not_installed`, and one whose adapter said the program here is not a
+/// version it serves stands `wrong_version` (`ControlRoom.installedHere`).
+/// Before a read nobody knows, and it is offered as before. The same answer
+/// for the snapshot, the control room's start and `resolveLaunch`.
 fn controlCliStandings(self: *App, alloc: Allocator, own: []const poltergeistpkg.ControlRoom.OwnCli) Allocator.Error!?[]const poltergeistpkg.ControlRoom.CliStanding {
     self.ensurePlugins();
     if (self.poltergeist_plugin_arena == null) return null;
-    const missing = try self.poltergeist_agent_clis.notInstalled(global.io(), alloc);
-    const here = try poltergeistpkg.ControlRoom.installedHere(alloc, self.poltergeist_cli_standings, missing);
+    const cannot = try self.cannotStart(alloc);
+    const here = try poltergeistpkg.ControlRoom.installedHere(alloc, self.poltergeist_cli_standings, cannot);
     // The person's own stand as their bases do (task 2156 v3).
     return try poltergeistpkg.ControlRoom.standingsWithOwn(alloc, here, own);
+}
+
+/// What the last inventory read said about the CLIs whose programs are here
+/// but cannot be started, or null when nothing has been read (tasks 1744,
+/// 2237). Copied into `alloc`; the empty lists are free.
+fn cannotStart(self: *App, alloc: Allocator) Allocator.Error!?poltergeistpkg.ControlRoom.NotStartable {
+    const serves = (try self.poltergeist_agent_clis.cannotStart(global.io(), alloc)) orelse return null;
+    return .{ .missing = serves.missing, .wrong_version = serves.wrong_version };
 }
 
 fn controlCliResume(self: *App, alloc: Allocator) Allocator.Error!poltergeistpkg.ControlRoom.CliResume {
@@ -7214,6 +7223,28 @@ fn personasChanged(self: *App) void {
     self.refreshPoltergeistTabs();
 }
 
+/// Why a CLI a plugin manages is held back from the lists a host offers,
+/// or null when it is offered (tasks 1677, 2237).
+///
+/// **Pure, so every case is a test.** `standing` is the plugin's own answer
+/// (`plugin_off`, `cannot_run`); a plugin that is on and runnable is offered
+/// unless the last inventory said the program here is not one it serves
+/// (`serves: false` → `wrong_version`). A CLI whose program is *not here*
+/// (`installed: false`) is deliberately not here: it is in `clis` with
+/// `installed` false, which is where a host reads it, and holding it back
+/// as well would be the same fact said twice.
+fn heldBackReason(
+    standing: poltergeistpkg.agent_cli.Standing,
+    wrong_version: []const []const u8,
+    key: []const u8,
+) ?[]const u8 {
+    return switch (standing) {
+        .off => "plugin_off",
+        .cannot_run => "cannot_run",
+        .ok => if (isAnyOf(wrong_version, key)) "wrong_version" else null,
+    };
+}
+
 /// What each agent CLI here offers, as JSON (`agent_cli.Cache`). A copy of
 /// the cache; `refresh` starts a new read on its own thread first.
 ///
@@ -7234,10 +7265,21 @@ pub fn agentClisJson(self: *App, alloc: Allocator, refresh: bool) ![]u8 {
 
     // `held_back` (task 1677): every CLI a plugin manages that is not in
     // `clis` because it cannot be started, and why -- a switch in Plugins
-    // (`plugin_off`) or nothing here can run its adapter (`cannot_run`).
+    // (`plugin_off`), nothing here can run its adapter (`cannot_run`), or
+    // the program on this machine is not the version its plugin starts
+    // (`wrong_version`, task 2237).
+    //
+    // **`wrong_version` belongs here and `not_installed` does not.** A CLI
+    // whose program is missing is in `clis` with `installed` false, and a
+    // host already reads it there (task 1744); a wrong version has no such
+    // field, so without this list the menu would offer a CLI that refuses
+    // the moment it is clicked. Both are held back from the menus by the
+    // host, which is the same treatment reached two ways.
+    //
     // Read afresh, as `resolveLaunch` reads it: a directory walk, no
     // process. A CLI a role names that is in neither list has no plugin
     // (`no_plugin`), which only a role can say.
+    const cannot: poltergeistpkg.ControlRoom.NotStartable = (try self.cannotStart(alloc)) orelse .{};
     var env = try global.environMap();
     defer env.deinit();
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -7248,11 +7290,7 @@ pub fn agentClisJson(self: *App, alloc: Allocator, refresh: bool) ![]u8 {
     try w.writeAll(",\"held_back\":[");
     var n: usize = 0;
     for (poltergeistpkg.agent_cli.survey(alloc, global.io(), &env)) |f| {
-        const why = switch (f.standing) {
-            .ok => continue,
-            .off => "plugin_off",
-            .cannot_run => "cannot_run",
-        };
+        const why = heldBackReason(f.standing, cannot.wrong_version, f.adapter.key) orelse continue;
         if (n > 0) try w.writeAll(",");
         try w.print("{{\"key\":{f},\"label\":{f},\"why\":\"{s}\"}}", .{
             std.json.fmt(f.adapter.key, .{}),
@@ -7271,6 +7309,24 @@ pub fn agentClisJson(self: *App, alloc: Allocator, refresh: bool) ![]u8 {
     return try out.toOwnedSlice();
 }
 
+test "2237: a CLI the machine has the wrong version of is held back, and one the machine has not is not" {
+    const testing = std.testing;
+    const wrong = [_][]const u8{"opencode"};
+    // The two the plugin itself answers: a switch, and an adapter nothing
+    // here can run.
+    try testing.expectEqualStrings("plugin_off", heldBackReason(.off, &.{}, "opencode").?);
+    try testing.expectEqualStrings("cannot_run", heldBackReason(.cannot_run, &.{}, "opencode").?);
+    // On and runnable, and the last inventory said the program here is not
+    // one it serves: held back, and **by the name of that reason**, which is
+    // what tells a host to say "turn the other plugin on" rather than "this
+    // plugin is off".
+    try testing.expectEqualStrings("wrong_version", heldBackReason(.ok, &wrong, "opencode").?);
+    // Another key's wrong version is not this key's.
+    try testing.expect(heldBackReason(.ok, &wrong, "codex") == null);
+    // Nothing said about a version: offered, as before.
+    try testing.expect(heldBackReason(.ok, &.{}, "opencode") == null);
+}
+
 pub const LaunchPersonaError = error{
     NoSuchPersona,
     NotSetUpForCli,
@@ -7279,6 +7335,11 @@ pub const LaunchPersonaError = error{
     /// Its adapter says the CLI's program is not on this machine (task
     /// 1744): installing it is what the person does, not a switch.
     CliNotInstalled,
+    /// Its adapter says the program on this machine is not one it serves
+    /// (task 2237): the person installs nothing -- the plugin for the
+    /// version that is here is the one to turn on. Kept apart from
+    /// `CliNotInstalled`, which is "install it".
+    CliWrongVersion,
     NoCli,
     ChooseCli,
     NoExecutable,
@@ -7600,12 +7661,13 @@ fn resolveLaunch(
     var env = try global.environMap();
     defer env.deinit();
     const surveyed = poltergeistpkg.agent_cli.survey(alloc, global.io(), &env);
-    // And whose program the last inventory found missing (task 1744): not
-    // a default, and refused by name when asked for. Nothing read yet is
-    // not "missing".
-    const missing: []const []const u8 = (try self.poltergeist_agent_clis.notInstalled(global.io(), alloc)) orelse &.{};
+    // And what the last inventory found cannot start here (tasks 1744,
+    // 2237): not a default, and refused by name when asked for. Nothing
+    // read yet is not "cannot".
+    const cannot: poltergeistpkg.ControlRoom.NotStartable = (try self.cannotStart(alloc)) orelse .{};
     var ok: std.ArrayListUnmanaged([]const u8) = .empty;
-    for (surveyed) |f| if (f.standing == .ok and !isAnyOf(missing, f.adapter.key)) try ok.append(alloc, f.adapter.key);
+    for (surveyed) |f| if (f.standing == .ok and whyNotStartable(cannot, f.adapter.key) == null)
+        try ok.append(alloc, f.adapter.key);
     const keys = ok.items;
 
     // The asker's own CLI, for `defaultCli`: named apart from `own`, which
@@ -7615,19 +7677,31 @@ fn resolveLaunch(
     else
         null;
     const chosen: []const u8 = if (asked.len > 0) asked else try p.defaultCli(keys, asker_cli);
-    // Two refusals, because the person does two different things about
-    // them: a plugin that is off is a switch in Plugins; one whose adapter
-    // nothing here can run, or no plugin at all, no switch fixes.
+    // The refusals, because the person does something different about each:
+    // a plugin that is off is a switch in Plugins; one whose adapter
+    // nothing here can run, or no plugin at all, no switch fixes; a
+    // program that is not here is installed; and one that is here at
+    // another major version is not installed at all -- the other plugin is
+    // turned on (task 2237).
     for (surveyed) |f| {
         if (!std.mem.eql(u8, f.adapter.key, chosen)) continue;
         switch (f.standing) {
-            .ok => if (isAnyOf(missing, chosen)) return error.CliNotInstalled,
+            .ok => if (whyNotStartable(cannot, chosen)) |why| return why,
             .off => return error.CliOff,
             .cannot_run => return error.CliUnavailable,
         }
         break;
     } else return error.CliUnavailable;
     return .{ .key = try alloc.dupe(u8, p.key), .cli = try alloc.dupe(u8, chosen), .launcher = via };
+}
+
+/// The error for a CLI whose program is here but cannot be started, or null
+/// when it can. `missing` first: an adapter that said that has no version
+/// to judge, and one key is never in both lists.
+fn whyNotStartable(cannot: poltergeistpkg.ControlRoom.NotStartable, key: []const u8) ?LaunchPersonaError {
+    if (isAnyOf(cannot.missing, key)) return error.CliNotInstalled;
+    if (isAnyOf(cannot.wrong_version, key)) return error.CliWrongVersion;
+    return null;
 }
 
 fn isAnyOf(keys: []const []const u8, key: []const u8) bool {

@@ -77,6 +77,12 @@ enum ControlRoomStartChoice {
         /// it back because its program is not here (task 1744); nil
         /// otherwise. `scene::CliChoice::last_gone`.
         var lastGone: String?
+        /// Why it is held back, when `lastGone` is said: not on the machine
+        /// (`notInstalled`) or the other major version (`wrongVersion`,
+        /// task 2237). **Two reasons, two sentences** -- one is "install
+        /// it", the other "turn the other plugin on" -- and only the
+        /// reason says which. Nil with `lastGone`.
+        var lastGoneWhy: ControlRoomList.SupervisorRole.HeldBack.Why?
     }
 
     /// Whether a start in `cli` goes on with the last session, and why not:
@@ -111,16 +117,19 @@ enum ControlRoomStartChoice {
             ?? clis.first?.key
         let shown = clis.count > 1
         let gone = key.flatMap { k in roles.first { $0.key == k } }?.heldBack
-            .filter { $0.why == .notInstalled }.count ?? 0
+            .filter { $0.why.programIsGone }.count ?? 0
         let room = clis.count + gone > 1 ? clis.count + gone : 0
         guard let last else {
             return CliChoice(clis: clis, shown: shown, room: room, picked: chosen, resume: .hidden, why: .noRecord,
-                             lastGone: nil)
+                             lastGone: nil, lastGoneWhy: nil)
         }
-        // The last supervisor's CLI, held back because it is not installed here.
+        // The most recent supervisor's CLI, held back because
+        // the program it names is not here to start -- not on the machine,
+        // or on it in the other major version (task 2237).
         let held = key.flatMap { k in roles.first { $0.key == k } }?.heldBack
             .first { $0.key == last.lastCli }
-        let lastGone = held?.why == .notInstalled
+        let goneWhy = held?.why.programIsGone == true ? held?.why : nil
+        let lastGone = goneWhy != nil
             ? cliName(key: last.lastCli, label: held?.label ?? last.lastCliLabel) : nil
         let (can, why) = resume(last, for: chosen)
         let state: Resume
@@ -136,7 +145,7 @@ enum ControlRoomStartChoice {
             state = .hidden
         }
         return CliChoice(clis: clis, shown: shown, room: room, picked: chosen, resume: state, why: can ? .none : why,
-                         lastGone: lastGone)
+                         lastGone: lastGone, lastGoneWhy: goneWhy)
     }
 
     /// What the start sends for its session: the one picked while "Go on"
@@ -191,14 +200,31 @@ enum ControlRoomStartChoice {
     }
 
     /// Why a start does not go on with the last session, in a sentence;
-    /// nil when there is nothing to say. Its CLI not on this machine; the
-    /// session another CLI's; otherwise the core's reason (`resumeNote`).
+    /// nil when there is nothing to say. Its CLI's program not startable
+    /// here; the session another CLI's; otherwise the core's reason
+    /// (`resumeNote`).
     static func resumeWhyText(_ choice: CliChoice, last: Start.Last?) -> String? {
         if choice.resume == .live { return nil }
-        // Its CLI is not on this machine: that, before which session it was.
+        // Its CLI cannot be started here, and **which of the two reasons it
+        // is decides the sentence** (tasks 1744, 2237): the program is not
+        // on this machine, so it is installed; or the program here is the
+        // other major version, so nothing is installed and the other plugin
+        // is turned on. One sentence for both would tell half the people
+        // the wrong thing to do.
         if let gone = choice.lastGone {
-            return String(localized: "\(gone), which the last supervisor used, is not installed on this machine.",
-                          comment: "总控台：启动总管时，上次总管用的 CLI 在这台机器上找不到（没装），所以不再默认选它。%@ 是那个 CLI")
+            switch choice.lastGoneWhy {
+            case .wrongVersion:
+                return String(localized: "\(gone), which the last supervisor used, is the other major version: turn on the plugin for the version that is here.",
+                              comment: "总控台：启动总管时，上次总管用的 CLI 装的是另一个大版本（如插件只服务 1.x、本机 2.x）。%@ 是那个 CLI。要做的不是去装，是去打开对上版本的插件")
+            // All the rest, spelled out: the reasons that do not hold a
+            // CLI's program back cannot reach here (`lastGone` is nil for
+            // them), so they stand with "not there" rather than being left
+            // out -- a sixth reason added to the enum is then a compile
+            // error here, naming the sentence it has not been given.
+            case .notInstalled, .none, .pluginOff, .cannotRun, .noPlugin:
+                return String(localized: "\(gone), which the last supervisor used, isn't installed on this machine.",
+                              comment: "总控台：启动总管时，上次总管用的 CLI 没装在这台机器上。%@ 是那个 CLI。要做的是装上它")
+            }
         }
         if choice.resume == .greyed, choice.why == .cliDiffers, let last,
            let was = cliName(key: last.lastCli, label: last.lastCliLabel),

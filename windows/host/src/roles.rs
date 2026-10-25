@@ -709,13 +709,22 @@ impl Default for CliSnapshot {
     }
 }
 
-/// Why a CLI a plugin manages cannot be started here. **Two answers, not
+/// Why a CLI a plugin manages cannot be started here. **Three answers, not
 /// one**: the person can turn a plugin on; they cannot make an adapter run
-/// where it does not.
+/// where it does not; and the program here can be the other major version,
+/// where the plugin for the version that *is* here is the one to turn on
+/// (task 2237).
+///
+/// **A CLI whose program is missing is not one of these.** It is in `clis`
+/// with `installed` false, and the menus read it there (task 1744). The
+/// other major version has no such field, so the core holds it back here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeldWhy {
     PluginOff,
     CannotRun,
+    /// On and running, and the adapter says the program here is not a
+    /// version it serves (task 2237).
+    WrongVersion,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -732,6 +741,7 @@ impl HeldCli {
         let why = match obj.get("why")?.as_str()? {
             "plugin_off" => HeldWhy::PluginOff,
             "cannot_run" => HeldWhy::CannotRun,
+            "wrong_version" => HeldWhy::WrongVersion,
             _ => return None,
         };
         Some(HeldCli { label: obj.get("label").and_then(Value::as_str).unwrap_or(&key).to_string(), key, why })
@@ -764,16 +774,23 @@ impl CliSnapshot {
 
     /// Why a CLI the role is set up for is not one it can be started in
     /// here, in a sentence -- the role keeps its settings either way.
-    /// Its plugin is off, it cannot run here, or no plugin manages it.
+    /// Its plugin is off, it cannot run here, no plugin manages it, or the
+    /// program here is the other major version and the plugin for the one
+    /// that *is* here is the one to turn on (task 2237). The last is the
+    /// only one the person fixes by switching a plugin **on**.
     pub fn missing_note(&self, key: &str) -> String {
+        // Every reason is its own arm (task 2237): a reason added later is a
+        // compile error here, not a sentence borrowed from another reason.
         match self.held(key) {
-            Some(h) if h.why == HeldWhy::PluginOff => {
-                tr("The {} plugin is off: {} won't be offered when this role starts. Its settings stay in the role.")
+            Some(h) => match h.why {
+                HeldWhy::PluginOff => tr("The {} plugin is off: {} won't be offered when this role starts. Its settings stay in the role.")
                     .replacen("{}", &h.label, 1)
-                    .replacen("{}", &h.label, 1)
-            }
-            Some(h) => tr("{} can't be started on this machine, so it won't be offered when this role starts. Its settings stay in the role.")
-                .replacen("{}", &h.label, 1),
+                    .replacen("{}", &h.label, 1),
+                HeldWhy::WrongVersion => tr("{} here is the other major version: turn on the plugin for the version that is installed. The settings stay in the role.")
+                    .replacen("{}", &h.label, 1),
+                HeldWhy::CannotRun => tr("{} can't be started on this machine, so it won't be offered when this role starts. Its settings stay in the role.")
+                    .replacen("{}", &h.label, 1),
+            },
             None => tr("No plugin manages this CLI any more"),
         }
     }
@@ -793,9 +810,21 @@ impl CliSnapshot {
     /// has never been read -- which is not "none" (#1670). An adapter whose
     /// inventory failed was still found, so it is in. One whose adapter
     /// said its program is not on this machine (`installed: false`, task
-    /// 1744) is not: not known is not "missing", said is.
+    /// 1744) is not: not known is not "missing", said is. Nor is one the
+    /// core held back as the other major version (`wrong_version`, task
+    /// 2237): it is here and it would refuse the moment it were started, so
+    /// it leaves the menus by the same rule as `installed: false` -- the
+    /// same treatment reached two ways. The mac host's twin is
+    /// `RoleCliOffer.available`.
     pub fn available(&self) -> Option<Vec<String>> {
-        (!self.stale).then(|| self.clis.iter().filter(|c| c.installed != Some(false)).map(|c| c.key.clone()).collect())
+        (!self.stale).then(|| {
+            let wrong: Vec<&str> = self.held_back.iter().filter(|h| h.why == HeldWhy::WrongVersion).map(|h| h.key.as_str()).collect();
+            self.clis
+                .iter()
+                .filter(|c| c.installed != Some(false) && !wrong.contains(&c.key.as_str()))
+                .map(|c| c.key.clone())
+                .collect()
+        })
     }
 }
 
@@ -1445,6 +1474,39 @@ mod tests {
         .unwrap();
         let offered = s.available();
         assert_eq!(offered, Some(ids(&["antigravity", "silent", "bare"])));
+    }
+
+    /// Task 2237: a CLI the core held back as the *other major version* is
+    /// not offered either -- it is on the machine and would refuse the
+    /// moment it were started -- and the note it says is the one that sends
+    /// the person to a plugin rather than to an installer. The mac host's
+    /// twin is `RoleCliOfferTests.aCliOfTheOtherMajorVersionIsNotOffered`.
+    #[test]
+    fn a_cli_of_the_other_major_version_is_not_offered() {
+        let s = CliSnapshot::parse(
+            r#"{"stale":false,"refreshing":false,
+                "clis":[{"key":"opencode","label":"opencode","bin":"opencode","inventory":{"installed":true}},
+                        {"key":"codex","label":"Codex","bin":"codex","inventory":{"installed":true}}],
+                "held_back":[{"key":"opencode","label":"opencode","why":"wrong_version"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(s.available(), Some(ids(&["codex"])));
+        let note = s.missing_note("opencode");
+        assert!(note.contains("other major version"), "{note}");
+        assert!(note.contains("turn on the plugin"), "{note}");
+        // And it is not confused with the reason that says the opposite
+        // thing: `installed: false` sends them to an installer instead.
+        let missing = CliSnapshot::parse(
+            r#"{"stale":false,"clis":[{"key":"opencode","inventory":{"installed":false}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(missing.available(), Some(Vec::<String>::new()));
+        // The plugin-off sentence is still the plugin-off one.
+        let off = CliSnapshot::parse(
+            r#"{"stale":false,"clis":[],"held_back":[{"key":"opencode","label":"opencode","why":"plugin_off"}]}"#,
+        )
+        .unwrap();
+        assert!(off.missing_note("opencode").contains("plugin is off"), "{}", off.missing_note("opencode"));
     }
 
     /// The adapter's unattended options (#1677, B): only the values it

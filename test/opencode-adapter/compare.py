@@ -34,6 +34,10 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 PLUGIN = os.path.join(ROOT, "plugins", "opencode")
+# **Both plugins** (task 2237): the split made a second pair of files with
+# the same job over a different major version, and a pair that is only
+# checked on one side of the split is a pair that can drift on the other.
+PLUGINS = [PLUGIN, os.path.join(ROOT, "plugins", "opencode-v2")]
 POLTER = "/Applications/Polter.app/Contents/MacOS/polter"
 
 
@@ -157,25 +161,27 @@ def main():
         home, cwd, bin_dir, writer = rig(base)
         old = rig(os.path.join(base, "onex"), "1.2.10", "session")
         unknown = rig(os.path.join(base, "unknown"), "no version here")
-        py = [os.path.join(PLUGIN, "adapter.py")]
-        ps = [a.ps, "-NoProfile", "-NonInteractive", "-File", os.path.join(PLUGIN, "adapter.ps1")]
         cases = [(r, home, bin_dir) for r in requests(home, cwd)] + [(r, old[0], old[2]) for r in requests_onex(old[0], old[1])]
         cases += [(("unknown version, " + r[0],) + r[1:], unknown[0], unknown[2]) for r in requests_onex(unknown[0], unknown[1])][:1]
-        for (label, question, req), home_, bin_ in cases:
-            run1 = lambda argv: run(argv, question, req, bin_, home_)
-            r1 = run1(py)
-            r2 = run1(ps)
-            # N1: the text after "Could not read <file>: " is the parser's
-            # own message, Python's against .NET's.
-            same = r1[0] == r2[0] and (r1[0] != 0 or norm(r1[1]) == norm(r2[1]))
-            print("%s  %s" % ("ok  " if same else "DIFF", label))
-            if not same:
-                bad += 1
-                print("      py  exit %d: %s%s" % (r1[0], r1[1].strip()[:1500], r1[2].strip()[-400:]))
-                print("      ps1 exit %d: %s%s" % (r2[0], r2[1].strip()[:1500], r2[2].strip()[-400:]))
+        for plugin in PLUGINS:
+            who = os.path.basename(plugin)
+            py = [os.path.join(plugin, "adapter.py")]
+            ps = [a.ps, "-NoProfile", "-NonInteractive", "-File", os.path.join(plugin, "adapter.ps1")]
+            for (label, question, req), home_, bin_ in cases:
+                run1 = lambda argv: run(argv, question, req, bin_, home_)
+                r1 = run1(py)
+                r2 = run1(ps)
+                # N1: the text after "Could not read <file>: " is the parser's
+                # own message, Python's against .NET's.
+                same = r1[0] == r2[0] and (r1[0] != 0 or norm(r1[1]) == norm(r2[1]))
+                print("%s  [%s] %s" % ("ok  " if same else "DIFF", who, label))
+                if not same:
+                    bad += 1
+                    print("      py  exit %d: %s%s" % (r1[0], r1[1].strip()[:1500], r1[2].strip()[-400:]))
+                    print("      ps1 exit %d: %s%s" % (r2[0], r2[1].strip()[:1500], r2[2].strip()[-400:]))
         # And what was compared is worth comparing: the database was read.
-        r = run(py, "identify", dict(version=1, home=home, cwd=cwd, pid=os.getpid(), env={"POLTER_AGENT_CLI": "opencode"}),
-                bin_dir, home)
+        r = run([os.path.join(PLUGIN, "adapter.py")], "identify",
+                dict(version=1, home=home, cwd=cwd, pid=os.getpid(), env={"POLTER_AGENT_CLI": "opencode"}), bin_dir, home)
         named = json.loads(r[1])["session"] == "ses_new"
         print("%s  the database was read (identify names ses_new)" % ("ok  " if named else "FAIL"))
         bad += 0 if named else 1

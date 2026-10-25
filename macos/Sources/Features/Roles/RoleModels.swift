@@ -597,36 +597,65 @@ struct AgentCliSnapshot: Equatable {
         func ticked(_ role: String) -> Bool { roles.contains(role) }
     }
 
+    /// **These three words arrive** (tasks 1677, 1744, 2237). This reads
+    /// `ghostty_app_agent_clis`, and the core writes `plugin_off`,
+    /// `cannot_run` and -- since task 2237 -- `wrong_version`
+    /// (`App.agentClisJson`): a CLI whose program is the other major
+    /// version is held back here too, because nothing in the inventory says
+    /// so. One whose program is missing is *not* held back in this list: it
+    /// is in `clis` with `installed` false, and a host reads it there
+    /// (task 1744). An entry naming anything else is dropped rather than
+    /// guessed at.
     struct HeldBack: Equatable {
-        enum Why: String { case pluginOff = "plugin_off", cannotRun = "cannot_run" }
+        enum Why: String {
+            case pluginOff = "plugin_off"
+            case cannotRun = "cannot_run"
+            /// On, runs, and the program on this machine is not one it
+            /// serves (task 2237): the plugin for the version that *is*
+            /// here is the one to turn on.
+            case wrongVersion = "wrong_version"
+        }
         var key: String
         var label: String
         var why: Why
     }
 
-    /// Where a CLI a role names stands here. Three reasons it cannot start,
-    /// because the person does three different things about them.
+    /// Where a CLI a role names stands here. Four reasons it cannot start,
+    /// because the person does something different about each.
     enum Standing: Equatable {
         case ok
         /// Installed, switched off: a switch in Plugins.
         case pluginOff(label: String)
         /// On, and nothing here can run its adapter: no switch fixes it.
         case cannotRun(label: String)
+        /// On and running, but the program here is not the version it
+        /// starts: the other plugin is the one to turn on (task 2237).
+        case wrongVersion(label: String)
         /// No plugin manages it.
         case noPlugin
     }
 
     func standing(_ key: String) -> Standing {
-        if cli(key) != nil { return .ok }
+        // **The hold is read first, and it is not the same question as "is
+        // it in `clis`"** (task 2237). A CLI of the other major version is
+        // in *both* lists: its adapter answered `installed: true` -- the
+        // program is here -- and `serves: false`, so the core holds it back
+        // as well. Being listed is not being startable, and the core's
+        // `startClisOf` leaves it out for the same reason. For the other
+        // two reasons the two lists never overlap, so this order changes
+        // nothing about them.
+        if let held = heldBack.first(where: { $0.key == key }) {
+            switch held.why {
+            case .pluginOff: return .pluginOff(label: held.label)
+            case .cannotRun: return .cannotRun(label: held.label)
+            case .wrongVersion: return .wrongVersion(label: held.label)
+            }
+        }
         // One of the person's own stands as its base does: a base whose
         // plugin is off holds it back too, for the same reason (the core's
         // `standingsWithOwn`).
         if let mine = own(key) { return ownStanding(mine) }
-        guard let held = heldBack.first(where: { $0.key == key }) else { return .noPlugin }
-        switch held.why {
-        case .pluginOff: return .pluginOff(label: held.label)
-        case .cannotRun: return .cannotRun(label: held.label)
-        }
+        return cli(key) != nil ? .ok : .noPlugin
     }
 
     /// Where one of the person's own stands, by its base -- the same answer
@@ -648,6 +677,9 @@ struct AgentCliSnapshot: Equatable {
         case .cannotRun(let label):
             return String(localized: "\(label) can't be started on this machine: nothing here can run its plugin. The settings stay in the role.",
                           comment: "角色库：角色勾了某 CLI，插件开着，但这台机器上跑不起来它的 adapter。是 CLI 名")
+        case .wrongVersion(let label):
+            return String(localized: "\(label) here is the other major version: turn on the plugin for the version that is installed. The settings stay in the role.",
+                          comment: "角色库：角色勾了某 CLI，插件开着，但本机装的是另一个大版本。要做的不是去装，是去打开对上版本的插件。是 CLI 名")
         case .noPlugin:
             return String(localized: "No plugin manages this CLI any more", comment: "角色库：角色里配了某 CLI，但对应插件已不在")
         }

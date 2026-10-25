@@ -716,6 +716,13 @@ pub const Cache = struct {
     /// An adapter that did not say, or failed, is not here: not known is
     /// not "missing".
     missing_keys: ?[][]u8 = null,
+    /// The keys of the CLIs whose adapter said `"serves": false` -- the
+    /// program is here and is not one that adapter starts (task 2237).
+    /// **The two lists are disjoint by construction**: an adapter that says
+    /// `installed: false` has no version to judge and says `serves: true`.
+    /// Null exactly when `clis` is, and an adapter that did not say is not
+    /// here, the same rule as `missing_keys`.
+    wrong_keys: ?[][]u8 = null,
     refreshing: bool = false,
     thread: ?std.Thread = null,
 
@@ -734,6 +741,8 @@ pub const Cache = struct {
         self.resume_keys = null;
         if (self.missing_keys) |keys| freeKeys(self.alloc, keys);
         self.missing_keys = null;
+        if (self.wrong_keys) |keys| freeKeys(self.alloc, keys);
+        self.wrong_keys = null;
     }
 
     fn freeKeys(alloc: Allocator, keys: [][]u8) void {
@@ -755,19 +764,42 @@ pub const Cache = struct {
         return out;
     }
 
-    /// Which CLIs' programs are not on this machine, as last read (task
-    /// 1744): null when nothing has been read yet -- which is not "all are
-    /// here" -- and otherwise their keys, copied into `alloc`.
+    /// Which CLIs an inventory read found not able to be started here, as
+    /// last read: null when nothing has been read yet -- which is not "all
+    /// can" -- and otherwise their keys, copied into `alloc`.
+    ///
+    /// **One answer, both lists**, so that a caller cannot read half of it
+    /// and be wrong about the other half: task 1744's `installed: false`
+    /// ("install it") and task 2237's `serves: false` ("install nothing;
+    /// turn the other plugin on") are the two things a person can be told,
+    /// and every place that holds a CLI back asks for both.
     ///
     /// Does not start a read.
-    pub fn notInstalled(self: *Cache, io: std.Io, alloc: Allocator) Allocator.Error!?[]const []const u8 {
+    pub fn cannotStart(self: *Cache, io: std.Io, alloc: Allocator) Allocator.Error!?Serves {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         const keys = self.missing_keys orelse return null;
+        const wrong = self.wrong_keys orelse return null;
+        return .{
+            .missing = try copyKeys(alloc, keys),
+            .wrong_version = try copyKeys(alloc, wrong),
+        };
+    }
+
+    fn copyKeys(alloc: Allocator, keys: [][]u8) Allocator.Error![]const []const u8 {
         const out = try alloc.alloc([]const u8, keys.len);
         for (keys, out) |k, *o| o.* = try alloc.dupe(u8, k);
         return out;
     }
+
+    pub const Serves = struct {
+        /// Adapters that said `"installed": false`: the program is not here.
+        missing: []const []const u8,
+        /// Adapters that said `"serves": false`: the program is here and
+        /// is not one this adapter starts. **Empty for every adapter that
+        /// has never heard of the field**, which is not knowing.
+        wrong_version: []const []const u8,
+    };
 
     /// What each CLI is called to a person, as last read: its key and its
     /// adapter's `label`, copied into `alloc`. Empty when nothing has been
@@ -870,11 +902,13 @@ pub const Cache = struct {
             self.resume_keys = f.resume_keys;
             if (self.missing_keys) |old| freeKeys(self.alloc, old);
             self.missing_keys = f.missing_keys;
+            if (self.wrong_keys) |old| freeKeys(self.alloc, old);
+            self.wrong_keys = f.wrong_keys;
         }
         self.refreshing = false;
     }
 
-    const Read = struct { clis: []u8, resume_keys: [][]u8, missing_keys: [][]u8 };
+    const Read = struct { clis: []u8, resume_keys: [][]u8, missing_keys: [][]u8, wrong_keys: [][]u8 };
 
     /// Ask every adapter for its inventory. The `clis` array and the keys
     /// of those that can go on with a session, owned by `alloc`.
@@ -909,6 +943,11 @@ pub const Cache = struct {
             for (gone.items) |k| alloc.free(k);
             gone.deinit(alloc);
         }
+        var wrong: std.ArrayListUnmanaged([]u8) = .empty;
+        errdefer {
+            for (wrong.items) |k| alloc.free(k);
+            wrong.deinit(alloc);
+        }
 
         try w.writeAll("[");
         for (discover(aa, io, &environ_map), 0..) |a, i| {
@@ -930,6 +969,13 @@ pub const Cache = struct {
                         const key = try alloc.dupe(u8, a.key);
                         errdefer alloc.free(key);
                         try gone.append(alloc, key);
+                    } else if (saysNotServed(aa, json)) {
+                        // `else if` on purpose: an adapter that said the
+                        // program is not here has no version to judge, and
+                        // the two lists are the two things a person does.
+                        const key = try alloc.dupe(u8, a.key);
+                        errdefer alloc.free(key);
+                        try wrong.append(alloc, key);
                     }
                 },
                 .failed => |why| {
@@ -943,7 +989,14 @@ pub const Cache = struct {
         errdefer alloc.free(clis);
         const resume_keys = try can.toOwnedSlice(alloc);
         errdefer freeKeys(alloc, resume_keys);
-        return .{ .clis = clis, .resume_keys = resume_keys, .missing_keys = try gone.toOwnedSlice(alloc) };
+        const missing_keys = try gone.toOwnedSlice(alloc);
+        errdefer freeKeys(alloc, missing_keys);
+        return .{
+            .clis = clis,
+            .resume_keys = resume_keys,
+            .missing_keys = missing_keys,
+            .wrong_keys = try wrong.toOwnedSlice(alloc),
+        };
     }
 };
 
@@ -1235,6 +1288,24 @@ pub fn saysNotInstalled(arena: Allocator, inventory_json: []const u8) bool {
     return v == .bool and !v.bool;
 }
 
+/// Whether an inventory answer says its CLI's program is here and is **not
+/// one this adapter serves** (task 2237): the JSON `false` and nothing
+/// else, the way `saysNotInstalled` reads `installed`.
+///
+/// **Two answers, because the person does two different things about
+/// them.** `installed: false` is "install it". This one is "do not install
+/// anything -- the plugin for the version that *is* installed is the one to
+/// turn on". A key not there, or not a bool, is an adapter that did not
+/// say: not known, and offered as before, which is also how an old adapter
+/// that has never heard of `serves` is treated.
+pub fn saysNotServed(arena: Allocator, inventory_json: []const u8) bool {
+    const root = std.json.parseFromSliceLeaky(std.json.Value, arena, inventory_json, .{}) catch
+        return false;
+    if (root != .object) return false;
+    const v = root.object.get("serves") orelse return false;
+    return v == .bool and !v.bool;
+}
+
 // ------------------------------------------------------------------- tests
 
 test "1744: an inventory says its program is missing with false and nothing else" {
@@ -1252,6 +1323,48 @@ test "1744: an inventory says its program is missing with false and nothing else
     try testing.expect(!word);
     const garbled = saysNotInstalled(aa, "not json");
     try testing.expect(!garbled);
+}
+
+test "2237: an inventory says it is the wrong version with serves false and nothing else" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    // The case the field exists for: the program is here, and it is not
+    // this adapter's to start.
+    const wrong = saysNotServed(aa, "{\"version\":1,\"installed\":true,\"serves\":false}");
+    try testing.expect(wrong);
+    const serves = saysNotServed(aa, "{\"version\":1,\"installed\":true,\"serves\":true}");
+    try testing.expect(!serves);
+    // **An adapter that has never heard of the field is not saying no.**
+    const old = saysNotServed(aa, "{\"version\":1,\"installed\":true,\"resume\":true}");
+    try testing.expect(!old);
+    const word = saysNotServed(aa, "{\"serves\":\"false\"}");
+    try testing.expect(!word);
+    const garbled = saysNotServed(aa, "not json");
+    try testing.expect(!garbled);
+    // And the two are one answer each: what a not-installed program says
+    // about a version it does not have is nothing.
+    try testing.expect(!saysNotServed(aa, "{\"installed\":false,\"serves\":true}"));
+}
+
+// The two lists are read together, so what a read leaves is checked
+// together: one adapter that says the program is missing, one that says
+// its version is wrong, and one that says neither.
+test "2237: an inventory read keeps the two refusals apart, and an adapter that did not say is in neither" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const absent = "{\"version\":1,\"installed\":false,\"serves\":true}";
+    const mismatched = "{\"version\":1,\"installed\":true,\"serves\":false}";
+    const fine = "{\"version\":1,\"installed\":true,\"serves\":true}";
+
+    try testing.expect(saysNotInstalled(aa, absent));
+    try testing.expect(!saysNotServed(aa, absent));
+    try testing.expect(!saysNotInstalled(aa, mismatched));
+    try testing.expect(saysNotServed(aa, mismatched));
+    try testing.expect(!saysNotInstalled(aa, fine));
+    try testing.expect(!saysNotServed(aa, fine));
 }
 
 const testing = std.testing;

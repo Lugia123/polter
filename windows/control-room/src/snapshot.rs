@@ -481,8 +481,10 @@ pub struct SupervisorRole {
 }
 
 /// Why a CLI a role is set up for is not one it can be started in here.
-/// **Two of these are not one**: a plugin that is off is the person's to
-/// turn on; one that cannot run here is not fixed by that.
+/// **These are not one**: a plugin that is off is the person's to turn on;
+/// one that cannot run here is not fixed by that; and one whose adapter
+/// says the program is here in the wrong version is fixed by turning on a
+/// different plugin, not by installing anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeldWhy {
     /// Its plugin is installed and switched off.
@@ -494,10 +496,16 @@ pub enum HeldWhy {
     /// Its plugin is on, its adapter runs, and its adapter says the CLI's
     /// program is not on this machine (task 1744).
     NotInstalled,
+    /// Its plugin is on, its adapter runs, and its adapter says the program
+    /// here is not a version it serves (task 2237): the plugin for the
+    /// version that *is* here is the one to turn on, and there is nothing
+    /// to install. Kept apart from `NotInstalled`, which is "install it".
+    WrongVersion,
 }
 
 impl HeldWhy {
-    pub const ALL: [HeldWhy; 4] = [HeldWhy::PluginOff, HeldWhy::CannotRun, HeldWhy::NoPlugin, HeldWhy::NotInstalled];
+    pub const ALL: [HeldWhy; 5] =
+        [HeldWhy::PluginOff, HeldWhy::CannotRun, HeldWhy::NoPlugin, HeldWhy::NotInstalled, HeldWhy::WrongVersion];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -505,6 +513,45 @@ impl HeldWhy {
             HeldWhy::CannotRun => "cannot_run",
             HeldWhy::NoPlugin => "no_plugin",
             HeldWhy::NotInstalled => "not_installed",
+            HeldWhy::WrongVersion => "wrong_version",
+        }
+    }
+
+    /// Whether the CLI's program is not here in a shape this plugin starts
+    /// -- not on the machine at all, or on it in the other major version.
+    /// Two reasons with two sentences, and one consequence for a start:
+    /// nothing to pick, and the line's room kept for it.
+    ///
+    /// **Written out arm by arm on purpose** (task 2237, review): a sixth
+    /// reason added to this enum must make the compiler name this line
+    /// rather than quietly read as "the program is here". The macOS twin is
+    /// `ControlRoomList.SupervisorRole.HeldBack.Why.programIsGone`.
+    pub fn program_is_gone(self) -> bool {
+        match self {
+            HeldWhy::NotInstalled | HeldWhy::WrongVersion => true,
+            HeldWhy::PluginOff | HeldWhy::CannotRun | HeldWhy::NoPlugin => false,
+        }
+    }
+
+    /// What the person does about this CLI's program not being startable
+    /// here, as the English to translate and its argument (`scene::resume_why`).
+    ///
+    /// **Two answers, because they are two actions** (tasks 1744, 2237):
+    /// `NotInstalled` is install it; `WrongVersion` is install nothing --
+    /// the plugin for the version that is here is the one to turn on. One
+    /// sentence for both would tell half the people the wrong thing.
+    ///
+    /// The other three reasons do not hold a program back (`program_is_gone`
+    /// says so), so they cannot reach here; they stand with `NotInstalled`
+    /// rather than being left out, so that a sixth reason is a compile error
+    /// here rather than a silent silence.
+    pub fn program_gone_say(self) -> &'static str {
+        match self {
+            HeldWhy::WrongVersion => crate::scene::msg::LAST_CLI_OTHER_VERSION,
+            HeldWhy::NotInstalled
+            | HeldWhy::PluginOff
+            | HeldWhy::CannotRun
+            | HeldWhy::NoPlugin => crate::scene::msg::LAST_CLI_NOT_HERE,
         }
     }
 

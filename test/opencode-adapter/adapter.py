@@ -12,6 +12,11 @@ other half: the same launch handed to a real opencode.
 
     python3 test/opencode-adapter/adapter.py
 
+**This plugin serves 1.x** (task 2237), so its `serves` is the inverse of
+`plugins/opencode-v2`'s. Both are checked, and against each other, in
+`serves.py` beside this file; what is here is this plugin's own answer, and
+the launch it writes for a 1.x opencode.
+
 Exit 0 when every case holds.
 """
 
@@ -128,6 +133,33 @@ def main():
               "nothing out of an environment table or a URL's credentials")
         check("inventory", by["mcp:web"]["detail"] == "http · mcp.example.com", "a remote server by its host")
         check("inventory", "mcp:unread" not in by, "config.json is not listed: 2.0 reads only opencode.json(c)")
+
+        # `serves` (task 2237): the program is here and this plugin does not
+        # start it, which is a different sentence from `installed`. The rig
+        # is a 2.0.32, and this plugin serves 1.x.
+        check("inventory", inv["installed"] is True and inv["serves"] is False,
+              "a 2.x opencode: installed, and not this plugin's to start")
+        check("inventory", any("this plugin starts 1.x only" in n for n in inv["notes"]),
+              "and it says so rather than leaving the person to guess: %s" % inv["notes"])
+        r.version("1.9.3")
+        one = r.ask("inventory", {})
+        check("inventory", one["installed"] is True and one["serves"] is True,
+              "a 1.x opencode is this plugin's, and the note goes")
+        # A version that cannot be read is not knowing, not knowing it is
+        # wrong: served, and `launch` is what says the hooks are off.
+        r.version("opencode, no version here")
+        unread = r.ask("inventory", {})
+        check("inventory", unread["installed"] is True and unread["serves"] is True,
+              "a version that cannot be read is not called the wrong version")
+        # ⚠️ **"No opencode at all" is not checked here**, and cannot be:
+        # `on_path("opencode")` falls back to `/opt/homebrew/bin/opencode`,
+        # `/usr/local/bin/opencode` and `~/.opencode/bin/opencode` when PATH
+        # has none (it is the binary the person installed), so a rig cannot
+        # hide it on a machine that has it. The field that answers it is
+        # task 1744's `installed`, and what this file can say about the pair
+        # is what is above: on every answer here that has a version, the two
+        # are not each other's inverse.
+        r.version("opencode v2.0.32")
     finally:
         r.close()
 

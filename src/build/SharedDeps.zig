@@ -268,9 +268,15 @@ pub fn add(
     step.root_module.addAnonymousImport("plugin_antigravity_json", .{
         .root_source_file = b.path("plugins/antigravity/plugin.json"),
     });
-    // And opencode's, for the box it declares (task 1777).
+    // And opencode's, for the box it declares (task 1777). **And the 2.x
+    // plugin's, which is a manifest of its own** (task 2237): the two
+    // declare the same box and the same honour, and the point of the split
+    // is that neither is read through the other's file.
     step.root_module.addAnonymousImport("plugin_opencode_json", .{
         .root_source_file = b.path("plugins/opencode/plugin.json"),
+    });
+    step.root_module.addAnonymousImport("plugin_opencode_v2_json", .{
+        .root_source_file = b.path("plugins/opencode-v2/plugin.json"),
     });
 
     // **And the hosts that edit a config file instead of calling an
@@ -286,6 +292,11 @@ pub fn add(
     // Embedding one would assert the SDK and let the declarations drift.
     step.root_module.addAnonymousImport("plugin_opencode_sh", .{
         .root_source_file = b.path("plugins/opencode/provision.sh"),
+    });
+    // The 2.x plugin's (task 2237): the same `mcp` / `type` /
+    // command-as-a-list shape, since it is the same opencode reading it.
+    step.root_module.addAnonymousImport("plugin_opencode_v2_sh", .{
+        .root_source_file = b.path("plugins/opencode-v2/provision.sh"),
     });
 
     // And `antigravity` (task 1682): the same `mcpServers` shape, in a file
