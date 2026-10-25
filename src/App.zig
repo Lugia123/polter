@@ -4107,6 +4107,7 @@ fn renderPage(self: *App, arena: Allocator, req: []const u8) Allocator.Error![]c
     };
     if (std.mem.eql(u8, r.page, "resources")) return self.renderResources(arena, r);
     if (std.mem.eql(u8, r.page, "tasks")) return self.renderTasks(arena, r);
+    if (std.mem.eql(u8, r.page, "workdirs")) return self.renderWorkdirs(arena, r);
     return "{\"error\":\"BadRequest\"}";
 }
 
@@ -4133,6 +4134,39 @@ fn pagePanes(self: *App, arena: Allocator, group: []const u8) Allocator.Error!?[
         if (!steward and own) try out.append(arena, .{ .id = id, .name = title, .role = .own });
     }
     return out.items;
+}
+
+/// The working directories of a group (task 2145 C1,
+/// `poltergeist.files.Workdirs`): worked out from the terminals now in the
+/// control room's groups and the worktrees the ledger remembers; nothing is
+/// kept between two asks.
+fn renderWorkdirs(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]const u8 {
+    const Workdirs = poltergeistpkg.files.Workdirs;
+    if (!self.chat.exists(r.group)) return "{\"error\":\"NoSuchGroup\"}";
+    var terms: std.ArrayListUnmanaged(Workdirs.Term) = .empty;
+    for (self.control_room.route_rows) |row| {
+        for (row.members, row.titles, row.own) |id, title, own| {
+            const steward = if (row.steward) |s| s == id else false;
+            try terms.append(arena, .{
+                .id = id,
+                .title = title,
+                .role = if (steward) .supervisor else if (own) .own else .worker,
+                .group = row.group,
+                .cwd = self.terminalCwd(arena, id),
+            });
+        }
+    }
+    var trees: std.ArrayListUnmanaged(Workdirs.Tree) = .empty;
+    if (self.poltergeist_worktrees) |*ledger| for (ledger.entries.items) |e| {
+        const ids = try arena.alloc(u64, if (e.terminal != null) 2 else 1);
+        ids[0] = e.by;
+        if (e.terminal) |t| ids[1] = t;
+        try trees.append(arena, .{ .name = e.name, .path = e.path, .terminals = ids });
+    };
+    const dirs = try Workdirs.compute(arena, global.io(), r.group, terms.items, trees.items, self.controlHome());
+    var out: std.Io.Writer.Allocating = .init(arena);
+    Workdirs.writeJson(&out.writer, r.group, dirs) catch return error.OutOfMemory;
+    return out.written();
 }
 
 fn renderTasks(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]const u8 {
@@ -4340,9 +4374,11 @@ const PageWorld = struct {
         self.app = undefined;
         const app = &self.app;
         app.alloc = alloc;
+        app.surfaces = .empty;
         app.page_req = .empty;
         app.page_out = .empty;
         app.page_held = false;
+        app.control_home = "";
         app.control_room = .init(alloc);
         app.resource_usage = .empty;
         app.resource_judges = .empty;
@@ -4471,6 +4507,62 @@ test "2015: control_page holds an answer that did not fit, for the same request 
     // Taken: the next ask is a new reading.
     const third = w.app.controlPage(req, 1 << 20);
     try testing.expect(!std.mem.eql(u8, first, third));
+}
+
+// The working-directory page where the runtime has no surfaces at all: this
+// is a test build's world, and the page still has to answer. Its terminals
+// have no shell that ever said where it was, so every row left is one whose
+// directory the worktree ledger knows -- and a terminal whose cwd is not
+// known is not a row of its own (`Workdirs.compute` skips it).
+test "2145 C1: the workdirs page answers where the runtime has no surfaces, and cwd is null" {
+    const testing = std.testing;
+    var w: PageWorld = undefined;
+    try w.init(testing.allocator);
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The runtime this test is built against has no `core` on its Surface:
+    // that is the whole reason the page's path through `terminalCwd` and
+    // `findSurfaceByID` used to fail to compile. Guarded, so that a runtime
+    // that *does* have one says so instead of quietly testing nothing.
+    if (comptime @hasDecl(apprt.Surface, "core")) return error.SkipZigTest;
+
+    // A worktree of the group's supervisor, on a real directory, so that the
+    // page has one row to write.
+    const tmp = testing.tmpDir(.{});
+    var tmp_dir = tmp;
+    defer tmp_dir.cleanup();
+    const real = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", a);
+    w.app.poltergeist_worktrees = .{ .alloc = testing.allocator };
+    defer w.app.poltergeist_worktrees.?.entries.deinit(testing.allocator);
+    try w.app.poltergeist_worktrees.?.entries.append(testing.allocator, .{
+        .name = "wt-shop",
+        .repo = "shop",
+        .path = real,
+        .branch = "wt/shop",
+        .base = "0",
+        .by = 0xa1,
+    });
+
+    const v = try w.ask(a, "{\"page\":\"workdirs\",\"group\":\"web-app\"}");
+    try testing.expectEqualStrings("workdirs", v.object.get("page").?.string);
+    try testing.expectEqualStrings("web-app", v.object.get("group").?.string);
+
+    // The supervisor 0xa1 is in the group and the worktree is its, so its row
+    // is there -- as a **tree**, with the tree's name and nobody in `who`:
+    // the supervisor's own directory is not a row, because with no surfaces
+    // `terminalCwd` answered null for it, and a terminal whose cwd is not
+    // known is not a row. A row that invented a terminal for the tree would
+    // read here as one.
+    const dirs = v.object.get("dirs").?.array.items;
+    try testing.expectEqual(@as(usize, 1), dirs.len);
+    try testing.expectEqualStrings(real, dirs[0].object.get("path").?.string);
+    try testing.expectEqualStrings("tree", dirs[0].object.get("kind").?.string);
+    try testing.expectEqualStrings("wt-shop", dirs[0].object.get("tree_name").?.string);
+    try testing.expectEqual(@as(usize, 0), dirs[0].object.get("who").?.array.items.len);
+    try testing.expect(dirs[0].object.get("readable").?.bool);
 }
 
 pub fn controlSnapshotJson(self: *const App) []const u8 {
@@ -15740,6 +15832,14 @@ fn hasSurface(self: *const App, surface: *const Surface) bool {
 
 /// Search for a surface by a 64 bit unique ID.
 pub fn findSurfaceByID(self: *const App, id: u64) ?*Surface {
+    // A runtime whose surfaces are not a real app's (`none`, which is what a
+    // test build is) has nothing to look in: its `Surface` has no `core`, and
+    // a list of them can never hold one. So the answer is here rather than at
+    // each caller who happens to be reachable from a test -- Zig analyzes a
+    // test's callees, and one that reaches this function used to fail to
+    // compile for a reason that had nothing to do with the test.
+    if (comptime !@hasDecl(apprt.Surface, "core")) return null;
+
     for (self.surfaces.items) |v| {
         const surface: *Surface = v.core();
         if (surface.id == id) return surface;

@@ -31,6 +31,7 @@ pub const login_path = @import("login_path.zig");
 pub const workdir = @import("workdir.zig");
 pub const StallWatch = @import("StallWatch.zig");
 pub const worktree = @import("worktree.zig");
+pub const files = @import("files/main.zig");
 pub const ChatLog = @import("ChatLog.zig");
 pub const MentionRetry = @import("MentionRetry.zig");
 pub const OwedTells = @import("OwedTells.zig");
@@ -124,6 +125,7 @@ test {
     _ = workdir;
     _ = StallWatch;
     _ = worktree;
+    _ = files;
     _ = Resident;
     _ = Bus;
     _ = agent_event;
