@@ -1264,7 +1264,17 @@ mod shipped_tests {
         };
         let found = {
             let tmp = std::env::temp_dir().join("polter-plug-test-note2");
-            let _ = std::fs::create_dir_all(tmp.join("polter").join("plugins"));
+            let dir = tmp.join("polter").join("plugins");
+            // **Cleared first, because the assertion below now counts.** The
+            // name is fixed, so a directory left behind by an interrupted run
+            // would be read as a second plugin and the reading would depend on
+            // the machine's history rather than on the rule.
+            let _ = std::fs::remove_dir_all(&tmp);
+            let _ = std::fs::create_dir_all(&dir);
+            // One directory and one file, which is the shape a release has:
+            // `SHIPPED` sits beside the plugin directories (task 1683).
+            let _ = std::fs::create_dir_all(dir.join("claude-code"));
+            let _ = std::fs::write(dir.join("SHIPPED"), "claude-code\n");
             let _g = EnvGuard::set(Some(&tmp));
             let n = shipped_note();
             let _ = std::fs::remove_dir_all(&tmp);
@@ -1275,7 +1285,18 @@ mod shipped_tests {
         assert_ne!(unset, found);
         assert!(unset.contains("POLTER_RESOURCES_DIR"), "{unset}");
         assert!(missing.contains("does not exist"), "{missing}");
-        assert!(found.contains("entries"), "{found}");
+        // **The reading, not just a word.** Task 1683 changed this branch from
+        // `N entries` to `N directories` -- the `SHIPPED` file the release
+        // puts there made the same eight plugins read as nine -- and this
+        // assertion kept demanding `entries`. It stayed red for a week while
+        // every mac check was green, because the only cargo command that runs
+        // off Windows is `--no-run`: **a stale assertion is invisible on the
+        // machine that compiles the tests and runs none of them.**
+        //
+        // Two facts, and either one alone would have stayed green through the
+        // regression: the count is of *directories* (the file is not in it),
+        // and there is exactly one of them.
+        assert!(found.contains("1 directories in"), "{found}");
     }
 
     /// `user_dir()` is untouched by all of this: plugins a user installed
