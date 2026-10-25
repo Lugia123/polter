@@ -2560,6 +2560,25 @@ pub const entries = [_]Entry{
         ,
     },
     .{
+        .key = .@"poltergeist-silence-remind-after",
+        .en = "How long a group's supervisor may go with nothing heard from its terminal -- no line typed into it by Polter (a quiet report, a group mention, an alarm) and no Polter tool called by the agent in it (`rpc.isAgentCall`: a CLI's own hooks and the sidecar's traffic are not calls) -- while its group has tasks not closed or cancelled, before it is reminded to look at the whole of it (task 2148). The reminder then repeats every this long while the silence lasts. Not while it has an alarm set: it said when it wants to be woken. Time the machine is asleep is not counted. `0` switches the reminder off.",
+        .zh = "群的总管在它的群还有没关闭、没取消的任务时，可以多久听不到自己终端的任何动静——Polter 没往里打过一行（静止报告、群里点名、闹钟），里面的 agent 也没调用过 Polter 工具（`rpc.isAgentCall`：CLI 自己的 hook 和边车自己的流量不算调用）——之后提醒它把全局看一遍（任务 2148）。沉默持续时，每隔这么久再提醒一次。设了闹钟时不提醒：它已经说了想什么时候被叫醒。机器睡眠的时间不算。`0` 关掉提醒。",
+        .full_en =
+        \\How long a group's supervisor may go with nothing heard from its terminal
+        \\-- no line typed into it by Polter (a quiet report, a group mention, an
+        \\alarm) and no Polter tool called by the agent in it (`rpc.isAgentCall`:
+        \\a CLI's own hooks and the sidecar's traffic are not calls) -- while its
+        \\group has tasks not closed or cancelled, before it is reminded to look
+        \\at the whole of it
+        \\(task 2148). The reminder then repeats every this long while the silence
+        \\lasts. Not while it has an alarm set: it said when it wants to be woken.
+        \\Time the machine is asleep is not counted. `0` switches the reminder off.
+        ,
+        .full_zh =
+        \\群的总管在它的群还有没关闭、没取消的任务时，可以多久听不到自己终端的任何动静——Polter 没往里打过一行（静止报告、群里点名、闹钟），里面的 agent 也没调用过 Polter 工具（`rpc.isAgentCall`：CLI 自己的 hook 和边车自己的流量不算调用）——之后提醒它把全局看一遍（任务 2148）。沉默持续时，每隔这么久再提醒一次。设了闹钟时不提醒：它已经说了想什么时候被叫醒。机器睡眠的时间不算。`0` 关掉提醒。
+        ,
+    },
+    .{
         .key = .@"poltergeist-stall-warn-after",
         .en = "How long Polter's app thread may spend on one thing before it is written in the log.",
         .zh = "Polter 的应用线程在一件事上停留多久后，会写进日志。",
