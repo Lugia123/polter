@@ -29,17 +29,45 @@ const max_stdin_bytes = 4 * 1024 * 1024;
 ///   method only returns `.ok`) or `.failed`, whose message comes from
 ///   `rpc.errorMessage` or `Server.refuse`. **Measured arm by arm**: the
 ///   longest is `AuthoriseOff`, 849 bytes of text and 896 bytes once
-///   `std.json` has escaped it, and the `Shielded` case adds an 18-byte
-///   `0x…: ` prefix. `LogsClosed` -- the one failure that formats a
-///   directory path in -- cannot be reached from here: it needs a request
-///   that names a `group`, and an `agent_event` carries none.
+///   `std.json` has escaped it, and the `Shielded` case adds the
+///   `0x…: ` prefix `dispatchOne` formats in -- **20 bytes**, not the 18
+///   this note claimed until task 2287 measured it (`"0x{x:0>16}: "` is
+///   sixteen digits, `0x`, and a colon and a space). `LogsClosed` -- the one
+///   failure that formats a directory path in -- cannot be reached from
+///   here: it needs a request that names a `group`, and an `agent_event`
+///   carries none.
 ///
-/// So the worst case is a quarter of this buffer, and the reason it will
-/// stay that way is written down here rather than left as a measurement
-/// somebody has to redo. **If either answer ever grows a field whose length
-/// is not ours** -- a path from the client, an upstream's text -- this
-/// stops being true and the read has to move to `readline.readLine` like
-/// the rest. That is what this note is for.
+/// ⚠️ **A measurement in a comment is not a guard.** The paragraph above
+/// used to be the whole of the reason these two reads could stay on
+/// `takeDelimiter`, and nothing failed if somebody added a long sentence to
+/// `rpc.errorMessage` -- the note would simply stop being true, and the read
+/// that borders on it answers `StreamTooLong` by leaving the rest of the
+/// line in the stream, for ever (`readline.zig`). So there is now a test
+/// that iterates **every** arm of `rpc.Error` and asserts the wire line it
+/// produces fits, with room: see `every sentence an answer can carry` at
+/// the bottom of this file.
+///
+/// ⚠️ **What that test does not cover, said here so nobody reads the green
+/// as the whole story** (the reviewer's point, task 2287):
+///
+///   * **`Server.zig`'s `refuse` literals are outside it.** Every sentence
+///     `Server.zig` writes with `refuse` -- `BadHandshake`, `BadToken`, the
+///     `Malformed` / `UnknownMethod` / `BadParams` / `OutOfMemory` quartet,
+///     `NoResponse`, and `refuseFull`'s "every agent slot on this socket is
+///     in use" -- is written there, not produced by `rpc.errorMessage`. The
+///     test walks an error set and cannot reach any of them. They are all
+///     under a hundred bytes today, and nothing would go red if one of them
+///     grew past `max_reply`.
+///   * **`LogsClosed` is measured only in its fixed part.** Its sentence
+///     reaches the wire through `hostFailure("LogsClosed", why)` at run
+///     time, with a **directory path spliced into it** (`App.zig`'s
+///     `noteLogProblem` names the state directory it could not open). The
+///     test measures `errorMessage(LogsClosed)`, which is the constant half,
+///     so a long enough path is not covered by it. It cannot be reached from
+///     `+hook` at all -- that needs a request naming a `group` and an
+///     `agent_event` carries none -- which is why the note above accepts it;
+///     this paragraph exists so that acceptance is visible rather than
+///     implied.
 const max_reply = 4 * 1024;
 
 pub const Options = struct {
@@ -369,6 +397,7 @@ pub fn writeRequest(w: *std.Io.Writer, ev: AgentEvent.Event) std.Io.Writer.Error
 
 const testing = std.testing;
 const wire = @import("../poltergeist/wire.zig");
+const rpc = @import("../poltergeist/rpc.zig");
 
 test "the request +hook writes is the one the host parses back" {
     var buf: [1024]u8 = undefined;
@@ -691,4 +720,99 @@ test "+hook with stdin that is not JSON exits 0, writes nothing to stdout, deliv
     try testing.expectEqual(@as(u8, 0), ran.code);
     try testing.expectEqual(@as(usize, 0), ran.stdout_bytes);
     try testing.expectEqual(@as(u32, 0), live.seen.events.load(.acquire));
+}
+
+test "2287: every sentence an answer can carry fits the buffer that reads it" {
+    const alloc = testing.allocator;
+
+    // **The guard the note above `max_reply` used to be the whole of.** That
+    // note measures the longest sentence `rpc.errorMessage` produces and
+    // concludes these two reads can stay `takeDelimiter`. Nothing failed if
+    // somebody later added a longer one: the note would quietly stop being
+    // true, and what a `takeDelimiter` does when the line does not fit is
+    // not "miss a line" but "leave the rest of it in the stream, for ever"
+    // (`readline.zig`). So this iterates **every arm** of `rpc.Error`.
+    //
+    // Exhaustive by iteration, not by a list written out here: a new arm, or
+    // a longer sentence in an existing one, is measured without anybody
+    // remembering to come back.
+    const arms = std.meta.tags(rpc.Error);
+
+    // ⚠️ **An iteration over an empty set is a green test about nothing.**
+    // The count is a floor rather than the exact number: a legitimate new
+    // arm raises it and must not redden this, while an error set that has
+    // shrunk -- or an iteration that stopped seeing one -- does.
+    try testing.expect(arms.len >= 12);
+
+    // The prefix `dispatchOne` puts in front of a `Shielded` message --
+    // `rpc.zig`'s `allocPrint(alloc, "0x{x:0>16}: {s}", …)`. **Applied to
+    // every arm**, which is an over-approximation: only `Shielded` carries
+    // one today. Erring that way is the safe direction, and it means the
+    // number below needs no second reading the day another arm grows one.
+    const id: u64 = 0x0123456789abcdef;
+
+    var worst_bytes: usize = 0;
+    var worst_arm: []const u8 = "";
+
+    for (arms) |err| {
+        const message = try std.fmt.allocPrint(
+            alloc,
+            "0x{x:0>16}: {s}",
+            .{ id, rpc.errorMessage(err) },
+        );
+        defer alloc.free(message);
+
+        // The line as the wire really builds it, rather than the same
+        // arithmetic done again here: `wire.writeResponse` is what the host
+        // sends, including its trailing newline.
+        var line: std.Io.Writer.Allocating = .init(alloc);
+        defer line.deinit();
+        try wire.writeResponse(&line.writer, .{ .failed = .{
+            .code = @errorName(err),
+            .message = message,
+        } });
+        const written = line.written();
+
+        // **And into the buffer the read really uses.** The arithmetic
+        // above and this are the same claim, and this is the one that is
+        // about `takeDelimiter`: a line that does not fit a fixed buffer
+        // fails the write rather than being measured.
+        var fixed: [max_reply]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&fixed);
+        wire.writeResponse(&w, .{ .failed = .{
+            .code = @errorName(err),
+            .message = message,
+        } }) catch |e| {
+            std.debug.print(
+                "\n{s} does not fit the {d}-byte buffer +hook reads its answer into: " ++
+                    "{d} bytes, and it failed with {t}. Either shorten the sentence " ++
+                    "in `rpc.errorMessage`, or move both reads in this file to " ++
+                    "`readline.readLine` -- a line that does not fit leaves its tail " ++
+                    "in the stream and every later read starts mid-sentence.\n",
+                .{ @errorName(err), max_reply, written.len, e },
+            );
+            return error.DoesNotFitTheReadBuffer;
+        };
+
+        if (written.len > worst_bytes) {
+            worst_bytes = written.len;
+            worst_arm = @errorName(err);
+        }
+    }
+
+    // Printed, because the number is the reading the note above `max_reply`
+    // quotes and a stale one is how this note went wrong before.
+    std.debug.print(
+        "\n2287: {d} arms of rpc.Error, worst is {s} at {d} bytes with the " ++
+            "`0x…: ` prefix; the read buffer is {d}.\n",
+        .{ arms.len, worst_arm, worst_bytes, max_reply },
+    );
+
+    // **Room, not merely fit.** A sentence one byte under the buffer is a
+    // sentence that stops being readable the next time somebody adds a word
+    // to it, and the whole point of this test is that the next person to do
+    // that finds out here rather than in a wedged hook. A quarter of the
+    // buffer is the headroom the note claims; this makes the claim
+    // mechanical rather than prose.
+    try testing.expect(worst_bytes <= max_reply / 4);
 }

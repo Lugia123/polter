@@ -83,6 +83,32 @@ pub fn readLine(
     out: *std.Io.Writer.Allocating,
     cap: usize,
 ) Error![]const u8 {
+    return readLineCounting(r, out, cap, null);
+}
+
+/// `readLine`, and **how big the line was when there was too much of it**
+/// (task 2287).
+///
+/// A caller that answers `LineTooLong` with a log line cannot say anything
+/// worth reading without this: "a line was too long" with no number is the
+/// same sentence for a 70 KiB request and a 60 MiB one, and those are
+/// different events. `dropped` is only written on `error.LineTooLong`.
+///
+/// **The number is a lower bound, and is one of two cases**:
+///
+///   * the line had a newline after it, and the count is exact -- the bytes
+///     read into `out` before the cap was reached (`cap + 1`), plus
+///     everything discarded to and including that newline;
+///   * the stream ended first, so there is no newline to count to and the
+///     count is only what was read. The caller says "at least" rather than
+///     pretending otherwise, which is why this hands back a number and not
+///     a sentence.
+pub fn readLineCounting(
+    r: *std.Io.Reader,
+    out: *std.Io.Writer.Allocating,
+    cap: usize,
+    dropped: ?*usize,
+) Error![]const u8 {
     out.clearRetainingCapacity();
     _ = r.streamDelimiterLimit(
         &out.writer,
@@ -98,7 +124,12 @@ pub fn readLine(
             // has just sent more than `cap` in one line. Its own failure is
             // not reported on top of this one: a stream that ended here
             // leaves nothing to resynchronise.
-            _ = r.discardDelimiterInclusive('\n') catch 0;
+            const rest = r.discardDelimiterInclusive('\n') catch 0;
+            // **Measured, not assumed**: what is in `out` is what
+            // `streamDelimiterLimit` managed to write before it stopped,
+            // and `rest` is what the discard walked. Nothing here depends on
+            // the reader's chunking or on the off-by-one above.
+            if (dropped) |d| d.* = out.written().len +| rest;
             return error.LineTooLong;
         },
     };
@@ -183,4 +214,60 @@ test "2170: an empty line is a line, and is not the end of the stream" {
     var r = std.Io.Reader.fixed("\nsecond\n");
     try testing.expectEqualStrings("", try readLine(&r, &buf, 1024));
     try testing.expectEqualStrings("second", try readLine(&r, &buf, 1024));
+}
+
+test "2287: a line past the cap reports how long it was, and the number is the line's" {
+    const alloc = testing.allocator;
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    defer buf.deinit();
+
+    const cap = 8;
+    // Exactly `cap + 1` is the smallest line that can be too long: the read
+    // is allowed `cap + 1` bytes, and a line of that many without a newline
+    // in it is past what it will take.
+    {
+        var d: usize = 0;
+        var r = std.Io.Reader.fixed("aaaaaaaaa\nshort\n"); // 9 = cap + 1, then a newline
+        try testing.expectError(error.LineTooLong, readLineCounting(&r, &buf, cap, &d));
+        // **The whole line, including the newline that ended it.** The
+        // number a log line needs is "how much did they send", not "how much
+        // did we keep", so the discarded part is in it.
+        try testing.expectEqual(@as(usize, 10), d);
+        try testing.expectEqualStrings("short", try readLine(&r, &buf, cap));
+    }
+
+    // A long one, so that the count is not merely a restatement of the cap.
+    {
+        var d: usize = 0;
+        var line: [500]u8 = undefined;
+        @memset(line[0..499], 'z');
+        line[499] = '\n';
+        var r = std.Io.Reader.fixed(&line);
+        try testing.expectError(error.LineTooLong, readLineCounting(&r, &buf, cap, &d));
+        try testing.expectEqual(@as(usize, 500), d);
+    }
+
+    // **A stream that ends mid-line still reports what it saw**, and that is
+    // a lower bound rather than the line's length: there is no newline to
+    // count to. The caller's sentence has to say "at least" for this case,
+    // which is why this is a number and not a phrase. Exactly `cap + 1` and
+    // not one byte more, because the discard walked off the end of the
+    // stream and had nothing to add.
+    {
+        var d: usize = 0;
+        var line: [64]u8 = undefined;
+        @memset(&line, 'y');
+        var r = std.Io.Reader.fixed(&line);
+        try testing.expectError(error.LineTooLong, readLineCounting(&r, &buf, cap, &d));
+        try testing.expectEqual(@as(usize, cap + 1), d);
+    }
+
+    // And a line that fits writes nothing into it: the caller must not read
+    // a stale count from a previous call.
+    {
+        var d: usize = 12345;
+        var r = std.Io.Reader.fixed("ok\n");
+        try testing.expectEqualStrings("ok", try readLineCounting(&r, &buf, cap, &d));
+        try testing.expectEqual(@as(usize, 12345), d);
+    }
 }

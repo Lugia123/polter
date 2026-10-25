@@ -654,6 +654,115 @@ fn interpret(alloc: Allocator, reply: []const u8) Verdict {
 
 const State = enum { granted, withheld, broken };
 
+/// Which end a dropped line came from. Two ends, two sentences: a client
+/// request that was dropped is answered, and an upstream reply that was
+/// dropped is not -- so they are not the same event and do not get the same
+/// log line (task 2287).
+const DropFrom = enum { client, upstream };
+
+/// What this slot has thrown away, and why (task 2287, from the review).
+///
+/// **An instrument, not a switch**, the same arrangement `Slot.floor_hits`
+/// has: `null` in the product, so no branch runs differently because of it.
+/// It records exactly what the `log.warn` lines beside it are told.
+///
+/// ⚠️ **Why the warns are recorded instead of read.** `std.log` reaches its
+/// sink through `std_options.logFn`, which is comptime -- there is no way for
+/// a test to intercept it -- and this repo's `logFn` sends a warn to macOS
+/// unified logging, and to stderr only when the build has an app runtime,
+/// which the test build does not. Measured for this task: a canary
+/// `log.warn` called from inside a test body printed nothing anywhere the
+/// test runner's own log could see. So the numbers that go *into* the warn
+/// are what a test can hold, and **whether `std.log` routes the line
+/// anywhere is not covered by this or any other test in this repository** --
+/// said here rather than left for somebody to assume the green means more
+/// than it does.
+const Drops = struct {
+    /// Lines thrown away for being past the read cap, from either end.
+    count: std.atomic.Value(u32) = .init(0),
+    /// How long the last one was, as `readline` counted it.
+    bytes: std.atomic.Value(usize) = .init(0),
+    /// Which line of the connection it was, counting from 1.
+    line: std.atomic.Value(usize) = .init(0),
+    /// 1 when the last one came from the upstream, 0 from the client.
+    upstream: std.atomic.Value(u32) = .init(0),
+    /// How many times the drain stopped because our buffer could not grow.
+    oom: std.atomic.Value(u32) = .init(0),
+    /// **How much memory `serve` is holding for the connection's line**,
+    /// asked after a line past the cap was thrown away.
+    ///
+    /// This is the symptom the review was pointing at: a `Writer.Allocating`
+    /// keeps whatever it grew to, and the client's buffer lives as long as
+    /// the connection does -- so one 60 MiB request nobody kept would hold
+    /// 60 MiB per terminal. The number is what a test can read; the capacity
+    /// is what `releaseOverlong` gives back.
+    held: std.atomic.Value(usize) = .init(0),
+    /// The same number for the **drain** thread's own line buffer.
+    ///
+    /// Separate from `held` rather than shared with it: the two threads both
+    /// write, and one field would make a reading depend on which of them ran
+    /// last. It is what makes the drain's share of this task (2287 r2) a
+    /// reading rather than an instruction followed.
+    upstream_held: std.atomic.Value(usize) = .init(0),
+};
+
+/// Write down a line that was too long, from either end.
+///
+/// **One function rather than two copies of the same four stores**, and it
+/// carries the two numbers the review asked for: how many bytes were thrown
+/// away and which line of the connection it was. A `log.warn` that says "a
+/// line was too long" and nothing else cannot be acted on -- a 70 KiB
+/// request and a 60 MiB one are different events -- and the line number is
+/// what makes one of these findable in a log.
+fn warnDropped(
+    name: []const u8,
+    cap: usize,
+    from: DropFrom,
+    bytes: usize,
+    line: usize,
+    drops: ?*Drops,
+) void {
+    if (drops) |d| {
+        _ = d.count.fetchAdd(1, .monotonic);
+        d.bytes.store(bytes, .monotonic);
+        d.line.store(line, .monotonic);
+        d.upstream.store(if (from == .upstream) 1 else 0, .monotonic);
+    }
+    switch (from) {
+        // The client is told (`writeTooLong`), and told in the log as well:
+        // a client that has gone wrong is exactly the one that will not read
+        // its answer, and then nothing anywhere says a request was dropped.
+        .client => log.warn(
+            "mcp-slot {s}: dropped a client request of at least {d} bytes on line {d}, past this slot's {d}-byte read cap; it was discarded to its newline and answered -32600, and the connection goes on",
+            .{ name, bytes, line, cap },
+        ),
+        // Nobody is told, and that is the whole reason this one is worse:
+        // the upstream is running, the connection is open, and the only
+        // symptom is a caller waiting for a reply that was thrown away.
+        .upstream => log.warn(
+            "mcp-slot {s}: dropped an upstream reply of at least {d} bytes on line {d} this thread has read, past the {d}-byte read cap; it was discarded to its newline and the caller waiting on it will never be answered",
+            .{ name, bytes, line, cap },
+        ),
+    }
+}
+
+/// Write down a drain that stopped for want of memory.
+///
+/// **Not the same event as a closed stream, and it used to be the same
+/// `break`.** `EndOfStream` and `ReadFailed` are the upstream going away;
+/// this one is our own buffer failing to grow while the upstream goes on
+/// answering into a thread that has stopped. The three read identically from
+/// every end, which is the shape this whole round is about.
+fn warnDrainOutOfMemory(name: []const u8, drops: ?*Drops) void {
+    if (drops) |d| {
+        _ = d.oom.fetchAdd(1, .monotonic);
+    }
+    log.warn(
+        "mcp-slot {s}: the buffer this thread reads the upstream with could not grow, so the drain stops here; the upstream goes on running and its replies from now on reach nobody",
+        .{name},
+    );
+}
+
 /// The upstream process and the thread draining it.
 const Upstream = struct {
     child: std.process.Child,
@@ -729,6 +838,22 @@ const Slot = struct {
     /// `took < min_wait_ms` was never true, and a floor that never executes
     /// is not a floor but a piece of code shaped like one.
     floor_hits: ?*std.atomic.Value(u32) = null,
+
+    /// Records every dropped line and every drain that stopped for want of
+    /// memory. `null` in the product; see `Drops`.
+    drops: ?*Drops = null,
+
+    /// Which allocator the drain's line buffer grows from.
+    ///
+    /// **A field for the same reason `read_cap` is one, one branch over.**
+    /// `error.OutOfMemory` in `drain` is a branch about *this process's*
+    /// memory, and no test can produce it from the outside: the fixture's
+    /// allocator is `testing.allocator`, and failing it would fail the whole
+    /// machine of threads around it. Pointing just the line buffer at an
+    /// allocator that fails on demand reaches the arm and nothing else --
+    /// and only `drain`'s own thread touches this buffer, so there is no
+    /// sharing to get wrong. `null` in every product path.
+    line_alloc: ?Allocator = null,
 
     fn init(
         alloc: Allocator,
@@ -811,18 +936,47 @@ const Slot = struct {
         //
         // The buffer is this slot's, for the life of the connection: the
         // loop is a request at a time, and the capacity is worth keeping
-        // between them.
+        // between them. What is *not* worth keeping is one request's worth
+        // of capacity for the whole connection, which is what a line past
+        // the cap leaves behind -- see `releaseOverlong` below.
         var in_buf: std.Io.Writer.Allocating = .init(self.alloc);
         defer in_buf.deinit();
 
+        // **Which line this is, and how long the last dropped one was**
+        // (task 2287). A `log.warn` saying "a line was too long" is the same
+        // sentence for a 70 KiB request and a 60 MiB one, and those are
+        // different events: the first is a tool call that should have been a
+        // file, the second is a client that has gone wrong. The number is
+        // what tells them apart, and the line number is what makes the log
+        // line findable in a stream of them.
+        var line_no: usize = 0;
+        var dropped: usize = 0;
+
         while (true) {
-            const line = readline.readLine(in, &in_buf, self.read_cap) catch |err| switch (err) {
+            const line = readline.readLineCounting(in, &in_buf, self.read_cap, &dropped) catch |err| switch (err) {
                 // The client closed its end. Nothing more is coming.
                 error.EndOfStream => break,
                 // **Said, not fatal, and said about this line only.** The
                 // line has already been discarded to its newline by the
                 // read, so the next one is a real line and this loop goes on.
+                //
+                // ⚠️ **Said in the log as well as to the client, and this is
+                // the half that was missing** (task 2287, from the audit).
+                // `writeTooLong` answers the client, which is right, but a
+                // client that has gone wrong is exactly the one that will
+                // not read its answer -- and then nothing anywhere says a
+                // request was dropped. The bytes and the line number are the
+                // two things a person reading the log needs and cannot
+                // reconstruct afterwards.
                 error.LineTooLong => {
+                    line_no += 1;
+                    warnDropped(self.name, self.read_cap, .client, dropped, line_no, self.drops);
+                    releaseOverlong(self.alloc, &in_buf, max_line);
+                    // What the connection is still holding for its line,
+                    // after giving back what that line cost. Read by the
+                    // test that would otherwise have to reach into this
+                    // function's locals (task 2287).
+                    if (self.drops) |d| d.held.store(in_buf.writer.buffer.len, .monotonic);
                     self.writeTooLong();
                     continue;
                 },
@@ -832,6 +986,7 @@ const Slot = struct {
                 error.ReadFailed => return error.ReadFailed,
                 error.OutOfMemory => return error.OutOfMemory,
             };
+            line_no += 1;
             if (line.len == 0) continue;
             // ⚠️ **`handle` borrows `line`, which `in_buf` owns**, and the
             // next turn of this loop reuses that buffer. Every caller below
@@ -841,8 +996,86 @@ const Slot = struct {
             self.handle(line) catch |err| {
                 log.warn("mcp-slot: could not handle a message err={}", .{err});
             };
+            // **A request nobody threw away can still be big** (task 2287
+            // r2, from the review). The `LineTooLong` arm above gives back
+            // what a *dropped* line cost; this gives back what an ordinary
+            // one did. The review's point was that the buffer lives as long
+            // as the connection, so one legitimate 2 MiB `tools/call` would
+            // hold 2 MiB per terminal until the client went away -- and a
+            // legitimate request that big is the *ordinary* case this file
+            // exists for: a call whose arguments should have been a file.
+            //
+            // ⚠️ **After `handle` returns, and the placement is the whole
+            // safety argument.** `handle` borrows `line` -- which is
+            // `in_buf.written()` -- and every branch of it either writes the
+            // bytes out or copies them before returning (`init_request` is
+            // the one that keeps any, and it `dupe`s). Once it is back,
+            // nothing holds a slice of this buffer, so shrinking it cannot
+            // pull memory out from under anybody.
+            //
+            // The condition is `> max_line` rather than `>=`: at exactly
+            // `max_line` the capacity is `max_line + 1`, one byte past what
+            // is kept, and that is not worth a call.
+            if (line.len > max_line) releaseOverlong(self.alloc, &in_buf, max_line);
+            // A live reading of what the connection is holding for its line,
+            // **after every line rather than only after a dropped one**. Read
+            // by the tests, which cannot reach this function's locals; the
+            // store is what turns "the shrink ran" into a reading (task
+            // 2287).
+            if (self.drops) |d| d.held.store(in_buf.writer.buffer.len, .monotonic);
         }
         return 0;
+    }
+
+    /// Give back the capacity a long line left behind.
+    ///
+    /// **A `Writer.Allocating` never shrinks on its own.** It grows to fit
+    /// what it is given and keeps that for the life of its owner -- and
+    /// here the owner is the connection, so one 60 MiB request that was
+    /// thrown away anyhow would hold 60 MiB for as long as the client stays
+    /// connected. A slot is per terminal and a machine has one per terminal,
+    /// so that is memory per terminal spent on a line nobody kept (task
+    /// 2287, from the audit).
+    ///
+    /// ⚠️ **Called in four places, and the two kinds are worth telling
+    /// apart** (task 2287 r2): after a line that was **dropped** for being
+    /// past the cap, and after a line that was **ordinary but long**. The
+    /// first is the audit's case; the second is the review's -- a legitimate
+    /// request of `2 * max_line`, well inside the cap, walked through
+    /// `handle` and left its buffer behind for the life of the connection.
+    ///
+    /// The threshold is `max_line`, the reader's fill window: below it the
+    /// capacity is what an ordinary request costs to carry, and giving it
+    /// back and taking it again on the next request is churn for nothing.
+    /// Above it, the capacity is a leftover.
+    ///
+    /// ⚠️ **Every call site is after the line is finished with**, and that
+    /// is what makes shrinking safe rather than merely tidy: `serve` calls
+    /// it once `handle` has returned (every branch of which either writes
+    /// the bytes out or copies them), `drain` once `writeLine` has returned
+    /// (it writes straight out of the buffer and keeps nothing). Nothing
+    /// holds a slice of `out` at any of the four points.
+    ///
+    /// `shrinkAndFree` keeps at most one buffer, and the one failure it can
+    /// have is that the allocator will not give a smaller one, which leaves
+    /// the capacity as it was: not a reason to fail, and the next read grows
+    /// from where it is either way.
+    fn releaseOverlong(
+        alloc: Allocator,
+        out: *std.Io.Writer.Allocating,
+        keep: usize,
+    ) void {
+        if (out.writer.buffer.len <= keep) return;
+        // Through an `ArrayList` view of the same memory: `Allocating` has
+        // `shrinkRetainingCapacity` (a length, not a capacity) and
+        // `toOwnedSlice`, and neither is "make the allocation smaller and
+        // keep using it". This hands the buffer to the list, asks the list
+        // to shrink, and takes it back -- `fromArrayList` is the two halves
+        // of that, and the `Allocating` is left owning exactly the memory
+        // the list gave back.
+        var list = out.toArrayList();
+        list.shrinkAndFree(alloc, @min(keep, list.items.len));
+        out.* = .fromArrayList(alloc, &list);
     }
 
     /// Tell the client its last line was too long to read.
@@ -1151,24 +1384,92 @@ const Slot = struct {
         // one `Slot.read_cap` already documents for exactly this reason
         // (`cli/mcp.zig`'s `Host.reply_cap` the same), and every product
         // path still uses the constant.
-        var line_buf: std.Io.Writer.Allocating = .init(self.alloc);
+        // ⚠️ **Its allocator is a field** (task 2287). Every other buffer in
+        // this function is grown by the machine around it; this one can be
+        // pointed at an allocator that fails on demand, which is the only
+        // way the `OutOfMemory` arm below is reachable at all -- see
+        // `Slot.line_alloc`. Nothing else in this process shares it, so
+        // failing it fails this read and nothing else.
+        var line_buf: std.Io.Writer.Allocating = .init(self.line_alloc orelse self.alloc);
         defer line_buf.deinit();
 
+        // **Which line this is, and how long the last dropped one was**
+        // (task 2287). Without them the `LineTooLong` arm below is silent:
+        // the client's call never comes back, and the log has nothing in it
+        // about why -- which is the failure this file's own header calls the
+        // worst of the four, one level quieter.
+        //
+        // ⚠️ **Counted from this thread's first read, which is not the
+        // upstream's first line** -- `startUpstream` read the `initialize`
+        // result itself, before this thread existed. Measured, not assumed:
+        // the first version of this comment said "line of the connection"
+        // and the test below expected 2 for a reply that is the upstream's
+        // second line, and got 1. The number is still the one a person needs
+        // -- it is what turns "a reply was dropped" into "the reply to the
+        // second thing this thread was going to read" -- but only for
+        // somebody who knows where the count starts, so the log line says
+        // "of this stream" and this says why.
+        var line_no: usize = 0;
+        var dropped: usize = 0;
+
         while (true) {
-            const line = readline.readLine(&reader.interface, &line_buf, self.read_cap) catch |err| switch (err) {
+            const line = readline.readLineCounting(&reader.interface, &line_buf, self.read_cap, &dropped) catch |err| switch (err) {
                 // **A line that was too long is not a dead upstream.** The
                 // read discarded it to its newline, so the stream is on a
                 // line boundary and the next read is a real line: keep
                 // draining. An upstream that sends one is not one to stop
                 // listening to.
-                error.LineTooLong => continue,
+                //
+                // ⚠️ **And it is written down** (task 2287, from the audit).
+                // Dropping a reply is the one failure here whose *only*
+                // other symptom is a client that never hears back -- the
+                // upstream is fine, the connection is fine, and this thread
+                // goes on happily. Both numbers are in the line for the same
+                // reason they are in `serve`'s: "too long" without a size
+                // cannot be acted on, and the line number is what makes it
+                // findable.
+                error.LineTooLong => {
+                    line_no += 1;
+                    warnDropped(self.name, self.read_cap, .upstream, dropped, line_no, self.drops);
+                    releaseOverlong(self.lineAlloc(), &line_buf, max_line);
+                    continue;
+                },
                 // Everything else is the stream itself -- closed, or
                 // unreadable -- and there is nothing left to drain.
-                error.EndOfStream, error.ReadFailed, error.OutOfMemory => break,
+                //
+                // ⚠️ **`OutOfMemory` is said out loud** (task 2287, from the
+                // audit). It was in the same `break` as the two stream
+                // errors, and it is not the same thing: the stream is alive
+                // and the upstream goes on answering into a thread that has
+                // stopped. The three used to look identical from every end,
+                // which is the shape this whole round is about -- so the one
+                // that is *our* failure rather than the stream's gets a line
+                // of its own before the drain stops.
+                error.OutOfMemory => {
+                    warnDrainOutOfMemory(self.name, self.drops);
+                    break;
+                },
+                error.EndOfStream, error.ReadFailed => break,
             };
+            line_no += 1;
             if (line.len == 0) continue;
             self.forgetOutstanding(line);
             self.writeLine(line) catch break;
+            // **The upper end of the same rule as `serve`'s** (task 2287 r2,
+            // from the review): the `LineTooLong` arm above gives back what a
+            // dropped line cost, this gives back what an ordinary long one
+            // did. An upstream reply past `max_line` is ordinary -- a
+            // `tools/list` with every tool on it -- and without this the
+            // drain thread holds that much for the life of the connection.
+            //
+            // ⚠️ **After `writeLine`, not before.** `writeLine` writes out of
+            // `line`, which is this buffer; shrinking first would hand it a
+            // slice of freed memory. It copies nothing and keeps nothing, so
+            // once it returns the buffer is nobody's.
+            if (line.len > max_line) releaseOverlong(self.lineAlloc(), &line_buf, max_line);
+            // What this thread is holding for its line, after every line --
+            // see `held` in `Drops`.
+            if (self.drops) |d| d.upstream_held.store(line_buf.writer.buffer.len, .monotonic);
         }
 
         // The upstream's stdout closed. If we are still meant to have one,
@@ -1183,6 +1484,11 @@ const Slot = struct {
         self.state_mutex.unlock(self.io);
 
         if (still_wanted) self.announceChange();
+    }
+
+    /// Which allocator the drain's line buffer grows from.
+    fn lineAlloc(self: *Slot) Allocator {
+        return self.line_alloc orelse self.alloc;
     }
 
     /// Caller holds `state_mutex`.
@@ -1934,8 +2240,14 @@ const SlotSide = struct {
     /// asks what an over-long request is answered with, which cannot reach
     /// 64 MiB.
     read_cap: usize = max_read,
+    /// What `drain`'s line buffer grows from. `null` everywhere but the one
+    /// test that asks what a drain does when memory runs out (task 2287).
+    line_alloc: ?Allocator = null,
     failed: std.atomic.Value(bool) = .init(false),
     floor_hits: std.atomic.Value(u32) = .init(0),
+    /// What the slot on this side has thrown away (task 2287). Read by the
+    /// tests that cannot read a `log.warn`; see `Drops`.
+    drops: Drops = .{},
 
     fn run(self: *SlotSide) void {
         const conn = self.listener.accept(self.io) catch {
@@ -1974,6 +2286,8 @@ const SlotSide = struct {
         defer slot.deinit();
         slot.floor_hits = &self.floor_hits;
         slot.read_cap = self.read_cap;
+        slot.drops = &self.drops;
+        slot.line_alloc = self.line_alloc;
 
         const rbuf = self.alloc.alloc(u8, max_line) catch return;
         defer self.alloc.free(rbuf);
@@ -2116,6 +2430,12 @@ const E2E = struct {
         wanted: bool,
         argv: []const []const u8,
         read_cap: usize,
+        /// Where the drain's line buffer grows from, or `null` for `alloc`.
+        /// **A parameter rather than a field set afterwards**, because the
+        /// slot's thread is started in here and would race the assignment.
+        /// One test passes an allocator that fails on demand (task 2287);
+        /// every other caller passes `null`.
+        line_alloc: ?Allocator,
     ) !*E2E {
         const self = try alloc.create(E2E);
         errdefer alloc.destroy(self);
@@ -2137,6 +2457,7 @@ const E2E = struct {
             .name = "argus",
             .argv = argv,
             .read_cap = read_cap,
+            .line_alloc = line_alloc,
         };
 
         self.* = .{
@@ -2297,7 +2618,7 @@ test "mcp-slot e2e: a withheld slot never starts its upstream, and a grant start
 
     // Start withheld: the persona this terminal wears does not include
     // `argus`.
-    var fx = E2E.start(alloc, io, false, argv, max_read) catch return error.SkipZigTest;
+    var fx = E2E.start(alloc, io, false, argv, max_read, null) catch return error.SkipZigTest;
     defer fx.deinit();
 
     // -- withheld ------------------------------------------------------
@@ -2391,7 +2712,7 @@ test "mcp-slot e2e: an upstream that will not start is not an empty tool list" {
     // Granted by the persona, and there is no such program.
     const argv: []const []const u8 = &.{"/nonexistent/polter-upstream-that-is-not-there"};
 
-    var fx = E2E.start(alloc, io, true, argv, max_read) catch return error.SkipZigTest;
+    var fx = E2E.start(alloc, io, true, argv, max_read, null) catch return error.SkipZigTest;
     defer fx.deinit();
 
     try fx.send(
@@ -2468,7 +2789,7 @@ test "2236: a client request past the buffer it used to fill reaches the upstrea
     }
     const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_echo_script, "upstream", sentinel };
 
-    var fx = E2E.start(alloc, io, true, argv, max_read) catch return error.SkipZigTest;
+    var fx = E2E.start(alloc, io, true, argv, max_read, null) catch return error.SkipZigTest;
     defer fx.deinit();
 
     try fx.send(
@@ -2520,7 +2841,7 @@ test "2236: a request past the cap is answered, and the line after it is a real 
     // The read, the discard and the answer are the same code either way --
     // only the number differs.
     const cap: usize = 4096;
-    var fx = E2E.start(alloc, io, false, &.{}, cap) catch return error.SkipZigTest;
+    var fx = E2E.start(alloc, io, false, &.{}, cap, null) catch return error.SkipZigTest;
     defer fx.deinit();
 
     const over = try bigRequest(alloc, 7, cap * 2);
@@ -2573,7 +2894,7 @@ test "2236: an upstream's initialize result past the buffer is forwarded, not ca
     // A long `initialize` result, and `0` bytes of padding on `tools/list`.
     const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_big_script, "upstream", sentinel, long, "0" };
 
-    var fx = E2E.start(alloc, io, true, argv, max_read) catch return error.SkipZigTest;
+    var fx = E2E.start(alloc, io, true, argv, max_read, null) catch return error.SkipZigTest;
     defer fx.deinit();
 
     try fx.send(
@@ -2616,7 +2937,7 @@ test "2236: an upstream's ordinary reply past the buffer arrives, and the drain 
     // A short `initialize` result, and a long `tools/list` one.
     const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_big_script, "upstream", sentinel, "0", long };
 
-    var fx = E2E.start(alloc, io, true, argv, max_read) catch return error.SkipZigTest;
+    var fx = E2E.start(alloc, io, true, argv, max_read, null) catch return error.SkipZigTest;
     defer fx.deinit();
 
     try fx.send(
@@ -2666,7 +2987,7 @@ test "2236: a line past the cap is dropped, and the drain goes on" {
     defer alloc.free(long);
     const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_big_script, "upstream", sentinel, "0", long };
 
-    var fx = E2E.start(alloc, io, true, argv, cap) catch return error.SkipZigTest;
+    var fx = E2E.start(alloc, io, true, argv, cap, null) catch return error.SkipZigTest;
     defer fx.deinit();
 
     try fx.send(
@@ -2690,4 +3011,323 @@ test "2236: a line past the cap is dropped, and the drain goes on" {
     );
     const after = try fx.recv();
     try testing.expect(std.mem.indexOf(u8, after, "\"after_the_long_one\":true") != null);
+}
+
+test "2287: a dropped client request is written down, with its size and its line, and the memory it cost is given back" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // **The cap is `max_line` here, and that is the point of this test's
+    // shape** (task 2287, and its own floor found this out): the capacity a
+    // `Writer.Allocating` grows to is bounded by `cap + 1`, because
+    // `streamDelimiterLimit` is handed `.limited(cap + 1)` and everything
+    // past that goes through `discardDelimiterInclusive`, which allocates
+    // nothing. So with a 4 KiB cap the buffer never reaches `max_line` and
+    // `releaseOverlong` is a no-op -- the first version of this test passed
+    // with the shrink deleted, which is a floor that did not exist.
+    const cap: usize = max_line;
+    var fx = E2E.start(alloc, io, false, &.{}, cap, null) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    // Past the cap by a lot, so that "the number the log line carries" is
+    // not merely the cap restated: twice the cap plus a bit.
+    const over_len = 2 * max_line + 8192;
+    const over = try bigRequest(alloc, 7, over_len);
+    defer alloc.free(over);
+    try fx.send(over);
+    _ = try fx.recv(); // the -32600 answer, asserted in the 2236 test
+
+    // **The two numbers the review asked for.** A warn that says "a line was
+    // too long" is the same sentence for a request of 5 KiB and one of
+    // 3 MiB; `dropped` is what tells them apart, and the line number is what
+    // makes one of them findable.
+    try testing.expectEqual(@as(u32, 1), fx.side.drops.count.load(.monotonic));
+    try testing.expectEqual(@as(usize, over_len + 1), fx.side.drops.bytes.load(.monotonic));
+    try testing.expectEqual(@as(usize, 1), fx.side.drops.line.load(.monotonic));
+    // From the client, not the upstream: two ends, two sentences.
+    try testing.expectEqual(@as(u32, 0), fx.side.drops.upstream.load(.monotonic));
+
+    // **The memory is given back** (the review's fourth point). The read
+    // grew the connection's buffer past `max_line` to carry a line nobody
+    // kept, and a `Writer.Allocating` keeps whatever it grew to for the life
+    // of its owner -- here, the connection. What is left must be the
+    // ordinary size, not the size of the line that was thrown away.
+    //
+    // **`< max_line` would pass without the shrink too**, which is why the
+    // assertion is `<= max_line` and the cap above is `max_line`: the buffer
+    // reaches `max_line + 1` at least, and the shrink is what takes it back
+    // down. With a 4 KiB cap it never reached `max_line` at all and this
+    // half proved nothing -- the floor is what found that.
+    const held = fx.side.drops.held.load(.monotonic);
+    try testing.expectEqual(max_line, held);
+
+    // **And the connection is still usable, at the ordinary size.** A shrink
+    // that broke the buffer would show up as the next request failing.
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":8,"method":"tools/list"}
+    );
+    const next = try fx.recv();
+    try testing.expect(std.mem.indexOf(u8, next, "\"tools\":[]") != null);
+
+    // The second line is the second line, and no second drop was counted.
+    try testing.expectEqual(@as(u32, 1), fx.side.drops.count.load(.monotonic));
+}
+
+test "2287: a dropped upstream reply is written down as the upstream's, and the drain goes on" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const sentinel = try std.fmt.allocPrint(alloc, "/tmp/pg-2287drain-{x}.touched", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteFile(io, sentinel) catch {};
+        alloc.free(sentinel);
+    }
+    const cap: usize = 4096;
+    const pad: usize = cap * 2;
+    const long = try std.fmt.allocPrint(alloc, "{d}", .{pad});
+    defer alloc.free(long);
+    const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_big_script, "upstream", sentinel, "0", long };
+
+    var fx = E2E.start(alloc, io, true, argv, cap, null) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}
+    );
+    _ = try fx.recv();
+
+    // **The line number is asserted here against a value rather than merely
+    // being non-zero**, which is what makes it a reading: this is the first
+    // line this drain thread has read, and the assertion above it is the
+    // second.
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+    );
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":3,"method":"anything/else"}
+    );
+    const after = try fx.recv();
+    try testing.expect(std.mem.indexOf(u8, after, "\"after_the_long_one\":true") != null);
+
+    try testing.expectEqual(@as(u32, 1), fx.side.drops.count.load(.monotonic));
+    try testing.expectEqual(@as(u32, 1), fx.side.drops.upstream.load(.monotonic));
+    // **1, not 2.** The count starts at this thread's first read, and the
+    // upstream's `initialize` result was read by `startUpstream` before the
+    // thread existed -- so the reply that was dropped is line 1 of what this
+    // thread has read. The first version of this assertion said 2, meaning
+    // "line of the connection", and the reading corrected it.
+    try testing.expectEqual(@as(usize, 1), fx.side.drops.line.load(.monotonic));
+    // The line the upstream wrote: the script's own scaffolding plus the
+    // padding plus its newline. The size is exact for a line that had a
+    // newline after it, and this one did.
+    const upstream_head = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"pad\":\"";
+    const upstream_tail = "\"}}";
+    try testing.expectEqual(
+        @as(usize, upstream_head.len + pad + upstream_tail.len + 1),
+        fx.side.drops.bytes.load(.monotonic),
+    );
+    // Nothing about memory: this is the upstream's buffer, and the review's
+    // fourth point was about the client's connection.
+    try testing.expectEqual(@as(u32, 0), fx.side.drops.oom.load(.monotonic));
+}
+
+test "2287: a drain that runs out of memory says so, and is not the same event as a closed upstream" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const sentinel = try std.fmt.allocPrint(alloc, "/tmp/pg-2287oom-{x}.touched", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteFile(io, sentinel) catch {};
+        alloc.free(sentinel);
+    }
+    const cap: usize = 4096;
+    const long = try std.fmt.allocPrint(alloc, "{d}", .{cap * 2});
+    defer alloc.free(long);
+    const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_big_script, "upstream", sentinel, "0", long };
+
+    // **An allocator that refuses the first growth, and only for the drain's
+    // own line buffer.** `error.OutOfMemory` in `drain` is about *this
+    // process*, which no fixture can produce from the outside without
+    // failing the machine of threads around it -- so the buffer is pointed
+    // at one that fails on demand (`Slot.line_alloc`). `fail_index = 0` is
+    // the very first allocation: the buffer being empty, the first thing
+    // that grows it is this reply.
+    var failing: std.testing.FailingAllocator = .init(alloc, .{ .fail_index = 0 });
+
+    var fx = E2E.start(alloc, io, true, argv, cap, failing.allocator()) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}
+    );
+    _ = try fx.recv();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+    );
+    // The drain is a thread; whether it has reached the failed read by the
+    // time this is sent is a question about scheduling rather than about the
+    // code. Bounded wait, like `expectFloorRan`, and for the same reason: on
+    // a busy machine an instant read reddens for a reason that has nothing
+    // to do with what is being tested.
+    var waited: u64 = 0;
+    while (waited < 5000) {
+        if (fx.side.drops.oom.load(.monotonic) >= 1) break;
+        fx.io.sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
+        waited += 20;
+    }
+
+    // **The assertion the review is about**: the drain did not merely stop,
+    // it stopped *having said why*. Before task 2287 this was one arm with
+    // `EndOfStream` and `ReadFailed` -- three different events, one silent
+    // `break`, and from every end they looked identical.
+    try testing.expectEqual(@as(u32, 1), fx.side.drops.oom.load(.monotonic));
+    // And it is not recorded as a dropped line: the two are different
+    // failures with different sentences, and a test that could not tell them
+    // apart would pass on the wrong one.
+    try testing.expectEqual(@as(u32, 0), fx.side.drops.count.load(.monotonic));
+}
+
+test "2287: an ordinary long request gives its memory back once it has been handled" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const sentinel = try std.fmt.allocPrint(alloc, "/tmp/pg-holder-{x}.touched", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteFile(io, sentinel) catch {};
+        alloc.free(sentinel);
+    }
+    const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_echo_script, "upstream", sentinel };
+
+    // **`max_read`, so this request is nowhere near the cap** -- which is the
+    // whole point (task 2287 r2, the reviewer's suggestion). The shrink added
+    // first only ran on the `LineTooLong` arm, so a request of `2 * max_line`
+    // that was *perfectly legal* walked through `handle` and left 2 MiB held
+    // for the life of the connection. Nothing about it is an error: it is a
+    // `tools/call` whose arguments should have been a file, which is the
+    // ordinary large case this file exists for.
+    var fx = E2E.start(alloc, io, true, argv, max_read, null) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}
+    );
+    const init_reply = try fx.recv();
+    try testing.expect(std.mem.indexOf(u8, init_reply, "stub-upstream") != null);
+
+    const long = try bigRequest(alloc, 2, 2 * max_line);
+    defer alloc.free(long);
+    try fx.send(long);
+
+    // **It went through, rather than being thrown away.** This is what makes
+    // the test about the ordinary path: a dropped line would show up as
+    // `count == 1` and take the `LineTooLong` arm instead. The upstream
+    // counts the bytes it read, so the answer is also the proof the whole
+    // request arrived.
+    const echoed = try fx.recv();
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, echoed, .{});
+    defer parsed.deinit();
+    const result = parsed.value.object.get("result") orelse {
+        std.debug.print("\nthe upstream did not get the request; it answered: {s}\n", .{echoed[0..@min(echoed.len, 300)]});
+        return error.NoResult;
+    };
+    try testing.expectEqual(@as(i64, @intCast(long.len)), result.object.get("line_bytes").?.integer);
+    try testing.expectEqual(@as(u32, 0), fx.side.drops.count.load(.monotonic));
+
+    // **And what the connection is holding afterwards.** Before the shrink
+    // this was `2 * max_line + 1`; the assertion is the exact value rather
+    // than "less than it was", so removing the call reddens here rather than
+    // passing on the strength of the buffer simply not having grown further.
+    try testing.expectEqual(max_line, fx.side.drops.held.load(.monotonic));
+
+    // The connection is still usable at the ordinary size, which is what
+    // rules out a shrink that broke the buffer.
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":3,"method":"tools/list"}
+    );
+    const next = try fx.recv();
+    try testing.expect(std.mem.indexOf(u8, next, "\"line_bytes\":") != null);
+    try testing.expectEqual(max_line, fx.side.drops.held.load(.monotonic));
+}
+
+test "2287: an ordinary long upstream reply gives its memory back too" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (!transport.available) return error.SkipZigTest;
+
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const sentinel = try std.fmt.allocPrint(alloc, "/tmp/pg-holddrain-{x}.touched", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteFile(io, sentinel) catch {};
+        alloc.free(sentinel);
+    }
+    // A short `initialize` result, and a `tools/list` one of `2 * max_line`:
+    // ordinary, well inside the cap, and long enough that the drain thread
+    // used to hold it for the life of the connection (task 2287 r2).
+    const pad = try std.fmt.allocPrint(alloc, "{d}", .{2 * max_line});
+    defer alloc.free(pad);
+    const argv: []const []const u8 = &.{ "/bin/sh", "-c", upstream_big_script, "upstream", sentinel, "0", pad };
+
+    var fx = E2E.start(alloc, io, true, argv, max_read, null) catch return error.SkipZigTest;
+    defer fx.deinit();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}
+    );
+    _ = try fx.recv();
+
+    try fx.send(
+        \\{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+    );
+    const long_reply = try fx.recv();
+    try testing.expect(long_reply.len > max_line);
+
+    // **The drain's own buffer, not `serve`'s** -- two threads, two fields,
+    // so this reading cannot be somebody else's.
+    //
+    // Bounded wait rather than an instant read: the write this test just
+    // received happens *before* the shrink in `drain`, so the two are on
+    // opposite sides of the same `writeLine` and the assertion is about a
+    // moment the client can see the arrival of but not the completion of.
+    var waited: u64 = 0;
+    while (waited < 5000) {
+        if (fx.side.drops.upstream_held.load(.monotonic) == max_line) break;
+        fx.io.sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
+        waited += 20;
+    }
+    try testing.expectEqual(max_line, fx.side.drops.upstream_held.load(.monotonic));
+    // Ordinary, so nothing was dropped and nothing ran out of memory.
+    try testing.expectEqual(@as(u32, 0), fx.side.drops.count.load(.monotonic));
+    try testing.expectEqual(@as(u32, 0), fx.side.drops.oom.load(.monotonic));
 }
