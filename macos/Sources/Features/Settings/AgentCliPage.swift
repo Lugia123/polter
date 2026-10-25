@@ -223,14 +223,6 @@ struct AgentCliPage: View {
                     set: { model.field(\.args, else: draft.args).wrappedValue = R.args(fromLine: $0) }))
                     .textFieldStyle(.roundedBorder).font(SettingsFont.minimumMonospaced)
             }
-            GridRow {
-                label(String(localized: "Roles", comment: "Agent CLI 设置页：表单，角色开关"))
-                roles(draft, page: page)
-            }
-            GridRow {
-                Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
-                note(String(localized: "A new one is off for every role. Switched on, a role starts in it with the skills, MCP servers and model it has for that CLI.", comment: "Agent CLI 设置页：角色开关下的说明"))
-            }
         }
     }
 
@@ -255,15 +247,6 @@ struct AgentCliPage: View {
                 .font(SettingsFont.minimumMonospaced)
             }
             Button { model.draft?.env.append(.init(name: "", value: "")) } label: { Image(systemName: "plus") }
-        }
-    }
-
-    private func roles(_ draft: R.Custom, page: R.Page) -> some View {
-        HStack(spacing: L.rowGap * 2) {
-            ForEach(page.roles, id: \.key) { role in
-                Toggle(role.name, isOn: model.role(role.key, else: draft.roles.contains(role.key)))
-                    .toggleStyle(.checkbox)
-            }
         }
     }
 

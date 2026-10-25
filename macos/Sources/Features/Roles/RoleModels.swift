@@ -574,6 +574,28 @@ struct AgentCliSnapshot: Equatable {
     /// CLIs a plugin manages that are not in `clis` because they cannot be
     /// started here, and why (task 1677). A CLI in neither has no plugin.
     var heldBack: [HeldBack] = []
+    /// The Agent CLIs of the person's own (task 2156 v5), each with the
+    /// roles it is switched on for. **In the same answer as `clis`**, which
+    /// is the point: before v5 the person's own reached the control room
+    /// and nothing else, so the role library and both hosts' menus listed
+    /// presets only. A host that reads this one call now has both.
+    var own: [Own] = []
+
+    /// One Agent CLI of the person's own, as the host sees it: which CLI it
+    /// runs and which roles it is ticked for. **Never its command or its
+    /// variables** -- the core does not put those in this answer.
+    struct Own: Equatable, Identifiable {
+        var key: String
+        var name: String
+        var base: String
+        var roles: [String] = []
+
+        var id: String { key }
+
+        /// Whether it is switched on for `role` -- the person's tick, kept
+        /// with the launcher (`launchers.json`), not with the role.
+        func ticked(_ role: String) -> Bool { roles.contains(role) }
+    }
 
     struct HeldBack: Equatable {
         enum Why: String { case pluginOff = "plugin_off", cannotRun = "cannot_run" }
@@ -596,12 +618,23 @@ struct AgentCliSnapshot: Equatable {
 
     func standing(_ key: String) -> Standing {
         if cli(key) != nil { return .ok }
+        // One of the person's own stands as its base does: a base whose
+        // plugin is off holds it back too, for the same reason (the core's
+        // `standingsWithOwn`).
+        if let mine = own(key) { return ownStanding(mine) }
         guard let held = heldBack.first(where: { $0.key == key }) else { return .noPlugin }
         switch held.why {
         case .pluginOff: return .pluginOff(label: held.label)
         case .cannotRun: return .cannotRun(label: held.label)
         }
     }
+
+    /// Where one of the person's own stands, by its base -- the same answer
+    /// its base gives, which is what the core's `standingsWithOwn` writes.
+    func ownStanding(_ mine: Own) -> Standing {
+        standing(mine.base)
+    }
+
 
     /// The sentence for a CLI a role names that cannot start here; nil
     /// when it can.
@@ -633,14 +666,36 @@ struct AgentCliSnapshot: Equatable {
                   let why = (one["why"] as? String).flatMap(HeldBack.Why.init(rawValue:)) else { return nil }
             return HeldBack(key: key, label: (one["label"] as? String) ?? key, why: why)
         }
+        own = ((obj["own"] as? [[String: Any]]) ?? []).compactMap { one in
+            guard let key = one["key"] as? String, let base = one["base"] as? String else { return nil }
+            return Own(key: key, name: (one["name"] as? String) ?? key, base: base,
+                       roles: (one["roles"] as? [String]) ?? [])
+        }
     }
 
     func cli(_ key: String) -> AgentCli? {
         clis.first { $0.key == key }
     }
 
+    /// One of the person's own by its key, or nil when it is a preset, a
+    /// CLI a plugin holds back, or nothing at all.
+    func own(_ key: String) -> Own? {
+        own.first { $0.key == key }
+    }
+
+    /// Whether this answer knows `key` at all -- a preset it read, or one
+    /// of the person's own. A key it does not know is kept in the role and
+    /// said to be orphaned rather than dropped.
+    func known(_ key: String) -> Bool {
+        cli(key) != nil || own(key) != nil
+    }
+
+    /// The name `key` goes by: a preset's label, one of the person's own
+    /// under **its own name** (task 2156 v5 -- "Claude · DeepSeek v4.1
+    /// flash", not the CLI underneath it), a held-back plugin's label, and
+    /// the key itself when nobody names it.
     func label(for key: String) -> String {
-        cli(key)?.label ?? heldBack.first { $0.key == key }?.label ?? key
+        cli(key)?.label ?? own(key)?.name ?? heldBack.first { $0.key == key }?.label ?? key
     }
 }
 

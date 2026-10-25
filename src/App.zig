@@ -2642,7 +2642,7 @@ fn controlActStartSupervisor(
         const here = try ControlRoom.startClisOf(alloc, role, try self.controlCliStandings(alloc, own));
         // None of the role's can start: `resolveLaunch` says which reason,
         // asked of its first.
-        break :cli ControlRoom.startCliOf(here, last, own) orelse role.clis[0];
+        break :cli ControlRoom.startCliOf(here, last, own, role.key) orelse role.clis[0];
     };
 
     // A group that has a project is started in it: the pane has its own
@@ -2654,7 +2654,7 @@ fn controlActStartSupervisor(
     const dir_z: [:0]const u8 = if (cwd.len > 0) try startDirZ(alloc, cwd) else "";
 
     const rt_app = self.poltergeist_rt_app orelse return error.NoRuntime;
-    var choice = try self.resolveLaunch(alloc, p.key, cli, null, own);
+    const choice = try self.resolveLaunch(alloc, p.key, cli, null, own);
     const now_ms = self.poltergeistElapsedMs();
 
     // Whether it goes on with the last session. Asked for the role and the
@@ -2664,6 +2664,7 @@ fn controlActStartSupervisor(
     const go_on = ControlRoom.resumeOf(.{
         .last = last,
         .cli = choice.launcher orelse choice.cli,
+        .role = p.key,
         .own = own,
         .cli_resume = try self.controlCliResume(alloc),
         .held = ControlRoom.sessionHeld(&self.poltergeist, try self.liveTerminals(alloc), last.session),
@@ -2673,10 +2674,45 @@ fn controlActStartSupervisor(
         },
     });
     const resuming = session_asked == .last and go_on.can;
-    // Going on with a session started through one of the person's own that
-    // has since been deleted: on its CLI, with the key that is gone on the
-    // line, so that `+launch` says so in the terminal (task 2156 v3).
-    if (resuming) choice.launcher = ControlRoom.goOnThrough(choice.launcher, choice.cli, last);
+    // **Going on through something the role no longer has** (task 2156 v5):
+    // the Agent CLI the last session was opened through has been deleted or
+    // unticked for this role since, and what this start goes in is the CLI
+    // underneath it. Said in the group, with the CLI underneath it -- where
+    // v3 only said the deleted case, in the terminal, and said nothing at
+    // all when it had merely been unticked.
+    //
+    // **Not only when going on with the session** (review of v5): a new
+    // session swaps CLIs for the same reason and used to be swapped in
+    // silence, so the person saw the CLI change under them with nothing
+    // saying why. The two cases are one sentence each, because what the
+    // session is doing differs: one is going on, the other is starting.
+    //
+    // **One `allocPrint` a branch, not one with the format chosen at
+    // run time.** A format string has to be comptime-known, so
+    // `allocPrint(alloc, if (resuming) "a" else "b", …)` does not build at
+    // all -- and the named test filter did not catch it, because nothing in
+    // `test` reaches this function (`ghostty_app_control_act` does). What
+    // caught it was `zig build -Demit-macos-app=false`, and that is now part
+    // of what is run before this is handed over.
+    if (ControlRoom.lostLauncher(last, own, p.key)) |gone| {
+        const was = ControlRoom.cliLabelOf(try self.controlCliNames(alloc, own), gone) orelse gone;
+        // What it actually went in, which is `choice`'s answer: an own one
+        // by its key, else the CLI. `choice` was worked out above, so this
+        // is only said about a start that was not refused.
+        const now = ControlRoom.cliLabelOf(try self.controlCliNames(alloc, own), choice.launcher orelse choice.cli) orelse choice.cli;
+        self.sayInGroup(group, if (resuming)
+            try std.fmt.allocPrint(
+                alloc,
+                "[Polter] The Agent CLI \"{s}\" is no longer switched on for the role {s}, so the session it opened is going on in {s}.",
+                .{ was, p.name, now },
+            )
+        else
+            try std.fmt.allocPrint(
+                alloc,
+                "[Polter] The Agent CLI \"{s}\" is no longer switched on for the role {s}, so this supervisor starts in {s} instead.",
+                .{ was, p.name, now },
+            ));
+    }
     const line = try launchLineFor(alloc, choice, .{
         .group = group,
         .session = if (resuming) last.session else null,
@@ -7180,6 +7216,18 @@ fn personasChanged(self: *App) void {
 
 /// What each agent CLI here offers, as JSON (`agent_cli.Cache`). A copy of
 /// the cache; `refresh` starts a new read on its own thread first.
+///
+/// **`own` is added here** (task 2156 v5): the Agent CLIs of the person's
+/// own, each with the roles it is ticked for, so that **every** place that
+/// lists a role's CLIs can list these beside the presets -- the role
+/// library, the `Role ▸` menu on both hosts, and the launch button under
+/// the role. Until v5 the only reader of the person's own was the control
+/// room, through `ownClis`; the role library and the menus read this one
+/// call, which knew nothing about them.
+///
+/// Read once per round (`ownClis`), so this is the same answer the control
+/// room is using in this round: two readers of one round cannot disagree
+/// about which roles an Agent CLI of the person's own is ticked for.
 pub fn agentClisJson(self: *App, alloc: Allocator, refresh: bool) ![]u8 {
     if (refresh) self.poltergeist_agent_clis.refresh(global.io());
     const cached = try self.poltergeist_agent_clis.snapshot(global.io(), alloc);
@@ -7213,7 +7261,13 @@ pub fn agentClisJson(self: *App, alloc: Allocator, refresh: bool) ![]u8 {
         });
         n += 1;
     }
-    try w.writeAll("]}");
+    // The Agent CLIs of the person's own (task 2156 v5), written exactly as
+    // the settings form is given them (`Launchers.writeSafe`): a variable's
+    // name, never its value. Every host that draws a role's CLIs reads this
+    // list, so this is the one place they have to be put in front of it.
+    try w.writeAll("],\"own\":");
+    try poltergeistpkg.Launchers.writeOwn(w, self.ownClis());
+    try w.writeAll("}");
     return try out.toOwnedSlice();
 }
 
@@ -7281,6 +7335,36 @@ fn presetLaunchers(aa: Allocator) ![]const poltergeistpkg.agent_cli.Found {
     return poltergeistpkg.agent_cli.survey(aa, global.io(), &env);
 }
 
+/// A line in `group`, from Polter itself: the control room's own sentences
+/// (task 2156 v5 -- "退回底子 CLI 也要说出来", and "发言人写 Polter").
+///
+/// **Signed `[Polter]` in its first word *and* authored by Polter**, which
+/// are two different things and both were needed. The signature was there
+/// from the start; the author was `Chat.user_id`, so the group drew these
+/// under the person's name -- `chatMemberTitle` answers "you" for that id
+/// and two hosts colour it as the person (`cli/chat.zig` reads `from_user`
+/// off the same zero). The word said Polter and the name said the person.
+/// Now `Chat.postAsPolter` writes them under `Chat.polter_id`, which names
+/// itself "Polter" and is nobody's member.
+///
+/// Nothing waits on it, and a group that cannot be posted into is logged
+/// rather than raised -- the fall-back has already happened and works
+/// either way.
+fn sayInGroup(self: *App, group: []const u8, text: []const u8) void {
+    const at: u64 = @intCast(self.poltergeistWallMs());
+    const posted = self.chat.postAsPolter(group, text, at) catch |err| {
+        log.warn("control room: could not say in {s} that an Agent CLI went away err={}", .{ group, err });
+        return;
+    };
+    // The same two things `chatPost` does for a message that came in over
+    // the socket, and neither is optional: without `logChat` the sentence is
+    // in the group for tonight and gone from the record tomorrow, and
+    // without the sweep nobody is notified that it arrived.
+    self.logChat(group, posted.seq, poltergeistpkg.Chat.polter_id, at, false, text);
+    self.tellTerminalsAboutMessages();
+    self.controlRoomTouch();
+}
+
 /// A line in every group `by` supervises, and in the log, saying what was
 /// changed -- names only (task 2156: "改动要留痕").
 fn launcherTrace(self: *App, by: poltergeistpkg.Bus.Id, text: []const u8) void {
@@ -7317,8 +7401,15 @@ pub fn settingsLaunchersJson(self: *App, alloc: Allocator) ![]u8 {
     return out.toOwnedSlice();
 }
 
-/// The settings form saving one Agent CLI of the person's own, its role
-/// switches as the form has them.
+/// The settings form saving one Agent CLI of the person's own.
+///
+/// **It carries no roles any more** (task 2156 v5): the Agent CLI page is
+/// the name, the CLI underneath, the command, its variables and its
+/// arguments, and which roles may start in it is decided in the role
+/// library (`ghostty_app_role_launcher_set`). So the switches the file
+/// holds are kept -- `keep_roles` is true -- and a form that arrived
+/// without them cannot clear them. A `roles` list that is in the JSON is
+/// still written, which is what `launcher_put` sends.
 pub fn settingsPutLauncher(self: *App, json: []const u8) !void {
     const L = poltergeistpkg.Launchers;
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
@@ -7332,11 +7423,8 @@ pub fn settingsPutLauncher(self: *App, json: []const u8) !void {
     const bases = try aa.alloc([]const u8, found.len);
     for (found, bases) |f, *b| b.* = f.adapter.key;
     try L.validate(l, bases);
-    // **The roles the form carried are the roles it gets** (this slice): the
-    // Agent CLI page is where they are ticked until the role library takes
-    // them over, so a form that unticked one has to untick it here too.
-    try writeLauncherSet(aa, try L.put(aa, self.launcherSet(aa), l, false));
-    log.info("launchers: the settings window saved {s} (base {s}, {d} variable(s), {d} role(s))", .{ l.key, l.base, l.env.len, l.roles.len });
+    try writeLauncherSet(aa, try L.put(aa, self.launcherSet(aa), l, true));
+    log.info("launchers: the settings window saved {s} (base {s}, {d} variable(s))", .{ l.key, l.base, l.env.len });
 }
 
 /// The role library switching one Agent CLI of the person's own on or off
@@ -8155,7 +8243,29 @@ fn takeOverLaunch(self: *App, aa: Allocator, now_ms: u64) !void {
     // still there and still ticked for this role (task 2156 v3): a take-over
     // is the same start the person made, put back. On its CLI otherwise.
     const cli = ControlRoom.takeOverThrough(run.launcher, run.cli, own, role.key);
+    // **A take-over that goes in the CLI underneath says so** (task 2156
+    // v5): the supervisor that quit was started through an Agent CLI of the
+    // person's own that has been deleted or unticked for this role since,
+    // and what the control room is putting back is not what was there.
+    //
+    // **`resolveLaunch` first, and the sentence only if it agreed** (review
+    // of v5). Said the other way round, a role not set up for the CLI
+    // underneath heard "…so the take-over starts Z instead" and then got
+    // `NotSetUpForCli` -- the words and what happened were two different
+    // things. Where it refuses, the refusal is what the person is told, and
+    // the group hears nothing that did not come true.
     const choice = try self.resolveLaunch(aa, role.key, cli, null, own);
+    if (ControlRoom.lostLauncher(last, own, role.key)) |gone| {
+        const was = ControlRoom.cliLabelOf(try self.controlCliNames(aa, own), gone) orelse gone;
+        // What it actually went in, which is `choice`'s answer and not the
+        // name asked for: `resolveLaunch` is the one that decided.
+        const now = ControlRoom.cliLabelOf(try self.controlCliNames(aa, own), choice.launcher orelse choice.cli) orelse choice.cli;
+        self.sayInGroup(run.group, try std.fmt.allocPrint(
+            aa,
+            "[Polter] The Agent CLI \"{s}\" is no longer switched on for the role {s}, so the take-over starts {s} instead.",
+            .{ was, role.name, now },
+        ));
+    }
     const line = try launchLineFor(aa, choice, .{ .group = run.group, .session = run.session });
 
     self.chat.beginStart(run.group, now_ms, now_ms + Store.pending_launch_ms, run.session != null, .directory) catch {};
@@ -14538,12 +14648,19 @@ fn chatMembers(
 /// A terminal only has a title once the program in it sets one. Agent CLIs
 /// do; a bare shell sitting at a prompt may not, and then the directory it
 /// is in says far more about which window it is than sixteen hex digits.
+///
+/// **Polter itself is neither the person nor a terminal** and has a name of
+/// its own (task 2156 v5, `Chat.polter_id`). Before this, a control-room
+/// sentence went in under `user_id` and the group showed it as the person
+/// speaking; there is no terminal to look up, so without this branch it
+/// would have come out as `0xffffffffffffffff`.
 fn chatMemberTitle(
     self: *App,
     alloc: Allocator,
     id: poltergeistpkg.Bus.Id,
 ) Allocator.Error![]const u8 {
     if (id == poltergeistpkg.Chat.user_id) return alloc.dupe(u8, "you");
+    if (id == poltergeistpkg.Chat.polter_id) return alloc.dupe(u8, "Polter");
 
     const surface = self.findSurfaceByID(id) orelse
         return std.fmt.allocPrint(alloc, "0x{x:0>16}", .{id});

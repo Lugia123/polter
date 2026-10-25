@@ -92,6 +92,35 @@ final class RoleLibrary: ObservableObject {
         }.map(Self.message(for:))
     }
 
+    /// Switch one of the person's own Agent CLIs on or off for a role (task
+    /// 2156 v5), through the core's `ghostty_app_role_launcher_set`. **Written
+    /// straight to `launchers.json`**, not into the role: which roles a
+    /// launcher is on for is kept with the launcher (the file's `roles`),
+    /// which is what the core's control room and both hosts' menus read.
+    /// Nil on success, otherwise a sentence for the person.
+    func setOwnCliRole(_ key: String, role: String, on: Bool) -> String? {
+        guard let app else { return Self.message(for: "NoApp") }
+        var err = [CChar](repeating: 0, count: 128)
+        let ok = key.withCString { cKey in
+            role.withCString { cRole in
+                err.withUnsafeMutableBufferPointer {
+                    ghostty_app_role_launcher_set(
+                        app, cRole, UInt(strlen(cRole)), cKey, UInt(strlen(cKey)), on,
+                        $0.baseAddress, UInt($0.count))
+                }
+            }
+        }
+        reloadClis(refresh: false)
+        return ok ? nil : Self.message(for: String(cString: err))
+    }
+
+    /// Whether one of the person's own is switched on for `role`, as last
+    /// read. **A question of one reading**: the role page and the menus
+    /// must not each work it out from a different copy.
+    func ticked(_ key: String, role: String) -> Bool {
+        clis.own(key)?.ticked(role) ?? false
+    }
+
     /// Read the CLI cache, and keep reading it while the core says a newer
     /// answer is coming. The core never blocks on the adapters, so this is
     /// how the window learns the read finished.

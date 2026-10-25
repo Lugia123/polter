@@ -33,6 +33,29 @@ pub const Id = Bus.Id;
 /// can read but not answer in would be a strange thing to build.
 pub const user_id: Id = 0;
 
+/// Polter itself, as a speaker in a group (task 2156 v5).
+///
+/// **The room, not somebody in it.** The control room has sentences of its
+/// own to say -- an Agent CLI the role no longer has, so this start goes in
+/// the one underneath -- and until this id existed they went in as
+/// `user_id`, so the group showed Polter's own words under the person's
+/// name. `Chat` had two ids and neither of them was Polter: "the person at
+/// the keyboard" and "a terminal".
+///
+/// **`Bus.not_a_terminal`, not a third reserved value.** That id already
+/// means exactly this -- a caller that is not a terminal -- and `Surface`
+/// is documented never to mint it, which is the whole reason it can be
+/// spoken with safely. A third value would be a second answer to a question
+/// that already has one.
+///
+/// **Polter is not a member of any group.** `post` refuses a speaker the
+/// group does not hold, and that rule is about terminals -- a terminal may
+/// not talk into a group it is not in. Polter is the room those
+/// conversations happen in, so `postAsPolter` reaches `append` directly and
+/// leaves the member list, its count (`othersIn`), and who a message wakes
+/// exactly as they were.
+pub const polter_id: Id = Bus.not_a_terminal;
+
 /// What a terminal added to a group is shown of what came before.
 pub const History = enum {
     /// Nothing. The conversation starts for them now.
@@ -1555,6 +1578,29 @@ pub fn postMentioning(
     return self.append(group, from, text, now_ms, false, buf[0..n]);
 }
 
+/// One of Polter's own sentences in `group` (task 2156 v5). See
+/// `polter_id`.
+///
+/// **No membership check, deliberately, and that is the one difference from
+/// `post`.** The check is `post`'s rule about who may talk in a room they
+/// are not in; Polter is not in the room, it *is* the room. Adding it to
+/// every group instead would put a member in every one of them, and
+/// `othersIn` counts members: `delete_group`'s `Stale` check compares that
+/// count against what the host had drawn, and every group in the control
+/// room would have read one larger than it is.
+///
+/// Never addressed to anybody: nobody is asked to act on these, so there is
+/// no `mentions` argument and nobody is typed into.
+pub fn postAsPolter(
+    self: *Chat,
+    name: []const u8,
+    text: []const u8,
+    now_ms: u64,
+) Error!Posted {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    return self.append(group, polter_id, text, now_ms, false, &.{});
+}
+
 /// The text of one message as the group holds it -- trimmed and, if it was
 /// over the limit, cut -- or null if it is not in the group any more.
 pub fn messageText(self: *const Chat, name: []const u8, seq: u64) ?[]const u8 {
@@ -3014,6 +3060,53 @@ test "1787: what Polter says in a group signed with its supervisor wakes nobody 
     // In the record all the same, for whoever reads the group -- the
     // control room shows it to the person.
     try testing.expectEqual(@as(usize, 1), chat.unread("c1b", a));
+}
+
+test "2156 v5: Polter's own sentences are authored by Polter, and cost the group no member" {
+    // The control room's sentences about an Agent CLI it fell back from
+    // (`App.sayInGroup`). They were written under `user_id`, so the group
+    // drew Polter's words under the person's name; `polter_id` is the room
+    // itself speaking.
+    try testing.expect(polter_id != user_id);
+    try testing.expect(polter_id == Bus.not_a_terminal);
+
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.create("c1b", boss);
+    try chat.add("c1b", a, .none, .{});
+
+    // **Not a member, and that is the point**: added to every group instead,
+    // it would count in `othersIn`, which `delete_group` compares against
+    // what the host drew -- every group would have read one larger. Two
+    // here, `boss` and `a`, and `polter_id` is neither of them.
+    try testing.expectEqual(@as(usize, 2), try chat.othersIn("c1b"));
+    try testing.expect(!chat.hasMember("c1b", polter_id));
+    // And a terminal may still not talk into a group it is not in: the
+    // missing-membership rule is untouched for every speaker but Polter.
+    try testing.expectError(error.NotAMember, chat.post("c1b", b, "hi", 0));
+
+    const posted = try chat.postAsPolter("c1b", "[Polter] … is going on in Claude Code.", 5);
+
+    // **The two readings that say who spoke, taken before anybody reads**:
+    // a supervisor is woken for what it has not read, and this is unread
+    // for it like anybody else's words -- the point here is only that it is
+    // *there* to read, under Polter's id.
+    try testing.expectEqual(@as(usize, 1), chat.unread("c1b", boss));
+    try testing.expectEqual(@as(usize, 1), chat.waking("c1b", a, .supervisor));
+
+    const seen = (try chat.read(testing.allocator, "c1b", a, 0, .unlimited)).messages;
+    defer testing.allocator.free(seen);
+
+    try testing.expectEqual(@as(usize, 1), seen.len);
+    try testing.expectEqual(polter_id, seen[0].from);
+    try testing.expectEqual(@as(u64, posted.seq), seen[0].seq);
+    // Nobody is asked to act on it, so no terminal is typed into.
+    try testing.expectEqual(@as(usize, 0), seen[0].mentions.len);
+    // Still counted as othersIn: speaking in a room does not put you in it.
+    try testing.expectEqual(@as(usize, 2), try chat.othersIn("c1b"));
+
+    // A group that is not there is a refusal, not a silent nothing.
+    try testing.expectError(error.NoSuchGroup, chat.postAsPolter("nope", "hi", 0));
 }
 
 test "a terminal is never unread to itself" {

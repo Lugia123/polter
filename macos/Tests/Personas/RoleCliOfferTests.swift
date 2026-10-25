@@ -65,6 +65,63 @@ struct RoleCliOfferTests {
         #expect(offered == ["antigravity", "silent"])
     }
 
+    // MARK: - The person's own (task 2156 v5)
+
+    private let withOwn = """
+        {"stale":false,"refreshing":false,"clis":[
+          {"key":"claude-code","label":"Claude Code","bin":"claude","error":null,"inventory":{"installed":true}},
+          {"key":"codex","label":"Codex","bin":"codex","error":null,"inventory":{"installed":false}}],
+         "own":[
+          {"key":"claude-deepseek-flash","name":"Claude · DeepSeek flash","base":"claude-code","roles":["polter-supervisor"]},
+          {"key":"over-codex","name":"Over Codex","base":"codex","roles":[]}]}
+        """
+
+    /// **One of the person's own stands as its base stands** (task 2156 v5):
+    /// the one over the CLI that is here is offered, the one over a CLI
+    /// whose program is missing is not -- offered, it would be a row that
+    /// answers "no adapter" when clicked.
+    @Test func thePersonsOwnStandAsTheirBaseDoes() throws {
+        let read = try #require(AgentCliSnapshot(json: withOwn))
+        #expect(RoleCliOffer.available(read) == ["claude-code", "claude-deepseek-flash"])
+    }
+
+    /// Its name reaches the menu, not the key (task 2156 v5): the row says
+    /// "Claude · DeepSeek flash", which is what the person called it.
+    @Test func anOwnCliIsNamedByNameAndKnownByItsKey() throws {
+        let read = try #require(AgentCliSnapshot(json: withOwn))
+        #expect(read.label(for: "claude-deepseek-flash") == "Claude · DeepSeek flash")
+        #expect(read.label(for: "claude-code") == "Claude Code")
+        #expect(read.label(for: "nobody") == "nobody")
+        #expect(read.known("claude-deepseek-flash"))
+        #expect(!read.known("nobody"))
+        #expect(read.own("claude-deepseek-flash")?.ticked("polter-supervisor") == true)
+        #expect(read.own("claude-deepseek-flash")?.ticked("polter-tester") == false)
+    }
+
+    /// Where it stands is its base's answer, one hop: not a third thing the
+    /// page has to know about. The base whose plugin is off holds it back
+    /// too, and the base nobody manages is no plugin for it as well.
+    @Test func anOwnCliStandsWhereItsBaseStands() throws {
+        let read = try #require(AgentCliSnapshot(json: """
+            {"stale":false,"refreshing":false,"clis":[],
+             "held_back":[{"key":"codex","label":"Codex","why":"plugin_off"}],
+             "own":[
+              {"key":"over-claude","name":"Over Claude","base":"claude-code","roles":[]},
+              {"key":"over-codex","name":"Over Codex","base":"codex","roles":[]}]}
+            """))
+        #expect(read.standing("over-claude") == .noPlugin)
+        #expect(read.standing("over-codex") == .pluginOff(label: "Codex"))
+    }
+
+    /// A snapshot from a core before this field is not one with no own CLIs,
+    /// and one that has never been read offers everything it is given.
+    @Test func anAnswerWithNoOwnFieldIsAnEmptyOneNotABrokenOne() throws {
+        let old = try #require(AgentCliSnapshot(json: #"{"stale":false,"refreshing":false,"clis":[]}"#))
+        #expect(old.own.isEmpty)
+        #expect(RoleCliOffer.available(old) == [])
+        #expect(RoleCliOffer.available(AgentCliSnapshot()) == nil)
+    }
+
     // MARK: - The row
 
     private final class Target: NSObject {

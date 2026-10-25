@@ -81,13 +81,19 @@ final class PersonaCatalog: ObservableObject {
             isKnown = false
             return
         }
-        // Only the CLIs the core found an adapter for are offered (#1670).
+        // Only the CLIs the core found an adapter for are offered (#1670) --
+        // the person's own among them (task 2156 v5), each as its base
+        // stands. The CLIs a role may be started in are the role's own plus
+        // the person's own ticked for it, in that order, which is the one
+        // rule every entry that starts a role obeys.
         let available = RoleCliOffer.available(library.clis)
         setPersonas(library.catalog.roles.map { role in
+            let mine = library.clis.own.filter { $0.ticked(role.key) }
             var p = Persona(
                 key: role.key,
                 name: role.displayName,
-                clis: role.clis.map { Persona.Cli(key: $0.cli, label: library.clis.label(for: $0.cli)) },
+                clis: role.clis.map { Persona.Cli(key: $0.cli, label: library.clis.label(for: $0.cli)) }
+                    + mine.map { Persona.Cli(key: $0.key, label: $0.name) },
                 available: available)
             p.summaryForMenu = role.displaySummary
             return p

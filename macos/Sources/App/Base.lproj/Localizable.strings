@@ -1283,3 +1283,6 @@
 "Saved." = "Saved.";
 "%@ custom model" = "%@ custom model";
 "Variable name" = "Variable name";
+
+/* 角色库：自定义 Agent CLI 后面跟着它跑哪个底子 CLI，%@ 是 CLI 名 */
+"runs %@" = "runs %@";

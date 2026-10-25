@@ -335,9 +335,33 @@ fn jstr(s: []const u8) std.json.Formatter([]const u8) {
     return std.json.fmt(s, .{});
 }
 
-fn writeStrings(w: *std.Io.Writer, list: []const []const u8) std.Io.Writer.Error!void {
+/// A list of strings as JSON. Public because `writeOwn` writes each one's
+/// roles with it.
+pub fn writeStrings(w: *std.Io.Writer, list: []const []const u8) std.Io.Writer.Error!void {
     try w.writeAll("[");
     for (list, 0..) |s, i| try w.print("{s}{f}", .{ if (i == 0) "" else ",", jstr(s) });
+    try w.writeAll("]");
+}
+
+/// The Agent CLIs of the person's own as a JSON array, each with the roles
+/// it is switched on for: what `ghostty_app_agent_clis` hands every host
+/// that lists a role's CLIs (task 2156 v5). **Duck-typed on purpose**:
+/// `App.ownClis` answers with `ControlRoom.OwnCli`, which is these four
+/// fields, and this file must not depend on `ControlRoom` to say so.
+///
+/// **A variable's name, never its value, and no command**: this is what the
+/// role library and both hosts' `Role ▸` menus draw, and they have no
+/// business with a token. `writeSafe` is the form's own, which does.
+pub fn writeOwn(w: *std.Io.Writer, own: anytype) std.Io.Writer.Error!void {
+    try w.writeAll("[");
+    for (own, 0..) |o, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.print("{{\"key\":{f},\"name\":{f},\"base\":{f},\"roles\":", .{
+            jstr(o.key), jstr(o.name), jstr(o.base),
+        });
+        try writeStrings(w, o.roles);
+        try w.writeAll("}");
+    }
     try w.writeAll("]");
 }
 
@@ -505,4 +529,41 @@ test "2156: the file reads back, an entry that does not read is skipped, and wha
     try testing.expect(std.mem.indexOf(u8, safe.written(), "ANTHROPIC_AUTH_TOKEN") != null);
     try testing.expect(std.mem.indexOf(u8, safe.written(), "\"value\"") == null);
     try testing.expect(std.mem.indexOf(u8, safe.written(), "--verbose") == null);
+}
+
+test "2156 v5: what every host is given of the person's own is their names and their switches -- never a value, never a command" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const own = [_]struct {
+        key: []const u8,
+        name: []const u8,
+        base: []const u8,
+        roles: []const []const u8,
+    }{
+        .{ .key = deepseek.key, .name = deepseek.name, .base = deepseek.base, .roles = &.{"polter-tester"} },
+    };
+    var out: std.Io.Writer.Allocating = .init(aa);
+    try writeOwn(&out.writer, &own);
+    const text = out.written();
+    try testing.expectEqualStrings(
+        "[{\"key\":\"claude-deepseek-flash\",\"name\":\"Claude · DeepSeek flash\",\"base\":\"claude-code\",\"roles\":[\"polter-tester\"]}]",
+        text,
+    );
+    // The command and the variables' values are the settings form's own
+    // (`writeSafe`); every other reader of the person's own is given this,
+    // and it carries neither. (`"deepseek-flash"` with its quotes is the
+    // variable's value; the key ends `-deepseek-flash"`, no quote in front.)
+    try testing.expect(std.mem.indexOf(u8, text, "boclaw") == null);
+    try testing.expect(std.mem.indexOf(u8, text, "\"deepseek-flash\"") == null);
+    try testing.expect(std.mem.indexOf(u8, text, "ANTHROPIC_MODEL") == null);
+    try testing.expect(std.mem.indexOf(u8, text, "command") == null);
+    try testing.expect(std.mem.indexOf(u8, text, "env") == null);
+    // It reads back as the same thing: this is what the two hosts parse.
+    const Parsed = struct { key: []const u8, name: []const u8, base: []const u8, roles: []const []const u8 };
+    const got = try std.json.parseFromSlice([]const Parsed, aa, text, .{ .ignore_unknown_fields = true });
+    defer got.deinit();
+    try testing.expectEqual(@as(usize, 1), got.value.len);
+    try testing.expectEqualStrings("claude-deepseek-flash", got.value[0].key);
+    try testing.expectEqualStrings("polter-tester", got.value[0].roles[0]);
 }

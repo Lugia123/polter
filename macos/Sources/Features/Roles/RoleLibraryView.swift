@@ -25,6 +25,29 @@ final class RoleLibraryEditor: ObservableObject {
     /// the person types a key of their own.
     @Published var keyFollowsName = true
 
+    /// The ticks and unticks of the person's own Agent CLIs this draft
+    /// holds against what the library has, by key (task 2156 v5).
+    ///
+    /// **Part of the draft, not written as it is pressed.** A launcher's
+    /// roles live in `launchers.json` rather than in the role, so the core
+    /// can be told at any moment -- but the two controls in one list would
+    /// then behave differently: a preset's tick waits for Save and this one
+    /// did not, and Discard Changes could not put it back. The person
+    /// cannot tell which is which by looking (the review of v5 says so in
+    /// as many words), so both wait. A key absent here is a tick nobody
+    /// has moved.
+    ///
+    /// It also removes a refusal instead of reporting it: a *new* role has
+    /// no key the core knows yet, so a tick written at press time was
+    /// refused with `NoSuchPersona` and the box simply sprang back. Saved
+    /// first, the role is there to be ticked.
+    @Published var ownOverrides: [String: Bool] = [:]
+
+    /// A refusal from writing those ticks, in words, for the band: kept
+    /// apart from `status` because `save` writes the role first and the
+    /// ticks after it, and one of the two must not overwrite the other.
+    var own_status: String?
+
     /// The official skill on screen, when it is one of those and not a
     /// role: its name, and its whole text as it is being edited.
     @Published private(set) var skill: String?
@@ -40,7 +63,7 @@ final class RoleLibraryEditor: ObservableObject {
     var isDirty: Bool {
         if skill != nil { return skillText != skillSaved }
         guard let draft else { return false }
-        return isNew || draft != original
+        return isNew || draft != original || !ownOverrides.isEmpty
     }
 
     // MARK: Selection
@@ -77,6 +100,7 @@ final class RoleLibraryEditor: ObservableObject {
         selection = key
         isNew = false
         status = nil
+        ownOverrides = [:]
         let role = key.flatMap { k in library.catalog.roles.first { $0.key == k } }
         original = role
         draft = role
@@ -123,6 +147,7 @@ final class RoleLibraryEditor: ObservableObject {
         isNew = true
         keyFollowsName = true
         original = nil
+        ownOverrides = [:]
         draft = role
         activeCli = role.clis.first?.cli
         status = nil
@@ -143,6 +168,7 @@ final class RoleLibraryEditor: ObservableObject {
         isNew = true
         keyFollowsName = false
         original = nil
+        ownOverrides = [:]
         draft = role
         activeCli = role.clis.first?.cli
         status = nil
@@ -164,6 +190,27 @@ final class RoleLibraryEditor: ObservableObject {
             if activeCli == cli { activeCli = role.clis.first?.cli }
         }
         draft = role
+    }
+
+    /// Switch one of the person's own Agent CLIs on or off for this role
+    /// (task 2156 v5). **The tick is the draft's** (`ownOverrides`) and the
+    /// core is told when the role is saved -- see `ownOverrides` for why
+    /// this one is not written as it is pressed, and `save` for where it
+    /// goes. The tick returns to what the library has when the draft is
+    /// thrown away.
+    func setOwnCli(_ key: String, for role: String, used: Bool) {
+        if library.ticked(key, role: role) == used {
+            ownOverrides.removeValue(forKey: key)
+        } else {
+            ownOverrides[key] = used
+        }
+    }
+
+    /// What the person's own Agent CLI `key` is ticked for in the draft on
+    /// screen: the tick they have just made, else what the library has.
+    /// One question, asked by the box that draws and by the write on Save.
+    func ownTicked(_ key: String, role: String) -> Bool {
+        ownOverrides[key] ?? library.ticked(key, role: role)
     }
 
     /// The role's one set of skills or MCP servers, shared by every CLI.
@@ -202,11 +249,37 @@ final class RoleLibraryEditor: ObservableObject {
             return false
         }
         isNew = false
-        status = nil
         selection = role.key
         original = library.catalog.roles.first { $0.key == role.key } ?? role
         draft = original
-        return true
+        // **The ticks of the person's own go after the role itself**, so a
+        // new role is in the library before anything is ticked for it --
+        // which is the whole of what `NoSuchPersona` was about. Every one
+        // that is refused is said in the band, where this page says
+        // everything else it cannot do: a tick that quietly sprang back
+        // told the person nothing (the review of v5, must-fix 2).
+        writeOwnTicks()
+        let why = own_status
+        own_status = nil
+        status = why
+        return why == nil
+    }
+
+    /// Tell the core about every tick of the person's own this save
+    /// carries, and keep the first refusal in words for the band. The
+    /// ticks that went are the ones that did: a key whose write succeeded
+    /// is dropped from the draft rather than asked again.
+    private func writeOwnTicks() {
+        own_status = nil
+        let role = draft?.key ?? selection ?? ""
+        let wanted = ownOverrides
+        for (key, on) in wanted {
+            if let why = library.setOwnCliRole(key, role: role, on: on) {
+                if own_status == nil { own_status = why }
+                continue
+            }
+            ownOverrides.removeValue(forKey: key)
+        }
     }
 
     func revert() {
@@ -930,16 +1003,20 @@ struct RoleLibraryView: View {
 
     private var cliPicker: some View {
         section(String(localized: "Agent CLIs", comment: "角色库：分区名，这个角色可以启动哪些 CLI")) {
-            if library.clis.stale && library.clis.clis.isEmpty {
+            if library.clis.stale && library.clis.clis.isEmpty && library.clis.own.isEmpty {
                 formControl { HStack(spacing: SettingsLayout.rowGap) {
                     ProgressView().controlSize(.small)
                     note(String(localized: "Reading what's installed…", comment: "角色库：正在读取各 CLI 装了什么"))
                 } }
-            } else if library.clis.clis.isEmpty {
+            } else if library.clis.clis.isEmpty && library.clis.own.isEmpty {
                 formControl {
                     note(String(localized: "No plugin that manages an agent CLI is installed and switched on.", comment: "角色库：没有任何 CLI 适配插件"))
                 }
             } else {
+                // The presets, then the person's own (task 2156 v5): **one
+                // tick per CLI either way**, which is the whole of the
+                // person's rule -- what a role may start in is this list,
+                // and the only place it is decided is here.
                 ForEach(library.clis.clis) { cli in
                     formControl { HStack(spacing: SettingsLayout.rowGap) {
                         Toggle(isOn: Binding(
@@ -960,9 +1037,12 @@ struct RoleLibraryView: View {
                         }
                     } }
                 }
+                ForEach(library.clis.own) { mine in
+                    ownRow(mine)
+                }
                 // Choices for a CLI no plugin offers any more are still in
                 // the role; say so rather than hide them.
-                ForEach(editor.draft?.clis.filter { library.clis.cli($0.cli) == nil } ?? []) { orphan in
+                ForEach(editor.draft?.clis.filter { library.clis.cli($0.cli) == nil && library.clis.own($0.cli) == nil } ?? []) { orphan in
                     let held = library.clis.heldBack.first { $0.key == orphan.cli }
                     formControl {
                         Toggle(isOn: Binding(get: { true }, set: { editor.setCli(orphan.cli, used: $0) })) {
@@ -992,6 +1072,36 @@ struct RoleLibraryView: View {
                 }
             }
         }
+    }
+
+    /// One Agent CLI of the person's own, as a tick in the role's list (task
+    /// 2156 v5). **The name is its own** -- "Claude · DeepSeek v4.1 flash",
+    /// not the CLI underneath it, which is in the formula beside it -- and
+    /// the tick is the one place the person says which roles may start in
+    /// it. **The tick is the draft's, saved with the role**: see
+    /// `RoleLibraryEditor.ownOverrides` for why it is not written as it is
+    /// pressed.
+    @ViewBuilder
+    private func ownRow(_ mine: AgentCliSnapshot.Own) -> some View {
+        formControl { HStack(spacing: SettingsLayout.rowGap) {
+            Toggle(isOn: Binding(
+                get: { editor.ownTicked(mine.key, role: editor.draft?.key ?? "") },
+                set: { on in
+                    guard let role = editor.draft?.key else { return }
+                    editor.setOwnCli(mine.key, for: role, used: on)
+                })) {
+                Text(mine.name)
+            }
+            .toggleStyle(.checkbox)
+            Text(String(format: String(localized: "runs %@", comment: "角色库：自定义 Agent CLI 后面跟着它跑哪个底子 CLI，%@ 是 CLI 名"), library.clis.label(for: mine.base)))
+                .font(SettingsFont.minimum)
+                .foregroundStyle(.secondary)
+            if library.clis.standing(mine.key) != .ok {
+                Text(library.clis.whyNot(mine.key) ?? "")
+                    .font(SettingsFont.minimum)
+                    .foregroundStyle(.orange)
+            }
+        } }
     }
 
     /// The one bar in the bottom band: list buttons at the list's left edge,
@@ -1051,10 +1161,21 @@ struct RoleLibraryView: View {
         if editor.isDirty {
             return String(localized: "Save the role before launching it.", comment: "角色库：有未保存修改时不能启动")
         }
-        if (editor.draft?.clis ?? []).isEmpty {
+        if editor.draft?.clis.isEmpty ?? true, launchKeys.isEmpty {
             return String(localized: "Pick an agent CLI under Basics to launch this role.", comment: "角色库：角色没选 CLI 时不能启动")
         }
         return nil
+    }
+
+    /// Every CLI this role may be started in, in the order the section
+    /// above lists them: the role's own, then the person's own switched on
+    /// for it (task 2156 v5). The Launch button and the reason it is grey
+    /// read the same list, so a role with only a launcher ticked can still
+    /// be launched.
+    private var launchKeys: [String] {
+        guard let role = editor.draft else { return [] }
+        return (role.clis.map(\.cli).filter { library.clis.stale || library.clis.known($0) })
+            + library.clis.own.filter { editor.ownTicked($0.key, role: role.key) }.map(\.key)
     }
 
     private var openInPicker: some View {
@@ -1072,15 +1193,19 @@ struct RoleLibraryView: View {
         // button stays and the core says why when it is pressed. Before
         // the CLIs have been read, every one the role names.
         let named = editor.draft?.clis ?? []
-        let here = library.clis.stale ? named : named.filter { library.clis.cli($0.cli) != nil }
-        let clis = here.isEmpty ? Array(named.prefix(1)) : here
+        // One of the person's own is not in the role: which roles it is on
+        // for is kept with the launcher (task 2156 v5), so the CLIs this
+        // button may start in are `launchKeys` -- the role's own plus the
+        // ones the person has switched on for it in the section above.
+        let here = library.clis.stale ? named : named.filter { library.clis.known($0.cli) }
+        let keys = here.isEmpty && launchKeys.isEmpty ? Array(named.prefix(1)).map(\.cli) : launchKeys
         let blocked = launchBlockedReason != nil
         let help = String(localized: "Open a new tab and start the agent CLI in it wearing this role.", comment: "角色库：启动按钮的说明")
-        if clis.count > 1 {
+        if keys.count > 1 {
             Menu(String(localized: "Launch", comment: "角色库：用这个角色启动")) {
-                ForEach(clis) { choice in
-                    Button(library.clis.label(for: choice.cli)) {
-                        if let role = editor.draft { onLaunch(role, choice.cli) }
+                ForEach(keys, id: \.self) { key in
+                    Button(library.clis.label(for: key)) {
+                        if let role = editor.draft { onLaunch(role, key) }
                     }
                 }
             }
@@ -1089,7 +1214,7 @@ struct RoleLibraryView: View {
             .help(help)
         } else {
             Button(String(localized: "Launch", comment: "角色库：用这个角色启动")) {
-                if let role = editor.draft, let cli = clis.first { onLaunch(role, cli.cli) }
+                if let role = editor.draft, let key = keys.first { onLaunch(role, key) }
             }
             .disabled(blocked)
             .help(help)

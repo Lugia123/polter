@@ -69,21 +69,21 @@ struct AgentCliRulesTests {
         #expect(R.args(fromLine: "  --a  b ") == ["--a", "b"])
     }
 
-    /// **The roles the drafts carries are the roles that are sent** (this
-    /// slice): the Agent CLI page is where they are ticked, and the core
-    /// takes them at their word (`settingsPutLauncher`, `keep_roles`
-    /// false). A form that dropped them here could untick nothing.
-    @Test func theRolesTickedForOnThePageAreTheOnesSent() throws {
+    /// **This page no longer decides which roles may start in it** (task
+    /// 2156 v5): the role library does, through the core's
+    /// `ghostty_app_role_launcher_set`. What this page sends still carries
+    /// whatever the core last gave it -- it passes the switches straight
+    /// through and neither adds nor drops one -- and the core keeps them
+    /// (`settingsPutLauncher`, `keep_roles` true).
+    @Test func whatIsSentFromThisPagePassesTheRolesThroughUnchanged() throws {
         let page = try #require(R.decode(Self.json))
-        var c = try #require(page.file.launchers.first)
+        let c = try #require(page.file.launchers.first)
         #expect(c.roles == ["polter-tester"])
-        c.roles = ["polter-tester", "polter-supervisor"]
-        let more = try JSONDecoder().decode(R.Custom.self, from: Data(R.putJSON(c, in: page).utf8))
-        #expect(more.roles == ["polter-tester", "polter-supervisor"])
-        // Unticked on the page: sent unticked, which is what the core reads.
-        c.roles = []
-        let none = try JSONDecoder().decode(R.Custom.self, from: Data(R.putJSON(c, in: page).utf8))
-        #expect(none.roles.isEmpty)
+        let sent = try JSONDecoder().decode(R.Custom.self, from: Data(R.putJSON(c, in: page).utf8))
+        #expect(sent.roles == ["polter-tester"])
+        // Nothing on this page can tick or untick one, so there is no field
+        // whose emptiness would read as "off for every role".
+        #expect(R.blank(in: page).roles.isEmpty)
     }
 
     // MARK: Deleting the selected one (task 2164)
@@ -103,7 +103,6 @@ struct AgentCliRulesTests {
         let name = h.field(\.name, else: saved.name)
         let args = h.field(\.args, else: saved.args)
         let value = h.variable(0, \.value, else: saved.env[0].value)
-        let tester = h.role("polter-tester", else: true)
         #expect(name.wrappedValue == "Claude · DeepSeek flash")
 
         h.draft = nil
@@ -111,10 +110,8 @@ struct AgentCliRulesTests {
         #expect(name.wrappedValue == "Claude · DeepSeek flash")
         #expect(args.wrappedValue == ["--verbose"])
         #expect(value.wrappedValue == "deepseek-flash")
-        #expect(tester.wrappedValue)
         // And a write to a control that is going away goes nowhere.
         name.wrappedValue = "typed late"
-        tester.wrappedValue = false
         #expect(h.draft == nil)
     }
 

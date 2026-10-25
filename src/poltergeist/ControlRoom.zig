@@ -894,36 +894,38 @@ pub fn baseOf(own: []const OwnCli, key: []const u8) []const u8 {
 }
 
 /// What `last` was started in, as a key a role's list holds: the Agent CLI
-/// of the person's own it went through, while that is still there; else its
-/// CLI -- which is also where a start goes on when that one has been
-/// deleted (and `+launch` says so, given the key that is gone).
+/// of the person's own it went through, while that is still there **and
+/// still ticked for `role`**; else its CLI (task 2156 v5).
 ///
-/// ⚠️ **This looks at the file and not at the role's ticks** (see the
-/// slice's README): an own one that is still there but has been unticked
-/// for this role answers with its own key, and `startCliOf` then falls to
-/// the role's first CLI, which need not be its base. Deleting and unticking
-/// therefore behave differently today. Saying both the same way, out loud,
-/// is the next slice's work.
-pub fn startedIn(last: Chat.LastSupervisor, own: []const OwnCli) []const u8 {
+/// **Unticking and deleting are one case** (this is what v3's README left
+/// to the next slice). `launchers.json`'s `roles` is the person saying which
+/// roles may start in it, so an own one unticked for this role is one the
+/// role no longer has: answering with its key would default the start to a
+/// CLI the role was told not to use. Both fall back to the CLI underneath,
+/// and `lostLauncher` is what the caller says out loud about it.
+pub fn startedIn(last: Chat.LastSupervisor, own: []const OwnCli, role: []const u8) []const u8 {
     if (last.launcher.len > 0) for (own) |o| {
-        if (std.mem.eql(u8, o.key, last.launcher)) return o.key;
+        if (std.mem.eql(u8, o.key, last.launcher)) return if (o.ticked(role)) o.key else last.cli;
     };
     return last.cli;
 }
 
-/// The Agent CLI of the person's own a start that goes on with `last`'s
-/// session goes through, given what was `picked` for `cli`. Picked by the
-/// same rule as the start (`startedIn`), that one is already `picked` while
-/// it is there. **Once deleted, the key that is gone**: the start is on its
-/// CLI, and `+launch`, handed a key it cannot find, says so in the terminal
-/// and starts the CLI as its plugin does (task 2156 v3).
+/// The Agent CLI of the person's own `last`'s session was opened through,
+/// when it is no longer one this role may start in: deleted from the file,
+/// or unticked for the role since (task 2156 v5). Null when there is
+/// nothing to say.
 ///
-/// ⚠️ **Handed a key for one that was only unticked this would stop the
-/// launch**: `+launch` refuses an Agent CLI that is not switched on for the
-/// role. Telling that case apart is the next slice's work.
-pub fn goOnThrough(picked: ?[]const u8, cli: []const u8, last: Chat.LastSupervisor) ?[]const u8 {
-    if (picked != null or last.launcher.len == 0) return picked;
-    if (!std.mem.eql(u8, cli, last.cli)) return picked;
+/// **One function for one sentence**: the start and the take-over both fall
+/// back to the CLI underneath, and both say which one went away and that
+/// the session is now its CLI's. Before v5 the deleted case said it in the
+/// terminal (the key rode along on the line) and the unticked case said
+/// nothing at all -- and a key that was only unticked made `+launch` refuse
+/// the whole launch.
+pub fn lostLauncher(last: Chat.LastSupervisor, own: []const OwnCli, role: []const u8) ?[]const u8 {
+    if (last.launcher.len == 0) return null;
+    for (own) |o| if (std.mem.eql(u8, o.key, last.launcher)) {
+        return if (o.ticked(role)) null else o.key;
+    };
     return last.launcher;
 }
 
@@ -931,16 +933,12 @@ pub fn goOnThrough(picked: ?[]const u8, cli: []const u8, last: Chat.LastSupervis
 /// through, while it is still there **and still ticked for `role`**; else
 /// `cli`, as its plugin starts it (task 2156 v3).
 ///
-/// The take-over case of `goOnThrough`: nobody asked for this start -- it is
+/// The take-over case of `startedIn`: nobody asked for this start -- it is
 /// the control room putting back the supervisor that quit -- so there is no
-/// key to say "gone" to. Starting through one that is no longer ticked would
-/// be starting it in something the person has since taken away, and starting
+/// key to say "gone" to, and `lostLauncher` is what the caller says about
+/// it instead. Starting through one that is no longer ticked would be
+/// starting it in something the person has since taken away, and starting
 /// through a deleted one is refused anyway; `cli` is what both fall back to.
-///
-/// ⚠️ **This fall-back is silent, and goes on with the old session.** Both
-/// are the next slice's work (see the README): saying in the group which CLI
-/// the take-over went in and why, and not continuing a session that was
-/// opened through a gateway in the CLI underneath it.
 pub fn takeOverThrough(run_launcher: []const u8, cli: []const u8, own: []const OwnCli, role: []const u8) []const u8 {
     if (run_launcher.len == 0) return cli;
     for (own) |o| {
@@ -1088,9 +1086,10 @@ pub fn installedHere(
 
 /// The CLI a role is started in, of those it can be here (`startClisOf`):
 /// the last supervisor's when it is one of them, else the first. Null for
-/// none.
-pub fn startCliOf(clis: []const []const u8, last: Chat.LastSupervisor, own: []const OwnCli) ?[]const u8 {
-    const was = startedIn(last, own);
+/// none. `role` is the role this start is for, which `startedIn` needs to
+/// tell an own one that is still ticked from one that has been unticked.
+pub fn startCliOf(clis: []const []const u8, last: Chat.LastSupervisor, own: []const OwnCli, role: []const u8) ?[]const u8 {
+    const was = startedIn(last, own, role);
     if (was.len > 0) for (clis) |c| {
         if (std.mem.eql(u8, c, was)) return c;
     };
@@ -1129,6 +1128,9 @@ pub fn resumeOf(q: struct {
     /// The CLI it would be started in -- an Agent CLI of the person's own
     /// by its key; null when there is none.
     cli: ?[]const u8,
+    /// The role this start is for: which tells an own one that is still
+    /// ticked for it from one the person has unticked (task 2156 v5).
+    role: []const u8,
     /// What those keys run (task 2156 v3): a session goes on only in what
     /// started it (`startedIn`), and whether that can is its base's answer.
     own: []const OwnCli,
@@ -1143,7 +1145,7 @@ pub fn resumeOf(q: struct {
         if (q.last.session.len == 0) break :why .no_session;
         if (q.last_try_failed) break :why .last_try_failed;
         const cli = q.cli orelse break :why .cli_differs;
-        if (!std.mem.eql(u8, cli, startedIn(q.last, q.own))) break :why .cli_differs;
+        if (!std.mem.eql(u8, cli, startedIn(q.last, q.own, q.role))) break :why .cli_differs;
         const base = baseOf(q.own, cli);
         switch (q.cli_resume) {
             .unread => break :why .clis_unread,
@@ -2499,13 +2501,14 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
         .{ .dir = "", .from = .none };
 
     const role = startRoleOf(in.supervisor_roles, last);
-    const cli = if (role) |r| startCliOf(try startClisOf(arena, r, in.cli_standings), last, in.own_clis) else null;
+    const cli = if (role) |r| startCliOf(try startClisOf(arena, r, in.cli_standings), last, in.own_clis, r.key) else null;
 
     const open = try arena.alloc(Id, in.terminals.len);
     for (in.terminals, open) |t, *o| o.* = t.id;
     const go_on = resumeOf(.{
         .last = last,
         .cli = cli,
+        .role = if (role) |r| r.key else "",
         .own = in.own_clis,
         .cli_resume = in.cli_resume,
         .held = sessionHeld(in.bus, open, last.session),
@@ -2524,6 +2527,7 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
         const this_one = resumeOf(.{
             .last = last,
             .cli = c,
+            .role = r.key,
             .own = in.own_clis,
             .cli_resume = in.cli_resume,
             .held = sessionHeld(in.bus, open, last.session),
@@ -2545,10 +2549,17 @@ fn supervisorOf(arena: Allocator, in: Input, name: []const u8, steward: ?Id, wak
         .cwd_from = cwd.from,
         .last = .{
             .role = if (last.role.len > 0) try arena.dupe(u8, last.role) else null,
-            // What it was started in: an Agent CLI of the person's own
-            // that is still there, by its key (task 2156 v3).
-            .cli = if (startedIn(last, in.own_clis).len > 0) try arena.dupe(u8, startedIn(last, in.own_clis)) else null,
-            .cli_label = if (cliLabelOf(in.cli_names, startedIn(last, in.own_clis))) |l| try arena.dupe(u8, l) else null,
+            // What it was started in: an Agent CLI of the person's own that
+            // is still there and still ticked for this role, by its key
+            // (task 2156 v5). Unticked falls back with the deleted one.
+            .cli = blk: {
+                const was = startedIn(last, in.own_clis, if (role) |r| r.key else "");
+                break :blk if (was.len > 0) try arena.dupe(u8, was) else null;
+            },
+            .cli_label = blk: {
+                const was = startedIn(last, in.own_clis, if (role) |r| r.key else "");
+                break :blk if (cliLabelOf(in.cli_names, was)) |l| try arena.dupe(u8, l) else null;
+            },
             .heard_ms = last.heard_ms,
         },
         .@"resume" = go_on,
@@ -6014,7 +6025,7 @@ test "ControlRoom resume: whether a start goes on with the last session, one rea
     const can_all: CliResume = .{ .read = &.{ "codex", "claude-code" } };
 
     // Everything in place: it can, and there is no reason.
-    const yes = resumeOf(.{ .last = whole, .cli = "claude-code", .own = &.{}, .cli_resume = can_all, .held = false, .last_try_failed = false });
+    const yes = resumeOf(.{ .last = whole, .cli = "claude-code", .role = "polter-supervisor", .own = &.{}, .cli_resume = can_all, .held = false, .last_try_failed = false });
     try testing.expect(yes.can);
     try testing.expectEqual(ResumeOut.Why.none, yes.why);
 
@@ -6057,14 +6068,14 @@ test "ControlRoom resume: whether a start goes on with the last session, one rea
         .{ .held = true, .why = .session_in_use },
     };
     for (cells) |c| {
-        const got = resumeOf(.{ .last = c.last, .cli = c.cli, .own = &.{}, .cli_resume = c.cli_resume, .held = c.held, .last_try_failed = c.last_try_failed });
+        const got = resumeOf(.{ .last = c.last, .cli = c.cli, .role = "polter-supervisor", .own = &.{}, .cli_resume = c.cli_resume, .held = c.held, .last_try_failed = c.last_try_failed });
         try testing.expectEqual(c.why, got.why);
         try testing.expect(!got.can);
     }
 
     // The order, where two apply: what is missing is said before what
     // would not have mattered.
-    const two = resumeOf(.{ .last = silent, .cli = "codex", .own = &.{}, .cli_resume = .unread, .held = true, .last_try_failed = true });
+    const two = resumeOf(.{ .last = silent, .cli = "codex", .role = "polter-supervisor", .own = &.{}, .cli_resume = .unread, .held = true, .last_try_failed = true });
     try testing.expectEqual(ResumeOut.Why.no_session, two.why);
 }
 
@@ -6170,24 +6181,24 @@ test "ControlRoom resume: the role and the CLI a start uses are the last supervi
 
     // Nothing written down: the first role, and its first CLI.
     try testing.expectEqualStrings("polter-supervisor", startRoleOf(&roles, last).?.key);
-    try testing.expectEqualStrings("codex", startCliOf(roles[1].clis, last, &.{}).?);
+    try testing.expectEqualStrings("codex", startCliOf(roles[1].clis, last, &.{}, "night-lead").?);
 
     // The role it wore, and the CLI it was -- not the role's first.
     last.role = "night-lead";
     last.cli = "claude-code";
     const role = startRoleOf(&roles, last).?;
     try testing.expectEqualStrings("night-lead", role.key);
-    try testing.expectEqualStrings("claude-code", startCliOf(role.clis, last, &.{}).?);
+    try testing.expectEqualStrings("claude-code", startCliOf(role.clis, last, &.{}, "night-lead").?);
 
     // A role that is gone, or no longer one to start a supervisor in, and
     // a CLI the role is no longer set up for: the first of each again.
     last.role = "deleted";
     last.cli = "gemini";
     try testing.expectEqualStrings("polter-supervisor", startRoleOf(&roles, last).?.key);
-    try testing.expectEqualStrings("codex", startCliOf(roles[1].clis, last, &.{}).?);
+    try testing.expectEqualStrings("codex", startCliOf(roles[1].clis, last, &.{}, "night-lead").?);
 
     try testing.expectEqual(@as(?StartRole, null), startRoleOf(&.{}, last));
-    try testing.expectEqual(@as(?[]const u8, null), startCliOf(&.{}, last, &.{}));
+    try testing.expectEqual(@as(?[]const u8, null), startCliOf(&.{}, last, &.{}, "polter-supervisor"));
 }
 
 test "ControlRoom resume: the snapshot says what a group's last supervisor was and whether a start goes on with its session" {
@@ -6426,8 +6437,7 @@ test "2156 v3: a role's own Agent CLIs are offered as its CLIs are -- listed, na
     }
 }
 
-test "2156 v3: going on with a session started through one of the person's own goes through it again -- and, once it is deleted, through the key that is gone" {
-    const agent_cli = @import("agent_cli.zig");
+test "2156 v5: going on with a session started through one of the person's own goes through it again -- and, once it is deleted or unticked for the role, through its CLI, with a key to say so about" {
     const own = [_]OwnCli{.{ .key = "claude-deepseek-flash", .name = "DS", .base = "claude-code", .roles = &.{"polter-supervisor"} }};
     const last: Chat.LastSupervisor = .{
         .dir = "/w",
@@ -6441,35 +6451,38 @@ test "2156 v3: going on with a session started through one of the person's own g
     const can: CliResume = .{ .read = &.{"claude-code"} };
     const q = struct {
         fn go(l: Chat.LastSupervisor, cli: []const u8, o: []const OwnCli, r: CliResume) ResumeOut {
-            return resumeOf(.{ .last = l, .cli = cli, .own = o, .cli_resume = r, .held = false, .last_try_failed = false });
+            return resumeOf(.{ .last = l, .cli = cli, .role = "polter-supervisor", .own = o, .cli_resume = r, .held = false, .last_try_failed = false });
         }
     };
 
-    // While it is there: it, and only it, goes on.
-    try testing.expectEqualStrings("claude-deepseek-flash", startedIn(last, &own));
+    // While it is there and still ticked for this role: it, and only it,
+    // goes on.
+    try testing.expectEqualStrings("claude-deepseek-flash", startedIn(last, &own, "polter-supervisor"));
+    try testing.expectEqual(@as(?[]const u8, null), lostLauncher(last, &own, "polter-supervisor"));
     try testing.expect(q.go(last, "claude-deepseek-flash", &own, can).can);
     try testing.expectEqual(ResumeOut.Why.cli_differs, q.go(last, "claude-code", &own, can).why);
     // Whether it can is its base's answer.
     try testing.expectEqual(ResumeOut.Why.cli_cannot_resume, q.go(last, "claude-deepseek-flash", &own, .{ .read = &.{"codex"} }).why);
 
-    // The line that goes on carries it.
-    var buf: [256]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&buf);
-    const through = goOnThrough("claude-deepseek-flash", "claude-code", last);
-    try agent_cli.writeLaunchWords(&w, "polter-supervisor", "claude-code", .{ .group = "g", .session = last.session, .launcher = through });
-    try testing.expect(std.mem.indexOf(u8, w.buffered(), " --resume=s-2156") != null);
-    try testing.expect(std.mem.indexOf(u8, w.buffered(), " --launcher=claude-deepseek-flash") != null);
+    // **Unticked for this role is the same case as deleted** (task 2156 v5):
+    // its CLI goes on with the session, and the caller has a key to say so
+    // about. Before v5 the unticked one answered with its own key, and
+    // `+launch` refused the whole launch for it.
+    const elsewhere = [_]OwnCli{.{ .key = "claude-deepseek-flash", .name = "DS", .base = "claude-code", .roles = &.{"polter-tester"} }};
+    try testing.expectEqualStrings("claude-code", startedIn(last, &elsewhere, "polter-supervisor"));
+    try testing.expectEqualStrings("claude-deepseek-flash", lostLauncher(last, &elsewhere, "polter-supervisor").?);
+    try testing.expect(q.go(last, "claude-code", &elsewhere, can).can);
 
-    // Deleted: its CLI goes on with the session, and the line still names
-    // the key that is gone, for `+launch` to say so.
-    try testing.expectEqualStrings("claude-code", startedIn(last, &.{}));
+    // Deleted: the same, and the key that is gone is still named.
+    try testing.expectEqualStrings("claude-code", startedIn(last, &.{}, "polter-supervisor"));
+    try testing.expectEqualStrings("claude-deepseek-flash", lostLauncher(last, &.{}, "polter-supervisor").?);
     try testing.expect(q.go(last, "claude-code", &.{}, can).can);
-    try testing.expectEqualStrings("claude-deepseek-flash", goOnThrough(null, "claude-code", last).?);
 
-    // Started as its plugin starts it: nothing to go through.
+    // Started as its plugin starts it: nothing to go through and nothing to
+    // say about.
     var plain = last;
     plain.launcher = "";
-    try testing.expectEqual(@as(?[]const u8, null), goOnThrough(null, "claude-code", plain));
+    try testing.expectEqual(@as(?[]const u8, null), lostLauncher(plain, &own, "polter-supervisor"));
     try testing.expect(q.go(plain, "claude-code", &own, can).can);
 }
 

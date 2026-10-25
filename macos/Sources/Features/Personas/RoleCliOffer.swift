@@ -50,8 +50,18 @@ enum RoleCliOffer: Hashable {
     /// that did not say, or whose inventory failed, is still offered: not
     /// known is not "missing". The Windows host's twin is
     /// `roles::CliSnapshot::available`.
+    ///
+    /// **The person's own are in here too** (task 2156 v5): the core puts
+    /// them in the same answer (`AgentCliSnapshot.own`), and one stands as
+    /// its base does -- a launcher over a CLI whose plugin is off would
+    /// otherwise be a row that answers "no adapter" when clicked.
     static func available(_ snapshot: AgentCliSnapshot) -> Set<String>? {
-        snapshot.stale ? nil : Set(snapshot.clis.filter { $0.installed != false }.map(\.key))
+        guard !snapshot.stale else { return nil }
+        var out = Set(snapshot.clis.filter { $0.installed != false }.map(\.key))
+        for mine in snapshot.own where out.contains(mine.base) {
+            out.insert(mine.key)
+        }
+        return out
     }
 
     /// Make `entry` -- the role's row -- act this way.

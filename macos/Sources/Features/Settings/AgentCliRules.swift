@@ -169,7 +169,12 @@ extension AgentCliDraftHolder {
             })
     }
 
-    /// Whether the draft is switched on for `role`.
+    /// Whether the draft is switched on for `role`. **Nothing on the Agent
+    /// CLI page ticks these any more** (task 2156 v5): which roles may start
+    /// in one of the person's own is decided in the role library, through
+    /// the core's `ghostty_app_role_launcher_set`. Kept because a draft
+    /// carries its roles -- `dirty` and `revert` compare the whole thing,
+    /// and one that dropped them would read as a change.
     func role(_ role: String, else made: Bool) -> Binding<Bool> {
         Binding(
             get: { [weak self] in self?.draft.map { $0.roles.contains(role) } ?? made },
