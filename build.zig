@@ -78,6 +78,14 @@ pub fn build(b: *std.Build) !void {
     // `-Demit-xcframework=false -Demit-macos-app=false` leaves out -- so
     // tools/pre-push-full-test can run and remember the two halves apart.
     const test_macos_step = b.step("test-macos", "Run the macOS host's xcodebuild tests");
+    // What `test` compiles, without running it. A filtered `test` does not
+    // compile the tests it skips, so a tree can pass every named test and
+    // still not build the suite -- which is how GitHub's run came to be
+    // the first place an exhaustive switch in a test went red.
+    const test_build_step = b.step(
+        "test-build",
+        "Build the unit tests without running them (compile check; give it no -Dtest-filter)",
+    );
     const test_lib_vt_step = b.step(
         "test-lib-vt",
         "Run libghostty-vt tests",
@@ -481,6 +489,7 @@ pub fn build(b: *std.Build) !void {
             test_step.dependOn(&test_exe_install.step);
         }
         _ = try deps.add(test_exe);
+        test_build_step.dependOn(&test_exe.step);
 
         addGhosttyH(b, test_exe.root_module, config.baselineTarget(b.graph.io), .Debug);
 

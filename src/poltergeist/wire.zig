@@ -283,15 +283,17 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .key = (try optionalString(aa, params, "key")) orelse "",
         } },
 
-        .resource_overview => .{ .resource_overview = .{
-            .group = (try optionalString(aa, params, "group")) orelse "",
-            // **A pid that does not fit is refused, not cast.** `@intCast`
-            // here was a panic -- Debug and ReleaseSafe both -- on a
-            // `{"pid": 4294967296}` from any terminal, and this tool is
-            // callable by every plugin as well. A request that cannot be
-            // answered as asked is an error, not a crash.
-            .pid = std.math.cast(u32, try optionalU64(params, "pid", 0)) orelse return error.BadParams,
-        } },
+        .resource_overview => .{
+            .resource_overview = .{
+                .group = (try optionalString(aa, params, "group")) orelse "",
+                // **A pid that does not fit is refused, not cast.** `@intCast`
+                // here was a panic -- Debug and ReleaseSafe both -- on a
+                // `{"pid": 4294967296}` from any terminal, and this tool is
+                // callable by every plugin as well. A request that cannot be
+                // answered as asked is an error, not a crash.
+                .pid = std.math.cast(u32, try optionalU64(params, "pid", 0)) orelse return error.BadParams,
+            },
+        },
 
         // The screenshot tools carry each parameter as the JSON it arrived
         // as; `screenshot.zig` decides what a value may be. The names were

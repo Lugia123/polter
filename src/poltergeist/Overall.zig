@@ -186,7 +186,7 @@ pub fn growth(points: []const Point) Growth {
     // Rule 2: it has to have gained this much. The window's first five
     // points and its last five, by the same rule every segment is read by.
     const lo = medianMem(win[0..@min(win.len, 5)]);
-    const hi = medianMem(win[win.len - @min(win.len, 5)..]);
+    const hi = medianMem(win[win.len - @min(win.len, 5) ..]);
     const rose = hi -| lo;
     if (rose < thresholds.rising_mib) return .{ .slope_mib_per_h = slope, .rose_mib = rose };
 
@@ -220,7 +220,7 @@ pub fn growth(points: []const Point) Growth {
         // **At most five of each**, which is `median`'s own limit: a
         // segment is judged by where it started and where it ended.
         const head = seg[0..@min(mid, 5)];
-        const tail = seg[seg.len - @min(seg.len - mid, 5)..];
+        const tail = seg[seg.len - @min(seg.len - mid, 5) ..];
         if (medianMem(tail) > medianMem(head)) {
             rising_segments += 1;
             if (run_start == null) run_start = i;

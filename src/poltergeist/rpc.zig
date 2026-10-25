@@ -2860,6 +2860,10 @@ test "only what changes the arrangement needs the supervisor" {
             .record_list,
             .record_search,
             .record_read,
+
+            // What Polter and the machine are spending: no terminal is
+            // reached, and a worker is the one the full disk kills.
+            .resource_overview,
             => true,
 
             // Polter's own logs are about the whole machine.

@@ -1226,7 +1226,8 @@ test "2015: a grid cell's hover says what stopped, why, the largest process and 
 }
 
 /// `key` of `o`, which must be there and hold null.
-fn expectNull(o: std.json.ObjectMap, key: []const u8) !void {    const v = o.get(key) orelse {
+fn expectNull(o: std.json.ObjectMap, key: []const u8) !void {
+    const v = o.get(key) orelse {
         std.debug.print("{s} is missing; it should be there as null\n", .{key});
         return error.TestExpectedEqual;
     };
