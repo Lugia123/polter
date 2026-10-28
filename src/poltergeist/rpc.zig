@@ -616,7 +616,17 @@ pub const Request = union(Method) {
     group_rename: struct { group: []const u8, to: []const u8 },
     group_add: struct { group: []const u8, id: Bus.Id, history: History = .none },
     group_remove: struct { group: []const u8, id: Bus.Id },
-    group_compact: struct { group: []const u8, through: u64, summary: []const u8 },
+    group_compact: struct {
+        group: []const u8,
+        through: u64,
+        summary: []const u8,
+
+        /// Which channel to compact: 0 (absent) is the public one, a task
+        /// number is that task's. One channel per call, because a summary
+        /// that stood in for several would carry a squad's private talk
+        /// into the public channel.
+        task: u64 = 0,
+    },
     group_list: struct {
         /// Just this group, with its brief whole. Omitted, every group the
         /// caller may see, each brief cut to a preview (task 591).
@@ -632,6 +642,12 @@ pub const Request = union(Method) {
         /// prose is a guess, and a wrong guess types into somebody who was
         /// not named. Empty is today's post, unchanged.
         mention: []const Bus.Id = &.{},
+
+        /// Which channel: a task number is that task's channel, 0 is the
+        /// public one. **Absent is not 0**: a member of exactly one open
+        /// task posts into that task's channel, which is what an older
+        /// session that has never heard of this field needs.
+        task: ?u64 = null,
     },
     group_read: struct {
         group: []const u8,
@@ -5323,6 +5339,18 @@ pub const Typist = enum {
     person_elsewhere,
 };
 
+/// A place `id` holds or held in one task's channel.
+pub const ChannelSeat = struct {
+    task: u64,
+
+    /// Wall-clock ms the place ended, or null while it is held.
+    until_ms: ?u64 = null,
+
+    /// Whether the task is open and the place is held now: only then may it
+    /// post into the channel.
+    current: bool,
+};
+
 /// Who a group post is to be typed into, handed to `Host.chatPost`.
 pub const Mentions = struct {
     /// The author's title as the stored text names it, so the line typed
@@ -5338,7 +5366,12 @@ pub const Mentions = struct {
     /// (task 1738).
     typist: Typist,
 
-    pub const none: Mentions = .{ .typist = .agent };
+    /// The channel it goes into, 0 being the public one. **No default**, for
+    /// the reason `typist` has none: a post that does not say where it goes
+    /// is how a squad's words end up in the public channel.
+    channel: u64,
+
+    pub const none: Mentions = .{ .typist = .agent, .channel = 0 };
 };
 
 pub const Delivery = struct {
@@ -6399,6 +6432,7 @@ pub const Host = struct {
             ctx: *anyopaque,
             group: []const u8,
             through: u64,
+            channel: u64,
             summary: []const u8,
             by: Bus.Id,
         ) anyerror!Chat.Kept,
@@ -6553,7 +6587,27 @@ pub const Host = struct {
             group: []const u8,
             id: Bus.Id,
             since: ?u64,
+            scope: Chat.Scope,
         ) anyerror!ChatBatch,
+
+        /// Which task channels of `group` `id` holds or held a place in,
+        /// each with whether it holds it now. What `Host.scopeFor` is built
+        /// from. Owned by `alloc`.
+        channelSeats: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            group: []const u8,
+            id: Bus.Id,
+        ) anyerror![]const ChannelSeat,
+
+        /// The terminals holding a place in task `task`'s channel now, or
+        /// null when that task is not in `group`. Owned by `alloc`.
+        channelReaders: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            group: []const u8,
+            task: u64,
+        ) anyerror!?[]const Bus.Id,
 
         /// Messages older than `before_seq` in `group`, out of the log on
         /// disk.
@@ -6570,6 +6624,7 @@ pub const Host = struct {
             before_seq: u64,
             limit: usize,
             filter: ChatFilter,
+            scope: Chat.Scope,
         ) anyerror!ChatPage,
 
         /// `record_*` and `log_*` (task 1511): the host knows who `caller`
@@ -7106,10 +7161,11 @@ pub const Host = struct {
         self: Host,
         group: []const u8,
         through: u64,
+        channel: u64,
         summary: []const u8,
         by: Bus.Id,
     ) anyerror!Chat.Kept {
-        return self.vtable.chatCompact(self.ctx, group, through, summary, by);
+        return self.vtable.chatCompact(self.ctx, group, through, channel, summary, by);
     }
 
     fn chatPost(
@@ -7144,8 +7200,47 @@ pub const Host = struct {
         group: []const u8,
         id: Bus.Id,
         since: ?u64,
+        scope: Chat.Scope,
     ) anyerror!ChatBatch {
-        return self.vtable.chatRead(self.ctx, alloc, group, id, since);
+        return self.vtable.chatRead(self.ctx, alloc, group, id, since, scope);
+    }
+
+    fn channelSeats(self: Host, alloc: std.mem.Allocator, group: []const u8, id: Bus.Id) anyerror![]const ChannelSeat {
+        return self.vtable.channelSeats(self.ctx, alloc, group, id);
+    }
+
+    fn channelReaders(self: Host, alloc: std.mem.Allocator, group: []const u8, task: u64) anyerror!?[]const Bus.Id {
+        return self.vtable.channelReaders(self.ctx, alloc, group, task);
+    }
+
+    /// **The one place a `Chat.Scope` is made for a caller** (squads S2,
+    /// plan 6.3). Every read path takes the result; none builds its own.
+    ///
+    /// The user, and the supervisor of this very group, read every channel.
+    /// Anybody else reads the public one and the channels of the tasks it
+    /// holds or held a place in. A failure to find out is not "everything":
+    /// it is the public channel alone, so the worst a broken lookup does is
+    /// show less.
+    pub fn scopeFor(self: Host, alloc: std.mem.Allocator, bus: *const Bus, caller: Bus.Id, group: []const u8) Chat.Scope {
+        if (caller == Chat.user_id) return .everything;
+        if (bus.isSupervisor(caller) and self.ownsGroup(group, caller)) return .everything;
+
+        const seats = self.channelSeats(alloc, group, caller) catch return Chat.Scope.public;
+        const out = alloc.alloc(Chat.Scope.Seat, seats.len) catch return Chat.Scope.public;
+        for (seats, out) |seat, *o| o.* = .{ .task = seat.task, .until_ms = seat.until_ms };
+        return .{ .only = out };
+    }
+
+    /// What a terminal is told about a group's unread messages: the scope it
+    /// reads with and how many it can see unread in it. **The one place the
+    /// notice sweep gets either**, so the count a notice states is the count
+    /// `group_read` can account for -- a squad's channel is never in it for
+    /// somebody outside the squad.
+    pub const Notice = struct { scope: Chat.Scope, count: usize };
+
+    pub fn noticeFor(self: Host, alloc: std.mem.Allocator, bus: *const Bus, chat: *const Chat, group: []const u8, id: Bus.Id) Notice {
+        const scope = self.scopeFor(alloc, bus, id, group);
+        return .{ .scope = scope, .count = chat.unread(group, id, scope) };
     }
 
     fn recordTool(self: Host, alloc: std.mem.Allocator, caller: Bus.Id, req: Request) anyerror!RecordTools.Answer {
@@ -7160,8 +7255,9 @@ pub const Host = struct {
         before_seq: u64,
         limit: usize,
         filter: ChatFilter,
+        scope: Chat.Scope,
     ) anyerror!ChatPage {
-        return self.vtable.chatHistory(self.ctx, alloc, group, id, before_seq, limit, filter);
+        return self.vtable.chatHistory(self.ctx, alloc, group, id, before_seq, limit, filter, scope);
     }
 
     fn pluginList(
@@ -9081,7 +9177,7 @@ fn dispatchOne(
         },
 
         .group_compact => |p| {
-            const wrote = host.chatCompact(p.group, p.through, p.summary, caller) catch |err|
+            const wrote = host.chatCompact(p.group, p.through, p.task, p.summary, caller) catch |err|
                 return chatFailure(err);
 
             // **The summary is the one message that cannot be cut quietly.**
@@ -9167,9 +9263,13 @@ fn dispatchOne(
         },
 
         .group_post => |p| {
-            if (p.mention.len > 0) return postMentioning(alloc, bus, host, caller, p);
+            const channel = switch (try postChannel(alloc, bus, host, caller, p.group, p.task)) {
+                .channel => |c| c,
+                .refused => |r| return r,
+            };
+            if (p.mention.len > 0) return postMentioning(alloc, bus, host, caller, p, channel);
 
-            const wrote = (host.chatPost(p.group, caller, p.text, .none) catch |err|
+            const wrote = (host.chatPost(p.group, caller, p.text, .{ .typist = .agent, .channel = channel }) catch |err|
                 return chatFailure(err)).wrote;
 
             // **Said before anything else, because it changes what was
@@ -9239,7 +9339,7 @@ fn dispatchOne(
             // host is where the cursor lives and the two have to be the same
             // decision. Cutting again on this side would put them back out
             // of step, which is the defect this arm used to carry.
-            const batch = host.chatRead(alloc, p.group, caller, p.since) catch |err|
+            const batch = host.chatRead(alloc, p.group, caller, p.since, host.scopeFor(alloc, bus, caller, p.group)) catch |err|
                 return chatFailure(err);
 
             // What to pass as `since` next time, so a caller paging through
@@ -9279,7 +9379,7 @@ fn dispatchOne(
                 .since_ms = p.since_ms,
                 .until_ms = p.until_ms,
                 .match = p.match,
-            }) catch |err| return chatFailure(err);
+            }, host.scopeFor(alloc, bus, caller, p.group)) catch |err| return chatFailure(err);
 
             // Two ways there can be more: the log said so, or the budget
             // cut the batch short. Either leaves something older that the
@@ -9776,6 +9876,71 @@ fn failure(err: Error) wire.Response {
     return .{ .failed = .{ .code = @errorName(err), .message = errorMessage(err) } };
 }
 
+fn noSuchTask(alloc: std.mem.Allocator, group: []const u8, task: u64) std.mem.Allocator.Error!wire.Response {
+    return hostFailure("NoSuchTask", try std.fmt.allocPrint(
+        alloc,
+        "there is no task {d} in \"{s}\", so it has no channel. task_list shows the panel.",
+        .{ task, group },
+    ));
+}
+
+/// Where a `group_post` goes (squads S2, plan 6.2).
+///
+/// - `task=0` is the public channel, for anybody in the group.
+/// - `task=N` is task N's channel: its members', and the user's and the
+///   group's supervisor's. Anybody else is `NotYourChannel`.
+/// - Without `task` a terminal that holds a place in exactly one open task
+///   posts into that task's channel -- so a session that has never heard of
+///   the parameter lands in the quietest right place -- and one in none
+///   posts publicly, as it always has. In two or more it is told to choose.
+fn postChannel(
+    alloc: std.mem.Allocator,
+    bus: *const Bus,
+    host: Host,
+    caller: Bus.Id,
+    group: []const u8,
+    task: ?u64,
+) std.mem.Allocator.Error!union(enum) { channel: u64, refused: wire.Response } {
+    const n = task orelse 0;
+    if (task != null and n == 0) return .{ .channel = 0 };
+
+    const all = switch (host.scopeFor(alloc, bus, caller, group)) {
+        .everything => true,
+        .only => false,
+    };
+    if (all) {
+        if (task == null) return .{ .channel = 0 };
+        const readers = host.channelReaders(alloc, group, n) catch |err| return .{ .refused = chatFailure(err) };
+        if (readers == null) return .{ .refused = try noSuchTask(alloc, group, n) };
+        return .{ .channel = n };
+    }
+
+    const seats = host.channelSeats(alloc, group, caller) catch |err| return .{ .refused = chatFailure(err) };
+    var mine: std.ArrayList(u64) = .empty;
+    for (seats) |seat| {
+        if (seat.current) try mine.append(alloc, seat.task);
+    }
+
+    if (task != null) {
+        if (std.mem.indexOfScalar(u64, mine.items, n) != null) return .{ .channel = n };
+        return .{ .refused = hostFailure(
+            "NotYourChannel",
+            "that is not a channel you hold a place in: you may post to the public channel (task=0) and to the channel of a task you are a member of. group_read shows what you can see.",
+        ) };
+    }
+
+    if (mine.items.len == 0) return .{ .channel = 0 };
+    if (mine.items.len == 1) return .{ .channel = mine.items[0] };
+
+    var list: std.Io.Writer.Allocating = .init(alloc);
+    for (mine.items) |t| list.writer.print(" {d}", .{t}) catch return error.OutOfMemory;
+    return .{ .refused = hostFailure("AmbiguousChannel", try std.fmt.allocPrint(
+        alloc,
+        "you hold a place in more than one task:{s}. Say where this goes: task=<number> for that task's channel, or task=0 for the public one. Nothing was posted.",
+        .{list.written()},
+    )) };
+}
+
 /// A group post that names terminals: `dev-docs/poltergeist/mentions.md`.
 ///
 /// Four steps, and the order is the contract:
@@ -9797,6 +9962,7 @@ fn postMentioning(
     host: Host,
     caller: Bus.Id,
     p: @FieldType(Request, "group_post"),
+    channel: u64,
 ) std.mem.Allocator.Error!wire.Response {
     if (p.mention.len > Chat.max_mentions) return hostFailure(
         "TooManyMentions",
@@ -9837,6 +10003,29 @@ fn postMentioning(
             .{ p.group, strangers.written() },
         ),
     );
+
+    // A name that cannot read the channel is refused with the rest, whole.
+    // The supervisor can always be named, and so can the person.
+    if (channel != 0) {
+        const readers = (host.channelReaders(alloc, p.group, channel) catch |err| return chatFailure(err)) orelse
+            return noSuchTask(alloc, p.group, channel);
+        var outsiders: std.Io.Writer.Allocating = .init(alloc);
+        for (named.items) |id| {
+            if (id == Chat.user_id or bus.isSupervisor(id)) continue;
+            if (std.mem.indexOfScalar(Bus.Id, readers, id) != null) continue;
+            outsiders.writer.print(" 0x{x:0>16}", .{id}) catch return error.OutOfMemory;
+        }
+        if (outsiders.written().len > 0) return hostFailure(
+            "MentionNotInChannel",
+            try std.fmt.allocPrint(
+                alloc,
+                "not in task {d}'s channel:{s}. Nothing was posted and nobody was typed " ++
+                    "into. A name must be able to read what it is named in; to reach " ++
+                    "everybody, post to the public channel with task=0.",
+                .{ channel, outsiders.written() },
+            ),
+        );
+    }
 
     // Step 2.
     const rows = try alloc.alloc(MentionRow, named.items.len);
@@ -9886,6 +10075,7 @@ fn postMentioning(
         .to = targets.items,
         // `group_post` is an agent's, the supervisor's included.
         .typist = .agent,
+        .channel = channel,
     }) catch |err| return chatFailure(err);
 
     for (rows) |*row| {
@@ -11407,6 +11597,17 @@ const FakeHost = struct {
     /// Who the last post's mentions were to be typed as.
     posted_typist: ?Typist = null,
 
+    /// Squads S2: where the last post went, what the fake says the caller's
+    /// places are, who it says reads a channel, and the scope the last read
+    /// and history were handed.
+    posted_channel: u64 = 0,
+    seats: []const ChannelSeat = &.{},
+    seats_fail: bool = false,
+    readers: ?[]const Bus.Id = &.{},
+    read_scope: ?Chat.Scope = null,
+    history_scope: ?Chat.Scope = null,
+    compacted_channel: u64 = 0,
+
     /// The lines a post typed into named terminals, in order, and which
     /// terminals refuse to be typed into and how.
     typed: [8]struct { id: Bus.Id, text: []const u8 } = undefined,
@@ -11728,6 +11929,8 @@ const FakeHost = struct {
             .chatGroups = chatGroups,
             .membership = membership,
             .chatRead = chatRead,
+            .channelSeats = channelSeats,
+            .channelReaders = channelReaders,
             .chatHistory = chatHistory,
             .recordTool = recordTool,
             .pluginList = pluginList,
@@ -12060,11 +12263,13 @@ const FakeHost = struct {
         ctx: *anyopaque,
         group: []const u8,
         through: u64,
+        channel: u64,
         summary: []const u8,
         by: Bus.Id,
     ) anyerror!Chat.Kept {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NoSuchGroup;
+        self.compacted_channel = channel;
         self.compacted = .{
             .group = group,
             .through = through,
@@ -12086,6 +12291,7 @@ const FakeHost = struct {
         self.posted = .{ .group = group, .from = from, .text = text };
         self.post_count += 1;
         self.posted_typist = mentions.typist;
+        self.posted_channel = mentions.channel;
 
         // Typed the way the real host types it: one line, the same
         // `Chat.formatDelivery`, through `send` so its refusals apply.
@@ -12212,10 +12418,12 @@ const FakeHost = struct {
         group: []const u8,
         _: Bus.Id,
         since: ?u64,
+        scope: Chat.Scope,
     ) anyerror!ChatBatch {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NotAMember;
         self.read_group = group;
+        self.read_scope = scope;
 
         const one = try alloc.alloc(ChatLine, 1);
         one[0] = .{
@@ -12237,6 +12445,17 @@ const FakeHost = struct {
         return .{ .json = "{}" };
     }
 
+    fn channelSeats(ctx: *anyopaque, _: std.mem.Allocator, _: []const u8, _: Bus.Id) anyerror![]const ChannelSeat {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        if (self.seats_fail) return error.SeatsUnavailable;
+        return self.seats;
+    }
+
+    fn channelReaders(ctx: *anyopaque, _: std.mem.Allocator, _: []const u8, _: u64) anyerror!?[]const Bus.Id {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.readers;
+    }
+
     fn chatHistory(
         ctx: *anyopaque,
         alloc: std.mem.Allocator,
@@ -12245,9 +12464,11 @@ const FakeHost = struct {
         before_seq: u64,
         limit: usize,
         filter: ChatFilter,
+        scope: Chat.Scope,
     ) anyerror!ChatPage {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.refuse) return error.NotAMember;
+        self.history_scope = scope;
         self.history_asked = .{
             .group = group,
             .before_seq = before_seq,
@@ -13698,7 +13919,7 @@ test "a reply is capped so it cannot outgrow the line buffer" {
     const big = "x" ** 8192;
     for (0..64) |i| _ = try chat.post("g", boss, big, i);
 
-    const batch = try chat.read(alloc, "g", worker, null, seam_budget);
+    const batch = try chat.read(alloc, "g", worker, null, seam_budget, .everything);
     try testing.expect(batch.messages.len < 64);
 
     var total: usize = 0;
@@ -13725,12 +13946,12 @@ test "one message larger than the whole budget is still delivered" {
     try chat.add("g", worker, .all, .{});
     _ = try chat.post("g", boss, "y" ** (128 * 1024), 0);
 
-    const batch = try chat.read(alloc, "g", worker, null, seam_budget);
+    const batch = try chat.read(alloc, "g", worker, null, seam_budget, .everything);
     try testing.expectEqual(@as(usize, 1), batch.messages.len);
 
     // And the cursor moved with it, which is the half that keeps the caller
     // from being handed the same oversized message for ever.
-    try testing.expectEqual(@as(usize, 0), chat.unread("g", worker));
+    try testing.expectEqual(@as(usize, 0), chat.unread("g", worker, .everything));
 }
 
 test "a reply that fits is passed through whole and says there is no more" {
@@ -13745,7 +13966,7 @@ test "a reply that fits is passed through whole and says there is no more" {
     _ = try chat.post("g", boss, "hello", 0);
     _ = try chat.post("g", boss, "there", 1);
 
-    const batch = try chat.read(alloc, "g", worker, null, seam_budget);
+    const batch = try chat.read(alloc, "g", worker, null, seam_budget, .everything);
     try testing.expectEqual(@as(usize, 2), batch.messages.len);
     try testing.expect(!batch.more);
 }
@@ -14178,7 +14399,7 @@ test "a capped reply says it was capped" {
     try chat.add("g", worker, .all, .{});
     try seamFill(&chat, "g", boss);
 
-    const batch = try chat.read(alloc, "g", worker, null, seam_budget);
+    const batch = try chat.read(alloc, "g", worker, null, seam_budget, .everything);
     try testing.expect(batch.messages.len < 60);
     try testing.expect(batch.more);
 }
@@ -17340,8 +17561,8 @@ test "579: a second read with no cursor of its own does not hand back the same b
     // Two calls, exactly as a caller that does not pass `since` makes them:
     // `null`, not `0`. Those are the two instructions that used to be one
     // value, and this test is about the one that has to advance.
-    const one = try chat.read(alloc, "g", worker, null, seam_budget);
-    const two = try chat.read(alloc, "g", worker, null, seam_budget);
+    const one = try chat.read(alloc, "g", worker, null, seam_budget, .everything);
+    const two = try chat.read(alloc, "g", worker, null, seam_budget, .everything);
 
     try testing.expect(one.more);
     try testing.expect(one.messages.len > 0);
@@ -17368,7 +17589,7 @@ test "579: a capped read leaves what it could not deliver unread" {
     try chat.add("g", worker, .all, .{});
     try seamFill(&chat, "g", boss);
 
-    const first = try chat.read(alloc, "g", worker, null, seam_budget);
+    const first = try chat.read(alloc, "g", worker, null, seam_budget, .everything);
     try testing.expect(first.more);
 
     // **The criterion, and it is the one that makes the count trustworthy.**
@@ -17376,15 +17597,15 @@ test "579: a capped read leaves what it could not deliver unread" {
     // unread. With the cursor moved over the whole log before the cut, this
     // was 0: the count said "nothing waiting" about messages nobody had
     // been shown.
-    try testing.expect(chat.unread("g", worker) > 0);
+    try testing.expect(chat.unread("g", worker, .everything) > 0);
 
     // And the two agree, which is what makes the count usable rather than
     // merely non-zero: the number left unread is exactly how many the next
     // unbounded read hands over, and after that read nothing is waiting.
-    const waiting = chat.unread("g", worker);
-    const rest = try chat.read(alloc, "g", worker, null, Chat.Budget.unlimited);
+    const waiting = chat.unread("g", worker, .everything);
+    const rest = try chat.read(alloc, "g", worker, null, Chat.Budget.unlimited, .everything);
     try testing.expectEqual(waiting, rest.messages.len);
-    try testing.expectEqual(@as(usize, 0), chat.unread("g", worker));
+    try testing.expectEqual(@as(usize, 0), chat.unread("g", worker, .everything));
 }
 
 test "579: since is exclusive, and the message on the boundary is not lost" {
@@ -17401,13 +17622,13 @@ test "579: since is exclusive, and the message on the boundary is not lost" {
         _ = try chat.post("g", boss, try std.fmt.bufPrint(&buf, "m{d}", .{i}), i);
     }
 
-    const all = try chat.read(alloc, "g", worker, 0, Chat.Budget.unlimited);
+    const all = try chat.read(alloc, "g", worker, 0, Chat.Budget.unlimited, .everything);
     try testing.expectEqual(@as(usize, 5), all.messages.len);
 
     // Hand back the seq of a message already held: the next one follows it,
     // and the one held is not repeated.
     const third = all.messages[2].seq;
-    const after = try chat.read(alloc, "g", worker, third, Chat.Budget.unlimited);
+    const after = try chat.read(alloc, "g", worker, third, Chat.Budget.unlimited, .everything);
     try testing.expectEqual(@as(usize, 2), after.messages.len);
     try testing.expectEqual(third + 1, after.messages[0].seq);
 }
@@ -20171,4 +20392,245 @@ test "worktree: while the host makes the tree, nothing is opened yet" {
         .worktree = "w1",
     } });
     try testing.expect(launch.role_launched == null);
+}
+
+// -- channels (squads S2) ---------------------------------------------------
+
+const seat7: [1]ChannelSeat = .{.{ .task = 7, .current = true }};
+const seat7_and_8: [2]ChannelSeat = .{ .{ .task = 7, .current = true }, .{ .task = 8, .current = true } };
+const members_of_7 = [_]Bus.Id{ worker, mention_w2 };
+
+fn postTo(alloc: std.mem.Allocator, b: *Bus, fake: *FakeHost, from: Bus.Id, task: ?u64, names: []const Bus.Id) !wire.Response {
+    return dispatch(alloc, b, fake.host(), term(from), .{ .group_post = .{
+        .group = "build",
+        .text = "status",
+        .mention = names,
+        .task = task,
+    } });
+}
+
+test "channel: 成员不带 task 发帖自动进自己的频道；task=0 发公共；同时在两个任务里不带 task → AmbiguousChannel" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // In one task: no `task` is that task's channel; task=0 is public.
+    var one: FakeHost = .{ .open = &.{}, .members = &mention_members, .seats = &seat7 };
+    _ = try postTo(arena.allocator(), &b, &one, worker, null, &.{});
+    try testing.expectEqual(@as(u64, 7), one.posted_channel);
+    _ = try postTo(arena.allocator(), &b, &one, worker, 0, &.{});
+    try testing.expectEqual(@as(u64, 0), one.posted_channel);
+    try testing.expectEqual(@as(usize, 2), one.post_count);
+
+    // In two: told to choose, and nothing is posted.
+    var two: FakeHost = .{ .open = &.{}, .members = &mention_members, .seats = &seat7_and_8 };
+    const res = try postTo(arena.allocator(), &b, &two, worker, null, &.{});
+    try testing.expectEqualStrings("AmbiguousChannel", res.failed.code);
+    try testing.expect(std.mem.indexOf(u8, res.failed.message, " 7 8") != null);
+    try testing.expectEqual(@as(usize, 0), two.post_count);
+    // Naming one is fine.
+    _ = try postTo(arena.allocator(), &b, &two, worker, 8, &.{});
+    try testing.expectEqual(@as(u64, 8), two.posted_channel);
+}
+
+test "channel: 任何成员都能发公共与自己的频道，发别人的频道 → NotYourChannel" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .seats = &seat7 };
+
+    // Public and its own: posted.
+    _ = try postTo(arena.allocator(), &b, &fake, worker, 0, &.{});
+    _ = try postTo(arena.allocator(), &b, &fake, worker, 7, &.{});
+    try testing.expectEqual(@as(usize, 2), fake.post_count);
+
+    // Somebody else's: refused, nothing added.
+    const res = try postTo(arena.allocator(), &b, &fake, worker, 9, &.{});
+    try testing.expectEqualStrings("NotYourChannel", res.failed.code);
+    try testing.expectEqual(@as(usize, 2), fake.post_count);
+
+    // A seat that ended is not a place to post from.
+    var past: FakeHost = .{ .open = &.{}, .members = &mention_members, .seats = &.{.{ .task = 7, .until_ms = 5, .current = false }} };
+    const gone = try postTo(arena.allocator(), &b, &past, worker, 7, &.{});
+    try testing.expectEqualStrings("NotYourChannel", gone.failed.code);
+
+    // No configuration key tightens this: nothing about posting, channels
+    // or the public channel is a setting.
+    const Config = @import("../config/Config.zig");
+    inline for (std.meta.fieldNames(Config)) |name| {
+        if (std.mem.startsWith(u8, name, "poltergeist-")) {
+            try testing.expect(std.mem.indexOf(u8, name, "channel") == null);
+            try testing.expect(std.mem.indexOf(u8, name, "public") == null);
+            try testing.expect(std.mem.indexOf(u8, name, "post") == null);
+        }
+    }
+}
+
+test "channel: 不在任何任务的 worker 的帖子仍是公共（旧用法不变）" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .seats = &.{} };
+
+    _ = try postTo(arena.allocator(), &b, &fake, worker, null, &.{});
+    try testing.expectEqual(@as(u64, 0), fake.posted_channel);
+    try testing.expectEqual(@as(usize, 1), fake.post_count);
+
+    // A channel it is not in is refused for it too.
+    const res = try postTo(arena.allocator(), &b, &fake, worker, 7, &.{});
+    try testing.expectEqualStrings("NotYourChannel", res.failed.code);
+    try testing.expectEqual(@as(usize, 1), fake.post_count);
+}
+
+test "channel: 总管不带 task = 公共广播；带 task = 只进该频道" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    // The supervisor holds a place in no task, and sees all channels.
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .readers = &members_of_7 };
+
+    _ = try postTo(arena.allocator(), &b, &fake, boss, null, &.{});
+    try testing.expectEqual(@as(u64, 0), fake.posted_channel);
+    _ = try postTo(arena.allocator(), &b, &fake, boss, 7, &.{});
+    try testing.expectEqual(@as(u64, 7), fake.posted_channel);
+    try testing.expectEqual(@as(usize, 2), fake.post_count);
+
+    // A task that is not in the group has no channel.
+    var none: FakeHost = .{ .open = &.{}, .members = &mention_members, .readers = null };
+    const res = try postTo(arena.allocator(), &b, &none, boss, 99, &.{});
+    try testing.expectEqualStrings("NoSuchTask", res.failed.code);
+    try testing.expectEqual(@as(usize, 0), none.post_count);
+}
+
+test "channel: mention 非频道成员被整条拒绝" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    // Task 7's channel is worker's and mention_w2's; `other` is in the
+    // group but not in it.
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .seats = &seat7, .readers = &members_of_7 };
+
+    const res = try postTo(arena.allocator(), &b, &fake, worker, 7, &.{ mention_w2, other });
+    try testing.expectEqualStrings("MentionNotInChannel", res.failed.code);
+    try testing.expectEqual(@as(usize, 0), fake.post_count);
+    try testing.expectEqual(@as(usize, 0), fake.typed_count);
+
+    // Control: the same post to the public channel names `other` fine, so
+    // it is the channel that refused and not the name.
+    const ok = try postTo(arena.allocator(), &b, &fake, worker, 0, &.{ mention_w2, other });
+    try testing.expect(ok == .posted);
+    try testing.expectEqual(@as(usize, 1), fake.post_count);
+
+    // And the supervisor can always be named, in a channel it is not in.
+    const sup = try postTo(arena.allocator(), &b, &fake, worker, 7, &.{boss});
+    try testing.expect(sup == .posted);
+}
+
+test "channel: 旧形状的 group_post（无 task 字段）在有任务的群里行为正确" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // The wire form an older session sends: no `task` at all.
+    const req = try wire.parseRequestLeaky(arena.allocator(),
+        \\{"method":"group_post","params":{"group":"build","text":"done"}}
+    );
+    try testing.expectEqual(@as(?u64, null), req.group_post.task);
+
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .seats = &seat7 };
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(worker), req);
+    try testing.expect(res == .ok or res == .text);
+    try testing.expectEqual(@as(u64, 7), fake.posted_channel);
+
+    // The new field parses, including the public 0 that is not "absent".
+    const zero = try wire.parseRequestLeaky(arena.allocator(),
+        \\{"method":"group_post","params":{"group":"build","text":"done","task":0}}
+    );
+    try testing.expectEqual(@as(?u64, 0), zero.group_post.task);
+}
+
+test "channel: 读路径拿到的 Scope 来自 scopeFor：用户与本群总管全部，其余只有自己的座位" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const seats = [_]ChannelSeat{.{ .task = 7, .until_ms = 50, .current = false }};
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .seats = &seats };
+
+    _ = try dispatch(arena.allocator(), &b, fake.host(), term(worker), .{ .group_read = .{ .group = "build" } });
+    const mine = fake.read_scope.?;
+    try testing.expect(mine == .only);
+    try testing.expect(mine.sees(7, 40));
+    try testing.expect(!mine.sees(7, 60)); // left at 50
+    try testing.expect(!mine.sees(8, 40));
+    try testing.expect(mine.sees(0, 99));
+
+    _ = try dispatch(arena.allocator(), &b, fake.host(), term(worker), .{ .group_history = .{ .group = "build" } });
+    try testing.expect(fake.history_scope.? == .only);
+
+    // The group's supervisor reads everything.
+    _ = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .group_read = .{ .group = "build" } });
+    try testing.expect(fake.read_scope.? == .everything);
+
+    // A supervisor of some other group does not.
+    var theirs: FakeHost = .{ .open = &.{}, .members = &mention_members, .group_owner = 0x7777 };
+    _ = try dispatch(arena.allocator(), &b, theirs.host(), term(boss), .{ .group_read = .{ .group = "build" } });
+    try testing.expect(theirs.read_scope.? == .only);
+
+    // A compaction names its channel.
+    _ = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .group_compact = .{ .group = "build", .through = 1, .summary = "s", .task = 7 } });
+    try testing.expectEqual(@as(u64, 7), fake.compacted_channel);
+}
+
+test "channel: 通知计数只数读者看得见的：成员 A 在 #7，别人在 #8 发帖，A 的计数里没有 #8" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var chat: Chat = .init(testing.allocator, .{});
+    defer chat.deinit();
+    try chat.create("build", boss);
+    try chat.add("build", worker, .all, .{});
+    try chat.add("build", mention_w2, .all, .{});
+    _ = try chat.post("build", boss, "public", 1);
+    _ = try chat.postIn("build", mention_w2, "seven", &.{}, 7, null, 2);
+    _ = try chat.postIn("build", boss, "eight", &.{}, 8, null, 3);
+
+    // worker holds a place in #7 only.
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .seats = &seat7 };
+    const n = fake.host().noticeFor(arena.allocator(), &b, &chat, "build", worker);
+    try testing.expectEqual(@as(usize, 2), n.count); // public + seven, not eight
+
+    // Negative control: the same group counted for the supervisor of it
+    // holds all of the messages it did not write -- the data has #8 in it.
+    const sup = fake.host().noticeFor(arena.allocator(), &b, &chat, "build", boss);
+    try testing.expect(sup.scope == .everything);
+    try testing.expectEqual(@as(usize, 1), sup.count); // the one it did not write: seven
+    try testing.expectEqual(@as(usize, 3), chat.unread("build", worker, .everything));
+}
+
+test "channel: 查座位失败 → 只看公共，不是全部" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .seats = &seat7, .seats_fail = true };
+    const scope = fake.host().scopeFor(arena.allocator(), &b, worker, "build");
+    try testing.expect(scope == .only);
+    try testing.expectEqual(@as(usize, 0), scope.only.len);
+    try testing.expect(scope.sees(0, 1));
+    try testing.expect(!scope.sees(7, 1));
+
+    // Control: the same host with the lookup working gives the seat.
+    fake.seats_fail = false;
+    const ok = fake.host().scopeFor(arena.allocator(), &b, worker, "build");
+    try testing.expect(ok.sees(7, 1));
 }

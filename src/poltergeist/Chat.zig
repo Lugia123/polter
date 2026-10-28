@@ -97,10 +97,59 @@ pub const Message = struct {
     /// Owned by the group. Empty for nearly every message.
     mentions: []const Id = &.{},
 
+    /// Which channel this was said in: 0 is the public one everybody in the
+    /// group reads, anything else is a task's number and the channel of
+    /// that task's squad (`Scope`). Plain data, no allocation.
+    channel: u64 = 0,
+
     fn release(self: Message, alloc: Allocator) void {
         alloc.free(self.text);
         if (self.mentions.len > 0) alloc.free(self.mentions);
     }
+};
+
+/// Which channels a reader may see (task 2448, squads S2, plan section 6.3).
+///
+/// **Every read path takes one and none has a default**, so a path added
+/// later that forgets it is a compile error rather than a quiet leak of one
+/// squad's channel into another's context. `rpc.scopeFor` is the one place
+/// that builds it for a caller.
+///
+/// Not secrecy: `terminal_read` shows any screen. This keeps unrelated
+/// messages out of an agent's context, nothing more.
+pub const Scope = union(enum) {
+    /// The user, the group's supervisor, the core itself.
+    everything,
+
+    /// The public channel plus these tasks' channels.
+    only: []const Seat,
+
+    /// A place in one task's channel.
+    pub const Seat = struct {
+        task: u64,
+
+        /// Set once the reader has left the task: it still reads what was
+        /// said while it was there (wall-clock ms, `Message.at_ms`), and
+        /// nothing said after. Null while it is a member.
+        until_ms: ?u64 = null,
+    };
+
+    pub fn sees(self: Scope, channel: u64, at_ms: u64) bool {
+        return switch (self) {
+            .everything => true,
+            .only => |seats| {
+                if (channel == 0) return true;
+                for (seats) |seat| {
+                    if (seat.task != channel) continue;
+                    return if (seat.until_ms) |until| at_ms <= until else true;
+                }
+                return false;
+            },
+        };
+    }
+
+    /// Public messages only: what a reader in no task sees.
+    pub const public: Scope = .{ .only = &.{} };
 };
 
 pub const Config = struct {
@@ -137,6 +186,10 @@ pub const Error = error{
 
     /// A post named more terminals than `max_mentions`.
     TooManyMentions,
+
+    /// A post to a task's channel named somebody who cannot read that
+    /// channel. Refused whole, like `MentionNotAMember`.
+    MentionNotInChannel,
 } || Allocator.Error;
 
 /// Most terminals one post may name. Each one is a line typed into somebody's
@@ -854,7 +907,7 @@ test "#1265: a renamed group is the same group" {
     try testing.expectEqualStrings("worker", chat.footingOf("new", a).?.title);
 
     // The words said before the rename are readable under the new name.
-    const batch = try chat.read(testing.allocator, "new", boss, 0, .unlimited);
+    const batch = try chat.read(testing.allocator, "new", boss, 0, .unlimited, .everything);
     defer testing.allocator.free(batch.messages);
     try testing.expectEqual(@as(usize, 2), batch.messages.len);
     try testing.expectEqualStrings("before", batch.messages[0].text);
@@ -1561,6 +1614,24 @@ pub fn postMentioning(
     mentions: []const Id,
     now_ms: u64,
 ) Error!Posted {
+    return self.postIn(name, from, text, mentions, 0, null, now_ms);
+}
+
+/// `postMentioning` into a channel (0 is the public one). Every name must
+/// be in the group and, when `readers` is given, one of those ids -- the
+/// terminals that can read the channel, which the chat does not know and
+/// the caller does. A name that could not read the post refuses it whole,
+/// before anything is added. Null is "everybody in the group".
+pub fn postIn(
+    self: *Chat,
+    name: []const u8,
+    from: Id,
+    text: []const u8,
+    mentions: []const Id,
+    channel: u64,
+    readers: ?[]const Id,
+    now_ms: u64,
+) Error!Posted {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     if (!group.members.contains(from)) return error.NotAMember;
     if (mentions.len > max_mentions) return error.TooManyMentions;
@@ -1570,12 +1641,15 @@ pub fn postMentioning(
     for (mentions) |id| {
         if (id == from) return error.MentionSelf;
         if (!group.members.contains(id)) return error.MentionNotAMember;
+        if (readers) |ids| {
+            if (std.mem.indexOfScalar(Id, ids, id) == null) return error.MentionNotInChannel;
+        }
         if (std.mem.indexOfScalar(Id, buf[0..n], id) != null) continue;
         buf[n] = id;
         n += 1;
     }
 
-    return self.append(group, from, text, now_ms, false, buf[0..n]);
+    return self.append(group, from, text, now_ms, false, buf[0..n], channel);
 }
 
 /// One of Polter's own sentences in `group` (task 2156 v5). See
@@ -1598,7 +1672,7 @@ pub fn postAsPolter(
     now_ms: u64,
 ) Error!Posted {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
-    return self.append(group, polter_id, text, now_ms, false, &.{});
+    return self.append(group, polter_id, text, now_ms, false, &.{}, 0);
 }
 
 /// The text of one message as the group holds it -- trimmed and, if it was
@@ -1709,6 +1783,7 @@ fn append(
     now_ms: u64,
     summary: bool,
     mentions: []const Id,
+    channel: u64,
 ) Error!Posted {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     if (trimmed.len == 0) return error.Empty;
@@ -1729,6 +1804,7 @@ fn append(
         .summary = summary,
         .text = owned,
         .mentions = named,
+        .channel = channel,
     });
 
     // The sender has seen its own message by definition -- **and nothing
@@ -1768,13 +1844,20 @@ fn trim(self: *Chat, group: *Group) void {
     group.log.shrinkRetainingCapacity(group.log.items.len - drop);
 }
 
-/// Replace everything up to and including `through` with one summary the
-/// supervisor wrote.
+/// Replace everything in `channel` up to and including `through` with one
+/// summary the supervisor wrote.
 ///
 /// The supervisor writes the summary and the program does the replacing,
 /// which is the division used everywhere else here: judging what a
 /// conversation amounted to is not something code can do, and rewriting a
 /// log correctly is not something a prompt should be trusted with.
+///
+/// **One channel at a time** (squads S2, plan 6.6). A summary that stood in
+/// for several channels would carry one squad's private talk into the
+/// public channel, so the messages of other channels inside the range stay
+/// where they are and the summary is itself a message of `channel`: only
+/// readers of that channel see it. The supervisor compacts each channel
+/// with its own summary.
 ///
 /// The summary keeps the seq of the last message it replaces, so a member
 /// that had not caught up is left with something to read rather than a gap.
@@ -1782,6 +1865,7 @@ pub fn compact(
     self: *Chat,
     name: []const u8,
     through: u64,
+    channel: u64,
     summary: []const u8,
     by: Id,
     now_ms: u64,
@@ -1791,65 +1875,83 @@ pub fn compact(
     const trimmed = std.mem.trim(u8, summary, " \t\r\n");
     if (trimmed.len == 0) return error.Empty;
 
-    // Where the replaced range ends.
-    var cut: usize = 0;
-    while (cut < group.log.items.len and group.log.items[cut].seq <= through) {
-        cut += 1;
+    // Where the replaced range ends: the last message of this channel at or
+    // below `through`, and the first one, for the held-back members below.
+    var last: ?usize = null;
+    var first_seq: u64 = 0;
+    for (group.log.items, 0..) |m, i| {
+        if (m.seq > through) break;
+        if (m.channel != channel) continue;
+        if (last == null) first_seq = m.seq;
+        last = i;
     }
 
     // Nothing covered: refuse rather than leave a summary standing for
     // messages it did not replace.
-    if (cut == 0) return error.Empty;
+    const end = last orelse return error.Empty;
 
     const kept = utf8Cut(trimmed, self.config.max_text_bytes);
     const owned = try self.alloc.dupe(u8, kept);
     errdefer self.alloc.free(owned);
 
-    // Both ends of the range being replaced, read before the texts go.
-    const first_seq = group.log.items[0].seq;
-    const seq = group.log.items[cut - 1].seq;
-    const cut_log_seq = group.log.items[cut - 1].log_seq;
-    for (group.log.items[0..cut]) |m| m.release(self.alloc);
+    // The far end of the range, read before the texts go.
+    const seq = group.log.items[end].seq;
+    const cut_log_seq = group.log.items[end].log_seq;
 
-    if (cut > 1) {
-        std.mem.copyForwards(
-            Message,
-            group.log.items[1 .. group.log.items.len - (cut - 1)],
-            group.log.items[cut..],
-        );
-        group.log.shrinkRetainingCapacity(group.log.items.len - (cut - 1));
+    // Drop this channel's messages in the range, keep everybody else's in
+    // order, and put the summary where the last of them was.
+    var w: usize = 0;
+    for (group.log.items[0..end]) |m| {
+        if (m.channel == channel) {
+            m.release(self.alloc);
+            continue;
+        }
+        group.log.items[w] = m;
+        w += 1;
     }
-
-    group.log.items[0] = .{
+    group.log.items[end].release(self.alloc);
+    const tail = group.log.items[end + 1 ..];
+    group.log.items[w] = .{
         .seq = seq,
         .from = by,
         .at_ms = now_ms,
         .summary = true,
         .text = owned,
+        .channel = channel,
     };
+    std.mem.copyForwards(Message, group.log.items[w + 1 .. w + 1 + tail.len], tail);
+    group.log.shrinkRetainingCapacity(w + 1 + tail.len);
 
     // Where each member now stands. Nobody's cursor moves: what somebody
     // has already read stays read, and dragging a cursor back would turn a
     // compaction into a pile of new messages for a member who was up to
     // date -- the opposite of what compacting is for.
+    //
+    // A floor below the range moves up to the summary when nothing else is
+    // left under it, as it always has (the summary carries the seq of the
+    // last message it replaces, and `barred` readers lean on the floor
+    // moving). When other channels' messages remain under the summary the
+    // floor stays where it is: moving it would hide them from a reader who
+    // may see them.
+    const survivors = w > 0;
     var it = group.members.valueIterator();
     while (it.next()) |m| {
         // Already looking past the whole range: nothing here concerns them.
         if (m.floor >= seq) continue;
-
         if (m.floor < first_seq) {
-            // The entire range was theirs to see, so the summary stands in
-            // for it.
-            m.floor = seq - 1;
-        } else {
-            // They were held back from part of this range -- by joining with
-            // `.none`, or by an earlier compaction. The summary covers what
-            // they were kept out of, so it is not theirs to read either.
-            // Hiding it costs them a recap; showing it would hand over the
-            // history they were deliberately not given.
-            m.floor = seq;
-            m.log_floor = @max(m.log_floor, cut_log_seq);
+            if (!survivors) m.floor = seq - 1;
+            continue;
         }
+
+        // They were held back from part of this range -- by joining with
+        // `.none`, or by an earlier compaction. The summary covers what
+        // they were kept out of, so it is not theirs to read either.
+        // Hiding it costs them a recap; showing it would hand over the
+        // history they were deliberately not given. (It also hides the
+        // other channels' messages that sit below it, which is the price
+        // of a floor being one number.)
+        m.floor = seq;
+        m.log_floor = @max(m.log_floor, cut_log_seq);
     }
 
     // **The same answer a post gives, for the same reason.** A summary is
@@ -1879,7 +1981,7 @@ pub fn bytesOf(self: *const Chat, name: []const u8) usize {
 }
 
 /// How many messages `id` has not been shown in this group.
-pub fn unread(self: *const Chat, name: []const u8, id: Id) usize {
+pub fn unread(self: *const Chat, name: []const u8, id: Id, scope: Scope) usize {
     const group = self.groups.getPtr(name) orelse return 0;
     const who = group.members.get(id) orelse return 0;
 
@@ -1888,6 +1990,7 @@ pub fn unread(self: *const Chat, name: []const u8, id: Id) usize {
         if (m.seq <= who.cursor) continue;
         if (m.seq <= who.floor) continue;
         if (m.from == id) continue;
+        if (!scope.sees(m.channel, m.at_ms)) continue;
         n += 1;
     }
     return n;
@@ -1952,19 +2055,19 @@ pub fn unread(self: *const Chat, name: []const u8, id: Id) usize {
 /// terminal named once in a group of twenty unread is woken for one, and a
 /// member not named in anything is woken for exactly what it was before --
 /// nothing.
-pub fn waking(self: *const Chat, name: []const u8, id: Id, role: Bus.Role) usize {
+pub fn waking(self: *const Chat, name: []const u8, id: Id, role: Bus.Role, scope: Scope) usize {
     return switch (role) {
-        .supervisor => self.unread(name, id),
+        .supervisor => self.unread(name, id, scope),
 
         // Minded: its supervisor types into it, and the group cannot compete
         // with that channel. Unmarked: nobody is expecting anything of it.
         // Unless the message said it was for them.
-        .watched, .none => self.unreadNaming(name, id),
+        .watched, .none => self.unreadNaming(name, id, scope),
     };
 }
 
 /// How many of `id`'s unread messages in this group name it.
-fn unreadNaming(self: *const Chat, name: []const u8, id: Id) usize {
+fn unreadNaming(self: *const Chat, name: []const u8, id: Id, scope: Scope) usize {
     const group = self.groups.getPtr(name) orelse return 0;
     const who = group.members.get(id) orelse return 0;
 
@@ -1973,6 +2076,7 @@ fn unreadNaming(self: *const Chat, name: []const u8, id: Id) usize {
         if (m.seq <= who.cursor) continue;
         if (m.seq <= who.floor) continue;
         if (m.from == id) continue;
+        if (!scope.sees(m.channel, m.at_ms)) continue;
         if (std.mem.indexOfScalar(Id, m.mentions, id) == null) continue;
         n += 1;
     }
@@ -1980,10 +2084,10 @@ fn unreadNaming(self: *const Chat, name: []const u8, id: Id) usize {
 }
 
 /// Total unread across every group `id` is in.
-pub fn unreadTotal(self: *const Chat, id: Id) usize {
+pub fn unreadTotal(self: *const Chat, id: Id, scope: Scope) usize {
     var n: usize = 0;
     var it = self.groups.keyIterator();
-    while (it.next()) |name| n += self.unread(name.*, id);
+    while (it.next()) |name| n += self.unread(name.*, id, scope);
     return n;
 }
 
@@ -2051,6 +2155,7 @@ pub fn read(
     id: Id,
     since: ?u64,
     budget: Budget,
+    scope: Scope,
 ) Error!Batch {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
     const who = group.members.getPtr(id) orelse return error.NotAMember;
@@ -2068,9 +2173,18 @@ pub fn read(
 
     var used: usize = 0;
     var more = false;
+
+    // How far this pass got, invisible messages included. A message the
+    // reader may not see is not unread, so the cursor goes past it with the
+    // rest -- left behind, it would be walked over again by every read.
+    var passed: u64 = 0;
     for (group.log.items) |m| {
         if (m.seq <= after) continue;
         if (m.seq <= who.floor) continue;
+        if (!scope.sees(m.channel, m.at_ms)) {
+            passed = m.seq;
+            continue;
+        }
 
         used += m.text.len + budget.per_line;
         if (used > budget.bytes and out.items.len > 0) {
@@ -2082,16 +2196,16 @@ pub fn read(
         }
 
         try out.append(alloc, m);
+        passed = m.seq;
     }
 
     // **Exactly what went out, and not one message further.** The old line
     // here reached for the newest message in the log instead, which is the
     // defect: it claimed on the member's behalf to have seen things that
-    // were about to be cut off the end of this very reply.
-    if (out.items.len > 0) {
-        const delivered = out.items[out.items.len - 1].seq;
-        if (delivered > who.cursor) who.cursor = delivered;
-    }
+    // were about to be cut off the end of this very reply. The only things
+    // passed over besides are the ones `scope` hides, and `passed` stops at
+    // the last message before a cut.
+    if (passed > who.cursor) who.cursor = passed;
 
     return .{ .messages = try out.toOwnedSlice(alloc), .more = more };
 }
@@ -2221,8 +2335,9 @@ pub fn shouldNotify(
     now_ms: u64,
     gap_ms: u64,
     role: Bus.Role,
+    scope: Scope,
 ) bool {
-    if (self.waking(name, id, role) == 0) return false;
+    if (self.waking(name, id, role, scope) == 0) return false;
 
     const group = self.groups.getPtr(name) orelse return false;
     const who = group.members.getPtr(id) orelse return false;
@@ -2264,8 +2379,9 @@ pub fn notifyWaitMs(
     now_ms: u64,
     gap_ms: u64,
     role: Bus.Role,
+    scope: Scope,
 ) ?u64 {
-    if (self.waking(name, id, role) == 0) return null;
+    if (self.waking(name, id, role, scope) == 0) return null;
     const group = self.groups.getPtr(name) orelse return null;
     const who = group.members.getPtr(id) orelse return null;
     if (group.head() <= who.told_seq) return null;
@@ -2458,8 +2574,8 @@ test "there can be several groups at once" {
     try chat.add("research", b, .none, .{});
 
     _ = try chat.post("build", boss, "for the builders", 0);
-    try testing.expectEqual(@as(usize, 1), chat.unread("build", a));
-    try testing.expectEqual(@as(usize, 0), chat.unread("research", b));
+    try testing.expectEqual(@as(usize, 1), chat.unread("build", a, .everything));
+    try testing.expectEqual(@as(usize, 0), chat.unread("research", b, .everything));
 }
 
 test "a shell left by a restart is invisible to the one who has to take it up" {
@@ -2542,7 +2658,7 @@ test "a group that does not exist refuses everything" {
     try testing.expectError(error.NoSuchGroup, chat.destroy("nope"));
     try testing.expectError(
         error.NoSuchGroup,
-        chat.read(testing.allocator, "nope", boss, 0, .unlimited),
+        chat.read(testing.allocator, "nope", boss, 0, .unlimited, .everything),
     );
 }
 
@@ -2555,14 +2671,14 @@ test "a terminal added without history sees nothing that came before" {
     _ = try chat.post("build", boss, "old two", 1);
 
     try chat.add("build", a, .none, .{});
-    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a, .everything));
 
-    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 0), seen.len);
 
     _ = try chat.post("build", boss, "fresh", 2);
-    try testing.expectEqual(@as(usize, 1), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 1), chat.unread("build", a, .everything));
 }
 
 test "a terminal added with history sees everything still in the log" {
@@ -2574,9 +2690,9 @@ test "a terminal added with history sees everything still in the log" {
     _ = try chat.post("build", boss, "old two", 1);
 
     try chat.add("build", a, .all, .{});
-    try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 2), chat.unread("build", a, .everything));
 
-    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 2), seen.len);
     try testing.expectEqualStrings("old one", seen[0].text);
@@ -2593,7 +2709,7 @@ test "adding somebody already in a group leaves their view alone" {
     // A second add with `.all` must not hand them the backlog they were
     // deliberately kept out of.
     try chat.add("build", a, .all, .{});
-    try testing.expectEqual(@as(usize, 1), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 1), chat.unread("build", a, .everything));
 }
 
 test "removing a member stops them reading" {
@@ -2606,9 +2722,9 @@ test "removing a member stops them reading" {
 
     try testing.expectError(
         error.NotAMember,
-        chat.read(testing.allocator, "build", a, 0, .unlimited),
+        chat.read(testing.allocator, "build", a, 0, .unlimited, .everything),
     );
-    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a, .everything));
 }
 
 test "a two terminal group is what a direct message used to be" {
@@ -2623,8 +2739,8 @@ test "a two terminal group is what a direct message used to be" {
 
     _ = try chat.post("boss-and-a", boss, "just between us", 0);
 
-    try testing.expectEqual(@as(usize, 1), chat.unread("boss-and-a", a));
-    try testing.expectEqual(@as(usize, 0), chat.unread("everyone", b));
+    try testing.expectEqual(@as(usize, 1), chat.unread("boss-and-a", a, .everything));
+    try testing.expectEqual(@as(usize, 0), chat.unread("everyone", b, .everything));
     try testing.expect(!chat.isMember("boss-and-a", b));
 }
 
@@ -2637,13 +2753,13 @@ test "reading marks seen, and a cursor picks up where it left off" {
     const first = (try chat.post("build", boss, "one", 0)).seq;
     _ = try chat.post("build", boss, "two", 1);
 
-    try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 2), chat.unread("build", a, .everything));
 
-    const rest = (try chat.read(testing.allocator, "build", a, first, .unlimited)).messages;
+    const rest = (try chat.read(testing.allocator, "build", a, first, .unlimited, .everything)).messages;
     defer testing.allocator.free(rest);
     try testing.expectEqual(@as(usize, 1), rest.len);
     try testing.expectEqualStrings("two", rest[0].text);
-    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a, .everything));
 }
 
 test "compacting replaces what it covers with one summary" {
@@ -2658,10 +2774,10 @@ test "compacting replaces what it covers with one summary" {
     }
     _ = try chat.post("build", boss, "kept", 9);
 
-    const at = (try chat.compact("build", 5, "we argued about the build", boss, 10)).seq;
+    const at = (try chat.compact("build", 5, 0, "we argued about the build", boss, 10)).seq;
     try testing.expectEqual(@as(u64, 5), at);
 
-    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
     defer testing.allocator.free(seen);
 
     try testing.expectEqual(@as(usize, 2), seen.len);
@@ -2684,9 +2800,9 @@ test "compacting leaves somebody who had not caught up with the summary" {
         _ = try chat.post("build", boss, try std.fmt.bufPrint(&buf, "m{d}", .{i}), i);
     }
 
-    _ = try chat.compact("build", 4, "the gist of it", boss, 5);
+    _ = try chat.compact("build", 4, 0, "the gist of it", boss, 5);
 
-    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 1), seen.len);
     try testing.expectEqualStrings("the gist of it", seen[0].text);
@@ -2708,14 +2824,14 @@ test "compacting does not make read messages unread again" {
     }
 
     // Caught up on everything.
-    const first = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
+    const first = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
     testing.allocator.free(first);
-    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a, .everything));
 
     // Compacting the first half changes nothing about what is unread.
-    _ = try chat.compact("build", 5, "the gist", boss, 11);
-    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
-    try testing.expectEqual(@as(usize, 0), chat.unreadTotal(a));
+    _ = try chat.compact("build", 5, 0, "the gist", boss, 11);
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a, .everything));
+    try testing.expectEqual(@as(usize, 0), chat.unreadTotal(a, .everything));
 }
 
 test "compacting does not hand over history a member was kept out of" {
@@ -2731,12 +2847,12 @@ test "compacting does not hand over history a member was kept out of" {
 
     // Deliberately started with a clean slate.
     try chat.add("build", a, .none, .{});
-    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a, .everything));
 
     _ = try chat.post("build", boss, "anyway, the build is green", 3);
-    _ = try chat.compact("build", 3, "credentials, rotation, and a green build", boss, 4);
+    _ = try chat.compact("build", 3, 0, "credentials, rotation, and a green build", boss, 4);
 
-    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 0), seen.len);
 }
@@ -2754,7 +2870,7 @@ test "a message is cut on a character boundary, not a byte one" {
     // Three-byte characters against a limit that falls mid-character.
     _ = try chat.post("build", boss, "日日日", 1);
 
-    const seen = (try chat.read(testing.allocator, "build", boss, 0, .unlimited)).messages;
+    const seen = (try chat.read(testing.allocator, "build", boss, 0, .unlimited, .everything)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 1), seen.len);
     try testing.expect(std.unicode.utf8ValidateSlice(seen[0].text));
@@ -2769,7 +2885,7 @@ test "compacting nothing is refused rather than leaving a stray summary" {
     _ = try chat.post("build", boss, "one", 0);
 
     // Nothing at or below seq 0.
-    try testing.expectError(error.Empty, chat.compact("build", 0, "nothing", boss, 1));
+    try testing.expectError(error.Empty, chat.compact("build", 0, 0, "nothing", boss, 1));
     try testing.expectEqual(
         @as(usize, 1),
         chat.groups.getPtr("build").?.log.items.len,
@@ -2782,7 +2898,7 @@ test "an empty summary is refused" {
 
     try chat.create("build", boss);
     _ = try chat.post("build", boss, "one", 0);
-    try testing.expectError(error.Empty, chat.compact("build", 1, "  ", boss, 1));
+    try testing.expectError(error.Empty, chat.compact("build", 1, 0, "  ", boss, 1));
 }
 
 test "compacting shrinks what a later read has to carry" {
@@ -2796,9 +2912,9 @@ test "compacting shrinks what a later read has to carry" {
         _ = try chat.post("build", boss, try std.fmt.bufPrint(&buf, "chatter {d}", .{i}), i);
     }
 
-    _ = try chat.compact("build", 20, "twenty lines of chatter", boss, 21);
+    _ = try chat.compact("build", 20, 0, "twenty lines of chatter", boss, 21);
 
-    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 1), seen.len);
 }
@@ -3040,7 +3156,7 @@ test "unreadTotal counts across every group" {
     _ = try chat.post("two", boss, "y", 1);
     _ = try chat.post("two", boss, "z", 2);
 
-    try testing.expectEqual(@as(usize, 3), chat.unreadTotal(a));
+    try testing.expectEqual(@as(usize, 3), chat.unreadTotal(a, .everything));
 }
 
 test "1787: what Polter says in a group signed with its supervisor wakes nobody but the person" {
@@ -3054,12 +3170,12 @@ test "1787: what Polter says in a group signed with its supervisor wakes nobody 
     try chat.add("c1b", a, .none, .{});
     _ = try chat.post("c1b", boss, "[Polter] This supervisor's second message was not typed: no agent connected from its terminal within 60s.", 0);
 
-    try testing.expectEqual(@as(usize, 0), chat.waking("c1b", boss, .supervisor));
-    try testing.expectEqual(@as(usize, 0), chat.unread("c1b", boss));
-    try testing.expectEqual(@as(usize, 0), chat.waking("c1b", a, .watched));
+    try testing.expectEqual(@as(usize, 0), chat.waking("c1b", boss, .supervisor, .everything));
+    try testing.expectEqual(@as(usize, 0), chat.unread("c1b", boss, .everything));
+    try testing.expectEqual(@as(usize, 0), chat.waking("c1b", a, .watched, .everything));
     // In the record all the same, for whoever reads the group -- the
     // control room shows it to the person.
-    try testing.expectEqual(@as(usize, 1), chat.unread("c1b", a));
+    try testing.expectEqual(@as(usize, 1), chat.unread("c1b", a, .everything));
 }
 
 test "2156 v5: Polter's own sentences are authored by Polter, and cost the group no member" {
@@ -3091,10 +3207,10 @@ test "2156 v5: Polter's own sentences are authored by Polter, and cost the group
     // a supervisor is woken for what it has not read, and this is unread
     // for it like anybody else's words -- the point here is only that it is
     // *there* to read, under Polter's id.
-    try testing.expectEqual(@as(usize, 1), chat.unread("c1b", boss));
-    try testing.expectEqual(@as(usize, 1), chat.waking("c1b", a, .supervisor));
+    try testing.expectEqual(@as(usize, 1), chat.unread("c1b", boss, .everything));
+    try testing.expectEqual(@as(usize, 1), chat.waking("c1b", a, .supervisor, .everything));
 
-    const seen = (try chat.read(testing.allocator, "c1b", a, 0, .unlimited)).messages;
+    const seen = (try chat.read(testing.allocator, "c1b", a, 0, .unlimited, .everything)).messages;
     defer testing.allocator.free(seen);
 
     try testing.expectEqual(@as(usize, 1), seen.len);
@@ -3117,8 +3233,8 @@ test "a terminal is never unread to itself" {
     try chat.add("build", a, .none, .{});
     _ = try chat.post("build", a, "mine", 0);
 
-    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
-    try testing.expectEqual(@as(usize, 1), chat.unread("build", boss));
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a, .everything));
+    try testing.expectEqual(@as(usize, 1), chat.unread("build", boss, .everything));
 }
 
 test "notices are rate limited per group and per terminal" {
@@ -3129,11 +3245,11 @@ test "notices are rate limited per group and per terminal" {
     try chat.add("build", a, .none, .{});
     _ = try chat.post("build", boss, "one", 0);
 
-    try testing.expect(chat.shouldNotify("build", a, 0, 1000, .supervisor));
-    try testing.expect(!chat.shouldNotify("build", a, 500, 1000, .supervisor));
+    try testing.expect(chat.shouldNotify("build", a, 0, 1000, .supervisor, .everything));
+    try testing.expect(!chat.shouldNotify("build", a, 500, 1000, .supervisor, .everything));
 
     _ = try chat.post("build", boss, "two", 900);
-    try testing.expect(chat.shouldNotify("build", a, 1000, 1000, .supervisor));
+    try testing.expect(chat.shouldNotify("build", a, 1000, 1000, .supervisor, .everything));
 }
 
 test "letting a worker go does not turn its notices back on" {
@@ -3149,10 +3265,10 @@ test "letting a worker go does not turn its notices back on" {
     _ = try chat.post("build", boss, "one", 0);
 
     // While it is being minded: silent, because its supervisor types into it.
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched, .everything));
 
     // Released. **This is the cell that was red before 413.**
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .none));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .none, .everything));
 }
 
 test "an unmarked terminal is not woken and still sees everything" {
@@ -3170,8 +3286,8 @@ test "an unmarked terminal is not woken and still sees everything" {
     _ = try chat.post("build", boss, "one", 0);
     _ = try chat.post("build", boss, "two", 0);
 
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .none));
-    try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .none, .everything));
+    try testing.expectEqual(@as(usize, 2), chat.unread("build", a, .everything));
 }
 
 test "a supervisor is the one that is woken" {
@@ -3185,7 +3301,7 @@ test "a supervisor is the one that is woken" {
     try chat.add("build", a, .none, .{});
     _ = try chat.post("build", boss, "one", 0);
 
-    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .supervisor));
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .supervisor, .everything));
 }
 
 test "being noisy in one group does not silence another" {
@@ -3200,8 +3316,8 @@ test "being noisy in one group does not silence another" {
     _ = try chat.post("one", boss, "x", 0);
     _ = try chat.post("two", boss, "y", 0);
 
-    try testing.expect(chat.shouldNotify("one", a, 0, 60_000, .supervisor));
-    try testing.expect(chat.shouldNotify("two", a, 0, 60_000, .supervisor));
+    try testing.expect(chat.shouldNotify("one", a, 0, 60_000, .supervisor, .everything));
+    try testing.expect(chat.shouldNotify("two", a, 0, 60_000, .supervisor, .everything));
 }
 
 test "forgetting a terminal takes it out of every group" {
@@ -3311,7 +3427,7 @@ test "a brief does not appear in the messages" {
     _ = try chat.setBrief("build", "这个群在等 B 定接口");
     _ = try chat.post("build", boss, "开始吧", 1);
 
-    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
     defer testing.allocator.free(seen);
 
     try testing.expectEqual(@as(usize, 1), seen.len);
@@ -3435,7 +3551,7 @@ test "a posted message learns where it landed on disk" {
     const seq = (try chat.post("build", a, "hello", 100)).seq;
 
     {
-        const got = (try chat.read(testing.allocator, "build", boss, 0, .unlimited)).messages;
+        const got = (try chat.read(testing.allocator, "build", boss, 0, .unlimited, .everything)).messages;
         defer testing.allocator.free(got);
         try testing.expectEqual(@as(u64, 0), got[0].log_seq);
     }
@@ -3443,7 +3559,7 @@ test "a posted message learns where it landed on disk" {
     chat.setLogSeq("build", seq, 10432);
 
     {
-        const got = (try chat.read(testing.allocator, "build", boss, 0, .unlimited)).messages;
+        const got = (try chat.read(testing.allocator, "build", boss, 0, .unlimited, .everything)).messages;
         defer testing.allocator.free(got);
         try testing.expectEqual(@as(u64, 10432), got[0].log_seq);
     }
@@ -3552,7 +3668,7 @@ test "compacting does not make a full-history member look barred" {
     try chat.add("build", a, .all, .{});
     try testing.expectEqual(Floor{ .seq = 0, .log_seq = 0 }, try chat.floorOf("build", a));
 
-    _ = try chat.compact("build", s2, "what those two amounted to", boss, 200);
+    _ = try chat.compact("build", s2, 0, "what those two amounted to", boss, 200);
 
     const floor = try chat.floorOf("build", a);
     try testing.expect(floor.seq > 0);
@@ -3576,7 +3692,7 @@ test "compacting does not unbar a member that joined without history" {
 
     const s2 = (try chat.post("build", boss, "after", 101)).seq;
     chat.setLogSeq("build", s2, 1867);
-    _ = try chat.compact("build", s2, "what those amounted to", boss, 200);
+    _ = try chat.compact("build", s2, 0, "what those amounted to", boss, 200);
 
     const floor = try chat.floorOf("build", a);
     try testing.expect(floor.barred);
@@ -3596,12 +3712,12 @@ test "a watched terminal is not woken, whoever spoke" {
     try chat.add("build", b, .none, .{});
 
     _ = try chat.post("build", boss, "here is the plan", 0);
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched));
-    try testing.expect(!chat.shouldNotify("build", a, 0, 1000, .watched));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched, .everything));
+    try testing.expect(!chat.shouldNotify("build", a, 0, 1000, .watched, .everything));
 
     _ = try chat.post("build", b, "core is green", 1);
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched));
-    try testing.expect(!chat.shouldNotify("build", a, 1, 1000, .watched));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched, .everything));
+    try testing.expect(!chat.shouldNotify("build", a, 1, 1000, .watched, .everything));
 }
 
 test "an unminded terminal is woken by both, because the group is all it has" {
@@ -3613,11 +3729,11 @@ test "an unminded terminal is woken by both, because the group is all it has" {
     try chat.add("build", b, .none, .{});
 
     _ = try chat.post("build", boss, "here is the plan", 0);
-    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .supervisor));
-    try testing.expect(chat.shouldNotify("build", a, 0, 1000, .supervisor));
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .supervisor, .everything));
+    try testing.expect(chat.shouldNotify("build", a, 0, 1000, .supervisor, .everything));
 
     _ = try chat.post("build", b, "core is green", 1);
-    try testing.expectEqual(@as(usize, 2), chat.waking("build", a, .supervisor));
+    try testing.expectEqual(@as(usize, 2), chat.waking("build", a, .supervisor, .everything));
 }
 
 test "a supervisor is woken by both, because that is how it hears" {
@@ -3631,10 +3747,10 @@ test "a supervisor is woken by both, because that is how it hears" {
     try chat.add("build", a, .none, .{});
 
     _ = try chat.post("build", boss2, "here is the plan", 0);
-    try testing.expectEqual(@as(usize, 1), chat.waking("build", boss, .supervisor));
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", boss, .supervisor, .everything));
 
     _ = try chat.post("build", a, "core is green", 1);
-    try testing.expectEqual(@as(usize, 2), chat.waking("build", boss, .supervisor));
+    try testing.expectEqual(@as(usize, 2), chat.waking("build", boss, .supervisor, .everything));
 }
 
 test "not being woken is not being kept out" {
@@ -3651,22 +3767,22 @@ test "not being woken is not being kept out" {
     _ = try chat.post("build", boss, "here is the plan", 0);
     _ = try chat.post("build", b, "core is green", 1);
 
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched));
-    try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
-    try testing.expectEqual(@as(usize, 2), chat.unreadTotal(a));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched, .everything));
+    try testing.expectEqual(@as(usize, 2), chat.unread("build", a, .everything));
+    try testing.expectEqual(@as(usize, 2), chat.unreadTotal(a, .everything));
 
-    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited)).messages;
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
     defer testing.allocator.free(seen);
     try testing.expectEqual(@as(usize, 2), seen.len);
     try testing.expectEqualStrings("here is the plan", seen[0].text);
     try testing.expectEqualStrings("core is green", seen[1].text);
-    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a, .everything));
 
     // And what it may see is still decided by its floor, not by this: it
     // joined with `.none`, so anything said before it arrived stays hidden.
     try chat.add("build", 0x5555, .none, .{});
     _ = try chat.post("build", boss, "after", 2);
-    const late = (try chat.read(testing.allocator, "build", 0x5555, 0, .unlimited)).messages;
+    const late = (try chat.read(testing.allocator, "build", 0x5555, 0, .unlimited, .everything)).messages;
     defer testing.allocator.free(late);
     try testing.expectEqual(@as(usize, 1), late.len);
 }
@@ -3687,25 +3803,25 @@ test "a named member is woken for what names it, and nobody else is woken at all
     _ = try chat.postMentioning("build", boss, "for a", &.{a}, 1);
 
     // Both can see both messages -- `unread` is untouched by naming.
-    try testing.expectEqual(@as(usize, 2), chat.unread("build", a));
-    try testing.expectEqual(@as(usize, 2), chat.unread("build", b));
+    try testing.expectEqual(@as(usize, 2), chat.unread("build", a, .everything));
+    try testing.expectEqual(@as(usize, 2), chat.unread("build", b, .everything));
 
     // `a` is woken for the one that names it, whatever its standing.
-    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .watched));
-    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .none));
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .watched, .everything));
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .none, .everything));
 
     // `b` is exactly where it was before mentions existed.
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", b, .watched));
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", b, .none));
-    try testing.expect(!chat.shouldNotify("build", b, 0, 1000, .watched));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", b, .watched, .everything));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", b, .none, .everything));
+    try testing.expect(!chat.shouldNotify("build", b, 0, 1000, .watched, .everything));
 
     // A supervisor was already woken for everything; naming adds nothing.
-    try testing.expectEqual(@as(usize, 2), chat.waking("build", a, .supervisor));
+    try testing.expectEqual(@as(usize, 2), chat.waking("build", a, .supervisor, .everything));
 
     // Having read it, `a` is not woken again for it.
-    const seen = (try chat.read(testing.allocator, "build", a, null, .unlimited)).messages;
+    const seen = (try chat.read(testing.allocator, "build", a, null, .unlimited, .everything)).messages;
     defer testing.allocator.free(seen);
-    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched));
+    try testing.expectEqual(@as(usize, 0), chat.waking("build", a, .watched, .everything));
 }
 
 test "one name that is not in the group refuses the whole post" {
@@ -3725,7 +3841,7 @@ test "one name that is not in the group refuses the whole post" {
     );
 
     // Nothing landed, and nobody has anything waiting.
-    try testing.expectEqual(@as(usize, 0), chat.unread("build", a));
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a, .everything));
     try testing.expectEqual(@as(usize, 0), chat.groups.getPtr("build").?.log.items.len);
 }
 
@@ -3753,7 +3869,7 @@ test "named messages that fall off the end or are compacted are freed" {
     _ = try chat.postMentioning("build", boss, "two", &.{ a, a }, 1);
     _ = try chat.postMentioning("build", boss, "three", &.{a}, 2);
     try testing.expectEqual(@as(usize, 1), chat.groups.getPtr("build").?.log.items[0].mentions.len);
-    _ = try chat.compact("build", 3, "summary", boss, 3);
+    _ = try chat.compact("build", 3, 0, "summary", boss, 3);
 }
 
 test "ControlRoom marks: seen and snooze are kept per group and survive a rename" {
@@ -3961,7 +4077,7 @@ test "group cursor: posting does not carry the poster past what it had not read"
     // The supervisor reads up to n.
     const n = (try chat.post("build", a, "started", 0)).seq;
     {
-        const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+        const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited, .everything)).messages;
         defer testing.allocator.free(got);
         try testing.expectEqual(n, got[got.len - 1].seq);
     }
@@ -3973,19 +4089,19 @@ test "group cursor: posting does not carry the poster past what it had not read"
     try testing.expectEqual(n + 2, own);
 
     // It is still unread, and still counted as such...
-    try testing.expectEqual(@as(usize, 1), chat.unread("build", boss));
-    try testing.expectEqual(@as(usize, 1), chat.waking("build", boss, .supervisor));
+    try testing.expectEqual(@as(usize, 1), chat.unread("build", boss, .everything));
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", boss, .supervisor, .everything));
 
     // ...and a read that says nothing about where to start hands it over.
-    const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+    const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited, .everything)).messages;
     defer testing.allocator.free(got);
     try testing.expect(got.len >= 1);
     try testing.expectEqual(missed, got[0].seq);
     try testing.expectEqualStrings("delivered: all green", got[0].text);
-    try testing.expectEqual(@as(usize, 0), chat.unread("build", boss));
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", boss, .everything));
 
     // Nothing is handed over twice afterwards.
-    const again = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+    const again = (try chat.read(testing.allocator, "build", boss, null, .unlimited, .everything)).messages;
     defer testing.allocator.free(again);
     try testing.expectEqual(@as(usize, 0), again.len);
 }
@@ -3998,13 +4114,13 @@ test "group cursor: a poster that was up to date stays up to date, and is not ha
 
     _ = try chat.post("build", a, "one", 0);
     {
-        const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+        const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited, .everything)).messages;
         defer testing.allocator.free(got);
     }
     // Nothing unread in between: its own post, and the one after, move it.
     _ = try chat.post("build", boss, "two", 1);
     _ = try chat.post("build", boss, "three", 2);
-    const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+    const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited, .everything)).messages;
     defer testing.allocator.free(got);
     try testing.expectEqual(@as(usize, 0), got.len);
 
@@ -4012,7 +4128,7 @@ test "group cursor: a poster that was up to date stays up to date, and is not ha
     // held back by messages it may not see.
     try chat.add("build", b, .none, .{});
     _ = try chat.post("build", b, "hello", 3);
-    const none = (try chat.read(testing.allocator, "build", b, null, .unlimited)).messages;
+    const none = (try chat.read(testing.allocator, "build", b, null, .unlimited, .everything)).messages;
     defer testing.allocator.free(none);
     try testing.expectEqual(@as(usize, 0), none.len);
 }
@@ -4028,33 +4144,33 @@ test "group notice: a message that arrives inside the gap is told when the gap i
     const gap: u64 = 30_000;
 
     _ = try chat.post("build", a, "one", 1_000);
-    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 1_000, gap, .supervisor));
-    try testing.expect(chat.shouldNotify("build", boss, 1_000, gap, .supervisor));
+    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 1_000, gap, .supervisor, .everything));
+    try testing.expect(chat.shouldNotify("build", boss, 1_000, gap, .supervisor, .everything));
 
     // Twenty-two seconds later, another. Not told now...
     _ = try chat.post("build", a, "two", 23_000);
-    try testing.expect(!chat.shouldNotify("build", boss, 23_000, gap, .supervisor));
+    try testing.expect(!chat.shouldNotify("build", boss, 23_000, gap, .supervisor, .everything));
     // ...and that is a wait with an end, which the caller comes back at.
-    try testing.expectEqual(@as(?u64, 8_000), chat.notifyWaitMs("build", boss, 23_000, gap, .supervisor));
-    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 31_000, gap, .supervisor));
-    try testing.expect(chat.shouldNotify("build", boss, 31_000, gap, .supervisor));
+    try testing.expectEqual(@as(?u64, 8_000), chat.notifyWaitMs("build", boss, 23_000, gap, .supervisor, .everything));
+    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 31_000, gap, .supervisor, .everything));
+    try testing.expect(chat.shouldNotify("build", boss, 31_000, gap, .supervisor, .everything));
 
     // Told about everything there is: a sweep that comes round again --
     // they run without a post now -- says nothing and waits for nothing.
-    try testing.expect(!chat.shouldNotify("build", boss, 90_000, gap, .supervisor));
-    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 90_000, gap, .supervisor));
+    try testing.expect(!chat.shouldNotify("build", boss, 90_000, gap, .supervisor, .everything));
+    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 90_000, gap, .supervisor, .everything));
     // Unless that notice never reached it: then it was not told.
     chat.noticeRefused(boss);
-    try testing.expect(chat.shouldNotify("build", boss, 90_000, gap, .supervisor));
+    try testing.expect(chat.shouldNotify("build", boss, 90_000, gap, .supervisor, .everything));
 
     // Nothing worth waking for is not a wait: a watched terminal named in
     // nothing, and a reader that has read it all.
-    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 32_000, gap, .watched));
+    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 32_000, gap, .watched, .everything));
     {
-        const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited)).messages;
+        const got = (try chat.read(testing.allocator, "build", boss, null, .unlimited, .everything)).messages;
         defer testing.allocator.free(got);
     }
-    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 32_000, gap, .supervisor));
+    try testing.expectEqual(@as(?u64, null), chat.notifyWaitMs("build", boss, 32_000, gap, .supervisor, .everything));
 }
 
 test "ControlRoom resume: a group's last supervisor is replaced whole, and says what that changed" {
@@ -4279,4 +4395,172 @@ test "task 1794: a start that ran out of time says what it was waiting for, and 
     chat.startOpened("nightly", 0xa1, 90_000);
     try testing.expect(!chat.startByDirectory("nightly", 99_000));
     try testing.expectEqual(StartBy.project, chat.startOf("nightly", 41_000).by.?);
+}
+
+// -- channels (squads S2) ---------------------------------------------------
+
+const cee: Id = 0x4444;
+
+/// One group, three members in two squads, and a message in each place:
+/// public, task 7's channel (`a`), task 8's channel (`c`). Seqs 1, 2, 3.
+fn channelFixture(chat: *Chat) !void {
+    try chat.create("g", boss);
+    try chat.add("g", a, .all, .{});
+    try chat.add("g", b, .all, .{});
+    try chat.add("g", cee, .all, .{});
+    _ = try chat.post("g", boss, "public one", 10);
+    _ = try chat.postIn("g", a, "seven only", &.{}, 7, null, 11);
+    _ = try chat.postIn("g", cee, "eight only", &.{}, 8, null, 12);
+}
+
+fn texts(messages: []const Message, out: *[8][]const u8) usize {
+    for (messages, 0..) |m, i| out[i] = m.text;
+    return messages.len;
+}
+
+test "channel: 成员只读到公共 + 自己的频道，读不到别的小队的" {
+    var chat = testChat();
+    defer chat.deinit();
+    try channelFixture(&chat);
+
+    const seven: Scope = .{ .only = &.{.{ .task = 7 }} };
+    const got = try chat.read(testing.allocator, "g", b, 0, .unlimited, seven);
+    defer testing.allocator.free(got.messages);
+    var t: [8][]const u8 = undefined;
+    const n = texts(got.messages, &t);
+    try testing.expectEqual(@as(usize, 2), n);
+    try testing.expectEqualStrings("public one", t[0]);
+    try testing.expectEqualStrings("seven only", t[1]);
+
+    // Negative control: the same group read with `.everything` has all
+    // three, so the missing one is the scope's doing and not the data's.
+    const all = try chat.read(testing.allocator, "g", boss, 0, .unlimited, .everything);
+    defer testing.allocator.free(all.messages);
+    try testing.expectEqual(@as(usize, 3), all.messages.len);
+    try testing.expectEqualStrings("eight only", all.messages[2].text);
+
+    // And a reader in no task sees the public channel alone.
+    const none = try chat.read(testing.allocator, "g", cee, 0, .unlimited, Scope.public);
+    defer testing.allocator.free(none.messages);
+    try testing.expectEqual(@as(usize, 1), none.messages.len);
+}
+
+test "channel: unread / waking 只数可见消息，不可见的不算未读也不叫醒" {
+    var chat = testChat();
+    defer chat.deinit();
+    try channelFixture(&chat);
+
+    // `b` is in task 7 only: it can see two of the three, and `a`'s own
+    // message is `a`'s.
+    const seven: Scope = .{ .only = &.{.{ .task = 7 }} };
+    try testing.expectEqual(@as(usize, 2), chat.unread("g", b, seven));
+    try testing.expectEqual(@as(usize, 1), chat.unread("g", b, Scope.public));
+    try testing.expectEqual(@as(usize, 3), chat.unread("g", b, .everything)); // negative control
+
+    // The supervisor is woken for what it can see; a worker for nothing.
+    try testing.expectEqual(@as(usize, 1), chat.waking("g", b, .supervisor, Scope.public));
+    try testing.expectEqual(@as(usize, 3), chat.waking("g", b, .supervisor, .everything)); // control
+    try testing.expectEqual(@as(usize, 0), chat.waking("g", b, .watched, seven));
+
+    // Named in a channel it cannot read, `b` is not woken for it either.
+    _ = try chat.postIn("g", cee, "named", &.{b}, 8, null, 13);
+    try testing.expectEqual(@as(usize, 0), chat.waking("g", b, .watched, seven));
+    try testing.expectEqual(@as(usize, 1), chat.waking("g", b, .watched, .everything)); // control
+    try testing.expectEqual(@as(usize, 1), chat.unreadTotal(b, Scope.public));
+    try testing.expectEqual(@as(usize, 4), chat.unreadTotal(b, .everything));
+}
+
+test "channel: 公共帖与频道帖都不叫醒 watched worker，叫醒总管；点名仍投递" {
+    var chat = testChat();
+    defer chat.deinit();
+    try channelFixture(&chat);
+
+    const seven: Scope = .{ .only = &.{.{ .task = 7 }} };
+    // Neither the public post nor task 7's post wakes a watched member of
+    // task 7, and both wake the supervisor.
+    try testing.expectEqual(@as(usize, 0), chat.waking("g", b, .watched, seven));
+    try testing.expectEqual(@as(usize, 2), chat.unread("g", b, seven)); // control: they are unread
+    try testing.expectEqual(@as(usize, 2), chat.waking("g", boss, .supervisor, .everything));
+
+    // A mention still wakes the one it names (delivery is the host's, the
+    // count is what it is told by).
+    _ = try chat.postIn("g", a, "look", &.{b}, 7, null, 14);
+    try testing.expectEqual(@as(usize, 1), chat.waking("g", b, .watched, seven));
+}
+
+test "channel: 压缩按频道各出摘要，公共摘要不含频道正文" {
+    var chat = testChat();
+    defer chat.deinit();
+    try channelFixture(&chat);
+    _ = try chat.postIn("g", a, "seven again", &.{}, 7, null, 13); // seq 4
+    _ = try chat.post("g", boss, "public two", 14); // seq 5
+
+    // Three channels, three summaries.
+    _ = try chat.compact("g", 5, 0, "PUBLIC SUMMARY", boss, 20);
+    _ = try chat.compact("g", 5, 7, "SEVEN SUMMARY", boss, 21);
+    _ = try chat.compact("g", 5, 8, "EIGHT SUMMARY", boss, 22);
+
+    const all = try chat.read(testing.allocator, "g", boss, 0, .unlimited, .everything);
+    defer testing.allocator.free(all.messages);
+    try testing.expectEqual(@as(usize, 3), all.messages.len);
+    for (all.messages) |m| try testing.expect(m.summary);
+
+    // Each is its channel's, and the one the public reads is the public's.
+    const seven: Scope = .{ .only = &.{.{ .task = 7 }} };
+    const pub_only = try chat.read(testing.allocator, "g", b, 0, .unlimited, Scope.public);
+    defer testing.allocator.free(pub_only.messages);
+    try testing.expectEqual(@as(usize, 1), pub_only.messages.len);
+    try testing.expectEqualStrings("PUBLIC SUMMARY", pub_only.messages[0].text);
+    try testing.expect(std.mem.indexOf(u8, pub_only.messages[0].text, "seven") == null);
+
+    const with_seven = try chat.read(testing.allocator, "g", a, 0, .unlimited, seven);
+    defer testing.allocator.free(with_seven.messages);
+    try testing.expectEqual(@as(usize, 2), with_seven.messages.len);
+    // In seq order: the summary stands at the seq of the last message it
+    // replaced, 4 for channel 7 and 5 for the public one.
+    try testing.expectEqual(@as(u64, 7), with_seven.messages[0].channel);
+    try testing.expectEqualStrings("SEVEN SUMMARY", with_seven.messages[0].text);
+    try testing.expectEqualStrings("PUBLIC SUMMARY", with_seven.messages[1].text);
+
+    // Nothing of channel 9 to cover: refused rather than a summary standing
+    // for nothing.
+    try testing.expectError(error.Empty, chat.compact("g", 5, 9, "x", boss, 23));
+}
+
+test "channel: 离队成员仍读得到在队期间的频道历史，读不到之后的" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.create("g", boss);
+    try chat.add("g", a, .all, .{});
+    try chat.add("g", b, .all, .{});
+    _ = try chat.postIn("g", a, "while b was in", &.{}, 7, null, 100);
+    _ = try chat.postIn("g", a, "after b left", &.{}, 7, null, 300);
+
+    // b left at 200. Control first, before any read moves the cursor: a
+    // member still there has both to read.
+    const still: Scope = .{ .only = &.{.{ .task = 7 }} };
+    try testing.expectEqual(@as(usize, 2), chat.unread("g", b, still));
+    const left: Scope = .{ .only = &.{.{ .task = 7, .until_ms = 200 }} };
+    try testing.expectEqual(@as(usize, 1), chat.unread("g", b, left));
+    const got = try chat.read(testing.allocator, "g", b, 0, .unlimited, left);
+    defer testing.allocator.free(got.messages);
+    try testing.expectEqual(@as(usize, 1), got.messages.len);
+    try testing.expectEqualStrings("while b was in", got.messages[0].text);
+    try testing.expectEqual(@as(usize, 0), chat.unread("g", b, left));
+}
+
+test "channel: 读过不可见的消息后游标照样前进，不可见的不再被走一遍" {
+    var chat = testChat();
+    defer chat.deinit();
+    try channelFixture(&chat);
+
+    const got = try chat.read(testing.allocator, "g", b, null, .unlimited, Scope.public);
+    defer testing.allocator.free(got.messages);
+    try testing.expectEqual(@as(usize, 1), got.messages.len);
+    // Past all three, though only the first was handed over.
+    const floor = try chat.floorOf("g", b);
+    _ = floor;
+    const again = try chat.read(testing.allocator, "g", b, null, .unlimited, .everything);
+    defer testing.allocator.free(again.messages);
+    try testing.expectEqual(@as(usize, 0), again.messages.len);
 }

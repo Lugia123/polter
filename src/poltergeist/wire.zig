@@ -257,6 +257,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .group = try requireString(aa, params, "group"),
             .through = try requireU64(params, "through"),
             .summary = try requireString(aa, params, "summary"),
+            .task = try optionalU64(params, "task", 0),
         } },
 
         .group_list => .{ .group_list = .{
@@ -267,6 +268,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .group = try requireString(aa, params, "group"),
             .text = try requireString(aa, params, "text"),
             .mention = try optionalIds(aa, params, "mention"),
+            .task = try optionalMaybeU64(params, "task"),
         } },
 
         .group_read => .{ .group_read = .{

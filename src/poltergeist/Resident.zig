@@ -666,6 +666,11 @@ fn writeBatch(
                     try s.write(true);
                 }
 
+                if (e.channel != 0) {
+                    try s.objectField("channel");
+                    try s.write(e.channel);
+                }
+
                 try s.objectField("text");
                 try s.write(e.text);
             },
@@ -2191,16 +2196,16 @@ test "a backoff gives up after ten tries, and a child that settles clears it" {
 /// A window with two groups in it, the last message belonging to the group
 /// nobody in these tests asked for.
 const mixed: []const Feed.Event = &.{
-    .{ .chat = .{ .n = 3, .seq = 30, .at_ms = 1000, .group = "build", .author = "worker-core", .text = "one" } },
-    .{ .chat = .{ .n = 4, .seq = 40, .at_ms = 1001, .group = "ops", .author = "worker-ops", .text = "two" } },
-    .{ .chat = .{ .n = 5, .seq = 50, .at_ms = 1002, .group = "build", .author = "worker-core", .summary = true, .text = "three" } },
-    .{ .chat = .{ .n = 6, .seq = 60, .at_ms = 1003, .group = "ops", .author = "worker-ops", .text = "four" } },
+    .{ .chat = .{ .n = 3, .seq = 30, .at_ms = 1000, .group = "build", .author = "worker-core", .channel = 0, .text = "one" } },
+    .{ .chat = .{ .n = 4, .seq = 40, .at_ms = 1001, .group = "ops", .author = "worker-ops", .channel = 0, .text = "two" } },
+    .{ .chat = .{ .n = 5, .seq = 50, .at_ms = 1002, .group = "build", .author = "worker-core", .summary = true, .channel = 7, .text = "three" } },
+    .{ .chat = .{ .n = 6, .seq = 60, .at_ms = 1003, .group = "ops", .author = "worker-ops", .channel = 0, .text = "four" } },
 };
 
 /// A window holding one of each kind, for the tests about what a
 /// subscription does and does not let through.
 const every_kind: []const Feed.Event = &.{
-    .{ .chat = .{ .n = 1, .seq = 10, .at_ms = 1000, .group = "build", .author = "worker-core", .text = "said" } },
+    .{ .chat = .{ .n = 1, .seq = 10, .at_ms = 1000, .group = "build", .author = "worker-core", .channel = 0, .text = "said" } },
     .{ .terminal_quiet = .{
         .n = 2,
         .at_ms = 1001,
@@ -2275,6 +2280,10 @@ test "a star takes every group, and no message carries a terminal handle" {
     // summary the supervisor wrote from something a person said.
     try testing.expect(messages.items[0].object.get("summary") == null);
     try testing.expectEqual(true, messages.items[2].object.get("summary").?.bool);
+
+    // The channel is said only when it is not the public one.
+    try testing.expect(messages.items[0].object.get("channel") == null);
+    try testing.expectEqual(@as(i64, 7), messages.items[2].object.get("channel").?.integer);
 
     try testing.expectEqual(@as(i64, 1000), messages.items[0].object.get("at_ms").?.integer);
     try testing.expectEqualStrings("worker-core", messages.items[0].object.get("author").?.string);
@@ -2425,6 +2434,7 @@ test "the archive plugin we ship answers the greeting the host really writes" {
         .at_ms = 1786819271275,
         .group = "build",
         .author = "worker-core",
+        .channel = 0,
         .text = "hello",
     } }};
     const batch = try renderBatch(alloc, 0, 11, events, .{
@@ -2717,6 +2727,7 @@ fn saySomething(feed: *Feed) void {
         .at_ms = 1000,
         .group = "build",
         .author = "worker-core",
+        .channel = 0,
         .text = "one",
     } });
     feed.publish(.{ .chat = .{
@@ -2724,6 +2735,7 @@ fn saySomething(feed: *Feed) void {
         .at_ms = 1001,
         .group = "ops",
         .author = "worker-ops",
+        .channel = 0,
         .text = "two",
     } });
     feed.publish(.{ .chat = .{
@@ -2731,6 +2743,7 @@ fn saySomething(feed: *Feed) void {
         .at_ms = 1002,
         .group = "build",
         .author = "worker-core",
+        .channel = 0,
         .summary = true,
         .text = "three",
     } });

@@ -1348,13 +1348,13 @@ fn scratch(alloc: Allocator, io: std.Io) ![]u8 {
 fn build(alloc: Allocator, io: std.Io, state: []const u8) !void {
     var cl = try ChatLog.open(alloc, io, state);
     defer cl.deinit();
-    _ = cl.append("alpha", 1, "boss", t0, false, "hello alpha");
-    _ = cl.append("beta", 2, "worker", t0 + 1, false, "hello beta");
-    _ = cl.append("alpha", 1, "boss", t0 + 2, false, "it says \"group\":\"alpha\" in the text, and that is only text");
-    _ = cl.append("beta", 2, "worker", t0 + 3, false, "beta again");
-    _ = cl.append("alpha", 1, "boss", t0 + day_ms, false, "next day, alpha");
-    _ = cl.append("alpha", 1, "boss", t0 + day_ms + 1, true, "a summary of alpha");
-    _ = cl.append("beta", 2, "worker", t0 + day_ms + 2, false, "beta next day");
+    _ = cl.append("alpha", 1, "boss", t0, false, "hello alpha", 0);
+    _ = cl.append("beta", 2, "worker", t0 + 1, false, "hello beta", 0);
+    _ = cl.append("alpha", 1, "boss", t0 + 2, false, "it says \"group\":\"alpha\" in the text, and that is only text", 0);
+    _ = cl.append("beta", 2, "worker", t0 + 3, false, "beta again", 0);
+    _ = cl.append("alpha", 1, "boss", t0 + day_ms, false, "next day, alpha", 0);
+    _ = cl.append("alpha", 1, "boss", t0 + day_ms + 1, true, "a summary of alpha", 0);
+    _ = cl.append("beta", 2, "worker", t0 + day_ms + 2, false, "beta next day", 0);
 
     var tasks: Tasks = .init(alloc, .{});
     defer tasks.deinit();
@@ -1559,10 +1559,10 @@ test "#1267: a rename moves the records to the new name and rewrites only this g
     // The record reads back under the new name, every message of it.
     var cl = try ChatLog.open(alloc, io, state);
     defer cl.deinit();
-    const page = try cl.history(alloc, "gamma", 0, 50, .{});
+    const page = try cl.history(alloc, "gamma", 0, 50, .{}, .everything);
     defer ChatLog.freePage(alloc, page);
     try testing.expectEqual(@as(usize, 4), page.entries.len);
-    const none = try cl.history(alloc, "alpha", 0, 50, .{});
+    const none = try cl.history(alloc, "alpha", 0, 50, .{}, .everything);
     defer ChatLog.freePage(alloc, none);
     try testing.expectEqual(@as(usize, 0), none.entries.len);
 
@@ -1714,7 +1714,7 @@ test "#1267: after a rename the log writes into the new files, not the backup" {
     // The log is open across the rename, as the app's is.
     var cl = try ChatLog.open(alloc, io, state);
     defer cl.deinit();
-    _ = cl.append("alpha", 1, "boss", t0 + 10 * day_ms, false, "written before");
+    _ = cl.append("alpha", 1, "boss", t0 + 10 * day_ms, false, "written before", 0);
 
     const Hook = struct {
         log: *ChatLog,
@@ -1727,7 +1727,7 @@ test "#1267: after a rename the log writes into the new files, not the backup" {
     _ = try rename(testOpts(alloc, io, state), "alpha", "gamma", .{ .ctx = &hook, .close_handles = Hook.close });
     cl.reopenHandles();
 
-    _ = cl.append("gamma", 1, "boss", t0 + 11 * day_ms, false, "written after");
+    _ = cl.append("gamma", 1, "boss", t0 + 11 * day_ms, false, "written after", 0);
 
     const stream = try readAll(alloc, io, &.{ state, "chat", "chat.jsonl" });
     defer alloc.free(stream);
@@ -1741,7 +1741,7 @@ test "#1267: after a rename the log writes into the new files, not the backup" {
     try testing.expectEqual(@as(usize, 0), count(old, "written after"));
 
     // And the day file: the new line is in the new directory's record.
-    const page = try cl.history(alloc, "gamma", 0, 50, .{});
+    const page = try cl.history(alloc, "gamma", 0, 50, .{}, .everything);
     defer ChatLog.freePage(alloc, page);
     try testing.expectEqual(@as(usize, 6), page.entries.len);
     try testing.expectEqualStrings("written after", page.entries[5].text);

@@ -386,8 +386,8 @@ test "a cleared chat is not filled back in from the stream at the next start (ta
     {
         var l = try ChatLog.open(alloc, io, state);
         defer l.deinit();
-        _ = l.append("build", 7, "worker", 1000, false, "old one");
-        _ = l.append("build", 7, "worker", 2000, false, "old two");
+        _ = l.append("build", 7, "worker", 1000, false, "old one", 0);
+        _ = l.append("build", 7, "worker", 2000, false, "old two", 0);
     }
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();

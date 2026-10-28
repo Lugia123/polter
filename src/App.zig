@@ -4245,7 +4245,9 @@ fn renderTasks(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]c
     if (r.open_task) |id| if (self.chat_log) |*l| {
         var tag: [24]u8 = undefined;
         const match = std.fmt.bufPrint(&tag, "#{d}", .{id}) catch "";
-        const page = try l.history(arena, r.group, 0, 200, .{ .since_ms = wall - Page.said_ms, .match = match });
+        // `.everything`: this is the task page in the control room, which
+        // is the person's view of their own groups.
+        const page = try l.history(arena, r.group, 0, 200, .{ .since_ms = wall - Page.said_ms, .match = match }, .everything);
         // Newest first from the record; the page reads oldest first.
         var i = page.entries.len;
         while (i > 0) : (i -= 1) {
@@ -7634,7 +7636,7 @@ fn sayInGroup(self: *App, group: []const u8, text: []const u8) void {
     // the socket, and neither is optional: without `logChat` the sentence is
     // in the group for tonight and gone from the record tomorrow, and
     // without the sweep nobody is notified that it arrived.
-    self.logChat(group, posted.seq, poltergeistpkg.Chat.polter_id, at, false, text);
+    self.logChat(group, posted.seq, poltergeistpkg.Chat.polter_id, at, false, text, 0);
     self.tellTerminalsAboutMessages();
     self.controlRoomTouch();
 }
@@ -9690,6 +9692,8 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .chatGroups = chatGroups,
         .membership = poltergeistMembership,
         .chatRead = chatRead,
+        .channelSeats = channelSeats,
+        .channelReaders = channelReaders,
         .chatHistory = chatHistory,
         .recordTool = recordTool,
         .pluginList = pluginList,
@@ -13274,7 +13278,7 @@ fn chatRename(
     ) catch "group renamed";
     const at: u64 = @intCast(self.poltergeistWallMs());
     if (self.chat.post(to, from, text, at)) |posted| {
-        self.logChat(to, posted.seq, from, at, false, text);
+        self.logChat(to, posted.seq, from, at, false, text, 0);
         self.tellTerminalsAboutMessages();
     } else |err| {
         log.warn("poltergeist: could not record a group rename in the group err={}", .{err});
@@ -14196,7 +14200,7 @@ fn reclaimSession(self: *App, id: poltergeistpkg.Bus.Id, cli: []const u8, sessio
         }) catch continue;
         const now: u64 = @intCast(self.poltergeistWallMs());
         if (self.chat.post(group, id, text.written(), now)) |posted| {
-            self.logChat(group, posted.seq, id, now, false, text.written());
+            self.logChat(group, posted.seq, id, now, false, text.written(), 0);
         } else |err| {
             log.warn("poltergeist: could not say in {s} that {x} is back err={}", .{ group, id, err });
         }
@@ -14364,6 +14368,68 @@ pub fn poltergeistTerminalGone(self: *App, id: poltergeistpkg.Bus.Id) void {
     if (self.terminal_meta) |*m| m.forget(id);
 }
 
+fn channelSeats(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    group: []const u8,
+    id: poltergeistpkg.Bus.Id,
+) anyerror![]const poltergeistpkg.rpc.ChannelSeat {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const nobody = poltergeistpkg.Tasks.nobody;
+    if (id == nobody) return &.{};
+
+    const list = try self.tasks.inGroup(alloc, group);
+    defer alloc.free(list);
+
+    var out: std.ArrayListUnmanaged(poltergeistpkg.rpc.ChannelSeat) = .empty;
+    errdefer out.deinit(alloc);
+    for (list) |t| {
+        // Holding a place now: the lead, or a filled place.
+        var holds = t.owner == id;
+        for (t.members) |m| {
+            if (m.slot == .filled and m.id == id) holds = true;
+        }
+
+        // Having held one: the last stretch's end is where reading stops.
+        var held = false;
+        var left: i64 = 0;
+        for (t.spans) |sp| {
+            if (sp.id != id) continue;
+            held = true;
+            if (sp.to_ms) |to| left = @max(left, to) else holds = true;
+        }
+        if (!holds and !held) continue;
+
+        try out.append(alloc, .{
+            .task = t.id,
+            .until_ms = if (holds) null else @intCast(@max(left, 0)),
+            .current = holds and t.state == .open,
+        });
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+fn channelReaders(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    group: []const u8,
+    task: u64,
+) anyerror!?[]const poltergeistpkg.Bus.Id {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const nobody = poltergeistpkg.Tasks.nobody;
+    const t = self.tasks.get(task) orelse return null;
+    if (!std.mem.eql(u8, t.group, group)) return null;
+
+    var out: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+    errdefer out.deinit(alloc);
+    if (t.owner != nobody) try out.append(alloc, t.owner);
+    for (t.members) |m| {
+        if (m.slot != .filled or m.id == nobody) continue;
+        if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, out.items, m.id) == null) try out.append(alloc, m.id);
+    }
+    return out.toOwnedSlice(alloc);
+}
+
 fn chatOwner(ctx: *anyopaque, group: []const u8) anyerror!poltergeistpkg.Bus.Id {
     const self: *App = @ptrCast(@alignCast(ctx));
     return self.chat.createdBy(group);
@@ -14384,19 +14450,20 @@ fn chatCompact(
     ctx: *anyopaque,
     group: []const u8,
     through: u64,
+    channel: u64,
     summary: []const u8,
     by: poltergeistpkg.Bus.Id,
 ) anyerror!poltergeistpkg.Chat.Kept {
     const self: *App = @ptrCast(@alignCast(ctx));
     const at: u64 = @intCast(self.poltergeistWallMs());
-    const done = try self.chat.compact(group, through, summary, by, at);
+    const done = try self.chat.compact(group, through, channel, summary, by, at);
     const seq = done.seq;
 
     // Written after the messages it replaced, not over them. Compaction
     // frees the agents' context; it is not an instruction to forget, and
     // the record of a night is worth more than the shape it was in when
     // the supervisor tidied up.
-    self.logChat(group, seq, by, at, true, summary);
+    self.logChat(group, seq, by, at, true, summary, channel);
 
     return done.wrote;
 }
@@ -14414,7 +14481,7 @@ fn chatPost(
     var named: [poltergeistpkg.Chat.max_mentions]poltergeistpkg.Bus.Id = undefined;
     if (mentions.to.len > named.len) return error.TooManyMentions;
     for (mentions.to, 0..) |d, i| named[i] = d.to;
-    const posted = try self.chat.postMentioning(group, from, text, named[0..mentions.to.len], at);
+    const posted = try self.chat.postIn(group, from, text, named[0..mentions.to.len], mentions.channel, null, at);
     const seq = posted.seq;
 
     // A terminal's title moves with its work, so the record follows it.
@@ -14424,7 +14491,7 @@ fn chatPost(
 
     // Written down after the model accepted it, so the record holds what
     // was actually said rather than what somebody tried to say.
-    self.logChat(group, seq, from, at, false, text);
+    self.logChat(group, seq, from, at, false, text, mentions.channel);
 
     // **Typed before the notices go out**, not after: a notice lands in the
     // input box without a return, and a named terminal handed one first
@@ -14554,6 +14621,7 @@ fn logChat(
     at_ms: u64,
     summary: bool,
     text: []const u8,
+    channel: u64,
 ) void {
     const l = if (self.chat_log) |*v| v else return;
 
@@ -14570,6 +14638,7 @@ fn logChat(
         at_wall_ms,
         summary,
         text,
+        channel,
     );
     if (log_seq != 0) self.chat.setLogSeq(group, seq, log_seq);
 
@@ -14589,6 +14658,7 @@ fn logChat(
         .author = author,
         .summary = summary,
         .text = text,
+        .channel = channel,
     } });
 }
 
@@ -15028,6 +15098,7 @@ fn chatRead(
     group: []const u8,
     id: poltergeistpkg.Bus.Id,
     since: ?u64,
+    scope: poltergeistpkg.Chat.Scope,
 ) anyerror!poltergeistpkg.rpc.ChatBatch {
     const self: *App = @ptrCast(@alignCast(ctx));
 
@@ -15037,7 +15108,7 @@ fn chatRead(
     const batch = try self.chat.read(alloc, group, id, since, .{
         .bytes = poltergeistpkg.rpc.read_budget_bytes,
         .per_line = poltergeistpkg.rpc.read_line_overhead_bytes,
-    });
+    }, scope);
     const messages = batch.messages;
     defer alloc.free(messages);
 
@@ -15183,6 +15254,7 @@ fn chatHistory(
     before_seq: u64,
     limit: usize,
     filter: poltergeistpkg.rpc.ChatFilter,
+    scope: poltergeistpkg.Chat.Scope,
 ) anyerror!poltergeistpkg.rpc.ChatPage {
     const self: *App = @ptrCast(@alignCast(ctx));
 
@@ -15211,7 +15283,7 @@ fn chatHistory(
     // shut off the one tool that reaches what the compaction took away.
     if (floor.barred and floor.log_seq == 0) return .{ .lines = &.{}, .more = false };
 
-    const page = try l.history(alloc, group, before_seq, limit, filter);
+    const page = try l.history(alloc, group, before_seq, limit, filter, scope);
 
     // Entries come back oldest first, so anything barred is a prefix.
     var k: usize = 0;
@@ -15289,7 +15361,15 @@ fn tellTerminalsAboutMessages(self: *App) void {
             // Still the whole count, deliberately. Not being woken is not
             // being kept out: whatever this terminal has waiting is what
             // `group_read` will hand it, and the notice says so honestly.
-            const count = self.chat.unread(name, surface.id);
+            //
+            // **Only what this terminal may read**: a notice that counted a
+            // squad's channel for somebody outside it would tell them a
+            // number that `group_read` can never account for.
+            var scope_arena: std.heap.ArenaAllocator = .init(self.alloc);
+            defer scope_arena.deinit();
+            const notice = self.poltergeistHost().noticeFor(scope_arena.allocator(), &self.poltergeist, &self.chat, name, surface.id);
+            const scope = notice.scope;
+            const count = notice.count;
             if (count == 0) continue;
             if (!self.chat.shouldNotify(
                 name,
@@ -15297,12 +15377,13 @@ fn tellTerminalsAboutMessages(self: *App) void {
                 now_ms,
                 chat_notice_gap_ms,
                 role,
+                scope,
             )) {
                 // Told too recently, with something still waiting: this
                 // sweep only runs when somebody posts, so without coming
                 // back the message that arrived inside the gap is never
                 // announced at all.
-                if (self.chat.notifyWaitMs(name, surface.id, now_ms, chat_notice_gap_ms, role)) |ms| {
+                if (self.chat.notifyWaitMs(name, surface.id, now_ms, chat_notice_gap_ms, role, scope)) |ms| {
                     self.noticeRetryIn(ms + chat_notice_retry_margin_ms);
                 }
                 continue;

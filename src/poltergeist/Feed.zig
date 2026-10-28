@@ -81,6 +81,15 @@ pub const Chat = struct {
     author: []const u8,
     summary: bool = false,
     text: []const u8,
+
+    /// 0 is the public channel, anything else a task's number (squads S2).
+    /// Said so that a plugin forwarding the night outward can tell a
+    /// squad's private talk from the group's.
+    ///
+    /// **No default** (CLAUDE.md, verification rule 6): a publisher that
+    /// forgot it would hand a squad's channel to a plugin as the group's
+    /// public talk, and say nothing. Leaving it out is a compile error.
+    channel: u64,
 };
 
 /// A terminal has gone quiet and somebody has to be told.
@@ -208,6 +217,7 @@ pub const Event = union(Kind) {
                     .author = a,
                     .summary = c.summary,
                     .text = t,
+                    .channel = c.channel,
                 } };
             },
 
@@ -629,6 +639,7 @@ fn chatEvent(seq: u64, group: []const u8, text: []const u8) Event {
         .at_ms = 1000 + @as(i64, @intCast(seq)),
         .group = group,
         .author = "worker-core",
+        .channel = 0,
         .text = text,
     } };
 }

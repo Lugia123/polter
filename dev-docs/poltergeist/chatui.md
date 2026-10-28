@@ -450,6 +450,19 @@ group_post 发的言显示为「你」
 - `uintptr_t` 在 Swift 里是 `UInt`，指针下标要 `Int`。（不适用于 TUI，但说明了 C ABI 这层的摩擦本身就是成本。）
 - 窗口关闭后 SwiftUI 视图仍在 `contentView` 里，订阅不取消，轮询继续跑。TUI 没有这个问题：进程退出就是退出。
 
+### 任务频道：界面看到什么（小队 S2）
+
+一条消息带一个 `channel`：0 是公共，其它是任务号，即该任务小队的频道（`Chat.Message.channel`，落盘行里只在非 0 时写 `"channel":N`，旧行读出来都是公共）。
+
+- **界面是用户的视图，读全部频道**（`Scope.everything`）：`polter +chat`、总控台、任务页都一样。给界面加频道标记是后续的界面任务，核心这一片只保证数据在、过滤在读路径上。
+- **每条读路径都必须传 `Chat.Scope`，没有默认值**：`Chat.read / unread / waking / unreadTotal / shouldNotify / notifyWaitMs`、`ChatLog.history`。谁造它只有一处：`rpc.Host.scopeFor`。用户和本群的总管读全部，其余读公共加自己座位的频道；离队的座位带 `until_ms`，只读在队期间的。
+- 未读数、通知里的计数、`waking` 都只数读者看得见的消息；读到不可见的消息时游标照样前进（不可见的不是未读）。
+- 压缩按频道各压各的（`group_compact` 的 `task`，缺省是公共），摘要继承频道。
+- **这不是保密**：`terminal_read` 对任何终端开放，worker 读隔壁屏幕就能看到隔壁频道。频道只管让 worker 的上下文里没有无关消息。`record_*` / `log_*` 读的是终端转录和 Polter 自己的日志，读不到聊天记录（`channel: record_search 同样过滤` 钉住这一点）。
+- 降级：新数据被旧版读，频道消息显示成公共消息。不做反向兼容。
+- 插件的 feed（`poltergeist_feed.publish`）仍收到全部消息，包括频道里的：插件是用户装的，按用户视图对待。每条 `.chat` 事件带 `channel`（非 0 才写），插件转发到外部时能分清公共消息和频道消息。`Feed.Chat.channel` 没有默认值：发布方漏填是编译错误，不会把频道消息静默发成公共消息。
+- 通知扫描（`App` 里给终端算未读、决定叫不叫醒）走 `rpc.Host.noticeFor`，由它给出 Scope 和计数，那里有测试。**App 里的这次调用本身没有测试守着**：有人把它改回自己算 scope（比如 `.everything`）时，编译和测试都不会红，改这一段时要自己核。
+
 ## 数据来源、保留与订阅
 
 ### 权威存储在哪

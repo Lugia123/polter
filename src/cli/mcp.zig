@@ -1123,7 +1123,7 @@ const tools = [_]Tool{
         .name = "group_compact",
         .description = "Replace everything up to a given seq with one summary you write, the way /compact shortens a conversation. Use it when a group's history has grown longer than it is worth. Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"group":{"type":"string"},"through":{"type":"integer","description":"Replace messages up to and including this seq"},"summary":{"type":"string","description":"What those messages amounted to"}},"required":["group","through","summary"]}
+        \\{"type":"object","properties":{"group":{"type":"string"},"through":{"type":"integer","description":"Replace messages up to and including this seq"},"summary":{"type":"string","description":"What those messages amounted to"},"task":{"type":"integer","description":"Which channel to compact: a task number, or 0 (the default) for the public one. One channel per call."}},"required":["group","through","summary"]}
         ,
     },
     .{
@@ -1163,7 +1163,7 @@ const tools = [_]Tool{
             "answer the box: its `retry` has `attempts: 0`, which means no count -- the " ++
             "line is typed once the box has been answered, and not before.",
         .schema =
-        \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"},"mention":{"type":"array","items":{"type":"string"},"description":"Terminal ids (0x...) to type this message into, each with a return. Every one must be a member of the group."}},"required":["group","text"]}
+        \\{"type":"object","properties":{"group":{"type":"string"},"text":{"type":"string"},"mention":{"type":"array","items":{"type":"string"},"description":"Terminal ids (0x...) to type this message into, each with a return. Every one must be a member of the group."},"task":{"type":"integer","description":"Which channel: a task number is that task's channel, 0 is the public one. Leave it out and a member of exactly one open task posts into that task's channel."}},"required":["group","text"]}
         ,
     },
     .{

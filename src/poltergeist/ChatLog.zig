@@ -34,6 +34,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 const Bus = @import("Bus.zig");
+const Chat = @import("Chat.zig");
 const daylog = @import("daylog.zig");
 
 // The record's shape -- how a name becomes a directory, what a day is, and
@@ -309,6 +310,9 @@ const Line = struct {
     author: []const u8 = "",
     summary: bool = false,
     text: []const u8 = "",
+
+    /// Absent on every line written before squads: the public channel.
+    channel: u64 = 0,
 };
 
 /// Read one line back, or null if it is not one.
@@ -390,6 +394,7 @@ pub fn append(
     at_ms: i64,
     summary: bool,
     text: []const u8,
+    channel: u64,
 ) u64 {
     if (!self.stream_open) {
         self.reopenHandles();
@@ -426,6 +431,12 @@ pub fn append(
     if (summary) {
         s.objectField("summary") catch return 0;
         s.write(true) catch return 0;
+    }
+    // Only when it is not the public channel, so a group that never has a
+    // squad writes the lines it always wrote.
+    if (channel != 0) {
+        s.objectField("channel") catch return 0;
+        s.write(channel) catch return 0;
     }
     s.objectField("text") catch return 0;
 
@@ -490,6 +501,9 @@ pub const Entry = struct {
     author: []const u8,
     summary: bool,
     text: []const u8,
+
+    /// 0 is the public channel, otherwise a task number.
+    channel: u64,
 };
 
 /// What a caller is looking for, when it is not simply "the page before
@@ -564,6 +578,7 @@ pub fn history(
     before_seq: u64,
     limit: usize,
     filter: Filter,
+    scope: Chat.Scope,
 ) Allocator.Error!Page {
     if (limit == 0) return .{ .entries = &.{}, .exhausted = false };
 
@@ -573,6 +588,7 @@ pub fn history(
         .group = group,
         .before_seq = before_seq,
         .filter = filter,
+        .scope = scope,
         .want = @min(limit, max_history_limit),
         .arena = .init(alloc),
         .scratch = try alloc.alloc(u8, scan_chunk_bytes),
@@ -926,6 +942,7 @@ pub const Tail = struct {
                         .author = author,
                         .summary = parsed.summary,
                         .text = text,
+                        .channel = parsed.channel,
                     });
                 }
 
@@ -1102,6 +1119,10 @@ const Walk = struct {
     group: []const u8,
     before_seq: u64,
     filter: Filter = .{},
+
+    /// No default: a walk that forgot it would hand a squad's channel to
+    /// whoever asked.
+    scope: Chat.Scope,
     want: usize,
 
     /// Newest first until the very last step of `history`.
@@ -1195,6 +1216,11 @@ const Walk = struct {
             // anything at all. The line is what is believed.
             if (!std.mem.eql(u8, parsed.group, w.group)) continue;
 
+            // What this reader may not see is not in the page at all, and
+            // not in `exhausted`'s way either: skipping it is the same as
+            // the line never having been said.
+            if (!w.scope.sees(parsed.channel, @intCast(@max(parsed.at_ms, 0)))) continue;
+
             // Asked after the group and the cursor, before anything is
             // copied: a line the caller did not ask for should cost a
             // comparison, not an allocation.
@@ -1217,6 +1243,7 @@ const Walk = struct {
                 .author = author,
                 .summary = parsed.summary,
                 .text = text,
+                .channel = parsed.channel,
             });
             if (w.found.items.len >= w.want) return true;
         }
@@ -1540,8 +1567,8 @@ test "a fresh log starts counting at one" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
 
-    try testing.expectEqual(@as(u64, 1), l.append("build", 7, "worker", 1000, false, "hi"));
-    try testing.expectEqual(@as(u64, 2), l.append("build", 7, "worker", 1001, false, "again"));
+    try testing.expectEqual(@as(u64, 1), l.append("build", 7, "worker", 1000, false, "hi", 0));
+    try testing.expectEqual(@as(u64, 2), l.append("build", 7, "worker", 1001, false, "again", 0));
 }
 
 test "reopening carries on from the file rather than from one" {
@@ -1561,15 +1588,15 @@ test "reopening carries on from the file rather than from one" {
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("build", 7, "worker", 1000, false, "one");
-        _ = l.append("build", 7, "worker", 1001, false, "two");
-        _ = l.append("build", 7, "worker", 1002, false, "three");
+        _ = l.append("build", 7, "worker", 1000, false, "one", 0);
+        _ = l.append("build", 7, "worker", 1001, false, "two", 0);
+        _ = l.append("build", 7, "worker", 1002, false, "three", 0);
     }
 
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
     try testing.expectEqual(@as(u64, 4), l.next_seq);
-    try testing.expectEqual(@as(u64, 4), l.append("build", 7, "worker", 1003, false, "four"));
+    try testing.expectEqual(@as(u64, 4), l.append("build", 7, "worker", 1003, false, "four", 0));
 }
 
 test "a torn last line neither loses the count nor swallows the next message" {
@@ -1589,8 +1616,8 @@ test "a torn last line neither loses the count nor swallows the next message" {
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("build", 7, "worker", 1000, false, "one");
-        _ = l.append("build", 7, "worker", 1001, false, "two");
+        _ = l.append("build", 7, "worker", 1000, false, "one", 0);
+        _ = l.append("build", 7, "worker", 1001, false, "two", 0);
 
         // What a crash mid-write leaves behind.
         try l.file.writePositionalAll(io, half, l.written);
@@ -1602,7 +1629,7 @@ test "a torn last line neither loses the count nor swallows the next message" {
 
         // The wreckage is skipped, not counted.
         try testing.expectEqual(@as(u64, 3), l.next_seq);
-        _ = l.append("build", 7, "worker", 1003, false, "three");
+        _ = l.append("build", 7, "worker", 1003, false, "three", 0);
     }
 
     // And the new message is a line of its own.
@@ -1662,8 +1689,8 @@ test "the count survives a rotation it did not see" {
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("build", 7, "worker", 1000, false, "one");
-        _ = l.append("build", 7, "worker", 1001, false, "two");
+        _ = l.append("build", 7, "worker", 1000, false, "one", 0);
+        _ = l.append("build", 7, "worker", 1001, false, "two", 0);
     }
 
     // Rotation, done to the files rather than by filling 8MB.
@@ -1671,17 +1698,17 @@ test "the count survives a rotation it did not see" {
 
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
-    try testing.expectEqual(@as(u64, 3), l.append("build", 7, "worker", 1002, false, "three"));
+    try testing.expectEqual(@as(u64, 3), l.append("build", 7, "worker", 1002, false, "three", 0));
 }
 
 /// The five messages the paging tests below all read back, interleaved
 /// with another group's so that filtering has something to fail at.
 fn testSeed(l: *ChatLog) void {
-    _ = l.append("build", 0xdeadbeef, "worker-core", 1000, false, "one");
-    _ = l.append("research", 0xdeadbeef, "worker-core", 1001, false, "x");
-    _ = l.append("build", 0xdeadbeef, "worker-core", 1002, false, "two");
-    _ = l.append("build", 0xdeadbeef, "worker-core", 1003, true, "three");
-    _ = l.append("research", 0xdeadbeef, "worker-core", 1004, false, "y");
+    _ = l.append("build", 0xdeadbeef, "worker-core", 1000, false, "one", 0);
+    _ = l.append("research", 0xdeadbeef, "worker-core", 1001, false, "x", 0);
+    _ = l.append("build", 0xdeadbeef, "worker-core", 1002, false, "two", 0);
+    _ = l.append("build", 0xdeadbeef, "worker-core", 1003, true, "three", 0);
+    _ = l.append("research", 0xdeadbeef, "worker-core", 1004, false, "y", 0);
 }
 
 test "a word and a date take back only what was asked for" {
@@ -1708,7 +1735,7 @@ test "a word and a date take back only what was asked for" {
     // By word. ASCII case is ignored, which is the only thing that can be
     // said about case without knowing the language.
     {
-        const page = try l.history(alloc, "build", 0, 10, .{ .match = "TW" });
+        const page = try l.history(alloc, "build", 0, 10, .{ .match = "TW" }, .everything);
         defer ChatLog.freePage(alloc, page);
         try testing.expectEqual(@as(usize, 1), page.entries.len);
         try testing.expectEqualStrings("two", page.entries[0].text);
@@ -1716,7 +1743,7 @@ test "a word and a date take back only what was asked for" {
 
     // A word nobody said is an empty page, not an error.
     {
-        const page = try l.history(alloc, "build", 0, 10, .{ .match = "nowhere" });
+        const page = try l.history(alloc, "build", 0, 10, .{ .match = "nowhere" }, .everything);
         defer ChatLog.freePage(alloc, page);
         try testing.expectEqual(@as(usize, 0), page.entries.len);
     }
@@ -1724,13 +1751,13 @@ test "a word and a date take back only what was asked for" {
     // By clock: `since` includes its instant and `until` excludes it, so
     // two adjacent ranges neither overlap nor leave a gap.
     {
-        const page = try l.history(alloc, "build", 0, 10, .{ .since_ms = 1002 });
+        const page = try l.history(alloc, "build", 0, 10, .{ .since_ms = 1002 }, .everything);
         defer ChatLog.freePage(alloc, page);
         try testing.expectEqual(@as(usize, 2), page.entries.len);
         try testing.expectEqualStrings("two", page.entries[0].text);
     }
     {
-        const page = try l.history(alloc, "build", 0, 10, .{ .until_ms = 1002 });
+        const page = try l.history(alloc, "build", 0, 10, .{ .until_ms = 1002 }, .everything);
         defer ChatLog.freePage(alloc, page);
         try testing.expectEqual(@as(usize, 1), page.entries.len);
         try testing.expectEqualStrings("one", page.entries[0].text);
@@ -1743,7 +1770,7 @@ test "a word and a date take back only what was asked for" {
             .since_ms = 1001,
             .until_ms = 1003,
             .match = "o",
-        });
+        }, .everything);
         defer ChatLog.freePage(alloc, page);
         try testing.expectEqual(@as(usize, 1), page.entries.len);
         try testing.expectEqualStrings("two", page.entries[0].text);
@@ -1752,7 +1779,7 @@ test "a word and a date take back only what was asked for" {
     // An empty filter is what every existing caller passes, and it changes
     // nothing.
     {
-        const page = try l.history(alloc, "build", 0, 10, .{});
+        const page = try l.history(alloc, "build", 0, 10, .{}, .everything);
         defer ChatLog.freePage(alloc, page);
         try testing.expectEqual(@as(usize, 3), page.entries.len);
     }
@@ -1798,7 +1825,7 @@ test "history hands back one group's messages, oldest first" {
 
     // Read back through the same handle that just wrote it: what the log
     // holds is what is on the disk, not what is still in a buffer.
-    const page = try l.history(testing.allocator, "build", 0, 10, .{});
+    const page = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, page);
 
     try testing.expectEqual(@as(usize, 3), page.entries.len);
@@ -1841,7 +1868,7 @@ test "before_seq is a bound the page never touches" {
     testSeed(&l);
 
     {
-        const page = try l.history(testing.allocator, "build", 4, 10, .{});
+        const page = try l.history(testing.allocator, "build", 4, 10, .{}, .everything);
         defer ChatLog.freePage(testing.allocator, page);
 
         try testing.expectEqual(@as(usize, 2), page.entries.len);
@@ -1852,13 +1879,13 @@ test "before_seq is a bound the page never touches" {
     // And the loop a caller actually runs: hand the oldest seq you were
     // given back as the next bound, and the two pages meet without an
     // overlap and without a gap.
-    const first = try l.history(testing.allocator, "build", 0, 2, .{});
+    const first = try l.history(testing.allocator, "build", 0, 2, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, first);
     try testing.expectEqual(@as(usize, 2), first.entries.len);
     try testing.expectEqual(@as(u64, 3), first.entries[0].seq);
     try testing.expectEqual(@as(u64, 4), first.entries[1].seq);
 
-    const second = try l.history(testing.allocator, "build", first.entries[0].seq, 2, .{});
+    const second = try l.history(testing.allocator, "build", first.entries[0].seq, 2, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, second);
     try testing.expectEqual(@as(usize, 1), second.entries.len);
     try testing.expectEqual(@as(u64, 1), second.entries[0].seq);
@@ -1880,17 +1907,17 @@ test "a page that fills up says there may be more" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
     for (0..5) |i| {
-        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi");
+        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi", 0);
     }
 
     {
-        const page = try l.history(testing.allocator, "build", 0, 2, .{});
+        const page = try l.history(testing.allocator, "build", 0, 2, .{}, .everything);
         defer ChatLog.freePage(testing.allocator, page);
         try testing.expectEqual(@as(usize, 2), page.entries.len);
         try testing.expect(!page.exhausted);
     }
     {
-        const page = try l.history(testing.allocator, "build", 0, 100, .{});
+        const page = try l.history(testing.allocator, "build", 0, 100, .{}, .everything);
         defer ChatLog.freePage(testing.allocator, page);
         try testing.expectEqual(@as(usize, 5), page.entries.len);
         try testing.expect(page.exhausted);
@@ -1915,7 +1942,7 @@ test "asking for nothing reads nothing" {
 
     // Not `exhausted`: a caller that asked for nothing has not been told
     // anything about where the beginning is.
-    const page = try l.history(testing.allocator, "build", 0, 0, .{});
+    const page = try l.history(testing.allocator, "build", 0, 0, .{}, .everything);
     try testing.expectEqual(@as(usize, 0), page.entries.len);
     try testing.expect(!page.exhausted);
 }
@@ -1935,7 +1962,7 @@ test "a line with no seq is not a line a cursor can point at" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
 
-    _ = l.append("build", 1, "worker", 1000, false, "one");
+    _ = l.append("build", 1, "worker", 1000, false, "one", 0);
 
     // What an older Polter left behind: a real message, in the right
     // group, with no number to page by.
@@ -1944,9 +1971,9 @@ test "a line with no seq is not a line a cursor can point at" {
     const day = try testDayPath(alloc, &l, "build", 1000);
     try testGraft(&l, io, day, legacy);
 
-    _ = l.append("build", 1, "worker", 1002, false, "three");
+    _ = l.append("build", 1, "worker", 1002, false, "three", 0);
 
-    const page = try l.history(testing.allocator, "build", 0, 10, .{});
+    const page = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, page);
 
     try testing.expectEqual(@as(usize, 2), page.entries.len);
@@ -1977,7 +2004,7 @@ test "paging back over a file larger than one window loses nothing at the seams"
     const filler = "x" ** 200;
     for (1..total + 1) |i| {
         const text = try std.fmt.allocPrint(alloc, "{d}-{s}", .{ i, filler });
-        try testing.expectEqual(@as(u64, i), l.append("build", 1, "worker", 1000, false, text));
+        try testing.expectEqual(@as(u64, i), l.append("build", 1, "worker", 1000, false, text, 0));
     }
 
     // Every seq exactly once, and the pages abut.
@@ -1987,7 +2014,7 @@ test "paging back over a file larger than one window loses nothing at the seams"
     var before: u64 = 0;
     var count: usize = 0;
     while (true) {
-        const page = try l.history(testing.allocator, "build", before, 200, .{});
+        const page = try l.history(testing.allocator, "build", before, 200, .{}, .everything);
         defer ChatLog.freePage(testing.allocator, page);
 
         for (page.entries, 0..) |e, i| {
@@ -2010,7 +2037,7 @@ test "paging back over a file larger than one window loses nothing at the seams"
     for (seen[1..]) |s| try testing.expect(s);
 
     // And the wall a caller cannot argue with.
-    const greedy = try l.history(testing.allocator, "build", 0, 1000, .{});
+    const greedy = try l.history(testing.allocator, "build", 0, 1000, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, greedy);
     try testing.expectEqual(@as(usize, 200), greedy.entries.len);
     try testing.expect(!greedy.exhausted);
@@ -2033,13 +2060,13 @@ test "a log nothing was ever said into is already at its beginning" {
 
     // Nothing to read is not the same as could not read: the caller has
     // seen everything there is and must be told to stop asking.
-    const page = try l.history(testing.allocator, "build", 0, 10, .{});
+    const page = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 0), page.entries.len);
     try testing.expect(page.exhausted);
 
     // Same answer for a group that was never spoken in at all.
-    const other = try l.history(testing.allocator, "never-mentioned", 0, 10, .{});
+    const other = try l.history(testing.allocator, "never-mentioned", 0, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, other);
     try testing.expectEqual(@as(usize, 0), other.entries.len);
     try testing.expect(other.exhausted);
@@ -2066,7 +2093,7 @@ test "a line longer than the window stops the walk instead of spinning on it" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
 
-    _ = l.append("build", 1, "worker", 1000, false, "buried");
+    _ = l.append("build", 1, "worker", 1000, false, "buried", 0);
 
     const giant = try alloc.alloc(u8, scan_chunk_bytes + 64 * 1024);
     @memset(giant, 'x');
@@ -2074,9 +2101,9 @@ test "a line longer than the window stops the walk instead of spinning on it" {
     const day = try testDayPath(alloc, &l, "build", 1000);
     try testGraft(&l, io, day, giant);
 
-    _ = l.append("build", 1, "worker", 1002, false, "reachable");
+    _ = l.append("build", 1, "worker", 1002, false, "reachable", 0);
 
-    const page = try l.history(testing.allocator, "build", 0, 10, .{});
+    const page = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, page);
 
     // Everything on the near side of the wall, and nothing beyond it.
@@ -2100,9 +2127,9 @@ test "a tail reads forward from nothing and hands back what was written" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
 
-    _ = l.append("build", 0xdeadbeef, "worker-core", 1000, false, "one");
-    _ = l.append("research", 0xdeadbeef, "other", 1001, false, "two");
-    _ = l.append("build", 0xdeadbeef, "worker-core", 1002, true, "three");
+    _ = l.append("build", 0xdeadbeef, "worker-core", 1000, false, "one", 0);
+    _ = l.append("research", 0xdeadbeef, "other", 1001, false, "two", 0);
+    _ = l.append("build", 0xdeadbeef, "worker-core", 1002, true, "three", 0);
 
     var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
     defer t.deinit();
@@ -2150,8 +2177,8 @@ test "a tail that has caught up says so and picks up the next line later" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
 
-    _ = l.append("build", 1, "worker", 1000, false, "one");
-    _ = l.append("build", 1, "worker", 1001, false, "two");
+    _ = l.append("build", 1, "worker", 1000, false, "one", 0);
+    _ = l.append("build", 1, "worker", 1001, false, "two", 0);
 
     var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
     defer t.deinit();
@@ -2173,7 +2200,7 @@ test "a tail that has caught up says so and picks up the next line later" {
 
     // And a read-only handle sees bytes another handle wrote after it was
     // opened, which is the whole basis for not sharing the writer's.
-    _ = l.append("build", 1, "worker", 1002, false, "three");
+    _ = l.append("build", 1, "worker", 1002, false, "three", 0);
     {
         const page = try t.next(testing.allocator, 10, 1 << 20);
         defer ChatLog.freePage(testing.allocator, page);
@@ -2198,7 +2225,7 @@ test "a tail stops at the limit and resumes exactly there" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
     for (0..5) |i| {
-        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi");
+        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi", 0);
     }
 
     var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
@@ -2246,8 +2273,8 @@ test "a half written line is not a line yet" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
 
-    _ = l.append("build", 1, "worker", 1000, false, "one");
-    _ = l.append("build", 1, "worker", 1001, false, "two");
+    _ = l.append("build", 1, "worker", 1000, false, "one", 0);
+    _ = l.append("build", 1, "worker", 1001, false, "two", 0);
 
     var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
     defer t.deinit();
@@ -2304,8 +2331,8 @@ test "a tail rolls out of the rotated generation into the new one" {
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("build", 1, "worker", 1000, false, "one");
-        _ = l.append("build", 1, "worker", 1001, false, "two");
+        _ = l.append("build", 1, "worker", 1000, false, "one", 0);
+        _ = l.append("build", 1, "worker", 1001, false, "two", 0);
 
         t = try ChatLog.tail(testing.allocator, io, path, .{});
         old_inode = t.inode;
@@ -2318,7 +2345,7 @@ test "a tail rolls out of the rotated generation into the new one" {
         // bytes are only reachable through the handle already open on
         // them, which is why the end of a generation has to be read before
         // anything is concluded from an inode.
-        _ = l.append("build", 1, "worker", 1002, false, "three");
+        _ = l.append("build", 1, "worker", 1002, false, "three", 0);
     }
     defer t.deinit();
 
@@ -2326,7 +2353,7 @@ test "a tail rolls out of the rotated generation into the new one" {
 
     var l2 = try ChatLog.open(testing.allocator, io, dir);
     defer l2.deinit();
-    try testing.expectEqual(@as(u64, 4), l2.append("build", 1, "worker", 1003, false, "four"));
+    try testing.expectEqual(@as(u64, 4), l2.append("build", 1, "worker", 1003, false, "four", 0));
 
     const page = try t.next(testing.allocator, 10, 1 << 20);
     defer ChatLog.freePage(testing.allocator, page);
@@ -2360,7 +2387,7 @@ test "a mark taken and reopened lands on the same line" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
     for (0..4) |i| {
-        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi");
+        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi", 0);
     }
 
     var m: Mark = undefined;
@@ -2404,7 +2431,7 @@ test "a mark whose offset points at nonsense still finds the place" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
     for (0..4) |i| {
-        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi");
+        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi", 0);
     }
 
     var m: Mark = undefined;
@@ -2458,9 +2485,9 @@ test "a mark from a file that has since rotated is not believed" {
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("build", 1, "worker", 1000, false, "one");
-        _ = l.append("build", 1, "worker", 1001, false, "two");
-        _ = l.append("build", 1, "worker", 1002, false, "three");
+        _ = l.append("build", 1, "worker", 1000, false, "one", 0);
+        _ = l.append("build", 1, "worker", 1001, false, "two", 0);
+        _ = l.append("build", 1, "worker", 1002, false, "three", 0);
 
         var t = try ChatLog.tail(testing.allocator, io, path, .{});
         defer t.deinit();
@@ -2476,8 +2503,8 @@ test "a mark from a file that has since rotated is not believed" {
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("build", 1, "worker", 1003, false, "four");
-        _ = l.append("build", 1, "worker", 1004, false, "five");
+        _ = l.append("build", 1, "worker", 1003, false, "four", 0);
+        _ = l.append("build", 1, "worker", 1004, false, "five", 0);
 
         var t = try ChatLog.tail(testing.allocator, io, path, m);
         defer t.deinit();
@@ -2498,7 +2525,7 @@ test "a mark from a file that has since rotated is not believed" {
     try std.Io.Dir.renameAbsolute(path, rotated, io);
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
-    _ = l.append("build", 1, "worker", 1005, false, "six");
+    _ = l.append("build", 1, "worker", 1005, false, "six", 0);
 
     var t = try ChatLog.tail(testing.allocator, io, path, m);
     defer t.deinit();
@@ -2530,7 +2557,7 @@ test "a line with no seq is skipped without stalling the read" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
 
-    _ = l.append("build", 1, "worker", 1000, false, "one");
+    _ = l.append("build", 1, "worker", 1000, false, "one", 0);
 
     // What an older Polter left behind, and what a stray editor might.
     const legacy = "{\"at_ms\":1001,\"group\":\"build\",\"from\":\"0x0000000000000001\"," ++
@@ -2542,7 +2569,7 @@ test "a line with no seq is skipped without stalling the read" {
     try l.file.writePositionalAll(io, junk, l.written);
     l.written += junk.len;
 
-    _ = l.append("build", 1, "worker", 1002, false, "three");
+    _ = l.append("build", 1, "worker", 1002, false, "three", 0);
 
     var t = try ChatLog.tail(testing.allocator, io, l.path, .{});
     defer t.deinit();
@@ -2579,7 +2606,7 @@ test "defaultPath is where open puts the file" {
     defer l.deinit();
     try testing.expectEqualStrings(path, l.path);
 
-    _ = l.append("build", 1, "worker", 1000, false, "one");
+    _ = l.append("build", 1, "worker", 1000, false, "one", 0);
 
     const st = try std.Io.Dir.cwd().statFile(io, path, .{});
     try testing.expect(st.size > 0);
@@ -2641,7 +2668,7 @@ test "a forward read that runs out of memory leaves nothing behind" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
     for (0..5) |i| {
-        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi");
+        _ = l.append("build", 1, "worker", @intCast(1000 + i), false, "hi", 0);
     }
 
     // Every allocation in the path failed in turn. The page is built one
@@ -2758,7 +2785,7 @@ test "a group name that means somewhere else writes here anyway" {
     defer l.deinit();
 
     const escape = "../../pwned";
-    _ = l.append(escape, 1, "worker", 1000, false, "hello");
+    _ = l.append(escape, 1, "worker", 1000, false, "hello", 0);
 
     // The whole path, and it starts inside the record and stays there.
     const path = try testDayPath(alloc, &l, escape, 1000);
@@ -2784,7 +2811,7 @@ test "a group name that means somewhere else writes here anyway" {
     // Reading it back finds it under the name it was said in, not under
     // the mangled one: the directory is a filing decision, the `group`
     // field is what the message says about itself.
-    const page = try l.history(testing.allocator, escape, 0, 10, .{});
+    const page = try l.history(testing.allocator, escape, 0, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 1), page.entries.len);
     try testing.expectEqualStrings("hello", page.entries[0].text);
@@ -2812,9 +2839,9 @@ test "a day of its own gets a file of its own, and paging crosses the two" {
     const second: i64 = first + 2 * day_ms;
     try testing.expect(dayOf(first) != dayOf(second));
 
-    _ = l.append("build", 1, "worker", first, false, "yesterday");
-    _ = l.append("build", 1, "worker", second, false, "today one");
-    _ = l.append("build", 1, "worker", second, false, "today two");
+    _ = l.append("build", 1, "worker", first, false, "yesterday", 0);
+    _ = l.append("build", 1, "worker", second, false, "today one", 0);
+    _ = l.append("build", 1, "worker", second, false, "today two", 0);
 
     // Two files, named for the two days.
     var days = try l.tree.days(alloc, "build");
@@ -2825,7 +2852,7 @@ test "a day of its own gets a file of its own, and paging crosses the two" {
 
     // And a page walks out of the newer file and into the older one
     // without a seam: oldest first, nothing missing, nothing twice.
-    const page = try l.history(testing.allocator, "build", 0, 10, .{});
+    const page = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 3), page.entries.len);
     try testing.expectEqualStrings("yesterday", page.entries[0].text);
@@ -2834,7 +2861,7 @@ test "a day of its own gets a file of its own, and paging crosses the two" {
     try testing.expect(page.exhausted);
 
     // Paging by the cursor lands on the same seam from the other side.
-    const older = try l.history(testing.allocator, "build", 2, 10, .{});
+    const older = try l.history(testing.allocator, "build", 2, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, older);
     try testing.expectEqual(@as(usize, 1), older.entries.len);
     try testing.expectEqualStrings("yesterday", older.entries[0].text);
@@ -2858,15 +2885,15 @@ test "compacting a group leaves the messages the summary stands for" {
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
 
-    _ = l.append("build", 1, "worker", 1000, false, "one");
-    _ = l.append("build", 1, "worker", 1001, false, "two");
-    _ = l.append("build", 1, "worker", 1002, false, "three");
+    _ = l.append("build", 1, "worker", 1000, false, "one", 0);
+    _ = l.append("build", 1, "worker", 1001, false, "two", 0);
+    _ = l.append("build", 1, "worker", 1002, false, "three", 0);
 
     // What `group_compact` writes: a summary standing in for the three
     // above, which memory now holds instead of them.
-    _ = l.append("build", 1, "supervisor", 1003, true, "three things happened");
+    _ = l.append("build", 1, "supervisor", 1003, true, "three things happened", 0);
 
-    const page = try l.history(testing.allocator, "build", 0, 10, .{});
+    const page = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, page);
 
     // All four, in the order they were said. The summary was written
@@ -2911,7 +2938,7 @@ test "a record that has fallen behind the stream is filled in on the next start"
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
 
-    const page = try l.history(testing.allocator, "build", 0, 10, .{});
+    const page = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 3), page.entries.len);
     try testing.expectEqualStrings("one", page.entries[0].text);
@@ -2919,7 +2946,7 @@ test "a record that has fallen behind the stream is filled in on the next start"
     try testing.expect(page.exhausted);
 
     // The other group came across too, and into its own directory.
-    const other = try l.history(testing.allocator, "research", 0, 10, .{});
+    const other = try l.history(testing.allocator, "research", 0, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, other);
     try testing.expectEqual(@as(usize, 2), other.entries.len);
     try testing.expectEqualStrings("x", other.entries[0].text);
@@ -2952,7 +2979,7 @@ test "filling in twice does not write anything twice" {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
 
-        const page = try l.history(testing.allocator, "build", 0, 20, .{});
+        const page = try l.history(testing.allocator, "build", 0, 20, .{}, .everything);
         defer ChatLog.freePage(testing.allocator, page);
         try testing.expectEqual(@as(usize, 3), page.entries.len);
     }
@@ -2976,15 +3003,15 @@ test "a day past the cap carries on in a part beside it" {
     const big = try alloc.alloc(u8, 60 * 1024);
     @memset(big, 'x');
 
-    _ = l.append("build", 1, "worker", 1000, false, "first");
+    _ = l.append("build", 1, "worker", 1000, false, "first", 0);
 
     // Past the day's cap, all inside one day.
     var written: u64 = 0;
     while (written < day_bytes + 64 * 1024) : (written += big.len) {
-        _ = l.append("build", 1, "worker", 1000, false, big);
+        _ = l.append("build", 1, "worker", 1000, false, big, 0);
     }
 
-    _ = l.append("build", 1, "worker", 1000, false, "last");
+    _ = l.append("build", 1, "worker", 1000, false, "last", 0);
 
     // The day did not end and nothing was moved aside: it carried on in
     // the part beside it.
@@ -2997,7 +3024,7 @@ test "a day past the cap carries on in a part beside it" {
 
     // The newest part is read first, so the last thing said comes back
     // even though it is not in the file the day is named for.
-    const page = try l.history(testing.allocator, "build", 0, 1, .{});
+    const page = try l.history(testing.allocator, "build", 0, 1, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 1), page.entries.len);
     try testing.expectEqualStrings("last", page.entries[0].text);
@@ -3006,7 +3033,7 @@ test "a day past the cap carries on in a part beside it" {
     // is more, which is the honest answer rather than a loss: the first
     // part is four times one page's scanning budget, so reaching its
     // front takes several calls.
-    const oldest = try l.history(testing.allocator, "build", 2, 1, .{});
+    const oldest = try l.history(testing.allocator, "build", 2, 1, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, oldest);
     try testing.expectEqual(@as(usize, 0), oldest.entries.len);
     try testing.expect(!oldest.exhausted);
@@ -3056,7 +3083,7 @@ test "the record is not disturbed by the stream rotating" {
     // care: it was never reading the stream.
     try testing.expectEqual(@as(u64, 0), l.written);
 
-    const page = try l.history(testing.allocator, "build", 0, 10, .{});
+    const page = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
     defer ChatLog.freePage(testing.allocator, page);
     try testing.expectEqual(@as(usize, 3), page.entries.len);
     try testing.expectEqualStrings("one", page.entries[0].text);
@@ -3102,9 +3129,9 @@ test "a group deleted from the control room is not written back at the next star
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("keep", 7, "worker", 1000, false, "one");
-        _ = l.append("doomed", 0, "you", 1001, false, "group renamed: t-none -> doomed.");
-        _ = l.append("doomed", 7, "worker", 1002, false, "three");
+        _ = l.append("keep", 7, "worker", 1000, false, "one", 0);
+        _ = l.append("doomed", 0, "you", 1001, false, "group renamed: t-none -> doomed.", 0);
+        _ = l.append("doomed", 7, "worker", 1002, false, "three", 0);
     }
     try testing.expect(try listedAtStart(io, dir, "doomed"));
 
@@ -3141,8 +3168,8 @@ test "a group made again under a deleted name starts from nothing, and is still 
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("doomed", 7, "worker", 1000, false, "old one");
-        _ = l.append("doomed", 7, "worker", 1001, false, "old two");
+        _ = l.append("doomed", 7, "worker", 1000, false, "old one", 0);
+        _ = l.append("doomed", 7, "worker", 1001, false, "old two", 0);
     }
     const group_stores = @import("group_stores.zig");
     try group_stores.deleteGroupDirs(alloc, io, dir, "doomed");
@@ -3151,7 +3178,7 @@ test "a group made again under a deleted name starts from nothing, and is still 
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        new_seq = l.append("doomed", 9, "worker", 2000, false, "new");
+        new_seq = l.append("doomed", 9, "worker", 2000, false, "new", 0);
     }
     try testing.expectEqual(@as(u64, 3), new_seq);
 
@@ -3174,7 +3201,7 @@ test "a group made again under a deleted name starts from nothing, and is still 
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        const page = try l.history(alloc, "doomed", 0, 10, .{});
+        const page = try l.history(alloc, "doomed", 0, 10, .{}, .everything);
         try testing.expectEqual(@as(usize, 1), page.entries.len);
         try testing.expectEqualStrings("new", page.entries[0].text);
     }
@@ -3199,9 +3226,9 @@ test "a group whose directory was removed outside Polter is not written back (ta
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("anchor", 7, "worker", 1000, false, "one");
-        _ = l.append("kept", 7, "worker", 1001, false, "two");
-        _ = l.append("gone", 7, "worker", 1002, false, "three");
+        _ = l.append("anchor", 7, "worker", 1000, false, "one", 0);
+        _ = l.append("kept", 7, "worker", 1001, false, "two", 0);
+        _ = l.append("gone", 7, "worker", 1002, false, "three", 0);
     }
 
     // `gone` is taken away by hand: no floor is held.
@@ -3223,7 +3250,7 @@ test "a group whose directory was removed outside Polter is not written back (ta
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        const page = try l.history(alloc, "kept", 0, 10, .{});
+        const page = try l.history(alloc, "kept", 0, 10, .{}, .everything);
         try testing.expectEqual(@as(usize, 1), page.entries.len);
         try testing.expectEqualStrings("two", page.entries[0].text);
     }
@@ -3251,7 +3278,7 @@ test "groups that were made and never spoken in do not make the record look new 
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("gone", 7, "worker", 1000, false, "said");
+        _ = l.append("gone", 7, "worker", 1000, false, "said", 0);
     }
     const gone_dir = try std.fs.path.join(alloc, &.{ dir, "chat", "gone" });
     try std.Io.Dir.cwd().deleteTree(io, gone_dir);
@@ -3286,8 +3313,8 @@ test "a record from before there was one is still filled in whole (task 1763)" {
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("old-a", 7, "worker", 1000, false, "one");
-        _ = l.append("old-b", 7, "worker", 1001, false, "two");
+        _ = l.append("old-a", 7, "worker", 1000, false, "one", 0);
+        _ = l.append("old-b", 7, "worker", 1001, false, "two", 0);
     }
     for ([_][]const u8{ "old-a", "old-b" }) |g| {
         const p = try std.fs.path.join(alloc, &.{ dir, "chat", g });
@@ -3322,7 +3349,7 @@ test "a group still running whose directory is removed under it: the next line m
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("live", 7, "worker", 1000, false, "before");
+        _ = l.append("live", 7, "worker", 1000, false, "before", 0);
 
         const live_dir = try std.fs.path.join(alloc, &.{ dir, "chat", "live" });
         l.closeHandles();
@@ -3330,9 +3357,9 @@ test "a group still running whose directory is removed under it: the next line m
         l.reopenHandles();
         try testing.expect(!groupDirIn(io, alloc, dir, "live"));
 
-        _ = l.append("live", 7, "worker", 1001, false, "after");
+        _ = l.append("live", 7, "worker", 1001, false, "after", 0);
         try testing.expect(groupDirIn(io, alloc, dir, "live"));
-        const page = try l.history(alloc, "live", 0, 10, .{});
+        const page = try l.history(alloc, "live", 0, 10, .{}, .everything);
         try testing.expectEqual(@as(usize, 1), page.entries.len);
         try testing.expectEqualStrings("after", page.entries[0].text);
     }
@@ -3340,7 +3367,7 @@ test "a group still running whose directory is removed under it: the next line m
     // The restart.
     var l = try ChatLog.open(testing.allocator, io, dir);
     defer l.deinit();
-    const page = try l.history(alloc, "live", 0, 10, .{});
+    const page = try l.history(alloc, "live", 0, 10, .{}, .everything);
     try testing.expectEqual(@as(usize, 1), page.entries.len);
     try testing.expectEqualStrings("after", page.entries[0].text);
 }
@@ -3361,8 +3388,8 @@ test "the held floor never goes down, and a broken one counts as none (task 1665
     {
         var l = try ChatLog.open(testing.allocator, io, dir);
         defer l.deinit();
-        _ = l.append("a", 7, "worker", 1000, false, "one");
-        _ = l.append("a", 7, "worker", 1001, false, "two");
+        _ = l.append("a", 7, "worker", 1000, false, "one", 0);
+        _ = l.append("a", 7, "worker", 1001, false, "two", 0);
     }
     try holdFloor(alloc, io, dir);
     try testing.expectEqual(@as(u64, 2), readFloor(alloc, io, chat));
@@ -3376,4 +3403,97 @@ test "the held floor never goes down, and a broken one counts as none (task 1665
     const path = try std.fs.path.join(alloc, &.{ chat, floor_name });
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "not a number" });
     try testing.expectEqual(@as(u64, 0), readFloor(alloc, io, chat));
+}
+
+// -- channels (squads S2) ---------------------------------------------------
+
+test "channel: group_history 同样过滤" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    _ = l.append("build", 1, "boss", 1000, false, "public one", 0);
+    _ = l.append("build", 2, "a", 1001, false, "seven only", 7);
+    _ = l.append("build", 3, "c", 1002, false, "eight only", 8);
+
+    // A member of task 7 reads the public channel and 7, not 8.
+    const seven: Chat.Scope = .{ .only = &.{.{ .task = 7 }} };
+    const mine = try l.history(testing.allocator, "build", 0, 10, .{}, seven);
+    defer ChatLog.freePage(testing.allocator, mine);
+    try testing.expectEqual(@as(usize, 2), mine.entries.len);
+    try testing.expectEqualStrings("public one", mine.entries[0].text);
+    try testing.expectEqualStrings("seven only", mine.entries[1].text);
+    try testing.expectEqual(@as(u64, 7), mine.entries[1].channel);
+
+    // Negative control: `.everything` finds all three, so the log really
+    // holds the channel messages the filter kept out.
+    const all = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
+    defer ChatLog.freePage(testing.allocator, all);
+    try testing.expectEqual(@as(usize, 3), all.entries.len);
+    try testing.expectEqual(@as(u64, 8), all.entries[2].channel);
+
+    // A search for words only task 8 said finds nothing for task 7's reader.
+    const found = try l.history(testing.allocator, "build", 0, 10, .{ .match = "eight" }, seven);
+    defer ChatLog.freePage(testing.allocator, found);
+    try testing.expectEqual(@as(usize, 0), found.entries.len);
+    const control = try l.history(testing.allocator, "build", 0, 10, .{ .match = "eight" }, .everything);
+    defer ChatLog.freePage(testing.allocator, control);
+    try testing.expectEqual(@as(usize, 1), control.entries.len);
+
+    // A reader who left task 7 at 1000 reads nothing of it said after.
+    const left: Chat.Scope = .{ .only = &.{.{ .task = 7, .until_ms = 1000 }} };
+    const gone = try l.history(testing.allocator, "build", 0, 10, .{}, left);
+    defer ChatLog.freePage(testing.allocator, gone);
+    try testing.expectEqual(@as(usize, 1), gone.entries.len);
+}
+
+test "ChatLog: 旧记录（无 channel）读出来都是公共；新记录被忽略未知键的读取器读过不崩" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // A line an older Polter wrote: no `channel`. It is the public channel,
+    // so even the reader with no task sees it.
+    const old = parseLine(alloc, "{\"seq\":4,\"at_ms\":5,\"group\":\"build\",\"from\":\"0x1\",\"author\":\"w\",\"text\":\"old\"}").?;
+    try testing.expectEqual(@as(u64, 0), old.channel);
+    try testing.expect(Chat.Scope.public.sees(old.channel, 5));
+
+    // A line with one, read by a reader that has never heard of it -- what
+    // a downgraded Polter is. It parses, and the message simply reads as
+    // public there (the one thing a downgrade cannot keep).
+    const Older = struct { seq: u64 = 0, text: []const u8 = "" };
+    const new_line = "{\"seq\":5,\"at_ms\":6,\"group\":\"build\",\"from\":\"0x1\",\"author\":\"w\",\"channel\":7,\"text\":\"new\"}";
+    const back = try std.json.parseFromSliceLeaky(Older, alloc, new_line, .{ .ignore_unknown_fields = true });
+    try testing.expectEqual(@as(u64, 5), back.seq);
+    try testing.expectEqualStrings("new", back.text);
+    const ours = parseLine(alloc, new_line).?;
+    try testing.expectEqual(@as(u64, 7), ours.channel);
+    try testing.expect(!Chat.Scope.public.sees(ours.channel, 6));
+
+    // And the writer leaves the key out for a public message.
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    _ = l.append("build", 1, "w", 1000, false, "public", 0);
+    _ = l.append("build", 1, "w", 1001, false, "squad", 9);
+    var buf: [1024]u8 = undefined;
+    const n = try l.file.readPositionalAll(io, &buf, 0);
+    const text = buf[0..n];
+    const first_end = std.mem.indexOfScalar(u8, text, '\n').?;
+    try testing.expect(std.mem.indexOf(u8, text[0..first_end], "\"channel\"") == null);
+    try testing.expect(std.mem.indexOf(u8, text[first_end..], "\"channel\":9") != null);
 }

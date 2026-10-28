@@ -1009,3 +1009,63 @@ test "the tools on a state directory: list, read, search, logs" {
     const tail = try logRead(a, io, state, .{ .name = "plugins/archive.log", .limit = 2 });
     try testing.expectEqualStrings("{\"lines\":[\"two\",\"three\"],\"from_line\":1,\"more\":false}", tail.json);
 }
+
+test "channel: record_search 同样过滤" {
+    // The record tools read terminals' transcripts and Polter's own logs,
+    // never the chat record, so a squad's channel cannot come out of them
+    // whatever the scope or the name. Pinned here because 6.4 of the squads
+    // plan lists them as a path to check, and the answer is "structurally
+    // not reachable", which a later change could quietly undo.
+    const alloc = testing.allocator;
+    const ChatLog = @import("ChatLog.zig");
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const state = try std.fmt.allocPrint(alloc, "/tmp/polter-records-chan-{x}", .{&raw});
+    defer {
+        Io.Dir.cwd().deleteTree(io, state) catch {};
+        alloc.free(state);
+    }
+    try Io.Dir.cwd().createDirPath(io, state);
+
+    {
+        var l = try ChatLog.open(alloc, io, state);
+        defer l.deinit();
+        _ = l.append("build", 0x22, "worker", 1_791_000_000_000, false, "SQUADSECRET plan", 7);
+    }
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const boss: Access = .{ .caller = 0x11, .supervises = &.{"build"}, .projects = &.{} };
+
+    // Negative control: the chat record does hold the channel message.
+    var log = try ChatLog.open(alloc, io, state);
+    defer log.deinit();
+    const page = try log.history(alloc, "build", 0, 10, .{ .match = "SQUADSECRET" }, .everything);
+    defer ChatLog.freePage(alloc, page);
+    try testing.expectEqual(@as(usize, 1), page.entries.len);
+
+    // Searched by every scope a caller can name, it is not found.
+    const scopes = [_]Scope{ .mine, .{ .group = "build" }, .{ .project = "p" }, .{ .task = 7 }, .{ .terminal = 0x22 }, .{ .session = "x" } };
+    for (scopes) |scope| {
+        const got = try search(a, io, state, boss, .{ .scope = scope, .query = "SQUADSECRET" });
+        switch (got) {
+            .json => |j| try testing.expect(std.mem.indexOf(u8, j, "SQUADSECRET") == null),
+            .refused => {},
+        }
+    }
+
+    // And the chat record is not a log that can be named.
+    const logs = try logList(a, io, state);
+    try testing.expect(std.mem.indexOf(u8, logs.json, "chat") == null);
+    var db: [10]u8 = undefined;
+    const rel = try std.fmt.allocPrint(a, "chat/build/{s}.jsonl", .{dayText(&db, daylog.dayOf(1_791_000_000_000))});
+    const named = try logRead(a, io, state, .{ .name = rel, .limit = 10 });
+    switch (named) {
+        .json => |j| try testing.expect(std.mem.indexOf(u8, j, "SQUADSECRET") == null),
+        .refused => {},
+    }
+}
