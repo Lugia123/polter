@@ -677,6 +677,11 @@ poltergeist_worktree_location: poltergeistpkg.worktree.Location = .beside,
 /// parked (`poltergeistWorktreePrepare`). App thread only.
 poltergeist_worktree_jobs: std.ArrayListUnmanaged(WorktreeWait) = .empty,
 
+/// Requests for the tree of a task whose tree another request is making:
+/// they wait for that job instead of starting a second one. Each holds a
+/// reference to its request. App thread only.
+poltergeist_tree_followers: std.ArrayListUnmanaged(poltergeistpkg.worktree.Follower) = .empty,
+
 /// Who holds each task tree's build lease. In memory, and for the app thread
 /// only: `Leases` has no lock. Nothing takes a lease yet (there is no
 /// `worktree_lease` tool), so this only ever answers "nobody"; a close or a
@@ -965,9 +970,11 @@ pub fn deinit(self: *App) void {
     for (self.poltergeist_worktree_jobs.items) |w| {
         // Waits for git, at quit, rather than free what its thread reads.
         w.job.destroy();
-        w.held.release();
+        if (!w.orphan) waitPending(w).release();
         self.alloc.free(w.preface);
     }
+    for (self.poltergeist_tree_followers.items) |f| @as(*poltergeistpkg.Server.Pending, @ptrCast(@alignCast(f.held))).release();
+    self.poltergeist_tree_followers.deinit(self.alloc);
     if (self.worktree_leases) |*l| l.deinit();
     self.poltergeist_worktree_jobs.deinit(self.alloc);
     if (self.poltergeist_worktrees) |*w| w.deinit();
@@ -7041,22 +7048,25 @@ fn poltergeistRequest(self: *App, pending: *poltergeistpkg.Server.Pending) void 
 
     // A host function may park this request instead of answering it (a
     // screenshot the apprt has not finished). It finds the request here.
-    self.poltergeist_dispatching = pending;
-    self.poltergeist_parked = false;
     defer self.poltergeist_dispatching = null;
 
-    const response = poltergeistpkg.rpc.dispatch(
-        pending.arena.allocator(),
-        &self.poltergeist,
-        self.poltergeistHost(),
-        caller,
-        pending.request,
-    ) catch |err| switch (err) {
-        error.OutOfMemory => poltergeistpkg.wire.Response{ .failed = .{
-            .code = "OutOfMemory",
-            .message = "out of memory",
-        } },
-    };
+    // The worktree jobs' bookkeeping goes round the dispatch: what a
+    // finished job did goes into the ledger first, a job the dispatch did
+    // not take is dropped after. The order lives in `worktree.round`.
+    var round: WorktreeRound = .{ .app = self, .pending = pending, .caller = caller };
+    if (self.worktreeLedger()) |ledger| {
+        poltergeistpkg.worktree.round(
+            WorktreeRound,
+            &round,
+            global.io(),
+            self.alloc,
+            ledger,
+            &self.poltergeist_worktree_jobs,
+            &self.poltergeist_tree_followers,
+            pending,
+        );
+    } else _ = round.dispatch();
+    const response = round.response;
 
     // After, so a call that made this terminal a supervisor or put it under
     // watch is counted on the entry it made. A supervisor's hollow flag
@@ -7663,7 +7673,7 @@ fn presetLaunchers(aa: Allocator) ![]const poltergeistpkg.agent_cli.Found {
 fn sayInGroup(self: *App, group: []const u8, text: []const u8) void {
     const at: u64 = @intCast(self.poltergeistWallMs());
     const posted = self.chat.postAsPolter(group, text, at) catch |err| {
-        log.warn("control room: could not say in {s} that an Agent CLI went away err={}", .{ group, err });
+        log.warn("could not say in group {s} (a line from Polter itself) err={}", .{ group, err });
         return;
     };
     // The same two things `chatPost` does for a message that came in over
@@ -12786,14 +12796,12 @@ fn poltergeistPlaceWorker(
 // and a removal deletes a directory, so each is a `worktree.Work` on the same
 // kind of thread (task 2472), the request parked the same way.
 
-const WorktreeWait = struct {
-    job: *poltergeistpkg.worktree.Job,
-    /// The request it parked, with a reference of its own.
-    held: *poltergeistpkg.Server.Pending,
-    /// For a close or a cancel: what the reply says of the members, to go
-    /// after its first sentence. Owned (the app's allocator).
-    preface: []u8 = &.{},
-};
+const WorktreeWait = poltergeistpkg.worktree.Wait;
+
+/// The request a wait parked, which holds a reference of its own.
+fn waitPending(w: WorktreeWait) *poltergeistpkg.Server.Pending {
+    return @ptrCast(@alignCast(w.held));
+}
 
 /// A finished job taken off the list: give it back with `deinit` once its
 /// result has been read.
@@ -12818,7 +12826,9 @@ const WorktreeTaken = struct {
 /// but which request it was for.
 fn worktreeJobDone(ctx: *anyopaque, job: *poltergeistpkg.worktree.Job) void {
     const self: *App = @ptrCast(@alignCast(ctx));
-    const pending: *poltergeistpkg.Server.Pending = @ptrCast(@alignCast(job.user.?));
+    // Nobody's request waits for this one (an orphan closeout): `round`
+    // finds it done on the next request.
+    const pending: *poltergeistpkg.Server.Pending = @ptrCast(@alignCast(job.user orelse return));
     // A reference for the mailbox, which `poltergeistRequest` releases as it
     // does every request's; the one the wait holds is released when the
     // wait is taken. A push that failed leaves the wait to be freed at quit.
@@ -12826,9 +12836,123 @@ fn worktreeJobDone(ctx: *anyopaque, job: *poltergeistpkg.worktree.Job) void {
     if (self.poltergeist_requests.push(global.io(), pending, .{ .instant = {} }) == 0) {
         log.warn("worktree: could not hand a finished worktree back to the app thread", .{});
         pending.release();
+        // The request will not come back; the next one settles the job and
+        // lets whoever waited on its tree go.
+        job.undelivered.store(true, .release);
+        if (self.poltergeist_rt_app) |rt| rt.wakeup();
         return;
     }
     if (self.poltergeist_rt_app) |rt| rt.wakeup();
+}
+
+/// What `worktree.round` needs of the app, for one request.
+const WorktreeRound = struct {
+    app: *App,
+    pending: *poltergeistpkg.Server.Pending,
+    caller: poltergeistpkg.Bus.Caller,
+    response: poltergeistpkg.wire.Response = undefined,
+
+    pub fn dispatch(self: *WorktreeRound) bool {
+        const app = self.app;
+        app.poltergeist_dispatching = self.pending;
+        app.poltergeist_parked = false;
+        self.response = poltergeistpkg.rpc.dispatch(
+            self.pending.arena.allocator(),
+            &app.poltergeist,
+            app.poltergeistHost(),
+            self.caller,
+            self.pending.request,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => poltergeistpkg.wire.Response{ .failed = .{
+                .code = "OutOfMemory",
+                .message = "out of memory",
+            } },
+        };
+        return app.poltergeist_parked;
+    }
+
+    /// A request that waited on a task's tree: dispatched again, and it finds
+    /// the tree in the ledger.
+    pub fn wake(self: *WorktreeRound, held: *anyopaque) void {
+        const app = self.app;
+        const f: *poltergeistpkg.Server.Pending = @ptrCast(@alignCast(held));
+        f.retain();
+        if (app.poltergeist_requests.push(global.io(), f, .{ .instant = {} }) == 0) {
+            log.warn("worktree: could not hand a waiting request back to the app thread", .{});
+            f.release();
+        }
+        // The follower's own reference.
+        f.release();
+        if (app.poltergeist_rt_app) |rt| rt.wakeup();
+    }
+
+    pub fn taskOpen(self: *WorktreeRound, task: u64) bool {
+        const t = self.app.tasks.get(task) orelse return false;
+        return t.state == .open;
+    }
+
+    /// The task was closed while its tree was being made: start the closeout
+    /// the close could not do. No request waits for it; `round` collects it.
+    pub fn closeOrphan(self: *WorktreeRound, task: u64) void {
+        const app = self.app;
+        const wt = poltergeistpkg.worktree;
+        const ledger = app.worktreeLedger() orelse return;
+        const t = app.tasks.get(task) orelse return;
+        const mode: wt.CloseMode = if (t.state == .cancelled) .cancelled else .closed;
+        // The things only the app thread can read, read now: who stands in
+        // the tree and who holds its lease. (`Job.create` copies them.)
+        var arena: std.heap.ArenaAllocator = .init(app.alloc);
+        defer arena.deinit();
+        const aa = arena.allocator();
+        var standing: std.ArrayListUnmanaged([]const u8) = .empty;
+        const ids = poltergeistWorktreeStanding(app, aa, task, &.{}) catch &.{};
+        for (ids) |id| standing.append(aa, std.fmt.allocPrint(aa, "0x{x:0>16}", .{id}) catch continue) catch {};
+        const job = wt.Job.create(std.heap.smp_allocator, .{ .io = global.io() }, .{ .closeout = .{
+            .task = task,
+            .in = .{ .mode = mode, .standing = standing.items, .lease = app.leases().status(task) },
+        } }, ledger.entries.items, worktreeJobDone, app) catch |err| {
+            log.warn("worktree: could not close out task {d}'s tree: {t}", .{ task, err });
+            return;
+        };
+        app.poltergeist_worktree_jobs.append(app.alloc, .{ .job = job, .held = job, .orphan = true }) catch |err| {
+            log.warn("worktree: could not close out task {d}'s tree: {t}", .{ task, err });
+            job.destroy();
+            return;
+        };
+        job.start() catch |err| {
+            log.warn("worktree: could not close out task {d}'s tree: {t}", .{ task, err });
+            _ = app.poltergeist_worktree_jobs.pop();
+            job.destroy();
+            return;
+        };
+        log.info("worktree: task {d} was closed while its tree was being made; closing the tree out", .{task});
+    }
+
+    pub fn release(self: *WorktreeRound, w: WorktreeWait) void {
+        self.app.releaseWait(w);
+    }
+};
+
+/// Free a wait that has left the list: the job, the request's reference
+/// (an orphan has none), the preface.
+fn releaseWait(self: *App, w: WorktreeWait) void {
+    if (w.orphan) {
+        if (w.job.result) |r| switch (r) {
+            .closeout => |c| {
+                log.info("worktree: {s}", .{c.note});
+                // The close had nothing to say about the tree; this is what
+                // became of it, and the supervisor reads it in the group.
+                if (self.tasks.get(c.task)) |t| {
+                    var buf: std.Io.Writer.Allocating = .init(self.alloc);
+                    defer buf.deinit();
+                    if (buf.writer.print("[Polter] {s}", .{c.note})) |_| self.sayInGroup(t.group, buf.written()) else |_| {}
+                }
+            },
+            else => {},
+        };
+    } else waitPending(w).release();
+    w.job.destroy();
+    self.alloc.free(w.preface);
 }
 
 /// The build leases, made when first asked about.
@@ -12867,7 +12991,7 @@ fn worktreeRun(self: *App, work: poltergeistpkg.worktree.Work, preface: []const 
     const pending = self.poltergeist_dispatching orelse return error.CannotWait;
 
     for (self.poltergeist_worktree_jobs.items, 0..) |w, i| {
-        if (w.held != pending) continue;
+        if (w.held != @as(*anyopaque, pending)) continue;
         if (!w.job.finished.load(.acquire)) {
             // Dispatched again before its job was done -- which nothing
             // does -- so it waits again rather than answer too early.
@@ -12875,7 +12999,7 @@ fn worktreeRun(self: *App, work: poltergeistpkg.worktree.Work, preface: []const 
             return error.WorktreePending;
         }
         _ = self.poltergeist_worktree_jobs.swapRemove(i);
-        return .{ .job = w.job, .held = w.held, .preface = w.preface };
+        return .{ .job = w.job, .held = waitPending(w), .preface = w.preface };
     }
 
     // The first time: start it, and park the request.
@@ -12973,6 +13097,23 @@ fn poltergeistTaskTreePrepare(
         if (wt.pathExists(io, e.path)) return .{ .tree = .{ .entry = try e.dupe(alloc), .reused = true } };
     }
 
+    // Another request is already making this task's tree: this one waits
+    // for that job and finds the tree in the ledger afterwards. Starting a
+    // second job would race the first for the branch.
+    if (self.poltergeist_dispatching) |pending| {
+        if (wt.waitFor(self.poltergeist_worktree_jobs.items, pending) == null) {
+            const waiting = wt.followerFor(self.poltergeist_tree_followers.items, pending);
+            if (waiting or wt.taskLeader(self.poltergeist_worktree_jobs.items, task) != null) {
+                if (!waiting) {
+                    try self.poltergeist_tree_followers.append(self.alloc, .{ .task = task, .held = pending });
+                    pending.retain();
+                }
+                self.poltergeist_parked = true;
+                return error.WorktreePending;
+            }
+        }
+    }
+
     // The repository the task's tree is already in, else where the caller is.
     const dir = if (ledger.taskTree(task)) |i|
         ledger.entries.items[i].repo
@@ -13049,14 +13190,14 @@ fn poltergeistParkedText(ctx: *anyopaque, alloc: Allocator) ?[]const u8 {
     const pending = self.poltergeist_dispatching orelse return null;
     const ledger = self.worktreeLedger() orelse return null;
     for (self.poltergeist_worktree_jobs.items, 0..) |w, i| {
-        if (w.held != pending) continue;
+        if (w.held != @as(*anyopaque, pending)) continue;
         if (w.job.work != .closeout) return null;
         if (!w.job.finished.load(.acquire)) {
             self.poltergeist_parked = true;
             return "";
         }
         _ = self.poltergeist_worktree_jobs.swapRemove(i);
-        const taken: WorktreeTaken = .{ .job = w.job, .held = w.held, .preface = w.preface };
+        const taken: WorktreeTaken = .{ .job = w.job, .held = waitPending(w), .preface = w.preface };
         defer taken.deinit(self);
         return closeoutText(alloc, ledger, taken) catch |err| {
             log.warn("worktree: the answer to a close could not be made: {t}", .{err});
@@ -13077,12 +13218,23 @@ fn poltergeistWorktreeStanding(
     const ledger = if (self.poltergeist_worktrees) |*l| l else return &.{};
     const i = ledger.taskTree(task) orelse return &.{};
     const path = ledger.entries.items[i].path;
+    // Who has held a place, not who holds one: a close takes the identities
+    // off before it asks (`worktree.seatTerminals`).
+    const seats: []const u64 = if (self.tasks.get(task)) |t|
+        poltergeistpkg.worktree.seatTerminals(alloc, t) catch &.{}
+    else
+        &.{};
     var out: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
     for (self.surfaces.items) |v| {
         const id = v.core().id;
         if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, skip, id) != null) continue;
-        const cwd = self.terminalCwd(alloc, id) orelse continue;
-        if (poltergeistpkg.worktree.within(path, cwd)) try out.append(alloc, id);
+        const cwd = self.terminalCwd(alloc, id);
+        // A terminal that cannot be placed is kept when it belongs to the
+        // task (any of its members, or the one this tree was opened for),
+        // rather than guessed gone.
+        const member = ledger.entries.items[i].terminal == id or
+            std.mem.indexOfScalar(u64, seats, id) != null;
+        if (try poltergeistpkg.worktree.stands(global.io(), alloc, path, cwd, member)) try out.append(alloc, id);
     }
     return out.items;
 }
@@ -13166,6 +13318,7 @@ fn poltergeistWorktreeRemove(
             .removed => |x| .{ .removed = .{
                 .path = try alloc.dupe(u8, x.path),
                 .branch_kept = if (x.branch_kept) |b| try alloc.dupe(u8, b) else null,
+                .ignored = try alloc.dupe(u8, x.ignored),
             } },
             .forgotten => |p| .{ .forgotten = try alloc.dupe(u8, p) },
             .refused => |f| .{ .refused = .{ .code = try alloc.dupe(u8, f.code), .message = try alloc.dupe(u8, f.message) } },
@@ -17495,6 +17648,23 @@ test "task 1730: tick drains the requests' queue after the mailbox" {
     try testing.expect(drained);
     const after = requests.? > mailbox;
     try testing.expect(after);
+}
+
+test "worktree: poltergeistRequest 只经 worktree.round 分派" {
+    // **Read off the source**, like the tick test above: a request handler
+    // cannot run in a test build, and a dispatch made around `round` would
+    // leave a refused request's finished tree out of the ledger while every
+    // other test passed. `round.dispatch()` is the one call, in the branch
+    // for no ledger at all; the rpc is called only from `WorktreeRound`.
+    const testing = std.testing;
+    const src = @embedFile("App.zig");
+    const start = std.mem.indexOf(u8, src, "\nfn poltergeistRequest(") orelse return error.NoRequestFn;
+    const end = start + 1 + (std.mem.indexOf(u8, src[start + 1 ..], "\nfn ") orelse return error.NoEnd);
+    const body = src[start..end];
+    try testing.expect(std.mem.indexOf(u8, body, "poltergeistpkg.worktree.round(") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "} else _ = round.dispatch();") != null);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "round.dispatch()"));
+    try testing.expectEqual(@as(usize, 0), std.mem.count(u8, body, "rpc.dispatch("));
 }
 
 test "task 1730: the burst, measured over the sizes and costs it can have" {

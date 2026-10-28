@@ -9547,9 +9547,9 @@ fn dispatchOne(
                 ) },
                 .removed => |r| .{ .text = if (r.branch_kept) |why| try std.fmt.allocPrint(
                     alloc,
-                    "Removed {s}. Its branch was kept: {s}",
-                    .{ r.path, why },
-                ) else try std.fmt.allocPrint(alloc, "Removed {s} and its branch.", .{r.path}) },
+                    "Removed {s}. Its branch was kept: {s}{s}",
+                    .{ r.path, why, r.ignored },
+                ) else try std.fmt.allocPrint(alloc, "Removed {s} and its branch.{s}", .{ r.path, r.ignored }) },
             };
         },
 

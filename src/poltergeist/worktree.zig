@@ -42,10 +42,12 @@
 //! for callers that may wait.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 const daylog = @import("daylog.zig");
+const Tasks = @import("Tasks.zig");
 
 const log = std.log.scoped(.poltergeist);
 
@@ -370,6 +372,54 @@ pub fn within(root: []const u8, dir: []const u8) bool {
     if (r.len == 0 or !std.mem.startsWith(u8, dir, r)) return false;
     if (dir.len == r.len) return true;
     return dir[r.len] == '/' or dir[r.len] == '\\';
+}
+
+/// Whether a terminal whose directory is `cwd` stands in the tree at `root`.
+/// `within` compares text, and the two texts come from different mouths: git
+/// reports the tree's real path, a shell reports the path it was walked in
+/// by -- through a link, with a `..`, in other letter case. So both go through
+/// `realpath` first; one that cannot (the directory is gone) is cleaned of
+/// `.` and `..` by hand and, on Windows, compared without regard to case.
+pub fn standsIn(io: Io, arena: Allocator, root: []const u8, cwd: []const u8) Allocator.Error!bool {
+    const r = try canonical(io, arena, root);
+    const c = try canonical(io, arena, cwd);
+    return within(r, c);
+}
+
+fn canonical(io: Io, arena: Allocator, path: []const u8) Allocator.Error![]const u8 {
+    const real = Io.Dir.cwd().realPathFileAlloc(io, path, arena) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return lexical(arena, path),
+    };
+    return if (builtin.os.tag == .windows) lowered(arena, real) else real;
+}
+
+fn lowered(arena: Allocator, path: []const u8) Allocator.Error![]const u8 {
+    const out = try arena.dupe(u8, path);
+    for (out) |*ch| ch.* = if (ch.* == '\\') '/' else std.ascii.toLower(ch.*);
+    return out;
+}
+
+/// `path` with `.` and `..` resolved by text alone.
+fn lexical(arena: Allocator, path: []const u8) Allocator.Error![]const u8 {
+    const src = if (builtin.os.tag == .windows) try lowered(arena, path) else path;
+    var parts: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, src, '/');
+    while (it.next()) |seg| {
+        if (seg.len == 0 or std.mem.eql(u8, seg, ".")) continue;
+        if (std.mem.eql(u8, seg, "..")) {
+            _ = parts.pop();
+            continue;
+        }
+        try parts.append(arena, seg);
+    }
+    var out: std.ArrayList(u8) = .empty;
+    if (src.len > 0 and src[0] == '/') try out.append(arena, '/');
+    for (parts.items, 0..) |seg, i| {
+        if (i > 0) try out.append(arena, '/');
+        try out.appendSlice(arena, seg);
+    }
+    return out.items;
 }
 
 /// Whether `dir` is in a git repository, told by looking for a `.git` on the
@@ -912,14 +962,55 @@ pub fn planTask(git: Git, arena: Allocator, known: []const Entry, req: TaskReque
     const ref = try std.fmt.allocPrint(arena, "refs/heads/{s}", .{branch});
     const has_branch = git.run(arena, repo.main, &.{ "rev-parse", "--verify", "--quiet", ref }) catch |err|
         return gitFailure(arena, err);
-    if (has_branch.ok) return .{ .refused = .{
-        .code = "BranchExists",
-        .message = try std.fmt.allocPrint(
-            arena,
-            "branch {s} already exists; nothing was opened. Delete the branch with git, or ask for it by name.",
-            .{branch},
-        ),
-    } };
+    if (has_branch.ok) {
+        // Somebody (an earlier request for this very task, racing this one)
+        // has made the tree and the ledger has not heard yet: it is the
+        // task's tree, and is used as it stands.
+        if (try checkedOutAt(git, arena, repo.main, ref)) |at| {
+            // Only the place this task's tree goes. The branch checked out
+            // in the main working tree, or in a tree somebody made by hand
+            // elsewhere, is theirs and is not taken for the task's: the
+            // task's tree would be the main repository, and closing the
+            // task would clear *its* build output.
+            const here = try canonical(git.io, arena, at);
+            const there = try canonical(git.io, arena, path);
+            const main = try canonical(git.io, arena, repo.main);
+            if (!samePath(here, there) or samePath(here, main)) return .{ .refused = .{
+                .code = "BranchExists",
+                .message = try std.fmt.allocPrint(
+                    arena,
+                    "branch {s} is checked out at {s}, which is not where this task's worktree goes; " ++
+                        "nothing was opened. Look at it with git before doing anything to it.",
+                    .{ branch, at },
+                ),
+            } };
+            const base = git.run(arena, repo.main, &.{ "merge-base", "HEAD", ref }) catch |err|
+                return gitFailure(arena, err);
+            return .{ .tree = .{ .entry = .{
+                .name = name,
+                .repo = repo.main,
+                .path = at,
+                .branch = branch,
+                .base = if (base.ok) base.out else "",
+                .created_ms = req.now_ms,
+                .by = req.by,
+                .task = req.task,
+                .group = req.group,
+                .kind = .task,
+            }, .reused = false } };
+        }
+        // Nothing has it checked out: it is a branch somebody made, and may
+        // hold their work. Not for Polter to say what becomes of it.
+        return .{ .refused = .{
+            .code = "BranchExists",
+            .message = try std.fmt.allocPrint(
+                arena,
+                "branch {s} already exists and no worktree has it checked out; nothing was opened. " ++
+                    "It may hold work: look at it with git before doing anything to it.",
+                .{branch},
+            ),
+        } };
+    }
 
     // A manual tree (or any directory) sitting where the group's directory
     // goes: a tree is a directory with a `.git` in it, and a task tree must
@@ -955,6 +1046,27 @@ pub fn planTask(git: Git, arena: Allocator, known: []const Entry, req: TaskReque
         .kind = .task,
         .task = req.task,
     });
+}
+
+/// The path of the worktree that has `ref` (a full ref name) checked out,
+/// as `git worktree list` reports it.
+fn checkedOutAt(git: Git, arena: Allocator, repo: []const u8, ref: []const u8) Allocator.Error!?[]const u8 {
+    const r = git.run(arena, repo, &.{ "worktree", "list", "--porcelain" }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    if (!r.ok) return null;
+    var path: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, r.out, '\n');
+    while (lines.next()) |raw| {
+        const l = std.mem.trimEnd(u8, raw, "\r");
+        if (std.mem.startsWith(u8, l, "worktree ")) {
+            path = l["worktree ".len..];
+        } else if (std.mem.startsWith(u8, l, "branch ")) {
+            if (std.mem.eql(u8, l["branch ".len..], ref)) return path;
+        }
+    }
+    return null;
 }
 
 /// What a `Job` is to do. Every one of them runs git, several times, and
@@ -1016,7 +1128,7 @@ pub const Result = union(enum) {
     pub fn goneTree(self: Result) ?Gone {
         return switch (self) {
             .closeout => |c| switch (c.outcome) {
-                .removed, .forgotten => .{ .repo = c.repo, .name = c.name },
+                .removed, .forgotten => .{ .repo = c.repo, .name = c.name, .path = c.path, .created_ms = c.created_ms },
                 else => null,
             },
             .removed => |r| r.gone,
@@ -1025,13 +1137,18 @@ pub const Result = union(enum) {
     }
 };
 
-pub const Gone = struct { repo: []const u8, name: []const u8 };
+/// Which row went. `path` and `created_ms` are in it because a manual tree's
+/// name can be used again: a tree made under the same name while the job ran
+/// is another row and must stay.
+pub const Gone = struct { repo: []const u8, name: []const u8, path: []const u8, created_ms: i64 };
 
 /// Take `result`'s tree out of the real ledger, as the job's private copy
 /// already did, and save. Run where the ledger lives. Whether it changed.
 pub fn forgetGone(io: Io, ledger: *Ledger, result: Result) bool {
     const gone = result.goneTree() orelse return false;
     const i = ledger.find(gone.repo, gone.name) orelse return false;
+    const row = ledger.entries.items[i];
+    if (!std.mem.eql(u8, row.path, gone.path) or row.created_ms != gone.created_ms) return false;
     ledger.removeAt(i);
     ledger.save(io) catch |err| log.warn("worktree: could not save the ledger: {t}", .{err});
     return true;
@@ -1061,6 +1178,10 @@ pub const Job = struct {
     /// Set on the job's thread before `finished`; read after it.
     result: ?Result = null,
     finished: std.atomic.Value(bool) = .init(false),
+    /// Set by `done`'s owner when it could not hand the finished job back to
+    /// the app thread: nothing will dispatch its request again, so `round`
+    /// settles it on whichever request comes next.
+    undelivered: std.atomic.Value(bool) = .init(false),
     /// Called on the job's thread once `result` is set: the last thing the
     /// thread does with the job. Must not wait for the job's owner.
     done: *const fn (ctx: *anyopaque, job: *Job) void,
@@ -1132,6 +1253,8 @@ pub const Job = struct {
                     .one => |i| .{
                         .repo = try a.dupe(u8, ledger.entries.items[i].repo),
                         .name = try a.dupe(u8, ledger.entries.items[i].name),
+                        .path = try a.dupe(u8, ledger.entries.items[i].path),
+                        .created_ms = ledger.entries.items[i].created_ms,
                     },
                     else => null,
                 };
@@ -1183,6 +1306,228 @@ pub const Job = struct {
         child.destroy(self);
     }
 };
+
+// ----------------------------------------------- the app's book of jobs
+//
+// What the app thread keeps about the jobs it started, kept here so that the
+// two things that went wrong with it (task 2495) can be tested on real jobs
+// and a real ledger: a second request for a task's tree started a second
+// job, and a finished job whose request was then refused was never put in
+// the ledger.
+
+/// A running or finished `Job` and the request it parked. `held` is the
+/// request's identity (an address) -- this file does not know its type.
+pub const Wait = struct {
+    job: *Job,
+    held: *anyopaque,
+    /// For a close or a cancel: what the reply says of the members. Owned
+    /// by the app.
+    preface: []u8 = &.{},
+    /// The ledger already has what the job did (`settle`).
+    settled: bool = false,
+    /// A job nobody's request is waiting for (a closeout started because a
+    /// task closed while its tree was being made): `held` is the job itself,
+    /// and `round` collects it when it is done.
+    orphan: bool = false,
+};
+
+/// A request for the tree of a task whose tree another request is already
+/// making. It waits for that one rather than make a second.
+pub const Follower = struct { task: u64, held: *anyopaque };
+
+pub fn waitFor(waits: []const Wait, held: *const anyopaque) ?usize {
+    for (waits, 0..) |w, i| if (w.held == held) return i;
+    return null;
+}
+
+/// The job making `task`'s tree, started by any request.
+pub fn taskLeader(waits: []const Wait, task: u64) ?usize {
+    for (waits, 0..) |w, i| switch (w.job.work) {
+        .task => |t| if (t.task == task) return i,
+        else => {},
+    };
+    return null;
+}
+
+pub fn followerFor(followers: []const Follower, held: *const anyopaque) bool {
+    for (followers) |f| if (f.held == held) return true;
+    return false;
+}
+
+/// Put what a finished job did into the real ledger: the tree it made, the
+/// tree it took down. **Before** the request that asked is dispatched again,
+/// because that dispatch may refuse (the task was closed meanwhile, the seat
+/// is taken) and then nothing else would ever look at the job -- and the
+/// directory is on disk either way. Whether the ledger changed.
+pub fn settle(io: Io, ledger: *Ledger, w: *Wait) bool {
+    if (w.settled or !w.job.finished.load(.acquire)) return false;
+    w.settled = true;
+    const result = w.job.result orelse return false;
+    var changed = false;
+    switch (result) {
+        .prepared => |p| switch (p) {
+            .tree => |t| if (!t.reused) {
+                _ = commit(io, ledger, p) catch |err| {
+                    log.warn("worktree: could not write down a finished tree: {t}", .{err});
+                    return false;
+                };
+                changed = true;
+            },
+            else => {},
+        },
+        else => {},
+    }
+    return forgetGone(io, ledger, result) or changed;
+}
+
+/// One request through the app's bookkeeping, in the only order that works.
+/// `ctx` supplies what is the app's own:
+///
+///   - `dispatch(ctx) bool`        dispatch `held` now; whether it parked
+///   - `wake(ctx, *anyopaque)`     dispatch a waiting follower again
+///   - `taskOpen(ctx, u64) bool`   whether the task still takes work
+///   - `closeOrphan(ctx, u64)`     start a closeout for a task already closed
+///   - `release(ctx, Wait)`        free a wait that left the list
+///
+/// **Before** the dispatch: whatever finished jobs did goes into the ledger
+/// (`settle`), and followers of a finished tree are woken -- the dispatch may
+/// refuse the request, and then nothing else would look at the job. **After**
+/// it: a job the dispatch did not take is dropped. Swapping the two leaves a
+/// refused request's tree out of the ledger, or drops a job before it is read.
+pub fn round(
+    comptime Ctx: type,
+    ctx: *Ctx,
+    io: Io,
+    alloc: Allocator,
+    ledger: *Ledger,
+    waits: *std.ArrayList(Wait),
+    followers: *std.ArrayList(Follower),
+    held: *anyopaque,
+) void {
+    sweep(Ctx, ctx, io, alloc, ledger, waits, followers);
+    if (waitFor(waits.items, held)) |i| settleOne(Ctx, ctx, io, alloc, ledger, waits, followers, i);
+    const parked = ctx.dispatch();
+    if (parked) return;
+    if (waitFor(waits.items, held)) |i| {
+        const w = waits.items[i];
+        if (w.settled and w.job.finished.load(.acquire)) {
+            _ = waits.swapRemove(i);
+            ctx.release(w);
+        }
+    }
+}
+
+fn settleOne(
+    comptime Ctx: type,
+    ctx: *Ctx,
+    io: Io,
+    alloc: Allocator,
+    ledger: *Ledger,
+    waits: *std.ArrayList(Wait),
+    followers: *std.ArrayList(Follower),
+    i: usize,
+) void {
+    const w = &waits.items[i];
+    if (w.settled) return;
+    _ = settle(io, ledger, w);
+    if (!w.settled) return;
+    const task = switch (w.job.work) {
+        .task => |t| t.task,
+        else => return,
+    };
+    if (takeFollowers(alloc, followers, task)) |woken| {
+        defer alloc.free(woken);
+        for (woken) |h| ctx.wake(h);
+    } else |err| log.warn("worktree: could not wake the requests waiting on task {d}'s tree: {t}", .{ task, err });
+    // The task was closed while its tree was being made, and the close saw
+    // no tree. The tree is in the ledger now and nobody will close it out.
+    if (!ctx.taskOpen(task) and ledger.taskTree(task) != null) ctx.closeOrphan(task);
+}
+
+/// Jobs that need no request to come back: an orphan closeout that is done,
+/// and a job whose hand-back failed.
+fn sweep(
+    comptime Ctx: type,
+    ctx: *Ctx,
+    io: Io,
+    alloc: Allocator,
+    ledger: *Ledger,
+    waits: *std.ArrayList(Wait),
+    followers: *std.ArrayList(Follower),
+) void {
+    var i: usize = 0;
+    while (i < waits.items.len) {
+        const w = &waits.items[i];
+        if (!w.job.finished.load(.acquire)) {
+            i += 1;
+            continue;
+        }
+        if (w.orphan) {
+            _ = settle(io, ledger, w);
+            const gone = waits.swapRemove(i);
+            ctx.release(gone);
+            continue;
+        }
+        if (w.job.undelivered.load(.acquire)) {
+            settleOne(Ctx, ctx, io, alloc, ledger, waits, followers, i);
+            const gone = waits.swapRemove(i);
+            ctx.release(gone);
+            continue;
+        }
+        i += 1;
+    }
+}
+
+/// Whether a terminal counts as standing in a tree. One whose directory
+/// cannot be read counts when it is a member of the task: a member that
+/// cannot be placed is kept, not guessed gone.
+pub fn stands(io: Io, arena: Allocator, root: []const u8, cwd: ?[]const u8, member: bool) Allocator.Error!bool {
+    const c = cwd orelse return member;
+    return standsIn(io, arena, root, c);
+}
+
+/// Every terminal that has held a place on `t`, now or before: the lead, the
+/// places filled now, and everyone the task's record says sat in one.
+///
+/// **The record, not just the places.** Closing or cancelling a task first
+/// takes every member's identity off (`Tasks.leave` writes `nobody` into the
+/// place), and only then asks who is standing in the tree -- so the places
+/// are empty at the one moment the answer matters. The spans keep the ids.
+pub fn seatTerminals(alloc: Allocator, t: Tasks.Task) Allocator.Error![]const u64 {
+    var out: std.ArrayList(u64) = .empty;
+    errdefer out.deinit(alloc);
+    const spans = try Tasks.spans(alloc, t);
+    defer alloc.free(spans);
+    const members = try Tasks.membersOf(alloc, t);
+    defer alloc.free(members);
+    try addSeat(alloc, &out, t.owner);
+    for (members) |m| try addSeat(alloc, &out, m.id);
+    for (spans) |sp| try addSeat(alloc, &out, sp.id);
+    return out.toOwnedSlice(alloc);
+}
+
+fn addSeat(alloc: Allocator, out: *std.ArrayList(u64), id: u64) Allocator.Error!void {
+    if (id == Tasks.nobody) return;
+    if (std.mem.indexOfScalar(u64, out.items, id) != null) return;
+    try out.append(alloc, id);
+}
+
+/// The followers of `task`, taken out of `followers`, for the app to
+/// dispatch again now that the leader's tree is in the ledger.
+pub fn takeFollowers(alloc: Allocator, followers: *std.ArrayList(Follower), task: u64) Allocator.Error![]const *anyopaque {
+    var out: std.ArrayList(*anyopaque) = .empty;
+    errdefer out.deinit(alloc);
+    var i: usize = 0;
+    while (i < followers.items.len) {
+        if (followers.items[i].task != task) {
+            i += 1;
+            continue;
+        }
+        try out.append(alloc, followers.items[i].held);
+        _ = followers.swapRemove(i);
+    }
+    return out.toOwnedSlice(alloc);
+}
 
 fn refuse(comptime code: []const u8, comptime message: []const u8) Prepared {
     return .{ .refused = .{ .code = code, .message = message } };
@@ -1248,7 +1593,32 @@ fn problemOf(arena: Allocator, r: anyerror!void) Allocator.Error!?[]const u8 {
     return null;
 }
 
+/// Whether git, asked in the tree, says the tree is its own repository root.
+/// With the tree's `.git` gone git walks up and answers for whatever
+/// repository is above -- the main one, for a tree made `inside` -- and every
+/// answer after that is about the wrong place.
+fn isOwnToplevel(git: Git, arena: Allocator, entry: Entry) !bool {
+    const top = try git.run(arena, entry.path, &.{ "rev-parse", "--show-toplevel" });
+    if (!top.ok) return false;
+    return samePath(top.out, entry.path);
+}
+
+fn samePath(a: []const u8, b: []const u8) bool {
+    const x = std.mem.trimEnd(u8, a, "/\\");
+    const y = std.mem.trimEnd(u8, b, "/\\");
+    if (x.len != y.len) return false;
+    for (x, y) |l, r| {
+        const ln = if (l == '\\') '/' else l;
+        const rn = if (r == '\\') '/' else r;
+        if (ln == rn) continue;
+        if (builtin.os.tag == .windows and std.ascii.toLower(ln) == std.ascii.toLower(rn)) continue;
+        return false;
+    }
+    return true;
+}
+
 fn statusInto(git: Git, arena: Allocator, s: *Status) !void {
+    if (!try isOwnToplevel(git, arena, s.entry)) return error.NotItsOwnRepo;
     const st = try git.run(arena, s.entry.path, &.{ "status", "--porcelain" });
     if (!st.ok) return error.StatusFailed;
     var n: usize = 0;
@@ -1270,8 +1640,21 @@ fn statusInto(git: Git, arena: Allocator, s: *Status) !void {
     const count = try git.run(arena, s.entry.repo, &.{ "rev-list", "--count", range });
     if (!count.ok) return error.NoBranch;
     const ahead = std.fmt.parseInt(usize, count.out, 10) catch return error.NoBranch;
-    s.ahead = ahead;
-    s.merged = ahead == 0;
+    // The branch is not what the tree holds once a worker has detached HEAD:
+    // count what the tree's own HEAD has that the mainline does not.
+    const tree_ahead = try aheadOfTreeHead(git, arena, s.entry, main_head.out);
+    s.ahead = @max(ahead, tree_ahead);
+    s.merged = s.ahead == 0;
+}
+
+/// Commits on the *tree's* `HEAD` that `main_head` does not have. Asked in the
+/// tree, because `HEAD` there is whatever the worker left it on -- a detached
+/// commit is reachable from no branch and goes with the tree.
+fn aheadOfTreeHead(git: Git, arena: Allocator, entry: Entry, main_head: []const u8) !usize {
+    const range = try std.fmt.allocPrint(arena, "{s}..HEAD", .{main_head});
+    const count = try git.run(arena, entry.path, &.{ "rev-list", "--count", range });
+    if (!count.ok) return error.NoTreeHead;
+    return std.fmt.parseInt(usize, count.out, 10) catch return error.NoTreeHead;
 }
 
 pub fn writeStatus(w: *std.json.Stringify, s: Status) std.Io.Writer.Error!void {
@@ -1337,6 +1720,12 @@ pub fn writeStatus(w: *std.json.Stringify, s: Status) std.Io.Writer.Error!void {
     try w.write(if (s.landed) |l| l.checked else null);
     try w.objectField("unlanded_count");
     try w.write(if (s.landed) |l| l.unlanded_count else null);
+    try w.objectField("ignored_extra");
+    try w.beginArray();
+    if (s.landed) |l| for (l.ignored_extra) |f| try w.write(f);
+    try w.endArray();
+    try w.objectField("ignored_more");
+    try w.write(if (s.landed) |l| l.ignored_more else null);
     try w.objectField("unlanded");
     try w.beginArray();
     if (s.landed) |l| for (l.unlanded[0..@min(l.unlanded.len, max_listed)]) |u| {
@@ -1397,6 +1786,12 @@ pub const Landed = struct {
     unlanded_count: usize = 0,
     /// Commits on the branch the mainline lacks, when that is what decided it.
     ahead: ?usize = null,
+    /// Ignored by git and not on the `build_debris` list: a `.env`, a note
+    /// under a `.gitignore`d name. Taking the tree down takes these too; they
+    /// do not decide `landed`, but the receipt names them.
+    ignored_extra: []const []const u8 = &.{},
+    /// How many more there are than `ignored_extra` lists.
+    ignored_more: usize = 0,
     /// Said in words when it is not the paths that decided it.
     reason: ?[]const u8 = null,
     /// git could not answer. Not the same as "no": the caller says so.
@@ -1424,6 +1819,7 @@ pub fn landed(git: Git, arena: Allocator, entry: Entry) Allocator.Error!Landed {
 }
 
 fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
+    if (!try isOwnToplevel(git, arena, entry)) return error.NotItsOwnRepo;
     // A commit on the branch is work this check cannot see in the path
     // list: the tree may be clean and still hold it. A worker that
     // committed anyway is the case, and it is not landed.
@@ -1440,6 +1836,17 @@ fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
             arena,
             "the branch has {d} commit{s} the mainline does not",
             .{ ahead, if (ahead == 1) "" else "s" },
+        ),
+    };
+
+    const tree_ahead = try aheadOfTreeHead(git, arena, entry, main_head.out);
+    if (tree_ahead > 0) return .{
+        .landed = false,
+        .ahead = tree_ahead,
+        .reason = try std.fmt.allocPrint(
+            arena,
+            "the tree's HEAD has {d} commit{s} the mainline does not (HEAD is not necessarily on {s})",
+            .{ tree_ahead, if (tree_ahead == 1) "" else "s", entry.branch },
         ),
     };
 
@@ -1576,13 +1983,60 @@ fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
 
     var list: std.ArrayList(Unlanded) = .empty;
     for (items.items, verdict) |it, v| if (v) |why| try list.append(arena, .{ .path = it.path, .why = why });
+    const ignored = try ignoredExtra(git, arena, entry);
     return .{
         .landed = list.items.len == 0,
         .checked = items.items.len,
         .unlanded = list.items,
         .unlanded_count = list.items.len,
         .ahead = 0,
+        .ignored_extra = ignored.items,
+        .ignored_more = ignored.more,
     };
+}
+
+/// Ignored paths in the tree that are not `build_debris` (nor inside one).
+/// `status` leaves ignored files out of its list, so `--force` takes them
+/// with the tree without any check having looked at them. At most
+/// `max_listed`; best effort -- git failing here says nothing.
+fn ignoredExtra(git: Git, arena: Allocator, entry: Entry) Allocator.Error!Ignored {
+    const r = git.run(arena, entry.path, &.{ "status", "--porcelain=v1", "-z", "--ignored=matching" }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .{},
+    };
+    if (!r.ok) return .{};
+    var more: usize = 0;
+    var out: std.ArrayList([]const u8) = .empty;
+    var recs = std.mem.splitScalar(u8, r.raw, 0);
+    next: while (recs.next()) |rec| {
+        if (!std.mem.startsWith(u8, rec, "!! ")) continue;
+        const rel = std.mem.trimEnd(u8, rec[3..], "/");
+        for (build_debris) |d| if (within(d, rel)) continue :next;
+        if (out.items.len >= max_listed) {
+            more += 1;
+            continue;
+        }
+        try out.append(arena, rel);
+    }
+    return .{ .items = out.items, .more = more };
+}
+
+const Ignored = struct { items: []const []const u8 = &.{}, more: usize = 0 };
+
+/// " Files git ignores ... : a, b, and N more." or "" -- for a reply that
+/// is about a tree being taken down, which takes these with it.
+fn ignoredSentence(arena: Allocator, l: Landed, gone: bool) Allocator.Error![]const u8 {
+    if (l.ignored_extra.len == 0) return "";
+    var out: std.Io.Writer.Allocating = .init(arena);
+    const w = &out.writer;
+    w.writeAll(if (gone)
+        " Files git ignores went with it and were not checked against the mainline: "
+    else
+        " Files git ignores are in it too, and would go with it unchecked: ") catch return error.OutOfMemory;
+    listStrings(w, l.ignored_extra) catch return error.OutOfMemory;
+    if (l.ignored_more > 0) w.print(", and {d} more", .{l.ignored_more}) catch return error.OutOfMemory;
+    w.writeAll(".") catch return error.OutOfMemory;
+    return out.written();
 }
 
 /// The id git gives a blob holding `bytes`, in the hash `oid_len` hex digits
@@ -1626,6 +2080,8 @@ pub const Removed = union(enum) {
         path: []const u8,
         /// Null when the branch went too; otherwise why it is still there.
         branch_kept: ?[]const u8,
+        /// `ignoredSentence` of what went with it; "" when nothing did.
+        ignored: []const u8,
     },
     /// The directory was already gone; only the entry was forgotten.
     forgotten: []const u8,
@@ -1726,7 +2182,7 @@ fn removeIndex(git: Git, arena: Allocator, ledger: *Ledger, i: usize) Allocator.
     ledger.removeAt(i);
     ledger.save(git.io) catch |err| log.warn("worktree: could not save the ledger: {t}", .{err});
     log.info("worktree: removed {s} at {s}", .{ entry.name, entry.path });
-    return .{ .removed = .{ .path = entry.path, .branch_kept = kept } };
+    return .{ .removed = .{ .path = entry.path, .branch_kept = kept, .ignored = try ignoredSentence(arena, second, true) } };
 }
 
 fn notLanded(arena: Allocator, entry: Entry, l: Landed) Allocator.Error!Refusal {
@@ -1745,8 +2201,8 @@ fn notLanded(arena: Allocator, entry: Entry, l: Landed) Allocator.Error!Refusal 
         .message = try std.fmt.allocPrint(
             arena,
             "the work in {s} has not landed; nothing was removed: {s}. Apply it on the mainline, or " ++
-                "throw it away with git, then ask again.",
-            .{ entry.path, why },
+                "throw it away with git, then ask again.{s}",
+            .{ entry.path, why, try ignoredSentence(arena, l, false) },
         ),
     };
 }
@@ -1784,6 +2240,14 @@ pub const CacheResult = struct {
 /// build is running -- nothing is touched then.
 pub fn cleanCache(git: Git, arena: Allocator, entry: Entry, busy: bool) Allocator.Error!CacheResult {
     if (busy) return .{ .busy = true };
+    const own = isOwnToplevel(git, arena, entry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.GitNotRunnable => false,
+    };
+    if (!own) return .{ .failed = try arena.dupe(CacheFail, &.{.{
+        .path = ".",
+        .why = "git does not see this directory as the worktree, so nothing it calls ignored can be trusted",
+    }}) };
     var cleaned: std.ArrayList([]const u8) = .empty;
     var kept: std.ArrayList([]const u8) = .empty;
     var failed: std.ArrayList(CacheFail) = .empty;
@@ -1876,6 +2340,7 @@ pub const Closeout = struct {
     repo: []const u8 = "",
     name: []const u8 = "",
     path: []const u8 = "",
+    created_ms: i64 = 0,
     branch: []const u8 = "",
     landed: ?Landed = null,
     ahead: ?usize = null,
@@ -1926,6 +2391,7 @@ pub fn closeout(git: Git, arena: Allocator, ledger: *Ledger, task: u64, in: Clos
     c.repo = entry.repo;
     c.name = entry.name;
     c.path = entry.path;
+    c.created_ms = entry.created_ms;
     c.branch = entry.branch;
     const busy = in.lease != null or in.building.len > 0;
 
@@ -1973,6 +2439,10 @@ pub fn closeout(git: Git, arena: Allocator, ledger: *Ledger, task: u64, in: Clos
 
     switch (c.outcome) {
         .removed, .forgotten, .no_tree => {},
+        // git is not answering for this tree (a broken `.git` makes it walk up
+        // to another repository): what it calls ignored is not to be trusted
+        // with a delete.
+        .kept_unknown => {},
         else => c.cache = try cleanCache(git, arena, entry, busy),
     }
     c.note = try renderCloseout(arena, c);
@@ -2006,6 +2476,12 @@ fn renderInto(w: *std.Io.Writer, c: Closeout) !void {
                 .{ c.task, verb, c.path },
             );
             if (c.branch_kept) |why| try w.print(" Its branch {s} was kept: {s}", .{ c.branch, why });
+            if (c.landed) |l| if (l.ignored_extra.len > 0) {
+                try w.writeAll(" Files git ignores went with it and were not checked against the mainline: ");
+                try listStrings(w, l.ignored_extra);
+                if (l.ignored_more > 0) try w.print(", and {d} more", .{l.ignored_more});
+                try w.writeAll(".");
+            };
         },
         .kept_standing => {
             try w.print("Task {d} {s}. Its worktree {s} (branch {s}) is kept: its work has landed, but ", .{ c.task, verb, c.path, c.branch });
@@ -2045,11 +2521,11 @@ fn renderInto(w: *std.Io.Writer, c: Closeout) !void {
             try w.writeAll(" Apply that work on the mainline, or throw it away, before the tree is taken down.");
         },
         .kept_ahead => try w.print(
-            "Task {d} {s}. Its worktree {s} is KEPT: branch {s} has {d} commit{s} the mainline does not.",
+            "Task {d} {s}. Its worktree {s} is KEPT: it (branch {s}, or the commit its HEAD is on) has {d} commit{s} the mainline does not.",
             .{ c.task, verb, c.path, c.branch, c.ahead orelse 0, if ((c.ahead orelse 0) == 1) "" else "s" },
         ),
         .kept_unknown => try w.print(
-            "Task {d} {s}. Its worktree {s} (branch {s}) is kept: whether its work has landed could not be told ({s}).",
+            "Task {d} {s}. Its worktree {s} (branch {s}) is kept: whether its work has landed could not be told ({s}); git is not sure what it is asking about, so its build output was not touched.",
             .{ c.task, verb, c.path, c.branch, c.problem orelse "no reason given" },
         ),
     }
@@ -2402,6 +2878,36 @@ test "worktree: names that can be a directory and a branch" {
     try testing.expect(!validName("x.lock"));
     try testing.expect(!validName("a b"));
     try testing.expect(!validName("x" ** (max_name + 1)));
+}
+
+test "worktree: standsIn 先 realpath：经符号链接、带 .. 进树的终端也算站在树里；旁边同前缀的目录不算" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+
+    // Through a link to the tree's parent.
+    const link = try std.fs.path.join(a, &.{ fx.root, "via" });
+    try Io.Dir.cwd().symLink(testing.io, std.fs.path.dirname(e.path).?, link, .{ .is_directory = true });
+    const through = try std.fs.path.join(a, &.{ link, "wt-2435" });
+    try testing.expect(!within(e.path, through));
+    try testing.expect(try standsIn(testing.io, a, e.path, through));
+
+    // Walked in by `..`.
+    const out_and_back = try std.fmt.allocPrint(a, "{s}/../../{s}/wt-2435", .{ e.path, std.fs.path.basename(std.fs.path.dirname(e.path).?) });
+    try testing.expect(try standsIn(testing.io, a, e.path, out_and_back));
+
+    // `..` that leaves the tree is not standing in it, though the text starts with its path.
+    const outside = try std.fmt.allocPrint(a, "{s}/../..", .{e.path});
+    try testing.expect(within(e.path, outside));
+    try testing.expect(!(try standsIn(testing.io, a, e.path, outside)));
+
+    // A sibling that merely shares the prefix.
+    const sibling = try std.fmt.allocPrint(a, "{s}x", .{e.path});
+    try testing.expect(!(try standsIn(testing.io, a, e.path, sibling)));
 }
 
 test "worktree: within matches the tree and below it, not a sibling with the same prefix" {
@@ -3201,6 +3707,121 @@ test "worktree: ahead > 0（worker 真提交了）→ 不 landed，即使路径�
     try testing.expect(exists(testing.io, e.path));
 }
 
+test "worktree: 在游离 HEAD 上提交（分支没动，工作区干净）→ 不 landed、不 merged、closeout 不删树" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try fx.must(e.path, &.{ "checkout", "-q", "--detach" });
+    try fx.write(e.path, "b.txt", "new\n");
+    try fx.must(e.path, &.{ "add", "b.txt" });
+    try fx.must(e.path, &.{ "commit", "-q", "-m", "detached work" });
+    try testing.expectEqualStrings("", try fx.out(e.path, &.{ "status", "--porcelain" }));
+    // The branch the ledger names has not moved.
+    const br = try fx.out(fx.repo, &.{ "rev-list", "--count", "HEAD..wt/polter/2435" });
+    try testing.expectEqualStrings("0", br);
+
+    const l = try landed(fx.git(), fx.al(), e);
+    try testing.expect(!l.landed);
+    try testing.expectEqual(@as(?usize, 1), l.ahead);
+    const s = try status(fx.git(), fx.al(), e);
+    try testing.expectEqual(@as(?bool, false), s.merged);
+    try testing.expectEqual(@as(?usize, 1), s.ahead);
+
+    const c = try closeout(fx.git(), fx.al(), &ledger, 2435, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.kept_ahead, c.outcome);
+    try testing.expect(exists(testing.io, e.path));
+    try testing.expectEqual(@as(usize, 1), ledger.entries.items.len);
+}
+
+test "worktree: 被 git 忽略、不在构建产物名单里的文件，随树删除前写进回执" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    try fx.write(fx.repo, ".gitignore", ".zig-cache/\n*.local.json\n");
+    try fx.must(fx.repo, &.{ "add", ".gitignore" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "ignore" });
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try workerWork(&fx, e.path);
+    try landOnMain(&fx);
+    try fx.write(e.path, "secrets.local.json", "{}\n");
+    const cache = try std.fs.path.join(a, &.{ e.path, ".zig-cache" });
+    try Io.Dir.cwd().createDirPath(testing.io, cache);
+    try fx.write(cache, "o", "x");
+
+    const c = try closeout(fx.git(), a, &ledger, 2435, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.removed, c.outcome);
+    const extra = c.landed.?.ignored_extra;
+    try testing.expectEqual(@as(usize, 1), extra.len);
+    try testing.expectEqualStrings("secrets.local.json", extra[0]);
+    try testing.expect(std.mem.indexOf(u8, c.note, "secrets.local.json") != null);
+}
+
+test "worktree: 树的 .git 没了（inside 布局下 git 会往上找到主仓库）→ 不清缓存、不当成已落地" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    try fx.write(fx.repo, ".gitignore", ".zig-cache/\n");
+    try fx.must(fx.repo, &.{ "add", ".gitignore" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "ignore" });
+
+    const p = try prepareTask(fx.git(), a, &ledger, .{ .dir = fx.repo, .group = "polter", .task = 2435, .location = .inside });
+    try testing.expect(p == .tree);
+    const e = p.tree.entry;
+    const cache = try std.fs.path.join(a, &.{ e.path, ".zig-cache" });
+    try Io.Dir.cwd().createDirPath(testing.io, cache);
+    try fx.write(cache, "o", "x");
+    try Io.Dir.cwd().deleteFile(testing.io, try std.fs.path.join(a, &.{ e.path, ".git" }));
+
+    const direct = try cleanCache(fx.git(), a, e, false);
+    try testing.expectEqual(@as(usize, 0), direct.cleaned.len);
+    try testing.expect(exists(testing.io, cache));
+
+    const c = try closeout(fx.git(), a, &ledger, 2435, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.kept_unknown, c.outcome);
+    try testing.expect(c.cache == null);
+    try testing.expect(exists(testing.io, cache));
+    try testing.expectEqual(@as(usize, 1), ledger.entries.items.len);
+}
+
+test "worktree: forgetGone 只忘掉 job 删的那一行：同名但 path 或 created_ms 不同的新行留着" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, try fx.ledgerFile());
+    defer ledger.deinit();
+    var ctx: u8 = 0;
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try workerWork(&fx, e.path);
+    try landOnMain(&fx);
+    const job = try Job.create(std.heap.smp_allocator, fx.git(), .{ .closeout = .{
+        .task = 2435,
+        .in = .{ .mode = .closed },
+    } }, ledger.entries.items, noteDone, &ctx);
+    defer job.destroy();
+    try runJob(job);
+    try testing.expectEqual(Outcome.removed, job.result.?.closeout.outcome);
+
+    // While the job ran, somebody made another row under the same name.
+    ledger.entries.items[0].created_ms += 1;
+    try testing.expect(!forgetGone(testing.io, &ledger, job.result.?));
+    try testing.expectEqual(@as(usize, 1), ledger.entries.items.len);
+    ledger.entries.items[0].created_ms -= 1;
+    try testing.expect(forgetGone(testing.io, &ledger, job.result.?));
+    try testing.expectEqual(@as(usize, 0), ledger.entries.items.len);
+}
+
 test "worktree: 路径数超过上限 → 不 landed（too_many）" {
     var fx: Fixture = undefined;
     try fx.init();
@@ -3499,7 +4120,7 @@ test "worktree: 保留的树也清缓存；被忽略但不在名单里的目录�
     try testing.expect(exists(testing.io, try std.fs.path.join(a, &.{ e.path, "a.txt" })));
 }
 
-test "worktree: 有租约时清缓存被拒 CacheBusy，租约松开后补做" {
+test "worktree: 有租约时清缓存被拒 CacheBusy，松开后再调一次就清（生产里没有自动补做）" {
     var fx: Fixture = undefined;
     try fx.init();
     defer fx.deinit();
@@ -3768,6 +4389,410 @@ test "worktree: Job 在线程里建任务树，commit 才落账；再问是同�
     defer second.destroy();
     try runJob(second);
     try testing.expect(second.result.?.prepared.tree.reused);
+}
+
+test "worktree: 同一任务的第二个请求拿着过期账本来：分支已检出在树里 → 当作复用，不拒绝" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var first_ledger = try Ledger.init(testing.allocator, null);
+    defer first_ledger.deinit();
+    var stale = try Ledger.init(testing.allocator, null);
+    defer stale.deinit();
+
+    const first = try taskTreeOf(&fx, &first_ledger, "polter", 2435);
+    // The racer's copy of the ledger was taken before the first one wrote.
+    const second = try prepareTask(fx.git(), a, &stale, .{ .dir = fx.repo, .group = "polter", .task = 2435 });
+    try testing.expect(second == .tree);
+    try testing.expectEqualStrings(first.path, second.tree.entry.path);
+    try testing.expectEqualStrings("wt/polter/2435", second.tree.entry.branch);
+    try testing.expectEqual(@as(?u64, 2435), second.tree.entry.task);
+    try testing.expect(exists(testing.io, first.path));
+}
+
+test "worktree: 分支存在但没有树检出它 → BranchExists，文案不叫人删分支" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    try fx.must(fx.repo, &.{ "branch", "wt/polter/2435" });
+    const p = try prepareTask(fx.git(), a, &ledger, .{ .dir = fx.repo, .group = "polter", .task = 2435 });
+    try testing.expect(p == .refused);
+    try testing.expectEqualStrings("BranchExists", p.refused.code);
+    try testing.expect(std.ascii.indexOfIgnoreCase(p.refused.message, "delete") == null);
+    try testing.expectEqual(@as(usize, 0), ledger.entries.items.len);
+}
+
+test "worktree: 同一任务已有建树 job 在跑 → taskLeader 认出它，后来的请求排成 follower，job 收完一并取走" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    var ctx: u8 = 0;
+    var a_req: u8 = 0;
+    var b_req: u8 = 0;
+
+    const job = try Job.create(std.heap.smp_allocator, fx.git(), .{ .task = .{
+        .dir = fx.repo,
+        .group = "polter",
+        .task = 2435,
+    } }, ledger.entries.items, noteDone, &ctx);
+    defer job.destroy();
+    var waits: std.ArrayList(Wait) = .empty;
+    defer waits.deinit(testing.allocator);
+    try waits.append(testing.allocator, .{ .job = job, .held = &a_req });
+
+    try testing.expectEqual(@as(?usize, 0), taskLeader(waits.items, 2435));
+    try testing.expectEqual(@as(?usize, null), taskLeader(waits.items, 2436));
+    try testing.expectEqual(@as(?usize, 0), waitFor(waits.items, &a_req));
+    try testing.expectEqual(@as(?usize, null), waitFor(waits.items, &b_req));
+
+    var followers: std.ArrayList(Follower) = .empty;
+    defer followers.deinit(testing.allocator);
+    try followers.append(testing.allocator, .{ .task = 2435, .held = &b_req });
+    try followers.append(testing.allocator, .{ .task = 7, .held = &ctx });
+    try testing.expect(followerFor(followers.items, &b_req));
+
+    try runJob(job);
+    const woken = try takeFollowers(testing.allocator, &followers, 2435);
+    defer testing.allocator.free(woken);
+    try testing.expectEqual(@as(usize, 1), woken.len);
+    try testing.expect(woken[0] == @as(*anyopaque, &b_req));
+    // The other task's follower stays.
+    try testing.expectEqual(@as(usize, 1), followers.items.len);
+    try testing.expectEqual(@as(u64, 7), followers.items[0].task);
+}
+
+test "worktree: 挂起的 job 做完、请求被再分派拒掉 → settle 已先把树记进账本，且只记一次" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, try fx.ledgerFile());
+    defer ledger.deinit();
+    var ctx: u8 = 0;
+    var req: u8 = 0;
+
+    const job = try Job.create(std.heap.smp_allocator, fx.git(), .{ .task = .{
+        .dir = fx.repo,
+        .group = "polter",
+        .task = 2435,
+    } }, ledger.entries.items, noteDone, &ctx);
+    defer job.destroy();
+    var w: Wait = .{ .job = job, .held = &req };
+
+    // Not finished: nothing to put down.
+    try testing.expect(!settle(testing.io, &ledger, &w));
+    try runJob(job);
+    const made = job.result.?.prepared.tree.entry.path;
+    try testing.expect(exists(testing.io, made));
+    try testing.expectEqual(@as(usize, 0), ledger.entries.items.len);
+
+    // The request is refused after this and never calls the job's owner.
+    try testing.expect(settle(testing.io, &ledger, &w));
+    try testing.expect(ledger.taskTree(2435) != null);
+    try testing.expect(!settle(testing.io, &ledger, &w));
+    try testing.expectEqual(@as(usize, 1), ledger.entries.items.len);
+}
+
+test "worktree: 主仓库或别处的树检出了 wt/g/N → 不当成任务树（BranchExists），账本为空" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    // The main working tree has the task's branch checked out.
+    try fx.must(fx.repo, &.{ "checkout", "-q", "-b", "wt/polter/2435" });
+    const p = try prepareTask(fx.git(), a, &ledger, .{ .dir = fx.repo, .group = "polter", .task = 2435 });
+    try testing.expect(p == .refused);
+    try testing.expectEqualStrings("BranchExists", p.refused.code);
+    try testing.expectEqual(@as(usize, 0), ledger.entries.items.len);
+
+    // A tree somebody made by hand, elsewhere, on that branch.
+    try fx.must(fx.repo, &.{ "checkout", "-q", "main" });
+    const elsewhere = try std.fs.path.join(a, &.{ fx.root, "mine" });
+    try fx.must(fx.repo, &.{ "worktree", "add", "-q", elsewhere, "wt/polter/2435" });
+    const q = try prepareTask(fx.git(), a, &ledger, .{ .dir = fx.repo, .group = "polter", .task = 2435 });
+    try testing.expect(q == .refused);
+    try testing.expectEqualStrings("BranchExists", q.refused.code);
+    try testing.expect(std.mem.indexOf(u8, q.refused.message, "mine") != null);
+    try testing.expectEqual(@as(usize, 0), ledger.entries.items.len);
+}
+
+/// The app's side of `round`, counting what it is asked.
+const RoundFake = struct {
+    ledger: *Ledger,
+    waits: *std.ArrayList(Wait),
+    task: u64,
+    parks: bool = false,
+    open: bool = true,
+    dispatched: bool = false,
+    tree_in_ledger_at_dispatch: bool = false,
+    waits_at_dispatch: usize = 0,
+    woken: usize = 0,
+    woken_before_dispatch: bool = false,
+    orphans: usize = 0,
+    released: usize = 0,
+
+    fn dispatch(self: *RoundFake) bool {
+        self.dispatched = true;
+        self.tree_in_ledger_at_dispatch = self.ledger.taskTree(self.task) != null;
+        self.waits_at_dispatch = self.waits.items.len;
+        self.woken_before_dispatch = self.woken > 0;
+        return self.parks;
+    }
+    fn wake(self: *RoundFake, _: *anyopaque) void {
+        self.woken += 1;
+    }
+    fn taskOpen(self: *RoundFake, _: u64) bool {
+        return self.open;
+    }
+    fn closeOrphan(self: *RoundFake, _: u64) void {
+        self.orphans += 1;
+    }
+    fn release(self: *RoundFake, _: Wait) void {
+        self.released += 1;
+    }
+};
+
+/// A finished tree-making job for task 2435, waiting on `req`.
+fn finishedTreeJob(fx: *Fixture, ledger: *Ledger, req: *u8, ctx: *u8) !*Job {
+    const job = try Job.create(std.heap.smp_allocator, fx.git(), .{ .task = .{
+        .dir = fx.repo,
+        .group = "polter",
+        .task = 2435,
+    } }, ledger.entries.items, noteDone, ctx);
+    errdefer job.destroy();
+    _ = req;
+    try runJob(job);
+    return job;
+}
+
+test "worktree: round 先 settle 再分派：分派那一刻树已在账本里、job 还在单子上；没挂起则分派后丢掉" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    var ctx: u8 = 0;
+    var req: u8 = 0;
+    const job = try finishedTreeJob(&fx, &ledger, &req, &ctx);
+    defer job.destroy();
+    var waits: std.ArrayList(Wait) = .empty;
+    defer waits.deinit(testing.allocator);
+    var followers: std.ArrayList(Follower) = .empty;
+    defer followers.deinit(testing.allocator);
+    try waits.append(testing.allocator, .{ .job = job, .held = &req });
+
+    var fake: RoundFake = .{ .ledger = &ledger, .waits = &waits, .task = 2435 };
+    round(RoundFake, &fake, testing.io, testing.allocator, &ledger, &waits, &followers, &req);
+    try testing.expect(fake.dispatched);
+    try testing.expect(fake.tree_in_ledger_at_dispatch);
+    try testing.expectEqual(@as(usize, 1), fake.waits_at_dispatch);
+    // The dispatch did not take the job: dropped.
+    try testing.expectEqual(@as(usize, 0), waits.items.len);
+    try testing.expectEqual(@as(usize, 1), fake.released);
+}
+
+test "worktree: round 遇到挂起的分派 → job 留在单子上，不丢" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    var ctx: u8 = 0;
+    var req: u8 = 0;
+    const job = try finishedTreeJob(&fx, &ledger, &req, &ctx);
+    defer job.destroy();
+    var waits: std.ArrayList(Wait) = .empty;
+    defer waits.deinit(testing.allocator);
+    var followers: std.ArrayList(Follower) = .empty;
+    defer followers.deinit(testing.allocator);
+    try waits.append(testing.allocator, .{ .job = job, .held = &req });
+
+    var fake: RoundFake = .{ .ledger = &ledger, .waits = &waits, .task = 2435, .parks = true };
+    round(RoundFake, &fake, testing.io, testing.allocator, &ledger, &waits, &followers, &req);
+    try testing.expectEqual(@as(usize, 1), waits.items.len);
+    try testing.expectEqual(@as(usize, 0), fake.released);
+}
+
+test "worktree: round 在分派前叫醒同任务的 follower；别的任务的不动" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    var ctx: u8 = 0;
+    var req: u8 = 0;
+    var b: u8 = 0;
+    var c: u8 = 0;
+    const job = try finishedTreeJob(&fx, &ledger, &req, &ctx);
+    defer job.destroy();
+    var waits: std.ArrayList(Wait) = .empty;
+    defer waits.deinit(testing.allocator);
+    var followers: std.ArrayList(Follower) = .empty;
+    defer followers.deinit(testing.allocator);
+    try waits.append(testing.allocator, .{ .job = job, .held = &req });
+    try followers.append(testing.allocator, .{ .task = 2435, .held = &b });
+    try followers.append(testing.allocator, .{ .task = 7, .held = &c });
+
+    var fake: RoundFake = .{ .ledger = &ledger, .waits = &waits, .task = 2435 };
+    round(RoundFake, &fake, testing.io, testing.allocator, &ledger, &waits, &followers, &req);
+    try testing.expectEqual(@as(usize, 1), fake.woken);
+    try testing.expect(fake.woken_before_dispatch);
+    try testing.expectEqual(@as(usize, 1), followers.items.len);
+    try testing.expectEqual(@as(u64, 7), followers.items[0].task);
+}
+
+test "worktree: 建树期间任务被关 → round 补做 closeout（开着的任务不补）" {
+    inline for (.{ false, true }) |open| {
+        var fx: Fixture = undefined;
+        try fx.init();
+        defer fx.deinit();
+        var ledger = try Ledger.init(testing.allocator, null);
+        defer ledger.deinit();
+        var ctx: u8 = 0;
+        var req: u8 = 0;
+        const job = try finishedTreeJob(&fx, &ledger, &req, &ctx);
+        defer job.destroy();
+        var waits: std.ArrayList(Wait) = .empty;
+        defer waits.deinit(testing.allocator);
+        var followers: std.ArrayList(Follower) = .empty;
+        defer followers.deinit(testing.allocator);
+        try waits.append(testing.allocator, .{ .job = job, .held = &req });
+
+        var fake: RoundFake = .{ .ledger = &ledger, .waits = &waits, .task = 2435, .open = open };
+        round(RoundFake, &fake, testing.io, testing.allocator, &ledger, &waits, &followers, &req);
+        try testing.expect(ledger.taskTree(2435) != null);
+        try testing.expectEqual(@as(usize, if (open) 0 else 1), fake.orphans);
+    }
+}
+
+test "worktree: job 做完却没交回 app 线程 → 下一个请求的 round 替它 settle、放走 follower、丢掉" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    var ctx: u8 = 0;
+    var lost: u8 = 0;
+    var b: u8 = 0;
+    var other: u8 = 0;
+    const job = try finishedTreeJob(&fx, &ledger, &lost, &ctx);
+    defer job.destroy();
+    job.undelivered.store(true, .release);
+    var waits: std.ArrayList(Wait) = .empty;
+    defer waits.deinit(testing.allocator);
+    var followers: std.ArrayList(Follower) = .empty;
+    defer followers.deinit(testing.allocator);
+    try waits.append(testing.allocator, .{ .job = job, .held = &lost });
+    try followers.append(testing.allocator, .{ .task = 2435, .held = &b });
+
+    var fake: RoundFake = .{ .ledger = &ledger, .waits = &waits, .task = 2435 };
+    round(RoundFake, &fake, testing.io, testing.allocator, &ledger, &waits, &followers, &other);
+    try testing.expectEqual(@as(usize, 1), fake.woken);
+    try testing.expect(ledger.taskTree(2435) != null);
+    try testing.expectEqual(@as(usize, 0), waits.items.len);
+    try testing.expectEqual(@as(usize, 1), fake.released);
+}
+
+test "worktree: 补做的 closeout（无请求的 orphan）做完后，round 把它的结果记进账本并丢掉" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    var ctx: u8 = 0;
+    var other: u8 = 0;
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try workerWork(&fx, e.path);
+    try landOnMain(&fx);
+    const job = try Job.create(std.heap.smp_allocator, fx.git(), .{ .closeout = .{
+        .task = 2435,
+        .in = .{ .mode = .closed },
+    } }, ledger.entries.items, noteDone, &ctx);
+    defer job.destroy();
+    try runJob(job);
+    var waits: std.ArrayList(Wait) = .empty;
+    defer waits.deinit(testing.allocator);
+    var followers: std.ArrayList(Follower) = .empty;
+    defer followers.deinit(testing.allocator);
+    try waits.append(testing.allocator, .{ .job = job, .held = job, .orphan = true });
+
+    var fake: RoundFake = .{ .ledger = &ledger, .waits = &waits, .task = 2435 };
+    round(RoundFake, &fake, testing.io, testing.allocator, &ledger, &waits, &followers, &other);
+    try testing.expect(!exists(testing.io, e.path));
+    try testing.expectEqual(@as(usize, 0), ledger.entries.items.len);
+    try testing.expectEqual(@as(usize, 0), waits.items.len);
+    try testing.expectEqual(@as(usize, 1), fake.released);
+}
+
+test "worktree: seatTerminals：成员先 leave（id 置 nobody）再算，坐过座位的终端仍在名单里" {
+    var t: Tasks = .init(testing.allocator, .{});
+    defer t.deinit();
+    const id = try t.create("polter", "squad", .other);
+    try t.join(id, "dev", "developer", 0xa1, "", 0, true);
+    try t.join(id, "test", "tester", 0xb2, "", 0, false);
+    // What `closeTask` does before it asks who is standing.
+    try t.leave(id, "dev", 10);
+    try t.leave(id, "test", 10);
+
+    const task = t.get(id).?;
+    const places = try Tasks.membersOf(testing.allocator, task);
+    defer testing.allocator.free(places);
+    for (places) |m| try testing.expectEqual(Tasks.nobody, m.id);
+
+    const seats = try seatTerminals(testing.allocator, task);
+    defer testing.allocator.free(seats);
+    try testing.expectEqual(@as(usize, 2), seats.len);
+    try testing.expect(std.mem.indexOfScalar(u64, seats, 0xa1) != null);
+    try testing.expect(std.mem.indexOfScalar(u64, seats, 0xb2) != null);
+}
+
+test "worktree: stands：cwd 取不到时，任务成员算站着、旁人不算" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    try testing.expect(try stands(testing.io, a, fx.repo, null, true));
+    try testing.expect(!(try stands(testing.io, a, fx.repo, null, false)));
+    try testing.expect(try stands(testing.io, a, fx.repo, fx.repo, false));
+}
+
+test "worktree: 手动 worktree_remove 的回执和 worktree_status 都带 ignored_extra，超过 20 条写还有多少" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    try fx.write(fx.repo, ".gitignore", "*.local\n");
+    try fx.must(fx.repo, &.{ "add", ".gitignore" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "ignore" });
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    var i: usize = 0;
+    while (i < max_listed + 5) : (i += 1) {
+        const name = try std.fmt.allocPrint(a, "n{d:0>2}.local", .{i});
+        try fx.write(e.path, name, "x\n");
+    }
+
+    const s = try statusFull(fx.git(), a, e);
+    try testing.expectEqual(@as(usize, max_listed), s.landed.?.ignored_extra.len);
+    try testing.expectEqual(@as(usize, 5), s.landed.?.ignored_more);
+    const js = try statusJson(&fx, s);
+    try testing.expectEqual(@as(usize, max_listed), js.object.get("ignored_extra").?.array.items.len);
+    try testing.expectEqual(@as(i64, 5), js.object.get("ignored_more").?.integer);
+
+    const r = try removeSel(fx.git(), a, &ledger, .{ .task = 2435 });
+    try testing.expect(r == .removed);
+    try testing.expect(std.mem.indexOf(u8, r.removed.ignored, "n00.local") != null);
+    try testing.expect(std.mem.indexOf(u8, r.removed.ignored, "and 5 more") != null);
 }
 
 test "worktree: closeout 的 Job 在私有账本上删树，真账本等 forgetGone 才跟上并落盘" {
