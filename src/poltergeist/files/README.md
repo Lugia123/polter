@@ -1,12 +1,15 @@
 # `files/` — a group's working directories, and what may be read
 
-Task 2145, plan in `polter-artifacts/2145/PLAN.md` §1. Three files so far:
+Task 2145, plan in `polter-artifacts/2145/PLAN.md` §1. Six files so far:
 
 | file | what it is |
 | --- | --- |
 | `Workdirs.zig` | which directories a group has, as one row per **real** directory (C1) |
 | `Access.zig` | may this path be read, and does it belong to this workdir (C2) |
 | `Text.zig` | what a file's bytes are, and whether they may be edited (C2) |
+| `Diff.zig` | a line diff (Myers), hunks between two lists of lines (C4) |
+| `Merge.zig` | three-way merge (diff3) into a segment table, and the choices put back into a text (C4) |
+| `Write.zig` | the one way a file is written: begin, propose, commit (C3) |
 
 Pure, and tested off the hosts: nothing here opens a window or talks to the
 app. The app gathers (`App.renderWorkdirs`) and the hosts draw.
@@ -67,3 +70,70 @@ through, and a link to `\\server\share` reaches the server as part of the same
 call (SMB authentication included) before anything here gets to answer. The
 refusals still hold — a link out is `outside` — but the call that answers has
 already made the trip. What to do about that is not decided.
+
+## Merging and writing (task 2562, C4 and C3)
+
+**Not wired to anything yet.** No MCP tool, no host and no `App` code calls
+these; `files_propose` / `files_commit` are `Write.propose` / `Write.commit`
+with a token registry in front, which is a later slice.
+
+**A text is cut at `\n` only**, so a trailing newline is a last empty line
+and `Diff.join` inverts `Diff.lines` exactly. `Write` takes one trailing
+newline off before merging and puts it back from the file's habit.
+
+**Segments**: `same` (includes "both made the identical change"),
+`mine_only`, `theirs_only`, `conflict`. Hunks that touch are one place, as in
+diff3. More than 5000 segments, or a diff past `Diff.max_edits` (3000 edited
+lines) makes the whole file one conflict, `Merged.whole_file`.
+
+**What is not closed.**
+
+1. The version check and the rename are two moments. They are closer than
+   they were (size and mtime are looked at once more just before the rename,
+   and a change there comes back as a new `Proposal`), but no lock is taken
+   here (that is C-locks): an agent that writes inside what is left loses its
+   write.
+2. A file with mixed LF/CRLF line ends is not editable (`Failure.mixed_eol`);
+   a file that *becomes* mixed while it is open cannot be saved either, and
+   the answer is the same failure.
+3. A file with several hard links is replaced, not edited in place.
+4. Only the final newline *state* is kept: an editor that adds a trailing
+   newline to a file that had none does not get it. A file whose text is
+   deleted entirely becomes empty, not a lone `\n`.
+5. `Options.restore_gone` writes with the default permissions and the habits
+   of the text editing began on, ignores `choices`, and never overwrites: a
+   file that appeared at the path meanwhile comes back as a new `Proposal`.
+6. **The directories above the file are not pinned.** `Access` checks the
+   path, and `writeAtomic` then opens its directory by that path again. If
+   someone replaces a directory *in the middle* of the path with a link out of
+   the workdir between the two, the temporary file and the rename land
+   outside. (A link in the last component is harmless: the rename replaces
+   the link itself, and the next `Access` sees it.) Closing it means taking
+   the real path of the opened directory handle and comparing it with what
+   `Access` gave; not done here.
+7. **The temporary file has a name** (16 hex digits, in the file's own
+   directory). A process that dies between making it and the rename leaves it
+   behind, and the file watch (C5) will see it.
+8. Owner, ACLs and extended attributes (Finder tags, quarantine) are not
+   carried over to the new file; the permission bits are.
+9. On Windows a target another program holds open makes the rename fail with
+   AccessDenied; the answer is `write_failed` and the file is as it was.
+10. A merge over a large file can take long and a lot of memory (`Diff`'s
+    header has the numbers: ~72 MB, hundreds of millions of comparisons at
+    the limit). It must not run on the app thread when it is wired up.
+11. A big edit that moves *both* sides far from `base` (or leaves more than
+    5000 segments) is one conflict for the whole file; a big edit where only
+    one side moved is not (`Merged.whole_file` is set either way).
+
+**Floors.** `2562 C4: both sides making the identical change is not a
+conflict` goes red (expected `.same`, found `.conflict`) when that case is
+judged a conflict; `2562 C3: the disk changing between propose and commit`
+goes red at `TestWroteOverAChangedFile` when `commit` does not look at the
+disk again; `2562 C4: a diff the search gives up on` goes red at the
+`Kind.mine_only` check when the whole-file case does not look at which side
+is `base`; `2562 C3: the link-into-place write refuses a name that is taken`
+goes red when `writeAtomic` is
+given `.replace` for a restore, and so does `2562 C3: restore, reached after
+the file was found gone, does not overwrite one made since` (at
+`TestRestoreOverwroteANewFile`), which is the one that checks `restore` itself
+chooses `.create_new`.
