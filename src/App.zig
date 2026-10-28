@@ -14561,6 +14561,7 @@ fn taskList(
         .state = @tagName(t.state),
         .progress = @tagName(t.progress),
         .kind = @tagName(t.kind),
+        .seats = try poltergeistpkg.rpc.seatViews(alloc, t, self, seatHolderAlive),
     };
     return .{ .rows = out, .more = win.more };
 }
@@ -17724,6 +17725,7 @@ test "squad: App 的读路径与 taskOwner 经过 rpc 里测过的那一处构�
         .{ .head = "\nfn taskOwner(", .call = "poltergeistpkg.rpc.ownerOf(" },
         .{ .head = "\nfn poltergeistHost(", .call = ".seatHeld = seatHolderAlive," },
         .{ .head = "\nfn seatHolderAlive(", .call = "self.stillLaunching(" },
+        .{ .head = "\nfn taskList(", .call = "poltergeistpkg.rpc.seatViews(alloc, t, self, seatHolderAlive)" },
     }) |w| {
         const code = try codeOf(alloc, w.head);
         defer alloc.free(code);

@@ -5831,7 +5831,55 @@ pub const TaskView = struct {
     /// three above it and for the same reason -- a reader that met an
     /// unfamiliar one can still show it.
     kind: []const u8,
+
+    /// The task's seats (task 2488): who was opened and which are empty.
+    /// **Always written, empty for a task with no squad**: an absent field
+    /// would leave a reader to guess whether the task has no squad or the
+    /// answer was dropped, and "no seats" is the answer here.
+    seats: []const SeatView,
 };
+
+/// One seat of a squad task, as `task_list` shows it.
+pub const SeatView = struct {
+    alias: []const u8,
+    role: []const u8,
+    /// `empty`, `filled` or `vacated` (`Tasks.Slot`), as a word.
+    slot: []const u8,
+    /// The terminal in the seat; zero unless `slot` is `filled`.
+    id: Bus.Id,
+    /// `<cli> <session prefix>`, or empty until the agent said it.
+    session: []const u8,
+    /// This seat's terminal is the task's owner.
+    lead: bool,
+    /// For a `filled` seat: an agent is connected from its terminal **or its
+    /// CLI is still starting** (`Host.seatHeld`, the rule `role_launch` and
+    /// `task_assign` refuse by). False with `slot: filled` is a seat whose
+    /// agent is gone; it is false for every other slot, where `slot` says why.
+    held: bool,
+};
+
+/// The seats of `t` as `task_list` shows them. Strings are copied: the reply
+/// is written after the panel can have changed. The one place, for the app
+/// and for the test host. A task with no squad has none.
+pub fn seatViews(
+    alloc: std.mem.Allocator,
+    t: Tasks.Task,
+    ctx: *anyopaque,
+    held: *const fn (ctx: *anyopaque, id: Bus.Id) bool,
+) std.mem.Allocator.Error![]const SeatView {
+    if (t.squad.len == 0) return &.{};
+    const out = try alloc.alloc(SeatView, t.members.len);
+    for (t.members, 0..) |m, i| out[i] = .{
+        .alias = try alloc.dupe(u8, m.alias),
+        .role = try alloc.dupe(u8, m.role),
+        .slot = @tagName(m.slot),
+        .id = m.id,
+        .session = try alloc.dupe(u8, m.session),
+        .lead = m.slot == .filled and m.id == t.owner,
+        .held = m.slot == .filled and held(ctx, m.id),
+    };
+    return out;
+}
 
 /// One thing that happened to one task, as the record wrote it down.
 ///
@@ -13595,6 +13643,7 @@ const FakeHost = struct {
             .kind = @tagName(t.kind),
             .state = @tagName(t.state),
             .progress = @tagName(t.progress),
+            .seats = try seatViews(alloc, t, self, seatHeld),
         };
         return .{ .rows = out, .more = win.more };
     }
@@ -22749,6 +22798,61 @@ test "squad: takeSeat 目标位持有者已死且排在前面、本终端占着�
     try testing.expectEqual(other, panel.get(id).?.members[0].id);
     try testing.expectEqual(Tasks.Slot.filled, panel.get(id).?.members[0].slot);
     try testing.expectEqual(worker, panel.get(id).?.members[1].id);
+}
+
+test "squad: task_list 每行带 seats——谁坐着、谁空着、谁是 lead、agent 在不在或还在启动；没有小队的任务是空数组" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test", "review" });
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{ .group = "build", .title = "alone", .kind = "other" } });
+    // dev: agent there (lead); test: its agent is gone; review: empty.
+    try panel.join(1, "dev", "", worker, "claude abcd1234", 0, true);
+    try panel.join(1, "test", "", other, "", 0, false);
+    fake.agent_absent = &.{other};
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_list = .{ .group = "build" } });
+    try testing.expect(res == .tasks);
+    var squad_row: ?TaskView = null;
+    var alone_row: ?TaskView = null;
+    for (res.tasks.rows) |r| {
+        if (r.id == 1) squad_row = r else alone_row = r;
+    }
+    const seats = squad_row.?.seats;
+    try testing.expectEqual(@as(usize, 3), seats.len);
+    try testing.expectEqualStrings("dev", seats[0].alias);
+    try testing.expectEqualStrings("filled", seats[0].slot);
+    try testing.expectEqual(worker, seats[0].id);
+    try testing.expectEqualStrings("claude abcd1234", seats[0].session);
+    try testing.expect(seats[0].lead);
+    try testing.expect(seats[0].held);
+    // Filled, but its agent is gone.
+    try testing.expectEqualStrings("filled", seats[1].slot);
+    try testing.expect(!seats[1].lead);
+    try testing.expect(!seats[1].held);
+    // Its CLI is still starting: not gone.
+    fake.launching = &.{other};
+    const again = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_list = .{ .group = "build" } });
+    for (again.tasks.rows) |r| {
+        if (r.id == 1) try testing.expect(r.seats[1].held);
+    }
+    // Empty: no terminal, not held, not the lead.
+    try testing.expectEqualStrings("review", seats[2].alias);
+    try testing.expectEqualStrings("empty", seats[2].slot);
+    try testing.expectEqual(@as(Bus.Id, 0), seats[2].id);
+    try testing.expect(!seats[2].held);
+    try testing.expect(!seats[2].lead);
+    // A task with no squad has no seats.
+    try testing.expectEqual(@as(usize, 0), alone_row.?.seats.len);
 }
 
 test "channel: chatLineOf / historyLineOf 把频道带进回复行" {

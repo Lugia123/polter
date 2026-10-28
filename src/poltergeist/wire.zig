@@ -1880,6 +1880,29 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 // and sort.
                 try s.objectField("kind");
                 try s.write(t.kind);
+
+                // Always written, `[]` for a task with no squad (task 2488).
+                try s.objectField("seats");
+                try s.beginArray();
+                for (t.seats) |seat| {
+                    try s.beginObject();
+                    try s.objectField("alias");
+                    try s.write(seat.alias);
+                    try s.objectField("role");
+                    try s.write(seat.role);
+                    try s.objectField("slot");
+                    try s.write(seat.slot);
+                    try s.objectField("terminal");
+                    try writeId(&s, seat.id);
+                    try s.objectField("session");
+                    try s.write(seat.session);
+                    try s.objectField("lead");
+                    try s.write(seat.lead);
+                    try s.objectField("held");
+                    try s.write(seat.held);
+                    try s.endObject();
+                }
+                try s.endArray();
                 try s.endObject();
             }
             try s.endArray();
@@ -3974,4 +3997,23 @@ test "1802: a terminal says whether its agent has left, and why, null included" 
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"left\":\"unknown\""));
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"left\":\"failed\""));
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"left\":null"));
+}
+
+test "squad: task_list 的每一行都写 seats，座位的字段齐全；没有小队的任务写空数组" {
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const seats = [_]rpc.SeatView{
+        .{ .alias = "dev", .role = "worker-dev", .slot = "filled", .id = 0x11, .session = "claude abcd1234", .lead = true, .held = true },
+        .{ .alias = "test", .role = "worker-test", .slot = "empty", .id = 0, .session = "", .lead = false, .held = false },
+    };
+    const rows = [_]rpc.TaskView{
+        .{ .id = 1, .title = "squad", .owner = 0x11, .state = "open", .progress = "working", .kind = "feature", .seats = &seats },
+        .{ .id = 2, .title = "alone", .owner = 0, .state = "open", .progress = "queued", .kind = "bug", .seats = &.{} },
+    };
+    try writeResponse(&w, .{ .tasks = .{ .rows = &rows } });
+    const out = w.buffered();
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, out, "\"seats\":"));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"seats\":[]"));
+    try testing.expect(std.mem.indexOf(u8, out, "\"alias\":\"dev\",\"role\":\"worker-dev\",\"slot\":\"filled\",\"terminal\":\"0x0000000000000011\",\"session\":\"claude abcd1234\",\"lead\":true,\"held\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"slot\":\"empty\",\"terminal\":\"0x0000000000000000\"") != null);
 }

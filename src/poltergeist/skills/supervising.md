@@ -105,7 +105,10 @@ you remember. Four calls before you plan anything, in this order.
 3. `task_list` on each of those groups. You are handed the whole panel — open,
    closed, cancelled, and who owns what. Anything at `done` is waiting for you
    to check it and close it; anything at `blocked` has been waiting longer
-   than that, and waiting for you specifically.
+   than that, and waiting for you specifically. A squad task's row has
+   `seats`: who sits in each seat (`terminal`, `session`, `lead`), which seats
+   are `empty`, and `held` — `slot: filled` with `held: false` is a seat whose
+   agent is gone.
 4. `terminal_list`, and `notices`. A terminal named on the panel may not be
    open any more, and the marks say which ones you still hold.
 
@@ -347,7 +350,8 @@ it had not done was make the announcement and the delivery the same act.
 
 Then `task_list(group)` hands you the whole panel — closed and cancelled work
 included, because checking the night is what you use it for. A worker asking
-gets only its own, still open.
+gets only its own, still open. For a squad task each row also lists the
+`seats` — who was opened, which are empty, which are `held`.
 
 `task_close(task)` when you have checked the work. `task_cancel(task)` calls
 one off — **and it types a line into the worker's terminal before the task
