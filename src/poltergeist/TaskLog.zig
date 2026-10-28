@@ -94,6 +94,9 @@ pub const MemberOp = enum {
     joined,
     /// A terminal's place became vacated: its terminal closed, or it left.
     left,
+    /// The terminal in a place said its session (task 2470): the line
+    /// carries the places as they now stand, session filled in.
+    session,
 };
 
 /// What a `joined` or `left` line adds: whose it was. The whole squad is on
@@ -1461,4 +1464,53 @@ test "TaskLog: 没有成员的任务写出的行里没有 members" {
     defer alloc.free(bytes);
     try testing.expect(std.mem.indexOf(u8, bytes, "members") == null);
     try testing.expect(std.mem.indexOf(u8, bytes, "joined") == null);
+}
+
+test "TaskLog: 2470 回填的 session 重放后不丢，换 session 的两段 span 也一样" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    const at: i64 = 1_700_000_000_000;
+    {
+        var tasks: Tasks = .init(alloc, .{});
+        defer tasks.deinit();
+        var l = try TaskLog.open(alloc, io, dir);
+        defer l.deinit();
+
+        const id = try tasks.create("build", "ship it", .other);
+        l.append(at, .created, tasks.get(id).?);
+        try tasks.join(id, "开发", "dev", 0x2222, "", at + 10, true);
+        l.appendMember(at + 10, .joined, tasks.get(id).?, .{ .alias = "开发", .id = 0x2222, .session = "" });
+
+        var changed: std.ArrayListUnmanaged(Tasks.TaskId) = .empty;
+        defer changed.deinit(alloc);
+        try tasks.noteSession(alloc, 0x2222, "claude-code aaaa1111", at + 20, &changed);
+        l.appendMember(at + 20, .session, tasks.get(id).?, .{ .alias = "开发", .id = 0x2222, .session = "claude-code aaaa1111" });
+        try tasks.noteSession(alloc, 0x2222, "claude-code bbbb2222", at + 30, &changed);
+        l.appendMember(at + 30, .session, tasks.get(id).?, .{ .alias = "开发", .id = 0x2222, .session = "claude-code bbbb2222" });
+    }
+
+    var again: Tasks = .init(alloc, .{});
+    defer again.deinit();
+    var l = try TaskLog.open(alloc, io, dir);
+    defer l.deinit();
+    l.restore(&again);
+
+    const t = again.get(1).?;
+    try testing.expectEqualStrings("claude-code bbbb2222", t.members[0].session);
+    try testing.expectEqual(@as(usize, 2), t.spans.len);
+    try testing.expectEqualStrings("claude-code aaaa1111", t.spans[0].session);
+    try testing.expectEqual(at + 10, t.spans[0].from_ms);
+    try testing.expectEqual(@as(?i64, at + 30), t.spans[0].to_ms);
+    try testing.expectEqualStrings("claude-code bbbb2222", t.spans[1].session);
+    try testing.expectEqual(at + 30, t.spans[1].from_ms);
+    try testing.expectEqual(@as(?i64, null), t.spans[1].to_ms);
 }

@@ -595,8 +595,75 @@ pub fn setMembers(self: *Tasks, id: TaskId, members: []const Member, at_ms: i64)
     }
     self.alloc.free(t.members);
     t.members = fresh;
+    _ = try self.syncSessions(t, at_ms);
     closeStale(t, at_ms);
     try self.reconcile(t, at_ms);
+}
+
+/// A terminal's agent has said its session (task 2470). A place is taken
+/// the moment `+launch` is typed, before the agent exists, so `join` wrote
+/// "" for it and for its stretch; this is where that is filled in, and the
+/// reclaim of a session after a restart goes through it too.
+///
+/// `session` is `<cli> <session id prefix>`, as `join` takes it. **The
+/// rule for a session that changes in the same terminal** (`/clear`,
+/// `/new`): the open stretch is ended at `at_ms` and a new one opened,
+/// because a stretch carries one session and #2436 adds tokens up by it;
+/// one stretch holding two would hand the second session's tokens to the
+/// first. A stretch whose session is still "" is not that case: nothing
+/// was attributed to it, so it is filled in place.
+///
+/// Only the open tasks, and only the places `who` holds: a terminal that
+/// is in no squad changes nothing. The ids moved are added to `changed`,
+/// in panel order, for the caller to write down.
+pub fn noteSession(
+    self: *Tasks,
+    alloc: Allocator,
+    who: Id,
+    session: []const u8,
+    at_ms: i64,
+    changed: *std.ArrayListUnmanaged(TaskId),
+) Allocator.Error!void {
+    if (who == nobody or session.len == 0) return;
+    for (self.list.items) |*t| {
+        if (t.state != .open) continue;
+        var hit = false;
+        for (t.members) |*m| {
+            if (m.slot != .filled or m.id != who) continue;
+            if (std.mem.eql(u8, m.session, session)) continue;
+            const sess = try self.alloc.dupe(u8, session);
+            self.alloc.free(m.session);
+            m.session = sess;
+            hit = true;
+        }
+        if (!hit) continue;
+        _ = try self.syncSessions(t, at_ms);
+        try self.reconcile(t, at_ms);
+        try changed.append(alloc, t.id);
+    }
+}
+
+/// Bring each filled place's open stretch to the place's session: fill a
+/// "" one in, end one that holds another session (`reconcile` opens its
+/// successor). **Replay calls this too**, so the two cannot disagree.
+fn syncSessions(self: *Tasks, t: *Task, at_ms: i64) Allocator.Error!bool {
+    var changed = false;
+    for (t.members) |m| {
+        if (m.slot != .filled or m.session.len == 0) continue;
+        for (t.spans) |*sp| {
+            if (sp.to_ms != null or sp.id != m.id or !std.mem.eql(u8, sp.alias, m.alias)) continue;
+            if (std.mem.eql(u8, sp.session, m.session)) continue;
+            if (sp.session.len == 0) {
+                const sess = try self.alloc.dupe(u8, m.session);
+                self.alloc.free(sp.session);
+                sp.session = sess;
+            } else {
+                sp.to_ms = at_ms;
+            }
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 fn holds(t: *const Task, sp: Span) bool {
@@ -1500,4 +1567,79 @@ test "squad: spans 给出 (alias, id, session, from_ms, to_ms)，open 区间 to_
     try testing.expectEqual(@as(?i64, 300), sp[0].to_ms);
     try testing.expectEqual(worker_c, sp[1].id);
     try testing.expectEqual(@as(?i64, null), sp[1].to_ms);
+}
+
+test "squad: 2470 noteSession 回填 join 时为空的 session，成员和 span 都有值" {
+    var t = testTasks();
+    defer t.deinit();
+    const id = try t.create("build", "ship it", .other);
+    try t.join(id, "开发", "dev", worker_b, "", 100, false);
+    try testing.expectEqualStrings("", t.get(id).?.members[0].session);
+
+    var changed: std.ArrayListUnmanaged(TaskId) = .empty;
+    defer changed.deinit(testing.allocator);
+    try t.noteSession(testing.allocator, worker_b, "claude-code aaaa1111", 200, &changed);
+    try testing.expectEqual(@as(usize, 1), changed.items.len);
+    const task = t.get(id).?;
+    try testing.expectEqualStrings("claude-code aaaa1111", task.members[0].session);
+    try testing.expectEqual(@as(usize, 1), task.spans.len);
+    try testing.expectEqualStrings("claude-code aaaa1111", task.spans[0].session);
+    try testing.expectEqual(@as(i64, 100), task.spans[0].from_ms);
+    try testing.expectEqual(@as(?i64, null), task.spans[0].to_ms);
+
+    // The same session again is no news.
+    changed.clearRetainingCapacity();
+    try t.noteSession(testing.allocator, worker_b, "claude-code aaaa1111", 300, &changed);
+    try testing.expectEqual(@as(usize, 0), changed.items.len);
+    try testing.expectEqual(@as(usize, 1), t.get(id).?.spans.len);
+}
+
+test "squad: 2470 同一终端换 session：旧 span 在 at_ms 关掉，另开一段新的" {
+    var t = testTasks();
+    defer t.deinit();
+    const id = try t.create("build", "ship it", .other);
+    try t.join(id, "开发", "dev", worker_b, "claude-code aaaa1111", 100, false);
+
+    var changed: std.ArrayListUnmanaged(TaskId) = .empty;
+    defer changed.deinit(testing.allocator);
+    try t.noteSession(testing.allocator, worker_b, "claude-code bbbb2222", 500, &changed);
+    const task = t.get(id).?;
+    try testing.expectEqualStrings("claude-code bbbb2222", task.members[0].session);
+    try testing.expectEqual(@as(usize, 2), task.spans.len);
+    try testing.expectEqualStrings("claude-code aaaa1111", task.spans[0].session);
+    try testing.expectEqual(@as(?i64, 500), task.spans[0].to_ms);
+    try testing.expectEqualStrings("claude-code bbbb2222", task.spans[1].session);
+    try testing.expectEqual(@as(i64, 500), task.spans[1].from_ms);
+    try testing.expectEqual(@as(?i64, null), task.spans[1].to_ms);
+}
+
+test "squad: 2470 不是成员的终端调 noteSession，什么都不改" {
+    var t = testTasks();
+    defer t.deinit();
+    const id = try t.create("build", "ship it", .other);
+    try t.join(id, "开发", "dev", worker_b, "", 100, false);
+
+    var changed: std.ArrayListUnmanaged(TaskId) = .empty;
+    defer changed.deinit(testing.allocator);
+    try t.noteSession(testing.allocator, worker_c, "claude-code cccc3333", 200, &changed);
+    try testing.expectEqual(@as(usize, 0), changed.items.len);
+    const task = t.get(id).?;
+    try testing.expectEqualStrings("", task.members[0].session);
+    try testing.expectEqualStrings("", task.spans[0].session);
+    try testing.expectEqual(@as(usize, 1), task.spans.len);
+}
+
+test "squad: 2470 join 时终端已知 session（先 join 空串再立刻回填），成员和 span 都有值" {
+    var t = testTasks();
+    defer t.deinit();
+    const id = try t.create("build", "ship it", .other);
+    // What `App.taskJoin` does for an agent that is already running.
+    try t.join(id, "开发", "dev", worker_b, "", 100, false);
+    var changed: std.ArrayListUnmanaged(TaskId) = .empty;
+    defer changed.deinit(testing.allocator);
+    try t.noteSession(testing.allocator, worker_b, "claude-code aaaa1111", 100, &changed);
+    const task = t.get(id).?;
+    try testing.expectEqualStrings("claude-code aaaa1111", task.members[0].session);
+    try testing.expectEqual(@as(usize, 1), task.spans.len);
+    try testing.expectEqualStrings("claude-code aaaa1111", task.spans[0].session);
 }

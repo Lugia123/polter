@@ -13568,6 +13568,13 @@ fn taskJoin(ctx: *anyopaque, task: u64, alias: []const u8, id: poltergeistpkg.Bu
     const self: *App = @ptrCast(@alignCast(ctx));
     try self.tasks.join(task, alias, "", id, "", self.taskWallMs(), lead);
     self.logSeat(.joined, task, alias, id);
+    // An agent already running has said its session long ago, and will only
+    // repeat it: `noteSession` calls that no news and never gets here (task
+    // 2470). So what the bus already knows is taken now.
+    const agent = self.poltergeist.agentOf(id);
+    if (agent.cli.get()) |cli| {
+        if (agent.session_id.get()) |sid| self.backfillMemberSession(id, cli, sid);
+    }
     self.controlRoomTouch();
 }
 
@@ -14643,11 +14650,37 @@ fn noteSession(self: *App, id: poltergeistpkg.Bus.Id, cli: []const u8, sid: []co
     // one place every agent that says its session goes through.
     self.resource_sessions.note(self.alloc, id, cli, sid);
     self.reclaimSession(id, cli, sid);
+    self.backfillMemberSession(id, cli, sid);
     const l = if (self.session_log) |*v| v else return;
     var it = self.chat.groups.iterator();
     while (it.next()) |kv| {
         if (!self.chat.isMember(kv.key_ptr.*, id)) continue;
         l.agent(kv.key_ptr.*, at, id, .{ .cli = cli, .launcher = self.poltergeist.agentOf(id).launcher.get() orelse "", .session_id = sid, .transcript_path = path });
+    }
+}
+
+/// The agent in `id` has said its session: the places it holds in a squad,
+/// and their open stretches, were written with "" when it took them, before
+/// the agent existed (task 2470). After `reclaimSession`, so a place handed
+/// to this terminal by a reclaim is filled in the same breath.
+fn backfillMemberSession(self: *App, id: poltergeistpkg.Bus.Id, cli: []const u8, sid: []const u8) void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var via_buf: [96]u8 = undefined;
+    const via = poltergeistpkg.TaskLog.viaText(&via_buf, cli, sid);
+    const at = self.taskWallMs();
+    var changed: std.ArrayListUnmanaged(poltergeistpkg.Tasks.TaskId) = .empty;
+    self.tasks.noteSession(a, id, via, at, &changed) catch return;
+    if (changed.items.len > 0) self.controlRoomTouch();
+    // Written with the same `at` the spans were moved at, so a replay ends
+    // and opens them at the same moment.
+    const l = if (self.task_log) |*v| v else return;
+    for (changed.items) |task| {
+        const t = self.tasks.get(task) orelse continue;
+        for (t.members) |m| {
+            if (m.slot == .filled and m.id == id) l.appendMember(at, .session, t, .{ .alias = m.alias, .id = id, .session = via });
+        }
     }
 }
 
