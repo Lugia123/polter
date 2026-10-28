@@ -79,6 +79,8 @@ pub const Launchers = @import("Launchers.zig");
 pub const official = @import("official.zig");
 pub const PersonaStore = @import("PersonaStore.zig");
 pub const PersonaWaits = @import("PersonaWaits.zig");
+pub const squad = @import("squad.zig");
+pub const SquadStore = @import("SquadStore.zig");
 pub const screenshot = @import("screenshot.zig");
 pub const reap = @import("reap.zig");
 pub const report = @import("report.zig");
@@ -184,6 +186,8 @@ test {
     _ = Launchers;
     _ = PersonaStore;
     _ = PersonaWaits;
+    _ = squad;
+    _ = SquadStore;
     _ = Plugin;
     _ = agent_cli;
     _ = Identities;

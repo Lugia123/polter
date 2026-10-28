@@ -64,6 +64,11 @@ personas: poltergeistpkg.PersonaStore,
 /// the distinction the whole `stale` field exists for.
 personas_attempted: bool = false,
 
+/// The squad templates (`squads.json`, task 2449), read the first time
+/// anything asks, for the reason `personas` is.
+squads: poltergeistpkg.SquadStore,
+squads_attempted: bool = false,
+
 /// What each agent CLI on this machine has installed, as its adapter plugin
 /// reports it. Filled on a thread of its own; see `agent_cli.Cache`.
 poltergeist_agent_clis: poltergeistpkg.agent_cli.Cache,
@@ -828,6 +833,7 @@ pub fn init(
         .config_conditional_state = .{},
         .poltergeist = .init(alloc, .{}),
         .personas = .{ .alloc = alloc },
+        .squads = .{ .alloc = alloc },
         .poltergeist_agent_clis = .init(alloc),
         .identities = .init(alloc),
         .poltergeist_persona_waits = .{ .alloc = alloc, .io = global.io() },
@@ -978,6 +984,7 @@ pub fn deinit(self: *App) void {
     self.tasks.deinit();
     self.poltergeist.deinit();
     self.personas.deinit();
+    self.squads.deinit();
     self.poltergeist_agent_clis.deinit(global.io());
     self.poltergeist_persona_waits.deinit();
     self.mention_retries.deinit();
@@ -11767,6 +11774,52 @@ pub fn ensurePersonas(self: *App) void {
     defer self.alloc.free(path);
 
     self.personas.load(global.io(), path);
+}
+
+pub fn ensureSquads(self: *App) void {
+    if (self.squads_attempted) return;
+    self.squads_attempted = true;
+
+    const path = poltergeistpkg.SquadStore.defaultPath(self.alloc) catch |err| {
+        log.warn("poltergeist: could not work out where squads.json lives err={}", .{err});
+        return;
+    };
+    defer self.alloc.free(path);
+
+    self.squads.load(global.io(), path);
+}
+
+/// The library as `squad.statusOf` wants it: null when `personas.json` is
+/// not readable, which is not the same as having no roles.
+fn squadRoles(self: *App) ?poltergeistpkg.persona.Set {
+    self.ensurePersonas();
+    if (self.personas.load_error != null or !self.personas.loaded) return null;
+    return self.personas.set;
+}
+
+/// Every squad template, as JSON (`SquadStore.writeCatalogJson`).
+pub fn squadCatalogJson(self: *App, alloc: Allocator) ![]u8 {
+    self.ensureSquads();
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    try self.squads.writeCatalogJson(&out.writer, self.squadRoles());
+    return try out.toOwnedSlice();
+}
+
+/// Write one template. The window (`who` = user) and `squad_put`
+/// (`who` = supervisor) both come here; `SquadStore.put` is the one writer.
+pub fn putSquad(self: *App, json: []const u8, who: poltergeistpkg.Bus.Authority) !void {
+    self.ensureSquads();
+    const path = try poltergeistpkg.SquadStore.defaultPath(self.alloc);
+    defer self.alloc.free(path);
+    try self.squads.put(global.io(), path, json, self.squadRoles(), who);
+}
+
+pub fn deleteSquad(self: *App, key: []const u8, who: poltergeistpkg.Bus.Authority) !void {
+    self.ensureSquads();
+    const path = try poltergeistpkg.SquadStore.defaultPath(self.alloc);
+    defer self.alloc.free(path);
+    try self.squads.remove(global.io(), path, key, who);
 }
 
 /// Re-render the configuration as text.

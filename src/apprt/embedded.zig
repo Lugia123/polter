@@ -2321,6 +2321,56 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// Every squad template, as JSON (`SquadStore.writeCatalogJson`). Same
+    /// buffer rule as `ghostty_app_persona_catalog`. The host binding is
+    /// slice S6; nothing calls this yet.
+    export fn ghostty_app_squad_catalog(
+        app: *App,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        const core = app.core_app;
+        const json = core.squadCatalogJson(core.alloc) catch
+            return copyJsonOut(squad_catalog_fallback, buf, cap);
+        defer core.alloc.free(json);
+        return copyJsonOut(json, buf, cap);
+    }
+
+    const squad_catalog_fallback =
+        \\{"loaded":false,"error":"the squad templates could not be rendered","squads":[]}
+    ;
+
+    /// Add or replace one template (`json` is one squad object). The
+    /// library window: the user, who may make any. False, with the
+    /// reason's name in `err`, when it was not written.
+    export fn ghostty_app_squad_put(
+        app: *App,
+        json: [*]const u8,
+        len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.putSquad(json[0..len], .user) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
+    export fn ghostty_app_squad_delete(
+        app: *App,
+        key: [*]const u8,
+        len: usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) bool {
+        app.core_app.deleteSquad(key[0..len], .user) catch |e| {
+            copyErrorOut(e, err, cap);
+            return false;
+        };
+        return true;
+    }
+
     /// The Agent CLI page (task 2156): `App.settingsLaunchersJson`, values
     /// and all -- for the settings form, which is the one place they are
     /// shown. Same buffer rule as `ghostty_app_persona_catalog`.

@@ -207,9 +207,21 @@ pub fn defaultPath(alloc: Allocator) ![]const u8 {
 
 /// `defaultPath` against the environment given.
 pub fn pathIn(alloc: Allocator, environ_map: *const std.process.Environ.Map) ![]const u8 {
+    return try pathBeside(alloc, environ_map, "personas.json");
+}
+
+/// The file called `name` in the directory `personas.json` lives in, by
+/// every rule `defaultPath` states -- `GHOSTTY_CONFIG_PATH` included. One
+/// function for every file that sits beside the roles (`squads.json`), so a
+/// test instance isolated by that variable is isolated for all of them.
+pub fn pathBeside(
+    alloc: Allocator,
+    environ_map: *const std.process.Environ.Map,
+    comptime name: []const u8,
+) ![]const u8 {
     if (comptime builtin.os.tag == .macos) {
-        if (try besideConfigOverride(alloc, environ_map.get("GHOSTTY_CONFIG_PATH"))) |p| return p;
-        if (internal_os.macos.appSupportDir(alloc, "personas.json")) |p| {
+        if (try besideConfigOverride(alloc, environ_map.get("GHOSTTY_CONFIG_PATH"), name)) |p| return p;
+        if (internal_os.macos.appSupportDir(alloc, name)) |p| {
             return p;
         } else |_| {}
     }
@@ -218,17 +230,17 @@ pub fn pathIn(alloc: Allocator, environ_map: *const std.process.Environ.Map) ![]
         global.io(),
         alloc,
         environ_map,
-        .{ .subdir = "polter/personas.json" },
+        .{ .subdir = "polter/" ++ name },
     );
 }
 
-/// `personas.json` in the directory of the config file the mac app was
-/// told to load instead of the default ones; null when it was not told.
-fn besideConfigOverride(alloc: Allocator, override: ?[]const u8) Allocator.Error!?[]const u8 {
+/// `name` in the directory of the config file the mac app was told to load
+/// instead of the default ones; null when it was not told.
+fn besideConfigOverride(alloc: Allocator, override: ?[]const u8, name: []const u8) Allocator.Error!?[]const u8 {
     const config_path = override orelse return null;
     if (config_path.len == 0) return null;
     const dir = std.fs.path.dirname(config_path) orelse ".";
-    return try std.fs.path.join(alloc, &.{ dir, "personas.json" });
+    return try std.fs.path.join(alloc, &.{ dir, name });
 }
 
 /// Longest `personas.json` we will read. A persona file is a handful of

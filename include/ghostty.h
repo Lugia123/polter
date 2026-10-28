@@ -1817,6 +1817,11 @@ GHOSTTY_API uintptr_t ghostty_app_notification_group(ghostty_app_t, uint64_t, ch
 GHOSTTY_API uintptr_t ghostty_app_persona_catalog(ghostty_app_t, char*, uintptr_t);
 GHOSTTY_API bool ghostty_app_persona_put(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 GHOSTTY_API bool ghostty_app_persona_delete(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+// The squad templates (task 2449, squads slice S3): the same three calls and
+// the same buffer rules as the role library above. Host bindings come with S6.
+GHOSTTY_API uintptr_t ghostty_app_squad_catalog(ghostty_app_t, char*, uintptr_t);
+GHOSTTY_API bool ghostty_app_squad_put(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+GHOSTTY_API bool ghostty_app_squad_delete(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 // The Agent CLI page (task 2156): the presets, every role, and launchers.json
 // -- values and all, for the settings form alone. _put takes one launcher
 // object -- the roles it is on for are kept as they are, the role
