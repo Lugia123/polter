@@ -5298,12 +5298,17 @@ fn notePoltergeistAgentsHere(self: *App) void {
         }
         const id = kv.key_ptr.*;
         const here = self.agentPresent(id);
+        const was_here = kv.value_ptr.agent_here == true;
         const pid: ?u64 = if (!here) null else if (self.poltergeist_server) |*srv| srv.agentPid(id) else null;
         const program: ?poltergeistpkg.Bus.Program = if (pid) |p| .{
             .pid = p,
             .started = if (poltergeistpkg.process_info.of(p)) |info| info.started else null,
         } else null;
         self.poltergeist.noteAgentHere(id, here, program, now_ms);
+        // An agent that has come to this terminal starts its quiet now
+        // (task 2411): an agent that went and came back between two of the
+        // clock's looks must not carry its old silence with it.
+        if (here and !was_here) self.noteHeard(id);
     }
     // A connection gone while its program runs (task 1668, #83).
     _ = self.poltergeist.considerLinks(now_ms, self, poltergeistProgramRuns);
@@ -13424,6 +13429,10 @@ fn saveAlarms(self: *App) void {
 /// supervisor was replaced has a `created_by` that is not one any more, and
 /// after a restart the creating terminal is gone while the group and its
 /// alarms are not -- which is the case alarms are kept by group *for*.
+///
+/// **This writes `heard`** (task 2411), through `Alarms.observeGroup`: a
+/// minding supervisor whose agent is here is observed at `now`, and one
+/// whose agent is not here is forgotten. Not a read.
 fn quietIn(
     self: *App,
     arena: Allocator,
@@ -13432,29 +13441,21 @@ fn quietIn(
     wall: i64,
 ) ?poltergeistpkg.Alarms.Quiet {
     const al = self.alarmsHeld();
-    const members = self.chat.membersOf(arena, group) catch return null;
-
-    // Those of the members that mind the group (`ControlRoom.minds`): a
-    // supervisor whose agent has left holds a terminal nobody is listening
-    // in, and a line typed there reaches nobody.
-    var minding: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
-    for (members) |id| {
-        if (id == poltergeistpkg.Chat.user_id) continue;
-        if (self.poltergeist.isSupervisor(id) and !self.poltergeist.agentHasLeft(id)) {
-            // `catch return null`, not `try`: this function's answer is
-            // optional (a group that cannot be read is one with nothing to
-            // say), and appending to an arena that is out of memory is the
-            // same "cannot say" -- a caller is a clock, and a clock that
-            // cannot be computed is a moment not armed, never a failure of
-            // the tick.
-            minding.append(arena, id) catch return null;
-        }
-    }
+    // Writes `heard` (task 2411): a minding supervisor whose agent is here
+    // starts its quiet at the moment it is first seen here, and one whose
+    // agent is not here is forgotten, so its quiet starts again on arrival.
+    // Those of the members that mind the group (`ControlRoom.minds`) are
+    // worked out in `Alarms.observeGroup`: a supervisor whose agent has left
+    // holds a terminal nobody is listening in.
+    const found = al.observeGroup(arena, &self.poltergeist, &self.chat, group, now, .{
+        .ctx = self,
+        .here = presenceIn,
+    }) orelse return null;
 
     var q: poltergeistpkg.Alarms.Quiet = .{
         .created_by = self.chat.createdBy(group) catch poltergeistpkg.Chat.user_id,
-        .members = members,
-        .minding = minding.items,
+        .members = found.members,
+        .minding = found.minding,
         .unfinished = self.unfinishedIn(group),
         // Filled in below, from whichever terminal the rule picks: it is
         // the chosen one's agent and quiet that decide anything.
@@ -15324,6 +15325,12 @@ fn owedTellTry(self: *App, id: poltergeistpkg.Bus.Id, line: []const u8) polterge
 pub fn agentPresent(self: *App, id: poltergeistpkg.Bus.Id) bool {
     if (self.poltergeist_server) |*srv| return srv.agentPresent(id);
     return false;
+}
+
+/// `agentPresent` as `Alarms.Presence` asks it (task 2411).
+fn presenceIn(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.agentPresent(id);
 }
 
 /// Pick how a line reaches a terminal: typed at whatever is running there,

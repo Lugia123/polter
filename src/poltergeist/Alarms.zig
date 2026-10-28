@@ -238,6 +238,75 @@ pub fn quietOf(self: *const Alarms, id: u64, now_ms: u64) u64 {
     return now_ms -| (self.heard.get(id) orelse self.started_ms);
 }
 
+/// An agent that is here at `now_ms` starts its terminal's quiet there, if
+/// the table does not already say when it arrived (task 2411): a terminal
+/// that connects long after Polter started must not inherit `started_ms`
+/// as its silence. Only an entry not yet made is written; one already there
+/// keeps its own time.
+pub fn observe(self: *Alarms, id: u64, now_ms: u64) void {
+    if (self.heard.contains(id)) return;
+    self.heard.put(self.alloc, id, now_ms) catch {};
+}
+
+/// The agent in `id` has gone: its quiet is not its old one when it comes
+/// back (task 2411). Dropping the entry is what makes the next arrival
+/// start from its own moment.
+pub fn forget(self: *Alarms, id: u64) void {
+    _ = self.heard.remove(id);
+}
+
+/// What `observeGroup` asks of the host: whether the agent in terminal
+/// `id` is here now (`App.agentPresent`). A function and not a `Server`, so
+/// the tests can say who is here.
+pub const Presence = struct {
+    ctx: *anyopaque,
+    here: *const fn (ctx: *anyopaque, id: Id) bool,
+};
+
+/// What a group's quiet is worked out from, as `App.quietIn` reads it.
+pub const Minding = struct {
+    members: []const Id,
+    minding: []const Id,
+};
+
+/// The group's members that mind it, and the quiet clock of each one whose
+/// agent is here (task 2411): a minding supervisor whose agent is here is
+/// observed at `now_ms`, so its quiet starts from when it was first seen
+/// here; one whose agent is not here is forgotten, so that when it arrives
+/// the quiet starts again. A supervisor whose agent has left is not minding
+/// and is left alone, as before. Null when the group cannot be read.
+///
+/// `App.quietIn` calls this, and `App.notePoltergeistAgentsHere` writes the
+/// arrival moment itself (`noteHeard`), because a connection can come and go
+/// between two of these calls.
+pub fn observeGroup(
+    self: *Alarms,
+    arena: Allocator,
+    bus: *const Bus,
+    chat: *const Chat,
+    group: []const u8,
+    now_ms: u64,
+    present: Presence,
+) ?Minding {
+    const members = chat.membersOf(arena, group) catch return null;
+    var minding: std.ArrayListUnmanaged(Id) = .empty;
+    for (members) |id| {
+        if (id == Chat.user_id) continue;
+        if (!bus.isSupervisor(id)) continue;
+        // One whose agent has left is not minding, and its quiet goes with
+        // it: when its next agent comes, the quiet starts from that moment.
+        if (bus.agentHasLeft(id)) {
+            self.forget(id);
+            continue;
+        }
+        // `catch return null`: a clock that cannot be computed is a moment
+        // not armed, never a failure of the tick (as `quietIn` always was).
+        minding.append(arena, id) catch return null;
+        if (present.here(present.ctx, id)) self.observe(id, now_ms) else self.forget(id);
+    }
+    return .{ .members = members, .minding = minding.items };
+}
+
 /// Drop every terminal we have heard from that is no longer here.
 ///
 /// **The table only ever grows otherwise**: its keys are terminal ids, one

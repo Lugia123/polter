@@ -5247,6 +5247,109 @@ test "2148: the alarm's rule for a group's supervisor is this file's rule, case 
     try testing.expectEqual(@as(?Id, null), Alarms.supervisorOfGroup(a, &w.bus, &w.chat, "plain"));
 }
 
+/// Who has an agent here, for `Alarms.observeGroup` (task 2411): everyone
+/// does unless named in `absent`.
+const PresenceFake = struct {
+    absent: []const Id = &.{},
+
+    fn here(ctx: *anyopaque, id: Id) bool {
+        const self: *PresenceFake = @ptrCast(@alignCast(ctx));
+        return std.mem.indexOfScalar(Id, self.absent, id) == null;
+    }
+
+    fn presence(self: *PresenceFake) Alarms.Presence {
+        return .{ .ctx = self, .here = here };
+    }
+};
+
+/// Whether a reminder is said for supervisor `id` at `now`, the way
+/// `App.quietIn` builds its `Quiet` from what `observeGroup` returned.
+fn remindsAt(al: *const Alarms, found: Alarms.Minding, id: Id, now: u64, here: bool, after: u64) bool {
+    const q: Alarms.Quiet = .{
+        .created_by = id,
+        .members = found.members,
+        .minding = found.minding,
+        .unfinished = 1,
+        .agent_here = here,
+        .alarm_pending = false,
+        .since_heard_ms = al.quietOf(id, now),
+        .after_ms = after,
+    };
+    return Alarms.plan(q, now, Alarms.waiting_recheck_ms).say;
+}
+
+test "2411: a quiet starts when the agent comes, not when Polter started" {
+    // ⚠️ **The path is `observeGroup`, the one `App.quietIn` calls**, on the
+    // real `Bus` and `Chat`: no test here writes `heard` by hand.
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var al: Alarms = .init(testing.allocator);
+    defer al.deinit();
+    const after = 15 * min;
+    // Polter started 44 hours before the supervisor below connects.
+    al.started_ms = 1_000;
+    const connected = 44 * 60 * min;
+    var fake: PresenceFake = .{};
+
+    // (1) A supervisor that connects long after Polter started: its quiet is
+    //     0 at connection, not the whole 44 hours since `started_ms`.
+    try w.steward(0xa1, "boss", 0x21, "own");
+    // Its agent is seen on the bus too, with its hooks live, so that when the
+    // connection goes later the bus knows it has left (as in 1762's test).
+    try w.hook(0xa1, .turn_started, null, 100);
+    w.bus.noteAgentHere(0xa1, true, .{ .pid = 9, .started = 1 }, 200);
+    var found = al.observeGroup(a, &w.bus, &w.chat, "own", connected, fake.presence()) orelse
+        return error.TestExpectedMinding;
+    try testing.expectEqual(@as(usize, 1), found.minding.len);
+    try testing.expectEqual(@as(u64, 0), al.quietOf(0xa1, connected));
+    try testing.expect(!remindsAt(&al, found, 0xa1, connected, true, after));
+    try testing.expect(!remindsAt(&al, found, 0xa1, connected + after - 1, true, after));
+    try testing.expect(remindsAt(&al, found, 0xa1, connected + after, true, after));
+
+    // (2) Its agent leaves an hour later, for real on the bus (the connection
+    //     gone and past its grace), and comes back an hour after that by its
+    //     next hook: the quiet is the new arrival's, not the old one's.
+    const left = connected + 60 * min;
+    w.bus.noteAgentHere(0xa1, false, null, left);
+    var ctx: u8 = 0;
+    _ = w.bus.considerLinks(left + Bus.link_grace_ms, &ctx, noRuns);
+    fake.absent = &[_]Id{0xa1};
+    found = al.observeGroup(a, &w.bus, &w.chat, "own", left + Bus.link_grace_ms, fake.presence()) orelse
+        return error.TestExpectedMinding;
+    try testing.expectEqual(@as(usize, 0), found.minding.len);
+    try testing.expect(!remindsAt(&al, found, 0xa1, left + 2 * after, false, after));
+    const back = connected + 120 * min;
+    try w.hook(0xa1, .session_started, null, back);
+    fake.absent = &.{};
+    found = al.observeGroup(a, &w.bus, &w.chat, "own", back, fake.presence()) orelse
+        return error.TestExpectedMinding;
+    try testing.expectEqual(@as(usize, 1), found.minding.len);
+    try testing.expectEqual(@as(u64, 0), al.quietOf(0xa1, back));
+    try testing.expect(!remindsAt(&al, found, 0xa1, back + after - 1, true, after));
+    try testing.expect(remindsAt(&al, found, 0xa1, back + after, true, after));
+
+    // (3) A supervisor whose role is in place but whose agent has not come:
+    //     no reminder is said, and when the agent does come, the quiet starts
+    //     at that moment.
+    try w.steward(0xa2, "later", 0x22, "later");
+    fake.absent = &[_]Id{0xa2};
+    const not_yet = connected + 180 * min;
+    found = al.observeGroup(a, &w.bus, &w.chat, "later", not_yet, fake.presence()) orelse
+        return error.TestExpectedMinding;
+    try testing.expectEqual(@as(usize, 1), found.minding.len);
+    try testing.expect(!remindsAt(&al, found, 0xa2, not_yet + 10 * after, false, after));
+    const arrived = not_yet + 10 * after;
+    fake.absent = &.{};
+    found = al.observeGroup(a, &w.bus, &w.chat, "later", arrived, fake.presence()) orelse
+        return error.TestExpectedMinding;
+    try testing.expectEqual(@as(u64, 0), al.quietOf(0xa2, arrived));
+    try testing.expect(!remindsAt(&al, found, 0xa2, arrived + after - 1, true, after));
+    try testing.expect(remindsAt(&al, found, 0xa2, arrived + after, true, after));
+}
+
 test "1762: a supervisor whose agent has left minds nothing, so one can be started; back with its next hook" {
     var w: World = .init();
     defer w.deinit();
