@@ -66,12 +66,13 @@ const instructions =
     "A task can carry a squad: the workers for that one task, who break up when it\\n" ++
     "closes. squad_list shows the templates; task_create with `squad` and `members`\\n" ++
     "plans the seats this task needs (nothing is opened), and role_launch with `task`\\n" ++
-    "and `member` opens them one by one, in the task's own worktree. Do not make a\\n" ++
+    "and `member` opens them one by one, in the task's own worktree when it has one. Do not make a\\n" ++
     "template when an existing one fits. A supervisor cannot be a member. Members\\n" ++
     "talk in the task's channel (group_post), which keeps one squad's talk out of\\n" ++
     "another's context -- it is not secret; only the supervisor is woken by it. Only\\n" ++
     "the lead writes the task's progress. task_close closes the idle members and\\n" ++
-    "deals with the worktree.\\n" ++
+    "deals with the worktree. Hand a member its work with terminal_send, or group_post naming\\n" ++
+    "it in `mention`: task_assign only says the seat is that terminal's.\\n" ++
     "\\n" ++
     "me says who you are and what you may reach. skill_read has the full guidance,\\n" ++
     "in three parts: supervising, operating-a-terminal, reading-a-terminal.\\n" ++
@@ -1198,7 +1199,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "group_history",
-        .description = "Read further back in a group than it still holds, out of the log on disk. `group_read` hands you what is current; this hands you what came before it -- including everything a `group_compact` replaced, which is gone from the group itself but never from the record. Page with `log_seq`: pass the smallest one you have seen as `before_seq` and you get the batch before that. `more: false` means you have reached the beginning of what was kept. The per-group `seq` is 0 here -- the log does not record it. **Prefer `match` and the two clocks to paging.** Reading a night back one screenful at a time to find one sentence spends exactly the context a compaction was meant to save: `match` is a substring of the message text with ASCII case ignored, `since_ms` and `until_ms` bound it by wall clock (since includes its instant, until excludes it). They compose, and a day outside the range is not even opened.",
+        .description = "Read further back in a group than it still holds, out of the log on disk. `group_read` hands you what is current; this hands you what came before it -- including everything a `group_compact` replaced, which is gone from the group itself but never from the record. Page with `log_seq`: pass the smallest one you have seen as `before_seq` and you get the batch before that. `more: false` means you have reached the beginning of what was kept. The per-group `seq` is 0 here -- the log does not record it. **Prefer `match` and the two clocks to paging.** Reading a night back one screenful at a time to find one sentence spends exactly the context a compaction was meant to save: `match` is a substring of the message text with ASCII case ignored, `since_ms` and `until_ms` bound it by wall clock (since includes its instant, until excludes it). They compose, and a day outside the range is not even opened. **It shows what `group_read` would**: the public channel and the channels of your tasks, each line with its `channel`; and a compaction summary is not shown to a member who joined without the history it recaps.",
         .schema =
         \\{"type":"object","properties":{"group":{"type":"string"},"before_seq":{"type":"integer"},"limit":{"type":"integer"},"since_ms":{"type":"integer","description":"Wall-clock ms; only messages at or after this"},"until_ms":{"type":"integer","description":"Wall-clock ms; only messages before this"},"match":{"type":"string","description":"Substring of the message text, ASCII case ignored"}},"required":["group"]}
         ,
@@ -1615,7 +1616,7 @@ const tools = [_]Tool{
             "are the squad's where the squad changed them, and the reply's `note` says what " ++
             "came from the squad and what a changed CLI left behind. The terminal takes the " ++
             "seat once it exists. A seat that has a live agent in it is MemberTaken and " ++
-            "nothing is opened; a supervisor role or a supervising terminal is " ++
+            "nothing is opened (so is an `in` terminal that already holds another seat of the task); a refused launch leaves the panel as it was; a seat the template has but the task was made without is made once the terminal is open; `place: auto` passes over a pane whose agent has gone but which still holds another seat of the task (`passed_over`, `why: holds_seat`); if the terminal is started and the panel then refuses it the seat, the group says so; a supervisor role or a supervising terminal is " ++
             "SupervisorNotAllowed. **With `task`, `cwd` left out starts the terminal in the task's worktree** (task_create's `worktree`): the first seat started makes it, off the app's thread -- the call may take a while on a large repository -- and every later seat goes into the same one; the reply's `worktree` says which (`used`, with `task` and `reused`). A `cwd` inside the tree is used as given. A `cwd` elsewhere in the same repository -- its main checkout, another task's tree -- is refused CwdOutsideTaskTree, and nothing is opened; a `cwd` in another repository is allowed, and `worktree.note` says the terminal is not in the tree. A task whose directory turns out not to be in a git repository becomes `worktree: none`, and the reply says the terminal is not isolated. Not with `in` (which starts the role where that terminal already is) or `worktree` (a tree of your own naming). Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"key":{"type":"string","description":"The role. Left out only with task and member."},"task":{"type":"integer","description":"With member: a seat of this task's squad."},"member":{"type":"string","description":"The seat's alias. The role, and what the squad changes in it, come from the seat."},"group":{"type":"string","description":"The group the worker is put in; left out, the one you supervise."},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."},"beside":{"type":"string","description":"The id of a terminal whose tab the new one goes in, as a new pane -- never a new tab. Not with in or place."},"worktree":{"type":"string","description":"As terminal_open's: the role's terminal opens in that git worktree, made if needed. Not with in."},"limits":{"type":"object","description":"Resource lines for the worker, as terminal_limits sets them."}},"additionalProperties":false}
@@ -1930,7 +1931,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "task_assign",
-        .description = "Say which terminal is doing a task. **A line is typed into that terminal saying the task is theirs, and only then does the panel record it** -- an assignment nobody was told about is one only you can see, and the group cannot carry it because a terminal you are minding is not woken by a post. **Read the reply**: it says whether the terminal was actually told, and if it could not be, nothing was assigned. The line names the task and tells the worker to report with task_progress when it finishes or gets stuck; **what the work is is still yours to send**, because the acceptance test is the part that cannot be generated. Pass id 0 to take it back off somebody without cancelling it; there is nobody to tell, so nothing is typed. **With `alias` it is a seat of the task's squad** that is filled or emptied (the seat holding a live agent is MemberTaken; a terminal holds one seat of a task); without `alias` it sets the task's lead, the seat task_create describes. **`fresh: true` clears the worker's context first** (off by default -- a worker reviewing the same change twice needs what it said the first time): `/clear` is typed, and the task line follows once the CLI reports a new session, at most 10s later; the reply says `cleared: confirmed` or `cleared: unconfirmed`, and the line tells the worker which group to group_read. Codex says it has cleared only when its next turn starts, which is the turn the task line starts, so for codex the line follows two seconds after `/clear` and the reply says `cleared: pending` (terminal_list shows its new session_id once that turn begins). Only for claude-code and codex with hooks, at the prompt: in a turn or at a permission box it refuses `AgentBusy`, another CLI `FreshUnsupported`, and nothing is typed or assigned. Supervisor only.",
+        .description = "Say which terminal is doing a task. **A line is typed into that terminal saying the task is theirs, and only then does the panel record it** -- an assignment nobody was told about is one only you can see, and the group cannot carry it because a terminal you are minding is not woken by a post. **Read the reply**: it says whether the terminal was actually told, and if it could not be, nothing was assigned. The line names the task and tells the worker to report with task_progress when it finishes or gets stuck; **what the work is is still yours to send**, because the acceptance test is the part that cannot be generated. Pass id 0 to take it back off somebody without cancelling it; there is nobody to tell, so nothing is typed. **It does not carry the work**: send that with terminal_send, or group_post naming the terminal in `mention`. **With `alias` it is a seat of the task's squad** that is filled or emptied (the seat holding a live agent is MemberTaken; a terminal holds one seat of a task); without `alias` it sets the task's lead, the seat task_create describes. **`fresh: true` clears the worker's context first** (off by default -- a worker reviewing the same change twice needs what it said the first time): `/clear` is typed, and the task line follows once the CLI reports a new session, at most 10s later; the reply says `cleared: confirmed` or `cleared: unconfirmed`, and the line tells the worker which group to group_read. Codex says it has cleared only when its next turn starts, which is the turn the task line starts, so for codex the line follows two seconds after `/clear` and the reply says `cleared: pending` (terminal_list shows its new session_id once that turn begins). Only for claude-code and codex with hooks, at the prompt: in a turn or at a permission box it refuses `AgentBusy`, another CLI `FreshUnsupported`, and nothing is typed or assigned. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"task":{"type":"integer"},"id":{"type":"string","description":"The terminal responsible, or 0 for nobody"},"alias":{"type":"string","description":"A seat of the task's squad: id takes the seat, or 0 empties it. Without alias, id is the task's lead."},"fresh":{"type":"boolean","description":"Clear the worker's context (claude-code /clear) before telling it the task is theirs. Default false."}},"required":["task","id"],"additionalProperties":false}
         ,
@@ -2825,6 +2826,23 @@ fn toolDescription(name: []const u8) ![]const u8 {
     return error.NoSuchTool;
 }
 
+/// `s` with every run of whitespace made one space.
+fn foldSpace(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var gap = false;
+    for (s) |c| {
+        if (std.ascii.isWhitespace(c)) {
+            gap = true;
+            continue;
+        }
+        if (gap and out.items.len > 0) try out.append(alloc, ' ');
+        gap = false;
+        try out.append(alloc, c);
+    }
+    return out.toOwnedSlice(alloc);
+}
+
 fn expectMentions(what: []const u8, text: []const u8, needle: []const u8) !void {
     std.testing.expect(std.mem.indexOf(u8, text, needle) != null) catch |err| {
         std.debug.print("{s} never says: {s}\n", .{ what, needle });
@@ -2835,13 +2853,17 @@ fn expectMentions(what: []const u8, text: []const u8, needle: []const u8) !void 
 test "mcp: squads -- the instructions and the tool descriptions say the rules a supervisor must know" {
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, initialize_result, .{});
     defer parsed.deinit();
-    const text = parsed.value.object.get("instructions").?.string;
+    // Line breaks in the prose are layout, not content: fold them away.
+    const text = try foldSpace(std.testing.allocator, parsed.value.object.get("instructions").?.string);
+    defer std.testing.allocator.free(text);
     for ([_][]const u8{
         "squad_list",
-        "Do not make a\ntemplate when an existing one fits",
+        "Do not make a template when an existing one fits",
         "A supervisor cannot be a member",
         "it is not secret",
-        "Only\nthe lead writes the task's progress",
+        "Only the lead writes the task's progress",
+        "when it has one",
+        "task_assign only says the seat is that terminal's",
     }) |needle| try expectMentions("instructions", text, needle);
 
     // The two constraints a supervisor is most tempted to skip.
@@ -2856,6 +2878,11 @@ test "mcp: squads -- the instructions and the tool descriptions say the rules a 
     try expectMentions("group_read", try toolDescription("group_read"), "channel of every task you are a member of");
     try expectMentions("task_close", try toolDescription("task_close"), "idle terminals you opened for it are closed");
     try expectMentions("task_close", try toolDescription("task_close"), "half-typed line");
+    try expectMentions("group_read", try toolDescription("group_read"), "Each message says its `channel`");
+    try expectMentions("group_history", try toolDescription("group_history"), "not shown to a member who joined without the history");
+    try expectMentions("task_assign", try toolDescription("task_assign"), "It does not carry the work");
+    try expectMentions("role_launch", try toolDescription("role_launch"), "why: holds_seat");
+    try expectMentions("role_launch", try toolDescription("role_launch"), "a refused launch leaves the panel as it was");
     try expectMentions("task_create", try toolDescription("task_create"), "group's project (group_project)");
     try expectMentions("task_create", try toolDescription("task_create"), "that seat is not in the `plan`");
     try expectMentions("group_post", try toolDescription("group_post"), "only when you name it in `mention`");

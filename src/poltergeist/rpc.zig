@@ -8158,8 +8158,9 @@ fn treeCreated(alloc: std.mem.Allocator, id: u64, group: []const u8, wish: TreeW
 ///
 /// **`members` is the answer to "who does this task need"**, and it is
 /// required: there is no "just the required ones" to fall back on. A
-/// required seat that was not named is made anyway and said -- required and
-/// optional are a hint to whoever opens the task, not a gate.
+/// required seat that was not named is not in the plan, and the reply says
+/// so (`missing_required`) -- required and optional are a hint to whoever
+/// opens the task, not a gate. The task is made either way.
 fn createSquadTask(
     alloc: std.mem.Allocator,
     host: Host,

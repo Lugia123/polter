@@ -21,8 +21,9 @@ the task closes.** Read this before you plan anything.
   to use it. If one fits, use it and **pick the seats this task needs** in
   `members` -- not all of them by default. `required` on a seat is advice: the
   task is made without a required seat you leave out, that seat is not in the
-  plan, and the reply's `note` and `missing_required` name it. `role_launch`
-  can still open it.
+  plan, and the reply's `note` and `missing_required` name it.
+  `role_launch` with its alias still opens it, and the seat is made once its
+  terminal is open. A seat the template does not have is `NoSuchMember`.
 - **Do not make a template out of habit.** `squad_put` only when none of the
   existing ones fits, and its `reason` says which one you looked at and why it
   does not. A template is for a combination that will be wanted again, not for
@@ -35,9 +36,12 @@ How one runs:
 1. `task_create` with `squad` and `members`. The reply is a `plan`: one
    `slot: empty` per seat. **No terminal is opened yet.**
 2. `role_launch` with `task` and `member`, once per seat. The role starts as
-   the squad changed it, in the task's worktree. Then hand each member its
-   work: say it in the task's channel (`group_post` with `task`), or give it
-   with `task_assign`.
+   the squad changed it, in the task's worktree. **Then hand each member its
+   work with `terminal_send`** (the whole text, typed into its terminal), or
+   with `group_post` with `task` **and `mention` naming it**. A channel post
+   that names nobody types into nobody. `task_assign` is not how work is
+   handed over: it only says the seat is that terminal's, and a seat
+   `role_launch` has already filled does not need it.
 3. Members report in the **task's channel** (`group_post` puts a member's post
    there). The channel is not secret -- `terminal_read` shows any screen -- it
    only keeps one squad's talk out of another's context. You read all of
@@ -47,11 +51,25 @@ How one runs:
    member gets `NotLead` and reports in the channel. The lead is the seat the
    template marks `lead` (else its first required seat, else its first); when
    that seat is not in this task, the first seat in the plan is. Whoever is
-   started in that seat becomes the task's owner. If it is empty, nobody can
+   started in that seat becomes the task's owner. A seat the task left out
+   is the lead when it is the template's: if you open it after the plan's
+   first seat, the owner moves to it, and the member who was first now gets
+   `NotLead` when it reports progress. If it is empty, nobody can
    write: fill it with `task_assign`.
 5. `task_close` when you have checked the work. It closes the idle members you
    opened (`release: keep` closes none), names the ones it left, and deals with
    the worktree.
+
+A launch that is refused (`MemberTaken`, `SupervisorNotAllowed`, a pane that
+cannot be typed into) leaves the panel as it was. `place: auto` passes over a
+pane whose agent has gone but which still holds another seat of the task
+(`passed_over`, `why: holds_seat`). If a terminal was started for a seat but
+could not take it, the group says so ("could not take it"): the agent was told
+it has the seat and the panel does not — close the terminal and `role_launch`
+the seat again (`task_assign` with `alias` fills a seat only when the task
+already has it, which a seat the task was made without does not until it is
+taken). `group_history` does not show a member the
+compaction summaries of history it joined too late to see.
 
 **The worktree belongs to the task.** It is planned at `task_create`, made when
 the first member is launched, and shared by every seat. When the task closes, a
@@ -142,13 +160,15 @@ be waiting on a worker that never heard.
 The group is for **planning, for the record, and for the person at the
 keyboard**. To make a terminal do something, `terminal_send` it.
 
-Unwatched terminals and other supervisors *are* woken — nobody is directing
-them, so the group is the only channel they have.
+Another supervisor is woken by every message it can read. A terminal nobody is minding is
+woken only by a message that **names it in `mention`**, as is yours.
 
-**Not woken is not kept out.** Everything you post is still unread for every
-member, and any of them reading the group with `group_read` gets all of it.
-That is the point: a worker can go and look when it chooses, and is not
-interrupted when it does not.
+**Not woken is not kept out — except across channels.** Everything in the
+public channel is still unread for every member, and any of them reading the
+group with `group_read` gets all of it: a worker can go and look when it
+chooses, and is not interrupted when it does not. A task's channel is read
+only by the squad's members and by you (see "Squads"), and each message
+`group_read` returns says its `channel` (0 is the public one).
 
 Which is still a cost. Each `group_read` puts your whole message into that
 worker's context, and context is the only thing here that actually runs out.
@@ -318,7 +338,7 @@ The order, and step 2 is a note to yourself:
 **Never hand work over by announcing it.** A hand-over said in the group, or
 written in a reply to somebody else, reaches nobody: the terminal you are
 handing to is watched, and a watched terminal is not woken by a post. It is
-`task_assign`, `terminal_send`, or a `group_post` that names that terminal in
+`task_assign` (which only says the task is theirs; the work itself is still yours to send), `terminal_send`, or a `group_post` that names that terminal in
 `mention` — which types the post into it with a return — and the group is
 the record afterwards. The
 failure this is written from cost eight minutes of two agents waiting on each
@@ -986,6 +1006,11 @@ them to switch back to it.
 
 ### Workers changing the same code at once: a worktree each
 
+**A task with a squad already has this**: one tree for the task, planned at
+`task_create`, made when the first member is launched, and shared by every
+seat (see "Squads"). The rest of this section is for workers who are not in
+one task's squad, or for a tree you name yourself.
+
 When two or more workers will **change code in the same repository at the same
 time**, give each its own git worktree: pass `worktree: "<name>"` to
 `terminal_open` or `role_launch`, and Polter makes the tree (branch
@@ -1009,11 +1034,13 @@ and you must not tell the worker otherwise.
 - **Polter does not merge.** `worktree_status` shows `dirty`, `ahead` and
   `merged` against the repository's checked-out branch; the merge is yours,
   with git.
-- **When to take a tree down:** when it will not be needed again — not when its
-  task is closed. `task_close` reminds you a tree is still there; it does not
-  remove it. `worktree_remove` does, and only for a tree that is clean and
-  merged: dirty or unmerged, it refuses and says why, and that refusal is the
-  point — the uncommitted work in it may be the only copy.
+- **When to take a tree down:** when it will not be needed again. `task_close`
+  and `task_cancel` take down the task's own tree when everything changed in
+  it has landed on the mainline and nobody stands in it, and keep it, saying
+  why, otherwise. For any other tree `worktree_remove` does it, and only for
+  one whose work has landed (`landed` in `worktree_status`): otherwise it
+  refuses and says why, and that refusal is the point — the uncommitted work
+  in it may be the only copy.
 
 ### Building a shape by hand, and the one thing that makes it hard
 

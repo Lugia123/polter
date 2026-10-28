@@ -8157,7 +8157,7 @@ fn joinRefusedText(buf: []u8, id: poltergeistpkg.Bus.Id, task: u64, alias: []con
         buf,
         "[polter] Terminal 0x{x:0>16} was started for the seat \"{s}\" of task {d} but could not take it ({t}): " ++
             "the panel does not have it in that seat, though its agent was told it is. " ++
-            "Give it the seat with task_assign, or close the terminal.",
+            "Close the terminal and role_launch the seat again; task_assign with the alias also works when the seat is already in the task.",
         .{ id, alias, task, err },
     ) catch "[polter] A terminal started for a squad seat could not take it.";
 }
