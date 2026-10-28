@@ -386,10 +386,12 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .worktree_status => .{ .worktree_status = .{
             .name = (try optionalString(aa, params, "name")) orelse "",
             .repo = (try optionalString(aa, params, "repo")) orelse "",
+            .task = try optionalU64(params, "task", 0),
         } },
         .worktree_remove => .{ .worktree_remove = .{
-            .name = try requireString(aa, params, "name"),
+            .name = (try optionalString(aa, params, "name")) orelse "",
             .repo = (try optionalString(aa, params, "repo")) orelse "",
+            .task = try optionalU64(params, "task", 0),
         } },
 
         .terminal_action => .{ .terminal_action = .{

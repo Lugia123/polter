@@ -1570,29 +1570,43 @@ const tools = [_]Tool{
     .{
         .name = "worktree_status",
         .description = "**Before you merge a worker's tree, and before you take one down**: how " ++
-            "every worktree Polter made stands (or the one you `name`). Each has name, " ++
-            "path, branch, base (the commit it was made at), repo, task (the task tied to " ++
-            "it when it was assigned to a terminal in it), terminal, and what git says now: " ++
-            "`dirty` (uncommitted and untracked files; ignored build output is not counted), " ++
-            "`ahead` (commits on its branch that `mainline` -- the branch the repository " ++
-            "itself has checked out -- does not have) and `merged`. `exists: false` is a " ++
-            "tree whose directory is gone. It never merges anything: that is yours to do " ++
-            "with git. Kept on disk, so it is the same after a restart. Supervisor only.",
+            "every worktree Polter made stands (or the one you `name`, or the one made for " ++
+            "`task`). Each has name, path, branch, base (the commit it was made at), repo, " ++
+            "task, terminal, `kind` (`task` for a tree made for a task -- named " ++
+            "`<group>/wt-<task>` on branch `wt/<group>/<task>` -- or `manual`), `group` (the " ++
+            "group the task was in when the tree was made), `group_now` and `label_stale` " ++
+            "(true when the group was renamed since: the directory is not moved), and what " ++
+            "git says now: `dirty` (uncommitted and untracked files; ignored build output is " ++
+            "not counted), `ahead` (commits on its branch that `mainline` does not have) and " ++
+            "`merged` (= ahead is 0). **`merged` says nothing when workers do not commit** -- " ++
+            "it is then always true, and `dirty` always above 0. Read `landed` instead: true " ++
+            "when every path the tree changed or added holds, on the mainline's HEAD, exactly " ++
+            "what the tree holds (content and mode) and every path it deleted is gone there " ++
+            "too. When false, `unlanded` lists up to 20 paths with a `why` (differs, extra, " ++
+            "main_still_has, mode, cannot_tell), `unlanded_count` the total and " ++
+            "`landed_checked` how many paths were looked at; `landed_reason` says when it " ++
+            "was not the paths that decided (commits on the branch, too many paths). " ++
+            "`lease` is who holds the tree's build lease, or null. `exists: false` is a " ++
+            "tree whose directory is gone. It never merges anything. Kept on disk, so it is " ++
+            "the same after a restart. Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"name":{"type":"string","description":"One tree; leave out for all of them."},"repo":{"type":"string","description":"The repository, when two have a tree of that name."}},"additionalProperties":false}
+        \\{"type":"object","properties":{"name":{"type":"string","description":"One tree; leave out for all of them. A task tree's name is <group>/wt-<task>."},"task":{"type":"integer","description":"The tree made for this task, instead of name."},"repo":{"type":"string","description":"The repository, when two have a tree of that name."}},"additionalProperties":false}
         ,
     },
     .{
         .name = "worktree_remove",
         .description = "Take down a worktree Polter made: the directory, its build output with it, " ++
-            "and its branch. **Only when it is clean and merged** -- otherwise refused, " ++
-            "saying why and by how much (WorktreeDirty: uncommitted changes; " ++
-            "WorktreeNotMerged: commits the repository's branch does not have), and nothing " ++
-            "is touched. Never forced and never automatic. Remove a tree when it will not " ++
-            "be needed again, not merely because its task is closed. A tree whose directory " ++
-            "is already gone is just forgotten. Supervisor only.",
+            "and its branch. **Only when its work has landed** (see `landed` in " ++
+            "worktree_status) -- otherwise refused: WorktreeNotLanded lists the paths that do " ++
+            "not match the mainline, WorktreeNotMerged says the branch has commits the " ++
+            "mainline does not -- and nothing is touched. The check is run twice, the second " ++
+            "time right before the delete, and only then does git remove the tree (with its " ++
+            "`--force`, since a tree with landed work in it is still dirty to git). Polter " ++
+            "also does this on its own when a task is closed, for a landed tree nobody " ++
+            "stands in and nobody holds a lease on. A tree whose directory is already gone " ++
+            "is just forgotten. Give `name` or `task`. Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string","description":"The repository, when two have a tree of that name."}},"required":["name"],"additionalProperties":false}
+        \\{"type":"object","properties":{"name":{"type":"string"},"task":{"type":"integer","description":"The tree made for this task, instead of name."},"repo":{"type":"string","description":"The repository, when two have a tree of that name."}},"additionalProperties":false}
         ,
     },
     .{

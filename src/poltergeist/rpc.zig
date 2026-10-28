@@ -791,8 +791,10 @@ pub const Request = union(Method) {
         /// would set them.
         limits: LimitsParam = .absent,
     },
-    worktree_status: struct { name: []const u8 = "", repo: []const u8 = "" },
-    worktree_remove: struct { name: []const u8, repo: []const u8 = "" },
+    // `task` (0: none) names the tree by the task it was made for, instead of
+    // by `name`; giving both is `BadParams`.
+    worktree_status: struct { name: []const u8 = "", repo: []const u8 = "", task: u64 = 0 },
+    worktree_remove: struct { name: []const u8 = "", repo: []const u8 = "", task: u64 = 0 },
     terminal_action: struct { id: Bus.Id, action: []const u8 },
     terminal_actions,
     terminal_key: struct { id: Bus.Id, key: []const u8 },
@@ -6204,6 +6206,7 @@ pub const Host = struct {
             alloc: std.mem.Allocator,
             name: []const u8,
             repo: []const u8,
+            task: u64,
         ) anyerror![]const u8,
 
         worktreeRemove: *const fn (
@@ -6211,6 +6214,7 @@ pub const Host = struct {
             alloc: std.mem.Allocator,
             name: []const u8,
             repo: []const u8,
+            task: u64,
         ) anyerror!worktree.Removed,
 
         /// `task` was given to `terminal`: tie it to the tree that
@@ -6952,12 +6956,12 @@ pub const Host = struct {
         return self.vtable.worktreeAt(self.ctx, alloc, cwd);
     }
 
-    fn worktreeStatus(self: Host, alloc: std.mem.Allocator, name: []const u8, repo: []const u8) anyerror![]const u8 {
-        return self.vtable.worktreeStatus(self.ctx, alloc, name, repo);
+    fn worktreeStatus(self: Host, alloc: std.mem.Allocator, name: []const u8, repo: []const u8, task: u64) anyerror![]const u8 {
+        return self.vtable.worktreeStatus(self.ctx, alloc, name, repo, task);
     }
 
-    fn worktreeRemove(self: Host, alloc: std.mem.Allocator, name: []const u8, repo: []const u8) anyerror!worktree.Removed {
-        return self.vtable.worktreeRemove(self.ctx, alloc, name, repo);
+    fn worktreeRemove(self: Host, alloc: std.mem.Allocator, name: []const u8, repo: []const u8, task: u64) anyerror!worktree.Removed {
+        return self.vtable.worktreeRemove(self.ctx, alloc, name, repo, task);
     }
 
     fn worktreeTieTask(self: Host, task: u64, terminal: Bus.Id) void {
@@ -8452,7 +8456,11 @@ fn dispatchOne(
         },
 
         .worktree_status => |p| {
-            const json = host.worktreeStatus(alloc, p.name, p.repo) catch |err| return switch (err) {
+            if (p.task != 0 and p.name.len > 0) return hostFailure(
+                "BadParams",
+                "name a worktree by its name or by its task, not both.",
+            );
+            const json = host.worktreeStatus(alloc, p.name, p.repo, p.task) catch |err| return switch (err) {
                 error.NoSuchWorktree => hostFailure(
                     "NoSuchWorktree",
                     "Polter has no worktree by that name; leave name out to list them all.",
@@ -8467,7 +8475,11 @@ fn dispatchOne(
         },
 
         .worktree_remove => |p| {
-            const done = host.worktreeRemove(alloc, p.name, p.repo) catch
+            if ((p.task != 0) == (p.name.len > 0)) return hostFailure(
+                "BadParams",
+                "name the worktree to remove by its name or by its task -- one of them.",
+            );
+            const done = host.worktreeRemove(alloc, p.name, p.repo, p.task) catch
                 return hostFailure("WorktreeFailed", "the worktree could not be removed; nothing was changed");
             return switch (done) {
                 .refused => |r| .{ .failed = .{ .code = r.code, .message = r.message } },
@@ -11694,6 +11706,8 @@ const FakeHost = struct {
     worktree_tag: ?worktree.Tag = null,
     worktree_tied: ?struct { task: u64, terminal: Bus.Id } = null,
     worktree_removed: worktree.Removed = .{ .forgotten = "/fake/gone" },
+    /// What `worktree_status` / `worktree_remove` last asked for.
+    worktree_sel: ?struct { name: []const u8, task: u64 } = null,
 
     /// What the fake calls its configuration.
     config: []const u8 = "poltergeist-watch = false\npoltergeist-notify = feishu\n",
@@ -12789,13 +12803,16 @@ const FakeHost = struct {
         return if (worktree.within(tag.path, cwd)) tag else null;
     }
 
-    fn worktreeStatus(_: *anyopaque, _: std.mem.Allocator, name: []const u8, _: []const u8) anyerror![]const u8 {
+    fn worktreeStatus(ctx: *anyopaque, _: std.mem.Allocator, name: []const u8, _: []const u8, task: u64) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.worktree_sel = .{ .name = name, .task = task };
         if (std.mem.eql(u8, name, "missing")) return error.NoSuchWorktree;
         return "[]";
     }
 
-    fn worktreeRemove(ctx: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8) anyerror!worktree.Removed {
+    fn worktreeRemove(ctx: *anyopaque, _: std.mem.Allocator, name: []const u8, _: []const u8, task: u64) anyerror!worktree.Removed {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.worktree_sel = .{ .name = name, .task = task };
         return self.worktree_removed;
     }
 
@@ -20633,4 +20650,39 @@ test "channel: 查座位失败 → 只看公共，不是全部" {
     fake.seats_fail = false;
     const ok = fake.host().scopeFor(arena.allocator(), &b, worker, "build");
     try testing.expect(ok.sees(7, 1));
+}
+
+test "rpc: worktree_status / worktree_remove 接受 task 参数，与 name 等价" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{};
+
+    // By task: the host is asked for the task, with no name.
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .worktree_status = .{ .task = 2435 } });
+    try testing.expectEqual(@as(u64, 2435), fake.worktree_sel.?.task);
+    try testing.expectEqualStrings("", fake.worktree_sel.?.name);
+    fake.worktree_sel = null;
+    const done = try dispatch(alloc, &b, fake.host(), term(boss), .{ .worktree_remove = .{ .task = 2435 } });
+    try testing.expect(done == .text);
+    try testing.expectEqual(@as(u64, 2435), fake.worktree_sel.?.task);
+
+    // By name, as before: the host is not given a task.
+    fake.worktree_sel = null;
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .worktree_remove = .{ .name = "polter/wt-2435" } });
+    try testing.expectEqualStrings("polter/wt-2435", fake.worktree_sel.?.name);
+    try testing.expectEqual(@as(u64, 0), fake.worktree_sel.?.task);
+
+    // Both, or (for remove) neither, is a mistake and touches nothing.
+    fake.worktree_sel = null;
+    const both = try dispatch(alloc, &b, fake.host(), term(boss), .{ .worktree_remove = .{ .name = "w1", .task = 3 } });
+    try testing.expect(both == .failed);
+    try testing.expectEqualStrings("BadParams", both.failed.code);
+    const none = try dispatch(alloc, &b, fake.host(), term(boss), .{ .worktree_remove = .{} });
+    try testing.expectEqualStrings("BadParams", none.failed.code);
+    const both_status = try dispatch(alloc, &b, fake.host(), term(boss), .{ .worktree_status = .{ .name = "w1", .task = 3 } });
+    try testing.expectEqualStrings("BadParams", both_status.failed.code);
+    try testing.expect(fake.worktree_sel == null);
 }

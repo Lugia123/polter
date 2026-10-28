@@ -21,9 +21,17 @@
 //!     answer **says** no tree was made (`Prepared.not_git`). A caller told
 //!     nothing would believe it was isolated.
 //!
-//! And one of its own: **nothing here deletes a tree that is dirty or not
-//! merged**, and nothing deletes one at all unless asked (`remove`). There
-//! is no `--force` anywhere in this file.
+//! And one of its own: **nothing here deletes a tree whose work has not
+//! landed** (`landed`), and nothing deletes one at all unless asked
+//! (`remove`) or a task is closed (`closeout`). A tree's work is *landed*
+//! when every path it changed holds, on the mainline's HEAD, exactly what the
+//! tree holds -- not "the branch has no commits the mainline lacks", which in
+//! this repository's own workflow (workers do not commit; the supervisor
+//! applies their patch on the main tree) is always true and says nothing.
+//! `--force` appears in this file **once**: in `removeIndex`, after `landed`
+//! is true and has been checked a second time. A tree with work in it is
+//! "dirty" to git, so without it git would refuse; with it, nothing but a
+//! landed tree can get that far (a test holds the command log to this).
 //!
 //! ⚠️ **Making a tree is checking out a repository**, which for this one is
 //! six thousand files and seconds of disk. So it is split in two: `plan`
@@ -36,6 +44,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+
+const daylog = @import("daylog.zig");
 
 const log = std.log.scoped(.poltergeist);
 
@@ -85,6 +95,10 @@ pub const Git = struct {
         ok: bool,
         out: []const u8,
         err: []const u8,
+        /// `out` before trimming. A `-z` listing is read from this: its
+        /// first record can start with a space (` M path`) and the trim
+        /// would eat it.
+        raw: []const u8 = "",
     };
 
     pub const Error = error{ GitNotRunnable, OutOfMemory };
@@ -112,6 +126,7 @@ pub const Git = struct {
             },
             .out = std.mem.trim(u8, r.stdout, " \t\r\n"),
             .err = std.mem.trim(u8, r.stderr, " \t\r\n"),
+            .raw = r.stdout,
         };
     }
 };
@@ -147,6 +162,110 @@ pub fn treePath(arena: Allocator, repo: Repo, location: Location, name: []const 
             break :blk try std.fs.path.join(arena, &.{ parent, wt, name });
         },
         .inside => try std.fs.path.join(arena, &.{ repo.main, inside_dir, name }),
+    };
+}
+
+// ------------------------------------------------- a task's tree: its names
+
+/// The leaf of a task's directory: `wt-<task>`. Task numbers are global, so
+/// two groups never share a leaf and the group segment above it is for the
+/// reader, not for telling trees apart.
+fn leafName(buf: *[24]u8, task: u64) []const u8 {
+    return std.fmt.bufPrint(buf, "wt-{d}", .{task}) catch unreachable;
+}
+
+/// The one place a group name becomes a path segment and a branch segment
+/// (`dev-docs`: the directory and the branch use the same string, so they
+/// always match).
+///
+/// A name `Chat.isValidName` would take (`[a-z0-9-]`, 1-48 bytes) is used as
+/// it is. Anything else -- a hand-edited file, a caller that went around the
+/// model -- goes through `daylog.encodeSegment`, and then two more rules that
+/// only a directory *and* a git ref have:
+///
+///   * a Windows device name (`con`, `prn`, `aux`, `nul`, `com1`-`com9`,
+///     `lpt1`-`lpt9`, any case, with or without an extension) cannot be a path
+///     segment there, and git keeps loose refs as files, so its first byte is
+///     written `%XX` (`con` -> `%63on`);
+///   * git refuses `..`, a name ending in `.lock` and a name ending in `.`,
+///     so every `.` is written `%2E`.
+///
+/// Still injective: a literal `%` is already `%25` by then, so `%63` and
+/// `%2E` can only have come from here.
+pub fn groupSegment(alloc: Allocator, group: []const u8) Allocator.Error![]const u8 {
+    if (plainGroup(group) and !isDeviceName(group)) return alloc.dupe(u8, group);
+
+    const encoded = try daylog.encodeSegment(alloc, group);
+    var seg: []const u8 = encoded;
+    if (std.mem.indexOf(u8, seg, "..") != null or
+        std.mem.endsWith(u8, seg, ".lock") or
+        std.mem.endsWith(u8, seg, "."))
+    {
+        const dots = std.mem.count(u8, seg, ".");
+        var out = try std.ArrayList(u8).initCapacity(alloc, seg.len + dots * 2);
+        for (seg) |c| {
+            if (c == '.') out.appendSliceAssumeCapacity("%2E") else out.appendAssumeCapacity(c);
+        }
+        seg = out.items;
+    }
+    if (isDeviceName(seg)) {
+        const hex = "0123456789ABCDEF";
+        return std.fmt.allocPrint(alloc, "%{c}{c}{s}", .{ hex[seg[0] >> 4], hex[seg[0] & 0xf], seg[1..] });
+    }
+    return seg;
+}
+
+fn plainGroup(group: []const u8) bool {
+    if (group.len == 0 or group.len > 48) return false;
+    for (group) |c| switch (c) {
+        'a'...'z', '0'...'9', '-' => {},
+        else => return false,
+    };
+    return true;
+}
+
+/// Whether `seg`, up to its first `.`, is a name Windows keeps for a device.
+fn isDeviceName(seg: []const u8) bool {
+    const base = seg[0 .. std.mem.indexOfScalar(u8, seg, '.') orelse seg.len];
+    var buf: [8]u8 = undefined;
+    if (base.len == 0 or base.len > buf.len) return false;
+    const lower = std.ascii.lowerString(&buf, base);
+    for ([_][]const u8{ "con", "prn", "aux", "nul" }) |n| if (std.mem.eql(u8, lower, n)) return true;
+    if (lower.len == 4 and (std.mem.startsWith(u8, lower, "com") or std.mem.startsWith(u8, lower, "lpt")))
+        return lower[3] >= '1' and lower[3] <= '9';
+    return false;
+}
+
+/// A task tree's ledger name: `<group segment>/wt-<task>`.
+pub fn taskTreeName(alloc: Allocator, group: []const u8, task: u64) Allocator.Error![]const u8 {
+    var buf: [24]u8 = undefined;
+    return std.fmt.allocPrint(alloc, "{s}/{s}", .{ try groupSegment(alloc, group), leafName(&buf, task) });
+}
+
+/// A task tree's branch: `wt/<group segment>/<task>`.
+pub fn taskBranch(alloc: Allocator, group: []const u8, task: u64) Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(alloc, branch_prefix ++ "{s}/{d}", .{ try groupSegment(alloc, group), task });
+}
+
+/// Where a task's tree goes: `<repo>-wt/<group>/wt-<task>` beside, or
+/// `<repo>/.polter-worktrees/<group>/wt-<task>` inside.
+pub fn taskTreePath(
+    arena: Allocator,
+    repo: Repo,
+    location: Location,
+    group: []const u8,
+    task: u64,
+) Allocator.Error![]const u8 {
+    var buf: [24]u8 = undefined;
+    const seg = try groupSegment(arena, group);
+    const leaf = leafName(&buf, task);
+    return switch (location) {
+        .beside => blk: {
+            const parent = std.fs.path.dirname(repo.main) orelse repo.main;
+            const wt = try std.fmt.allocPrint(arena, "{s}-wt", .{std.fs.path.basename(repo.main)});
+            break :blk try std.fs.path.join(arena, &.{ parent, wt, seg, leaf });
+        },
+        .inside => try std.fs.path.join(arena, &.{ repo.main, inside_dir, seg, leaf }),
     };
 }
 
@@ -200,9 +319,20 @@ pub const Entry = struct {
     /// standing in the tree (`Ledger.tieTask`). What the panel shows after a
     /// restart.
     task: ?u64 = null,
+    /// The group the task was in when the tree was made (a task tree's
+    /// directory and branch carry it). Empty for a `manual` tree.
+    group: []const u8 = "",
+    kind: Kind = .manual,
+
+    /// Whose a tree is. `manual`: asked for by name (`terminal_open` /
+    /// `role_launch` `worktree`); `task`: made for a task, named from its
+    /// group and number, and the task is the tree's identity.
+    pub const Kind = enum { manual, task };
 
     pub fn dupe(self: Entry, alloc: Allocator) Allocator.Error!Entry {
         var e = self;
+        e.group = try alloc.dupe(u8, self.group);
+        errdefer alloc.free(e.group);
         e.name = try alloc.dupe(u8, self.name);
         errdefer alloc.free(e.name);
         e.repo = try alloc.dupe(u8, self.repo);
@@ -216,6 +346,7 @@ pub const Entry = struct {
     }
 
     fn free(self: Entry, alloc: Allocator) void {
+        alloc.free(self.group);
         alloc.free(self.name);
         alloc.free(self.repo);
         alloc.free(self.path);
@@ -382,6 +513,38 @@ pub const Ledger = struct {
         return true;
     }
 
+    /// Which tree a caller means: by `task` when one is given (the tree
+    /// made for it, else any tied to it), else by name. `task` is the way a
+    /// supervisor need not remember a name with a slash in it.
+    pub fn select(self: *const Ledger, name: []const u8, repo: []const u8, task: u64) Lookup {
+        if (task == 0) return self.lookup(name, repo);
+        var hit: ?usize = null;
+        var n: usize = 0;
+        for (self.entries.items, 0..) |e, i| {
+            if (e.task != task) continue;
+            if (repo.len > 0 and !std.mem.eql(u8, e.repo, repo)) continue;
+            // A task's own tree wins over one that was merely tied to it.
+            if (hit) |h| if (self.entries.items[h].kind == .task and e.kind != .task) continue;
+            if (hit) |h| if (self.entries.items[h].kind != .task and e.kind == .task) {
+                hit = i;
+                n = 1;
+                continue;
+            };
+            hit = i;
+            n += 1;
+        }
+        if (n > 1) return .{ .ambiguous = n };
+        return if (hit) |i| .{ .one = i } else .none;
+    }
+
+    /// The tree made for `task` (not one merely tied to it).
+    pub fn taskTree(self: *const Ledger, task: u64) ?usize {
+        for (self.entries.items, 0..) |e, i| {
+            if (e.kind == .task and e.task == task) return i;
+        }
+        return null;
+    }
+
     /// The tree tied to `task`, or the one its owner stands in.
     pub fn forTask(self: *const Ledger, task: u64, owner_cwd: []const u8) ?usize {
         for (self.entries.items, 0..) |e, i| if (e.task == task) return i;
@@ -522,15 +685,6 @@ pub fn plan(git: Git, arena: Allocator, known: []const Entry, req: Request) Allo
     }
 
     const path = try treePath(arena, repo, req.location, req.name);
-    if (exists(git.io, path)) return .{ .refused = .{
-        .code = "WorktreeExists",
-        .message = try std.fmt.allocPrint(
-            arena,
-            "{s} is already there and Polter did not make it; nothing was opened. Pick another name.",
-            .{path},
-        ),
-    } };
-
     const ref = try std.fmt.allocPrint(arena, "refs/heads/{s}", .{branch});
     const has_branch = git.run(arena, repo.main, &.{ "rev-parse", "--verify", "--quiet", ref }) catch |err|
         return gitFailure(arena, err);
@@ -543,7 +697,58 @@ pub fn plan(git: Git, arena: Allocator, known: []const Entry, req: Request) Allo
         ),
     } };
 
-    const head = git.run(arena, req.dir, &.{ "rev-parse", "--verify", "HEAD" }) catch |err|
+    // The other direction: `wt/<name>/<n>` is a task's branch, and `wt/<name>`
+    // cannot be made beside it.
+    const under = try std.fmt.allocPrint(arena, "refs/heads/{s}", .{branch});
+    const below = git.run(arena, repo.main, &.{ "for-each-ref", "--count=1", "--format=%(refname)", under }) catch |err|
+        return gitFailure(arena, err);
+    if (below.ok and below.out.len > 0) return .{ .refused = .{
+        .code = "BranchExists",
+        .message = try std.fmt.allocPrint(
+            arena,
+            "branch {s} cannot be made: {s} exists under it (a group's task branches); nothing was opened. " ++
+                "Pick another name.",
+            .{ branch, below.out },
+        ),
+    } };
+
+    if (exists(git.io, path)) return .{ .refused = .{
+        .code = "WorktreeExists",
+        .message = try std.fmt.allocPrint(
+            arena,
+            "{s} is already there and Polter did not make it; nothing was opened. Pick another name.",
+            .{path},
+        ),
+    } };
+
+    return addTree(git, arena, repo, req.dir, .{
+        .name = req.name,
+        .branch = branch,
+        .path = path,
+        .location = req.location,
+        .by = req.by,
+        .now_ms = req.now_ms,
+    });
+}
+
+/// What `addTree` writes down besides where it is.
+const NewTree = struct {
+    name: []const u8,
+    branch: []const u8,
+    path: []const u8,
+    location: Location,
+    by: u64,
+    now_ms: i64,
+    group: []const u8 = "",
+    kind: Entry.Kind = .manual,
+    task: ?u64 = null,
+};
+
+/// The part of making a tree that is the same for both kinds: a base to make
+/// it at, the exclude line for `inside`, `git worktree add`, and the entry
+/// with the path git itself reports.
+fn addTree(git: Git, arena: Allocator, repo: Repo, dir: []const u8, nt: NewTree) Allocator.Error!Prepared {
+    const head = git.run(arena, dir, &.{ "rev-parse", "--verify", "HEAD" }) catch |err|
         return gitFailure(arena, err);
     if (!head.ok) return refuse(
         "NoCommits",
@@ -551,7 +756,7 @@ pub fn plan(git: Git, arena: Allocator, known: []const Entry, req: Request) Allo
     );
     const base = head.out;
 
-    if (req.location == .inside) ensureExcluded(arena, git.io, repo.common) catch |err| return .{ .refused = .{
+    if (nt.location == .inside) ensureExcluded(arena, git.io, repo.common) catch |err| return .{ .refused = .{
         .code = "WorktreeFailed",
         .message = try std.fmt.allocPrint(
             arena,
@@ -561,7 +766,7 @@ pub fn plan(git: Git, arena: Allocator, known: []const Entry, req: Request) Allo
         ),
     } };
 
-    const add = git.run(arena, repo.main, &.{ "worktree", "add", "-b", branch, path, base }) catch |err|
+    const add = git.run(arena, repo.main, &.{ "worktree", "add", "-b", nt.branch, nt.path, base }) catch |err|
         return gitFailure(arena, err);
     if (!add.ok) return .{ .refused = .{
         .code = "WorktreeFailed",
@@ -571,17 +776,127 @@ pub fn plan(git: Git, arena: Allocator, known: []const Entry, req: Request) Allo
     // What git made it, not what was asked for: the two differ wherever a
     // path goes through a link (`/tmp` on macOS), and a terminal's `cwd` is
     // matched against this.
-    const real = git.run(arena, path, &.{ "rev-parse", "--show-toplevel" }) catch null;
+    const real = git.run(arena, nt.path, &.{ "rev-parse", "--show-toplevel" }) catch null;
     const entry: Entry = .{
-        .name = req.name,
+        .name = nt.name,
         .repo = repo.main,
-        .path = if (real) |r| (if (r.ok and r.out.len > 0) r.out else path) else path,
-        .branch = branch,
+        .path = if (real) |r| (if (r.ok and r.out.len > 0) r.out else nt.path) else nt.path,
+        .branch = nt.branch,
         .base = base,
-        .created_ms = req.now_ms,
-        .by = req.by,
+        .created_ms = nt.now_ms,
+        .by = nt.by,
+        .task = nt.task,
+        .group = nt.group,
+        .kind = nt.kind,
     };
     return .{ .tree = .{ .entry = entry, .reused = false } };
+}
+
+pub const TaskRequest = struct {
+    /// The directory the tree is made from; its `HEAD` is the base.
+    dir: []const u8,
+    /// The group the task is in, now.
+    group: []const u8,
+    task: u64,
+    location: Location = .beside,
+    by: u64 = 0,
+    now_ms: i64 = 0,
+};
+
+/// `prepare` for a task's own tree. Same two halves as `plan`/`commit`.
+pub fn prepareTask(git: Git, arena: Allocator, ledger: *Ledger, req: TaskRequest) Allocator.Error!Prepared {
+    return commit(git.io, ledger, try planTask(git, arena, ledger.entries.items, req));
+}
+
+/// The git half of making the tree *for a task*: `<repo>-wt/<group>/wt-<n>` on
+/// `wt/<group>/<n>`, with `group` and `task` written into the entry **now**
+/// -- not later, by `task_assign` finding a terminal standing in it.
+///
+/// Asked for again, it is the same tree. A manual branch called `wt/<group>`
+/// would make `wt/<group>/<n>` impossible (git keeps a ref as a file, and a
+/// file cannot also be a directory), so that is refused first, by name,
+/// without touching the other branch.
+pub fn planTask(git: Git, arena: Allocator, known: []const Entry, req: TaskRequest) Allocator.Error!Prepared {
+    if (req.task == 0) return refuse("BadParams", "a task's worktree needs the task's number.");
+
+    const repo = (discover(git, arena, req.dir) catch |err| return gitFailure(arena, err)) orelse
+        return .{ .not_git = req.dir };
+
+    const name = try taskTreeName(arena, req.group, req.task);
+    const seg = try groupSegment(arena, req.group);
+    const branch = try taskBranch(arena, req.group, req.task);
+
+    for (known) |k| {
+        if (k.kind != .task or k.task != req.task) continue;
+        if (!std.mem.eql(u8, k.repo, repo.main)) continue;
+        if (exists(git.io, k.path)) return .{ .tree = .{
+            .entry = try k.dupe(arena),
+            .reused = true,
+        } };
+        log.info("worktree: {s} was written down but {s} is gone; making it again", .{ k.name, k.path });
+    }
+
+    const path = try taskTreePath(arena, repo, req.location, req.group, req.task);
+
+    const prefix = try std.fmt.allocPrint(arena, "refs/heads/" ++ branch_prefix ++ "{s}", .{seg});
+    const taken = git.run(arena, repo.main, &.{ "rev-parse", "--verify", "--quiet", prefix }) catch |err|
+        return gitFailure(arena, err);
+    if (taken.ok) return .{ .refused = .{
+        .code = "BranchPrefixTaken",
+        .message = try std.fmt.allocPrint(
+            arena,
+            "branch {s}{s} exists, so no branch can be made under {s}{s}/ (git keeps a branch as a file " ++
+                "and a file cannot also be a directory); nothing was opened. Rename or delete that " ++
+                "branch with git, or move this task to another group.",
+            .{ branch_prefix, seg, branch_prefix, seg },
+        ),
+    } };
+    const ref = try std.fmt.allocPrint(arena, "refs/heads/{s}", .{branch});
+    const has_branch = git.run(arena, repo.main, &.{ "rev-parse", "--verify", "--quiet", ref }) catch |err|
+        return gitFailure(arena, err);
+    if (has_branch.ok) return .{ .refused = .{
+        .code = "BranchExists",
+        .message = try std.fmt.allocPrint(
+            arena,
+            "branch {s} already exists; nothing was opened. Delete the branch with git, or ask for it by name.",
+            .{branch},
+        ),
+    } };
+
+    // A manual tree (or any directory) sitting where the group's directory
+    // goes: a tree is a directory with a `.git` in it, and a task tree must
+    // not be made inside another tree.
+    const group_dir = std.fs.path.dirname(path) orelse path;
+    const dot_git = try std.fs.path.join(arena, &.{ group_dir, ".git" });
+    if (exists(git.io, dot_git)) return .{ .refused = .{
+        .code = "WorktreeExists",
+        .message = try std.fmt.allocPrint(
+            arena,
+            "{s}, where this group's task trees go, is itself a worktree that Polter did not make for a " ++
+                "task; nothing was opened. Remove it or pick another group.",
+            .{group_dir},
+        ),
+    } };
+    if (exists(git.io, path)) return .{ .refused = .{
+        .code = "WorktreeExists",
+        .message = try std.fmt.allocPrint(
+            arena,
+            "{s} is already there and Polter did not make it; nothing was opened.",
+            .{path},
+        ),
+    } };
+
+    return addTree(git, arena, repo, req.dir, .{
+        .name = name,
+        .branch = branch,
+        .path = path,
+        .location = req.location,
+        .by = req.by,
+        .now_ms = req.now_ms,
+        .group = req.group,
+        .kind = .task,
+        .task = req.task,
+    });
 }
 
 /// `plan` on a thread of its own (task 1702).
@@ -701,7 +1016,23 @@ pub const Status = struct {
     merged: ?bool = null,
     /// Set when git could not answer.
     problem: ?[]const u8 = null,
+    /// `landed` (below), filled by `statusFull`.
+    landed: ?Landed = null,
+    /// The group the task is in *now*; null when the caller does not know.
+    /// Differs from `entry.group` after the group is renamed, which does not
+    /// move the directory (`label_stale`).
+    group_now: ?[]const u8 = null,
+    /// Who holds the tree's build lease, when the caller knows.
+    lease: ?LeaseView = null,
 };
+
+/// `status`, and whether the tree's work has landed. Costs a few more git
+/// calls than `status`, so `remove` and `closeout` call `landed` themselves.
+pub fn statusFull(git: Git, arena: Allocator, entry: Entry) Allocator.Error!Status {
+    var s = try status(git, arena, entry);
+    if (s.exists and s.problem == null) s.landed = try landed(git, arena, entry);
+    return s;
+}
 
 pub fn status(git: Git, arena: Allocator, entry: Entry) Allocator.Error!Status {
     var s: Status = .{ .entry = entry, .exists = exists(git.io, entry.path) };
@@ -774,11 +1105,318 @@ pub fn writeStatus(w: *std.json.Stringify, s: Status) std.Io.Writer.Error!void {
     try w.write(s.mainline);
     try w.objectField("merged");
     try w.write(s.merged);
+    try w.objectField("kind");
+    try w.write(@tagName(e.kind));
+    try w.objectField("group");
+    try w.write(e.group);
+    try w.objectField("group_now");
+    try w.write(s.group_now);
+    try w.objectField("label_stale");
+    try w.write(e.kind == .task and s.group_now != null and !std.mem.eql(u8, e.group, s.group_now.?));
+    try w.objectField("lease");
+    if (s.lease) |l| {
+        try w.beginObject();
+        try w.objectField("holder_alias");
+        try w.write(l.alias);
+        try w.objectField("holder");
+        var buf: [18]u8 = undefined;
+        try w.write(std.fmt.bufPrint(&buf, "0x{x:0>16}", .{l.terminal}) catch unreachable);
+        try w.objectField("purpose");
+        try w.write(@tagName(l.purpose));
+        try w.objectField("since_ms");
+        try w.write(l.since_ms);
+        try w.objectField("expires_ms");
+        try w.write(l.expires_ms);
+        try w.endObject();
+    } else try w.write(null);
+    // `landed` is the answer to "can this tree be taken down"; `merged`
+    // above is only "the branch has no commit the mainline lacks", which in a
+    // workflow where nobody commits on the branch is always true.
+    try w.objectField("landed");
+    try w.write(if (s.landed) |l| l.landed else null);
+    try w.objectField("landed_checked");
+    try w.write(if (s.landed) |l| l.checked else null);
+    try w.objectField("unlanded_count");
+    try w.write(if (s.landed) |l| l.unlanded_count else null);
+    try w.objectField("unlanded");
+    try w.beginArray();
+    if (s.landed) |l| for (l.unlanded[0..@min(l.unlanded.len, max_listed)]) |u| {
+        try w.beginObject();
+        try w.objectField("path");
+        try w.write(u.path);
+        try w.objectField("why");
+        try w.write(@tagName(u.why));
+        try w.endObject();
+    };
+    try w.endArray();
+    if (s.landed) |l| if (l.reason) |r| {
+        try w.objectField("landed_reason");
+        try w.write(r);
+    };
     if (s.problem) |p| {
         try w.objectField("problem");
         try w.write(p);
     }
     try w.endObject();
+}
+
+// -------------------------------------------------------------- landed
+
+/// More changed paths than this and the answer is "not landed" without
+/// looking: better to keep a tree than to spend minutes proving a big one.
+pub const max_landed_paths = 2000;
+
+/// How many unlanded paths an answer lists; the rest are only counted.
+pub const max_listed = 20;
+
+/// Paths per git call, so no command line is long on any platform.
+const path_batch = 100;
+
+/// Why one path does not match the mainline.
+pub const Why = enum {
+    /// In both, with different content.
+    differs,
+    /// In the tree (new or untracked), not on the mainline.
+    extra,
+    /// Deleted in the tree, still on the mainline.
+    main_still_has,
+    /// Same content, different mode (the executable bit, or a link).
+    mode,
+    /// A submodule, a file that became a directory, a conflict, something
+    /// that could not be read.
+    cannot_tell,
+};
+
+pub const Unlanded = struct { path: []const u8, why: Why };
+
+pub const Landed = struct {
+    landed: bool,
+    /// Paths looked at.
+    checked: usize = 0,
+    /// Every path that does not match.
+    unlanded: []const Unlanded = &.{},
+    unlanded_count: usize = 0,
+    /// Commits on the branch the mainline lacks, when that is what decided it.
+    ahead: ?usize = null,
+    /// Said in words when it is not the paths that decided it.
+    reason: ?[]const u8 = null,
+    /// git could not answer. Not the same as "no": the caller says so.
+    unknown: bool = false,
+};
+
+/// Whether the work in a tree is already on the mainline: **every path the
+/// tree changed or added holds, on the mainline's `HEAD`, exactly what the
+/// tree holds** (content and mode), and every path it deleted is gone there
+/// too. Read-only, and safe off the app thread.
+///
+/// Not "merged": in this repository's workflow a worker never commits -- the
+/// supervisor applies the patch on the main tree and commits there -- so
+/// `ahead` is always 0 and the branch looks merged from the first minute, and
+/// the tree is always dirty to git. Neither says whether the work is in.
+pub fn landed(git: Git, arena: Allocator, entry: Entry) Allocator.Error!Landed {
+    return landedOf(git, arena, entry) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => .{
+            .landed = false,
+            .unknown = true,
+            .reason = try std.fmt.allocPrint(arena, "git could not answer ({t})", .{err}),
+        },
+    };
+}
+
+fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
+    // A commit on the branch is work this check cannot see in the path
+    // list: the tree may be clean and still hold it. A worker that
+    // committed anyway is the case, and it is not landed.
+    const main_head = try git.run(arena, entry.repo, &.{ "rev-parse", "--verify", "HEAD" });
+    if (!main_head.ok) return error.NoMainline;
+    const range = try std.fmt.allocPrint(arena, "{s}..{s}", .{ main_head.out, entry.branch });
+    const count = try git.run(arena, entry.repo, &.{ "rev-list", "--count", range });
+    if (!count.ok) return error.NoBranch;
+    const ahead = std.fmt.parseInt(usize, count.out, 10) catch return error.NoBranch;
+    if (ahead > 0) return .{
+        .landed = false,
+        .ahead = ahead,
+        .reason = try std.fmt.allocPrint(
+            arena,
+            "the branch has {d} commit{s} the mainline does not",
+            .{ ahead, if (ahead == 1) "" else "s" },
+        ),
+    };
+
+    // Renames are split into "deleted" and "added", directories into files,
+    // and `-z` keeps a path with a space, a newline or a quote whole.
+    const st = try git.run(arena, entry.path, &.{ "status", "--porcelain=v1", "-z", "--no-renames", "-uall" });
+    if (!st.ok) return error.StatusFailed;
+
+    const Item = struct { path: []const u8, deleted: bool, odd: bool };
+    var items: std.ArrayList(Item) = .empty;
+    var recs = std.mem.splitScalar(u8, st.raw, 0);
+    while (recs.next()) |rec| {
+        if (rec.len < 4) continue;
+        const x = rec[0];
+        const y = rec[1];
+        try items.append(arena, .{
+            .path = rec[3..],
+            .deleted = y == 'D' or (x == 'D' and y == ' '),
+            .odd = x == 'U' or y == 'U' or x == 'T' or y == 'T' or (x == 'A' and y == 'A') or (x == 'D' and y == 'D'),
+        });
+    }
+    if (items.items.len > max_landed_paths) return .{
+        .landed = false,
+        .checked = items.items.len,
+        .ahead = 0,
+        .reason = try std.fmt.allocPrint(
+            arena,
+            "too_many: {d} changed paths, more than the {d} that are checked",
+            .{ items.items.len, max_landed_paths },
+        ),
+    };
+
+    // What the mainline holds at each of those paths.
+    const Head = struct { mode: []const u8, oid: []const u8 };
+    var head: std.StringHashMapUnmanaged(Head) = .empty;
+    var at: usize = 0;
+    while (at < items.items.len) : (at += path_batch) {
+        const end = @min(items.items.len, at + path_batch);
+        var args: std.ArrayList([]const u8) = .empty;
+        try args.appendSlice(arena, &.{ "--literal-pathspecs", "ls-tree", "-r", "-z", "HEAD", "--" });
+        for (items.items[at..end]) |it| try args.append(arena, it.path);
+        const r = try git.run(arena, entry.repo, args.items);
+        if (!r.ok) return error.LsTreeFailed;
+        var rows = std.mem.splitScalar(u8, r.raw, 0);
+        while (rows.next()) |row| {
+            const tab = std.mem.indexOfScalar(u8, row, '\t') orelse continue;
+            var f = std.mem.tokenizeScalar(u8, row[0..tab], ' ');
+            const mode = f.next() orelse continue;
+            _ = f.next() orelse continue;
+            const oid = f.next() orelse continue;
+            try head.put(arena, row[tab + 1 ..], .{ .mode = mode, .oid = oid });
+        }
+    }
+
+    // `null` is "matches".
+    const verdict = try arena.alloc(?Why, items.items.len);
+    @memset(verdict, null);
+    const work_exec = try arena.alloc(bool, items.items.len);
+    @memset(work_exec, false);
+    var to_hash: std.ArrayList(usize) = .empty;
+
+    for (items.items, 0..) |it, i| {
+        if (it.odd) {
+            verdict[i] = .cannot_tell;
+            continue;
+        }
+        const h = head.get(it.path);
+        if (it.deleted) {
+            if (h != null) verdict[i] = .main_still_has;
+            continue;
+        }
+        const abs = try std.fs.path.join(arena, &.{ entry.path, it.path });
+        const stat = Io.Dir.cwd().statFile(git.io, abs, .{ .follow_symlinks = false }) catch {
+            verdict[i] = .cannot_tell;
+            continue;
+        };
+        const hh = h orelse {
+            verdict[i] = if (stat.kind == .file or stat.kind == .sym_link) .extra else .cannot_tell;
+            continue;
+        };
+        if (std.mem.eql(u8, hh.mode, "160000")) {
+            verdict[i] = .cannot_tell;
+            continue;
+        }
+        switch (stat.kind) {
+            .file => {
+                work_exec[i] = Io.File.Permissions.has_executable_bit and
+                    (stat.permissions.toMode() & 0o111) != 0;
+                if (std.mem.eql(u8, hh.mode, "120000")) verdict[i] = .differs else try to_hash.append(arena, i);
+            },
+            .sym_link => {
+                if (!std.mem.eql(u8, hh.mode, "120000")) {
+                    verdict[i] = .differs;
+                    continue;
+                }
+                var buf: [4096]u8 = undefined;
+                const n = Io.Dir.cwd().readLink(git.io, abs, &buf) catch {
+                    verdict[i] = .cannot_tell;
+                    continue;
+                };
+                const oid = try blobOid(arena, hh.oid.len, buf[0..n]);
+                if (!std.mem.eql(u8, oid, hh.oid)) verdict[i] = .differs;
+            },
+            else => verdict[i] = .cannot_tell,
+        }
+    }
+
+    // A regular file is hashed by git in the tree, so the tree's own
+    // filters (line endings, attributes) apply as `git add` would apply them.
+    at = 0;
+    while (at < to_hash.items.len) : (at += path_batch) {
+        const chunk = to_hash.items[at..@min(to_hash.items.len, at + path_batch)];
+        var args: std.ArrayList([]const u8) = .empty;
+        try args.appendSlice(arena, &.{ "hash-object", "--" });
+        for (chunk) |i| try args.append(arena, items.items[i].path);
+        const r = try git.run(arena, entry.path, args.items);
+        if (!r.ok) return error.HashFailed;
+        var lines = std.mem.splitScalar(u8, r.out, '\n');
+        for (chunk) |i| {
+            const oid = std.mem.trim(u8, lines.next() orelse return error.HashFailed, " \t\r");
+            const hh = head.get(items.items[i].path).?;
+            if (!std.mem.eql(u8, oid, hh.oid)) {
+                verdict[i] = .differs;
+                continue;
+            }
+            // Same content. The mode is the other half of "the same": a
+            // file that only became executable is not on the mainline.
+            if (Io.File.Permissions.has_executable_bit) {
+                const want_exec = std.mem.eql(u8, hh.mode, "100755");
+                if (work_exec[i] != want_exec) verdict[i] = .mode;
+            }
+        }
+    }
+
+    var list: std.ArrayList(Unlanded) = .empty;
+    for (items.items, verdict) |it, v| if (v) |why| try list.append(arena, .{ .path = it.path, .why = why });
+    return .{
+        .landed = list.items.len == 0,
+        .checked = items.items.len,
+        .unlanded = list.items,
+        .unlanded_count = list.items.len,
+        .ahead = 0,
+    };
+}
+
+/// The id git gives a blob holding `bytes`, in the hash `oid_len` hex digits
+/// say the repository uses. Only for a link's target, which `hash-object`
+/// would follow rather than read.
+fn blobOid(arena: Allocator, oid_len: usize, bytes: []const u8) Allocator.Error![]const u8 {
+    var head_buf: [32]u8 = undefined;
+    const h = std.fmt.bufPrint(&head_buf, "blob {d}\x00", .{bytes.len}) catch unreachable;
+    if (oid_len == 64) {
+        var sha: std.crypto.hash.sha2.Sha256 = .init(.{});
+        sha.update(h);
+        sha.update(bytes);
+        var d: [32]u8 = undefined;
+        sha.final(&d);
+        return std.fmt.allocPrint(arena, "{x}", .{&d});
+    }
+    var sha: std.crypto.hash.Sha1 = .init(.{});
+    sha.update(h);
+    sha.update(bytes);
+    var d: [20]u8 = undefined;
+    sha.final(&d);
+    return std.fmt.allocPrint(arena, "{x}", .{&d});
+}
+
+/// "path (why), ..." for at most `max_listed` of them.
+fn unlandedList(arena: Allocator, l: Landed) Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(arena);
+    const n = @min(l.unlanded.len, max_listed);
+    for (l.unlanded[0..n], 0..) |u, i| {
+        out.writer.print("{s}{s} ({t})", .{ if (i == 0) "" else ", ", u.path, u.why }) catch return error.OutOfMemory;
+    }
+    if (l.unlanded_count > n) out.writer.print(", and {d} more", .{l.unlanded_count - n}) catch return error.OutOfMemory;
+    return out.written();
 }
 
 // -------------------------------------------------------------- remove
@@ -795,20 +1433,47 @@ pub const Removed = union(enum) {
     refused: Refusal,
 };
 
-/// Take a tree down -- **only when it is clean and merged**, and say why not
-/// otherwise. Never forced.
+/// Which tree: by `name` (and `repo` when two repositories have that name),
+/// or by `task`.
+pub const Selector = struct {
+    name: []const u8 = "",
+    repo: []const u8 = "",
+    task: u64 = 0,
+};
+
+/// `removeSel` by name.
 pub fn remove(git: Git, arena: Allocator, ledger: *Ledger, name: []const u8, repo: []const u8) Allocator.Error!Removed {
-    const i = switch (ledger.lookup(name, repo)) {
+    return removeSel(git, arena, ledger, .{ .name = name, .repo = repo });
+}
+
+/// Take a tree down -- **only when its work has landed** (`landed`), and say
+/// why not otherwise. The entry is the one `sel` names.
+pub fn removeSel(git: Git, arena: Allocator, ledger: *Ledger, sel: Selector) Allocator.Error!Removed {
+    const i = switch (ledger.select(sel.name, sel.repo, sel.task)) {
         .none => return .{ .refused = .{
             .code = "NoSuchWorktree",
-            .message = try std.fmt.allocPrint(arena, "Polter has no worktree called {s}; worktree_status lists them.", .{name}),
+            .message = if (sel.task != 0)
+                try std.fmt.allocPrint(arena, "Polter has no worktree for task {d}; worktree_status lists them.", .{sel.task})
+            else
+                try std.fmt.allocPrint(arena, "Polter has no worktree called {s}; worktree_status lists them.", .{sel.name}),
         } },
         .ambiguous => |n| return .{ .refused = .{
             .code = "BadParams",
-            .message = try std.fmt.allocPrint(arena, "{d} repositories have a worktree called {s}; say which with repo.", .{ n, name }),
+            .message = try std.fmt.allocPrint(arena, "{d} repositories have that worktree; say which with repo.", .{n}),
         } },
         .one => |i| i,
     };
+    return removeIndex(git, arena, ledger, i);
+}
+
+/// The one place a tree is taken down, for `remove` and for `closeout`.
+///
+/// ⚠️ **The only `--force` in this file**, and only after `landed` has said
+/// yes twice. A tree whose work has landed is still "dirty" to git -- the
+/// changes are in it, and on the mainline -- so git refuses to remove it
+/// without. Nothing else reaches this line, and a test reads the command log
+/// to hold it to that.
+fn removeIndex(git: Git, arena: Allocator, ledger: *Ledger, i: usize) Allocator.Error!Removed {
     const entry = try ledger.entries.items[i].dupe(arena);
 
     const s = try status(git, arena, entry);
@@ -819,15 +1484,7 @@ pub fn remove(git: Git, arena: Allocator, ledger: *Ledger, name: []const u8, rep
     }
     if (s.problem) |p| return .{ .refused = .{
         .code = "WorktreeFailed",
-        .message = try std.fmt.allocPrint(arena, "whether {s} is clean and merged could not be told, so it was kept: {s}", .{ entry.path, p }),
-    } };
-    if (s.dirty.? > 0) return .{ .refused = .{
-        .code = "WorktreeDirty",
-        .message = try std.fmt.allocPrint(
-            arena,
-            "{d} uncommitted change{s} in {s}; nothing was removed. Commit, apply or discard them with git first.",
-            .{ s.dirty.?, if (s.dirty.? == 1) "" else "s", entry.path },
-        ),
+        .message = try std.fmt.allocPrint(arena, "whether the work in {s} has landed could not be told, so it was kept: {s}", .{ entry.path, p }),
     } };
     if (!s.merged.?) return .{ .refused = .{
         .code = "WorktreeNotMerged",
@@ -838,7 +1495,19 @@ pub fn remove(git: Git, arena: Allocator, ledger: *Ledger, name: []const u8, rep
         ),
     } };
 
-    const rm = git.run(arena, entry.repo, &.{ "worktree", "remove", entry.path }) catch |err| switch (err) {
+    const first = try landed(git, arena, entry);
+    if (first.unknown) return .{ .refused = .{
+        .code = "WorktreeFailed",
+        .message = try std.fmt.allocPrint(arena, "whether the work in {s} has landed could not be told, so it was kept: {s}", .{ entry.path, first.reason.? }),
+    } };
+    if (!first.landed) return .{ .refused = try notLanded(arena, entry, first) };
+
+    // The tree can change between the answer and the delete: whoever is
+    // working in it does not wait for this. Ask again, as late as possible.
+    const second = try landed(git, arena, entry);
+    if (!second.landed) return .{ .refused = try notLanded(arena, entry, second) };
+
+    const rm = git.run(arena, entry.repo, &.{ "worktree", "remove", "--force", entry.path }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.GitNotRunnable => return .{ .refused = .{ .code = "WorktreeFailed", .message = "git could not be run; nothing was removed." } },
     };
@@ -856,6 +1525,533 @@ pub fn remove(git: Git, arena: Allocator, ledger: *Ledger, name: []const u8, rep
     log.info("worktree: removed {s} at {s}", .{ entry.name, entry.path });
     return .{ .removed = .{ .path = entry.path, .branch_kept = kept } };
 }
+
+fn notLanded(arena: Allocator, entry: Entry, l: Landed) Allocator.Error!Refusal {
+    const why: []const u8 = if (l.reason) |r|
+        r
+    else
+        try std.fmt.allocPrint(arena, "{d} of {d} changed path{s} {s} not on the mainline as they are here: {s}", .{
+            l.unlanded_count,
+            l.checked,
+            if (l.checked == 1) "" else "s",
+            if (l.unlanded_count == 1) "is" else "are",
+            try unlandedList(arena, l),
+        });
+    return .{
+        .code = "WorktreeNotLanded",
+        .message = try std.fmt.allocPrint(
+            arena,
+            "the work in {s} has not landed; nothing was removed: {s}. Apply it on the mainline, or " ++
+                "throw it away with git, then ask again.",
+            .{ entry.path, why },
+        ),
+    };
+}
+
+// ------------------------------------------------------ build leftovers
+
+/// What is cleared from a tree, by name and nothing else: the build output
+/// that grows to tens of gigabytes. Not a pattern. A name here is deleted
+/// only if git also says the path is ignored there, so a tracked directory
+/// that happens to be called `zig-out` is never touched.
+pub const build_debris = [_][]const u8{
+    ".zig-cache",
+    "zig-out",
+    "macos/build",
+    "macos/GhosttyKit.xcframework",
+    "windows/target",
+    "windows/split-tree/target",
+};
+
+pub const CacheFail = struct { path: []const u8, why: []const u8 };
+
+pub const CacheResult = struct {
+    /// Somebody holds the lease or is building: nothing was touched
+    /// (`CacheBusy`), because removing what `zig build` is reading is the
+    /// worst thing this file could do.
+    busy: bool = false,
+    cleaned: []const []const u8 = &.{},
+    /// There, not ignored by git, left alone.
+    kept: []const []const u8 = &.{},
+    failed: []const CacheFail = &.{},
+};
+
+/// Clear `build_debris` out of the tree. Runs git, deletes directories:
+/// off the app thread. `busy` is the caller's word that a lease is held or a
+/// build is running -- nothing is touched then.
+pub fn cleanCache(git: Git, arena: Allocator, entry: Entry, busy: bool) Allocator.Error!CacheResult {
+    if (busy) return .{ .busy = true };
+    var cleaned: std.ArrayList([]const u8) = .empty;
+    var kept: std.ArrayList([]const u8) = .empty;
+    var failed: std.ArrayList(CacheFail) = .empty;
+    for (build_debris) |rel| {
+        const abs = try std.fs.path.join(arena, &.{ entry.path, rel });
+        if (!exists(git.io, abs)) continue;
+        const ign = git.run(arena, entry.path, &.{ "check-ignore", "-q", "--", rel }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.GitNotRunnable => {
+                try failed.append(arena, .{ .path = rel, .why = "git could not be run" });
+                continue;
+            },
+        };
+        if (!ign.ok) {
+            try kept.append(arena, rel);
+            continue;
+        }
+        // It is inside the tree by construction; this is the guard that
+        // stays true if the list is ever edited carelessly.
+        std.debug.assert(within(entry.path, abs));
+        Io.Dir.cwd().deleteTree(git.io, abs) catch |err| {
+            try failed.append(arena, .{ .path = rel, .why = try std.fmt.allocPrint(arena, "{t}", .{err}) });
+            continue;
+        };
+        try cleaned.append(arena, rel);
+    }
+    return .{ .cleaned = cleaned.items, .kept = kept.items, .failed = failed.items };
+}
+
+// ------------------------------------------------------------- closeout
+
+pub const CloseMode = enum { closed, cancelled };
+
+pub const CloseIn = struct {
+    mode: CloseMode,
+    /// Terminals still standing in the tree, named for a person (an alias
+    /// and an id). The caller has already taken the members' identity off
+    /// and closed the idle ones, so what is left is busy, the user's, or
+    /// could not be closed.
+    standing: []const []const u8 = &.{},
+    /// Who holds the tree's build lease.
+    lease: ?LeaseView = null,
+    /// Aliases whose process tree is running a build in it.
+    building: []const []const u8 = &.{},
+};
+
+pub const Outcome = enum {
+    /// The task has no tree in the ledger.
+    no_tree,
+    /// Landed, nobody in it, nobody building: taken down.
+    removed,
+    /// The directory was already gone; the entry was dropped.
+    forgotten,
+    /// Landed, but terminals still stand in it.
+    kept_standing,
+    /// Landed, but the lease is held or a build is running.
+    kept_busy,
+    /// Work in it is not on the mainline.
+    kept_unlanded,
+    /// The branch has commits the mainline lacks.
+    kept_ahead,
+    /// git could not say.
+    kept_unknown,
+};
+
+pub const Closeout = struct {
+    outcome: Outcome,
+    mode: CloseMode,
+    task: u64,
+    name: []const u8 = "",
+    path: []const u8 = "",
+    branch: []const u8 = "",
+    landed: ?Landed = null,
+    ahead: ?usize = null,
+    problem: ?[]const u8 = null,
+    standing: []const []const u8 = &.{},
+    lease: ?LeaseView = null,
+    building: []const []const u8 = &.{},
+    branch_kept: ?[]const u8 = null,
+    /// A removal that was due and was refused at the last moment.
+    refusal: ?Refusal = null,
+    /// Null when the tree went (its cache with it).
+    cache: ?CacheResult = null,
+    /// The sentence for the supervisor, from `renderCloseout`.
+    note: []const u8 = "",
+};
+
+/// What closing or cancelling a task does to its tree. **The one function**:
+/// `task_close`, `task_cancel`, `worktree_status` and `worktree_remove` all
+/// say what they say from here, so there is one table and one sentence per
+/// row, and the delete is `removeIndex` -- the same code, the same checks, the
+/// same single `--force` -- as the manual one.
+///
+/// | state                                      | tree  | cache |
+/// | landed, nobody in it, no lease or build    | taken down | with it |
+/// | landed, terminals still in it              | kept, named | cleared |
+/// | landed, lease held or a build running      | kept, holder named | **not** (`CacheBusy`) |
+/// | not landed                                 | kept, paths listed | cleared |
+/// | the branch has commits the mainline lacks  | kept, branch named | cleared |
+/// | git could not say / too many paths         | kept, reason | cleared |
+///
+/// A cancelled task is the same table: an unlanded tree is kept, an empty
+/// one has nothing to lose and goes. The caller has already released the
+/// members' leases when cancelling.
+pub fn closeout(git: Git, arena: Allocator, ledger: *Ledger, task: u64, in: CloseIn) Allocator.Error!Closeout {
+    var c: Closeout = .{
+        .outcome = .no_tree,
+        .mode = in.mode,
+        .task = task,
+        .standing = in.standing,
+        .lease = in.lease,
+        .building = in.building,
+    };
+    const i = ledger.taskTree(task) orelse {
+        c.note = try renderCloseout(arena, c);
+        return c;
+    };
+    const entry = try ledger.entries.items[i].dupe(arena);
+    c.name = entry.name;
+    c.path = entry.path;
+    c.branch = entry.branch;
+    const busy = in.lease != null or in.building.len > 0;
+
+    const s = try status(git, arena, entry);
+    if (!s.exists) {
+        ledger.removeAt(i);
+        ledger.save(git.io) catch |err| log.warn("worktree: could not save the ledger: {t}", .{err});
+        c.outcome = .forgotten;
+        c.note = try renderCloseout(arena, c);
+        return c;
+    }
+
+    if (s.problem) |p| {
+        c.outcome = .kept_unknown;
+        c.problem = p;
+    } else if (!s.merged.?) {
+        c.outcome = .kept_ahead;
+        c.ahead = s.ahead;
+    } else {
+        const l = try landed(git, arena, entry);
+        c.landed = l;
+        if (l.unknown) {
+            c.outcome = .kept_unknown;
+            c.problem = l.reason;
+        } else if (!l.landed) {
+            c.outcome = .kept_unlanded;
+        } else if (busy) {
+            c.outcome = .kept_busy;
+        } else if (in.standing.len > 0) {
+            c.outcome = .kept_standing;
+        } else switch (try removeIndex(git, arena, ledger, i)) {
+            .removed => |r| {
+                c.outcome = .removed;
+                c.branch_kept = r.branch_kept;
+            },
+            .forgotten => c.outcome = .forgotten,
+            .refused => |r| {
+                // Due, and the last look said no (the tree changed, or git
+                // refused). Kept, and the reason is the sentence.
+                c.outcome = .kept_unlanded;
+                c.refusal = r;
+            },
+        }
+    }
+
+    switch (c.outcome) {
+        .removed, .forgotten, .no_tree => {},
+        else => c.cache = try cleanCache(git, arena, entry, busy),
+    }
+    c.note = try renderCloseout(arena, c);
+    return c;
+}
+
+/// The sentence for `c`: what became of the tree, and why, with the paths,
+/// terminals or holder that decided it named.
+pub fn renderCloseout(arena: Allocator, c: Closeout) Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(arena);
+    const w = &out.writer;
+    renderInto(w, c) catch return error.OutOfMemory;
+    if (c.cache) |cache| {
+        w.writeAll(" ") catch return error.OutOfMemory;
+        renderCache(w, cache) catch return error.OutOfMemory;
+    }
+    return out.written();
+}
+
+fn renderInto(w: *std.Io.Writer, c: Closeout) !void {
+    const verb = switch (c.mode) {
+        .closed => "closed",
+        .cancelled => "cancelled",
+    };
+    switch (c.outcome) {
+        .no_tree => try w.print("Task {d} {s}. It has no worktree.", .{ c.task, verb }),
+        .forgotten => try w.print("Task {d} {s}. Its worktree {s} was already gone; Polter no longer lists it.", .{ c.task, verb, c.path }),
+        .removed => {
+            try w.print(
+                "Task {d} {s}. Its worktree {s} was taken down: everything changed in it is already on the mainline.",
+                .{ c.task, verb, c.path },
+            );
+            if (c.branch_kept) |why| try w.print(" Its branch {s} was kept: {s}", .{ c.branch, why });
+        },
+        .kept_standing => {
+            try w.print("Task {d} {s}. Its worktree {s} (branch {s}) is kept: its work has landed, but ", .{ c.task, verb, c.path, c.branch });
+            try listStrings(w, c.standing);
+            try w.writeAll(if (c.standing.len == 1) " is still standing in it." else " are still standing in it.");
+        },
+        .kept_busy => {
+            try w.print("Task {d} {s}. Its worktree {s} (branch {s}) is kept: its work has landed, but ", .{ c.task, verb, c.path, c.branch });
+            if (c.lease) |l| try w.print("{s} holds its {t} lease", .{ l.alias, l.purpose });
+            if (c.lease != null and c.building.len > 0) try w.writeAll(" and ");
+            if (c.building.len > 0) {
+                try listStrings(w, c.building);
+                try w.writeAll(" is building in it");
+            }
+            try w.writeAll(".");
+        },
+        .kept_unlanded => {
+            try w.print("Task {d} {s}. Its worktree {s} (branch {s}) is KEPT: ", .{ c.task, verb, c.path, c.branch });
+            if (c.refusal) |r| {
+                try w.writeAll(r.message);
+            } else if (c.landed) |l| {
+                if (l.reason) |r| {
+                    try w.writeAll(r);
+                    try w.writeAll(".");
+                } else {
+                    try w.print("{d} of {d} changed path{s} {s} not on the mainline as they are in the tree:", .{
+                        l.unlanded_count,
+                        l.checked,
+                        if (l.checked == 1) "" else "s",
+                        if (l.unlanded_count == 1) "is" else "are",
+                    });
+                    const n = @min(l.unlanded.len, max_listed);
+                    for (l.unlanded[0..n]) |u| try w.print(" {s} ({t});", .{ u.path, u.why });
+                    if (l.unlanded_count > n) try w.print(" and {d} more.", .{l.unlanded_count - n});
+                }
+            }
+            try w.writeAll(" Apply that work on the mainline, or throw it away, before the tree is taken down.");
+        },
+        .kept_ahead => try w.print(
+            "Task {d} {s}. Its worktree {s} is KEPT: branch {s} has {d} commit{s} the mainline does not.",
+            .{ c.task, verb, c.path, c.branch, c.ahead orelse 0, if ((c.ahead orelse 0) == 1) "" else "s" },
+        ),
+        .kept_unknown => try w.print(
+            "Task {d} {s}. Its worktree {s} (branch {s}) is kept: whether its work has landed could not be told ({s}).",
+            .{ c.task, verb, c.path, c.branch, c.problem orelse "no reason given" },
+        ),
+    }
+}
+
+fn listStrings(w: *std.Io.Writer, items: []const []const u8) !void {
+    for (items, 0..) |it, i| try w.print("{s}{s}", .{ if (i == 0) "" else ", ", it });
+}
+
+fn renderCache(w: *std.Io.Writer, r: CacheResult) !void {
+    if (r.busy) return w.writeAll("CacheBusy: its build output was not cleared because a lease is held or a build is running; clear it with worktree_clean once that ends.");
+    if (r.cleaned.len > 0) {
+        try w.writeAll("Build output cleared (");
+        try listStrings(w, r.cleaned);
+        try w.writeAll("); the next build in this tree is a cold one.");
+    } else if (r.failed.len == 0) {
+        try w.writeAll("There was no build output to clear.");
+    }
+    for (r.failed) |f| try w.print(" Could not clear {s}: {s}.", .{ f.path, f.why });
+}
+
+// ---------------------------------------------------------------- lease
+
+/// What a lease is held for. Advice, not enforcement: Polter cannot stop an
+/// agent's editor or see the `zig build` it types, so a lease is a note
+/// everyone can read ("who, since when, for what"), kept so a tester does
+/// not start a build while a developer is still writing.
+pub const Purpose = enum { build, @"test", edit };
+
+/// How long a lease lasts without being renewed.
+pub const default_lease_ttl_ms: i64 = 30 * 60 * 1000;
+
+pub const LeaseView = struct {
+    alias: []const u8,
+    terminal: u64,
+    purpose: Purpose,
+    since_ms: i64,
+    expires_ms: i64,
+};
+
+/// Why a lease stopped being held.
+pub const LeaseWhy = enum {
+    /// Its holder let go.
+    released,
+    /// The holder's terminal is gone.
+    terminal_closed,
+    /// The holder's turn ended and nothing of theirs runs in the background.
+    idle,
+    /// Not renewed within the TTL.
+    expired,
+    /// The supervisor took it back.
+    supervisor,
+};
+
+/// One lease let go: for the task's record, so the morning can say who held
+/// it, for how long and why it stopped.
+pub const LeaseEvent = struct {
+    task: u64,
+    why: LeaseWhy,
+    alias: []const u8,
+    terminal: u64,
+    held_ms: i64,
+};
+
+/// What `sweep` is told of a terminal that holds a lease. A holder that is
+/// not listed is gone.
+pub const Liveness = enum { busy, idle, waiting_on_background };
+
+pub const Seen = struct { terminal: u64, state: Liveness };
+
+/// The leases on task trees: one holder per tree, in memory only. After a
+/// restart nobody holds anything -- the agent sessions have to reconnect and
+/// the old holders cannot be trusted to still be doing what they said.
+pub const Leases = struct {
+    alloc: Allocator,
+    ttl_ms: i64 = default_lease_ttl_ms,
+    held: std.ArrayList(Held) = .empty,
+
+    const Held = struct {
+        task: u64,
+        alias: []u8,
+        terminal: u64,
+        purpose: Purpose,
+        since_ms: i64,
+        expires_ms: i64,
+
+        fn view(self: Held) LeaseView {
+            return .{
+                .alias = self.alias,
+                .terminal = self.terminal,
+                .purpose = self.purpose,
+                .since_ms = self.since_ms,
+                .expires_ms = self.expires_ms,
+            };
+        }
+    };
+
+    pub fn init(alloc: Allocator) Leases {
+        return .{ .alloc = alloc };
+    }
+
+    pub fn deinit(self: *Leases) void {
+        for (self.held.items) |h| self.alloc.free(h.alias);
+        self.held.deinit(self.alloc);
+    }
+
+    fn find(self: *const Leases, task: u64) ?usize {
+        for (self.held.items, 0..) |h, i| if (h.task == task) return i;
+        return null;
+    }
+
+    /// Who holds `task`'s tree. The alias is borrowed until the next change.
+    pub fn status(self: *const Leases, task: u64) ?LeaseView {
+        const i = self.find(task) orelse return null;
+        return self.held.items[i].view();
+    }
+
+    pub const Acquired = union(enum) {
+        /// The caller holds it now; `renewed` when it already did.
+        granted: struct { view: LeaseView, renewed: bool },
+        /// Somebody else does: `LeaseHeld`, with who and since when.
+        held: LeaseView,
+    };
+
+    /// Take the lease, or renew it when the caller already holds it. Never
+    /// waits and never queues: a tool call that blocked would hold up the
+    /// agent's whole turn.
+    pub fn acquire(
+        self: *Leases,
+        task: u64,
+        alias: []const u8,
+        terminal: u64,
+        purpose: Purpose,
+        now_ms: i64,
+    ) Allocator.Error!Acquired {
+        if (self.find(task)) |i| {
+            const h = &self.held.items[i];
+            if (h.terminal != terminal) return .{ .held = h.view() };
+            h.purpose = purpose;
+            h.expires_ms = now_ms + self.ttl_ms;
+            return .{ .granted = .{ .view = h.view(), .renewed = true } };
+        }
+        const owned = try self.alloc.dupe(u8, alias);
+        errdefer self.alloc.free(owned);
+        try self.held.append(self.alloc, .{
+            .task = task,
+            .alias = owned,
+            .terminal = terminal,
+            .purpose = purpose,
+            .since_ms = now_ms,
+            .expires_ms = now_ms + self.ttl_ms,
+        });
+        return .{ .granted = .{ .view = self.held.items[self.held.items.len - 1].view(), .renewed = false } };
+    }
+
+    pub const Released = union(enum) {
+        released: LeaseEvent,
+        /// Nobody holds it -- including a holder from before a restart.
+        not_held,
+        /// Somebody else does, and the caller is not the supervisor.
+        not_holder: LeaseView,
+    };
+
+    /// Let go. The holder may; the supervisor may let go of anyone's.
+    pub fn release(
+        self: *Leases,
+        arena: Allocator,
+        task: u64,
+        terminal: u64,
+        supervisor: bool,
+        now_ms: i64,
+    ) Allocator.Error!Released {
+        const i = self.find(task) orelse return .not_held;
+        const h = self.held.items[i];
+        if (h.terminal != terminal and !supervisor) return .{ .not_holder = h.view() };
+        const why: LeaseWhy = if (h.terminal == terminal) .released else .supervisor;
+        const ev = try self.eventOf(arena, h, why, now_ms);
+        self.drop(i);
+        return .{ .released = ev };
+    }
+
+    fn eventOf(self: *const Leases, arena: Allocator, h: Held, why: LeaseWhy, now_ms: i64) Allocator.Error!LeaseEvent {
+        _ = self;
+        return .{
+            .task = h.task,
+            .why = why,
+            .alias = try arena.dupe(u8, h.alias),
+            .terminal = h.terminal,
+            .held_ms = now_ms - h.since_ms,
+        };
+    }
+
+    fn drop(self: *Leases, i: usize) void {
+        self.alloc.free(self.held.items[i].alias);
+        _ = self.held.orderedRemove(i);
+    }
+
+    /// Let go of every lease whose holder cannot be holding it any more, and
+    /// say each one. A holder's turn ending (`idle`) is a reason to let go
+    /// unless something of theirs is running in the background -- a build
+    /// they started and are waiting for.
+    pub fn sweep(self: *Leases, arena: Allocator, now_ms: i64, seen: []const Seen) Allocator.Error![]const LeaseEvent {
+        var events: std.ArrayList(LeaseEvent) = .empty;
+        var i: usize = 0;
+        while (i < self.held.items.len) {
+            const h = self.held.items[i];
+            const state: ?Liveness = for (seen) |s| {
+                if (s.terminal == h.terminal) break s.state;
+            } else null;
+            const why: ?LeaseWhy = if (state == null)
+                .terminal_closed
+            else if (state.? == .idle)
+                .idle
+            else if (now_ms >= h.expires_ms)
+                .expired
+            else
+                null;
+            if (why) |wh| {
+                try events.append(arena, try self.eventOf(arena, h, wh, now_ms));
+                self.drop(i);
+                continue;
+            }
+            i += 1;
+        }
+        return events.items;
+    }
+};
 
 // --------------------------------------------------------------- tests
 //
@@ -1195,7 +2391,7 @@ test "worktree: a job makes the tree off the calling thread, which carries on me
     try testing.expectEqualStrings("wt/w1", try fx.out(p.tree.entry.path, &.{ "rev-parse", "--abbrev-ref", "HEAD" }));
 }
 
-test "worktree: a dirty tree is not removed, and the refusal says how dirty" {
+test "worktree: a tree with work that is not on the mainline is not removed, and the refusal names the path" {
     var fx: Fixture = undefined;
     try fx.init();
     defer fx.deinit();
@@ -1212,8 +2408,8 @@ test "worktree: a dirty tree is not removed, and the refusal says how dirty" {
 
     const r = try remove(fx.git(), fx.al(), &ledger, "w1", "");
     try testing.expect(r == .refused);
-    try testing.expectEqualStrings("WorktreeDirty", r.refused.code);
-    try testing.expect(std.mem.indexOf(u8, r.refused.message, "1 uncommitted change ") != null);
+    try testing.expectEqualStrings("WorktreeNotLanded", r.refused.code);
+    try testing.expect(std.mem.indexOf(u8, r.refused.message, "a.txt (differs)") != null);
     try testing.expect(exists(testing.io, path));
     try testing.expectEqual(@as(usize, 1), ledger.entries.items.len);
 }
@@ -1283,4 +2479,952 @@ test "worktree: a clean, merged tree is removed, ignored build output and all" {
 
     const none = try remove(fx.git(), fx.al(), &ledger, "w1", "");
     try testing.expectEqualStrings("NoSuchWorktree", none.refused.code);
+}
+
+// ------------------------------------------------- task trees (task 2465)
+//
+// Every repository below is the Fixture's, made under /tmp and deleted by
+// `deinit`. The tests that delete a tree delete one the test itself made in
+// that repository, never one of the working copy's.
+
+/// The tree for `task` of `group`, made beside `fx.repo`.
+fn taskTreeOf(fx: *Fixture, ledger: *Ledger, group: []const u8, task: u64) !Entry {
+    const p = try prepareTask(fx.git(), fx.al(), ledger, .{ .dir = fx.repo, .group = group, .task = task });
+    try testing.expect(p == .tree);
+    return p.tree.entry;
+}
+
+/// What a worker leaves in its tree: `a.txt` changed, `b.txt` new.
+fn workerWork(fx: *Fixture, dir: []const u8) !void {
+    try fx.write(dir, "a.txt", "two\n");
+    try fx.write(dir, "b.txt", "new\n");
+}
+
+/// The supervisor applying that work on the main tree and committing it.
+fn landOnMain(fx: *Fixture) !void {
+    try workerWork(fx, fx.repo);
+    try fx.must(fx.repo, &.{ "add", "a.txt", "b.txt" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "land" });
+}
+
+fn chmodPlus(fx: *Fixture, mode: []const u8, path: []const u8) !void {
+    const r = try std.process.run(fx.al(), testing.io, .{ .argv = &.{ "/bin/chmod", mode, path } });
+    try testing.expect(r.term == .exited and r.term.exited == 0);
+}
+
+fn statusJson(fx: *Fixture, s: Status) !std.json.Value {
+    var out: std.Io.Writer.Allocating = .init(fx.al());
+    var w: std.json.Stringify = .{ .writer = &out.writer };
+    try writeStatus(&w, s);
+    return try std.json.parseFromSliceLeaky(std.json.Value, fx.al(), out.written(), .{});
+}
+
+fn whyOf(l: Landed, path: []const u8) ?Why {
+    for (l.unlanded) |u| if (std.mem.eql(u8, u.path, path)) return u.why;
+    return null;
+}
+
+/// A git that writes every call it is given to `<root>/git.log`, and -- on
+/// its `late_on`th `status --porcelain=v1`, when that is not 0 -- first puts
+/// `late.txt` into the tree it is run in: somebody working while Polter
+/// decides. Everything else is real git.
+fn loggingGit(fx: *Fixture, late_on: u32) !Git {
+    const io = testing.io;
+    const script = try std.fs.path.join(fx.al(), &.{ fx.root, "logged-git" });
+    const body = try std.fmt.allocPrint(fx.al(),
+        \\#!/bin/sh
+        \\echo "$*" >> "{s}/git.log"
+        \\case " $* " in
+        \\*" --porcelain=v1 "*)
+        \\  n=$(cat "{s}/count" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "{s}/count"
+        \\  if [ "$n" = "{d}" ]; then echo late > "$2/late.txt"; fi;;
+        \\esac
+        \\exec git "$@"
+        \\
+    , .{ fx.root, fx.root, fx.root, late_on });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = script, .data = body });
+    try chmodPlus(fx, "+x", script);
+    var g = fx.git();
+    g.exe = script;
+    return g;
+}
+
+fn gitLog(fx: *Fixture) ![]const u8 {
+    const p = try std.fs.path.join(fx.al(), &.{ fx.root, "git.log" });
+    return Io.Dir.cwd().readFileAlloc(testing.io, p, fx.al(), .limited(1 << 20)) catch "";
+}
+
+test "worktree: 任务树的目录与分支由群和任务号拼出，beside 与 inside 两种位置都对" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try testing.expectEqualStrings(try std.fs.path.join(a, &.{ fx.root, "proj-wt", "polter", "wt-2435" }), e.path);
+    try testing.expectEqualStrings("wt/polter/2435", e.branch);
+    try testing.expectEqualStrings("polter/wt-2435", e.name);
+    try testing.expectEqualStrings("wt/polter/2435", try fx.out(e.path, &.{ "rev-parse", "--abbrev-ref", "HEAD" }));
+
+    const inside = try prepareTask(fx.git(), a, &ledger, .{
+        .dir = fx.repo,
+        .group = "polter",
+        .task = 2436,
+        .location = .inside,
+    });
+    try testing.expect(inside == .tree);
+    try testing.expectEqualStrings(
+        try std.fs.path.join(a, &.{ fx.repo, inside_dir, "polter", "wt-2436" }),
+        inside.tree.entry.path,
+    );
+    try testing.expectEqualStrings("wt/polter/2436", inside.tree.entry.branch);
+    // The excluded directory covers the group level too: git sees nothing.
+    try testing.expectEqualStrings("", try fx.out(fx.repo, &.{ "status", "--porcelain" }));
+}
+
+test "worktree: groupSegment 对合法群名原样返回，对不合法名走 encodeSegment，目录与分支用同一个结果" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const plain = try groupSegment(aa, "demo-15r");
+    try testing.expectEqualStrings("demo-15r", plain);
+
+    const odd = try groupSegment(aa, "My Group/1");
+    const enc = try daylog.encodeSegment(aa, "My Group/1");
+    try testing.expectEqualStrings(enc, odd);
+    try testing.expectEqualStrings("My%20Group%2F1", odd);
+
+    // The directory and the branch are spelled from the same string.
+    const path = try taskTreePath(aa, .{ .main = "/r/proj", .common = "/r/proj/.git" }, .beside, "My Group/1", 7);
+    const branch = try taskBranch(aa, "My Group/1", 7);
+    const name = try taskTreeName(aa, "My Group/1", 7);
+    try testing.expect(std.mem.indexOf(u8, path, odd) != null);
+    try testing.expect(std.mem.indexOf(u8, branch, odd) != null);
+    try testing.expect(std.mem.startsWith(u8, name, odd));
+    // Two different odd names stay different (a '_' stand-in would not).
+    const other = try groupSegment(aa, "My Group_1");
+    try testing.expect(!std.mem.eql(u8, other, odd));
+}
+
+test "worktree: groupSegment 转义 Windows 保留设备名（con、nul、com1）和 .lock 结尾" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_][2][]const u8{
+        .{ "con", "%63on" },
+        .{ "nul", "%6Eul" },
+        .{ "com1", "%63om1" },
+        .{ "lpt9", "%6Cpt9" },
+        .{ "CON", "%43ON" },
+        .{ "x.lock", "x%2Elock" },
+        .{ "a..b", "a%2E%2Eb" },
+        .{ ".hidden", "%2Ehidden" },
+        // Near misses are not device names.
+        .{ "console", "console" },
+        .{ "com0", "com0" },
+        .{ "com10", "com10" },
+    };
+    for (cases) |c| {
+        const got = try groupSegment(a, c[0]);
+        testing.expectEqualStrings(c[1], got) catch |err| {
+            std.debug.print("groupSegment({s})\n", .{c[0]});
+            return err;
+        };
+    }
+    // A literal "%63on" cannot be mistaken for the escaped "con".
+    const lit = try groupSegment(a, "%63on");
+    try testing.expect(!std.mem.eql(u8, lit, "%63on"));
+}
+
+test "worktree: 已有手动分支 wt/<群> 时，建 wt/<群>/<号> 被拒 BranchPrefixTaken 并点名那个分支，没建任何东西" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    // A manual tree whose name happens to be the group's.
+    const manual = try prepare(fx.git(), a, &ledger, .{ .dir = fx.repo, .name = "polter" });
+    try testing.expect(manual == .tree);
+    const before = try fx.out(fx.repo, &.{ "branch", "--list" });
+
+    const p = try prepareTask(fx.git(), a, &ledger, .{ .dir = fx.repo, .group = "polter", .task = 2435 });
+    try testing.expect(p == .refused);
+    try testing.expectEqualStrings("BranchPrefixTaken", p.refused.code);
+    try testing.expect(std.mem.indexOf(u8, p.refused.message, "wt/polter") != null);
+    try testing.expectEqual(@as(usize, 1), ledger.entries.items.len);
+    try testing.expectEqualStrings(before, try fx.out(fx.repo, &.{ "branch", "--list" }));
+    // Not a directory under the manual tree either.
+    try testing.expect(!exists(testing.io, try std.fs.path.join(a, &.{ manual.tree.entry.path, "wt-2435" })));
+
+    // The other way round: with `wt/other/9` there, a manual `other` cannot be made.
+    const t = try prepareTask(fx.git(), a, &ledger, .{ .dir = fx.repo, .group = "other", .task = 9 });
+    try testing.expect(t == .tree);
+    const m = try prepare(fx.git(), a, &ledger, .{ .dir = fx.repo, .name = "other" });
+    try testing.expect(m == .refused);
+    try testing.expectEqualStrings("BranchExists", m.refused.code);
+    try testing.expect(std.mem.indexOf(u8, m.refused.message, "wt/other/9") != null);
+}
+
+test "worktree: 任务树的叶子 wt-<号> 在两个只差大小写的群之间不冲突" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const x = try taskTreeOf(&fx, &ledger, "Polter", 1);
+    const y = try taskTreeOf(&fx, &ledger, "polter", 2);
+    try testing.expect(!std.mem.eql(u8, x.path, y.path));
+    try testing.expectEqual(@as(usize, 2), ledger.entries.items.len);
+    try testing.expectEqualStrings("wt-1", std.fs.path.basename(x.path));
+    try testing.expectEqualStrings("wt-2", std.fs.path.basename(y.path));
+}
+
+test "worktree: 任务建树时账本 task 就写了，不靠 task_assign" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, try fx.ledgerFile());
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try testing.expectEqual(@as(?u64, 2435), e.task);
+    try testing.expectEqualStrings("polter", e.group);
+    try testing.expectEqual(Entry.Kind.task, e.kind);
+    // In the ledger as it is now, and as it is after a restart.
+    try testing.expectEqual(@as(?usize, 0), ledger.taskTree(2435));
+    var again = try Ledger.init(testing.allocator, try fx.ledgerFile());
+    defer again.deinit();
+    again.load(testing.io);
+    try testing.expectEqual(@as(?usize, 0), again.taskTree(2435));
+    try testing.expectEqualStrings("polter", again.entries.items[0].group);
+    // By task number, or by the name with the slash in it: the same tree.
+    try testing.expectEqual(Ledger.Lookup{ .one = 0 }, again.select("", "", 2435));
+    try testing.expectEqual(Ledger.Lookup{ .one = 0 }, again.select("polter/wt-2435", "", 0));
+    try testing.expectEqual(Ledger.Lookup.none, again.select("", "", 9));
+
+    // Asked for again, the same tree.
+    const second = try prepareTask(fx.git(), fx.al(), &again, .{ .dir = fx.repo, .group = "polter", .task = 2435 });
+    try testing.expect(second == .tree and second.tree.reused);
+}
+
+test "worktree: 旧账本行读出来是 manual 且 group 为空" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const file = try fx.ledgerFile();
+    try writeReplacing(testing.allocator, testing.io, file,
+        \\{"version":1,"trees":[{"name":"w1","repo":"/r/proj","path":"/r/proj-wt/w1","branch":"wt/w1","base":"abc","created_ms":5,"by":3,"terminal":null,"task":42}]}
+    );
+    var ledger = try Ledger.init(testing.allocator, file);
+    defer ledger.deinit();
+    ledger.load(testing.io);
+    try testing.expectEqual(@as(usize, 1), ledger.entries.items.len);
+    const e = ledger.entries.items[0];
+    try testing.expectEqual(Entry.Kind.manual, e.kind);
+    try testing.expectEqualStrings("", e.group);
+    try testing.expectEqual(@as(?u64, 42), e.task);
+    // A manual tree is not "the tree made for" its task.
+    try testing.expectEqual(@as(?usize, null), ledger.taskTree(42));
+    try testing.expectEqual(Ledger.Lookup{ .one = 0 }, ledger.select("", "", 42));
+}
+
+test "worktree: 补丁已在主线提交 → landed，closeout 删树" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, try fx.ledgerFile());
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try workerWork(&fx, e.path);
+    // The worker did not commit; the supervisor applied the patch on main.
+    try landOnMain(&fx);
+
+    const s = try status(fx.git(), fx.al(), e);
+    // The old fields: this is exactly the case they cannot tell apart.
+    try testing.expectEqual(@as(?bool, true), s.merged);
+    try testing.expect(s.dirty.? > 0);
+
+    const l = try landed(fx.git(), fx.al(), e);
+    try testing.expect(l.landed);
+    try testing.expectEqual(@as(usize, 2), l.checked);
+    try testing.expectEqual(@as(usize, 0), l.unlanded_count);
+
+    const c = try closeout(fx.git(), fx.al(), &ledger, 2435, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.removed, c.outcome);
+    try testing.expect(!exists(testing.io, e.path));
+    try testing.expectEqual(@as(usize, 0), ledger.entries.items.len);
+    const br = try fx.git().run(fx.al(), fx.repo, &.{ "rev-parse", "--verify", "--quiet", "refs/heads/wt/polter/2435" });
+    try testing.expect(!br.ok);
+}
+
+test "worktree: 树里多一个未跟踪的源文件 → 不 landed，保留，unlanded 点名该路径（extra）" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try workerWork(&fx, e.path);
+    try fx.write(e.path, "c.zig", "pub const x = 1;\n");
+    try landOnMain(&fx);
+
+    const l = try landed(fx.git(), fx.al(), e);
+    try testing.expect(!l.landed);
+    try testing.expectEqual(@as(usize, 1), l.unlanded_count);
+    try testing.expectEqual(@as(?Why, .extra), whyOf(l, "c.zig"));
+
+    const c = try closeout(fx.git(), fx.al(), &ledger, 2435, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.kept_unlanded, c.outcome);
+    try testing.expect(exists(testing.io, e.path));
+    try testing.expectEqual(@as(usize, 1), ledger.entries.items.len);
+    try testing.expect(std.mem.indexOf(u8, c.note, "c.zig (extra)") != null);
+}
+
+test "worktree: 主线后来又改过同一个文件 → 不 landed，保留，unlanded 点名该路径（differs）" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try workerWork(&fx, e.path);
+    try landOnMain(&fx);
+    // Main moved on: somebody changed a.txt again.
+    try fx.write(fx.repo, "a.txt", "three\n");
+    try fx.must(fx.repo, &.{ "commit", "-q", "-am", "later" });
+
+    const l = try landed(fx.git(), fx.al(), e);
+    try testing.expect(!l.landed);
+    try testing.expectEqual(@as(usize, 1), l.unlanded_count);
+    try testing.expectEqual(@as(?Why, .differs), whyOf(l, "a.txt"));
+
+    const c = try closeout(fx.git(), fx.al(), &ledger, 2435, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.kept_unlanded, c.outcome);
+    try testing.expect(exists(testing.io, e.path));
+    try testing.expect(std.mem.indexOf(u8, c.note, "a.txt (differs)") != null);
+}
+
+test "worktree: 树里删了文件且主线也没有 → landed；树里删了而主线还有 → 不 landed（main_still_has）" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try Io.Dir.cwd().deleteFile(testing.io, try std.fs.path.join(fx.al(), &.{ e.path, "a.txt" }));
+
+    // Main still has it.
+    const still = try landed(fx.git(), fx.al(), e);
+    try testing.expect(!still.landed);
+    try testing.expectEqual(@as(?Why, .main_still_has), whyOf(still, "a.txt"));
+
+    // Main deleted it too.
+    try fx.must(fx.repo, &.{ "rm", "-q", "a.txt" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "drop a" });
+    const gone = try landed(fx.git(), fx.al(), e);
+    try testing.expect(gone.landed);
+    try testing.expectEqual(@as(usize, 1), gone.checked);
+}
+
+test "worktree: 只有可执行位不同 → 不 landed（mode）" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try chmodPlus(&fx, "+x", try std.fs.path.join(fx.al(), &.{ e.path, "a.txt" }));
+    const l = try landed(fx.git(), fx.al(), e);
+    try testing.expect(!l.landed);
+    try testing.expectEqual(@as(?Why, .mode), whyOf(l, "a.txt"));
+}
+
+test "worktree: 被 .gitignore 的构建产物不算改动" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    try fx.write(fx.repo, ".gitignore", "zig-out/\n.zig-cache/\n");
+    try fx.must(fx.repo, &.{ "add", ".gitignore" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "ignore" });
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    for ([_][]const u8{ "zig-out", ".zig-cache" }) |d| {
+        const dir = try std.fs.path.join(fx.al(), &.{ e.path, d });
+        try Io.Dir.cwd().createDirPath(testing.io, dir);
+        try fx.write(dir, "big", "x");
+    }
+    const l = try landed(fx.git(), fx.al(), e);
+    try testing.expect(l.landed);
+    try testing.expectEqual(@as(usize, 0), l.checked);
+}
+
+test "worktree: 路径含空格、中文、引号时判据仍正确" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const names = [_][]const u8{ "sp ace.txt", "中文.txt", "q\"uote.txt" };
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    for (names) |n| {
+        try fx.write(e.path, n, "same\n");
+        try fx.write(fx.repo, n, "same\n");
+    }
+    for (names) |n| try fx.must(fx.repo, &.{ "add", "--", n });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "names" });
+
+    const l = try landed(fx.git(), fx.al(), e);
+    try testing.expect(l.landed);
+    try testing.expectEqual(@as(usize, 3), l.checked);
+
+    // And one of them different on main is named, whole.
+    try fx.write(fx.repo, "中文.txt", "other\n");
+    try fx.must(fx.repo, &.{ "commit", "-q", "-am", "diverge" });
+    const d = try landed(fx.git(), fx.al(), e);
+    try testing.expect(!d.landed);
+    try testing.expectEqual(@as(?Why, .differs), whyOf(d, "中文.txt"));
+    try testing.expectEqual(@as(usize, 1), d.unlanded_count);
+}
+
+test "worktree: 重命名按\"删旧+加新\"处理" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try fx.must(e.path, &.{ "mv", "a.txt", "c.txt" });
+
+    // Main has the new name but still the old one: the deletion is not there.
+    try fx.write(fx.repo, "c.txt", "one\n");
+    try fx.must(fx.repo, &.{ "add", "c.txt" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "copy" });
+    const half = try landed(fx.git(), fx.al(), e);
+    try testing.expect(!half.landed);
+    try testing.expectEqual(@as(?Why, .main_still_has), whyOf(half, "a.txt"));
+    try testing.expectEqual(@as(usize, 2), half.checked);
+
+    try fx.must(fx.repo, &.{ "rm", "-q", "a.txt" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "rename" });
+    const whole = try landed(fx.git(), fx.al(), e);
+    try testing.expect(whole.landed);
+}
+
+test "worktree: ahead > 0（worker 真提交了）→ 不 landed，即使路径集合为空" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try fx.write(e.path, "b.txt", "new\n");
+    try fx.must(e.path, &.{ "add", "b.txt" });
+    try fx.must(e.path, &.{ "commit", "-q", "-m", "work" });
+    // Clean: nothing for the path list to say.
+    try testing.expectEqualStrings("", try fx.out(e.path, &.{ "status", "--porcelain" }));
+
+    const l = try landed(fx.git(), fx.al(), e);
+    try testing.expectEqual(@as(usize, 0), l.unlanded_count);
+    try testing.expect(!l.landed);
+    try testing.expectEqual(@as(?usize, 1), l.ahead);
+    try testing.expect(std.mem.indexOf(u8, l.reason.?, "1 commit") != null);
+
+    const r = try remove(fx.git(), fx.al(), &ledger, "", "");
+    _ = r;
+    const c = try closeout(fx.git(), fx.al(), &ledger, 2435, .{ .mode = .cancelled });
+    try testing.expectEqual(Outcome.kept_ahead, c.outcome);
+    try testing.expect(exists(testing.io, e.path));
+}
+
+test "worktree: 路径数超过上限 → 不 landed（too_many）" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    const dir = try std.fs.path.join(fx.al(), &.{ e.path, "many" });
+    try Io.Dir.cwd().createDirPath(testing.io, dir);
+    var i: usize = 0;
+    while (i < max_landed_paths + 1) : (i += 1) {
+        var buf: [32]u8 = undefined;
+        try fx.write(dir, try std.fmt.bufPrint(&buf, "f{d}.txt", .{i}), "x");
+    }
+    const l = try landed(fx.git(), fx.al(), e);
+    try testing.expect(!l.landed);
+    try testing.expectEqual(max_landed_paths + 1, l.checked);
+    try testing.expect(std.mem.startsWith(u8, l.reason.?, "too_many"));
+}
+
+test "worktree: 删除前复核——判据与删除之间树里又多了一个文件 → 不删" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try workerWork(&fx, e.path);
+    try landOnMain(&fx);
+
+    // The second `status --porcelain=v1` -- the re-check -- finds a file the
+    // first one did not.
+    const git = try loggingGit(&fx, 2);
+    const r = try removeSel(git, fx.al(), &ledger, .{ .task = 2435 });
+    try testing.expect(r == .refused);
+    try testing.expectEqualStrings("WorktreeNotLanded", r.refused.code);
+    try testing.expect(std.mem.indexOf(u8, r.refused.message, "late.txt") != null);
+    try testing.expect(exists(testing.io, e.path));
+    try testing.expectEqual(@as(usize, 1), ledger.entries.items.len);
+    try testing.expect(std.mem.indexOf(u8, try gitLog(&fx), "worktree remove") == null);
+}
+
+test "worktree_remove: 未落地 → WorktreeNotLanded 且命令记录里没有 --force；已落地 → 恰有一次 --force 且在复核之后" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    const a = fx.al();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try workerWork(&fx, e.path);
+
+    // Not landed: refused, and no `--force` was ever asked of git.
+    const git = try loggingGit(&fx, 0);
+    const no = try removeSel(git, a, &ledger, .{ .task = 2435 });
+    try testing.expect(no == .refused);
+    try testing.expectEqualStrings("WorktreeNotLanded", no.refused.code);
+    try testing.expect(std.mem.indexOf(u8, try gitLog(&fx), "--force") == null);
+    try testing.expect(std.mem.indexOf(u8, try gitLog(&fx), "worktree remove") == null);
+    try testing.expect(exists(testing.io, e.path));
+
+    // Landed: exactly one `--force`, and it comes after the last look.
+    try landOnMain(&fx);
+    const yes = try removeSel(git, a, &ledger, .{ .task = 2435 });
+    try testing.expect(yes == .removed);
+    const log_text = try gitLog(&fx);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, log_text, "--force"));
+    const force_at = std.mem.indexOf(u8, log_text, "worktree remove --force").?;
+    const last_look = std.mem.lastIndexOf(u8, log_text, "--porcelain=v1").?;
+    try testing.expect(last_look < force_at);
+    // Two looks since it landed (the check and the re-check), plus the one
+    // before it was landed.
+    try testing.expect(std.mem.count(u8, log_text, "--porcelain=v1") >= 3);
+}
+
+test "rpc: worktree_status 带 kind/group/group_now/label_stale，改群名后 label_stale 为真且目录没动" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    var s = try status(fx.git(), fx.al(), e);
+
+    s.group_now = "polter";
+    const same = try statusJson(&fx, s);
+    try testing.expectEqualStrings("task", same.object.get("kind").?.string);
+    try testing.expectEqualStrings("polter", same.object.get("group").?.string);
+    try testing.expectEqualStrings("polter", same.object.get("group_now").?.string);
+    try testing.expect(!same.object.get("label_stale").?.bool);
+    try testing.expectEqual(@as(i64, 2435), same.object.get("task").?.integer);
+
+    // The group was renamed. Nothing is moved: the directory, the branch and
+    // the ledger's group are what they were, and only the label is stale.
+    s.group_now = "renamed";
+    const stale = try statusJson(&fx, s);
+    try testing.expect(stale.object.get("label_stale").?.bool);
+    try testing.expectEqualStrings("polter", stale.object.get("group").?.string);
+    try testing.expectEqualStrings("renamed", stale.object.get("group_now").?.string);
+    try testing.expect(exists(testing.io, e.path));
+    try testing.expectEqualStrings("wt/polter/2435", try fx.out(e.path, &.{ "rev-parse", "--abbrev-ref", "HEAD" }));
+
+    // A manual tree has neither a group nor a stale label.
+    const m = try prepare(fx.git(), fx.al(), &ledger, .{ .dir = fx.repo, .name = "w1" });
+    var ms = try status(fx.git(), fx.al(), m.tree.entry);
+    ms.group_now = "anything";
+    const mj = try statusJson(&fx, ms);
+    try testing.expectEqualStrings("manual", mj.object.get("kind").?.string);
+    try testing.expect(!mj.object.get("label_stale").?.bool);
+}
+
+test "rpc: worktree_status 带 landed/unlanded 与旧的 merged/dirty/ahead；在 worker 不提交的夹具里 merged 恒 true，而 landed 随内容变" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try workerWork(&fx, e.path);
+
+    // Work not on main.
+    const before = try statusJson(&fx, try statusFull(fx.git(), fx.al(), e));
+    try testing.expect(before.object.get("merged").?.bool);
+    try testing.expectEqual(@as(i64, 2), before.object.get("dirty").?.integer);
+    try testing.expectEqual(@as(i64, 0), before.object.get("ahead").?.integer);
+    try testing.expect(!before.object.get("landed").?.bool);
+    try testing.expectEqual(@as(i64, 2), before.object.get("unlanded_count").?.integer);
+    try testing.expectEqual(@as(i64, 2), before.object.get("landed_checked").?.integer);
+    const listed = before.object.get("unlanded").?.array;
+    try testing.expectEqual(@as(usize, 2), listed.items.len);
+    try testing.expectEqualStrings("differs", listed.items[0].object.get("why").?.string);
+
+    // The same work on main: `merged` and `dirty` do not move, `landed` does.
+    try landOnMain(&fx);
+    const after = try statusJson(&fx, try statusFull(fx.git(), fx.al(), e));
+    try testing.expect(after.object.get("merged").?.bool);
+    try testing.expectEqual(@as(i64, 2), after.object.get("dirty").?.integer);
+    try testing.expect(after.object.get("landed").?.bool);
+    try testing.expectEqual(@as(usize, 0), after.object.get("unlanded").?.array.items.len);
+}
+
+/// One row of the closeout table, built from nothing, for both modes.
+const Row = enum { free, standing, leased, unlanded, ahead, unknown, gone };
+
+fn closeoutRow(row: Row, mode: CloseMode) !void {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    try fx.write(fx.repo, ".gitignore", ".zig-cache/\n");
+    try fx.must(fx.repo, &.{ "add", ".gitignore" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "ignore" });
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    const cache = try std.fs.path.join(a, &.{ e.path, ".zig-cache" });
+    try Io.Dir.cwd().createDirPath(testing.io, cache);
+    try fx.write(cache, "o", "x");
+
+    switch (row) {
+        .free, .standing, .leased => {
+            try workerWork(&fx, e.path);
+            try landOnMain(&fx);
+        },
+        .unlanded => try workerWork(&fx, e.path),
+        .ahead => {
+            try fx.write(e.path, "b.txt", "n\n");
+            try fx.must(e.path, &.{ "add", "b.txt" });
+            try fx.must(e.path, &.{ "commit", "-q", "-m", "work" });
+        },
+        .unknown => try Io.Dir.cwd().deleteFile(testing.io, try std.fs.path.join(a, &.{ e.path, ".git" })),
+        .gone => try Io.Dir.cwd().deleteTree(testing.io, e.path),
+    }
+
+    const standing = [_][]const u8{"dev-1 (0x00ab)"};
+    const c = try closeout(fx.git(), a, &ledger, 2435, .{
+        .mode = mode,
+        .standing = if (row == .standing) &standing else &.{},
+        .lease = if (row == .leased) .{
+            .alias = "tester",
+            .terminal = 7,
+            .purpose = .build,
+            .since_ms = 0,
+            .expires_ms = 1,
+        } else null,
+    });
+    const word = if (mode == .closed) "closed" else "cancelled";
+    try testing.expect(std.mem.indexOf(u8, c.note, word) != null);
+
+    switch (row) {
+        .free => {
+            try testing.expectEqual(Outcome.removed, c.outcome);
+            try testing.expect(!exists(testing.io, e.path));
+            try testing.expectEqual(@as(usize, 0), ledger.entries.items.len);
+            try testing.expect(c.cache == null);
+        },
+        .gone => {
+            try testing.expectEqual(Outcome.forgotten, c.outcome);
+            try testing.expectEqual(@as(usize, 0), ledger.entries.items.len);
+        },
+        else => {
+            // Every other row keeps the tree and its ledger row.
+            try testing.expect(exists(testing.io, e.path));
+            try testing.expectEqual(@as(usize, 1), ledger.entries.items.len);
+            const cleared = !exists(testing.io, cache);
+            switch (row) {
+                .standing => {
+                    try testing.expectEqual(Outcome.kept_standing, c.outcome);
+                    try testing.expect(std.mem.indexOf(u8, c.note, "dev-1 (0x00ab)") != null);
+                    try testing.expect(cleared);
+                },
+                .leased => {
+                    try testing.expectEqual(Outcome.kept_busy, c.outcome);
+                    try testing.expect(c.cache.?.busy);
+                    try testing.expect(!cleared);
+                    try testing.expect(std.mem.indexOf(u8, c.note, "tester holds its build lease") != null);
+                    try testing.expect(std.mem.indexOf(u8, c.note, "CacheBusy") != null);
+                },
+                .unlanded => {
+                    try testing.expectEqual(Outcome.kept_unlanded, c.outcome);
+                    try testing.expect(std.mem.indexOf(u8, c.note, "a.txt (differs)") != null);
+                    try testing.expect(cleared);
+                },
+                .ahead => {
+                    try testing.expectEqual(Outcome.kept_ahead, c.outcome);
+                    try testing.expect(std.mem.indexOf(u8, c.note, "wt/polter/2435") != null);
+                    try testing.expect(std.mem.indexOf(u8, c.note, "1 commit") != null);
+                    try testing.expect(cleared);
+                },
+                .unknown => try testing.expectEqual(Outcome.kept_unknown, c.outcome),
+                else => unreachable,
+            }
+        },
+    }
+}
+
+test "worktree: closeout 的收尾表各一行" {
+    inline for (.{ CloseMode.closed, CloseMode.cancelled }) |mode| {
+        inline for (@typeInfo(Row).@"enum".fields) |f| {
+            closeoutRow(@enumFromInt(f.value), mode) catch |err| {
+                std.debug.print("closeout row {s} ({t})\n", .{ f.name, mode });
+                return err;
+            };
+        }
+    }
+}
+
+test "worktree: 保留的树也清缓存；被忽略但不在名单里的目录不动；未被 git 忽略的同名目录不动" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    try fx.write(fx.repo, ".gitignore", ".zig-cache/\nother-cache/\n");
+    try fx.must(fx.repo, &.{ "add", ".gitignore" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "ignore" });
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    // `zig-out` is on the list but git does not ignore it here; `other-cache`
+    // is ignored but is not on the list.
+    for ([_][]const u8{ ".zig-cache", "zig-out", "other-cache" }) |d| {
+        const dir = try std.fs.path.join(a, &.{ e.path, d });
+        try Io.Dir.cwd().createDirPath(testing.io, dir);
+        try fx.write(dir, "f", "x");
+    }
+    const r = try cleanCache(fx.git(), a, e, false);
+    try testing.expect(!r.busy);
+    try testing.expectEqual(@as(usize, 1), r.cleaned.len);
+    try testing.expectEqualStrings(".zig-cache", r.cleaned[0]);
+    try testing.expectEqual(@as(usize, 1), r.kept.len);
+    try testing.expectEqualStrings("zig-out", r.kept[0]);
+    try testing.expect(!exists(testing.io, try std.fs.path.join(a, &.{ e.path, ".zig-cache" })));
+    try testing.expect(exists(testing.io, try std.fs.path.join(a, &.{ e.path, "zig-out", "f" })));
+    try testing.expect(exists(testing.io, try std.fs.path.join(a, &.{ e.path, "other-cache", "f" })));
+    // The tree itself is untouched.
+    try testing.expect(exists(testing.io, try std.fs.path.join(a, &.{ e.path, "a.txt" })));
+}
+
+test "worktree: 有租约时清缓存被拒 CacheBusy，租约松开后补做" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    try fx.write(fx.repo, ".gitignore", ".zig-cache/\n");
+    try fx.must(fx.repo, &.{ "add", ".gitignore" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "ignore" });
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    const cache = try std.fs.path.join(a, &.{ e.path, ".zig-cache" });
+    try Io.Dir.cwd().createDirPath(testing.io, cache);
+    try fx.write(cache, "o", "x");
+
+    var leases = Leases.init(testing.allocator);
+    defer leases.deinit();
+    const got = try leases.acquire(2435, "tester", 7, .build, 0);
+    try testing.expect(got == .granted);
+
+    const busy = try cleanCache(fx.git(), a, e, leases.status(2435) != null);
+    try testing.expect(busy.busy);
+    try testing.expectEqual(@as(usize, 0), busy.cleaned.len);
+    try testing.expect(exists(testing.io, cache));
+
+    const rel = try leases.release(a, 2435, 7, false, 10);
+    try testing.expect(rel == .released);
+    const done = try cleanCache(fx.git(), a, e, leases.status(2435) != null);
+    try testing.expect(!done.busy);
+    try testing.expectEqual(@as(usize, 1), done.cleaned.len);
+    try testing.expect(!exists(testing.io, cache));
+}
+
+test "worktree: 清缓存失败写进事件并出现在回执里，不吞" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    const a = fx.al();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+    try fx.write(fx.repo, ".gitignore", ".zig-cache/\n");
+    try fx.must(fx.repo, &.{ "add", ".gitignore" });
+    try fx.must(fx.repo, &.{ "commit", "-q", "-m", "ignore" });
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    try workerWork(&fx, e.path);
+
+    // A directory inside the cache that cannot be written to cannot be
+    // emptied, so the cache cannot be removed.
+    const locked = try std.fs.path.join(a, &.{ e.path, ".zig-cache", "locked" });
+    try Io.Dir.cwd().createDirPath(testing.io, locked);
+    try fx.write(locked, "f", "x");
+    try chmodPlus(&fx, "555", locked);
+    defer chmodPlus(&fx, "755", locked) catch {};
+
+    const c = try closeout(fx.git(), a, &ledger, 2435, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.kept_unlanded, c.outcome);
+    try testing.expectEqual(@as(usize, 1), c.cache.?.failed.len);
+    try testing.expectEqualStrings(".zig-cache", c.cache.?.failed[0].path);
+    try testing.expectEqual(@as(usize, 0), c.cache.?.cleaned.len);
+    try testing.expect(std.mem.indexOf(u8, c.note, "Could not clear .zig-cache") != null);
+}
+
+test "worktree: select by task finds the tree made for the task, not one merely tied to it" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const manual = try prepare(fx.git(), fx.al(), &ledger, .{ .dir = fx.repo, .name = "w1" });
+    try testing.expect(manual == .tree);
+    ledger.entries.items[0].task = 5;
+    _ = try taskTreeOf(&fx, &ledger, "polter", 5);
+    try testing.expectEqual(@as(usize, 2), ledger.entries.items.len);
+    try testing.expectEqual(Ledger.Lookup{ .one = 1 }, ledger.select("", "", 5));
+    try testing.expectEqual(Ledger.Lookup{ .one = 1 }, ledger.select("polter/wt-5", "", 0));
+    // And remove by task takes that one down: the other is untouched.
+    const r = try removeSel(fx.git(), fx.al(), &ledger, .{ .task = 5 });
+    try testing.expect(r == .removed);
+    try testing.expectEqualStrings("w1", ledger.entries.items[0].name);
+}
+
+test "lease: acquire 独占；LeaseHeld 带持有者与 since；同一持有者再 acquire = 续期" {
+    var leases = Leases.init(testing.allocator);
+    defer leases.deinit();
+
+    const first = try leases.acquire(7, "dev-1", 0x11, .edit, 1_000);
+    try testing.expect(first == .granted);
+    try testing.expect(!first.granted.renewed);
+    try testing.expectEqual(@as(i64, 1_000 + default_lease_ttl_ms), first.granted.view.expires_ms);
+
+    // Someone else is refused, and told who and since when.
+    const other = try leases.acquire(7, "tester", 0x22, .build, 2_000);
+    try testing.expect(other == .held);
+    try testing.expectEqualStrings("dev-1", other.held.alias);
+    try testing.expectEqual(@as(u64, 0x11), other.held.terminal);
+    try testing.expectEqual(@as(i64, 1_000), other.held.since_ms);
+    try testing.expectEqual(Purpose.edit, other.held.purpose);
+
+    // The holder asking again renews: same since, later expiry, new purpose.
+    const again = try leases.acquire(7, "dev-1", 0x11, .@"test", 5_000);
+    try testing.expect(again == .granted and again.granted.renewed);
+    try testing.expectEqual(@as(i64, 1_000), again.granted.view.since_ms);
+    try testing.expectEqual(@as(i64, 5_000 + default_lease_ttl_ms), again.granted.view.expires_ms);
+    try testing.expectEqual(Purpose.@"test", again.granted.view.purpose);
+
+    // Another task's tree is its own lease.
+    const elsewhere = try leases.acquire(8, "tester", 0x22, .build, 2_000);
+    try testing.expect(elsewhere == .granted);
+    try testing.expectEqual(@as(?LeaseView, null), leases.status(9));
+
+    // Not the holder: refused, and still held.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const no = try leases.release(arena.allocator(), 7, 0x22, false, 6_000);
+    try testing.expect(no == .not_holder);
+    try testing.expect(leases.status(7) != null);
+}
+
+test "lease: 持有者终端关了 / agent idle 且无后台 / 超时 / 总管 release，四种松开各写一条带原因的事件" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var leases = Leases.init(testing.allocator);
+    defer leases.deinit();
+    leases.ttl_ms = 100;
+
+    // Task 1: its terminal closes. 2: its turn ends. 3: it times out.
+    // 4: the supervisor takes it back. 5: its turn ended but a build of its
+    // own is still running -- it must be kept, until it times out too.
+    _ = try leases.acquire(1, "a", 11, .build, 0);
+    _ = try leases.acquire(2, "b", 12, .build, 0);
+    _ = try leases.acquire(3, "c", 13, .build, 0);
+    _ = try leases.acquire(4, "d", 14, .edit, 0);
+    _ = try leases.acquire(5, "e", 15, .build, 0);
+
+    // t=50: nobody has timed out. 11 is not listed (gone), 12 is idle, 15 is
+    // idle-with-a-background-job, 13 and 14 are working.
+    const first = try leases.sweep(a, 50, &.{
+        .{ .terminal = 12, .state = .idle },
+        .{ .terminal = 13, .state = .busy },
+        .{ .terminal = 14, .state = .busy },
+        .{ .terminal = 15, .state = .waiting_on_background },
+    });
+    try testing.expectEqual(@as(usize, 2), first.len);
+    try testing.expectEqual(@as(u64, 1), first[0].task);
+    try testing.expectEqual(LeaseWhy.terminal_closed, first[0].why);
+    try testing.expectEqualStrings("a", first[0].alias);
+    try testing.expectEqual(@as(u64, 2), first[1].task);
+    try testing.expectEqual(LeaseWhy.idle, first[1].why);
+    try testing.expectEqual(@as(i64, 50), first[1].held_ms);
+    // The counter-example: waiting on a background job is not idle.
+    try testing.expect(leases.status(5) != null);
+
+    // The supervisor takes 4 back.
+    const sup = try leases.release(a, 4, 999, true, 60);
+    try testing.expect(sup == .released);
+    try testing.expectEqual(LeaseWhy.supervisor, sup.released.why);
+    try testing.expectEqualStrings("d", sup.released.alias);
+
+    // t=150: 13 and 15 are past their time.
+    const late = try leases.sweep(a, 150, &.{
+        .{ .terminal = 13, .state = .busy },
+        .{ .terminal = 15, .state = .waiting_on_background },
+    });
+    try testing.expectEqual(@as(usize, 2), late.len);
+    try testing.expectEqual(LeaseWhy.expired, late[0].why);
+    try testing.expectEqual(LeaseWhy.expired, late[1].why);
+    try testing.expectEqual(@as(usize, 0), leases.held.items.len);
+}
+
+test "lease: 重启后租约不恢复，旧持有者的 release 得到 NotHeld" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var before = Leases.init(testing.allocator);
+    _ = try before.acquire(7, "dev-1", 0x11, .edit, 0);
+    try testing.expect(before.status(7) != null);
+    before.deinit();
+
+    // The process restarted: a fresh registry holds nothing, and the old
+    // holder letting go is told so rather than silently believed.
+    var after = Leases.init(testing.allocator);
+    defer after.deinit();
+    try testing.expectEqual(@as(?LeaseView, null), after.status(7));
+    const r = try after.release(a, 7, 0x11, false, 10);
+    try testing.expect(r == .not_held);
+    // And the tree is free for whoever asks next.
+    const fresh = try after.acquire(7, "tester", 0x22, .build, 20);
+    try testing.expect(fresh == .granted and !fresh.granted.renewed);
 }

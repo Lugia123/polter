@@ -12652,6 +12652,7 @@ fn poltergeistWorktreeStatus(
     alloc: Allocator,
     name: []const u8,
     repo: []const u8,
+    task: u64,
 ) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
     const wt = poltergeistpkg.worktree;
@@ -12660,22 +12661,38 @@ fn poltergeistWorktreeStatus(
 
     var out: std.Io.Writer.Allocating = .init(alloc);
     var w: std.json.Stringify = .{ .writer = &out.writer };
-    if (name.len > 0) {
-        const i = switch (ledger.lookup(name, repo)) {
+    if (name.len > 0 or task != 0) {
+        const i = switch (ledger.select(name, repo, task)) {
             .none => return error.NoSuchWorktree,
             .ambiguous => return error.Ambiguous,
             .one => |i| i,
         };
-        try wt.writeStatus(&w, try wt.status(git, alloc, ledger.entries.items[i]));
+        try wt.writeStatus(&w, try self.worktreeStatusOf(alloc, git, ledger.entries.items[i]));
         return out.written();
     }
     try w.beginArray();
     for (ledger.entries.items) |e| {
         if (repo.len > 0 and !std.mem.eql(u8, e.repo, repo)) continue;
-        try wt.writeStatus(&w, try wt.status(git, alloc, e));
+        try wt.writeStatus(&w, try self.worktreeStatusOf(alloc, git, e));
     }
     try w.endArray();
     return out.written();
+}
+
+/// One tree as `worktree_status` says it: git's answer, whether its work has
+/// landed, and the group its task is in now (which differs from the one in
+/// its name after the group is renamed).
+fn worktreeStatusOf(
+    self: *App,
+    alloc: Allocator,
+    git: poltergeistpkg.worktree.Git,
+    e: poltergeistpkg.worktree.Entry,
+) Allocator.Error!poltergeistpkg.worktree.Status {
+    var s = try poltergeistpkg.worktree.statusFull(git, alloc, e);
+    if (e.kind == .task) if (e.task) |t| if (self.tasks.get(t)) |task| {
+        s.group_now = task.group;
+    };
+    return s;
 }
 
 fn poltergeistWorktreeRemove(
@@ -12683,10 +12700,11 @@ fn poltergeistWorktreeRemove(
     alloc: Allocator,
     name: []const u8,
     repo: []const u8,
+    task: u64,
 ) anyerror!poltergeistpkg.worktree.Removed {
     const self: *App = @ptrCast(@alignCast(ctx));
     const ledger = self.worktreeLedger() orelse return error.OutOfMemory;
-    return poltergeistpkg.worktree.remove(.{ .io = global.io() }, alloc, ledger, name, repo);
+    return poltergeistpkg.worktree.removeSel(.{ .io = global.io() }, alloc, ledger, .{ .name = name, .repo = repo, .task = task });
 }
 
 fn poltergeistWorktreeTieTask(ctx: *anyopaque, task: u64, id: poltergeistpkg.Bus.Id) void {
