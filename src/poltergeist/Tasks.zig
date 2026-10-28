@@ -186,6 +186,11 @@ pub const Task = struct {
     /// lead**: the one terminal whose word moves `progress`.
     members: []Member = &.{},
 
+    /// The squad template this task's places were taken from, as its key
+    /// was then (a snapshot: the template changing later does not reach
+    /// back). "" for a task with no squad. Owned by the panel.
+    squad: []const u8 = "",
+
     /// Every stretch a terminal held a place, oldest first. Owned.
     spans: []Span = &.{},
 };
@@ -220,10 +225,6 @@ pub const Config = struct {
     /// A squad is a handful, not a crowd.
     max_members: usize = 8,
     max_alias_bytes: usize = 24,
-
-    /// The moment a terminal closing is noted at. Null reads as zero; the
-    /// host that wants real spans sets it.
-    now_ms: ?*const fn () i64 = null,
 };
 
 pub const Error = error{
@@ -447,14 +448,13 @@ pub fn setProgress(
 /// The tasks stay. What was being worked on last night is exactly what the
 /// morning wants to see, and a task whose owner has gone is a task that
 /// needs somebody -- which is visible only if it is still there.
-pub fn forget(self: *Tasks, id: Id) void {
-    self.forgetAt(id, if (self.config.now_ms) |f| f() else 0);
-}
-
-/// `forget`, saying when: the places the terminal held become `vacated`,
-/// its stretch ends, and if it was the lead the task has no owner. The task
-/// itself stays open.
-pub fn forgetAt(self: *Tasks, id: Id, at_ms: i64) void {
+///
+/// `at_ms` is when, wall-clock: the places the terminal held become
+/// `vacated`, its stretch ends then, and if it was the lead the task has no
+/// owner. The task itself stays open. **Said by the caller**, not read from
+/// a clock held here: nothing in the app ever set one, and every stretch
+/// ended at zero.
+pub fn forget(self: *Tasks, id: Id, at_ms: i64) void {
     for (self.list.items) |*t| {
         if (t.owner == id) t.owner = nobody;
         for (t.members) |*m| {
@@ -470,6 +470,7 @@ pub fn forgetAt(self: *Tasks, id: Id, at_ms: i64) void {
 // -- the squad --------------------------------------------------------------
 
 fn freeSquad(self: *Tasks, t: Task) void {
+    self.alloc.free(t.squad);
     for (t.members) |m| {
         self.alloc.free(m.alias);
         self.alloc.free(m.role);
@@ -488,6 +489,14 @@ fn memberIndex(t: *const Task, alias: []const u8) ?usize {
         if (std.mem.eql(u8, m.alias, alias)) return i;
     }
     return null;
+}
+
+/// Say which template the task's squad is from.
+pub fn setSquad(self: *Tasks, id: TaskId, key: []const u8) Error!void {
+    const t = try self.find(id);
+    const owned = try self.alloc.dupe(u8, key);
+    self.alloc.free(t.squad);
+    t.squad = owned;
 }
 
 /// Put a new place in the task's squad, with nobody in it.
@@ -653,13 +662,29 @@ pub fn reown(
     alloc: Allocator,
     from: Id,
     to: Id,
+    at_ms: i64,
     moved: *std.ArrayListUnmanaged(TaskId),
 ) Allocator.Error!void {
     if (from == nobody or from == to) return;
     for (self.list.items) |*t| {
-        if (t.owner != from or t.state != .open) continue;
+        if (t.state != .open) continue;
+        // A place in a squad goes back to the same alias: the terminal that
+        // held it is the same agent session, under a new id (squads S4).
+        var held = false;
+        for (t.members) |*m| {
+            if (m.slot == .filled and m.id == from) {
+                m.id = to;
+                held = true;
+            }
+        }
+        if (t.owner == from) {
+            t.owner = to;
+            held = true;
+        }
+        if (!held) continue;
         try moved.append(alloc, t.id);
-        t.owner = to;
+        closeStale(t, at_ms);
+        try self.reconcile(t, at_ms);
     }
 }
 
@@ -1065,7 +1090,7 @@ test "a terminal closing leaves the work behind, without an owner" {
 
     const id = try t.create("build", "one", .other);
     try t.assign(id, worker_a);
-    t.forget(worker_a);
+    t.forget(worker_a, 0);
 
     try testing.expectEqual(nobody, t.get(id).?.owner);
     try testing.expectEqual(State.open, t.get(id).?.state);
@@ -1088,7 +1113,7 @@ test "1978: a terminal back as the same session takes its open tasks, and not it
 
     var moved: std.ArrayListUnmanaged(TaskId) = .empty;
     defer moved.deinit(testing.allocator);
-    try t.reown(testing.allocator, worker_a, 0x9999, &moved);
+    try t.reown(testing.allocator, worker_a, 0x9999, 0, &moved);
 
     try testing.expectEqualSlices(TaskId, &.{ open, stuck }, moved.items);
     try testing.expectEqual(@as(Id, 0x9999), t.get(open).?.owner);
@@ -1407,7 +1432,7 @@ test "squad: 终端关掉后位 vacated，任务不关，牵头人退回 nobody"
     try t.join(id, "开发", "dev", worker_a, "claude-code aaaa1111", 100, true);
     try t.join(id, "测试", "test", worker_b, "claude-code bbbb2222", 110, false);
 
-    t.forgetAt(worker_a, 500);
+    t.forget(worker_a, 500);
 
     const task = t.get(id).?;
     try testing.expectEqual(State.open, task.state);
@@ -1419,6 +1444,17 @@ test "squad: 终端关掉后位 vacated，任务不关，牵头人退回 nobody"
 
     // Nobody leads, so nobody can report -- on purpose.
     try testing.expectError(error.NotLead, t.setProgress(id, worker_b, .done));
+}
+
+test "squad: forget 把传入的时间写进 span 的 to_ms，不是零" {
+    var t = testTasks();
+    defer t.deinit();
+    const id = try t.create("build", "ship it", .other);
+    try t.join(id, "开发", "dev", worker_a, "", 100, true);
+    t.forget(worker_a, 4242);
+    const task = t.get(id).?;
+    try testing.expectEqual(@as(i64, 100), task.spans[0].from_ms);
+    try testing.expectEqual(@as(?i64, 4242), task.spans[0].to_ms);
 }
 
 test "squad: 无成员的旧任务读出来等价于一个无别名成员，且不写回记录" {

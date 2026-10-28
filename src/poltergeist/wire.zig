@@ -356,6 +356,19 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         .launcher_delete => .{ .launcher_delete = .{
             .key = try requireString(aa, params, "key"),
         } },
+        .squad_list => .squad_list,
+        // An object written back out as text, as `role_put` carries a role.
+        .squad_put => .{ .squad_put = .{
+            .squad = blk: {
+                const given = params orelse return error.BadParams;
+                const v = given.get("squad") orelse return error.BadParams;
+                if (v != .object) return error.BadParams;
+                break :blk try std.json.Stringify.valueAlloc(aa, v, .{});
+            },
+        } },
+        .squad_delete => .{ .squad_delete = .{
+            .key = try requireString(aa, params, "key"),
+        } },
         .role_launcher_set => .{ .role_launcher_set = .{
             .role = try requireString(aa, params, "role"),
             .launcher = try requireString(aa, params, "launcher"),
@@ -366,7 +379,10 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
         } },
         .role_launch => .{
             .role_launch = .{
-                .key = try requireString(aa, params, "key"),
+                // Left out only with `task` and `member`: the seat names the role.
+                .key = (try optionalString(aa, params, "key")) orelse "",
+                .task = try optionalU64(params, "task", 0),
+                .member = (try optionalString(aa, params, "member")) orelse "",
                 .cli = (try optionalString(aa, params, "cli")) orelse "",
                 .cwd = (try optionalString(aa, params, "cwd")) orelse "",
                 // The same reading as `terminal_open`'s, from the same function.
@@ -529,6 +545,8 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 // the four names is worth more than telling it which of the two
                 // ways it got it wrong.
                 .kind = (try optionalString(aa, params, "kind")) orelse "",
+                .squad = (try optionalString(aa, params, "squad")) orelse "",
+                .members = try optionalStrings(aa, params, "members"),
             },
         },
 
@@ -555,11 +573,13 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
 
                 // Off unless asked: see `rpc.Request.task_assign`.
                 .fresh = optionalBool(params, "fresh", false),
+                .alias = (try optionalString(aa, params, "alias")) orelse "",
             },
         },
 
         .task_close => .{ .task_close = .{
             .task = try requireU64(params, "task"),
+            .release = (try optionalString(aa, params, "release")) orelse "",
         } },
 
         .task_cancel => .{ .task_cancel = .{
@@ -695,6 +715,28 @@ fn optionalIds(
     for (items, out) |item, *id| id.* = switch (item) {
         .integer => |i| if (i < 0) return error.BadParams else @intCast(i),
         .string => |str| std.fmt.parseUnsigned(Bus.Id, str, 0) catch return error.BadParams,
+        else => return error.BadParams,
+    };
+    return out;
+}
+
+/// An array of strings. Absent or `null` is the empty list; anything else
+/// malformed is refused whole, as `optionalIds` does.
+fn optionalStrings(
+    aa: Allocator,
+    params: ?std.json.ObjectMap,
+    key: []const u8,
+) ParseError![]const []const u8 {
+    const p = params orelse return &.{};
+    const v = p.get(key) orelse return &.{};
+    const items = switch (v) {
+        .null => return &.{},
+        .array => |arr| arr.items,
+        else => return error.BadParams,
+    };
+    const out = try aa.alloc([]const u8, items.len);
+    for (items, out) |item, *str| str.* = switch (item) {
+        .string => |t| try aa.dupe(u8, t),
         else => return error.BadParams,
     };
     return out;

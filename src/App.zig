@@ -2825,7 +2825,7 @@ fn openStartTab(
         if (self.personas.takeLaunch(now_ms)) |taken| {
             var launch = taken;
             defer launch.deinit();
-            try self.startRoleIn(id, launch.by, .{ .key = launch.key, .cli = launch.cli }, launch.line, .agent);
+            try self.startRoleInAs(id, launch.by, .{ .key = launch.key, .cli = launch.cli }, launch.line, .agent, launch.effective);
             self.controlStartOpened(id);
         }
         return id;
@@ -3276,7 +3276,7 @@ fn firstPromptText(self: *App, aa: Allocator, id: poltergeistpkg.Bus.Id) ?[]cons
     const launch = self.personas.launchOf(id) orelse return null;
     const p = self.personas.set.find(launch.role) orelse return null;
     const group = self.chat.startingIn(id, self.poltergeistElapsedMs());
-    const own = (poltergeistpkg.persona.launchInstructions(aa, p, group) catch return null) orelse return null;
+    const own = (poltergeistpkg.persona.launchedInstructions(aa, p, launch, group) catch return null) orelse return null;
     return std.mem.concat(aa, u8, &.{ own, "\n\n", first_prompt_end }) catch null;
 }
 
@@ -7417,11 +7417,34 @@ pub fn adoptPersona(self: *App, key: []const u8) !void {
 }
 
 pub fn deletePersona(self: *App, key: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    _ = try self.deletePersonaDropping(arena.allocator(), key);
+}
+
+/// Delete a role, and take every squad seat made from it out of the
+/// templates **after** the role is gone (`SquadStore.dropRole`: the role
+/// first, so that a crash between the two leaves seats that read as
+/// `role_missing`, which the next squad write sweeps). Answers the seats
+/// taken out, in `alloc`.
+///
+/// A `squads.json` that cannot be read leaves the seats where they are and
+/// is logged: the role is deleted either way, and deleting it must not be
+/// the thing that fails because a second file is broken.
+pub fn deletePersonaDropping(self: *App, alloc: Allocator, key: []const u8) ![]const poltergeistpkg.squad.Removed {
     self.ensurePersonas();
     const path = try poltergeistpkg.PersonaStore.defaultPath(self.alloc);
     defer self.alloc.free(path);
     try self.personas.remove(global.io(), path, key);
     self.personasChanged();
+
+    self.ensureSquads();
+    const squads_path = poltergeistpkg.SquadStore.defaultPath(self.alloc) catch return &.{};
+    defer self.alloc.free(squads_path);
+    return self.squads.dropRole(global.io(), squads_path, alloc, key, self.squadRoles()) catch |err| {
+        log.warn("poltergeist: role {s} is deleted but its squad seats could not be taken out err={}", .{ key, err });
+        return &.{};
+    };
 }
 
 /// After the library changed: every terminal wearing a role has just been
@@ -7795,7 +7818,16 @@ fn poltergeistLaunchers(
 
 /// `cli` is always an agent CLI's key; a launcher of the person's own is
 /// `launcher`, started on its base (task 2156).
-const LaunchChoice = struct { key: []const u8, cli: []const u8, launcher: ?[]const u8 = null };
+const LaunchChoice = struct {
+    key: []const u8,
+    cli: []const u8,
+    launcher: ?[]const u8 = null,
+    /// A squad seat's role with the squad's word laid over it
+    /// (`squad.resolve`); null for a start that is not one. Where it is
+    /// set, nothing downstream reads the role library again for what the
+    /// squad may have changed.
+    resolved: ?poltergeistpkg.squad.Resolved = null,
+};
 
 /// Everything that can be refused about a launch, refused before anything
 /// opens or is typed: a role that does not exist, that is not set up for
@@ -7815,8 +7847,41 @@ fn resolveLaunch(
     by: ?poltergeistpkg.Bus.Id,
     own: []const poltergeistpkg.ControlRoom.OwnCli,
 ) !LaunchChoice {
+    return self.resolveLaunchSeat(alloc, key, cli, by, own, null);
+}
+
+/// `resolveLaunch` for a squad's seat when `seat_over` is set: the checks
+/// below are made against **what the seat will start**, not against the
+/// role. A squad that moves a member to another CLI is judged on that CLI's
+/// entry (which `squad.resolve` makes, empty if the role has none), so the
+/// role's own `NotSetUpForCli` / `NoCli` do not refuse it (plan v3 item 13).
+fn resolveLaunchSeat(
+    self: *App,
+    alloc: Allocator,
+    key: []const u8,
+    cli_asked: []const u8,
+    by: ?poltergeistpkg.Bus.Id,
+    own: []const poltergeistpkg.ControlRoom.OwnCli,
+    seat_over: ?poltergeistpkg.squad.Override,
+) !LaunchChoice {
     self.ensurePersonas();
-    const p = self.personas.set.find(key) orelse return error.NoSuchPersona;
+    const role = self.personas.set.find(key) orelse return error.NoSuchPersona;
+    var p = role;
+    var cli = cli_asked;
+    if (seat_over) |over| {
+        // A CLI the person's squad names, when the caller named none.
+        if (cli_asked.len == 0) cli = over.cli orelse "";
+        // Named by the squad, or named by the caller and set up in the
+        // role: the entry for it is what is judged, and the squad may have
+        // given the role an entry it did not have. A caller's CLI that the
+        // role is not set up for stays a launcher or a refusal below.
+        if (cli.len > 0 and (cli_asked.len == 0 or role.cli(cli) != null)) {
+            p = (poltergeistpkg.squad.resolve(alloc, role, over, cli, &.{}, null) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.NoCli,
+            }).persona;
+        }
+    }
     // A launcher of the person's own, by its key where the CLI goes (task
     // 2156): switched on for this role, and started on its base with the
     // role's choices for that CLI -- every check below is the base's.
@@ -7907,7 +7972,15 @@ fn resolveLaunch(
         }
         break;
     } else return error.CliUnavailable;
-    return .{ .key = try alloc.dupe(u8, p.key), .cli = try alloc.dupe(u8, chosen), .launcher = via };
+    const resolved: ?poltergeistpkg.squad.Resolved = if (seat_over) |over|
+        (poltergeistpkg.squad.resolve(alloc, role, over, chosen, keys, asker_cli) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.NoCli => error.NoCli,
+            error.ChooseCli => error.ChooseCli,
+        })
+    else
+        null;
+    return .{ .key = try alloc.dupe(u8, p.key), .cli = try alloc.dupe(u8, chosen), .launcher = via, .resolved = resolved };
 }
 
 /// The error for a CLI whose program is here but cannot be started, or null
@@ -7986,6 +8059,21 @@ fn startRoleIn(
     line: []const u8,
     who: Surface.Typist,
 ) anyerror!void {
+    return self.startRoleInAs(id, by, choice, line, who, null);
+}
+
+/// `startRoleIn` for a squad's seat when `effective` is set: the launch is
+/// recorded with the squad's settings, and once the line is typed the
+/// terminal takes its seat in the task.
+fn startRoleInAs(
+    self: *App,
+    id: poltergeistpkg.Bus.Id,
+    by: poltergeistpkg.Bus.Id,
+    choice: LaunchChoice,
+    line: []const u8,
+    who: Surface.Typist,
+    effective: ?poltergeistpkg.persona.Effective,
+) anyerror!void {
     const surface = self.findSurfaceByID(id) orelse return error.UnknownTerminal;
 
     // Asked before the role is recorded: a launch that cannot be typed must
@@ -8000,7 +8088,7 @@ fn startRoleIn(
     // machine). All three in `PersonaStore.startRole`, the one place every
     // way of starting a role goes through.
     self.ensurePersonas();
-    self.personas.startRole(id, by, choice.key, choice.cli, self.poltergeistElapsedMs()) catch |err| {
+    self.personas.startRoleAs(id, by, choice.key, choice.cli, self.poltergeistElapsedMs(), effective) catch |err| {
         log.warn("poltergeist: starting {s} but could not record it err={}", .{ choice.key, err });
     };
     self.wakePersonaWaits(id);
@@ -8018,6 +8106,28 @@ fn startRoleIn(
         .deadline_ms = self.poltergeistElapsedMs() +| poltergeistpkg.Bus.launch_agent_wait_ms,
         .typed_at = .now(global.io(), .boot),
     }) catch {};
+    if (effective) |e| self.joinSeat(id, e);
+}
+
+/// A terminal started for a squad's seat takes it: the seat is `filled`,
+/// the lead's terminal becomes the task's owner, and the joining is
+/// written down. After the line is typed, so a start that could not be
+/// typed leaves the seat empty.
+fn joinSeat(self: *App, id: poltergeistpkg.Bus.Id, e: poltergeistpkg.persona.Effective) void {
+    const at = self.taskWallMs();
+    self.tasks.join(e.task, e.alias, "", id, "", at, e.lead) catch |err| {
+        log.warn("poltergeist: terminal {x} could not take the seat {s} of task {d} err={}", .{ id, e.alias, e.task, err });
+        return;
+    };
+    self.logSeat(.joined, e.task, e.alias, id);
+    self.controlRoomTouch();
+}
+
+/// Write down that a terminal took, or gave up, a seat.
+fn logSeat(self: *App, op: poltergeistpkg.TaskLog.MemberOp, task: u64, alias: []const u8, id: poltergeistpkg.Bus.Id) void {
+    const l = if (self.task_log) |*v| v else return;
+    const t = self.tasks.get(task) orelse return;
+    l.appendMember(self.taskWallMs(), op, t, .{ .alias = alias, .id = id, .session = "" });
 }
 
 /// A request has come from terminal `id` (`rpc.arrived`): if a role launch
@@ -8898,7 +9008,72 @@ pub fn launchPersona(
     /// null for a launch that is not a supervisor's -- a person's click.
     group: ?[]const u8,
 ) anyerror!poltergeistpkg.rpc.Opened {
-    const choice = try self.resolveLaunch(alloc, key, cli, by, self.ownClis());
+    return self.launchPersonaSeat(alloc, by, key, cli, cwd, place, into, beside, group, null);
+}
+
+/// What a seat of a squad starts as, to be carried to wherever the start
+/// is finished (see `persona.Effective`).
+fn effectiveOf(alloc: Allocator, choice: LaunchChoice, seat: poltergeistpkg.rpc.MemberSeat) !poltergeistpkg.persona.Effective {
+    const r = choice.resolved orelse return error.NoCli;
+    return .{
+        .task = seat.task,
+        .alias = seat.alias,
+        .lead = seat.lead,
+        .choice = r.choice,
+        .cli_skills = r.persona.cli_skills,
+        .cli_mcp = r.persona.cli_mcp,
+        // Replaced, not merely different: empty says "this seat gets none",
+        // which must not read as "the role's".
+        .instructions = if (r.instructions_replaced) (r.persona.instructions orelse "") else null,
+        .brief = try poltergeistpkg.persona.memberBrief(alloc, seat.task, seat.alias, seat.mates),
+    };
+}
+
+/// A seat's start in words, for `role_launch`'s reply.
+fn seatNote(alloc: Allocator, seat: poltergeistpkg.rpc.MemberSeat, choice: LaunchChoice) Allocator.Error![]const u8 {
+    var w: std.Io.Writer.Allocating = .init(alloc);
+    const r = choice.resolved.?;
+    try w.writer.print("Seat \"{s}\" of task {d} starts as {s}", .{ seat.alias, seat.task, choice.cli });
+    if (r.choice.model) |m| try w.writer.print(" ({s})", .{m});
+    if (r.from_squad.len > 0 or seat.over.cli != null) {
+        try w.writer.writeAll("; taken from the squad:");
+        if (seat.over.cli != null) try w.writer.writeAll(" cli");
+        for (r.from_squad) |f| try w.writer.print(" {s}", .{f});
+    }
+    if (r.dropped.len > 0) {
+        try w.writer.writeAll("; left behind:");
+        for (r.dropped) |d| try w.writer.print(" [{s}]", .{d});
+    }
+    try w.writer.writeAll(". It takes the seat once its terminal is up.");
+    return w.written();
+}
+
+/// `launchPersona`, and a squad's seat when `seat` is set: the role is
+/// started as the squad's override leaves it, and the terminal takes the
+/// seat. See `resolveLaunchSeat`, `effectiveOf`.
+pub fn launchPersonaSeat(
+    self: *App,
+    alloc: Allocator,
+    by: poltergeistpkg.Bus.Id,
+    key: []const u8,
+    cli: []const u8,
+    cwd: []const u8,
+    place: poltergeistpkg.rpc.Placement,
+    into: ?poltergeistpkg.Bus.Id,
+    beside: ?poltergeistpkg.Bus.Id,
+    group: ?[]const u8,
+    seat: ?poltergeistpkg.rpc.MemberSeat,
+) anyerror!poltergeistpkg.rpc.Opened {
+    const choice = try self.resolveLaunchSeat(alloc, key, cli, by, self.ownClis(), if (seat) |s| s.over else null);
+    const effective: ?poltergeistpkg.persona.Effective = if (seat) |s| try effectiveOf(alloc, choice, s) else null;
+    const seat_note: ?[]const u8 = if (seat) |s| try seatNote(alloc, s, choice) else null;
+    const seat_word: ?[]const u8 = if (seat) |s| try poltergeistpkg.squad.encodeSeat(alloc, .{
+        .alias = s.alias,
+        .role = choice.key,
+        .required = false,
+        .lead = false,
+        .override = s.over,
+    }, effective.?.brief) else null;
     // **Its group, on the line** (task 1971): `+launch --group=` tells
     // Polter before the CLI starts, and the agent is put in the group when
     // it is heard -- before its first request is answered (`arrived`), so
@@ -8906,14 +9081,14 @@ pub fn launchPersona(
     // supervisor's own `group_add`, after; until then every group call the
     // worker made came back NotAMember.
     const joining: LaunchGroup = if (group) |named| try self.launchGroupOf(alloc, by, named) else .{ .none = .not_asked };
-    const line = try launchLineFor(alloc, choice, .{ .group = joining.name(), .session = null });
+    const line = try launchLineFor(alloc, choice, .{ .group = joining.name(), .session = null, .seat = seat_word });
     const join_note = joining.note();
 
     if (into) |target| {
         // It is where it is: a directory would have to be typed into it.
         if (cwd.len > 0) return error.InWithCwd;
-        try self.launchPersonaIn(target, by, choice, line);
-        return .{ .id = target, .placed = .{ .reused = .asked }, .joins = joining.name(), .join_note = join_note };
+        try self.launchPersonaIn(target, by, choice, line, effective);
+        return .{ .id = target, .placed = .{ .reused = .asked }, .joins = joining.name(), .join_note = join_note, .seat = seat_note };
     }
 
     const anchor: ?*Surface = if (beside) |id|
@@ -8937,8 +9112,8 @@ pub fn launchPersona(
     if (where == .auto) {
         const found = try self.poltergeistFreeWorker(alloc, by, cwd);
         if (found.free) |free| {
-            if (self.launchPersonaIn(free, by, choice, line)) {
-                return .{ .id = free, .placed = .{ .reused = .free_worker }, .joins = joining.name(), .join_note = join_note };
+            if (self.launchPersonaIn(free, by, choice, line, effective)) {
+                return .{ .id = free, .placed = .{ .reused = .free_worker }, .joins = joining.name(), .join_note = join_note, .seat = seat_note };
             } else |err| {
                 // It was free when it was looked at and is not now: a new
                 // pane is the answer it would have been without this.
@@ -8954,7 +9129,7 @@ pub fn launchPersona(
     // Set before the terminal is asked for: a runtime that creates the
     // surface synchronously runs its `init` -- and so the claim -- inside
     // the call.
-    try self.personas.expectLaunch(choice.key, choice.cli, line, by, self.poltergeistElapsedMs());
+    try self.personas.expectLaunchAs(choice.key, choice.cli, line, by, self.poltergeistElapsedMs(), effective);
     // A launch whose terminal was refused must not wait for the next
     // terminal anybody opens.
     errdefer self.personas.dropLaunch();
@@ -8969,6 +9144,7 @@ pub fn launchPersona(
     opened.joins = joining.name();
     opened.join_note = join_note;
     opened.stack = stack;
+    opened.seat = seat_note;
     if (opened.id) |new| {
         // Claimed already when the surface was made inside the call; if not,
         // it is this terminal's now -- taken the same way a late one takes
@@ -8976,7 +9152,7 @@ pub fn launchPersona(
         if (self.personas.takeLaunch(self.poltergeistElapsedMs())) |taken| {
             var p = taken;
             defer p.deinit();
-            try self.startRoleIn(new, p.by, .{ .key = p.key, .cli = p.cli }, p.line, .agent);
+            try self.startRoleInAs(new, p.by, .{ .key = p.key, .cli = p.cli }, p.line, .agent, p.effective);
         }
     }
     return opened;
@@ -8996,6 +9172,7 @@ fn launchPersonaIn(
     by: poltergeistpkg.Bus.Id,
     choice: LaunchChoice,
     line: []const u8,
+    effective: ?poltergeistpkg.persona.Effective,
 ) anyerror!void {
     const surface = self.findSurfaceByID(target) orelse return error.UnknownTerminal;
     const seat: FreeWorker.Seat = .{
@@ -9019,7 +9196,7 @@ fn launchPersonaIn(
         .workers_refused => error.WorkersRefused,
         .elsewhere, .other_directory => unreachable,
     };
-    try self.startRoleIn(target, by, choice, line, .agent);
+    try self.startRoleInAs(target, by, choice, line, .agent, effective);
 }
 
 /// One of `by`'s own worker panes that a role can be started in now, the
@@ -9319,7 +9496,7 @@ pub fn claimPendingLaunch(self: *App, surface: *Surface) void {
     // group has been waiting for, whether or not the role starts in it.
     const from_control_room = p.by == poltergeistpkg.Chat.user_id;
     if (from_control_room) self.controlStartOpened(surface.id);
-    self.startRoleIn(surface.id, p.by, .{ .key = p.key, .cli = p.cli }, p.line, .agent) catch |err| {
+    self.startRoleInAs(surface.id, p.by, .{ .key = p.key, .cli = p.cli }, p.line, .agent, p.effective) catch |err| {
         log.warn("poltergeist: could not start role {s} in its terminal err={}", .{ p.key, err });
         if (from_control_room) if (self.chat.startingIn(surface.id, self.poltergeistElapsedMs())) |group| {
             self.chat.failStart(group, .agent_never_connected);
@@ -9397,9 +9574,9 @@ fn poltergeistPersonaPut(ctx: *anyopaque, json: []const u8) anyerror!void {
     return self.putPersona(json, .supervisor);
 }
 
-fn poltergeistPersonaDelete(ctx: *anyopaque, key: []const u8) anyerror!void {
+fn poltergeistPersonaDelete(ctx: *anyopaque, alloc: Allocator, key: []const u8) anyerror![]const poltergeistpkg.squad.Removed {
     const self: *App = @ptrCast(@alignCast(ctx));
-    return self.deletePersona(key);
+    return self.deletePersonaDropping(alloc, key);
 }
 
 fn poltergeistAgentClis(ctx: *anyopaque, alloc: Allocator, refresh: bool) anyerror![]const u8 {
@@ -9424,9 +9601,10 @@ fn poltergeistPersonaLaunch(
     into: ?poltergeistpkg.Bus.Id,
     beside: ?poltergeistpkg.Bus.Id,
     group: []const u8,
+    seat: ?poltergeistpkg.rpc.MemberSeat,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const self: *App = @ptrCast(@alignCast(ctx));
-    return self.launchPersona(alloc, by, key, cli, cwd, place, into, beside, group);
+    return self.launchPersonaSeat(alloc, by, key, cli, cwd, place, into, beside, group, seat);
 }
 
 /// The group a supervisor's `role_launch` puts its worker in (task 1971):
@@ -9701,6 +9879,18 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .pluginConfigure = pluginConfigure,
         .pluginTest = pluginTest,
         .taskCreate = taskCreate,
+        .taskCreateSquad = taskCreateSquad,
+        .taskJoin = taskJoin,
+        .taskLeave = taskLeave,
+        .squadCatalog = poltergeistSquadCatalog,
+        .squadGet = poltergeistSquadGet,
+        .squadPut = poltergeistSquadPut,
+        .squadDelete = poltergeistSquadDelete,
+        .squadRefusal = poltergeistSquadRefusal,
+        .squadSummary = poltergeistSquadSummary,
+        .roleIsSupervisor = poltergeistRoleIsSupervisor,
+        .typeBlocker = poltergeistTypeBlocker,
+        .hasDraft = poltergeistHasDraft,
         .taskEdit = taskEdit,
         .layout = poltergeistLayout,
         .tabMove = polterTabMove,
@@ -13335,7 +13525,7 @@ fn reopenStoreHandles(self: *App) void {
 /// The panel model has no clock -- time arrives as a parameter everywhere
 /// in `poltergeist/` -- and the record is filed by local day, so this is
 /// where the two meet.
-fn taskWallMs(self: *App) i64 {
+pub fn taskWallMs(self: *App) i64 {
     return self.poltergeistWallMs();
 }
 
@@ -13351,6 +13541,116 @@ fn logTask(self: *App, op: poltergeistpkg.TaskLog.Op, id: u64) void {
     const l = if (self.task_log) |*v| v else return;
     const task = self.tasks.get(id) orelse return;
     l.append(self.taskWallMs(), op, task);
+}
+
+fn taskCreateSquad(
+    ctx: *anyopaque,
+    group: []const u8,
+    title: []const u8,
+    kind: poltergeistpkg.Tasks.Kind,
+    squad_key: []const u8,
+    seats: []const poltergeistpkg.rpc.PlannedSeat,
+) anyerror!u64 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    if (!self.chat.exists(group)) return error.NoSuchGroup;
+
+    const id = try self.tasks.create(group, title, kind);
+    errdefer self.tasks.cancel(id) catch {};
+    try self.tasks.setSquad(id, squad_key);
+    for (seats) |seat| try self.tasks.addSlot(id, seat.alias, seat.role);
+    // After the seats, so the `created` line carries them (every line
+    // carries the whole task).
+    self.logTask(.created, id);
+    return id;
+}
+
+fn taskJoin(ctx: *anyopaque, task: u64, alias: []const u8, id: poltergeistpkg.Bus.Id, lead: bool) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    try self.tasks.join(task, alias, "", id, "", self.taskWallMs(), lead);
+    self.logSeat(.joined, task, alias, id);
+    self.controlRoomTouch();
+}
+
+fn taskLeave(ctx: *anyopaque, task: u64, alias: []const u8) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const t = self.tasks.get(task) orelse return error.NoSuchTask;
+    var id: poltergeistpkg.Bus.Id = 0;
+    for (t.members) |m| {
+        if (std.mem.eql(u8, m.alias, alias)) id = m.id;
+    }
+    try self.tasks.leave(task, alias, self.taskWallMs());
+    self.logSeat(.left, task, alias, id);
+    self.controlRoomTouch();
+}
+
+fn poltergeistSquadCatalog(ctx: *anyopaque, alloc: Allocator) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.squadCatalogJson(alloc);
+}
+
+fn poltergeistSquadGet(ctx: *anyopaque, key: []const u8) ?poltergeistpkg.squad.Squad {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    self.ensureSquads();
+    return self.squads.set.find(key);
+}
+
+fn poltergeistSquadPut(ctx: *anyopaque, json: []const u8, who: poltergeistpkg.Bus.Authority) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.putSquad(json, who);
+}
+
+fn poltergeistSquadDelete(ctx: *anyopaque, key: []const u8, who: poltergeistpkg.Bus.Authority) anyerror!void {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.deleteSquad(key, who);
+}
+
+fn poltergeistSquadRefusal(ctx: *anyopaque) ?[]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.squads.last_refusal;
+}
+
+/// What a seat would start as, for a plan: the CLI and model once the
+/// squad's override is over the role. Null when the role is gone or the CLI
+/// cannot be worked out (the plan then says nothing of it, rather than a
+/// guess).
+fn poltergeistSquadSummary(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    by: poltergeistpkg.Bus.Id,
+    role: []const u8,
+    over: poltergeistpkg.squad.Override,
+) ?poltergeistpkg.rpc.SeatSummary {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const choice = self.resolveLaunchSeat(alloc, role, "", by, self.ownClis(), over) catch return null;
+    const r = choice.resolved orelse return null;
+    return .{ .cli = choice.cli, .model = r.choice.model };
+}
+
+fn poltergeistRoleIsSupervisor(ctx: *anyopaque, key: []const u8) bool {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    self.ensurePersonas();
+    if (std.mem.eql(u8, key, poltergeistpkg.persona.supervisor_key)) return true;
+    const p = self.personas.set.find(key) orelse return false;
+    return p.polter.supervisor;
+}
+
+/// Why a line typed into `id` now would not be taken, by the name of the
+/// error `Surface.mayTypeAs` gives: the answer `task_cancel` of a squad
+/// asks of every seat before it types into any of them.
+/// Whether closing `id` would lose a half-typed line (`draftFor(.agent)`,
+/// which errs towards "there is one"). A terminal that is not found has
+/// nothing to lose.
+fn poltergeistHasDraft(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return false;
+    return surface.draftFor(.agent);
+}
+
+fn poltergeistTypeBlocker(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) ?[]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return "NoSuchTerminal";
+    surface.mayTypeAs(.agent) catch |err| return @errorName(err);
+    return null;
 }
 
 fn taskCreate(
@@ -14241,7 +14541,7 @@ fn reownTasks(
     var moved: std.ArrayListUnmanaged(poltergeistpkg.Tasks.TaskId) = .empty;
     for (was) |old| {
         const before = moved.items.len;
-        try self.tasks.reown(alloc, old, id, &moved);
+        try self.tasks.reown(alloc, old, id, at, &moved);
         for (moved.items[before..]) |task| {
             // A fresh stretch, the same as a task handed over.
             _ = self.poltergeist_nudged.remove(task);

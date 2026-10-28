@@ -381,6 +381,64 @@ pub fn launchInstructions(aa: Allocator, p: Persona, group: ?[]const u8) Allocat
     return try std.mem.concat(aa, u8, &.{ note, "\n\n", own });
 }
 
+/// `launchInstructions`, with the opening paragraph of a squad member in
+/// front (squads S4, plan 4.5). The paragraph and the role's own
+/// instructions are two paragraphs apart, the way `supervisor_launch_note`
+/// is kept apart from them.
+pub fn launchInstructionsFor(
+    aa: Allocator,
+    p: Persona,
+    group: ?[]const u8,
+    brief: ?[]const u8,
+) Allocator.Error!?[]const u8 {
+    const base = try launchInstructions(aa, p, group);
+    const b = brief orelse return base;
+    const own = base orelse return b;
+    return try std.mem.concat(aa, u8, &.{ b, "\n\n", own });
+}
+
+/// The instructions a launched terminal was started with, which is what its
+/// first prompt carries: the role's, **unless the launch record says the squad
+/// replaced them** (empty included), with a seat's opening paragraph in
+/// front. Read from the launch, not from the role library: the library has
+/// the role's words, and the squad's are the ones that were started with
+/// (plan v3 item 14).
+pub fn launchedInstructions(
+    aa: Allocator,
+    role: Persona,
+    launch: Launch,
+    group: ?[]const u8,
+) Allocator.Error!?[]const u8 {
+    var p = role;
+    if (launch.instructions) |t| p.instructions = if (t.len == 0) null else t;
+    return try launchInstructionsFor(aa, p, group, launch.brief);
+}
+
+/// What a squad member is told first: which task, which seat, who else sits
+/// there, and where to talk. A template, not generated text.
+pub fn memberBrief(
+    aa: Allocator,
+    task: u64,
+    alias: []const u8,
+    mates: []const []const u8,
+) (Allocator.Error || std.Io.Writer.Error)![]const u8 {
+    var w: std.Io.Writer.Allocating = .init(aa);
+    try w.writer.print("You are \"{s}\" on task {d}, one seat of a squad.", .{ alias, task });
+    if (mates.len > 0) {
+        try w.writer.writeAll(" The others on it:");
+        for (mates, 0..) |m, i| try w.writer.print("{s} \"{s}\"", .{ if (i > 0) "," else "", m });
+        try w.writer.writeByte('.');
+    }
+    try w.writer.print(
+        " Your channel is task {d}: group_post goes there by default, and only the squad and " ++
+            "the supervisor read it. To say something to every group, pass task=0; to reach " ++
+            "another squad, mention the supervisor. task_progress reports the task's progress " ++
+            "and is shared by the squad, and only its lead writes it.",
+        .{task},
+    );
+    return w.written();
+}
+
 // ------------------------------------------------------ the official roles
 
 /// The roles Polter ships are data, not code: `official.zig` has where they
@@ -1234,6 +1292,36 @@ pub const Launch = struct {
     /// (`Persona.cli_skills`), copied for the same reason as `choice`.
     skills: Selection,
     mcp: Selection,
+    /// A squad member's instructions **as the squad left them**: null when
+    /// the squad did not touch them (the role's own are used), and when
+    /// present -- empty included, "this seat gets none" -- the whole of
+    /// what replaces the role's. The first prompt reads this, not the role
+    /// library, which is why it is kept here (squads S4).
+    instructions: ?[]const u8,
+    /// The opening paragraph of a squad member (`memberBrief`), or null.
+    brief: ?[]const u8,
+};
+
+/// A squad member's start: the role as the squad's override left it, and
+/// the seat it is for. Made once, at `role_launch`, by `squad.resolve`, and
+/// carried to wherever the start is finished -- `PersonaStore.startRole`
+/// for the launch record and the first prompt, the `+launch` line for the
+/// CLI -- so that **none of them reads the role library again** and gets
+/// the role's own settings back (squads S4, plan v3 item 14).
+pub const Effective = struct {
+    /// The seat: task, alias, and whether it is the lead's.
+    task: u64,
+    alias: []const u8,
+    lead: bool,
+    /// What the CLI is started with.
+    choice: CliChoice,
+    cli_skills: Selection,
+    cli_mcp: Selection,
+    /// Null: the squad did not touch them. Present and empty: it did, and
+    /// the seat gets none.
+    instructions: ?[]const u8,
+    /// `memberBrief`.
+    brief: []const u8,
 };
 
 /// What `terminal_capabilities` knows about a terminal from the role side:
@@ -2036,4 +2124,56 @@ test "persona: a launch option is a key and a text value, and nothing else" {
     try testing.expectError(error.BadField, parsePersonaLeaky(aa,
         \\{"key":"a","name":"a","clis":{"codex":{"options":["x"]}}}
     ));
+}
+
+test "persona: launchInstructions 对小队成员加开场段（含别名），且与角色 instructions 之间隔空行" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const role: Persona = .{ .key = "worker-dev", .name = "Dev", .instructions = "own words" };
+
+    const brief = try memberBrief(aa, 7, "开发", &.{ "测试", "审核" });
+    const text = (try launchInstructionsFor(aa, role, null, brief)).?;
+    try testing.expect(std.mem.indexOf(u8, text, "\"开发\"") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "task 7") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "\"测试\", \"审核\"") != null);
+    try testing.expect(std.mem.startsWith(u8, text, brief));
+    // A blank line between the paragraph and the role's own words.
+    try testing.expect(std.mem.endsWith(u8, text, "\n\nown words"));
+
+    // A role with nothing to say still gets the paragraph; no member, none.
+    const bare = (try launchInstructionsFor(aa, .{ .key = "b", .name = "b" }, null, brief)).?;
+    try testing.expectEqualStrings(brief, bare);
+    try testing.expectEqualStrings("own words", (try launchInstructionsFor(aa, role, null, null)).?);
+}
+
+test "persona: 空串覆盖之后，首条提示里没有角色的指令" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    const role: Persona = .{ .key = "worker-dev", .name = "Dev", .instructions = "ROLE-SECRET-WORDS" };
+    var launch: Launch = .{
+        .role = "worker-dev",
+        .choice = .{ .cli = "claude-code" },
+        .skills = .{},
+        .mcp = .{},
+        .instructions = "",
+        .brief = "You are \"dev\".",
+    };
+
+    // The squad said: none. The role's are not in what the agent is told.
+    const replaced = (try launchedInstructions(aa, role, launch, null)).?;
+    try testing.expect(std.mem.indexOf(u8, replaced, "ROLE-SECRET-WORDS") == null);
+    try testing.expect(std.mem.indexOf(u8, replaced, "You are \"dev\".") != null);
+
+    // Negative control: the squad did not touch them, and the role's are there.
+    launch.instructions = null;
+    const followed = (try launchedInstructions(aa, role, launch, null)).?;
+    try testing.expect(std.mem.indexOf(u8, followed, "ROLE-SECRET-WORDS") != null);
+
+    // And a replacement with words is those words, not the role's.
+    launch.instructions = "SQUAD-WORDS";
+    const words = (try launchedInstructions(aa, role, launch, null)).?;
+    try testing.expect(std.mem.indexOf(u8, words, "SQUAD-WORDS") != null);
+    try testing.expect(std.mem.indexOf(u8, words, "ROLE-SECRET-WORDS") == null);
 }

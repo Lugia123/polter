@@ -20,6 +20,7 @@ const Chat = @import("Chat.zig");
 const MentionRetry = @import("MentionRetry.zig");
 const Plugin = @import("Plugin.zig");
 const Tasks = @import("Tasks.zig");
+const SquadStore = @import("SquadStore.zig");
 const fresh_assign = @import("fresh_assign.zig");
 pub const limits = @import("limits.zig");
 const procscan = @import("procscan.zig");
@@ -30,6 +31,7 @@ const screenshot = @import("screenshot.zig");
 pub const actions = @import("actions.zig");
 pub const keys = @import("keys.zig");
 pub const persona = @import("persona.zig");
+pub const squad = @import("squad.zig");
 const secret = @import("secret.zig");
 pub const worktree = @import("worktree.zig");
 
@@ -301,6 +303,11 @@ pub const Method = enum {
     launcher_list,
     launcher_put,
     launcher_delete,
+    /// The squad templates (squads S4): read, written and deleted by a
+    /// supervisor, who has no standing to make one lightly (`squad_put`).
+    squad_list,
+    squad_put,
+    squad_delete,
     role_launcher_set,
 
     /// Delete a role. Terminals wearing it are taken out of it.
@@ -757,11 +764,23 @@ pub const Request = union(Method) {
     /// carries a role.
     launcher_put: struct { launcher: []const u8 },
     launcher_delete: struct { key: []const u8 },
+    squad_list,
+    /// `squad` is the template object as JSON text, as `role_put` carries a
+    /// role: the host reads it with the function that reads `squads.json`.
+    squad_put: struct { squad: []const u8 },
+    squad_delete: struct { key: []const u8 },
     role_launcher_set: struct { role: []const u8, launcher: []const u8, on: bool },
     role_delete: struct { key: []const u8 },
     role_clis: struct { refresh: bool = false },
     role_launch: struct {
-        key: []const u8,
+        /// The role's key. Left out only with `task` and `member`, which
+        /// name the seat and so the role (`BadParams` otherwise).
+        key: []const u8 = "",
+        /// A seat in a task's squad (squads S4): both or neither. The role
+        /// is started as the squad's override leaves it, and the terminal
+        /// takes the seat once it exists.
+        task: u64 = 0,
+        member: []const u8 = "",
         /// Empty means "the only CLI this role is set up for".
         cli: []const u8 = "",
         /// Empty means where the calling terminal is standing.
@@ -838,13 +857,33 @@ pub const Request = union(Method) {
     stand_down,
     become_supervisor,
 
-    task_create: struct { group: []const u8, title: []const u8, kind: []const u8 = "" },
+    task_create: struct {
+        group: []const u8,
+        title: []const u8,
+        kind: []const u8 = "",
+        /// A squad template's key. With it `members` is required: the
+        /// aliases to plan for, and only those (squads S4).
+        squad: []const u8 = "",
+        members: []const []const u8 = &.{},
+    },
     task_edit: struct { task: u64, title: []const u8 = "", kind: []const u8 = "" },
     /// `fresh`: clear the worker's context first (#64). Default off: a
     /// worker reviewing the same change twice needs what it said the
     /// first time.
-    task_assign: struct { task: u64, id: Bus.Id, fresh: bool = false },
-    task_close: struct { task: u64 },
+    task_assign: struct {
+        task: u64,
+        id: Bus.Id,
+        fresh: bool = false,
+        /// A seat in the task's squad: `id` takes it, or `0` empties it.
+        /// Left out, `id` is the task's owner as before.
+        alias: []const u8 = "",
+    },
+    task_close: struct {
+        task: u64,
+        /// `close_idle` (the default) closes the idle terminals the
+        /// supervisor opened for the squad; `keep` closes none.
+        release: []const u8 = "",
+    },
     task_cancel: struct { task: u64 },
     task_progress: struct { task: u64, progress: []const u8 },
     alarm_set: struct { group: []const u8, minutes: u32, note: []const u8 = "" },
@@ -1222,6 +1261,9 @@ pub fn callableByPlugin(method: Method) bool {
         .launcher_list,
         .launcher_put,
         .launcher_delete,
+        .squad_list,
+        .squad_put,
+        .squad_delete,
         .role_launcher_set,
         .role_delete,
         .role_clis,
@@ -1626,6 +1668,9 @@ pub fn requiresSupervisor(method: Method) bool {
         .launcher_list,
         .launcher_put,
         .launcher_delete,
+        .squad_list,
+        .squad_put,
+        .squad_delete,
         .role_launcher_set,
         .role_delete,
         .role_clis,
@@ -1755,6 +1800,9 @@ pub fn targetsTerminal(method: Method) bool {
         .launcher_list,
         .launcher_put,
         .launcher_delete,
+        .squad_list,
+        .squad_put,
+        .squad_delete,
         .role_launcher_set,
         .role_delete,
         .role_clis,
@@ -1883,6 +1931,9 @@ pub fn target(req: Request) ?Bus.Id {
         .launcher_list,
         .launcher_put,
         .launcher_delete,
+        .squad_list,
+        .squad_put,
+        .squad_delete,
         .role_launcher_set,
         .role_delete,
         .role_clis,
@@ -2000,6 +2051,9 @@ pub fn selfPermitted(req: Request) bool {
         .launcher_list,
         .launcher_put,
         .launcher_delete,
+        .squad_list,
+        .squad_put,
+        .squad_delete,
         .role_launcher_set,
         .role_delete,
         .role_clis,
@@ -2233,6 +2287,9 @@ pub fn promptReach(method: Method) enum {
         .launcher_list,
         .launcher_put,
         .launcher_delete,
+        .squad_list,
+        .squad_put,
+        .squad_delete,
         .role_launcher_set,
         .role_delete,
         .role_clis,
@@ -2922,6 +2979,9 @@ test "only what changes the arrangement needs the supervisor" {
             .launcher_list,
             .launcher_put,
             .launcher_delete,
+            .squad_list,
+            .squad_put,
+            .squad_delete,
             .role_launcher_set,
             .role_delete,
             .role_clis,
@@ -5482,6 +5542,36 @@ pub const TaskOwner = struct {
     /// silent disagreement this file spends its time preventing, only
     /// pointing the other way.
     open: bool,
+
+    /// The squad's key and seats, as the panel has them (squads S4). Empty
+    /// for a task with no squad. Owned by the host; valid for the request.
+    squad: []const u8 = "",
+    members: []const Tasks.Member = &.{},
+};
+
+/// A seat of a squad that `role_launch` is starting a terminal for.
+pub const MemberSeat = struct {
+    task: u64,
+    alias: []const u8,
+    /// Whether the seat is the lead's, so that its terminal becomes the
+    /// task's owner.
+    lead: bool,
+    /// What the squad says differently from the role.
+    over: squad.Override,
+    /// The aliases of the other seats, for the opening paragraph.
+    mates: []const []const u8,
+};
+
+/// A seat `task_create` plans: the alias and the role it was made from.
+pub const PlannedSeat = struct {
+    alias: []const u8,
+    role: []const u8,
+};
+
+/// What a member would be started with, for `task_create`'s plan.
+pub const SeatSummary = struct {
+    cli: []const u8,
+    model: ?[]const u8,
 };
 
 /// Where a `terminal_layout` puts its shape. See `arrange.Into`.
@@ -5761,6 +5851,9 @@ pub const Opened = struct {
     /// 1958). Null when `auto` would have split it off the caller too, or
     /// when `here` was not asked for.
     stack: ?Bus.Id = null,
+    /// A squad seat's start in words: what the squad changed, what a
+    /// changed CLI left behind (`squad.Resolved.dropped`).
+    seat: ?[]const u8 = null,
 };
 
 /// What `role_launch` says when a worker asked for `here` was split off
@@ -6140,7 +6233,9 @@ pub const Host = struct {
         /// `PersonaStore.WriteError`'s names.
         personaPut: *const fn (ctx: *anyopaque, json: []const u8) anyerror!void,
 
-        personaDelete: *const fn (ctx: *anyopaque, key: []const u8) anyerror!void,
+        /// Delete a role and take every squad seat that is made from it
+        /// out of the templates (squads S4). Answers who was taken out.
+        personaDelete: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, key: []const u8) anyerror![]const squad.Removed,
 
         /// The installed plugins that declare what their CLI's screen
         /// shows while a permission box is up (`Plugin.ScreenSays`), for
@@ -6178,6 +6273,9 @@ pub const Host = struct {
             beside: ?Bus.Id,
             /// `role_launch`'s `group`: empty for the caller's own (task 1971).
             group: []const u8,
+            /// A squad's seat the terminal is to take, with the squad's
+            /// override over the role; null for a start that is not one.
+            seat: ?MemberSeat,
         ) anyerror!Opened,
 
         /// Find or make the worktree `name` of the repository `cwd` is in
@@ -6697,6 +6795,57 @@ pub const Host = struct {
             kind: Tasks.Kind,
         ) anyerror!u64,
 
+        /// Put a task on a group's panel with a squad: the template's key
+        /// and one empty seat for each planned. Answers with its number.
+        taskCreateSquad: *const fn (
+            ctx: *anyopaque,
+            group: []const u8,
+            title: []const u8,
+            kind: Tasks.Kind,
+            squad_key: []const u8,
+            seats: []const PlannedSeat,
+        ) anyerror!u64,
+
+        /// A terminal takes the seat `alias` of a task; `lead` makes it the
+        /// task's owner. `MemberTaken` when another terminal has it.
+        taskJoin: *const fn (ctx: *anyopaque, task: u64, alias: []const u8, id: Bus.Id, lead: bool) anyerror!void,
+
+        /// The seat `alias` of a task is emptied: its terminal stays, the
+        /// seat is `vacated`.
+        taskLeave: *const fn (ctx: *anyopaque, task: u64, alias: []const u8) anyerror!void,
+
+        /// The squad templates as JSON (`SquadStore.writeCatalogJson`).
+        squadCatalog: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator) anyerror![]const u8,
+        /// One template, borrowed from the host for the request.
+        squadGet: *const fn (ctx: *anyopaque, key: []const u8) ?squad.Squad,
+        squadPut: *const fn (ctx: *anyopaque, json: []const u8, who: Bus.Authority) anyerror!void,
+        squadDelete: *const fn (ctx: *anyopaque, key: []const u8, who: Bus.Authority) anyerror!void,
+        /// Why the last refused `squadPut` was refused, or null.
+        squadRefusal: *const fn (ctx: *anyopaque) ?[]const u8,
+        /// What `over` over the role `role` would start, for a plan; null
+        /// when the role is gone or the CLI cannot be worked out.
+        squadSummary: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            by: Bus.Id,
+            role: []const u8,
+            over: squad.Override,
+        ) ?SeatSummary,
+
+        /// Whether the role is one a supervisor wears: the official
+        /// supervisor role, or one whose `polter.supervisor` is set.
+        roleIsSupervisor: *const fn (ctx: *anyopaque, key: []const u8) bool,
+
+        /// Whether `id` has a half-typed line in its input (the person's or
+        /// an agent's, unsent): closing the terminal would lose it.
+        hasDraft: *const fn (ctx: *anyopaque, id: Bus.Id) bool,
+
+        /// Why typing into `id` would not be accepted now (the code a
+        /// `sendText` would fail with), or null when it would. Asked before
+        /// a squad is told to stop, so that nobody is told if anybody
+        /// cannot be.
+        typeBlocker: *const fn (ctx: *anyopaque, id: Bus.Id) ?[]const u8,
+
         /// Whether the user lets agents take screenshots
         /// (`screenshot-agent-access`).
         screenshotAllowed: *const fn (ctx: *anyopaque) bool,
@@ -6984,8 +7133,8 @@ pub const Host = struct {
         return self.vtable.personaPut(self.ctx, json);
     }
 
-    fn personaDelete(self: Host, key: []const u8) anyerror!void {
-        return self.vtable.personaDelete(self.ctx, key);
+    fn personaDelete(self: Host, alloc: std.mem.Allocator, key: []const u8) anyerror![]const squad.Removed {
+        return self.vtable.personaDelete(self.ctx, alloc, key);
     }
 
     fn agentClis(self: Host, alloc: std.mem.Allocator, refresh: bool) anyerror![]const u8 {
@@ -7007,8 +7156,9 @@ pub const Host = struct {
         into: ?Bus.Id,
         beside: ?Bus.Id,
         group: []const u8,
+        seat: ?MemberSeat,
     ) anyerror!Opened {
-        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place, into, beside, group);
+        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place, into, beside, group, seat);
     }
 
     fn quietMs(self: Host, id: Bus.Id) u64 {
@@ -7307,6 +7457,61 @@ pub const Host = struct {
         return self.vtable.taskCreate(self.ctx, group, title, kind);
     }
 
+    fn taskCreateSquad(
+        self: Host,
+        group: []const u8,
+        title: []const u8,
+        kind: Tasks.Kind,
+        squad_key: []const u8,
+        seats: []const PlannedSeat,
+    ) anyerror!u64 {
+        return self.vtable.taskCreateSquad(self.ctx, group, title, kind, squad_key, seats);
+    }
+
+    fn taskJoin(self: Host, task: u64, alias: []const u8, id: Bus.Id, lead: bool) anyerror!void {
+        return self.vtable.taskJoin(self.ctx, task, alias, id, lead);
+    }
+
+    fn taskLeave(self: Host, task: u64, alias: []const u8) anyerror!void {
+        return self.vtable.taskLeave(self.ctx, task, alias);
+    }
+
+    fn squadCatalog(self: Host, alloc: std.mem.Allocator) anyerror![]const u8 {
+        return self.vtable.squadCatalog(self.ctx, alloc);
+    }
+
+    fn squadGet(self: Host, key: []const u8) ?squad.Squad {
+        return self.vtable.squadGet(self.ctx, key);
+    }
+
+    fn squadPut(self: Host, json: []const u8, who: Bus.Authority) anyerror!void {
+        return self.vtable.squadPut(self.ctx, json, who);
+    }
+
+    fn squadDelete(self: Host, key: []const u8, who: Bus.Authority) anyerror!void {
+        return self.vtable.squadDelete(self.ctx, key, who);
+    }
+
+    fn squadRefusal(self: Host) ?[]const u8 {
+        return self.vtable.squadRefusal(self.ctx);
+    }
+
+    fn squadSummary(self: Host, alloc: std.mem.Allocator, by: Bus.Id, role: []const u8, over: squad.Override) ?SeatSummary {
+        return self.vtable.squadSummary(self.ctx, alloc, by, role, over);
+    }
+
+    fn roleIsSupervisor(self: Host, key: []const u8) bool {
+        return self.vtable.roleIsSupervisor(self.ctx, key);
+    }
+
+    fn hasDraft(self: Host, id: Bus.Id) bool {
+        return self.vtable.hasDraft(self.ctx, id);
+    }
+
+    fn typeBlocker(self: Host, id: Bus.Id) ?[]const u8 {
+        return self.vtable.typeBlocker(self.ctx, id);
+    }
+
     fn layout(
         self: Host,
         alloc: std.mem.Allocator,
@@ -7414,6 +7619,450 @@ pub const Host = struct {
 ///
 /// One sentence per reason, because each asks for something different:
 /// fix the role, fix the file, or look for a bug.
+fn closeTask(
+    alloc: std.mem.Allocator,
+    bus: *Bus,
+    host: Host,
+    caller: Bus.Id,
+    p: @FieldType(Request, "task_close"),
+) WriteOom!wire.Response {
+    const keep = if (p.release.len == 0 or std.mem.eql(u8, p.release, "close_idle"))
+        false
+    else if (std.mem.eql(u8, p.release, "keep"))
+        true
+    else
+        return hostFailure("BadParams", "release is `close_idle` (the default) or `keep`.");
+
+    // The seats as they are now, copied: leaving them changes the panel's.
+    const before = host.taskOwner(p.task) catch |err| return taskFailure(err);
+    const seats = try alloc.dupe(Tasks.Member, before.members);
+
+    host.taskClose(p.task) catch |err| return taskFailure(err);
+
+    // **In this order, and the order is the point** (plan 7.2): every
+    // seat is given up first, then the idle terminals are closed, and
+    // only then is the worktree asked about -- so the terminals that
+    // were standing in it are gone when "nobody is standing in it" is
+    // judged.
+    for (seats) |m| {
+        if (m.slot == .filled) host.taskLeave(p.task, m.alias) catch {};
+    }
+    var closed: std.Io.Writer.Allocating = .init(alloc);
+    var kept: std.Io.Writer.Allocating = .init(alloc);
+    var n_closed: usize = 0;
+    var n_kept: usize = 0;
+    for (seats) |m| {
+        if (m.slot != .filled) continue;
+        const why: ?[]const u8 = if (keep)
+            "release is keep"
+        else if (!host.agentPresent(m.id))
+            "no agent in it"
+        else if (bus.openedBy(m.id) != caller)
+            "not opened by you (the person's terminal)"
+        else if (bus.workersOf(m.id) == .refused)
+            "the person marked it Don't Start Workers"
+        else if (bus.isShielded(m.id))
+            "shielded"
+        else switch (bus.agentOf(m.id).state) {
+            .idle, .ended, .failed => if (host.hasDraft(m.id))
+                "a half-typed line is in its input box and would be lost"
+            else
+                null,
+            else => |st| try std.fmt.allocPrint(alloc, "busy ({t})", .{st}),
+        };
+        if (why == null) {
+            if (host.performAction(m.id, "close_surface", false)) {
+                try closed.writer.print("{s} 0x{x:0>16} ({s})", .{ if (n_closed > 0) "," else "", m.id, m.alias });
+                n_closed += 1;
+                continue;
+            } else |err| {
+                try kept.writer.print("{s} 0x{x:0>16} ({s}): not closed, {t}", .{ if (n_kept > 0) ";" else "", m.id, m.alias, err });
+                n_kept += 1;
+                continue;
+            }
+        }
+        try kept.writer.print("{s} 0x{x:0>16} ({s}): {s}", .{ if (n_kept > 0) ";" else "", m.id, m.alias, why.? });
+        n_kept += 1;
+    }
+
+    // **Said, not done** (task 1702): a closed task's tree may still
+    // be needed, and whether it is is the supervisor's judgement.
+    // TODO(S4c): the squad's shared tree, and its landed/leased
+    // verdict (plan 12.6), replace this line for a task that has one.
+    const tree = host.worktreeForTask(alloc, p.task, before.owner);
+    if (n_closed == 0 and n_kept == 0 and tree == null) return .ok;
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    try out.writer.print("Task {d} closed.", .{p.task});
+    if (n_closed > 0) try out.writer.print(" Closed the idle terminals you opened for it:{s}.", .{closed.written()});
+    if (n_kept > 0) try out.writer.print(" Left open, and no longer in the task:{s}.", .{kept.written()});
+    if (tree) |t| try out.writer.print(
+        " Its worktree {s} is still at {s} (branch {s}); " ++
+            "worktree_status says whether it is merged, and worktree_remove takes it " ++
+            "down once it is not needed.",
+        .{ t.name, t.path, t.branch },
+    );
+    return .{ .text = out.written() };
+}
+
+/// The alias of a squad task's lead: the template's, else the first seat.
+fn leadAlias(host: Host, t: TaskOwner) []const u8 {
+    if (host.squadGet(t.squad)) |sq| {
+        if (sq.leadOf()) |l| {
+            for (t.members) |m| if (std.mem.eql(u8, m.alias, l.alias)) return l.alias;
+        }
+    }
+    return t.members[0].alias;
+}
+
+/// `task_assign` with an `alias`: a terminal takes a seat of the task's
+/// squad, or (`id` 0) the seat is emptied. **Told first, written second**,
+/// as the single-owner assignment is.
+fn assignSeat(
+    alloc: std.mem.Allocator,
+    bus: *Bus,
+    host: Host,
+    caller: Bus.Id,
+    task: u64,
+    alias: []const u8,
+    id: Bus.Id,
+) WriteOom!wire.Response {
+    if (caller == Chat.user_id) return failure(error.NotPermitted);
+    const what = host.taskOwner(task) catch |err| return taskFailure(err);
+    if (!host.ownsGroup(what.group, caller)) return failure(error.NotYours);
+    if (!what.open) return taskFailure(error.NotOpen);
+    if (what.members.len == 0) return hostFailure(
+        "NoSquad",
+        "that task has no squad, so it has no seats. task_assign without `alias` hands it to one terminal.",
+    );
+    const seat: Tasks.Member = for (what.members) |m| {
+        if (std.mem.eql(u8, m.alias, alias)) break m;
+    } else return taskFailure(error.NoSuchMember);
+
+    if (id == 0) {
+        host.taskLeave(task, alias) catch |err| return taskFailure(err);
+        return .{ .text = try std.fmt.allocPrint(alloc, "Seat \"{s}\" of task {d} is empty. Its terminal was not told anything.", .{ alias, task }) };
+    }
+
+    if (bus.get(id) == null and !isOpenTerminal(alloc, host, id)) return failure(error.UnknownTerminal);
+    // Not a supervisor: not the terminal, and not the seat's role.
+    if (bus.isSupervisor(id) or host.roleIsSupervisor(seat.role)) return supervisorNotAllowed();
+    if (seat.slot == .filled and seat.id != id and host.agentPresent(seat.id)) return taskFailure(error.MemberTaken);
+
+    const typable = mayType(host, id);
+    if (typable == .startup_prompt) return .{ .failed = .{
+        .code = "StartupPrompt",
+        .message = startup_prompt_message ++ " The seat was not given.",
+    } };
+    if (typable == .no_agent) return .{ .failed = .{
+        .code = "NoAgentThere",
+        .message = "there is no agent in that terminal (no live MCP connection), so nobody can take " ++
+            "this seat -- start an agent CLI there and assign it again.",
+    } };
+    const line = try std.fmt.allocPrint(
+        alloc,
+        "[polter] You are now \"{s}\" on task {d} (\"{s}\"), a squad's seat. Your supervisor will " ++
+            "send the detail. Talk in the task's channel with group_post; the lead reports progress " ++
+            "with task_progress -- what you print here reaches nobody.",
+        .{ alias, task, what.title },
+    );
+    host.sendText(id, line, true) catch |err| return taskFailure(err);
+
+    const lead = std.mem.eql(u8, leadAlias(host, what), alias);
+    host.taskJoin(task, alias, id, lead) catch |err| return taskFailure(err);
+    return .{ .text = try std.fmt.allocPrint(alloc, "0x{x:0>16} has the seat \"{s}\" of task {d}{s}.", .{ id, alias, task, if (lead) ", and leads it" else "" }) };
+}
+
+/// `task_cancel` of a task with a squad (plan 7.1). **Everyone or no one**:
+/// every seat's terminal that has an agent is asked whether it can be told,
+/// and if one cannot, nothing is typed anywhere and nothing is cancelled --
+/// half a squad told to stop is worse than a squad that is all still going.
+fn cancelSquad(
+    alloc: std.mem.Allocator,
+    host: Host,
+    task: u64,
+    what: TaskOwner,
+) WriteOom!wire.Response {
+    var blocked: std.Io.Writer.Allocating = .init(alloc);
+    var n_blocked: usize = 0;
+    var targets: std.ArrayListUnmanaged(Tasks.Member) = .empty;
+    for (what.members) |m| {
+        if (m.slot != .filled) continue;
+        // No agent: nobody is working on it from there, and holding the
+        // cancellation for it would keep a task alive that has no worker.
+        if (!host.agentPresent(m.id)) continue;
+        if (host.typeBlocker(m.id)) |code| {
+            try blocked.writer.print("{s} \"{s}\" 0x{x:0>16}: {s}", .{ if (n_blocked > 0) ";" else "", m.alias, m.id, code });
+            n_blocked += 1;
+        } else try targets.append(alloc, m);
+    }
+    if (n_blocked > 0) return hostFailure(
+        "NotTold",
+        try std.fmt.allocPrint(
+            alloc,
+            "task {d} was NOT cancelled and nobody was told: these seats cannot be told right now --{s}. " ++
+                "Cancelling is all of them or none; try again when they can be.",
+            .{ task, blocked.written() },
+        ),
+    );
+
+    const line = try std.fmt.allocPrint(
+        alloc,
+        "[polter] Task {d} (\"{s}\") has been cancelled. Stop working on it.",
+        .{ task, what.title },
+    );
+    var failed: std.Io.Writer.Allocating = .init(alloc);
+    var n_failed: usize = 0;
+    for (targets.items) |m| {
+        host.sendText(m.id, line, true) catch {
+            try failed.writer.print("{s} \"{s}\"", .{ if (n_failed > 0) "," else "", m.alias });
+            n_failed += 1;
+        };
+    }
+    host.taskCancel(task) catch |err| return taskFailure(err);
+    if (n_failed > 0) return .{ .text = try std.fmt.allocPrint(
+        alloc,
+        "Task {d} cancelled. {d} seat(s) were told; these could not be, though they could a moment ago:{s}.",
+        .{ task, targets.items.len - n_failed, failed.written() },
+    ) };
+    return .{ .text = try std.fmt.allocPrint(
+        alloc,
+        "Task {d} cancelled.{s}",
+        .{ task, if (targets.items.len == 0) " Nobody was working on it, so nobody was told." else try std.fmt.allocPrint(alloc, " {d} seat(s) were told to stop.", .{targets.items.len}) },
+    ) };
+}
+
+/// `task_create` with a squad: the plan, not the terminals (plan 4.2).
+///
+/// **`members` is the answer to "who does this task need"**, and it is
+/// required: there is no "just the required ones" to fall back on. A
+/// required seat that was not named is made anyway and said -- required and
+/// optional are a hint to whoever opens the task, not a gate.
+fn createSquadTask(
+    alloc: std.mem.Allocator,
+    host: Host,
+    caller: Bus.Id,
+    group: []const u8,
+    title: []const u8,
+    kind: Tasks.Kind,
+    squad_key: []const u8,
+    members: []const []const u8,
+) WriteOom!wire.Response {
+    // Only a supervisor opens a squad, and not the person from the keyboard
+    // (plan 4.4): the person asks the supervisor.
+    if (caller == Chat.user_id) return failure(error.NotPermitted);
+    if (members.len == 0) return hostFailure(
+        "BadParams",
+        "a task with a squad needs `members`: the aliases of the seats this task needs. " ++
+            "There is no default -- say which, and leave the others out.",
+    );
+    const sq = host.squadGet(squad_key) orelse return hostFailure(
+        "NoSuchSquad",
+        "there is no squad with that key. squad_list has them.",
+    );
+    if (sq.members.len == 0) return hostFailure(
+        "SquadEmpty",
+        "that squad has no members left (their roles were deleted). Pick another, or put it right with squad_put.",
+    );
+
+    var seats: std.ArrayListUnmanaged(PlannedSeat) = .empty;
+    for (members, 0..) |alias, i| {
+        for (members[0..i]) |before| if (std.mem.eql(u8, before, alias)) return hostFailure(
+            "DuplicateAlias",
+            try std.fmt.allocPrint(alloc, "\"{s}\" is named twice in members.", .{alias}),
+        );
+        const m = sq.member(alias) orelse return hostFailure(
+            "NoSuchMember",
+            try std.fmt.allocPrint(alloc, "the squad {s} has no seat called \"{s}\". squad_list shows its seats.", .{ squad_key, alias }),
+        );
+        // Not a supervisor: a role marked as one cannot sit in a squad.
+        if (host.roleIsSupervisor(m.role)) return supervisorNotAllowed();
+        try seats.append(alloc, .{ .alias = m.alias, .role = m.role });
+    }
+
+    const id = host.taskCreateSquad(group, title, kind, squad_key, seats.items) catch |err| return taskFailure(err);
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    const w = &out.writer;
+    try w.print("{{\"task\":{d},\"squad\":{f},\"plan\":[", .{ id, std.json.fmt(squad_key, .{}) });
+    for (seats.items, 0..) |seat, i| {
+        const m = sq.member(seat.alias).?;
+        if (i > 0) try w.writeByte(',');
+        try w.print("{{\"alias\":{f},\"role\":{f},\"slot\":\"empty\"", .{ std.json.fmt(seat.alias, .{}), std.json.fmt(seat.role, .{}) });
+        if (host.squadSummary(alloc, caller, seat.role, m.override)) |sum| {
+            try w.print(",\"cli\":{f}", .{std.json.fmt(sum.cli, .{})});
+            if (sum.model) |model| try w.print(",\"model\":{f}", .{std.json.fmt(model, .{})});
+        }
+        try w.writeByte('}');
+    }
+    try w.writeAll("],\"missing_required\":[");
+    var missing: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (sq.members) |m| {
+        if (!m.required) continue;
+        const named = for (members) |n| {
+            if (std.mem.eql(u8, n, m.alias)) break true;
+        } else false;
+        if (!named) try missing.append(alloc, m.alias);
+    }
+    for (missing.items, 0..) |alias, i| {
+        if (i > 0) try w.writeByte(',');
+        try w.print("{f}", .{std.json.fmt(alias, .{})});
+    }
+    try w.writeAll("],\"note\":");
+    var note: std.Io.Writer.Allocating = .init(alloc);
+    try note.writer.writeAll("No terminal is open yet: role_launch with `task` and `member` opens each seat in the plan, one at a time.");
+    if (missing.items.len > 0) {
+        try note.writer.writeAll(" The task was made anyway; these seats are required by the squad and were not named, so they are not in the plan:");
+        for (missing.items, 0..) |alias, i| try note.writer.print("{s} 必选位 {s} 没点名", .{ if (i > 0) ";" else "", alias });
+        try note.writer.writeAll(". role_launch can still open one.");
+    }
+    try w.print("{f}}}", .{std.json.fmt(note.written(), .{})});
+    return .{ .json = out.written() };
+}
+
+/// What a seat of a squad is started as, or why it is not started.
+const SeatChoice = union(enum) {
+    go: struct { role: []const u8, seat: MemberSeat },
+    stop: wire.Response,
+};
+
+/// `role_launch` with `task` and `member`: the seat, its role and what the
+/// squad changed in it -- and every refusal that comes before a terminal is
+/// opened.
+fn seatFor(
+    alloc: std.mem.Allocator,
+    bus: *Bus,
+    host: Host,
+    caller: Bus.Id,
+    task: u64,
+    member: []const u8,
+    asked_key: []const u8,
+    into: ?Bus.Id,
+) std.mem.Allocator.Error!SeatChoice {
+    if (task == 0 or member.len == 0) return .{ .stop = hostFailure(
+        "BadParams",
+        "`task` and `member` go together: the task whose squad has the seat, and the seat's alias.",
+    ) };
+    // Only the supervisor of the task's group opens its squad (plan 4.4).
+    if (caller == Chat.user_id) return .{ .stop = failure(error.NotPermitted) };
+    const what = host.taskOwner(task) catch |err| return .{ .stop = taskFailure(err) };
+    if (!host.ownsGroup(what.group, caller)) return .{ .stop = failure(error.NotYours) };
+    if (!what.open) return .{ .stop = taskFailure(error.NotOpen) };
+    if (what.squad.len == 0) return .{ .stop = hostFailure(
+        "NoSquad",
+        "that task has no squad: task_create with `squad` and `members` makes one.",
+    ) };
+
+    var seat: ?Tasks.Member = null;
+    for (what.members) |m| {
+        if (std.mem.eql(u8, m.alias, member)) seat = m;
+    }
+    const m = seat orelse return .{ .stop = hostFailure(
+        "NoSuchMember",
+        try std.fmt.allocPrint(alloc, "task {d} has no seat called \"{s}\"; task_list shows its seats.", .{ task, member }),
+    ) };
+    const sq = host.squadGet(what.squad) orelse return .{ .stop = hostFailure(
+        "NoSuchSquad",
+        try std.fmt.allocPrint(alloc, "the squad {s} this task was made from is gone, so what it changes in a role is not known. squad_put brings it back.", .{what.squad}),
+    ) };
+    const sm = sq.member(member) orelse return .{ .stop = hostFailure(
+        "NoSuchMember",
+        try std.fmt.allocPrint(alloc, "the squad {s} no longer has a seat called \"{s}\".", .{ what.squad, member }),
+    ) };
+
+    // Not a supervisor, in the role or in the terminal.
+    if (host.roleIsSupervisor(m.role) or (into != null and bus.isSupervisor(into.?))) return .{ .stop = supervisorNotAllowed() };
+    if (asked_key.len > 0 and !std.mem.eql(u8, asked_key, m.role)) return .{ .stop = hostFailure(
+        "BadParams",
+        "the seat names the role; leave `key` out, or give the seat's own.",
+    ) };
+    // A seat with a live agent in it is not given to a second one.
+    if (m.slot == .filled and host.agentPresent(m.id)) return .{ .stop = hostFailure(
+        "MemberTaken",
+        try std.fmt.allocPrint(alloc, "the seat \"{s}\" of task {d} is taken by 0x{x:0>16}, which has an agent in it. Nothing was opened.", .{ member, task, m.id }),
+    ) };
+
+    var mates: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (what.members) |o| {
+        if (!std.mem.eql(u8, o.alias, member)) try mates.append(alloc, o.alias);
+    }
+    const lead = if (sq.leadOf()) |l| std.mem.eql(u8, l.alias, member) else false;
+    return .{ .go = .{
+        .role = m.role,
+        .seat = .{ .task = task, .alias = member, .lead = lead, .over = sm.override, .mates = mates.items },
+    } };
+}
+
+fn supervisorNotAllowed() wire.Response {
+    return hostFailure(
+        "SupervisorNotAllowed",
+        "a supervisor cannot sit in a squad: not a role marked as one, and not a terminal that " ++
+            "is supervising. A squad is the supervisor's workers.",
+    );
+}
+
+/// `role_launch`'s `note`: the stack suggestion, and a seat's start in words.
+fn launchNote(alloc: std.mem.Allocator, caller: Bus.Id, opened: Opened) std.mem.Allocator.Error!?[]const u8 {
+    const stack_note: ?[]const u8 = if (opened.stack) |stack| if (opened.placed == .split)
+        try hereBesideStack(alloc, caller, stack)
+    else
+        null else null;
+    const seat_note = opened.seat orelse return stack_note;
+    const first = stack_note orelse return seat_note;
+    return try std.fmt.allocPrint(alloc, "{s} {s}", .{ seat_note, first });
+}
+
+fn removedSeatsText(alloc: std.mem.Allocator, key: []const u8, gone: []const squad.Removed) WriteOom![]const u8 {
+    var text: std.Io.Writer.Allocating = .init(alloc);
+    try text.writer.print("Role {s} deleted. Squad seats made from it were taken out:", .{key});
+    for (gone, 0..) |g, i| try text.writer.print("{s} {s}/{s}", .{ if (i > 0) "," else "", g.squad, g.alias });
+    try text.writer.writeByte('.');
+    return text.written();
+}
+
+/// Writing into an arena's buffer fails only by running out of memory, but
+/// the writer's error set says `WriteFailed`; the helpers say both.
+const WriteOom = std.mem.Allocator.Error || std.Io.Writer.Error;
+
+/// Why a squad template was not written or deleted, in words that say what
+/// to do. `squad_put` has three refusals that exist to stop a template
+/// being made lightly, and each names the thing to do instead.
+fn squadWriteFailure(alloc: std.mem.Allocator, host: Host, err: anyerror) std.mem.Allocator.Error!wire.Response {
+    return switch (err) {
+        error.BadSquad => hostFailure(
+            "BadSquad",
+            try std.fmt.allocPrint(alloc, "the squad does not read: {s}", .{host.squadRefusal() orelse "see squad_list for the shape"}),
+        ),
+        error.ReasonRequired => hostFailure(
+            "ReasonRequired",
+            "a squad you make needs a `reason` of at least 20 bytes: which existing template does not " ++
+                "fit this work, and why. Do not make a template for one task; squad_list shows the " ++
+                "ones that are there, and task_create's `members` already says which seats to open.",
+        ),
+        error.TooManySupervisorSquads => hostFailure(
+            "TooManySupervisorSquads",
+            "there are already 12 squads made by a supervisor. Delete one that is not used " ++
+                "(squad_delete), or ask the person to turn the good ones into their own.",
+        ),
+        error.NotPermitted => hostFailure(
+            "NotPermitted",
+            "that template is the person's, and a supervisor neither replaces nor deletes one. " ++
+                "Make a copy under another key, with a reason.",
+        ),
+        error.NoSuchSquad => hostFailure("NoSuchSquad", "there is no squad with that key. squad_list has them."),
+        error.SupervisorNotAllowed => hostFailure(
+            "SupervisorNotAllowed",
+            "a squad seat cannot be a supervisor role: the official supervisor, or a role whose " ++
+                "polter.supervisor is set.",
+        ),
+        error.FileUnreadable => hostFailure(
+            "LibraryUnreadable",
+            "squads.json does not parse right now, so writing to it would throw away whatever " ++
+                "somebody was halfway through. It has to be fixed by hand first.",
+        ),
+        else => hostFailure("SquadsFailed", "could not write the squad templates"),
+    };
+}
+
 fn roleWriteFailure(err: anyerror) wire.Response {
     return switch (err) {
         error.BadPersona => hostFailure(
@@ -7622,6 +8271,9 @@ pub fn isAgentCall(method: Method) bool {
         .launcher_list,
         .launcher_put,
         .launcher_delete,
+        .squad_list,
+        .squad_put,
+        .squad_delete,
         .role_launcher_set,
         .role_delete,
         .role_clis,
@@ -8287,7 +8939,30 @@ fn dispatchOne(
         .role_launcher_set => |p| return launcherAnswer(host.launchers(alloc, caller, .{ .role = .{ .role = p.role, .launcher = p.launcher, .on = p.on } })),
 
         .role_delete => |p| {
-            host.personaDelete(p.key) catch |err| return roleWriteFailure(err);
+            const gone = host.personaDelete(alloc, p.key) catch |err| return roleWriteFailure(err);
+            if (gone.len == 0) return .ok;
+            // The role is gone and so are the seats made from it. Said,
+            // because nobody was asked (there is no dialog on this road).
+            return .{ .text = removedSeatsText(alloc, p.key, gone) catch return error.OutOfMemory };
+        },
+
+        .squad_list => {
+            const json = host.squadCatalog(alloc) catch
+                return hostFailure("SquadsFailed", "could not read the squad templates");
+            return .{ .json = json };
+        },
+
+        .squad_put => |p| {
+            // The window writes through its own call; this road is a
+            // supervisor's (or, from the keyboard, the person's).
+            const authority: Bus.Authority = if (caller == Chat.user_id) .user else .supervisor;
+            host.squadPut(p.squad, authority) catch |err| return squadWriteFailure(alloc, host, err);
+            return .ok;
+        },
+
+        .squad_delete => |p| {
+            const authority: Bus.Authority = if (caller == Chat.user_id) .user else .supervisor;
+            host.squadDelete(p.key, authority) catch |err| return squadWriteFailure(alloc, host, err);
             return .ok;
         },
 
@@ -8298,6 +8973,26 @@ fn dispatchOne(
         },
 
         .role_launch => |p| {
+            // **A seat of a squad** (squads S4): `task` and `member` name
+            // it, and with them the role and what the squad changed in it.
+            var key = p.key;
+            var seat: ?MemberSeat = null;
+            if (p.task != 0 or p.member.len > 0) {
+                switch (try seatFor(alloc, bus, host, caller, p.task, p.member, p.key, p.in)) {
+                    .go => |got| {
+                        key = got.role;
+                        seat = got.seat;
+                    },
+                    .stop => |no| return no,
+                }
+                // TODO(S4c): `cwd` left out starts in the task's worktree
+                // (plan 12.2), once the tree belongs to the task. Until
+                // then the caller's own directory, as for any role.
+            } else if (p.key.len == 0) return hostFailure(
+                "BadParams",
+                "key is the role to start; leave it out only with `task` and `member`, " ++
+                    "which name a seat of a squad.",
+            );
             // `beside` says where, so a second answer to that is refused
             // rather than one of them quietly winning.
             if (p.beside != null and (p.in != null or p.place != .auto)) return hostFailure(
@@ -8332,7 +9027,7 @@ fn dispatchOne(
                 .go => |t| t,
                 .stop => |no| return no,
             };
-            const opened = host.personaLaunch(alloc, caller, p.key, p.cli, if (tree) |t| t.dir else p.cwd, p.place, p.in, p.beside, p.group) catch |err| return switch (err) {
+            const opened = host.personaLaunch(alloc, caller, key, p.cli, if (tree) |t| t.dir else p.cwd, p.place, p.in, p.beside, p.group, seat) catch |err| return switch (err) {
                 // Starting it in a terminal that is already open (`in`).
                 error.UnknownTerminal => hostFailure(
                     "UnknownTerminal",
@@ -8447,10 +9142,7 @@ fn dispatchOne(
                     .limits = try launchLimits(bus, host, caller, p.limits, opened.id),
                     // Only a split beside a stack it would have joined: a
                     // `here` that fell back to a tab says so in `fallback`.
-                    .note = if (opened.stack) |stack| if (opened.placed == .split)
-                        try hereBesideStack(alloc, caller, stack)
-                    else
-                        null else null,
+                    .note = try launchNote(alloc, caller, opened),
                 },
             };
         },
@@ -9422,8 +10114,16 @@ fn dispatchOne(
                     "how they stay findable.",
             );
 
-            const id = host.taskCreate(p.group, p.title, kind) catch |err| return taskFailure(err);
-            return .{ .task = id };
+            if (p.squad.len == 0) {
+                if (p.members.len > 0) return hostFailure(
+                    "BadParams",
+                    "`members` names seats of a squad; give the squad's key in `squad`, " ++
+                        "or leave `members` out for a task of one.",
+                );
+                const id = host.taskCreate(p.group, p.title, kind) catch |err| return taskFailure(err);
+                return .{ .task = id };
+            }
+            return createSquadTask(alloc, host, caller, p.group, p.title, kind, p.squad, p.members) catch return error.OutOfMemory;
         },
 
         .task_edit => |p| {
@@ -9445,6 +10145,17 @@ fn dispatchOne(
         },
 
         .task_assign => |p| {
+            // **A seat of a squad** (squads S4): `alias` names it. Without
+            // `alias`, a terminal handed a squad task takes the lead's seat.
+            if (p.alias.len > 0) return assignSeat(alloc, bus, host, caller, p.task, p.alias, p.id) catch return error.OutOfMemory;
+            if (p.id != 0) {
+                if (host.taskOwner(p.task)) |t| {
+                    if (t.members.len > 0) {
+                        return assignSeat(alloc, bus, host, caller, p.task, leadAlias(host, t), p.id) catch return error.OutOfMemory;
+                    }
+                } else |_| {}
+            }
+
             // The same existence check `group_add` makes, and for a
             // sharper reason: a task on a mistyped id is a task nobody is
             // doing, and when it is called off there is nobody to tell.
@@ -9485,20 +10196,7 @@ fn dispatchOne(
             return assignAndTell(alloc, host, p.task, p.id, what, .none);
         },
 
-        .task_close => |p| {
-            host.taskClose(p.task) catch |err| return taskFailure(err);
-            // **Said, not done** (task 1702): a closed task's tree may still
-            // be needed, and whether it is is the supervisor's judgement.
-            const owner = if (host.taskOwner(p.task)) |w| w.owner else |_| 0;
-            const tree = host.worktreeForTask(alloc, p.task, owner) orelse return .ok;
-            return .{ .text = try std.fmt.allocPrint(
-                alloc,
-                "Task {d} closed. Its worktree {s} is still at {s} (branch {s}); " ++
-                    "worktree_status says whether it is merged, and worktree_remove takes it " ++
-                    "down once it is not needed.",
-                .{ p.task, tree.name, tree.path, tree.branch },
-            ) };
-        },
+        .task_close => |p| return closeTask(alloc, bus, host, caller, p) catch return error.OutOfMemory,
 
         .task_cancel => |p| {
             // **Say it, then remove it, and this order is the whole of
@@ -9513,6 +10211,7 @@ fn dispatchOne(
             // putting the sequence here is what makes "told first" a thing
             // a test can hold onto rather than a comment somebody keeps.
             const what = host.taskOwner(p.task) catch |err| return taskFailure(err);
+            if (what.members.len > 0) return cancelSquad(alloc, host, p.task, what) catch return error.OutOfMemory;
 
             var told: []const u8 = " Nobody was on it, so there was nobody to tell.";
             if (what.owner != 0 and !host.agentPresent(what.owner)) {
@@ -10992,6 +11691,20 @@ fn taskFailure(err: anyerror) wire.Response {
             draft_in_line ++ " It was not told, and the task is still open.",
         ),
         error.NotImplemented => hostFailure("NotImplemented", not_wired_up),
+        error.NoSuchMember => hostFailure("NoSuchMember", "that task has no seat by that alias. task_list shows its seats."),
+        error.MemberTaken => hostFailure(
+            "MemberTaken",
+            "that seat has another terminal in it, or this terminal already has another seat in the " ++
+                "task. Empty the seat first: task_assign with the alias and id 0.",
+        ),
+        error.DuplicateAlias => hostFailure("DuplicateAlias", "an alias is used twice in one task."),
+        error.TooManyMembers => hostFailure("TooManyMembers", "a task has at most eight seats."),
+        error.BadAlias => hostFailure("BadAlias", "an alias is 1 to 24 bytes."),
+        error.NotLead => hostFailure(
+            "NotLead",
+            "a squad task's progress is written by its lead only. Say what you have done with " ++
+                "group_post, which goes to the task's channel.",
+        ),
         else => hostFailure("HostRefused", "the panel could not do that"),
     };
 }
@@ -11499,6 +12212,8 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 /// A host that records what it was asked to do and can be told to refuse.
 const FakeHost = struct {
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
+    /// How many `sendText` calls were carried out.
+    sent_n: usize = 0,
     /// What `readTerminal` answers.
     screen: []const u8 = "screen contents",
     /// What `promptScreens` answers.
@@ -11563,6 +12278,7 @@ const FakeHost = struct {
         into: ?Bus.Id = null,
         beside: ?Bus.Id = null,
         group: []const u8 = "",
+        seat: ?MemberSeat = null,
     } = null,
     /// What the app would say of the group a launch joins (task 1971).
     role_joins: ?[]const u8 = null,
@@ -11779,6 +12495,30 @@ const FakeHost = struct {
     /// than described. Null for the tests that do not care.
     panel: ?*Tasks = null,
 
+    /// A real squad store in a scratch directory, for the tests of the
+    /// squad tools (squads S4). Null for the ones that do not care.
+    squad_store: ?*SquadStore = null,
+    squad_path: []const u8 = "",
+    squad_io: ?std.Io = null,
+    squad_roles: ?persona.Set = null,
+    /// The roles this fake counts as a supervisor's.
+    supervisor_roles: []const []const u8 = &.{},
+    /// Terminals with a half-typed line in their input.
+    drafts: []const Bus.Id = &.{},
+    /// Terminals `typeBlocker` says cannot be typed into.
+    type_blocked: []const Bus.Id = &.{},
+    /// Terminals whose close `performAction` refuses.
+    close_refused: []const Bus.Id = &.{},
+    /// Every `close_surface` that was carried out, in order.
+    closed_ids: [8]Bus.Id = undefined,
+    closed_n: usize = 0,
+    /// The squad a `taskCreateSquad` was asked for.
+    seats_planned: usize = 0,
+    /// A seat joined by `taskJoin`, as it was asked.
+    joined: ?struct { task: u64, alias: []const u8, id: Bus.Id, lead: bool } = null,
+    /// Roles `personaDelete` took squad seats out of, as (squad, alias).
+    deleted_seats: []const squad.Removed = &.{},
+
     /// Stands in for a group that still has terminals working in it. The
     /// crossing that decides this is the host's -- it is the only party
     /// that knows which terminals are open -- so what is testable here is
@@ -11952,6 +12692,18 @@ const FakeHost = struct {
             .pluginConfigure = pluginConfigure,
             .pluginTest = pluginTest,
             .taskCreate = taskCreate,
+            .taskCreateSquad = taskCreateSquad,
+            .taskJoin = taskJoin,
+            .taskLeave = taskLeave,
+            .squadCatalog = squadCatalog,
+            .squadGet = squadGet,
+            .squadPut = squadPut,
+            .squadDelete = squadDelete,
+            .squadRefusal = squadRefusal,
+            .squadSummary = squadSummary,
+            .roleIsSupervisor = roleIsSupervisor,
+            .typeBlocker = typeBlocker,
+            .hasDraft = hasDraft,
             .taskEdit = taskEdit,
             .layout = layout,
             .tabMove = tabMove,
@@ -12031,6 +12783,96 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const panel = self.panel orelse return error.NotImplemented;
         return panel.create(group, title, kind);
+    }
+
+    fn taskCreateSquad(
+        ctx: *anyopaque,
+        group: []const u8,
+        title: []const u8,
+        kind: Tasks.Kind,
+        squad_key: []const u8,
+        seats: []const PlannedSeat,
+    ) anyerror!u64 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+        const id = try panel.create(group, title, kind);
+        try panel.setSquad(id, squad_key);
+        for (seats) |seat| try panel.addSlot(id, seat.alias, seat.role);
+        self.seats_planned = seats.len;
+        return id;
+    }
+
+    fn taskJoin(ctx: *anyopaque, task: u64, alias: []const u8, id: Bus.Id, lead: bool) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+        try panel.join(task, alias, "", id, "", 0, lead);
+        self.joined = .{ .task = task, .alias = alias, .id = id, .lead = lead };
+    }
+
+    fn taskLeave(ctx: *anyopaque, task: u64, alias: []const u8) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+        try panel.leave(task, alias, 0);
+    }
+
+    fn squadCatalog(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror![]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const store = self.squad_store orelse return error.NotImplemented;
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        try store.writeCatalogJson(&out.writer, self.squad_roles);
+        return out.written();
+    }
+
+    fn squadGet(ctx: *anyopaque, key: []const u8) ?squad.Squad {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const store = self.squad_store orelse return null;
+        return store.set.find(key);
+    }
+
+    fn squadPut(ctx: *anyopaque, json: []const u8, who: Bus.Authority) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const store = self.squad_store orelse return error.NotImplemented;
+        try store.put(self.squad_io.?, self.squad_path, json, self.squad_roles, who);
+    }
+
+    fn squadDelete(ctx: *anyopaque, key: []const u8, who: Bus.Authority) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const store = self.squad_store orelse return error.NotImplemented;
+        try store.remove(self.squad_io.?, self.squad_path, key, who);
+    }
+
+    fn squadRefusal(ctx: *anyopaque) ?[]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const store = self.squad_store orelse return null;
+        return store.last_refusal;
+    }
+
+    fn squadSummary(
+        _: *anyopaque,
+        _: std.mem.Allocator,
+        _: Bus.Id,
+        _: []const u8,
+        over: squad.Override,
+    ) ?SeatSummary {
+        return .{ .cli = over.cli orelse "claude-code", .model = null };
+    }
+
+    fn roleIsSupervisor(ctx: *anyopaque, key: []const u8) bool {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        for (self.supervisor_roles) |r| if (std.mem.eql(u8, r, key)) return true;
+        return std.mem.eql(u8, key, persona.supervisor_key);
+    }
+
+    fn hasDraft(ctx: *anyopaque, id: Bus.Id) bool {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        for (self.drafts) |d| if (d == id) return true;
+        return false;
+    }
+
+    fn typeBlocker(ctx: *anyopaque, id: Bus.Id) ?[]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        for (self.type_blocked) |b| if (b == id) return "DraftInLine";
+        return null;
     }
 
     fn layout(
@@ -12123,7 +12965,7 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const panel = self.panel orelse return error.NotImplemented;
         const t = panel.get(task) orelse return error.NoSuchTask;
-        return .{ .owner = t.owner, .title = t.title, .open = t.state == .open, .group = t.group };
+        return .{ .owner = t.owner, .title = t.title, .open = t.state == .open, .group = t.group, .squad = t.squad, .members = t.members };
     }
 
     fn taskCancel(ctx: *anyopaque, task: u64) anyerror!void {
@@ -12532,6 +13374,7 @@ const FakeHost = struct {
         if (self.refuse) return error.Refused;
         if (self.send_error) |err| return err;
         self.sent = .{ .id = id, .text = text, .submit = submit };
+        self.sent_n += 1;
     }
 
     fn parkAssign(ctx: *anyopaque, id: Bus.Id, task: u64, before: ?[]const u8, confirm: fresh_assign.Confirm) anyerror!void {
@@ -12659,10 +13502,11 @@ const FakeHost = struct {
         self.role_put = json;
     }
 
-    fn personaDelete(ctx: *anyopaque, key: []const u8) anyerror!void {
+    fn personaDelete(ctx: *anyopaque, _: std.mem.Allocator, key: []const u8) anyerror![]const squad.Removed {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.role_error) |e| return e;
         self.role_deleted = key;
+        return self.deleted_seats;
     }
 
     fn agentClis(ctx: *anyopaque, _: std.mem.Allocator, refresh: bool) anyerror![]const u8 {
@@ -12687,10 +13531,11 @@ const FakeHost = struct {
         into: ?Bus.Id,
         beside: ?Bus.Id,
         group: []const u8,
+        seat: ?MemberSeat,
     ) anyerror!Opened {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.role_error) |e| return e;
-        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into, .beside = beside, .group = group };
+        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into, .beside = beside, .group = group, .seat = seat };
         if (beside != null) return .{ .id = null, .placed = .split };
         if (into) |there| return .{ .id = there, .placed = .{ .reused = .asked } };
         // What the app's placement would answer: `tab` is a tab, `here` a
@@ -12845,7 +13690,12 @@ const FakeHost = struct {
     ) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.action_error) |err| return err;
+        for (self.close_refused) |r| if (r == id) return error.CloseRefusedUsersTerminal;
         self.acted = .{ .id = id, .action = action, .confirm_close = confirm_close };
+        if (std.mem.eql(u8, action, "close_surface") and self.closed_n < self.closed_ids.len) {
+            self.closed_ids[self.closed_n] = id;
+            self.closed_n += 1;
+        }
     }
 
     fn stoodDown(ctx: *anyopaque, id: Bus.Id) void {
@@ -20685,4 +21535,567 @@ test "rpc: worktree_status / worktree_remove 接受 task 参数，与 name 等�
     const both_status = try dispatch(alloc, &b, fake.host(), term(boss), .{ .worktree_status = .{ .name = "w1", .task = 3 } });
     try testing.expectEqualStrings("BadParams", both_status.failed.code);
     try testing.expect(fake.worktree_sel == null);
+}
+
+// -- squads S4: opening a squad, and closing it -----------------------------
+
+const squad_roles: persona.Set = .{ .personas = &.{
+    .{ .key = "worker-dev", .name = "Dev", .instructions = "ROLE-DEV" },
+    .{ .key = "worker-test", .name = "Test" },
+    .{ .key = "worker-review", .name = "Review" },
+} };
+
+const trio_json =
+    \\{"key":"trio","name":"Trio","description":"write, test, review","origin":"user","members":[
+    \\ {"alias":"dev","role":"worker-dev","required":true,"lead":true,"override":{"instructions":""}},
+    \\ {"alias":"test","role":"worker-test","required":true,"override":{"cli":"codex"}},
+    \\ {"alias":"review","role":"worker-review"}]}
+;
+
+/// A squad store in a scratch directory with the `trio` template in it.
+const SquadRig = struct {
+    threaded: std.Io.Threaded,
+    store: SquadStore,
+    dir: []const u8,
+    path: []const u8,
+
+    fn init(self: *SquadRig) !void {
+        self.threaded = .init(testing.allocator, .{});
+        const io = self.threaded.io();
+        var raw: [6]u8 = undefined;
+        io.random(&raw);
+        self.dir = try std.fmt.allocPrint(testing.allocator, "/tmp/polter-rpc-squads-{x}", .{&raw});
+        try std.Io.Dir.cwd().createDirPath(io, self.dir);
+        self.path = try std.fmt.allocPrint(testing.allocator, "{s}/squads.json", .{self.dir});
+        self.store = .{ .alloc = testing.allocator };
+        try self.store.put(io, self.path, trio_json, squad_roles, .user);
+    }
+
+    fn wire(self: *SquadRig, fake: *FakeHost) void {
+        fake.squad_store = &self.store;
+        fake.squad_path = self.path;
+        fake.squad_io = self.threaded.io();
+        fake.squad_roles = squad_roles;
+    }
+
+    fn deinit(self: *SquadRig) void {
+        self.store.deinit();
+        std.Io.Dir.cwd().deleteTree(self.threaded.io(), self.dir) catch {};
+        testing.allocator.free(self.dir);
+        testing.allocator.free(self.path);
+        self.threaded.deinit();
+    }
+};
+
+fn createTrio(alloc: std.mem.Allocator, b: *Bus, fake: *FakeHost, members: []const []const u8) !wire.Response {
+    return dispatch(alloc, b, fake.host(), term(boss), .{ .task_create = .{
+        .group = "build",
+        .title = "squad work",
+        .kind = "feature",
+        .squad = "trio",
+        .members = members,
+    } });
+}
+
+test "rpc: task_create 选了模版而 members 缺省或为空 → BadParams；漏掉必选位 → 照建，note 提醒并给 missing_required，plan 里没有该位" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+
+    const none = try createTrio(alloc, &b, &fake, &.{});
+    try testing.expectEqualStrings("BadParams", none.failed.code);
+    try testing.expectEqual(@as(usize, 0), panel.list.items.len);
+
+    // `test` is required and not named: the task is made anyway.
+    const res = try createTrio(alloc, &b, &fake, &.{"dev"});
+    try testing.expect(res == .json);
+    const created = panel.list.items.len == 1;
+    try testing.expect(created);
+    try testing.expect(std.mem.indexOf(u8, res.json, "\"missing_required\":[\"test\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, res.json, "必选位 test 没点名") != null);
+    // And it is not in the plan.
+    try testing.expect(std.mem.indexOf(u8, res.json, "\"alias\":\"test\"") == null);
+    try testing.expect(std.mem.indexOf(u8, res.json, "\"alias\":\"dev\"") != null);
+}
+
+test "rpc: task_create 的 plan 只含点名的位，可选位不点名就不在 plan 里" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+
+    const res = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    try testing.expect(std.mem.indexOf(u8, res.json, "\"alias\":\"review\"") == null);
+    try testing.expect(std.mem.indexOf(u8, res.json, "\"missing_required\":[]") != null);
+    try testing.expectEqual(@as(usize, 2), fake.seats_planned);
+    const t = panel.list.items[0];
+    try testing.expectEqual(@as(usize, 2), t.members.len);
+    try testing.expectEqualStrings("trio", t.squad);
+    try testing.expectEqual(Tasks.Slot.empty, t.members[0].slot);
+    // A name the template does not have, and a name twice.
+    const unknown = try createTrio(alloc, &b, &fake, &.{"qa"});
+    try testing.expectEqualStrings("NoSuchMember", unknown.failed.code);
+    const twice = try createTrio(alloc, &b, &fake, &.{ "dev", "dev" });
+    try testing.expectEqualStrings("DuplicateAlias", twice.failed.code);
+    // The person at the keyboard asks the supervisor; they do not open it.
+    const user = try dispatch(alloc, &b, fake.host(), term(Chat.user_id), .{ .task_create = .{
+        .group = "build",
+        .title = "x",
+        .kind = "feature",
+        .squad = "trio",
+        .members = &.{"dev"},
+    } });
+    try testing.expectEqualStrings("NotPermitted", user.failed.code);
+}
+
+test "rpc: 总管不能入队：task_create 的 members 和 role_launch task+member 遇到总管角色或总管终端都返回 SupervisorNotAllowed" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+
+    // The role of the seat has become a supervisor's since the template was
+    // written.
+    fake.supervisor_roles = &.{"worker-dev"};
+    const made = try createTrio(alloc, &b, &fake, &.{"dev"});
+    try testing.expectEqualStrings("SupervisorNotAllowed", made.failed.code);
+    try testing.expectEqual(@as(usize, 0), panel.list.items.len);
+
+    // A task that does have the seat (made before the role changed).
+    fake.supervisor_roles = &.{};
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    fake.supervisor_roles = &.{"worker-dev"};
+    const launch_role = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{
+        .task = 1,
+        .member = "dev",
+    } });
+    try testing.expectEqualStrings("SupervisorNotAllowed", launch_role.failed.code);
+    try testing.expect(fake.role_launched == null);
+
+    // A role that is fine, started into a terminal that is supervising.
+    try b.addSupervisor(0x6666);
+    fake.supervisor_roles = &.{};
+    const into_boss = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{
+        .task = 1,
+        .member = "test",
+        .in = 0x6666,
+    } });
+    try testing.expectEqualStrings("SupervisorNotAllowed", into_boss.failed.code);
+    try testing.expect(fake.role_launched == null);
+}
+
+test "rpc: role_launch task+member 的有效角色 = resolve(role, override)，种子带着小队的覆盖" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{
+        .task = 1,
+        .member = "test",
+    } });
+    try testing.expect(res == .opened);
+    const got = fake.role_launched.?;
+    // The seat names the role; `key` was left out.
+    try testing.expectEqualStrings("worker-test", got.key);
+    const seat = got.seat.?;
+    try testing.expectEqualStrings("test", seat.alias);
+    try testing.expect(!seat.lead);
+    // What the squad changed rides with the launch: the CLI.
+    try testing.expectEqualStrings("codex", seat.over.cli.?);
+    try testing.expect(seat.over.instructions == null);
+    try testing.expectEqualStrings("dev", seat.mates[0]);
+
+    // The lead's seat is the lead's, and says "no instructions".
+    const lead = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "dev" } });
+    try testing.expect(lead == .opened);
+    try testing.expect(fake.role_launched.?.seat.?.lead);
+    try testing.expectEqualStrings("", fake.role_launched.?.seat.?.over.instructions.?);
+
+    // A `key` that is not the seat's role is a mistake, said.
+    const wrong = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .key = "worker-review", .task = 1, .member = "dev" } });
+    try testing.expectEqualStrings("BadParams", wrong.failed.code);
+    // No key and no seat.
+    const bare = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{} });
+    try testing.expectEqualStrings("BadParams", bare.failed.code);
+}
+
+test "rpc: role_launch 位已被占且终端还有 agent → MemberTaken，不开第二个" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    try panel.join(1, "dev", "", worker, "", 0, true);
+
+    const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "dev" } });
+    try testing.expectEqualStrings("MemberTaken", taken.failed.code);
+    try testing.expect(fake.role_launched == null);
+
+    // Negative control: the agent has gone, the seat can be refilled.
+    fake.agent_absent = &.{worker};
+    const again = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "dev" } });
+    try testing.expect(again == .opened);
+    try testing.expect(fake.role_launched != null);
+}
+
+test "rpc: task_assign alias 填位 / id 0 腾位；不带 alias 仍是设置 owner" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+
+    // Fills the seat; the lead's makes the terminal the owner.
+    const filled = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{ .task = 1, .id = worker, .alias = "dev" } });
+    try testing.expect(filled == .text);
+    try testing.expect(fake.sent != null);
+    try testing.expectEqual(Tasks.Slot.filled, panel.get(1).?.members[0].slot);
+    try testing.expectEqual(worker, panel.get(1).?.members[0].id);
+    try testing.expectEqual(worker, panel.get(1).?.owner);
+
+    // Taken by another terminal.
+    const taken = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{ .task = 1, .id = other, .alias = "dev" } });
+    try testing.expectEqualStrings("MemberTaken", taken.failed.code);
+
+    // id 0 empties it, and nothing is typed.
+    fake.sent = null;
+    const emptied = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{ .task = 1, .id = 0, .alias = "dev" } });
+    try testing.expect(emptied == .text);
+    try testing.expect(fake.sent == null);
+    try testing.expectEqual(Tasks.Slot.vacated, panel.get(1).?.members[0].slot);
+
+    // Without an alias it is the old thing: the owner, on a task of one.
+    const solo = try panel.create("build", "solo", .bug);
+    const set = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{ .task = solo, .id = worker } });
+    try testing.expect(set == .text or set == .ok);
+    try testing.expectEqual(worker, panel.get(solo).?.owner);
+    try testing.expectEqual(@as(usize, 0), panel.get(solo).?.members.len);
+
+    // A supervising terminal does not sit in a squad.
+    const sup = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{ .task = 1, .id = boss, .alias = "test" } });
+    try testing.expectEqualStrings("SupervisorNotAllowed", sup.failed.code);
+}
+
+test "rpc: task_cancel 带成员 —— 一个成员预检不过则整体拒绝且一个都没打字" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    try panel.join(1, "dev", "", worker, "", 0, true);
+    try panel.join(1, "test", "", other, "", 0, false);
+
+    // The second seat's terminal has a half-typed line.
+    fake.type_blocked = &.{other};
+    const refused = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{ .task = 1 } });
+    try testing.expectEqualStrings("NotTold", refused.failed.code);
+    try testing.expect(std.mem.indexOf(u8, refused.failed.message, "\"test\"") != null);
+    try testing.expectEqual(@as(usize, 0), fake.sent_n);
+    try testing.expectEqual(Tasks.State.open, panel.get(1).?.state);
+
+    // Negative control: nobody blocked, and both are told.
+    fake.type_blocked = &.{};
+    const done = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{ .task = 1 } });
+    try testing.expect(done == .text);
+    try testing.expectEqual(@as(usize, 2), fake.sent_n);
+    try testing.expectEqual(Tasks.State.cancelled, panel.get(1).?.state);
+}
+
+test "rpc: task_cancel 先打字后取消的顺序仍成立" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    try panel.join(1, "dev", "", worker, "", 0, true);
+    try panel.join(1, "test", "", other, "", 0, false);
+
+    // The terminal cannot be written to once the preflight has passed: the
+    // task is cancelled anyway and the reply names who was not told.
+    fake.send_error = error.ChildExited;
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{ .task = 1 } });
+    try testing.expect(res == .text);
+    try testing.expect(std.mem.indexOf(u8, res.text, "could not be") != null);
+    try testing.expectEqual(Tasks.State.cancelled, panel.get(1).?.state);
+
+    // And a task whose send is accepted was told before it left the list.
+    fake.send_error = null;
+    _ = try createTrio(alloc, &b, &fake, &.{"dev"});
+    try panel.join(2, "dev", "", worker, "", 0, true);
+    fake.sent = null;
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{ .task = 2 } });
+    try testing.expect(fake.sent != null);
+    try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "cancelled") != null);
+}
+
+/// A closing rig: trio with dev, test and review all filled, each by a
+/// terminal the supervisor opened and whose agent is idle.
+fn closingRig(alloc: std.mem.Allocator, b: *Bus, panel: *Tasks, fake: *FakeHost) !void {
+    _ = try createTrio(alloc, b, fake, &.{ "dev", "test", "review" });
+    const dev: Bus.Id = 0x2222;
+    const tst: Bus.Id = 0x3333;
+    const rev: Bus.Id = 0x4444;
+    try panel.join(1, "dev", "", dev, "", 0, true);
+    try panel.join(1, "test", "", tst, "", 0, false);
+    try panel.join(1, "review", "", rev, "", 0, false);
+    for ([_]Bus.Id{ dev, tst, rev }) |id| {
+        try b.markOpenedByAgent(id, boss);
+        const e = b.entries.getPtr(id).?;
+        e.agent.state = .idle;
+    }
+}
+
+test "rpc: task_close 默认关闭空闲且总管开出的成员终端；忙的、用户开的、refused、shield 的不关且在回复里点名" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    try closingRig(alloc, &b, &panel, &fake);
+
+    // test: busy; review: the person's. dev: idle and the supervisor's.
+    b.entries.getPtr(0x3333).?.agent.state = .in_turn;
+    b.entries.getPtr(0x4444).?.opened_by = null;
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = 1 } });
+    try testing.expect(res == .text);
+    try testing.expectEqual(@as(usize, 1), fake.closed_n);
+    try testing.expectEqual(@as(Bus.Id, 0x2222), fake.closed_ids[0]);
+    try testing.expect(std.mem.indexOf(u8, res.text, "(test): busy (in_turn)") != null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "(review): not opened by you") != null);
+    // Every seat is out of the task whether it was closed or not.
+    for (panel.get(1).?.members) |m| try testing.expect(m.slot != .filled);
+    try testing.expectEqual(Tasks.State.closed, panel.get(1).?.state);
+}
+
+test "rpc: task_close 的 refused 和 shield 不关，点名" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    try closingRig(alloc, &b, &panel, &fake);
+
+    try b.setWorkers(0x3333, .refused, .user);
+    try b.setShielded(0x4444, true, .user);
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = 1 } });
+    try testing.expectEqual(@as(usize, 1), fake.closed_n);
+    try testing.expectEqual(@as(Bus.Id, 0x2222), fake.closed_ids[0]);
+    try testing.expect(std.mem.indexOf(u8, res.text, "(test): the person marked it Don't Start Workers") != null);
+    try testing.expect(std.mem.indexOf(u8, res.text, "(review): shielded") != null);
+}
+
+test "rpc: task_close 不关输入框里有草稿的终端，只摘身份并点名" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    try closingRig(alloc, &b, &panel, &fake);
+
+    // test's terminal is idle and the supervisor's, with a line half typed.
+    fake.drafts = &.{0x3333};
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = 1 } });
+    try testing.expectEqual(@as(usize, 2), fake.closed_n);
+    for (fake.closed_ids[0..fake.closed_n]) |id| try testing.expect(id != 0x3333);
+    try testing.expect(std.mem.indexOf(u8, res.text, "(test): a half-typed line") != null);
+    // It is out of the task all the same.
+    for (panel.get(1).?.members) |m| try testing.expect(m.slot != .filled);
+}
+
+test "rpc: release=keep 一个都不关" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    try closingRig(alloc, &b, &panel, &fake);
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = 1, .release = "keep" } });
+    try testing.expectEqual(@as(usize, 0), fake.closed_n);
+    try testing.expect(std.mem.indexOf(u8, res.text, "release is keep") != null);
+    // They are out of the task all the same.
+    for (panel.get(1).?.members) |m| try testing.expect(m.slot != .filled);
+    const bad = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = 1, .release = "all" } });
+    try testing.expectEqualStrings("BadParams", bad.failed.code);
+}
+
+test "rpc: 关 pane 被拒的终端被点名且不影响其它" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    try closingRig(alloc, &b, &panel, &fake);
+
+    fake.close_refused = &.{0x3333};
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = 1 } });
+    try testing.expectEqual(@as(usize, 2), fake.closed_n);
+    try testing.expect(std.mem.indexOf(u8, res.text, "(test): not closed, CloseRefusedUsersTerminal") != null);
+}
+
+test "rpc: squad_put 无 reason / 超限 / 改用户模版 → 拒绝" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .open = &.{} };
+    rig.wire(&fake);
+
+    const no_reason = try dispatch(alloc, &b, fake.host(), term(boss), .{ .squad_put = .{ .squad =
+        \\{"key":"mine","name":"Mine","members":[{"alias":"dev","role":"worker-dev"}]}
+    } });
+    try testing.expectEqualStrings("ReasonRequired", no_reason.failed.code);
+    try testing.expect(std.mem.indexOf(u8, no_reason.failed.message, "squad_list") != null);
+
+    // The user's template is not the supervisor's to replace or delete.
+    const user_owned = try dispatch(alloc, &b, fake.host(), term(boss), .{ .squad_put = .{ .squad =
+        \\{"key":"trio","name":"Trio","reason":"the existing one does not have a second tester","members":[{"alias":"dev","role":"worker-dev"}]}
+    } });
+    try testing.expectEqualStrings("NotPermitted", user_owned.failed.code);
+    const del = try dispatch(alloc, &b, fake.host(), term(boss), .{ .squad_delete = .{ .key = "trio" } });
+    try testing.expectEqualStrings("NotPermitted", del.failed.code);
+
+    // Twelve are allowed; the thirteenth is not.
+    var i: usize = 0;
+    while (i < 12) : (i += 1) {
+        const json = try std.fmt.allocPrint(alloc,
+            \\{{"key":"s{d}","name":"S","reason":"no template has this pair of roles together","members":[{{"alias":"dev","role":"worker-dev"}}]}}
+        , .{i});
+        const ok = try dispatch(alloc, &b, fake.host(), term(boss), .{ .squad_put = .{ .squad = json } });
+        try testing.expect(ok == .ok);
+    }
+    const over = try dispatch(alloc, &b, fake.host(), term(boss), .{ .squad_put = .{ .squad =
+        \\{"key":"s13","name":"S","reason":"no template has this pair of roles together","members":[{"alias":"dev","role":"worker-dev"}]}
+    } });
+    try testing.expectEqualStrings("TooManySupervisorSquads", over.failed.code);
+
+    // A supervisor role as a member.
+    var f2: FakeHost = .{ .open = &.{} };
+    rig.wire(&f2);
+    const listed = try dispatch(alloc, &b, f2.host(), term(boss), .squad_list);
+    try testing.expect(listed == .json);
+    try testing.expect(std.mem.indexOf(u8, listed.json, "\"trio\"") != null);
+}
+
+test "rpc: role_delete 回复点名被摘掉的小队位" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .open = &.{} };
+    const gone = [_]squad.Removed{.{ .squad = "trio", .alias = "dev" }};
+    fake.deleted_seats = &gone;
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_delete = .{ .key = "worker-dev" } });
+    try testing.expectEqualStrings("worker-dev", fake.role_deleted.?);
+    try testing.expect(std.mem.indexOf(u8, res.text, "trio/dev") != null);
+    fake.deleted_seats = &.{};
+    const plain = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_delete = .{ .key = "worker-dev" } });
+    try testing.expect(plain == .ok);
 }

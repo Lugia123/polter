@@ -138,6 +138,9 @@ pub const PendingLaunch = struct {
     /// Past this, a terminal that starts is not the one that was asked for
     /// -- the split or tab was refused or closed -- and it is left alone.
     deadline_ms: u64,
+    /// A squad member's start: what the squad made of the role. Null for a
+    /// start that is not a seat's.
+    effective: ?persona.Effective,
 
     pub fn deinit(self: *PendingLaunch) void {
         self.arena.deinit();
@@ -965,9 +968,25 @@ pub fn startRole(
     cli: []const u8,
     now_ms: u64,
 ) !void {
+    return self.startRoleAs(id, by, key, cli, now_ms, null);
+}
+
+/// `startRole`, for a squad's seat: the launch is recorded with the squad's
+/// settings (`effective`), not the role's.
+pub fn startRoleAs(
+    self: *PersonaStore,
+    id: Bus.Id,
+    by: Bus.Id,
+    key: []const u8,
+    cli: []const u8,
+    now_ms: u64,
+    effective: ?persona.Effective,
+) !void {
     const p = self.set.find(key) orelse return error.NoSuchPersona;
     try self.setPersona(id, key);
-    if (p.cli(cli)) |c| try self.noteLaunch(id, p, c);
+    if (effective) |e| {
+        try self.noteLaunchAs(id, p, e.choice, e);
+    } else if (p.cli(cli)) |c| try self.noteLaunch(id, p, c);
     try self.launchers.put(self.alloc, id, by);
     try self.holdStanding(id, by, p.polter, now_ms);
 }
@@ -988,6 +1007,20 @@ pub fn expectLaunch(
     by: Bus.Id,
     now_ms: u64,
 ) Allocator.Error!void {
+    return self.expectLaunchAs(key, cli, line, by, now_ms, null);
+}
+
+/// `expectLaunch`, for a squad's seat: what the squad made of the role is
+/// copied and kept until the terminal arrives.
+pub fn expectLaunchAs(
+    self: *PersonaStore,
+    key: []const u8,
+    cli: []const u8,
+    line: []const u8,
+    by: Bus.Id,
+    now_ms: u64,
+    effective: ?persona.Effective,
+) Allocator.Error!void {
     self.dropLaunch();
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     errdefer arena.deinit();
@@ -999,6 +1032,7 @@ pub fn expectLaunch(
         .line = try aa.dupe(u8, line),
         .by = by,
         .deadline_ms = now_ms + pending_launch_ms,
+        .effective = if (effective) |e| try copyEffective(aa, e) else null,
     };
     self.pending_launch.?.arena = arena;
 }
@@ -1027,6 +1061,39 @@ pub fn dropLaunch(self: *PersonaStore) void {
 /// Record that `id` was started in role `p` with the CLI `choice`, and
 /// forget whatever it was started in before. Copies what it keeps.
 pub fn noteLaunch(self: *PersonaStore, id: Bus.Id, p: persona.Persona, choice: persona.CliChoice) Allocator.Error!void {
+    return self.noteLaunchAs(id, p, choice, null);
+}
+
+/// A copy of a squad seat's start that lives in `aa`.
+pub fn copyEffective(aa: Allocator, e: persona.Effective) Allocator.Error!persona.Effective {
+    const options = try aa.alloc(persona.Option, e.choice.options.len);
+    for (e.choice.options, options) |o, *d| d.* = .{ .key = try aa.dupe(u8, o.key), .value = try aa.dupe(u8, o.value) };
+    return .{
+        .task = e.task,
+        .alias = try aa.dupe(u8, e.alias),
+        .lead = e.lead,
+        .choice = .{
+            .cli = try aa.dupe(u8, e.choice.cli),
+            .model = if (e.choice.model) |m| try aa.dupe(u8, m) else null,
+            .args = try dupeList(aa, e.choice.args),
+            .options = options,
+        },
+        .cli_skills = try dupeSelection(aa, e.cli_skills),
+        .cli_mcp = try dupeSelection(aa, e.cli_mcp),
+        .instructions = if (e.instructions) |t| try aa.dupe(u8, t) else null,
+        .brief = try aa.dupe(u8, e.brief),
+    };
+}
+
+/// `noteLaunch`; with `effective`, the settings recorded are the squad's
+/// (selections, instructions, brief) and `choice` is the one it resolved.
+pub fn noteLaunchAs(
+    self: *PersonaStore,
+    id: Bus.Id,
+    p: persona.Persona,
+    choice: persona.CliChoice,
+    effective: ?persona.Effective,
+) Allocator.Error!void {
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     errdefer arena.deinit();
     const aa = arena.allocator();
@@ -1040,8 +1107,10 @@ pub fn noteLaunch(self: *PersonaStore, id: Bus.Id, p: persona.Persona, choice: p
             .args = try dupeList(aa, choice.args),
             .options = options,
         },
-        .skills = try dupeSelection(aa, p.cli_skills),
-        .mcp = try dupeSelection(aa, p.cli_mcp),
+        .skills = try dupeSelection(aa, if (effective) |e| e.cli_skills else p.cli_skills),
+        .mcp = try dupeSelection(aa, if (effective) |e| e.cli_mcp else p.cli_mcp),
+        .instructions = if (effective) |e| (if (e.instructions) |t| try aa.dupe(u8, t) else null) else null,
+        .brief = if (effective) |e| try aa.dupe(u8, e.brief) else null,
     };
 
     const gop = try self.launches.getOrPut(self.alloc, id);
@@ -2239,4 +2308,45 @@ test "personas: without it, the library stays where it always was" {
         defer alloc.free(path);
         try testing.expectEqualStrings(expected, path);
     }
+}
+
+test "PersonaStore: 小队覆盖经待启动槽和启动记录送到首条提示" {
+    var store: PersonaStore = .{ .alloc = testing.allocator };
+    defer store.deinit();
+    const eff: persona.Effective = .{
+        .task = 7,
+        .alias = "dev",
+        .lead = false,
+        .choice = .{ .cli = "codex", .model = "m1" },
+        .cli_skills = .{},
+        .cli_mcp = .{},
+        // The squad said: none. Not the same as "the role's".
+        .instructions = "",
+        .brief = "BRIEF",
+    };
+    // A split's terminal does not exist yet: the seat waits in the slot.
+    try store.expectLaunchAs("worker-dev", "codex", "line", 0x1, 0, eff);
+    var taken = store.takeLaunch(0).?;
+    defer taken.deinit();
+    const e = taken.effective.?;
+    try testing.expectEqual(@as(u64, 7), e.task);
+
+    // The terminal arrives; the launch is recorded with the squad's word.
+    const role: persona.Persona = .{ .key = "worker-dev", .name = "d", .instructions = "ROLE-SECRET" };
+    try store.noteLaunchAs(0x9, role, e.choice, e);
+    const l = store.launchOf(0x9).?;
+    try testing.expectEqual(@as(usize, 0), l.instructions.?.len);
+    try testing.expectEqualStrings("BRIEF", l.brief.?);
+
+    // And the first prompt, read from that record, has no word of the role's.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const text = (try persona.launchedInstructions(arena.allocator(), role, l, null)).?;
+    try testing.expect(std.mem.indexOf(u8, text, "ROLE-SECRET") == null);
+    try testing.expect(std.mem.indexOf(u8, text, "BRIEF") != null);
+
+    // Negative control: a start that is not a seat's is the role's.
+    try store.noteLaunchAs(0xa, role, .{ .cli = "codex" }, null);
+    const plain = (try persona.launchedInstructions(arena.allocator(), role, store.launchOf(0xa).?, null)).?;
+    try testing.expect(std.mem.indexOf(u8, plain, "ROLE-SECRET") != null);
 }

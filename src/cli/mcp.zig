@@ -1429,6 +1429,27 @@ const tools = [_]Tool{
         ,
     },
     .{
+        .name = "squad_list",
+        .description = "The squad templates -- which roles work together on one task, under what names (`alias`), and what each seat does differently from its role: key, name, description, who made it (`origin`: user or supervisor), a supervisor's `reason`, and for every seat its alias, role, `required`, `lead`, what it overrides, and `role_missing` when its role has been deleted. `description` is the template author's note on when to use it: read it before choosing. A template is a menu, not a plan -- task_create's `squad` and `members` pick the template and the seats this task needs. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{},"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "squad_put",
+        .description = "Make a squad template, or replace one **you** made, by its key. **Do not make a template out of habit.** Look at squad_list first: if a template already fits, use it and name the seats you need in task_create's `members`; a template is for a combination of roles that will be wanted again, not for one task. So `reason` is required (at least 20 bytes) and says which existing template does not fit and why, and a template you make is marked `origin: supervisor` for the person to keep or delete. At most 12 supervisor-made templates exist; past that, delete one first (TooManySupervisorSquads). The person's own templates are not yours to replace or delete (NotPermitted). A seat names a role by key, and keeps only what the squad changes: in `override`, a key that is there is the squad's word and one that is not follows the role -- `instructions` replaces the role's whole (\"\" means none), `cli`/`clis` choose the CLI, model, args and options, and `skills`, `mcp`, `cli_skills`, `cli_mcp` add and remove. A role's `polter` settings and `tools` cannot be overridden. A seat may not be a supervisor role (SupervisorNotAllowed). Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"squad":{"type":"object","description":"key, name, description, reason (required for you), members: [{alias, role, required, lead, override}]"}},"required":["squad"],"additionalProperties":false}
+        ,
+    },
+    .{
+        .name = "squad_delete",
+        .description = "Delete a squad template you made. The person's templates are theirs (NotPermitted). Tasks already made from it keep their seats; a seat of such a task that has not been opened can no longer be started (NoSuchSquad) until the template is put back. Supervisor only.",
+        .schema =
+        \\{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}
+        ,
+    },
+    .{
         .name = "role_launcher_set",
         .description = "Switch an Agent CLI of the person's own (a launcher in these tools) on or off for a role. Switched on, the role starts through it with its own choices for the base CLI -- skills, MCP servers, model. Supervisor only.",
         .schema =
@@ -1562,9 +1583,16 @@ const tools = [_]Tool{
             "answered, so its first group_read already works: the group you supervise, " ++
             "or the one you name in `group` when you supervise several. The reply's " ++
             "`joins` names it; `join_note` says why it was put in none. " ++
-            "Supervisor only.",
+            "**`task` and `member` start a seat of a task's squad** (task_create with a " ++
+            "`squad`): leave `key` out, the seat names the role, and the role is started " ++
+            "as the squad's override leaves it -- its instructions, CLI, model and arguments " ++
+            "are the squad's where the squad changed them, and the reply's `note` says what " ++
+            "came from the squad and what a changed CLI left behind. The terminal takes the " ++
+            "seat once it exists. A seat that has a live agent in it is MemberTaken and " ++
+            "nothing is opened; a supervisor role or a supervising terminal is " ++
+            "SupervisorNotAllowed. Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"key":{"type":"string"},"group":{"type":"string","description":"The group the worker is put in; left out, the one you supervise."},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."},"beside":{"type":"string","description":"The id of a terminal whose tab the new one goes in, as a new pane -- never a new tab. Not with in or place."},"worktree":{"type":"string","description":"As terminal_open's: the role's terminal opens in that git worktree, made if needed. Not with in."},"limits":{"type":"object","description":"Resource lines for the worker, as terminal_limits sets them."}},"required":["key"],"additionalProperties":false}
+        \\{"type":"object","properties":{"key":{"type":"string","description":"The role. Left out only with task and member."},"task":{"type":"integer","description":"With member: a seat of this task's squad."},"member":{"type":"string","description":"The seat's alias. The role, and what the squad changes in it, come from the seat."},"group":{"type":"string","description":"The group the worker is put in; left out, the one you supervise."},"cli":{"type":"string"},"cwd":{"type":"string"},"place":{"type":"string","enum":["auto","tab","here","stack"]},"in":{"type":"string","description":"The id of a terminal that is already open, to start the role in instead of opening one. Not with cwd."},"beside":{"type":"string","description":"The id of a terminal whose tab the new one goes in, as a new pane -- never a new tab. Not with in or place."},"worktree":{"type":"string","description":"As terminal_open's: the role's terminal opens in that git worktree, made if needed. Not with in."},"limits":{"type":"object","description":"Resource lines for the worker, as terminal_limits sets them."}},"additionalProperties":false}
         ,
     },
     .{
@@ -1859,9 +1887,9 @@ const tools = [_]Tool{
     },
     .{
         .name = "task_create",
-        .description = "Put a piece of work on a group's panel: one line saying what it is, and what kind of work it is. It answers with a task number. The panel is what survives the night -- an instruction you typed into a terminal has scrolled out of that agent's context by 3am, and so has your memory of sending it. Keep the title to a line; the acceptance test and the detail go in the message you send the worker, not here. `kind` is required and has no default: feature, bug, research or other. A default would make everything one value inside a fortnight and sort nothing, which is what a panel read by eye at 3am cannot afford. Tasks made before the field existed read as \"unset\" and cannot be asked for -- that value means \"older than the question\", which is how they stay findable. Got the title or the kind wrong? task_edit fixes either without changing the number. Supervisor only, and only in a group you made.",
+        .description = "Put a piece of work on a group's panel: one line saying what it is, and what kind of work it is. It answers with a task number. The panel is what survives the night -- an instruction you typed into a terminal has scrolled out of that agent's context by 3am, and so has your memory of sending it. Keep the title to a line; the acceptance test and the detail go in the message you send the worker, not here. `kind` is required and has no default: feature, bug, research or other. A default would make everything one value inside a fortnight and sort nothing, which is what a panel read by eye at 3am cannot afford. Tasks made before the field existed read as \"unset\" and cannot be asked for -- that value means \"older than the question\", which is how they stay findable. Got the title or the kind wrong? task_edit fixes either without changing the number. Supervisor only, and only in a group you made. **`squad` and `members` open a squad on the task**: `squad` is a template's key from squad_list, and `members` -- required with it, with no default -- is the aliases of the seats this task needs and only those. Seats you do not name are not in the reply's `plan`; a seat the template marks required that you left out is made anyway, and the reply's `note` and `missing_required` say so. The reply is `plan`: one `slot: empty` per seat -- **no terminal is opened**. Open each with role_launch and `task` + `member`. A supervisor role cannot be a member (SupervisorNotAllowed). Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"group":{"type":"string"},"title":{"type":"string","description":"One line. Not the requirement, just what it is."},"kind":{"type":"string","enum":["feature","bug","research","other"],"description":"Required. What kind of work this is."}},"required":["group","title","kind"],"additionalProperties":false}
+        \\{"type":"object","properties":{"group":{"type":"string"},"title":{"type":"string","description":"One line. Not the requirement, just what it is."},"squad":{"type":"string","description":"A squad template's key (squad_list). Needs members."},"members":{"type":"array","items":{"type":"string"},"description":"With squad, required: the aliases of the seats this task needs. Only these are planned."},"kind":{"type":"string","enum":["feature","bug","research","other"],"description":"Required. What kind of work this is."}},"required":["group","title","kind"],"additionalProperties":false}
         ,
     },
     .{
@@ -1875,19 +1903,19 @@ const tools = [_]Tool{
         .name = "task_assign",
         .description = "Say which terminal is doing a task. **A line is typed into that terminal saying the task is theirs, and only then does the panel record it** -- an assignment nobody was told about is one only you can see, and the group cannot carry it because a terminal you are minding is not woken by a post. **Read the reply**: it says whether the terminal was actually told, and if it could not be, nothing was assigned. The line names the task and tells the worker to report with task_progress when it finishes or gets stuck; **what the work is is still yours to send**, because the acceptance test is the part that cannot be generated. Pass id 0 to take it back off somebody without cancelling it; there is nobody to tell, so nothing is typed. **`fresh: true` clears the worker's context first** (off by default -- a worker reviewing the same change twice needs what it said the first time): `/clear` is typed, and the task line follows once the CLI reports a new session, at most 10s later; the reply says `cleared: confirmed` or `cleared: unconfirmed`, and the line tells the worker which group to group_read. Codex says it has cleared only when its next turn starts, which is the turn the task line starts, so for codex the line follows two seconds after `/clear` and the reply says `cleared: pending` (terminal_list shows its new session_id once that turn begins). Only for claude-code and codex with hooks, at the prompt: in a turn or at a permission box it refuses `AgentBusy`, another CLI `FreshUnsupported`, and nothing is typed or assigned. Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"task":{"type":"integer"},"id":{"type":"string","description":"The terminal responsible, or 0 for nobody"},"fresh":{"type":"boolean","description":"Clear the worker's context (claude-code /clear) before telling it the task is theirs. Default false."}},"required":["task","id"],"additionalProperties":false}
+        \\{"type":"object","properties":{"task":{"type":"integer"},"id":{"type":"string","description":"The terminal responsible, or 0 for nobody"},"alias":{"type":"string","description":"A seat of the task's squad: id takes the seat, or 0 empties it. Without alias, id is the task's lead."},"fresh":{"type":"boolean","description":"Clear the worker's context (claude-code /clear) before telling it the task is theirs. Default false."}},"required":["task","id"],"additionalProperties":false}
         ,
     },
     .{
         .name = "task_close",
-        .description = "The work is done and you have checked it. Nothing is sent to the worker: it finished, it reported, and this is you agreeing. A closed task stays on the panel for the person at the keyboard to read back in the morning, and disappears from the worker's own task_list. Supervisor only.",
+        .description = "The work is done and you have checked it. Nothing is sent to the worker: it finished, it reported, and this is you agreeing. A closed task stays on the panel for the person at the keyboard to read back in the morning, and disappears from the worker's own task_list. Supervisor only. **A task with a squad**: the idle terminals you opened for it are closed (`release` `keep` closes none); busy ones, the person's, `refused` and shielded ones are left open, taken out of the task, and named in the reply, as is any whose close was refused. Supervisor only.",
         .schema =
-        \\{"type":"object","properties":{"task":{"type":"integer"}},"required":["task"],"additionalProperties":false}
+        \\{"type":"object","properties":{"task":{"type":"integer"},"release":{"type":"string","enum":["close_idle","keep"],"description":"Default close_idle: the idle terminals you opened for the squad are closed. keep closes none."}},"required":["task"],"additionalProperties":false}
         ,
     },
     .{
         .name = "task_cancel",
-        .description = "Call a task off. **A line is typed into the worker's terminal telling it to stop, and only then does the task leave its list.** A task that merely stopped being on the panel would leave the agent working on something nobody wants -- it has no reason to look at the panel again. **Read the reply**: it says whether the worker was actually told. If its terminal has gone, this refuses and the task stays open rather than pretending. Supervisor only.",
+        .description = "Call a task off. **A line is typed into the worker's terminal telling it to stop, and only then does the task leave its list.** A task that merely stopped being on the panel would leave the agent working on something nobody wants -- it has no reason to look at the panel again. **Read the reply**: it says whether the worker was actually told. If its terminal has gone, this refuses and the task stays open rather than pretending. Supervisor only. **A task with a squad is cancelled for all of its seats or for none**: if any seat's terminal cannot be told right now, nothing is typed anywhere, the task stays, and the reply names who cannot. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"task":{"type":"integer"}},"required":["task"],"additionalProperties":false}
         ,

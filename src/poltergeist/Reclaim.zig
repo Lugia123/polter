@@ -413,3 +413,50 @@ test "1978: told in each group gone back into, then each group a task is under, 
     try testing.expectEqualStrings("review", got[1]);
     try testing.expectEqualStrings("ops", got[2]);
 }
+
+test "Reclaim: 重启后同 session 回到原位，alias 与牵头不变" {
+    const Tasks = @import("Tasks.zig");
+    var r = try build(testing.allocator, &.{ note(0xa, 10, "s-1"), note(0xb, 10, "s-2") }, &.{});
+    defer r.deinit();
+
+    var tasks: Tasks = .init(testing.allocator, .{});
+    defer tasks.deinit();
+    const id = try tasks.create("build", "squad work", .feature);
+    try tasks.setSquad(id, "trio");
+    try tasks.addSlot(id, "dev", "worker-dev");
+    try tasks.addSlot(id, "test", "worker-test");
+    try tasks.join(id, "dev", "", 0xa, "", 5, true);
+    try tasks.join(id, "test", "", 0xb, "", 5, false);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    // The agent that ran the lead's seat says its session, in a new terminal.
+    const got = try r.claim(arena.allocator(), 0x100, "claude-code", "s-1", &.{0x100});
+    try testing.expectEqualSlices(u64, &.{0xa}, got.terminals);
+    var moved: std.ArrayListUnmanaged(Tasks.TaskId) = .empty;
+    defer moved.deinit(testing.allocator);
+    for (got.terminals) |old| try tasks.reown(testing.allocator, old, 0x100, 777, &moved);
+    try testing.expectEqualSlices(Tasks.TaskId, &.{id}, moved.items);
+
+    const t = tasks.get(id).?;
+    // The same seat, under the same alias, filled by the new terminal.
+    try testing.expectEqualStrings("dev", t.members[0].alias);
+    try testing.expectEqual(@as(u64, 0x100), t.members[0].id);
+    try testing.expectEqual(Tasks.Slot.filled, t.members[0].slot);
+    try testing.expectEqual(@as(u64, 0x100), t.owner);
+    // The other seat is not touched, and nobody else moved into it.
+    try testing.expectEqual(@as(u64, 0xb), t.members[1].id);
+    // The stretch followed: the old terminal's ended, the new one's is open.
+    var open_for_new = false;
+    for (t.spans) |sp| {
+        if (sp.to_ms == null and sp.id == 0x100 and std.mem.eql(u8, sp.alias, "dev")) {
+            open_for_new = true;
+            // Begun when the caller said it was, not at zero.
+            try testing.expectEqual(@as(i64, 777), sp.from_ms);
+        }
+        try testing.expect(!(sp.to_ms == null and sp.id == 0xa));
+        // And the old terminal's ended then.
+        if (sp.id == 0xa) try testing.expectEqual(@as(?i64, 777), sp.to_ms);
+    }
+    try testing.expect(open_for_new);
+}

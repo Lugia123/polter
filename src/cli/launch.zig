@@ -66,6 +66,7 @@ const AgentEvent = @import("../poltergeist/agent_event.zig");
 const hook = @import("hook.zig");
 const Chat = @import("../poltergeist/Chat.zig");
 const Launchers = @import("../poltergeist/Launchers.zig");
+const squad = @import("../poltergeist/squad.zig");
 
 pub const Options = struct {
     pub fn deinit(self: Options) void {
@@ -164,6 +165,8 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
                 "in letters, digits, `.`, `_` and `-`.\n",
             error.BadLauncher => "Polter: `--launcher=` needs the key of an Agent CLI of your own, " ++
                 "in lower-case letters, digits and `-`.\n",
+            error.BadSeat => "Polter: `--seat=` is a squad seat as Polter writes it, in letters, " ++
+                "digits, `_` and `-`.\n",
             else => "Polter: `+launch` needs a role.\n",
         });
         try err_out.writeAll(usage);
@@ -202,10 +205,6 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
         try err_out.print("Polter: there is no role called \"{s}\".\n", .{parsed.role});
         return 1;
     };
-    // A supervisor role's agent is told it is one, and of which group when
-    // it was started for one (`persona.launchInstructions`).
-    p.instructions = try persona.launchInstructions(aa, p, parsed.group);
-
     // --- which CLI
     var env = try global.environMap();
     defer env.deinit();
@@ -256,6 +255,33 @@ fn start(alloc: Allocator, progress: *Progress) !u8 {
             }
         }
     }
+
+    // --- a squad's seat (squads S4)
+    //
+    // The app resolved the member against the role when it was asked to
+    // start it and put the result on this line. The role is not read again
+    // for what the squad said: a squad that replaced the instructions, or
+    // chose another CLI or model, is exactly what a second reading of the
+    // library would undo.
+    var brief: ?[]const u8 = null;
+    if (parsed.seat) |word| {
+        const seat = squad.decodeSeatLeaky(aa, word) catch {
+            try err_out.writeAll("Polter: the squad seat on the line does not read; nothing was started.\n");
+            return 1;
+        };
+        const keys = try aa.alloc([]const u8, adapters.len);
+        for (adapters, keys) |a, *k| k.* = a.key;
+        const r = squad.resolve(aa, p, seat.member.override, named_cli, keys, null) catch {
+            try err_out.print("Polter: could not work out which CLI the seat \"{s}\" starts.\n", .{seat.member.alias});
+            return 1;
+        };
+        p = r.persona;
+        brief = seat.brief;
+    }
+
+    // A supervisor role's agent is told it is one, and of which group when
+    // it was started for one (`persona.launchInstructions`).
+    p.instructions = try persona.launchInstructionsFor(aa, p, parsed.group, brief);
 
     // Named, or the role's default by the app's own rule
     // (`Persona.defaultCli`): of the CLIs it is set up for, the only one
@@ -690,7 +716,7 @@ const Console = struct {
 
 const usage =
     \\
-    \\    polter +launch <role> [<cli>] [--group=<name>] [--resume=<session>] [--launcher=<key>] [-- <arg>...]
+    \\    polter +launch <role> [<cli>] [--group=<name>] [--resume=<session>] [--launcher=<key>] [--seat=<seat>] [-- <arg>...]
     \\
 ;
 
@@ -705,11 +731,14 @@ const Parsed = struct {
     /// A launcher of the person's own to start the CLI through (task
     /// 2156, `Launchers`); null for the CLI as its plugin starts it.
     launcher: ?[]const u8 = null,
+    /// A squad's seat, as `squad.encodeSeat` wrote it; null for a start
+    /// that is not one.
+    seat: ?[]const u8 = null,
     /// What came after `--`, for the CLI, in order. Empty without one.
     passthrough: []const []const u8,
 };
 
-const ParseError = error{ NoRole, ExtraArgument, BadGroup, BadSession, BadLauncher };
+const ParseError = error{ NoRole, ExtraArgument, BadGroup, BadSession, BadLauncher, BadSeat };
 
 /// `<role> [<cli>] [-- <arg>...]` after our own `+launch` token.
 ///
@@ -751,6 +780,7 @@ fn parseRest(args: []const []const u8) ParseError!Parsed {
     var group: ?[]const u8 = null;
     var session: ?[]const u8 = null;
     var launcher: ?[]const u8 = null;
+    var seat: ?[]const u8 = null;
     for (args[0..split]) |a| {
         if (cut(a, "--group=")) |v| {
             if (!Chat.isValidName(v)) return error.BadGroup;
@@ -761,6 +791,9 @@ fn parseRest(args: []const []const u8) ParseError!Parsed {
         } else if (cut(a, "--launcher=")) |v| {
             if (!Launchers.isValidKey(v)) return error.BadLauncher;
             launcher = v;
+        } else if (cut(a, "--seat=")) |v| {
+            if (!agent_cli.isSeatToken(v)) return error.BadSeat;
+            seat = v;
         } else {
             if (n == 0 and !persona.isValidKey(a)) return error.NoRole;
             if (n == words.len) return error.ExtraArgument;
@@ -776,6 +809,7 @@ fn parseRest(args: []const []const u8) ParseError!Parsed {
         .group = group,
         .session = session,
         .launcher = launcher,
+        .seat = seat,
         .passthrough = passthrough,
     };
 }

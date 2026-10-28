@@ -814,6 +814,62 @@ fn contains(list: []const []const u8, id: []const u8) bool {
     return false;
 }
 
+// ----------------------------------------------------------------- the seat
+
+/// What the `+launch` line is handed to start a squad's seat: the member as
+/// the squad has it, and the opening paragraph. `+launch` is another
+/// process, and reading the role library again there is what would give
+/// back the role's instructions (plan v3 item 14); this is how the squad's
+/// word reaches it instead.
+pub const Seat = struct {
+    member: Member,
+    brief: []const u8,
+};
+
+/// `Seat` as a word fit for a shell line: URL-safe base64 without padding,
+/// which is `[A-Za-z0-9_-]` and so needs no quoting in any shell.
+pub fn encodeSeat(aa: Allocator, m: Member, brief: []const u8) Allocator.Error![]const u8 {
+    var seat = m;
+    // The seat's own marks are the squad's business, not the CLI's.
+    seat.lead = false;
+    seat.required = false;
+    const sq: Squad = .{
+        .key = "seat",
+        .name = "seat",
+        .description = "",
+        .origin = .user,
+        .reason = "",
+        .members = &.{seat},
+    };
+    var json: std.Io.Writer.Allocating = .init(aa);
+    json.writer.print("{{\"brief\":{f},\"squad\":", .{jstr(brief)}) catch return error.OutOfMemory;
+    writeSquad(&json.writer, sq) catch return error.OutOfMemory;
+    json.writer.writeAll("}") catch return error.OutOfMemory;
+    const raw = json.written();
+    const enc = std.base64.url_safe_no_pad.Encoder;
+    const out = try aa.alloc(u8, enc.calcSize(raw.len));
+    return enc.encode(out, raw);
+}
+
+/// Back from `encodeSeat`. Anything else is `Malformed`.
+pub fn decodeSeatLeaky(aa: Allocator, word: []const u8) ParseError!Seat {
+    const dec = std.base64.url_safe_no_pad.Decoder;
+    const n = dec.calcSizeForSlice(word) catch return error.Malformed;
+    const raw = try aa.alloc(u8, n);
+    dec.decode(raw, word) catch return error.Malformed;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, aa, raw, .{}) catch
+        return error.Malformed;
+    const obj = switch (parsed) {
+        .object => |o| o,
+        else => return error.Malformed,
+    };
+    const brief = try requireString(obj, "brief");
+    var diag: Diag = .{ .where = "" };
+    const sq = try squadOf(aa, obj.get("squad") orelse return error.Incomplete, 0, .user, null, &diag);
+    if (sq.members.len != 1) return error.BadField;
+    return .{ .member = sq.members[0], .brief = brief };
+}
+
 // --------------------------------------------------------------------- tests
 
 const testing = std.testing;
@@ -1310,4 +1366,43 @@ test "squad: 全是可选成员的模版能读、能写，牵头回退到第一�
         \\  {"alias":"b","role":"worker-test","required":true}]}]}
     );
     try testing.expectEqualStrings("b", mixed.squads[0].leadOf().?.alias);
+}
+
+test "squad: 席位字经 +launch 的一行往返，空串指令覆盖仍在" {
+    var scratch: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer scratch.deinit();
+    const aa = scratch.allocator();
+    const m: Member = .{
+        .alias = "开发",
+        .role = "worker-dev",
+        .required = true,
+        .lead = true,
+        .override = .{
+            .cli = "codex",
+            .clis = &.{},
+            .instructions = "",
+            .cli_skills = null,
+            .cli_mcp = null,
+            .skills = null,
+            .mcp = null,
+        },
+    };
+    const word = try encodeSeat(aa, m, "You are dev.");
+    // Fit for a shell line without quoting.
+    for (word) |c| try testing.expect(std.ascii.isAlphanumeric(c) or c == '-' or c == '_');
+
+    const seat = try decodeSeatLeaky(aa, word);
+    try testing.expectEqualStrings("开发", seat.member.alias);
+    try testing.expectEqualStrings("You are dev.", seat.brief);
+    try testing.expectEqualStrings("codex", seat.member.override.cli.?);
+    // Present and empty: the squad said "none", which is not "the role's".
+    try testing.expectEqualStrings("", seat.member.override.instructions.?);
+    try testing.expect(!seat.member.lead);
+
+    // What `+launch` does with it: the role's words are gone.
+    const role: persona.Persona = .{ .key = "worker-dev", .name = "Dev", .instructions = "ROLE-WORDS" };
+    const r = try resolve(aa, role, seat.member.override, "codex", &.{"codex"}, null);
+    try testing.expect(r.persona.instructions == null);
+
+    try testing.expectError(error.Malformed, decodeSeatLeaky(aa, "not-a-seat"));
 }

@@ -1218,6 +1218,10 @@ pub const LaunchFor = struct {
     /// A launcher of the person's own the CLI is started through (task
     /// 2156): `--launcher=` on the line, the CLI word being its base.
     launcher: ?[]const u8 = null,
+    /// A squad's seat, `squad.encodeSeat`'s word: the member as the squad
+    /// has it, so that `+launch` does not read the role's settings back
+    /// (squads S4). Null for a start that is not a seat's.
+    seat: ?[]const u8 = null,
 
     pub const none: LaunchFor = .{ .group = null, .session = null };
 };
@@ -1244,6 +1248,22 @@ pub fn writeLaunchWords(
         if (isSessionToken(id)) try w.print(" --resume={s}", .{id});
     }
     if (extra.launcher) |key| try w.print(" --launcher={s}", .{key});
+    // Not filtered as the session is: a seat left off would start the role
+    // as the library has it, which is the failure this word is for.
+    // `squad.encodeSeat` writes only characters `isSeatToken` accepts.
+    if (extra.seat) |word| try w.print(" --seat={s}", .{word});
+}
+
+/// Whether `s` is a seat word: URL-safe base64, `[A-Za-z0-9_-]`, which is
+/// all a shell reads as one plain word. Not the CLI's to see: `+launch`
+/// takes it off the line.
+pub fn isSeatToken(s: []const u8) bool {
+    if (s.len == 0) return false;
+    for (s) |c| switch (c) {
+        'A'...'Z', 'a'...'z', '0'...'9', '_', '-' => {},
+        else => return false,
+    };
+    return true;
 }
 
 /// Whether `s` can be a session's id on a launch line and in a launch
