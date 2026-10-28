@@ -1,20 +1,21 @@
 # Contributing to Polter
 
-Polter is a fork of [Ghostty](https://github.com/ghostty-org/ghostty). Before
+Polter is a Vibe Studio for the multi-agent era, forked from [Ghostty](https://github.com/ghostty-org/ghostty). Before
 anything else, the split, because it decides where your change should go:
 
 | | |
 | --- | --- |
 | The terminal itself — rendering, fonts, escape sequences, keybindings, configuration, `libghostty` | **Upstream Ghostty's.** Send it [there](https://github.com/ghostty-org/ghostty); it will reach the people who wrote it, and Polter will get it when upstream is merged in. |
-| Supervising — `src/poltergeist/`, the MCP tools, the group chat TUI (`src/cli/chat.zig`), the task panel, the terminal transcript, the plugin host, `plugins/`, `windows/` | **This fork's.** Here. |
+| Supervising & Vibe Studio layer — `src/poltergeist/`, MCP server & tools, the group chat TUI (`src/cli/chat.zig`), the task panel, resource telemetry (`resource_overview`), the AI screenshot engine, workdirs & file browser, roles/launchers, the plugin host, `plugins/`, `windows/` | **This fork's.** Here. |
 
 If you are not sure, open an issue and ask. Guessing wrong costs you a rebase.
 
 ## Getting set up
 
 ```sh
-zig build                     # Zig 0.16
+zig build                            # Zig 0.16
 zig build -Demit-macos-app=false     # skip the app bundle; much faster
+zig build test-build                 # compile test binary only without running (fast compile check)
 zig build test -Dtest-filter=<name>  # the full suite is slow
 zig fmt .
 ```
@@ -56,7 +57,7 @@ exemption from anything below: these rules apply to this fork's own commits as
 much as to a patch from a stranger. They are inherited from upstream Ghostty's
 AI policy and kept because they are right.
 
-**Disclose it.** Say which tool you used (Claude Code, Cursor, and so on) and
+**Disclose it.** Say which tool you used (Claude Code, OpenCode, Codex, agy, Cursor, and so on) and
 how much of the work was AI-assisted. All AI use, in any form.
 
 **You must be able to explain what your change does, and how it interacts with

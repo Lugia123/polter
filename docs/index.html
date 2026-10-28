@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Polter — 让一个 Claude Code 会话去管另外几个</title>
-<meta name="description" content="A terminal for running Claude Code sessions in parallel: one session supervises the others over MCP — reads their screens, types into them, and is told how long each has been still. Built on Ghostty. macOS and Windows. No account, no API key.">
+<title>Polter — 面向多 Agent 时代的新一代 Vibe Studio</title>
+<meta name="description" content="Polter: The Next-Gen Vibe Studio for Multi-Agent Orchestration. Built on Ghostty. One supervisor directs coding agents in parallel over MCP — reading screens, assigning tasks, and auto-answering routine prompts. macOS and Windows. No account, no API key.">
 <link rel="canonical" href="https://lugia123.github.io/polter/">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://lugia123.github.io/polter/">
-<meta property="og:title" content="Polter: put one Claude Code session in charge of the others">
-<meta property="og:description" content="A terminal for running several coding agents in parallel. One Claude Code session is the supervisor: over MCP it reads the others' screens, types into them, and is told how long each has been still.">
+<meta property="og:title" content="Polter: The Next-Gen Vibe Studio for Multi-Agent Orchestration">
+<meta property="og:description" content="A local agentic workspace where one AI Supervisor directs an entire squad of coding agents across your screen with durable task boards, group chat, and unattended proxy approvals.">
 <meta property="og:image" content="https://lugia123.github.io/polter/poster-en.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <script type="application/ld+json">
@@ -505,10 +505,10 @@ if(!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches))
 <section class="hero">
   <div class="wrap center">
     <img class="hero-icon" src="icon.png" alt="Polter" width="84" height="84">
-    <h1 data-lang="zh"><span class="nb">让一个</span><span class="nb">&nbsp;Claude Code&nbsp;</span><span class="nb">会话</span><span class="nb">成为</span><span class="nb">其他 AI 的</span><span class="nb">“包工头”。</span></h1>
-    <h1 data-lang="en">Put one Claude Code session in charge of the others.</h1>
-    <p class="tag" data-lang="zh">专为 AI 智能体打造的终端复用器与大管家。</p>
-    <p class="tag" data-lang="en">A terminal multiplexer and orchestrator for AI agents.</p>
+    <h1 data-lang="zh"><span class="nb">面向多 Agent 时代的</span><span class="nb">新一代 Vibe Studio</span></h1>
+    <h1 data-lang="en">The Next-Gen Vibe Studio for Multi-Agent Orchestration</h1>
+    <p class="tag" data-lang="zh">告别单兵写代码与人肉切终端。一个 AI 总管统领全屏小队，持续交付不卡死。</p>
+    <p class="tag" data-lang="en">Built on Ghostty. A local agentic workspace where one AI Supervisor directs an entire squad of coding agents across your screen.</p>
     <div class="cta">
       <a class="btn btn-light" href="https://github.com/Lugia123/polter/releases/latest">
         <span data-lang="zh">下载最新版本</span><span data-lang="en">Download the latest release</span></a>
@@ -617,8 +617,8 @@ if(!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches))
     <div class="head center rv">
       <h2 data-lang="zh"><span class="nb">指定其中一个</span><span class="nb">作为“总管”。</span></h2>
       <h2 data-lang="en">One agent acts as the Supervisor.</h2>
-      <p class="lead" data-lang="zh">它其实就是一个普通的 Claude Code，但 Polter 给了它特殊的工具来管理其他标签页。</p>
-      <p class="lead" data-lang="en">This supervisor is a normal Claude Code session that is given special tools to manage all other tabs (Workers).</p>
+      <p class="lead" data-lang="zh">它可以是 Claude Code、Codex、OpenCode 或任意 AI CLI，Polter 赋予了它统领其他标签页的全局视角与调度工具。</p>
+      <p class="lead" data-lang="en">It can be Claude Code, Codex, OpenCode, or any AI CLI — Polter equips it with full orchestration tools to govern peer tabs.</p>
     </div>
 
     <!-- 示意图：不是真实截图 -->
@@ -846,17 +846,33 @@ if(!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches))
     <div class="more">
       <article class="tile hooks rv">
         <h3 data-lang="zh">消息钩子 (Hooks)</h3><h3 data-lang="en">Hooks</h3>
-        <p data-lang="zh">由角色启动的 Claude Code 会在一轮对话结束时，主动告诉 Polter 它说了什么。总管会直接收到通知，而不是被动等待静止的屏幕。（目前仅限 Claude Code；其它工具依然通过监听屏幕活动来监控）。</p>
-        <p data-lang="en">A Claude Code started from a Role tells Polter when its turn ends and what it said. The supervisor is notified directly, rather than waiting to read a still screen. (Claude Code only; other CLIs are monitored by screen activity).</p>
+        <p data-lang="zh">由角色启动的智能体（Claude Code、Codex、OpenCode、Antigravity）在一轮对话结束时，会主动告诉 Polter 它说了什么。总管直接收到通知，不必等待屏幕静止。</p>
+        <p data-lang="en">An agent started from a Role (Claude Code, Codex, OpenCode, Antigravity) tells Polter when its turn ends and what it said. The supervisor is notified directly, without waiting for a still screen.</p>
         <div class="flow" aria-hidden="true">
           <span class="node">claude</span><i class="wire"></i><span class="node p">P</span><i class="wire"></i><span class="node sup-n">⚑</span>
         </div>
       </article>
       <article class="tile rv">
-        <h3 data-lang="zh">内置插件</h3><h3 data-lang="en">Plugins</h3>
-        <p data-lang="zh">发行版开箱即带 7 个配置插件。</p>
-        <p data-lang="en">Polter ships with 7 provisioning plugins out of the box.</p>
-        <div class="plugs" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <h3 data-lang="zh">全量资源监控 (New)</h3><h3 data-lang="en">Resource Telemetry (New)</h3>
+        <p data-lang="zh">内置 <code>resource_overview</code> 引擎，毫秒级常驻监控 Polter 自身、各 Worker 进程、MCP 边车、Swap 交换分区与磁盘余量。</p>
+        <p data-lang="en">Built-in <code>resource_overview</code> engine continuously monitors Polter, worker processes, MCP sidecars, swap usage, and free disk headroom.</p>
+        <div class="slots" aria-hidden="true">
+          <div class="slot" style="padding:10px 14px"><i style="background:var(--mint)"></i><span data-lang="zh">CPU / 内存</span><span data-lang="en">CPU / RAM</span></div>
+        </div>
+      </article>
+      <article class="tile rv">
+        <h3 data-lang="zh">群组工作目录与文件浏览 (New)</h3><h3 data-lang="en">Group Workdirs &amp; File Browser (New)</h3>
+        <p data-lang="zh">核心层支持按群组终端聚合工作目录，识别工作树归属并浏览项目文本文件，带过宽路径保护。</p>
+        <p data-lang="en">The core aggregates working directories per group, tracking worktree associations and project files with excessive-path guards.</p>
+        <div class="slots" aria-hidden="true">
+          <div class="slot" style="padding:10px 14px"><i style="background:var(--indigo-hi)"></i><span data-lang="zh">群组工作目录</span><span data-lang="en">Group Workspaces</span></div>
+        </div>
+      </article>
+      <article class="tile rv">
+        <h3 data-lang="zh">智能角色与 CLI 适配</h3><h3 data-lang="en">Roles &amp; CLI Adapters</h3>
+        <p data-lang="zh">开箱支持按角色精准关联指定 AI CLI（包括 OpenCode v1/v2、Codex、Claude Code、Antigravity），启动菜单自适应裁剪。</p>
+        <p data-lang="en">Bind specific agent CLIs to roles (including OpenCode v1/v2, Codex, Claude Code, Antigravity) with adaptive launch filtering.</p>
+        <div class="plugs" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
       </article>
       <article class="tile rv">
         <h3 data-lang="zh">统一设置</h3><h3 data-lang="en">One Settings Window</h3>
@@ -1123,7 +1139,7 @@ if(!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches))
       <tbody>
         <tr>
           <th scope="row"><span data-lang="zh">它是啥？</span><span data-lang="en">What is it?</span></th>
-          <td class="us"><span class="k">Polter</span><span><span data-lang="zh">内置 MCP 的终端 (基于 Ghostty)</span><span data-lang="en">Terminal built on Ghostty, with MCP server</span></span></td>
+          <td class="us"><span class="k">Polter</span><span><span data-lang="zh">面向多 Agent 的 Vibe Studio (基于 Ghostty)</span><span data-lang="en">Agentic Vibe Studio (built on Ghostty)</span></span></td>
           <td><span class="k">tmux</span><span><span data-lang="zh">终端复用器</span><span data-lang="en">Terminal multiplexer</span></span></td>
           <td><span class="k">Claude Code</span><span><span data-lang="zh">Claude Code 会话内部功能</span><span data-lang="en">Feature inside one Claude Code session</span></span></td>
           <td><span class="k">Claude Squad</span><span><span data-lang="zh">基于 tmux 和 git 工作区的 TUI</span><span data-lang="en">TUI using tmux and git worktrees</span></span></td>

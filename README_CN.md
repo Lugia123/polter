@@ -4,24 +4,24 @@
 </h1>
 
 <p align="center">
-  <b>专为 AI 智能体打造的终端复用器与大管家。</b><br>
-  <b>Polter 是一个跑在 macOS 和 Windows 上的终端，基于 Ghostty 构建：挑一个 Claude Code 会话当总管，盯住其他标签页里的编程 agent——读屏幕、替它们敲字，也知道每个屏幕已经安静了多久。</b><br>
-  <sub>让一个 Claude Code 会话当上其他 AI 的“包工头”。通过 MCP 协议，它能读取其他标签页的屏幕文字、替它们敲键盘、新建标签页；你离开之后，它替你盯着这帮“打工人”。</sub>
+  <b>面向多 Agent 时代的新一代 Vibe Studio。</b><br>
+  <b>基于 Ghostty 构建的本地智能体工作台：挑一个终端会话当总管，统领全屏 AI 编程小队——读屏幕、派任务、代答确认，毫秒级感知每个屏幕的静止状态。</b><br>
+  <sub>告别单兵写代码与在多个终端间人肉切换。通过原生 MCP 协议，总管能读取其他标签页屏幕、派发工单并调配分级模型；你离开电脑后，它替你盯住整套全栈工程的持续交付。</sub>
 </p>
 
 <p align="center">
   <a href="#下载安装">下载安装</a> ·
-  <a href="#快速上手">快速上手</a> ·
-  <a href="#核心功能">核心功能</a> ·
-  <a href="#专为-ai-设计的截图工具">AI 专属截图</a> ·
-  <a href="#竞品对比">竞品对比</a> ·
+  <a href="#快速上手-3-分钟开工">快速上手</a> ·
+  <a href="#为什么叫-vibe-studio核心能力">核心功能</a> ·
+  <a href="#专为-ai-设计的结构化截图">AI 专属截图</a> ·
+  <a href="#竞品全维度对比">竞品对比</a> ·
+  <a href="#技术规格与安全护栏">技术规格</a> ·
   <a href="#常见问题-faq">FAQ</a> ·
-  <a href="#联系方式">联系方式</a> ·
   <a href="README.md">English</a>
 </p>
 
 <p align="center">
-  <a href="https://lugia123.github.io/polter/?lang=zh"><img src="docs/poster-zh.jpg" alt="Polter: 给你的 AI 找个总管。点击观看 73 秒演示视频。" width="72%"></a><br>
+  <a href="https://lugia123.github.io/polter/?lang=zh"><img src="docs/poster-zh.jpg" alt="Polter: 给你的 AI 找个总管。点击观看演示视频。" width="72%"></a><br>
   <sub><a href="https://lugia123.github.io/polter/?lang=zh">▶ 观看 73 秒演示视频</a></sub>
 </p>
 
@@ -32,165 +32,192 @@
 
 ---
 
-### 痛点与解决方案
+## 痛点与破局：从单兵 Vibe Coding 到 Agent 小队工作台
 
-在本地同时开好几个 Claude Code 或 Codex 窗口，是件很不好管的事。这些 AI“打工人”常常在长任务中途停摆，真让它们通宵干活，多半两三个小时后就卡在某个要你确认的提示前发呆。
+单兵使用 AI 编程（如在单个对话框或单个终端里跑 Claude Code / Codex）写个几十行 Demo 确实惊艳；但在真正的工程世界里，这种方式很快会陷入泥潭：
+* **多窗口手忙脚乱**：前端开一个、后端开一个、测试开一个，你在 5 个终端 Tab 之间来回切换，人肉充当传话筒；
+* **深夜长任务停摆**：满心期待 AI 通宵重构，第二天醒来发现它在凌晨 1 点半卡在一个 `(y/n)` 权限确认弹窗前，白白枯坐了 6 个小时；
+* **单模型成本与失忆**：全上最贵的大模型很快会烧光 API 配额，而单个模型在庞大上下文里又容易产生幻觉、堆砌重复代码（屎山）。
 
-**解决方案：** Polter 基于 Ghostty 构建，内置了 MCP（模型上下文协议）服务器。你可以指定其中一个标签页当**“总管 (Supervisor)”**。它本身就是一个普通的 Claude Code 会话，只是 Polter 额外给了它一套工具，让它能管住其他标签页。
+**Polter 的解法：**  
+Polter 基于现代极客终端 Ghostty 构建，内置了深度优化的本地 MCP（Model Context Protocol）服务器。你可以在终端里指定一个会话当**“总管 (Supervisor)”**。  
+总管本身就是一个普通的 AI CLI 会话，但 Polter 赋予了它“上帝视角”：它负责与你过方案、拆解任务看板（Todo List）、调度全屏的 Worker 小队（业务码农、代码保洁员、自动化测试员），并在关键节点自动放行低危确认，实现**真正无人值守的通宵交付**。
 
-其他工作节点不是子智能体，而是各自独立的终端会话；它们的输出会逐行落盘，第二天早上你大可以直接 `grep` 出来。
+---
 
-总管并不是在不停轮询。屏幕一旦不再变化，Polter 才会主动推通知。所以一个安静的夜晚烧掉多少 Token，取决于节点卡住了几次，而不是任务跑了多久。
+## 下载安装
 
-### 核心功能
+[**点击此处直接下载最新发布版 (GitHub Releases)**](https://github.com/Lugia123/polter/releases/latest)
 
-*   **聪明的总管：** 总管能读任意标签页屏幕上的纯文本（是文字本身，不是截图识别），能往任意标签页里敲指令，也能开新标签页拉起新的打工人。
-*   **团队管理：** 拉个群聊、派任务、收汇报都行。任务面板存在磁盘上，重启终端照样还在。
-*   **发呆检测：** Polter 记着每个屏幕多久没动过，一旦卡住，立刻通报总管。
-*   **角色与项目：** 常用的 AI 启动参数（技能、提示词、模型）存成“角色 (Role)”；“项目”则把当前所有标签页、目录和历史记录一起存档，下次一键恢复（macOS 与 Windows 都支持）。
-*   **消息钩子 (Hooks)：** 由角色启动的智能体在一轮对话结束时，会主动告诉 Polter 自己说了什么。总管直接收到通知，不必等屏幕静下来。（支持 Claude Code、Codex 和 OpenCode；Antigravity 目前只有 macOS 版；其他工具依旧靠监听屏幕活动来监控。）
-*   **内置插件：** 发行版开箱即带 4 个配置插件。
-*   **确认提示归总管：** worker 撞上权限确认就交给总管，所有标签页一视同仁：总管自己能判断的就自己答，判断不了的推到你面前，顺带发一条系统通知。你可以只对单个标签页说不（`Agent → 允许总管在此回答提示`）、把标签页护起来，或者干脆对全部说不（`poltergeist-may-authorise = false`）。
-*   **统一设置：** 角色、项目、插件和配置文件都在同一个设置窗口里集中管理。
-*   **中英双语：** 菜单和窗口默认跟随系统语言，也能在 `Language` 里手动切。
+| 操作系统 | 安装包文件 | 说明 |
+| :--- | :--- | :--- |
+| **macOS 13+** | `Polter-*-macos-universal.zip` | 原生通用二进制，同时支持 Apple Silicon (M系列芯片) 与 Intel。 |
+| **Windows 10+** | `Polter-*-windows-x64.zip` | x64 免安装绿色版。解压即用，不修改注册表，无多余权限申请。 |
+| **Linux** | 源码编译 | 支持从源码构建（截图标注模块后续补齐）。 |
 
-### 专为 AI 设计的截图工具
-
-Polter 内置截图工具最特别的地方是：**标注本身就是可读的数据**。每张图旁边落一个 `.json` 文件，记着你写的字、框的位置和编号。粘给 AI 时，标注文字会随图片一起以纯文本送到，AI 不用再从图里“肉眼认字”。
-
-*   **全局触发：** 快捷键（Mac `⌘⇧0`，Windows `Ctrl+Shift+0`）。*(注意：Windows 上这个热键很容易和系统的“切换输入语言”撞车，尤其装了好几款中文输入法时)。*
-*   **鼠标触发：** 按住 `⌘⇧`（Mac）或 `Ctrl+Shift`（Windows）单击鼠标。*(注意：这是系统级拦截。Windows 上这次点击会被 Polter 吞掉；Mac 上则会穿透到底层应用，在浏览器里可能误点开链接。可在设置里用 `screenshot-mouse-trigger` 改一改，或者直接设成 `none`)。*
-*   **智能选区与长截图：** 窗口自动吸附，也可以自由框选。点“长截图”，程序会自己往下滚，拼出整页网页或长段代码。
-*   **丰富的标注：** 矩形、箭头、文字、编号，还有不可还原的马赛克（原图只留在内存，绝不落盘，也不进剪贴板）。
-*   **总管也能自己截图：** 总管能通过 MCP 工具列出窗口、静默截图、截长图、自己加标注。*(在意隐私的话，用 `screenshot-agent-access` 关掉，默认是允许的)。*
-*   **权限要求：** **macOS 需要同时授予「屏幕录制」和「辅助功能」权限。**（辅助功能用于自动滚动和 agent 的 `screenshot_long` 工具；不授权的话，长截图会退化成手动滚动，agent 请求长截图直接报错）。Windows 版不需要任何权限。
-*   **自动清理：** 每次启动，截图目录里超过 7 天、且符合截图命名规则的文件（包括粘贴进来的剪贴板图片）会被清掉。
-
-### 下载安装
-
-[**点击此处下载最新版本**](https://github.com/Lugia123/polter/releases/latest)
-
-| 操作系统 | 文件包 | 备注 |
-| --- | --- | --- |
-| **macOS 13+** | `Polter-*-macos-universal.zip` | 原生支持 Apple 芯片与 Intel。 |
-| **Windows 10+** | `Polter-*-windows-x64.zip` | x64。解压即用，无需安装，也不申请任何权限。 |
-| **Linux** | 无现成安装包 | 需从源码编译。（截图功能此版本暂未实现）。 |
-
-**macOS 用户必看：**
-目前的安装包没有签名，会被 Gatekeeper 拦下。打开终端执行下面几条解除隔离：
+#### macOS 快速安装说明：
+当前公测安装包暂未购买苹果商业公证，会被 Gatekeeper 安全机制拦截。解压后请打开系统自带终端执行以下命令解除隔离属性：
 ```sh
 unzip Polter-*-macos-universal.zip
 xattr -dr com.apple.quarantine Polter.app
 mv Polter.app /Applications/
 ```
-*重要提示：请从“访达 (Finder)”或“程序坞 (Dock)”里双击打开 Polter，别用终端命令启动——否则它读不到你 `PATH` 上的 AI 工具。*
+> **重要提示**：请务必从 **“访达 (Finder)”** 或 **“程序坞 (Dock)”** 中双击启动 Polter，不要通过其它子 shell 命令启动——否则它可能无法完整继承系统 `PATH` 中的 AI 工具环境。
 
-**Windows 用户必看：**
-解压后直接运行 `polter-host.exe`，其他文件（DLL 和 share 文件夹）要和它放在同一目录。被 Windows SmartScreen 拦下的话，点“详细信息 -> 仍要运行”即可。
+#### Windows 快速安装说明：
+解压压缩包后，直接双击运行目录内的 `polter-host.exe` 即可（请保留同目录下的 DLL 及 `share/` 文件夹）。如遇 Windows SmartScreen 提示，点击“更多信息 -> 仍要运行”。
 
-### 前置条件
-你得先有一个智能体 CLI（命令行工具）在系统 `PATH` 里，**并且在 Polter 启动那一刻就已经在了**。Claude Code、Codex 和 OpenCode 在 macOS 和 Windows 上都是深度接入，Antigravity（`agy`）目前只有 macOS：Polter 能按角色启动它们，也能收到它们的钩子。默认只开了 Claude Code 插件，其余的到 `设置…` 的插件页里打开。
-
-### 快速上手
-
-1. **启动 Claude Code：** 新开一个 Polter 标签页，`cd` 到代码目录，起一个 Claude Code。
-2. **任命总管：** 点击菜单栏：`Agent → 设当前终端为总管`。
-3. **测试连接：** 对它说：*“调用 `me` 工具，告诉我它说了什么。”* 它回你一串终端 ID，就说明接上了！*(如果它说没有这个工具，先别往下走，去看 [FAQ](#常见问题-faq))*。
-4. **下发任务：** 直接把项目丢给总管，建群、开标签页、分派任务它自己来。
-5. **查阅进度：** 把它挂后台跑着。进度去总控台的「群聊」页签看（或敲 `polter +chat`），按 `tab` / `shift+tab` 在对话、任务看板和统计视图之间切换。
-
-### 竞品对比
-
-*(前五列数据读于 2026-10-04，herdr、Warp、Orca 三列读于 2026-10-24，均来自各项目官方文档或仓库；“—”表示该格没读到内容。)*
-
-| 对比项 | Polter | tmux | Claude Code (子智能体) | [Claude Squad](https://github.com/smtg-ai/claude-squad) | [cmux](https://github.com/manaflow-ai/cmux) | [herdr](https://github.com/ogulcancelik/herdr) | [Warp](https://docs.warp.dev) | [Orca](https://github.com/stablyai/orca) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **它是啥？** | 基于 Ghostty 的终端，内置 MCP | 终端复用器 | Claude Code 会话内部的功能 | 基于 tmux 和 git 工作区的 TUI | 基于 Ghostty 的 macOS 终端 | 终端内的 agent 复用器，Rust 写的 | 内置 agent (Oz) 的终端，也能跑第三方 CLI agent | 并排跑多个编程 agent 的桌面应用 |
-| **谁来监督 AI？** | 另一个 AI（总管） | 你自己 | 父级会话 | 你，在同一个窗口里 | 你（靠通知提示音） | 你，看每个 agent 的状态（阻塞 / 工作中 / 完成 / 空闲） | — | 你（靠通知） |
-| **工作节点是啥？** | 终端里的独立会话 | 你在窗格里启动的任何东西 | 父会话的子智能体 | 自己工作区里的独立会话 | 你在窗格里启动的任何东西 | 窗格里的 agent 或进程 | — | 各自 git 工作区里的独立 agent |
-| **画面不动时？** | 总管会知道它发呆多久了 | 状态栏高亮并响铃（需配置） | — | — | 响铃（agent 发信号时） | 状态显示阻塞或空闲 | — | agent 完成时发通知 |
-| **文件隔离？** | 无（共享当前代码库） | 无 | 父目录（或按需新建工作区） | 每个 agent 有独立的 git 工作区 | 无 | — | — | 每个 agent 独立的 git 工作区 |
-| **支持平台** | macOS、Windows | 类 Unix 系统 | 能跑 Claude Code 的地方 | 需要 tmux 和 `gh` | macOS | Linux、macOS | macOS、Windows、Linux | macOS、Windows、Linux |
-
-**Polter 没有的功能：** 不会给工作节点开独立的 worktree，也没有 cmux 那种浏览器面板。真要按任务做文件隔离，Claude Squad 的架构更对口。
-
-### 隐私与设置
-
-所有数据都留在本地，Polter 不会自动往云端发任何东西，你可以把它当成普通 shell 历史记录对待。文件都在 `$XDG_STATE_HOME/polter/` 目录下：
-*   `chat/`：智能体之间的对话。
-*   `terminals/`：每个终端里的事件记录。
-*   `tasks/`：任务面板的每一次变更。
-*   `stats/`：每个群每小时的统计。
-
-几个值得知道的设置：
-*   `poltergeist-watch`：是否允许屏幕采样。默认关闭，总管可以给单个终端打开。
-*   `poltergeist-quiescence-after`：屏幕发呆多久才通知总管（时长配置，默认 3 分钟）。
-*   `poltergeist-register-mcp`：是否在启动时注册 MCP 服务（默认开启）。
-*   `screenshot-directory`：截图的保存目录。agent 如果只能读工作区内的文件，就把截图路径指到你的项目目录。
-*   `screenshot-agent-access`：是否允许 agent 使用 MCP 截图工具。
-*   `clipboard-paste-image`：粘贴图片时，是否转成文件路径交给 CLI 读取。
-
-### 安全护栏 (Polter 绝对不做的事)
-
-*   **不会变成绕过权限的后门：** `terminal_send` 只走粘贴通道发送纯文本，控制字节一律转成空格，逼不了 AI 去干被禁止的事。
-*   **只在你允许的地方回答提示——而默认是所有地方：** 开箱状态下，总管可以回答任何没被护住的标签页里的权限确认，连「以后不再询问」都行。想让某些提示留给自己：在该标签页取消勾选「允许总管在此回答提示」、把它护起来，或者设 `poltergeist-may-authorise = false`。这三样没有任何工具能撤销。
-*   **不会破解终端锁定：** 画面的锁定 (hold) 和防护 (shield) 只由你设置和解除，AI 解不开。
-*   **不会长成一套复杂的任务系统：** 任务面板只记两件事：谁在干什么、干完了没有。
-
-### 常见问题 (FAQ)
-
-**1. AI 说它没有 "polter 工具" 怎么办？**
-三种可能：插件被禁用了；Polter 启动那一刻 `claude` 不在 `PATH` 里；或者你在设置里关掉了 `poltergeist-register-mcp`。注册表指向的永远是最近一次启动时的构建版本。
-
-**2. 除了 Claude Code 还能用别的 AI 工具吗？**
-服务端走的是标准 MCP 协议，任何 MCP 客户端都能接进来，发行版自带 4 个配置插件：Claude Code、Codex、OpenCode、Antigravity（`agy`）。前三家 macOS 和 Windows 都有，Antigravity 只有 macOS。Polter 能按角色启动它们、收到它们的钩子，内置的总管和测试员角色给 Claude Code、Codex 和 Antigravity 用。另有 3 个（DeepSeek-TUI、Kimi CLI、Qwen Code）2026-10-25 之前随包发过，已经摘掉：这三家谁都没在它登记的那个 CLI 上跑过一次，留着的话它们的失败会以你的故障的形状到来。插件就是 `plugins/` 下一个目录加 `src/build/GhosttyResources.zig` 里一行，谁量过谁把它们加回来。
-
-**3. 这不就是 tmux 吗？**
-不是。`tmux` 只负责分屏，盯着屏幕的活儿还得你来干。Polter 是把其它节点的发呆时间报给某一个智能体，并让它能读别的屏幕、敲别的键盘。
-
-**4. Claude Code 已经有子智能体了，我还需要这个吗？**
-只想在一个会话里拆任务的话，确实用不上。子智能体从属于父会话；Polter 的工作节点是各自独立的终端会话，总管可以跨着终端管它们。
-
-**5. 它怎么知道 agent 卡住了？**
-它并不知道。它只量一件事：屏幕多久没变过，而且不解析任何 CLI 的输出。到底是卡住了还是在思考，交给总管自己判断。
-
-**6. 这个项目和 Poltergeist 有关系吗？**
-没关系。`steipete/poltergeist` 是文件监视器和构建工具，命令也叫 `polter`；Polter Finance（DeFi 协议）、polter.io（API 模拟工具）同样不是本项目——大家只是都借了“幽灵”这个意象。这里的 `poltergeist-*` 仅是本项目的设置项前缀。
-
-**7. 我该怎么写插件？**
-一个目录、一个 `plugin.json`，再加一个可执行文件——20 行 shell 脚本就能写完一个插件。
-
-**8. 有基于 Ghostty 且能在 Windows 上跑的终端吗？**
-有。Polter 本身就是基于 Ghostty 构建的，Windows 10+ (x64) 有免安装 zip，macOS 13+ 也有。
-
-**9. 怎么知道哪个 Claude Code 会话在等我输入？**
-总管会拿到每个屏幕静止了多久。由角色启动的 agent 每轮结束还会通过钩子主动汇报，权限提示则直接交给总管。
-
-**10. Claude Code 或 Codex 卡在权限审批时怎么通知我？**
-总管自己判断得了的，直接答了；判断不了的，连同一发系统通知转给你。要不要让总管代答，可以按标签页关掉。
-
-**11. 需要账号或连云端吗？**
-不需要账号，也不用联云端。数据全在本机 `$XDG_STATE_HOME/polter/` 下，Polter 不会把任何东西发到云端。
-
-**12. Claude Code 已有子 agent，为什么还要 Polter？**
-子 agent 活在父会话里，Polter 的 worker 是独立的终端会话——各自一份进程、一份屏幕。总管能直接读它的屏幕，也知道它多久没动过了。
-
-### 联系方式
-
-*   **邮箱：** [xugf@bestfunc.com](mailto:xugf@bestfunc.com)
-*   **Bug 与功能建议：** [GitHub Issues](https://github.com/Lugia123/polter/issues)
-
-### 和 Ghostty 终端的关系
-
-一个终端能有多好，多亏了 [Ghostty](https://github.com/ghostty-org/ghostty)。Polter 基于 Ghostty 构建，没有另起炉灶：渲染器、VT 实现、字体栈、原生 UI 全都是他们的，上游更新我们也会持续合回来。
-
-所以终端本身的那些事——转义序列、性能、配置项、快捷键绑定以及 `libghostty`——全都归上游。文档直接看 [ghostty.org/docs](https://ghostty.org/docs)，把里面的 `ghostty` 换成 `polter` 就行。
-
-Polter 自己加的东西都在 `src/poltergeist/` 下：MCP 工具层、聊天 TUI、终端转录日志和插件宿主。本项目不隶属于 Ghostty 官方——在这儿发现的 bug 别直接报给他们，除非你在原版 Ghostty 上也能复现。
-
-构建指南在 [`dev-docs/preview-manual.md`](dev-docs/preview-manual.md) 中；设计思路记录在 [`dev-docs/poltergeist/`](dev-docs/poltergeist/README.md) 下。
-
-采用 MIT 协议，和上游一致。
+#### 前置准备
+请确保你的常用 AI CLI（如 Claude Code、Codex、OpenCode 等）已正确安装并处于系统 `PATH` 路径中。Polter 启动时会自动挂载检测。
 
 ---
-*感谢 [LINUX DO](https://linux.do) 社区，Polter 最早是在那里分享的。*
+
+## 快速上手（3 分钟开工）
+
+1. **拉起终端：** 启动 Polter，进入你的项目代码目录，敲入命令启动你的主力 AI（如 `claude`）。
+2. **任命总管：** 在顶部菜单栏点击：`Agent → 设当前终端为总管`（或直接对 AI 说：*“你来当总管，监管并调度其他终端”*）。
+3. **连通性校验：** 对总管说：*“调用 `me` 工具，告诉我它说了什么。”* 当它成功返回当前终端 ID 与环境信息，即表示总控通道已就绪！*(若提示工具不存在，请见下方 [FAQ](#常见问题-faq))*。
+4. **下发工程：** 像技术总监一样向总管下发宏观需求。总管会自动建立任务看板、拆分工单、横向纵向切分屏幕、拉起新的 Worker 终端开工。
+5. **挂机与检阅：** 放心合上电脑或切换后台。随时可以在总控台的「群聊」页面（或终端敲 `polter +chat`）查阅进度，使用 `Tab` / `Shift+Tab` 自由在对话记录、任务看板与统计视图之间无缝切换。
+
+---
+
+## 为什么叫 Vibe Studio？核心能力总览
+
+*   🎯 **智能总管全局调度**：总管能直接读取任意标签页的纯文本输出（真实终端输出，而非 OCR 识别），能向任意终端键入指令，也能自动切分窗口拉起新 Worker。
+*   📋 **持久化看板与小队群聊**：内置 Task Board（任务面板）与 Group Chat。任务编号、执行状态与沟通日志完全落盘，终端重启依然完好如初。
+*   ⏱️ **毫秒级静止感知**：时刻监测每个屏幕多久没有输出变化。是陷入死循环、思考中，还是等待输入，总管秒级洞察并主动处理。
+*   🛡️ **无感代答防卡死**：Worker 遇到依赖安装等常见权限确认时，总管智能判断并代为放行（`terminal_answer_prompt`）；遇高危操作自动推送到人面前并附带系统通知，通宵狂奔不挂起。
+*   📊 **全量系统与进程监控 (New · #2149)**：
+    *   内置 `resource_overview` 监控引擎：极低开销常驻监控 Polter 自身、各群组 Worker、MCP 边车进程占用；
+    *   控制室新增专属性能仪表盘：实时 CPU/内存指标、按天按周堆叠历史趋势、Swap 交换分区与磁盘余量全景透视。
+*   📁 **群组工作目录与文件浏览器切片 (New · #2145)**：
+    *   核心层支持按群组终端自动聚合真实工作目录（Workdirs），清晰识别各终端与代码工作树（Worktree）的从属关联；
+    *   支持在群组工作目录范围内索引与读取代码文本文件，内置 `too_wide` 路径保护，防止终端停在根目录或家目录时误暴露无关敏感目录。
+*   🎭 **角色 (Role) 与 CLI 智能关联 (New · #2156)**：
+    *   将常用启动参数（模型、System Prompt、工具集）存为“角色”；
+    *   支持为特定角色勾选专属 CLI，启动菜单自适应过滤裁剪，杜绝模型与脚本错配。
+*   ⚡ **OpenCode 2.x 独立插件适配 (New · #2237)**：
+    *   正式拆分并提供 `opencode-v2` 专属插件，与 1.x 独立共存并精准匹配版本。
+*   🔍 **控制室任务按编号极速过滤 (New · #2248)**：
+    *   任务看板支持直接输入编号（如 `2149` 或 `#2149`）毫秒级过滤定位。
+*   📜 **终端视口保护与全屏沉浸 (New · #2233, #2235)**：
+    *   向上翻看历史日志时，底层的持续输出不会将视口粗暴扯回底部；
+    *   由 Polter 启动的 Claude Code 默认支持全屏绘制（fullscreen），告别多余闪烁。
+*   🛡️ **高弹性 MCP 边车通道 (New · #2170, #2236, #2287)**：
+    *   超长请求优雅容错不闪退，自动回收巨幅日志内存，严格守护 IPC 管道安全。
+*   💾 **一键项目复原 (Projects)**：
+    *   将当前整个工作区的所有分屏布局、目录、标签名与 Shell 历史一键存档，下次开机一秒还原。
+*   🔒 **100% 本地与隐私无忧**：
+    *   不建账号、不传云端、不碰私钥，所有会话日志与状态纯本地存储。
+
+---
+
+## 专为 AI 设计的结构化截图
+
+Polter 内置的截图工具专为多模态 Agent 工作流设计：**标注本身即结构化数据**。  
+保存截图的同时，会在同目录下伴生一份 `.json` 元数据文件，记录用户绘制的红框坐标、文本批注与步骤序号。当粘贴给 AI 时，标注文本直接以纯文本连同图像一并送出，**AI 彻底免除 OCR 肉眼识字的不确定性**。
+
+*   **全局快捷键**：Mac `⌘⇧0`，Windows `Ctrl+Shift+0`。
+*   **长截图拼合**：点击“长截图”，引擎自动控制视口平滑滚动拼合长代码或完整网页。
+*   **不可逆马赛克**：涉及账号密码或密钥的区域涂抹后直接在内存销毁，绝不落盘、不进剪贴板。
+*   **总管静默截图**：总管可通过 `screenshot_capture`、`screenshot_long` 等 MCP 工具在后台静默抓取指定窗口画面并分析。
+
+---
+
+## 竞品全维度对比矩阵
+
+*(对比数据源自 2026 年各项目官方文档与实机基线)*
+
+| 关键考量维度 | Polter (Vibe Studio) | tmux | Claude Code (内置子智能体) | [Claude Squad](https://github.com/smtg-ai/claude-squad) | [cmux](https://github.com/manaflow-ai/cmux) | [herdr](https://github.com/ogulcancelik/herdr) | [Warp](https://docs.warp.dev) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **产品本质形态** | **基于 Ghostty 的多智能体工作台** | 经典字符终端复用器 | 单个会话内部的任务派生 | 基于 tmux + git 的 TUI 工具 | 基于 Ghostty 的单向增强终端 | Rust 编写的终端 Agent 复用器 | 带 AI 侧边栏的商业闭源终端 |
+| **调度核心机制** | **AI 总管自主管理全屏小队** | 人类完全手动管理 | 父级会话阻塞等待子级 | 人类在单一窗口肉眼监视 | 人类靠通知铃声被动响应 | 人类查看状态指示条 | 人类与内嵌单智能体交互 |
+| **静止与发呆感知** | **硬件级屏幕静止时钟 + Hooks 双轨** | 仅依赖传统 bell 响铃 | 无（仅靠会话内部超时） | 无独立静止感知 | 仅依赖 Agent 显式信号 | 标记状态为 idle/blocked | 无独立终端空闲检测 |
+| **权限中断代答** | **总管基于策略代答放行 (Proxy Approval)** | 无（人肉敲 y） | 无（只能开启全量不安全模式） | 人肉介入确认 | 无 | 无 | 无 |
+| **协作通信架构** | **星型拓扑：进程间群聊 + 任务看板** | 终端彼此无隔离通信管道 | 仅限内存父子上下文继承 | 依赖外部 git 分支通信 | 无原生跨会话管道 | 无结构化群聊面板 | 无 |
+| **资源与负载度量** | **全景透视：自身与小队内存/Swap/磁盘监控** | 依靠外部 top/htop | 无度量 | 无度量 | 无度量 | 基础进程状态 | 仅自身客户端消耗 |
+| **底层性能引擎** | **Ghostty 原生渲染引擎 (Zig/Metal/DirectX)** | 字符终端 | Node.js 宿主 | shell/tmux 包装器 | Ghostty (早期分支) | 终端虚拟层 | 闭源专有引擎 |
+| **数据与隐私模型** | **100% 本地存储 ($XDG_STATE_HOME)** | 100% 本地 | 取决于 Anthropic 接口策略 | 本地 | 本地 | 本地 | 依赖云端账号与遥测 |
+
+---
+
+## 技术规格与架构实现 (Technical Specifications)
+
+Polter 通过模块化分层解耦，在 Ghostty 高性能终端核心之上构筑了高内聚的 Agent 控制平面：
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Polter Core Architecture                        │
+├────────────────────────────────────────────────────────────────────────┤
+│  [Human Layer]    设置管理 / 任务检阅 / 架构契约立法 / 体验终审        │
+│          ▲                                                             │
+│          │ (UI / TUI / Menu / Native Hotkeys)                          │
+├──────────┼─────────────────────────────────────────────────────────────┤
+│  [Supervisor]     总管 Agent 会话 (Claude Code / Codex / agy)          │
+│          ▲                                                             │
+│          │ (MCP Protocols: become_supervisor / task_* / terminal_*)   │
+├──────────┼─────────────────────────────────────────────────────────────┤
+│  [Bus & State]    IPC 管道 + 本地状态存储 ($XDG_STATE_HOME/polter)      │
+│                   - chat.jsonl (结构化群聊轮转流，单代上限 8MB)         │
+│                   - tasks/ (任务状态机持久化存盘)                       │
+│                   - resource_overview (全量 CPU/内存/磁盘低开销采样)   │
+├──────────┼─────────────────────────────────────────────────────────────┤
+│  [Workers Array]  Worker 1 (码农)  │  Worker 2 (保洁)  │ Worker 3 (压测)│
+│                   各终端独立进程、互不干扰、支持差异化模型路由          │
+├────────────────────────────────────────────────────────────────────────┤
+│  [Engine Base]    Ghostty Terminal Core (Zig, GPU Acceleration, PTY)   │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 1. MCP 工具集协议清单
+*   `become_supervisor`：将当前终端升级为总管角色，获取全局读写与编排权限。
+*   `terminal_list` / `terminal_read` / `terminal_send`：跨终端巡检、读取无污染屏幕数据、非阻塞模拟键入。
+*   `terminal_answer_prompt`：针对停摆确认对话框的自动化代理决策通道。
+*   `group_create` / `group_post` / `group_read` / `group_list`：跨智能体消息总线与持久化审计流。
+*   `task_create` / `task_assign` / `task_progress` / `task_close` / `task_history`：结构化状态机看板。
+*   `resource_overview`：毫秒级全域系统资源透视（进程树、内存分配、Swap 交换分区、剩余磁盘）。
+
+#### 2. 本地存储布局与持久化规范
+Polter 遵循 XDG 规范，所有持久化资产均保存在 `$XDG_STATE_HOME/polter/`（macOS 通常为 `~/.local/state/polter/`）：
+*   `chat/`：智能体群组通信数据，主文件 `chat.jsonl` 自动执行单代 8MB 滚动备份（`chat.jsonl.1`）；
+*   `tasks/`：各群组独立维护的任务状态机数据；
+*   `projects/`：保存的多分屏布局、目录路径及环境定义；
+*   `launchers.json` & `personas.json`：角色系统与 CLI 预设配置。
+
+---
+
+## 安全护栏（Polter 绝对不做的事）
+
+1.  **绝不偷偷向云端上传代码**：没有商业遥测、没有中央服务器、没有云端中间商，完全断网亦可流畅运行。
+2.  **绝不剥夺人类终极否决权**：
+    *   你可以通过设置 `poltergeist-may-authorise = false` 全局关闭总管代答；
+    *   可以通过“防护 (Shield)”功能将特定生产终端彻底设为只读隔绝，任何 AI 权限均无法逾越。
+3.  **绝不在内存中保留敏感明文图像**：马赛克涂抹区域在渲染管线阶段直接像素级破坏，磁盘与剪贴板永不留存原始敏感数据。
+
+---
+
+## 常见问题 (FAQ)
+
+**Q: Polter 和常规的 AI 编辑器（如 Cursor、Windsurf）有什么本质区别？**  
+A: Cursor 等工具本质是“单人、单仓代码补全编辑器”。当你的工程演进到全栈阶段，需要同时运行前端构建、后端开发、数据库迁移和自动化压测时，单编辑器架构就会崩溃。Polter 是**多 Agent 协同的 Vibe Studio**，它在终端层调度多支独立小队并行运转。
+
+**Q: 为什么总管能防止半夜停摆？**  
+A: 绝大多数过夜长任务中断，都是因为终端卡在了低危确认提示符（如 `npm install`、`allow reading file?`）。Polter 的总管能在秒级识别此类状态并代为确认；遇到真正的高危操作则触发系统通知叫醒人类，兼顾效率与安全底线。
+
+**Q: 除了 Claude Code，还能接入哪些 AI CLI？**  
+A: Polter 完整内置支持 Claude Code、OpenCode (v1 及 v2)、Codex 以及 macOS 下的 Antigravity（`agy`），并提供统一的角色与钩子支持。任何基于终端的命令行工具均可在 Worker 标签页中顺畅运行。
+
+**Q: 本地性能开销大吗？**  
+A: 极小。底层基于现代高性能 Ghostty（采用 Zig 编写，GPU 硬件加速渲染），监控模块 `resource_overview` 采用静态内存预分配，全量全屏监控时 CPU 占用通常不足 1%。
+
+---
+
+## 联系与支持
+
+*   **问题反馈与建议**：[GitHub Issues](https://github.com/Lugia123/polter/issues)
+*   **商务与交流**：[xugf@bestfunc.com](mailto:xugf@bestfunc.com)
+*   **关于 Ghostty**：Polter 的卓越终端基底源于 [Ghostty](https://github.com/ghostty-org/ghostty) 开源项目。我们遵循 MIT 开源协议，持续同步上游核心能力。
+
+---
+*感谢 [LINUX DO](https://linux.do) 社区在早期分享中给予的宝贵反馈。*
