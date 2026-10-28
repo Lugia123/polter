@@ -84,6 +84,26 @@ pub const Op = enum {
     reowned,
 };
 
+/// The two squad lines (task 2439). **Not in `Op` on purpose**: `Op` is
+/// switched over exhaustively by the readers of the record (`TaskPage`
+/// words every one of them), and a value added there is a build error in
+/// files that have no words for it yet. Replay never looks at the op, and a
+/// reader that maps a line's op through `Op` skips these.
+pub const MemberOp = enum {
+    /// A terminal took a place in the task's squad.
+    joined,
+    /// A terminal's place became vacated: its terminal closed, or it left.
+    left,
+};
+
+/// What a `joined` or `left` line adds: whose it was. The whole squad is on
+/// every line already; this is the one that moved.
+pub const Who = struct {
+    alias: []const u8,
+    id: Tasks.Id,
+    session: []const u8,
+};
+
 /// What a `reowned` line adds to the task: who had it, and the session
 /// that says the new terminal is the same agent.
 pub const Reowned = struct {
@@ -142,7 +162,7 @@ pub fn compact(self: *TaskLog, tasks: *const Tasks, at_ms: i64) struct { files: 
         var buf: std.Io.Writer.Allocating = .init(self.alloc);
         defer buf.deinit();
         var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
-        render(&s, last.get(t.id) orelse at_ms, .compacted, t, null) catch return .{ .files = 0, .bytes = 0 };
+        render(&s, last.get(t.id) orelse at_ms, @tagName(Op.compacted), t, null, null) catch return .{ .files = 0, .bytes = 0 };
         buf.writer.writeByte('\n') catch return .{ .files = 0, .bytes = 0 };
         self.tree.write(t.group, at_ms, buf.written());
     }
@@ -231,21 +251,26 @@ pub fn deinit(self: *TaskLog) void {
 /// which the record explicitly tolerates, see `daylog` -- still says what
 /// the task is called and who has it.
 pub fn append(self: *TaskLog, at_ms: i64, op: Op, task: Tasks.Task) void {
-    self.appendLine(at_ms, op, task, null);
+    self.appendLine(at_ms, @tagName(op), task, null, null);
+}
+
+/// A `joined` or `left` line.
+pub fn appendMember(self: *TaskLog, at_ms: i64, op: MemberOp, task: Tasks.Task, who: Who) void {
+    self.appendLine(at_ms, @tagName(op), task, null, who);
 }
 
 /// A `reowned` line: the task, already under its new owner, and where it
 /// came from.
 pub fn appendReowned(self: *TaskLog, at_ms: i64, task: Tasks.Task, r: Reowned) void {
-    self.appendLine(at_ms, .reowned, task, r);
+    self.appendLine(at_ms, @tagName(Op.reowned), task, r, null);
 }
 
-fn appendLine(self: *TaskLog, at_ms: i64, op: Op, task: Tasks.Task, r: ?Reowned) void {
+fn appendLine(self: *TaskLog, at_ms: i64, op: []const u8, task: Tasks.Task, r: ?Reowned, who: ?Who) void {
     var buf: std.Io.Writer.Allocating = .init(self.alloc);
     defer buf.deinit();
 
     var s: std.json.Stringify = .{ .writer = &buf.writer, .options = .{} };
-    render(&s, at_ms, op, task, r) catch |err| {
+    render(&s, at_ms, op, task, r, who) catch |err| {
         log.warn("task log: could not render err={}", .{err});
         return;
     };
@@ -257,15 +282,16 @@ fn appendLine(self: *TaskLog, at_ms: i64, op: Op, task: Tasks.Task, r: ?Reowned)
 fn render(
     s: *std.json.Stringify,
     at_ms: i64,
-    op: Op,
+    op: []const u8,
     task: Tasks.Task,
     reowned: ?Reowned,
+    who: ?Who,
 ) std.Io.Writer.Error!void {
     try s.beginObject();
     try s.objectField("at_ms");
     try s.write(at_ms);
     try s.objectField("op");
-    try s.write(@tagName(op));
+    try s.write(op);
     try s.objectField("task");
     try s.write(task.id);
     try s.objectField("group");
@@ -289,6 +315,37 @@ fn render(
     // that is only on some lines is a field the replay has to guess at.
     try s.objectField("kind");
     try s.write(@tagName(task.kind));
+
+    // Only a task that has a squad says so, so a task without one is
+    // written exactly as it was before there were squads. A reader that
+    // does not know the key skips it, and `owner` above is still the lead.
+    if (task.members.len > 0) {
+        try s.objectField("members");
+        try s.beginArray();
+        for (task.members) |m| {
+            try s.beginObject();
+            try s.objectField("alias");
+            try s.write(m.alias);
+            try s.objectField("role");
+            try s.write(m.role);
+            try s.objectField("id");
+            try s.write(std.fmt.bufPrint(&idbuf, "0x{x:0>16}", .{m.id}) catch unreachable);
+            try s.objectField("slot");
+            try s.write(@tagName(m.slot));
+            try s.objectField("session");
+            try s.write(m.session);
+            try s.endObject();
+        }
+        try s.endArray();
+    }
+    if (who) |w| {
+        try s.objectField("alias");
+        try s.write(w.alias);
+        try s.objectField("member");
+        try s.write(std.fmt.bufPrint(&idbuf, "0x{x:0>16}", .{w.id}) catch unreachable);
+        try s.objectField("session");
+        try s.write(w.session);
+    }
 
     if (reowned) |r| {
         try s.objectField("from");
@@ -336,6 +393,11 @@ pub const Event = struct {
     /// line went by. `nobody` and "" on every other line.
     from: Tasks.Id = Tasks.nobody,
     via: []const u8 = "",
+    /// For `joined` and `left`: the place, the terminal in it, and its
+    /// session. "" and `nobody` on every other line.
+    alias: []const u8 = "",
+    member: Tasks.Id = Tasks.nobody,
+    session: []const u8 = "",
 };
 
 pub const Page = struct {
@@ -448,6 +510,8 @@ fn freeEvent(alloc: Allocator, e: Event) void {
     alloc.free(e.state);
     alloc.free(e.progress);
     alloc.free(e.via);
+    alloc.free(e.alias);
+    alloc.free(e.session);
 }
 
 /// One line into an `Event`, or null for a line that is not one.
@@ -497,6 +561,15 @@ fn parseEvent(alloc: Allocator, line: []const u8) Allocator.Error!?Event {
     const progress = try alloc.dupe(u8, str(obj, "progress") orelse "");
     errdefer alloc.free(progress);
     const via = try alloc.dupe(u8, str(obj, "via") orelse "");
+    errdefer alloc.free(via);
+    const alias = try alloc.dupe(u8, str(obj, "alias") orelse "");
+    errdefer alloc.free(alias);
+    const session = try alloc.dupe(u8, str(obj, "session") orelse "");
+
+    const member: Tasks.Id = if (str(obj, "member")) |t|
+        std.fmt.parseUnsigned(Tasks.Id, t, 0) catch Tasks.nobody
+    else
+        Tasks.nobody;
 
     const from: Tasks.Id = if (str(obj, "from")) |t|
         std.fmt.parseUnsigned(Tasks.Id, t, 0) catch Tasks.nobody
@@ -514,6 +587,9 @@ fn parseEvent(alloc: Allocator, line: []const u8) Allocator.Error!?Event {
         .progress = progress,
         .from = from,
         .via = via,
+        .alias = alias,
+        .member = member,
+        .session = session,
     };
 }
 
@@ -635,6 +711,7 @@ fn applyLine(self: *TaskLog, tasks: *Tasks, line: []const u8) void {
         if (kind.choosable()) tasks.setKind(id, kind) catch {};
         tasks.assign(id, owner) catch {};
         tasks.setProgress(id, owner, progress) catch {};
+        applyMembers(arena.allocator(), tasks, id, obj);
         switch (state) {
             .open => {},
             .closed => tasks.close(id) catch {},
@@ -654,7 +731,42 @@ fn applyLine(self: *TaskLog, tasks: *Tasks, line: []const u8) void {
         // `unset` is what that means. It is a value nothing may ask for, so
         // "everything older than the question" stays a query.
         .kind = kind,
-    }) catch {};
+    }) catch return;
+    applyMembers(arena.allocator(), tasks, id, obj);
+}
+
+/// The squad a line carries, if it carries one. The stretches are brought
+/// into line by `Tasks.setMembers` at the moment the line was written.
+fn applyMembers(
+    arena: Allocator,
+    tasks: *Tasks,
+    id: Tasks.TaskId,
+    obj: std.json.ObjectMap,
+) void {
+    const arr = switch (obj.get("members") orelse return) {
+        .array => |a| a,
+        else => return,
+    };
+    const at_ms: i64 = switch (obj.get("at_ms") orelse std.json.Value{ .integer = 0 }) {
+        .integer => |n| n,
+        else => 0,
+    };
+
+    var out: std.ArrayListUnmanaged(Tasks.Member) = .empty;
+    for (arr.items) |item| {
+        const m = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        out.append(arena, .{
+            .alias = str(m, "alias") orelse continue,
+            .role = str(m, "role") orelse "",
+            .id = if (str(m, "id")) |t| std.fmt.parseUnsigned(Tasks.Id, t, 0) catch Tasks.nobody else Tasks.nobody,
+            .slot = std.meta.stringToEnum(Tasks.Slot, str(m, "slot") orelse "empty") orelse .empty,
+            .session = str(m, "session") orelse "",
+        }) catch return;
+    }
+    tasks.setMembers(id, out.items, at_ms) catch {};
 }
 
 fn str(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
@@ -1193,4 +1305,155 @@ test "compacting keeps the panel and drops the history before today" {
             try testing.expectEqual(Tasks.State.closed, t.state);
         }
     }
+}
+
+test "TaskLog: 重放含 joined/left 的记录得到同样的成员与 spans" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    const at: i64 = 1_700_000_000_000;
+    {
+        var tasks: Tasks = .init(alloc, .{});
+        defer tasks.deinit();
+        var l = try TaskLog.open(alloc, io, dir);
+        defer l.deinit();
+
+        const id = try tasks.create("build", "ship it", .other);
+        l.append(at, .created, tasks.get(id).?);
+        try tasks.join(id, "开发", "dev", 0x2222, "claude-code aaaa1111", at + 10, true);
+        l.appendMember(at + 10, .joined, tasks.get(id).?, .{ .alias = "开发", .id = 0x2222, .session = "claude-code aaaa1111" });
+        try tasks.join(id, "测试", "test", 0x3333, "claude-code bbbb2222", at + 20, false);
+        l.appendMember(at + 20, .joined, tasks.get(id).?, .{ .alias = "测试", .id = 0x3333, .session = "claude-code bbbb2222" });
+        tasks.forgetAt(0x3333, at + 30);
+        l.appendMember(at + 30, .left, tasks.get(id).?, .{ .alias = "测试", .id = 0x3333, .session = "claude-code bbbb2222" });
+
+        const page = try l.history(alloc, "build", 0, 10);
+        defer TaskLog.freePage(alloc, page);
+        try testing.expectEqualStrings("joined", page.events[1].op);
+        try testing.expectEqualStrings("开发", page.events[1].alias);
+        try testing.expectEqual(@as(Tasks.Id, 0x2222), page.events[1].member);
+        try testing.expectEqualStrings("left", page.events[3].op);
+    }
+
+    var again: Tasks = .init(alloc, .{});
+    defer again.deinit();
+    var l = try TaskLog.open(alloc, io, dir);
+    defer l.deinit();
+    l.restore(&again);
+
+    const t = again.get(1).?;
+    try testing.expectEqual(@as(Tasks.Id, 0x2222), t.owner);
+    try testing.expectEqual(@as(usize, 2), t.members.len);
+    try testing.expectEqualStrings("测试", t.members[1].alias);
+    try testing.expectEqual(Tasks.Slot.vacated, t.members[1].slot);
+    try testing.expectEqual(Tasks.Slot.filled, t.members[0].slot);
+
+    try testing.expectEqual(@as(usize, 2), t.spans.len);
+    try testing.expectEqualStrings("开发", t.spans[0].alias);
+    try testing.expectEqual(at + 10, t.spans[0].from_ms);
+    try testing.expectEqual(@as(?i64, null), t.spans[0].to_ms);
+    try testing.expectEqualStrings("claude-code bbbb2222", t.spans[1].session);
+    try testing.expectEqual(at + 20, t.spans[1].from_ms);
+    try testing.expectEqual(@as(?i64, at + 30), t.spans[1].to_ms);
+}
+
+test "TaskLog: 只认旧 op 的重放读新记录，任务与 owner 仍在" {
+    // The replay never read `op`, so there is no old-op allow-list to
+    // shadow. This reads the new lines the way the pre-squad reader did:
+    // only the old keys, ignoring the rest, and takes only the old ops.
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    var tasks: Tasks = .init(alloc, .{});
+    defer tasks.deinit();
+    var l = try TaskLog.open(alloc, io, dir);
+    defer l.deinit();
+
+    const at: i64 = 1_700_000_000_000;
+    const id = try tasks.create("build", "ship it", .other);
+    l.append(at, .created, tasks.get(id).?);
+    try tasks.join(id, "开发", "dev", 0x2222, "claude-code aaaa1111", at + 10, true);
+    l.appendMember(at + 10, .joined, tasks.get(id).?, .{ .alias = "开发", .id = 0x2222, .session = "x" });
+
+    const page = try l.history(alloc, "build", 0, 10);
+    defer TaskLog.freePage(alloc, page);
+    try testing.expectEqualStrings("joined", page.events[1].op);
+
+    // Read every day file of the group and replay it with the old rules.
+    var old: Tasks = .init(alloc, .{});
+    defer old.deinit();
+    var days = try l.tree.daysIn(alloc, "build");
+    defer days.deinit(alloc);
+    for (days.items) |day| {
+        const path = try l.tree.partPathIn(alloc, "build", day.day, day.part);
+        defer alloc.free(path);
+        const bytes = try std.Io.Dir.readFileAlloc(.cwd(), io, path, alloc, .limited(1 << 20));
+        defer alloc.free(bytes);
+        var lines = std.mem.splitScalar(u8, bytes, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            var arena: std.heap.ArenaAllocator = .init(alloc);
+            defer arena.deinit();
+            const obj = (try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), line, .{})).object;
+            const task: Tasks.TaskId = @intCast(obj.get("task").?.integer);
+            const owner = try std.fmt.parseUnsigned(Tasks.Id, str(obj, "owner").?, 0);
+            if (old.get(task) == null) {
+                try old.restore(.{ .id = task, .group = str(obj, "group").?, .title = str(obj, "title").?, .owner = owner });
+            } else {
+                try old.assign(task, owner);
+            }
+        }
+    }
+    try testing.expectEqual(@as(Tasks.Id, 0x2222), old.get(id).?.owner);
+    try testing.expectEqualStrings("ship it", old.get(id).?.title);
+}
+
+test "TaskLog: 没有成员的任务写出的行里没有 members" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+
+    var tasks: Tasks = .init(alloc, .{});
+    defer tasks.deinit();
+    var l = try TaskLog.open(alloc, io, dir);
+    defer l.deinit();
+
+    const id = try tasks.create("build", "old", .other);
+    try tasks.assign(id, 0x2222);
+    // Reading it as a one-place squad must not change what is written.
+    const ms = try Tasks.membersOf(alloc, tasks.get(id).?);
+    alloc.free(ms);
+    l.append(1_700_000_000_000, .assigned, tasks.get(id).?);
+
+    var days = try l.tree.daysIn(alloc, "build");
+    defer days.deinit(alloc);
+    const path = try l.tree.partPathIn(alloc, "build", days.items[0].day, days.items[0].part);
+    defer alloc.free(path);
+    const bytes = try std.Io.Dir.readFileAlloc(.cwd(), io, path, alloc, .limited(1 << 20));
+    defer alloc.free(bytes);
+    try testing.expect(std.mem.indexOf(u8, bytes, "members") == null);
+    try testing.expect(std.mem.indexOf(u8, bytes, "joined") == null);
 }

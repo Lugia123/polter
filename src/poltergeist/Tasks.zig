@@ -124,6 +124,43 @@ pub const Kind = enum {
     }
 };
 
+/// Whether a place in a task's squad has ever been filled.
+///
+/// Three, not two: `empty` is "nobody has been put here yet", `vacated` is
+/// "somebody was, and the terminal closed". Both have no terminal now, and
+/// only the slot tells a supervisor which one it is looking at -- one is a
+/// place still to open, the other is a place to refill.
+pub const Slot = enum { empty, filled, vacated };
+
+/// One place in a task's squad.
+pub const Member = struct {
+    /// The label the panel and the channel show. Unique within the task;
+    /// "" is only the implicit member of a task that has no squad.
+    alias: []const u8,
+
+    /// The persona key it was made from, as it was then.
+    role: []const u8 = "",
+
+    /// The terminal in the place now. Zero for `empty` and `vacated` alike.
+    id: Id = nobody,
+    slot: Slot = .empty,
+
+    /// `<cli> <session id prefix>`, as `TaskLog.viaText` writes it: a
+    /// terminal id does not survive a restart, a session does.
+    session: []const u8 = "",
+};
+
+/// One stretch of a terminal holding a place: what #2436 adds tokens up by.
+pub const Span = struct {
+    alias: []const u8,
+    id: Id,
+    session: []const u8,
+    from_ms: i64,
+
+    /// Null while the terminal still holds the place.
+    to_ms: ?i64 = null,
+};
+
 pub const Task = struct {
     id: TaskId,
 
@@ -144,6 +181,13 @@ pub const Task = struct {
 
     /// See `Kind`. Restored tasks that predate the field arrive as `unset`.
     kind: Kind = .unset,
+
+    /// The squad, if there is one. Owned by the panel. **`owner` is the
+    /// lead**: the one terminal whose word moves `progress`.
+    members: []Member = &.{},
+
+    /// Every stretch a terminal held a place, oldest first. Owned.
+    spans: []Span = &.{},
 };
 
 pub const Config = struct {
@@ -172,6 +216,14 @@ pub const Config = struct {
     /// The mechanism stays because a caller with a reason can still ask for
     /// a limit, and the test below holds that path open.
     max_tasks: usize = std.math.maxInt(usize),
+
+    /// A squad is a handful, not a crowd.
+    max_members: usize = 8,
+    max_alias_bytes: usize = 24,
+
+    /// The moment a terminal closing is noted at. Null reads as zero; the
+    /// host that wants real spans sets it.
+    now_ms: ?*const fn () i64 = null,
 };
 
 pub const Error = error{
@@ -189,6 +241,20 @@ pub const Error = error{
 
     /// The task is closed or cancelled, so there is nothing to move.
     NotOpen,
+
+    /// A member of a squad that is not its lead reaching for the task's
+    /// progress. The lead reports; the rest talk in the channel.
+    NotLead,
+
+    /// An empty alias, or one longer than `max_alias_bytes`.
+    BadAlias,
+    NoSuchMember,
+
+    /// The place has another terminal in it, or this terminal already
+    /// holds another place in the task.
+    MemberTaken,
+    DuplicateAlias,
+    TooManyMembers,
 } || Allocator.Error;
 
 alloc: Allocator,
@@ -209,6 +275,7 @@ pub fn deinit(self: *Tasks) void {
     for (self.list.items) |t| {
         self.alloc.free(t.group);
         self.alloc.free(t.title);
+        self.freeSquad(t);
     }
     self.list.deinit(self.alloc);
     self.* = undefined;
@@ -362,7 +429,15 @@ pub fn setProgress(
     progress: Progress,
 ) Error!void {
     const t = try self.find(id);
-    if (t.owner != by) return error.NotYours;
+    if (t.owner != by) {
+        // **In a squad the progress is the lead's alone.** A member who is
+        // not the lead is told so, and told where to say it instead; a
+        // terminal that is not in the squad is simply not on the task.
+        for (t.members) |m| {
+            if (m.slot == .filled and m.id == by) return error.NotLead;
+        }
+        return error.NotYours;
+    }
     if (t.state != .open) return error.NotOpen;
     t.progress = progress;
 }
@@ -373,9 +448,200 @@ pub fn setProgress(
 /// morning wants to see, and a task whose owner has gone is a task that
 /// needs somebody -- which is visible only if it is still there.
 pub fn forget(self: *Tasks, id: Id) void {
+    self.forgetAt(id, if (self.config.now_ms) |f| f() else 0);
+}
+
+/// `forget`, saying when: the places the terminal held become `vacated`,
+/// its stretch ends, and if it was the lead the task has no owner. The task
+/// itself stays open.
+pub fn forgetAt(self: *Tasks, id: Id, at_ms: i64) void {
     for (self.list.items) |*t| {
         if (t.owner == id) t.owner = nobody;
+        for (t.members) |*m| {
+            if (m.slot == .filled and m.id == id) {
+                m.slot = .vacated;
+                m.id = nobody;
+            }
+        }
+        closeStale(t, at_ms);
     }
+}
+
+// -- the squad --------------------------------------------------------------
+
+fn freeSquad(self: *Tasks, t: Task) void {
+    for (t.members) |m| {
+        self.alloc.free(m.alias);
+        self.alloc.free(m.role);
+        self.alloc.free(m.session);
+    }
+    self.alloc.free(t.members);
+    for (t.spans) |sp| {
+        self.alloc.free(sp.alias);
+        self.alloc.free(sp.session);
+    }
+    self.alloc.free(t.spans);
+}
+
+fn memberIndex(t: *const Task, alias: []const u8) ?usize {
+    for (t.members, 0..) |m, i| {
+        if (std.mem.eql(u8, m.alias, alias)) return i;
+    }
+    return null;
+}
+
+/// Put a new place in the task's squad, with nobody in it.
+pub fn addSlot(self: *Tasks, id: TaskId, alias: []const u8, role: []const u8) Error!void {
+    const t = try self.find(id);
+    if (t.state != .open) return error.NotOpen;
+    _ = try self.newMember(t, alias, role);
+}
+
+fn newMember(self: *Tasks, t: *Task, alias: []const u8, role: []const u8) Error!usize {
+    if (alias.len == 0 or alias.len > self.config.max_alias_bytes) return error.BadAlias;
+    if (memberIndex(t, alias) != null) return error.DuplicateAlias;
+    if (t.members.len >= self.config.max_members) return error.TooManyMembers;
+
+    const a = try self.alloc.dupe(u8, alias);
+    errdefer self.alloc.free(a);
+    const r = try self.alloc.dupe(u8, role);
+    errdefer self.alloc.free(r);
+    const grown = try self.alloc.realloc(t.members, t.members.len + 1);
+    t.members = grown;
+    grown[grown.len - 1] = .{ .alias = a, .role = r };
+    return grown.len - 1;
+}
+
+/// A terminal takes a place (making it if the alias is new). `lead` also
+/// makes it the task's owner. Taking the place it already holds is a no-op.
+pub fn join(
+    self: *Tasks,
+    id: TaskId,
+    alias: []const u8,
+    role: []const u8,
+    by: Id,
+    session: []const u8,
+    at_ms: i64,
+    lead: bool,
+) Error!void {
+    const t = try self.find(id);
+    if (t.state != .open) return error.NotOpen;
+    if (by == nobody) return error.NoSuchMember;
+
+    const idx = memberIndex(t, alias) orelse try self.newMember(t, alias, role);
+    for (t.members, 0..) |m, i| {
+        if (m.slot == .filled and m.id == by and i != idx) return error.MemberTaken;
+    }
+    const m = &t.members[idx];
+    if (m.slot == .filled and m.id != by) return error.MemberTaken;
+
+    const sess = try self.alloc.dupe(u8, session);
+    self.alloc.free(m.session);
+    m.session = sess;
+    m.id = by;
+    m.slot = .filled;
+    if (lead) t.owner = by;
+    try self.reconcile(t, at_ms);
+}
+
+/// A member leaves while its terminal lives on. The place is `vacated`; if
+/// it was the lead, the task has no owner.
+pub fn leave(self: *Tasks, id: TaskId, alias: []const u8, at_ms: i64) Error!void {
+    const t = try self.find(id);
+    const idx = memberIndex(t, alias) orelse return error.NoSuchMember;
+    const m = &t.members[idx];
+    if (m.slot != .filled) return;
+    if (t.owner == m.id) t.owner = nobody;
+    m.slot = .vacated;
+    m.id = nobody;
+    closeStale(t, at_ms);
+}
+
+/// Replace the squad with what a record line says (replay only). Spans are
+/// not touched: `reconcile` brings them into line.
+pub fn setMembers(self: *Tasks, id: TaskId, members: []const Member, at_ms: i64) Error!void {
+    const t = try self.find(id);
+    const fresh = try self.alloc.alloc(Member, members.len);
+    var made: usize = 0;
+    errdefer {
+        for (fresh[0..made]) |m| {
+            self.alloc.free(m.alias);
+            self.alloc.free(m.role);
+            self.alloc.free(m.session);
+        }
+        self.alloc.free(fresh);
+    }
+    for (members) |m| {
+        const a = try self.alloc.dupe(u8, m.alias);
+        errdefer self.alloc.free(a);
+        const r = try self.alloc.dupe(u8, m.role);
+        errdefer self.alloc.free(r);
+        fresh[made] = .{ .alias = a, .role = r, .id = m.id, .slot = m.slot, .session = try self.alloc.dupe(u8, m.session) };
+        made += 1;
+    }
+    for (t.members) |m| {
+        self.alloc.free(m.alias);
+        self.alloc.free(m.role);
+        self.alloc.free(m.session);
+    }
+    self.alloc.free(t.members);
+    t.members = fresh;
+    closeStale(t, at_ms);
+    try self.reconcile(t, at_ms);
+}
+
+fn holds(t: *const Task, sp: Span) bool {
+    for (t.members) |m| {
+        if (m.slot == .filled and m.id == sp.id and std.mem.eql(u8, m.alias, sp.alias)) return true;
+    }
+    return false;
+}
+
+/// End every stretch whose terminal no longer holds that place.
+fn closeStale(t: *Task, at_ms: i64) void {
+    for (t.spans) |*sp| {
+        if (sp.to_ms == null and !holds(t, sp.*)) sp.to_ms = at_ms;
+    }
+}
+
+/// Open a stretch for every filled place that has none. **The same call
+/// serves a live `join` and a replayed line**, so the two cannot disagree
+/// about what a stretch is.
+fn reconcile(self: *Tasks, t: *Task, at_ms: i64) Allocator.Error!void {
+    for (t.members) |m| {
+        if (m.slot != .filled) continue;
+        var open = false;
+        for (t.spans) |sp| {
+            if (sp.to_ms == null and sp.id == m.id and std.mem.eql(u8, sp.alias, m.alias)) open = true;
+        }
+        if (open) continue;
+        const a = try self.alloc.dupe(u8, m.alias);
+        errdefer self.alloc.free(a);
+        const sess = try self.alloc.dupe(u8, m.session);
+        errdefer self.alloc.free(sess);
+        const grown = try self.alloc.realloc(t.spans, t.spans.len + 1);
+        t.spans = grown;
+        grown[grown.len - 1] = .{ .alias = a, .id = m.id, .session = sess, .from_ms = at_ms };
+    }
+}
+
+/// A task's places. **A task with no squad reads as one place with no
+/// alias** -- its owner -- without anything being written back.
+pub fn membersOf(alloc: Allocator, t: Task) Allocator.Error![]const Member {
+    if (t.members.len > 0) return alloc.dupe(Member, t.members);
+    const one = try alloc.alloc(Member, 1);
+    one[0] = .{
+        .alias = "",
+        .id = t.owner,
+        .slot = if (t.owner == nobody) .empty else .filled,
+    };
+    return one;
+}
+
+/// Who held which place, and when: `to_ms` null while they still do. The
+/// strings are the task's own; only the slice is the caller's.
+pub fn spans(alloc: Allocator, t: Task) Allocator.Error![]const Span {
+    return alloc.dupe(Span, t.spans);
 }
 
 /// Every open task `from` has, handed to `to` (task 1978): the terminal
@@ -415,6 +681,7 @@ pub fn forgetGroup(self: *Tasks, group: []const u8) void {
             const t = self.list.orderedRemove(i);
             self.alloc.free(t.group);
             self.alloc.free(t.title);
+            self.freeSquad(t);
             continue;
         }
         i += 1;
@@ -1054,7 +1321,7 @@ test "the panel stores what the chapter says it stores and no more" {
     // it is** -- because a supervisor sorting a night's panel was doing it
     // by reading titles, and a convention written into titles is not
     // something anything can filter on.
-    const allowed = [_][]const u8{ "id", "group", "title", "owner", "state", "progress", "kind" };
+    const allowed = [_][]const u8{ "id", "group", "title", "owner", "state", "progress", "kind", "members", "spans" };
     try testing.expectEqual(allowed.len, names.len);
     for (names) |n| {
         var ok = false;
@@ -1066,4 +1333,135 @@ test "the panel stores what the chapter says it stores and no more" {
             return error.TestUnexpectedResult;
         }
     }
+}
+
+// -- squad (task 2439) ------------------------------------------------------
+
+const worker_c: Id = 0x4444;
+
+test "squad: 一张任务可以挂三个成员，owner 是牵头人" {
+    var t = testTasks();
+    defer t.deinit();
+
+    const id = try t.create("build", "ship it", .other);
+    try t.join(id, "开发", "dev", worker_a, "claude-code aaaa1111", 100, true);
+    try t.join(id, "测试", "test", worker_b, "claude-code bbbb2222", 110, false);
+    try t.join(id, "审核", "review", worker_c, "claude-code cccc3333", 120, false);
+
+    const task = t.get(id).?;
+    try testing.expectEqual(@as(usize, 3), task.members.len);
+    try testing.expectEqual(worker_a, task.owner);
+    try testing.expectEqualStrings("测试", task.members[1].alias);
+    try testing.expectEqual(worker_b, task.members[1].id);
+    try testing.expectEqual(Slot.filled, task.members[2].slot);
+
+    try testing.expectError(error.DuplicateAlias, t.addSlot(id, "测试", "test"));
+    try testing.expectError(error.MemberTaken, t.join(id, "开发", "dev", worker_b, "", 130, false));
+}
+
+test "squad: 位的三态 empty/filled/vacated 互相分得开" {
+    var t = testTasks();
+    defer t.deinit();
+
+    const id = try t.create("build", "ship it", .other);
+    try t.addSlot(id, "测试", "test");
+    try testing.expectEqual(Slot.empty, t.get(id).?.members[0].slot);
+
+    try t.join(id, "测试", "test", worker_b, "claude-code bbbb2222", 100, false);
+    try testing.expectEqual(Slot.filled, t.get(id).?.members[0].slot);
+
+    try t.leave(id, "测试", 200);
+    const m = t.get(id).?.members[0];
+    try testing.expect(m.slot == .vacated);
+    // Both of the others have no terminal too; the slot is all that
+    // separates "never opened" from "closed".
+    try testing.expectEqual(nobody, m.id);
+}
+
+test "squad: 小队任务的 progress 只由牵头人写；非牵头人成员 → NotLead，非成员 → NotYours；单人任务的 owner 照旧能写" {
+    var t = testTasks();
+    defer t.deinit();
+
+    const id = try t.create("build", "ship it", .other);
+    try t.join(id, "开发", "dev", worker_a, "", 100, true);
+    try t.join(id, "测试", "test", worker_b, "", 110, false);
+
+    try t.setProgress(id, worker_a, .working);
+    try testing.expectEqual(Progress.working, t.get(id).?.progress);
+    try testing.expectError(error.NotLead, t.setProgress(id, worker_b, .done));
+    try testing.expectError(error.NotYours, t.setProgress(id, worker_c, .done));
+    try testing.expectEqual(Progress.working, t.get(id).?.progress);
+
+    // A task with no squad is unchanged: its owner writes, others do not.
+    const solo = try t.create("build", "alone", .other);
+    try t.assign(solo, worker_a);
+    try t.setProgress(solo, worker_a, .done);
+    try testing.expectError(error.NotYours, t.setProgress(solo, worker_b, .done));
+}
+
+test "squad: 终端关掉后位 vacated，任务不关，牵头人退回 nobody" {
+    var t = testTasks();
+    defer t.deinit();
+
+    const id = try t.create("build", "ship it", .other);
+    try t.join(id, "开发", "dev", worker_a, "claude-code aaaa1111", 100, true);
+    try t.join(id, "测试", "test", worker_b, "claude-code bbbb2222", 110, false);
+
+    t.forgetAt(worker_a, 500);
+
+    const task = t.get(id).?;
+    try testing.expectEqual(State.open, task.state);
+    try testing.expectEqual(nobody, task.owner);
+    try testing.expectEqual(Slot.vacated, task.members[0].slot);
+    try testing.expectEqual(Slot.filled, task.members[1].slot);
+    try testing.expectEqual(@as(?i64, 500), task.spans[0].to_ms);
+    try testing.expectEqual(@as(?i64, null), task.spans[1].to_ms);
+
+    // Nobody leads, so nobody can report -- on purpose.
+    try testing.expectError(error.NotLead, t.setProgress(id, worker_b, .done));
+}
+
+test "squad: 无成员的旧任务读出来等价于一个无别名成员，且不写回记录" {
+    var t = testTasks();
+    defer t.deinit();
+
+    const id = try t.create("build", "old", .other);
+    try t.assign(id, worker_a);
+
+    const ms = try membersOf(testing.allocator, t.get(id).?);
+    defer testing.allocator.free(ms);
+    try testing.expectEqual(@as(usize, 1), ms.len);
+    try testing.expectEqualStrings("", ms[0].alias);
+    try testing.expectEqual(worker_a, ms[0].id);
+    try testing.expectEqual(Slot.filled, ms[0].slot);
+
+    // Read, not written back.
+    try testing.expectEqual(@as(usize, 0), t.get(id).?.members.len);
+    try testing.expectEqual(@as(usize, 0), t.get(id).?.spans.len);
+
+    const none = try t.create("build", "nobody", .other);
+    const ms2 = try membersOf(testing.allocator, t.get(none).?);
+    defer testing.allocator.free(ms2);
+    try testing.expectEqual(Slot.empty, ms2[0].slot);
+}
+
+test "squad: spans 给出 (alias, id, session, from_ms, to_ms)，open 区间 to_ms 为空" {
+    var t = testTasks();
+    defer t.deinit();
+
+    const id = try t.create("build", "ship it", .other);
+    try t.join(id, "测试", "test", worker_b, "claude-code bbbb2222", 100, false);
+    try t.leave(id, "测试", 300);
+    try t.join(id, "测试", "test", worker_c, "claude-code cccc3333", 400, false);
+
+    const sp = try spans(testing.allocator, t.get(id).?);
+    defer testing.allocator.free(sp);
+    try testing.expectEqual(@as(usize, 2), sp.len);
+    try testing.expectEqualStrings("测试", sp[0].alias);
+    try testing.expectEqual(worker_b, sp[0].id);
+    try testing.expectEqualStrings("claude-code bbbb2222", sp[0].session);
+    try testing.expectEqual(@as(i64, 100), sp[0].from_ms);
+    try testing.expectEqual(@as(?i64, 300), sp[0].to_ms);
+    try testing.expectEqual(worker_c, sp[1].id);
+    try testing.expectEqual(@as(?i64, null), sp[1].to_ms);
 }
