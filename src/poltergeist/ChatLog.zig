@@ -313,6 +313,9 @@ const Line = struct {
 
     /// Absent on every line written before squads: the public channel.
     channel: u64 = 0,
+
+    /// A summary's start, as a log seq. Absent: not known (task 2494).
+    covers_from_log: u64 = 0,
 };
 
 /// Read one line back, or null if it is not one.
@@ -396,6 +399,24 @@ pub fn append(
     text: []const u8,
     channel: u64,
 ) u64 {
+    return self.appendCovering(group, from, author, at_ms, summary, text, channel, 0);
+}
+
+/// `append`, for a summary that says where it starts: `covers_log` is the
+/// log seq of the first message it replaced (0: not known). A member kept
+/// out of the history before that point is not given the summary by
+/// `group_history` -- it recaps what they were barred from (`hiddenFrom`).
+pub fn appendCovering(
+    self: *ChatLog,
+    group: []const u8,
+    from: Bus.Id,
+    author: []const u8,
+    at_ms: i64,
+    summary: bool,
+    text: []const u8,
+    channel: u64,
+    covers_log: u64,
+) u64 {
     if (!self.stream_open) {
         self.reopenHandles();
         if (!self.stream_open) return 0;
@@ -437,6 +458,10 @@ pub fn append(
     if (channel != 0) {
         s.objectField("channel") catch return 0;
         s.write(channel) catch return 0;
+    }
+    if (summary and covers_log != 0) {
+        s.objectField("covers_from_log") catch return 0;
+        s.write(covers_log) catch return 0;
     }
     s.objectField("text") catch return 0;
 
@@ -504,7 +529,23 @@ pub const Entry = struct {
 
     /// 0 is the public channel, otherwise a task number.
     channel: u64,
+
+    /// For a summary: the log seq of the first message it replaced, 0 when
+    /// that is not known (older lines, or a message never written down).
+    covers_from_log: u64,
 };
+
+/// Whether `group_history` keeps `e` from a member whose bar sits at
+/// `log_floor` (`Chat.Floor`). Below the bar, always. A summary besides,
+/// when the member was kept out of history (`barred`) and the summary starts
+/// at or below the bar, or does not say where it starts: it recaps what they
+/// were kept out of, and the live read hides it for the same reason
+/// (`Chat.beyondFloor`).
+pub fn hiddenFrom(e: Entry, log_floor: u64, barred: bool) bool {
+    if (e.seq <= log_floor) return true;
+    if (!e.summary or !barred) return false;
+    return e.covers_from_log == 0 or e.covers_from_log <= log_floor;
+}
 
 /// What a caller is looking for, when it is not simply "the page before
 /// this one".
@@ -943,6 +984,7 @@ pub const Tail = struct {
                         .summary = parsed.summary,
                         .text = text,
                         .channel = parsed.channel,
+                        .covers_from_log = parsed.covers_from_log,
                     });
                 }
 
@@ -1244,6 +1286,7 @@ const Walk = struct {
                 .summary = parsed.summary,
                 .text = text,
                 .channel = parsed.channel,
+                .covers_from_log = parsed.covers_from_log,
             });
             if (w.found.items.len >= w.want) return true;
         }
@@ -3496,4 +3539,72 @@ test "ChatLog: 旧记录（无 channel）读出来都是公共；新记录被忽
     const first_end = std.mem.indexOfScalar(u8, text, '\n').?;
     try testing.expect(std.mem.indexOf(u8, text[0..first_end], "\"channel\"") == null);
     try testing.expect(std.mem.indexOf(u8, text[first_end..], "\"channel\":9") != null);
+}
+
+test "channel: group_history 压缩后，不带历史的成员读不到摘要，入群后的公共帖仍在；带历史的成员两样都读得到" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    var chat: Chat = .init(testing.allocator, .{});
+    defer chat.deinit();
+
+    const boss: Bus.Id = 0x1111;
+    const old_hand: Bus.Id = 0x2222;
+    const newcomer: Bus.Id = 0x3333;
+    try chat.create("g", boss);
+    try chat.add("g", old_hand, .all, .{});
+
+    // What the host does for each post: the group's own log, then the record.
+    const before = try chat.post("g", boss, "before the join", 1000);
+    chat.setLogSeq("g", before.seq, l.append("g", boss, "boss", 1000, false, "before the join", 0));
+    try chat.add("g", newcomer, .none, .{});
+    const after = try chat.post("g", boss, "after the join", 1001);
+    chat.setLogSeq("g", after.seq, l.append("g", boss, "boss", 1001, false, "after the join", 0));
+
+    // The supervisor compacts both; the summary is written beside them.
+    const done = try chat.compact("g", after.seq, 0, "SUMMARY", boss, 1002);
+    try testing.expect(done.covers_log != 0);
+    chat.setLogSeq("g", done.seq, l.appendCovering("g", boss, "boss", 1002, true, "SUMMARY", 0, done.covers_log));
+
+    const page = try l.history(testing.allocator, "g", 0, 10, .{}, .everything);
+    defer ChatLog.freePage(testing.allocator, page);
+    try testing.expectEqual(@as(usize, 3), page.entries.len);
+    try testing.expectEqual(done.covers_log, page.entries[2].covers_from_log);
+
+    // The newcomer was kept out of "before the join", which the summary recaps.
+    const fl = try chat.floorOf("g", newcomer);
+    try testing.expect(fl.barred);
+    var seen: [3][]const u8 = undefined;
+    var n: usize = 0;
+    for (page.entries) |e| {
+        if (hiddenFrom(e, fl.log_seq, fl.barred)) continue;
+        seen[n] = e.text;
+        n += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), n);
+    try testing.expectEqualStrings("after the join", seen[0]);
+
+    // Negative control: a member who was given the history sees all three.
+    const ol = try chat.floorOf("g", old_hand);
+    n = 0;
+    for (page.entries) |e| {
+        if (!hiddenFrom(e, ol.log_seq, ol.barred)) n += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), n);
+
+    // A summary line from before this field existed does not say where it
+    // starts: kept from a barred member, as the bar cannot be proved.
+    const legacy: Entry = .{ .seq = fl.log_seq + 5, .at_ms = 0, .group = "g", .from = boss, .author = "", .summary = true, .text = "", .channel = 0, .covers_from_log = 0 };
+    try testing.expect(hiddenFrom(legacy, fl.log_seq, true));
+    try testing.expect(!hiddenFrom(legacy, 0, false));
 }

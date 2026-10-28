@@ -102,6 +102,18 @@ pub const Message = struct {
     /// that task's squad (`Scope`). Plain data, no allocation.
     channel: u64 = 0,
 
+    /// For a summary: the seq of the oldest message it replaced (squads S2).
+    /// A member whose floor is at or above it was kept out of part of what
+    /// the summary recaps, so the summary is not theirs to read -- and the
+    /// floor itself stays where it was, so they lose no other message
+    /// because of somebody else's compaction. 0 for everything else.
+    covers_from: u64 = 0,
+
+    /// The same, as a position in the log on disk: the log seq of the first
+    /// message the summary replaced, 0 when not known. What `group_history`
+    /// hides the summary by; the host writes it beside the summary's line.
+    covers_from_log: u64 = 0,
+
     fn release(self: Message, alloc: Allocator) void {
         alloc.free(self.text);
         if (self.mentions.len > 0) alloc.free(self.mentions);
@@ -1589,6 +1601,10 @@ pub fn startTerminalClosed(self: *Chat, id: Id) bool {
 pub const Posted = struct {
     seq: u64,
     wrote: Kept,
+
+    /// Only for a compaction: where its summary starts, as a log seq (0:
+    /// not known). Every other post says 0.
+    covers_log: u64,
 };
 
 pub fn post(
@@ -1764,12 +1780,19 @@ fn utf8Cut(text: []const u8, limit: usize) []const u8 {
     return text[0..i];
 }
 
+/// Whether `m` is kept from `who` by its floor: below it, or a summary
+/// that recaps something below it.
+fn beyondFloor(m: Message, who: Member) bool {
+    if (m.seq <= who.floor) return true;
+    return m.summary and m.covers_from != 0 and m.covers_from <= who.floor;
+}
+
 /// Whether anything `who` may see and has not been handed, written by
 /// somebody other than `id`, comes before `seq`.
 fn unreadBefore(group: *const Group, who: Member, id: Id, seq: u64) bool {
     for (group.log.items) |m| {
         if (m.seq >= seq) break;
-        if (m.seq <= who.cursor or m.seq <= who.floor) continue;
+        if (m.seq <= who.cursor or beyondFloor(m, who)) continue;
         if (m.from != id) return true;
     }
     return false;
@@ -1828,7 +1851,7 @@ fn append(
     if (now_ms > group.last_ms) group.last_ms = now_ms;
 
     self.trim(group);
-    return .{ .seq = seq, .wrote = .{ .given = trimmed.len, .kept = kept.len } };
+    return .{ .seq = seq, .wrote = .{ .given = trimmed.len, .kept = kept.len }, .covers_log = 0 };
 }
 
 fn trim(self: *Chat, group: *Group) void {
@@ -1879,10 +1902,15 @@ pub fn compact(
     // below `through`, and the first one, for the held-back members below.
     var last: ?usize = null;
     var first_seq: u64 = 0;
+    var first_log: u64 = 0;
     for (group.log.items, 0..) |m, i| {
         if (m.seq > through) break;
         if (m.channel != channel) continue;
-        if (last == null) first_seq = m.seq;
+        // An earlier summary in the range brings its own start with it.
+        if (last == null) {
+            first_seq = if (m.summary and m.covers_from != 0) m.covers_from else m.seq;
+            first_log = if (m.summary) m.covers_from_log else m.log_seq;
+        }
         last = i;
     }
 
@@ -1896,7 +1924,6 @@ pub fn compact(
 
     // The far end of the range, read before the texts go.
     const seq = group.log.items[end].seq;
-    const cut_log_seq = group.log.items[end].log_seq;
 
     // Drop this channel's messages in the range, keep everybody else's in
     // order, and put the summary where the last of them was.
@@ -1918,6 +1945,8 @@ pub fn compact(
         .summary = true,
         .text = owned,
         .channel = channel,
+        .covers_from = first_seq,
+        .covers_from_log = first_log,
     };
     std.mem.copyForwards(Message, group.log.items[w + 1 .. w + 1 + tail.len], tail);
     group.log.shrinkRetainingCapacity(w + 1 + tail.len);
@@ -1927,39 +1956,22 @@ pub fn compact(
     // compaction into a pile of new messages for a member who was up to
     // date -- the opposite of what compacting is for.
     //
-    // A floor below the range moves up to the summary when nothing else is
-    // left under it, as it always has (the summary carries the seq of the
-    // last message it replaces, and `barred` readers lean on the floor
-    // moving). When other channels' messages remain under the summary the
-    // floor stays where it is: moving it would hide them from a reader who
-    // may see them.
-    const survivors = w > 0;
-    var it = group.members.valueIterator();
-    while (it.next()) |m| {
-        // Already looking past the whole range: nothing here concerns them.
-        if (m.floor >= seq) continue;
-        if (m.floor < first_seq) {
-            if (!survivors) m.floor = seq - 1;
-            continue;
-        }
-
-        // They were held back from part of this range -- by joining with
-        // `.none`, or by an earlier compaction. The summary covers what
-        // they were kept out of, so it is not theirs to read either.
-        // Hiding it costs them a recap; showing it would hand over the
-        // history they were deliberately not given. (It also hides the
-        // other channels' messages that sit below it, which is the price
-        // of a floor being one number.)
-        m.floor = seq;
-        m.log_floor = @max(m.log_floor, cut_log_seq);
-    }
+    // **Nobody's floor moves either.** A member held back from part of the
+    // range (joined with `.none`, or an earlier compaction) is not given the
+    // summary, because it recaps what they were kept out of: `covers_from`
+    // says where it starts and `beyondFloor` hides it. The floor is one
+    // number for every channel, so raising it would also hide the messages
+    // of other channels that stay -- for the member who joined with `.none`,
+    // which is the default, the public posts nobody had read yet. (And a
+    // floor raised for a member who was kept out of nothing would make
+    // `beyondFloor` read the summary as theirs to be kept from.)
 
     // **The same answer a post gives, for the same reason.** A summary is
     // the one message that stands in for everything it replaced, so a
     // summary quietly cut is a stretch of the conversation that nobody can
     // recover from the group -- and the supervisor who wrote it was told
     // `ok`.
-    return .{ .seq = seq, .wrote = .{ .given = trimmed.len, .kept = kept.len } };
+    return .{ .seq = seq, .wrote = .{ .given = trimmed.len, .kept = kept.len }, .covers_log = first_log };
 }
 
 /// How much text this group is carrying, in bytes.
@@ -1988,7 +2000,7 @@ pub fn unread(self: *const Chat, name: []const u8, id: Id, scope: Scope) usize {
     var n: usize = 0;
     for (group.log.items) |m| {
         if (m.seq <= who.cursor) continue;
-        if (m.seq <= who.floor) continue;
+        if (beyondFloor(m, who)) continue;
         if (m.from == id) continue;
         if (!scope.sees(m.channel, m.at_ms)) continue;
         n += 1;
@@ -2074,7 +2086,7 @@ fn unreadNaming(self: *const Chat, name: []const u8, id: Id, scope: Scope) usize
     var n: usize = 0;
     for (group.log.items) |m| {
         if (m.seq <= who.cursor) continue;
-        if (m.seq <= who.floor) continue;
+        if (beyondFloor(m, who)) continue;
         if (m.from == id) continue;
         if (!scope.sees(m.channel, m.at_ms)) continue;
         if (std.mem.indexOfScalar(Id, m.mentions, id) == null) continue;
@@ -2180,7 +2192,7 @@ pub fn read(
     var passed: u64 = 0;
     for (group.log.items) |m| {
         if (m.seq <= after) continue;
-        if (m.seq <= who.floor) continue;
+        if (beyondFloor(m, who.*)) continue;
         if (!scope.sees(m.channel, m.at_ms)) {
             passed = m.seq;
             continue;
@@ -3645,10 +3657,8 @@ test "a member given the history has no log floor to raise" {
 }
 
 test "compacting does not make a full-history member look barred" {
-    // The floor of a member that was kept out of nothing still moves when
-    // the group is compacted -- the summary carries the seq of the last
-    // message it replaces, so the floor has to pass it for the summary to
-    // be readable at all. What must not move is `barred`.
+    // A compaction no longer moves anybody's floor (task 2494; it used to
+    // pass the summary's seq). What must not change is `barred`.
     //
     // `App.chatHistory` used to ask `floor.seq > 0` instead, which this
     // arrangement answers yes to. The effect was that one `group_compact`
@@ -3671,7 +3681,7 @@ test "compacting does not make a full-history member look barred" {
     _ = try chat.compact("build", s2, 0, "what those two amounted to", boss, 200);
 
     const floor = try chat.floorOf("build", a);
-    try testing.expect(floor.seq > 0);
+    try testing.expectEqual(@as(u64, 0), floor.seq);
     try testing.expect(!floor.barred);
 }
 
@@ -3679,7 +3689,8 @@ test "compacting does not unbar a member that joined without history" {
     // The other direction of the same fix, because loosening the test
     // `App.chatHistory` makes is exactly how it would be got wrong: a
     // member added with `.none` must still be barred afterwards, and still
-    // bounded at the log seq it was barred at.
+    // bounded at the log seq it was barred at -- and no further: "after"
+    // came after they joined, and a compaction (task 2494) does not take it.
     var chat = testChat();
     defer chat.deinit();
 
@@ -3696,7 +3707,7 @@ test "compacting does not unbar a member that joined without history" {
 
     const floor = try chat.floorOf("build", a);
     try testing.expect(floor.barred);
-    try testing.expectEqual(@as(u64, 1867), floor.log_seq);
+    try testing.expectEqual(@as(u64, 1866), floor.log_seq);
 }
 
 test "a watched terminal is not woken, whoever spoke" {
@@ -4563,4 +4574,50 @@ test "channel: 读过不可见的消息后游标照样前进，不可见的不�
     const again = try chat.read(testing.allocator, "g", b, null, .unlimited, .everything);
     defer testing.allocator.free(again.messages);
     try testing.expectEqual(@as(usize, 0), again.messages.len);
+}
+
+test "channel: 压缩一个频道不把 history=none 成员的 floor 推过去，公共帖仍读得到" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.create("g", boss);
+    _ = try chat.postIn("g", boss, "seven early", &.{}, 7, null, 10); // seq 1
+    // W joins with no history, as `group_add` does by default: floor 1.
+    try chat.add("g", cee, .none, .{});
+    _ = try chat.post("g", boss, "for everybody", 12); // seq 2
+    _ = try chat.postIn("g", boss, "seven late", &.{}, 7, null, 13); // seq 3
+
+    try testing.expectEqual(@as(usize, 1), chat.unread("g", cee, Scope.public));
+    // The supervisor compacts channel 7 through 3 (it starts at seq 1).
+    _ = try chat.compact("g", 3, 7, "SEVEN SUMMARY", boss, 20);
+
+    // **The floor did not move**, and the public post is still unread.
+    try testing.expectEqual(@as(u64, 1), (try chat.floorOf("g", cee)).seq);
+    try testing.expectEqual(@as(usize, 1), chat.unread("g", cee, Scope.public));
+    const got = try chat.read(testing.allocator, "g", cee, 0, .unlimited, Scope.public);
+    defer testing.allocator.free(got.messages);
+    try testing.expectEqual(@as(usize, 1), got.messages.len);
+    try testing.expectEqualStrings("for everybody", got.messages[0].text);
+}
+
+test "channel: 摘要记下 covers_from，被挡过的成员读不到它，没被挡的读得到" {
+    var chat = testChat();
+    defer chat.deinit();
+    try chat.create("g", boss);
+    try chat.add("g", a, .all, .{});
+    _ = try chat.post("g", boss, "before the join", 10); // seq 1
+    try chat.add("g", cee, .none, .{}); // floor 1
+    _ = try chat.post("g", boss, "after the join", 12); // seq 2
+    _ = try chat.compact("g", 2, 0, "PUBLIC SUMMARY", boss, 20);
+
+    const mine = try chat.read(testing.allocator, "g", a, 0, .unlimited, Scope.public);
+    defer testing.allocator.free(mine.messages);
+    try testing.expectEqual(@as(usize, 1), mine.messages.len);
+    try testing.expectEqual(@as(u64, 1), mine.messages[0].covers_from);
+    try testing.expectEqualStrings("PUBLIC SUMMARY", mine.messages[0].text);
+
+    // Held back from seq 1, which the summary recaps: not theirs.
+    const theirs = try chat.read(testing.allocator, "g", cee, 0, .unlimited, Scope.public);
+    defer testing.allocator.free(theirs.messages);
+    try testing.expectEqual(@as(usize, 0), theirs.messages.len);
+    try testing.expectEqual(@as(usize, 0), chat.unread("g", cee, Scope.public));
 }

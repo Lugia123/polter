@@ -1151,7 +1151,7 @@ pub fn deinit(self: *Surface) void {
     // exactly what the morning wants to see, and a task whose owner has
     // gone is one that needs somebody -- which is only visible if it is
     // still on the panel.
-    self.app.tasks.forget(self.id, self.app.taskWallMs());
+    self.app.taskTerminalGone(self.id);
     self.app.removeChatSurface(self.id);
     if (self.app.poltergeist_server) |*srv| srv.revokeTokens(self.id);
     if (self.history_token.len > 0) self.alloc.free(self.history_token);

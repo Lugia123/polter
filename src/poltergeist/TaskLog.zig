@@ -1349,7 +1349,7 @@ test "TaskLog: 重放含 joined/left 的记录得到同样的成员与 spans" {
         l.appendMember(at + 10, .joined, tasks.get(id).?, .{ .alias = "开发", .id = 0x2222, .session = "claude-code aaaa1111" });
         try tasks.join(id, "测试", "test", 0x3333, "claude-code bbbb2222", at + 20, false);
         l.appendMember(at + 20, .joined, tasks.get(id).?, .{ .alias = "测试", .id = 0x3333, .session = "claude-code bbbb2222" });
-        tasks.forget(0x3333, at + 30);
+        tasks.forgetWithoutRecord(0x3333, at + 30);
         l.appendMember(at + 30, .left, tasks.get(id).?, .{ .alias = "测试", .id = 0x3333, .session = "claude-code bbbb2222" });
 
         const page = try l.history(alloc, "build", 0, 10);

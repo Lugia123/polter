@@ -17,6 +17,7 @@ const std = @import("std");
 const AgentEvent = @import("agent_event.zig");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
+const ChatLog = @import("ChatLog.zig");
 const MentionRetry = @import("MentionRetry.zig");
 const Plugin = @import("Plugin.zig");
 const Tasks = @import("Tasks.zig");
@@ -4976,6 +4977,12 @@ pub const ChatLine = struct {
     /// True when this stands in for messages the supervisor compacted away.
     summary: bool,
 
+    /// Which channel it was said in: 0 is the public one, anything else is
+    /// a task's number (squads S2). **No default**: a supervisor reads every
+    /// channel at once, and a message that does not say whose it is cannot
+    /// be answered in the right place or compacted by channel.
+    channel: u64,
+
     text: []const u8,
 };
 
@@ -5549,12 +5556,101 @@ pub const TaskOwner = struct {
 
     /// The squad's key and seats, as the panel has them (squads S4). Empty
     /// for a task with no squad. Owned by the host; valid for the request.
-    squad: []const u8 = "",
-    members: []const Tasks.Member = &.{},
+    ///
+    /// **No defaults** (task 2494): the app once left both out and every
+    /// seat tool answered `NoSquad` in the real thing while the tests, whose
+    /// host filled them, stayed green. A host builds one with `ownerOf`.
+    squad: []const u8,
+    members: []const Tasks.Member,
 
     /// Whether a tree is to be made for it (plan 12.1).
-    worktree: Tasks.WorktreeState = .unset,
+    worktree: Tasks.WorktreeState,
 };
+
+/// What the panel's task says to `task_assign`, `task_cancel` and the seat
+/// tools. **The one place a `TaskOwner` is made from a task**, used by the
+/// app and by the test host alike -- so a field left out is a test that
+/// fails, not a feature that is silently absent in the real thing.
+pub fn ownerOf(t: Tasks.Task) TaskOwner {
+    return .{
+        .owner = t.owner,
+        .title = t.title,
+        .open = t.state == .open,
+        .group = t.group,
+        .squad = t.squad,
+        .members = t.members,
+        .worktree = t.worktree,
+    };
+}
+
+/// The panel's half of a seat start (squads S4): the terminal `id`, opened
+/// for the seat `alias` of `task`, takes it -- after its launch line is
+/// typed, so a start that could not be typed leaves the panel as it was.
+///
+/// **The one place this is decided**, for the app and for the test host
+/// alike, so a rule that is only in one of them cannot hide behind the
+/// other. A seat the task lacks (left out of `task_create`'s members) is
+/// made now. A seat whose holder's agent is gone is emptied first --
+/// `Tasks.join` refuses a place held by another terminal, however dead.
+/// Everything `join` would refuse is judged before anything is changed.
+/// Returns the terminal whose seat was emptied, for the record.
+pub fn takeSeat(
+    tasks: *Tasks,
+    ctx: *anyopaque,
+    holderAlive: *const fn (ctx: *anyopaque, id: Bus.Id) bool,
+    id: Bus.Id,
+    task: u64,
+    alias: []const u8,
+    role: []const u8,
+    lead: bool,
+    at_ms: i64,
+) !?Bus.Id {
+    const t = tasks.get(task) orelse return error.NoSuchTask;
+    var emptied: ?Bus.Id = null;
+    for (t.members) |m| {
+        if (m.slot != .filled) continue;
+        // One terminal, one seat.
+        if (m.id == id and !std.mem.eql(u8, m.alias, alias)) return error.MemberTaken;
+        if (m.id != id and std.mem.eql(u8, m.alias, alias)) {
+            if (holderAlive(ctx, m.id)) return error.MemberTaken;
+            emptied = m.id;
+        }
+    }
+    if (emptied != null) try tasks.leave(task, alias, at_ms);
+    try tasks.join(task, alias, role, id, "", at_ms, lead);
+    return emptied;
+}
+
+/// A line of `group_read`, from a message of the group's own log. The one
+/// place `channel` is copied (squads S2), so that a reader that sees every
+/// channel is told which each came from -- and a test can see it.
+pub fn chatLineOf(m: Chat.Message, author: []const u8, text: []const u8) ChatLine {
+    return .{
+        .seq = m.seq,
+        .log_seq = m.log_seq,
+        .from = m.from,
+        .author = author,
+        .at_ms = @intCast(m.at_ms),
+        .summary = m.summary,
+        .channel = m.channel,
+        .text = text,
+    };
+}
+
+/// A line of `group_history`, from a line of the log on disk. The log never
+/// recorded the group's own count, so `seq` is 0 (see `ChatLine.log_seq`).
+pub fn historyLineOf(e: ChatLog.Entry) ChatLine {
+    return .{
+        .seq = 0,
+        .log_seq = e.seq,
+        .from = e.from,
+        .author = e.author,
+        .at_ms = e.at_ms,
+        .summary = e.summary,
+        .channel = e.channel,
+        .text = e.text,
+    };
+}
 
 /// Where a task's tree would be made from.
 pub const TreeBase = struct { dir: []const u8, git: bool };
@@ -5929,6 +6025,9 @@ pub const PassedOver = struct {
         shielded,
         /// The user keeps it for their own commands (task 1699).
         workers_refused,
+        /// It holds another seat of the task the role is for: its agent has
+        /// gone, the seat is still its.
+        holds_seat,
     };
 };
 
@@ -7866,7 +7965,17 @@ fn assignSeat(
     if (bus.get(id) == null and !isOpenTerminal(alloc, host, id)) return failure(error.UnknownTerminal);
     // Not a supervisor: not the terminal, and not the seat's role.
     if (bus.isSupervisor(id) or host.roleIsSupervisor(seat.role)) return supervisorNotAllowed();
+    // **Everything `Tasks.join` would refuse is judged here, before the
+    // terminal is told anything** (task 2494): the place held by another
+    // terminal with an agent in it, and this terminal already holding
+    // another place of the task. A place whose agent is gone is free.
     if (seat.slot == .filled and seat.id != id and host.agentPresent(seat.id)) return taskFailure(error.MemberTaken);
+    for (what.members) |m| {
+        if (m.slot == .filled and m.id == id and !std.mem.eql(u8, m.alias, alias)) return hostFailure(
+            "MemberTaken",
+            try std.fmt.allocPrint(alloc, "0x{x:0>16} already holds the seat \"{s}\" of task {d}; one terminal, one seat. Nothing was said to it.", .{ id, m.alias, task }),
+        );
+    }
 
     const typable = mayType(host, id);
     if (typable == .startup_prompt) return .{ .failed = .{
@@ -7888,6 +7997,8 @@ fn assignSeat(
     host.sendText(id, line, true) catch |err| return taskFailure(err);
 
     const lead = std.mem.eql(u8, leadAlias(host, what), alias);
+    // The old holder's agent is gone: the place is emptied, then taken.
+    if (seat.slot == .filled and seat.id != id) host.taskLeave(task, alias) catch |err| return taskFailure(err);
     host.taskJoin(task, alias, id, lead) catch |err| return taskFailure(err);
     return .{ .text = try std.fmt.allocPrint(alloc, "0x{x:0>16} has the seat \"{s}\" of task {d}{s}.", .{ id, alias, task, if (lead) ", and leads it" else "" }) };
 }
@@ -7938,7 +8049,15 @@ fn cancelSquad(
             n_failed += 1;
         };
     }
+    // The seats as they were, copied: giving them up changes the panel's.
+    const seats = try alloc.dupe(Tasks.Member, what.members);
     host.taskCancel(task) catch |err| return taskFailure(err);
+    // Every place given up (plan 7.1), so none stays `filled` on a task that
+    // is over: its stretch is closed and the record says `left`. A terminal
+    // reused for the next task is then not counted on two at once.
+    for (seats) |m| {
+        if (m.slot == .filled) host.taskLeave(task, m.alias) catch {};
+    }
     const tail = if (n_failed > 0)
         try std.fmt.allocPrint(
             alloc,
@@ -7949,7 +8068,7 @@ fn cancelSquad(
         " Nobody was working on it, so nobody was told."
     else
         try std.fmt.allocPrint(alloc, " {d} seat(s) were told to stop.", .{targets.items.len});
-    return withTree(alloc, host, task, .cancelled, what.members, &.{}, tail, try std.fmt.allocPrint(alloc, "Task {d} cancelled.{s}", .{ task, tail }));
+    return withTree(alloc, host, task, .cancelled, seats, &.{}, tail, try std.fmt.allocPrint(alloc, "Task {d} cancelled.{s}", .{ task, tail }));
 }
 
 /// What a new task's `worktree` came to, decided before the task is made.
@@ -8166,18 +8285,23 @@ fn seatFor(
     for (what.members) |m| {
         if (std.mem.eql(u8, m.alias, member)) seat = m;
     }
-    const m = seat orelse return .{ .stop = hostFailure(
-        "NoSuchMember",
-        try std.fmt.allocPrint(alloc, "task {d} has no seat called \"{s}\"; its seats are the aliases task_create's plan named.", .{ task, member }),
-    ) };
     const sq = host.squadGet(what.squad) orelse return .{ .stop = hostFailure(
         "NoSuchSquad",
         try std.fmt.allocPrint(alloc, "the squad {s} this task was made from is gone, so what it changes in a role is not known. squad_put brings it back.", .{what.squad}),
     ) };
     const sm = sq.member(member) orelse return .{ .stop = hostFailure(
         "NoSuchMember",
-        try std.fmt.allocPrint(alloc, "the squad {s} no longer has a seat called \"{s}\".", .{ what.squad, member }),
+        if (seat != null)
+            try std.fmt.allocPrint(alloc, "the squad {s} no longer has a seat called \"{s}\", so what it changes in the role is not known (task {d} still has the seat).", .{ what.squad, member, task })
+        else
+            try std.fmt.allocPrint(alloc, "task {d} has no seat called \"{s}\", and the squad {s} has none either.", .{ task, member, what.squad }),
     ) };
+    // A seat the template has and the task does not (it was left out of
+    // `task_create`'s members): **nothing is written here.** The terminal
+    // takes it when its launch line is typed (`takeSeat` makes the seat
+    // then), so a refused or failed launch leaves the panel as it was.
+    const added = seat == null;
+    const m: Tasks.Member = seat orelse .{ .alias = sm.alias, .role = sm.role };
 
     // Not a supervisor, in the role or in the terminal.
     if (host.roleIsSupervisor(m.role) or (into != null and bus.isSupervisor(into.?))) return .{ .stop = supervisorNotAllowed() };
@@ -8191,13 +8315,29 @@ fn seatFor(
         try std.fmt.allocPrint(alloc, "the seat \"{s}\" of task {d} is taken by 0x{x:0>16}, which has an agent in it. Nothing was opened.", .{ member, task, m.id }),
     ) };
 
+    // The terminal asked to sit here already holds another seat of the task:
+    // `join` would refuse it after the terminal was opened.
+    if (into) |at| for (what.members) |o| {
+        if (o.slot == .filled and o.id == at and !std.mem.eql(u8, o.alias, member)) return .{ .stop = hostFailure(
+            "MemberTaken",
+            try std.fmt.allocPrint(alloc, "0x{x:0>16} already holds the seat \"{s}\" of task {d}; one terminal, one seat. Nothing was opened.", .{ at, o.alias, task }),
+        ) };
+    };
+
+    // **The panel is not touched here**, whatever the answer: a seat of a
+    // dead agent is emptied and a seat the task lacked is made by
+    // `takeSeat`, after the terminal is opened and the line is typed.
     var mates: std.ArrayListUnmanaged([]const u8) = .empty;
     for (what.members) |o| {
         if (!std.mem.eql(u8, o.alias, member)) try mates.append(alloc, o.alias);
     }
     // The same rule task_assign uses: the template's lead if it is in this task, else the
     // task's first seat -- so a task that did not name the lead seat still has a lead.
-    const lead = std.mem.eql(u8, leadAlias(host, what), member);
+    // A seat the task lacks is the lead when it is the template's.
+    const lead = if (added)
+        (if (sq.leadOf()) |l| std.mem.eql(u8, l.alias, member) else false)
+    else
+        std.mem.eql(u8, leadAlias(host, what), member);
     return .{ .go = .{
         .role = m.role,
         .seat = .{ .task = task, .alias = member, .lead = lead, .over = sm.override, .mates = mates.items },
@@ -12672,6 +12812,8 @@ const FakeHost = struct {
     seats_fail: bool = false,
     readers: ?[]const Bus.Id = &.{},
     read_scope: ?Chat.Scope = null,
+    /// The channel the fake's one line says it was said in.
+    line_channel: u64 = 0,
     history_scope: ?Chat.Scope = null,
     compacted_channel: u64 = 0,
 
@@ -12901,6 +13043,8 @@ const FakeHost = struct {
     /// Terminals with no agent in them whatever `agent_present` says, for
     /// the tests where one named terminal has one and another does not.
     agent_absent: []const Bus.Id = &.{},
+    /// Why the seat of the last `role_launch` was not taken, if it was not.
+    join_refused: ?anyerror = null,
     /// What `startupReach` answers for a terminal with no agent.
     startup: StartupReach = .none,
     /// What `startupQuestion` answers, for every terminal.
@@ -13324,7 +13468,7 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const panel = self.panel orelse return error.NotImplemented;
         const t = panel.get(task) orelse return error.NoSuchTask;
-        return .{ .owner = t.owner, .title = t.title, .open = t.state == .open, .group = t.group, .squad = t.squad, .members = t.members, .worktree = t.worktree };
+        return ownerOf(t);
     }
 
     fn taskCancel(ctx: *anyopaque, task: u64) anyerror!void {
@@ -13526,7 +13670,7 @@ const FakeHost = struct {
                 self.typed_count += 1;
             }
         }
-        return .{ .seq = 1, .wrote = self.post_kept orelse .{ .given = text.len, .kept = text.len } };
+        return .{ .seq = 1, .wrote = self.post_kept orelse .{ .given = text.len, .kept = text.len }, .covers_log = 0 };
     }
 
     fn chatGroupInfo(
@@ -13647,6 +13791,7 @@ const FakeHost = struct {
             .author = try alloc.dupe(u8, "a terminal"),
             .at_ms = 0,
             .summary = false,
+            .channel = self.line_channel,
             .text = try alloc.dupe(u8, "hello"),
         };
 
@@ -13701,6 +13846,7 @@ const FakeHost = struct {
             .author = try alloc.dupe(u8, "a terminal"),
             .at_ms = 0,
             .summary = false,
+            .channel = self.line_channel,
             .text = try alloc.dupe(u8, "said earlier"),
         };
         return .{ .lines = one, .more = self.history_more };
@@ -13896,7 +14042,10 @@ const FakeHost = struct {
         if (self.role_error) |e| return e;
         self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into, .beside = beside, .group = group, .seat = seat };
         if (beside != null) return .{ .id = null, .placed = .split };
-        if (into) |there| return .{ .id = there, .placed = .{ .reused = .asked } };
+        if (into) |there| {
+            self.takeSeatOn(there, key, seat);
+            return .{ .id = there, .placed = .{ .reused = .asked } };
+        }
         // What the app's placement would answer: `tab` is a tab, `here` a
         // split, `stack` a stack, and `auto` whichever this fake was told.
         // A split or a stack has no terminal yet, and a late tab has none
@@ -13907,13 +14056,27 @@ const FakeHost = struct {
             .auto => if (self.role_auto_splits) .split else .{ .tab = .no_pane_count },
             .stack => .stack,
         };
+        const made: ?Bus.Id = if (self.role_tab_late or placed == .split or placed == .stack) null else 0x7777;
+        if (made) |at| self.takeSeatOn(at, key, seat);
         return .{
-            .id = if (self.role_tab_late or placed == .split or placed == .stack) null else 0x7777,
+            .id = made,
             .placed = placed,
             // The app's `WorkerColumn.lastHere`, asked only under `here`.
             .stack = if (place == .here) self.role_stack else null,
             .joins = self.role_joins,
             .join_note = self.role_join_note,
+        };
+    }
+
+    /// What the app's `joinSeat` does once the terminal is open: the seat is
+    /// taken through `takeSeat`, the same call, so the panel is what the
+    /// real thing would leave. A refusal is kept, as the app says it in the
+    /// group.
+    fn takeSeatOn(self: *FakeHost, id: Bus.Id, key: []const u8, seat: ?MemberSeat) void {
+        const s = seat orelse return;
+        const panel = self.panel orelse return;
+        _ = takeSeat(panel, self, agentPresent, id, s.task, s.alias, key, s.lead, 0) catch |err| {
+            self.join_refused = err;
         };
     }
 
@@ -15918,6 +16081,7 @@ test "capHistory keeps the newest, because a history caller pages backwards" {
         .author = "worker",
         .at_ms = 0,
         .summary = false,
+        .channel = 0,
         .text = big,
     };
 
@@ -15942,6 +16106,7 @@ test "one history message larger than the whole budget is still delivered" {
         .author = "worker",
         .at_ms = 0,
         .summary = false,
+        .channel = 0,
         .text = huge,
     }};
 
@@ -15959,8 +16124,8 @@ test "an empty history batch is the beginning, not a cut one" {
 
 test "a history batch that fits says there is no more" {
     const lines = [_]ChatLine{
-        .{ .seq = 0, .log_seq = 1, .from = 1, .author = "a", .at_ms = 0, .summary = false, .text = "hello" },
-        .{ .seq = 0, .log_seq = 2, .from = 2, .author = "b", .at_ms = 0, .summary = false, .text = "there" },
+        .{ .seq = 0, .log_seq = 1, .from = 1, .author = "a", .at_ms = 0, .summary = false, .channel = 0, .text = "hello" },
+        .{ .seq = 0, .log_seq = 2, .from = 2, .author = "b", .at_ms = 0, .summary = false, .channel = 0, .text = "there" },
     };
 
     const capped = capHistory(&lines);
@@ -21834,6 +21999,25 @@ test "channel: 读路径拿到的 Scope 来自 scopeFor：用户与本群总管�
     try testing.expectEqual(@as(u64, 7), fake.compacted_channel);
 }
 
+test "channel: group_read 与 group_history 的回复每条带 channel" {
+    var b = try mentionBus();
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{ .open = &.{}, .members = &mention_members, .line_channel = 7 };
+
+    const read = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .group_read = .{ .group = "build" } });
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try wire.writeResponse(&w, read);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"channel\":7") != null);
+
+    const hist = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{ .group_history = .{ .group = "build" } });
+    var w2: std.Io.Writer = .fixed(&buf);
+    try wire.writeResponse(&w2, hist);
+    try testing.expect(std.mem.indexOf(u8, w2.buffered(), "\"channel\":7") != null);
+}
+
 test "channel: 通知计数只数读者看得见的：成员 A 在 #7，别人在 #8 发帖，A 的计数里没有 #8" {
     var b = try mentionBus();
     defer b.deinit();
@@ -22293,6 +22477,232 @@ test "rpc: task_cancel 先打字后取消的顺序仍成立" {
     _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{ .task = 2 } });
     try testing.expect(fake.sent != null);
     try testing.expect(std.mem.indexOf(u8, fake.sent.?.text, "cancelled") != null);
+}
+
+test "squad: TaskOwner 由 ownerOf 造出，宿主问到的 squad 和 members 一个不缺" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    const solo = try panel.create("build", "solo", .bug);
+
+    // What the app's `taskOwner` returns is `ownerOf(task)`: the same call.
+    const got = ownerOf(panel.get(1).?);
+    try testing.expectEqualStrings("trio", got.squad);
+    try testing.expectEqual(@as(usize, 2), got.members.len);
+    const via_host = try fake.host().taskOwner(1);
+    try testing.expectEqualStrings(got.squad, via_host.squad);
+    try testing.expectEqual(got.members.len, via_host.members.len);
+
+    // A task with no squad says so by being empty, nothing else.
+    const plain = ownerOf(panel.get(solo).?);
+    try testing.expectEqual(@as(usize, 0), plain.squad.len);
+    try testing.expectEqual(@as(usize, 0), plain.members.len);
+}
+
+test "squad: task_assign 到 agent 已不在的位 → 重填成功；终端已占本任务别的位 → 先拒、一个字没打" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    // `dev` is held by a terminal whose agent has gone; `worker` holds `test`.
+    try panel.join(1, "dev", "", other, "", 0, true);
+    try panel.join(1, "test", "", worker, "", 0, false);
+    fake.agent_absent = &.{other};
+
+    // The terminal already has a seat of this task: refused before it is told.
+    const two = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{ .task = 1, .id = worker, .alias = "dev" } });
+    try testing.expectEqualStrings("MemberTaken", two.failed.code);
+    try testing.expectEqual(@as(usize, 0), fake.sent_n);
+    try testing.expectEqual(other, panel.get(1).?.members[0].id);
+
+    // It gives `test` up, and the dead agent's seat is its to take.
+    try panel.leave(1, "test", 0);
+    const refilled = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{ .task = 1, .id = worker, .alias = "dev" } });
+    try testing.expect(refilled == .text);
+    try testing.expectEqual(@as(usize, 1), fake.sent_n);
+    try testing.expectEqual(worker, panel.get(1).?.members[0].id);
+    try testing.expectEqual(Tasks.Slot.filled, panel.get(1).?.members[0].slot);
+    try testing.expectEqual(worker, panel.get(1).?.owner);
+}
+
+test "squad: role_launch 位上的 agent 已不在 → 先腾空再开，之后 join 进得去；in 的终端已占别的位 → 开之前就拒" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    try panel.join(1, "dev", "", other, "", 0, true);
+    try panel.join(1, "test", "", worker, "", 0, false);
+    fake.agent_absent = &.{other};
+
+    // `worker` already sits in `test`: nothing is opened, nothing is changed.
+    const held = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "dev", .in = worker } });
+    try testing.expectEqualStrings("MemberTaken", held.failed.code);
+    try testing.expect(fake.role_launched == null);
+    try testing.expectEqual(Tasks.Slot.filled, panel.get(1).?.members[0].slot);
+
+    // A launch that fails changes nothing: the dead agent's seat is still
+    // its terminal's, and no seat was added.
+    fake.role_error = error.NoCli;
+    const failed = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "dev" } });
+    try testing.expect(failed == .failed);
+    try testing.expectEqual(other, panel.get(1).?.members[0].id);
+    try testing.expectEqual(Tasks.Slot.filled, panel.get(1).?.members[0].slot);
+    fake.role_error = null;
+
+    // A fresh terminal for the dead agent's seat: once it is open it takes
+    // the seat through `takeSeat` (the fake runs it as the app's `joinSeat`
+    // does), emptying the dead holder first.
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "dev" } });
+    try testing.expect(res == .opened);
+    try testing.expect(fake.join_refused == null);
+    try testing.expectEqual(@as(Bus.Id, 0x7777), panel.get(1).?.members[0].id);
+    try testing.expectEqual(Tasks.Slot.filled, panel.get(1).?.members[0].slot);
+}
+
+test "squad: takeSeat 先判后改——终端已占别的位、位上 agent 还在 → MemberTaken 且面板原样；agent 已不在 → 腾空再占" {
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    const id = try panel.create("build", "squad work", .feature);
+    try panel.setSquad(id, "trio");
+    try panel.addSlot(id, "dev", "worker-dev");
+    try panel.addSlot(id, "test", "worker-test");
+    try panel.join(id, "dev", "", worker, "", 1, true);
+    try panel.join(id, "test", "", other, "", 1, false);
+    var fake = panelFixture(&panel);
+
+    // `test`'s holder has no agent, but `worker` already sits in `dev`: it
+    // cannot also take `test`, and the dead holder is **not** emptied on the
+    // way to finding that out.
+    fake.agent_absent = &.{other};
+    try testing.expectError(error.MemberTaken, takeSeat(&panel, &fake, FakeHost.agentPresent, worker, id, "test", "", false, 5));
+    try testing.expectEqual(other, panel.get(id).?.members[1].id);
+    try testing.expectEqual(Tasks.Slot.filled, panel.get(id).?.members[1].slot);
+
+    // A live holder keeps its seat against a third terminal.
+    fake.agent_absent = &.{};
+    try testing.expectError(error.MemberTaken, takeSeat(&panel, &fake, FakeHost.agentPresent, 0x9999, id, "test", "", false, 5));
+    try testing.expectEqual(other, panel.get(id).?.members[1].id);
+
+    // The holder's agent is gone: the seat is emptied and taken, and the
+    // emptied terminal is named for the record.
+    fake.agent_absent = &.{other};
+    const emptied = try takeSeat(&panel, &fake, FakeHost.agentPresent, 0x9999, id, "test", "", false, 6);
+    try testing.expectEqual(@as(?Bus.Id, other), emptied);
+    try testing.expectEqual(@as(Bus.Id, 0x9999), panel.get(id).?.members[1].id);
+
+    // A seat the task lacks is made, with the role it was asked for.
+    _ = try takeSeat(&panel, &fake, FakeHost.agentPresent, 0x8888, id, "review", "worker-review", false, 7);
+    try testing.expectEqual(@as(usize, 3), panel.get(id).?.members.len);
+    try testing.expectEqualStrings("worker-review", panel.get(id).?.members[2].role);
+}
+
+test "channel: chatLineOf / historyLineOf 把频道带进回复行" {
+    const m: Chat.Message = .{ .seq = 4, .log_seq = 40, .from = 0x2222, .at_ms = 1000, .summary = false, .text = "x", .channel = 7 };
+    try testing.expectEqual(@as(u64, 7), chatLineOf(m, "w", "x").channel);
+    const e: ChatLog.Entry = .{ .seq = 41, .at_ms = 1000, .group = "g", .from = 0x2222, .author = "w", .summary = false, .text = "x", .channel = 9, .covers_from_log = 0 };
+    try testing.expectEqual(@as(u64, 9), historyLineOf(e).channel);
+    try testing.expectEqual(@as(u64, 41), historyLineOf(e).log_seq);
+}
+
+test "squad: task_cancel 摘掉每个成员的身份并关掉 span" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    try panel.join(1, "dev", "", worker, "", 0, true);
+    try panel.join(1, "test", "", other, "", 0, false);
+    try testing.expectEqual(@as(?i64, null), panel.get(1).?.spans[0].to_ms);
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{ .task = 1 } });
+    try testing.expect(res == .text);
+    const t = panel.get(1).?;
+    try testing.expectEqual(Tasks.State.cancelled, t.state);
+    for (t.members) |m| try testing.expectEqual(Tasks.Slot.vacated, m.slot);
+    for (t.spans) |sp| try testing.expect(sp.to_ms != null);
+}
+
+test "squad: task_create 漏点名的座位（必选或可选），之后 role_launch 把它加进任务再开" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    // The template's lead (dev) and its other seats are not named.
+    _ = try createTrio(alloc, &b, &fake, &.{"review"});
+    try testing.expectEqual(@as(usize, 1), panel.get(1).?.members.len);
+
+    // Neither a seat the template lacks nor an unknown task is added.
+    const nope = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "nobody" } });
+    try testing.expectEqualStrings("NoSuchMember", nope.failed.code);
+    try testing.expectEqual(@as(usize, 1), panel.get(1).?.members.len);
+
+    // **A launch that fails leaves no seat behind.**
+    fake.role_error = error.NoCli;
+    const failed = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "test" } });
+    try testing.expect(failed == .failed);
+    try testing.expectEqual(@as(usize, 1), panel.get(1).?.members.len);
+    fake.role_error = null;
+
+    // A required seat that was left out: made when its terminal takes it.
+    const req = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "test" } });
+    try testing.expect(req == .opened);
+    try testing.expect(!fake.role_launched.?.seat.?.lead);
+    try testing.expectEqual(@as(usize, 2), panel.get(1).?.members.len);
+    try testing.expectEqualStrings("test", panel.get(1).?.members[1].alias);
+    try testing.expectEqualStrings("worker-test", panel.get(1).?.members[1].role);
+
+    // That terminal closes; the template's lead, left out too, is started:
+    // it leads.
+    try panel.leave(1, "test", 0);
+    const lead = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "dev" } });
+    try testing.expect(lead == .opened);
+    try testing.expect(fake.role_launched.?.seat.?.lead);
+    try testing.expectEqual(@as(usize, 3), panel.get(1).?.members.len);
+    try testing.expectEqual(@as(Bus.Id, 0x7777), panel.get(1).?.owner);
 }
 
 /// A closing rig: trio with dev, test and review all filled, each by a

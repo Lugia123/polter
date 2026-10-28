@@ -435,7 +435,9 @@ test "Reclaim: 重启后同 session 回到原位，alias 与牵头不变" {
     try testing.expectEqualSlices(u64, &.{0xa}, got.terminals);
     var moved: std.ArrayListUnmanaged(Tasks.TaskId) = .empty;
     defer moved.deinit(testing.allocator);
-    for (got.terminals) |old| try tasks.reown(testing.allocator, old, 0x100, 777, &moved);
+    var gone: std.ArrayListUnmanaged(Tasks.Gone) = .empty;
+    defer gone.deinit(testing.allocator);
+    for (got.terminals) |old| try tasks.reown(testing.allocator, old, 0x100, "claude-code s-1", 777, &moved, &gone);
     try testing.expectEqualSlices(Tasks.TaskId, &.{id}, moved.items);
 
     const t = tasks.get(id).?;
@@ -459,4 +461,40 @@ test "Reclaim: 重启后同 session 回到原位，alias 与牵头不变" {
         if (sp.id == 0xa) try testing.expectEqual(@as(?i64, 777), sp.to_ms);
     }
     try testing.expect(open_for_new);
+}
+
+test "squad: 认回按 session 核对，别的 session 的座位被腾空而不是指向死终端" {
+    const Tasks = @import("Tasks.zig");
+    var tasks: Tasks = .init(testing.allocator, .{});
+    defer tasks.deinit();
+    const id = try tasks.create("build", "squad work", .feature);
+    try tasks.setSquad(id, "trio");
+    try tasks.addSlot(id, "dev", "worker-dev");
+    try tasks.addSlot(id, "test", "worker-test");
+    try tasks.join(id, "dev", "", 0xa, "claude-code s-1", 5, true);
+    try tasks.join(id, "test", "", 0xa2, "claude-code s-2", 5, false);
+
+    var moved: std.ArrayListUnmanaged(Tasks.TaskId) = .empty;
+    defer moved.deinit(testing.allocator);
+    var gone: std.ArrayListUnmanaged(Tasks.Gone) = .empty;
+    defer gone.deinit(testing.allocator);
+    // Terminal 0xa came back as session s-9: neither seat it held was s-9's.
+    try tasks.reown(testing.allocator, 0xa, 0x100, "claude-code s-9", 777, &moved, &gone);
+    try testing.expectEqual(@as(usize, 0), moved.items.len);
+    try testing.expectEqual(@as(usize, 1), gone.items.len);
+    try testing.expectEqualStrings("dev", gone.items[0].alias);
+    const t = tasks.get(id).?;
+    try testing.expectEqual(Tasks.Slot.vacated, t.members[0].slot);
+    try testing.expectEqual(Tasks.nobody, t.owner);
+    // The seat of another terminal is untouched.
+    try testing.expectEqual(@as(u64, 0xa2), t.members[1].id);
+
+    // And its own session is taken back, as before.
+    try tasks.join(id, "dev", "", 0xb, "claude-code s-1", 8, true);
+    moved.clearRetainingCapacity();
+    gone.clearRetainingCapacity();
+    try tasks.reown(testing.allocator, 0xb, 0x101, "claude-code s-1", 900, &moved, &gone);
+    try testing.expectEqualSlices(Tasks.TaskId, &.{id}, moved.items);
+    try testing.expectEqual(@as(usize, 0), gone.items.len);
+    try testing.expectEqual(@as(u64, 0x101), tasks.get(id).?.members[0].id);
 }

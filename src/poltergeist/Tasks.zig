@@ -487,7 +487,12 @@ pub fn setProgress(
 /// owner. The task itself stays open. **Said by the caller**, not read from
 /// a clock held here: nothing in the app ever set one, and every stretch
 /// ended at zero.
-pub fn forget(self: *Tasks, id: Id, at_ms: i64) void {
+///
+/// **Writes nothing to the record** -- hence the name (task 2494). A
+/// terminal the person closes goes through `App.taskTerminalGone`, which
+/// says each place `left`; a call to this from `Surface.deinit` would leave
+/// a restart replaying the places as filled, and no test can see that call.
+pub fn forgetWithoutRecord(self: *Tasks, id: Id, at_ms: i64) void {
     for (self.list.items) |*t| {
         if (t.owner == id) t.owner = nobody;
         for (t.members) |*m| {
@@ -498,6 +503,29 @@ pub fn forget(self: *Tasks, id: Id, at_ms: i64) void {
         }
         closeStale(t, at_ms);
     }
+}
+
+/// A place given up without its holder being asked: whose, for the record
+/// that has to say it left.
+pub const Gone = struct { task: TaskId, alias: []const u8, id: Id };
+
+/// `forget`, saying which places it emptied (task 2494). The terminal was
+/// closed by its person, so the record has to say each place `left` -- or
+/// a restart replays the place as filled, pointing at a terminal that is
+/// not there. The aliases are the task's own strings.
+pub fn forgetGone(
+    self: *Tasks,
+    alloc: Allocator,
+    id: Id,
+    at_ms: i64,
+    gone: *std.ArrayListUnmanaged(Gone),
+) Allocator.Error!void {
+    for (self.list.items) |t| {
+        for (t.members) |m| {
+            if (m.slot == .filled and m.id == id) try gone.append(alloc, .{ .task = t.id, .alias = m.alias, .id = id });
+        }
+    }
+    self.forgetWithoutRecord(id, at_ms);
 }
 
 // -- the squad --------------------------------------------------------------
@@ -762,27 +790,41 @@ pub fn reown(
     alloc: Allocator,
     from: Id,
     to: Id,
+    via: []const u8,
     at_ms: i64,
     moved: *std.ArrayListUnmanaged(TaskId),
+    gone: *std.ArrayListUnmanaged(Gone),
 ) Allocator.Error!void {
     if (from == nobody or from == to) return;
     for (self.list.items) |*t| {
         if (t.state != .open) continue;
         // A place in a squad goes back to the same alias: the terminal that
         // held it is the same agent session, under a new id (squads S4).
+        // **Only if it was this session's** (task 2494): a place whose
+        // session is another one is not this agent's, and its terminal is
+        // gone, so it is emptied rather than left pointing at it. A place
+        // that never heard its session ("") is taken on the terminal's word.
         var held = false;
+        var lost_lead = false;
         for (t.members) |*m| {
-            if (m.slot == .filled and m.id == from) {
+            if (m.slot != .filled or m.id != from) continue;
+            if (m.session.len == 0 or std.mem.eql(u8, m.session, via)) {
                 m.id = to;
                 held = true;
+            } else {
+                try gone.append(alloc, .{ .task = t.id, .alias = m.alias, .id = from });
+                m.slot = .vacated;
+                m.id = nobody;
+                if (t.owner == from) lost_lead = true;
             }
         }
+        if (lost_lead) t.owner = nobody;
         if (t.owner == from) {
             t.owner = to;
             held = true;
         }
-        if (!held) continue;
-        try moved.append(alloc, t.id);
+        if (!held and !lost_lead) continue;
+        if (held) try moved.append(alloc, t.id);
         closeStale(t, at_ms);
         try self.reconcile(t, at_ms);
     }
@@ -1190,7 +1232,7 @@ test "a terminal closing leaves the work behind, without an owner" {
 
     const id = try t.create("build", "one", .other);
     try t.assign(id, worker_a);
-    t.forget(worker_a, 0);
+    t.forgetWithoutRecord(worker_a, 0);
 
     try testing.expectEqual(nobody, t.get(id).?.owner);
     try testing.expectEqual(State.open, t.get(id).?.state);
@@ -1213,7 +1255,9 @@ test "1978: a terminal back as the same session takes its open tasks, and not it
 
     var moved: std.ArrayListUnmanaged(TaskId) = .empty;
     defer moved.deinit(testing.allocator);
-    try t.reown(testing.allocator, worker_a, 0x9999, 0, &moved);
+    var gone: std.ArrayListUnmanaged(Gone) = .empty;
+    defer gone.deinit(testing.allocator);
+    try t.reown(testing.allocator, worker_a, 0x9999, "claude-code s-1", 0, &moved, &gone);
 
     try testing.expectEqualSlices(TaskId, &.{ open, stuck }, moved.items);
     try testing.expectEqual(@as(Id, 0x9999), t.get(open).?.owner);
@@ -1532,7 +1576,7 @@ test "squad: 终端关掉后位 vacated，任务不关，牵头人退回 nobody"
     try t.join(id, "开发", "dev", worker_a, "claude-code aaaa1111", 100, true);
     try t.join(id, "测试", "test", worker_b, "claude-code bbbb2222", 110, false);
 
-    t.forget(worker_a, 500);
+    t.forgetWithoutRecord(worker_a, 500);
 
     const task = t.get(id).?;
     try testing.expectEqual(State.open, task.state);
@@ -1551,7 +1595,7 @@ test "squad: forget 把传入的时间写进 span 的 to_ms，不是零" {
     defer t.deinit();
     const id = try t.create("build", "ship it", .other);
     try t.join(id, "开发", "dev", worker_a, "", 100, true);
-    t.forget(worker_a, 4242);
+    t.forgetWithoutRecord(worker_a, 4242);
     const task = t.get(id).?;
     try testing.expectEqual(@as(i64, 100), task.spans[0].from_ms);
     try testing.expectEqual(@as(?i64, 4242), task.spans[0].to_ms);

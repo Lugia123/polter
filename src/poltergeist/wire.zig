@@ -1655,6 +1655,10 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
                 try s.write(m.at_ms);
                 try s.objectField("summary");
                 try s.write(m.summary);
+                // 0 is the public channel, else a task's number: a reader
+                // that sees every channel needs it to answer in the right one.
+                try s.objectField("channel");
+                try s.write(m.channel);
                 try s.objectField("text");
                 try s.write(m.text);
                 try s.endObject();
@@ -3140,6 +3144,7 @@ test "a history reply carries the log cursor beside the group seq" {
         .author = "worker-core",
         .at_ms = 1756000000000,
         .summary = false,
+        .channel = 7,
         .text = "signature is settled",
     }};
     try writeResponse(&w, .{ .messages = .{ .lines = &lines, .more = true } });
@@ -3147,6 +3152,7 @@ test "a history reply carries the log cursor beside the group seq" {
     const out = w.buffered();
     try testing.expect(std.mem.indexOf(u8, out, "\"log_seq\":10431") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"seq\":0") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"channel\":7") != null);
 }
 
 test "terminal_open place: absent is auto, and tab is not a preference" {

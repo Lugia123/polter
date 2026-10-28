@@ -2410,6 +2410,8 @@ fn controlActFixPost(
         .from_title = "you",
         .to = deliveries[0..to.len],
         .typist = who,
+        // The person's posts from the control room go to the whole group.
+        .channel = 0,
     });
     for (to, 0..) |*t, i| t.err = deliveries[i].err;
     log.info("control room: fix posted in group={s} typed={d}", .{ group, to.len });
@@ -2432,6 +2434,7 @@ fn controlActAskPost(
         .from_title = "you",
         .to = &deliveries,
         .typist = who,
+        .channel = 0,
     });
     to[0].err = deliveries[0].err;
     const pending = deliveries[0].err != null and self.mention_retries.pending(group, posted.seq, to[0].to);
@@ -8114,21 +8117,64 @@ fn startRoleInAs(
         .deadline_ms = self.poltergeistElapsedMs() +| poltergeistpkg.Bus.launch_agent_wait_ms,
         .typed_at = .now(global.io(), .boot),
     }) catch {};
-    if (effective) |e| self.joinSeat(id, e);
+    if (effective) |e| {
+        if (self.joinSeat(id, choice.key, e)) |err| self.sayJoinRefused(id, e, err);
+    }
 }
 
 /// A terminal started for a squad's seat takes it: the seat is `filled`,
 /// the lead's terminal becomes the task's owner, and the joining is
 /// written down. After the line is typed, so a start that could not be
 /// typed leaves the seat empty.
-fn joinSeat(self: *App, id: poltergeistpkg.Bus.Id, e: poltergeistpkg.persona.Effective) void {
+///
+/// The decision is `rpc.takeSeat`'s, the test host's as well: a seat the
+/// task lacked is made, a seat whose holder's agent is gone is emptied,
+/// and anything `Tasks.join` would refuse is refused before the panel is
+/// changed. **Returns why it was refused, or null** -- the caller says it
+/// (`sayJoinRefused`): a terminal running as a seat the panel does not
+/// have it in was a one-line warning nobody read.
+fn joinSeat(self: *App, id: poltergeistpkg.Bus.Id, role: []const u8, e: poltergeistpkg.persona.Effective) ?anyerror {
     const at = self.taskWallMs();
-    self.tasks.join(e.task, e.alias, "", id, "", at, e.lead) catch |err| {
+    const emptied = poltergeistpkg.rpc.takeSeat(&self.tasks, self, seatHolderAlive, id, e.task, e.alias, role, e.lead, at) catch |err| {
         log.warn("poltergeist: terminal {x} could not take the seat {s} of task {d} err={}", .{ id, e.alias, e.task, err });
-        return;
+        return err;
     };
+    if (emptied) |old| self.logSeat(.left, e.task, e.alias, old);
     self.logSeat(.joined, e.task, e.alias, id);
     self.controlRoomTouch();
+    return null;
+}
+
+fn seatHolderAlive(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.agentPresent(id);
+}
+
+/// What the group is told when a terminal opened for a seat could not take
+/// it. Written into `buf`.
+fn joinRefusedText(buf: []u8, id: poltergeistpkg.Bus.Id, task: u64, alias: []const u8, err: anyerror) []const u8 {
+    return std.fmt.bufPrint(
+        buf,
+        "[polter] Terminal 0x{x:0>16} was started for the seat \"{s}\" of task {d} but could not take it ({t}): " ++
+            "the panel does not have it in that seat, though its agent was told it is. " ++
+            "Give it the seat with task_assign, or close the terminal.",
+        .{ id, alias, task, err },
+    ) catch "[polter] A terminal started for a squad seat could not take it.";
+}
+
+/// Said in the task's group, so the supervisor sees it.
+fn sayJoinRefused(self: *App, id: poltergeistpkg.Bus.Id, e: poltergeistpkg.persona.Effective, err: anyerror) void {
+    const t = self.tasks.get(e.task) orelse return;
+    var buf: [512]u8 = undefined;
+    self.sayInGroup(t.group, joinRefusedText(&buf, id, e.task, e.alias, err));
+}
+
+/// Whether the terminal `id` holds a seat of this task other than `alias`.
+fn paneHoldsOtherSeat(members: []const poltergeistpkg.Tasks.Member, id: poltergeistpkg.Bus.Id, alias: []const u8) bool {
+    for (members) |m| {
+        if (m.slot == .filled and m.id == id and !std.mem.eql(u8, m.alias, alias)) return true;
+    }
+    return false;
 }
 
 /// Write down that a terminal took, or gave up, a seat.
@@ -9038,7 +9084,7 @@ fn effectiveOf(alloc: Allocator, choice: LaunchChoice, seat: poltergeistpkg.rpc.
 }
 
 /// A seat's start in words, for `role_launch`'s reply.
-fn seatNote(alloc: Allocator, seat: poltergeistpkg.rpc.MemberSeat, choice: LaunchChoice) Allocator.Error![]const u8 {
+fn seatNote(alloc: Allocator, seat: poltergeistpkg.rpc.MemberSeat, choice: LaunchChoice) (Allocator.Error || std.Io.Writer.Error)![]const u8 {
     var w: std.Io.Writer.Allocating = .init(alloc);
     const r = choice.resolved.?;
     try w.writer.print("Seat \"{s}\" of task {d} starts as {s}", .{ seat.alias, seat.task, choice.cli });
@@ -9118,7 +9164,7 @@ pub fn launchPersonaSeat(
     // `poltergeist_workers` says this supervisor opened.
     var passed_over: ?poltergeistpkg.rpc.PassedOver = null;
     if (where == .auto) {
-        const found = try self.poltergeistFreeWorker(alloc, by, cwd);
+        const found = try self.poltergeistFreeWorker(alloc, by, cwd, effective);
         if (found.free) |free| {
             if (self.launchPersonaIn(free, by, choice, line, effective)) {
                 return .{ .id = free, .placed = .{ .reused = .free_worker }, .joins = joining.name(), .join_note = join_note, .seat = seat_note };
@@ -9192,6 +9238,7 @@ fn launchPersonaIn(
         .at_prompt = surface.isAtShellPrompt(),
         .draft = surface.draftFor(.agent),
         .dir_fits = true,
+        .holds_seat = if (effective) |e| if (self.tasks.get(e.task)) |t| paneHoldsOtherSeat(t.members, target, e.alias) else false else false,
     };
     if (seat.why()) |why| return switch (why) {
         .agent => error.AgentThere,
@@ -9202,6 +9249,7 @@ fn launchPersonaIn(
         // answer for anything that reaches here another way.
         .shielded => error.Shielded,
         .workers_refused => error.WorkersRefused,
+        .holds_seat => error.MemberTaken,
         .elsewhere, .other_directory => unreachable,
     };
     try self.startRoleInAs(target, by, choice, line, .agent, effective);
@@ -9216,6 +9264,7 @@ fn poltergeistFreeWorker(
     alloc: Allocator,
     by: poltergeistpkg.Bus.Id,
     cwd: []const u8,
+    effective: ?poltergeistpkg.persona.Effective,
 ) Allocator.Error!FreeWorker.Found {
     const none: FreeWorker.Found = .{ .free = null, .passed_over = null };
     const workers: []const poltergeistpkg.Bus.Id = if (self.poltergeist_workers.get(by)) |l| l.items else return none;
@@ -9244,6 +9293,9 @@ fn poltergeistFreeWorker(
                 defer alloc.free(at);
                 break :dir std.mem.eql(u8, at, cwd);
             } else false,
+            // Another seat of the task it is started for: a pane whose
+            // agent left a seat behind is not free for a second one.
+            .holds_seat = if (effective) |e| if (self.tasks.get(e.task)) |t| paneHoldsOtherSeat(t.members, w, e.alias) else false else false,
         };
     }
     if (FreeWorker.pick(seats)) |at| return .{ .free = workers[at], .passed_over = null };
@@ -9283,8 +9335,12 @@ const FreeWorker = struct {
         draft: bool,
         /// It stands where the role is to start, or nowhere was named.
         dir_fits: bool,
+        /// It holds another seat of the task the role is started for (its
+        /// agent may be gone: the seat is still its). Taking this one would
+        /// be refused after the CLI was started.
+        holds_seat: bool,
 
-        const Why = enum { elsewhere, shielded, workers_refused, agent, launching, not_at_prompt, draft, other_directory };
+        const Why = enum { elsewhere, shielded, workers_refused, agent, launching, not_at_prompt, draft, other_directory, holds_seat };
 
         /// Why this one cannot be used; null when it can. In the order a
         /// caller would want to hear it: an agent that is there is the
@@ -9304,6 +9360,7 @@ const FreeWorker = struct {
             if (!self.at_prompt) return .not_at_prompt;
             if (self.draft) return .draft;
             if (!self.dir_fits) return .other_directory;
+            if (self.holds_seat) return .holds_seat;
             return null;
         }
     };
@@ -9332,6 +9389,7 @@ const FreeWorker = struct {
                 .not_at_prompt => .not_at_prompt,
                 .draft => .draft,
                 .other_directory => .other_directory,
+                .holds_seat => .holds_seat,
             };
             return .{ .at = i, .why = why };
         }
@@ -9371,7 +9429,7 @@ test "1974: a pane whose launch is still starting its CLI is not free, whatever 
     // The demo's second worker (2026-10-21): the first one's Codex was at
     // "Starting MCP servers", no agent heard yet, and its screen read as an
     // empty prompt -- so it was taken, and agy's launch line went into Codex.
-    const starting: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .launching = true, .at_prompt = true, .draft = false, .dir_fits = true };
+    const starting: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .launching = true, .at_prompt = true, .draft = false, .dir_fits = true, .holds_seat = false };
     const why = starting.why();
     try testing.expectEqual(@as(?FreeWorker.Seat.Why, .launching), why);
     try testing.expectEqual(@as(?usize, null), FreeWorker.pick(&.{starting}));
@@ -9396,7 +9454,7 @@ test "1974: a pane whose launch is still starting its CLI is not free, whatever 
 
 test "a worker's pane is used again only when it is ours, empty, waiting and where the role is to start" {
     const testing = std.testing;
-    const free: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .launching = false, .at_prompt = true, .draft = false, .dir_fits = true };
+    const free: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .launching = false, .at_prompt = true, .draft = false, .dir_fits = true, .holds_seat = false };
     try testing.expectEqual(@as(?FreeWorker.Seat.Why, null), free.why());
 
     // Each of the five on its own is enough to leave it alone.
@@ -9430,7 +9488,7 @@ test "a worker's pane is used again only when it is ours, empty, waiting and whe
     try testing.expectEqual(@as(?usize, 1), FreeWorker.pick(&.{ seat, free }));
     try testing.expectEqual(poltergeistpkg.rpc.PassedOver.Why.workers_refused, FreeWorker.passedOver(&.{seat}).?.why);
     // An agent that is there is the reason, whatever else is true.
-    seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = true, .launching = false, .at_prompt = false, .draft = true, .dir_fits = false };
+    seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = true, .launching = false, .at_prompt = false, .draft = true, .dir_fits = false, .holds_seat = false };
     try testing.expectEqual(@as(?FreeWorker.Seat.Why, .agent), seat.why());
 
     // The oldest that can be used, and none when none can.
@@ -9446,7 +9504,7 @@ test "a worker's pane is used again only when it is ours, empty, waiting and whe
 // and why (#1498): the oldest of the caller's in its tab, and only those.
 test "the worker pane passed over is the oldest in the tab, with its reason (#1498)" {
     const testing = std.testing;
-    const free: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .launching = false, .at_prompt = true, .draft = false, .dir_fits = true };
+    const free: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .launching = false, .at_prompt = true, .draft = false, .dir_fits = true, .holds_seat = false };
 
     var gone = free;
     gone.here = false;
@@ -13938,7 +13996,7 @@ fn taskClose(ctx: *anyopaque, task: u64) anyerror!void {
 fn taskOwner(ctx: *anyopaque, task: u64) anyerror!poltergeistpkg.rpc.TaskOwner {
     const self: *App = @ptrCast(@alignCast(ctx));
     const t = self.tasks.get(task) orelse return error.NoSuchTask;
-    return .{ .owner = t.owner, .title = t.title, .open = t.state == .open, .group = t.group, .worktree = t.worktree };
+    return poltergeistpkg.rpc.ownerOf(t);
 }
 
 /// Mark a task cancelled. The worker has already been told; see above.
@@ -14765,10 +14823,13 @@ fn reownTasks(
     session_id: []const u8,
 ) Allocator.Error![]const poltergeistpkg.Tasks.TaskId {
     const at = self.taskWallMs();
+    var via_buf: [96]u8 = undefined;
+    const via = poltergeistpkg.TaskLog.viaText(&via_buf, cli, session_id);
     var moved: std.ArrayListUnmanaged(poltergeistpkg.Tasks.TaskId) = .empty;
+    var gone: std.ArrayListUnmanaged(poltergeistpkg.Tasks.Gone) = .empty;
     for (was) |old| {
         const before = moved.items.len;
-        try self.tasks.reown(alloc, old, id, at, &moved);
+        try self.tasks.reown(alloc, old, id, via, at, &moved, &gone);
         for (moved.items[before..]) |task| {
             // A fresh stretch, the same as a task handed over.
             _ = self.poltergeist_nudged.remove(task);
@@ -14776,7 +14837,29 @@ fn reownTasks(
             if (self.task_log) |*l| l.appendReowned(at, t, .{ .from = old, .cli = cli, .session_id = session_id });
         }
     }
+    // Seats of another session that pointed at the terminals gone: emptied
+    // above, said here (task 2494).
+    for (gone.items) |g| self.logSeat(.left, g.task, g.alias, g.id);
     return moved.items;
+}
+
+/// A terminal is closed by its person: the places it held in a squad are
+/// given up and each is written as `left` (task 2494). Without the line a
+/// restart replays the place as filled, pointing at a terminal that is not
+/// there. **Not run when the app quits**: neither host frees the app then
+/// (task 2086), so the places stay as they were and `Reclaim` can give them
+/// back to the sessions that come up again.
+pub fn taskTerminalGone(self: *App, id: poltergeistpkg.Bus.Id) void {
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    var gone: std.ArrayListUnmanaged(poltergeistpkg.Tasks.Gone) = .empty;
+    const at = self.taskWallMs();
+    self.tasks.forgetGone(arena.allocator(), id, at, &gone) catch {
+        // Out of memory before anything was changed: still forget it.
+        self.tasks.forgetWithoutRecord(id, at);
+        return;
+    };
+    for (gone.items) |g| self.logSeat(.left, g.task, g.alias, g.id);
 }
 
 test "1978: tasks taken up are written as reowned, with the session they went by, and stay taken up after a restart" {
@@ -14832,6 +14915,139 @@ test "1978: tasks taken up are written as reowned, with the session they went by
     defer again.deinit();
     app.task_log.?.restore(&again);
     try testing.expectEqual(@as(P.Tasks.Id, 0x100), again.get(mine).?.owner);
+}
+
+test "squad: 终端被用户关掉 → taskTerminalGone 写 left，重放后那个位是空的，不指向死终端" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const P = poltergeistpkg;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-gone-{x}", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    var app: App = undefined;
+    app.alloc = alloc;
+    app.tasks = .init(alloc, .{});
+    defer app.tasks.deinit();
+    app.task_log = try P.TaskLog.open(alloc, io, dir);
+    defer app.task_log.?.deinit();
+
+    const id = try app.tasks.create("build", "squad work", .feature);
+    try app.tasks.setSquad(id, "trio");
+    try app.tasks.addSlot(id, "dev", "worker-dev");
+    try app.tasks.addSlot(id, "test", "worker-test");
+    app.logTask(.created, id);
+    try app.tasks.join(id, "dev", "", 0xa, "", 5, true);
+    app.logSeat(.joined, id, "dev", 0xa);
+    try app.tasks.join(id, "test", "", 0xb, "", 5, false);
+    app.logSeat(.joined, id, "test", 0xb);
+
+    // The person closes the dev terminal.
+    app.taskTerminalGone(0xa);
+    try testing.expectEqual(P.Tasks.Slot.vacated, app.tasks.get(id).?.members[0].slot);
+    try testing.expectEqual(P.Tasks.Slot.filled, app.tasks.get(id).?.members[1].slot);
+
+    const page = try app.task_log.?.history(alloc, "build", 0, 50);
+    defer P.TaskLog.freePage(alloc, page);
+    try testing.expectEqualStrings("left", page.events[page.events.len - 1].op);
+
+    // The next run replays the record: the place is empty, not pointing at
+    // a terminal that no longer exists.
+    var again: P.Tasks = .init(alloc, .{});
+    defer again.deinit();
+    app.task_log.?.restore(&again);
+    try testing.expectEqual(P.Tasks.Slot.vacated, again.get(id).?.members[0].slot);
+    try testing.expectEqual(@as(P.Tasks.Id, 0), again.get(id).?.members[0].id);
+    try testing.expectEqual(@as(P.Tasks.Id, 0xb), again.get(id).?.members[1].id);
+}
+
+test "squad: joinSeat 入位走 takeSeat：新座位被做出来并写 joined；终端已占本任务别的位 → 返回 MemberTaken，面板原样" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const P = poltergeistpkg;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var raw: [6]u8 = undefined;
+    io.random(&raw);
+    const dir = try std.fmt.allocPrint(alloc, "/tmp/polter-join-{x}", .{&raw});
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    var app: App = undefined;
+    app.alloc = alloc;
+    app.control_dirty = true;
+    app.tasks = .init(alloc, .{});
+    defer app.tasks.deinit();
+    app.task_log = try P.TaskLog.open(alloc, io, dir);
+    defer app.task_log.?.deinit();
+
+    const id = try app.tasks.create("build", "squad work", .feature);
+    try app.tasks.setSquad(id, "trio");
+    try app.tasks.addSlot(id, "dev", "worker-dev");
+    var e: P.persona.Effective = undefined;
+    e.task = id;
+    e.alias = "dev";
+    e.lead = true;
+
+    // Taken: the seat is filled, the lead owns the task, and it is written.
+    try testing.expectEqual(@as(?anyerror, null), app.joinSeat(0xa, "worker-dev", e));
+    try testing.expectEqual(@as(P.Tasks.Id, 0xa), app.tasks.get(id).?.members[0].id);
+    try testing.expectEqual(@as(P.Tasks.Id, 0xa), app.tasks.get(id).?.owner);
+    const page = try app.task_log.?.history(alloc, "build", 0, 50);
+    defer P.TaskLog.freePage(alloc, page);
+    try testing.expectEqualStrings("joined", page.events[page.events.len - 1].op);
+
+    // The same terminal for a seat the task lacks: refused, and the seat is
+    // not made -- nothing is changed by a refusal.
+    e.alias = "test";
+    e.lead = false;
+    try testing.expectEqual(@as(?anyerror, error.MemberTaken), app.joinSeat(0xa, "worker-test", e));
+    try testing.expectEqual(@as(usize, 1), app.tasks.get(id).?.members.len);
+
+    // Another terminal for that missing seat makes it.
+    try testing.expectEqual(@as(?anyerror, null), app.joinSeat(0xb, "worker-test", e));
+    try testing.expectEqual(@as(usize, 2), app.tasks.get(id).?.members.len);
+    try testing.expectEqualStrings("worker-test", app.tasks.get(id).?.members[1].role);
+
+    // What the group is told when it is refused.
+    var buf: [512]u8 = undefined;
+    const said = joinRefusedText(&buf, 0xa, id, "test", error.MemberTaken);
+    try testing.expect(std.mem.indexOf(u8, said, "\"test\"") != null);
+    try testing.expect(std.mem.indexOf(u8, said, "MemberTaken") != null);
+}
+
+test "squad: place:auto 不复用占着本任务另一个座位的 pane（agent 已退出也一样）" {
+    const testing = std.testing;
+    var members = [_]poltergeistpkg.Tasks.Member{
+        .{ .alias = "test", .id = 0xa, .slot = .filled },
+        .{ .alias = "dev" },
+    };
+    // `test`'s agent has exited; its pane is at a prompt and otherwise free.
+    try testing.expect(paneHoldsOtherSeat(&members, 0xa, "dev"));
+    try testing.expect(!paneHoldsOtherSeat(&members, 0xa, "test"));
+    try testing.expect(!paneHoldsOtherSeat(&members, 0xb, "dev"));
+
+    var seat: FreeWorker.Seat = .{ .here = true, .shielded = false, .workers_refused = false, .agent = false, .launching = false, .at_prompt = true, .draft = false, .dir_fits = true, .holds_seat = false };
+    try testing.expectEqual(@as(?usize, 0), FreeWorker.pick(&.{seat}));
+    seat.holds_seat = paneHoldsOtherSeat(&members, 0xa, "dev");
+    try testing.expectEqual(@as(?FreeWorker.Seat.Why, .holds_seat), seat.why());
+    try testing.expectEqual(@as(?usize, null), FreeWorker.pick(&.{seat}));
+    const over = FreeWorker.passedOver(&.{seat}).?;
+    try testing.expectEqual(poltergeistpkg.rpc.PassedOver.Why.holds_seat, over.why);
 }
 
 /// An agent said which session it is: beside its transcript, and in every
@@ -14998,7 +15214,8 @@ fn channelReaders(
         if (m.slot != .filled or m.id == nobody) continue;
         if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, out.items, m.id) == null) try out.append(alloc, m.id);
     }
-    return out.toOwnedSlice(alloc);
+    const owned = try out.toOwnedSlice(alloc);
+    return owned;
 }
 
 fn chatOwner(ctx: *anyopaque, group: []const u8) anyerror!poltergeistpkg.Bus.Id {
@@ -15034,7 +15251,7 @@ fn chatCompact(
     // frees the agents' context; it is not an instruction to forget, and
     // the record of a night is worth more than the shape it was in when
     // the supervisor tidied up.
-    self.logChat(group, seq, by, at, true, summary, channel);
+    self.logChatCovering(group, seq, by, at, true, summary, channel, done.covers_log);
 
     return done.wrote;
 }
@@ -15194,6 +15411,21 @@ fn logChat(
     text: []const u8,
     channel: u64,
 ) void {
+    self.logChatCovering(group, seq, from, at_ms, summary, text, channel, 0);
+}
+
+/// `logChat`, with the log seq a summary starts at (0: not known).
+fn logChatCovering(
+    self: *App,
+    group: []const u8,
+    seq: u64,
+    from: poltergeistpkg.Bus.Id,
+    at_ms: u64,
+    summary: bool,
+    text: []const u8,
+    channel: u64,
+    covers_log: u64,
+) void {
     const l = if (self.chat_log) |*v| v else return;
 
     var buf: [256]u8 = undefined;
@@ -15202,7 +15434,7 @@ fn logChat(
 
     const at_wall_ms: i64 = @intCast(at_ms);
 
-    const log_seq = l.append(
+    const log_seq = l.appendCovering(
         group,
         from,
         author,
@@ -15210,6 +15442,7 @@ fn logChat(
         summary,
         text,
         channel,
+        covers_log,
     );
     if (log_seq != 0) self.chat.setLogSeq(group, seq, log_seq);
 
@@ -15687,20 +15920,11 @@ fn chatRead(
     errdefer alloc.free(out);
 
     for (messages, 0..) |m, i| {
-        // Copied for the same reason: the log trims itself as it grows.
-        out[i] = .{
-            .seq = m.seq,
-            .log_seq = m.log_seq,
-            .from = m.from,
-            .author = try self.chatMemberTitle(alloc, m.from),
-
-            // Already the wall clock: a message is stamped when it is
-            // posted, from the real clock, so there is nothing to convert.
-            .at_ms = @intCast(m.at_ms),
-
-            .summary = m.summary,
-            .text = try alloc.dupe(u8, m.text),
-        };
+        // Copied for the same reason: the log trims itself as it grows. The
+        // line is made by `rpc.chatLineOf`, which has a test for what it
+        // copies; a message is stamped with the real clock when it is posted,
+        // so there is nothing to convert.
+        out[i] = poltergeistpkg.rpc.chatLineOf(m, try self.chatMemberTitle(alloc, m.from), try alloc.dupe(u8, m.text));
     }
 
     return .{ .lines = out, .more = batch.more };
@@ -15848,42 +16072,26 @@ fn chatHistory(
     // never written down. Since the bound cannot be proved, give less
     // rather than risk giving more.
     //
-    // `barred` and not `floor.seq > 0`: a compaction raises the floor of a
-    // member that was kept out of nothing, so the seq alone would read a
-    // whole group as barred the first time its supervisor compacted -- and
-    // shut off the one tool that reaches what the compaction took away.
+    // `barred` and not `floor.seq > 0`: the seq alone cannot say whether a
+    // member was kept out of anything, and reading a whole group as barred
+    // would shut off the one tool that reaches what a compaction took away.
     if (floor.barred and floor.log_seq == 0) return .{ .lines = &.{}, .more = false };
 
     const page = try l.history(alloc, group, before_seq, limit, filter, scope);
 
-    // Entries come back oldest first, so anything barred is a prefix.
+    // Entries come back oldest first, so anything barred is a prefix. A
+    // summary that recaps what the member was kept out of is not (task 2494):
+    // it was written after they joined, and `hiddenFrom` says which.
     var k: usize = 0;
     while (k < page.entries.len and page.entries[k].seq <= floor.log_seq) k += 1;
-    const visible = page.entries[k..];
 
-    const out = try alloc.alloc(poltergeistpkg.rpc.ChatLine, visible.len);
-    for (visible, 0..) |e, i| {
-        out[i] = .{
-            // The log never recorded the group's own count. Inventing one
-            // would be handed straight back as `group_compact`'s `through`,
-            // which counts something else entirely.
-            .seq = 0,
-            .log_seq = e.seq,
-            .from = e.from,
-
-            // The name the log recorded, not what the tab says now: the
-            // terminal that spoke is very likely closed, and the record is
-            // the only place that name still exists.
-            .author = e.author,
-
-            // Wall-clock, as it was written. The live log is stamped the
-            // same way now, so history and memory read alike.
-            .at_ms = e.at_ms,
-
-            .summary = e.summary,
-            .text = e.text,
-        };
+    var out_list: std.ArrayListUnmanaged(poltergeistpkg.rpc.ChatLine) = .empty;
+    errdefer out_list.deinit(alloc);
+    for (page.entries) |e| {
+        if (poltergeistpkg.ChatLog.hiddenFrom(e, floor.log_seq, floor.barred)) continue;
+        try out_list.append(alloc, poltergeistpkg.rpc.historyLineOf(e));
     }
+    const out = try out_list.toOwnedSlice(alloc);
 
     // Once anything was filtered out, everything older is barred too, so
     // there is nothing further to offer this member.
