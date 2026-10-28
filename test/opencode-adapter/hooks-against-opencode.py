@@ -119,7 +119,10 @@ class H(http.server.BaseHTTPRequestHandler):
                  "function": {"name": name, "arguments": json.dumps(args)}}]}))
             send(chunk({}, "tool_calls"))
         try:
-            if "ASKQ" in text and last_user:
+            if "NESTED" in text and last_user:
+                # A subagent that runs a command: its own approval.
+                call("subagent", {"agent": "explore", "description": "nest", "prompt": "RUNCMD deep"})
+            elif "ASKQ" in text and last_user:
                 call("question", {"questions": [{"question": "Which colour probe?", "header": "Colour",
                      "options": [{"label": "Red", "description": "r"}, {"label": "Blue", "description": "b"}]}]})
             elif "SUBAGENT" in text and last_user:
@@ -247,6 +250,123 @@ def adapter(question, req, home, opencode):
     return json.loads(p.stdout)
 
 
+# Each plugin the session cell runs against: the 1.x and the 2.x directory,
+# both loaded by this opencode (2.x). `HOOKS_CELL_ADAPTERS` (colon-separated
+# adapter paths) overrides it, for a floor run against a copy.
+CELL_ADAPTERS = os.environ.get("HOOKS_CELL_ADAPTERS") or os.pathsep.join(
+    os.path.join(ROOT, "plugins", d, "adapter.py") for d in ("opencode", "opencode-v2"))
+
+
+def events_in(calls):
+    """Every `+hook` a stand-in Polter was run as, in order: (event, payload)."""
+    out = []
+    for name in sorted(os.listdir(calls)):
+        if name.endswith(".argv"):
+            with open(os.path.join(calls, name)) as f:
+                argv = f.read().split()
+            with open(os.path.join(calls, name[:-5] + ".json")) as f:
+                out.append((argv[-1], json.loads(f.read())))
+    return out
+
+
+def wait_cell(tui, calls, since, want, secs=90):
+    """The first event from index `since` that `want(event, payload)` accepts."""
+    end = time.time() + secs
+    while time.time() < end:
+        tui.pump(0.3)
+        for name, payload in events_in(calls)[since:]:
+            if want(name, payload):
+                return payload
+    return None
+
+
+def owner_cell(adapter_path, opencode, base):
+    """One TUI, two tabs, and a subagent of a subagent -- through the plugin
+    in `adapter_path`'s directory, as the role launch hands it in.
+
+    S1 runs a turn; `/new` makes S2, which runs one; then S2 starts a
+    subagent, which asks to run a command. Said: S2's turn and the
+    subagent's approval (as an agent's); not said: S2's `session.created`,
+    and the subagent's own turn events. A subagent of a subagent cannot be
+    made here: opencode gives a subagent no `subagent` tool (measured)."""
+    label = os.path.basename(os.path.dirname(adapter_path))
+    case = "owner:" + label
+    home, cwd, calls = (os.path.join(base, d) for d in ("home", "proj", "calls"))
+    for d in (home, cwd, calls):
+        os.makedirs(d)
+    polter = os.path.join(base, "fake-polter")
+    with open(polter, "w") as f:
+        f.write(FAKE_POLTER % calls)
+    os.chmod(polter, 0o755)
+    model_py = os.path.join(base, "fake-model.py")
+    with open(model_py, "w") as f:
+        f.write(FAKE_MODEL)
+    os.makedirs(os.path.join(home, ".config", "opencode"))
+    port = free_port()
+    model = subprocess.Popen([sys.executable, model_py, str(port), os.path.join(base, "model.log")],
+                             stderr=subprocess.DEVNULL)
+    req = {"version": 1, "cwd": cwd, "home": home, "polter": polter, "session": None,
+           "role": {"model": "fake/m", "instructions": "hello cell"},
+           "cli": {"skills": {"default": True, "except": []}, "mcp": {"default": True, "except": []}}}
+    p = subprocess.run([adapter_path, "launch", json.dumps(req)], capture_output=True, text=True, timeout=30,
+                       env={"PATH": os.path.dirname(opencode) + ":/usr/bin:/bin", "HOME": home})
+    launch = json.loads(p.stdout)
+    content = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])
+    content["provider"] = {"fake": {"npm": "@ai-sdk/openai-compatible", "models": {"m": {"name": "m"}},
+                           "options": {"baseURL": "http://127.0.0.1:%d/v1" % port, "apiKey": "x"}}}
+    content["permission"]["bash"] = "ask"
+    env = dict(launch["env"], OPENCODE_CONFIG_CONTENT=json.dumps(content), POLTER_HOOK_EXE=polter,
+               PATH=os.path.dirname(opencode) + ":/usr/bin:/bin", HOME=home, XDG_CONFIG_HOME=home + "/.config",
+               XDG_DATA_HOME=home + "/.local/share", XDG_STATE_HOME=home + "/.local/state",
+               XDG_CACHE_HOME=home + "/.cache", TERM="xterm-256color", OPENCODE_DISABLE_MODELS_FETCH="1")
+    tui = Tui(launch["argv"], env, cwd)
+    try:
+        first = wait_cell(tui, calls, 0, lambda n, p: n == "session.execution.succeeded")
+        check(case, first is not None, "the first tab's turn ends")
+        s1 = first and first["data"]["sessionID"]
+
+        n = len(events_in(calls))
+        tui.type("/new")
+        tui.pump(3)
+        tui.type("pong second tab")
+        done = wait_cell(tui, calls, n, lambda k, p: k == "session.execution.succeeded"
+                         and p["data"]["sessionID"] != s1)
+        window = events_in(calls)[n:]
+        s2 = done and done["data"]["sessionID"]
+        check(case, done is not None and any(k == "session.execution.started" and p["data"]["sessionID"] == s2
+                                             for k, p in window),
+              "the second tab's turn is said: its started and its succeeded")
+        check(case, s2 is not None and not any(k == "session.created" and p["data"]["sessionID"] == s2
+                                               for k, p in window),
+              "the second tab's session.created is not said (it is not the terminal's until its turn starts)")
+
+        m = len(events_in(calls))
+        m0 = m
+        tui.type("NESTED go")
+        ask = wait_cell(tui, calls, m, lambda k, p: k == "permission.asked" and p["polter"].get("child") is True)
+        check(case, ask is not None and ask["data"]["sessionID"] != s2,
+              "the subagent's approval is said, as an agent's (child), not as the terminal's session")
+        if ask is not None:
+            tui.pump(1)
+            tui.key("\r")
+        replied = wait_cell(tui, calls, m, lambda k, p: k == "permission.replied" and p["polter"].get("child") is True)
+        check(case, replied is not None, "and its answer is said")
+        ended = wait_cell(tui, calls, m, lambda k, p: k == "session.execution.succeeded" and p["data"]["sessionID"] == s2)
+        check(case, ended is not None, "the second tab's turn ends")
+        window = events_in(calls)[m:]
+        stray = [(k, p["data"]["sessionID"][-6:]) for k, p in window
+                 if p["polter"].get("child") and k not in ("permission.asked", "permission.replied",
+                                                          "form.created", "form.replied", "form.cancelled")]
+        check(case, not stray, "a subagent's own turn events are not said: %s" % stray)
+    finally:
+        tui.stop()
+        model.terminate()
+        model.wait(5)
+    for name, payload in events_in(calls)[m0:]:
+        print("   %s  %-28s sid=...%s child=%s" % (case, name, (payload.get("data") or {}).get("sessionID", "")[-6:],
+                                              payload["polter"].get("child")))
+
+
 def main():
     opencode = shutil.which("opencode")
     if not opencode:
@@ -259,9 +379,17 @@ def main():
         return 0
     base = tempfile.mkdtemp(prefix="oc1806-live-")
     try:
-        return run(base, opencode)
+        rc = run(base, opencode)
     finally:
         shutil.rmtree(base, ignore_errors=True)
+    cells = tempfile.mkdtemp(prefix="oc2414-cell-")
+    try:
+        for i, adapter_path in enumerate(CELL_ADAPTERS.split(os.pathsep)):
+            owner_cell(adapter_path, opencode, os.path.join(cells, str(i)))
+    finally:
+        shutil.rmtree(cells, ignore_errors=True)
+    print("all hold" if not failures else "%d DO NOT HOLD" % len(failures))
+    return 0 if not failures else 1
 
 
 def run(base, opencode):
@@ -461,7 +589,6 @@ def run(base, opencode):
     check("switches", "tools.other.ping" in sent and "tools.probe.ping" not in sent,
           "the switched-off server's tools are not the model's, the other one's are")
 
-    print("all hold" if not failures else "%d DO NOT HOLD" % len(failures))
     return 0 if not failures else 1
 
 

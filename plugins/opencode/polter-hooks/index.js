@@ -30,6 +30,18 @@
 // Nothing of the person's configuration is written for it, and nothing is
 // written into this directory: it is part of a signed app.
 //
+// **One terminal, one session** (task 2414). A `--standalone` TUI's server
+// carries every tab of that TUI on one bus: a `/new` in the same TUI is a
+// second session on this server. Another TUI's sessions do not come here at
+// all (measured; see dev-docs/poltergeist/adapters.md, the opencode part,
+// "哪个会话是终端的会话"). So the terminal's session is the one that started
+// its turn last: each non-subagent `session.execution.started` makes its
+// session the terminal's, so a `/new` and a switch of tab followed by a
+// message both carry the terminal over, the way claude-code's `/new` does.
+// `session.created` only sets it while nothing has yet (the first session).
+// Events of any other session -- a tab that is running in the background
+// after the terminal moved on -- and of their subagents are not said.
+//
 // **It never holds opencode up and never throws.** The tool hooks are
 // awaited by opencode before it goes on, so each handler only queues its
 // event and returns; the queue runs one `+hook` at a time, which also keeps
@@ -59,8 +71,10 @@ const BUS_EVENTS = new Set([
   "form.cancelled",
 ])
 
-// What still stops the terminal when a subagent's session says it: an
-// approval or a question waits for somebody, whoever asked.
+// An approval or a question is said for an agent under the terminal's current
+// session at any depth, because the terminal is waiting on it whichever agent
+// asked. The rest of a subagent's events are not said. Under a background
+// session (not the current one) it is not said either: see `owner` above.
 const ASKS = /^(permission|form)\./
 
 // Most of an answer handed to `+hook`. It cuts to its own limit
@@ -75,9 +89,13 @@ export default {
     if (!EXE) return
 
     // Sessions a subagent tool started under another one (`parentID` on
-    // their `session.created`). Their turns are not the terminal's turns: a
-    // subagent finishing is not the agent finishing.
-    const children = new Set()
+    // their `session.created`), with that parent. Their turns are not the
+    // terminal's turns: a subagent finishing is not the agent finishing.
+    const children = new Map()
+
+    // The terminal's session: the one whose turn started last (see the top of
+    // this file). Null until the first session, and other sessions are dropped.
+    let owner = null
 
     // What each session's turn has said so far: the text of its last
     // assistant message, kept from `session.text.ended` -- a message says
@@ -102,6 +120,15 @@ export default {
         .catch(() => {})
     }
 
+    // The session at the top of a subagent's chain of parents (a session
+    // that is not a subagent is its own root). A depth bound keeps a bad
+    // chain from looping.
+    const rootOf = (sid) => {
+      let s = sid
+      for (let i = 0; i < 64 && children.has(s); i++) s = children.get(s)
+      return s
+    }
+
     const answerOf = (sid) => {
       const a = answers.get(sid)
       if (!a) return null
@@ -115,7 +142,7 @@ export default {
       const sid = sessionOf(data)
 
       if (event.type === "session.text.ended") {
-        if (!sid || children.has(sid)) return
+        if (!sid || children.has(sid) || sid !== owner) return
         let a = answers.get(sid)
         if (!a || a.message !== data.assistantMessageID) {
           a = { message: data.assistantMessageID, parts: [] }
@@ -127,10 +154,17 @@ export default {
       if (!BUS_EVENTS.has(event.type)) return
 
       if (event.type === "session.created" && data.parentID) {
-        children.add(sid)
+        children.set(sid, data.parentID)
         return
       }
       const child = sid !== null && children.has(sid)
+      if (!child && sid !== null) {
+        if (event.type === "session.execution.started") owner = sid
+        else if (event.type === "session.created" && owner === null) owner = sid
+      }
+      // A subagent belongs to the terminal's session through its parents, at
+      // any depth: a grandchild's approval is the terminal's when its root is.
+      if (child ? rootOf(sid) !== owner : sid !== owner) return
       if (child && !ASKS.test(event.type)) return
 
       if (event.type === "session.execution.started") answers.delete(sid)
@@ -156,7 +190,7 @@ export default {
       try {
         await ctx.tool.hook(name, async (input) => {
           try {
-            if (!input || children.has(input.sessionID)) return
+            if (!input || input.sessionID !== owner || children.has(input.sessionID)) return
             send("tool." + name, { sessionID: input.sessionID, tool: input.tool, id: input.id })
           } catch {}
         })
