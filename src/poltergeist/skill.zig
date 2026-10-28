@@ -553,6 +553,39 @@ test "naming a tool means naming it, not containing its letters" {
     try testing.expect(namesTool("`terminal_actions` lists them", "terminal_actions"));
 }
 
+test "the supervising skill opens with the squad rules, before anything else a supervisor reads" {
+    // The supervisor reads this file first, and the squad rules decide how
+    // it sets the work up, so they sit ahead of "Picking up again".
+    const supervising = for (shipped_skills) |sk| {
+        if (std.mem.eql(u8, sk.name, "supervising")) break sk.source;
+    } else return error.TestUnexpectedResult;
+
+    const squads = std.mem.indexOf(u8, supervising, "## Squads") orelse return error.TestUnexpectedResult;
+    const picking_up = std.mem.indexOf(u8, supervising, "## Picking up again") orelse return error.TestUnexpectedResult;
+    try testing.expect(squads < picking_up);
+    const section = supervising[squads..picking_up];
+
+    for ([_][]const u8{
+        "who break up",
+        "Work that writes code goes to a squad first",
+        "not all of them by default",
+        "**Do not make a template out of habit.**",
+        "**You cannot be in a squad.**",
+        "Only the lead writes the task's progress",
+        "The channel is not secret",
+        "The worktree belongs to the task",
+        "`squad_list`",
+        "`task_create`",
+        "`role_launch`",
+        "`task_close`",
+    }) |needle| {
+        testing.expect(std.mem.indexOf(u8, section, needle) != null) catch |err| {
+            std.debug.print("\nthe squad section never says: {s}\n", .{needle});
+            return err;
+        };
+    }
+}
+
 test "the skills say that a post wakes nobody who is not named" {
     // A `group_post` answers `ok` whether or not anybody minded will see
     // it, and only a terminal named in `mention` is typed into. A skill

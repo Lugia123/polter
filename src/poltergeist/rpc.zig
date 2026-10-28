@@ -8122,7 +8122,7 @@ fn createSquadTask(
     if (wish.note.len > 0) try note.writer.print(" {s}", .{wish.note});
     if (missing.items.len > 0) {
         try note.writer.writeAll(" The task was made anyway; these seats are required by the squad and were not named, so they are not in the plan:");
-        for (missing.items, 0..) |alias, i| try note.writer.print("{s} 必选位 {s} 没点名", .{ if (i > 0) ";" else "", alias });
+        for (missing.items, 0..) |alias, i| try note.writer.print("{s} required seat {s} was not named", .{ if (i > 0) ";" else "", alias });
         try note.writer.writeAll(". role_launch can still open one.");
     }
     try w.print("{f}}}", .{std.json.fmt(note.written(), .{})});
@@ -8168,7 +8168,7 @@ fn seatFor(
     }
     const m = seat orelse return .{ .stop = hostFailure(
         "NoSuchMember",
-        try std.fmt.allocPrint(alloc, "task {d} has no seat called \"{s}\"; task_list shows its seats.", .{ task, member }),
+        try std.fmt.allocPrint(alloc, "task {d} has no seat called \"{s}\"; its seats are the aliases task_create's plan named.", .{ task, member }),
     ) };
     const sq = host.squadGet(what.squad) orelse return .{ .stop = hostFailure(
         "NoSuchSquad",
@@ -8195,7 +8195,9 @@ fn seatFor(
     for (what.members) |o| {
         if (!std.mem.eql(u8, o.alias, member)) try mates.append(alloc, o.alias);
     }
-    const lead = if (sq.leadOf()) |l| std.mem.eql(u8, l.alias, member) else false;
+    // The same rule task_assign uses: the template's lead if it is in this task, else the
+    // task's first seat -- so a task that did not name the lead seat still has a lead.
+    const lead = std.mem.eql(u8, leadAlias(host, what), member);
     return .{ .go = .{
         .role = m.role,
         .seat = .{ .task = task, .alias = member, .lead = lead, .over = sm.override, .mates = mates.items },
@@ -11924,7 +11926,7 @@ fn taskFailure(err: anyerror) wire.Response {
             draft_in_line ++ " It was not told, and the task is still open.",
         ),
         error.NotImplemented => hostFailure("NotImplemented", not_wired_up),
-        error.NoSuchMember => hostFailure("NoSuchMember", "that task has no seat by that alias. task_list shows its seats."),
+        error.NoSuchMember => hostFailure("NoSuchMember", "that task has no seat by that alias. Its seats are the aliases task_create's plan named."),
         error.MemberTaken => hostFailure(
             "MemberTaken",
             "that seat has another terminal in it, or this terminal already has another seat in the " ++
@@ -21998,7 +22000,7 @@ test "rpc: task_create 选了模版而 members 缺省或为空 → BadParams；�
     const created = panel.list.items.len == 1;
     try testing.expect(created);
     try testing.expect(std.mem.indexOf(u8, res.json, "\"missing_required\":[\"test\"]") != null);
-    try testing.expect(std.mem.indexOf(u8, res.json, "必选位 test 没点名") != null);
+    try testing.expect(std.mem.indexOf(u8, res.json, "required seat test was not named") != null);
     // And it is not in the plan.
     try testing.expect(std.mem.indexOf(u8, res.json, "\"alias\":\"test\"") == null);
     try testing.expect(std.mem.indexOf(u8, res.json, "\"alias\":\"dev\"") != null);
@@ -22129,6 +22131,27 @@ test "rpc: role_launch task+member 的有效角色 = resolve(role, override)，�
     // No key and no seat.
     const bare = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{} });
     try testing.expectEqualStrings("BadParams", bare.failed.code);
+}
+
+test "rpc: role_launch 的牵头人与 task_assign 同一条规则：任务没点名模版的牵头座位时，第一个座位就是牵头人" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    // The template's lead is "dev"; this task names only "test".
+    _ = try createTrio(alloc, &b, &fake, &.{"test"});
+
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "test" } });
+    try testing.expect(res == .opened);
+    try testing.expect(fake.role_launched.?.seat.?.lead);
 }
 
 test "rpc: role_launch 位已被占且终端还有 agent → MemberTaken，不开第二个" {
