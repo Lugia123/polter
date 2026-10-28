@@ -8157,25 +8157,37 @@ fn joinSeat(self: *App, id: poltergeistpkg.Bus.Id, role: []const u8, e: polterge
 
 fn seatHolderAlive(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
     const self: *App = @ptrCast(@alignCast(ctx));
-    return self.agentPresent(id);
+    if (self.agentPresent(id)) return true;
+    // Its CLI may still be starting: no agent yet, but the seat is not free
+    // (task 2541).
+    const surface = self.findSurfaceByID(id) orelse return false;
+    return self.stillLaunching(id, surface);
 }
 
 /// What the group is told when a terminal opened for a seat could not take
 /// it. Written into `buf`.
 fn joinRefusedText(buf: []u8, id: poltergeistpkg.Bus.Id, task: u64, alias: []const u8, err: anyerror) []const u8 {
+    // What to do depends on why: a full task is not helped by launching
+    // again, and a seat held by a CLI that is only starting (a startup
+    // question on its screen holds it for as long as it is unanswered) is
+    // freed by closing that terminal (task 2541).
+    const way_out = switch (err) {
+        error.TooManyMembers => "The task already has as many seats as it can hold: close this terminal, and free a seat with task_assign (id 0) or use another task.",
+        error.MemberTaken => "The seat is held by another terminal whose agent is there or still starting (a CLI waiting on a startup question holds it until it is answered): close this terminal, and close the holder if it is not coming up; then role_launch the seat again.",
+        else => "Close this terminal and role_launch the seat again.",
+    };
     return std.fmt.bufPrint(
         buf,
         "[polter] Terminal 0x{x:0>16} was started for the seat \"{s}\" of task {d} but could not take it ({t}): " ++
-            "the panel does not have it in that seat, though its agent was told it is. " ++
-            "Close the terminal and role_launch the seat again; task_assign with the alias also works when the seat is already in the task.",
-        .{ id, alias, task, err },
+            "the panel does not have it in that seat, though its agent was told it is. {s}",
+        .{ id, alias, task, err, way_out },
     ) catch "[polter] A terminal started for a squad seat could not take it.";
 }
 
 /// Said in the task's group, so the supervisor sees it.
 fn sayJoinRefused(self: *App, id: poltergeistpkg.Bus.Id, e: poltergeistpkg.persona.Effective, err: anyerror) void {
     const t = self.tasks.get(e.task) orelse return;
-    var buf: [512]u8 = undefined;
+    var buf: [768]u8 = undefined;
     self.sayInGroup(t.group, joinRefusedText(&buf, id, e.task, e.alias, err));
 }
 
@@ -9889,6 +9901,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .sendText = poltergeistSend,
         .parkAssign = poltergeistParkAssign,
         .agentPresent = poltergeistAgentPresent,
+        .seatHeld = seatHolderAlive,
         .startupReach = poltergeistStartupReach,
         .startupQuestion = poltergeistStartupQuestion,
         .personaFace = poltergeistPersonaFace,
@@ -15177,10 +15190,16 @@ test "squad: joinSeat 入位走 takeSeat：新座位被做出来并写 joined；
     try testing.expectEqualStrings("worker-test", app.tasks.get(id).?.members[1].role);
 
     // What the group is told when it is refused.
-    var buf: [512]u8 = undefined;
+    var buf: [768]u8 = undefined;
     const said = joinRefusedText(&buf, 0xa, id, "test", error.MemberTaken);
     try testing.expect(std.mem.indexOf(u8, said, "\"test\"") != null);
     try testing.expect(std.mem.indexOf(u8, said, "MemberTaken") != null);
+    // A holder still starting: the way out says to close a terminal.
+    try testing.expect(std.mem.indexOf(u8, said, "still starting") != null);
+    // A full task is not told to launch again.
+    const full = joinRefusedText(&buf, 0xa, id, "test", error.TooManyMembers);
+    try testing.expect(std.mem.indexOf(u8, full, "TooManyMembers") != null);
+    try testing.expect(std.mem.indexOf(u8, full, "role_launch") == null);
 }
 
 test "squad: place:auto 不复用占着本任务另一个座位的 pane（agent 已退出也一样）" {
@@ -17665,6 +17684,52 @@ test "worktree: poltergeistRequest 只经 worktree.round 分派" {
     try testing.expect(std.mem.indexOf(u8, body, "} else _ = round.dispatch();") != null);
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "round.dispatch()"));
     try testing.expectEqual(@as(usize, 0), std.mem.count(u8, body, "rpc.dispatch("));
+}
+
+/// The source of the function that starts at `head` (a line start, e.g.
+/// "\nfn taskOwner("), **without its comments**, so a call that is only
+/// written in a comment does not count as made. For the source-text tests.
+fn codeOf(alloc: Allocator, head: []const u8) ![]u8 {
+    const src = @embedFile("App.zig");
+    const start = std.mem.indexOf(u8, src, head) orelse return error.NoFunction;
+    const end = start + (std.mem.indexOf(u8, src[start..], "\n}\n") orelse return error.NoEnd);
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var lines = std.mem.splitScalar(u8, src[start..end], '\n');
+    while (lines.next()) |line| {
+        // Whole-line and trailing comments both: a call written after a `//`
+        // on a code line is not a call either.
+        const code = line[0 .. std.mem.indexOf(u8, line, "//") orelse line.len];
+        if (std.mem.trim(u8, code, " ").len == 0) continue;
+        try out.appendSlice(alloc, code);
+        try out.append(alloc, '\n');
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+test "squad: App 的读路径与 taskOwner 经过 rpc 里测过的那一处构造；seatHeld 接的是 seatHolderAlive，它问 stillLaunching" {
+    // **Read off the source**, like the tick test above: `chatRead`,
+    // `chatHistory`, `taskOwner` and `poltergeistHost` need a running App.
+    // The rpc functions are tested for what they do; that the app calls
+    // them, and does not build the line or the owner by hand again
+    // (`channel = 0`, a squad left empty), or wire `seatHeld` to
+    // `agentPresent` (a launching CLI's seat taken from it), is looked for
+    // here -- **in the code, not in the comments** (`codeOf`).
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const Want = struct { head: []const u8, call: []const u8 };
+    for ([_]Want{
+        .{ .head = "\nfn chatRead(", .call = "poltergeistpkg.rpc.chatLineOf(" },
+        .{ .head = "\nfn chatHistory(", .call = "poltergeistpkg.rpc.historyLineOf(" },
+        .{ .head = "\nfn taskOwner(", .call = "poltergeistpkg.rpc.ownerOf(" },
+        .{ .head = "\nfn poltergeistHost(", .call = ".seatHeld = seatHolderAlive," },
+        .{ .head = "\nfn seatHolderAlive(", .call = "self.stillLaunching(" },
+    }) |w| {
+        const code = try codeOf(alloc, w.head);
+        defer alloc.free(code);
+        const found = std.mem.indexOf(u8, code, w.call) != null;
+        try testing.expect(found);
+    }
 }
 
 test "task 1730: the burst, measured over the sizes and costs it can have" {

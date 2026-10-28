@@ -5606,19 +5606,52 @@ pub fn takeSeat(
     at_ms: i64,
 ) !?Bus.Id {
     const t = tasks.get(task) orelse return error.NoSuchTask;
-    var emptied: ?Bus.Id = null;
-    for (t.members) |m| {
-        if (m.slot != .filled) continue;
-        // One terminal, one seat.
-        if (m.id == id and !std.mem.eql(u8, m.alias, alias)) return error.MemberTaken;
-        if (m.id != id and std.mem.eql(u8, m.alias, alias)) {
-            if (holderAlive(ctx, m.id)) return error.MemberTaken;
-            emptied = m.id;
-        }
-    }
+    const emptied: ?Bus.Id = switch (judgeSeat(t.members, ctx, holderAlive, id, alias)) {
+        .taken, .holds_other => return error.MemberTaken,
+        .free => null,
+        .emptied => |old| old,
+    };
     if (emptied != null) try tasks.leave(task, alias, at_ms);
     try tasks.join(task, alias, role, id, "", at_ms, lead);
     return emptied;
+}
+
+/// What `takeSeat` would do with the seat `alias` for `id`, **judged without
+/// changing anything**; `assignSeat` asks the same (task 2541), so the rule
+/// is written once.
+pub const SeatVerdict = union(enum) {
+    /// Nobody holds the seat (or `id` itself does).
+    free,
+    /// Its holder is gone: the seat is emptied first, and this terminal was it.
+    emptied: Bus.Id,
+    /// Another terminal holds it and `holderAlive` says it is still there.
+    taken,
+    /// `id` already holds another seat of the task: one terminal, one seat.
+    holds_other: []const u8,
+};
+
+pub fn judgeSeat(
+    members: []const Tasks.Member,
+    ctx: *anyopaque,
+    holderAlive: *const fn (ctx: *anyopaque, id: Bus.Id) bool,
+    id: Bus.Id,
+    alias: []const u8,
+) SeatVerdict {
+    var verdict: SeatVerdict = .free;
+    for (members) |m| {
+        if (m.slot != .filled) continue;
+        if (m.id == id and !std.mem.eql(u8, m.alias, alias)) return .{ .holds_other = m.alias };
+        if (m.id != id and std.mem.eql(u8, m.alias, alias)) {
+            if (holderAlive(ctx, m.id)) return .taken;
+            verdict = .{ .emptied = m.id };
+        }
+    }
+    return verdict;
+}
+
+fn hostSeatHeld(ctx: *anyopaque, id: Bus.Id) bool {
+    const h: *const Host = @ptrCast(@alignCast(ctx));
+    return h.seatHeld(id);
 }
 
 /// A line of `group_read`, from a message of the group's own log. The one
@@ -6319,6 +6352,16 @@ pub const Host = struct {
         /// something a bare shell cannot produce. False also covers the
         /// moment before an agent's sidecar has finished connecting.
         agentPresent: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+        ) bool,
+
+        /// Whether a seat's holder still counts as holding it: an agent is
+        /// connected from it, **or its CLI is still starting** (task 2541).
+        /// `agentPresent` alone is false for the seconds between the launch
+        /// line and the agent's connecting, and a second `role_launch` for
+        /// the same seat in that time emptied the first terminal's seat.
+        seatHeld: *const fn (
             ctx: *anyopaque,
             id: Bus.Id,
         ) bool,
@@ -7184,6 +7227,10 @@ pub const Host = struct {
         return self.vtable.agentPresent(self.ctx, id);
     }
 
+    fn seatHeld(self: Host, id: Bus.Id) bool {
+        return self.vtable.seatHeld(self.ctx, id);
+    }
+
     fn startupReach(self: Host, id: Bus.Id) StartupReach {
         return self.vtable.startupReach(self.ctx, id);
     }
@@ -7967,14 +8014,18 @@ fn assignSeat(
     if (bus.isSupervisor(id) or host.roleIsSupervisor(seat.role)) return supervisorNotAllowed();
     // **Everything `Tasks.join` would refuse is judged here, before the
     // terminal is told anything** (task 2494): the place held by another
-    // terminal with an agent in it, and this terminal already holding
-    // another place of the task. A place whose agent is gone is free.
-    if (seat.slot == .filled and seat.id != id and host.agentPresent(seat.id)) return taskFailure(error.MemberTaken);
-    for (what.members) |m| {
-        if (m.slot == .filled and m.id == id and !std.mem.eql(u8, m.alias, alias)) return hostFailure(
+    // terminal with an agent in it or one still starting, and this terminal
+    // already holding another place of the task -- `judgeSeat`, the rule
+    // `takeSeat` takes the seat by. A place whose agent is gone is free.
+    var held_ctx = host;
+    const verdict = judgeSeat(what.members, @ptrCast(&held_ctx), hostSeatHeld, id, alias);
+    switch (verdict) {
+        .taken => return taskFailure(error.MemberTaken),
+        .holds_other => |held| return hostFailure(
             "MemberTaken",
-            try std.fmt.allocPrint(alloc, "0x{x:0>16} already holds the seat \"{s}\" of task {d}; one terminal, one seat. Nothing was said to it.", .{ id, m.alias, task }),
-        );
+            try std.fmt.allocPrint(alloc, "0x{x:0>16} already holds the seat \"{s}\" of task {d}; one terminal, one seat. Nothing was said to it.", .{ id, held, task }),
+        ),
+        .free, .emptied => {},
     }
 
     const typable = mayType(host, id);
@@ -7998,7 +8049,7 @@ fn assignSeat(
 
     const lead = std.mem.eql(u8, leadAlias(host, what), alias);
     // The old holder's agent is gone: the place is emptied, then taken.
-    if (seat.slot == .filled and seat.id != id) host.taskLeave(task, alias) catch |err| return taskFailure(err);
+    if (verdict == .emptied) host.taskLeave(task, alias) catch |err| return taskFailure(err);
     host.taskJoin(task, alias, id, lead) catch |err| return taskFailure(err);
     return .{ .text = try std.fmt.allocPrint(alloc, "0x{x:0>16} has the seat \"{s}\" of task {d}{s}.", .{ id, alias, task, if (lead) ", and leads it" else "" }) };
 }
@@ -8311,9 +8362,9 @@ fn seatFor(
         "the seat names the role; leave `key` out, or give the seat's own.",
     ) };
     // A seat with a live agent in it is not given to a second one.
-    if (m.slot == .filled and host.agentPresent(m.id)) return .{ .stop = hostFailure(
+    if (m.slot == .filled and host.seatHeld(m.id)) return .{ .stop = hostFailure(
         "MemberTaken",
-        try std.fmt.allocPrint(alloc, "the seat \"{s}\" of task {d} is taken by 0x{x:0>16}, which has an agent in it. Nothing was opened.", .{ member, task, m.id }),
+        try std.fmt.allocPrint(alloc, "the seat \"{s}\" of task {d} is taken by 0x{x:0>16}, which has an agent in it or is starting one (up to about a minute; longer while its CLI waits on a startup question). Wait for it, or close that terminal to free the seat. Nothing was opened.", .{ member, task, m.id }),
     ) };
 
     // The terminal asked to sit here already holds another seat of the task:
@@ -12071,7 +12122,8 @@ fn taskFailure(err: anyerror) wire.Response {
         error.MemberTaken => hostFailure(
             "MemberTaken",
             "that seat has another terminal in it, or this terminal already has another seat in the " ++
-                "task. Empty the seat first: task_assign with the alias and id 0.",
+                "task. A holder whose agent is there, or whose CLI is still starting, keeps it: empty the seat first " ++
+                "(task_assign with the alias and id 0) or close that terminal.",
         ),
         error.DuplicateAlias => hostFailure("DuplicateAlias", "an alias is used twice in one task."),
         error.TooManyMembers => hostFailure("TooManyMembers", "a task has at most eight seats."),
@@ -13044,6 +13096,8 @@ const FakeHost = struct {
     /// Terminals with no agent in them whatever `agent_present` says, for
     /// the tests where one named terminal has one and another does not.
     agent_absent: []const Bus.Id = &.{},
+    /// Terminals whose CLI is still starting: no agent yet, but `seatHeld`.
+    launching: []const Bus.Id = &.{},
     /// Why the seat of the last `role_launch` was not taken, if it was not.
     join_refused: ?anyerror = null,
     /// What `startupReach` answers for a terminal with no agent.
@@ -13124,6 +13178,7 @@ const FakeHost = struct {
             .sendText = send,
             .parkAssign = parkAssign,
             .agentPresent = agentPresent,
+            .seatHeld = seatHeld,
             .startupReach = startupReach,
             .startupQuestion = startupQuestion,
             .personaFace = personaFace,
@@ -13895,6 +13950,11 @@ const FakeHost = struct {
         return self.agent_present;
     }
 
+    fn seatHeld(ctx: *anyopaque, id: Bus.Id) bool {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return agentPresent(ctx, id) or std.mem.indexOfScalar(Bus.Id, self.launching, id) != null;
+    }
+
     fn startupQuestion(ctx: *anyopaque, _: Bus.Id) bool {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return self.startup_question;
@@ -14076,7 +14136,7 @@ const FakeHost = struct {
     fn takeSeatOn(self: *FakeHost, id: Bus.Id, key: []const u8, seat: ?MemberSeat) void {
         const s = seat orelse return;
         const panel = self.panel orelse return;
-        _ = takeSeat(panel, self, agentPresent, id, s.task, s.alias, key, s.lead, 0) catch |err| {
+        _ = takeSeat(panel, self, seatHeld, id, s.task, s.alias, key, s.lead, 0) catch |err| {
             self.join_refused = err;
         };
     }
@@ -17316,11 +17376,16 @@ test "making and handing out work is the supervisor's" {
     const alloc = arena.allocator();
     var fake = panelFixture(&panel);
 
-    const made = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{
-        .group = "build",
-        .title = "get the core building",
-        .kind = "bug",
-    } });
+    const made = try dispatch(alloc, &b, fake.host(), term(boss), .{
+        .task_create = .{
+            .group = "build",
+            .title = "get the core building",
+            // Not `bug` or `feature`: those plan a worktree since c4aa61e82, and
+            // the reply is then JSON carrying a note, where this test wants the
+            // task number -- it is about who may make work, not about the tree.
+            .kind = "other",
+        },
+    });
     try testing.expectEqual(@as(u64, 1), made.task);
 
     // The watched terminal may not make its own, nor hand one out, nor
@@ -22625,6 +22690,67 @@ test "squad: takeSeat 先判后改——终端已占别的位、位上 agent 还
     try testing.expectEqualStrings("worker-review", panel.get(id).?.members[2].role);
 }
 
+test "squad: 位上的终端 CLI 还在启动（agent 没连上）→ 再 role_launch / task_assign 同一个位都拒，不挤掉第一个" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    try panel.join(1, "dev", "", other, "", 0, true);
+    // No agent has connected from `other` yet, but its CLI is starting.
+    fake.agent_absent = &.{other};
+    fake.launching = &.{other};
+
+    const again = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "dev" } });
+    try testing.expect(again == .failed);
+    try testing.expectEqualStrings("MemberTaken", again.failed.code);
+    try testing.expect(fake.role_launched == null);
+    try testing.expectEqual(other, panel.get(1).?.members[0].id);
+
+    const assigned = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_assign = .{ .task = 1, .id = worker, .alias = "dev" } });
+    try testing.expect(assigned == .failed);
+    try testing.expectEqualStrings("MemberTaken", assigned.failed.code);
+    try testing.expectEqual(@as(usize, 0), fake.sent_n);
+    try testing.expectEqual(other, panel.get(1).?.members[0].id);
+
+    // takeSeat itself, for a launch that got past the check by racing it.
+    try testing.expectError(error.MemberTaken, takeSeat(&panel, &fake, FakeHost.seatHeld, worker, 1, "dev", "", false, 5));
+    try testing.expectEqual(other, panel.get(1).?.members[0].id);
+
+    // Negative control: the launch gave up (no longer starting) and no agent
+    // came -- the seat is a dead one and can be refilled.
+    fake.launching = &.{};
+    const refilled = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "dev" } });
+    try testing.expect(refilled == .opened);
+}
+
+test "squad: takeSeat 目标位持有者已死且排在前面、本终端占着后面的另一个位 → 拒，死位不被腾空" {
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    const id = try panel.create("build", "squad work", .feature);
+    try panel.setSquad(id, "trio");
+    try panel.addSlot(id, "dev", "worker-dev");
+    try panel.addSlot(id, "test", "worker-test");
+    // The dead seat comes **first**, so a check made while walking the
+    // members would already have emptied it when it met the other seat.
+    try panel.join(id, "dev", "", other, "", 1, true);
+    try panel.join(id, "test", "", worker, "", 1, false);
+    var fake = panelFixture(&panel);
+    fake.agent_absent = &.{other};
+    try testing.expectError(error.MemberTaken, takeSeat(&panel, &fake, FakeHost.seatHeld, worker, id, "dev", "", false, 5));
+    try testing.expectEqual(other, panel.get(id).?.members[0].id);
+    try testing.expectEqual(Tasks.Slot.filled, panel.get(id).?.members[0].slot);
+    try testing.expectEqual(worker, panel.get(id).?.members[1].id);
+}
+
 test "channel: chatLineOf / historyLineOf 把频道带进回复行" {
     const m: Chat.Message = .{ .seq = 4, .log_seq = 40, .from = 0x2222, .at_ms = 1000, .summary = false, .text = "x", .channel = 7 };
     try testing.expectEqual(@as(u64, 7), chatLineOf(m, "w", "x").channel);
@@ -23087,7 +23213,11 @@ test "worktree: role_launch task 的 cwd 在树外 → CwdOutsideTaskTree；树�
     try testing.expectEqualStrings("/src/proj-wt/build/wt-1/src", fake.role_launched.?.cwd);
 
     // Another repository altogether: allowed, and said not to be the tree.
+    // The launch above left its terminal in `dev` (the fake takes the seat as
+    // the app does), so for `dev` to be launched again that terminal's agent
+    // has to be gone -- a live one keeps the seat (`MemberTaken`).
     fake.role_launched = null;
+    fake.agent_absent = &.{0x7777};
     const elsewhere = try launchInTree(alloc, &b, &fake, "/other/repo");
     try testing.expect(elsewhere == .opened);
     try testing.expectEqualStrings("/other/repo", fake.role_launched.?.cwd);
