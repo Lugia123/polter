@@ -326,6 +326,12 @@ fn render(
         try s.objectField("squad");
         try s.write(task.squad);
     }
+    // Likewise only when it was ever said (`unset` is a task that predates
+    // the question), and on every line, so a replay need not guess.
+    if (task.worktree != .unset) {
+        try s.objectField("worktree");
+        try s.write(@tagName(task.worktree));
+    }
     if (task.members.len > 0) {
         try s.objectField("members");
         try s.beginArray();
@@ -751,6 +757,9 @@ fn applyMembers(
     obj: std.json.ObjectMap,
 ) void {
     if (str(obj, "squad")) |key| tasks.setSquad(id, key) catch {};
+    if (str(obj, "worktree")) |w| if (std.meta.stringToEnum(Tasks.WorktreeState, w)) |state| {
+        tasks.setWorktree(id, state) catch {};
+    };
     const arr = switch (obj.get("members") orelse return) {
         .array => |a| a,
         else => return,
@@ -1513,4 +1522,41 @@ test "TaskLog: 2470 回填的 session 重放后不丢，换 session 的两段 sp
     try testing.expectEqualStrings("claude-code bbbb2222", t.spans[1].session);
     try testing.expectEqual(at + 30, t.spans[1].from_ms);
     try testing.expectEqual(@as(?i64, null), t.spans[1].to_ms);
+}
+
+test "TaskLog: 任务的 worktree 状态重启后还在；没写过的旧记录读出来是 unset" {
+    const alloc = testing.allocator;
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        alloc.free(dir);
+    }
+    const at: i64 = 1_700_000_000_000;
+    {
+        var tasks: Tasks = .init(alloc, .{});
+        defer tasks.deinit();
+        var l = try TaskLog.open(alloc, io, dir);
+        defer l.deinit();
+        const one = try tasks.create("build", "planned", .bug);
+        l.append(at, .created, tasks.get(one).?);
+        try tasks.setWorktree(one, .planned);
+        l.append(at + 1, .edited, tasks.get(one).?);
+        try tasks.setWorktree(one, .made);
+        l.append(at + 2, .edited, tasks.get(one).?);
+        // One that was never asked: its lines say nothing of a tree.
+        const two = try tasks.create("build", "old", .other);
+        l.append(at, .created, tasks.get(two).?);
+    }
+
+    var again: Tasks = .init(alloc, .{});
+    defer again.deinit();
+    var l = try TaskLog.open(alloc, io, dir);
+    defer l.deinit();
+    l.restore(&again);
+    try testing.expectEqual(Tasks.WorktreeState.made, again.get(1).?.worktree);
+    try testing.expectEqual(Tasks.WorktreeState.unset, again.get(2).?.worktree);
 }

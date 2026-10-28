@@ -547,6 +547,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 .kind = (try optionalString(aa, params, "kind")) orelse "",
                 .squad = (try optionalString(aa, params, "squad")) orelse "",
                 .members = try optionalStrings(aa, params, "members"),
+                .worktree = (try optionalString(aa, params, "worktree")) orelse "",
             },
         },
 
@@ -2001,6 +2002,14 @@ fn writeOpenedWorktree(s: *std.json.Stringify, w: rpc.OpenedWorktree) std.Io.Wri
             try s.write(u.entry.repo);
             try s.objectField("reused");
             try s.write(u.reused);
+            if (u.entry.kind == .task) if (u.entry.task) |t| {
+                try s.objectField("task");
+                try s.write(t);
+            };
+            if (u.note.len > 0) {
+                try s.objectField("note");
+                try s.write(u.note);
+            }
         },
         .not_git => |n| {
             try s.objectField("used");
@@ -2283,6 +2292,12 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
         try s.objectField("path");
         try s.write(w.path);
         try s.endObject();
+        // The task whose tree it is, so a supervisor sees whose terminal
+        // stands in which task without reading paths.
+        if (w.task) |t| {
+            try s.objectField("worktree_task");
+            try s.write(t);
+        }
     }
 
     // Left out entirely rather than sent as null. A field that is absent

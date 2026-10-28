@@ -865,6 +865,10 @@ pub const Request = union(Method) {
         /// aliases to plan for, and only those (squads S4).
         squad: []const u8 = "",
         members: []const []const u8 = &.{},
+        /// "auto" (the default for a feature or a bug) plans a worktree for
+        /// the task, made when its first member is started; "none" says it
+        /// uses none (the default for research and the rest).
+        worktree: []const u8 = "",
     },
     task_edit: struct { task: u64, title: []const u8 = "", kind: []const u8 = "" },
     /// `fresh`: clear the worker's context first (#64). Default off: a
@@ -5547,6 +5551,24 @@ pub const TaskOwner = struct {
     /// for a task with no squad. Owned by the host; valid for the request.
     squad: []const u8 = "",
     members: []const Tasks.Member = &.{},
+
+    /// Whether a tree is to be made for it (plan 12.1).
+    worktree: Tasks.WorktreeState = .unset,
+};
+
+/// Where a task's tree would be made from.
+pub const TreeBase = struct { dir: []const u8, git: bool };
+
+/// What `task_close` and `task_cancel` hand the host to answer with.
+pub const CloseoutAsk = struct {
+    task: u64,
+    mode: worktree.CloseMode,
+    /// Terminals still in the tree, named for a person.
+    standing: []const []const u8 = &.{},
+    /// Aliases building in it (not detected yet: always empty).
+    building: []const []const u8 = &.{},
+    /// What the reply says of the members, to go after its first sentence.
+    preface: []const u8 = "",
 };
 
 /// A seat of a squad that `role_launch` is starting a terminal for.
@@ -6326,6 +6348,35 @@ pub const Host = struct {
             task: u64,
             owner: Bus.Id,
         ) ?worktree.Tag,
+
+        /// The directory a task of `group` made by `by` would have its tree
+        /// made from -- the group's project, else where `by` stands -- and
+        /// whether it looks like a git repository. Null when neither is
+        /// known. Looks at the disk and runs no process.
+        taskTreeBase: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, group: []const u8, by: Bus.Id) ?TreeBase,
+
+        /// Say whether `task` has a tree of its own (plan 12.1).
+        taskSetWorktree: *const fn (ctx: *anyopaque, task: u64, state: Tasks.WorktreeState) anyerror!void,
+
+        /// Find or make the tree of `task`, for its first member. Parks the
+        /// request (`WorktreePending`) while git makes it, as
+        /// `worktreePrepare` does.
+        taskTreePrepare: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, by: Bus.Id, task: u64) anyerror!worktree.Prepared,
+
+        /// What becomes of `ask.task`'s tree, as the answer to its close or
+        /// cancel. Null: the task has no tree, nothing to add. Otherwise the
+        /// host parks the request (`WorktreePending`) while the job runs off
+        /// its thread; `parkedText` has the reply when the request comes
+        /// back.
+        worktreeCloseout: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, ask: CloseoutAsk) anyerror!?[]const u8,
+
+        /// The reply a parked request left for itself, if this dispatch is
+        /// its second time round and the job has finished.
+        parkedText: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator) ?[]const u8,
+
+        /// Terminals whose working directory is in `task`'s tree, other than
+        /// `skip`.
+        worktreeStanding: *const fn (ctx: *anyopaque, alloc: std.mem.Allocator, task: u64, skip: []const Bus.Id) anyerror![]const Bus.Id,
 
         /// Open a terminal in `by`'s window, starting in `cwd`.
         ///
@@ -7117,6 +7168,30 @@ pub const Host = struct {
         self.vtable.worktreeTieTask(self.ctx, task, terminal);
     }
 
+    fn taskTreeBase(self: Host, alloc: std.mem.Allocator, group: []const u8, by: Bus.Id) ?TreeBase {
+        return self.vtable.taskTreeBase(self.ctx, alloc, group, by);
+    }
+
+    fn taskSetWorktree(self: Host, task: u64, state: Tasks.WorktreeState) anyerror!void {
+        return self.vtable.taskSetWorktree(self.ctx, task, state);
+    }
+
+    fn taskTreePrepare(self: Host, alloc: std.mem.Allocator, by: Bus.Id, task: u64) anyerror!worktree.Prepared {
+        return self.vtable.taskTreePrepare(self.ctx, alloc, by, task);
+    }
+
+    fn worktreeCloseout(self: Host, alloc: std.mem.Allocator, ask: CloseoutAsk) anyerror!?[]const u8 {
+        return self.vtable.worktreeCloseout(self.ctx, alloc, ask);
+    }
+
+    fn parkedText(self: Host, alloc: std.mem.Allocator) ?[]const u8 {
+        return self.vtable.parkedText(self.ctx, alloc);
+    }
+
+    fn worktreeStanding(self: Host, alloc: std.mem.Allocator, task: u64, skip: []const Bus.Id) anyerror![]const Bus.Id {
+        return self.vtable.worktreeStanding(self.ctx, alloc, task, skip);
+    }
+
     fn worktreeForTask(self: Host, alloc: std.mem.Allocator, task: u64, owner: Bus.Id) ?worktree.Tag {
         return self.vtable.worktreeForTask(self.ctx, alloc, task, owner);
     }
@@ -7651,6 +7726,7 @@ fn closeTask(
     var kept: std.Io.Writer.Allocating = .init(alloc);
     var n_closed: usize = 0;
     var n_kept: usize = 0;
+    var closed_ids: std.ArrayListUnmanaged(Bus.Id) = .empty;
     for (seats) |m| {
         if (m.slot != .filled) continue;
         const why: ?[]const u8 = if (keep)
@@ -7674,6 +7750,7 @@ fn closeTask(
             if (host.performAction(m.id, "close_surface", false)) {
                 try closed.writer.print("{s} 0x{x:0>16} ({s})", .{ if (n_closed > 0) "," else "", m.id, m.alias });
                 n_closed += 1;
+                try closed_ids.append(alloc, m.id);
                 continue;
             } else |err| {
                 try kept.writer.print("{s} 0x{x:0>16} ({s}): not closed, {t}", .{ if (n_kept > 0) ";" else "", m.id, m.alias, err });
@@ -7685,23 +7762,66 @@ fn closeTask(
         n_kept += 1;
     }
 
-    // **Said, not done** (task 1702): a closed task's tree may still
-    // be needed, and whether it is is the supervisor's judgement.
-    // TODO(S4c): the squad's shared tree, and its landed/leased
-    // verdict (plan 12.6), replace this line for a task that has one.
-    const tree = host.worktreeForTask(alloc, p.task, before.owner);
-    if (n_closed == 0 and n_kept == 0 and tree == null) return .ok;
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    try out.writer.print("Task {d} closed.", .{p.task});
-    if (n_closed > 0) try out.writer.print(" Closed the idle terminals you opened for it:{s}.", .{closed.written()});
-    if (n_kept > 0) try out.writer.print(" Left open, and no longer in the task:{s}.", .{kept.written()});
-    if (tree) |t| try out.writer.print(
-        " Its worktree {s} is still at {s} (branch {s}); " ++
-            "worktree_status says whether it is merged, and worktree_remove takes it " ++
-            "down once it is not needed.",
-        .{ t.name, t.path, t.branch },
-    );
-    return .{ .text = out.written() };
+    // **The tree's fate is `worktree.closeout`'s to say** (plan 12.6): taken
+    // down when everything changed in it has landed on the mainline and nobody
+    // stands in it, kept and named otherwise. Run off the app's thread by the
+    // host, which parks this request until it is done.
+    var preface: std.Io.Writer.Allocating = .init(alloc);
+    if (n_closed > 0) try preface.writer.print(" Closed the idle terminals you opened for it:{s}.", .{closed.written()});
+    if (n_kept > 0) try preface.writer.print(" Left open, and no longer in the task:{s}.", .{kept.written()});
+    var plain: std.Io.Writer.Allocating = .init(alloc);
+    try plain.writer.print("Task {d} closed.{s}", .{ p.task, preface.written() });
+    if (n_closed == 0 and n_kept == 0) return withTree(alloc, host, p.task, .closed, seats, closed_ids.items, "", null);
+    return withTree(alloc, host, p.task, .closed, seats, closed_ids.items, preface.written(), plain.written());
+}
+
+/// The reply to closing or cancelling `task`: what became of its tree
+/// (`worktree.closeout`), with `preface` after the first sentence. When the
+/// task has no tree it is `plain`, which is null for a close with nothing to
+/// say.
+///
+/// **Standing** is the terminals whose directory is in the tree and that were
+/// not closed (`closed`): they are what stops a landed tree being taken down.
+fn withTree(
+    alloc: std.mem.Allocator,
+    host: Host,
+    task: u64,
+    mode: worktree.CloseMode,
+    seats: []const Tasks.Member,
+    closed: []const Bus.Id,
+    preface: []const u8,
+    plain: ?[]const u8,
+) WriteOom!wire.Response {
+    const ids = host.worktreeStanding(alloc, task, closed) catch &.{};
+    var standing: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (ids) |id| {
+        const alias = for (seats) |m| {
+            if (m.id == id and m.alias.len > 0) break m.alias;
+        } else "";
+        try standing.append(alloc, if (alias.len > 0)
+            try std.fmt.allocPrint(alloc, "{s} (0x{x:0>16})", .{ alias, id })
+        else
+            try std.fmt.allocPrint(alloc, "0x{x:0>16}", .{id}));
+    }
+    const text = host.worktreeCloseout(alloc, .{
+        .task = task,
+        .mode = mode,
+        .standing = standing.items,
+        .preface = preface,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // Parked: git is at work off the app's thread, and the request comes
+        // back for `parkedText`. This reply is never sent.
+        error.WorktreePending => return hostFailure("WorktreePending", "the task's worktree is being looked at."),
+        else => return .{ .text = try std.fmt.allocPrint(
+            alloc,
+            "{s} Its worktree could not be looked at ({t}); it was not touched.",
+            .{ plain orelse try std.fmt.allocPrint(alloc, "Task {d} {s}.", .{ task, @tagName(mode) }), err },
+        ) },
+    };
+    if (text) |t| return .{ .text = t };
+    if (plain) |t| return .{ .text = t };
+    return .ok;
 }
 
 /// The alias of a squad task's lead: the template's, else the first seat.
@@ -7819,16 +7939,100 @@ fn cancelSquad(
         };
     }
     host.taskCancel(task) catch |err| return taskFailure(err);
-    if (n_failed > 0) return .{ .text = try std.fmt.allocPrint(
-        alloc,
-        "Task {d} cancelled. {d} seat(s) were told; these could not be, though they could a moment ago:{s}.",
-        .{ task, targets.items.len - n_failed, failed.written() },
-    ) };
-    return .{ .text = try std.fmt.allocPrint(
-        alloc,
-        "Task {d} cancelled.{s}",
-        .{ task, if (targets.items.len == 0) " Nobody was working on it, so nobody was told." else try std.fmt.allocPrint(alloc, " {d} seat(s) were told to stop.", .{targets.items.len}) },
-    ) };
+    const tail = if (n_failed > 0)
+        try std.fmt.allocPrint(
+            alloc,
+            " {d} seat(s) were told; these could not be, though they could a moment ago:{s}.",
+            .{ targets.items.len - n_failed, failed.written() },
+        )
+    else if (targets.items.len == 0)
+        " Nobody was working on it, so nobody was told."
+    else
+        try std.fmt.allocPrint(alloc, " {d} seat(s) were told to stop.", .{targets.items.len});
+    return withTree(alloc, host, task, .cancelled, what.members, &.{}, tail, try std.fmt.allocPrint(alloc, "Task {d} cancelled.{s}", .{ task, tail }));
+}
+
+/// What a new task's `worktree` came to, decided before the task is made.
+const TreeWish = struct {
+    state: Tasks.WorktreeState,
+    /// Said in the reply when there is something to say: why a tree that
+    /// was wanted is not planned.
+    note: []const u8 = "",
+};
+
+/// `worktree` of `task_create`, as a state. Null for a value that is not one.
+///
+/// **`planned` only for a directory that looks like a repository.** The
+/// guess is a walk up for a `.git`, which runs no process; a directory that
+/// looks like one and is not is found out when the tree is made, and the task
+/// goes to `none` then (`prepareTaskTree`), loudly. A directory that is plainly
+/// not one is `none` now, and the reply says the task is not isolated.
+fn treeWish(
+    alloc: std.mem.Allocator,
+    host: Host,
+    caller: Bus.Id,
+    group: []const u8,
+    kind: Tasks.Kind,
+    raw: []const u8,
+) std.mem.Allocator.Error!?TreeWish {
+    const asked: Tasks.WorktreeState = if (raw.len == 0)
+        Tasks.WorktreeState.forKind(kind)
+    else if (std.mem.eql(u8, raw, "auto"))
+        .planned
+    else if (std.mem.eql(u8, raw, "none"))
+        .none
+    else
+        return null;
+    if (asked != .planned) return .{ .state = .none };
+    const base = host.taskTreeBase(alloc, group, caller) orelse return .{
+        .state = .none,
+        .note = "No worktree was planned: neither the group's project nor where you stand is known, " ++
+            "so there is no repository to make one in. The task's terminals are not isolated from anything else working there.",
+    };
+    if (!base.git) return .{
+        .state = .none,
+        .note = try std.fmt.allocPrint(
+            alloc,
+            "No worktree was planned: {s} is not in a git repository, so the task's terminals " ++
+                "are not isolated from anything else working there.",
+            .{base.dir},
+        ),
+    };
+    return .{ .state = .planned };
+}
+
+/// `"worktree":…` for the reply of a new task, with a trailing comma, or
+/// nothing when there is nothing to say.
+fn writeTreeFields(alloc: std.mem.Allocator, w: *std.Io.Writer, id: u64, group: []const u8, wish: TreeWish) WriteOom!void {
+    switch (wish.state) {
+        .planned => {
+            const name = try worktree.taskTreeName(alloc, group, id);
+            const branch = try worktree.taskBranch(alloc, group, id);
+            try w.print(
+                "\"worktree\":\"planned\",\"worktree_name\":{f},\"branch\":{f},",
+                .{ std.json.fmt(name, .{}), std.json.fmt(branch, .{}) },
+            );
+        },
+        else => if (wish.note.len > 0) try w.writeAll("\"worktree\":\"none\","),
+    }
+}
+
+/// The reply of a task of one: its number alone unless there is a tree to
+/// say something of.
+fn treeCreated(alloc: std.mem.Allocator, id: u64, group: []const u8, wish: TreeWish) WriteOom!wire.Response {
+    if (wish.state != .planned and wish.note.len == 0) return .{ .task = id };
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    const w = &out.writer;
+    try w.print("{{\"task\":{d},", .{id});
+    try writeTreeFields(alloc, w, id, group, wish);
+    try w.writeAll("\"note\":");
+    var note: std.Io.Writer.Allocating = .init(alloc);
+    if (wish.state == .planned) try note.writer.writeAll(
+        "No worktree is made yet: it is made when the task's first terminal is started " ++
+            "(role_launch with `task`), and that terminal starts in it.",
+    ) else try note.writer.writeAll(wish.note);
+    try w.print("{f}}}", .{std.json.fmt(note.written(), .{})});
+    return .{ .json = out.written() };
 }
 
 /// `task_create` with a squad: the plan, not the terminals (plan 4.2).
@@ -7846,6 +8050,7 @@ fn createSquadTask(
     kind: Tasks.Kind,
     squad_key: []const u8,
     members: []const []const u8,
+    wish: TreeWish,
 ) WriteOom!wire.Response {
     // Only a supervisor opens a squad, and not the person from the keyboard
     // (plan 4.4): the person asks the supervisor.
@@ -7880,6 +8085,7 @@ fn createSquadTask(
     }
 
     const id = host.taskCreateSquad(group, title, kind, squad_key, seats.items) catch |err| return taskFailure(err);
+    host.taskSetWorktree(id, wish.state) catch |err| return taskFailure(err);
 
     var out: std.Io.Writer.Allocating = .init(alloc);
     const w = &out.writer;
@@ -7907,9 +8113,13 @@ fn createSquadTask(
         if (i > 0) try w.writeByte(',');
         try w.print("{f}", .{std.json.fmt(alias, .{})});
     }
-    try w.writeAll("],\"note\":");
+    try w.writeAll("],");
+    try writeTreeFields(alloc, w, id, group, wish);
+    try w.writeAll("\"note\":");
     var note: std.Io.Writer.Allocating = .init(alloc);
     try note.writer.writeAll("No terminal is open yet: role_launch with `task` and `member` opens each seat in the plan, one at a time.");
+    if (wish.state == .planned) try note.writer.writeAll(" The task's worktree is made when the first seat is started, and every seat works in it.");
+    if (wish.note.len > 0) try note.writer.print(" {s}", .{wish.note});
     if (missing.items.len > 0) {
         try note.writer.writeAll(" The task was made anyway; these seats are required by the squad and were not named, so they are not in the plan:");
         for (missing.items, 0..) |alias, i| try note.writer.print("{s} 必选位 {s} 没点名", .{ if (i > 0) ";" else "", alias });
@@ -8985,9 +9195,9 @@ fn dispatchOne(
                     },
                     .stop => |no| return no,
                 }
-                // TODO(S4c): `cwd` left out starts in the task's worktree
-                // (plan 12.2), once the tree belongs to the task. Until
-                // then the caller's own directory, as for any role.
+                // `cwd` left out starts in the task's worktree (plan 12.2):
+                // made here, by the first seat to be started, off the app's
+                // thread -- see `prepareTaskTree`.
             } else if (p.key.len == 0) return hostFailure(
                 "BadParams",
                 "key is the role to start; leave it out only with `task` and `member`, " ++
@@ -9023,11 +9233,19 @@ fn dispatchOne(
                     "terminal, so leave `in` out.",
             );
             if (limitsRefusal(p.limits)) |no| return no;
-            const tree = switch (try prepareWorktree(alloc, host, caller, p.cwd, p.worktree)) {
+            // A seat of a task goes in the task's tree, unless the caller
+            // named a tree of its own (`worktree`, which stays as it was)
+            // or is starting the role in a terminal that is already open.
+            const into_task = p.task != 0 and p.worktree.len == 0 and p.in == null;
+            const prepared = if (into_task)
+                try prepareTaskTree(alloc, host, caller, p.task, p.cwd)
+            else
+                try prepareWorktree(alloc, host, caller, p.cwd, p.worktree);
+            const tree = switch (prepared) {
                 .go => |t| t,
                 .stop => |no| return no,
             };
-            const opened = host.personaLaunch(alloc, caller, key, p.cli, if (tree) |t| t.dir else p.cwd, p.place, p.in, p.beside, p.group, seat) catch |err| return switch (err) {
+            const opened = host.personaLaunch(alloc, caller, key, p.cli, if (tree) |t| t.start() else p.cwd, p.place, p.in, p.beside, p.group, seat) catch |err| return switch (err) {
                 // Starting it in a terminal that is already open (`in`).
                 error.UnknownTerminal => hostFailure(
                     "UnknownTerminal",
@@ -9161,6 +9379,8 @@ fn dispatchOne(
                     "BadParams",
                     "more than one repository has a worktree by that name; say which with repo.",
                 ),
+                // Parked: git is at work off the app's thread.
+                error.WorktreePending => hostFailure("WorktreePending", "the worktrees are being looked at."),
                 else => hostFailure("WorktreeFailed", "the worktrees could not be read"),
             };
             return .{ .json = json };
@@ -9171,8 +9391,10 @@ fn dispatchOne(
                 "BadParams",
                 "name the worktree to remove by its name or by its task -- one of them.",
             );
-            const done = host.worktreeRemove(alloc, p.name, p.repo, p.task) catch
-                return hostFailure("WorktreeFailed", "the worktree could not be removed; nothing was changed");
+            const done = host.worktreeRemove(alloc, p.name, p.repo, p.task) catch |err| return switch (err) {
+                error.WorktreePending => hostFailure("WorktreePending", "the worktree is being taken down."),
+                else => hostFailure("WorktreeFailed", "the worktree could not be removed; nothing was changed"),
+            };
             return switch (done) {
                 .refused => |r| .{ .failed = .{ .code = r.code, .message = r.message } },
                 .forgotten => |path| .{ .text = try std.fmt.allocPrint(
@@ -10114,6 +10336,16 @@ fn dispatchOne(
                     "how they stay findable.",
             );
 
+            // Asked before anything is made: a misspelt value is a task that
+            // would otherwise exist without the tree it was meant to get.
+            const asked = treeWish(alloc, host, caller, p.group, kind, p.worktree) catch return error.OutOfMemory;
+            const wish = asked orelse return hostFailure(
+                "BadParams",
+                "worktree is `auto` (a worktree of its own for the task, made when its first " ++
+                    "member is started) or `none`. Left out, a feature or a bug is `auto` and " ++
+                    "research and other are `none`.",
+            );
+
             if (p.squad.len == 0) {
                 if (p.members.len > 0) return hostFailure(
                     "BadParams",
@@ -10121,9 +10353,10 @@ fn dispatchOne(
                         "or leave `members` out for a task of one.",
                 );
                 const id = host.taskCreate(p.group, p.title, kind) catch |err| return taskFailure(err);
-                return .{ .task = id };
+                host.taskSetWorktree(id, wish.state) catch |err| return taskFailure(err);
+                return treeCreated(alloc, id, p.group, wish) catch return error.OutOfMemory;
             }
-            return createSquadTask(alloc, host, caller, p.group, p.title, kind, p.squad, p.members) catch return error.OutOfMemory;
+            return createSquadTask(alloc, host, caller, p.group, p.title, kind, p.squad, p.members, wish) catch return error.OutOfMemory;
         },
 
         .task_edit => |p| {
@@ -10196,9 +10429,17 @@ fn dispatchOne(
             return assignAndTell(alloc, host, p.task, p.id, what, .none);
         },
 
-        .task_close => |p| return closeTask(alloc, bus, host, caller, p) catch return error.OutOfMemory,
+        .task_close => |p| {
+            // The second time round of a close that parked for its tree: the
+            // members were seen to before, and the reply is made.
+            if (host.parkedText(alloc)) |text| return .{ .text = text };
+            return closeTask(alloc, bus, host, caller, p) catch return error.OutOfMemory;
+        },
 
         .task_cancel => |p| {
+            // The second time round of a cancel that parked for its tree.
+            if (host.parkedText(alloc)) |text| return .{ .text = text };
+
             // **Say it, then remove it, and this order is the whole of
             // the tool.** A worker whose task simply stopped being on the
             // panel has no reason to look at the panel again: it carries
@@ -10228,12 +10469,8 @@ fn dispatchOne(
                 // right now (somebody is typing in it) still blocks the
                 // cancellation, because there the premise holds.
                 host.taskCancel(p.task) catch |err| return taskFailure(err);
-                return .{ .text = try std.fmt.allocPrint(
-                    alloc,
-                    "Task {d} cancelled. There is no agent in that terminal, " ++
-                        "so nobody was told -- and nobody is working on it.",
-                    .{p.task},
-                ) };
+                const tail = " There is no agent in that terminal, so nobody was told -- and nobody is working on it.";
+                return withTree(alloc, host, p.task, .cancelled, &.{}, &.{}, tail, try std.fmt.allocPrint(alloc, "Task {d} cancelled.{s}", .{ p.task, tail })) catch return error.OutOfMemory;
             }
             if (what.owner != 0) {
                 const line = try std.fmt.allocPrint(
@@ -10256,12 +10493,8 @@ fn dispatchOne(
             host.taskCancel(p.task) catch |err| return taskFailure(err);
 
             // A sentence, not `ok`: the supervisor has to know whether
-            // anybody was actually told.
-            return .{ .text = try std.fmt.allocPrint(
-                alloc,
-                "Task {d} cancelled.{s}",
-                .{ p.task, told },
-            ) };
+            // anybody was actually told. And what became of the tree.
+            return withTree(alloc, host, p.task, .cancelled, &.{}, &.{}, told, try std.fmt.allocPrint(alloc, "Task {d} cancelled.{s}", .{ p.task, told })) catch return error.OutOfMemory;
         },
 
         .task_progress => |p| {
@@ -12077,11 +12310,115 @@ fn highlightJson(alloc: std.mem.Allocator, v: HighlightAnswer.Shown) ![]const u8
 /// was asked for (task 1702). `not_git` is the user's §4.3-3: the terminal
 /// opened, and **the reply says it is not isolated**.
 pub const OpenedWorktree = union(enum) {
-    used: struct { entry: worktree.Entry, reused: bool },
+    used: struct { entry: worktree.Entry, reused: bool, note: []const u8 = "" },
     not_git: struct { name: []const u8, dir: []const u8, note: []const u8 },
 };
 
-const PreparedTree = struct { dir: []const u8, answer: OpenedWorktree };
+const PreparedTree = struct {
+    dir: []const u8,
+    answer: OpenedWorktree,
+    /// Where the terminal starts when that is not `dir` (a task's seat given
+    /// a `cwd` of its own).
+    at: []const u8 = "",
+
+    fn start(self: PreparedTree) []const u8 {
+        return if (self.at.len > 0) self.at else self.dir;
+    }
+};
+
+const TreeStep = union(enum) { go: ?PreparedTree, stop: wire.Response };
+
+/// The worktree half of starting a seat of a task (plan 12.1, 12.2): the
+/// task's tree, made if this is the first seat, and where the terminal starts.
+///
+/// Refused `CwdOutsideTaskTree` for a `cwd` in the same repository but not in
+/// the tree -- a task's terminal beside its tree is the thing the tree is
+/// there to prevent. A `cwd` in another repository is allowed, and the reply
+/// says the terminal is not in the tree.
+fn prepareTaskTree(
+    alloc: std.mem.Allocator,
+    host: Host,
+    caller: Bus.Id,
+    task: u64,
+    cwd: []const u8,
+) !TreeStep {
+    const what = host.taskOwner(task) catch |err| return .{ .stop = taskFailure(err) };
+    if (what.worktree != .planned and what.worktree != .made) return .{ .go = null };
+
+    const prepared = host.taskTreePrepare(alloc, caller, task) catch |err| return .{
+        .stop = switch (err) {
+            // Parked while git makes the tree off the app's thread, and
+            // dispatched again when it is made: this reply is never sent.
+            error.WorktreePending => hostFailure("WorktreePending", "the worktree is still being made."),
+            error.NoDirectory => hostFailure(
+                "BadParams",
+                "the task's worktree is made from the group's project, else from where you stand, " ++
+                    "and neither is known. group_project ties the group to a project, or start the seat " ++
+                    "from a terminal that is in the repository.",
+            ),
+            error.NotAbsolute => hostFailure("BadParams", "a working directory has to be an absolute path."),
+            error.OutOfMemory => return error.OutOfMemory,
+            else => hostFailure("WorktreeFailed", "the task's worktree could not be made; nothing was opened."),
+        },
+    };
+    switch (prepared) {
+        .refused => |r| return .{ .stop = .{ .failed = .{ .code = r.code, .message = r.message } } },
+        .not_git => |dir| {
+            // Found out now: the guess at task_create was wrong. Recorded, so
+            // the task stops being `planned` for something that cannot be made.
+            host.taskSetWorktree(task, .none) catch {};
+            const note = try std.fmt.allocPrint(
+                alloc,
+                "{s} The task's worktree is now `none`.",
+                .{try worktree.notGitNote(alloc, dir)},
+            );
+            return .{ .go = .{
+                .dir = dir,
+                .at = cwd,
+                .answer = .{ .not_git = .{
+                    .name = try std.fmt.allocPrint(alloc, "task {d}", .{task}),
+                    .dir = dir,
+                    .note = note,
+                } },
+            } };
+        },
+        .tree => |t| {
+            if (what.worktree == .planned) host.taskSetWorktree(task, .made) catch {};
+            const relation: worktree.CwdRelation = if (cwd.len == 0) .in_tree else worktree.cwdRelation(t.entry, cwd);
+            switch (relation) {
+                .in_tree => return .{ .go = .{
+                    .dir = t.entry.path,
+                    .at = cwd,
+                    .answer = .{ .used = .{ .entry = t.entry, .reused = t.reused } },
+                } },
+                .same_repo => return .{ .stop = .{ .failed = .{
+                    .code = "CwdOutsideTaskTree",
+                    .message = try std.fmt.allocPrint(
+                        alloc,
+                        "{s} is in the same repository as task {d}'s worktree {s} but not in it. A seat of " ++
+                            "a task works in the task's tree; leave `cwd` out to start there, or give a " ++
+                            "directory inside it. Nothing was opened.",
+                        .{ cwd, task, t.entry.path },
+                    ),
+                } } },
+                .elsewhere => return .{ .go = .{
+                    .dir = t.entry.path,
+                    .at = cwd,
+                    .answer = .{ .used = .{
+                        .entry = t.entry,
+                        .reused = t.reused,
+                        .note = try std.fmt.allocPrint(
+                            alloc,
+                            "{s} is not in the repository of task {d}'s worktree, so this terminal is NOT in " ++
+                                "the worktree ({s}); it works where it was asked to.",
+                            .{ cwd, task, t.entry.path },
+                        ),
+                    } },
+                } },
+            }
+        },
+    }
+}
 
 /// The worktree half of opening a terminal: `go` with where to open it
 /// (null: no worktree was asked for), or `stop` with the refusal.
@@ -12091,7 +12428,7 @@ fn prepareWorktree(
     caller: Bus.Id,
     cwd: []const u8,
     name: []const u8,
-) !union(enum) { go: ?PreparedTree, stop: wire.Response } {
+) !TreeStep {
     if (name.len == 0) return .{ .go = null };
     const prepared = host.worktreePrepare(alloc, caller, cwd, name) catch |err| return .{
         .stop = switch (err) {
@@ -12422,6 +12759,20 @@ const FakeHost = struct {
     worktree_tag: ?worktree.Tag = null,
     worktree_tied: ?struct { task: u64, terminal: Bus.Id } = null,
     worktree_removed: worktree.Removed = .{ .forgotten = "/fake/gone" },
+    /// A task's tree (plan 12): where it would be made from, what making it
+    /// answers, and what closing it says.
+    tree_base: ?TreeBase = null,
+    tree_prepare_answer: worktree.Prepared = .{ .not_git = "/fake/plain" },
+    tree_prepare_error: ?anyerror = null,
+    tree_prepare_calls: usize = 0,
+    tree_prepare_asked: ?struct { by: Bus.Id, task: u64 } = null,
+    closeout_text: ?[]const u8 = null,
+    closeout_error: ?anyerror = null,
+    closeout_asked: ?CloseoutAsk = null,
+    /// What `parkedText` answers: the second time round of a parked close.
+    parked_text: ?[]const u8 = null,
+    standing_ids: []const Bus.Id = &.{},
+    standing_skip: []const Bus.Id = &.{},
     /// What `worktree_status` / `worktree_remove` last asked for.
     worktree_sel: ?struct { name: []const u8, task: u64 } = null,
 
@@ -12652,6 +13003,12 @@ const FakeHost = struct {
             .worktreeRemove = worktreeRemove,
             .worktreeTieTask = worktreeTieTask,
             .worktreeForTask = worktreeForTask,
+            .taskTreeBase = taskTreeBase,
+            .taskSetWorktree = taskSetWorktree,
+            .taskTreePrepare = taskTreePrepare,
+            .worktreeCloseout = worktreeCloseout,
+            .parkedText = parkedText,
+            .worktreeStanding = worktreeStanding,
             .configText = configText,
             .quietMs = quietMs,
             .callSilentMs = callSilentMs,
@@ -12965,7 +13322,7 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const panel = self.panel orelse return error.NotImplemented;
         const t = panel.get(task) orelse return error.NoSuchTask;
-        return .{ .owner = t.owner, .title = t.title, .open = t.state == .open, .group = t.group, .squad = t.squad, .members = t.members };
+        return .{ .owner = t.owner, .title = t.title, .open = t.state == .open, .group = t.group, .squad = t.squad, .members = t.members, .worktree = t.worktree };
     }
 
     fn taskCancel(ctx: *anyopaque, task: u64) anyerror!void {
@@ -13659,6 +14016,49 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         self.worktree_sel = .{ .name = name, .task = task };
         return self.worktree_removed;
+    }
+
+    fn taskTreeBase(ctx: *anyopaque, _: std.mem.Allocator, _: []const u8, _: Bus.Id) ?TreeBase {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.tree_base;
+    }
+
+    fn taskSetWorktree(ctx: *anyopaque, task: u64, state: Tasks.WorktreeState) anyerror!void {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const panel = self.panel orelse return error.NotImplemented;
+        return panel.setWorktree(task, state);
+    }
+
+    fn taskTreePrepare(ctx: *anyopaque, _: std.mem.Allocator, by: Bus.Id, task: u64) anyerror!worktree.Prepared {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.tree_prepare_calls += 1;
+        self.tree_prepare_asked = .{ .by = by, .task = task };
+        if (self.tree_prepare_error) |err| return err;
+        return self.tree_prepare_answer;
+    }
+
+    fn worktreeCloseout(ctx: *anyopaque, alloc: std.mem.Allocator, ask: CloseoutAsk) anyerror!?[]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.closeout_asked = .{
+            .task = ask.task,
+            .mode = ask.mode,
+            .standing = try alloc.dupe([]const u8, ask.standing),
+            .building = ask.building,
+            .preface = try alloc.dupe(u8, ask.preface),
+        };
+        if (self.closeout_error) |err| return err;
+        return self.closeout_text;
+    }
+
+    fn parkedText(ctx: *anyopaque, _: std.mem.Allocator) ?[]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.parked_text;
+    }
+
+    fn worktreeStanding(ctx: *anyopaque, _: std.mem.Allocator, _: u64, skip: []const Bus.Id) anyerror![]const Bus.Id {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.standing_skip = skip;
+        return self.standing_ids;
     }
 
     fn worktreeTieTask(ctx: *anyopaque, task: u64, terminal: Bus.Id) void {
@@ -21178,29 +21578,6 @@ test "worktree: terminal_list says which tree a terminal stands in" {
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, json, "\"worktree\":{\"name\":\"w1\",\"branch\":\"wt/w1\",\"path\":\"/src/proj-wt/w1\"}"));
 }
 
-test "worktree: closing a task says its tree is still there, and removes nothing" {
-    var b = try testBus(testing.allocator);
-    defer b.deinit();
-    var panel: Tasks = .init(testing.allocator, .{});
-    defer panel.deinit();
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var fake = panelFixture(&panel);
-    const id = try panel.create("build", "one", .feature);
-    fake.worktree_tag = .{ .name = "w1", .branch = "wt/w1", .path = "/src/proj-wt/w1" };
-    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = id } });
-    try testing.expect(res == .text);
-    try testing.expect(std.mem.indexOf(u8, res.text, "worktree w1 is still at /src/proj-wt/w1") != null);
-
-    // No tree, the reply it always had.
-    var bare = panelFixture(&panel);
-    const id2 = try panel.create("build", "two", .feature);
-    const plain = try dispatch(alloc, &b, bare.host(), term(boss), .{ .task_close = .{ .task = id2 } });
-    try testing.expect(plain == .ok);
-}
-
 test "worktree: a refused removal is passed on with its reason" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -22098,4 +22475,392 @@ test "rpc: role_delete 回复点名被摘掉的小队位" {
     fake.deleted_seats = &.{};
     const plain = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_delete = .{ .key = "worker-dev" } });
     try testing.expect(plain == .ok);
+}
+
+// -- a task's own worktree (task 2472, squads S4c) ---------------------------
+
+/// The ledger entry of task 1's tree, as `worktree.planTask` would have made it.
+const task_entry: worktree.Entry = .{
+    .name = "build/wt-1",
+    .repo = "/src/proj",
+    .path = "/src/proj-wt/build/wt-1",
+    .branch = "wt/build/1",
+    .base = "abc123",
+    .group = "build",
+    .kind = .task,
+    .task = 1,
+};
+
+test "worktree: task_create worktree=auto 记 planned，不建树；research 与 none 不计划" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    fake.tree_base = .{ .dir = "/src/proj", .git = true };
+
+    // A bug, `worktree` left out: planned, named, and nothing was made.
+    const made = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{ .group = "build", .title = "fix", .kind = "bug" } });
+    try testing.expect(made == .json);
+    try testing.expect(std.mem.indexOf(u8, made.json, "\"worktree\":\"planned\"") != null);
+    try testing.expect(std.mem.indexOf(u8, made.json, "\"branch\":\"wt/build/1\"") != null);
+    try testing.expectEqual(Tasks.WorktreeState.planned, panel.get(1).?.worktree);
+    try testing.expectEqual(@as(usize, 0), fake.tree_prepare_calls);
+    try testing.expect(fake.worktree_asked == null);
+
+    // Asked for outright on a kind that would not have had one.
+    const asked = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{ .group = "build", .title = "read", .kind = "research", .worktree = "auto" } });
+    try testing.expect(asked == .json);
+    try testing.expectEqual(Tasks.WorktreeState.planned, panel.get(2).?.worktree);
+
+    // Research is `none` and says nothing: the reply it always had.
+    const research = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{ .group = "build", .title = "look", .kind = "research" } });
+    try testing.expect(research == .task);
+    try testing.expectEqual(Tasks.WorktreeState.none, panel.get(3).?.worktree);
+
+    // A feature told `none`.
+    const declined = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{ .group = "build", .title = "doc", .kind = "feature", .worktree = "none" } });
+    try testing.expect(declined == .task);
+    try testing.expectEqual(Tasks.WorktreeState.none, panel.get(4).?.worktree);
+
+    // A value that is neither: refused before anything is made.
+    const typo = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{ .group = "build", .title = "x", .kind = "bug", .worktree = "atuo" } });
+    try testing.expectEqualStrings("BadParams", typo.failed.code);
+    try testing.expectEqual(@as(usize, 4), panel.list.items.len);
+}
+
+test "worktree: 非 git 目录 → 任务 worktree=none，回执明说没隔离；建树时才发现也一样" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    // Plainly not a repository: said at task_create.
+    fake.tree_base = .{ .dir = "/plain", .git = false };
+    const made = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{ .group = "build", .title = "fix", .kind = "bug" } });
+    try testing.expect(made == .json);
+    try testing.expect(std.mem.indexOf(u8, made.json, "\"worktree\":\"none\"") != null);
+    try testing.expect(std.mem.indexOf(u8, made.json, "not in a git repository") != null);
+    try testing.expect(std.mem.indexOf(u8, made.json, "not isolated") != null);
+    try testing.expectEqual(Tasks.WorktreeState.none, panel.get(1).?.worktree);
+
+    // Where nobody stands, nothing is known, and that is said too.
+    fake.tree_base = null;
+    const unknown = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_create = .{ .group = "build", .title = "fix2", .kind = "bug" } });
+    try testing.expect(std.mem.indexOf(u8, unknown.json, "not isolated") != null);
+    try testing.expectEqual(Tasks.WorktreeState.none, panel.get(2).?.worktree);
+
+    // Looked like a repository, was not: found out at the first seat.
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    rig.wire(&fake);
+    fake.tree_base = .{ .dir = "/stray", .git = true };
+    const trio = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    try testing.expect(std.mem.indexOf(u8, trio.json, "\"worktree\":\"planned\"") != null);
+    try testing.expectEqual(Tasks.WorktreeState.planned, panel.get(3).?.worktree);
+    fake.tree_prepare_answer = .{ .not_git = "/stray" };
+    const launched = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 3, .member = "dev" } });
+    try testing.expect(launched == .opened);
+    try testing.expectEqual(@as(usize, 1), fake.tree_prepare_calls);
+    try testing.expectEqual(Tasks.WorktreeState.none, panel.get(3).?.worktree);
+    try testing.expect(std.mem.indexOf(u8, launched.opened.worktree.?.not_git.note, "not isolated") != null);
+    try testing.expectEqualStrings("/stray", fake.role_launched.?.cwd);
+}
+
+fn launchInTree(alloc: std.mem.Allocator, b: *Bus, fake: *FakeHost, cwd: []const u8) !wire.Response {
+    return dispatch(alloc, b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "dev", .cwd = cwd } });
+}
+
+test "worktree: 第一次 role_launch task member 才建树，且终端的 cwd 在树里" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    fake.tree_base = .{ .dir = "/src/proj", .git = true };
+    fake.tree_prepare_answer = .{ .tree = .{ .entry = task_entry, .reused = false } };
+
+    const made = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    try testing.expect(std.mem.indexOf(u8, made.json, "\"worktree\":\"planned\"") != null);
+    // Nothing was made by asking for the task.
+    try testing.expectEqual(@as(usize, 0), fake.tree_prepare_calls);
+    try testing.expect(fake.role_launched == null);
+
+    const res = try launchInTree(alloc, &b, &fake, "");
+    try testing.expect(res == .opened);
+    // The tree was made for this seat, by the task's number, for the caller,
+    // and the terminal starts in it.
+    try testing.expectEqual(@as(usize, 1), fake.tree_prepare_calls);
+    try testing.expectEqual(@as(u64, 1), fake.tree_prepare_asked.?.task);
+    try testing.expectEqual(boss, fake.tree_prepare_asked.?.by);
+    try testing.expectEqualStrings("/src/proj-wt/build/wt-1", fake.role_launched.?.cwd);
+    try testing.expectEqual(Tasks.WorktreeState.made, panel.get(1).?.worktree);
+    try testing.expectEqualStrings("wt/build/1", res.opened.worktree.?.used.entry.branch);
+
+    // A second seat goes into the same tree.
+    fake.tree_prepare_answer = .{ .tree = .{ .entry = task_entry, .reused = true } };
+    const second = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "test" } });
+    try testing.expect(second == .opened);
+    try testing.expectEqualStrings("/src/proj-wt/build/wt-1", fake.role_launched.?.cwd);
+    try testing.expect(second.opened.worktree.?.used.reused);
+}
+
+test "worktree: role_launch task 的 cwd 在树外 → CwdOutsideTaskTree；树里照用；别的仓库允许并带 note" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    fake.tree_base = .{ .dir = "/src/proj", .git = true };
+    fake.tree_prepare_answer = .{ .tree = .{ .entry = task_entry, .reused = false } };
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+
+    // The repository's own checkout is outside the tree.
+    const outside = try launchInTree(alloc, &b, &fake, "/src/proj");
+    try testing.expectEqualStrings("CwdOutsideTaskTree", outside.failed.code);
+    try testing.expect(std.mem.indexOf(u8, outside.failed.message, "/src/proj-wt/build/wt-1") != null);
+    try testing.expect(fake.role_launched == null);
+    // So is another task's tree, beside it.
+    const sibling = try launchInTree(alloc, &b, &fake, "/src/proj-wt/build/wt-9");
+    try testing.expectEqualStrings("CwdOutsideTaskTree", sibling.failed.code);
+    try testing.expect(fake.role_launched == null);
+
+    // A directory inside the tree is where it starts.
+    const inside = try launchInTree(alloc, &b, &fake, "/src/proj-wt/build/wt-1/src");
+    try testing.expect(inside == .opened);
+    try testing.expectEqualStrings("/src/proj-wt/build/wt-1/src", fake.role_launched.?.cwd);
+
+    // Another repository altogether: allowed, and said not to be the tree.
+    fake.role_launched = null;
+    const elsewhere = try launchInTree(alloc, &b, &fake, "/other/repo");
+    try testing.expect(elsewhere == .opened);
+    try testing.expectEqualStrings("/other/repo", fake.role_launched.?.cwd);
+    const used = elsewhere.opened.worktree.?.used;
+    try testing.expect(std.mem.indexOf(u8, used.note, "NOT in the worktree") != null);
+}
+
+test "worktree: 任务 worktree=none 的 role_launch 不碰树；带 worktree 名字的仍走手动树" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    // No `tree_base`: the task is `none`.
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+    try testing.expectEqual(Tasks.WorktreeState.none, panel.get(1).?.worktree);
+    const res = try launchInTree(alloc, &b, &fake, "/anywhere");
+    try testing.expect(res == .opened);
+    try testing.expectEqual(@as(usize, 0), fake.tree_prepare_calls);
+    try testing.expectEqualStrings("/anywhere", fake.role_launched.?.cwd);
+    try testing.expect(res.opened.worktree == null);
+}
+
+test "worktree: 树正在建时 role_launch 不开终端，也不改任务的状态" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    fake.tree_base = .{ .dir = "/src/proj", .git = true };
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+
+    fake.tree_prepare_error = error.WorktreePending;
+    const res = try launchInTree(alloc, &b, &fake, "");
+    try testing.expectEqualStrings("WorktreePending", res.failed.code);
+    try testing.expect(fake.role_launched == null);
+    try testing.expectEqual(Tasks.WorktreeState.planned, panel.get(1).?.worktree);
+}
+
+test "worktree: task_close 的回执用 closeout 的文字，带上站在树里的终端；没有树时仍是原来的回执" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    try closingRig(alloc, &b, &panel, &fake);
+
+    // test is busy, so it stays; a terminal nobody listed also stands in the tree.
+    b.entries.getPtr(0x3333).?.agent.state = .in_turn;
+    fake.standing_ids = &.{ 0x3333, 0x9999 };
+    fake.closeout_text = "Task 1 closed. TREE-SENTENCE";
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = 1 } });
+    try testing.expectEqualStrings("Task 1 closed. TREE-SENTENCE", res.text);
+
+    const ask = fake.closeout_asked.?;
+    try testing.expectEqual(worktree.CloseMode.closed, ask.mode);
+    try testing.expectEqual(@as(u64, 1), ask.task);
+    // Named for a person: a seat by its alias, a stranger by its id.
+    try testing.expectEqual(@as(usize, 2), ask.standing.len);
+    try testing.expectEqualStrings("test (0x0000000000003333)", ask.standing[0]);
+    try testing.expectEqualStrings("0x0000000000009999", ask.standing[1]);
+    // The members' side of the reply is handed over to go after the first sentence,
+    // and the terminals closed here are not "standing".
+    try testing.expect(std.mem.indexOf(u8, ask.preface, "Closed the idle terminals") != null);
+    try testing.expect(std.mem.indexOf(u8, ask.preface, "(test): busy") != null);
+    try testing.expectEqual(@as(usize, 2), fake.standing_skip.len);
+    // The members are out of the task before the tree is asked about.
+    for (panel.get(1).?.members) |m| try testing.expect(m.slot != .filled);
+
+    // No tree: the reply it had, members only.
+    var bare_b = try testBus(testing.allocator);
+    defer bare_b.deinit();
+    var bare_panel: Tasks = .init(testing.allocator, .{});
+    defer bare_panel.deinit();
+    var bare = panelFixture(&bare_panel);
+    rig.wire(&bare);
+    try closingRig(alloc, &bare_b, &bare_panel, &bare);
+    const plain = try dispatch(alloc, &bare_b, bare.host(), term(boss), .{ .task_close = .{ .task = 1 } });
+    try testing.expect(std.mem.startsWith(u8, plain.text, "Task 1 closed. Closed the idle terminals"));
+    try testing.expect(std.mem.indexOf(u8, plain.text, "worktree") == null);
+}
+
+test "worktree: task_close 的树在后台处理时，请求停着；回来时直接给答案，不再重做成员" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    try closingRig(alloc, &b, &panel, &fake);
+
+    fake.closeout_error = error.WorktreePending;
+    const parked = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = 1 } });
+    try testing.expectEqualStrings("WorktreePending", parked.failed.code);
+    try testing.expectEqual(@as(usize, 3), fake.closed_n);
+
+    // The second time round: the host has the answer, so nothing else runs.
+    fake.parked_text = "Task 1 closed. ANSWER";
+    const closed_before = fake.closed_n;
+    const back = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_close = .{ .task = 1 } });
+    try testing.expectEqualStrings("Task 1 closed. ANSWER", back.text);
+    try testing.expectEqual(closed_before, fake.closed_n);
+}
+
+test "worktree: task_cancel 的回执用 closeout，模式是 cancelled；单人任务与小队任务各一遍" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    // A task of one, with a tree.
+    const id = try panel.create("build", "one", .feature);
+    fake.closeout_text = "Task 1 cancelled. KEPT-OR-NOT";
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{ .task = id } });
+    try testing.expectEqualStrings("Task 1 cancelled. KEPT-OR-NOT", res.text);
+    try testing.expectEqual(worktree.CloseMode.cancelled, fake.closeout_asked.?.mode);
+    try testing.expectEqualStrings(" Nobody was on it, so there was nobody to tell.", fake.closeout_asked.?.preface);
+    try testing.expectEqual(Tasks.State.cancelled, panel.get(id).?.state);
+
+    // No tree: the reply it had.
+    var bare = panelFixture(&panel);
+    const id2 = try panel.create("build", "two", .feature);
+    const plain = try dispatch(alloc, &b, bare.host(), term(boss), .{ .task_cancel = .{ .task = id2 } });
+    try testing.expectEqualStrings("Task 2 cancelled. Nobody was on it, so there was nobody to tell.", plain.text);
+}
+
+test "worktree: task_cancel 小队任务也用 closeout；后台处理时停着，回来直接给答案" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    try closingRig(alloc, &b, &panel, &fake);
+
+    fake.closeout_text = "Task 1 cancelled. SQUAD-TREE";
+    fake.standing_ids = &.{0x2222};
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{ .task = 1 } });
+    try testing.expectEqualStrings("Task 1 cancelled. SQUAD-TREE", res.text);
+    try testing.expectEqual(worktree.CloseMode.cancelled, fake.closeout_asked.?.mode);
+    try testing.expectEqualStrings("dev (0x0000000000002222)", fake.closeout_asked.?.standing[0]);
+    try testing.expect(std.mem.indexOf(u8, fake.closeout_asked.?.preface, "seat(s) were told to stop") != null);
+
+    // Back from the thread: the answer, and nothing is told again.
+    fake.parked_text = "Task 1 cancelled. ANSWER";
+    const back = try dispatch(alloc, &b, fake.host(), term(boss), .{ .task_cancel = .{ .task = 1 } });
+    try testing.expectEqualStrings("Task 1 cancelled. ANSWER", back.text);
+}
+
+test "worktree: terminal_list 说终端站在哪个任务的树里" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fake: FakeHost = .{
+        .open = &.{
+            .{ .id = worker, .cwd = "/src/proj-wt/build/wt-1/src", .title = "in" },
+            .{ .id = other, .cwd = "/src/proj", .title = "out" },
+        },
+        .worktree_tag = .{ .name = "build/wt-1", .branch = "wt/build/1", .path = "/src/proj-wt/build/wt-1", .task = 1 },
+    };
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .terminal_list);
+    const json = try openedJson(alloc, res);
+    // One terminal is in it, and the key is on that one alone.
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, json, "\"worktree_task\":1"));
+
+    // A manual tree has no task, and the key is not there.
+    fake.worktree_tag = .{ .name = "w1", .branch = "wt/w1", .path = "/src/proj-wt/build/wt-1" };
+    const manual = try dispatch(alloc, &b, fake.host(), term(boss), .terminal_list);
+    try testing.expect(std.mem.indexOf(u8, try openedJson(alloc, manual), "worktree_task") == null);
 }

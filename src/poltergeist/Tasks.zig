@@ -124,6 +124,28 @@ pub const Kind = enum {
     }
 };
 
+/// Whether a task is to have a worktree of its own (plan 12.1).
+///
+/// Four, not a bool, because the answers that look alike are not: `none` is
+/// "this task does not use a tree" (research, a document, coordination),
+/// `planned` is "it will, and none is made yet" -- the one that gets
+/// forgotten -- and `made` is "it is there, the worktree ledger has it".
+/// `unset` is a task recorded before there was the question.
+pub const WorktreeState = enum {
+    unset,
+    none,
+    planned,
+    made,
+
+    /// The default a kind has when the supervisor does not say.
+    pub fn forKind(kind: Kind) WorktreeState {
+        return switch (kind) {
+            .feature, .bug => .planned,
+            .research, .other, .unset => .none,
+        };
+    }
+};
+
 /// Whether a place in a task's squad has ever been filled.
 ///
 /// Three, not two: `empty` is "nobody has been put here yet", `vacated` is
@@ -190,6 +212,9 @@ pub const Task = struct {
     /// was then (a snapshot: the template changing later does not reach
     /// back). "" for a task with no squad. Owned by the panel.
     squad: []const u8 = "",
+
+    /// See `WorktreeState`.
+    worktree: WorktreeState = .unset,
 
     /// Every stretch a terminal held a place, oldest first. Owned.
     spans: []Span = &.{},
@@ -329,6 +354,14 @@ pub fn setKind(self: *Tasks, id: TaskId, kind: Kind) Error!void {
     if (!kind.choosable()) return error.BadKind;
     const t = try self.find(id);
     t.kind = kind;
+}
+
+/// Say whether the task is to have a tree of its own. A tree that is `made`
+/// is not unmade by saying `planned` again.
+pub fn setWorktree(self: *Tasks, id: TaskId, state: WorktreeState) Error!void {
+    const t = try self.find(id);
+    if (t.worktree == .made and state != .made) return;
+    t.worktree = state;
 }
 
 /// Put a task back with the number it already had.
@@ -1642,4 +1675,22 @@ test "squad: 2470 join 时终端已知 session（先 join 空串再立刻回填�
     try testing.expectEqualStrings("claude-code aaaa1111", task.members[0].session);
     try testing.expectEqual(@as(usize, 1), task.spans.len);
     try testing.expectEqualStrings("claude-code aaaa1111", task.spans[0].session);
+}
+
+test "worktree: 任务的树状态由 kind 给默认；已建的树不会被改回 planned" {
+    try testing.expectEqual(WorktreeState.planned, WorktreeState.forKind(.feature));
+    try testing.expectEqual(WorktreeState.planned, WorktreeState.forKind(.bug));
+    try testing.expectEqual(WorktreeState.none, WorktreeState.forKind(.research));
+    try testing.expectEqual(WorktreeState.none, WorktreeState.forKind(.other));
+
+    var tasks: Tasks = .init(testing.allocator, .{});
+    defer tasks.deinit();
+    const id = try tasks.create("build", "t", .bug);
+    // Not said yet: the state a task has before anyone is asked.
+    try testing.expectEqual(WorktreeState.unset, tasks.get(id).?.worktree);
+    try tasks.setWorktree(id, .planned);
+    try tasks.setWorktree(id, .made);
+    try tasks.setWorktree(id, .planned);
+    try testing.expectEqual(WorktreeState.made, tasks.get(id).?.worktree);
+    try testing.expectError(error.NoSuchTask, tasks.setWorktree(99, .none));
 }
