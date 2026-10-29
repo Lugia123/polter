@@ -670,6 +670,11 @@ stall_watch_thread: ?std.Thread = null,
 /// Null until the state directory is known or a request needs it.
 poltergeist_worktrees: ?poltergeistpkg.worktree.Ledger = null,
 
+/// Who is editing which file (task 2565 C6a). Made when the first lock is
+/// taken; `fileGuard` reads it. The hosts that take and renew the locks are
+/// C6b.
+file_locks: ?poltergeistpkg.files.Locks = null,
+
 /// `poltergeist-worktree-location`.
 poltergeist_worktree_location: poltergeistpkg.worktree.Location = .beside,
 
@@ -978,6 +983,7 @@ pub fn deinit(self: *App) void {
     if (self.worktree_leases) |*l| l.deinit();
     self.poltergeist_worktree_jobs.deinit(self.alloc);
     if (self.poltergeist_worktrees) |*w| w.deinit();
+    if (self.file_locks) |*l| l.deinit();
     if (self.poltergeist_log_problem) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
@@ -4198,6 +4204,15 @@ fn pagePanes(self: *App, arena: Allocator, group: []const u8) Allocator.Error!?[
 fn renderWorkdirs(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]const u8 {
     const Workdirs = poltergeistpkg.files.Workdirs;
     if (!self.chat.exists(r.group)) return "{\"error\":\"NoSuchGroup\"}";
+    const dirs = try self.workdirsOf(arena, r.group);
+    var out: std.Io.Writer.Allocating = .init(arena);
+    Workdirs.writeJson(&out.writer, r.group, dirs) catch return error.OutOfMemory;
+    return out.written();
+}
+
+/// The rows `renderWorkdirs` writes, for `group`.
+fn workdirsOf(self: *App, arena: Allocator, group: []const u8) Allocator.Error![]const poltergeistpkg.files.Workdirs.Dir {
+    const Workdirs = poltergeistpkg.files.Workdirs;
     var terms: std.ArrayListUnmanaged(Workdirs.Term) = .empty;
     for (self.control_room.route_rows) |row| {
         for (row.members, row.titles, row.own) |id, title, own| {
@@ -4218,10 +4233,64 @@ fn renderWorkdirs(self: *App, arena: Allocator, r: PageRequest) Allocator.Error!
         if (e.terminal) |t| ids[1] = t;
         try trees.append(arena, .{ .name = e.name, .path = e.path, .terminals = ids });
     };
-    const dirs = try Workdirs.compute(arena, global.io(), r.group, terms.items, trees.items, self.controlHome());
-    var out: std.Io.Writer.Allocating = .init(arena);
-    Workdirs.writeJson(&out.writer, r.group, dirs) catch return error.OutOfMemory;
-    return out.written();
+    return Workdirs.compute(arena, global.io(), group, terms.items, trees.items, self.controlHome());
+}
+
+/// `Host.fileGuard` (task 2565 C6a): the sentence for `id`'s agent when
+/// `path` is a file somebody is editing in Polter, null when it is not
+/// locked **or when it is in no working directory of `id`'s groups** -- the
+/// path goes through `Access` first, so a path outside every workdir is not
+/// asked of the table, and the guard lets it through like any other thing it
+/// cannot tell.
+/// **The one clock the file locks run on** -- every acquire, renew and
+/// question to `Locks` takes its time from here, so a lease is never
+/// stamped on one clock and read on another. Monotonic, counted while awake.
+pub fn fileLockNowMs(self: *App) i64 {
+    return @intCast(self.poltergeistElapsedMs());
+}
+
+fn poltergeistFileGuard(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+    path: []const u8,
+) anyerror!?[]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const files = poltergeistpkg.files;
+    const locks = if (self.file_locks) |*l| l else return null;
+    const now = self.fileLockNowMs();
+    // Nothing locked is the usual case, and every agent write comes through
+    // here: answer before any directory is worked out.
+    _ = locks.sweep(now);
+    if (locks.entries.items.len == 0) return null;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    // The groups the control room shows `id` in -- the rows the workdirs page
+    // is made from, so the guard and the page cannot disagree about which
+    // directories are `id`'s.
+    for (self.control_room.route_rows) |row| {
+        if (std.mem.indexOfScalar(u64, row.members, id) == null) continue;
+        for (try self.workdirsOf(aa, row.group)) |dir| {
+            const verdict = try files.Access.resolve(aa, global.io(), .{
+                .workdir = dir.path,
+                .path = path,
+                .too_wide = !dir.readable,
+            });
+            const real = switch (verdict) {
+                .ok => |r| r,
+                .refuse => continue,
+            };
+            if (real.kind != .file) continue;
+            const held = locks.holder(now, .{ .workdir_id = dir.id, .path = real.path }) orelse continue;
+            return try std.fmt.allocPrint(
+                alloc,
+                "{s} is editing {s} in Polter. Do not change it until Polter says it is done; carry on with other work.",
+                .{ held.name, real.path },
+            );
+        }
+    }
+    return null;
 }
 
 fn renderTasks(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]const u8 {
@@ -4699,6 +4768,86 @@ test "2145 C1: the workdirs page answers where the runtime has no surfaces, and 
     try testing.expectEqualStrings("wt-shop", dirs[0].object.get("tree_name").?.string);
     try testing.expectEqual(@as(usize, 0), dirs[0].object.get("who").?.array.items.len);
     try testing.expect(dirs[0].object.get("readable").?.bool);
+}
+
+test "2565 C6: the guard answers for a locked file by its real path, and for nothing outside the workdir" {
+    const testing = std.testing;
+    var w: PageWorld = undefined;
+    try w.init(testing.allocator);
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    if (comptime @hasDecl(apprt.Surface, "core")) return error.SkipZigTest;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const real = try tmp.dir.realPathFileAlloc(testing.io, ".", a);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "x.md", .data = "x" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "y.md", .data = "y" });
+    try tmp.dir.symLink(testing.io, "x.md", "via-link.md", .{});
+    try tmp.dir.symLink(testing.io, "/etc/hosts", "out-link.md", .{});
+
+    w.app.poltergeist_worktrees = .{ .alloc = testing.allocator };
+    defer w.app.poltergeist_worktrees.?.entries.deinit(testing.allocator);
+    try w.app.poltergeist_worktrees.?.entries.append(testing.allocator, .{
+        .name = "wt-shop",
+        .repo = "shop",
+        .path = real,
+        .branch = "wt/shop",
+        .base = "0",
+        .by = 0xa1,
+    });
+    const Locks = poltergeistpkg.files.Locks;
+    // `PageWorld` leaves the app undefined; these two are read below.
+    w.app.poltergeist_epoch = null;
+    w.app.file_locks = .init(testing.allocator);
+    defer w.app.file_locks.?.deinit();
+
+    const dirs = try w.app.workdirsOf(a, "web-app");
+    try testing.expectEqual(@as(usize, 1), dirs.len);
+    const now = w.app.fileLockNowMs();
+    const x = try std.fs.path.join(a, &.{ real, "x.md" });
+    _ = try w.app.file_locks.?.acquire(now, .{ .workdir_id = dirs[0].id, .path = x }, 7, "w2");
+
+    const ctx: *anyopaque = &w.app;
+    const Case = struct { path: []const u8, locked: bool };
+    const cases = [_]Case{
+        .{ .path = x, .locked = true },
+        // Another spelling of the same file, and a link to it: one lock.
+        .{ .path = try std.fs.path.join(a, &.{ real, "sub", "..", "x.md" }), .locked = true },
+        .{ .path = try std.fs.path.join(a, &.{ real, "via-link.md" }), .locked = true },
+        .{ .path = try std.fs.path.join(a, &.{ real, "y.md" }), .locked = false },
+        // Not there, a link that leaves the workdir, and a path in no
+        // workdir at all: never asked of the table.
+        .{ .path = try std.fs.path.join(a, &.{ real, "gone.md" }), .locked = false },
+        .{ .path = try std.fs.path.join(a, &.{ real, "out-link.md" }), .locked = false },
+        .{ .path = "/etc/hosts", .locked = false },
+        .{ .path = "relative.md", .locked = false },
+    };
+    for (cases) |c| {
+        const got = try poltergeistFileGuard(ctx, a, 0xa1, c.path);
+        try testing.expectEqual(c.locked, got != null);
+        if (got) |reason| {
+            try testing.expect(std.mem.startsWith(u8, reason, "w2 is editing "));
+            try testing.expect(std.mem.indexOf(u8, reason, x) != null);
+        }
+    }
+    // A file outside every workdir is locked under its raw spelling: the
+    // guard must not look the lock up by that spelling when `Access` has
+    // refused the path.
+    var other = testing.tmpDir(.{});
+    defer other.cleanup();
+    try other.dir.writeFile(testing.io, .{ .sub_path = "z.md", .data = "z" });
+    const z = try std.fs.path.join(a, &.{ try other.dir.realPathFileAlloc(testing.io, ".", a), "z.md" });
+    _ = try w.app.file_locks.?.acquire(now, .{ .workdir_id = dirs[0].id, .path = z }, 8, "w3");
+    try testing.expect((try poltergeistFileGuard(ctx, a, 0xa1, z)) == null);
+    // A terminal of no group is asked about nothing.
+    try testing.expect((try poltergeistFileGuard(ctx, a, 0xdead, x)) == null);
+    // The lease lapsed: the file is free again, swept or not.
+    w.app.file_locks.?.entries.items[0].renewed_ms = now - Locks.lease_ms - 1;
+    w.app.file_locks.?.entries.items[1].renewed_ms = now - Locks.lease_ms - 1;
+    try testing.expect((try poltergeistFileGuard(ctx, a, 0xa1, x)) == null);
 }
 
 pub fn controlSnapshotJson(self: *const App) []const u8 {
@@ -9964,6 +10113,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .chatMembers = chatMembers,
         .chatGroups = chatGroups,
         .membership = poltergeistMembership,
+        .fileGuard = poltergeistFileGuard,
         .chatRead = chatRead,
         .channelSeats = channelSeats,
         .channelReaders = channelReaders,

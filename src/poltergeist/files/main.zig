@@ -9,6 +9,7 @@ pub const Text = @import("Text.zig");
 pub const Diff = @import("Diff.zig");
 pub const Merge = @import("Merge.zig");
 pub const Write = @import("Write.zig");
+pub const Locks = @import("Locks.zig");
 
 test {
     _ = Workdirs;
@@ -17,4 +18,5 @@ test {
     _ = Diff;
     _ = Merge;
     _ = Write;
+    _ = Locks;
 }

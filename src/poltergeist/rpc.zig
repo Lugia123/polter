@@ -524,6 +524,16 @@ pub const Method = enum {
     /// closed to plugins: it is about the asking terminal and nobody else.
     hook_context,
 
+    /// Whether the file an agent is about to write is locked by the person
+    /// editing it in Polter (task 2565 C6a, PLAN 1.5): sent by `polter
+    /// +hook-guard`, which Claude Code runs as a `PreToolUse` hook on its
+    /// file-writing tools. The answer is `text`: empty when nothing locks
+    /// the file, otherwise the sentence the guard hands the agent.
+    ///
+    /// **Not a tool call and not a tool**, on `hook_context`'s terms, and
+    /// closed to plugins: it is about the asking terminal's own write.
+    file_guard,
+
     /// The last finished turn of a terminal's agent, in full: what its
     /// `turn_ended` hook carried, when, and in which session. The notices
     /// quote the start of it; this is the rest, up to 16 KB.
@@ -930,6 +940,7 @@ pub const Request = union(Method) {
 
     agent_event: AgentEvent.Event,
     hook_context: struct { moment: HookMoment },
+    file_guard: struct { path: []const u8 },
     terminal_turn: struct { id: Bus.Id },
 
     // The screenshot tools. Every parameter is carried as its raw JSON text
@@ -1239,6 +1250,7 @@ pub fn callableByPlugin(method: Method) bool {
         // **Closed to plugins**, for the same reason: what it answers is
         // put into the context of the agent in the terminal that asked.
         .hook_context,
+        .file_guard,
 
         // **Closed to plugins, for now.** It reads what an agent answered,
         // which is more than a screen's bookkeeping; nothing has asked for
@@ -1434,6 +1446,7 @@ pub fn offeredAsTool(method: Method) bool {
         // Asked by `polter +hook-context` on the CLI's behalf, and
         // answered into the CLI's own context. An agent has `me`.
         .hook_context => false,
+        .file_guard => false,
 
         else => true,
     };
@@ -1476,6 +1489,7 @@ pub fn requiresSupervisor(method: Method) bool {
         // Asked by `polter +hook-context` about the terminal it runs in,
         // and only that one: whoever it is, it is asking about itself.
         .hook_context => false,
+        .file_guard => false,
 
         // Reading, on `terminal_read`'s terms: the target's mark decides.
         .terminal_turn => false,
@@ -1738,6 +1752,7 @@ pub fn targetsTerminal(method: Method) bool {
     return switch (method) {
         .agent_event,
         .hook_context,
+        .file_guard,
         .me,
         .terminal_list,
         .notices,
@@ -1881,6 +1896,7 @@ pub fn target(req: Request) ?Bus.Id {
     return switch (req) {
         .agent_event,
         .hook_context,
+        .file_guard,
         .me,
         .terminal_list,
         .notices,
@@ -2008,6 +2024,7 @@ pub fn selfPermitted(req: Request) bool {
         // on one of the sides below.
         .agent_event,
         .hook_context,
+        .file_guard,
         .me,
         .terminal_list,
         .notices,
@@ -2276,6 +2293,7 @@ pub fn promptReach(method: Method) enum {
 
         .agent_event,
         .hook_context,
+        .file_guard,
         .terminal_turn,
         .me,
         .terminal_list,
@@ -2933,6 +2951,7 @@ test "only what changes the arrangement needs the supervisor" {
             // the arrangement.
             .agent_event,
             .hook_context,
+            .file_guard,
             .terminal_turn,
 
             // Looking back through records: what may be seen is decided
@@ -6911,6 +6930,18 @@ pub const Host = struct {
             id: Bus.Id,
         ) anyerror!wire.Membership,
 
+        /// The sentence to hand `id`'s agent when `path` -- a file it is
+        /// about to write -- is locked by the person editing it, or null when
+        /// nothing locks it. **Null is also the answer for a path that is in
+        /// no working directory of `id`'s groups**: the guard lets both
+        /// through. Copied into `alloc`.
+        fileGuard: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: Bus.Id,
+            path: []const u8,
+        ) anyerror!?[]const u8,
+
         /// What `id` has not seen in `group` after `since`, and whether
         /// the budget cut it short.
         ///
@@ -7615,6 +7646,15 @@ pub const Host = struct {
         id: Bus.Id,
     ) anyerror!wire.Membership {
         return self.vtable.membership(self.ctx, alloc, id);
+    }
+
+    fn fileGuard(
+        self: Host,
+        alloc: std.mem.Allocator,
+        id: Bus.Id,
+        path: []const u8,
+    ) anyerror!?[]const u8 {
+        return self.vtable.fileGuard(self.ctx, alloc, id, path);
     }
 
     fn chatRead(
@@ -8668,6 +8708,7 @@ pub fn isAgentCall(method: Method) bool {
         //   anything, and a hook that refreshed the clock would hide the
         //   silence it is for, as `agent_event` would.
         .hook_context,
+        .file_guard,
         => false,
 
         .terminal_turn,
@@ -8899,6 +8940,18 @@ fn dispatchOne(
             // Null when the host cannot say, and the text says so.
             info.membership = host.membership(alloc, caller) catch null;
             return .{ .text = try hookContextText(alloc, p.moment, info) };
+        },
+
+        .file_guard => |p| {
+            // As `hook_context`: the answer is about a terminal's own write.
+            if (who.terminalId() == null) return failure(error.NotATerminal);
+            // An error is the host not knowing, which the guard lets through
+            // like every other thing it cannot tell; say so in the log.
+            const reason = host.fileGuard(alloc, caller, p.path) catch |err| {
+                log.warn("poltergeist: file_guard could not be answered err={}", .{err});
+                return .{ .text = "" };
+            };
+            return .{ .text = reason orelse "" };
         },
 
         .persona_slot => |p| {
@@ -12826,6 +12879,8 @@ const FakeHost = struct {
     heard: ?struct { id: Bus.Id, kind: AgentEvent.Kind } = null,
     /// What `membership` answers; null is a host that cannot say.
     membership_is: ?wire.Membership = null,
+    /// The one path `fileGuard` says is locked.
+    locked_path: ?[]const u8 = null,
     /// What `launchFailed` was last told.
     launch_failed: ?struct { id: Bus.Id, why: AgentEvent.LaunchFailure, note: ?[]const u8 } = null,
     /// What `+launch` said its agent is for (`launchedForGroup`).
@@ -13289,6 +13344,7 @@ const FakeHost = struct {
             .chatMembers = chatMembers,
             .chatGroups = chatGroups,
             .membership = membership,
+            .fileGuard = fileGuard,
             .chatRead = chatRead,
             .channelSeats = channelSeats,
             .channelReaders = channelReaders,
@@ -14082,6 +14138,14 @@ const FakeHost = struct {
     fn membership(ctx: *anyopaque, _: std.mem.Allocator, _: Bus.Id) anyerror!wire.Membership {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return self.membership_is orelse error.NoSuchGroup;
+    }
+
+    fn fileGuard(ctx: *anyopaque, alloc: std.mem.Allocator, _: Bus.Id, path: []const u8) anyerror!?[]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        // Locked exactly when the path is the one the test locked.
+        const locked = self.locked_path orelse return null;
+        if (!std.mem.eql(u8, locked, path)) return null;
+        return try alloc.dupe(u8, "w2 is editing it");
     }
 
     fn launchers(ctx: *anyopaque, alloc: std.mem.Allocator, by: Bus.Id, op: LauncherOp) anyerror![]const u8 {
@@ -20202,6 +20266,35 @@ test "1779: hook_context is the asking terminal's, for its hooks: no tool, no ca
         plug(&.{"hook_context"}),
         .{ .hook_context = .{ .moment = .after_compact } },
     ));
+}
+
+test "2565 C6: file_guard is the asking terminal's, for its hook: no tool, no call, no plugin" {
+    try testing.expect(!offeredAsTool(.file_guard));
+    try testing.expect(!isAgentCall(.file_guard));
+    try testing.expect(!callableByPlugin(.file_guard));
+    try testing.expect(!requiresSupervisor(.file_guard));
+
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try testing.expectError(error.NotATerminal, authorize(
+        &b,
+        plug(&.{"file_guard"}),
+        .{ .file_guard = .{ .path = "/w/a/x.md" } },
+    ));
+}
+
+test "2565 C6: file_guard answers the host's sentence for a locked path, and empty text for any other" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var fake: FakeHost = .{ .locked_path = "/w/a/x.md" };
+
+    const locked = (try dispatch(aa, &b, fake.host(), term(worker), .{ .file_guard = .{ .path = "/w/a/x.md" } })).text;
+    try testing.expectEqualStrings("w2 is editing it", locked);
+    const free = (try dispatch(aa, &b, fake.host(), term(worker), .{ .file_guard = .{ .path = "/w/a/y.md" } })).text;
+    try testing.expectEqualStrings("", free);
 }
 
 test "1779: after a compaction a supervisor is told who it is and to read the record again" {

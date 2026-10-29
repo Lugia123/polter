@@ -137,3 +137,32 @@ given `.replace` for a restore, and so does `2562 C3: restore, reached after
 the file was found gone, does not overwrite one made since` (at
 `TestRestoreOverwroteANewFile`), which is the one that checks `restore` itself
 chooses `.create_new`.
+
+## The edit lock and `+hook-guard` (C6a): what it does not stop
+
+The guard lets a write through whenever it is unsure; these are the writes it
+does not hold back. None is a refusal of something that should pass.
+
+**1. A payload over 16 MB** (a `Write` of a huge file) is not read to the end,
+so it is let through.
+
+**2. A path spelled through a link from outside the workdir** (macOS
+`/tmp/…` against `/private/tmp/…`) is judged by `Access` on its spelling
+first, and can come out "outside" although it names a file of the workdir.
+
+**3. A terminal that is in no group is never held back.** PLAN §1.5 speaks of
+the terminals whose directory contains the file; the code asks the groups the
+control room shows the terminal in, and a terminal in none has no workdir.
+
+**4. `sub/../x.md` where `sub` is a link** is normalised by its spelling
+before the real path is taken (`pathOf` and `Access.resolve` both do). The
+operating system would write to the link's target's parent, the guard asks
+about `cwd/x.md`: it can refuse a write to a different, locked file's
+namesake, or miss one. Rare; closing it means handing Polter the unnormalised
+path and letting `realpath` resolve it.
+
+**5. Only `Write`, `Edit`, `MultiEdit` and `NotebookEdit` are asked about**
+(`hook_guard.writing_tools`). A file changed through `Bash` is not seen.
+
+**6. Nothing registers the hook yet** (C6b), and nothing takes a lock, so no
+write is held back in the app today.

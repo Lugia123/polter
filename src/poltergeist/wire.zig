@@ -159,6 +159,7 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                 ) orelse return error.BadParams,
             },
         },
+        .file_guard => .{ .file_guard = .{ .path = try requireString(aa, params, "path") } },
         .terminal_turn => .{ .terminal_turn = .{ .id = try requireId(params) } },
 
         .terminal_read => .{ .terminal_read = .{
