@@ -33,6 +33,7 @@ pub const default_shell = @import("default_shell.zig");
 pub const shell = @import("shell.zig");
 pub const job = @import("job.zig");
 pub const stderr = @import("stderr.zig");
+pub const dirwatch = @import("dirwatch.zig");
 pub const uri = @import("uri.zig");
 
 // Functions and types

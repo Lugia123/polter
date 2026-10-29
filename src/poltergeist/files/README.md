@@ -166,3 +166,42 @@ path and letting `realpath` resolve it.
 
 **6. Nothing registers the hook yet** (C6b), and nothing takes a lock, so no
 write is held back in the app today.
+
+## Watching and "recently changed" (C5)
+
+`Watch.zig` decides what a change is worth (the excluded directories, the
+one-a-second throttle, each path once); `os/dirwatch.zig` is the FSEvents /
+`ReadDirectoryChangesW` half. `Recent.zig` merges the hook's sightings with
+the watcher's. **Nothing is wired yet**: no App, no hook event, no host calls
+these, so no change is heard in the app until a later slice does.
+
+What is not settled:
+
+**1. Windows is cross-compiled and not run.** `dirwatch_windows.zig` builds for
+`x86_64-windows`; it has not seen a real directory. `stop` relies on
+`CancelIoEx` waking a blocked synchronous `ReadDirectoryChangesW`.
+
+**2. The excluded names are matched by component, anywhere.** A source
+directory that happens to be called `target` is never reported. `.gitignore`
+is not read (PLAN §1.3).
+
+**3. A burst larger than 1000 paths between two notifications is "look
+again"** (`Batch.overflowed`), not a list; so is a Windows buffer overflow (it
+arrives as an empty batch and is dropped silently — the next change names
+itself).
+
+**4. FSEvents reports real paths.** `Watch.start` must be given the real
+workdir path (`Workdirs.Dir.path` is); a symlinked spelling would make every
+event "not under the root" and be dropped without a sound.
+
+**5. "Who" is whatever string the caller passes,** and `Recent.stopped` ends
+only rows with that exact string. Two terminals sharing one name end each
+other's edits.
+
+**6. A hook always takes the row over,** whatever the time: `hookEditing`
+replaces the row and names its `who`; only the watcher's sightings are subject
+to the window (`Recent.dedupe_ms`, 2 s, by the time on the call).
+
+**7. The macOS test arms for 200 ms before writing**, because FSEvents drops
+events from before the stream is running; a loaded machine could in principle
+need longer.

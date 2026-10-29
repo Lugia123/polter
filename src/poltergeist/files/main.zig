@@ -10,6 +10,8 @@ pub const Diff = @import("Diff.zig");
 pub const Merge = @import("Merge.zig");
 pub const Write = @import("Write.zig");
 pub const Locks = @import("Locks.zig");
+pub const Recent = @import("Recent.zig");
+pub const Watch = @import("Watch.zig");
 
 test {
     _ = Workdirs;
@@ -19,4 +21,6 @@ test {
     _ = Merge;
     _ = Write;
     _ = Locks;
+    _ = Recent;
+    _ = Watch;
 }
