@@ -1490,7 +1490,7 @@ test "the panel stores what the chapter says it stores and no more" {
     // it is** -- because a supervisor sorting a night's panel was doing it
     // by reading titles, and a convention written into titles is not
     // something anything can filter on.
-    const allowed = [_][]const u8{ "id", "group", "title", "owner", "state", "progress", "kind", "members", "spans" };
+    const allowed = [_][]const u8{ "id", "group", "title", "owner", "state", "progress", "kind", "members", "squad", "worktree", "spans" };
     try testing.expectEqual(allowed.len, names.len);
     for (names) |n| {
         var ok = false;
