@@ -1,6 +1,6 @@
 # Can Qwen Code run non-interactively on this machine at all?
 #
-# ⚠️ **STALE SINCE 2026-10-25 (task 2207).** The `qwen-code` plugin was removed
+# WARNING: **STALE SINCE 2026-10-25 (task 2207).** The `qwen-code` plugin was removed
 # from this repository -- it had never been run against Qwen Code -- so nothing
 # in the tree calls the CLI this probes, and no run of it will tell you
 # anything about what we ship. **Kept rather than deleted because of what it

@@ -72,6 +72,7 @@ GROUP_NAME_FILES = {
     "src/poltergeist/notes.zig": "builds one sentence about a group; stores nothing",
     "src/poltergeist/Projects.zig": "works out the tie between groups and projects from views handed in on each call; holds no group by name. What it keeps is the host's last statement, where a project file's `group` is the host's word and is put right by an order (set_group) after a rename, not re-keyed",
     "src/poltergeist/Session.zig": "looks a group up by name in a session snapshot already read (supervisorDirIn); files nothing under the name. The snapshot is written whole from Chat after every change, so it carries whatever names Chat holds; one written before a rename simply has no entry for the new name, and the lookup finds nothing",
+    "src/poltergeist/worktree.zig": "encodes a group's name into a worktree branch/path segment (groupSegment, task 2433 S4b); stores nothing by name",
     "src/poltergeist/rpc.zig": "the request/response surface: groups are named by callers",
     "src/poltergeist/wire.zig": "parses the request fields",
     "src/poltergeist/Transcript.zig": "terminals, not groups: its `group`-like parameters are the daylog path segment",

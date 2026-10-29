@@ -929,7 +929,7 @@ function Get-Inventory($Req) {
     $g = Get-Gathered $Req
     $answer = New-Map
     $answer['version'] = $ContractVersion
-    # ⚠️ **This runs `opencode --version`**, which the inventory did not use
+    # WARNING: **This runs `opencode --version`**, which the inventory did not use
     # to -- the price of `serves`, and the same call `launch` makes:
     # autoupdate and the models fetch off, no session and no service started.
     $start = Resolve-OpencodeCommand
