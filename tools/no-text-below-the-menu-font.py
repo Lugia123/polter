@@ -7,7 +7,7 @@ project windows (Save as Project, Load Project, the ask before closing) is
 the size of the system's menu font. Not "about 13": whatever
 `NSFont.menuFont(ofSize: 0).pointSize` answers on the machine it runs on.
 
-**Why a gate and not a review.** Before this, 67 places in these four
+**Why a gate and not a review.** Before this, 67 places in those four
 directories were set in `.caption` (10 pt), `.caption2` (10), `.subheadline`
 (11), `.callout` (12) or a literal `size: 12`, against a menu font of 13.
 Each one was a reasonable-looking line; `.caption` under a control is what
@@ -15,7 +15,13 @@ SwiftUI's own samples do. The next one will look just as reasonable, so the
 smaller styles are refused here by name, and there is one thing to write
 instead: `SettingsFont.minimum` (or `.minimumMonospaced`).
 
-What is refused, in `macos/Sources/Features/{Settings,Projects,Roles,Plugins}`:
+The squad templates' page (task 2613) is a settings section like the rest and
+was added to `DIRS` when it landed: the gate is about **the settings window**,
+not about four directory names, and a new section that drew its own text
+somewhere the list did not name would have been outside the rule it is
+supposed to obey.
+
+What is refused, in `macos/Sources/Features/{Settings,Projects,Roles,Plugins,Squads}`:
 
   1. the text styles smaller than the menu font: `.caption`, `.caption2`,
      `.footnote`, `.subheadline`, `.callout`;
@@ -45,7 +51,7 @@ either spelling is accepted, and nothing else.
     stay green and be wrong.
   * **A scale applied after the font**: `.scaleEffect`, `.minimumScaleFactor`
     are not looked for (none exists in these directories today).
-  * **A view outside these four directories** that a settings section embeds.
+  * **A view outside the scanned directories** that a settings section embeds.
   * **Whether the text fits** once it is larger. That is a screenshot's job
     (settings.md §2.3a), not this file's.
 
@@ -60,7 +66,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FEATURES = os.path.join(HERE, "..", "macos", "Sources", "Features")
-DIRS = ("Settings", "Projects", "Roles", "Plugins")
+DIRS = ("Settings", "Projects", "Roles", "Plugins", "Squads")
 SOURCE = os.path.join(FEATURES, "Settings", "SettingsFont.swift")
 
 SMALL_STYLE = re.compile(r"\.(caption2|caption|footnote|subheadline|callout)\b")

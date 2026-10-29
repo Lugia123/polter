@@ -75,6 +75,12 @@ final class SettingsModel: ObservableObject {
     let plugins: PluginsPane
     let projects: ProjectsModel
     let general = GeneralModel()
+    /// The squad templates (#2434): the core's catalog, and the copy the
+    /// page edits. The catalog is the app-wide one -- it is the core's file,
+    /// and there is one -- but the editor is this window's, dropped with it,
+    /// so a closed window holds no draft.
+    let squads: SquadLibrary
+    let squadEditor: SquadLibraryEditor
     /// The breadcrumb names the General group, and the root view watches
     /// this model, not `general`: without passing its group on, a click in
     /// the group list changed the page and left the breadcrumb on the old
@@ -89,6 +95,10 @@ final class SettingsModel: ObservableObject {
         plugins.reload()
         self.projects = projects ?? ProjectsModel()
         self.projects.reload()
+        let squads = SquadLibrary.shared
+        squads.reload()
+        self.squads = squads
+        self.squadEditor = SquadLibraryEditor(library: squads)
         generalGroupChanges = general.$group.dropFirst().sink { [weak self] _ in
             self?.objectWillChange.send()
         }
@@ -98,6 +108,7 @@ final class SettingsModel: ObservableObject {
     var currentPane: SettingsPane? {
         switch section {
         case .roles: roles
+        case .squads: squadEditor
         case .plugins: plugins
         case .projects, .general: nil
         }
@@ -267,7 +278,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             styleMask: Self.style).size
         let host = NSHostingController(rootView: SettingsRootView(
             model: model, library: library, editor: model.roles, plugins: model.plugins,
-            projects: model.projects, minimumContent: minContent))
+            projects: model.projects, squads: model.squads, squadEditor: model.squadEditor,
+            minimumContent: minContent))
         host.sizingOptions = [.minSize]
 
         let window = NSWindow(contentViewController: host)
@@ -330,6 +342,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 current: model.plugins.selection,
                 fresh: fresh,
                 keys: model.plugins.plugins.map(\.key)))
+        case .squads:
+            model.squads.reload()
+            let choice = SettingsRules.squadToSelect(
+                item: route.item,
+                fresh: fresh,
+                keys: model.squads.catalog.squads.map(\.key))
+            if case .select(let key) = choice { model.squadEditor.select(key) }
         case .projects:
             // A route that names nothing leaves an open window where it is.
             if fresh || route.item != nil { model.projects.route(to: route.item) } else { model.projects.reload() }

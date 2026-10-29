@@ -10,6 +10,11 @@ struct SettingsRootView: View {
     @ObservedObject var editor: RoleLibraryEditor
     @ObservedObject var plugins: PluginsPane
     @ObservedObject var projects: ProjectsModel
+    /// The squad templates and the one being edited (#2434). Read here for
+    /// two reasons: the crumb names the template, and the section's own view
+    /// is put together from this window's grid like every other section's.
+    @ObservedObject var squads: SquadLibrary
+    @ObservedObject var squadEditor: SquadLibraryEditor
     /// The window's minimum, as content size (settings.md §2.2).
     var minimumContent: CGSize
 
@@ -93,6 +98,16 @@ struct SettingsRootView: View {
             hidden = false
         } else if model.section == .roles, let draft = editor.draft {
             item = draft.displayName.isEmpty ? draft.key : draft.displayName
+            hidden = false
+        } else if model.section == .squads, let draft = squadEditor.draft {
+            // A seat's own page is inside its template, and the crumb says
+            // both, the way an official skill's does above.
+            let squad = draft.displayName.isEmpty ? draft.key : draft.displayName
+            if let member = squadEditor.member {
+                item = squad + " › " + member
+            } else {
+                item = squad
+            }
             hidden = false
         } else if model.section == .projects, let name = projects.selected?.name {
             item = name
@@ -206,6 +221,14 @@ struct SettingsRootView: View {
             }
         case .plugins:
             detail(searching) { PluginsView(pane: plugins, part: .detail) }
+        case .squads:
+            HStack(spacing: 0) {
+                squadsPart(.list)
+                    .frame(width: L.list)
+                    .searchDimmed(searching)
+                vRule
+                detail(searching) { squadsPart(.detail) }
+            }
         case .projects:
             HStack(spacing: 0) {
                 projectsPart(.list)
@@ -266,6 +289,7 @@ struct SettingsRootView: View {
     private var sectionBar: some View {
         switch model.section {
         case .roles: roles(.bar)
+        case .squads: squadsPart(.bar)
         case .plugins: PluginsView(pane: plugins, part: .bar)
         case .projects: projectsPart(.bar)
         case .general: generalPart(.bar)
@@ -289,6 +313,18 @@ struct SettingsRootView: View {
             canLaunch: { RoleLibraryOpener.launchSurface != nil },
             onLaunch: { role, cli in RoleLibraryOpener.launch(role: role, cli: cli) },
             onOpenPlugin: { [model] key in model.goPlugin(key) })
+    }
+
+    /// The squad templates page. It needs the role library's roles as well as
+    /// its own: a seat is built on one, and whether a role may join at all is
+    /// a question about the role (`SquadRules.isSupervisor`).
+    private func squadsPart(_ part: SquadLibraryView.Part) -> some View {
+        SquadLibraryView(
+            library: squads,
+            editor: squadEditor,
+            roles: library.catalog.roles,
+            part: part,
+            filter: "")
     }
 }
 

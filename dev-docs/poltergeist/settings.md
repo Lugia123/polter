@@ -202,6 +202,7 @@ GTK 本轮不做（三个界面 GTK 目前都没有）。
 | section | item | 打开后选中 |
 |---|---|---|
 | `roles` | 角色 key，可空 | 该角色；空则上次选中的，再空则第一个 |
+| `squads` | 小队 key，可空 | 该小队；空则上次选中的，再空则第一个 |
 | `projects` | 项目名，可空 | 该项目；空则当前窗口绑定的项目，再空则第一个 |
 | `plugins` | 插件 key，可空 | 该插件；空则第一个 |
 | `general` | 组名（`appearance` / `font` / … / `keybinds` / `advanced` / `about`），可空 | 该组；空则上次停留的组，再空则第一组 |

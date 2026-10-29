@@ -12,7 +12,9 @@
   "watched": [
     "macos/Sources/Features/ControlRoom",
     "macos/Tests/ControlRoom",
+    "macos/Sources/Features/Squads",
     "macos/Tests/Projects",
+    "macos/Tests/Squads",
     "macos/Tests/Splits",
     "macos/Sources/Features/Highlight"
   ],
@@ -171,9 +173,21 @@
       "macos/Sources/Features/Roles/RoleModels.swift",
       "macos/Sources/Ghostty/Surface View/SurfaceTitleState.swift",
       "macos/Sources/Features/Terminal/SurfaceSearchEscape.swift",
-      "macos/Sources/Features/Settings/AgentCliRules.swift"
+      "macos/Sources/Features/Settings/AgentCliRules.swift",
+      "macos/Sources/Features/Settings/GeneralRules.swift",
+      "macos/Sources/Features/Settings/SettingsLayout.swift",
+      "macos/Sources/Features/Settings/SettingsRules.swift",
+      "macos/Sources/Features/Squads/SquadModels.swift"
     ],
     "out": [
+      {
+        "path": "macos/Sources/Features/Squads/SquadLibrary.swift",
+        "why": "imports GhosttyKit: it is the one place that asks the core for the squad catalog and writes a template back (ghostty_app_squad_catalog/put/delete), and reads the app delegate's app; what the page decides from a catalog it already has is SquadModels.swift, which is in"
+      },
+      {
+        "path": "macos/Sources/Features/Squads/SquadLibraryView.swift",
+        "why": "draws the page: SwiftUI, AppKit alerts and the roles page's own chrome, none of which the package compiles (there is no window here); every rule it applies is SquadRules in SquadModels.swift, which is in, and the layout is a screenshot's job (dev-docs/poltergeist/settings.md §2.3a)"
+      },
       {
         "path": "macos/Sources/Features/ControlRoom/ControlRoomController.swift",
         "why": "imports GhosttyKit: it is the window controller, and holds the core's app and the terminals' views"
@@ -286,7 +300,9 @@
       "macos/Tests/Terminal/SurfaceSearchEscapeTests.swift",
       "macos/Tests/Terminal/ReopenTabEntryTests.swift",
       "macos/Tests/Terminal/TabDotsTests.swift",
-      "macos/Tests/Settings/AgentCliRulesTests.swift"
+      "macos/Tests/Settings/AgentCliRulesTests.swift",
+      "macos/Tests/Settings/SettingsRulesTests.swift",
+      "macos/Tests/Squads/SquadLibraryTests.swift"
     ],
     "out": [
       {

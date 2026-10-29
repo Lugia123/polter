@@ -9,22 +9,27 @@ import Foundation
 /// the route names in `dev-docs/poltergeist/settings.md` §3.1, shared with the
 /// Windows host.
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case roles, projects, plugins, general
+    case roles, squads, projects, plugins, general
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .roles: String(localized: "Roles", comment: "设置窗口：侧栏栏目，角色")
+        case .squads: String(localized: "Squad Templates", comment: "设置窗口：侧栏栏目，小队模版")
         case .projects: String(localized: "Projects", comment: "设置窗口：侧栏栏目，项目")
         case .plugins: String(localized: "Plugins", comment: "设置窗口：侧栏栏目，插件")
         case .general: String(localized: "General", comment: "设置窗口：侧栏栏目，通用")
         }
     }
 
+    /// **The two-people mark, not a crowd**: a squad template is a handful of
+    /// seats a task is handed out to, which is what `person.2` draws. The
+    /// Windows host draws Segoe Fluent's People for the same row.
     var symbol: String {
         switch self {
         case .roles: "person.crop.circle"
+        case .squads: "person.2"
         case .projects: "square.grid.2x2"
         case .plugins: "puzzlepiece.extension"
         case .general: "gearshape"
@@ -39,6 +44,7 @@ struct SettingsRoute: Equatable {
     var item: String?
 
     static func roles(_ key: String? = nil) -> Self { .init(section: .roles, item: key) }
+    static func squads(_ key: String? = nil) -> Self { .init(section: .squads, item: key) }
     static func projects(_ name: String? = nil) -> Self { .init(section: .projects, item: name) }
     static func general(_ group: GeneralGroup? = nil) -> Self { .init(section: .general, item: group?.rawValue) }
 }
@@ -91,6 +97,19 @@ enum SettingsRules {
         guard fresh else { return .keep }
         if let last, roles.contains(last) { return .select(last) }
         return .select(roles.first)
+    }
+
+    /// Which squad template a route to the Squad Templates section selects
+    /// (§3.1), the same question `roleToSelect` answers for roles: the one
+    /// it names; with none named, a newly opened window takes the first, and
+    /// an open window keeps what it shows. A named template that is no
+    /// longer there counts as none named. No "last one" to remember -- a
+    /// template is chosen once and then saved into a task, where a role is
+    /// gone back to all day.
+    static func squadToSelect(item: String?, fresh: Bool, keys: [String]) -> RoleChoice {
+        if let item, keys.contains(item) { return .select(item) }
+        guard fresh else { return .keep }
+        return .select(keys.first)
     }
 
     /// What a search leaves of a list (settings.md §2.3a).

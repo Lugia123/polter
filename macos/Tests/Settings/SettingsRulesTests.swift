@@ -196,9 +196,16 @@ struct SettingsRulesTests {
     /// The sidebar steps through its sections in their order.
     @Test func theSidebarStepsThroughItsSections() {
         let all = SettingsSection.allCases
-        #expect(SettingsRules.step(from: SettingsSection.roles, in: all, by: 1) == .projects)
+        // Squad Templates sits between Roles and Projects (task 2613), and
+        // this walks `allCases` rather than a list of its own -- so the row
+        // under Roles is the squads page, and the one up from Projects is it
+        // too. The page is what moved; the stepping rule did not.
+        #expect(SettingsSection.allCases == [.roles, .squads, .projects, .plugins, .general])
+        #expect(SettingsRules.step(from: SettingsSection.roles, in: all, by: 1) == .squads)
+        #expect(SettingsRules.step(from: SettingsSection.squads, in: all, by: 1) == .projects)
         #expect(SettingsRules.step(from: SettingsSection.general, in: all, by: 1) == .general)
         #expect(SettingsRules.step(from: SettingsSection.plugins, in: all, by: -1) == .projects)
+        #expect(SettingsRules.step(from: SettingsSection.projects, in: all, by: -1) == .squads)
     }
 
     // MARK: Unsaved changes
