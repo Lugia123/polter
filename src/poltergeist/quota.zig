@@ -559,7 +559,12 @@ pub fn fromClaudeStatus(arena: Allocator, stdin: []const u8) ?[max_windows]?Wind
 }
 
 /// `YYYY-MM-DDTHH:MM:SS[.fff]Z` as Unix milliseconds.
-fn isoMs(s: []const u8) ?u64 {
+///
+/// `pub` for `token_says.zig` (task 2584), which reads moments out of the
+/// same Codex records this file reads allowances out of: one parser for one
+/// format, so a record whose timestamp this build cannot read is refused by
+/// both rather than accepted by one.
+pub fn isoMs(s: []const u8) ?u64 {
     if (s.len < 20 or s[4] != '-' or s[7] != '-' or s[10] != 'T' or s[13] != ':' or s[16] != ':') return null;
     if (s[s.len - 1] != 'Z') return null;
     const y = std.fmt.parseInt(i64, s[0..4], 10) catch return null;

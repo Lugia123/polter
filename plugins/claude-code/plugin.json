@@ -23,6 +23,16 @@
     "turn_done_has": " · done "
   },
   "exec": "provision.sh",
+  "token_says": {
+    "source": "statusline",
+    "counts": "window",
+    "keys": [
+      "context_window.current_usage.input_tokens",
+      "context_window.current_usage.output_tokens",
+      "context_window.current_usage.cache_creation_input_tokens",
+      "context_window.current_usage.cache_read_input_tokens"
+    ]
+  },
   "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
   "agent_cli": {

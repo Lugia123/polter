@@ -44,6 +44,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const internal_os = @import("../os/main.zig");
+const token_says = @import("token_says.zig");
 
 const log = std.log.scoped(.poltergeist);
 
@@ -363,6 +364,12 @@ pub const Manifest = struct {
     /// was declined without a word -- see `DeclinedSays`. Empty for a
     /// plugin that declares nothing.
     declined_says: DeclinedSays = .none,
+
+    /// Where this plugin's CLI says how many tokens a session spent, and
+    /// what those numbers are -- see `token_says.TokenSays` and that file's
+    /// header for why the kind matters. Null for a plugin that declares
+    /// nothing, which is every CLI whose usage Polter cannot read.
+    token_says: ?token_says.TokenSays = null,
 
     /// The parameter by that name, if the manifest declares one.
     pub fn param(self: Manifest, name: []const u8) ?ParamSpec {
@@ -1170,7 +1177,26 @@ pub fn load(
         .hooks_report_approval = hooksReportApprovalOf(key, obj),
         .startup_says = try startupSaysOf(arena, key, obj),
         .declined_says = try declinedSaysOf(arena, key, obj),
+        .token_says = try tokenSaysOf(arena, key, obj),
     };
+}
+
+/// `token_says`, or null with a warning for a section that does not read.
+///
+/// Like every other optional section, a section that does not read costs
+/// the section and not the plugin -- and here that is the safer of the two
+/// failures by a distance: a declaration somebody half-meant would be a
+/// number attributed to a task's seats by a rule nobody wrote, and a wrong
+/// attribution is much harder to notice than an absent one.
+fn tokenSaysOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Allocator.Error!?token_says.TokenSays {
+    const section = switch (obj.get("token_says") orelse return null) {
+        .object => |o| o,
+        else => {
+            log.warn("plugin {s}: token_says is not an object; ignored", .{key});
+            return null;
+        },
+    };
+    return token_says.parse(arena, key, section);
 }
 
 /// `declined_says`, or `.none` with a warning for a section that does not
@@ -3976,6 +4002,112 @@ fn shippedSays(a: Allocator, key: []const u8, json: []const u8) !Manifest {
         .screen_says = try screenSaysOf(a, key, parsed.object),
         .hooks_report_approval = hooksReportApprovalOf(key, parsed.object),
     };
+}
+
+// The `token_says` two shipped manifests declare (task 2584), read out of
+// their own files.
+//
+// **Both halves have to be asserted, and either one alone is worthless.**
+// That the file declares the section at all is what a person reading the
+// plugin directory sees; that the core reads it back to the same fields is
+// what makes the declaration mean anything. A `keys` path that no longer
+// matches what the CLI writes -- a renamed field, a level of nesting
+// gained -- reads as `null` for every stretch, which in the product looks
+// exactly like a CLI whose usage Polter cannot read, and no test of the
+// arithmetic inside `token_says.zig` can see it.
+test "usage: the shipped Claude Code and Codex manifests declare where their token numbers are" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const claude = (try tokenSaysOf(a, "claude-code", (try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        a,
+        @embedFile("plugin_claude_code_json"),
+        .{},
+    )).object)).?;
+    // The status line hands over **how full the window is**, not what the
+    // session has spent: `current_usage` is the last API call. Read as a
+    // total it would be subtracted, and the difference of two levels is a
+    // number nobody spent.
+    try testing.expectEqual(token_says.Source.statusline, claude.source);
+    try testing.expectEqual(token_says.Counts.window, claude.counts);
+    // The four fields of `current_usage`, as Claude Code 2.1.312's own
+    // schema describes them ("Token usage from last API call ... input
+    // tokens for current context, output tokens generated, cache ...").
+    try testing.expectEqual(@as(usize, 4), claude.keys.len);
+    try testing.expectEqualStrings("context_window.current_usage.input_tokens", claude.keys[0]);
+    try testing.expectEqualStrings("context_window.current_usage.output_tokens", claude.keys[1]);
+    try testing.expectEqualStrings("context_window.current_usage.cache_creation_input_tokens", claude.keys[2]);
+    try testing.expectEqualStrings("context_window.current_usage.cache_read_input_tokens", claude.keys[3]);
+    // A status line's input carries no timestamp: the moment is the reading.
+    try testing.expectEqual(@as(?[]const u8, null), claude.at_key);
+
+    const codex = (try tokenSaysOf(a, "codex", (try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        a,
+        @embedFile("plugin_codex_json"),
+        .{},
+    )).object)).?;
+    // A session's running spend, which is what a difference means
+    // something of.
+    try testing.expectEqual(token_says.Source.session_record, codex.source);
+    try testing.expectEqual(token_says.Counts.total, codex.counts);
+    try testing.expectEqual(@as(usize, 1), codex.keys.len);
+    try testing.expectEqualStrings("payload.info.total_token_usage.total_tokens", codex.keys[0]);
+    try testing.expectEqualStrings("timestamp", codex.at_key.?);
+
+    // **And the two halves meet**: each declaration reads the payload its
+    // own CLI writes. The Claude Code one is the shape measured on 2.1.312
+    // (its schema's own words), the Codex one is a line out of a real
+    // rollout record in `$CODEX_HOME/sessions/`.
+    const claude_line =
+        \\{"session_id":"s","context_window":{"total_input_tokens":15234,
+        \\ "current_usage":{"input_tokens":19113,"output_tokens":250,
+        \\   "cache_creation_input_tokens":100,"cache_read_input_tokens":40}}}
+    ;
+    const got = (try token_says.readingOf(a, "claude-code", "s", 7, try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        a,
+        claude_line,
+        .{},
+    ), claude)).?;
+    try testing.expectEqual(@as(u64, 19_503), got.tokens);
+
+    const codex_line =
+        \\{"timestamp":"2026-10-24T13:30:48.093Z","type":"event_msg","payload":{"type":"token_count",
+        \\ "info":{"total_token_usage":{"input_tokens":49384495,"output_tokens":460060,
+        \\          "total_tokens":49844555}}}}
+    ;
+    const got_codex = (try token_says.readingOf(a, "codex", "s", 7, try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        a,
+        codex_line,
+        .{},
+    ), codex)).?;
+    try testing.expectEqual(@as(u64, 49_844_555), got_codex.tokens);
+
+    // The two CLIs Polter starts that do **not** declare one: an opencode
+    // whose event is not forwarded to Polter, and an agy whose status line
+    // is Antigravity's own. A manifest that declares nothing reads as
+    // "nothing to read", which is the honest answer and not an error.
+    for ([_][]const u8{
+        @embedFile("plugin_opencode_json"),
+        @embedFile("plugin_opencode_v2_json"),
+        @embedFile("plugin_antigravity_json"),
+    }) |json| {
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, json, .{});
+        try testing.expect((try tokenSaysOf(a, "x", parsed.object)) == null);
+    }
+
+    // A manifest whose section is there and does not read costs the section
+    // and nothing else: its other jobs keep working.
+    const broken = (try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"source":"statusline","counts":"windowish","keys":["a"]}
+    , .{})).object;
+    try testing.expect((try tokenSaysOf(a, "x", broken)) == null);
+    const not_an_object = (try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"token_says\":3}", .{})).object;
+    try testing.expect((try tokenSaysOf(a, "x", not_an_object)) == null);
 }
 
 test "1682: only a CLI whose hooks report no approval has its screen read while they are live" {

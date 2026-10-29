@@ -89,6 +89,7 @@ pub const secret = @import("secret.zig");
 pub const Session = @import("Session.zig");
 pub const Projects = @import("Projects.zig");
 pub const Tasks = @import("Tasks.zig");
+pub const token_says = @import("token_says.zig");
 pub const TaskLog = @import("TaskLog.zig");
 pub const StatsLog = @import("StatsLog.zig");
 pub const Retention = @import("Retention.zig");
@@ -203,6 +204,7 @@ test {
     _ = Server;
     _ = Session;
     _ = Tasks;
+    _ = token_says;
     _ = TaskLog;
     _ = skill;
     _ = skill_store;

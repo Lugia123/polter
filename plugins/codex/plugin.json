@@ -30,6 +30,14 @@
     ]
   },
   "exec": "provision.sh",
+  "token_says": {
+    "source": "session_record",
+    "counts": "total",
+    "keys": [
+      "payload.info.total_token_usage.total_tokens"
+    ],
+    "at_key": "timestamp"
+  },
   "exec_windows": "provision.ps1",
   "timeout_ms": 20000,
   "agent_cli": {
