@@ -15,6 +15,7 @@ use polter_control_room::list::{self, List, Row};
 use polter_control_room::json::Value;
 use polter_control_room::pane;
 use polter_control_room::pane_color::Color as PaneColor;
+use polter_control_room::preview_layout;
 use polter_control_room::project_link::{self, HintClock};
 use polter_control_room::{panestack, tabmarks};
 use polter_control_room::pulse::{self, Scope};
@@ -1129,6 +1130,31 @@ fn main() {
         }
     }
 
+    // Where the terminal and the file preview go in one cell (task 2623,
+    // #2140 S2). One line a cell, over the cases beside the snapshot
+    // (`preview_layout_cases.json`), in the form the macOS dump prints and
+    // `polter-artifacts/2623/check_preview_layout.py` reads:
+    //
+    //     preview case=<name> cell_w=<n> open=<0|1> dragged=<n|-> -> tx= tw= px= pw= overlay=
+    //
+    // The answers are this crate's `preview_layout::layout`; the macOS side
+    // has the same rule in `PreviewLayout.split`, and any line that differs
+    // is the two hosts disagreeing about one cell.
+    for (name, cell_w, open, dragged) in preview_cases(&args[1]) {
+        let s = preview_layout::layout(cell_w, open, dragged);
+        println!(
+            "preview case={} cell_w={} open={} dragged={} -> tx={} tw={} px={} pw={} overlay={}",
+            name,
+            points(cell_w),
+            if open { 1 } else { 0 },
+            dragged.map_or("-".to_string(), points),
+            points(s.terminal_x),
+            points(s.terminal_width),
+            points(s.preview_x),
+            points(s.preview_width),
+            if s.overlay { 1 } else { 0 }
+        );
+    }
     let lay = ListLayout::new(&l, height);
     println!("size w={:.3} h={:.3}", lay.width, lay.height);
     rect("header", lay.header);
@@ -1423,4 +1449,55 @@ fn start_note_said(project: Option<&polter_control_room::snapshot::ProjectTie>) 
         Some((template, args)) => quote(&args.iter().fold(template.to_string(), |said, arg| polter_control_room::list::fill(&said, arg))),
         None => "-".to_string(),
     }
+}
+
+/// A width as the acceptance fixture writes one: a whole number without a
+/// decimal point, and anything else as it round-trips. `preview_layout_cases.json`
+/// and `polter-artifacts/2623/check_preview_layout.py` both read these back
+/// as numbers, so the two hosts printing the same value the same way is what
+/// makes a differing line a differing answer rather than a differing spelling.
+fn points(v: f64) -> String {
+    if v == v.trunc() && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
+/// The cells `preview_layout` is asked about, from beside the snapshot
+/// (`preview_layout_cases.json`, task 2623 S2). The same file the macOS dump
+/// reads, so the two hosts are asked about the same cells in the same order;
+/// a case the file has and a host does not read is a line one side prints.
+fn preview_cases(snapshot: &str) -> Vec<(String, f64, bool, Option<f64>)> {
+    let path = std::path::Path::new(snapshot).with_file_name("preview_layout_cases.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let v = polter_control_room::json::parse(&text).expect("preview_layout_cases.json is JSON");
+    let Some(Value::Arr(cases)) = v.get("cases") else {
+        panic!("preview_layout_cases.json: no cases");
+    };
+    if cases.is_empty() {
+        panic!("preview_layout_cases.json: no cases at all, so nothing was compared");
+    }
+    cases
+        .iter()
+        .map(|c| {
+            let word = |key: &str| match c.get(key) {
+                Some(Value::Str(s)) => s.clone(),
+                _ => panic!("preview_layout_cases.json: a case has no {key}"),
+            };
+            let number = |key: &str| match c.get(key) {
+                None | Some(Value::Null) => None,
+                Some(Value::Int(n)) => Some(*n as f64),
+                Some(Value::Float(f)) => Some(*f),
+                other => panic!("preview_layout_cases.json: {key} is {other:?}, not a number"),
+            };
+            let name = word("case");
+            let cell_w = number("cell_w").unwrap_or_else(|| panic!("{name}: no cell_w"));
+            let open = match c.get("open") {
+                Some(Value::Bool(b)) => *b,
+                _ => panic!("{name}: no open"),
+            };
+            (name, cell_w, open, number("dragged_w"))
+        })
+        .collect()
 }

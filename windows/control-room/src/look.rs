@@ -237,6 +237,25 @@ pub mod pane {
     pub const FRAME_SHADOW_BLUR: f64 = 24.0;
 }
 
+/// The file preview beside a terminal in the same cell (task 2623, #2140 S1): the widths `preview_layout` is worked out from, which is the one rule the macOS host and the Windows host share (`dev-docs/poltergeist/control-room.md`; the design's `INTERACTION.md` §一 and `src/files.css`'s `.split.over > .fp`). The names are the ones the two hosts, the supervisor's ruling of 2026-11-01 and the acceptance fixture use.
+pub mod preview {
+    /// A cell at least this wide puts the terminal and the preview side by side; a narrower one has the preview over the terminal. It is the design's own sum of the two least widths (`terminal_min_width` + `preview_min_width`), written down as one number so that neither host adds it up again.
+    /// Source: design 2140 v2, INTERACTION.md (§一 终端格里的预览, 宽窄) and src/files.css (`.split.over > .fp`, `--cpw`), read for task 2623 S1; the numbers as the supervisor's ruling of 2026-11-01 named them. v3 redraws the same cell and says 不改 about this part (CHANGES.md, the two things left).
+    pub const CELL_MIN_WIDTH_SIDE_BY_SIDE: f64 = 800.0;
+    /// The least a terminal may be in a cell that shows a preview: side by side, the preview never takes so much of the cell that the terminal goes below this.
+    /// Source: design 2140 v2, INTERACTION.md (§一 终端格里的预览, 宽窄) and src/files.css (`.split.over > .fp`, `--cpw`), read for task 2623 S1; the numbers as the supervisor's ruling of 2026-11-01 named them. v3 redraws the same cell and says 不改 about this part (CHANGES.md, the two things left).
+    pub const TERMINAL_MIN_WIDTH: f64 = 360.0;
+    /// The least the preview may be side by side. The design says 预览最窄 440, and it is also what the clamp gives a cell of exactly `cell_min_width_side_by_side`, where half the cell (400) is under it. ⚠️ It was 360 under another name (a fixed default width) before the supervisor's ruling of 2026-11-01; 360 is now `terminal_min_width`.
+    /// Source: design 2140 v2, INTERACTION.md (§一 终端格里的预览, 宽窄) and src/files.css (`.split.over > .fp`, `--cpw`), read for task 2623 S1; the numbers as the supervisor's ruling of 2026-11-01 named them. v3 redraws the same cell and says 不改 about this part (CHANGES.md, the two things left).
+    pub const PREVIEW_MIN_WIDTH: f64 = 440.0;
+    /// Nobody has dragged the divider: the preview's target width is this much of the cell, and `preview_min_width` and `terminal_min_width` clamp it from there. The design says 预览默认占格子的一半, and its `.split.cellsplit > .fp { width: var(--cpw, 50%) }`; there is no fixed default width (the supervisor's ruling of 2026-11-01: a `preview_default_width` in this data is a dead constant, and a host that works the half out itself is the second copy this number exists to prevent).
+    /// Source: design 2140 v2, INTERACTION.md (§一 终端格里的预览, 宽窄) and src/files.css (`.split.over > .fp`, `--cpw`), read for task 2623 S1; the numbers as the supervisor's ruling of 2026-11-01 named them. v3 redraws the same cell and says 不改 about this part (CHANGES.md, the two things left).
+    pub const PREVIEW_DEFAULT_FRACTION: f64 = 0.5;
+    /// Over the terminal, how much of it is left in sight at the left, dimmed, with `‹ 终端` over it. The preview starts here and takes what is left of the cell -- never a negative width, and never a negative size anywhere (task 2623: the supervisor's ruling of 2026-11-01; the 40 is the design's).
+    /// Source: design 2140 v2, INTERACTION.md (§一 终端格里的预览, 宽窄) and src/files.css (`.split.over > .fp`, `--cpw`), read for task 2623 S1; the numbers as the supervisor's ruling of 2026-11-01 named them. v3 redraws the same cell and says 不改 about this part (CHANGES.md, the two things left).
+    pub const OVERLAY_LEFT_EXPOSE: f64 = 40.0;
+}
+
 /// The badge at the left end of a supervisor's title, the mark before a supervisor's name on a stack's tab, and the edge round a supervisor's pane when panes wear no frames (task 1692).
 pub mod supervisor_badge {
     /// Round at both ends: its radius is half of this.

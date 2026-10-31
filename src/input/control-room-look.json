@@ -42,7 +42,8 @@
     "perf5-2149": "design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry)",
     "perf-2015": "task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit",
     "perf-v4-svg": "design #1985 ui-v4, src/perf4.py: the dial's and the curve's drawing, read for task 2039 W2 (seq 166)",
-    "task-v9": "design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts"
+    "task-v9": "design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts",
+    "files-2140-v2": "design 2140 v2, INTERACTION.md (§一 终端格里的预览, 宽窄) and src/files.css (`.split.over > .fp`, `--cpw`), read for task 2623 S1; the numbers as the supervisor's ruling of 2026-11-01 named them. v3 redraws the same cell and says 不改 about this part (CHANGES.md, the two things left)"
   },
 
   "numbers": {
@@ -166,6 +167,36 @@
       "plain_has_line": { "v": false, "src": "v14-changes" },
       "frame_shadow_y": { "v": 8, "src": "v17-tokens" },
       "frame_shadow_blur": { "v": 24, "src": "v17-tokens" }
+    },
+    "preview": {
+      "_src": "files-2140-v2",
+      "_doc": [
+        "The file preview beside a terminal in the same cell (task 2623, #2140 S1): the widths",
+        "`preview_layout` is worked out from, which is the one rule the macOS host and the Windows",
+        "host share (`dev-docs/poltergeist/control-room.md`; the design's `INTERACTION.md` §一 and",
+        "`src/files.css`'s `.split.over > .fp`). The names are the ones the two hosts, the",
+        "supervisor's ruling of 2026-11-01 and the acceptance fixture use."
+      ],
+      "cell_min_width_side_by_side": {
+        "v": 800,
+        "doc": "A cell at least this wide puts the terminal and the preview side by side; a narrower one has the preview over the terminal. It is the design's own sum of the two least widths (`terminal_min_width` + `preview_min_width`), written down as one number so that neither host adds it up again."
+      },
+      "terminal_min_width": {
+        "v": 360,
+        "doc": "The least a terminal may be in a cell that shows a preview: side by side, the preview never takes so much of the cell that the terminal goes below this."
+      },
+      "preview_min_width": {
+        "v": 440,
+        "doc": "The least the preview may be side by side. The design says 预览最窄 440, and it is also what the clamp gives a cell of exactly `cell_min_width_side_by_side`, where half the cell (400) is under it. ⚠️ It was 360 under another name (a fixed default width) before the supervisor's ruling of 2026-11-01; 360 is now `terminal_min_width`."
+      },
+      "preview_default_fraction": {
+        "v": 0.5,
+        "doc": "Nobody has dragged the divider: the preview's target width is this much of the cell, and `preview_min_width` and `terminal_min_width` clamp it from there. The design says 预览默认占格子的一半, and its `.split.cellsplit > .fp { width: var(--cpw, 50%) }`; there is no fixed default width (the supervisor's ruling of 2026-11-01: a `preview_default_width` in this data is a dead constant, and a host that works the half out itself is the second copy this number exists to prevent)."
+      },
+      "overlay_left_expose": {
+        "v": 40,
+        "doc": "Over the terminal, how much of it is left in sight at the left, dimmed, with `‹ 终端` over it. The preview starts here and takes what is left of the cell -- never a negative width, and never a negative size anywhere (task 2623: the supervisor's ruling of 2026-11-01; the 40 is the design's)."
+      }
     },
     "supervisor_badge": {
       "_src": "supervisor-pane-v1",

@@ -10,6 +10,7 @@
 //! | [`layout`] | where everything in the list panel is; the chip's spring |
 //! | [`highlight`] | a terminal lit up to be found: how lit it is as it breathes, whether its card fits, what a key does to it, why it ended |
 //! | [`pulse`] | which waiting glyph breathes; what a window tab carries and whether it is drawn |
+//! | [`preview_layout`] | where the terminal and the file preview go in one cell, side by side or the preview over the terminal (task 2623) |
 //! | [`act`] | the person's acts as requests to the core, what a refusal says, when looking marks a group seen |
 //! | [`lend`] | which terminal is shown on the right, and what happens to it when anything changes |
 //! | [`reach`] | what can still be done with no terminal in front: which actions, and which key is which |
@@ -74,6 +75,7 @@ pub mod project_mark;
 pub mod project_notice;
 pub mod project_words;
 pub mod panestack;
+pub mod preview_layout;
 pub mod pulse;
 pub mod quota;
 pub mod reach;

@@ -120,7 +120,13 @@ where the tab in front is scrolled to from three offsets, and which member's
 glyph each edge carries for three orders the core might hand in -- and
 a tab's nominal width for five names, macOS's with its close button's place
 added back first: the one way the two are meant to differ, by exactly
-`close_gap + close_button` (task 1642; see `mac_as_windows`).
+`close_gap + close_button` (task 1642; see `mac_as_windows`); and where the
+terminal and a file preview go in one cell -- the terminal's and the
+preview's start and width at every cell in
+`src/poltergeist/testdata/preview_layout_cases.json`, from a cell narrower
+than the preview's own inset to one wide enough that half of it is the
+preview, with the divider dragged to each end of its range and further, and
+with sizes that are not sizes at all (task 2623, #2140 S2).
 
 **NOT COMPARED, and why.**
 
@@ -156,6 +162,11 @@ added back first: the one way the two are meant to differ, by exactly
     asked about the right end and compared, and the macOS tests hold the
     left.
   * Anything drawn. This compares numbers and strings, not pixels.
+  * Where the terminal and the preview are in a cell, in the app. Both
+    sides run the same rule here (`preview_layout::layout`,
+    `PreviewLayout.split`) and its own unit tests hold it; what the app's
+    SwiftUI does with the answer, and the WebView2 that would be put in the
+    rectangle, is not in this file's reach.
   * That the app links these files the way the package does. It is the same
     source; it is not the same binary.
 
@@ -186,6 +197,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomList.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomPageLayout.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
+    "macos/Sources/Features/ControlRoom/PreviewLayout.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomRowMenu.swift",
@@ -980,6 +992,37 @@ for stacked in [false, true] {
     }
 }
 
+// Where the terminal and the file preview go in one cell (task 2623, #2140
+// S2). One line a cell, over the cases beside the snapshot
+// (`preview_layout_cases.json`), in the form the Windows dump prints and
+// `polter-artifacts/2623/check_preview_layout.py` reads:
+//
+//     preview case=<name> cell_w=<n> open=<0|1> dragged=<n|-> -> tx= tw= px= pw= overlay=
+//
+// The answers are `PreviewLayout.split`; the Windows side has the same rule
+// in `preview_layout::layout`, and any line that differs is the two hosts
+// disagreeing about one cell. A width is printed by `points`, above.
+let casesURL = URL(fileURLWithPath: args[1]).deletingLastPathComponent()
+    .appendingPathComponent("preview_layout_cases.json")
+let caseTop = (try? JSONSerialization.jsonObject(with: Data(contentsOf: casesURL))) as? [String: Any]
+let caseList = caseTop?["cases"] as? [[String: Any]] ?? []
+if caseList.isEmpty {
+    FileHandle.standardError.write(Data("preview_layout_cases.json: no cases at all, so nothing was compared\n".utf8))
+    exit(1)
+}
+for c in caseList {
+    guard let name = c["case"] as? String, let cellW = (c["cell_w"] as? NSNumber)?.doubleValue,
+          let open = c["open"] as? Bool else {
+        FileHandle.standardError.write(Data("preview_layout_cases.json: a case has no name, cell_w or open\n".utf8))
+        exit(1)
+    }
+    let dragged = (c["dragged_w"] as? NSNumber)?.doubleValue
+    let s = PreviewLayout.split(cellW: CGFloat(cellW), open: open, draggedW: dragged.map { CGFloat($0) })
+    print("preview case=\(name) cell_w=\(points(cellW)) open=\(open ? 1 : 0) "
+        + "dragged=\(dragged.map(points) ?? "-") -> tx=\(points(Double(s.terminalX))) "
+        + "tw=\(points(Double(s.terminalWidth))) px=\(points(Double(s.previewX))) "
+        + "pw=\(points(Double(s.previewWidth))) overlay=\(s.overlay ? 1 : 0)")
+}
 let lay = ControlRoomListLayout(list: list, height: CGFloat(height))
 print("size w=\(f(lay.size.width)) h=\(f(lay.size.height))")
 rect("header", lay.header)
