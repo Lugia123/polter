@@ -34,6 +34,7 @@ pub const keys = @import("keys.zig");
 pub const persona = @import("persona.zig");
 pub const squad = @import("squad.zig");
 const secret = @import("secret.zig");
+pub const files = @import("files/main.zig");
 pub const worktree = @import("worktree.zig");
 
 const log = std.log.scoped(.poltergeist);
@@ -534,6 +535,19 @@ pub const Method = enum {
     /// closed to plugins: it is about the asking terminal's own write.
     file_guard,
 
+    /// The five requests a host makes to read and edit a file of a working
+    /// directory (task 2573, `files/Tickets.zig`): a ticket for a file, the
+    /// path a read may go to, a proposed edit, its commit, and the ticket's
+    /// end.
+    ///
+    /// **For a host, not an agent**: no tool, no call, closed to plugins --
+    /// what they answer is a capability to read files.
+    files_open,
+    files_resolve,
+    files_propose,
+    files_commit,
+    files_close,
+
     /// The last finished turn of a terminal's agent, in full: what its
     /// `turn_ended` hook carried, when, and in which session. The notices
     /// quote the start of it; this is the rest, up to 16 KB.
@@ -941,6 +955,11 @@ pub const Request = union(Method) {
     agent_event: AgentEvent.Event,
     hook_context: struct { moment: HookMoment },
     file_guard: struct { path: []const u8 },
+    files_open: struct { workdir_id: []const u8, path: []const u8, scope: files.Access.Scope = .file },
+    files_resolve: struct { token: []const u8, rel: []const u8 = "" },
+    files_propose: struct { token: []const u8, full_text: []const u8, base_version: []const u8 },
+    files_commit: struct { proposal_id: []const u8, choices: []const files.Merge.Choice = &.{}, restore_gone: bool = false },
+    files_close: struct { token: []const u8 },
     terminal_turn: struct { id: Bus.Id },
 
     // The screenshot tools. Every parameter is carried as its raw JSON text
@@ -1251,6 +1270,11 @@ pub fn callableByPlugin(method: Method) bool {
         // put into the context of the agent in the terminal that asked.
         .hook_context,
         .file_guard,
+        .files_open,
+        .files_resolve,
+        .files_propose,
+        .files_commit,
+        .files_close,
 
         // **Closed to plugins, for now.** It reads what an agent answered,
         // which is more than a screen's bookkeeping; nothing has asked for
@@ -1448,6 +1472,14 @@ pub fn offeredAsTool(method: Method) bool {
         .hook_context => false,
         .file_guard => false,
 
+        // Asked by the host for the files of a preview (task 2573); no agent has them.
+        .files_open,
+        .files_resolve,
+        .files_propose,
+        .files_commit,
+        .files_close,
+        => false,
+
         else => true,
     };
 }
@@ -1490,6 +1522,14 @@ pub fn requiresSupervisor(method: Method) bool {
         // and only that one: whoever it is, it is asking about itself.
         .hook_context => false,
         .file_guard => false,
+
+        // Asked by the host for the files of a preview (task 2573); no agent has them.
+        .files_open,
+        .files_resolve,
+        .files_propose,
+        .files_commit,
+        .files_close,
+        => false,
 
         // Reading, on `terminal_read`'s terms: the target's mark decides.
         .terminal_turn => false,
@@ -1801,6 +1841,11 @@ pub fn targetsTerminal(method: Method) bool {
         // terminal.
         .config_get,
         .resource_overview,
+        .files_open,
+        .files_resolve,
+        .files_propose,
+        .files_commit,
+        .files_close,
         .screenshot_windows,
         .screenshot_capture,
         .screenshot_annotate,
@@ -1932,6 +1977,11 @@ pub fn target(req: Request) ?Bus.Id {
         .config_get,
         // Names a group or a pid, neither of which is a terminal.
         .resource_overview,
+        .files_open,
+        .files_resolve,
+        .files_propose,
+        .files_commit,
+        .files_close,
         // `screenshot_capture` may name a terminal, as `terminal`: whose
         // window to photograph is not reach into that terminal, and the one
         // rule about it -- never a shielded one -- is checked where the
@@ -2033,6 +2083,11 @@ pub fn selfPermitted(req: Request) bool {
         .skill_read,
         .config_get,
         .resource_overview,
+        .files_open,
+        .files_resolve,
+        .files_propose,
+        .files_commit,
+        .files_close,
         .screenshot_windows,
         .screenshot_capture,
         .screenshot_annotate,
@@ -2325,6 +2380,11 @@ pub fn promptReach(method: Method) enum {
         .skill_read,
         .config_get,
         .resource_overview,
+        .files_open,
+        .files_resolve,
+        .files_propose,
+        .files_commit,
+        .files_close,
         .screenshot_windows,
         .screenshot_capture,
         .screenshot_annotate,
@@ -2963,6 +3023,11 @@ test "only what changes the arrangement needs the supervisor" {
             // What Polter and the machine are spending: no terminal is
             // reached, and a worker is the one the full disk kills.
             .resource_overview,
+            .files_open,
+            .files_resolve,
+            .files_propose,
+            .files_commit,
+            .files_close,
             => true,
 
             // Polter's own logs are about the whole machine.
@@ -6720,6 +6785,19 @@ pub const Host = struct {
             alloc: std.mem.Allocator,
         ) anyerror![]const Place,
 
+        /// The tickets for files (task 2573). The host owns them, as it owns
+        /// the clock: they live as long as the app does.
+        filesTickets: *const fn (ctx: *anyopaque) *files.Tickets,
+
+        /// The working directory with this id (`Workdirs.Dir.id`), real, or
+        /// null if no group has one. Memory belongs to the caller's
+        /// allocator.
+        filesWorkdir: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+            id: []const u8,
+        ) anyerror!?files.Tickets.Workdir,
+
         /// Everything the supervisor has not been shown, cleared as it is
         /// read. Empty when there is nothing waiting. Returned memory
         /// belongs to the caller's allocator.
@@ -7483,6 +7561,14 @@ pub const Host = struct {
 
     fn openTerminals(self: Host, alloc: std.mem.Allocator) anyerror![]const Place {
         return self.vtable.openTerminals(self.ctx, alloc);
+    }
+
+    fn filesTickets(self: Host) *files.Tickets {
+        return self.vtable.filesTickets(self.ctx);
+    }
+
+    fn filesWorkdir(self: Host, alloc: std.mem.Allocator, id: []const u8) anyerror!?files.Tickets.Workdir {
+        return self.vtable.filesWorkdir(self.ctx, alloc, id);
     }
 
     fn setWatching(self: Host, id: Bus.Id, watching: bool) anyerror!void {
@@ -8709,6 +8795,11 @@ pub fn isAgentCall(method: Method) bool {
         //   silence it is for, as `agent_event` would.
         .hook_context,
         .file_guard,
+        .files_open,
+        .files_resolve,
+        .files_propose,
+        .files_commit,
+        .files_close,
         => false,
 
         .terminal_turn,
@@ -8922,6 +9013,18 @@ fn dispatchOne(
             info.membership = host.membership(alloc, caller) catch null;
             return .{ .me = info };
         },
+
+        .files_open => |p| {
+            const wd = host.filesWorkdir(alloc, p.workdir_id) catch |err| {
+                log.warn("poltergeist: files_open could not look up a workdir err={}", .{err});
+                return hostFailure("HostRefused", "the working directories could not be read");
+            } orelse return .{ .json = try std.fmt.allocPrint(alloc, "{{\"refused\":\"no_workdir\",\"why\":\"there is no working directory with that id\"}}", .{}) };
+            return .{ .json = try host.filesTickets().open(alloc, wd, p.path, p.scope) };
+        },
+        .files_resolve => |p| return .{ .json = try host.filesTickets().resolve(alloc, p.token, p.rel) },
+        .files_propose => |p| return .{ .json = try host.filesTickets().propose(alloc, p.token, p.full_text, p.base_version) },
+        .files_commit => |p| return .{ .json = try host.filesTickets().commit(alloc, p.proposal_id, p.choices, p.restore_gone) },
+        .files_close => |p| return .{ .json = try host.filesTickets().close(alloc, p.token) },
 
         .hook_context => |p| {
             // `authorize` has refused a plugin already; refused again here
@@ -12843,7 +12946,14 @@ const fake_plugins = [_]PluginView{
 
 const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 /// A host that records what it was asked to do and can be told to refuse.
+const FilesWorkdir = struct { id: []const u8, dir: files.Tickets.Workdir };
+
 const FakeHost = struct {
+    /// What `filesTickets` hands out (task 2573); a test that opens one
+    /// ends with `defer fake.tickets.deinit()`.
+    tickets: files.Tickets = .init(std.testing.allocator, std.testing.io),
+    /// What `filesWorkdir` knows.
+    workdirs: []const FilesWorkdir = &.{},
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
     /// How many `sendText` calls were carried out.
     sent_n: usize = 0,
@@ -13321,6 +13431,8 @@ const FakeHost = struct {
             .resourceUsage = resourceUsage,
             .resourceOverview = resourceOverview,
             .openTerminals = openTerminals,
+            .filesTickets = filesTickets,
+            .filesWorkdir = filesWorkdir,
             .setWatching = setWatching,
             .stoodDown = stoodDown,
             .drainNotices = drainNotices,
@@ -14290,6 +14402,22 @@ const FakeHost = struct {
     ) anyerror![]const Place {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return alloc.dupe(Place, self.open);
+    }
+
+    fn filesTickets(ctx: *anyopaque) *files.Tickets {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return &self.tickets;
+    }
+
+    fn filesWorkdir(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+        id: []const u8,
+    ) anyerror!?files.Tickets.Workdir {
+        _ = alloc;
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        for (self.workdirs) |w| if (std.mem.eql(u8, w.id, id)) return w.dir;
+        return null;
     }
 
     fn configText(
@@ -20273,7 +20401,6 @@ test "2565 C6: file_guard is the asking terminal's, for its hook: no tool, no ca
     try testing.expect(!isAgentCall(.file_guard));
     try testing.expect(!callableByPlugin(.file_guard));
     try testing.expect(!requiresSupervisor(.file_guard));
-
     var b = try testBus(testing.allocator);
     defer b.deinit();
     try testing.expectError(error.NotATerminal, authorize(
@@ -20295,6 +20422,155 @@ test "2565 C6: file_guard answers the host's sentence for a locked path, and emp
     try testing.expectEqualStrings("w2 is editing it", locked);
     const free = (try dispatch(aa, &b, fake.host(), term(worker), .{ .file_guard = .{ .path = "/w/a/y.md" } })).text;
     try testing.expectEqualStrings("", free);
+}
+
+const FilesRig = struct {
+    tmp: testing.TmpDir,
+    arena: std.heap.ArenaAllocator,
+    bus: Bus,
+    fake: FakeHost,
+    work: []const u8,
+    dirs: [1]FilesWorkdir,
+
+    fn init(self: *FilesRig) !void {
+        self.tmp = testing.tmpDir(.{});
+        self.arena = .init(testing.allocator);
+        const a = self.arena.allocator();
+        try self.tmp.dir.createDirPath(testing.io, "w/sub");
+        try self.tmp.dir.createDirPath(testing.io, "other");
+        self.work = try self.tmp.dir.realPathFileAlloc(testing.io, "w", a);
+        self.dirs = .{.{ .id = "abcd", .dir = .{ .path = self.work, .too_wide = false } }};
+        self.bus = try testBus(testing.allocator);
+        self.fake = .{};
+        self.fake.workdirs = &self.dirs;
+    }
+
+    fn deinit(self: *FilesRig) void {
+        self.fake.tickets.deinit();
+        self.bus.deinit();
+        self.arena.deinit();
+        self.tmp.cleanup();
+    }
+
+    fn put(self: *FilesRig, sub: []const u8, data: []const u8) !void {
+        try self.tmp.dir.writeFile(testing.io, .{ .sub_path = sub, .data = data });
+    }
+
+    /// One request, as a host sends it, answered as JSON.
+    fn ask(self: *FilesRig, json: []const u8) !std.json.Value {
+        const a = self.arena.allocator();
+        const req = try wire.parseRequestLeaky(a, json);
+        const res = try dispatch(a, &self.bus, self.fake.host(), term(worker), req);
+        return std.json.parseFromSliceLeaky(std.json.Value, a, res.json, .{});
+    }
+
+    fn askf(self: *FilesRig, comptime fmt: []const u8, args: anytype) !std.json.Value {
+        return self.ask(try std.fmt.allocPrint(self.arena.allocator(), fmt, args));
+    }
+
+    fn open(self: *FilesRig, path: []const u8, scope: []const u8) !std.json.Value {
+        return self.askf("{{\"method\":\"files_open\",\"params\":{{\"workdir_id\":\"abcd\",\"path\":\"{s}\",\"scope\":\"{s}\"}}}}", .{ path, scope });
+    }
+
+    fn resolve(self: *FilesRig, token: []const u8, rel: []const u8) !std.json.Value {
+        return self.askf("{{\"method\":\"files_resolve\",\"params\":{{\"token\":\"{s}\",\"rel\":\"{s}\"}}}}", .{ token, rel });
+    }
+};
+
+test "2573 C7: the files requests are a host's: no tool, no call, no plugin, no standing" {
+    for ([_]Method{ .files_open, .files_resolve, .files_propose, .files_commit, .files_close }) |m| {
+        try testing.expect(!offeredAsTool(m));
+        try testing.expect(!isAgentCall(m));
+        try testing.expect(!callableByPlugin(m));
+        try testing.expect(!requiresSupervisor(m));
+    }
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try testing.expectError(error.NotATerminal, authorize(
+        &b,
+        plug(&.{"files_open"}),
+        .{ .files_open = .{ .workdir_id = "abcd", .path = "a.md" } },
+    ));
+}
+
+test "2573 C7: a ticket reads its file, and a file beside it is refused for scope file and read for siblings" {
+    var r: FilesRig = undefined;
+    try r.init();
+    defer r.deinit();
+    try r.put("w/a.md", "a\n");
+    try r.put("w/b.png", "b");
+    try r.put("w/sub/c.md", "c");
+    try r.put("other/x.md", "x");
+
+    const file = try r.open("a.md", "file");
+    const ft = file.object.get("token").?.string;
+    try testing.expect((try r.resolve(ft, "")).object.get("path") != null);
+    try testing.expect((try r.resolve(ft, "b.png")).object.get("refused") != null);
+    try testing.expect((try r.resolve(ft, "sub/c.md")).object.get("refused") != null);
+
+    const sib = try r.open("a.md", "siblings");
+    const st = sib.object.get("token").?.string;
+    try testing.expect((try r.resolve(st, "b.png")).object.get("path") != null);
+    try testing.expect((try r.resolve(st, "sub/c.md")).object.get("refused") != null);
+    try testing.expect((try r.resolve(st, "../other/x.md")).object.get("refused") != null);
+
+    const all = try r.open("a.md", "workdir");
+    const wt = all.object.get("token").?.string;
+    try testing.expect((try r.resolve(wt, "sub/c.md")).object.get("path") != null);
+    try testing.expect((try r.resolve(wt, "../other/x.md")).object.get("refused") != null);
+}
+
+test "2573 C7: open refuses a path outside, a workdir nobody has, and a scope that is not one" {
+    var r: FilesRig = undefined;
+    try r.init();
+    defer r.deinit();
+    try r.put("other/x.md", "x");
+    try testing.expect((try r.open("../other/x.md", "file")).object.get("refused") != null);
+    try testing.expect((try r.open("missing.md", "file")).object.get("refused") != null);
+    const nobody = try r.ask("{\"method\":\"files_open\",\"params\":{\"workdir_id\":\"nope\",\"path\":\"a.md\"}}");
+    try testing.expectEqualStrings("no_workdir", nobody.object.get("refused").?.string);
+    try testing.expectError(error.BadParams, wire.parseRequestLeaky(r.arena.allocator(), "{\"method\":\"files_open\",\"params\":{\"workdir_id\":\"abcd\",\"path\":\"a.md\",\"scope\":\"everything\"}}"));
+    try testing.expectEqual(@as(usize, 0), r.fake.tickets.count());
+}
+
+test "2573 C7: a closed ticket reads nothing, and its proposals write nothing" {
+    var r: FilesRig = undefined;
+    try r.init();
+    defer r.deinit();
+    try r.put("w/a.md", "one\n");
+    const o = try r.open("a.md", "file");
+    const t = o.object.get("token").?.string;
+    const ver = o.object.get("info").?.object.get("version").?.string;
+    const p = try r.askf("{{\"method\":\"files_propose\",\"params\":{{\"token\":\"{s}\",\"full_text\":\"two\\n\",\"base_version\":\"{s}\"}}}}", .{ t, ver });
+    const pid = p.object.get("proposal_id").?.string;
+    const closed = try r.askf("{{\"method\":\"files_close\",\"params\":{{\"token\":\"{s}\"}}}}", .{t});
+    try testing.expect(closed.object.get("closed").?.bool);
+    try testing.expect((try r.resolve(t, "")).object.get("refused") != null);
+    const c = try r.askf("{{\"method\":\"files_commit\",\"params\":{{\"proposal_id\":\"{s}\"}}}}", .{pid});
+    try testing.expect(c.object.get("refused") != null);
+    const kept = try r.tmp.dir.readFileAlloc(testing.io, "w/a.md", r.arena.allocator(), .limited(100));
+    try testing.expectEqualStrings("one\n", kept);
+}
+
+test "2573 C7: propose and commit through the request writes the file, with a conflict resolved by the user's choice" {
+    var r: FilesRig = undefined;
+    try r.init();
+    defer r.deinit();
+    try r.put("w/a.md", "one\ntwo\n");
+    const o = try r.open("a.md", "file");
+    const t = o.object.get("token").?.string;
+    const ver = o.object.get("info").?.object.get("version").?.string;
+    const p = try r.askf("{{\"method\":\"files_propose\",\"params\":{{\"token\":\"{s}\",\"full_text\":\"ONE\\ntwo\\n\",\"base_version\":\"{s}\"}}}}", .{ t, ver });
+    // The disk moves on the same line: the commit comes back as a conflict.
+    try r.put("w/a.md", "uno\ntwo\n");
+    const c = try r.askf("{{\"method\":\"files_commit\",\"params\":{{\"proposal_id\":\"{s}\",\"choices\":[]}}}}", .{p.object.get("proposal_id").?.string});
+    try testing.expectEqualStrings("changed", c.object.get("status").?.string);
+    const np = c.object.get("proposal").?.object;
+    try testing.expectEqual(@as(i64, 1), np.get("conflicts").?.integer);
+    const w = try r.askf("{{\"method\":\"files_commit\",\"params\":{{\"proposal_id\":\"{s}\",\"choices\":[{{\"edit\":\"Uno\"}}]}}}}", .{np.get("proposal_id").?.string});
+    try testing.expectEqualStrings("written", w.object.get("status").?.string);
+    const got = try r.tmp.dir.readFileAlloc(testing.io, "w/a.md", r.arena.allocator(), .limited(100));
+    try testing.expectEqualStrings("Uno\ntwo\n", got);
 }
 
 test "1779: after a compaction a supervisor is told who it is and to read the record again" {

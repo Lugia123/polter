@@ -160,6 +160,32 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             },
         },
         .file_guard => .{ .file_guard = .{ .path = try requireString(aa, params, "path") } },
+        .files_open => .{
+            .files_open = .{
+                .workdir_id = try requireString(aa, params, "workdir_id"),
+                .path = try requireString(aa, params, "path"),
+                // Nothing is read beyond the file unless the host says so.
+                .scope = std.meta.stringToEnum(
+                    rpc.files.Access.Scope,
+                    (try optionalString(aa, params, "scope")) orelse "file",
+                ) orelse return error.BadParams,
+            },
+        },
+        .files_resolve => .{ .files_resolve = .{
+            .token = try requireString(aa, params, "token"),
+            .rel = (try optionalString(aa, params, "rel")) orelse "",
+        } },
+        .files_propose => .{ .files_propose = .{
+            .token = try requireString(aa, params, "token"),
+            .full_text = try requireString(aa, params, "full_text"),
+            .base_version = try requireString(aa, params, "base_version"),
+        } },
+        .files_commit => .{ .files_commit = .{
+            .proposal_id = try requireString(aa, params, "proposal_id"),
+            .choices = try parseChoices(aa, params),
+            .restore_gone = optionalBool(params, "restore_gone", false),
+        } },
+        .files_close => .{ .files_close = .{ .token = try requireString(aa, params, "token") } },
         .terminal_turn => .{ .terminal_turn = .{ .id = try requireId(params) } },
 
         .terminal_read => .{ .terminal_read = .{
@@ -824,6 +850,37 @@ fn contextUsed(params: ?std.json.ObjectMap) ParseError!?u8 {
         .integer => |i| if (i < 0 or i > 100) error.BadParams else @intCast(i),
         else => error.BadParams,
     };
+}
+
+/// `choices` for `files_commit`: an array, each one `"use_mine"`,
+/// `"use_theirs"`, `"both"` or `{"edit": "<text>"}`. Absent is none. **One
+/// that is none of those refuses the whole call**: a choice that was guessed
+/// at is a conflict resolved in a way nobody picked.
+fn parseChoices(aa: Allocator, params: ?std.json.ObjectMap) ParseError![]const rpc.files.Merge.Choice {
+    const p = params orelse return &.{};
+    const v = p.get("choices") orelse return &.{};
+    const items = switch (v) {
+        .null => return &.{},
+        .array => |arr| arr.items,
+        else => return error.BadParams,
+    };
+    const out = try aa.alloc(rpc.files.Merge.Choice, items.len);
+    for (items, out) |item, *c| c.* = switch (item) {
+        .string => |w| if (std.mem.eql(u8, w, "use_mine"))
+            .use_mine
+        else if (std.mem.eql(u8, w, "use_theirs"))
+            .use_theirs
+        else if (std.mem.eql(u8, w, "both"))
+            .both
+        else
+            return error.BadParams,
+        .object => |o| switch (o.get("edit") orelse return error.BadParams) {
+            .string => |t| .{ .edit = t },
+            else => return error.BadParams,
+        },
+        else => return error.BadParams,
+    };
+    return out;
 }
 
 /// `place`, for `terminal_open` and `role_launch` alike.
@@ -3621,6 +3678,35 @@ test "role_launch in: a terminal that is already open is named by its id, and a 
     // Not "none": that would open a terminal nobody asked for.
     try testing.expectError(error.BadParams, parse("{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":\"that one\"}}"));
     try testing.expectError(error.BadParams, parse("{\"method\":\"role_launch\",\"params\":{\"key\":\"hand\",\"in\":true}}"));
+}
+
+test "2573 C7: files_commit reads its choices, and one it does not know refuses the whole call" {
+    var p = try parse("{\"method\":\"files_commit\",\"params\":{\"proposal_id\":\"x\",\"choices\":[\"use_mine\",\"use_theirs\",\"both\",{\"edit\":\"hi\"}],\"restore_gone\":true}}");
+    defer p.deinit();
+    const c = p.value.files_commit;
+    try testing.expectEqual(@as(usize, 4), c.choices.len);
+    try testing.expect(c.choices[0] == .use_mine);
+    try testing.expect(c.choices[2] == .both);
+    try testing.expectEqualStrings("hi", c.choices[3].edit);
+    try testing.expect(c.restore_gone);
+    for ([_][]const u8{
+        "\"choices\":[\"use_mind\"]",
+        "\"choices\":[{\"edit\":3}]",
+        "\"choices\":[{}]",
+        "\"choices\":[1]",
+        "\"choices\":\"both\"",
+    }) |bad| {
+        const json = try std.fmt.allocPrint(testing.allocator, "{{\"method\":\"files_commit\",\"params\":{{\"proposal_id\":\"x\",{s}}}}}", .{bad});
+        defer testing.allocator.free(json);
+        try testing.expectError(error.BadParams, parse(json));
+    }
+    // Absent is none, and the scope of an open defaults to the file alone.
+    var q = try parse("{\"method\":\"files_commit\",\"params\":{\"proposal_id\":\"x\"}}");
+    defer q.deinit();
+    try testing.expectEqual(@as(usize, 0), q.value.files_commit.choices.len);
+    var o = try parse("{\"method\":\"files_open\",\"params\":{\"workdir_id\":\"w\",\"path\":\"a\"}}");
+    defer o.deinit();
+    try testing.expectEqual(rpc.files.Access.Scope.file, o.value.files_open.scope);
 }
 
 test "2149: a pid too big for u32 is refused, not cast" {

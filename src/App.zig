@@ -675,6 +675,10 @@ poltergeist_worktrees: ?poltergeistpkg.worktree.Ledger = null,
 /// C6b.
 file_locks: ?poltergeistpkg.files.Locks = null,
 
+/// The tickets a host holds to read and edit files of a working directory
+/// (task 2573, `files/Tickets.zig`).
+file_tickets: poltergeistpkg.files.Tickets,
+
 /// `poltergeist-worktree-location`.
 poltergeist_worktree_location: poltergeistpkg.worktree.Location = .beside,
 
@@ -857,6 +861,7 @@ pub fn init(
         .owed_tells = .{ .alloc = alloc },
         .start_lines = .{ .alloc = alloc },
         .poltergeist_feed = .init(alloc, global.io()),
+        .file_tickets = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
         .projects = .init(alloc),
         .tasks = .init(alloc, .{}),
@@ -984,6 +989,7 @@ pub fn deinit(self: *App) void {
     self.poltergeist_worktree_jobs.deinit(self.alloc);
     if (self.poltergeist_worktrees) |*w| w.deinit();
     if (self.file_locks) |*l| l.deinit();
+    self.file_tickets.deinit();
     if (self.poltergeist_log_problem) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
@@ -4210,7 +4216,8 @@ fn renderWorkdirs(self: *App, arena: Allocator, r: PageRequest) Allocator.Error!
     return out.written();
 }
 
-/// The rows `renderWorkdirs` writes, for `group`.
+/// The working directories of `group`, worked out afresh: the page draws
+/// them, and `filesWorkdir` finds the one a ticket is asked for in them.
 fn workdirsOf(self: *App, arena: Allocator, group: []const u8) Allocator.Error![]const poltergeistpkg.files.Workdirs.Dir {
     const Workdirs = poltergeistpkg.files.Workdirs;
     var terms: std.ArrayListUnmanaged(Workdirs.Term) = .empty;
@@ -4519,6 +4526,7 @@ const PageWorld = struct {
         app.group_log = null;
         app.resource_seq = 1;
         app.poltergeist = .init(alloc, .{});
+        app.file_tickets = .init(alloc, std.testing.io);
         app.chat = .init(alloc, .{});
         app.tasks = .init(alloc, .{});
         app.task_log = null;
@@ -4563,6 +4571,7 @@ const PageWorld = struct {
         if (app.resource_overall) |o| o.destroy();
         app.resource_overall = null;
         app.poltergeist.deinit();
+        app.file_tickets.deinit();
         app.chat.deinit();
         app.tasks.deinit();
     }
@@ -4848,6 +4857,47 @@ test "2565 C6: the guard answers for a locked file by its real path, and for not
     w.app.file_locks.?.entries.items[0].renewed_ms = now - Locks.lease_ms - 1;
     w.app.file_locks.?.entries.items[1].renewed_ms = now - Locks.lease_ms - 1;
     try testing.expect((try poltergeistFileGuard(ctx, a, 0xa1, x)) == null);
+}
+
+test "2573 C7: filesWorkdir finds a directory of the page by its id, and nothing else" {
+    const testing = std.testing;
+    var w: PageWorld = undefined;
+    try w.init(testing.allocator);
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    if (comptime @hasDecl(apprt.Surface, "core")) return error.SkipZigTest;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "note.md", .data = "hello\n" });
+    const real = try tmp.dir.realPathFileAlloc(testing.io, ".", a);
+    w.app.poltergeist_worktrees = .{ .alloc = testing.allocator };
+    defer w.app.poltergeist_worktrees.?.entries.deinit(testing.allocator);
+    try w.app.poltergeist_worktrees.?.entries.append(testing.allocator, .{
+        .name = "wt-shop",
+        .repo = "shop",
+        .path = real,
+        .branch = "wt/shop",
+        .base = "0",
+        .by = 0xa1,
+    });
+
+    var buf: [16]u8 = undefined;
+    const id = poltergeistpkg.files.Workdirs.idOf(&buf, real);
+    const got = (try poltergeistFilesWorkdir(&w.app, a, id)) orelse return error.TestWorkdirNotFound;
+    try testing.expectEqualStrings(real, got.path);
+    try testing.expect(!got.too_wide);
+    try testing.expect((try poltergeistFilesWorkdir(&w.app, a, "0000000000000000")) == null);
+    try testing.expect((try poltergeistFilesWorkdir(&w.app, a, "")) == null);
+
+    // A ticket made on it reads the file and nothing beside the workdir.
+    const T = poltergeistFilesTickets(&w.app);
+    const opened = try std.json.parseFromSliceLeaky(std.json.Value, a, try T.open(a, got, "note.md", .file), .{});
+    try testing.expect(opened.object.get("token") != null);
+    const out = try std.json.parseFromSliceLeaky(std.json.Value, a, try T.resolve(a, opened.object.get("token").?.string, "../elsewhere"), .{});
+    try testing.expect(out.object.get("refused") != null);
 }
 
 pub fn controlSnapshotJson(self: *const App) []const u8 {
@@ -10075,6 +10125,8 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .resourceUsage = poltergeistResourceUsage,
         .resourceOverview = poltergeistResourceOverview,
         .openTerminals = poltergeistOpenTerminals,
+        .filesTickets = poltergeistFilesTickets,
+        .filesWorkdir = poltergeistFilesWorkdir,
         .openTerminal = poltergeistOpenTerminal,
         .worktreePrepare = poltergeistWorktreePrepare,
         .worktreeOpened = poltergeistWorktreeOpened,
@@ -13825,6 +13877,38 @@ test "poltergeist: a tab the apprt did not open is a failure, not a terminal tha
     // opened anything, whatever it returned.
     try std.testing.expectError(error.OpenFailed, tabWasAsked(true, .refused));
     try std.testing.expectError(error.OpenFailed, tabWasAsked(false, .refused));
+}
+
+fn poltergeistFilesTickets(ctx: *anyopaque) *poltergeistpkg.files.Tickets {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return &self.file_tickets;
+}
+
+/// The working directory with this id, from whichever group has it. The id
+/// is a hash of the real path (`Workdirs.idOf`), so it is the same in every
+/// group that lists the directory.
+fn poltergeistFilesWorkdir(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: []const u8,
+) anyerror!?poltergeistpkg.files.Tickets.Workdir {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    var seen: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer seen.deinit(alloc);
+    for (self.control_room.route_rows) |row| {
+        var done = false;
+        for (seen.items) |g| if (std.mem.eql(u8, g, row.group)) {
+            done = true;
+        };
+        if (done) continue;
+        try seen.append(alloc, row.group);
+        const dirs = try self.workdirsOf(alloc, row.group);
+        for (dirs) |d| if (std.mem.eql(u8, d.id, id)) return .{
+            .path = d.path,
+            .too_wide = !d.readable,
+        };
+    }
+    return null;
 }
 
 fn poltergeistOpenTerminals(
