@@ -4308,13 +4308,59 @@ fn renderTasks(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]c
     // The panel, whole: the same page `task_list` reads for the supervisor.
     const win = try self.tasks.page(arena, r.group, .{});
     const tasks = try arena.alloc(Page.Task, win.tasks.len);
-    for (win.tasks, tasks) |t, *out| out.* = .{
-        .id = t.id,
-        .title = t.title,
-        .state = t.state,
-        .progress = t.progress,
-        .owner = try self.memberName(arena, r.group, t.owner),
-    };
+    for (win.tasks, tasks) |t, *out| {
+        var members: []const Page.TaskMember = &.{};
+        if (t.members.len > 0) {
+            const mems = try arena.alloc(Page.TaskMember, t.members.len);
+            for (t.members, mems) |m, *m_out| {
+                const term_str = if (m.id != poltergeistpkg.Tasks.nobody)
+                    try std.fmt.allocPrint(arena, "0x{x}", .{m.id})
+                else
+                    "—";
+                m_out.* = .{
+                    .alias = m.alias,
+                    .role = m.role,
+                    .lead = (t.owner != poltergeistpkg.Tasks.nobody and m.id == t.owner),
+                    // A token, not a word: `filled` / `empty` / `vacated` is
+                    // the whole of it, and each host says its own sentence.
+                    // **Three, and they are not two**: `empty` is a seat
+                    // nobody has taken, `vacated` one whose terminal has
+                    // gone. Collapsing them would tell the person a seat is
+                    // being worked when it is waiting to be opened.
+                    .slot = switch (m.slot) {
+                        .filled => "filled",
+                        .vacated => "vacated",
+                        .empty => "empty",
+                    },
+                    .terminal = term_str,
+                    .cli = m.session,
+                };
+            }
+            members = mems;
+        }
+
+        const wt_state: []const u8 = switch (t.worktree) {
+            .made => "made",
+            .planned => "planned",
+            .none, .unset => "",
+        };
+
+        out.* = .{
+            .id = t.id,
+            .title = t.title,
+            .state = t.state,
+            .progress = t.progress,
+            .owner = try self.memberName(arena, r.group, t.owner),
+            .squad = t.squad,
+            .squad_name = self.squadNameOf(t.squad),
+            // `made`/`planned`, and the path the ledger holds for the tree
+            // (empty while it is only planned -- nothing has been made).
+            .worktree = wt_state,
+            .worktree_path = self.taskTreePath(t.id) orelse "",
+            .members = members,
+            .tokens = null,
+        };
+    }
 
     // The record, newest pages back to its start or to what one page holds
     // -- the same record `task_history` reads.
@@ -4365,6 +4411,28 @@ fn renderTasks(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]c
         .offset_ms = poltergeistpkg.daylog.localOffsetMs(wall),
         .tr = resourceTr,
     });
+}
+
+/// What a squad template is called, by its key; null when no template of
+/// that key is on this machine any more (`Tasks.Task.squad` is a snapshot,
+/// and the person may have deleted the template since). Null for an empty
+/// key: a task with no squad.
+///
+/// Read-only: `ensureSquads` loads the table the first time anything asks.
+fn squadNameOf(self: *App, key: []const u8) ?[]const u8 {
+    if (key.len == 0) return null;
+    self.ensureSquads();
+    const s = self.squads.set.find(key) orelse return null;
+    return s.name;
+}
+
+/// Where a task's tree is on disk, from the worktree ledger; null while it
+/// is only planned, and for a task with no tree. **Not the branch**: that is
+/// `Worktree.taskBranch`'s rule, which `TaskPage.branchOf` says too.
+fn taskTreePath(self: *App, id: u64) ?[]const u8 {
+    const ledger = if (self.poltergeist_worktrees) |*l| l else return null;
+    const i = ledger.taskTree(id) orelse return null;
+    return ledger.entries.items[i].path;
 }
 
 /// What a terminal is called on the task page: its title in the group, in

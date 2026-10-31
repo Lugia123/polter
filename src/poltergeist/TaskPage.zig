@@ -36,6 +36,50 @@ pub const said_max = 20;
 
 pub const Glyph = enum { queued, working, blocked, done, closed, cancelled };
 
+pub const TaskMember = struct {
+    alias: []const u8,
+    role: []const u8,
+    lead: bool = false,
+    /// `filled`, `empty` or `vacated` -- a machine token, and the whole of
+    /// what the page knows about the seat. The host says the word.
+    slot: []const u8 = "filled",
+    terminal: []const u8 = "—",
+    cli: []const u8 = "",
+};
+
+pub const SquadDetail = struct {
+    /// The template's name as a person reads it, resolved by
+    /// `App.renderTasks`; the key when no template of that key is on this
+    /// machine any more, so a task whose squad was deleted still says what
+    /// it was. `Task.squad` is the key.
+    name: []const u8,
+    seats: []const TaskMember,
+};
+
+pub const WorktreeDetail = struct {
+    /// `wt/<group>/<task>`, from the same rule the tree was named by.
+    branch: []const u8,
+    /// Where it is, from the worktree ledger. Empty for a tree that is
+    /// planned and not made yet: nothing has been created to point at.
+    path: []const u8,
+    /// `made` or `planned` -- a token, not a sentence. There is no word in
+    /// the core's tables for "planned", and both hosts have one.
+    state: []const u8,
+};
+
+pub const TokenSlice = struct {
+    alias: []const u8,
+    role: []const u8,
+    tokens: []const u8,
+    pct: u8,
+    color: []const u8,
+};
+
+pub const TokensDetail = struct {
+    total: []const u8,
+    breakdown: []const TokenSlice,
+};
+
 pub const Task = struct {
     id: u64,
     title: []const u8,
@@ -43,6 +87,26 @@ pub const Task = struct {
     progress: Tasks.Progress,
     /// What its owner is called; empty for nobody.
     owner: []const u8,
+    /// The squad template's **key** this task's seats came from
+    /// (`Tasks.Task.squad`); "" for a task with no squad. The key is what
+    /// the panel stores and what a record replays.
+    squad: []const u8 = "",
+    /// What that template is called, looked up by the app -- the only thing
+    /// that holds the template table. Falls back to the key when no
+    /// template of that key is on the machine any more, so a task whose
+    /// squad was deleted still says which one it was.
+    squad_name: []const u8 = "",
+    /// Whether the task has a tree, and which kind: `made` or `planned`;
+    /// "" for a task that uses none, and for one from before the question
+    /// existed (`unset`). A token -- the host says the word.
+    worktree: []const u8 = "",
+    /// Where the tree is, from the worktree ledger (`Ledger.Entry.path`).
+    /// Empty for a tree that is only planned: nothing is on disk yet.
+    worktree_path: []const u8 = "",
+    /// Squad seats if this task has a squad.
+    members: []const TaskMember = &.{},
+    /// Token stats if available.
+    tokens: ?TokensDetail = null,
 };
 
 pub const Event = struct {
@@ -181,6 +245,7 @@ const Row = struct {
     idle: []const u8,
     emph: bool,
     detail: ?Detail = null,
+    worktree: ?[]const u8 = null,
 };
 
 const Part = struct { text: []const u8, hit: bool };
@@ -192,6 +257,9 @@ const Detail = struct {
     log: []const LogLine,
     said_title: []const u8,
     said: []const SaidOut,
+    squad: ?SquadDetail = null,
+    worktree: ?WorktreeDetail = null,
+    tokens: ?TokensDetail = null,
 };
 
 const LogLine = struct {
@@ -278,9 +346,20 @@ pub fn render(arena: Allocator, in: In) Allocator.Error![]u8 {
             .glyph = glyphOf(t),
             .state = tr(stateWord(t)),
             .title = t.title,
-            .owner = if (t.owner.len > 0) t.owner else tr(words.nobody),
+            // **The squad's name, not its key**: the key is `wt-polter`, the
+            // name is what the person made the template to be called. The
+            // key is the fallback, for a squad whose template is gone.
+            .owner = if (t.squad_name.len > 0)
+                t.squad_name
+            else if (t.squad.len > 0)
+                t.squad
+            else if (t.owner.len > 0)
+                t.owner
+            else
+                tr(words.nobody),
             .idle = try idle(arena, tr, lastAt(in.events, t.id), in.now_ms, in.offset_ms),
             .emph = in.open_task == t.id,
+            .worktree = if (t.worktree.len > 0) try branchOf(arena, in.group, t.id) else null,
         };
         if (q.len > 0) row.title_parts = try titleParts(arena, t.title, q);
         if (in.open_task == t.id) row.detail = try detail(arena, in, t);
@@ -480,6 +559,21 @@ fn detail(arena: Allocator, in: In, t: Task) Allocator.Error!Detail {
     const out = try arena.alloc(SaidOut, said.len);
     for (said, out) |s, *o| o.* = .{ .at = try clock(arena, s.at_ms, in.offset_ms), .who = s.who, .text = s.text };
 
+    var sq_detail: ?SquadDetail = null;
+    if (t.members.len > 0) sq_detail = .{
+        // The name, with the key as its fallback -- the same pair the row's
+        // owner column reads (see `render`).
+        .name = if (t.squad_name.len > 0) t.squad_name else t.squad,
+        .seats = t.members,
+    };
+
+    var wt_detail: ?WorktreeDetail = null;
+    if (t.worktree.len > 0) wt_detail = .{
+        .branch = try branchOf(arena, in.group, t.id),
+        .path = t.worktree_path,
+        .state = t.worktree,
+    };
+
     var idn: [24]u8 = undefined;
     return .{
         .body_title = tr(words.body_title),
@@ -490,7 +584,18 @@ fn detail(arena: Allocator, in: In, t: Task) Allocator.Error!Detail {
         .log = log.items,
         .said_title = try fill(arena, tr(words.said_title), &.{std.fmt.bufPrint(&idn, "{d}", .{t.id}) catch ""}),
         .said = out,
+        .squad = sq_detail,
+        .worktree = wt_detail,
+        .tokens = t.tokens,
     };
+}
+
+/// A task's tree's branch name: the row's tag and the detail's card say the
+/// same thing because they come from here. `Worktree.taskBranch` names the
+/// branch the tree is actually made on; this is that name, so a host that
+/// draws it is not inventing one.
+fn branchOf(arena: Allocator, group: []const u8, id: u64) Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(arena, "wt/{s}/{d}", .{ group, id });
 }
 
 fn opText(arena: Allocator, tr: Tr, e: Event) Allocator.Error![]const u8 {
@@ -960,6 +1065,126 @@ test "2248: a number finds that task, and neither a longer one nor a padded one"
     try testing.expect(!matches(t, "2150"));
     // An empty box is every task, as it was.
     try testing.expect(matches(t, ""));
+}
+
+test "2614: a legacy task with no squad and no worktree says nothing of either" {
+    var in = baseIn();
+    in.open_task = 215;
+    var got = try rendered(in);
+    defer got.deinit();
+
+    const open_rows = got.root.object.get("open").?.array.items;
+    try testing.expectEqualStrings("api", str(open_rows[1], "owner"));
+    try testing.expect(open_rows[1].object.get("worktree") == null or open_rows[1].object.get("worktree").? == .null);
+
+    const d = open_rows[1].object.get("detail").?.object;
+    try testing.expect(d.get("squad") == null or d.get("squad").? == .null);
+    try testing.expect(d.get("worktree") == null or d.get("worktree").? == .null);
+    try testing.expect(d.get("tokens") == null or d.get("tokens").? == .null);
+}
+
+test "2614: the owner column is the squad's name, the seat carries its slot, and the tree its own path" {
+    // A key and a name that differ, because they do in the real thing
+    // (`wt-polter` against 「Polter核心开发小队」): a page that drew the key
+    // would pass a test whose two were the same string.
+    const seats = [_]TaskMember{
+        .{ .alias = "审核", .role = "reviewer", .lead = true, .slot = "filled", .terminal = "0x361a", .cli = "claude" },
+        .{ .alias = "开发", .role = "dev", .lead = false, .slot = "empty", .terminal = "—", .cli = "" },
+        .{ .alias = "测试", .role = "tester", .lead = false, .slot = "vacated", .terminal = "—", .cli = "" },
+    };
+    const tok_slices = [_]TokenSlice{
+        .{ .alias = "审核", .role = "reviewer", .tokens = "38.5k", .pct = 35, .color = "#3B82F6" },
+        .{ .alias = "开发", .role = "dev", .tokens = "72.1k", .pct = 65, .color = "#10B981" },
+    };
+    const squad_tasks = [_]Task{
+        .{
+            .id = 2614,
+            .title = "任务面板重构",
+            .state = .open,
+            .progress = .working,
+            .owner = "0x361a",
+            .squad = "wt-polter",
+            .squad_name = "Polter核心开发小队",
+            .worktree = "made",
+            .worktree_path = "/src/proj-wt/polter/wt-2614",
+            .members = &seats,
+            .tokens = .{
+                .total = "110.6k",
+                .breakdown = &tok_slices,
+            },
+        },
+    };
+
+    var in = baseIn();
+    in.group = "polter";
+    in.tasks = &squad_tasks;
+    in.open_task = 2614;
+    var got = try rendered(in);
+    defer got.deinit();
+
+    const open_rows = got.root.object.get("open").?.array.items;
+    try testing.expectEqual(@as(usize, 1), open_rows.len);
+    // The name, not the key.
+    try testing.expectEqualStrings("Polter核心开发小队", str(open_rows[0], "owner"));
+    // The row's tag is the branch the tree was made on.
+    try testing.expectEqualStrings("wt/polter/2614", str(open_rows[0], "worktree"));
+
+    const d = open_rows[0].object.get("detail").?.object;
+    try testing.expectEqualStrings("Polter核心开发小队", str(d.get("squad").?, "name"));
+    const seat_arr = d.get("squad").?.object.get("seats").?.array.items;
+    try testing.expectEqual(@as(usize, 3), seat_arr.len);
+    try testing.expectEqualStrings("审核", str(seat_arr[0], "alias"));
+    try testing.expect(seat_arr[0].object.get("lead").?.bool);
+    // **Three slots, three readings.** `empty` is a seat nobody has taken
+    // and `vacated` one whose terminal has gone: a page told "filled" for
+    // either would say a seat is being worked when it is not.
+    try testing.expectEqualStrings("filled", str(seat_arr[0], "slot"));
+    try testing.expectEqualStrings("empty", str(seat_arr[1], "slot"));
+    try testing.expectEqualStrings("vacated", str(seat_arr[2], "slot"));
+
+    const wt_obj = d.get("worktree").?.object;
+    try testing.expectEqualStrings("wt/polter/2614", wt_obj.get("branch").?.string);
+    // The ledger's path, not one spelled out of the task's number.
+    try testing.expectEqualStrings("/src/proj-wt/polter/wt-2614", wt_obj.get("path").?.string);
+    try testing.expectEqualStrings("made", wt_obj.get("state").?.string);
+
+    try testing.expectEqualStrings("110.6k", d.get("tokens").?.object.get("total").?.string);
+}
+
+test "2614: a squad whose template is gone still reads as its key, and a planned tree has no path" {
+    const seats = [_]TaskMember{
+        .{ .alias = "审核", .role = "reviewer", .lead = true, .slot = "filled", .terminal = "0x361a", .cli = "claude" },
+    };
+    const gone = [_]Task{
+        .{
+            .id = 2614,
+            .title = "任务面板重构",
+            .state = .open,
+            .progress = .working,
+            .owner = "0x361a",
+            // No `squad_name`: the app could not resolve the key.
+            .squad = "wt-deleted",
+            .worktree = "planned",
+            .members = &seats,
+        },
+    };
+
+    var in = baseIn();
+    in.group = "polter";
+    in.tasks = &gone;
+    in.open_task = 2614;
+    var got = try rendered(in);
+    defer got.deinit();
+
+    const open_rows = got.root.object.get("open").?.array.items;
+    try testing.expectEqualStrings("wt-deleted", str(open_rows[0], "owner"));
+    // A tree that is planned and not made: the tag names the branch it will
+    // be made on, and there is no path yet because nothing is on disk.
+    try testing.expectEqualStrings("wt/polter/2614", str(open_rows[0], "worktree"));
+
+    const wt_obj = open_rows[0].object.get("detail").?.object.get("worktree").?.object;
+    try testing.expectEqualStrings("planned", wt_obj.get("state").?.string);
+    try testing.expectEqualStrings("", wt_obj.get("path").?.string);
 }
 
 test "2015: #21 is not in #215, and #215 is in #215, and in #215's end" {

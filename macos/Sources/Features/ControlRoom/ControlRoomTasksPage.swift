@@ -577,38 +577,254 @@ struct ControlRoomTaskDetail: View {
     var body: some View {
         let inner = max(width - CGFloat(Metrics.detailPadLeft + Metrics.detailPadRight), 0)
         let leftW = max(min(CGFloat(Metrics.detailLeftWidth), (inner - CGFloat(Metrics.detailColumnGap)) / 2), 0)
-        HStack(alignment: .top, spacing: CGFloat(Metrics.detailColumnGap)) {
-            VStack(alignment: .leading, spacing: 0) {
-                heading(detail.body_title)
-                Text(detail.body).foregroundStyle(theme.text.color).lineSpacing(Self.bodyLineSpacing)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, CGFloat(Metrics.bodyBottom))
-                heading(detail.log_title)
-                ForEach(Array(detail.log.enumerated()), id: \.offset) { i, l in
-                    log(l, first: i == 0, last: i == detail.log.count - 1)
-                }
+        VStack(alignment: .leading, spacing: 14) {
+            if detail.squad != nil || detail.worktree != nil || detail.tokens != nil {
+                topBanner(width: inner)
             }
-            .frame(width: leftW, alignment: .leading)
-            VStack(alignment: .leading, spacing: 0) {
-                heading(detail.said_title)
-                ForEach(Array(detail.said.enumerated()), id: \.offset) { _, s in
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack(spacing: CGFloat(Metrics.saidHeadGap)) {
-                            Text(s.at).font(.system(size: CGFloat(Look.Font.body), design: .monospaced)).foregroundStyle(theme.textSecondary.color)
-                            Text(s.who).font(.system(size: CGFloat(Look.Font.body), weight: .semibold, design: .monospaced)).foregroundStyle(theme.text.color)
-                        }
-                        Text(s.text).foregroundStyle(theme.text.color).lineSpacing(Self.bodyLineSpacing)
-                            .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top, spacing: CGFloat(Metrics.detailColumnGap)) {
+                VStack(alignment: .leading, spacing: 0) {
+                    heading(detail.body_title)
+                    Text(detail.body).foregroundStyle(theme.text.color).lineSpacing(Self.bodyLineSpacing)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, CGFloat(Metrics.bodyBottom))
+                    heading(detail.log_title)
+                    ForEach(Array(detail.log.enumerated()), id: \.offset) { i, l in
+                        log(l, first: i == 0, last: i == detail.log.count - 1)
                     }
-                    .padding(.bottom, CGFloat(Metrics.saidBottom))
                 }
+                .frame(width: leftW, alignment: .leading)
+                VStack(alignment: .leading, spacing: 0) {
+                    heading(detail.said_title)
+                    ForEach(Array(detail.said.enumerated()), id: \.offset) { _, s in
+                        VStack(alignment: .leading, spacing: 0) {
+                            HStack(spacing: CGFloat(Metrics.saidHeadGap)) {
+                                Text(s.at).font(.system(size: CGFloat(Look.Font.body), design: .monospaced)).foregroundStyle(theme.textSecondary.color)
+                                Text(s.who).font(.system(size: CGFloat(Look.Font.body), weight: .semibold, design: .monospaced)).foregroundStyle(theme.text.color)
+                            }
+                            Text(s.text).foregroundStyle(theme.text.color).lineSpacing(Self.bodyLineSpacing)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.bottom, CGFloat(Metrics.saidBottom))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.top, CGFloat(Metrics.detailPadTop))
         .padding(.leading, CGFloat(Metrics.detailPadLeft))
         .padding(.trailing, CGFloat(Metrics.detailPadRight))
         .padding(.bottom, CGFloat(Metrics.detailPadBottom))
+    }
+
+    @ViewBuilder
+    private func topBanner(width: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            if let squad = detail.squad {
+                squadCard(squad)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let wt = detail.worktree {
+                worktreeCard(wt)
+                    .frame(width: max(width * 0.22, 190))
+            }
+            if let tokens = detail.tokens {
+                tokenCard(tokens)
+                    .frame(width: max(width * 0.24, 210))
+            }
+        }
+    }
+
+    private func squadCard(_ squad: Tasks.SquadDetail) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(String(localized: "Squad seat matrix (\(String(squad.seats.count)) seats · adaptive)", comment: "总控台任务详情：顶栏小队卡片标题，%@ 是席位个数"))
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(theme.textSecondary.color)
+            HStack(spacing: 6) {
+                ForEach(Array(squad.seats.enumerated()), id: \.offset) { _, s in
+                    seatTile(s)
+                }
+            }
+        }
+        .padding(9)
+        .background(theme.dark ? Color.white.opacity(0.04) : Color.black.opacity(0.025))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.dark ? Color.white.opacity(0.12) : Color.black.opacity(0.1), lineWidth: 0.5))
+    }
+
+    /// One seat. **Its word is its slot**, read off the core's token: three
+    /// readings, three colours -- a seat with somebody in it, one nobody has
+    /// taken, one whose terminal has gone. `Seated` is the only one that is
+    /// a colour of its own: the other two are the same state told apart by
+    /// what it means (see `ControlRoomTasks.SquadSeat.slotWord`).
+    private func seatTile(_ s: Tasks.SquadSeat) -> some View {
+        let actFg = theme.dark ? Color(red: 0x4A/255.0, green: 0xDE/255.0, blue: 0x80/255.0) : Color(red: 0x04/255.0, green: 0x78/255.0, blue: 0x57/255.0)
+        let actBg = theme.dark ? Color(red: 0x4A/255.0, green: 0xDE/255.0, blue: 0x80/255.0).opacity(0.2) : Color(red: 0x10/255.0, green: 0xB9/255.0, blue: 0x81/255.0).opacity(0.15)
+        let infoFg = theme.dark ? Color(red: 0x38/255.0, green: 0xBD/255.0, blue: 0xF8/255.0) : Color(red: 0x02/255.0, green: 0x84/255.0, blue: 0xC7/255.0)
+        let infoBg = theme.dark ? Color(red: 0x38/255.0, green: 0xBD/255.0, blue: 0xF8/255.0).opacity(0.2) : Color(red: 0x02/255.0, green: 0x84/255.0, blue: 0xC7/255.0).opacity(0.14)
+        let idleFg = theme.dark ? Color(red: 0x94/255.0, green: 0xA3/255.0, blue: 0xB8/255.0) : Color(red: 0x4B/255.0, green: 0x55/255.0, blue: 0x63/255.0)
+        let idleBg = theme.dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+
+        let isSeated = s.slot == "filled"
+        let isVacated = s.slot == "vacated"
+        let statusFg = isSeated ? actFg : (isVacated ? infoFg : idleFg)
+        let statusBg = isSeated ? actBg : (isVacated ? infoBg : idleBg)
+
+        return VStack(alignment: .leading, spacing: 4) {
+            // 第 1 行：角色别名 + LEAD 药丸，右侧终端 ID 药丸（严格 16px 等高）
+            HStack {
+                HStack(spacing: 4) {
+                    Text(s.alias)
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundStyle(theme.text.color)
+                    if s.lead {
+                        Text(String(localized: "LEAD", comment: "总控台任务详情：小队席位卡上标记带队的那个位子"))
+                            .font(.system(size: 8.5, weight: .heavy))
+                            .foregroundStyle(theme.dark ? Color.black : Color.white)
+                            .padding(.horizontal, 4)
+                            .frame(height: 16)
+                            .background(theme.dark ? Color(red: 0xF5/255.0, green: 0x9E/255.0, blue: 0x0B/255.0) : Color(red: 0xD9/255.0, green: 0x77/255.0, blue: 0x06/255.0))
+                            .cornerRadius(3)
+                    }
+                }
+                Spacer(minLength: 2)
+                Text(s.terminal)
+                    .font(.system(size: 8.5, design: .monospaced))
+                    .foregroundStyle(theme.textTertiary.color)
+                    .padding(.horizontal, 4)
+                    .frame(height: 16)
+                    .background(theme.dark ? Color.white.opacity(0.08) : Color.black.opacity(0.04))
+                    .cornerRadius(3)
+            }
+
+            // 第 2 行：状态药丸独立第二行，带圆点指示，不溢出卡片
+            if let word = s.slotWord {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(statusFg)
+                        .frame(width: 5, height: 5)
+                    Text(word)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(statusFg)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(statusBg)
+                .cornerRadius(4)
+            }
+
+            // 第 3 行：角色名，自适应缩小字号，完整显示绝不断词换行，绝无省略号
+            Text(s.role)
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(theme.text.color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .allowsTightening(true)
+
+            // 第 4 行：CLI / 引擎信息，完整显示
+            Text(s.cli)
+                .font(.system(size: 9))
+                .foregroundStyle(theme.textSecondary.color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .allowsTightening(true)
+        }
+        .padding(7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.dark ? Color.white.opacity(0.035) : Color.black.opacity(0.02))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.dark ? Color.white.opacity(0.1) : Color.black.opacity(0.08), lineWidth: 0.5))
+    }
+
+    private func worktreeCard(_ wt: Tasks.WorktreeDetail) -> some View {
+        let accent = theme.dark ? Color(red: 0x38/255.0, green: 0xBD/255.0, blue: 0xF8/255.0) : Color(red: 0x03/255.0, green: 0x69/255.0, blue: 0xA1/255.0)
+        let tagBg = theme.dark ? Color(red: 0x38/255.0, green: 0xBD/255.0, blue: 0xF8/255.0).opacity(0.2) : Color(red: 0x02/255.0, green: 0x84/255.0, blue: 0xC7/255.0).opacity(0.12)
+        return VStack(alignment: .leading, spacing: 5) {
+            Text(String(localized: "Its own worktree (isolated)", comment: "总控台任务详情：顶栏工作树卡片标题"))
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(theme.textSecondary.color)
+            HStack(spacing: 4) {
+                Text(String(localized: "Branch:", comment: "总控台任务详情：工作树卡片里分支那一行的标签")).font(.system(size: 10)).foregroundStyle(theme.textTertiary.color)
+                Text(wt.branch).font(.system(size: 10.5, weight: .semibold, design: .monospaced)).foregroundStyle(theme.text.color)
+            }
+            // A tree that is only planned is not on disk: no path to show,
+            // rather than an empty row (the core sends "").
+            if !wt.path.isEmpty {
+                HStack(alignment: .top, spacing: 4) {
+                    Text(String(localized: "Path:", comment: "总控台任务详情：工作树卡片里路径那一行的标签")).font(.system(size: 10)).foregroundStyle(theme.textTertiary.color)
+                    Text(wt.path)
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(theme.textSecondary.color)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            HStack(spacing: 4) {
+                Text(String(localized: "State:", comment: "总控台任务详情：工作树卡片里状态那一行的标签")).font(.system(size: 10)).foregroundStyle(theme.textTertiary.color)
+                if let word = wt.stateWord {
+                    Text(word)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(accent)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(tagBg)
+                        .cornerRadius(3)
+                }
+            }
+        }
+        .padding(9)
+        .background(theme.dark ? Color.white.opacity(0.04) : Color.black.opacity(0.025))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.dark ? Color.white.opacity(0.12) : Color.black.opacity(0.1), lineWidth: 0.5))
+    }
+
+    private func tokenCard(_ tokens: Tasks.TokensDetail) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(String(localized: "Tokens used (\(tokens.total))", comment: "总控台任务详情：顶栏 Token 卡片标题，%@ 是总计"))
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(theme.textSecondary.color)
+            GeometryReader { geo in
+                HStack(spacing: 0) {
+                    ForEach(Array(tokens.breakdown.enumerated()), id: \.offset) { _, b in
+                        Rectangle()
+                            .fill(Color(nsColor: NSColor(hex: b.color) ?? .gray))
+                            .frame(width: geo.size.width * CGFloat(b.pct) / 100.0)
+                    }
+                }
+                .cornerRadius(4)
+            }
+            .frame(height: 8)
+            .background(theme.dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06))
+            .cornerRadius(4)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    ForEach(Array(tokens.breakdown.prefix(2).enumerated()), id: \.offset) { _, b in
+                        HStack(spacing: 3) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color(nsColor: NSColor(hex: b.color) ?? .gray))
+                                .frame(width: 7, height: 7)
+                            Text(b.alias).font(.system(size: 9.5)).foregroundStyle(theme.textSecondary.color)
+                            Text(b.tokens).font(.system(size: 9.5, weight: .semibold, design: .monospaced)).foregroundStyle(theme.text.color)
+                        }
+                    }
+                }
+                if tokens.breakdown.count > 2 {
+                    HStack(spacing: 8) {
+                        ForEach(Array(tokens.breakdown.dropFirst(2).enumerated()), id: \.offset) { _, b in
+                            HStack(spacing: 3) {
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(Color(nsColor: NSColor(hex: b.color) ?? .gray))
+                                    .frame(width: 7, height: 7)
+                                Text(b.alias).font(.system(size: 9.5)).foregroundStyle(theme.textSecondary.color)
+                                Text(b.tokens).font(.system(size: 9.5, weight: .semibold, design: .monospaced)).foregroundStyle(theme.text.color)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(9)
+        .background(theme.dark ? Color.white.opacity(0.04) : Color.black.opacity(0.025))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.dark ? Color.white.opacity(0.12) : Color.black.opacity(0.1), lineWidth: 0.5))
     }
 
     private func heading(_ text: String) -> some View {

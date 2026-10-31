@@ -1369,3 +1369,17 @@
 "The role's own (%@)" = "The role's own (%@)";
 "Two seats of this squad have the same alias." = "Two seats of this squad have the same alias.";
 "Follow the role again" = "Follow the role again";
+
+/* The task page's detail banner: the squad, the worktree and the tokens (task 2614) */
+"Squad seat matrix (%@ seats · adaptive)" = "Squad seat matrix (%@ seats · adaptive)";
+"LEAD" = "LEAD";
+"Its own worktree (isolated)" = "Its own worktree (isolated)";
+"Branch:" = "Branch:";
+"Path:" = "Path:";
+"State:" = "State:";
+"Tokens used (%@)" = "Tokens used (%@)";
+"Seated" = "Seated";
+"Not seated yet" = "Not seated yet";
+"Seat left" = "Seat left";
+"Ready" = "Ready";
+"Planned, not made yet" = "Planned, not made yet";

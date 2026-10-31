@@ -51,6 +51,66 @@ enum ControlRoomTasks {
         var text: String
     }
 
+    /// One place in a task's squad. **`slot` is the whole of its state** --
+    /// `filled`, `empty` (nobody has taken it) or `vacated` (its terminal
+    /// has gone) -- and the word drawn is this host's (`Slot`). There is no
+    /// status from the core: it holds no per-seat progress, and a sentence
+    /// invented in the core would be one language inside a page both hosts
+    /// translate.
+    struct SquadSeat: Decodable, Equatable {
+        var alias: String
+        var role: String
+        var lead: Bool
+        var slot: String
+        var terminal: String
+        var cli: String
+
+        /// What the seat's chip says. A slot this build does not know draws
+        /// no word at all, rather than guessing one.
+        var slotWord: String? {
+            switch slot {
+            case "filled": return String(localized: "Seated", comment: "任务详情·小队席位：位子上有人")
+            case "empty": return String(localized: "Not seated yet", comment: "任务详情·小队席位：位子空着，还没人坐")
+            case "vacated": return String(localized: "Seat left", comment: "任务详情·小队席位：坐过的人走了，位子空着")
+            default: return nil
+            }
+        }
+    }
+
+    struct SquadDetail: Decodable, Equatable {
+        var name: String
+        var seats: [SquadSeat]
+    }
+
+    struct WorktreeDetail: Decodable, Equatable {
+        var branch: String
+        /// The ledger's path; empty for a tree that is only planned.
+        var path: String
+        /// `made` or `planned`, a token: the word is this host's.
+        var state: String
+
+        var stateWord: String? {
+            switch state {
+            case "made": return String(localized: "Ready", comment: "任务详情·工作树：树已经建好了")
+            case "planned": return String(localized: "Planned, not made yet", comment: "任务详情·工作树：计划要建，还没建")
+            default: return nil
+            }
+        }
+    }
+
+    struct TokenSlice: Decodable, Equatable {
+        var alias: String
+        var role: String
+        var tokens: String
+        var pct: UInt8
+        var color: String
+    }
+
+    struct TokensDetail: Decodable, Equatable {
+        var total: String
+        var breakdown: [TokenSlice]
+    }
+
     struct Detail: Decodable, Equatable {
         var body_title: String
         var body: String
@@ -58,6 +118,9 @@ enum ControlRoomTasks {
         var log: [LogLine]
         var said_title: String
         var said: [Said]
+        var squad: SquadDetail?
+        var worktree: WorktreeDetail?
+        var tokens: TokensDetail?
     }
 
     struct Task: Decodable, Equatable, Identifiable {
@@ -77,6 +140,9 @@ enum ControlRoomTasks {
         /// Its line in bold: the open one.
         var emph: Bool?
         var detail: Detail?
+        /// The tree's branch (`wt/group/task`), drawn as the tag after the
+        /// title; nil for a task with no tree.
+        var worktree: String?
 
         var bold: Bool { emph ?? false }
     }
@@ -216,9 +282,10 @@ enum ControlRoomTasks {
             r.miss(partsPath)
             parts = nil
         }
+        let worktreeTag = (v["worktree"] as? String)
         return Task(id: id, glyph: r.named(v, path, "glyph", as: Glyph.self), state: r.text(v, path, "state"),
                     title: r.text(v, path, "title"), owner: r.text(v, path, "owner"), idle: r.text(v, path, "idle"),
-                    title_parts: parts, emph: r.bool(v, path, "emph") ?? false, detail: detail)
+                    title_parts: parts, emph: r.bool(v, path, "emph") ?? false, detail: detail, worktree: worktreeTag)
     }
 
     private static func readDetail(_ r: Reader, _ v: Reader.Object, _ path: String) -> Detail {
@@ -245,8 +312,54 @@ enum ControlRoomTasks {
             let x = (x as? Reader.Object) ?? [:], p = Reader.at(sp, i)
             return Said(at: r.text(x, p, "at"), who: r.text(x, p, "who"), text: r.text(x, p, "text"))
         }
+
+        let squad: SquadDetail? = {
+            guard let sq = v["squad"] as? Reader.Object else { return nil }
+            let sp = Reader.join(path, "squad")
+            let name = r.text(sq, sp, "name")
+            let seats = r.list(sq, sp, "seats").enumerated().map { i, s -> SquadSeat in
+                let s = (s as? Reader.Object) ?? [:], p = Reader.at(Reader.join(sp, "seats"), i)
+                return SquadSeat(
+                    alias: r.text(s, p, "alias"),
+                    role: r.text(s, p, "role"),
+                    lead: r.bool(s, p, "lead") ?? false,
+                    slot: r.text(s, p, "slot"),
+                    terminal: r.text(s, p, "terminal"),
+                    cli: r.text(s, p, "cli")
+                )
+            }
+            return SquadDetail(name: name, seats: seats)
+        }()
+
+        let worktree: WorktreeDetail? = {
+            guard let wt = v["worktree"] as? Reader.Object else { return nil }
+            let wp = Reader.join(path, "worktree")
+            return WorktreeDetail(
+                branch: r.text(wt, wp, "branch"),
+                path: r.text(wt, wp, "path"),
+                state: r.text(wt, wp, "state")
+            )
+        }()
+
+        let tokens: TokensDetail? = {
+            guard let tk = v["tokens"] as? Reader.Object else { return nil }
+            let tp = Reader.join(path, "tokens")
+            let total = r.text(tk, tp, "total")
+            let breakdown = r.list(tk, tp, "breakdown").enumerated().map { i, b -> TokenSlice in
+                let b = (b as? Reader.Object) ?? [:], p = Reader.at(Reader.join(tp, "breakdown"), i)
+                return TokenSlice(
+                    alias: r.text(b, p, "alias"),
+                    role: r.text(b, p, "role"),
+                    tokens: r.text(b, p, "tokens"),
+                    pct: UInt8(r.int(b, p, "pct") ?? 0),
+                    color: r.text(b, p, "color")
+                )
+            }
+            return TokensDetail(total: total, breakdown: breakdown)
+        }()
+
         return Detail(body_title: r.text(v, path, "body_title"), body: r.text(v, path, "body"), log_title: r.text(v, path, "log_title"),
-                      log: log, said_title: r.text(v, path, "said_title"), said: said)
+                      log: log, said_title: r.text(v, path, "said_title"), said: said, squad: squad, worktree: worktree, tokens: tokens)
     }
 
     /// The request: `openTask` is the one whose detail is wanted, `closed`

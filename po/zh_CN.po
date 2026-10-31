@@ -7082,3 +7082,23 @@ msgstr "默认"
 #: windows/settings-shell/src/shell_profiles.rs
 msgid "Change Default Shell…"
 msgstr "更改默认 Shell…"
+
+#: windows/control-room/src/tasks.rs
+msgid "Seated"
+msgstr "在位"
+
+#: windows/control-room/src/tasks.rs
+msgid "Not seated yet"
+msgstr "还没人坐"
+
+#: windows/control-room/src/tasks.rs
+msgid "Seat left"
+msgstr "坐着的人走了"
+
+#: windows/control-room/src/tasks.rs
+msgid "Ready"
+msgstr "就绪"
+
+#: windows/control-room/src/tasks.rs
+msgid "Planned, not made yet"
+msgstr "计划中，尚未建立"

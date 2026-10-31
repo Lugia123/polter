@@ -1444,3 +1444,17 @@
 "The role's own (%@)" = "跟随角色（%@）";
 "Two seats of this squad have the same alias." = "这个小队有两个位子用了同一个别名。";
 "Follow the role again" = "恢复跟随角色";
+
+/* 总控台任务详情：详情顶栏的小队、工作树与 Token 三张卡片（task 2614） */
+"Squad seat matrix (%@ seats · adaptive)" = "小队协同席位矩阵（%@ 席位 · 动态适应）";
+"LEAD" = "带队";
+"Its own worktree (isolated)" = "独立工作树（Worktree 隔离）";
+"Branch:" = "分支：";
+"Path:" = "路径：";
+"State:" = "状态：";
+"Tokens used (%@)" = "Token 消耗聚合（%@）";
+"Seated" = "在位";
+"Not seated yet" = "还没人坐";
+"Seat left" = "坐着的人走了";
+"Ready" = "就绪";
+"Planned, not made yet" = "计划中，尚未建立";

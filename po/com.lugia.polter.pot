@@ -6850,3 +6850,23 @@ msgstr ""
 #: src/poltergeist/TaskPage.zig
 msgid "The closed ones were searched too. Press Esc to clear the filter."
 msgstr ""
+
+#: windows/control-room/src/tasks.rs
+msgid "Seated"
+msgstr ""
+
+#: windows/control-room/src/tasks.rs
+msgid "Not seated yet"
+msgstr ""
+
+#: windows/control-room/src/tasks.rs
+msgid "Seat left"
+msgstr ""
+
+#: windows/control-room/src/tasks.rs
+msgid "Ready"
+msgstr ""
+
+#: windows/control-room/src/tasks.rs
+msgid "Planned, not made yet"
+msgstr ""

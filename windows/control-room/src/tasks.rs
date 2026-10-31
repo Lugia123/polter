@@ -6,6 +6,7 @@
 //! is. A glyph or a kind of line this build does not know is an error.
 
 use crate::json::{self, Value};
+use crate::n_;
 use crate::reader::{at, join, Reader};
 use crate::snapshot::DecodeError;
 
@@ -62,6 +63,74 @@ pub struct Said {
     pub text: String,
 }
 
+/// One place in a task's squad. **`slot` is the whole of its state** --
+/// `filled`, `empty` (nobody has taken it) or `vacated` (its terminal has
+/// gone) -- and the word drawn is this host's (`slot_word`). There is no
+/// status from the core: it holds no per-seat progress, and a sentence
+/// invented there would be one language inside a page both hosts translate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SquadSeat {
+    pub alias: String,
+    pub role: String,
+    pub lead: bool,
+    pub slot: String,
+    pub terminal: String,
+    pub cli: String,
+}
+
+impl SquadSeat {
+    /// What the seat's chip says, or `None` for a slot this build does not
+    /// know -- drawn with no word rather than a guessed one.
+    pub fn slot_word(&self) -> Option<&'static str> {
+        match self.slot.as_str() {
+            "filled" => Some(n_("Seated")),
+            "empty" => Some(n_("Not seated yet")),
+            "vacated" => Some(n_("Seat left")),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SquadDetail {
+    pub name: String,
+    pub seats: Vec<SquadSeat>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorktreeDetail {
+    pub branch: String,
+    /// The ledger's path; empty for a tree that is only planned.
+    pub path: String,
+    /// `made` or `planned`, a token: the word is this host's.
+    pub state: String,
+}
+
+impl WorktreeDetail {
+    pub fn state_word(&self) -> Option<&'static str> {
+        match self.state.as_str() {
+            "made" => Some(n_("Ready")),
+            "planned" => Some(n_("Planned, not made yet")),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenSlice {
+    pub alias: String,
+    pub role: String,
+    pub tokens: String,
+    pub pct: u8,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokensDetail {
+    pub total: String,
+    pub breakdown: Vec<TokenSlice>,
+}
+
 /// What the open task shows under its line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Detail {
@@ -71,6 +140,9 @@ pub struct Detail {
     pub log: Vec<LogLine>,
     pub said_title: String,
     pub said: Vec<Said>,
+    pub squad: Option<SquadDetail>,
+    pub worktree: Option<WorktreeDetail>,
+    pub tokens: Option<TokensDetail>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +163,9 @@ pub struct Task {
     /// Its line in bold: the open one.
     pub emph: bool,
     pub detail: Option<Detail>,
+    /// The tree's branch (`wt/group/task`), drawn as the tag after the
+    /// title; `None` for a task with no tree.
+    pub worktree: Option<String>,
 }
 
 /// A key and what it does.
@@ -202,6 +277,60 @@ fn detail(r: &mut Reader, v: &Value, path: &str) -> Detail {
     }).collect();
     let sp = join(path, "said");
     let said = r.list(v, path, "said").iter().enumerate().map(|(i, x)| said(r, x, &at(&sp, i))).collect();
+
+    let squad = match v.get("squad") {
+        Some(sq @ Value::Obj(_)) => {
+            let sp_path = join(path, "squad");
+            let name = r.text(sq, &sp_path, "name");
+            let seats_path = join(&sp_path, "seats");
+            let seats = r.list(sq, &sp_path, "seats").iter().enumerate().map(|(i, s)| {
+                let p = at(&seats_path, i);
+                SquadSeat {
+                    alias: r.text(s, &p, "alias"),
+                    role: r.text(s, &p, "role"),
+                    lead: r.boolean(s, &p, "lead").unwrap_or(false),
+                    slot: r.text(s, &p, "slot"),
+                    terminal: r.text(s, &p, "terminal"),
+                    cli: r.text(s, &p, "cli"),
+                }
+            }).collect();
+            Some(SquadDetail { name, seats })
+        }
+        _ => None,
+    };
+
+    let worktree = match v.get("worktree") {
+        Some(wt @ Value::Obj(_)) => {
+            let wp = join(path, "worktree");
+            Some(WorktreeDetail {
+                branch: r.text(wt, &wp, "branch"),
+                path: r.text(wt, &wp, "path"),
+                state: r.text(wt, &wp, "state"),
+            })
+        }
+        _ => None,
+    };
+
+    let tokens = match v.get("tokens") {
+        Some(tk @ Value::Obj(_)) => {
+            let tp = join(path, "tokens");
+            let total = r.text(tk, &tp, "total");
+            let bp = join(&tp, "breakdown");
+            let breakdown = r.list(tk, &tp, "breakdown").iter().enumerate().map(|(i, b)| {
+                let p = at(&bp, i);
+                TokenSlice {
+                    alias: r.text(b, &p, "alias"),
+                    role: r.text(b, &p, "role"),
+                    tokens: r.text(b, &p, "tokens"),
+                    pct: r.int(b, &p, "pct").map(|n| n as u8).unwrap_or(0),
+                    color: r.text(b, &p, "color"),
+                }
+            }).collect();
+            Some(TokensDetail { total, breakdown })
+        }
+        _ => None,
+    };
+
     Detail {
         body_title: r.text(v, path, "body_title"),
         body: r.text(v, path, "body"),
@@ -209,6 +338,9 @@ fn detail(r: &mut Reader, v: &Value, path: &str) -> Detail {
         log,
         said_title: r.text(v, path, "said_title"),
         said,
+        squad,
+        worktree,
+        tokens,
     }
 }
 
@@ -238,6 +370,10 @@ fn task(r: &mut Reader, v: &Value, path: &str) -> Option<Task> {
             None
         }
     };
+    let worktree = match v.get("worktree") {
+        Some(Value::Str(s)) => Some(s.clone()),
+        _ => None,
+    };
     Some(Task {
         id,
         glyph,
@@ -248,6 +384,7 @@ fn task(r: &mut Reader, v: &Value, path: &str) -> Option<Task> {
         idle: r.text(v, path, "idle"),
         emph: r.boolean(v, path, "emph").unwrap_or(false),
         detail: r.nullable_obj(v, path, "detail").map(|d| detail(r, d, &join(path, "detail"))),
+        worktree,
     })
 }
 
@@ -494,5 +631,119 @@ pub(crate) mod tests {
         assert!(m.open.is_empty());
         assert_eq!(m.no_match, Some(NoMatch { title: "没有标题里含「弹窗」的任务".into(), detail: "已关闭的也找过了。按 Esc 清空筛选。".into() }));
         assert!(m.missing.is_empty());
+    }
+
+    #[test]
+    fn test_squad_and_worktree_task_decoding() {
+        let json = r##"{
+            "group": "polter",
+            "goal": "重构任务面板",
+            "goal_lines": ["重构任务面板"],
+            "head": {"id": "号", "state": "状态", "title": "标题", "owner": "负责人", "idle": "多久没动"},
+            "open": [
+                {
+                    "id": 2614,
+                    "glyph": "working",
+                    "state": "进行中",
+                    "title": "任务面板升级",
+                    "owner": "Polter核心开发小队",
+                    "idle": "刚刚",
+                    "emph": true,
+                    "title_parts": null,
+                    "worktree": "wt/polter/2614",
+                    "detail": {
+                        "body_title": "任务目标",
+                        "body": "落地 v3 设计",
+                        "log_title": "执行经过",
+                        "log": [],
+                        "said_title": "小队群聊提及",
+                        "said": [],
+                        "squad": {
+                            "name": "Polter核心开发小队",
+                            "seats": [
+                                {
+                                    "alias": "审核",
+                                    "role": "reviewer",
+                                    "lead": true,
+                                    "slot": "filled",
+                                    "terminal": "0x361a",
+                                    "cli": "Claude · DS Flash"
+                                },
+                                {
+                                    "alias": "开发",
+                                    "role": "dev",
+                                    "lead": false,
+                                    "slot": "empty",
+                                    "terminal": "—",
+                                    "cli": ""
+                                },
+                                {
+                                    "alias": "测试",
+                                    "role": "tester",
+                                    "lead": false,
+                                    "slot": "vacated",
+                                    "terminal": "—",
+                                    "cli": ""
+                                }
+                            ]
+                        },
+                        "worktree": {
+                            "branch": "wt/polter/2614",
+                            "path": "/src/proj-wt/polter/wt-2614",
+                            "state": "made"
+                        },
+                        "tokens": {
+                            "total": "110.6k",
+                            "breakdown": [
+                                {
+                                    "alias": "审核",
+                                    "role": "reviewer",
+                                    "tokens": "38.5k",
+                                    "pct": 35,
+                                    "color": "#3B82F6"
+                                }
+                            ]
+                        }
+                    }
+                }
+            ],
+            "closed_count": 0,
+            "closed": [],
+            "closed_title": null,
+            "closed_key": null,
+            "hint_closed": null,
+            "filter": null,
+            "no_match": null,
+            "hints": []
+        }"##;
+
+        let res = decode(json).expect("should decode squad task");
+        assert!(res.missing.is_empty(), "missing: {:?}", res.missing);
+        assert_eq!(res.open.len(), 1);
+        let t = &res.open[0];
+        assert_eq!(t.owner, "Polter核心开发小队");
+        assert_eq!(t.worktree.as_deref(), Some("wt/polter/2614"));
+
+        let d = t.detail.as_ref().expect("detail should exist");
+        let squad = d.squad.as_ref().expect("squad should exist");
+        assert_eq!(squad.name, "Polter核心开发小队");
+        assert_eq!(squad.seats.len(), 3);
+        assert!(squad.seats[0].lead);
+        assert_eq!(squad.seats[0].alias, "审核");
+        // **Three slots, three words** (`slot_word`): a page told the same
+        // word for all three would say a seat is being worked when nobody
+        // has taken it.
+        assert_eq!(squad.seats.iter().map(|s| s.slot_word()).collect::<Vec<_>>(), [Some("Seated"), Some("Not seated yet"), Some("Seat left")]);
+        assert_eq!(SquadSeat { slot: "squatted".into(), ..squad.seats[0].clone() }.slot_word(), None);
+
+        let wt = d.worktree.as_ref().expect("worktree should exist");
+        assert_eq!(wt.branch, "wt/polter/2614");
+        assert_eq!(wt.path, "/src/proj-wt/polter/wt-2614");
+        assert_eq!(wt.state_word(), Some("Ready"));
+        assert_eq!(WorktreeDetail { state: "vanished".into(), ..wt.clone() }.state_word(), None);
+
+        let tok = d.tokens.as_ref().expect("tokens should exist");
+        assert_eq!(tok.total, "110.6k");
+        assert_eq!(tok.breakdown.len(), 1);
     }
 }
