@@ -258,7 +258,7 @@ struct ControlRoomWorkdirsPage: View {
         .background(
             RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row))
                 .fill(selected
-                      ? theme.text.color.opacity(Tile.selectedGroundAlpha)
+                      ? Color.white.opacity(theme.selectionTint)
                       : Color.clear)
         )
         // The bar down the left edge of the selected row, sized and placed
@@ -466,15 +466,16 @@ private enum Tile {
     /// the name above it, which is what keeps the two inside 48.
     static let pathLineHeight: CGFloat = 18
 
-    // `files.css`, `.tr.sel`: the ground is `--chip` and the bar is `--bar`.
+    // `files.css`, `.tr.sel`: the ground is `--chip` (white opacity in
+    // `theme.selectionTint`, light 0.72 / dark 0.11) and the bar is `--bar`.
     // **Two different things on purpose** -- the ground says "this is the
     // row you are on" and the bar says the same thing again for the one row
     // a glance will find; the design's own words for the bar are 你打开以后
     // frontend 改过的行 in the workbench, where the *other* bar lives, in
     // `textTertiary`. Using one colour for both would make a changed line
     // and a selected row the same word.
-    static let selectedGroundAlpha: Double = 0.11
     static let selBarWidth: CGFloat = 3
+    /// 16 = 28 - 6 - 6, aligning with the design's `.tr.sel::after` bar height.
     static let selBarHeight: CGFloat = 16
     static let selBarInset: CGFloat = 3
     static let barRadius: CGFloat = 1.5
