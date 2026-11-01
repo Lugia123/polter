@@ -5890,15 +5890,26 @@ fn scanPlugins(
             // again -- a loop that from the plugin's side is indistinguishable
             // from idling. See `Plugin.Manifest.runnable`.
             //
+            // **A page plugin is not one of these, and asking it first is the
+            // whole point** (task 2644). It has no `exec` at all, so
+            // `runnable` is false -- and the sentence below would be a lie
+            // about it: "declares nothing this system can run" is not "it is
+            // a page the host loads when somebody opens a `.md`". Two facts
+            // that arrive as one `false` is exactly the split
+            // `Plugin.Manifest.shape` exists for.
+            //
             // Only for plugins that are switched on: an unsupported plugin
             // nobody enabled has nothing to say.
-            if (!manifest.runnable) {
-                log.info(
-                    "poltergeist: plugin {s} declares nothing this system can run " ++
-                        "({s}); installed and enabled, but not started",
-                    .{ manifest.key, manifest.exec },
-                );
-                continue;
+            switch (manifest.shape()) {
+                .page => {},
+                .resident => if (!manifest.runnable) {
+                    log.info(
+                        "poltergeist: plugin {s} declares nothing this system can run " ++
+                            "({s}); installed and enabled, but not started",
+                        .{ manifest.key, manifest.exec.? },
+                    );
+                    continue;
+                },
             }
 
             found.append(arena, .{
@@ -6671,12 +6682,19 @@ pub fn ensureResidents(self: *App) void {
     // **"resident", not "archive", and that is a correction rather than a
     // rewording.** This counts `poltergeist_residents`, which is every plugin
     // that subscribes to anything; the loop above offers all of
-    // `poltergeist_plugins` and `startResident` turns away exactly two --
-    // one that subscribes to nothing, and a duplicate. **There is no archive
-    // test, and there could not be one**: `archive` is not a field, a kind or
-    // a flag anywhere in a manifest. It is a name people give a plugin
-    // (`chat-archive` in the fixtures), so nothing here can tell an archive
-    // from any other resident.
+    // `poltergeist_plugins` and `startResident` turns away three -- a page
+    // plugin (there is no process to start, task 2644), one that subscribes
+    // to nothing, and a duplicate. **There is no archive test, and there
+    // could not be one**: `archive` is not a field, a kind or a flag anywhere
+    // in a manifest. It is a name people give a plugin (`chat-archive` in the
+    // fixtures), so nothing here can tell an archive from any other resident.
+    //
+    // ⚠️ **The count in this sentence has been wrong once already**, in the
+    // other direction: it said "archive", and a reader who saw "3 archive
+    // plugins" next to a line about one subscriber concluded there were three
+    // archives. So it is written as a count of the turn-aways rather than as
+    // a number somebody remembers -- the third one is a line below, in
+    // `startResident`'s first branch, and a fourth belongs there with it.
     //
     // The number itself is worth printing -- each of these is a thread -- so
     // the repair is to call it what it counts. **A reader who saw "3 archive
@@ -6748,19 +6766,66 @@ fn pluginLogDir(self: *App) []const u8 {
 /// -- the one failure `dev-docs/poltergeist/plugins.md` spends a section ruling
 /// out. This is the only path that starts one, so it is where the guarantee
 /// belongs.
+/// Why a plugin is not started -- **decidable without an `App`**.
+///
+/// The decision itself is a function of the manifest and nothing else, and it
+/// was written twice: once as the first branch of `startResident` and once as
+/// the first branch of `configurePlugin`'s `started`. Two copies of one rule
+/// is how the second one came to be missing a case -- `configurePlugin`
+/// answered a page plugin with "add `wants` to its plugin.json" for a while
+/// (task 2644, the test seat's F1) -- so the rule is here, once, and both
+/// callers switch on it.
+///
+/// **`App` is the reason this is a free function and not a method.** Both
+/// callers want an `*App` with a loaded plugin list and a socket, and there is
+/// no fixture that builds one, so a rule living inside either of them is a
+/// rule nothing in this repository can ask about. Here it is a pure function
+/// of a `Manifest`, and `Plugin.zig`'s own manifest tests are what pin it.
+const TurnAway = enum {
+    /// A page (`Manifest.shape`): the host loads its page when somebody opens
+    /// a file it claims, and there is no process to start at all.
+    page,
+
+    /// A resident plugin that subscribes to nothing. Nothing would ever be
+    /// handed to it, and the person is told to give it a `wants`.
+    nothing,
+
+    /// Go ahead.
+    start,
+};
+
+fn turnAway(manifest: poltergeistpkg.Plugin.Manifest) TurnAway {
+    // Exhaustive over `Shape`, so a third one has to be given an answer here
+    // rather than falling into whichever arm a wildcard named.
+    return switch (manifest.shape()) {
+        .page => .page,
+        .resident => if (manifest.wants.empty()) .nothing else .start,
+    };
+}
+
 fn startResident(
     self: *App,
     manifest: poltergeistpkg.Plugin.Manifest,
     settings: poltergeistpkg.Plugin.Settings,
 ) bool {
-    if (manifest.wants.empty()) {
-        log.warn(
-            "poltergeist: plugin {s} subscribes to nothing, so it is not " ++
-                "started; add \"wants\": {{\"events\": [\"chat\"]}} -- or whichever " ++
-                "events it is for -- to its plugin.json",
-            .{manifest.key},
-        );
-        return false;
+    switch (turnAway(manifest)) {
+        // **A page plugin is not started** (task 2644). It has no `exec`, so
+        // `Resident.start` would be handed an empty string to spawn --
+        // `launchKindFor("")` is `.direct` and `launchable("")` is true, so
+        // it would *try*, fail, back off and try again, and the loop looks
+        // from the plugin's side exactly like idling. Quiet: nothing is
+        // wrong, which is what the sentence below would say the opposite of.
+        .page => return false,
+        .nothing => {
+            log.warn(
+                "poltergeist: plugin {s} subscribes to nothing, so it is not " ++
+                    "started; add \"wants\": {{\"events\": [\"chat\"]}} -- or whichever " ++
+                    "events it is for -- to its plugin.json",
+                .{manifest.key},
+            );
+            return false;
+        },
+        .start => {},
     }
 
     if (manifest.wants.groupless()) log.warn(
@@ -6798,7 +6863,12 @@ fn startResident(
 
     const archive = poltergeistpkg.Resident.start(self.alloc, global.io(), .{
         .key = manifest.key,
-        .exec = manifest.exec,
+        // **`.?`, and it cannot fail here**: `startResident` returned above
+        // for anything whose `shape` is `.page`, and `shape` is exactly
+        // "has no exec". A plugin with no file to run never reaches this
+        // line, so the unwrap is the type system being told what the branch
+        // above already decided. See `Plugin.Manifest.exec`.
+        .exec = manifest.exec.?,
         .timeout_ms = manifest.timeout_ms,
         .wants = manifest.wants,
         .params = settings.params,
@@ -10247,127 +10317,130 @@ pub fn removeChatSurface(self: *App, id: poltergeistpkg.Bus.Id) void {
 }
 
 fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
-    return .{ .ctx = self, .vtable = &.{
-        .readTerminal = poltergeistRead,
-        .sendText = poltergeistSend,
-        .parkAssign = poltergeistParkAssign,
-        .agentPresent = poltergeistAgentPresent,
-        .seatHeld = seatHolderAlive,
-        .startupReach = poltergeistStartupReach,
-        .startupQuestion = poltergeistStartupQuestion,
-        .startupAnswer = poltergeistStartupAnswer,
-        .personaFace = poltergeistPersonaFace,
-        .terminalCapabilities = poltergeistTerminalCapabilities,
-        .agentArrived = poltergeistAgentArrived,
-        .agentHeard = poltergeistAgentHeard,
-        .launchFailed = poltergeistLaunchFailed,
-        .launchedForGroup = poltergeistLaunchedForGroup,
-        .launchers = poltergeistLaunchers,
-        .personaCatalog = poltergeistPersonaCatalog,
-        .personaPut = poltergeistPersonaPut,
-        .personaDelete = poltergeistPersonaDelete,
-        .agentClis = poltergeistAgentClis,
-        .promptScreens = poltergeistPromptScreens,
-        .personaLaunch = poltergeistPersonaLaunch,
-        .personaSlot = poltergeistPersonaSlot,
-        .sendKey = poltergeistSendKey,
-        // **The same function, on purpose** (task 2635). What a key does
-        // once it is past `Polter` is the terminal's business and is the
-        // same either way; which door it came in by is the difference, and
-        // that lives in `rpc.Host`, where the guard is. A second function
-        // here would be a copy of `poltergeistSendKey` to keep in step for
-        // no behaviour at all.
-        .sendStartupAnswerKey = poltergeistSendKey,
-        .performAction = poltergeistPerformAction,
-        .quietMs = poltergeistQuiet,
-        .callSilentMs = poltergeistCallSilent,
-        .nowMs = poltergeistNow,
-        .resourceUsage = poltergeistResourceUsage,
-        .resourceOverview = poltergeistResourceOverview,
-        .openTerminals = poltergeistOpenTerminals,
-        .filesTickets = poltergeistFilesTickets,
-        .filesWorkdir = poltergeistFilesWorkdir,
-        .openTerminal = poltergeistOpenTerminal,
-        .worktreePrepare = poltergeistWorktreePrepare,
-        .worktreeOpened = poltergeistWorktreeOpened,
-        .worktreeAt = poltergeistWorktreeAt,
-        .worktreeStatus = poltergeistWorktreeStatus,
-        .worktreeRemove = poltergeistWorktreeRemove,
-        .worktreeTieTask = poltergeistWorktreeTieTask,
-        .worktreeForTask = poltergeistWorktreeForTask,
-        .taskTreeBase = poltergeistTaskTreeBase,
-        .taskSetWorktree = poltergeistTaskSetWorktree,
-        .taskTreePrepare = poltergeistTaskTreePrepare,
-        .worktreeCloseout = poltergeistWorktreeCloseout,
-        .parkedText = poltergeistParkedText,
-        .worktreeStanding = poltergeistWorktreeStanding,
-        .configText = poltergeistConfigText,
-        .setWatching = poltergeistSetWatching,
-        .stoodDown = poltergeistStoodDown,
-        .drainNotices = poltergeistDrainNotices,
-        .setThreshold = poltergeistThreshold,
-        .readSkill = poltergeistSkill,
-        .chatCreate = chatCreate,
-        .chatDestroy = chatDestroy,
-        .chatRename = chatRename,
-        .logProblem = logProblem,
-        .chatAdd = chatAdd,
-        .chatRemove = chatRemove,
-        .chatCompact = chatCompact,
-        .chatPost = chatPost,
-        .notifyUser = notifyUser,
-        .sessionRecall = sessionRecall,
-        .sessionFile = sessionFile,
-        .chatSetBrief = chatSetBrief,
-        .groupProject = poltergeistGroupProject,
-        .chatGroupInfo = chatGroupInfo,
-        .chatOwner = chatOwner,
-        .chatMembers = chatMembers,
-        .chatGroups = chatGroups,
-        .membership = poltergeistMembership,
-        .fileGuard = poltergeistFileGuard,
-        .chatRead = chatRead,
-        .channelSeats = channelSeats,
-        .channelReaders = channelReaders,
-        .chatHistory = chatHistory,
-        .recordTool = recordTool,
-        .pluginList = pluginList,
-        .pluginRoots = pluginRoots,
-        .pluginConfigure = pluginConfigure,
-        .pluginTest = pluginTest,
-        .taskCreate = taskCreate,
-        .taskCreateSquad = taskCreateSquad,
-        .taskJoin = taskJoin,
-        .taskLeave = taskLeave,
-        .squadCatalog = poltergeistSquadCatalog,
-        .squadGet = poltergeistSquadGet,
-        .squadPut = poltergeistSquadPut,
-        .squadDelete = poltergeistSquadDelete,
-        .squadRefusal = poltergeistSquadRefusal,
-        .squadSummary = poltergeistSquadSummary,
-        .roleIsSupervisor = poltergeistRoleIsSupervisor,
-        .typeBlocker = poltergeistTypeBlocker,
-        .hasDraft = poltergeistHasDraft,
-        .taskEdit = taskEdit,
-        .layout = poltergeistLayout,
-        .tabMove = polterTabMove,
-        .paneMove = polterPaneMove,
-        .highlight = polterHighlight,
-        .userPresent = polterUserPresent,
-        .screenshotAllowed = poltergeistScreenshotAllowed,
-        .screenshotHost = poltergeistScreenshotHost,
-        .screenshotInteractive = poltergeistScreenshotInteractive,
-        .screenshotCwd = poltergeistScreenshotCwd,
-        .screenshotIo = poltergeistScreenshotIo,
-        .taskAssign = taskAssign,
-        .taskClose = taskClose,
-        .taskOwner = taskOwner,
-        .taskCancel = taskCancel,
-        .taskProgress = taskProgress,
-        .alarm = alarmOp,
-        .taskList = taskList,
-        .taskHistory = taskHistory,
-    } };
+    return .{
+        .ctx = self,
+        .vtable = &.{
+            .readTerminal = poltergeistRead,
+            .sendText = poltergeistSend,
+            .parkAssign = poltergeistParkAssign,
+            .agentPresent = poltergeistAgentPresent,
+            .seatHeld = seatHolderAlive,
+            .startupReach = poltergeistStartupReach,
+            .startupQuestion = poltergeistStartupQuestion,
+            .startupAnswer = poltergeistStartupAnswer,
+            .personaFace = poltergeistPersonaFace,
+            .terminalCapabilities = poltergeistTerminalCapabilities,
+            .agentArrived = poltergeistAgentArrived,
+            .agentHeard = poltergeistAgentHeard,
+            .launchFailed = poltergeistLaunchFailed,
+            .launchedForGroup = poltergeistLaunchedForGroup,
+            .launchers = poltergeistLaunchers,
+            .personaCatalog = poltergeistPersonaCatalog,
+            .personaPut = poltergeistPersonaPut,
+            .personaDelete = poltergeistPersonaDelete,
+            .agentClis = poltergeistAgentClis,
+            .promptScreens = poltergeistPromptScreens,
+            .personaLaunch = poltergeistPersonaLaunch,
+            .personaSlot = poltergeistPersonaSlot,
+            .sendKey = poltergeistSendKey,
+            // **The same function, on purpose** (task 2635). What a key does
+            // once it is past `Polter` is the terminal's business and is the
+            // same either way; which door it came in by is the difference, and
+            // that lives in `rpc.Host`, where the guard is. A second function
+            // here would be a copy of `poltergeistSendKey` to keep in step for
+            // no behaviour at all.
+            .sendStartupAnswerKey = poltergeistSendKey,
+            .performAction = poltergeistPerformAction,
+            .quietMs = poltergeistQuiet,
+            .callSilentMs = poltergeistCallSilent,
+            .nowMs = poltergeistNow,
+            .resourceUsage = poltergeistResourceUsage,
+            .resourceOverview = poltergeistResourceOverview,
+            .openTerminals = poltergeistOpenTerminals,
+            .filesTickets = poltergeistFilesTickets,
+            .filesWorkdir = poltergeistFilesWorkdir,
+            .openTerminal = poltergeistOpenTerminal,
+            .worktreePrepare = poltergeistWorktreePrepare,
+            .worktreeOpened = poltergeistWorktreeOpened,
+            .worktreeAt = poltergeistWorktreeAt,
+            .worktreeStatus = poltergeistWorktreeStatus,
+            .worktreeRemove = poltergeistWorktreeRemove,
+            .worktreeTieTask = poltergeistWorktreeTieTask,
+            .worktreeForTask = poltergeistWorktreeForTask,
+            .taskTreeBase = poltergeistTaskTreeBase,
+            .taskSetWorktree = poltergeistTaskSetWorktree,
+            .taskTreePrepare = poltergeistTaskTreePrepare,
+            .worktreeCloseout = poltergeistWorktreeCloseout,
+            .parkedText = poltergeistParkedText,
+            .worktreeStanding = poltergeistWorktreeStanding,
+            .configText = poltergeistConfigText,
+            .setWatching = poltergeistSetWatching,
+            .stoodDown = poltergeistStoodDown,
+            .drainNotices = poltergeistDrainNotices,
+            .setThreshold = poltergeistThreshold,
+            .readSkill = poltergeistSkill,
+            .chatCreate = chatCreate,
+            .chatDestroy = chatDestroy,
+            .chatRename = chatRename,
+            .logProblem = logProblem,
+            .chatAdd = chatAdd,
+            .chatRemove = chatRemove,
+            .chatCompact = chatCompact,
+            .chatPost = chatPost,
+            .notifyUser = notifyUser,
+            .sessionRecall = sessionRecall,
+            .sessionFile = sessionFile,
+            .chatSetBrief = chatSetBrief,
+            .groupProject = poltergeistGroupProject,
+            .chatGroupInfo = chatGroupInfo,
+            .chatOwner = chatOwner,
+            .chatMembers = chatMembers,
+            .chatGroups = chatGroups,
+            .membership = poltergeistMembership,
+            .fileGuard = poltergeistFileGuard,
+            .chatRead = chatRead,
+            .channelSeats = channelSeats,
+            .channelReaders = channelReaders,
+            .chatHistory = chatHistory,
+            .recordTool = recordTool,
+            .pluginList = pluginList,
+            .pluginRoots = pluginRoots,
+            .pluginConfigure = pluginConfigure,
+            .pluginTest = pluginTest,
+            .taskCreate = taskCreate,
+            .taskCreateSquad = taskCreateSquad,
+            .taskJoin = taskJoin,
+            .taskLeave = taskLeave,
+            .squadCatalog = poltergeistSquadCatalog,
+            .squadGet = poltergeistSquadGet,
+            .squadPut = poltergeistSquadPut,
+            .squadDelete = poltergeistSquadDelete,
+            .squadRefusal = poltergeistSquadRefusal,
+            .squadSummary = poltergeistSquadSummary,
+            .roleIsSupervisor = poltergeistRoleIsSupervisor,
+            .typeBlocker = poltergeistTypeBlocker,
+            .hasDraft = poltergeistHasDraft,
+            .taskEdit = taskEdit,
+            .layout = poltergeistLayout,
+            .tabMove = polterTabMove,
+            .paneMove = polterPaneMove,
+            .highlight = polterHighlight,
+            .userPresent = polterUserPresent,
+            .screenshotAllowed = poltergeistScreenshotAllowed,
+            .screenshotHost = poltergeistScreenshotHost,
+            .screenshotInteractive = poltergeistScreenshotInteractive,
+            .screenshotCwd = poltergeistScreenshotCwd,
+            .screenshotIo = poltergeistScreenshotIo,
+            .taskAssign = taskAssign,
+            .taskClose = taskClose,
+            .taskOwner = taskOwner,
+            .taskCancel = taskCancel,
+            .taskProgress = taskProgress,
+            .alarm = alarmOp,
+            .taskList = taskList,
+            .taskHistory = taskHistory,
+        },
+    };
 }
 
 // -- the plugin tools' side of the host -------------------------------------
@@ -10464,10 +10537,13 @@ fn pluginListFor(
             .params = params.items,
         };
 
-        // Every plugin is resident now, so every plugin has a state worth
-        // reporting -- and this is exactly where a notification channel's
-        // health used to be invisible: it was a fork that had already
-        // exited, so there was nothing left to ask.
+        // Every **resident** plugin has a state worth reporting -- a page
+        // plugin (task 2644) has none, and `status` stays null for it, which
+        // is the same value a resident plugin that is not running gets. The
+        // two are told apart by `shape`, which is why `residentNote` is given
+        // it. This is exactly where a notification channel's health used to
+        // be invisible: it was a fork that had already exited, so there was
+        // nothing left to ask.
         //
         // Left empty when no copy is running, rather than reported as
         // zero. `wire.writePlugin` leaves the whole group out then, and
@@ -10492,6 +10568,7 @@ fn pluginListFor(
 
         const facts: poltergeistpkg.report.ResidentFacts = .{
             .key = manifest.key,
+            .shape = manifest.shape(),
             .enabled = installed.settings.enabled,
             .declares_events = !manifest.wants.empty(),
             .groupless = manifest.wants.groupless(),
@@ -10705,15 +10782,26 @@ pub fn configurePlugin(
         next.sameParams(installed.settings),
     ) and self.stopResident(manifest.key);
 
-    const started: poltergeistpkg.report.Started = if (manifest.wants.empty())
-        .subscribes_to_nothing
-    else if (self.residentFor(manifest.key) != null)
-        .already_running
-    else if ((switched_on or restarted) and
-        self.startResidentNow(alloc, io, &environ_map, manifest.key))
-        .started_now
-    else
-        .not_started;
+    // **`turnAway` first, and it is the same rule `startResident` obeys**
+    // (task 2644, the test seat's F1). A page plugin subscribes to nothing --
+    // `wants.empty()` is its ordinary state, not a manifest that forgot
+    // something -- so asking `wants` first answered a person switching one on
+    // with "add \"wants\": {\"events\": [...]} to its plugin.json", and the
+    // `.page` branch in `report.residentNote` was never reached, because
+    // `started != .not_started` returns above it. `.not_started` is what a
+    // page plugin is: nothing was started, which is true, and is what makes
+    // the caller say why.
+    const started: poltergeistpkg.report.Started = switch (turnAway(manifest)) {
+        .page => .not_started,
+        .nothing => .subscribes_to_nothing,
+        .start => if (self.residentFor(manifest.key) != null)
+            .already_running
+        else if ((switched_on or restarted) and
+            self.startResidentNow(alloc, io, &environ_map, manifest.key))
+            .started_now
+        else
+            .not_started,
+    };
 
     // The event it missed by starting late, to it alone. Only once Polter
     // has registered in this run: before that nobody has been handed one,
@@ -10746,6 +10834,7 @@ pub fn configurePlugin(
     // place and never written out twice.
     const note = try poltergeistpkg.report.residentNote(alloc, .{
         .key = manifest.key,
+        .shape = manifest.shape(),
         .enabled = next.enabled,
         .declares_events = !manifest.wants.empty(),
         .groupless = manifest.wants.groupless(),
@@ -10820,6 +10909,52 @@ test "configure answers with report.Started's tag names" {
     try std.testing.expectEqual(@as(usize, 4), @typeInfo(Started).@"enum".fields.len);
 }
 
+test "2644: turnAway is the one rule both callers obey" {
+    const P = poltergeistpkg.Plugin;
+    const chat = P.Wants{ .events = &.{.chat} };
+
+    // A page plugin: nothing to start, and **not** "subscribes to nothing".
+    // The two are the same three fields and mean opposite things, which is
+    // the split F1 was: `configurePlugin` answered this with the sentence for
+    // the second.
+    var page: P.Manifest = .{ .key = "edit-text" };
+    try std.testing.expectEqual(TurnAway.page, turnAway(page));
+    try std.testing.expectEqual(P.Shape.page, page.shape());
+
+    // The same manifest with an `exec` is a resident plugin that subscribes
+    // to nothing -- and that one *is* a manifest somebody has to fix.
+    page.exec = "/x/run.sh";
+    try std.testing.expectEqual(TurnAway.nothing, turnAway(page));
+
+    // A resident that subscribes to something goes ahead.
+    page.wants = chat;
+    try std.testing.expectEqual(TurnAway.start, turnAway(page));
+
+    // **A manifest that is both, and that is the case the two readings
+    // disagree on.** `preview != null` says page; `exec != null` says
+    // resident, and resident is right -- there is a process, and the half
+    // with a lifetime is the one `startResident` has to start. So this one
+    // goes into `both` with a `preview` on it: a `turnAway` that read
+    // `preview` would answer `.page` here and leave the process unstarted.
+    var both: P.Manifest = .{
+        .key = "both",
+        .exec = "/x/run.sh",
+        .wants = chat,
+        .preview = .{ .extensions = &.{".md"}, .reads = .file, .page = "p.html" },
+    };
+    try std.testing.expectEqual(TurnAway.start, turnAway(both));
+
+    // And with the `exec` gone it is a page again, preview or not.
+    both.exec = null;
+    try std.testing.expectEqual(TurnAway.page, turnAway(both));
+
+    // A preview-only manifest, which is what a real one looks like.
+    try std.testing.expectEqual(TurnAway.page, turnAway(.{
+        .key = "preview-only",
+        .preview = .{ .extensions = &.{".md"}, .reads = .file, .page = "p.html" },
+    }));
+}
+
 test "a plugin configure: only the person may write a cmd: reference" {
     try std.testing.expectError(error.WillNotWriteCmd, pluginValueAllowed(.supervisor, "cmd:op read x"));
     try pluginValueAllowed(.supervisor, "env:HOOK");
@@ -10889,8 +11024,10 @@ fn installedPlugin(
 /// to it as the long way round.
 ///
 /// **Nothing is ever started to test a plugin**, whatever it subscribes to.
-/// Every plugin is resident, and a second copy would be a second subscriber
-/// handed everything twice. See `poltergeist/report.zig` for the sentences.
+/// Every **resident** plugin is already running, and a second copy would be a
+/// second subscriber handed everything twice. See `poltergeist/report.zig`
+/// for the sentences. A page plugin (task 2644) has nothing to start and
+/// nothing to hand, and `residentStatus` says so rather than this.
 fn pluginTest(
     ctx: *anyopaque,
     alloc: Allocator,
@@ -10916,15 +11053,19 @@ fn pluginTest(
     }
     self.poltergeist_plugin_tested_ms = now;
 
-    // Every plugin is resident, so nothing is ever started to test one: a
-    // second copy would be a second subscriber handed everything twice. The
-    // answer to "does it work" is the running copy's own account of itself,
-    // which for a notification channel is a strictly better answer than the
-    // old one -- a test notification proved the fork worked at that
-    // instant, and said nothing about the night it was needed.
+    // Every **resident** plugin is already running, so nothing is ever
+    // started to test one: a second copy would be a second subscriber handed
+    // everything twice. The answer to "does it work" is the running copy's
+    // own account of itself, which for a notification channel is a strictly
+    // better answer than the old one -- a test notification proved the fork
+    // worked at that instant, and said nothing about the night it was needed.
+    // A page plugin never gets here with a notification in mind: it
+    // subscribes to nothing, so `subscribes(.terminal_quiet)` is false and
+    // `residentStatus` answers that it is a preview.
     if (!installed.manifest.wants.subscribes(.terminal_quiet)) {
         return poltergeistpkg.report.residentStatus(alloc, .{
             .key = installed.manifest.key,
+            .shape = installed.manifest.shape(),
             .enabled = installed.settings.enabled,
             .declares_events = !installed.manifest.wants.empty(),
             .groupless = installed.manifest.wants.groupless(),

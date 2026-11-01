@@ -1,0 +1,5 @@
+# The build's own output and its dependencies, neither of which is the
+# product. What ships is `plugins/edit-text/page/vendor/codemirror.bundle.js`,
+# which `tools/the-editor-bundle-is-the-pinned-one.py` pins by sha256.
+node_modules/
+codemirror.bundle.js

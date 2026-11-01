@@ -47,6 +47,13 @@ const internal_os = @import("../os/main.zig");
 const keys = @import("keys.zig");
 const token_says = @import("token_says.zig");
 
+/// The core's own scope for "how much of a working directory a ticket
+/// reaches" (task 2573). Imported rather than re-spelled so that a
+/// `preview.reads` and what the ticket actually enforces are one type: a
+/// second enum here would be a second answer to the same question, and the
+/// day they drifted a manifest would declare a scope nobody enforced.
+const files = @import("files/main.zig");
+
 const log = std.log.scoped(.poltergeist);
 
 /// Longest a plugin may take before it is killed.
@@ -226,8 +233,16 @@ pub const Wants = struct {
     }
 
     /// True when nothing was asked for, so there is nothing to hand over.
-    /// The host says so rather than running a plugin it would then feed
-    /// silence for ever.
+    ///
+    /// **A resident plugin that asks for nothing is not started**: there would
+    /// be nothing to hand it, and the host says so.
+    ///
+    /// ⚠️ **Not true of a preview plugin, which is the other half of this
+    /// answer now** (task 2644). A plugin whose `shape` is `.page` asks for no
+    /// events *by construction* -- events are what a process is fed, and there
+    /// is no process -- so a caller that read this alone would report a
+    /// manifest that had forgotten something. Ask `Manifest.shape` first; this
+    /// is about a plugin that could have asked for events and did not.
     pub fn empty(self: Wants) bool {
         return self.events.len == 0;
     }
@@ -294,6 +309,139 @@ pub const ParamSpec = struct {
     }
 };
 
+/// What a plugin claims to preview, and how (`polter-artifacts/2140/v2/
+/// PLUGIN.md`, `2145/PLAN.md` §3.1).
+///
+/// **A preview is a plugin that the host loads, not one Polter runs.** What
+/// the manifest declares here is which files the plugin answers for, what
+/// page shows them, and -- for the three fields the host enforces rather than
+/// merely reads -- how far the page may reach: `reads` is a scope, `edits` is
+/// whether a write is possible at all, and `network` is whether the page may
+/// leave. The rules those three are *enforced* by are the host's
+/// (`macos/Sources/Features/Preview`, `windows/host/src/preview_page.rs`) and
+/// the core's (`files/Tickets.zig`): the page never writes a file, a ticket
+/// bounds every read, and the page's own scripts do not run in a browser
+/// page. This file's job is to read the declaration and to refuse one that
+/// cannot be acted on.
+pub const Preview = struct {
+    /// The file extensions this plugin answers for, lower-case, each with its
+    /// leading dot: `".md"`. **Required** -- a plugin that named none would
+    /// be one that can never be chosen, which is the failure that looks
+    /// exactly like a plugin that is simply never needed.
+    extensions: []const []const u8,
+
+    /// Types by sniffed MIME, when the extension is not enough. Optional.
+    mime: []const []const u8 = &.{},
+
+    /// What shows the file. See `Render`.
+    render: Render = .page,
+
+    /// The page inside the plugin's own directory, when `render` is `page`.
+    /// Relative, and refused when it would leave the plugin's directory --
+    /// it is somebody else's JSON, and `..` is a path out of their own
+    /// plugin and into whatever is beside it.
+    page: ?[]const u8 = null,
+
+    /// How far the page may read (`PLAN.md` §3.1). **Required**: an absent
+    /// one must not read as the widest.
+    reads: Reads,
+
+    /// The most a single read may return. `PLUGIN.md`'s default is 4 MB, and
+    /// the bound is enforced by whoever serves the bytes rather than here --
+    /// this is the number they enforce.
+    max_bytes: u64 = default_preview_max_bytes,
+
+    /// Whether the page may reach the network. **`false` by default, and it
+    /// is the answer that has to be written down**: a manifest that says
+    /// nothing gets a page with no network, which is the direction that
+    /// cannot open a hole by omission.
+    network: bool = false,
+
+    /// Whether the file may be edited at all. `false` by default. A preview
+    /// that may be edited is one the host grows an edit button for, and the
+    /// host judges a second time whether *this* file may be (`files/Text.zig`
+    /// refuses a binary, a file over 1 MB, and one that is not UTF-8).
+    edits: bool = false,
+
+    /// Which plugin wins when several claim one file. Higher first, and the
+    /// plugin a person chose by hand beats all of them (`PLUGIN.md`).
+    priority: i32 = 50,
+
+    /// The plugin to hand editing to, when this one shows a file it may not
+    /// edit itself -- Markdown's formatted view hands `.md` to `edit-text`.
+    hands_edit_to: ?[]const u8 = null,
+
+    /// The most extensions one preview may claim, and the most MIME types.
+    /// Bounds because this comes off a file somebody else wrote and the list
+    /// is walked to pick a plugin for every file opened.
+    pub const max_extensions = 64;
+    pub const max_mime = 32;
+
+    /// How a previewed file is shown.
+    pub const Render = enum {
+        /// A page the plugin ships, served over its own scheme, with the
+        /// eight-call bridge (`PreviewBridge`, `polter-file://`). This is
+        /// what every preview plugin is.
+        page,
+
+        /// The file itself, loaded into a **separate web view with no bridge
+        /// at all** -- not the plugin page's shell with the bridge hidden.
+        /// Its scripts run and it may reach the network (v3 `CHANGES.md`,
+        /// 2026-10-24: html opens directly, scripts and network allowed), and
+        /// the isolation is that there is no bridge, no `polter-file:` token
+        /// beyond this file's own, and no persistent store. See
+        /// `polter-artifacts/2140/v3/SECURITY.md`.
+        browser,
+    };
+
+    /// How much of the workdir a ticket for this plugin reaches
+    /// (`files/Access.Scope`). Spelled as the manifest spells it, and
+    /// **an unknown word refuses**: a scope nobody understood must never be
+    /// read as the widest of the three.
+    pub const Reads = enum {
+        file,
+        siblings,
+        project,
+
+        /// The `Access.Scope` this is, or null for one the core does not know.
+        /// `project` is the manifest's word for the whole working directory.
+        pub fn scope(self: Reads) ?files.Access.Scope {
+            return switch (self) {
+                .file => .file,
+                .siblings => .siblings,
+                .project => .workdir,
+            };
+        }
+    };
+};
+
+/// The default `max_bytes`: 4 MB, `PLUGIN.md`'s own default.
+pub const default_preview_max_bytes: u64 = 4 * 1024 * 1024;
+
+/// What a plugin is, which is what decides whether there is a process to
+/// start at all (task 2644, `polter-artifacts/2140/v2/PLUGIN.md`).
+///
+/// **A third state, and it is here because two different facts were about to
+/// be read as one.** "This system cannot run the file it names" (a `.sh` on
+/// Windows) and "it names no file, on purpose" (a preview plugin, which is a
+/// page the host loads and not a process at all) both arrive as
+/// `runnable == false`, and the sentence the host says about the first --
+/// *declares nothing this system can run* -- is false of the second. That is
+/// the split `CLAUDE.md` asks for by name: a flag must not answer "I do not
+/// know" and "I know, and the answer is none" at once.
+pub const Shape = enum {
+    /// A process: Polter starts it, feeds it the events it asked for, and a
+    /// manifest that asks for none is not started at all.
+    resident,
+
+    /// A page: html the host loads when a person opens a file of a kind this
+    /// plugin claims (`preview`). **Nothing is started, no events are
+    /// subscribed, and there is no `exec` to run** -- `Wants.empty` is the
+    /// ordinary state of one of these rather than a manifest that forgot
+    /// something.
+    page,
+};
+
 /// A plugin as declared by its manifest.
 ///
 /// Everything is owned by `arena`, which the loader hands over whole.
@@ -304,11 +452,19 @@ pub const Manifest = struct {
     /// For a person reading a list of them.
     name: []const u8 = "",
 
-    /// Absolute path to the executable this system would run.
+    /// Absolute path to the executable this system would run, or **null for a
+    /// plugin that names no file to run**.
     ///
     /// Resolved from `exec_<os>` when the manifest declares one for this
     /// system, and from `exec` otherwise. See `launchKindFor`.
-    exec: []const u8,
+    ///
+    /// ⚠️ **Null is a third state and an empty string is not it.** `""` is a
+    /// path that `launchKindFor` reads as `.direct` and `launchable` accepts,
+    /// so a preview plugin given one would be *spawned* -- an `exec("")`
+    /// failing, backing off and failing again, which from the plugin's side
+    /// is indistinguishable from idling. A manifest may leave this out only
+    /// when it declares `preview`; `load` refuses one that leaves out both.
+    exec: ?[]const u8 = null,
 
     /// Whether this system can start `exec` at all.
     ///
@@ -321,7 +477,16 @@ pub const Manifest = struct {
     /// `absent` / `provisioned` / `failed` split the provisioning plugins
     /// use: **"nothing to do here" and "something went wrong" must not look
     /// alike.**
+    ///
+    /// **False for a plugin with no `exec`**, but that is not the fact to act
+    /// on: ask `shape` first. `runnable` is about a file, and a page plugin
+    /// has none to be runnable or not.
     runnable: bool = true,
+
+    /// The kinds of file this plugin previews, and how. Null for every plugin
+    /// that is not a preview -- which is every plugin that has an `exec`.
+    /// See `Preview`.
+    preview: ?Preview = null,
 
     timeout_ms: u64 = default_timeout_ms,
 
@@ -376,6 +541,27 @@ pub const Manifest = struct {
     pub fn param(self: Manifest, name: []const u8) ?ParamSpec {
         for (self.params) |p| if (std.mem.eql(u8, p.name, name)) return p;
         return null;
+    }
+
+    /// Which of the two things this plugin is.
+    ///
+    /// **Derived from whether `exec` is null, and the answer is
+    /// `resident` whenever there is one.** A manifest may legally carry both
+    /// -- a plugin that previews `.md` *and* registers Polter with a CLI is a
+    /// plugin somebody will write -- and then it is both, and `resident` is
+    /// the half that has a lifetime: the page half is loaded by the host
+    /// whenever a file of that kind is opened, and nothing about it is a
+    /// process to start. Every caller that would otherwise branch on "is
+    /// `exec` null" asks this instead, so there is one answer to the question
+    /// rather than one per caller.
+    ///
+    /// ⚠️ **Not `preview == null`.** The two tests are the same only under
+    /// `load`'s invariant that a manifest carries one or the other, which is
+    /// a fact about `load` and not about this struct -- `Manifest` with both
+    /// null type-checks, and `preview != null` would call it a page. Reading
+    /// `exec` is reading the thing that decides it: what gets started.
+    pub fn shape(self: Manifest) Shape {
+        return if (self.exec == null) .page else .resident;
     }
 };
 
@@ -648,7 +834,6 @@ pub const StartupSays = struct {
         }
         return null;
     }
-
 
     pub fn verdict(self: StartupSays, screen: []const u8) Verdict {
         const tail = bottomRows(screen, ScreenSays.rows);
@@ -1267,21 +1452,40 @@ pub fn load(
     // ⚠️ **Not `wants.exec`.** That one is the list of binaries a plugin says
     // it will look for on `PATH`, and it is disclosure only. This one is the
     // file to start. The two have collided in readers' heads before.
+    //
+    // **Optional when the manifest declares `preview`, and only then** (task
+    // 2644). A preview plugin is a page the host loads; it has no process and
+    // therefore no file to run, and requiring one would refuse every one of
+    // them at load -- `plugin_list` would not carry them, so the failure would
+    // arrive as "the plugin is not installed". A manifest that names neither
+    // is still refused, which is what `{"name":"nameless"}` has always been.
+    //
+    // Null rather than `""`: `launchKindFor("")` is `.direct` and
+    // `launchable("")` is `true`, so an empty string would have this plugin
+    // *spawned* as `exec("")`, failing and backing off for ever. See
+    // `Manifest.exec`.
     const os_key = "exec_" ++ @tagName(builtin.os.tag);
-    const exec_rel = stringField(obj, os_key) orelse
-        stringField(obj, "exec") orelse
-        {
-            log.warn("plugin {s}: no exec", .{key});
-            return error.BadManifest;
-        };
-
-    const exec_abs = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, exec_rel });
+    const preview = try previewOf(arena, key, obj);
+    const exec_rel = stringField(obj, os_key) orelse stringField(obj, "exec");
+    if (exec_rel == null and preview == null) {
+        log.warn(
+            "plugin {s}: no exec, and no preview either -- there is nothing for " ++
+                "this plugin to be",
+            .{key},
+        );
+        return error.BadManifest;
+    }
+    const exec_abs: ?[]const u8 = if (exec_rel) |rel|
+        try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, rel })
+    else
+        null;
 
     return .{
         .key = key,
         .name = stringField(obj, "name") orelse key,
         .exec = exec_abs,
-        .runnable = launchable(exec_abs),
+        .runnable = if (exec_abs) |abs| launchable(abs) else false,
+        .preview = preview,
         .timeout_ms = switch (obj.get("timeout_ms") orelse std.json.Value{ .null = {} }) {
             .integer => |n| if (n > 0) @intCast(n) else default_timeout_ms,
             else => default_timeout_ms,
@@ -1295,6 +1499,323 @@ pub fn load(
         .startup_says = try startupSaysOf(arena, key, obj),
         .declined_says = try declinedSaysOf(arena, key, obj),
         .token_says = try tokenSaysOf(arena, key, obj),
+    };
+}
+
+/// `preview`, or null with a warning for a section that does not read.
+///
+/// **The section is all or nothing, unlike every other optional one here.**
+/// `token_says` and `declined_says` cost only themselves when they are
+/// half-understood, because the plugin has another job either way; a preview
+/// section is the whole of what a preview plugin is, so a half-read one would
+/// leave a plugin that claims files and cannot show them -- which is the
+/// failure that looks like a plugin that is simply never chosen.
+///
+/// **Every refusal is a refusal and not a default.** The two that matter:
+/// `reads` absent or unrecognised must never read as the widest scope, and
+/// `network: "false"` -- a string -- must not read as the boolean `false` it
+/// looks like from a chair. Both are the same rule: **a declaration nobody
+/// understood must land on the side that grants nothing.**
+fn previewOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Allocator.Error!?Preview {
+    const section = switch (obj.get("preview") orelse return null) {
+        .object => |o| o,
+        else => {
+            log.warn("plugin {s}: preview is not an object; ignored", .{key});
+            return null;
+        },
+    };
+
+    const extensions = extensionList(arena, key, section, "extensions");
+    if (extensions.len == 0) {
+        log.warn(
+            "plugin {s}: preview names no extensions, so nothing would ever be " ++
+                "previewed by it; the section is ignored",
+            .{key},
+        );
+        return null;
+    }
+
+    const reads: Preview.Reads = switch (section.get("reads") orelse {
+        log.warn(
+            "plugin {s}: preview has no reads; ignored -- an absent scope must not " ++
+                "be read as the widest one",
+            .{key},
+        );
+        return null;
+    }) {
+        .string => |s| std.meta.stringToEnum(Preview.Reads, s) orelse {
+            log.warn(
+                "plugin {s}: preview.reads is \"{s}\", which is not file, siblings " ++
+                    "or project; ignored",
+                .{ key, s },
+            );
+            return null;
+        },
+        else => {
+            log.warn("plugin {s}: preview.reads is not a string; ignored", .{key});
+            return null;
+        },
+    };
+
+    const render: Preview.Render = switch (section.get("render") orelse std.json.Value{ .string = "page" }) {
+        .string => |s| std.meta.stringToEnum(Preview.Render, s) orelse {
+            log.warn(
+                "plugin {s}: preview.render is \"{s}\", which is not page or browser; ignored",
+                .{ key, s },
+            );
+            return null;
+        },
+        else => {
+            log.warn("plugin {s}: preview.render is not a string; ignored", .{key});
+            return null;
+        },
+    };
+
+    // A `page` render is a page, and a page is a file inside the plugin's own
+    // directory. **A path that leaves it is refused here rather than caught
+    // later**: it is somebody else's JSON, and `../` in it is a path out of
+    // their plugin and into whatever sits beside it. `browser` has no page --
+    // the file being previewed is served, not the plugin's own html.
+    const page: ?[]const u8 = if (render == .page) page: {
+        const rel = stringField(section, "page") orelse {
+            log.warn(
+                "plugin {s}: preview.render is page and there is no page; ignored -- " ++
+                    "a page render with no page has nothing to load",
+                .{key},
+            );
+            return null;
+        };
+        if (!isInsidePlugin(rel)) {
+            log.warn(
+                "plugin {s}: preview.page is \"{s}\", which is not a plain relative path " ++
+                    "inside the plugin; ignored",
+                .{ key, rel },
+            );
+            return null;
+        }
+        break :page try arena.dupe(u8, rel);
+    } else null;
+
+    // The two booleans the host acts on. **Present and not a bool refuses the
+    // section**, rather than being read as the default: `"network": "false"`
+    // and `"edits": "true"` both parse as "the author wrote something here",
+    // and taking either as a default would be reading a declaration nobody
+    // understood as the one that grants least *or* most, depending on which
+    // default the field happens to have.
+    const network = boolField(key, "preview", section, "network", false) orelse return null;
+    const edits = boolField(key, "preview", section, "edits", false) orelse return null;
+
+    return .{
+        .extensions = extensions,
+        .mime = mimeList(arena, key, section),
+        .render = render,
+        .page = page,
+        .reads = reads,
+        .max_bytes = switch (section.get("max_bytes") orelse std.json.Value{ .null = {} }) {
+            .integer => |n| if (n > 0) @intCast(n) else default_preview_max_bytes,
+            else => default_preview_max_bytes,
+        },
+        .network = network,
+        .edits = edits,
+        .priority = switch (section.get("priority") orelse std.json.Value{ .null = {} }) {
+            .integer => |n| std.math.cast(i32, n) orelse 50,
+            else => 50,
+        },
+        .hands_edit_to = if (stringField(section, "hands_edit_to")) |s|
+            (if (s.len > 0) try arena.dupe(u8, s) else null)
+        else
+            null,
+    };
+}
+
+/// A list of extensions, each normalised to lower case with its leading dot.
+///
+/// **Normalised rather than taken as written**, because the comparison the
+/// host makes is without case (`test/fixtures/preview-types.tsv` rule 2): a
+/// manifest that wrote `".MD"` and one that wrote `".md"` mean the same file,
+/// and storing them differently would make whichever the picker compared
+/// against decide which manifests work. An entry that is not a dotted name is
+/// passed over and said, the way every other list here treats one bad item.
+fn extensionList(
+    arena: Allocator,
+    key: []const u8,
+    section: std.json.ObjectMap,
+    name: []const u8,
+) []const []const u8 {
+    const items = switch (section.get(name) orelse return &.{}) {
+        .array => |a| a.items,
+        else => {
+            log.warn("plugin {s}: preview.{s} is not a list; read as naming nothing", .{ key, name });
+            return &.{};
+        },
+    };
+
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (items) |item| {
+        const raw = switch (item) {
+            .string => |s| s,
+            else => continue,
+        };
+        if (raw.len < 2 or raw[0] != '.') {
+            log.warn(
+                "plugin {s}: preview.{s} has \"{s}\", which is not an extension " ++
+                    "(a dot and a name, like \".md\"); passed over",
+                .{ key, name, raw },
+            );
+            continue;
+        }
+        // **A second dot, a separator or a space can never match**, and the
+        // reason is the host's rule rather than this file's taste: the
+        // extension is what follows the *last* dot of the file's own name
+        // (`test/fixtures/preview-types.tsv` rule 1), so `.tar.gz` is
+        // compared against `gz` and `".tar.gz"` never equals it. A plugin
+        // declared that way would be installed, listed, shown as fine, and
+        // chosen for nothing -- the failure that looks exactly like a plugin
+        // nobody needed.
+        //
+        // ⚠️ **The second dot is checked here and not only in the comment
+        // above.** It was written there and left out of the code once, which
+        // is what a reader would never notice: the sentence and the guard
+        // have to be edited together or the guard is the half that goes.
+        if (std.mem.indexOfScalar(u8, raw[1..], '.') != null or
+            std.mem.indexOfAny(u8, raw, " \t/\\") != null)
+        {
+            log.warn(
+                "plugin {s}: preview.{s} has \"{s}\", which holds a second dot, a " ++
+                    "separator or a space and cannot match an extension -- the host " ++
+                    "takes what follows the last dot of the file's own name, so this " ++
+                    "would name nothing; passed over",
+                .{ key, name, raw },
+            );
+            continue;
+        }
+        if (out.items.len >= Preview.max_extensions) {
+            log.warn(
+                "plugin {s}: preview.{s} names more than {d} extensions, and the rest " ++
+                    "are passed over",
+                .{ key, name, Preview.max_extensions },
+            );
+            break;
+        }
+        const lower = arena.alloc(u8, raw.len) catch break;
+        for (raw, lower) |c, *dst| dst.* = std.ascii.toLower(c);
+        out.append(arena, lower) catch break;
+    }
+    return out.items;
+}
+
+/// `preview.mime` -- sniffed types, when an extension is not enough. Same
+/// treatment as the extensions, minus the dot: `"text/*"` and `"image/png"`.
+fn mimeList(arena: Allocator, key: []const u8, section: std.json.ObjectMap) []const []const u8 {
+    const items = switch (section.get("mime") orelse return &.{}) {
+        .array => |a| a.items,
+        else => {
+            log.warn("plugin {s}: preview.mime is not a list; read as naming nothing", .{key});
+            return &.{};
+        },
+    };
+
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (items) |item| {
+        const raw = switch (item) {
+            .string => |s| s,
+            else => continue,
+        };
+        // `type/subtype`, with `*` allowed on either side of the slash. A
+        // string with no slash is not a type, and matching it would be
+        // matching nothing.
+        if (std.mem.indexOfScalar(u8, raw, '/') == null) {
+            log.warn(
+                "plugin {s}: preview.mime has \"{s}\", which is not a type; passed over",
+                .{ key, raw },
+            );
+            continue;
+        }
+        if (out.items.len >= Preview.max_mime) {
+            log.warn("plugin {s}: preview.mime names more than {d}, and the rest are passed over", .{ key, Preview.max_mime });
+            break;
+        }
+        const lower = arena.alloc(u8, raw.len) catch break;
+        for (raw, lower) |c, *dst| dst.* = std.ascii.toLower(c);
+        out.append(arena, lower) catch break;
+    }
+    return out.items;
+}
+
+/// Whether a `preview.page` names a file inside the plugin's own directory.
+///
+/// A plain relative path and nothing else: not absolute, no `..` in any
+/// position, no separator at the front. Deliberately narrower than "resolves
+/// inside the directory", because resolving is the *host's* job and the two
+/// would be two implementations of one rule -- and because a `..` that
+/// happens to land back inside is still a path nobody meant to write.
+///
+/// ⚠️ **Two spellings of "absolute" that a leading-separator check does not
+/// catch, both of them Windows'** (measured by the test seat, 2026-11-02):
+///
+///   * `C:\evil.html` -- a drive letter. `rel[0]` is `C`, so the check below
+///     passes it, and a Rust `Path::join` **replaces** the base with it: the
+///     page would come from anywhere on the machine.
+///   * `page.html::$DATA` -- an NTFS alternate data stream. No separator at
+///     the front and no `..` either, and it names something other than the
+///     file it looks like.
+///
+/// Both carry `:`, and a `:` may not appear in a relative path on any system
+/// this ships on, so **`:` anywhere refuses**. Refusing the character is what
+/// makes this the guard rather than a list of the two spellings somebody
+/// thought of -- there are more of these, and only one of them is a drive
+/// letter.
+fn isInsidePlugin(rel: []const u8) bool {
+    if (rel.len == 0) return false;
+    // Absolute, whichever separator the manifest chose: a leading `/` or `\`
+    // -- and the leading `\\` of a UNC path is covered by the same byte.
+    if (rel[0] == '/' or rel[0] == '\\') return false;
+    // A drive letter, an NTFS stream, and whatever else spells a path that is
+    // not relative. See the note above.
+    if (std.mem.indexOfScalar(u8, rel, ':') != null) return false;
+    if (std.mem.indexOfScalar(u8, rel, 0) != null) return false;
+    // An empty segment (`a//b`) or a trailing separator is a path the two
+    // hosts would each resolve their own way, and neither reading is one a
+    // plugin's author wrote on purpose.
+    if (std.mem.indexOf(u8, rel, "//") != null) return false;
+    if (rel[rel.len - 1] == '/' or rel[rel.len - 1] == '\\') return false;
+
+    var it = std.mem.tokenizeAny(u8, rel, "/\\");
+    while (it.next()) |segment| {
+        if (std.mem.eql(u8, segment, "..")) return false;
+        // `.` on its own is the directory it is in, so a page at `.` is not a
+        // page. Written as a segment rather than as a prefix test, so that a
+        // dotfile's dot -- `.hidden.html`, which is a perfectly good page --
+        // is not refused for the wrong reason.
+        if (std.mem.eql(u8, segment, ".")) return false;
+    }
+    return true;
+}
+
+/// A field that has to be a JSON boolean when it is there at all.
+///
+/// Returns `null` for "the section does not read", so the caller can refuse
+/// the whole thing; `null` from the *map* means the field was absent, which
+/// is the default and not a fault. The two are told apart by the outer
+/// optional, which is the shape `CLAUDE.md` asks for: **"nothing was said"
+/// and "what was said cannot be read" must not arrive as the same value.**
+fn boolField(
+    key: []const u8,
+    where: []const u8,
+    obj: std.json.ObjectMap,
+    name: []const u8,
+    default: bool,
+) ?bool {
+    return switch (obj.get(name) orelse return default) {
+        .bool => |b| b,
+        else => {
+            log.warn(
+                "plugin {s}: {s}.{s} is not true or false; the section is ignored " ++
+                    "-- a string read as a boolean is a declaration nobody understood",
+                .{ key, where, name },
+            );
+            return null;
+        },
     };
 }
 
@@ -2734,7 +3255,7 @@ test "a manifest is read, and its exec made absolute" {
 
     // Absolute, so running it never depends on where Polter happens to be.
     const want = try std.fmt.allocPrint(alloc, "{s}/send.sh", .{dir});
-    try testing.expectEqualStrings(want, m.exec);
+    try testing.expectEqualStrings(want, m.exec.?);
 }
 
 // The four cells of task 1683: no list, named in the list, not named in it,
@@ -2907,6 +3428,197 @@ test "a manifest missing what it needs is refused" {
 
     try testing.expectError(error.BadManifest, load(alloc, io, dir));
     try testing.expectError(error.NoManifest, load(alloc, io, "/tmp/polter-no-dir-9c1f"));
+
+    var f2 = try d.createFile(io, "plugin.json", .{});
+    try f2.writeStreamingAll(io, "{\"key\":\"neither\"}");
+    f2.close(io);
+    try testing.expectError(error.BadManifest, load(alloc, io, dir));
+}
+
+// A page plugin: `preview` and **no `exec` at all**. Before task 2644 this
+// was `error.BadManifest`, and the failure arrived at `plugin_list` as "the
+// plugin is not installed".
+test "2644: a manifest that declares a preview and no exec loads as a page" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestDir(alloc, io,
+        \\{"key":"edit-text","name":"Text",
+        \\ "preview":{"extensions":[".txt",".MD"],"reads":"file","page":"page/index.html"}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+
+    // The two that `App.zig` and `report.zig` branch on. `exec == null` is
+    // what `shape` reads, and `null` rather than `""` is what keeps
+    // `launchKindFor("")` -- `.direct`, and `launchable("")` is true -- from
+    // turning this into an `exec("")` spawn loop.
+    try testing.expect(m.exec == null);
+    try testing.expectEqual(Shape.page, m.shape());
+    // Not because it is unlaunchable: there is no file to be either.
+    try testing.expect(!m.runnable);
+
+    const p = m.preview.?;
+    try testing.expectEqualStrings("page/index.html", p.page.?);
+    try testing.expectEqual(Preview.Reads.file, p.reads);
+    try testing.expectEqual(Preview.Render.page, p.render);
+    // Extensions are lower-cased on the way in, so the host's comparison --
+    // which is case-insensitive -- is against one spelling.
+    try testing.expectEqual(@as(usize, 2), p.extensions.len);
+    try testing.expectEqualStrings(".txt", p.extensions[0]);
+    try testing.expectEqualStrings(".md", p.extensions[1]);
+
+    // The defaults that are the narrow direction. `network` and `edits`
+    // absent must not be read as "allowed".
+    try testing.expect(!p.network);
+    try testing.expect(!p.edits);
+    try testing.expectEqual(default_preview_max_bytes, p.max_bytes);
+}
+
+// Both halves in one manifest. `shape` must say `resident`: there **is** a
+// process, and the half that has a lifetime is the one that decides.
+test "2644: a manifest that declares both a preview and an exec is resident" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestDir(alloc, io,
+        \\{"key":"both","exec":"run.sh",
+        \\ "wants":{"events":["chat"]},
+        \\ "preview":{"extensions":[".md"],"reads":"siblings","page":"p.html"}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+    try testing.expectEqual(Shape.resident, m.shape());
+    try testing.expect(m.exec != null);
+    try testing.expect(m.preview != null);
+}
+
+// The section is all or nothing, and every refusal lands on the side that
+// grants nothing. Nine ways to write a `preview` nobody can act on, and
+// **not one of them may arrive as a preview with a default filled in**.
+//
+// Each manifest carries an `exec` as well, so the plugin loads whatever the
+// preview section does: what is measured is `preview == null`, which is the
+// claim being made. Without the `exec` every case would be refused for the
+// other reason -- nothing left to be -- and the test would pass while
+// measuring something else entirely.
+test "2644: a preview section that cannot be acted on is not read at all" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const cases = [_]struct { why: []const u8, preview: []const u8 }{
+        .{ .why = "preview is not an object", .preview =
+        \\"preview":"file"
+        },
+        .{ .why = "no extensions", .preview =
+        \\"preview":{"reads":"file","page":"a.html"}
+        },
+        .{ .why = "extensions is not a list", .preview =
+        \\"preview":{"extensions":".md","reads":"file","page":"a.html"}
+        },
+        .{ .why = "every extension is unreadable", .preview =
+        \\"preview":{"extensions":["md",".tar.gz",""],"reads":"file","page":"a.html"}
+        },
+        // The one an absent value must never become: the widest scope.
+        .{ .why = "no reads", .preview =
+        \\"preview":{"extensions":[".md"],"page":"a.html"}
+        },
+        .{ .why = "reads is a word the core does not know", .preview =
+        \\"preview":{"extensions":[".md"],"reads":"everything","page":"a.html"}
+        },
+        .{ .why = "network is the string \"false\"", .preview =
+        \\"preview":{"extensions":[".md"],"reads":"file","page":"a.html","network":"false"}
+        },
+        .{ .why = "render is page and there is no page", .preview =
+        \\"preview":{"extensions":[".md"],"reads":"file"}
+        },
+        .{ .why = "the page leaves the plugin", .preview =
+        \\"preview":{"extensions":[".md"],"reads":"file","page":"../outside.html"}
+        },
+    };
+
+    for (cases) |case| {
+        const json = try std.fmt.allocPrint(alloc, "{{\"key\":\"p\",\"exec\":\"run.sh\",{s}}}", .{case.preview});
+        const dir = try manifestDir(alloc, io, json);
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+        const m = try load(alloc, io, dir);
+        // It is a resident plugin with no preview: not a preview with a
+        // default nobody wrote.
+        testing.expectEqual(Shape.resident, m.shape()) catch {
+            std.debug.print("shape moved for: {s}\n", .{case.why});
+            return error.TestUnexpectedResult;
+        };
+        testing.expect(m.preview == null) catch {
+            std.debug.print("preview survived: {s}\n", .{case.why});
+            return error.TestUnexpectedResult;
+        };
+    }
+}
+
+// The guard the test seat measured `C:\evil.html` walking through. **The
+// character, not the two spellings somebody thought of**: `:` may not appear
+// in a relative path on any system this ships on, and there are more ways to
+// write an absolute path than a drive letter.
+test "2644: a preview page has to be a plain relative path inside the plugin" {
+    // Let through: a page is a file in the plugin.
+    const inside = [_][]const u8{ "page/index.html", "vendor/cm.js", "a/b/c/d.html", "p.html" };
+    for (inside) |rel| try testing.expect(isInsidePlugin(rel));
+
+    // Refused. The first four are the ones that were measured passing.
+    const outside = [_][]const u8{
+        "",
+        "/etc/passwd",
+        "\\srv\\share\\x.html",
+        "C:\\evil.html",
+        "C:/evil.html",
+        "page.html::$DATA",
+        "../outside.html",
+        "a/../../b.html",
+        "a//b.html",
+        "dir/",
+        ".",
+        "./page.html",
+    };
+    for (outside) |rel| testing.expect(!isInsidePlugin(rel)) catch {
+        std.debug.print("isInsidePlugin let through: {s}\n", .{rel});
+        return error.TestUnexpectedResult;
+    };
+}
+
+test "2644: shape is read off exec, which is the thing that decides what starts" {
+    // The two cells, as `Manifest` can actually be built -- `load`'s "one or
+    // the other" invariant is a fact about `load`, not about this struct, so
+    // the test does not lean on it.
+    try testing.expectEqual(Shape.page, (Manifest{ .key = "p" }).shape());
+    try testing.expectEqual(Shape.page, (Manifest{ .key = "p", .preview = .{
+        .extensions = &.{".md"},
+        .reads = .file,
+        .page = "a.html",
+    } }).shape());
+    try testing.expectEqual(Shape.resident, (Manifest{ .key = "p", .exec = "/x/run.sh" }).shape());
+    try testing.expectEqual(Shape.resident, (Manifest{
+        .key = "p",
+        .exec = "/x/run.sh",
+        .preview = .{ .extensions = &.{".md"}, .reads = .file, .page = "a.html" },
+    }).shape());
 }
 
 test "settings round-trip through the file format" {
@@ -3853,7 +4565,7 @@ test "a manifest names the file for this system, and says so when there is none"
         const m = try load(alloc, io, dir);
         try testing.expectEqualStrings(
             try std.fmt.allocPrint(alloc, "{s}/provision.sh", .{dir}),
-            m.exec,
+            m.exec.?,
         );
         try testing.expect(m.runnable != (builtin.os.tag == .windows));
     }
@@ -3870,7 +4582,7 @@ test "a manifest names the file for this system, and says so when there is none"
         const m = try load(alloc, io, dir);
         try testing.expectEqualStrings(
             try std.fmt.allocPrint(alloc, "{s}/chosen.bin", .{dir}),
-            m.exec,
+            m.exec.?,
         );
         try testing.expect(m.runnable);
     }
@@ -3890,7 +4602,7 @@ test "a manifest names the file for this system, and says so when there is none"
         const m = try load(alloc, io, dir);
         try testing.expectEqualStrings(
             try std.fmt.allocPrint(alloc, "{s}/provision.sh", .{dir}),
-            m.exec,
+            m.exec.?,
         );
     }
 

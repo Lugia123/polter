@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<title>ime-probe {"panes":{}}</title>
+<!--
+  The P0a probe (`2145/PLAN.md` §4, §5): does CodeMirror 6 survive a Chinese
+  input method inside the two hosts' web views, and can this page tell when it
+  does not?
+
+  **Three panes, one screen, one reading.** A, B and C are three editors of the
+  same text, and the page reports on all three at once, so a green A is worth
+  something only if B is red:
+
+    A  CodeMirror 6, the arrangement the plugin will ship -- the platform's own
+       event flow, with nothing added. Expected: **green**.
+    B  CodeMirror 6 **with every keydown killed** -- `preventDefault()` and
+       `stopPropagation()` on each one, without ever asking whether it is part
+       of a composition. That is what a keydown handler written without
+       `isComposing` does, and it is the defect the probe exists to detect:
+       expected **red**. A page reporting A green while B is also green is a
+       page whose instrument cannot see the failure, and A's green then means
+       nothing.
+
+       ⚠️ **B green is a reading about the instrument, not about A.** Whether
+       a `preventDefault` on keydown actually cuts a composition is the
+       engine's business, and the two hosts are two engines: WebKit may still
+       deliver the commit through `compositionupdate`/`input` where Chromium
+       does not. So B green says "this host cannot be broken this way", which
+       is a reason to distrust A's green rather than a reason to relax -- and
+       it is exactly what the test seat's own floor page
+       (`polter-artifacts/2644/evid/probe/10-ime-floor.html`) is for.
+    C  A native `<textarea>`, which is what the platform gives with none of
+       this code. Expected: **green**. If C is red, the machine's input method
+       is broken rather than the editor, and the whole reading is void.
+
+  **The page never decides whether it passed.** `verdict` is `null` until a
+  whole probe has been typed into that pane, and `unknown` -- never `ok` --
+  when any step of it did not happen. What the observed thing means is the
+  test seat's call (`polter-artifacts/2644/evid/CRITERIA.md`), and the page is
+  written so it cannot make that call for them.
+
+  ## How a reading comes out
+
+  Never by screenshot and never by the page saying it passed: every fact is
+  written into `document.title` as one JSON object, which the host logs and the
+  test seat reads back. The title is rewritten on every event, so the last line
+  for a pane is the whole of what it saw.
+
+  ## What each pane reports
+
+    committed     what the input method committed, as the editor sees it.
+    composing     whether the editor was mid-composition at that moment.
+    caret         the caret's rect at that moment, which is what a candidate
+                  window is placed against. **The page cannot read the
+                  candidate window** -- the system draws it -- so what is
+                  measured is the rect the system would have used; the
+                  screenshot comparison (the box within one line height of it)
+                  is the test seat's.
+    save_during   what the save shortcut did *while composing*: whether a save
+                  happened and whether it would have saved the text from before
+                  the composition (correct) or a half-composed string (wrong).
+                  `EDITING.md` §6 and `PLAN.md` §4 make this a criterion.
+    verdict       `ok` / `mismatch` / `unknown`, and it is `ok` only when the
+                  whole of `TYPED` went through.
+
+  ## Why this is a plugin page and not a browser page
+
+  The question is about *this application's* web views -- `WKWebView` on macOS,
+  WebView2 on Windows -- and what Safari or Chrome does is not evidence about
+  them. It is served over `polter-plugin://` and carries no network, which is
+  also the configuration the shipped page will run in.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; padding: 16px;
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: Canvas; color: CanvasText;
+  }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  p.hint { margin: 0 0 16px; color: GrayText; }
+  .panes { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .pane { flex: 1 1 280px; min-width: 260px; }
+  .pane h2 { font-size: 13px; margin: 0 0 6px; }
+  .pane h2 .what { font-weight: 400; color: GrayText; }
+  .box { border: 1px solid GrayText; border-radius: 6px; overflow: hidden; }
+  textarea, .box .cm-editor { display: block; width: 100%; min-height: 96px; }
+  textarea {
+    border: 0; outline: none; resize: vertical; padding: 8px; min-height: 96px;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: Canvas; color: CanvasText; box-sizing: border-box;
+  }
+  .cm-editor { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .cm-editor.cm-focused { outline: none; }
+  .readout {
+    margin-top: 6px; padding: 6px 8px; border-radius: 4px;
+    font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap; word-break: break-all;
+    background: color-mix(in srgb, CanvasText 8%, Canvas);
+  }
+  #title-now {
+    margin-top: 16px; padding: 8px; border-radius: 4px;
+    font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap; word-break: break-all; max-height: 30vh; overflow: auto;
+    background: color-mix(in srgb, CanvasText 12%, Canvas);
+  }
+  button { font: inherit; padding: 2px 10px; }
+</style>
+</head>
+<body>
+<h1>中文输入法探针 · P0a</h1>
+<p class="hint">
+  三个框里各打一遍「<b>中文输入法测试</b>」，用你的输入法真的组字，不要粘贴；
+  打的中间按一次 ⌘S（Windows 上是 Ctrl+S）。打完看下面的读数。
+</p>
+
+<div class="panes">
+  <div class="pane">
+    <h2>A <span class="what">CodeMirror 6 · 照原样（期望绿）</span></h2>
+    <div class="box" id="box-a" data-pane="A"></div>
+    <div class="readout" id="read-a">—</div>
+  </div>
+  <div class="pane">
+    <h2>B <span class="what">CodeMirror 6 · 组字被掐断（期望红）</span></h2>
+    <div class="box" id="box-b" data-pane="B"></div>
+    <div class="readout" id="read-b">—</div>
+  </div>
+  <div class="pane">
+    <h2>C <span class="what">原生 textarea · 参照（期望绿）</span></h2>
+    <div class="box"><textarea id="ta-c" spellcheck="false"></textarea></div>
+    <div class="readout" id="read-c">—</div>
+  </div>
+</div>
+
+<p style="margin-top:16px">
+  <button id="reset">清空重来</button>
+  <span class="hint" style="margin-left:8px">清空会重新开始三格的读数。</span>
+</p>
+<div id="title-now">document.title（宿主读这一行）</div>
+
+<script src="./vendor/codemirror.bundle.js"></script>
+<script>
+"use strict";
+
+// What the person is asked to type, and therefore what a committed string is
+// compared against. A constant rather than a variable: every pane is measured
+// against one answer, so no pane can be lenient by having been handed another.
+const TYPED = "中文输入法测试";
+
+// A keydown is part of a composition. **Both spellings, because the two hosts
+// disagree about which one they set**: WebKit sets `isComposing`, and Chromium
+// has historically reported the composition through `keyCode === 229`, which
+// is also what CodeMirror's own keymap guards on. Guarding on one and not the
+// other is exactly the defect pane B demonstrates.
+const composing = (e) => e.isComposing === true || e.keyCode === 229;
+
+/// The caret's rect right now, as the page sees it, or null when there is no
+/// selection to read.
+function caretRect(win) {
+  try {
+    const sel = win.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+    const r = sel.getRangeAt(0).cloneRange();
+    r.collapse(true);
+    const box = r.getBoundingClientRect();
+    if (box.height === 0 && box.width === 0) return null;
+    return { x: Math.round(box.left), y: Math.round(box.top), h: Math.round(box.height) };
+  } catch (_) { return null; }
+}
+
+function makePane(label) {
+  return {
+    label,
+    // What the input method has committed, as the editor sees it.
+    committed: "",
+    // Whether the editor was mid-composition at the last observation.
+    midComposition: false,
+    // The caret rect at that moment, in the page's own coordinates. What a
+    // candidate window is placed against; the window itself is the system's.
+    caret: null,
+    // What the save shortcut did while composing. Null until it happens.
+    saveDuringComposition: null,
+    // Set once a whole probe has been typed. `unknown` when it was not -- a
+    // half-typed probe is not a passing one.
+    verdict: null,
+  };
+}
+
+const panes = { A: makePane("A"), B: makePane("B"), C: makePane("C") };
+
+/// Write every pane's reading into `document.title`, which is the only way a
+/// reading leaves this page.
+function publish() {
+  const out = { probe: "ime", typed: TYPED, panes: {} };
+  for (const label of Object.keys(panes)) {
+    const p = panes[label];
+    const seen = p.committed.length > 0;
+    out.panes[label] = {
+      committed: p.committed,
+      composing: p.midComposition,
+      caret: p.caret,
+      save_during_composition: p.saveDuringComposition,
+      observed: seen,
+      // A comparison nobody has data for is absent, not a pass.
+      matches: seen ? p.committed === TYPED : null,
+      verdict: p.verdict,
+    };
+  }
+  const text = JSON.stringify(out);
+  document.title = "ime-probe " + text;
+  const whole = document.getElementById("title-now");
+  if (whole) whole.textContent = document.title;
+  for (const label of Object.keys(panes)) {
+    const el = document.getElementById("read-" + label.toLowerCase());
+    if (el) el.textContent = JSON.stringify(out.panes[label]);
+  }
+}
+
+/// The observations every pane makes, in one place.
+///
+/// **One observer, three panes, no per-pane copy of the logic.** Each pane
+/// differs only in the guard its keydown applies and in what "the editor's
+/// text" means; a second copy of the measuring would be a second answer.
+function observe(pane, textOf, winOf) {
+  const save = (e) => (e.key === "s" || e.key === "S") && (e.metaKey || e.ctrlKey);
+
+  return {
+    /// What the pane saw. **Recording only -- it decides nothing.** A pane
+    /// that has to ask this what to do is a pane whose guard is inside the
+    /// instrument it is measuring, which is the mistake this split exists to
+    /// avoid: the three panes differ in what they *do* with a keydown, and
+    /// they all record the same way.
+    record(e) {
+      const isComposing = composing(e);
+      if (isComposing) {
+        pane.midComposition = true;
+        pane.caret = caretRect(winOf());
+      }
+      // What the save shortcut does *while composing*: the composition must
+      // not be cut short by it, so the text a save would take is the text from
+      // before, not half a character.
+      if (isComposing && save(e) && pane.saveDuringComposition === null) {
+        pane.saveDuringComposition = { typed: e.key, would_save: textOf(), cut_short: null };
+      }
+      return isComposing;
+    },
+    compositionStart() {
+      pane.midComposition = true;
+      pane.caret = caretRect(winOf());
+      publish();
+    },
+    compositionUpdate() {
+      pane.caret = caretRect(winOf());
+      publish();
+    },
+    compositionEnd() {
+      pane.midComposition = false;
+      publish();
+    },
+    changed(text) {
+      pane.committed = text;
+      if (pane.saveDuringComposition && pane.saveDuringComposition.cut_short === null) {
+        // A composition cut short by the save key would leave the text
+        // *shorter* than what was there when the key was pressed, or holding
+        // half a character. Either shows up as a length that moved backwards
+        // or a string that is not a prefix of the finished one.
+        pane.saveDuringComposition.cut_short = text.length < pane.saveDuringComposition.would_save.length;
+      }
+      pane.verdict = text === TYPED
+        ? "ok"
+        : (text.length >= TYPED.length ? "mismatch" : "unknown");
+      publish();
+    },
+  };
+}
+
+/// Pane A and pane B: CodeMirror 6, differing in the one thing this probe is
+/// about.
+///
+/// `broken: true` is the mutation, and it is **a parameter rather than a
+/// second page** so the two panes cannot drift apart in any other way: it is
+/// one arrangement with one thing changed, which is what makes B's red a
+/// statement about A.
+///
+/// ⚠️ **B's handler never consults `record`'s answer.** It calls `record` to
+/// fill the pane's readout, and then kills the event -- `preventDefault()` and
+/// `stopPropagation()` -- whether or not the key is part of a composition.
+/// That is the defect written the way it is actually written (a handler that
+/// forgot `isComposing`, not one that checks it and then ignores it), and
+/// making the action independent of the observation is what keeps the pane
+/// honest: a B that branched on `record` would be a B whose mutation could be
+/// disabled by the guard it is supposed to be missing.
+function makeCM6(parent, broken) {
+  const bundle = window.PolterEditText;
+  if (!bundle) {
+    // The bundle did not load. Said loudly rather than left as an empty box: a
+    // broken page and an empty editor look the same, and one of them is a
+    // finding.
+    parent.textContent = "codemirror.bundle.js did not load";
+    panes[parent.dataset.pane].verdict = "unknown";
+    publish();
+    return null;
+  }
+
+  const pane = panes[parent.dataset.pane];
+  const obs = observe(pane, () => view.state.doc.toString(), () => parent.ownerDocument.defaultView);
+  const view = bundle.makeEditor(parent, "", false, (text) => obs.changed(text));
+
+  // ⚠️ **A DOM listener, and on the element rather than through CodeMirror's
+  // extension API.** CodeMirror's own keymap already carries the guard, so a
+  // mutation made through the extension API could be quietly ignored by a
+  // version that moved the guard elsewhere; the DOM event is the one the guard
+  // protects against whichever layer reads it. Capture phase, so this runs
+  // before the editor's own handlers see the key.
+  if (broken) {
+    parent.addEventListener("keydown", (e) => {
+      obs.record(e);
+      e.preventDefault();
+      e.stopPropagation();
+    }, true);
+  } else {
+    // A: the arrangement the plugin ships. Nothing is added -- the platform's
+    // own event flow is what is being measured, and `record` only watches.
+    parent.addEventListener("keydown", (e) => { obs.record(e); }, true);
+  }
+  parent.addEventListener("compositionstart", () => obs.compositionStart());
+  parent.addEventListener("compositionupdate", () => obs.compositionUpdate());
+  parent.addEventListener("compositionend", () => obs.compositionEnd());
+  return view;
+}
+
+/// Pane C: the platform's own control, which every other reading is against.
+function makeNative(id) {
+  const ta = document.getElementById(id);
+  const pane = panes.C;
+  const obs = observe(pane, () => ta.value, () => window);
+  ta.addEventListener("keydown", (e) => { obs.record(e); }, true);
+  ta.addEventListener("compositionstart", () => obs.compositionStart());
+  ta.addEventListener("compositionupdate", () => obs.compositionUpdate());
+  ta.addEventListener("compositionend", () => obs.compositionEnd());
+  ta.addEventListener("input", () => obs.changed(ta.value));
+  return ta;
+}
+
+const viewA = makeCM6(document.getElementById("box-a"), false);
+const viewB = makeCM6(document.getElementById("box-b"), true);
+const textareaC = makeNative("ta-c");
+
+document.getElementById("reset").addEventListener("click", () => {
+  for (const label of Object.keys(panes)) Object.assign(panes[label], makePane(label));
+  if (textareaC) textareaC.value = "";
+  publish();
+});
+
+// What the test seat drives, if it wants to: the state, and a forced publish so
+// a reading can be taken without waiting for another keystroke.
+window.__polterImeProbe = { panes, TYPED, publish, viewA, viewB };
+publish();
+</script>
+</body>
+</html>

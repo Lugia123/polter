@@ -28,10 +28,22 @@ const ControlRoom = @import("ControlRoom.zig");
 pub const ResidentFacts = struct {
     key: []const u8,
 
+    /// Which of the two things this plugin is (`Plugin.Manifest.shape`).
+    ///
+    /// **No default, and that is the whole reason it is here.** A page plugin
+    /// has no `exec`, subscribes to nothing and is never started -- and every
+    /// sentence below would otherwise be true of it in the wrong way:
+    /// "subscribes to nothing, so it was not started" reads as a manifest
+    /// that forgot something, where the truth is that there is nothing to
+    /// start. Three `false` fields in a row that mean *fine* are exactly what
+    /// reads as *broken*, so the caller has to say which of the two it is.
+    shape: Plugin.Shape,
+
     enabled: bool,
 
     /// Whether its manifest subscribed to anything at all. A plugin that
     /// subscribed to nothing has nothing to be handed and is never started.
+    /// **Not a fault for a page plugin** -- see `shape`.
     declares_events: bool,
 
     /// Whether it subscribed to `chat` and named no groups, which is a
@@ -67,12 +79,23 @@ const nothing_started =
 /// What `plugin_test` says about a plugin -- see `mcp.md` §2.5.
 ///
 /// Nothing is started to produce this, and the sentence says so. Every
-/// plugin is resident now; a second copy would be a second subscriber
-/// handed everything twice, and the protocol has no dry run to offer
-/// instead. So the answer to "does it work" is the running copy's own
-/// account of itself.
+/// **resident** plugin is already running what there is to run; a second
+/// copy would be a second subscriber handed everything twice, and the
+/// protocol has no dry run to offer instead. So the answer to "does it work"
+/// is the running copy's own account of itself.
+///
+/// A page plugin has neither half of that: no process to be a second copy
+/// of, and no events, so `nothing_started` is not appended for one. See
+/// below.
 pub fn residentStatus(alloc: Allocator, facts: ResidentFacts) Allocator.Error![]const u8 {
-    return strayFirst(alloc, facts, try sentence(alloc, facts, nothing_started));
+    // **`nothing_started` is for a resident plugin, and is appended to none
+    // other.** It argues why no *second copy* is started -- "every plugin is
+    // resident, a second copy would subscribe and be handed every event all
+    // over again" -- and a sentence that has just called this plugin a
+    // preview would be contradicted two words later by its own tail. A page
+    // plugin is not a second copy of anything: there is nothing to copy.
+    const tail = if (facts.shape == .page) "" else nothing_started;
+    return strayFirst(alloc, facts, try sentence(alloc, facts, tail));
 }
 
 /// `why`, with what is said of a plugin this release did not ship put in
@@ -103,7 +126,31 @@ pub fn residentNote(alloc: Allocator, facts: ResidentFacts) Allocator.Error![]co
         .feeding, .starting => true,
         .backing_off, .dormant, .stopped => false,
     } else false;
-    const why = if (running) try alloc.dupe(u8, "") else try sentence(alloc, facts, "");
+
+    // **A page plugin that is switched on has nothing to explain, and this
+    // is not a nicety: the hosts read a non-empty `note` as a fault.** Both
+    // dots go to their error state on one -- `SettingsPluginRules.pluginDot`
+    // returns `.failing` for `!status.note.isEmpty`, and
+    // `settings-shell/src/plugins.rs::dot` returns `Dot::Error` for the
+    // same -- so handing a preview the "is a preview, nothing is started for
+    // it" sentence would put a red dot on the settings row of a plugin that
+    // is doing exactly what it is for. **Measured, not read**: this file's
+    // own `2644:` test failed on 2026-11-02 with that sentence where the
+    // empty string was expected, before this branch existed.
+    //
+    // The `.page` branch in `sentence` is not the one for here: that one
+    // answers `plugin_test` ("does it work"), where the question deserves an
+    // answer. This one answers "why is nothing happening", and the answer for
+    // a page plugin is that nothing needs to.
+    //
+    // `stray` is still said, by `strayFirst` below: that is about where the
+    // plugin came from rather than about what it is. So is being switched
+    // off -- gated on `enabled` for the same reason, and `sentence`'s own
+    // first branch would have said it anyway.
+    const why = if (running or (facts.shape == .page and facts.enabled))
+        try alloc.dupe(u8, "")
+    else
+        try sentence(alloc, facts, "");
 
     // A plugin this release did not ship is said first, whether or not it is
     // working: it is loaded, and the person did not choose that (task 1683).
@@ -174,6 +221,16 @@ pub fn residentNoteSay(alloc: Allocator, facts: ResidentFacts) Allocator.Error!?
     // the rest after it.
     if (facts.stray) |path| return try say(alloc, .stray, &.{path});
     if (!facts.enabled) return try say(alloc, .switched_off, &.{});
+
+    // **A page plugin is not waiting to be handed anything.** It has no
+    // events, no process and no note to be given: the host loads its page
+    // when somebody opens a file it claims. Said as nothing at all rather
+    // than as "subscribes to nothing", which is the sentence for a resident
+    // plugin whose manifest is missing something. Which of the two it is
+    // comes from the caller, because nothing in these facts can tell them
+    // apart.
+    if (facts.shape == .page) return null;
+
     if (!facts.declares_events) return try say(alloc, .subscribes_to_nothing, &.{});
     if (facts.groupless) return try say(alloc, .no_groups, &.{});
     const st = facts.status orelse {
@@ -200,6 +257,17 @@ fn sentence(
         alloc,
         "{s} is installed but switched off, so nothing is being handed to it. " ++
             "plugin_configure with enabled: true switches it on.{s}",
+        .{ facts.key, tail },
+    );
+
+    // A page plugin that is switched on is doing exactly what it does. The
+    // sentence a resident plugin gets here -- "subscribes to nothing, so it
+    // was not started" -- is true of it in every word and wrong in what it
+    // means, which is why `shape` exists (`Plugin.Manifest.shape`).
+    if (facts.shape == .page) return std.fmt.allocPrint(
+        alloc,
+        "{s} is a preview: the host loads its page when somebody opens a file " ++
+            "it claims, and nothing is started for it.{s}",
         .{ facts.key, tail },
     );
 
@@ -805,7 +873,7 @@ test "the hover says the same branch as the note, in a person's words, and only 
     defer arena.deinit();
     const a = arena.allocator();
 
-    const base: ResidentFacts = .{ .key = "codex", .enabled = true, .declares_events = true, .log_open = true, .stray = null };
+    const base: ResidentFacts = .{ .key = "codex", .shape = .resident, .enabled = true, .declares_events = true, .log_open = true, .stray = null };
 
     // Off: a sentence for the switch, and no tool in it.
     var facts = base;
@@ -852,6 +920,7 @@ test "a plugin this release did not ship is said first, working or not, with its
 
     // Running and well, yet stray: the note is not empty, and says where.
     var facts: ResidentFacts = .{
+        .shape = .resident,
         .key = "gemini",
         .enabled = true,
         .declares_events = true,
@@ -903,11 +972,12 @@ test "a plugin is never started to test it" {
     // whole answer to "why did you not just run it": it has to survive an
     // edit to any single branch.
     const shapes = [_]ResidentFacts{
-        .{ .key = "chat-archive", .enabled = false, .declares_events = true, .log_open = true, .stray = null },
-        .{ .key = "chat-archive", .enabled = true, .declares_events = false, .log_open = true, .stray = null },
-        .{ .key = "chat-archive", .enabled = true, .declares_events = true, .log_open = false, .stray = null },
-        .{ .key = "chat-archive", .enabled = true, .declares_events = true, .log_open = true, .stray = null },
+        .{ .key = "chat-archive", .shape = .resident, .enabled = false, .declares_events = true, .log_open = true, .stray = null },
+        .{ .key = "chat-archive", .shape = .resident, .enabled = true, .declares_events = false, .log_open = true, .stray = null },
+        .{ .key = "chat-archive", .shape = .resident, .enabled = true, .declares_events = true, .log_open = false, .stray = null },
+        .{ .key = "chat-archive", .shape = .resident, .enabled = true, .declares_events = true, .log_open = true, .stray = null },
         .{
+            .shape = .resident,
             .key = "chat-archive",
             .enabled = true,
             .declares_events = true,
@@ -916,6 +986,7 @@ test "a plugin is never started to test it" {
             .status = .{ .state = .feeding, .cursor = 1049, .failures = 0 },
         },
         .{
+            .shape = .resident,
             .key = "chat-archive",
             .enabled = true,
             .declares_events = true,
@@ -924,6 +995,7 @@ test "a plugin is never started to test it" {
             .status = .{ .state = .starting, .cursor = 0, .failures = 0 },
         },
         .{
+            .shape = .resident,
             .key = "chat-archive",
             .enabled = true,
             .declares_events = true,
@@ -932,6 +1004,7 @@ test "a plugin is never started to test it" {
             .status = .{ .state = .backing_off, .cursor = 12, .failures = 2 },
         },
         .{
+            .shape = .resident,
             .key = "chat-archive",
             .enabled = true,
             .declares_events = true,
@@ -940,6 +1013,7 @@ test "a plugin is never started to test it" {
             .status = .{ .state = .dormant, .cursor = 0, .failures = 9 },
         },
         .{
+            .shape = .resident,
             .key = "chat-archive",
             .enabled = true,
             .declares_events = true,
@@ -966,6 +1040,60 @@ test "a plugin is never started to test it" {
     try testing.expect(std.mem.indexOf(u8, feeding, "1049") != null);
 }
 
+// Task 2644. A preview plugin is not a plugin waiting to be started: it has
+// no process, no events, and nothing to be handed. Every sentence written
+// for a resident plugin is *true* of it and wrong in what it means, so the
+// three ways one can be described are all measured here.
+test "2644: a page plugin is described as a preview, and never as a resident that forgot" {
+    const alloc = testing.allocator;
+    const page: ResidentFacts = .{
+        .key = "edit-text",
+        .shape = .page,
+        // Every field a resident plugin would be broken by, and all of them
+        // are its ordinary state.
+        .enabled = true,
+        .declares_events = false,
+        .log_open = true,
+        .stray = null,
+    };
+
+    // 1. `plugin_test`'s answer. **The tail that argues about second copies
+    // must not be on it**: that paragraph opens "every plugin is resident",
+    // which is the opposite of what the head of the same sentence just said.
+    const said = try residentStatus(alloc, page);
+    defer alloc.free(said);
+    try testing.expect(std.mem.indexOf(u8, said, "is a preview") != null);
+    try testing.expect(std.mem.indexOf(u8, said, "nothing is started for it") != null);
+    try testing.expect(std.mem.indexOf(u8, said, "every plugin is resident") == null);
+    try testing.expect(std.mem.indexOf(u8, said, "second copy") == null);
+
+    // 2. `plugin_list`'s note: empty. A note saying "subscribes to nothing,
+    // so it was not started" would read as a manifest that forgot something,
+    // where the truth is that there is nothing to start -- and the host's dot
+    // reads a non-empty note as a fault (`SettingsPluginRules.pluginDot`).
+    const note = try residentNote(alloc, page);
+    defer alloc.free(note);
+    try testing.expectEqualStrings("", note);
+    try testing.expect(try residentNoteSay(alloc, page) == null);
+
+    // 3. The same plugin with `shape` left as the other one, to show the
+    // branch is what says it and not the fields: this is the sentence a page
+    // plugin must never get.
+    var resident = page;
+    resident.shape = .resident;
+    const wrong = try residentNote(alloc, resident);
+    defer alloc.free(wrong);
+    try testing.expect(std.mem.indexOf(u8, wrong, "subscribes to nothing") != null);
+
+    // 4. Switching one off is still said: that is about the person's switch
+    // and not about what the plugin is, so the page branch comes after it.
+    var off = page;
+    off.enabled = false;
+    const offnote = try residentNote(alloc, off);
+    defer alloc.free(offnote);
+    try testing.expect(std.mem.indexOf(u8, offnote, "switched off") != null);
+}
+
 test "a plugin that is switched off is reported as switched off" {
     const alloc = testing.allocator;
 
@@ -974,6 +1102,7 @@ test "a plugin that is switched off is reported as switched off" {
     // saying "it is not running" without saying why would send the reader
     // looking in Polter's log for something that is not there.
     const facts: ResidentFacts = .{
+        .shape = .resident,
         .key = "chat-archive",
         .enabled = false,
         .declares_events = false,
@@ -1003,6 +1132,7 @@ test "a plugin that would not start is not reported as running" {
     // failed. This used to be a warning nobody reads, and the listing said
     // nothing at all -- which reads as "fine".
     const stuck: ResidentFacts = .{
+        .shape = .resident,
         .key = "chat-archive",
         .enabled = true,
         .declares_events = true,
@@ -1020,6 +1150,7 @@ test "a plugin that would not start is not reported as running" {
     // and a sentence repeating it on every plugin that works is noise.
     for ([_]Resident.State{ .feeding, .starting }) |state| {
         const quiet = try residentNote(alloc, .{
+            .shape = .resident,
             .key = "chat-archive",
             .enabled = true,
             .declares_events = true,
@@ -1035,6 +1166,7 @@ test "a plugin that would not start is not reported as running" {
     // `state` is the only clue makes the reader look up what `dormant` means.
     for ([_]Resident.State{ .backing_off, .dormant, .stopped }) |state| {
         const said = try residentNote(alloc, .{
+            .shape = .resident,
             .key = "chat-archive",
             .enabled = true,
             .declares_events = true,

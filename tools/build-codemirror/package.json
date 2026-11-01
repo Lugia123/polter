@@ -1,0 +1,24 @@
+{
+  "name": "polter-build-codemirror",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pins and bundles the CodeMirror 6 build that plugins/edit-text ships.",
+  "dependencies": {
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/search": "6.7.2",
+    "@codemirror/autocomplete": "6.20.4",
+    "@codemirror/lang-javascript": "6.2.5",
+    "@codemirror/lang-json": "6.0.2",
+    "@codemirror/lang-css": "6.3.1",
+    "@codemirror/lang-html": "6.4.12",
+    "@codemirror/lang-markdown": "6.5.2",
+    "@codemirror/legacy-modes": "6.5.5",
+    "@lezer/highlight": "1.2.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
