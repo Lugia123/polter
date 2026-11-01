@@ -16,6 +16,7 @@
     "macos/Tests/Projects",
     "macos/Tests/Squads",
     "macos/Tests/Splits",
+    "macos/Sources/Features/Splits",
     "macos/Sources/Features/Highlight",
     "macos/Sources/Features/Preview",
     "macos/Tests/Preview",
@@ -106,6 +107,7 @@
       "macos/Sources/Features/Highlight/PolterHighlightViews.swift",
       "macos/Sources/Features/ReopenTab/ReopenTabEntry.swift",
       "macos/Sources/Features/Splits/SplitTree.swift",
+      "macos/Sources/Features/Splits/SplitViewLayout.swift",
       "macos/Sources/Features/Splits/PolterArrangePlan.swift",
       "macos/Sources/Features/Splits/PolterPaneTabRules.swift",
       "macos/Sources/Features/Splits/PolterCloseCircle.swift",
@@ -193,6 +195,18 @@
       "macos/Sources/Features/Squads/SquadModels.swift"
     ],
     "out": [
+      {
+        "path": "macos/Sources/Features/Splits/SplitView.swift",
+        "why": "draws the split view: its `body` builds `GeometryReader`+`ZStack` and its initialiser takes two `@ViewBuilder` closures, so a package would have to compile SwiftUI views whose leaves are real terminals in the app; the arithmetic and the constants it reads are `SplitViewLayout.swift`, which is in and is held by `SplitViewDragTests`. Listed here rather than left unplaced because `macos/Sources/Features/Splits` is a watched directory as of task 2646, and being watched is what makes an omission a failure"
+      },
+      {
+        "path": "macos/Sources/Features/Splits/SplitView.Divider.swift",
+        "why": "the divider's own view: it is a SwiftUI `ZStack` of two `Rectangle`s and an `NSView` cursor rectangle, and it needs `BackportPointerStyle`/`Backport.pointerStyle`, which is in the package but only as part of a file whose other half is not. It holds **no arithmetic at all** -- the sizes it is given come from `SplitView`, which passes `SplitViewLayout.visibleSize`/`invisibleSize`, and the seam it is placed on is `SplitViewLayout.splitterPoint`"
+      },
+      {
+        "path": "macos/Sources/Features/Splits/TabStripDragOverlay.swift",
+        "why": "moves a pane onto another window's tab strip: it reads `Ghostty.SurfaceView`, `BaseTerminalController` and `WindowTabChipSlide`, none of which the package compiles, and it walks AppKit's tab bar (`NSTabButton` descendants) which needs a window with a real title bar. What it decides is `TabStripDrop.swift`, which is in"
+      },
       {
         "path": "macos/Sources/Features/Plugins/PluginSettings.swift",
         "why": "reads a plugin's settings file (the user's, else the shipped settings.json) and needs SettingsRules.pluginMissing, which is in the package but only as a part of SettingsRules.swift; a plugin's settings are also read by the core, and the file a run of the package would need is one a test sets up by hand -- PluginSettingsTests.swift is outside the watched directories and is not in"
@@ -335,6 +349,7 @@
       "macos/Tests/Roles/OfficialWhyTests.swift",
       "macos/Tests/Splits/TabIntoPaneTests.swift",
       "macos/Tests/Splits/TerminalSplitDropZoneTests.swift",
+      "macos/Tests/Splits/SplitViewDragTests.swift",
       "macos/Tests/CommandPaletteAliasTests.swift",
       "macos/Tests/PluginChoiceLabelTests.swift",
       "macos/Tests/PluginInterfaceLanguageTests.swift",
