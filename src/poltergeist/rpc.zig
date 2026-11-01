@@ -11753,7 +11753,7 @@ fn postMentioning(
     //
     // **Nobody listening, nothing typed** (#1533). A mention is typed with a
     // return, and at a bare shell -- an agent that has exited leaves one --
-    // the shell runs it: `zsh: no matches found: [poltergeist]` on every
+    // the shell runs it: `zsh: no matches found: [polter]` on every
     // try, and with a `;` in the message, the rest of it as a command. The
     // same gate `task_assign` has (`NoAgentThere`), asked here rather than
     // in the host so that the host is never handed the line at all. Not
@@ -15918,14 +15918,14 @@ test "notices hands back what is waiting and clears it" {
     defer b.deinit();
     try b.addSupervisor(boss);
 
-    var fake: FakeHost = .{ .notices = "[poltergeist] 0x2222 quiet 90s" };
+    var fake: FakeHost = .{ .notices = "[polter] 0x2222 quiet 90s" };
     const host = fake.host();
 
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
     const res = try dispatch(arena.allocator(), &b, host, term(boss), .notices);
-    try testing.expectEqualStrings("[poltergeist] 0x2222 quiet 90s", res.text);
+    try testing.expectEqualStrings("[polter] 0x2222 quiet 90s", res.text);
     try testing.expectEqual(@as(usize, 1), fake.drained);
 }
 
@@ -20439,7 +20439,7 @@ test "mention: the named terminal is typed the message, one line, names frozen i
 
     // And the line typed is the record's text, not a paraphrase of it.
     try testing.expectEqualStrings(
-        "[poltergeist] build #1 @1111 boss: @2222 wA run the build",
+        "[polter] build #1 @1111 boss: @2222 wA run the build",
         typedInto(&fake, worker).?,
     );
     try testing.expectEqual(@as(usize, 1), fake.typed_count);

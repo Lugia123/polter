@@ -482,7 +482,7 @@ read the screen and has no opinion about what the terminal is doing. Reports
 collect in a box, one entry per terminal however often it reported, handed to
 you on an interval the user sets:
 
-    [poltergeist] 0x0000000000002222 quiet 185s, 0x0000000000004444 back at work
+    [polter] 0x0000000000002222 quiet 185s, 0x0000000000004444 back at work
 
 `notices` hands you the same box on demand and is never held back — choosing
 to look is not an interruption, so call it when you finish something.
@@ -496,7 +496,7 @@ unchanged but not silent, and is alive. One that has stopped is both.
 The same line can carry one more clause, about a **group** you are the
 supervisor of rather than about a screen:
 
-    [poltergeist] 0x0000000000002222 quiet 185s · build: #93 untouched 49h, nothing said for 3h40m
+    [polter] 0x0000000000002222 quiet 185s · build: #93 untouched 49h, nothing said for 3h40m
 
 It arrives in the same box, on the same interval, because that interval is
 the one number the user set to say how often you may be interrupted at all.
@@ -514,7 +514,7 @@ After a restart that is every group, until a supervisor takes one up.
 
 **A second clock, not about the screen.** A line can also carry
 
-    [poltergeist] 0x0000000000002222 no tool call 22m (screen changed 3s ago)
+    [polter] 0x0000000000002222 no tool call 22m (screen changed 3s ago)
 
 which is how long since that terminal's agent last called a Polter tool. It
 exists because **a screen that keeps changing is not proof of work**: a CLI
@@ -551,7 +551,7 @@ the middle of a turn). On the control room the row reads "Agent left".
 **The agent's own word, when it has hooks.** A worker started from a role
 whose CLI supports it reports on itself, and then the line can say
 
-    [poltergeist] 0x0000000000002222 turn ended 12s ago: "Fixed #845, full suite …", 0x0000000000004444 failed rate_limit
+    [polter] 0x0000000000002222 turn ended 12s ago: "Fixed #845, full suite …", 0x0000000000004444 failed rate_limit
 
 and `awaiting approval Bash [state_at_ms=… event_at_ms=… answer=allowed]: …`,
 `awaiting input idle_prompt`. A CLI with no hooks can say the first of these
@@ -682,7 +682,7 @@ looks. If it is your worker, watch it.
 
 The line carries what you need to act:
 
-    [poltergeist] 0x0000000000002222 awaiting approval Bash [state_at_ms=1760000000000 event_at_ms=1760000000350 answer=allowed]: rm -rf build/
+    [polter] 0x0000000000002222 awaiting approval Bash [state_at_ms=1760000000000 event_at_ms=1760000000350 answer=allowed]: rm -rf build/
 
 `answer=` is whether you may: `allowed`, `off` (the person switched it off
 for that terminal, or for all of them), `shielded` (out of reach of every

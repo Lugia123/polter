@@ -37,7 +37,7 @@ group_post(group, text, mention: ["0x2528…", "0xf95a…"])
 
 **只打给有 agent 在场的终端**（#1533）：`agentPresent`，只认主连接（#1498）。
 agent 退出后终端里是裸 shell，打字加回车会被当命令执行——真机上每次都是
-`zsh: no matches found: [poltergeist]`，消息里带 `;` 时后半句会单独执行。不在场
+`zsh: no matches found: [polter]`，消息里带 `;` 时后半句会单独执行。不在场
 就不打字，那一格 `delivered:false`、`code:"NoAgent"`，消息照常入群。判断在
 `rpc.postMentioning` 里做，不交给宿主，所以宿主根本拿不到那一行。主管自己用
 `terminal_send` 往裸 shell 里打字不受影响——那是那个工具的本意。
@@ -183,7 +183,7 @@ waking(name, id, role) = switch (role) {
 发帖那一刻的值。改写的写成
 `@<主管> <title> (↪ 原点名 @<B> <B title>：<A title> 想让 <B title> 做下面这件事，请主管判断后转发)`。
 
-**敲进终端的一行**：`[poltergeist] <群> #<seq> @<作者> <作者 title>: <群记录里那份正文>`。
+**敲进终端的一行**：`[polter] <群> #<seq> @<作者> <作者 title>: <群记录里那份正文>`。
 换行折成空格，内容与群记录是同一份，冻结在同一刻（`Chat.formatDelivery`）。
 
 **顺序**（`App.chatPost`）：先入群，再逐个直投，最后跑通知扫描。直投成功的

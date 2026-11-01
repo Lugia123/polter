@@ -471,7 +471,7 @@ Agent 的稀缺资源是**上下文**，不是 CPU。而：
 worker**，每个 worker 收到通知后调一次 `group_read` 把整条读进上下文。一条长帖
 的实际代价是 **3 次打断 + 3 份全文**。
 
-其中一个 worker 的屏幕上，`[poltergeist] N new messages` 出现了九次以上，而它在
+其中一个 worker 的屏幕上，`[polter] N new messages` 出现了九次以上，而它在
 那段时间里**一个文件都还没写**——花了 11 分钟、44.5k tokens，相当一部分是在读
 总管的话。
 

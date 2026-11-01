@@ -3686,7 +3686,7 @@ fn takeSome(self: *Bus, to: Id, now_ms: u64, buf: []u8, how: Take, peers: Peers,
     // Written into a fixed buffer with a running end, because the whole
     // point is to produce one line for one injection.
     var w: std.Io.Writer = .fixed(buf);
-    w.writeAll("[poltergeist]") catch return null;
+    w.writeAll("[polter]") catch return null;
 
     var it = self.entries.iterator();
     while (it.next()) |kv| {
@@ -6600,7 +6600,7 @@ test "hooks: turn ended goes in the box with the start of the answer" {
     var buf: [255]u8 = undefined;
     const line = b.drain(boss, 13_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 turn ended 12s ago: \"已修好 #845，全量 104/104 second line\"",
+        "[polter] 0x0000000000002222 turn ended 12s ago: \"已修好 #845，全量 104/104 second line\"",
         line,
     );
 }
@@ -6635,7 +6635,7 @@ test "hooks: failed and awaiting approval read as themselves" {
     _ = try b.agentEvent(worker, failed, 0);
     var buf: [255]u8 = undefined;
     const one = b.drain(boss, 0, &buf, .none) orelse return error.TestExpectedNotice;
-    try testing.expectEqualStrings("[poltergeist] 0x0000000000002222 failed rate_limit", one);
+    try testing.expectEqualStrings("[polter] 0x0000000000002222 failed rate_limit", one);
 
     var ask = hookEv(.awaiting_approval);
     ask.detail = "Bash";
@@ -6643,7 +6643,7 @@ test "hooks: failed and awaiting approval read as themselves" {
     _ = try b.agentEvent(worker, ask, 0);
     const two = b.drain(boss, 0, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 awaiting approval Bash [state_at_ms=0 event_at_ms=0 answer=allowed]: zig build test",
+        "[polter] 0x0000000000002222 awaiting approval Bash [state_at_ms=0 event_at_ms=0 answer=allowed]: zig build test",
         two,
     );
 }
@@ -6662,7 +6662,7 @@ test "1777: retrying is its own state, said once, its clock where the retrying b
     try testing.expectEqual(AgentState.retrying, b.agentOf(worker).state);
     const one = b.drain(boss, 31_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 retrying an API error for 30s: Rate Limited (attempt 1)",
+        "[polter] 0x0000000000002222 retrying an API error for 30s: Rate Limited (attempt 1)",
         one,
     );
 
@@ -6703,7 +6703,7 @@ test "hooks: a worker stopped on a question is handed over at once, inside the i
     // The two moments are the ones `promptStanding` holds a later answer
     // to, under the names `terminal_answer_prompt` takes them by.
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 awaiting approval Bash [state_at_ms=10000 event_at_ms=10000 answer=allowed]: rm -rf dist",
+        "[polter] 0x0000000000002222 awaiting approval Bash [state_at_ms=10000 event_at_ms=10000 answer=allowed]: rm -rf dist",
         line,
     );
     try testing.expect(b.promptStanding(worker, 10_000, 10_000, 10_000, null));
@@ -6781,7 +6781,7 @@ test "hooks: waiting for an answer is urgent too, and a turn that merely ended i
     asks.detail = "which branch?";
     _ = try b.agentEvent(worker, asks, 3_000);
     const line = b.drainIfDue(boss, 3_000, &buf, .none) orelse return error.TestExpectedNotice;
-    try testing.expectEqualStrings("[poltergeist] 0x0000000000002222 awaiting input which branch?", line);
+    try testing.expectEqualStrings("[polter] 0x0000000000002222 awaiting input which branch?", line);
 }
 
 fn toolDone(tool: []const u8) AgentEvent.Event {
@@ -7033,7 +7033,7 @@ test "hooks: the notice about a prompt says when answering it is not open" {
     _ = try b.agentEvent(worker, ask, 7);
     const line = b.drain(boss, 7, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 awaiting approval Edit [state_at_ms=7 event_at_ms=7 answer=off]",
+        "[polter] 0x0000000000002222 awaiting approval Edit [state_at_ms=7 event_at_ms=7 answer=off]",
         line,
     );
 }
@@ -7510,7 +7510,7 @@ test "hooks: live and in a turn, a still screen is reported with how long the tu
     const line = b.drain(boss, 3 * std.time.ms_per_min, &buf, .none) orelse
         return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 quiet 60s (in turn 3m)",
+        "[polter] 0x0000000000002222 quiet 60s (in turn 3m)",
         line,
     );
 }
@@ -7523,7 +7523,7 @@ test "hooks: live and idle, or no hooks at all, a still screen is reported as be
     _ = b.report(worker, quiet(60_000), 60_000);
     var buf: [255]u8 = undefined;
     const idle = b.drain(boss, 60_000, &buf, .none) orelse return error.TestExpectedNotice;
-    try testing.expectEqualStrings("[poltergeist] 0x0000000000002222 quiet 60s", idle);
+    try testing.expectEqualStrings("[polter] 0x0000000000002222 quiet 60s", idle);
 
     // `expected` is not `live`: until the hooks have spoken, nothing they
     // did not say explains anything.
@@ -7574,7 +7574,7 @@ test "hooks 879: a screen that moved after awaiting approval, and then went stil
 
     const line = b.drain(boss, 90_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 quiet 60s (last event: awaiting approval 89s ago)",
+        "[polter] 0x0000000000002222 quiet 60s (last event: awaiting approval 89s ago)",
         line,
     );
 }
@@ -8059,7 +8059,7 @@ test "#62: a turn running a tool and a turn with nothing running read differentl
     try testing.expect(b.considerCalls(t));
     const running = b.drain(boss, t, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 no tool call 15m (in turn 15m, Bash running 14m)",
+        "[polter] 0x0000000000002222 no tool call 15m (in turn 15m, Bash running 14m)",
         running,
     );
 
@@ -8071,7 +8071,7 @@ test "#62: a turn running a tool and a turn with nothing running read differentl
     try testing.expect(b.considerCalls(2 * t));
     const idle = b.drain(boss, 2 * t, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 no tool call 30m (in turn 30m, no tool running for 14m)",
+        "[polter] 0x0000000000002222 no tool call 30m (in turn 30m, no tool running for 14m)",
         idle,
     );
 }
@@ -8094,7 +8094,7 @@ test "#62: an agent that does not report its tools is not said to have none runn
     try testing.expect(b.considerCalls(t));
     const line = b.drain(boss, t, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 no tool call 15m (in turn 15m)",
+        "[polter] 0x0000000000002222 no tool call 15m (in turn 15m)",
         line,
     );
 }
@@ -8194,7 +8194,7 @@ test "#63: a terminal with no agent in it says so on the quiet and no tool call 
     _ = b.report(worker, quiet(60_000), 180_000);
     const gone = b.drain(boss, 180_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 quiet 60s (no agent in it)",
+        "[polter] 0x0000000000002222 quiet 60s (no agent in it)",
         gone,
     );
 
@@ -8207,7 +8207,7 @@ test "#63: a terminal with no agent in it says so on the quiet and no tool call 
     try testing.expect(b2.considerCalls(t));
     const silent = b2.drain(boss, t, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 no tool call 15m (no agent in it)",
+        "[polter] 0x0000000000002222 no tool call 15m (no agent in it)",
         silent,
     );
 }
@@ -8231,7 +8231,7 @@ test "1656: a title that says it waits puts awaiting approval in the box, said a
 
     const line = b.drain(boss, 5_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 awaiting approval (title says so) [state_at_ms=4000 event_at_ms=4000 answer=allowed]: " ++ codex_wait,
+        "[polter] 0x0000000000002222 awaiting approval (title says so) [state_at_ms=4000 event_at_ms=4000 answer=allowed]: " ++ codex_wait,
         line,
     );
 }
@@ -8306,7 +8306,7 @@ test "1682: a box on the screen, read while a tool runs, is a wait said as the s
 
     const line = b.drain(boss, 5_000, &buf, .none) orelse return error.TestExpectedNotice;
     try testing.expectEqualStrings(
-        "[poltergeist] 0x0000000000002222 awaiting approval (screen says so) [state_at_ms=4000 event_at_ms=4000 answer=allowed]: " ++ agy_box,
+        "[polter] 0x0000000000002222 awaiting approval (screen says so) [state_at_ms=4000 event_at_ms=4000 answer=allowed]: " ++ agy_box,
         line,
     );
 

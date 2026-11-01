@@ -4565,7 +4565,7 @@ fn showPoltergeistAlert(self: *Surface, text: []const u8) !void {
 
         // **On a line of its own.** It used to start wherever the cursor
         // was, which at a prompt is after whatever the person has typed:
-        // `echo half-a-line[poltergeist] 0x… awaiting approval …`, read on
+        // `echo half-a-line[polter] 0x… awaiting approval …`, read on
         // the Windows machine (2026-10-13) as a notice typed into a draft.
         // It was not typed -- nothing here reaches the program's input --
         // but glued to the line it could not be told apart from text that

@@ -2414,7 +2414,7 @@ pub fn formatNotice(
 ) std.fmt.BufPrintError![]u8 {
     return std.fmt.bufPrint(
         buf,
-        "[poltergeist] {d} new message{s} in \"{s}\". Read them with group_read.",
+        "[polter] {d} new message{s} in \"{s}\". Read them with group_read.",
         .{ count, if (count == 1) "" else "s", name },
     );
 }
@@ -2454,7 +2454,7 @@ pub fn formatDelivery(
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
     const w = &out.writer;
-    w.print("[poltergeist] {s} #{d} ", .{ group, seq }) catch return error.OutOfMemory;
+    w.print("[polter] {s} #{d} ", .{ group, seq }) catch return error.OutOfMemory;
     writeName(w, from, from_title) catch return error.OutOfMemory;
     w.writeAll(": ") catch return error.OutOfMemory;
     for (stored) |c| w.writeByte(switch (c) {
@@ -3864,7 +3864,7 @@ test "a mention typed into a terminal is one line with the names frozen in it" {
 
     const line = try formatDelivery(testing.allocator, "build", 7, 0x1111, "boss", "@2222 w\nrun it\r\nnow");
     defer testing.allocator.free(line);
-    try testing.expectEqualStrings("[poltergeist] build #7 @1111 boss: @2222 w run it  now", line);
+    try testing.expectEqualStrings("[polter] build #7 @1111 boss: @2222 w run it  now", line);
     try testing.expect(std.mem.indexOfScalar(u8, line, '\n') == null);
 }
 

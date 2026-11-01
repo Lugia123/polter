@@ -217,11 +217,11 @@ agent: {
 **送到总管**：沿用 notices 盒子（`Bus.zig` 的 `take()`），新增一种 entry，与屏幕静止并列：
 
 ```
-[poltergeist] 0x…2222 turn ended 12s ago: "已修好 #845，全量 104/104 …" · 0x…4444 failed rate_limit · 0x…6666 awaiting approval Bash: zig build test …
+[polter] 0x…2222 turn ended 12s ago: "已修好 #845，全量 104/104 …" · 0x…4444 failed rate_limit · 0x…6666 awaiting approval Bash: zig build test …
 ```
 
 最终答案在 notices 里最多放前 120 字符，**且受整行长度限制**：notices 一行经
-`apprt.surface.Message` 送出，缓冲区是 255 字节，含 `[poltergeist]` 与每个 18 字符的 id；
+`apprt.surface.Message` 送出，缓冲区是 255 字节，含 `[polter]` 与每个 18 字符的 id；
 120 个中文字符就是 360 字节，一条都放不下。所以写进 `take()` 时按这一行剩余空间在 UTF-8 边界截断并加 `…`，
 不扩大 Message。全文由 `terminal_list` 之外的一个新只读工具
 `terminal_turn(id)` 取（最后一次 `turn_ended` 的全文、时间、session_id），**上限 16 KB**，超出截断并说明。
