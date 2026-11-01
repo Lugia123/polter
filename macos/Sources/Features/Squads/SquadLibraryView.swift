@@ -822,7 +822,7 @@ struct SquadLibraryView: View {
                     base: role.choice(for: cli) ?? RoleCliChoice(cli: cli),
                     update: { change in
                         editor.updateMember(member.alias) { squad in
-                            SquadCliOptions.setChoice(cli, role: role, into: &squad.override) { $0 = change }
+                            SquadCliOptions.setChoice(cli, role: role, into: &squad.override, change)
                         }
                     },
                     reset: member.alias + "/" + cli)

@@ -678,7 +678,7 @@ struct RoleLibraryView: View {
                                         choice: choice,
                                         base: choice,
                                         update: { change in
-                                            editor.updateChoice(choice.cli) { $0 = change }
+                                            editor.updateChoice(choice.cli, change)
                                         },
                                         reset: editor.original?.key ?? "")
                                 }
@@ -1310,7 +1310,7 @@ struct RoleCliStartEditor: View {
     /// them growing a second copy of the rule.
     var base: RoleCliChoice
     /// Written back by the draft's owner.
-    var update: (inout RoleCliChoice) -> Void
+    var update: ((inout RoleCliChoice) -> Void) -> Void
     /// Changes when the thing being edited changes underneath: another
     /// role, another seat, or a reload. The role page hands it the role it
     /// came from and the seat page the squad and the seat, so that the
@@ -1451,7 +1451,7 @@ struct RoleCliItemsEditor: View {
     var kind: AgentCliItem.Kind
     /// What each switch shows.
     var selection: RoleSelection
-    var updateSelection: (inout RoleSelection) -> Void
+    var updateSelection: ((inout RoleSelection) -> Void) -> Void
     /// Whether "items installed later" is the person's to set here. On a
     /// seat it is not: the core keeps that default with the role
     /// (`squad.setSelection` never takes it from the squad), so the switch
@@ -1574,7 +1574,7 @@ struct RoleItemSection: View {
     /// The one set (task 1677), whichever CLI an item is in. Handed in for
     /// `RoleCliItemsEditor`'s reason: a seat is not a `RoleLibraryEditor`.
     var selection: RoleSelection
-    var update: (inout RoleSelection) -> Void
+    var update: ((inout RoleSelection) -> Void) -> Void
     /// See `RoleCliItemsEditor.defaultLocked`.
     var defaultLocked = false
 
