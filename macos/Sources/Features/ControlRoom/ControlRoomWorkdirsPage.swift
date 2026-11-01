@@ -77,7 +77,7 @@ struct ControlRoomWorkdirsPage: View {
             left
             right
         }
-        .background(theme.windowBase.color)
+        .background(theme.terminalBackground.color)
         .onAppear { model.refreshWorkdirs() }
     }
 
@@ -259,7 +259,7 @@ struct ControlRoomWorkdirsPage: View {
             RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row))
                 .fill(selected
                       ? theme.text.color.opacity(Tile.selectedGroundAlpha)
-                      : theme.windowBase.color)
+                      : Color.clear)
         )
         // The bar down the left edge of the selected row, sized and placed
         // as the design places it (`files.css`, `.tr.sel::after`: 3 wide,
