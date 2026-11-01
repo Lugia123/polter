@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import GhosttyKit
 import SwiftUI
+import WebKit
 
 /// The control room, as a tab among the terminal tabs
 /// (`dev-docs/poltergeist/control-room.md`, 3.1).
@@ -614,10 +615,16 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             let attributes = styled.length > 0 ? styled.attributes(at: 0, effectiveRange: nil) : [:]
             window.tab.attributedTitle = NSAttributedString(string: name, attributes: attributes)
         }
-        let content = KeyForwardingHostingView(rootView: ControlRoomView(model: model, detail: detail))
+        // The application's own object, so that the chat page's preview
+        // sidebar is bound to the one store every preview in the
+        // application lives in (`Ghostty.App.previewStore`, task 2645).
+        // Before this the control room's own tree had it nowhere: only the
+        // terminal it lends and the terminal a chat runs were given it.
+        let content = KeyForwardingHostingView(rootView: ControlRoomView(model: model, detail: detail)
+            .environmentObject(ghostty))
         content.onKeyEquivalent = { [weak self] in
             guard let self else { return false }
-            return self.goToTab(for: $0) || self.taskPageTakesReturn($0)
+            return self.goToTab(for: $0) || self.taskPageTakesReturn($0) || self.sidebarTakesKey($0)
         }
         watchingResponder = window.observe(\.firstResponder) { [weak self] _, _ in
             DispatchQueue.main.async { self?.syncLentFocus() }
@@ -710,6 +717,88 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         if Self.shared === self { Self.shared = nil }
         // The tabs that remain move up one.
         DispatchQueue.main.async { Self.relabel() }
+    }
+
+    // MARK: The preview sidebar's two chords
+
+    /// ⌘\ and ⌘⌥←/→ on this window, before any view inside it can take them.
+    /// See `ControlRoomSidebar` for what each means and why ⌘\ is not a
+    /// binding in the configuration.
+    ///
+    /// **The window's, and only this window's.** A terminal tab never calls
+    /// this, so ⌘\ there is whatever the configuration says it is -- which is
+    /// nothing, since no binding names a backslash (`grep backslash
+    /// src/config/Config.zig` finds a test name and a comment and no
+    /// binding). The supervisor's ruling of 2026-11-02 is that this scope is
+    /// the point: the sidebar is the control room's, and a person pressing
+    /// the chord in an ordinary terminal must not get one.
+    ///
+    /// **Asked through `ControlRoomSidebar.wanted` rather than decided
+    /// here**: a rule written in this method could only be checked on a
+    /// running window, and the file is outside the package the logic tests
+    /// build. What is left here is the three facts the decision needs and
+    /// the two things it cannot do.
+    private func sidebarTakesKey(_ event: NSEvent) -> Bool {
+        let wanted = ControlRoomSidebar.wanted(
+            characters: event.charactersIgnoringModifiers ?? "",
+            modifiers: event.modifierFlags.intersection(ControlRoomSidebar.relevant).rawValue,
+            onChatPage: model.pageInFront == .chat,
+            // **A text box, not a terminal.** The group's chat is a
+            // `SurfaceView`, which is not one of these, so the arrows are
+            // ours there -- which is what the ruling asks for. The group-name
+            // field is an `NSText`, and the preview plugin's editor is a
+            // `contenteditable` inside a `WKWebView`, which AppKit hands the
+            // keyboard to as the *web view* and not as an `NSText` -- so the
+            // two are told apart in `isTyping` rather than by one `is` test
+            // (`ControlRoomSidebar.textHasKeyboard` says why the answer is
+            // handed in and not worked out there).
+            textHasKeyboard: ControlRoomSidebar.textHasKeyboard(
+                window?.firstResponder, inWebView: isInWebView(window?.firstResponder)))
+        switch wanted {
+        case .no:
+            return false
+
+        case .toggle:
+            let opened = ghostty.previewStore.toggleSidebar()
+            Ghostty.logger.notice("control room: the preview sidebar is \(opened ? "open" : "closed", privacy: .public)")
+            // Opening puts the keyboard in the sidebar and closing brings it
+            // back out (`ControlRoomSidebar.side`), through the chat page's
+            // own door: only the page knows how to reach the two things the
+            // keyboard can be in.
+            model.sidebarFocus?(ControlRoomSidebar.side(opened: opened))
+            return true
+
+        case .focus(let side):
+            // On a page that draws no chat there is no sidebar to walk to,
+            // and the chord is left to whatever would have had it --
+            // ⌥⌘←/→ is `goto_split`, and saying "handled" here would swallow
+            // it on the supervisor's page.
+            guard let move = model.sidebarFocus else { return false }
+            move(side)
+            return true
+        }
+    }
+
+    /// Whether `responder` is inside a web view's content.
+    ///
+    /// **The chain, not the identity.** A `WKWebView` hands the keyboard to
+    /// its own content view (`WKContentView`) once a page is really loaded
+    /// and something in it is editable, so the first responder is usually
+    /// neither the web view nor an `NSText` -- it is a private view whose
+    /// *ancestors* are the web view. Walking up is therefore the reading
+    /// that holds either way, where `firstResponder is WKWebView` would only
+    /// hold for the case the test seat happened to measure.
+    ///
+    /// **This is here and not in `ControlRoomSidebar`** because it names
+    /// `WKWebView`, and that file is compiled into a package with no app: it
+    /// takes the answer as `inWebView` and this produces it.
+    private func isInWebView(_ responder: NSResponder?) -> Bool {
+        var view = responder as? NSView
+        while let v = view {
+            if v is WKWebView { return true }
+            view = v.superview
+        }
+        return false
     }
 
     // MARK: Going to a tab by number

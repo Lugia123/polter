@@ -205,6 +205,23 @@ final class ControlRoomModel: ObservableObject {
     /// has not. Taken by the window's content view before anything else
     /// sees the key (`ControlRoomController`, task 2039 round 4).
     var taskPageReturn: (() -> Void)?
+    /// Where ⌘⌥←/→ puts the keyboard while the chat page is drawn; nil while
+    /// it is not.
+    ///
+    /// **The chat page's own door, and the same shape as `taskPageReturn`**
+    /// (task 2645): the page is inside the package the logic tests leave out
+    /// (`ControlRoomChat.swift` imports GhosttyKit and makes real terminals),
+    /// so the only thing that can be checked about the two chords is the
+    /// decision -- `ControlRoomSidebar.wanted` -- and this is how the
+    /// decision reaches a window. Set in the chat page's `onAppear` and
+    /// cleared as it leaves, so that a page nobody can see is not where a
+    /// key goes.
+    ///
+    /// **Nil is "no chat page is drawn"**, which is not the same as "the
+    /// chord does nothing": the window asks this after it has already been
+    /// told the press is one of ours, and a nil here means the press belongs
+    /// to the page that is in front instead.
+    var sidebarFocus: ((ControlRoomSidebar.Side) -> Void)?
     /// What the right side's pages ask the core (task 2015); nothing until
     /// the controller hands it the core.
     var pageSource: ControlRoomPageSource = .none

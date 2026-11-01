@@ -24,6 +24,32 @@ enum PreviewSlot {
     typealias Layout = PreviewLayout
     typealias Look = ControlRoomLook
 
+    /// **The one cell key the control room's two whole-width pages share**
+    /// (task 2645, #2140 M3; the design's `INTERACTION.md` §一 和 §二:
+    /// 「右栏只有一个『当前文件』」).
+    ///
+    /// A `Store` remembers a cell by the `String` the caller names it with,
+    /// and every terminal pane names itself -- its surface's id -- so two
+    /// panes never share one. The chat page and the working-directories page
+    /// are the other case: they are not cells of anybody's split tree, they
+    /// hold no terminal, and the design says the file opened on one of them
+    /// is the file the other is showing. So they name themselves the same
+    /// `String`, and sharing falls out of the store that was already there
+    /// rather than being a second mechanism -- no moving a file from one key
+    /// to another as the person changes pages, and no second place a current
+    /// file lives.
+    ///
+    /// ⚠️ **One constant, named twice**, which is the whole point: two
+    /// literals spelled the same in two files are two places to be wrong in
+    /// and nothing that notices when one of them is. `ControlRoomChatPage`
+    /// and `ControlRoomWorkdirsPage` both name *this*.
+    ///
+    /// ⚠️ **And it is deliberately not a surface's id.** A terminal pane's
+    /// preview is that pane's own (the design: 终端格里的预览是那一个格子
+    /// 自己的), so nothing may ever mint a surface id equal to this. The
+    /// name has a shape no UUID has, which is why it reads as a sentence.
+    static let controlRoomSidebarKey = "control-room-sidebar"
+
     /// What one cell's preview is doing.
     struct State: Equatable {
         /// The preview is open in this cell.
@@ -81,6 +107,41 @@ enum PreviewSlot {
             s.open = open
             states[key] = s
         }
+
+        /// Whether `key`'s preview is open, flipped: the whole of what a
+        /// press of ⌘\ (or a press on the 「文件」button) does (task 2645).
+        ///
+        /// **`open = !open` and nothing else**, so that the two things a
+        /// person can do -- the key and the button -- cannot come apart. It
+        /// is a method on the store rather than a line in a view because a
+        /// view cannot be asked what it did: the control room's chat page
+        /// and window controller are outside the package the logic tests
+        /// build (`tools/mac-logic-tests.json`), and a toggle written there
+        /// could only ever be checked on a running application. Here it is
+        /// one call on a value.
+        ///
+        /// Returns what it left the flag at, so a caller that logs or draws
+        /// does not have to read it back and cannot read it before the
+        /// write.
+        @discardableResult
+        mutating func toggle(_ key: String) -> Bool {
+            let open = !state(key).open
+            set(key, open: open)
+            return open
+        }
+
+        /// The same flip, for the control room's two whole-width pages:
+        /// they are one place to the person, so they are one key here.
+        ///
+        /// ⚠️ **The pages call this, and never a key.** A page that spelled
+        /// the key itself -- even the right one -- would be a second place
+        /// the key is written, and the day one of the two is edited the
+        /// pages stop sharing with nothing to say so. There is deliberately
+        /// no `key` parameter on this and no second spelling of the
+        /// constant: the only way to reach the sidebar's state is through
+        /// the one name (`controlRoomSidebarKey`, above).
+        @discardableResult
+        mutating func toggleSidebar() -> Bool { toggle(PreviewSlot.controlRoomSidebarKey) }
 
         /// The divider in this cell was dragged to `w`, or nil for "put it
         /// back to the default".

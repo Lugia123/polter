@@ -133,6 +133,32 @@ final class ControlRoomChatContainer: NSView {
         onKeyboardLeft()
     }
 
+    /// Put the keyboard back into the chat in front: ⌘⌥← from the preview
+    /// sidebar (task 2645). Whether there was one to put it into.
+    ///
+    /// **Through the surface view and not through SwiftUI**, because what
+    /// holds the keyboard here is a terminal: a hosting view made the first
+    /// responder gets the keys and types nothing, which is the failure
+    /// `takeKeyboard` above exists on the other side of.
+    @discardableResult
+    func focusChat() -> Bool {
+        guard let front, let chat = chats.first(where: { $0.group == front }),
+              let window = chat.view.window else { return false }
+        window.makeFirstResponder(chat.view)
+        chat.view.focusDidChange(window.isKeyWindow)
+        return true
+    }
+
+    /// The sidebar is taking the keyboard: the chat gives it up **without
+    /// being hidden and without anyone being told to take it** -- which is
+    /// what `takeKeyboard` would do, and is wrong here, since the list is
+    /// not where this key is going.
+    func resignChat() {
+        guard let holder = keyboardHolder else { return }
+        holder.view.window?.makeFirstResponder(nil)
+        holder.view.focusDidChange(false)
+    }
+
     /// Leaving the chat page: the keyboard comes out of its chat before it
     /// is hidden.
     func leavingPage() {
@@ -225,6 +251,18 @@ final class ControlRoomChatContainer: NSView {
 /// The chat page: the container -- always the same view, hidden rather
 /// than taken out when the page is left (task 1461's rule) -- and, for a
 /// group whose chat ended, one sentence that a press answers.
+///
+/// **And the preview sidebar beside it** (task 2645, #2140 M3; the design's
+/// `INTERACTION.md` §一 and §二: 群聊在左，旁栏在右). The chat itself is one
+/// view in one place, through everything, exactly as a terminal is in a pane
+/// (`PaneFramePreview` says why): what changes when the sidebar opens is its
+/// *frame*, never which view it is.
+///
+/// **The sidebar's cell is `PreviewSlot.controlRoomSidebarKey`**, the same
+/// name the working-directories page uses -- so 「右栏只有一个『当前文件』」
+/// is the store that was already there and not a second mechanism. A
+/// terminal pane names itself by its surface's id and therefore never
+/// collides with either (the design: 终端格里的预览是那一个格子自己的).
 struct ControlRoomChatPage: View {
     typealias Look = ControlRoomLook
 
@@ -232,6 +270,27 @@ struct ControlRoomChatPage: View {
     @ObservedObject var model: ControlRoomModel
 
     @Environment(\.colorScheme) private var scheme
+    /// The one store every preview in the application is kept in
+    /// (`Ghostty.App.previewStore`), so that what this page shows is what a
+    /// terminal pane shows when the two are on the same file.
+    @EnvironmentObject private var ghostty: Ghostty.App
+
+    /// Which side of this page the keyboard is standing on, as the window's
+    /// two chords last put it (`ControlRoomSidebar`).
+    ///
+    /// **Written here and not through `@FocusState`**, because the two sides
+    /// are not both SwiftUI views: the chat is a terminal that takes the
+    /// first responder itself, so a move onto it has to be made through the
+    /// container, and a move onto the sidebar has to put the keyboard
+    /// *somewhere* rather than nowhere. `.chat` is where this starts: the
+    /// sidebar opens with the keyboard still in the chat until something
+    /// asks otherwise.
+    @State private var side: ControlRoomSidebar.Side = .chat
+
+    /// The cell this page's sidebar lives in. Named through
+    /// `ControlRoomSidebar` so that the key has one spelling for the whole
+    /// application.
+    private static var cell: String { ControlRoomSidebar.key }
 
     var body: some View {
         let theme = Look.theme(scheme)
@@ -251,14 +310,118 @@ struct ControlRoomChatPage: View {
                 .buttonStyle(.plain)
             }
         }
+        .panePreview(cell: Self.cell, store: $ghostty.previewStore) { split in
+            PanePreviewPanel(cell: Self.cell, split: split, store: $ghostty.previewStore)
+                // Where ⌘⌥→ puts the keyboard: a view with nothing in it that
+                // the chat stops receiving keys into. Everything it does not
+                // use goes on up the responder chain (`SidebarFocusSink`), so
+                // nothing is swallowed.
+                .background(SidebarFocusSink(wanted: side == .preview))
+        }
         .onAppear { model.chatContainer?.show(group) }
         .onChange(of: group) { model.chatContainer?.show($0) }
         .onDisappear { model.chatContainer?.show(nil) }
+        // What the window's ⌘⌥←/→ asks for while this page is in front
+        // (`ControlRoomController`). Set while the page is drawn and taken
+        // away as it leaves, the way the task page's Return is
+        // (`ControlRoomTasksPage`): a page nobody can see must not be where
+        // a key goes.
+        .onAppear { offerFocus() }
+        .onChange(of: model.pageInFront) { _ in offerFocus() }
+        .onChange(of: group) { _ in offerFocus() }
+        .onDisappear { model.sidebarFocus = nil }
+        // Closing the sidebar while the keyboard was inside it puts the
+        // keyboard back on the chat. **The design says exactly this**
+        // (「关掉以后，键盘回到这个格子的终端里」), and it is the half that
+        // goes wrong silently: a window whose first responder is a view that
+        // is no longer drawn is a window where typing goes nowhere.
+        .onChange(of: ghostty.previewStore.state(Self.cell).open) { open in
+            guard !open else { return }
+            move(to: ControlRoomSidebar.side(opened: false))
+        }
+    }
+
+    /// Hand the window the door the arrows use, or take it away when another
+    /// page is in front.
+    ///
+    /// ⚠️ **This sets the door and nothing else.** It does *not* move the
+    /// keyboard, which is what `move(to:)` is for: a page that has just come
+    /// in front is not a person asking to type in the chat, and taking the
+    /// keyboard for it would be this page stealing it from whatever the
+    /// person was doing (`ControlRoomChatContainer` takes a chat's keyboard
+    /// away on the way *out* for the same reason, one file over). What it
+    /// does do is put `side` back to `.chat`, so that a sidebar left open on
+    /// a previous visit does not take the keyboard the moment this page is
+    /// drawn again (`SidebarFocusSink` would, and the store's open flag does
+    /// survive a page change on purpose).
+    private func offerFocus() {
+        guard model.pageInFront == .chat else {
+            model.sidebarFocus = nil
+            return
+        }
+        side = .chat
+        model.sidebarFocus = { move(to: $0) }
+    }
+
+    /// Stand the keyboard on one side, for real: the chat's is a terminal
+    /// and only the container can hand it the first responder, and the
+    /// sidebar's is a view with nothing in it (`SidebarFocusSink`).
+    private func move(to wanted: ControlRoomSidebar.Side) {
+        side = wanted
+        switch wanted {
+        case .chat: model.chatContainer?.focusChat()
+        case .preview: model.chatContainer?.resignChat()
+        }
     }
 
     private struct ChatHost: NSViewRepresentable {
         let container: ControlRoomChatContainer
         func makeNSView(context: Context) -> ControlRoomChatContainer { container }
         func updateNSView(_ view: ControlRoomChatContainer, context: Context) {}
+    }
+
+    /// The sidebar's keyboard: a view with nothing in it, made the first
+    /// responder when the keyboard is on that side.
+    ///
+    /// **An `NSView` rather than `@FocusState`**, because what this has to be
+    /// able to do is take the first responder *away from a terminal*, and
+    /// whether a SwiftUI focus bridge does that to a view holding a real
+    /// `NSTextInputContext` is not something this file can be sure of. The
+    /// view draws nothing and uses none of the keys: `NSResponder`'s own
+    /// `keyDown` passes an event it does not handle to the next responder, so
+    /// a key pressed here goes wherever it would have gone with no sidebar,
+    /// rather than into a hole.
+    private struct SidebarFocusSink: NSViewRepresentable {
+        let wanted: Bool
+
+        func makeNSView(context: Context) -> Sink { Sink() }
+        func updateNSView(_ view: Sink, context: Context) {
+            view.wanted = wanted
+            view.takeIfWanted()
+        }
+
+        final class Sink: NSView {
+            var wanted = false
+
+            /// Key events only: this view is not a control and has nothing to
+            /// click.
+            override var acceptsFirstResponder: Bool { true }
+            override func becomeFirstResponder() -> Bool { true }
+
+            /// ⚠️ **Not in `viewDidMoveToWindow` alone.** The window is there
+            /// long before the keyboard is asked to move, and `updateNSView`
+            /// is what a change of side reaches; both are needed because the
+            /// two orders happen (the sidebar opened before the view is in a
+            /// window, and a window that arrives later).
+            func takeIfWanted() {
+                guard wanted, let window, window.firstResponder !== self else { return }
+                window.makeFirstResponder(self)
+            }
+
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                takeIfWanted()
+            }
+        }
     }
 }
