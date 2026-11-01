@@ -1458,3 +1458,20 @@
 "Seat left" = "坐着的人走了";
 "Ready" = "就绪";
 "Planned, not made yet" = "计划中，尚未建立";
+
+/* 总控台：工作目录页（task 2643, #2140 M4/W4） */
+"Workdirs" = "工作目录";
+"Working Directories" = "工作目录";
+"Recently changed" = "最近改过";
+"No file changed today" = "今天还没有文件改动";
+"Working directories" = "工作目录";
+"No working directory on record" = "暂无工作目录记录";
+"No files" = "暂无文件";
+"Collapse all" = "全部收起";
+"Workbench" = "工作台";
+"Text preview" = "文本预览";
+"Pick a file to see its code and its changes" = "选择文件以查看代码与改动";
+"0 lines" = "0 行";
+"The bars at the left mark lines changed after you opened this file" = "左边的竖条：这个文件在你打开以后被改过的行";
+"%@ directories" = "%@ 个";
+"%@ being changed" = "在改 %@ 个";

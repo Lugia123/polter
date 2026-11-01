@@ -182,3 +182,99 @@ enum ControlRoomWorkdirs {
         return inner.hasPrefix(prefix)
     }
 }
+
+// MARK: - Which roots are open
+
+extension ControlRoomWorkdirs {
+    /// What the working-directories page remembers between two draws: which
+    /// roots are open, and which row the workbench is showing. The three ways
+    /// the design opens and shuts a root, and the one way it moves a
+    /// selection, are the methods below (task 2643, #2140 M4/W4;
+    /// `polter-artifacts/2140/v3/src/12-trees-overflow-mac-dark.html` and its
+    /// `CHANGES.md`: 放不下时都收起来 / 按住 ⌥ 点一个根只展开它).
+    ///
+    /// **No view in here, and it is here for that reason.** What the page
+    /// draws for one root's twisty is `isOpen`; the three gestures call the
+    /// three methods below and nothing else. That leaves every rule below
+    /// worth a test on words and sets, which is why this lives beside the
+    /// request and the reading of the answer rather than in the view.
+    ///
+    /// ⚠️ **What is remembered is the *shut* ones, not the open ones.** The
+    /// design's default is open (根默认展开到第一层, `2145/PLAN.md` §2.5), and
+    /// a set of *open* ids cannot tell "nobody has touched this root" from
+    /// "somebody opened it": a root the page has never seen would draw shut,
+    /// which is the wrong picture drawn for the right reason, and the day the
+    /// default moves the set that was right is the one that never held it.
+    /// Two states that look alike need a bit that separates them, and this is
+    /// that bit -- absence from the set means **no decision**, not "closed".
+    struct Tree: Equatable {
+        /// The roots somebody has shut. Every root not in here is open.
+        private(set) var shut: Set<String> = []
+
+        /// The row the workbench is showing, or nil for none.
+        ///
+        /// **One at a time, and that is the whole rule**: the design draws
+        /// the selected row with a bar down its left edge (`files.css`,
+        /// `.tr.sel::after`), and two of those would be two answers about
+        /// what is open in the pane beside them. It lives here rather than
+        /// in the view because the view is a `sources.out` file -- nothing
+        /// in it can be reached by a test, and the rule is worth one
+        /// (task 2643's test seat asked for exactly this pair of
+        /// assertions).
+        ///
+        /// ⚠️ **Not a `Bool` on the row.** A flag per row is a set with no
+        /// rule, and the first two rows to be drawn with it would both be
+        /// selected on the screen the day somebody forgot to clear the one
+        /// they were on. One slot cannot forget.
+        private(set) var selected: String?
+
+        init() {}
+
+        /// The twisty points right while the root is shut and down while it
+        /// is open (`files3.css`, `.root .tw`).
+        func isOpen(_ id: String) -> Bool { !shut.contains(id) }
+
+        /// A plain click on a root: it opens if it was shut, and shuts if it
+        /// was open. **The other roots are left alone** -- the design draws
+        /// several roots open at once, and that is the state a plain click
+        /// reaches.
+        mutating func toggle(_ id: String) {
+            if shut.contains(id) { shut.remove(id) } else { shut.insert(id) }
+        }
+
+        /// ⌥-click: this root opens and **every other root shuts**.
+        ///
+        /// On a root that is already the only one open this leaves the state
+        /// as it is rather than shutting it: the design's gesture is "only
+        /// this one", and a click that shut the root you pointed at would be
+        /// `toggle` wearing another key. `toggle` is the way to shut one.
+        mutating func solo(_ id: String, among ids: [String]) {
+            shut = Set(ids).subtracting([id])
+        }
+
+        /// Whether this row is the one the workbench is showing.
+        func isSelected(_ id: String) -> Bool { selected == id }
+
+        /// The row was clicked: it is the selected one, and **the one before
+        /// it is not** -- the same slot, so there is no second thing to
+        /// clear. `nil` is a click on nothing, which is a selection moved
+        /// off every row rather than a row selected by default.
+        mutating func select(_ id: String?) { selected = id }
+
+        /// 「全部收起」: every root shuts.
+        mutating func collapseAll(_ ids: [String]) {
+            shut = Set(ids)
+        }
+
+        /// Roots that have gone stop being remembered, so a directory that
+        /// comes back comes back **open** rather than wearing a decision that
+        /// was made about a directory the group had before. Called with what
+        /// the page last drew: a group's workdirs come and go as terminals
+        /// enter and leave directories (`Workdirs.compute` is worked out
+        /// afresh on every ask -- its README says so, and the cost of it is
+        /// written down there).
+        mutating func keep(only ids: [String]) {
+            shut.formIntersection(ids)
+        }
+    }
+}

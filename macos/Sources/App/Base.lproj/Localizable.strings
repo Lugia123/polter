@@ -1383,3 +1383,20 @@
 "Seat left" = "Seat left";
 "Ready" = "Ready";
 "Planned, not made yet" = "Planned, not made yet";
+
+/* The control room's working-directories page (task 2643, #2140 M4/W4) */
+"Workdirs" = "Workdirs";
+"Working Directories" = "Working Directories";
+"Recently changed" = "Recently changed";
+"No file changed today" = "No file changed today";
+"Working directories" = "Working directories";
+"No working directory on record" = "No working directory on record";
+"No files" = "No files";
+"Collapse all" = "Collapse all";
+"Workbench" = "Workbench";
+"Text preview" = "Text preview";
+"Pick a file to see its code and its changes" = "Pick a file to see its code and its changes";
+"0 lines" = "0 lines";
+"The bars at the left mark lines changed after you opened this file" = "The bars at the left mark lines changed after you opened this file";
+"%@ directories" = "%@ directories";
+"%@ being changed" = "%@ being changed";

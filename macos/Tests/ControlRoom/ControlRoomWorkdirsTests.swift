@@ -219,3 +219,177 @@ struct ControlRoomWorkdirsTests {
                 == .failure(.refused(Workdirs.noDirectory)))
     }
 }
+
+// MARK: - Which roots are open
+
+/// The working-directories page's tree, which roots of it are open, and the
+/// three ways the design opens and shuts them (task 2643, #2140 M4/W4;
+/// `2140/v3/src/12-trees-overflow-mac-dark.html`).
+///
+/// **Tested here rather than through the page** because the page is a
+/// `sources.out` file: it draws from a model and is not in the package that
+/// runs with no app (`tools/mac-logic-tests.json`). The rules below are the
+/// whole of what the page does with a click, so holding them here is holding
+/// the page's behaviour -- and what is left in the view is the drawing.
+struct ControlRoomWorkdirsTreeTests {
+    typealias Tree = ControlRoomWorkdirs.Tree
+
+    private let ids = ["a", "b", "c"]
+
+    /// **A root nobody has touched is open**, which is the design's default
+    /// (根默认展开到第一层, `2145/PLAN.md` §2.5).
+    ///
+    /// ⚠️ This is the assertion the storage choice is for. The state is the
+    /// set of *shut* ids, so an untouched root is open because it is absent
+    /// -- and a set of *open* ids would answer the opposite here while every
+    /// other test below still passed. It is also the bit that keeps "nobody
+    /// has decided" apart from "somebody opened it": those two are the same
+    /// picture today and would stop being the same the day the default
+    /// moves.
+    @Test func aRootNobodyHasTouchedIsOpen() {
+        let tree = Tree()
+        #expect(tree.isOpen("a"))
+        #expect(tree.isOpen("b"))
+        #expect(tree.isOpen("c"))
+    }
+
+    /// A plain click turns one root over and **leaves the others where they
+    /// were**: the design draws several roots open at once.
+    @Test func aPlainClickTurnsOneRootOverAndLeavesTheOthers() {
+        var tree = Tree()
+        tree.toggle("b")
+        #expect(tree.isOpen("a"))
+        #expect(!tree.isOpen("b"))
+        #expect(tree.isOpen("c"))
+
+        tree.toggle("b")
+        #expect(tree.isOpen("b"))
+        #expect(tree.isOpen("a"))
+        #expect(tree.isOpen("c"))
+    }
+
+    /// ⌥-click: this one opens and every other one shuts. It is the only
+    /// gesture that shuts a root the person did not point at, which is what
+    /// makes it worth a test of its own.
+    @Test func optionClickLeavesExactlyTheOnePointedAtOpen() {
+        var tree = Tree()
+        tree.solo("b", among: ids)
+        #expect(!tree.isOpen("a"))
+        #expect(tree.isOpen("b"))
+        #expect(!tree.isOpen("c"))
+
+        // And the other way round: the one that was open shuts, the one
+        // pointed at opens.
+        tree.solo("c", among: ids)
+        #expect(!tree.isOpen("a"))
+        #expect(!tree.isOpen("b"))
+        #expect(tree.isOpen("c"))
+    }
+
+    /// ⌥-click on the one root that is already alone leaves it **open**.
+    ///
+    /// ⚠️ A click that shut the root it was pointed at would be `toggle`
+    /// wearing another key, and the design's gesture is "only this one".
+    @Test func optionClickOnTheOnlyOpenRootLeavesItOpen() {
+        var tree = Tree()
+        tree.solo("b", among: ids)
+        tree.solo("b", among: ids)
+        #expect(tree.isOpen("b"))
+        #expect(!tree.isOpen("a"))
+        #expect(!tree.isOpen("c"))
+    }
+
+    @Test func collapseAllShutsEveryRoot() {
+        var tree = Tree()
+        tree.collapseAll(ids)
+        #expect(!tree.isOpen("a"))
+        #expect(!tree.isOpen("b"))
+        #expect(!tree.isOpen("c"))
+    }
+
+    /// A root that has gone stops being remembered, so the **same id coming
+    /// back comes back open** rather than wearing the decision somebody made
+    /// about it before it left.
+    ///
+    /// A group's workdirs come and go as terminals enter and leave
+    /// directories (`Workdirs.compute` is worked out afresh on every ask),
+    /// so an id that returns is a directory the group has again -- and a
+    /// page that opened it shut would be answering from a decision about a
+    /// directory that was, for a while, not there.
+    @Test func aRootThatGoesAndComesBackIsOpenAgain() {
+        var tree = Tree()
+        tree.toggle("b")
+        tree.toggle("c")
+        #expect(!tree.isOpen("b"))
+
+        // `b` leaves; only `a` and `c` are still the group's.
+        tree.keep(only: ["a", "c"])
+        #expect(!tree.isOpen("c"), "a root that is still here keeps its state")
+
+        // ... and later `b` is a directory of the group again.
+        tree.keep(only: ["a", "b", "c"])
+        #expect(tree.isOpen("b"))
+    }
+
+    /// Nothing else in the struct answers a question about what is open
+    /// beyond `isOpen`: the set is the storage, and a caller that read
+    /// `shut` to decide something would be the second answer the storage
+    /// choice exists to prevent. (The property is `private(set)`, so this
+    /// test is about the *reading* side being the one method.)
+    @Test func theOnlyQuestionIsWhetherARootIsOpen() {
+        var tree = Tree()
+        #expect(tree.isOpen("a"))
+        tree.collapseAll(ids)
+        #expect(!tree.isOpen("a"))
+    }
+
+    // MARK: The selected row
+
+    /// A click puts the selection on that row, and **the row before it is
+    /// not selected any more**. One assertion each way, because one slot can
+    /// be wrong in both: a selection that never moves (the second `#expect`
+    /// fails) and a selection that moves to two rows at once (the first
+    /// fails).
+    @Test func theSelectionMovesToTheRowClickedAndOffTheOneBeforeIt() {
+        var tree = Tree()
+        #expect(!tree.isSelected("a"))
+        #expect(!tree.isSelected("b"))
+
+        tree.select("a")
+        #expect(tree.isSelected("a"))
+        #expect(!tree.isSelected("b"))
+
+        tree.select("b")
+        #expect(!tree.isSelected("a"), "the row the click left must not still be selected")
+        #expect(tree.isSelected("b"))
+    }
+
+    /// A click on nothing moves the selection off every row: nil and a row
+    /// are two different states, and a `Bool` per row could not say the
+    /// first one at all.
+    @Test func aClickOnNothingSelectsNoRow() {
+        var tree = Tree()
+        tree.select("a")
+        tree.select(nil)
+        #expect(!tree.isSelected("a"))
+        #expect(!tree.isSelected("b"))
+    }
+
+    /// **A root that leaves the group's list does not take the selection
+    /// with it.** What is selected is a file, and a file does not stop being
+    /// the open one because the directory holding it left `workdirs` for a
+    /// moment (`Workdirs.compute` is worked out afresh on every ask).
+    @Test func aSelectionSurvivesARootGoingAwayAndComingBack() {
+        var tree = Tree()
+        tree.toggle("b")
+        tree.select("f1")
+        #expect(!tree.isOpen("b"))
+
+        // `b` is not one of the group's directories for a while. `keep` drops
+        // the decision made about it -- which is the whole point of the
+        // method -- so `b` reads as open again rather than as shut.
+        tree.keep(only: ["a", "c"])
+        #expect(tree.isOpen("b"), "a root that is gone is not a shut root")
+        #expect(tree.isSelected("f1"), "and what is open in the pane beside it did not move")
+    }
+}

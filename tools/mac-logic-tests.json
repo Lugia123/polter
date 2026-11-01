@@ -247,7 +247,7 @@
       },
       {
         "path": "macos/Sources/Features/ControlRoom/ControlRoomWorkdirsPage.swift",
-        "why": "draws the working directories page: SwiftUI view that reads ControlRoomWorkdirs.Answer from the model, no standalone business logic"
+        "why": "draws the working directories page: SwiftUI view that reads ControlRoomWorkdirs.Answer from the model. It holds no rule of its own -- which roots are open and which row the workbench is showing are ControlRoomWorkdirs.Tree, in ControlRoomWorkdirs.swift, which is `in` -- so the only thing this file decides is where a box goes"
       },
       {
         "path": "macos/Sources/Features/ControlRoom/ControlRoomLender.swift",
