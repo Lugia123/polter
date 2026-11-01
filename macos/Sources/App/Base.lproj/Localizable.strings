@@ -1359,7 +1359,19 @@
 "A supervisor role can't join a squad, so none of them is listed here." = "A supervisor role can't join a squad, so none of them is listed here.";
 "This seat is built on a role that is not in the role library." = "This seat is built on a role that is not in the role library.";
 "What says it is inherited follows the role. What you change here is this seat's and no other's." = "What says it is inherited follows the role. What you change here is this seat's and no other's.";
-"Back to the Template" = "Back to the Template";
+"Back to the Templates" = "Back to the Templates";
+
+/* 小队模版：成员页的三个 tab 与复用角色编辑器后新增的文案（task 2647） */
+"Leaves this seat's page and shows the template's seats. Nothing here is changed." = "Leaves this seat's page and shows the template's seats. Nothing here is changed.";
+"Restore to the Role's Settings" = "Restore to the Role's Settings";
+"Takes away everything this seat says of its own: instructions, CLI, skills and MCP servers all follow the role again." = "Takes away everything this seat says of its own: instructions, CLI, skills and MCP servers all follow the role again.";
+"These come from the role this seat is built on and are changed on the roles page. This page is for what the seat does differently." = "These come from the role this seat is built on and are changed on the roles page. This page is for what the seat does differently.";
+"This seat names a CLI that isn't here any more: %@. Pick another one, or follow the role." = "This seat names a CLI that isn't here any more: %@. Pick another one, or follow the role.";
+"A seat starts one CLI. The role's own list is what it may choose from, plus your own Agent CLIs." = "A seat starts one CLI. The role's own list is what it may choose from, plus your own Agent CLIs.";
+"%@ — runs %@" = "%@ — runs %@";
+"%@ (not here any more)" = "%@ (not here any more)";
+"Follows the role" = "Follows the role";
+"This follows the role: a seat adds or takes away named items, and what happens to items installed later is the role's word." = "This follows the role: a seat adds or takes away named items, and what happens to items installed later is the role's word.";
 "Identity" = "Identity";
 "A seat's name inside the squad. It is edited on the template's own page, beside the other seats." = "A seat's name inside the squad. It is edited on the template's own page, beside the other seats.";
 "The role's own. A seat is not given a name of its own." = "The role's own. A seat is not given a name of its own.";
@@ -1383,6 +1395,10 @@
 "Seat left" = "Seat left";
 "Ready" = "Ready";
 "Planned, not made yet" = "Planned, not made yet";
+
+"This CLI can't start here: %@. What's saved stays until you pick another." = "This CLI can't start here: %@. What's saved stays until you pick another.";
+"Still reading what's installed. This seat's CLI is kept as it is." = "Still reading what's installed. This seat's CLI is kept as it is.";
+"Changed for this seat only. Putting the seat back to its role takes this with it." = "Changed for this seat only. Putting the seat back to its role takes this with it.";
 
 /* The control room's working-directories page (task 2643, #2140 M4/W4) */
 "Workdirs" = "Workdirs";

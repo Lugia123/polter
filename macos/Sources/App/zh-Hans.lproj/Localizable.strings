@@ -1434,7 +1434,19 @@
 "A supervisor role can't join a squad, so none of them is listed here." = "总管角色不能加入小队，所以这里一个都不列。";
 "This seat is built on a role that is not in the role library." = "这个位子的角色不在角色库里。";
 "What says it is inherited follows the role. What you change here is this seat's and no other's." = "标了「继承自角色」的跟着角色走。你在这里改的是这一个位子的，不牵动别人。";
-"Back to the Template" = "回到模版";
+"Back to the Templates" = "← 返回模版总览";
+
+/* 小队模版：成员页的三个 tab 与复用角色编辑器后新增的文案（task 2647） */
+"Leaves this seat's page and shows the template's seats. Nothing here is changed." = "离开这个位子的页面，回到模版看它的席位。这里什么都不改。";
+"Restore to the Role's Settings" = "还原到角色设定";
+"Takes away everything this seat says of its own: instructions, CLI, skills and MCP servers all follow the role again." = "把这个位子自己写的东西全部去掉：指令、CLI、skill 和 MCP 都重新跟着角色走。";
+"These come from the role this seat is built on and are changed on the roles page. This page is for what the seat does differently." = "这些来自这个位子所依据的角色，在角色库页面上改。这个页面管的是这个位子做得不一样的地方。";
+"This seat names a CLI that isn't here any more: %@. Pick another one, or follow the role." = "这个位子指定的 CLI 已经不在了：%@。请另选一个，或者跟随角色。";
+"A seat starts one CLI. The role's own list is what it may choose from, plus your own Agent CLIs." = "一个位子只起一个 CLI。可选范围是角色自己的那几个，加上你的自定义 Agent CLI。";
+"%@ — runs %@" = "%@ —— 底下跑的是 %@";
+"%@ (not here any more)" = "%@（已经不在这里了）";
+"Follows the role" = "跟随角色";
+"This follows the role: a seat adds or takes away named items, and what happens to items installed later is the role's word." = "这一项跟随角色：位子只能对具名的项做增删，以后新装的项怎么算由角色说了算。";
 "Identity" = "身份";
 "A seat's name inside the squad. It is edited on the template's own page, beside the other seats." = "位子在小队里的名字。它在模版自己的页面上、和其它位子一起改。";
 "The role's own. A seat is not given a name of its own." = "这是角色自己的。位子不另起名字。";
@@ -1458,6 +1470,10 @@
 "Seat left" = "坐着的人走了";
 "Ready" = "就绪";
 "Planned, not made yet" = "计划中，尚未建立";
+
+"This CLI can't start here: %@. What's saved stays until you pick another." = "这个 CLI 在这台机器上起不来：%@。你另选一个之前，已保存的配置照留。";
+"Still reading what's installed. This seat's CLI is kept as it is." = "还在读本机装了哪些 CLI。这个位子的 CLI 暂时原样保留。";
+"Changed for this seat only. Putting the seat back to its role takes this with it." = "只有这个位子改过。把位子还原到角色设定会连同它一起去掉。";
 
 /* 总控台：工作目录页（task 2643, #2140 M4/W4） */
 "Workdirs" = "工作目录";

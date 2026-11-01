@@ -42,6 +42,11 @@ final class SquadLibraryEditor: ObservableObject {
     /// another seat while the person is looking at it.
     @Published var member: String?
 
+    /// Which of a seat's three pages is on screen. The same type the roles
+    /// page uses, and kept across seats on purpose, for the same reason
+    /// `RoleLibraryEditor.tab` is (`RoleLibraryView.swift`).
+    @Published var memberTab: RoleEditorTab = .basics
+
     /// Whether the "add a member" panel is up.
     @Published var adding = false
 
@@ -290,6 +295,13 @@ struct SquadLibraryView: View {
     /// The role library's roles: what a seat is built on, and the only place
     /// the page can learn a role's name and whether it is a supervisor's.
     var roles: [Role]
+    /// The role library itself, for the two views this page reuses from the
+    /// roles page: they read what each CLI has installed from here, not
+    /// from the squads page (task 2647).
+    @ObservedObject var clis: RoleLibrary
+    /// The way to the Plugins page, for an item whose CLI's plugin is off --
+    /// the roles page's own answer (05b), passed in rather than looked up.
+    var onOpenPlugin: (String) -> Void
     var part: Part
 
     /// The settings window's search text: templates whose name or key contains
@@ -678,10 +690,19 @@ struct SquadLibraryView: View {
     private func memberPage(_ squad: Squad, alias: String) -> some View {
         if let member = squad.member(alias), let role = roles.first(where: { $0.key == member.role }) {
             seatNotice(squad, member, role)
+            memberTabs
+            Divider()
             ScrollView {
-                memberForm(member, role: role)
-                    .padding(SettingsLayout.pad)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Group {
+                    switch editor.memberTab {
+                    case .basics:
+                        memberBasics(member, role: role)
+                    case .skills, .mcp:
+                        memberItems(member, role: role, kind: editor.memberTab == .skills ? .skill : .mcp)
+                    }
+                }
+                .padding(SettingsLayout.pad)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         } else if let member = squad.member(alias) {
             // The role is gone from the library, so there is nothing to
@@ -692,6 +713,26 @@ struct SquadLibraryView: View {
                 detail: member.role)
             Spacer()
         }
+    }
+
+    /// The same three tabs a role has, in the same control
+    /// (`RoleLibraryView.tabBar`): a seat is a role with a delta over it, so
+    /// its page is the role's page. **Nothing here is a second copy of the
+    /// role editor** -- the two state pages draw `RoleCliItemsEditor` and the
+    /// per-CLI settings draw `RoleCliStartEditor`, so a field added to the
+    /// role editor turns up here without being written again.
+    private var memberTabs: some View {
+        Picker("", selection: $editor.memberTab) {
+            Text(String(localized: "Basics", comment: "角色库：tab 名，角色基本信息")).tag(RoleEditorTab.basics)
+            Text(String(localized: "Skills", comment: "角色编辑器：分区名，技能")).tag(RoleEditorTab.skills)
+            Text(String(localized: "MCP", comment: "角色库：tab 名，MCP 服务器")).tag(RoleEditorTab.mcp)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(maxWidth: 420)
+        .padding(.horizontal, SettingsLayout.pad)
+        .padding(.vertical, SettingsLayout.rowGap + 4)
+        .frame(maxWidth: .infinity)
     }
 
     /// What this page is, above it: which seat of which template, what it is
@@ -711,7 +752,26 @@ struct SquadLibraryView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Button(String(localized: "Back to the Template", comment: "小队模版：从成员页回到模版页")) { editor.member = nil }
+            // Everything this seat says of its own, in one move: the whole
+            // override goes, rather than each field being cleared one at a
+            // time -- a field-by-field version would leave anything added
+            // later behind, and `SquadOverride.none` is the one value that
+            // cannot drift from the type.
+            if !member.override.isNone {
+                Button(String(localized: "Restore to the Role's Settings", comment: "小队模版：成员页，一键清空这个席位的全部覆盖")) {
+                    editor.updateMember(member.alias) { $0.override = .none }
+                }
+                .help(String(localized: "Takes away everything this seat says of its own: instructions, CLI, skills and MCP servers all follow the role again.", comment: "小队模版：还原按钮的说明"))
+            }
+            // A way back, said as one: the old wording ("Back to the
+            // Template") read like "reset this seat to the template's
+            // defaults", which is the opposite of leaving the page.
+            Button {
+                editor.member = nil
+            } label: {
+                Label(String(localized: "Back to the Templates", comment: "小队模版：从成员页回到模版总览页"), systemImage: "chevron.backward")
+            }
+            .help(String(localized: "Leaves this seat's page and shows the template's seats. Nothing here is changed.", comment: "小队模版：返回按钮的说明"))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, SettingsLayout.pad)
@@ -719,7 +779,10 @@ struct SquadLibraryView: View {
         .background(Color.accentColor.opacity(0.08))
     }
 
-    private func memberForm(_ member: SquadMember, role: Role) -> some View {
+    /// What a seat's Basics page holds: the identity it does not own, the
+    /// instructions it may replace, the CLI it starts in, and -- when it has
+    /// moved to one of the person's own -- that CLI's launch settings.
+    private func memberBasics(_ member: SquadMember, role: Role) -> some View {
         VStack(alignment: .leading, spacing: SettingsLayout.groupGap) {
             section(String(localized: "Identity", comment: "小队模版：成员页分区名，身份")) {
                 VStack(alignment: .leading, spacing: SettingsLayout.rowGap) {
@@ -735,6 +798,9 @@ struct SquadLibraryView: View {
                     formRow(String(localized: "Description", comment: "小队模版：字段名，模版的说明")) {
                         lockedField(role.displaySummary, why: String(localized: "The role's own. A seat changes the CLI, what the agent is told, and its skills -- nothing about who it is.", comment: "小队模版：成员页描述只读的说明"))
                     }
+                    formControl {
+                        note(String(localized: "These come from the role this seat is built on and are changed on the roles page. This page is for what the seat does differently.", comment: "小队模版：成员页身份区下面的说明"))
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -744,32 +810,126 @@ struct SquadLibraryView: View {
             section(String(localized: "Agent CLI", comment: "角色库：分区名，Agent CLI")) {
                 cliRow(member, role: role)
             }
+            // The launch settings of the CLI this seat actually starts in,
+            // drawn by the roles page's own view (task 2647). Which CLIs
+            // those are is `SquadCliOptions.startClis`: the seat's own when
+            // it named one, the role's otherwise.
+            ForEach(SquadCliOptions.startClis(role: role, member: member), id: \.self) { cli in
+                RoleCliStartEditor(
+                    library: clis,
+                    cliKey: cli,
+                    choice: SquadCliOptions.choice(cli, role: role, member: member),
+                    base: role.choice(for: cli) ?? RoleCliChoice(cli: cli),
+                    update: { change in
+                        editor.updateMember(member.alias) { squad in
+                            SquadCliOptions.setChoice(cli, role: role, into: &squad.override) { $0 = change }
+                        }
+                    },
+                    reset: member.alias + "/" + cli)
+            }
         }
     }
 
-    /// Which CLI this seat starts in. Present-and-set is this seat's word,
-    /// absent is the role's (`SquadOverride.cli`), and the mark under the
-    /// control says which -- the same place the General page puts its notes.
+    /// One of a seat's two state pages: the role's own items with this
+    /// seat's delta over them, through the roles page's editor.
+    ///
+    /// The seat's list is the role's list, so a skill the role gains turns
+    /// up here on its own -- which is the whole point of reusing it. What
+    /// the seat writes back is only its difference (`SquadMergedItems.apply`),
+    /// and the "installed later" switch is the role's (`defaultLocked`).
+    private func memberItems(_ member: SquadMember, role: Role, kind: AgentCliItem.Kind) -> some View {
+        let merged = SquadMergedItems.of(kind, role: role, member: member, in: clis.clis)
+        return VStack(alignment: .leading, spacing: SettingsLayout.rowGap) {
+            if merged.overridden {
+                formControl {
+                    mark(.overridden, back: {
+                        editor.updateMember(member.alias) { squad in
+                            switch kind {
+                            case .skill: squad.override.cliSkills = nil
+                            case .mcp: squad.override.cliMcp = nil
+                            }
+                        }
+                    })
+                }
+            }
+            RoleCliItemsEditor(
+                library: clis,
+                cliKeys: SquadMergedItems.clis(role: role, member: member, in: clis.clis),
+                kind: kind,
+                selection: merged.selection,
+                updateSelection: { change in
+                    editor.updateMember(member.alias) { squad in
+                        SquadMergedItems.apply(change, kind: kind, role: role, into: &squad.override)
+                    }
+                },
+                defaultLocked: true,
+                onOpenPlugin: onOpenPlugin)
+        }
+    }
+
+    /// Which CLI this seat starts in, and where its own selection stands
+    /// (task 2647).
+    ///
+    /// **The list used to be the role's `clis` alone**, so a seat moved to
+    /// one of the person's own Agent CLIs (`claude-deepseek-flash`, over
+    /// `claude-code`) matched no row: SwiftUI drew an empty control that
+    /// could not be changed back. The rows now come from
+    /// `SquadCliOptions`, which always has one for what the seat names.
     private func cliRow(_ member: SquadMember, role: Role) -> some View {
-        VStack(alignment: .leading, spacing: SettingsLayout.rowGap) {
+        let options = SquadCliOptions.of(role: role, member: member, in: clis.clis)
+        return VStack(alignment: .leading, spacing: SettingsLayout.rowGap) {
             formRow(String(localized: "CLI", comment: "角色库：字段名，Agent CLI")) {
                 Picker("", selection: cliBinding(member)) {
-                    Text(role.clis.isEmpty
-                         ? String(localized: "The role's own", comment: "小队模版：成员页 CLI 选择，跟着角色")
-                         : String(format: String(localized: "The role's own (%@)", comment: "小队模版：成员页 CLI 选择，%@ 是角色自己的 CLI"), role.clis.map(\.cli).joined(separator: ", ")))
-                        .tag("")
-                    ForEach(role.clis, id: \.cli) { choice in
-                        Text(choice.cli).tag(choice.cli)
+                    ForEach(options.options) { option in
+                        Text(option.label).tag(option.key)
                     }
                 }
                 .labelsHidden()
             }
             formControl {
-                mark(
-                    member.override.cli == nil ? .inherited : .overridden,
-                    back: member.override.cli == nil
-                        ? nil
-                        : { editor.updateMember(member.alias) { $0.override.cli = nil } })
+                VStack(alignment: .leading, spacing: 4) {
+                    mark(
+                        member.override.cli == nil ? .inherited : .overridden,
+                        back: member.override.cli == nil
+                            ? nil
+                            : { editor.updateMember(member.alias) { $0.override.cli = nil } })
+                    // The state of the selection, in words (rule 5: the
+                    // four things that look alike get told apart). A
+                    // selection with no row is the defect the person
+                    // reported, and it says which kind it is instead of
+                    // drawing nothing at all.
+                    switch options.standing {
+                    case .offered:
+                        if let why = options.options.first(where: { $0.key == options.selected })?.why {
+                            Text(why)
+                                .font(SettingsFont.minimum)
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    case .unknown:
+                        Text(String(format: String(localized: "This seat names a CLI that isn't here any more: %@. Pick another one, or follow the role.", comment: "小队模版：成员页 CLI 选择，选中的 CLI 快照里没有"), options.selected))
+                            .font(SettingsFont.minimum)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case .unavailable:
+                        // The core's own sentence for this key, through the
+                        // role library the page was handed -- the same one
+                        // the roles page shows (`whyNot`), so there is one
+                        // wording and not two.
+                        Text(String(format: String(localized: "This CLI can't start here: %@. What's saved stays until you pick another.", comment: "小队模版：成员页 CLI 选择，选中的 CLI 在快照里但起不来，%@ 是核心给的原因"), clis.clis.whyNot(options.selected) ?? options.selected))
+                            .font(SettingsFont.minimum)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case .notRead:
+                        Text(String(localized: "Still reading what's installed. This seat's CLI is kept as it is.", comment: "小队模版：成员页 CLI 选择，还没读到 CLI 清单时的说明"))
+                            .font(SettingsFont.minimum)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            formControl {
+                note(String(localized: "A seat starts one CLI. The role's own list is what it may choose from, plus your own Agent CLIs.", comment: "小队模版：成员页 CLI 选择下面的说明"))
             }
         }
     }

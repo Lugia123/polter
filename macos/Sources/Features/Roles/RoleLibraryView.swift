@@ -672,7 +672,15 @@ struct RoleLibraryView: View {
                                 // plugin is off included: its settings are
                                 // kept and can be changed (05a).
                                 ForEach(editor.draft?.clis ?? []) { choice in
-                                    RoleCliStartEditor(library: library, editor: editor, cliKey: choice.cli)
+                                    RoleCliStartEditor(
+                                        library: library,
+                                        cliKey: choice.cli,
+                                        choice: choice,
+                                        base: choice,
+                                        update: { change in
+                                            editor.updateChoice(choice.cli) { $0 = change }
+                                        },
+                                        reset: editor.original?.key ?? "")
                                 }
                             case .skills, .mcp:
                                 itemsTab(editor.tab == .skills ? .skill : .mcp)
@@ -740,8 +748,13 @@ struct RoleLibraryView: View {
             }
         } else {
             // One list for every CLI (07): no CLI to pick here.
-            RoleCliItemsEditor(library: library, editor: editor, cliKeys: clis.map(\.cli),
-                               kind: kind, onOpenPlugin: onOpenPlugin)
+            RoleCliItemsEditor(
+                library: library,
+                cliKeys: clis.map(\.cli),
+                kind: kind,
+                selection: kind == .skill ? (editor.draft?.skills ?? RoleSelection()) : (editor.draft?.mcp ?? RoleSelection()),
+                updateSelection: { change in editor.updateSelection(kind, change) },
+                onOpenPlugin: onOpenPlugin)
         }
     }
 
@@ -1284,12 +1297,28 @@ struct OfficialMark: View {
 /// On the Basics tab; what the CLI keeps is on the other two.
 struct RoleCliStartEditor: View {
     @ObservedObject var library: RoleLibrary
-    @ObservedObject var editor: RoleLibraryEditor
     var cliKey: String
+    /// The settings as the thing on screen has them: the role's own entry
+    /// on the role page, and the role's entry with **this seat's** keys laid
+    /// over it on a seat's page (`SquadCliOptions.choice`).
+    var choice: RoleCliChoice
+    /// What `choice` is laid over -- the role's own entry for this CLI.
+    /// Equal to `choice` where nothing overrides it; the seat page draws a
+    /// mark from the difference. **The difference is not worked out here**:
+    /// whoever owns the draft writes it back (`SquadCliOptions.setChoice`),
+    /// so the role page and a seat's page share this view without either of
+    /// them growing a second copy of the rule.
+    var base: RoleCliChoice
+    /// Written back by the draft's owner.
+    var update: (inout RoleCliChoice) -> Void
+    /// Changes when the thing being edited changes underneath: another
+    /// role, another seat, or a reload. The role page hands it the role it
+    /// came from and the seat page the squad and the seat, so that the
+    /// arguments box re-reads what is there instead of keeping a line typed
+    /// against something else.
+    var reset: String
 
     @State private var argsText = ""
-
-    private var choice: RoleCliChoice? { editor.draft?.choice(for: cliKey) }
 
     /// An example of what goes in "extra arguments", in the CLI's own words
     /// -- a command line, not a sentence, so it is not translated. Empty for
@@ -1313,7 +1342,11 @@ struct RoleCliStartEditor: View {
             HStack(alignment: .firstTextBaseline, spacing: SettingsLayout.rowGap) {
                 Text(String(format: String(localized: "Starting %@", comment: "角色库：分区名，%@ 是 CLI 名，启动参数"), library.clis.label(for: cliKey)))
                     .font(.headline)
-                if library.clis.cli(cliKey) == nil && !library.clis.stale {
+                // **`cliKey` may be one of the person's own** (task 2647):
+                // a seat can start in a launcher, and `cli(_:)` only knows
+                // the presets -- so the "can't be used" note is for a key
+                // the snapshot knows nothing about, not for a launcher.
+                if library.clis.cli(cliKey) == nil && library.clis.own(cliKey) == nil && !library.clis.stale {
                     // 05a: it can still be changed and saved.
                     Text(String(localized: "Can't be used when starting; what's here is still saved",
                                 comment: "角色库：插件关着时「启动 Codex」标题旁一句，设置照样保存"))
@@ -1323,8 +1356,8 @@ struct RoleCliStartEditor: View {
             }
             formRow(String(localized: "Model", comment: "角色库：字段名，模型")) {
                 TextField(String(localized: "The CLI's default", comment: "角色库：模型字段占位，留空用 CLI 默认"), text: Binding(
-                    get: { choice?.model ?? "" },
-                    set: { value in editor.updateChoice(cliKey) { $0.model = value } }))
+                    get: { choice.model },
+                    set: { value in update { $0.model = value } }))
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 260)
             }
@@ -1332,9 +1365,9 @@ struct RoleCliStartEditor: View {
                 optionRow(option)
             }
             // Picked once, and not offered now: kept, and said as it is.
-            ForEach((choice?.options ?? [:]).keys.sorted().filter { key in !offered.contains { $0.key == key } }, id: \.self) { key in
+            ForEach(choice.options.keys.sorted().filter { key in !offered.contains { $0.key == key } }, id: \.self) { key in
                 formRow(key) {
-                    Text(choice?.options[key] ?? "").font(.body.monospaced()).foregroundStyle(.secondary)
+                    Text(choice.options[key] ?? "").font(.body.monospaced()).foregroundStyle(.secondary)
                 }
             }
             formRow(String(localized: "Extra Arguments", comment: "角色库：字段名，额外命令行参数")) {
@@ -1343,30 +1376,37 @@ struct RoleCliStartEditor: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.body.monospaced())
                         .onChange(of: argsText) { value in
-                            editor.updateChoice(cliKey) { $0.args = RoleArgs.split(value) }
+                            update { $0.args = RoleArgs.split(value) }
                         }
                     note(String(localized: "Added to the command line as typed. Quote anything with a space in it.", comment: "角色库：额外参数的说明"))
                 }
             }
+            // Under the fields, and only when there is something to say:
+            // that what is here is not the role's. On the role page `base`
+            // is `choice` itself, so this line never appears there, and the
+            // seat page gets it without a second form being written.
+            if choice != base {
+                note(String(localized: "Changed for this seat only. Putting the seat back to its role takes this with it.", comment: "小队模版：成员页上，某个 CLI 的启动设置被这个席位改过时的说明"))
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onAppear { argsText = RoleArgs.join(choice?.args ?? []) }
-        .onChange(of: cliKey) { _ in argsText = RoleArgs.join(choice?.args ?? []) }
-        .onChange(of: editor.original) { _ in argsText = RoleArgs.join(choice?.args ?? []) }
+        .onAppear { argsText = RoleArgs.join(choice.args) }
+        .onChange(of: cliKey) { _ in argsText = RoleArgs.join(choice.args) }
+        .onChange(of: reset) { _ in argsText = RoleArgs.join(choice.args) }
     }
 
     /// One unattended setting (04B): a drop-down of the values this version
     /// of the CLI takes, "The CLI's default" first, and in grey beside it
     /// the flags the value adds.
     private func optionRow(_ option: AgentCliOption) -> some View {
-        let picked = choice?.options[option.key]
+        let picked = choice.options[option.key]
         let args = option.values.first { $0.value == (picked ?? option.defaultValue) }?.args ?? []
         return formRow(option.title) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: SettingsLayout.rowGap) {
                     Picker("", selection: Binding(
                         get: { picked ?? "" },
-                        set: { value in editor.updateChoice(cliKey) { $0.options[option.key] = value.isEmpty ? nil : value } })) {
+                        set: { value in update { $0.options[option.key] = value.isEmpty ? nil : value } })) {
                         if let d = option.defaultValue {
                             Text(String(format: String(localized: "Polter's default (%@)", comment: "角色库：启动选项下拉第一项，%@ 是 Polter 替没选的角色定的值"), d)).tag("")
                         } else {
@@ -1397,12 +1437,26 @@ struct RoleCliStartEditor: View {
 /// The skills, or the MCP servers, of every CLI the role starts in, as one
 /// list with one switch each (07, 08; task 1677): one tab each, so the
 /// servers are not at the bottom of a long list of skills.
+///
+/// **The selection is handed in rather than read off an editor** (task
+/// 2647): a squad's seat draws this same list, over the role's set with
+/// that seat's own delta laid on it (`SquadMergedItems`), and the seat is
+/// not a `RoleLibraryEditor`. The rules stay in one place -- whoever owns
+/// the draft says what is on and writes the change back -- so the two
+/// pages cannot drift apart.
 struct RoleCliItemsEditor: View {
     @ObservedObject var library: RoleLibrary
-    @ObservedObject var editor: RoleLibraryEditor
-    /// The CLIs the role starts in, in its order.
+    /// The CLIs whose installed lists are read.
     var cliKeys: [String]
     var kind: AgentCliItem.Kind
+    /// What each switch shows.
+    var selection: RoleSelection
+    var updateSelection: (inout RoleSelection) -> Void
+    /// Whether "items installed later" is the person's to set here. On a
+    /// seat it is not: the core keeps that default with the role
+    /// (`squad.setSelection` never takes it from the squad), so the switch
+    /// is drawn, greyed, and said to follow the role.
+    var defaultLocked = false
     var onOpenPlugin: (String) -> Void
 
     @State private var search = ""
@@ -1471,7 +1525,9 @@ struct RoleCliItemsEditor: View {
                     title: kind == .skill
                         ? String(localized: "Skills", comment: "角色编辑器：分区名，技能")
                         : String(localized: "MCP Servers", comment: "角色编辑器：分区名，MCP 服务器"),
-                    kind: kind, rows: merged.rows, search: search, editor: editor)
+                    kind: kind, rows: merged.rows, search: search,
+                    selection: selection, update: updateSelection,
+                    defaultLocked: defaultLocked)
 
                 ForEach(read.flatMap(\.notes), id: \.self) { note(String($0)) }
             }
@@ -1515,18 +1571,14 @@ struct RoleItemSection: View {
     /// Every CLI's items as one list (`RoleMergedItems`).
     var rows: [RoleMergedItems.Row]
     var search: String
-    @ObservedObject var editor: RoleLibraryEditor
+    /// The one set (task 1677), whichever CLI an item is in. Handed in for
+    /// `RoleCliItemsEditor`'s reason: a seat is not a `RoleLibraryEditor`.
+    var selection: RoleSelection
+    var update: (inout RoleSelection) -> Void
+    /// See `RoleCliItemsEditor.defaultLocked`.
+    var defaultLocked = false
 
     @State private var collapsed: Set<String> = []
-
-    /// The role's one set (task 1677), whichever CLI an item is in.
-    private var selection: RoleSelection {
-        (kind == .skill ? editor.draft?.skills : editor.draft?.mcp) ?? RoleSelection()
-    }
-
-    private func update(_ change: (inout RoleSelection) -> Void) {
-        editor.updateSelection(kind, change)
-    }
 
     private var all: [AgentCliItem] { rows.map(\.item) }
 
@@ -1567,16 +1619,26 @@ struct RoleItemSection: View {
                 .disabled(visible.isEmpty)
             }
 
-            Toggle(isOn: Binding(
-                get: { sel.keepByDefault },
-                set: { keep in update { $0.setDefault(keep, keeping: all.map(\.id)) } })) {
-                Text(kind == .skill
-                     ? String(localized: "Keep skills installed later", comment: "角色库：以后新装的 skill 默认保留")
-                     : String(localized: "Keep MCP servers added later", comment: "角色库：以后新加的 MCP 默认保留"))
-                    .font(SettingsFont.minimum)
+            HStack(alignment: .firstTextBaseline, spacing: SettingsLayout.rowGap) {
+                Toggle(isOn: Binding(
+                    get: { sel.keepByDefault },
+                    set: { keep in update { $0.setDefault(keep, keeping: all.map(\.id)) } })) {
+                    Text(kind == .skill
+                         ? String(localized: "Keep skills installed later", comment: "角色库：以后新装的 skill 默认保留")
+                         : String(localized: "Keep MCP servers added later", comment: "角色库：以后新加的 MCP 默认保留"))
+                        .font(SettingsFont.minimum)
+                }
+                .toggleStyle(.checkbox)
+                .disabled(defaultLocked)
+                .help(defaultLocked
+                      ? String(localized: "This follows the role: a seat adds or takes away named items, and what happens to items installed later is the role's word.", comment: "角色库：小队成员页上，这个默认开关不可改的说明")
+                      : String(localized: "What happens to anything that isn't listed here yet, such as something installed tomorrow or a project's own.", comment: "角色库：默认项开关的说明"))
+                if defaultLocked {
+                    Text(String(localized: "Follows the role", comment: "角色库：小队成员页上，默认开关旁的标记"))
+                        .font(SettingsFont.minimum)
+                        .foregroundStyle(.secondary)
+                }
             }
-            .toggleStyle(.checkbox)
-            .help(String(localized: "What happens to anything that isn't listed here yet, such as something installed tomorrow or a project's own.", comment: "角色库：默认项开关的说明"))
 
             if all.isEmpty {
                 Text(kind == .skill
@@ -1681,7 +1743,7 @@ struct RoleItemRow: View {
     var isOn: Bool
     /// The one CLI it is installed in, when the role starts in more than
     /// one and that is known (07).
-    var only: String? = nil
+    var only: String?
     var onToggle: (Bool) -> Void
 
     @State private var expanded = false

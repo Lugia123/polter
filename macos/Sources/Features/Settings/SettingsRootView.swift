@@ -18,6 +18,7 @@ struct SettingsRootView: View {
     /// The window's minimum, as content size (settings.md §2.2).
     var minimumContent: CGSize
 
+    // swiftlint:disable:next type_name
     private typealias L = SettingsLayout
 
     @FocusState private var sectionsFocused: Bool
@@ -317,12 +318,17 @@ struct SettingsRootView: View {
 
     /// The squad templates page. It needs the role library's roles as well as
     /// its own: a seat is built on one, and whether a role may join at all is
-    /// a question about the role (`SquadRules.isSupervisor`).
+    /// a question about the role (`SquadRules.isSupervisor`). **The library
+    /// itself is passed on too** (task 2647): a seat's page draws the roles
+    /// page's own editors, and they read what each CLI has installed from
+    /// here rather than from a second copy of the squad page.
     private func squadsPart(_ part: SquadLibraryView.Part) -> some View {
         SquadLibraryView(
             library: squads,
             editor: squadEditor,
             roles: library.catalog.roles,
+            clis: library,
+            onOpenPlugin: { [model] key in model.goPlugin(key) },
             part: part,
             filter: "")
     }

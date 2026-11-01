@@ -540,3 +540,351 @@ enum SquadRules {
             : String(format: String(localized: "%d members", comment: "小队模版：列表行副标题，%d 是成员数"), squad.members.count)
     }
 }
+
+// MARK: What a seat adds up to
+
+/// A seat's skills or MCP servers, as its own page shows them: the role's
+/// set with the seat's delta laid over it, and the same list of rows the
+/// role page draws.
+///
+/// **The composition is the core's** (`squad.applySelection`): `remove`
+/// first, then `add`, each naming a single id. Everything the seat does not
+/// name is the role's -- including `keepByDefault`, which the core never
+/// takes from the squad (`setSelection` returns `sel.default` unchanged), so
+/// the seat page says "follows the role" rather than offering a switch that
+/// could not be saved.
+///
+/// Pure and here rather than in the page: `SquadLibraryView.swift` draws
+/// the tabs but this file is the half `tools/mac-logic-tests` compiles, so
+/// the rules can be named in a test and made to fail on purpose.
+struct SquadMergedItems: Equatable {
+    /// The rows the seat's tab draws, from the CLIs the seat actually runs.
+    var merged: RoleMergedItems
+    /// The role's set with the seat's delta applied. `isOn` on this is what
+    /// the switches show.
+    var selection: RoleSelection
+    /// Whether the seat says anything of its own about these items.
+    var overridden: Bool
+
+    /// The kind of delta one of these tabs writes (`SquadOverride`).
+    static func delta(_ kind: AgentCliItem.Kind, _ override: SquadOverride) -> SquadDelta? {
+        kind == .skill ? override.cliSkills : override.cliMcp
+    }
+
+    /// The role's own set, which is what the seat inherits.
+    static func base(_ kind: AgentCliItem.Kind, _ role: Role) -> RoleSelection {
+        kind == .skill ? role.skills : role.mcp
+    }
+
+    /// A role's set with a delta laid over it -- the same two loops the
+    /// core's `applySelection` makes, in the same order.
+    static func applied(_ base: RoleSelection, _ delta: SquadDelta?) -> RoleSelection {
+        guard let delta else { return base }
+        var out = base
+        for id in delta.remove { out.set(id, on: false) }
+        for id in delta.add { out.set(id, on: true) }
+        return out
+    }
+
+    /// The CLIs whose installed lists the seat's tabs read.
+    ///
+    /// The seat runs **one** CLI (`squad.resolve` starts the one entry
+    /// `cli` names), so a seat that has moved to another CLI reads that
+    /// one's list rather than the role's -- otherwise a launcher over
+    /// `claude-code` would show `antigravity`'s skills and hide the ones
+    /// the seat was given. A launcher stands as its base does, the same
+    /// rule `RoleCliOffer.available` follows.
+    static func clis(role: Role, member: SquadMember, in snapshot: AgentCliSnapshot) -> [String] {
+        guard let cli = member.override.cli, !cli.isEmpty else { return role.clis.map(\.cli) }
+        return [snapshot.own(cli)?.base ?? cli]
+    }
+
+    static func of(
+        _ kind: AgentCliItem.Kind,
+        role: Role,
+        member: SquadMember,
+        in snapshot: AgentCliSnapshot
+    ) -> SquadMergedItems {
+        let base = base(kind, role)
+        let delta = delta(kind, member.override)
+        return SquadMergedItems(
+            merged: RoleMergedItems.of(kind, clis: clis(role: role, member: member, in: snapshot), in: snapshot),
+            selection: applied(base, delta),
+            overridden: delta != nil)
+    }
+
+    /// One change made to the **merged** set, written back as the seat's
+    /// delta. `change` edits what is on screen; what is stored is only the
+    /// difference from the role, so a switch moved back to where the role
+    /// has it stops being an override rather than becoming one that says
+    /// the same thing (`SquadDelta.set`).
+    ///
+    /// `keepByDefault` is forced back to the role's: it is not the seat's
+    /// word (see the type's own note), and a change that moved it would
+    /// otherwise turn into a delta over every listed id.
+    static func apply(
+        _ change: (inout RoleSelection) -> Void,
+        kind: AgentCliItem.Kind,
+        role: Role,
+        into override: inout SquadOverride
+    ) {
+        let base = base(kind, role)
+        let before = applied(base, delta(kind, override))
+        var after = before
+        change(&after)
+        after.keepByDefault = base.keepByDefault
+
+        // Only the ids whose state actually moved are the seat's word.
+        let touched = Set(before.except).symmetricDifference(Set(after.except))
+        guard !touched.isEmpty else { return }
+        var out = delta(kind, override) ?? SquadDelta()
+        for id in touched { out.set(id, on: after.isOn(id), roleHas: base.isOn(id)) }
+
+        switch kind {
+        case .skill: override.cliSkills = out.isNone ? nil : out
+        case .mcp: override.cliMcp = out.isNone ? nil : out
+        }
+    }
+}
+
+/// The choices a seat's CLI drop-down offers (task 2647), and where the
+/// seat's own selection stands among them.
+///
+/// **The defect this exists for**: the drop-down was built from the *role's*
+/// `clis` alone, so a seat whose `override.cli` was one of the person's own
+/// Agent CLIs (`claude-deepseek-flash`, over `claude-code`) matched no row
+/// and SwiftUI drew nothing at all -- an empty control that looked broken
+/// and could not be changed back.
+///
+/// So the rows are: **follow the role**, the CLIs the core found adapters
+/// for, the person's own Agent CLIs, and the keys the snapshot does not
+/// know at all -- a launcher the person has deleted, which is never
+/// dropped, because losing its row would silently rewrite the seat on the
+/// next save.
+struct SquadCliOptions: Equatable {
+    struct Option: Equatable, Identifiable {
+        enum Kind: Equatable {
+            /// The role's own: the seat says nothing about the CLI.
+            case followRole
+            /// A CLI a plugin manages.
+            case preset
+            /// One of the person's own Agent CLIs (`launchers.json`).
+            case own
+            /// Named by the seat or the role, and not in the snapshot any
+            /// more -- a plugin switched off, or a launcher deleted.
+            case orphan
+        }
+
+        /// The tag the picker matches on; `""` is follow-the-role.
+        var key: String
+        var label: String
+        var kind: Kind
+        /// Why this one is only a row at all when it is an orphan: the
+        /// sentence the role library uses for the same key
+        /// (`AgentCliSnapshot.whyNot`). Nil for the rows that can start.
+        var why: String?
+
+        var id: String { key }
+    }
+
+    var options: [Option]
+    /// `member.override.cli`, or `""` when the seat follows the role.
+    var selected: String
+    /// What the selected row says. **Empty is not a state this can be in
+    /// for a selection that is set**: a row is made for it. It is empty
+    /// only when `selected` is `""` and even that row is missing, which is
+    /// what `isMatched` reports.
+    var selectedLabel: String
+    /// Whether `selected` found a row. False is the old blank control.
+    var isMatched: Bool
+    /// Whether `selected` is a key the snapshot no longer has.
+    var isOrphan: Bool
+    /// **Why** the selection has no row, when it has none. `isMatched` is
+    /// one bit and this is four answers, because the person does something
+    /// different about each -- and because "not read yet" is not "gone"
+    /// (rule 5: one flag must not say both "I don't know" and "I know, and
+    /// the answer is no").
+    var standing: Standing
+
+    enum Standing: Equatable {
+        /// A row was made for it.
+        case offered
+        /// The snapshot knows the key and it cannot start here: its program
+        /// is not on this machine, or it is the other major version. The
+        /// core has a sentence for which (`AgentCliSnapshot.whyNot`), and
+        /// turning a plugin on is the fix.
+        case unavailable
+        /// The snapshot has never heard of it -- a launcher the person has
+        /// deleted, or a key written by hand. Nothing here can say why.
+        case unknown
+        /// Nothing has been read yet. Not the same as either of the two
+        /// above, and the page says so rather than accusing the seat.
+        case notRead
+    }
+    /// The CLIs whose **per-CLI settings** a seat may write
+    /// (`override.clis`): the one it starts in, or one the role is already
+    /// set up for. Any other key is refused by the core with `BadField`
+    /// (`squad.zig:353-360`), so the page works this set out rather than
+    /// writing something the core will throw away.
+    var settingKeys: [String]
+
+    static func of(role: Role, member: SquadMember, in snapshot: AgentCliSnapshot) -> SquadCliOptions {
+        let offered = RoleCliOffer.available(snapshot)
+
+        var options: [Option] = [Option(
+            key: "",
+            label: role.clis.isEmpty
+                ? String(localized: "The role's own", comment: "小队模版：成员页 CLI 选择，跟随角色")
+                : String(format: String(localized: "The role's own (%@)", comment: "小队模版：成员页 CLI 选择，%@ 是角色自己的 CLI"), role.clis.map(\.cli).joined(separator: ", ")),
+            kind: .followRole)]
+        // The presets and the person's own, through the same filter every
+        // other start menu reads (task 2237): a CLI whose program is
+        // missing or is the other major version is not a row the core would
+        // accept.
+        var known: Set<String> = [""]
+
+        // **Nothing read yet: the role's own are the rows.** `nil` from
+        // `RoleCliOffer.available` is "not known", not "none here", and the
+        // same fallback every start menu makes is to offer what the role
+        // named. Without this the drop-down of a seat whose snapshot has
+        // not arrived holds only "follow the role" -- which is the empty
+        // control again, one state over. It is *not* an orphan judgement:
+        // `standing` stays `.notRead` for a key nobody has vouched for.
+        if snapshot.stale {
+            for key in role.clis.map(\.cli) where !key.isEmpty && known.insert(key).inserted {
+                options.append(Option(key: key, label: snapshot.label(for: key), kind: .preset, why: nil))
+            }
+        }
+        for cli in snapshot.clis where offered?.contains(cli.key) ?? true {
+            guard known.insert(cli.key).inserted else { continue }
+            options.append(Option(key: cli.key, label: cli.label, kind: .preset, why: nil))
+        }
+        for mine in snapshot.own where offered?.contains(mine.key) ?? true {
+            guard known.insert(mine.key).inserted else { continue }
+            options.append(Option(
+                key: mine.key,
+                label: String(
+                    format: String(localized: "%@ — runs %@", comment: "小队模版：成员页 CLI 选择，一个自定义 Agent CLI 与它底下的 CLI，如「agy bestfunc — runs antigravity」"),
+                    mine.name, snapshot.label(for: mine.base)),
+                kind: .own,
+                why: nil))
+        }
+        // **Only a key the snapshot does not know at all** -- a launcher
+        // the person has deleted. Losing that row would draw nothing (the
+        // defect) *and* would quietly rewrite the seat on the next save.
+        //
+        // A key the snapshot knows but cannot start (its program is not on
+        // this machine, or it is the other major version) is deliberately
+        // **not** a row: it is not something this seat may be moved to, and
+        // `RoleCliOffer.available` is where that question is answered for
+        // every start menu in the app. Adding one here would undo that
+        // filter one call later. A selection on such a key therefore
+        // matches nothing, which is the state the page says out loud.
+        //
+        // `stale` is the third case and not a fourth: nothing has been read
+        // yet, so "not known" is not "gone". One flag for both is exactly
+        // what rule 5 is about, so nothing is called an orphan until the
+        // snapshot has an answer.
+        if !snapshot.stale {
+            for key in role.clis.map(\.cli) + [member.override.cli ?? ""] where !key.isEmpty && !snapshot.known(key) {
+                guard known.insert(key).inserted else { continue }
+                options.append(Option(
+                    key: key,
+                    label: String(format: String(localized: "%@ (not here any more)", comment: "小队模版：成员页 CLI 选择，这个 CLI 现在这台机器上没有了，%@ 是它的名字"),
+                                  snapshot.label(for: key)),
+                    kind: .orphan,
+                    why: snapshot.whyNot(key)))
+            }
+        }
+
+        let selected = member.override.cli ?? ""
+        let row = options.first { $0.key == selected }
+        let standing = Self.standing(row != nil, selected: selected, in: snapshot)
+        return SquadCliOptions(
+            options: options,
+            selected: selected,
+            selectedLabel: row?.label ?? "",
+            isMatched: row != nil,
+            isOrphan: row?.kind == .orphan,
+            standing: standing,
+            // **No key twice**, in the order the role has them: a seat that
+            // starts in a CLI the role already lists names it once, and the
+            // page must not draw two "Starting …" sections for one CLI.
+            settingKeys: dedup(role.clis.map(\.cli) + (selected.isEmpty ? [] : [selected])))
+    }
+
+    /// Why the selection has a row, or why it does not.
+    ///
+    /// A function rather than a chain of conditions where it is used: the
+    /// four answers are read off two independent questions (is there a row;
+    /// has the snapshot been read) and a third that only matters when there
+    /// is none. Written once, so the page's sentence and the test's
+    /// expectation cannot come from two different readings of the same
+    /// state.
+    static func standing(_ matched: Bool, selected: String, in snapshot: AgentCliSnapshot) -> Standing {
+        // **"Nothing read yet" is asked first, and only about a key somebody
+        // named.** A row can exist without the snapshot having vouched for
+        // it: while nothing has been read the page offers the role's own by
+        // name, so there is a row to draw (`isMatched`) and still no answer
+        // to give -- "has a row" is not "knows". The empty tag is the
+        // exception and keeps `.offered`: its row is the role itself, not a
+        // claim about any CLI.
+        if snapshot.stale && !selected.isEmpty { return .notRead }
+        if matched { return .offered }
+        return snapshot.known(selected) ? .unavailable : .unknown
+    }
+
+    /// The same keys, in the same order, with each one only once.
+    static func dedup(_ keys: [String]) -> [String] {
+        var seen: Set<String> = []
+        return keys.filter { seen.insert($0).inserted }
+    }
+
+    /// One CLI's launch settings for this seat: the role's entry for that
+    /// CLI with the seat's own keys laid over it -- what `squad.resolve`
+    /// builds at launch, with the same rule (the role's entry for *that*
+    /// CLI, and nothing about the others).
+    static func choice(_ cli: String, role: Role, member: SquadMember) -> RoleCliChoice {
+        var out = role.choice(for: cli) ?? RoleCliChoice(cli: cli)
+        guard let over = member.override.cliChoice(cli) else { return out }
+        if !over.model.isEmpty { out.model = over.model }
+        if !over.args.isEmpty { out.args = over.args }
+        if !over.options.isEmpty { out.options = over.options }
+        return out
+    }
+
+    /// Write back **only** what differs from the role: a field that equals
+    /// the role's stops being an override instead of being one that says
+    /// the same thing (`writeOverride`'s rule, and `SquadDelta.set`'s).
+    static func setChoice(
+        _ cli: String,
+        role: Role,
+        into override: inout SquadOverride,
+        _ change: (inout RoleCliChoice) -> Void
+    ) {
+        let base = role.choice(for: cli) ?? RoleCliChoice(cli: cli)
+        var edited = choice(cli, role: role, member: SquadMember(alias: "", role: role.key, override: override))
+        change(&edited)
+
+        var over = SquadCliChoice(cli: cli)
+        if edited.model != base.model { over.model = edited.model }
+        if edited.args != base.args { over.args = edited.args }
+        if edited.options != base.options { over.options = edited.options }
+        override.setCliChoice(cli) { $0 = over }
+    }
+
+    /// The CLIs a seat's "Starting …" sections are drawn for: the one it
+    /// starts in when it has named one, otherwise the role's own, since
+    /// that is what it will run.
+    ///
+    /// **Not the same question as `settingKeys`**, which is what the core
+    /// will *accept* (`override.clis` may also name a CLI the role is set
+    /// up for). This one is what the seat will actually run, and it is the
+    /// shorter list: a seat starts one CLI, so drawing a section for every
+    /// CLI the role allows would be four forms editing something that never
+    /// starts.
+    static func startClis(role: Role, member: SquadMember) -> [String] {
+        guard let cli = member.override.cli, !cli.isEmpty else { return role.clis.map(\.cli) }
+        return [cli]
+    }
+}
