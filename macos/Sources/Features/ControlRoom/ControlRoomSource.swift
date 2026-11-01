@@ -92,6 +92,13 @@ final class ControlRoomModel: ObservableObject {
     /// them (a kept selection whose group is gone, and the group to open
     /// on).
     @Published private(set) var selection: String?
+    /// The working directories of the selected group (task 2634, #2140 M2).
+    @Published var workdirs: ControlRoomWorkdirs.Answer?
+    /// Refresh the working directories for the currently selected group.
+    var onRefreshWorkdirs: () -> Void = {}
+    func refreshWorkdirs() {
+        onRefreshWorkdirs()
+    }
     /// Whether the selection is one the person made -- a click, an arrow
     /// key, or what they had selected before a restart -- and not the row
     /// the control room opened on by itself. Only the person's own counts

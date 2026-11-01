@@ -43,7 +43,8 @@
     "perf-2015": "task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit",
     "perf-v4-svg": "design #1985 ui-v4, src/perf4.py: the dial's and the curve's drawing, read for task 2039 W2 (seq 166)",
     "task-v9": "design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts",
-    "files-2140-v2": "design 2140 v2, INTERACTION.md (§一 终端格里的预览, 宽窄) and src/files.css (`.split.over > .fp`, `--cpw`), read for task 2623 S1; the numbers as the supervisor's ruling of 2026-11-01 named them. v3 redraws the same cell and says 不改 about this part (CHANGES.md, the two things left)"
+    "files-2140-v2": "design 2140 v2, INTERACTION.md (§一 终端格里的预览, 宽窄) and src/files.css (`.split.over > .fp`, `--cpw`), read for task 2623 S1; the numbers as the supervisor's ruling of 2026-11-01 named them. v3 redraws the same cell and says 不改 about this part (CHANGES.md, the two things left)",
+    "files-2140-v2-palette": "design 2140 v2, src/files-palette.css (`--scrim`, the one the preview pages load last and the one `.split.over > .cv::after` lays over the terminal), read for task 2634 M2"
   },
 
   "numbers": {
@@ -806,7 +807,8 @@
     "task_blocked": { "light": "#545557", "dark": "#B4B8BB", "src": "task-v9", "doc": "Blocked: as `text_secondary`." },
     "task_done": { "light": "#545557", "dark": "#B4B8BB", "src": "task-v9", "doc": "Done, waiting to be closed: as `text_secondary`." },
     "task_closed": { "light": "#616365", "dark": "#95999C", "src": "task-v9", "doc": "Closed: as `text_tertiary`." },
-    "task_cancelled": { "light": "#616365", "dark": "#95999C", "src": "task-v9", "doc": "Cancelled: as `text_tertiary`." }
+    "task_cancelled": { "light": "#616365", "dark": "#95999C", "src": "task-v9", "doc": "Cancelled: as `text_tertiary`." },
+    "preview_scrim": { "light": "#000000@0.18", "dark": "#000000@0.45", "src": "files-2140-v2-palette", "doc": "Over a terminal the preview is drawn over, so the 40 of it left in sight reads as behind rather than as a second terminal (task 2634, #2140 M2; the design's `src/files-palette.css` `--scrim`, which `.split.over > .cv::after` lays on the terminal)." }
   },
 
   "strings": {

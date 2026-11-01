@@ -1701,6 +1701,9 @@ pub struct Theme {
     /// Cancelled: as `text_tertiary`.
     /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
     pub task_cancelled: Rgba,
+    /// Over a terminal the preview is drawn over, so the 40 of it left in sight reads as behind rather than as a second terminal (task 2634, #2140 M2; the design's `src/files-palette.css` `--scrim`, which `.split.over > .cv::after` lays on the terminal).
+    /// Source: design 2140 v2, src/files-palette.css (`--scrim`, the one the preview pages load last and the one `.split.over > .cv::after` lays over the terminal), read for task 2634 M2.
+    pub preview_scrim: Rgba,
     /// The status word on this surface: `problem_text` when light, `problem_text` when dark.
     /// Source: design v17, CHANGES.md.
     pub problem_text_on_row: Rgba,
@@ -1852,6 +1855,7 @@ pub const LIGHT: Theme = Theme {
     task_done: Rgba { r: 84, g: 85, b: 87, a: 1.0 },
     task_closed: Rgba { r: 97, g: 99, b: 101, a: 1.0 },
     task_cancelled: Rgba { r: 97, g: 99, b: 101, a: 1.0 },
+    preview_scrim: Rgba { r: 0, g: 0, b: 0, a: 0.18 },
     problem_text_on_row: Rgba { r: 172, g: 3, b: 17, a: 1.0 },
     problem_text_on_row_selected: Rgba { r: 172, g: 3, b: 17, a: 1.0 },
     problem_text_on_window_tab_selected: Rgba { r: 172, g: 3, b: 17, a: 1.0 },
@@ -1991,6 +1995,7 @@ pub const DARK: Theme = Theme {
     task_done: Rgba { r: 180, g: 184, b: 187, a: 1.0 },
     task_closed: Rgba { r: 149, g: 153, b: 156, a: 1.0 },
     task_cancelled: Rgba { r: 149, g: 153, b: 156, a: 1.0 },
+    preview_scrim: Rgba { r: 0, g: 0, b: 0, a: 0.45 },
     problem_text_on_row: Rgba { r: 252, g: 79, b: 78, a: 1.0 },
     problem_text_on_row_selected: Rgba { r: 239, g: 242, b: 246, a: 1.0 },
     problem_text_on_window_tab_selected: Rgba { r: 239, g: 242, b: 246, a: 1.0 },
