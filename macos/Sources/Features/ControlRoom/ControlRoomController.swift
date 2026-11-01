@@ -108,6 +108,7 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
                     // looked at (`ControlRoomSeenTracker.listChanged`).
                     self.seen?.listChanged(to: self.model.rowBeingLookedAt)
                     self.syncDetail()
+                    self.refreshWorkdirs()
                     // A group gone from the snapshot takes its chat with it;
                     // before the first snapshot nothing is known gone.
                     if let rows = self.model.list?.rows {
@@ -140,6 +141,8 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         }
         model.onGoToSupervisor = { [weak self] in self?.goToSupervisor() }
         model.pageSource = .core(ghostty)
+        model.onRefreshWorkdirs = { [weak self] in self?.refreshWorkdirs() }
+        refreshWorkdirs()
         // The left panel's bottom line reads through the same door (task
         // 2149), so that the two cannot come to mean different pages.
         model.overallAsk = model.pageSource.overallAsk
@@ -241,6 +244,26 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         // at until the person selects it.
         seen?.selectionChanged(to: model.rowBeingLookedAt)
         syncDetail()
+        refreshWorkdirs()
+    }
+
+    private func refreshWorkdirs() {
+        guard let group = model.selection else {
+            model.workdirs = nil
+            return
+        }
+        let req = ControlRoomWorkdirs.request(group: group)
+        switch model.pageSource.ask(req) {
+        case .success(let text):
+            switch ControlRoomWorkdirs.read(text) {
+            case .success(let answer):
+                model.workdirs = answer
+            case .failure:
+                model.workdirs = nil
+            }
+        case .failure:
+            model.workdirs = nil
+        }
     }
 
     /// Coming to the front with a row already selected is a chance to look

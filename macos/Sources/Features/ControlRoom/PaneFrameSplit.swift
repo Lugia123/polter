@@ -1,6 +1,7 @@
 import Combine
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 /// The three frames, put round the panes of a terminal tab
 /// (`control-room.md`, 12.6).
@@ -153,6 +154,130 @@ private struct PaneFrameScope: ViewModifier {
     }
 }
 
+/// The panel drawn inside one cell when its preview is open (task 2634, #2140 M2).
+///
+/// **Concrete view, and never `AnyView`**: wrapping this or its children in
+/// `AnyView` tears the view hierarchy down on every frame and recreates the
+/// `WKWebView` along with its coordinator, breaking document loads and page state.
+struct PanePreviewPanel: View {
+    typealias Look = ControlRoomLook
+    typealias Split = PreviewLayout.Split
+
+    let cell: String
+    let split: Split
+    @Binding var store: PreviewSlot.Store
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let state = store.state(cell)
+        let theme = Look.theme(scheme)
+        VStack(spacing: 0) {
+            // Header bar
+            HStack(spacing: 8) {
+                if split.overlay {
+                    // Under threshold (< 800): "‹ 终端" button at the leading edge
+                    Button {
+                        store.set(cell, open: false)
+                    } label: {
+                        HStack(spacing: 2) {
+                            Image(systemName: "chevron.backward")
+                            Text("终端")
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(theme.text.color)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if !state.rel.isEmpty {
+                    Text(URL(fileURLWithPath: state.rel).lastPathComponent)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(theme.text.color)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } else {
+                    Text("文件")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(theme.textSecondary.color)
+                }
+
+                Spacer()
+
+                // Close button (×)
+                Button {
+                    store.set(cell, open: false)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(theme.textSecondary.color)
+                        .frame(width: 16, height: 16)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(theme.windowBase.color)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(theme.line.color)
+                    .frame(height: CGFloat(Look.Line.hairline))
+            }
+
+            // Body
+            if state.token.isEmpty {
+                VStack {
+                    Spacer()
+                    Text("暂无预览文件")
+                        .font(.system(size: 12))
+                        .foregroundStyle(theme.textSecondary.color)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(theme.windowBase.color)
+            } else {
+                PreviewWebView(token: state.token)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .background(theme.windowBase.color)
+    }
+}
+
+/// The WKWebView bridge inside SwiftUI, holding a strong reference to the PreviewBridge
+/// so that weak delegates in WKWebView are preserved.
+struct PreviewWebView: NSViewRepresentable {
+    let token: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(token: token)
+    }
+
+    func makeNSView(context: Context) -> WKWebView {
+        context.coordinator.bridge.view()
+    }
+
+    func updateNSView(_ nsView: WKWebView, context: Context) {
+        if context.coordinator.token != token {
+            context.coordinator.update(token: token)
+        }
+    }
+
+    class Coordinator {
+        var token: String
+        var bridge: PreviewBridge
+
+        init(token: String) {
+            self.token = token
+            self.bridge = PreviewBridge(token: token)
+        }
+
+        func update(token: String) {
+            self.token = token
+            self.bridge = PreviewBridge(token: token)
+        }
+    }
+}
+
 /// Round what one leaf shows.
 private struct PaneFramed: ViewModifier {
     typealias Look = ControlRoomLook
@@ -221,6 +346,9 @@ private struct PaneFramed: ViewModifier {
         // Under the pointer only, as the window's own tabs (task 1642).
         let closeShows = grip != nil && !lent && PolterPaneTabRules.closeShows(hovering: titleHovered)
         content
+            .panePreview(cell: surfaceView.id.uuidString, store: $ghostty.previewStore) { split in
+                PanePreviewPanel(cell: surfaceView.id.uuidString, split: split, store: $ghostty.previewStore)
+            }
             .environment(\.paneHasTitle, grip != nil)
             .environment(\.paneHoldsStack, stack != nil)
             .modifier(PaneFrameChrome(

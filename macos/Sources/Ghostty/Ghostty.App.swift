@@ -22,6 +22,9 @@ extension Ghostty {
         /// The readiness value of the state.
         @Published var readiness: Readiness = .loading
 
+        /// Every cell's preview state across windows and tabs (task 2634, #2140 M2).
+        @Published var previewStore: PreviewSlot.Store = .init()
+
         /// The global app configuration. This defines the app level configuration plus any behavior
         /// for new windows, tabs, etc. Note that when creating a new window, it may inherit some
         /// configuration (i.e. font size) from the previously focused window. This would override this.

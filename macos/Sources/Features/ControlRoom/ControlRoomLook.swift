@@ -1701,6 +1701,9 @@ enum ControlRoomLook {
         /// Cancelled: as `text_tertiary`.
         /// Source: design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts.
         var taskCancelled: RGBA
+        /// Over a terminal the preview is drawn over, so the 40 of it left in sight reads as behind rather than as a second terminal (task 2634, #2140 M2; the design's `src/files-palette.css` `--scrim`, which `.split.over > .cv::after` lays on the terminal).
+        /// Source: design 2140 v2, src/files-palette.css (`--scrim`, the one the preview pages load last and the one `.split.over > .cv::after` lays over the terminal), read for task 2634 M2.
+        var previewScrim: RGBA
         /// The status word on this surface: `problem_text` when light, `problem_text` when dark.
         /// Source: design v17, CHANGES.md.
         var problemTextOnRow: RGBA
@@ -1852,6 +1855,7 @@ enum ControlRoomLook {
         taskDone: RGBA(r: 84, g: 85, b: 87, a: 1.0),
         taskClosed: RGBA(r: 97, g: 99, b: 101, a: 1.0),
         taskCancelled: RGBA(r: 97, g: 99, b: 101, a: 1.0),
+        previewScrim: RGBA(r: 0, g: 0, b: 0, a: 0.18),
         problemTextOnRow: RGBA(r: 172, g: 3, b: 17, a: 1.0),
         problemTextOnRowSelected: RGBA(r: 172, g: 3, b: 17, a: 1.0),
         problemTextOnWindowTabSelected: RGBA(r: 172, g: 3, b: 17, a: 1.0),
@@ -1991,6 +1995,7 @@ enum ControlRoomLook {
         taskDone: RGBA(r: 180, g: 184, b: 187, a: 1.0),
         taskClosed: RGBA(r: 149, g: 153, b: 156, a: 1.0),
         taskCancelled: RGBA(r: 149, g: 153, b: 156, a: 1.0),
+        previewScrim: RGBA(r: 0, g: 0, b: 0, a: 0.45),
         problemTextOnRow: RGBA(r: 252, g: 79, b: 78, a: 1.0),
         problemTextOnRowSelected: RGBA(r: 239, g: 242, b: 246, a: 1.0),
         problemTextOnWindowTabSelected: RGBA(r: 239, g: 242, b: 246, a: 1.0),

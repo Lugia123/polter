@@ -43,6 +43,7 @@
       "macos/Sources/Features/ControlRoom/ControlRoomListView.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
       "macos/Sources/Features/ControlRoom/PreviewLayout.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomWorkdirs.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomQuota.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomQuotaView.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomOverall.swift",
@@ -88,6 +89,10 @@
       "macos/Sources/Features/ControlRoom/PaneFrame.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomWindowSize.swift",
       "macos/Sources/Features/ControlRoom/PaneFrameView.swift",
+      {
+        "path": "macos/Sources/Features/ControlRoom/PaneFramePreview.swift",
+        "why": "the preview's place in a pane, and its tests are what hold the terminal to not being lost by it (task 1461's shape, task 2634 M2); it is written with values in and a view out -- no Ghostty.App, no SurfaceView, no ControlRoomLender -- so this whole file, divider arithmetic included, runs here. What is drawn beside the terminal is a panel handed in, and that one says GhosttyKit and is not here"
+      },
       "macos/Sources/Features/ControlRoom/PaneStackStrip.swift",
       "macos/Sources/Features/ControlRoom/PaneStackStripView.swift",
       "macos/Sources/Features/ControlRoom/PaneStackRules.swift",
@@ -175,6 +180,8 @@
       "macos/Sources/Features/Projects/ProjectPaneSizes.swift",
       "macos/Sources/Features/Preview/PluginWebView.swift",
       "macos/Sources/Features/Preview/PreviewRoutes.swift",
+      "macos/Sources/Features/Preview/PreviewSlot.swift",
+      "macos/Sources/Features/Preview/PreviewTicket.swift",
       "macos/Sources/Features/Personas/RoleCliOffer.swift",
       "macos/Sources/Features/Roles/RoleModels.swift",
       "macos/Sources/Ghostty/Surface View/SurfaceTitleState.swift",
@@ -193,6 +200,10 @@
       {
         "path": "macos/Sources/Features/Preview/PreviewBridge.swift",
         "why": "imports GhosttyKit: it is the one place a preview asks the core (ghostty_app_files, the five files requests) and reads the app delegate's app; the rules it applies are PreviewRoutes.swift's, which is in and is held to the shared table"
+      },
+      {
+        "path": "macos/Sources/Features/Preview/PreviewTicketCore.swift",
+        "why": "imports GhosttyKit: it is the `files_open` side of the same door `PreviewBridge.swift` is the `files_resolve` side of, and reads the app delegate's app; what a ticket is, what may be one, and how a refusal is read are PreviewTicket.swift's, which is in"
       },
       {
         "path": "macos/Sources/Features/Plugins/PluginCore.swift",
@@ -281,6 +292,7 @@
       "macos/Tests/ControlRoom/ControlRoomTasksTests.swift",
       "macos/Tests/ControlRoom/NotificationClickTests.swift",
       "macos/Tests/ControlRoom/PaneFrameChromeTests.swift",
+      "macos/Tests/ControlRoom/PaneFramePreviewTests.swift",
       "macos/Tests/ControlRoom/PaneFrameBarFitTests.swift",
       "macos/Tests/ControlRoom/PaneFrameTests.swift",
       "macos/Tests/ControlRoom/PaneStackStripTests.swift",
@@ -288,6 +300,7 @@
       "macos/Tests/ControlRoom/SafeFontTests.swift",
       "macos/Tests/ControlRoom/PaneStackRulesTests.swift",
       "macos/Tests/ControlRoom/PreviewLayoutTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomWorkdirsTests.swift",
       "macos/Tests/ControlRoom/TerminalPresenceTests.swift",
       "macos/Tests/ControlRoom/WindowOpsTallyTests.swift",
       "macos/Tests/ControlRoom/DockBadgeTests.swift",
@@ -334,7 +347,9 @@
       "macos/Tests/Settings/AgentCliRulesTests.swift",
       "macos/Tests/Settings/SettingsRulesTests.swift",
       "macos/Tests/Squads/SquadLibraryTests.swift",
-      "macos/Tests/Preview/PreviewRoutesTests.swift"
+      "macos/Tests/Preview/PreviewRoutesTests.swift",
+      "macos/Tests/Preview/PreviewSlotTests.swift",
+      "macos/Tests/Preview/PreviewTicketTests.swift"
     ],
     "out": [
       {
