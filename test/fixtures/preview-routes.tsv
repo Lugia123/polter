@@ -1,0 +1,106 @@
+# The `polter-file://` request routes, one table, two implementations (task 2628, #2140 M1/W1).
+#
+# Read by windows/preview-route/src/lib.rs and
+# macos/Sources/Features/Preview/PreviewRoutes.swift, each of which runs every row in
+# its own tests and must produce the expected columns byte for byte -- the shape
+# test/fixtures/project-filenames.tsv uses for its three implementations, and the reason
+# is the same: two hosts in two languages that can each be green while they disagree.
+#
+# What the route does, and what it does NOT do.
+#
+# A preview is served over `polter-file://<token>/<rel>`. The token is the host of the
+# URL and the path is what the ticket resolves *inside* the file's own scope. **The route
+# decides nothing about the file system**: it says which ticket is asked and what relative
+# path is asked of it, and the core's `files_resolve(token, rel)` -- `files/Tickets.zig`,
+# task 2573 -- judges that path against the ticket's scope every time and hands back the
+# real path. A host that built a real path here would be a second judge, and the two would
+# drift.
+#
+# The columns, tab separated, exactly five. `url` is last so that the two columns that are
+# empty for a refusal are inside the line: an editor that strips trailing whitespace would
+# silently turn a five-column row into a three-column one. **And for the same reason `url`
+# is never empty here** -- a row whose `url` is the empty string ends in tabs, and both
+# readers went red on it before it was noticed. The empty request is asserted in each
+# side's own tests instead (`resolve("")`).
+#
+#   case      a name for the row
+#   verdict   ok | other_scheme | bad_token | outside | bad_escape
+#   token     the ticket, for `ok`; empty otherwise
+#   rel       the path asked of the ticket, for `ok` (empty = the ticket's own file)
+#   url       the request as it arrives at the scheme handler
+#
+# The rules, in the order they are applied:
+#
+# 1. The scheme must be `polter-file`, compared without case (a URL scheme is
+#    case-insensitive by the standard). Anything else -- `https:`, `file:`,
+#    `polter-plugin:`, an empty string, or this scheme with no authority -- is
+#    other_scheme, and the handler answers 403 rather than reading anything.
+# 2. With a token and a path, or the request is refused. **The token is hex, 32 lower-case
+#    characters** (16 bytes, `Tickets.newId`). Anything else -- short, long, upper-case, a
+#    non-hex character, an empty host, a percent-escape -- is bad_token, judged before any
+#    path is looked at: an unguessable token is the whole of the capability, so a request
+#    that cannot carry one is refused for that reason and not for a path.
+# 3. The path is percent-decoded; a malformed escape or bytes that are not UTF-8 are
+#    bad_escape (a path that cannot be read is not guessed at).
+# 4. `\` and `/` are both separators, `..` is refused wherever it appears, and a segment
+#    holding `:` or NUL is refused -- outside. `..` is refused even when it would land back
+#    inside, because the browser normalises `a/../b` itself before it makes the request, so
+#    a `..` arriving here is a caller that is not the page's own URL resolution. `.` and
+#    empty segments are dropped.
+# 5. What is left is the relative path. It is NOT checked against the ticket here: whether
+#    it is inside the scope is the core's answer (`Access`), and the host has no way to
+#    know which token is which.
+#
+# NOT CHECKED: whether the token is one that is *held* (only the core knows; a token that
+#   is well formed and unknown comes back refused by `files_resolve`), whether the file
+#   exists, whether it is readable, and whether the answer is inside the ticket's scope.
+#   All four are the core's, and are covered by `files/Tickets.zig`'s own tests.
+#
+# **Both readers assert this number**: `# rows: 40`. Two implementations that agree on
+# every row they read still agree when a row is deleted -- "they match" is not "this case
+# is still being tested", and the rows that matter most here (the refusals) are the ones
+# somebody would trim. The count is the guard; `project-filenames.tsv` has one for the
+# same reason.
+#
+# rows: 40
+case	verdict	token	rel	url
+entry-url	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8		polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/
+no-path	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8		polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8
+file-in-subdir	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	img/a.png	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/img/a.png
+deep-relative	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	a/b/c/d.md	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a/b/c/d.md
+dotdot-out	outside			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/../etc/passwd
+dotdot-deep	outside			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/img/../../etc/passwd
+dotdot-encoded	outside			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/%2e%2e/etc/passwd
+dotdot-encoded-upper	outside			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/%2E%2E/etc/passwd
+dotdot-backslash	outside			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/..\..\etc
+dotdot-then-back-inside	outside			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a/../b.md
+backslash-separates	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	a/b/c.png	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a\b/c.png
+encoded-slash	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	a/b	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a%2Fb
+nul-encoded	outside			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a%00b
+colon-in-segment	outside			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/c:/hosts
+colon-encoded	outside			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a/c%3Ad
+bad-escape-letter	bad_escape			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a%zz
+bad-escape-short	bad_escape			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a%4
+not-utf8	bad_escape			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/%ff
+uppercase-scheme	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	x	POLTER-FILE://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/x
+mixedcase-scheme	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	x	Polter-File://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/x
+https	other_scheme			https://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/x
+file-url	other_scheme			file:///etc/hosts
+plugin-scheme	other_scheme			polter-plugin://plug/index.html
+scheme-without-authority	other_scheme			polter-file:9f2c0a1b4d5e6f708192a3b4c5d6e7f8/x
+scheme-only	bad_token			polter-file://
+short-token	bad_token			polter-file://9f2c0a1b/x
+long-token	bad_token			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f800/x
+token-uppercase	bad_token			polter-file://9F2C0A1B4D5E6F708192A3B4C5D6E7F8/x
+token-nonhex	bad_token			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7fz/x
+token-empty-host	bad_token			polter-file:///x
+token-percent-encoded	bad_token			polter-file://%39f2c0a1b4d5e6f708192a3b4c5d6e7f8/x
+token-dotted	bad_token			polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8./x
+query	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	a	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a?x=1
+fragment	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	a	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a#f
+query-and-fragment	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	a	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a?x=1#f
+dot-segment	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	a	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/./a
+double-slash	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	a	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8//a
+trailing-slash	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	a	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a/
+space-in-name	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	a b.md	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a b.md
+percent-space	ok	9f2c0a1b4d5e6f708192a3b4c5d6e7f8	a b.md	polter-file://9f2c0a1b4d5e6f708192a3b4c5d6e7f8/a%20b.md

@@ -4131,6 +4131,49 @@ pub fn controlPage(self: *App, req: []const u8, cap: usize) []const u8 {
     return self.page_out.items;
 }
 
+/// The answer to one of the five `files_*` requests, from a door a **host**
+/// uses rather than an agent (task 2628, #2140 M1/W1).
+///
+/// `req` is one JSON request, the same text `wire.parseRequestLeaky` reads
+/// off the socket, and the answer is the same JSON the socket would have
+/// carried -- so a host and the tool surface cannot disagree about what a
+/// ticket does. `null` when `req` is not one of the five; the five are
+/// refused to every agent, every tool and every plugin on purpose
+/// (`rpc.callableByPlugin`, `offeredAsTool`, `isAgentCall`), and a host has
+/// no terminal id to be judged by, which is why this does not go through
+/// `rpc.dispatch`.
+///
+/// **What makes that safe is the ticket, not the caller.** A token was
+/// minted by the core for one workdir and one scope and is unguessable;
+/// every path is judged against *that ticket* by `Tickets.resolve` on every
+/// single call. There is no request here whose answer the caller's own
+/// identity would have narrowed.
+///
+/// App thread only, like every other door of this kind.
+pub fn filesAnswer(
+    self: *App,
+    arena: Allocator,
+    req: []const u8,
+) Allocator.Error!?[]const u8 {
+    const parsed = poltergeistpkg.wire.parseRequestLeaky(arena, req) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // A request that cannot be read is said, not guessed at: the
+        // caller is a host that built the text itself, so this is a bug on
+        // its side and it should hear about it rather than get silence.
+        //
+        // ⚠️ **`@as` and not a bare `return`**: this function answers `null`
+        // for "not one of the five", so an allocated answer and a `null` are
+        // the same error union's two payloads and Zig will not widen `[]u8`
+        // into `?[]const u8` on its own.
+        else => return @as(?[]const u8, try std.fmt.allocPrint(
+            arena,
+            "{{\"refused\":\"bad_request\",\"why\":{f}}}",
+            .{std.json.fmt(@errorName(err), .{})},
+        )),
+    };
+    return poltergeistpkg.rpc.filesAnswer(arena, poltergeistHost(self), parsed);
+}
+
 const PageRequest = struct {
     page: []const u8 = "",
     group: []const u8 = "",
@@ -4352,7 +4395,16 @@ fn renderTasks(self: *App, arena: Allocator, r: PageRequest) Allocator.Error![]c
             .progress = t.progress,
             .owner = try self.memberName(arena, r.group, t.owner),
             .squad = t.squad,
-            .squad_name = self.squadNameOf(t.squad),
+            // ⚠️ **`orelse t.squad`, and it is not decoration.** The field is
+            // `[]const u8` and its own doc says it "falls back to the key when
+            // no template of that key is on the machine any more"; this call
+            // site was the one place that fallback was missing, so
+            // `zig build -Demit-macos-app=false` did not compile at HEAD
+            // (`App.zig:4355` -- the build this task's own change is proved
+            // on). Found 2026-11-01 while building task 2628 and reported to
+            // the supervisor rather than fixed quietly, because the line came
+            // in with 4450d819b and not with this task.
+            .squad_name = self.squadNameOf(t.squad) orelse t.squad,
             // `made`/`planned`, and the path the ledger holds for the tree
             // (empty while it is only planned -- nothing has been made).
             .worktree = wt_state,

@@ -1,0 +1,97 @@
+# What a preview answers with for a file: one table, two implementations (task 2628, #2140 M1/W1).
+#
+# Read by windows/preview-route/src/lib.rs (`content_type`, the only
+# implementation the Windows host has) and held to the same answers by
+# macos/Tests/Preview/PreviewRoutesTests.swift, which runs every row against
+# `PreviewRoutes.contentType` -- the shape test/fixtures/preview-routes.tsv
+# uses for the route itself, and for the reason that file gives.
+#
+# Why the two hosts were not already the same thing: this table used to be
+# written twice, once in `windows/host/src/preview_page.rs` and once in
+# `macos/Sources/Features/Preview/PreviewRoutes.swift`, and the 33 entries
+# differed on two of them -- `.css` (`text/css` / `text/plain`) and `.json`
+# (`application/json` / `text/plain`). Both hosts send
+# `X-Content-Type-Options: nosniff`, so a previewed stylesheet rendered on
+# one machine and printed as text on the other. Measured 2026-11-01 by the
+# test seat (`polter-artifacts/2628/evid/two-hosts-response-0638.log`).
+#
+# The rule, in the order it is applied:
+#
+# 1. The extension is what follows the **last** dot in the file's own name.
+#    No dot at all, a dotfile (`.gitignore`), a trailing dot (`file.`) and a
+#    directory component holding a dot (`a.d/b`) all have no extension.
+# 2. It is compared **without case** (`.MD` is `.md`).
+# 3. Anything not in this table is `application/octet-stream`: an unknown
+#    extension must not stop the file being read.
+#
+# `text/plain` is the answer wherever a person is the reader. A previewed
+# `.html` is a page and is served as one; `.md`, `.rs`, `.json` and `.css`
+# are files somebody is reading, and a previewed page's own scripts do not
+# run, so nothing in a preview loads a stylesheet or a JSON document. That
+# is why `.js` was already `text/plain` on both hosts, and why `.css` and
+# `.json` now are too.
+#
+# CAREFUL: **The plugin page's table is a different table and keeps `text/css` and
+# `application/json`.** A plugin page *is* a program: its `.css` and `.json`
+# are resources the page loads and the engine has to be told what they are.
+# `windows/settings-shell/src/plugins.rs::content_type` (with its own
+# `content_types_are_the_macos_table` test) and
+# `macos/Sources/Features/Plugins/PluginPage.swift::contentType` are that
+# table. The two answer different questions; do not merge them.
+#
+# Columns, tab separated, exactly three:
+#
+#   path   the file's path as the core named it (a preview is served the
+#          real path, so a directory component may be present)
+#   type   the whole Content-Type header value, `; charset=utf-8` included
+#   why    what the row is here for -- **never empty**, so that no row ends
+#          in a tab and can be trimmed into a two-column one
+#
+# NOTE: **Both readers assert this number**: `# rows: 40`. Two implementations
+# that agree on every row they read also agree after a row is deleted, and
+# the rows worth trimming are the ones that pin a *shape* rather than a
+# type -- a trailing dot, a dotfile, a dot in a directory component. Same
+# guard, same reason, as `preview-routes.tsv` and `project-filenames.tsv`.
+#
+# rows: 40
+path	type	why
+README.md	text/plain; charset=utf-8	markdown, the common case
+notes.markdown	text/plain; charset=utf-8	the long spelling
+NOTES.MD	text/plain; charset=utf-8	the extension is compared without case
+index.html	text/html; charset=utf-8	the one type served as a document
+page.HTM	text/html; charset=utf-8	and its short spelling, without case
+app.js	text/plain; charset=utf-8	already text on both hosts before this table
+main.mjs	text/plain; charset=utf-8	the other script extension
+mod.ts	text/plain; charset=utf-8	typescript is text here too
+view.tsx	text/plain; charset=utf-8	react source, read as text
+site.css	text/plain; charset=utf-8	the first of the two that differed
+a/b/site.CSS	text/plain; charset=utf-8	in a subdirectory, and without case
+data.json	text/plain; charset=utf-8	the second of the two that differed
+src/main.rs	text/plain; charset=utf-8	source being read, not run
+src/main.zig	text/plain; charset=utf-8	and this repository's own language
+tool.py	text/plain; charset=utf-8	a script being read, not executed
+App.swift	text/plain; charset=utf-8	the macOS host is written in it
+main.go	text/plain; charset=utf-8	read as text like the rest of the source
+a.c	text/plain; charset=utf-8	source, not a document
+a.h	text/plain; charset=utf-8	a header is source, same as its .c
+a.cpp	text/plain; charset=utf-8	and its C++ spelling
+notes.txt	text/plain; charset=utf-8	plain text, the easy case
+run.log	text/plain; charset=utf-8	a log is text somebody reads
+rows.csv	text/plain; charset=utf-8	a table somebody is reading
+rows.tsv	text/plain; charset=utf-8	the table format this file is in
+img/logo.svg	image/svg+xml	a document that is an image
+img/logo.png	image/png	a markdown file's images load from this ticket
+shot.JPEG	image/jpeg	without case
+clip.mp4	video/mp4	and media, which the policy names too
+book.pdf	application/pdf	came back as a file, not as an image or a page
+anim.gif	image/gif	the animated one
+shot.jpg	image/jpeg	the short spelling, next to .JPEG above
+img/logo.webp	image/webp	the modern replacement for the two above
+track.mp3	audio/mpeg	audio, which the policy lets in from this ticket too
+clip.webm	video/webm	the other video container
+mix.ogg	audio/ogg	the other audio container
+LICENSE	application/octet-stream	no dot at all: bytes, not a failed read
+file.	application/octet-stream	a trailing dot is not an extension
+.gitignore	application/octet-stream	a dotfile's dot introduces the name, not a type
+a.d/b	application/octet-stream	a dot in a directory component is not this file's
+blob.wat	application/octet-stream	an extension nobody wrote a type for

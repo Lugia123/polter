@@ -1795,6 +1795,19 @@ GHOSTTY_API bool ghostty_app_control_act(ghostty_app_t, const char*, uintptr_t, 
 // length first. Zero bytes means the core has no answer yet: draw nothing.
 // App thread only.
 GHOSTTY_API uintptr_t ghostty_app_control_page(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+// The five `files_*` requests, for a host and not for an agent: reading and
+// editing one file of a working directory through a capability ticket
+// (src/poltergeist/files/Tickets.zig, task 2573; the hosts' own door is
+// task 2628). `req` is one JSON request, the same text the socket carries --
+// {"method":"files_resolve","params":{"token":...,"rel":...}} and its four
+// siblings -- and the answer is the same JSON the socket would have carried.
+// Same buffer rule as ghostty_app_control_snapshot, and a second call with
+// the same request gives the same answer, so a host may ask for the length
+// first. **Zero bytes for a request that is not one of the five**: a host
+// that asks for something else is told nothing rather than answered with
+// somebody else's shape. Refusals come back as {"refused":...,"why":...},
+// which is what the ticket itself answers with. App thread only.
+GHOSTTY_API uintptr_t ghostty_app_files(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 // Where the person is, as far as the control room goes: whether it is in
 // front, and which groups' cards it has on screen, as JSON
 // {"in_front":bool,"cards":["group",...]}. Said whenever either changes; the

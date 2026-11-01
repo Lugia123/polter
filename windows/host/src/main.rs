@@ -138,6 +138,8 @@ mod general_ui;
 mod logs_ui;
 mod plugins_ui;
 mod plugin_page;
+mod webview_host;
+mod preview_page;
 mod polterclose;
 mod project;
 mod project_picker;
@@ -5783,6 +5785,15 @@ fn load_api() -> Option<Api> {
                 let p = GetProcAddress(internal, s!("ghostty_app_control_page"));
                 if p.is_none() {
                     logf!("optional symbol ghostty_app_control_page missing: the control room's pages will have no data");
+                }
+                p.map(|p| std::mem::transmute(p))
+            },
+            // Optional, like `app_control_page`: asked for by name, and a
+            // core from before task 2628 simply has no preview.
+            app_files: {
+                let p = GetProcAddress(internal, s!("ghostty_app_files"));
+                if p.is_none() {
+                    logf!("optional symbol ghostty_app_files missing: the file preview will have no data");
                 }
                 p.map(|p| std::mem::transmute(p))
             },

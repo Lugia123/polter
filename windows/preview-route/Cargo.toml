@@ -1,0 +1,28 @@
+[package]
+name = "polter-preview-route"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The `polter-file://` request routes and the preview's `window.polter`
+# contract, apart from the WebView2 that serves them (task 2628, #2140
+# M1/W1, `polter-artifacts/2145/PLAN.md` §2.1 and §3.2).
+#
+# Out here for the reason `settings-shell` and `projectname` are: the host's
+# own tests compile only for a Windows target and run only on the Windows
+# machine (`windows/Cargo.toml`), so a route broken on the Mac stayed green
+# until somebody put it on the Windows box. What decides which file a
+# `polter-file://` request asks about is a string rule, and a string rule
+# can be tested anywhere; `windows/tools/pure-crates-pass-their-tests.py`
+# runs these tests on whatever machine runs the gates.
+#
+# **No dependencies**, including no JSON library: the one document this
+# reads is a table of tab-separated lines.
+#
+# ⚠️ **This crate decides nothing about the file system.** It says which
+# ticket is asked and what relative path is asked of it; the core's
+# `files_resolve` judges that path against the ticket's scope every time
+# and hands back the real path (`src/poltergeist/files/Tickets.zig`, task
+# 2573). A host that built a real path from `rel` here would be a second
+# judge of "is this inside the workdir", and the two would drift.
+[dependencies]

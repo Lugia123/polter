@@ -1988,6 +1988,18 @@ pub struct Api {
     /// has been worked out yet. App thread only; asked for when
     /// `ACTION_CONTROL_ROOM_CHANGED` arrives and at no other time.
     pub app_control_snapshot: unsafe extern "C" fn(App, *mut u8, usize) -> usize,
+    /// `ghostty_app_files(app, req, len, buf, cap)` (task 2628, #2140 M1/W1):
+    /// the five `files_*` requests answered for a **host** rather than an
+    /// agent -- `src/poltergeist/files/Tickets.zig`, task 2573. `req` is one
+    /// JSON request, the same text the socket carries, and the answer is the
+    /// same JSON the socket would have carried, by the persona buffer rule.
+    /// **Zero bytes for a request that is not one of the five.** App thread
+    /// only.
+    ///
+    /// **Optional**, like `app_control_page`: a core from before this task
+    /// has no such export, and a preview is the only thing that wants it.
+    /// Without it a preview says so rather than showing a blank frame.
+    pub app_files: Option<unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> usize>,
     /// `ghostty_app_key(app, event)`: a key with no terminal to send it to.
     /// The core performs the binding when it is app-scoped (or global) and
     /// answers true; a surface-scoped one is left alone and answers false.

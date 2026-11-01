@@ -856,7 +856,7 @@ fn contextUsed(params: ?std.json.ObjectMap) ParseError!?u8 {
 /// `"use_theirs"`, `"both"` or `{"edit": "<text>"}`. Absent is none. **One
 /// that is none of those refuses the whole call**: a choice that was guessed
 /// at is a conflict resolved in a way nobody picked.
-fn parseChoices(aa: Allocator, params: ?std.json.ObjectMap) ParseError![]const rpc.files.Merge.Choice {
+pub fn parseChoices(aa: Allocator, params: ?std.json.ObjectMap) ParseError![]const rpc.files.Merge.Choice {
     const p = params orelse return &.{};
     const v = p.get("choices") orelse return &.{};
     const items = switch (v) {

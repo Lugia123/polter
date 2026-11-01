@@ -8915,6 +8915,73 @@ pub fn heardByAgent(who: Bus.Caller, method: Method) ?Bus.Id {
     return who.terminalId();
 }
 
+/// One of the five `files_*` requests, answered -- and `null` for anything
+/// else, so a caller that is not one of them is told so rather than
+/// answered with somebody else's shape.
+///
+/// **The single place the files requests are carried out.** `dispatch` hands
+/// these here, and so does a host's own door (`filesAnswer`); a second copy
+/// would be a second answer to "may this path be read", which is the one
+/// question this whole path exists to ask once.
+fn filesArm(
+    alloc: std.mem.Allocator,
+    host: Host,
+    req: Request,
+) std.mem.Allocator.Error!?wire.Response {
+    return switch (req) {
+        .files_open => |p| blk: {
+            const wd = host.filesWorkdir(alloc, p.workdir_id) catch |err| {
+                log.warn("poltergeist: files_open could not look up a workdir err={}", .{err});
+                break :blk hostFailure("HostRefused", "the working directories could not be read");
+            } orelse break :blk .{ .json = try std.fmt.allocPrint(alloc, "{{\"refused\":\"no_workdir\",\"why\":\"there is no working directory with that id\"}}", .{}) };
+            break :blk .{ .json = try host.filesTickets().open(alloc, wd, p.path, p.scope) };
+        },
+        .files_resolve => |p| .{ .json = try host.filesTickets().resolve(alloc, p.token, p.rel) },
+        .files_propose => |p| .{ .json = try host.filesTickets().propose(alloc, p.token, p.full_text, p.base_version) },
+        .files_commit => |p| .{ .json = try host.filesTickets().commit(alloc, p.proposal_id, p.choices, p.restore_gone) },
+        .files_close => |p| .{ .json = try host.filesTickets().close(alloc, p.token) },
+        else => null,
+    };
+}
+
+/// The answer a **host** gets to one of the five `files_*` requests, as the
+/// JSON a host reads -- or `null` when `req` is not one of them.
+///
+/// **A host does not come through `dispatch`** (task 2628, #2140 M1/W1).
+/// `dispatch` opens with `arrived` and `authorize`, and both are about a
+/// caller: `arrived` claims an agent's standing for the terminal that sent
+/// a request, and a host is not one; `authorize` refuses these five to
+/// every plugin and every agent on purpose (`callableByPlugin`,
+/// `isAgentCall`, `offeredAsTool`), so a door that went through it would be
+/// a door nobody could use. What makes that safe is the ticket itself: a
+/// host holds a token the core minted for one workdir and one scope, which
+/// nothing else has, and `Tickets.resolve` judges every path against *that
+/// ticket* every time. There is no call here that the caller's own id would
+/// have narrowed.
+///
+/// An answer is `{"refused":...}` for anything the core will not do, in the
+/// same shape `Tickets` refuses in -- so a host has one path to write, not
+/// two.
+pub fn filesAnswer(
+    alloc: std.mem.Allocator,
+    host: Host,
+    req: Request,
+) std.mem.Allocator.Error!?[]const u8 {
+    const res = (try filesArm(alloc, host, req)) orelse return null;
+    return switch (res) {
+        .json => |j| j,
+        .failed => |f| try std.fmt.allocPrint(
+            alloc,
+            "{{\"refused\":{f},\"why\":{f}}}",
+            .{ std.json.fmt(f.code, .{}), std.json.fmt(f.message, .{}) },
+        ),
+        // `filesArm` answers with one of those two and nothing else; this
+        // arm is written out so that a `Response` gaining a case does not
+        // silently become "not a files request".
+        else => null,
+    };
+}
+
 pub fn dispatch(
     alloc: std.mem.Allocator,
     bus: *Bus,
@@ -9014,17 +9081,25 @@ fn dispatchOne(
             return .{ .me = info };
         },
 
-        .files_open => |p| {
-            const wd = host.filesWorkdir(alloc, p.workdir_id) catch |err| {
-                log.warn("poltergeist: files_open could not look up a workdir err={}", .{err});
-                return hostFailure("HostRefused", "the working directories could not be read");
-            } orelse return .{ .json = try std.fmt.allocPrint(alloc, "{{\"refused\":\"no_workdir\",\"why\":\"there is no working directory with that id\"}}", .{}) };
-            return .{ .json = try host.filesTickets().open(alloc, wd, p.path, p.scope) };
+        // **The five files requests live in one place** (`filesAnswer`),
+        // because a host reaches them through a door of its own and not
+        // through this dispatch: two copies of "which path may be read"
+        // would be two answers, and the hosts are the only callers there
+        // are (task 2628).
+        //
+        // ⚠️ **The prong above and `filesArm`'s own arm are the same list of
+        // five written twice**, and that cannot be helped here: this switch
+        // is exhaustive over `Method` with no `else`, which is what makes a
+        // new request fail to compile until somebody decides about it, so a
+        // `filesArm` reached from here has to be asked with the request in
+        // hand. What can be helped is what happens when the two drift: this
+        // answers a named refusal rather than `unreachable`, so a sixth name
+        // added to the prong is a caller told "that is not a files request"
+        // instead of the whole process panicking on the app thread.
+        .files_open, .files_resolve, .files_propose, .files_commit, .files_close => {
+            return (try filesArm(alloc, host, req)) orelse
+                hostFailure("NotAFilesRequest", "that call is not one of the files requests");
         },
-        .files_resolve => |p| return .{ .json = try host.filesTickets().resolve(alloc, p.token, p.rel) },
-        .files_propose => |p| return .{ .json = try host.filesTickets().propose(alloc, p.token, p.full_text, p.base_version) },
-        .files_commit => |p| return .{ .json = try host.filesTickets().commit(alloc, p.proposal_id, p.choices, p.restore_gone) },
-        .files_close => |p| return .{ .json = try host.filesTickets().close(alloc, p.token) },
 
         .hook_context => |p| {
             // `authorize` has refused a plugin already; refused again here
@@ -20472,10 +20547,63 @@ const FilesRig = struct {
         return self.askf("{{\"method\":\"files_open\",\"params\":{{\"workdir_id\":\"abcd\",\"path\":\"{s}\",\"scope\":\"{s}\"}}}}", .{ path, scope });
     }
 
+    /// The same request through the **host's own door** (`filesAnswer`) and
+    /// not through `dispatch`: nothing here is authorized, because a host is
+    /// not a caller and the ticket is what decides.
+    fn askHost(self: *FilesRig, json: []const u8) !std.json.Value {
+        const a = self.arena.allocator();
+        const req = try wire.parseRequestLeaky(a, json);
+        const out = (try filesAnswer(a, self.fake.host(), req)) orelse
+            return error.NotAFilesRequest;
+        return std.json.parseFromSliceLeaky(std.json.Value, a, out, .{});
+    }
+
     fn resolve(self: *FilesRig, token: []const u8, rel: []const u8) !std.json.Value {
         return self.askf("{{\"method\":\"files_resolve\",\"params\":{{\"token\":\"{s}\",\"rel\":\"{s}\"}}}}", .{ token, rel });
     }
 };
+
+test "2628 M1/W1: a host reaches the files requests through its own door, and the ticket still decides" {
+    var r: FilesRig = undefined;
+    try r.init();
+    defer r.deinit();
+    try r.put("w/a.md", "a\n");
+    try r.put("w/b.png", "b");
+    try r.put("other/x.md", "x");
+
+    // A host is not a caller, so `dispatch` is not on this path at all --
+    // and the token from `files_open` is what the rest of it hangs on.
+    const file = try r.askHost(
+        \\{"method":"files_open","params":{"workdir_id":"abcd","path":"a.md","scope":"file"}}
+    );
+    const token = file.object.get("token").?.string;
+    try testing.expectEqual(@as(usize, 32), token.len);
+
+    // The ticket's own file, and the fence `scope: file` puts round it --
+    // asked through the host's door, judged by the ticket exactly as it is
+    // through the socket.
+    try testing.expect((try r.askHost(try std.fmt.allocPrint(r.arena.allocator(), "{{\"method\":\"files_resolve\",\"params\":{{\"token\":\"{s}\"}}}}", .{token})))
+        .object.get("path") != null);
+    try testing.expect((try r.askHost(try std.fmt.allocPrint(r.arena.allocator(), "{{\"method\":\"files_resolve\",\"params\":{{\"token\":\"{s}\",\"rel\":\"../other/x.md\"}}}}", .{token})))
+        .object.get("refused") != null);
+
+    // An unknown token is refused, not answered with somebody else's file.
+    try testing.expect((try r.askHost(
+        \\{"method":"files_resolve","params":{"token":"00000000000000000000000000000000"}}
+    )).object.get("refused") != null);
+
+    // **A request that is not one of the five gets nothing at all**: a host
+    // handed a `me` answer would read a terminal's name as a file's.
+    try testing.expect((try filesAnswer(r.arena.allocator(), r.fake.host(), .me)) == null);
+
+    // And the five are still refused everywhere an agent or a plugin could
+    // reach them -- the door does not widen anything.
+    for ([_]Method{ .files_open, .files_resolve, .files_propose, .files_commit, .files_close }) |m| {
+        try testing.expect(!callableByPlugin(m));
+        try testing.expect(!offeredAsTool(m));
+        try testing.expect(!isAgentCall(m));
+    }
+}
 
 test "2573 C7: the files requests are a host's: no tool, no call, no plugin, no standing" {
     for ([_]Method{ .files_open, .files_resolve, .files_propose, .files_commit, .files_close }) |m| {

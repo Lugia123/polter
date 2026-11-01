@@ -16,7 +16,10 @@
     "macos/Tests/Projects",
     "macos/Tests/Squads",
     "macos/Tests/Splits",
-    "macos/Sources/Features/Highlight"
+    "macos/Sources/Features/Highlight",
+    "macos/Sources/Features/Preview",
+    "macos/Tests/Preview",
+    "macos/Sources/Features/Plugins"
   ],
   "stubs": [
     "tools/mac-logic-tests-stubs/GhosttyStandIn.swift"
@@ -170,6 +173,8 @@
         "why": "only the measurements of the gap round a framed pane are taken, which ProjectPaneSizes sizes a reopened pane by; the rest needs Ghostty.App, the real SurfaceView and BaseTerminalController: it is where a frame is put round a live pane"
       },
       "macos/Sources/Features/Projects/ProjectPaneSizes.swift",
+      "macos/Sources/Features/Preview/PluginWebView.swift",
+      "macos/Sources/Features/Preview/PreviewRoutes.swift",
       "macos/Sources/Features/Personas/RoleCliOffer.swift",
       "macos/Sources/Features/Roles/RoleModels.swift",
       "macos/Sources/Ghostty/Surface View/SurfaceTitleState.swift",
@@ -181,6 +186,30 @@
       "macos/Sources/Features/Squads/SquadModels.swift"
     ],
     "out": [
+      {
+        "path": "macos/Sources/Features/Plugins/PluginSettings.swift",
+        "why": "reads a plugin's settings file (the user's, else the shipped settings.json) and needs SettingsRules.pluginMissing, which is in the package but only as a part of SettingsRules.swift; a plugin's settings are also read by the core, and the file a run of the package would need is one a test sets up by hand -- PluginSettingsTests.swift is outside the watched directories and is not in"
+      },
+      {
+        "path": "macos/Sources/Features/Preview/PreviewBridge.swift",
+        "why": "imports GhosttyKit: it is the one place a preview asks the core (ghostty_app_files, the five files requests) and reads the app delegate's app; the rules it applies are PreviewRoutes.swift's, which is in and is held to the shared table"
+      },
+      {
+        "path": "macos/Sources/Features/Plugins/PluginCore.swift",
+        "why": "imports GhosttyKit: it is the one place that asks the core about plugins (ghostty_app_plugin_list/test/configure) and reads the app delegate's app; nothing in it is a rule the package could run"
+      },
+      {
+        "path": "macos/Sources/Features/Plugins/PluginMenu.swift",
+        "why": "draws the Plugins submenu: AppKit and SwiftUI, and every call it makes goes through PluginCore, which imports GhosttyKit"
+      },
+      {
+        "path": "macos/Sources/Features/Plugins/PluginPage.swift",
+        "why": "imports WebKit: it is a plugin's settings page in a WKWebView -- the scheme handler, the three bridge calls and the file fence. What it shares with a preview is WebViewShell, which is in; the page itself needs a view on screen"
+      },
+      {
+        "path": "macos/Sources/Features/Plugins/PluginSettingsView.swift",
+        "why": "draws the settings form from a plugin's own schema: SwiftUI, and its Save calls PluginCore, which imports GhosttyKit"
+      },
       {
         "path": "macos/Sources/Features/Squads/SquadLibrary.swift",
         "why": "imports GhosttyKit: it is the one place that asks the core for the squad catalog and writes a template back (ghostty_app_squad_catalog/put/delete), and reads the app delegate's app; what the page decides from a catalog it already has is SquadModels.swift, which is in"
@@ -304,7 +333,8 @@
       "macos/Tests/Terminal/TabDotsTests.swift",
       "macos/Tests/Settings/AgentCliRulesTests.swift",
       "macos/Tests/Settings/SettingsRulesTests.swift",
-      "macos/Tests/Squads/SquadLibraryTests.swift"
+      "macos/Tests/Squads/SquadLibraryTests.swift",
+      "macos/Tests/Preview/PreviewRoutesTests.swift"
     ],
     "out": [
       {

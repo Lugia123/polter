@@ -4,6 +4,14 @@ import OSLog
 
 /// A plugin's own settings page, shown in a `WKWebView`.
 ///
+/// **The five decisions that surround a page are not made here** -- a
+/// non-persistent store, one origin per page, no network twice over, no
+/// navigation away, no new windows are `WebViewShell`'s (task 2628, #2140 M1),
+/// and a file preview is served in the same shell. The reasons are written out
+/// in that file's header and are not repeated here. What is left in this file
+/// is what is *this page's*: the scheme it is served over, the three calls
+/// `window.polter` has, and how a request for one of its files is answered.
+///
 /// **This is not shipping a browser engine.** `WKWebView` is a system
 /// component: the same WebKit every other app on the machine already links,
 /// already installed, already updated by the OS. Nothing is bundled and
@@ -39,19 +47,10 @@ struct PluginPage: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WKWebView {
-        let bridge = context.coordinator
-        let webView = WKWebView(frame: .zero, configuration: bridge.configuration())
-        webView.navigationDelegate = bridge
-        webView.uiDelegate = bridge
-
-        // Nothing here is a site, so there is nothing to go back to. A page
-        // that swallowed a two-finger swipe and navigated would leave a
-        // settings window showing a blank frame with no way back.
-        webView.allowsBackForwardNavigationGestures = false
-        webView.allowsMagnification = false
-
-        bridge.load(into: webView)
-        return webView
+        // The coordinator holds the shell; the shell holds the view. ⚠️ The
+        // web view's delegates are **weak**, so a shell made here and thrown
+        // away would leave a page with no delegation at all -- see `Shell`.
+        context.coordinator.view()
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
@@ -88,40 +87,6 @@ struct PluginPage: NSViewRepresentable {
 /// A page that wants to type into a terminal is a case nobody has yet had.
 /// When somebody does, opening it is a decision with a reason attached,
 /// which is better than it having been open from the start.
-///
-/// ## What stops it
-///
-/// Each of these is a separate decision, written down because a default
-/// taken silently is a default nobody can review:
-///
-/// 1. **A custom scheme, not `file:`.** Loading `file:///…/ui/index.html`
-///    means either no read access to the page's own siblings, or -- with
-///    `allowFileAccessFromFileURLs` -- a page that can `fetch` any file the
-///    user can read, `~/.ssh` included. And `file:` origins are treated as
-///    opaque and inconsistent across WebKit versions, which is a poor thing
-///    to build an isolation story on. A scheme handler means every single
-///    request is resolved by the code below, so "may not leave `ui/`" is a
-///    check that runs rather than a property hoped for.
-/// 2. **One origin per plugin.** The URL is `polter-plugin://<key>/…`, so
-///    two plugins' pages are cross-origin to each other by the browser's own
-///    rules -- no reaching across via frames or `window.opener`. Each page
-///    also gets a fresh non-persistent data store, so cookies, local storage
-///    and caches are neither shared between plugins nor left on disk.
-/// 3. **No network.** Twice over, and deliberately: a `Content-Security-
-///    Policy` header on every response, which covers `fetch`, `XHR`,
-///    `WebSocket`, images, fonts and frames; and a content rule list that
-///    blocks every load whose URL is not this scheme, which covers anything
-///    CSP is later found not to. A settings page has no reason to talk to
-///    the internet, and the dependency that does is exactly the one nobody
-///    read.
-/// 4. **No new windows.** `window.open` and `target="_blank"` get nothing
-///    back. A page inside a settings window that can conjure a second
-///    window is a page that can draw something that looks like Polter
-///    asking for a password.
-/// 5. **JavaScript stays on.** It is the point -- a page without it is a
-///    worse version of the declarative form. What is switched off is
-///    JavaScript *opening windows by itself*, which is (4) said to the
-///    engine as well as to the delegate.
 @MainActor
 final class PluginPageBridge: NSObject {
     private static let logger = Logger(
@@ -133,6 +98,10 @@ final class PluginPageBridge: NSObject {
     /// Where the page's files live, resolved once and used for every request
     /// as the fence a served path must sit inside.
     private let root: URL
+
+    /// The shell, made on the first ask and kept. See `Shell` on why the
+    /// delegates have to be held by something that lives as long as the view.
+    private var shell: WebViewShell.Shell<PluginPageBridge>?
 
     var onSave: (() -> Void)?
     var onClose: (() -> Void)?
@@ -147,9 +116,17 @@ final class PluginPageBridge: NSObject {
         self.onClose = onClose
     }
 
+    /// The web view for this page, making the shell the first time.
+    func view() -> WKWebView {
+        if let shell { return shell.view }
+        let made = WebViewShell.Shell(self)
+        shell = made
+        return made.view
+    }
+
     /// The URL the page is loaded from. The plugin's key is the host, which
     /// is what makes each page its own origin.
-    private var entryURL: URL? {
+    var entryURL: URL? {
         var components = URLComponents()
         components.scheme = PluginPage.scheme
         components.host = plugin.key
@@ -157,87 +134,13 @@ final class PluginPageBridge: NSObject {
         return components.url
     }
 
-    func configuration() -> WKWebViewConfiguration {
-        let configuration = WKWebViewConfiguration()
-
-        // Not shared with any other web view in the app, and never written
-        // to disk: a settings page has no session to keep, and what it does
-        // store should not outlive the window or be visible to the next
-        // plugin's page.
-        configuration.websiteDataStore = .nonPersistent()
-        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
-        configuration.setURLSchemeHandler(self, forURLScheme: PluginPage.scheme)
-
-        let controller = WKUserContentController()
-        controller.addScriptMessageHandler(
-            self,
-            contentWorld: .page,
-            name: PluginPage.handlerName)
-        controller.addUserScript(WKUserScript(
-            source: Self.bridgeScript,
-            injectionTime: .atDocumentStart,
-
-            // The main frame only. A page that frames something else does
-            // not get to hand the bridge to whatever it framed.
-            forMainFrameOnly: true))
-        configuration.userContentController = controller
-
-        return configuration
-    }
-
-    /// Compile the block-everything rule list, then load the page.
-    ///
-    /// The load waits for the rule list so the page never runs for even one
-    /// frame without it. If compiling fails the page is loaded anyway and
-    /// the failure is logged: the CSP header on every response is the
-    /// primary control and this is the belt beside it, so a page that
-    /// silently never appears would be a worse outcome than a page running
-    /// with one of two network blocks.
-    func load(into webView: WKWebView) {
-        guard let url = entryURL else { return }
-        let request = URLRequest(url: url)
-
-        guard let store = WKContentRuleListStore.default() else {
-            Self.logger.warning("no content rule list store; page loads with CSP only")
-            webView.load(request)
-            return
-        }
-
-        store.compileContentRuleList(
-            forIdentifier: "polter-plugin-offline",
-            encodedContentRuleList: Self.blockEverythingElse
-        ) { [weak webView] list, error in
-            guard let webView else { return }
-            if let list {
-                webView.configuration.userContentController.add(list)
-            } else {
-                Self.logger.warning(
-                    "content rules did not compile, page loads with CSP only: \(String(describing: error))")
-            }
-            webView.load(request)
-        }
-    }
-
-    /// Block every load, then let this scheme back through.
-    ///
-    /// Written in that order because the last matching rule wins: a single
-    /// "allow ours" rule would not stop anything, and a single "block http"
-    /// rule would miss every scheme nobody thought of.
-    private static let blockEverythingElse = """
-    [
-      {"trigger": {"url-filter": ".*"}, "action": {"type": "block"}},
-      {"trigger": {"url-filter": "^polter-plugin://"},
-       "action": {"type": "ignore-previous-rules"}}
-    ]
-    """
-
     /// What the page finds on `window`.
     ///
     /// `postMessage` to a reply handler returns a promise, so the whole
     /// bridge is three lines with no message ids or pending tables to get
     /// wrong. Frozen and non-configurable so a dependency that runs later
     /// cannot quietly replace it with something that logs what it is handed.
-    private static let bridgeScript = """
+    private static let pageBridgeScript = """
     (function () {
       const post = (method, argument) =>
         window.webkit.messageHandlers.\(PluginPage.handlerName)
@@ -257,6 +160,15 @@ final class PluginPageBridge: NSObject {
       });
     })();
     """
+}
+
+// MARK: What the shell has to be told
+
+extension PluginPageBridge: WebViewShell.Page {
+    static var scheme: String { PluginPage.scheme }
+    static var handlerName: String { PluginPage.handlerName }
+    static var bridgeScript: String { Self.pageBridgeScript }
+    var policy: String { Self.policy }
 }
 
 // MARK: The three calls
@@ -524,35 +436,18 @@ extension PluginPageBridge: WKURLSchemeHandler {
     }
 }
 
-// MARK: Nowhere to navigate, nowhere to open
-
-extension PluginPageBridge: WKNavigationDelegate, WKUIDelegate {
-    nonisolated func webView(
-        _ webView: WKWebView,
-        decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-    ) {
-        MainActor.assumeIsolated {
-            // Only this scheme. A link to `https://…` does nothing rather
-            // than turning a settings window into a browser; the content
-            // rules block the load anyway, and this stops the frame being
-            // replaced by a failure page.
-            guard navigationAction.request.url?.scheme == PluginPage.scheme else {
-                decisionHandler(.cancel)
-                return
-            }
-            decisionHandler(.allow)
-        }
-    }
-
-    nonisolated func webView(
-        _ webView: WKWebView,
-        createWebViewWith configuration: WKWebViewConfiguration,
-        for navigationAction: WKNavigationAction,
-        windowFeatures: WKWindowFeatures
-    ) -> WKWebView? {
-        // See (4) on `PluginPageBridge`: a page that can put a second window
-        // on screen can put something that looks like Polter on screen.
-        nil
-    }
-}
+// MARK: The two delegates are the shell's
+//
+// **Nothing here.** A link to `https://…` doing nothing, and `window.open`
+// getting nothing back, used to be this class's `WKNavigationDelegate` and
+// `WKUIDelegate`. They are `WebViewShell.Navigation` and
+// `WebViewShell.Windows` now (task 2628, #2140 M1), because a preview needs
+// exactly the same two answers from its view and a second copy of them is a
+// second answer nothing would report -- both would be green on the day they
+// drifted apart.
+//
+// The scheme list those delegates allow is `WebViewShell.allowedSchemes`,
+// which for this page is `polter-plugin` and nothing else. A preview's adds
+// `polter-file:`, and it is the same list the content rule list is compiled
+// from, so a scheme a page may be loaded from and a scheme it may load
+// cannot disagree.

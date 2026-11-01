@@ -24,7 +24,7 @@
 //! handler here borrows the cell.
 
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use polter_settings_shell::plugins::{self as rules, Call, PageState};
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
@@ -33,14 +33,18 @@ use webview2_com::{
     CreateCoreWebView2EnvironmentCompletedHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler,
     WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, AcceleratorKeyPressedEventHandler,
 };
-use windows::core::{Interface, HRESULT, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, RECT, WPARAM};
-use windows::Win32::System::Com::CoTaskMemFree;
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_WITH_ALTERED_SEARCH_PATH};
+use windows::core::{Interface, PCWSTR, PWSTR};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use crate::plugins::{self, Plugin};
+
+// Everything about a WebView2 that is not about what the page can do: the
+// loader, the user-data folder, and the four conversions (`task 2628`, the
+// shell a preview is served in too). The three functions taken here were
+// this file's until a second page needed them.
+use crate::webview_host::{probe, read_inside, take_keyboard_back, take_pwstr, user_data_dir, wide, Loader};
 
 /// Posted to the plugins section when the page saved (`wparam` 1) or asked
 /// to close (2). **`WM_APP + 19`**, free when written (`grep 'WM_APP +'`);
@@ -48,14 +52,6 @@ use crate::plugins::{self, Plugin};
 /// answer rebuilds the page, and that must not happen inside the page's own
 /// message handler.
 pub const WM_PAGE_EVENT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 19;
-
-type CreateEnv = unsafe extern "system" fn(PCWSTR, PCWSTR, *mut std::ffi::c_void, *mut std::ffi::c_void) -> HRESULT;
-type GetVersion = unsafe extern "system" fn(PCWSTR, *mut PWSTR) -> HRESULT;
-
-#[derive(Clone, Copy)]
-struct Loader {
-    create: CreateEnv,
-}
 
 struct Page {
     /// Asked once per process: the Runtime does not appear under a running
@@ -95,52 +91,6 @@ thread_local! {
 /// state but `Loading` and `Ready`.
 pub fn state() -> PageState {
     PAGE.with(|p| p.borrow().state.clone())
-}
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(Some(0)).collect()
-}
-
-fn take_pwstr(p: PWSTR) -> String {
-    if p.is_null() {
-        return String::new();
-    }
-    let s = unsafe { p.to_string() }.unwrap_or_default();
-    unsafe { CoTaskMemFree(Some(p.0 as *const std::ffi::c_void)) };
-    s
-}
-
-/// Find the loader beside the executable and ask it for the Runtime.
-fn probe() -> (Option<Loader>, PageState) {
-    let Some(path) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("WebView2Loader.dll"))) else {
-        return (None, rules::page_state(false, Err(0)));
-    };
-    let w = wide(&path.display().to_string());
-    let module: HMODULE = match unsafe { LoadLibraryExW(PCWSTR(w.as_ptr()), None, LOAD_WITH_ALTERED_SEARCH_PATH) } {
-        Ok(m) => m,
-        Err(e) => {
-            // process-wide: the WebView2 loader, looked for once per process
-            crate::plogf!("[page] {} did not load: {:?}", path.display(), e);
-            return (None, rules::page_state(false, Err(0)));
-        }
-    };
-    let create = unsafe { GetProcAddress(module, windows::core::s!("CreateCoreWebView2EnvironmentWithOptions")) };
-    let version = unsafe { GetProcAddress(module, windows::core::s!("GetAvailableCoreWebView2BrowserVersionString")) };
-    let (Some(create), Some(version)) = (create, version) else {
-        // process-wide: as above
-        crate::plogf!("[page] {} has no WebView2 entry points", path.display());
-        return (None, rules::page_state(false, Err(0)));
-    };
-    let create: CreateEnv = unsafe { std::mem::transmute(create) };
-    let version: GetVersion = unsafe { std::mem::transmute(version) };
-    let mut v = PWSTR::null();
-    let hr = unsafe { version(PCWSTR::null(), &mut v) };
-    let text = take_pwstr(v);
-    let answer = if hr.is_ok() { Ok(text.as_str()) } else { Err(hr.0) };
-    let st = rules::page_state(true, answer);
-    // process-wide: as above
-    crate::plogf!("[page] loader {} found; runtime version {:?} hr=0x{:08X} -> {:?}", path.display(), text, hr.0 as u32, st);
-    (Some(Loader { create }), st)
 }
 
 /// Show `p`'s page in `rect` of `parent` (the section window).
@@ -206,36 +156,6 @@ pub fn hide() {
     }
 }
 
-/// **The keyboard out of a hidden page** (task 1003): after `close()` or a
-/// switch to the Settings tab the focus stayed in WebView2's own child
-/// window, now invisible, and Ctrl+W -- and every other key -- went into
-/// it. It goes to the settings window, as a click on its sidebar would.
-fn take_keyboard_back(parent: HWND) {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
-    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, IsChild, IsWindowVisible, GA_ROOT};
-    if parent.0.is_null() {
-        return;
-    }
-    unsafe {
-        let f = GetFocus();
-        // In the hidden page's own windows -- or, as the test machine read
-        // it (task 1005), on the section's window itself, where WebView2
-        // leaves it when it hides.
-        let stranded = !f.0.is_null() && (f == parent || (IsChild(parent, f).as_bool() && !IsWindowVisible(f).as_bool()));
-        if stranded {
-            let to = if crate::plugins_ui::focus_after_page() {
-                GetFocus()
-            } else {
-                let root = GetAncestor(parent, GA_ROOT);
-                let _ = SetFocus(Some(root));
-                root
-            };
-            // process-wide: the one plugin page
-            crate::plogf!("[page] keyboard taken back from the hidden page ({:?}) to {:?}", f, to);
-        }
-    }
-}
-
 fn close_controller() {
     let ctl = PAGE.with(|c| {
         let s = &mut *c.borrow_mut();
@@ -247,13 +167,6 @@ fn close_controller() {
             let _ = ctl.Close();
         }
     }
-}
-
-/// `%LOCALAPPDATA%\polter\webview2`: WebView2 needs a folder of its own even
-/// for an InPrivate page, and the default -- beside the executable -- may
-/// not be writable.
-fn user_data_dir() -> Option<PathBuf> {
-    Some(plugins::user_dir()?.parent()?.join("webview2"))
 }
 
 fn make_env(loader: Loader) {
@@ -538,22 +451,6 @@ fn serve(args: &ICoreWebView2WebResourceRequestedEventArgs, key: &str) {
     if let Ok(resp) = unsafe { env.CreateWebResourceResponse(stream.as_ref(), status, PCWSTR(reason.as_ptr()), PCWSTR(headers.as_ptr())) } {
         let _ = unsafe { args.SetResponse(&resp) };
     }
-}
-
-/// The file at `segs` under `root`, **only if it is still under `root`
-/// once links are followed**: `resolve` fences the path's spelling, this
-/// fences where it really lands.
-fn read_inside(root: &Path, segs: &[String]) -> Option<Vec<u8>> {
-    let root = std::fs::canonicalize(root).ok()?;
-    let mut p = root.clone();
-    for s in segs {
-        p.push(s);
-    }
-    let real = std::fs::canonicalize(&p).ok()?;
-    if !real.starts_with(&root) || !real.is_file() {
-        return None;
-    }
-    std::fs::read(real).ok()
 }
 
 fn on_message(wv: &ICoreWebView2, args: &ICoreWebView2WebMessageReceivedEventArgs, key: &str) {

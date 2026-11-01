@@ -212,3 +212,11 @@ path = "../control-room"
 # Out here so the cleanup rule has tests that run on the Mac.
 [dependencies.polter-hostlog]
 path = "../hostlog"
+
+# The `polter-file://` request routes and the preview's `window.polter`
+# contract (task 2628, #2140 W1). Out here for the reason `projectname` is:
+# a route tested only on Windows is one that can be broken on the Mac with
+# everything green, and the same table is run by the macOS twin
+# (`macos/Sources/Features/Preview/PreviewRoutes.swift`).
+[dependencies.polter-preview-route]
+path = "../preview-route"

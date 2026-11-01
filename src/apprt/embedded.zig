@@ -2218,6 +2218,46 @@ pub const CAPI = struct {
         return copyJsonOut(app.core_app.controlPage(req[0..len], room), buf, cap);
     }
 
+    /// The five `files_*` requests, for a **host** (task 2628, #2140 M1/W1;
+    /// `src/poltergeist/files/Tickets.zig`). `req` is one JSON request --
+    /// the same text the socket carries -- and the answer is the same JSON
+    /// the socket would have carried, by the persona buffer rule: the real
+    /// length back, one NUL after it when it fits, and the same answer on a
+    /// second call with the same request so a host may ask for the size
+    /// first.
+    ///
+    /// **Zero bytes for a request that is not one of the five.** A host
+    /// that asks for something else is told nothing rather than answered
+    /// with somebody else's shape.
+    ///
+    /// ⚠️ **Not an agent's door and not a plugin's.** These are refused to
+    /// both, on purpose, everywhere else (`src/poltergeist/rpc.zig`); here
+    /// the caller has no terminal id at all, and what makes the door safe
+    /// is the ticket: a token the core minted for one workdir and one scope,
+    /// against which `Tickets.resolve` judges every path on every call.
+    /// App thread only.
+    export fn ghostty_app_files(
+        app: *App,
+        req: [*]const u8,
+        len: usize,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        const core = app.core_app;
+        var arena: std.heap.ArenaAllocator = .init(core.alloc);
+        defer arena.deinit();
+        const answer = core.filesAnswer(arena.allocator(), req[0..len]) catch
+            return copyJsonOut(files_fallback, buf, cap);
+        return copyJsonOut(answer orelse "", buf, cap);
+    }
+
+    /// What a files request that could not be answered at all says. Named
+    /// rather than empty, because "out of memory" and "that is not one of
+    /// the five" are different things and a host reads neither as a file.
+    const files_fallback =
+        \\{"refused":"unavailable","why":"the core could not answer"}
+    ;
+
     /// The group a click on a notification raised from terminal `id` (a
     /// `ghostty_surface_poltergeist_id`) opens the control room at: the
     /// group it supervises, else the first it is in, in the control room's

@@ -114,6 +114,7 @@ dependencies = [
  "polter-control-room",
  "polter-droppath",
  "polter-hostlog",
+ "polter-preview-route",
  "polter-projectfile",
  "polter-projectname",
  "polter-projects",
@@ -128,6 +129,10 @@ dependencies = [
 
 [[package]]
 name = "polter-hostlog"
+version = "0.1.0"
+
+[[package]]
+name = "polter-preview-route"
 version = "0.1.0"
 
 [[package]]
