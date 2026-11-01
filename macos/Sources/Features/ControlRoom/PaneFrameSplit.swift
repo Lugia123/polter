@@ -245,6 +245,7 @@ struct PanePreviewPanel: View {
 
 /// The WKWebView bridge inside SwiftUI, holding a strong reference to the PreviewBridge
 /// so that weak delegates in WKWebView are preserved.
+@MainActor
 struct PreviewWebView: NSViewRepresentable {
     let token: String
 
@@ -262,6 +263,7 @@ struct PreviewWebView: NSViewRepresentable {
         }
     }
 
+    @MainActor
     class Coordinator {
         var token: String
         var bridge: PreviewBridge
