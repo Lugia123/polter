@@ -246,6 +246,10 @@
         "why": "asks the core through ControlRoomPerfPage.swift's source, which imports GhosttyKit; its reading, its columns and its keys are ControlRoomTasks.swift, which is in"
       },
       {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomWorkdirsPage.swift",
+        "why": "draws the working directories page: SwiftUI view that reads ControlRoomWorkdirs.Answer from the model, no standalone business logic"
+      },
+      {
         "path": "macos/Sources/Features/ControlRoom/ControlRoomLender.swift",
         "why": "imports GhosttyKit: it moves a real terminal view between windows"
       },

@@ -7,23 +7,24 @@ import Testing
 struct PageStripTests {
     typealias L = ControlRoomPageStripLayout
     let wants: [CGFloat] = [L.nominalWant("总管", marked: true), L.nominalWant("群聊", marked: false),
-                            L.nominalWant("任务", marked: false), L.nominalWant("性能", marked: true)]
+                            L.nominalWant("任务", marked: false), L.nominalWant("性能", marked: true),
+                            L.nominalWant("工作目录", marked: false)]
 
     @Test func testFourTabsInOrderFromTheInsetEachAsWideAsItWants() {
         let s = L(width: 900, wants: wants, current: .supervisor)
         #expect(s.tabs.map(\.page) == ControlRoomPage.allCases)
-        #expect(s.tabs.map(\.width) == [78, 56, 56, 78])
+        #expect(s.tabs.map(\.width) == [78, 56, 56, 78, 88])
         #expect(same(s.tabs[0].x, 4 + 20))
         for (a, b) in zip(s.tabs, s.tabs.dropFirst()) { #expect(a.x + a.width == b.x) }
         #expect(s.tabs.allSatisfy { $0.y == 4 && $0.height == 28 && !$0.squeezed })
-        let last = s.tabs[3]
+        let last = s.tabs[4]
         #expect(s.status.x == last.x + last.width + 8)
         #expect(same(s.status.x + s.status.width, 900 - 4 - 12))
     }
 
     @Test func testSeparatorsOnlyBetweenTwoTabsNeitherInFront() {
         let s = L(width: 900, wants: wants, current: .tasks)
-        #expect(s.tabs.map(\.separatorBefore) == [false, true, false, false])
+        #expect(s.tabs.map(\.separatorBefore) == [false, true, false, false, true])
         #expect(s.tabs.filter(\.current).map(\.page) == [.tasks])
     }
 
@@ -39,13 +40,14 @@ struct PageStripTests {
     }
 
     @Test func testTooNarrowTheOthersGiveWayAndTheOneInFrontDoesNot() {
-        let width = 2 * 4 + 20 + 12 + wants[3] + 3 * 50
+        let width = 2 * 4 + 20 + 12 + wants[3] + 4 * 50
         let s = L(width: width, wants: wants, current: .performance)
         #expect(s.tabs[3].width == wants[3])
         #expect(!(s.tabs[3].squeezed))
-        #expect(s.tabs[..<3].allSatisfy { $0.squeezed && $0.width >= L.least })
-        let tight = L(width: 2 * 4 + 20 + 12 + 3 * L.least + 30, wants: wants, current: .performance)
-        #expect(tight.tabs[..<3].allSatisfy { $0.width == L.least })
+        let others = s.tabs.indices.filter { $0 != 3 }
+        #expect(others.allSatisfy { s.tabs[$0].squeezed && s.tabs[$0].width >= L.least })
+        let tight = L(width: 2 * 4 + 20 + 12 + 4 * L.least + 30, wants: wants, current: .performance)
+        #expect(others.allSatisfy { tight.tabs[$0].width == L.least })
         #expect(same(tight.tabs[3].width, 30))
         #expect(same(tight.status.width, 0))
     }

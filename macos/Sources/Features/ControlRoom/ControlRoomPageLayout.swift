@@ -21,7 +21,7 @@ import CoreGraphics
 /// given back and not made again, while another page is in front
 /// (`ControlRoomView`).
 enum ControlRoomPage: Int, CaseIterable, Equatable {
-    case supervisor, chat, tasks, performance
+    case supervisor, chat, tasks, performance, workdirs
 
     var label: String {
         switch self {
@@ -33,6 +33,8 @@ enum ControlRoomPage: Int, CaseIterable, Equatable {
             String(localized: "Tasks", comment: "总控台：右栏页签，任务")
         case .performance:
             String(localized: "Performance", comment: "总控台：右栏页签，性能")
+        case .workdirs:
+            String(localized: "Workdirs", comment: "总控台：右栏页签，工作目录")
         }
     }
 

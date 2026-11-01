@@ -26,7 +26,7 @@ struct ControlRoomPageStripView: View {
         switch page {
         case .supervisor: true
         case .performance: level.ink(theme) != nil
-        case .chat, .tasks: false
+        case .chat, .tasks, .workdirs: false
         }
     }
 
@@ -85,7 +85,7 @@ struct ControlRoomPageStripView: View {
                             .frame(width: CGFloat(Look.Side.glyph) * 4 / 7, height: CGFloat(Look.Side.glyph) * 4 / 7)
                             .frame(width: CGFloat(Look.Side.glyph), height: CGFloat(Look.Side.glyph))
                     }
-                case .chat, .tasks:
+                case .chat, .tasks, .workdirs:
                     EmptyView()
                 }
                 Text(tab.page.label)
@@ -278,6 +278,8 @@ struct ControlRoomPageBody: View {
             ControlRoomTasksPage(group: model.selection ?? "", model: model)
         case .chat:
             ControlRoomChatPage(group: model.selection ?? "", model: model)
+        case .workdirs:
+            ControlRoomWorkdirsPage(group: model.selection ?? "", model: model)
         case .supervisor:
             Look.theme(scheme).terminalBackground.color
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
