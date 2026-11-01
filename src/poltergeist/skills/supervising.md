@@ -729,6 +729,15 @@ nothing you can do would answer it. Then, in this order:
    other: the countdown is not counted as the screen moving. `PromptGone` on
    one means the box itself changed or went -- read again. `choice` counts from the highlighted
    option, starting at 1.
+   **A CLI's own startup question is the exception, and it is answered for you**:
+   when a worker stops on a box its CLI asks *before it starts* -- Antigravity's
+   `Do you trust the contents of this project?` in a working tree it has not seen --
+   that CLI's plugin declares the key that answers it, and the same call presses that
+   key. Nothing to count and nothing to read first: the box's highlighted option is
+   already the answer. `choice` and the two moments take no part there. The reply names
+   the answer it pressed; the question then clears from `terminal_list` on the next
+   heartbeat. A startup question whose CLI declares no answer is still refused as
+   before -- that one really is the person's.
 4. **If you may not, or it did not take** — `answer=off` or `shielded`,
    `AuthoriseOff`, `Shielded`, the worker's own agent refusing an answer that
    did not come from its user, or a question that is the person's by step 2:

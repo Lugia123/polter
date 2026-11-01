@@ -9,6 +9,13 @@
     "blocks": [
       "Do you trust the contents of this project?"
     ],
+    "answers": [
+      {
+        "contains": "Do you trust the contents of this project?",
+        "key": "enter",
+        "description": "auto-trust the new workspace (box default: Yes)"
+      }
+    ],
     "ready_says": [
       "? for shortcuts"
     ],

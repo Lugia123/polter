@@ -9338,6 +9338,38 @@ fn startupQuestionText(self: *App, id: poltergeistpkg.Bus.Id) ?[]const u8 {
     return says.blockSaid(scrollback.sinceRestored(screen, scrollback.boundaryWording()));
 }
 
+/// What the CLI started in `id` says about a starting question on its
+/// screen, and whether its plugin declares a key to answer it (task 2635,
+/// `rpc.Host.startupAnswer`).
+///
+/// **A second read of the same screen `startupQuestionText` reads**, not a
+/// second way of deciding what is on it: the same CLI (the launch's, else
+/// the agent's hooks'), the same `scrollback.sinceRestored` boundary, so a
+/// question left in the restored history of some earlier session cannot be
+/// answered as if it were on this terminal now. The two are separate calls
+/// because they answer two different questions -- "is anything typing into
+/// this terminal forbidden" and "is there a key a plugin declares for what
+/// is on it" -- and `rpc` asks the second one only on its own path. They
+/// can disagree for the moment between two reads, and what that costs is
+/// bounded: the worst case is one key sent at a screen that no longer shows
+/// the question, which is why this reads the screen at the instant it is
+/// asked rather than trusting anything earlier.
+fn startupAsk(self: *App, id: poltergeistpkg.Bus.Id) poltergeistpkg.Plugin.StartupAsk {
+    const agent = self.poltergeist.agentOf(id);
+    const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else agent.cli.get() orelse return .none;
+    self.ensurePlugins();
+    const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+        log.debug("poltergeist: could not read a starting CLI for an answer id={x} err={}", .{ id, err });
+        return .none;
+    };
+    defer self.alloc.free(screen);
+    return poltergeistpkg.Plugin.startupAskFor(
+        self.poltergeist_says,
+        cli,
+        scrollback.sinceRestored(screen, scrollback.boundaryWording()),
+    );
+}
+
 /// Every launch that has waited `Bus.launch_agent_wait_ms` with no agent
 /// connecting from its terminal is said to have failed, the way `+launch`
 /// says a failure (task 1712): the bus takes back what it expected, the
@@ -10223,6 +10255,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .seatHeld = seatHolderAlive,
         .startupReach = poltergeistStartupReach,
         .startupQuestion = poltergeistStartupQuestion,
+        .startupAnswer = poltergeistStartupAnswer,
         .personaFace = poltergeistPersonaFace,
         .terminalCapabilities = poltergeistTerminalCapabilities,
         .agentArrived = poltergeistAgentArrived,
@@ -10238,6 +10271,13 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
         .personaLaunch = poltergeistPersonaLaunch,
         .personaSlot = poltergeistPersonaSlot,
         .sendKey = poltergeistSendKey,
+        // **The same function, on purpose** (task 2635). What a key does
+        // once it is past `Polter` is the terminal's business and is the
+        // same either way; which door it came in by is the difference, and
+        // that lives in `rpc.Host`, where the guard is. A second function
+        // here would be a copy of `poltergeistSendKey` to keep in step for
+        // no behaviour at all.
+        .sendStartupAnswerKey = poltergeistSendKey,
         .performAction = poltergeistPerformAction,
         .quietMs = poltergeistQuiet,
         .callSilentMs = poltergeistCallSilent,
@@ -12056,6 +12096,13 @@ fn poltergeistStoodDown(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) void {
 fn poltergeistStartupQuestion(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
     const self: *App = @ptrCast(@alignCast(ctx));
     return self.startupQuestionUp(id);
+}
+
+/// What the CLI started in `id` says about a starting question and how its
+/// plugin answers it (`rpc.Host.startupAnswer`, task 2635).
+fn poltergeistStartupAnswer(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) poltergeistpkg.Plugin.StartupAsk {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    return self.startupAsk(id);
 }
 
 fn poltergeistStartupReach(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) poltergeistpkg.rpc.StartupReach {

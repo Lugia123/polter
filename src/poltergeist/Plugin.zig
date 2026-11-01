@@ -44,6 +44,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const internal_os = @import("../os/main.zig");
+const keys = @import("keys.zig");
 const token_says = @import("token_says.zig");
 
 const log = std.log.scoped(.poltergeist);
@@ -531,6 +532,21 @@ pub fn nextOptionKey(manifests: []const Manifest, cli: ?[]const u8) []const u8 {
 /// one is up, a launch's wait for its agent does not run out, and the
 /// control room and `terminal_list` say the person has a question to answer.
 ///
+/// `answers` is the one way past that (task 2635). A plugin that declares
+/// an answer for a question it declares in `blocks` lets
+/// `terminal_answer_prompt` press **that key** while the question is on the
+/// screen, instead of refusing; everything else about the box is unchanged:
+/// `terminal_key` and `terminal_send` still refuse every key but ctrl+c
+/// while a question is up, and the user's answer switch (`may_authorise`)
+/// is still asked before any of it runs. See `Answer` and `answerFor`.
+///
+/// ```json
+/// "startup_says": { "blocks": ["Do you trust the contents of this project?"],
+///                   "answers": [{ "contains": "Do you trust the contents of this project?",
+///                                 "key": "enter",
+///                                 "description": "take the trust box's default (Yes)" }] }
+/// ```
+///
 /// `tools_from_second_turn` says the CLI's first turn has none of Polter's
 /// tools: Antigravity starts its MCP servers with the first prompt and lists
 /// their tools from the turn after (measured on agy 1.4.2, task 1740). So
@@ -542,7 +558,51 @@ pub const StartupSays = struct {
     ready_without_agent: bool,
     tools_from_second_turn: bool,
 
-    pub const none: StartupSays = .{ .blocks = &.{}, .ready_says = &.{}, .ready_without_agent = false, .tools_from_second_turn = false };
+    /// Questions this plugin lets Polter answer itself, in the order they
+    /// are tried (`answerFor`). Empty for a plugin whose questions are the
+    /// person's alone, which is every plugin that declares nothing.
+    answers: []const Answer,
+
+    pub const none: StartupSays = .{ .blocks = &.{}, .ready_says = &.{}, .ready_without_agent = false, .tools_from_second_turn = false, .answers = &.{} };
+
+    /// One question a plugin lets Polter answer, and the key that answers
+    /// it (task 2635).
+    ///
+    /// ```json
+    /// { "contains": "Do you trust the contents of this project?",
+    ///   "key": "enter", "description": "take the trust box's default" }
+    /// ```
+    ///
+    /// **`key` is a keystroke, not an option number.** The question this
+    /// exists for is not the list-with-a-highlight the `choice` parameter
+    /// walks: it is a box whose highlighted option is already the answer
+    /// (`> Yes, I trust this folder`), so one return takes it and the arrows
+    /// have nothing to move between. That is why `terminal_answer_prompt`
+    /// presses exactly this string and never `choice`, and why the key is
+    /// parsed here at load (`keys.parse`) rather than being discovered as
+    /// unpressable at the moment somebody needs it.
+    ///
+    /// **`description` is for people reading the declaration**, never for a
+    /// settings page: it is what the log line and the tool's reply name the
+    /// answer by, so that a reader of either can tell which rule fired
+    /// without reconstructing it from the text match. It is not translated
+    /// and no host shows it (`every-shipped-plugin-string-has-chinese`
+    /// checks the manifest's own `description` and its parameters; this one
+    /// is not one of those).
+    pub const Answer = struct {
+        /// Text that says this answer's question is the one on the screen,
+        /// matched the way `blocks` is (`containsWrapped`: a question a
+        /// narrow terminal broke over two rows is still that question).
+        contains: []const u8,
+
+        /// What `terminal_answer_prompt` presses. Must be a key
+        /// `terminal_key` would take by the same name; a manifest spelling
+        /// one it would not costs that entry and nothing else.
+        key: []const u8,
+
+        /// Which answer this is, in words, for whoever reads the log.
+        description: []const u8,
+    };
 
     pub fn declared(self: StartupSays) bool {
         return self.blocks.len > 0 or self.ready_says.len > 0;
@@ -565,6 +625,30 @@ pub const StartupSays = struct {
         }
         return null;
     }
+
+    /// The declared answer to the question on `screen`, or null when this
+    /// plugin declares none for it (task 2635).
+    ///
+    /// **First match wins, in the order the manifest wrote them.** Two
+    /// entries whose text is on the same screen are a declaration that can
+    /// only be read one way, so the order the plugin chose is the answer and
+    /// there is no second rule to learn. What a caller gets back is the
+    /// whole entry, `description` included, so that the log says which of
+    /// them was taken.
+    ///
+    /// ⚠️ **Having an answer is not the same as being allowed to press it.**
+    /// This says only that the plugin declares a key for what is on the
+    /// screen. Whether anybody may press it -- the user's switch, the
+    /// caller's standing, the target's shield -- is `rpc.authorize`'s,
+    /// asked before this is reached.
+    pub fn answerFor(self: StartupSays, screen: []const u8) ?Answer {
+        const tail = bottomRows(screen, ScreenSays.rows);
+        for (self.answers) |a| {
+            if (containsWrapped(tail, a.contains)) return a;
+        }
+        return null;
+    }
+
 
     pub fn verdict(self: StartupSays, screen: []const u8) Verdict {
         const tail = bottomRows(screen, ScreenSays.rows);
@@ -693,6 +777,39 @@ pub fn startupFor(manifests: []const Manifest, cli: []const u8) ?StartupSays {
         return m.startup_says;
     }
     return null;
+}
+
+/// What `cli`'s plugin says about the question on `screen` (task 2635):
+/// whether one of its declared questions is up at all, and if so whether it
+/// declares a key to answer it with.
+///
+/// **Three answers rather than an optional one**, because the two nulls
+/// mean different things to a caller and are said differently: `none` is
+/// "no question of ours is on that screen, carry on as before", and
+/// `unanswerable` is "one is, and the declaration does not cover it, so the
+/// refusal stands". Collapsing them would make `terminal_answer_prompt`
+/// report the second as if it were the first.
+pub const StartupAsk = union(enum) {
+    /// No question this plugin declares (`blocks`) is on the screen.
+    none,
+    /// One is, and no entry of `answers` matches it.
+    unanswerable,
+    /// One is, and this is what the plugin says answers it.
+    key: StartupSays.Answer,
+};
+
+/// The whole question, asked of one screen read: which CLI this is, whether
+/// its plugin declares the question on the screen, and what answers it.
+///
+/// **Both halves of the declaration are read here, in this order, so that
+/// no caller can read only one of them.** `answers` without `blocks` would
+/// let a stray string fire at a screen where no question is up at all;
+/// `blocks` without `answers` is what every other CLI has had since task
+/// 1746. One function, one place to be wrong.
+pub fn startupAskFor(manifests: []const Manifest, cli: []const u8, screen: []const u8) StartupAsk {
+    const says = startupFor(manifests, cli) orelse return .none;
+    if (says.blockSaid(screen) == null) return .none;
+    return if (says.answerFor(screen)) |a| .{ .key = a } else .unanswerable;
 }
 
 /// Whether `needle` is in `hay` once neither has any white space: a
@@ -1251,7 +1368,86 @@ fn startupSaysOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) All
         .ready_says = try startupTexts(arena, key, section, "ready_says"),
         .ready_without_agent = startupFlag(key, section, "ready_without_agent"),
         .tools_from_second_turn = startupFlag(key, section, "tools_from_second_turn"),
+        .answers = try startupAnswersOf(arena, key, section),
     };
+}
+
+/// `startup_says.answers`, one entry at a time (task 2635).
+///
+/// **Per entry, not per table** -- unlike `sectionTexts`, which costs the
+/// whole list for one bad item. The two differ because the failure costs
+/// different things. A `blocks` list is how a question is recognised at
+/// all: half of one is a question Polter would walk past, so refusing the
+/// list is the safe answer. An `answers` list is permission, and refusing
+/// it costs nothing but the convenience it was declared for -- so a
+/// misspelled entry loses its own question and leaves the others answering
+/// theirs. Anything else would let one typo in a second CLI's entry turn a
+/// working first entry off, with a warning about the wrong thing.
+///
+/// Four ways an entry is dropped, each logged with the entry's own words so
+/// that a reader can find the line to fix:
+///   * not an object, or a field missing or not a string;
+///   * `contains` empty or longer than `max_text_bytes`, or `key` not one
+///     `keys.parse` accepts (`PlainText` is the usual one: a bare letter is
+///     text, and text belongs in `terminal_send`, which is refused while a
+///     question is up -- an entry spelling one could never fire);
+///   * `description` longer than `max_text_bytes` (the same limit the rest
+///     of a screen text is held to);
+///   * more than `max_texts` entries, past which the rest are ignored.
+fn startupAnswersOf(arena: Allocator, key: []const u8, section: std.json.ObjectMap) Allocator.Error![]const StartupSays.Answer {
+    const list = switch (section.get("answers") orelse return &.{}) {
+        .array => |a| a.items,
+        else => {
+            log.warn("plugin {s}: startup_says.answers is not a list; ignored", .{key});
+            return &.{};
+        },
+    };
+    var out: std.ArrayListUnmanaged(StartupSays.Answer) = .empty;
+    for (list, 0..) |v, i| {
+        if (out.items.len == ScreenSays.max_texts) {
+            log.warn("plugin {s}: startup_says.answers has more than {d}; the rest are ignored", .{ key, ScreenSays.max_texts });
+            break;
+        }
+        const obj = switch (v) {
+            .object => |o| o,
+            else => {
+                log.warn("plugin {s}: startup_says.answers[{d}] is not an object; ignored", .{ key, i });
+                continue;
+            },
+        };
+        const said = shortText(obj, "contains") orelse {
+            log.warn("plugin {s}: startup_says.answers[{d}] has no `contains` of 1 to {d} bytes; ignored", .{ key, i, ScreenSays.max_text_bytes });
+            continue;
+        };
+        const pressed = shortText(obj, "key") orelse {
+            log.warn("plugin {s}: startup_says.answers[{d}] has no `key` of 1 to {d} bytes; ignored", .{ key, i, ScreenSays.max_text_bytes });
+            continue;
+        };
+        // **At load, not at the press.** A key nothing can press would
+        // otherwise fail at the moment somebody needed it answered, which is
+        // the worst moment and the one hardest to trace back to a manifest.
+        _ = keys.parse(pressed) catch |err| {
+            log.warn("plugin {s}: startup_says.answers[{d}].key \"{s}\" is not a key ({s}); ignored", .{ key, i, pressed, @errorName(err) });
+            continue;
+        };
+        const description = shortText(obj, "description") orelse {
+            log.warn("plugin {s}: startup_says.answers[{d}] has no `description` of 1 to {d} bytes; ignored", .{ key, i, ScreenSays.max_text_bytes });
+            continue;
+        };
+        try out.append(arena, .{
+            .contains = try arena.dupe(u8, said),
+            .key = try arena.dupe(u8, pressed),
+            .description = try arena.dupe(u8, description),
+        });
+    }
+    return out.items;
+}
+
+/// A non-empty string field of at most `max_text_bytes`, or null.
+fn shortText(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const t = stringField(obj, name) orelse return null;
+    if (t.len == 0 or t.len > ScreenSays.max_text_bytes) return null;
+    return t;
 }
 
 fn startupFlag(key: []const u8, section: std.json.ObjectMap, name: []const u8) bool {
@@ -4388,7 +4584,7 @@ test "1746: the shipped Codex manifest knows the boxes codex 0.154 asks before i
 }
 
 test "1746: a line meant for agy's second turn waits for its first to be over" {
-    const says: StartupSays = .{ .blocks = &.{"Do you trust the contents of this project?"}, .ready_says = &.{"? for shortcuts"}, .ready_without_agent = true, .tools_from_second_turn = true };
+    const says: StartupSays = .{ .blocks = &.{"Do you trust the contents of this project?"}, .ready_says = &.{"? for shortcuts"}, .ready_without_agent = true, .tools_from_second_turn = true, .answers = &.{} };
     const working = "> You are the supervisor...\n\n  Thinking...\n";
     const box = ">\n────\n? for shortcuts\n";
     // Its hooks say the turn is still going: not over, whatever the screen.
@@ -4401,6 +4597,250 @@ test "1746: a line meant for agy's second turn waits for its first to be over" {
     try testing.expect(!says.firstTurnOver(null, working));
     try testing.expect(says.firstTurnOver(null, box));
     try testing.expect(!says.firstTurnOver(null, "Do you trust the contents of this project?\n> Yes\n? for shortcuts\n"));
+}
+
+/// The three screens this task's tests are written against, so that a
+/// fixture cannot drift from the claim made about it: agy's trust box, and
+/// its input box, and an ordinary shell.
+const trust_box_with_answer =
+    \\Accessing workspace:
+    \\
+    \\/h/project
+    \\
+    \\Do you trust the contents of this project?
+    \\
+    \\Antigravity CLI requires permission to read, edit, and execute files here.
+    \\
+    \\> Yes, I trust this folder
+    \\  No, exit
+    \\
+    \\  ↑/↓ Navigate · enter Confirm
+;
+const agy_input_box =
+    \\            Antigravity CLI 1.4.0
+    \\              Gemini 3.8 Flash (Low)
+    \\────────────────────────────────
+    \\>
+    \\────────────────────────────────
+    \\? for shortcuts
+;
+
+/// One entry of a test's `answers`, written as JSON so that what is parsed
+/// is what a manifest would hold rather than a Zig literal built by hand.
+fn answerJson(a: Allocator, said: []const u8, key: []const u8, description: []const u8) Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(
+        a,
+        "{{\"contains\":\"{s}\",\"key\":\"{s}\",\"description\":\"{s}\"}}",
+        .{ said, key, description },
+    );
+}
+
+test "2635: startup_says.answers is parsed one entry at a time, and a bad entry costs only itself" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The good one first, the bad one second: if the parser dropped the
+    // table (the way `sectionTexts` does), the first would go with it.
+    const good = try answerJson(a, "Do you trust the contents of this project?", "enter", "take the default");
+    const only_body = try std.fmt.allocPrint(a, "{{\"answers\":[{s}]}}", .{good});
+    const only = (try std.json.parseFromSliceLeaky(std.json.Value, a, only_body, .{})).object;
+    const one = try startupAnswersOf(a, "antigravity", only);
+    try testing.expectEqual(@as(usize, 1), one.len);
+    try testing.expectEqualStrings("Do you trust the contents of this project?", one[0].contains);
+    try testing.expectEqualStrings("enter", one[0].key);
+    try testing.expectEqualStrings("take the default", one[0].description);
+
+    // A plain letter is text, not a key (`keys.parse` refuses `PlainText`):
+    // such an entry could never fire, so it is dropped -- and the good entry
+    // beside it stays.
+    const bad = try answerJson(a, "Do you trust the contents of this project?", "y", "text, not a key");
+    const mixed = try std.fmt.allocPrint(a, "{{\"answers\":[{s},{s}]}}", .{ good, bad });
+    const obj = (try std.json.parseFromSliceLeaky(std.json.Value, a, mixed, .{})).object;
+    const kept = try startupAnswersOf(a, "antigravity", obj);
+    try testing.expectEqual(@as(usize, 1), kept.len);
+    try testing.expectEqualStrings("enter", kept[0].key);
+
+    // Every shape that costs an entry, each with a good one beside it so
+    // that "dropped the entry" cannot pass as "dropped the table".
+    for ([_][]const u8{
+        // Not an object.
+        "\"enter\"",
+        // No `key`.
+        "{\"contains\":\"Do you trust the contents of this project?\",\"description\":\"d\"}",
+        // No `contains`.
+        "{\"key\":\"enter\",\"description\":\"d\"}",
+        // No `description`: the log line names the answer by it.
+        "{\"contains\":\"Do you trust the contents of this project?\",\"key\":\"enter\"}",
+        // `key` that is not a key at all.
+        "{\"contains\":\"Do you trust the contents of this project?\",\"key\":\"ctrl+nonsense\",\"description\":\"d\"}",
+        // `contains` over the one screen text's limit (`max_text_bytes`).
+        "{\"contains\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"key\":\"enter\",\"description\":\"d\"}",
+        // An empty `contains` matches everything, which would answer a
+        // question nobody declared.
+        "{\"contains\":\"\",\"key\":\"enter\",\"description\":\"d\"}",
+    }) |broken| {
+        const body = try std.fmt.allocPrint(a, "{{\"answers\":[{s},{s}]}}", .{ good, broken });
+        const o = (try std.json.parseFromSliceLeaky(std.json.Value, a, body, .{})).object;
+        const out = try startupAnswersOf(a, "antigravity", o);
+        try testing.expectEqual(@as(usize, 1), out.len);
+        try testing.expectEqualStrings("enter", out[0].key);
+    }
+
+    // Nine is one past `max_texts`: the eighth is kept, the ninth is not.
+    var nine: std.ArrayListUnmanaged(u8) = .empty;
+    try nine.appendSlice(a, "{\"answers\":[");
+    for (0..9) |i| {
+        if (i > 0) try nine.append(a, ',');
+        try nine.appendSlice(a, try std.fmt.allocPrint(a, "{{\"contains\":\"q{d}\",\"key\":\"enter\",\"description\":\"d\"}}", .{i}));
+    }
+    try nine.appendSlice(a, "]}");
+    const nine_obj = (try std.json.parseFromSliceLeaky(std.json.Value, a, nine.items, .{})).object;
+    const eight = try startupAnswersOf(a, "x", nine_obj);
+    try testing.expectEqual(ScreenSays.max_texts, eight.len);
+    try testing.expectEqualStrings("q7", eight[7].contains);
+
+    // Not a list at all: none, with the rest of the section intact.
+    const not_a_list = (try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"answers\":3}", .{})).object;
+    try testing.expectEqual(@as(usize, 0), (try startupAnswersOf(a, "x", not_a_list)).len);
+}
+
+test "2635: the shipped antigravity manifest declares an answer for its own trust box" {
+    // **The parse and the declaration are two different claims** (the shape
+    // this repository keeps meeting): a parser that reads `answers` proves
+    // nothing about the manifest shipping one, and a green suite would look
+    // exactly the same if `plugin.json` declared none -- while the product
+    // on a real machine answered nothing. So this reads the shipped file.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const agy = try std.json.parseFromSliceLeaky(std.json.Value, a, @embedFile("plugin_antigravity_json"), .{});
+    const says = try startupSaysOf(a, "antigravity", agy.object);
+
+    try testing.expect(says.answers.len > 0);
+
+    // It answers the question `blocks` declares, and not some other string:
+    // the text of the rule is the text of the question, so the two cannot
+    // drift apart without this going red.
+    try testing.expectEqualStrings(says.blocks[0], says.answers[0].contains);
+    try testing.expectEqualStrings("Do you trust the contents of this project?", says.answers[0].contains);
+
+    // And the key is the one agy's box takes: its highlighted option is
+    // already "Yes, I trust this folder", so one return takes it.
+    try testing.expectEqualStrings("enter", says.answers[0].key);
+    try testing.expect(says.answers[0].description.len > 0);
+}
+
+test "2635: answerFor takes the first declared entry whose text is on the screen" {
+    const says: StartupSays = .{
+        .blocks = &.{"Do you trust the contents of this project?"},
+        .ready_says = &.{},
+        .ready_without_agent = true,
+        .tools_from_second_turn = false,
+        .answers = &.{
+            .{ .contains = "No, exit", .key = "arrow_down", .description = "leave instead of trusting" },
+            .{ .contains = "Do you trust the contents of this project?", .key = "enter", .description = "take the default" },
+        },
+    };
+
+    // Both texts are on this screen, so the order the manifest wrote them in
+    // is the answer -- first match wins, and there is no second rule to
+    // learn.
+    try testing.expectEqualStrings("arrow_down", says.answerFor(trust_box_with_answer).?.key);
+
+    // The second entry on its own.
+    const only_second: StartupSays = .{
+        .blocks = says.blocks,
+        .ready_says = &.{},
+        .ready_without_agent = true,
+        .tools_from_second_turn = false,
+        .answers = says.answers[1..],
+    };
+    try testing.expectEqualStrings("enter", only_second.answerFor(trust_box_with_answer).?.key);
+    try testing.expectEqualStrings("take the default", only_second.answerFor(trust_box_with_answer).?.description);
+
+    // A question a narrow terminal broke over two rows is still that
+    // question (`containsWrapped`), which is what makes this usable in a
+    // split -- read off t1746b-20, agy 1.4.2.
+    try testing.expectEqualStrings("enter", only_second.answerFor(
+        \\Accessing workspace:
+        \\/h/t1746b-repo-wt/w1
+        \\Do you trust the contents of this
+        \\project?
+        \\> Yes, I trust this folder
+    ).?.key);
+
+    // Nothing declared is on this screen: no answer, and no answer for the
+    // input box either -- an answer fires at a question, not at a CLI.
+    try testing.expect(only_second.answerFor(agy_input_box) == null);
+    try testing.expect(only_second.answerFor("$ ls\nREADME.md\n$ ") == null);
+
+    // A plugin that declares none: nothing, even with the question on the
+    // screen. This is every CLI but antigravity.
+    const no_answers: StartupSays = .{
+        .blocks = says.blocks,
+        .ready_says = &.{},
+        .ready_without_agent = true,
+        .tools_from_second_turn = false,
+        .answers = &.{},
+    };
+    try testing.expect(no_answers.answerFor(trust_box_with_answer) == null);
+
+    // The words above the bottom rows are scrollback: a question answered.
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try buf.appendSlice(testing.allocator, "Do you trust the contents of this project?\n");
+    for (0..ScreenSays.rows) |_| try buf.appendSlice(testing.allocator, "⏺ done\n");
+    try testing.expect(only_second.answerFor(buf.items) == null);
+}
+
+test "2635: startupAskFor separates 'no question of ours' from 'a question we cannot answer'" {
+    const answered: Manifest = .{
+        .key = "antigravity",
+        .exec = "p",
+        .startup_says = .{
+            .blocks = &.{"Do you trust the contents of this project?"},
+            .ready_says = &.{},
+            .ready_without_agent = true,
+            .tools_from_second_turn = false,
+            .answers = &.{.{ .contains = "Do you trust the contents of this project?", .key = "enter", .description = "take the default" }},
+        },
+    };
+    // The same CLI with the question declared and no answer for it: a plugin
+    // that recognises a box it does not answer.
+    const recognised_only: Manifest = .{
+        .key = "codex",
+        .exec = "p",
+        .startup_says = .{
+            .blocks = &.{"Do you trust the contents of this project?"},
+            .ready_says = &.{},
+            .ready_without_agent = false,
+            .tools_from_second_turn = false,
+            .answers = &.{},
+        },
+    };
+    const all = [_]Manifest{ answered, recognised_only };
+
+    // **The two nulls are said differently, and that is the whole point of
+    // the union**: `none` sends the caller on into the ordinary permission
+    // path, `unanswerable` keeps the refusal. Collapsing them would make a
+    // question nobody answers report as no question at all.
+    try testing.expectEqual(StartupAsk.none, startupAskFor(&all, "antigravity", agy_input_box));
+    try testing.expectEqual(StartupAsk.none, startupAskFor(&all, "antigravity", ""));
+    switch (startupAskFor(&all, "codex", trust_box_with_answer)) {
+        .unanswerable => {},
+        else => return error.TestUnexpectedResult,
+    }
+    switch (startupAskFor(&all, "antigravity", trust_box_with_answer)) {
+        .key => |k| try testing.expectEqualStrings("enter", k.key),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // A CLI with no plugin at all, and one whose plugin has no
+    // `startup_says`: nothing is declared, so nothing is claimed.
+    try testing.expectEqual(StartupAsk.none, startupAskFor(&all, "nobody", trust_box_with_answer));
+    const bare = [_]Manifest{.{ .key = "claude-code", .exec = "p" }};
+    try testing.expectEqual(StartupAsk.none, startupAskFor(&bare, "claude-code", trust_box_with_answer));
 }
 
 test "1668: a declared screen text says a box is up only in the bottom rows" {

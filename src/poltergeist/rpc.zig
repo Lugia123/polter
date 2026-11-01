@@ -3775,6 +3775,194 @@ test "1746: a question the CLI asks before it starts on the screen: no key but c
     try testing.expect(after == .text);
 }
 
+/// What a plugin's `answers` declaration looks like by the time `rpc` sees
+/// it, for the tests below: one entry, `enter`, at the trust box.
+const agy_answer: Plugin.StartupSays.Answer = .{
+    .contains = "Do you trust the contents of this project?",
+    .key = "enter",
+    .description = "auto-trust the new workspace (box default: Yes)",
+};
+
+test "2635: terminal_answer_prompt presses the declared key at a startup question, moments or none" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{ .startup_question = true, .startup_answer = .{ .key = agy_answer }, .key_outcome = .written };
+
+    // **Without moments**: this is the call that used to come back
+    // `StartupQuestionOnScreen`, and under a naive extension
+    // `PromptGone` -- `blindRefusal` reads the state, and a starting CLI's
+    // question is `awaiting_input`, which is not a box to it.
+    const plain = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{ .id = worker } });
+
+    // **With the moments `terminal_list` would have given**, which is what a
+    // supervisor was taught to do: `promptStanding` asks for
+    // `awaiting_approval` and a captured box, so a short-circuit below
+    // either exit would come back `PromptGone` here.
+    fake.keyed = null;
+    fake.keys_n = 0;
+    const with_moments = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{
+        .id = worker,
+        .state_at_ms = 1_000,
+        .event_at_ms = 1_000,
+    } });
+
+    // Both are the same answer, and both sent the key.
+    for ([_]wire.Response{ plain, with_moments }) |r| {
+        try testing.expect(r == .text);
+        try testing.expect(std.mem.indexOf(u8, r.text, "enter") != null);
+    }
+    try testing.expectEqualStrings("enter", fake.keyed.?.key);
+    try testing.expectEqual(@as(usize, 1), fake.keys_n);
+    // Not an arrow first: one key, the declared one, and no walk.
+    try testing.expectEqualStrings("enter", fake.keys_pressed[0]);
+}
+
+test "2635: the declared key is pressed and choice takes no part in it" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `choice` counts options in a list with a highlight to walk. A startup
+    // question is not one: the box's first option is already the answer, so
+    // the plugin's key is the whole of it and any count means the same. The
+    // test says so, because a caller that passed 2 would otherwise get a
+    // different key (or a refusal) depending on which kind of box it met.
+    for ([_]u8{ 1, 2, 9 }) |choice| {
+        var fake: FakeHost = .{ .startup_question = true, .startup_answer = .{ .key = agy_answer }, .key_outcome = .written };
+        const r = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{ .id = worker, .choice = choice } });
+        try testing.expect(r == .text);
+        try testing.expectEqualStrings("enter", fake.keyed.?.key);
+        // One key and no walk, whatever the count: no `arrow_down` reached it.
+        try testing.expectEqual(@as(usize, 1), fake.keys_n);
+    }
+
+    // **The bounds check still runs first**, so an impossible count is
+    // `BadParams` on this path as on every other -- the same refusal for the
+    // same mistake, whichever kind of box is on the screen.
+    for ([_]u8{ 0, 10 }) |choice| {
+        var fake: FakeHost = .{ .startup_question = true, .startup_answer = .{ .key = agy_answer }, .key_outcome = .written };
+        const r = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{ .id = worker, .choice = choice } });
+        try testing.expect(r == .failed);
+        try testing.expectEqualStrings("BadParams", r.failed.code);
+        try testing.expect(fake.keyed == null);
+    }
+}
+
+test "2635: a question the plugin recognises but does not answer keeps the refusal, and no key goes" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // **The negative control, in the direction that matters**: a plugin that
+    // declares the question in `blocks` and has no answer for it. The
+    // refusal is the one every CLI had before this task, and the key that
+    // would have answered it is not sent -- with or without moments, since
+    // the short-circuit is above both.
+    for ([_]Request{ .{ .terminal_answer_prompt = .{ .id = worker } }, .{ .terminal_answer_prompt = .{
+        .id = worker,
+        .state_at_ms = 1_000,
+        .event_at_ms = 1_000,
+    } } }) |req| {
+        var fake: FakeHost = .{ .startup_question = true, .startup_answer = .unanswerable, .key_outcome = .written };
+        const r = try dispatch(alloc, &b, fake.host(), term(boss), req);
+        try testing.expect(r == .failed);
+        try testing.expectEqualStrings("StartupQuestionOnScreen", r.failed.code);
+        try testing.expect(fake.keyed == null);
+        try testing.expectEqual(@as(usize, 0), fake.keys_n);
+    }
+
+    // And no question of this CLI's at all: the ordinary permission path,
+    // unchanged. Its box is up, its plugin declares it and its switch is on,
+    // so the return goes -- exactly as it did before this task.
+    const screens = [_]Plugin.Manifest{.{
+        .key = "claude-code",
+        .exec = "p",
+        .screen_says = .{ .awaiting_approval = &.{"Do you want to proceed?"}, .next_option = .arrow_down },
+    }};
+    var plain: FakeHost = .{
+        .startup_question = false,
+        .startup_answer = .none,
+        .key_outcome = .written,
+        .screen = "Do you want to proceed?\n❯ 1. Yes\n",
+        .prompt_screens = &screens,
+    };
+    const taken = try dispatch(alloc, &b, plain.host(), term(boss), .{ .terminal_answer_prompt = .{ .id = worker } });
+    try testing.expect(taken == .ok);
+    try testing.expectEqualStrings("enter", plain.keyed.?.key);
+    // Through the ordinary door: this is not the startup path.
+    try testing.expect(!plain.startup_key_sent);
+    // **It was asked, and answered `none`** -- which is the whole of what
+    // "the ordinary path is untouched" means here: the question is put to
+    // the host on every call, and `none` is what sends the arm on into the
+    // permission path it always took. Zero would mean the arm never looked,
+    // and that is a different claim from the one this test is making.
+    try testing.expectEqual(@as(usize, 1), plain.startup_asked);
+}
+
+test "2635: the user's switch still refuses an answer, and the ask reaches no key at all" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The switch is the person's, and a declared answer does not go around
+    // it: `authorize` refuses before the arm runs, so the host is never
+    // asked and `startupAnswer` is never called -- which is why this asserts
+    // on the key rather than on the message.
+    try b.setMayAuthorise(worker, false, .user);
+    var fake: FakeHost = .{ .startup_question = true, .startup_answer = .{ .key = agy_answer }, .key_outcome = .written };
+    const refused = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{ .id = worker } });
+    try testing.expect(refused == .failed);
+    try testing.expectEqualStrings("AuthoriseOff", refused.failed.code);
+    try testing.expect(fake.keyed == null);
+    try testing.expect(fake.startup_asked == 0);
+}
+
+test "2635: the startup door presses a key host.sendKey refuses, and nothing else about the guard moved" {
+    // **The two doors, measured on the wrappers rather than through
+    // dispatch**, because this is where the difference lives: `Host.sendKey`
+    // keeps its refusal, and `Host.sendStartupAnswerKey` reaches a second
+    // vtable entry that has no guard on it. The fake tells the two apart by
+    // `startup_key_sent` -- the bit the whole seam exists for.
+    var fake: FakeHost = .{ .startup_question = true, .key_outcome = .written };
+    const host = fake.host();
+
+    for ([_][]const u8{ "enter", "arrow_down", "arrow_up", "tab", "shift+tab" }) |k| {
+        try testing.expectError(error.StartupQuestionOnScreen, host.sendKey(worker, k));
+        try testing.expect(fake.keyed == null);
+    }
+    // ctrl+c keeps its exemption: it answers no question.
+    try testing.expectEqual(keys.Outcome.written, try host.sendKey(worker, "ctrl+c"));
+    // ...and it came in by the ordinary door, which is the bit that says the
+    // two are distinguishable at all.
+    try testing.expect(!fake.startup_key_sent);
+    try testing.expectEqualStrings("ctrl+c", fake.keyed.?.key);
+
+    // The startup door: the declared key goes, and only that one is asked
+    // for -- nothing here decides which key it is, so this is about the
+    // guard and not about the declaration.
+    fake.keyed = null;
+    try testing.expectEqual(keys.Outcome.written, try host.sendStartupAnswerKey(worker, "enter"));
+    try testing.expectEqualStrings("enter", fake.keyed.?.key);
+    // **Which door it came in by**, and this is the assertion the whole
+    // seam exists for: the same `enter` is refused by `sendKey` above and
+    // accepted here, and the fake can tell a reader which of the two it was.
+    try testing.expect(fake.startup_key_sent);
+
+    // Text is refused on both doors -- `sendText` is not this door's shape
+    // and there is no startup-shaped way to type at one of these boxes.
+    try testing.expectError(error.StartupQuestionOnScreen, host.sendText(worker, "yes", true));
+    try testing.expect(fake.sent == null);
+}
+
 test "a key goes to the host as written, and a key that is not one never gets there" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -6363,6 +6551,46 @@ pub const Host = struct {
             id: Bus.Id,
         ) bool,
 
+        /// Which key `id`'s CLI plugin declares for the question on its
+        /// screen, or null when none is up or none is declared for it
+        /// (task 2635).
+        ///
+        /// **The terminal's CLI is worked out by the host**, not passed in,
+        /// so that this and `startupQuestion` cannot disagree about which
+        /// CLI a terminal is running: the host is the side that knows both
+        /// the launch that started it and what its hooks said. The screen is
+        /// read here too, at the moment of the call, so the answer is
+        /// matched against the terminal as it is now.
+        ///
+        /// **The returned `Answer` belongs to the plugins** and lives as
+        /// long as they do, the way `promptScreens` does.
+        startupAnswer: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+        ) Plugin.StartupAsk,
+
+        /// Press exactly this key, past the guard `sendKey` puts up while a
+        /// question is on the screen (task 2635).
+        ///
+        /// **A second vtable entry rather than a bypass inside `sendKey`**,
+        /// and the reason is not tidiness. The guard in this file's
+        /// `sendKey` is what holds every other door shut, and a caller
+        /// reaching this one has already been through the plugin's `blocks`
+        /// and `answers` match -- so the permission is carried by *which
+        /// entry was called*, not by a condition inside the shared one.
+        /// That also makes it observable: a host implementation, and a test
+        /// host, can say which of the two a key came in by, where a
+        /// condition inside `sendKey` would leave them indistinguishable.
+        ///
+        /// The app implements both with the same function -- what a key
+        /// does once it is past `Polter` is the terminal's business -- so
+        /// this is a seam, not a second behaviour.
+        sendStartupAnswerKey: *const fn (
+            ctx: *anyopaque,
+            id: Bus.Id,
+            key: []const u8,
+        ) anyerror!keys.Outcome,
+
         /// Type text into a terminal as if the user had.
         sendText: *const fn (
             ctx: *anyopaque,
@@ -7392,6 +7620,10 @@ pub const Host = struct {
         return self.vtable.startupReach(self.ctx, id);
     }
 
+    fn startupAnswer(self: Host, id: Bus.Id) Plugin.StartupAsk {
+        return self.vtable.startupAnswer(self.ctx, id);
+    }
+
     fn personaSlot(self: Host, id: Bus.Id, slot: []const u8) anyerror!PersonaSlot {
         return self.vtable.personaSlot(self.ctx, id, slot);
     }
@@ -7427,6 +7659,24 @@ pub const Host = struct {
         confirm_close: bool,
     ) anyerror!void {
         return self.vtable.performAction(self.ctx, id, action, confirm_close);
+    }
+
+    /// `Host.sendKey`'s guard, gone around for exactly one key (task 2635):
+    /// the one `terminal_answer_prompt` was told to press by a plugin's own
+    /// `answers` declaration, at a screen the same plugin's `blocks` says is
+    /// its question. Everything else -- `terminal_key`, a notice, the owed
+    /// first prompt -- still meets the refusal.
+    ///
+    /// **The guard stays where it is and this goes around it through its own
+    /// vtable entry**, which is the point: `sendKey` is shared by every door
+    /// that presses a key at another terminal, and widening it there would
+    /// open all of them at once. Here the permission is carried by which
+    /// entry was called -- only the one arm that has already matched the
+    /// declaration reaches this -- so there is no second place for the
+    /// condition to be got wrong, and a host can say which door a key came
+    /// in by.
+    fn sendStartupAnswerKey(self: Host, id: Bus.Id, key: []const u8) anyerror!keys.Outcome {
+        return self.vtable.sendStartupAnswerKey(self.ctx, id, key);
     }
 
     fn configText(
@@ -10232,6 +10482,51 @@ fn dispatchOne(
                     "the number has to match what is on the screen.",
             );
 
+            // **A question its own plugin declares an answer for, before
+            // anything else in this arm looks at the terminal** (task 2635).
+            //
+            // It has to be here, above both of the arm's other exits, and
+            // the reason is that neither of them can be right about this
+            // kind of box:
+            //
+            //   * the moments below are checked against `promptStanding`,
+            //     which asks for `awaiting_approval` and a captured box --
+            //     and a starting CLI's question is `awaiting_input` with
+            //     `detail: startup_question` (`Bus.noteStartupQuestion`),
+            //     so a caller that did exactly what it was taught to do --
+            //     hand back `state_at_ms`/`event_at_ms` off `terminal_list`
+            //     -- would get `PromptGone` and never reach a key;
+            //   * `blindRefusal` below asks the same question of the same
+            //     state and answers `PromptGone` for the same reason.
+            //
+            // So a caller's moments are **not read on this path at all**,
+            // and that is not a weakening: the moments exist to say "the box
+            // I looked at is still the one there", and this path answers it
+            // harder -- it reads the screen *now* and matches the plugin's
+            // declared question against *that*. A stale caller gets the
+            // same refusal either way, because the question it looked at is
+            // not on the screen any more.
+            //
+            // ⚠️ **What is deliberately not here.** `choice` takes no part:
+            // the answer to one of these is a single keystroke the plugin
+            // named (`Plugin.StartupSays.Answer.key`), not an option in a
+            // list, so there is no highlight to walk and nothing for a
+            // count to mean. A `choice` of 2 that matches still presses the
+            // declared key, and says so in its reply rather than reporting
+            // an option taken. The bounds check above still runs first, so
+            // an impossible count is `BadParams` on this path as on every
+            // other. `Host.sendKey`'s guard is not consulted either -- this
+            // goes through `sendStartupAnswerKey`, the second door, which exists
+            // only for this call site.
+            //
+            // **The state is not moved by hand.** Whether the question is
+            // still up is the screen's answer, and `App.holdStartupQuestions`
+            // re-reads it on its own heartbeat: once the box is gone,
+            // `noteStartupQuestion(id, null, …)` puts the terminal back and
+            // lets its first prompt through. Writing the state from here
+            // would be a second authority for it, and the two would argue.
+            if (try startupAnswerRefusal(alloc, host, p.id)) |refused| return refused;
+
             // **Before the first arrow, not before the return.** A box that
             // has been replaced is not one to walk a highlight around in
             // either.
@@ -11782,6 +12077,81 @@ fn assignAndTell(
                 "terminal_list shows a new session_id for it once that has happened; read " ++
                 "that terminal before relying on its context being empty.",
         } },
+    ) };
+}
+
+/// The answer to a question the terminal's own CLI plugin declares one for,
+/// or null when there is nothing of the kind to do (task 2635).
+///
+/// **This is the only place a key is pressed at a starting CLI's question**,
+/// and it is called from exactly one arm: `terminal_answer_prompt`, after
+/// its `BadParams` check and before either of the exits that would refuse
+/// this kind of box (see the arm for why neither can be right about it).
+/// Everything else that could press a key there -- `terminal_key`, a notice,
+/// the owed first prompt -- meets `Host.sendKey`'s guard as it always has.
+///
+/// Three outcomes, and the middle one is the whole reason this is a
+/// function rather than a condition in the arm:
+///
+///   * **no question of this CLI's is up** (`StartupAsk.none`) ⇒ null, and
+///     the caller carries on into the ordinary permission-prompt path. That
+///     is what every other CLI's box does today, and none of it changes.
+///   * **one is up and the declaration does not answer it**
+///     (`unanswerable`) ⇒ `StartupQuestionOnScreen`, the same refusal as
+///     before, with no key sent. A question a plugin recognises but does not
+///     answer is the person's, and that is the answer that says so.
+///   * **one is up and answered** ⇒ the declared key goes through
+///     `Host.sendStartupAnswerKey`, and the reply names the answer rather than
+///     claiming an option was taken (`choice` takes no part here -- see the
+///     arm).
+///
+/// **The user's switch is not asked again here.** `authorize` asks it for
+/// `terminal_answer_prompt` on every call, before any of this runs
+/// (`Error.AuthoriseOff`), and it is the same question -- so asking it twice
+/// would be a second authority for one answer, and the copy that is not
+/// exercised by the real dispatch path is the one that rots.
+///
+/// **A key that reaches the program is not a question answered.** The reply
+/// says the key was pressed and what it was, because whether the box is
+/// gone is the screen's to say on the next heartbeat
+/// (`App.holdStartupQuestions`), and this call cannot see that. Claiming
+/// otherwise would be the reply asserting the very thing it was sent to
+/// cause.
+fn startupAnswerRefusal(
+    alloc: std.mem.Allocator,
+    host: Host,
+    id: Bus.Id,
+) std.mem.Allocator.Error!?wire.Response {
+    const ans = switch (host.startupAnswer(id)) {
+        .none => return null,
+        .unanswerable => return hostFailure("StartupQuestionOnScreen", startup_question_on_screen),
+        .key => |a| a,
+    };
+
+    _ = host.sendStartupAnswerKey(id, ans.key) catch |err| return switch (err) {
+        error.UnknownTerminal,
+        error.NoSuchTerminal,
+        => failure(error.UnknownTerminal),
+        error.ChildExited => hostFailure(
+            "ChildExited",
+            "that terminal's process has already exited, so there is no question " ++
+                "there to answer. Read it to see what happened.",
+        ),
+        error.Composing => hostFailure("UserPresent", composing_typed),
+        else => hostFailure(
+            "KeyFailed",
+            "the terminal would not take the key this CLI's plugin answers that " ++
+                "question with, so nothing was answered.",
+        ),
+    };
+
+    return .{ .text = try std.fmt.allocPrint(
+        alloc,
+        "pressed {s} at that terminal's startup question: {s}. That says the key " ++
+            "reached the program, not that the box is gone -- its screen is read " ++
+            "again on the next heartbeat, and terminal_list shows the question " ++
+            "clearing a moment after that. Nothing was typed.",
+        .{ ans.key, ans.description },
     ) };
 }
 
@@ -13392,6 +13762,38 @@ const FakeHost = struct {
     startup: StartupReach = .none,
     /// What `startupQuestion` answers, for every terminal.
     startup_question: bool = false,
+    /// What `startupAnswer` answers, for every terminal (task 2635).
+    ///
+    /// **The default is the honest one for a fake with no manifests**: no
+    /// question of any plugin's is on the screen, so nothing is answered and
+    /// the arm carries on into its ordinary permission-prompt path. A test
+    /// that wants the startup path sets this to `.key`.
+    ///
+    /// There is no separate record of which door a key came in by, and that
+    /// is not an omission: both doors end in this fake's `sendKey` vtable
+    /// entry, exactly as both end in the app's one `poltergeistSendKey`.
+    /// **The distinction lives in the `Host` wrappers**, which is where the
+    /// guard is, so it is measured by calling the wrappers (see the test on
+    /// `sendStartupAnswerKey`), not by watching the fake.
+    startup_answer: Plugin.StartupAsk = .none,
+
+    /// Whether the last key this fake was handed came in by the startup
+    /// door (`sendStartupAnswerKey`) rather than the ordinary one
+    /// (`sendKey`), task 2635.
+    ///
+    /// **The two doors call the same `press`, so `keyed` alone cannot tell
+    /// them apart** -- and telling them apart is the whole safety claim of
+    /// this task: the same key must be *impossible* through `sendKey` and
+    /// *possible* through the startup door, in the same run, at the same
+    /// terminal. Without this bit a test can only show that a key reached
+    /// the fake, not which way it came.
+    startup_key_sent: bool = false,
+
+    /// How many times `startupAnswer` was asked for (task 2635). **Zero is
+    /// the reading that matters on the refusal paths**: whether the question
+    /// was read at all is a different fact from whether a key went, and the
+    /// two are refused for different reasons.
+    startup_asked: usize = 0,
 
     /// The one slot this terminal's persona wants, for the slot tests.
     slot_wanted: ?[]const u8 = null,
@@ -13469,6 +13871,8 @@ const FakeHost = struct {
             .seatHeld = seatHeld,
             .startupReach = startupReach,
             .startupQuestion = startupQuestion,
+            .startupAnswer = startupAnswer,
+            .sendStartupAnswerKey = sendStartupAnswerKey,
             .personaFace = personaFace,
             .terminalCapabilities = terminalCapabilities,
             .agentArrived = agentArrived,
@@ -14252,6 +14656,12 @@ const FakeHost = struct {
         return self.startup_question;
     }
 
+    fn startupAnswer(ctx: *anyopaque, _: Bus.Id) Plugin.StartupAsk {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.startup_asked += 1;
+        return self.startup_answer;
+    }
+
     fn startupReach(ctx: *anyopaque, _: Bus.Id) StartupReach {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         return self.startup;
@@ -14615,6 +15025,21 @@ const FakeHost = struct {
 
     fn sendKey(ctx: *anyopaque, id: Bus.Id, k: []const u8) anyerror!keys.Outcome {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.startup_key_sent = false;
+        return self.press(id, k);
+    }
+
+    /// The startup door (task 2635), told apart from `sendKey` by
+    /// `startup_key_sent`: the two call the same `press`, so a test that
+    /// watched only `keyed` could not say which door a key came in by --
+    /// and that distinction is the whole safety claim of this task.
+    fn sendStartupAnswerKey(ctx: *anyopaque, id: Bus.Id, k: []const u8) anyerror!keys.Outcome {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        self.startup_key_sent = true;
+        return self.press(id, k);
+    }
+
+    fn press(self: *FakeHost, id: Bus.Id, k: []const u8) anyerror!keys.Outcome {
         if (self.key_error) |err| return err;
         self.keyed = .{ .id = id, .key = k };
         if (self.keys_n < self.keys_pressed.len) {

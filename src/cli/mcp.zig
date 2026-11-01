@@ -1743,7 +1743,16 @@ const tools = [_]Tool{
             "to 1: it walks to it with the arrow keys -- down, or right for a CLI whose " ++
             "box lists its options in a row (opencode) -- and presses return, so **read the " ++
             "terminal first** -- a wrong count takes a different option and reports " ++
-            "success. **And read what you are approving, all of it, first**: " ++
+            "success. **A CLI's own startup question is the one case where `choice` does " ++
+            "not apply**: when the terminal is a CLI waiting at a box it asks before it " ++
+            "starts (Antigravity's `Do you trust the contents of this project?`), and that " ++
+            "CLI's plugin declares a key for it, this presses **that declared key** and " ++
+            "nothing else -- no arrows, whatever `choice` says, and whatever " ++
+            "`state_at_ms`/`event_at_ms` you passed, because the question on the screen is " ++
+            "read as it is now instead. The reply names the answer it pressed. A question " ++
+            "no plugin declares an answer for is still refused as it always was " ++
+            "(`StartupQuestionOnScreen`), and so is one whose plugin recognises it and has " ++
+            "no answer. **And read what you are approving, all of it, first**: " ++
             "terminal_turn's `pending_tool` is the whole tool call; the notice's note " ++
             "and the box on screen both show only the start of a long command, and " ++
             "`truncated: true` there means the rest cannot be read -- do not approve " ++
@@ -1769,7 +1778,7 @@ const tools = [_]Tool{
             "terminal, while ctrl+c and escape still go through. Same reach rule as " ++
             "terminal_read. Never at your own terminal: your own prompt is yours.",
         .schema =
-        \\{"type":"object","properties":{"id":{"type":"string"},"choice":{"type":"integer"},"state_at_ms":{"type":"integer","description":"agent.state_at_ms from terminal_list, as read when you looked at the prompt. Give both or neither."},"event_at_ms":{"type":"integer","description":"agent.event_at_ms from terminal_list, as read then."}},"required":["id"]}
+        \\{"type":"object","properties":{"id":{"type":"string"},"choice":{"type":"integer","description":"Which option to take, counting the highlighted one as 1. Ignored when the terminal is a CLI's own startup question and its plugin declares a key for it: there the declared key is pressed and no option is walked."},"state_at_ms":{"type":"integer","description":"agent.state_at_ms from terminal_list, as read when you looked at the prompt. Give both or neither. Not read at a startup question: that is matched against the screen as it is now."},"event_at_ms":{"type":"integer","description":"agent.event_at_ms from terminal_list, as read then."}},"required":["id"]}
         ,
     },
     .{
