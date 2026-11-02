@@ -571,7 +571,12 @@ struct ControlRoomWorkdirsPage: View {
     /// icon and the name (`files4.css`, `.tr`).
     private func row(_ node: Node) -> some View {
         let selected = tree.isSelected(node.path)
-        let open = node.isDir && levels.isOpen(node.path)
+        // ⚠️ **`isOpen`, not `open`**: a local `Bool` named `open` shadows the
+        // view's two `open(_:)` methods, and the call below then reads
+        // `cannot call value of non-function type 'Bool'`. `swiftc -parse`
+        // cannot see that (it checks syntax only); the app build did
+        // (`t2681/xcodebuild-direct.log`).
+        let isOpen = node.isDir && levels.isOpen(node.path)
         return Button {
             if node.isDir {
                 levels.toggle(node.path)
@@ -587,12 +592,12 @@ struct ControlRoomWorkdirsPage: View {
                 // the two line up (`build2665.py`'s `build_tree_node`: 文件
                 // 占位保持对齐).
                 if node.isDir {
-                    icon(open ? .chevronOpen : .chevronShut, ink: theme.textSecondary)
+                    icon(isOpen ? .chevronOpen : .chevronShut, ink: theme.textSecondary)
                         .frame(width: Tile.twistyWidth, height: Tile.twistyWidth)
                 } else {
                     Color.clear.frame(width: Tile.twistyWidth, height: Tile.twistyWidth)
                 }
-                icon(for: node, open: open)
+                icon(for: node, open: isOpen)
                     .frame(width: Tile.treeIcon, height: Tile.treeIcon)
                 Text(node.name)
                     .font(.system(size: Tile.wordsSize, design: .monospaced))
