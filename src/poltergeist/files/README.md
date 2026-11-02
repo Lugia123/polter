@@ -1,6 +1,7 @@
 # `files/` — a group's working directories, and what may be read
 
-Task 2145, plan in `polter-artifacts/2145/PLAN.md` §1. Six files so far:
+Task 2145, plan in `polter-artifacts/2145/PLAN.md` §1. The six the plan's
+first slices named:
 
 | file | what it is |
 | --- | --- |
@@ -10,6 +11,34 @@ Task 2145, plan in `polter-artifacts/2145/PLAN.md` §1. Six files so far:
 | `Diff.zig` | a line diff (Myers), hunks between two lists of lines (C4) |
 | `Merge.zig` | three-way merge (diff3) into a segment table, and the choices put back into a text (C4) |
 | `Write.zig` | the one way a file is written: begin, propose, commit (C3) |
+
+⚠️ **The package has grown past that table and the table has not kept up.**
+`ls src/poltergeist/files/*.zig` is eleven modules now; `Tickets.zig` (C7),
+`Locks.zig` (C6a), `Watch.zig` and `Recent.zig` (C5) and `Listing.zig` (task
+2668) are all here and none of them is a row above. **`Listing.zig` is added
+below because task 2670 S7 asked for it**, and the rest of the table is left
+as it is rather than turned into four more rows nobody asked for — but a
+reader should know the count above is the plan's, not the directory's.
+
+| file | what it is |
+| --- | --- |
+| `Listing.zig` | one level of a directory, for the host that draws a tree (task 2668) |
+
+**`Listing.zig` is a listing and not a walk.** It answers one directory --
+`files_list(token, rel)` -- with the entries directly inside it, sorted
+**by the core** (directories first, then by name, case-insensitively, with a
+byte comparison to settle names that differ only in case) and with the build
+output already gone (`Watch.excluded_dirs`: `.git`, `node_modules`,
+`.zig-cache`, `zig-out`, `target`, `.build`, `DerivedData`, matched by
+component and by `Watch.default_ignore_case`). Past `max_entries` the rest
+are counted into `more` rather than dropped silently, and the collection is
+finished before it is sorted and cut -- cutting as it went would leave
+whichever 2000 entries the filesystem happened to hand over first.
+
+⚠️ **The order is the core's and a host may not re-sort it.** A host that
+sorted a level would be a second answer about what a directory looks like,
+and `tools/control-room-hosts-do-not-decide.py` refuses one that sorts at
+all.
 
 Pure, and tested off the hosts: nothing here opens a window or talks to the
 app. The app gathers (`App.renderWorkdirs`) and the hosts draw.

@@ -1482,6 +1482,7 @@
 "No file changed today" = "今天还没有文件改动";
 "Working directories" = "工作目录";
 "No working directory on record" = "暂无工作目录记录";
+"Reading the working directories…" = "正在读取工作目录…";
 "No files" = "暂无文件";
 "Collapse all" = "全部收起";
 "Workbench" = "工作台";
@@ -1491,3 +1492,20 @@
 "The bars at the left mark lines changed after you opened this file" = "左边的竖条：这个文件在你打开以后被改过的行";
 "%@ directories" = "%@ 个";
 "%@ being changed" = "在改 %@ 个";
+"%@ more" = "还有 %@ 个";
+
+/* 总控台：工作目录页的活动栏与搜索面板（task 2670 的 S3 与 S5） */
+"Explorer" = "资源管理器";
+"Search" = "搜索";
+"Collapse the sidebar" = "收起侧栏";
+"Expand the sidebar" = "展开侧栏";
+"The answer was not a ticket" = "拿回来的不是一张票据";
+"The core is not answering" = "核心没有回答";
+"The answer was not one this page can read" = "这一页读不懂核心的回答";
+"Search in files" = "搜内容";
+"Search file names" = "搜文件名";
+"Type to search file names" = "输入文件名的一部分来查找";
+"Type a name to look for a file" = "输入一个名字来查找文件";
+"Still looking" = "还在找";
+"No file by that name" = "没有这个名字的文件";
+"%@ matches" = "%@ 处匹配";

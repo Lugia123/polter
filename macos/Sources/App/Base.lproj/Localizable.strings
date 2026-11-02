@@ -1407,6 +1407,7 @@
 "No file changed today" = "No file changed today";
 "Working directories" = "Working directories";
 "No working directory on record" = "No working directory on record";
+"Reading the working directories…" = "Reading the working directories…";
 "No files" = "No files";
 "Collapse all" = "Collapse all";
 "Workbench" = "Workbench";
@@ -1416,3 +1417,21 @@
 "The bars at the left mark lines changed after you opened this file" = "The bars at the left mark lines changed after you opened this file";
 "%@ directories" = "%@ directories";
 "%@ being changed" = "%@ being changed";
+"%@ more" = "%@ more";
+
+/* The control room's working-directories page, the activity bar and the
+   search panel (task 2670, S3 and S5) */
+"Explorer" = "Explorer";
+"Search" = "Search";
+"Collapse the sidebar" = "Collapse the sidebar";
+"Expand the sidebar" = "Expand the sidebar";
+"The answer was not a ticket" = "The answer was not a ticket";
+"The core is not answering" = "The core is not answering";
+"The answer was not one this page can read" = "The answer was not one this page can read";
+"Search in files" = "Search in files";
+"Search file names" = "Search file names";
+"Type to search file names" = "Type to search file names";
+"Type a name to look for a file" = "Type a name to look for a file";
+"Still looking" = "Still looking";
+"No file by that name" = "No file by that name";
+"%@ matches" = "%@ matches";
