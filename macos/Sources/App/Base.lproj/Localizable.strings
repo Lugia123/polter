@@ -838,7 +838,7 @@
 "More tabs" = "More tabs";
 "Add a terminal to this pane" = "Add a terminal to this pane";
 
-/* 窗口菜单 › 层叠：一格里叠放多个终端（control-room.md 12.6.2） */
+/* 层叠子菜单：一格里叠放多个终端（control-room.md 12.6.2；任务 2661 起挂文件菜单与终端右键菜单） */
 "New Terminal in This Pane" = "New Terminal in This Pane";
 "Next Stacked Terminal" = "Next Stacked Terminal";
 "Previous Stacked Terminal" = "Previous Stacked Terminal";

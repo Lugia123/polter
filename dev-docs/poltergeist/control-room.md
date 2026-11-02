@@ -2093,8 +2093,10 @@ worker 是标题带，普通终端没有带——普通终端的一叠设计稿�
 - **操作**（`BaseTerminalController+Stack.swift`）：在这一格里新开一个、切到上一个 / 下一个 / 点某个标签、拿出去成为旁边的
   一格、把这一格叠到上一格 / 下一格上。每个都是「换一棵树」，带撤销。切换时如果被换下去的是焦点格，焦点跟到换上来的
   （`TerminalPresence.focus`）。
-- **入口**：点标签、点加号、点「…」出菜单；窗口菜单「均分分屏」后面的「层叠」子菜单（六项，不该亮的灰着，
-  `PaneStackRules.offers`）；键位动作 `pane_stack:new|next|previous|out|onto_next|onto_previous`，**默认不绑键**，
+- **入口**：点标签、点加号、点「…」出菜单；**「层叠」子菜单挂在哪里**（六项，不该亮的灰着，
+  `PaneStackRules.offers`）：mac 上在**文件菜单**「向上分屏」后面，和终端右键菜单「向上分屏」后面各一份
+  （任务 2661；原来是挂窗口菜单「调整分屏」后面，报告「没有堆叠到当前分屏的办法」的当时它一直在，只是隔了一个菜单）；
+  键位动作 `pane_stack:new|next|previous|out|onto_next|onto_previous`，**默认不绑键**，
   也进了命令面板。动作走 `apprt.Action.pane_stack`（加在枚举末尾，编号 80）：GTK 回「没做」，Windows 宿主的 `cb_action`
   有一条 `owed: 1493` 的分支、面板把这六行藏起来。
 - **关**：关一格显示的那个，后面的顶上来并接过键盘（原来会把键盘给旁边的格）；关一个叠在后面的——比如它的 shell 自己

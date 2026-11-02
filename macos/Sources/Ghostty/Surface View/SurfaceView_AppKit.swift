@@ -1762,6 +1762,21 @@ extension Ghostty {
             item.setImageIfDesired(systemSymbolName: "rectangle.bottomhalf.inset.filled")
             item = menu.addItem(withTitle: String(localized: "Split Up", comment: "右键菜单：向上分屏"), action: #selector(splitUp(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.tophalf.inset.filled")
+
+            // The Stack submenu, where a person looks for it: right here,
+            // after the four directions and before "Close Split" (task
+            // 2661) -- the same place it takes in the File menu, which is
+            // what the report was about (the submenu existed, one menu
+            // away, in Window). The rows are the menu bar's, from the one
+            // table (`BaseTerminalController.stackMenuVerbs`); only the
+            // selectors differ, and they are this view's, so each row acts
+            // on the pane that was right-clicked instead of on the one
+            // holding the keyboard (`item.target = self`, as Close Split
+            // below).
+            if windowSurfaceTree != nil {
+                menu.addItem(polterStackMenuItem())
+            }
+
             item = menu.addItem(withTitle: String(localized: "Close Split", comment: "右键菜单：关闭这个分屏"), action: #selector(closeSplit(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "xmark.rectangle")
             // Aimed at this surface rather than left to the responder chain,
@@ -1975,6 +1990,59 @@ extension Ghostty {
         /// The split tree of the window this surface is in, when it is in one.
         var windowSurfaceTree: SplitTree<Ghostty.SurfaceView>? {
             (window?.windowController as? BaseTerminalController)?.surfaceTree
+        }
+
+        // MARK: The Stack submenu (task 2661)
+
+        /// The Stack submenu for this terminal's right-click menu: the six
+        /// rows of `BaseTerminalController.stackMenuVerbs`, aimed at **this**
+        /// terminal.
+        ///
+        /// **Built fresh every time, and that is not an accident.**
+        /// `NSMenuItem` belongs to one menu at a time: the menu bar's rows are
+        /// made once and kept (`AppDelegate.stackMenuItems`), so handing those
+        /// same objects to a second menu would take them out of the menu bar
+        /// and leave it six rows short. Each row here is a new object, wired
+        /// to this view (`target = self`), so the menu bar's are untouched.
+        ///
+        /// The rows are greyed where they have nothing to do by
+        /// `validateMenuItem(_:)` below -- the same `PaneStackRules.offers` the
+        /// menu bar asks.
+        func polterStackMenuItem() -> NSMenuItem {
+            let submenu = NSMenu(title: String(localized: "Stack", comment: "层叠子菜单：一格里叠放多个终端"))
+            submenu.autoenablesItems = true
+            for row in BaseTerminalController.stackMenuVerbs {
+                let item = NSMenuItem(title: row.title,
+                                      action: BaseTerminalController.paneSelector(for: row.verb),
+                                      keyEquivalent: "")
+                item.target = self
+                submenu.addItem(item)
+            }
+            let holder = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
+            holder.submenu = submenu
+            return holder
+        }
+
+        /// Whether a Stack row has anything to do on **this** terminal, and
+        /// the whole reason these actions live on the view rather than
+        /// going to the responder chain: the menu bar's rows ask
+        /// `TerminalController` about the pane the keyboard is in, but a
+        /// right-click is about the pane under the pointer, which is not
+        /// always the same one.
+        func polterStackOffers(_ verb: PaneStackRules.Verb) -> Bool {
+            guard let controller = BaseTerminalController.controller(owning: self) else { return false }
+            return controller.offers(stack: verb, at: self)
+        }
+
+        @objc func polterStackNew(_ sender: Any?) { polterStackPerform(.new) }
+        @objc func polterStackNext(_ sender: Any?) { polterStackPerform(.next) }
+        @objc func polterStackPrevious(_ sender: Any?) { polterStackPerform(.previous) }
+        @objc func polterStackOut(_ sender: Any?) { polterStackPerform(.out) }
+        @objc func polterStackOntoNext(_ sender: Any?) { polterStackPerform(.ontoNext) }
+        @objc func polterStackOntoPrevious(_ sender: Any?) { polterStackPerform(.ontoPrevious) }
+
+        private func polterStackPerform(_ verb: PaneStackRules.Verb) {
+            (BaseTerminalController.controller(owning: self))?.perform(stack: verb, at: self)
         }
 
         /// Whether **Close Split** is something to offer a surface in this tree.
@@ -2580,6 +2648,15 @@ extension Ghostty.SurfaceView: NSMenuItemValidation {
 
         case #selector(closeSplit(_:)):
             return Self.closeSplitIsOffered(in: windowSurfaceTree)
+
+        // The Stack submenu of this terminal's own right-click menu (task
+        // 2661): a row is greyed where it has nothing to do on **this**
+        // terminal, which is not the same question the menu bar's rows ask
+        // (see `polterStackOffers`).
+        case #selector(polterStackNew(_:)), #selector(polterStackNext(_:)), #selector(polterStackPrevious(_:)),
+             #selector(polterStackOut(_:)), #selector(polterStackOntoNext(_:)), #selector(polterStackOntoPrevious(_:)):
+            guard let verb = BaseTerminalController.stackVerb(of: item.action) else { return false }
+            return polterStackOffers(verb)
 
         case #selector(toggleReadonly):
             item.state = readonly ? .on : .off

@@ -1598,46 +1598,46 @@ extension AppDelegate {
         reloadDockMenu()
     }
 
-    /// The Stack submenu, made the first time it is asked for and put
-    /// after "Equalize Splits": one item for each of a stack's verbs, each
-    /// with the binding action it is the menu form of. No key is bound by
-    /// default; an item shows whatever key the config gives its action.
+    /// The Stack submenu, put in the **File menu, right after "Split Up"**
+    /// (task 2661): one item for each of a stack's verbs, each with the binding
+    /// action it is the menu form of. No key is bound by default; an item shows
+    /// whatever key the config gives its action.
     ///
-    /// Made in code, not in the xib: the items go to the first responder
-    /// (the tab's controller), which says which of them has anything to do.
+    /// **It used to hang off the Window menu, after "Resize Split"** (task
+    /// 1604 put it there). What that cost is why it moved: the four
+    /// directions a person splits with are in File, so File is where they
+    /// look for the fifth thing -- and "Resize Split" is about the divider,
+    /// not about what is in the panes. Reported as "there is no way to stack
+    /// a terminal onto the one in this pane", with the submenu sitting one
+    /// menu away the whole time.
+    ///
+    /// Put there once, and answered with the rows it put there: the second
+    /// call (a config reload) returns the same rows rather than a second
+    /// submenu. The rows are rebuilt only if the menu has been rearranged
+    /// under us -- see the guard.
     @MainActor private func stackMenuItems() -> [(String, NSMenuItem)] {
-        if let stackMenu { return stackMenu }
-        let verbs: [(String, String, Selector)] = [
-            ("pane_stack:new", String(localized: "New Terminal in This Pane", comment: "窗口菜单 › 层叠：在当前这一格里新开一个终端，叠在前面"),
-             #selector(BaseTerminalController.paneStackNew(_:))),
-            ("pane_stack:next", String(localized: "Next Stacked Terminal", comment: "窗口菜单 › 层叠：这一叠的下一个"),
-             #selector(BaseTerminalController.paneStackNext(_:))),
-            ("pane_stack:previous", String(localized: "Previous Stacked Terminal", comment: "窗口菜单 › 层叠：这一叠的上一个"),
-             #selector(BaseTerminalController.paneStackPrevious(_:))),
-            ("pane_stack:out", String(localized: "Move Terminal Out of Stack", comment: "窗口菜单 › 层叠：把当前终端从这一叠里拿出来，成为旁边的一格"),
-             #selector(BaseTerminalController.paneStackOut(_:))),
-            ("pane_stack:onto_next", String(localized: "Stack onto Next Pane", comment: "窗口菜单 › 层叠：把当前终端叠到下一格上"),
-             #selector(BaseTerminalController.paneStackOntoNext(_:))),
-            ("pane_stack:onto_previous", String(localized: "Stack onto Previous Pane", comment: "窗口菜单 › 层叠：把当前终端叠到上一格上"),
-             #selector(BaseTerminalController.paneStackOntoPrevious(_:))),
-        ]
-        let submenu = NSMenu(title: String(localized: "Stack", comment: "窗口菜单里的子菜单：一格里叠放多个终端"))
-        let made: [(String, NSMenuItem)] = verbs.map { action, title, selector in
-            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        let title = String(localized: "Stack", comment: "层叠子菜单：一格里叠放多个终端")
+
+        if let stackMenu, let splitUp = menuSplitUp,
+           splitUp.menu?.items.contains(where: { $0.submenu?.title == title }) == true {
+            return stackMenu
+        }
+
+        let submenu = NSMenu(title: title)
+        let made: [(String, NSMenuItem)] = BaseTerminalController.stackMenuVerbs.map { row in
+            let item = NSMenuItem(title: row.title,
+                                  action: BaseTerminalController.menuBarSelector(for: row.verb),
+                                  keyEquivalent: "")
             submenu.addItem(item)
-            return (action, item)
+            return (row.action, item)
         }
-        // In the Window menu, right after "Resize Split ▸" -- found through
-        // the one outlet there is into that submenu. It used to go after
-        // "Equalize Splits" itself, which put it *inside* "Resize Split"
-        // (task 1604: the Windows menu has it beside, as this comment's
-        // title always said).
-        if let equalize = menuEqualizeSplits, let resize = equalize.menu, let window = resize.supermenu,
-           let resizeItem = window.items.first(where: { $0.submenu === resize }) {
-            let holder = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
+
+        if let splitUp = menuSplitUp, let file = splitUp.menu {
+            let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             holder.submenu = submenu
-            window.insertItem(holder, at: window.index(of: resizeItem) + 1)
+            file.insertItem(holder, at: file.index(of: splitUp) + 1)
         }
+
         stackMenu = made
         return made
     }

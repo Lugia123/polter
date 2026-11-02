@@ -247,18 +247,86 @@ extension BaseTerminalController {
 
     // MARK: The menu
 
-    /// The verb a menu item of the Stack submenu stands for; nil for any
-    /// other item.
-    static func stackVerb(of action: Selector?) -> PaneStackRules.Verb? {
-        switch action {
-        case #selector(paneStackNew(_:)): return .new
-        case #selector(paneStackNext(_:)): return .next
-        case #selector(paneStackPrevious(_:)): return .previous
-        case #selector(paneStackOut(_:)): return .out
-        case #selector(paneStackOntoNext(_:)): return .ontoNext
-        case #selector(paneStackOntoPrevious(_:)): return .ontoPrevious
-        default: return nil
+    /// The six rows of a Stack submenu, in the order they are put on it: the
+    /// verb, the binding action it is the menu form of, and the words.
+    ///
+    /// **The one table.** Two menus carry these rows -- the menu bar's
+    /// (`AppDelegate.stackMenuItems`, which also hands each row the key the
+    /// config gives its action) and a terminal's own right-click menu (task
+    /// 2661) -- and a second copy of the six titles is a second copy that
+    /// drifts: the right-click menu would keep yesterday's words after the
+    /// menu bar's were reworded, and nothing would say so. The words here are
+    /// the existing ones, unchanged, and the verbs are still
+    /// `PaneStackRules.Verb`'s six: this table adds no seventh row.
+    ///
+    /// Each menu picks its own selectors from the verb
+    /// (`menuBarSelector(for:)` / `paneSelector(for:)`), because the two act
+    /// on different things -- the menu bar's on the pane the keyboard is in,
+    /// a right-click's on the pane under the pointer.
+    ///
+    /// A stored `let`, not a function: the six rows are a fact about the app
+    /// and nothing computes them, and a second copy of them is exactly what
+    /// this table exists to prevent. `@MainActor` is spelled out though the
+    /// class already infers it from `NSWindowController`, because both
+    /// readers are menus.
+    @MainActor
+    static let stackMenuVerbs: [(verb: PaneStackRules.Verb, action: String, title: String)] = [
+        (.new, "pane_stack:new",
+         String(localized: "New Terminal in This Pane", comment: "层叠子菜单：在当前这一格里新开一个终端，叠在前面")),
+        (.next, "pane_stack:next",
+         String(localized: "Next Stacked Terminal", comment: "层叠子菜单：这一叠的下一个")),
+        (.previous, "pane_stack:previous",
+         String(localized: "Previous Stacked Terminal", comment: "层叠子菜单：这一叠的上一个")),
+        (.out, "pane_stack:out",
+         String(localized: "Move Terminal Out of Stack", comment: "层叠子菜单：把当前终端从这一叠里拿出来，成为旁边的一格")),
+        (.ontoNext, "pane_stack:onto_next",
+         String(localized: "Stack onto Next Pane", comment: "层叠子菜单：把当前终端叠到下一格上")),
+        (.ontoPrevious, "pane_stack:onto_previous",
+         String(localized: "Stack onto Previous Pane", comment: "层叠子菜单：把当前终端叠到上一格上")),
+    ]
+
+    /// The selector a menu-bar Stack row fires: the controller's own, which
+    /// acts on the pane the keyboard is in.
+    ///
+    /// A switch over every verb, not a lookup in the table above: a seventh
+    /// verb would otherwise get whatever the fallback answered, and the menu
+    /// bar would carry a row wired to nothing. Written out, adding one is a
+    /// compile error here and in `paneSelector(for:)`.
+    static func menuBarSelector(for verb: PaneStackRules.Verb) -> Selector {
+        switch verb {
+        case .new: return #selector(paneStackNew(_:))
+        case .next: return #selector(paneStackNext(_:))
+        case .previous: return #selector(paneStackPrevious(_:))
+        case .out: return #selector(paneStackOut(_:))
+        case .ontoNext: return #selector(paneStackOntoNext(_:))
+        case .ontoPrevious: return #selector(paneStackOntoPrevious(_:))
         }
+    }
+
+    /// The selector a terminal's own right-click Stack row fires.
+    ///
+    /// They are `Ghostty.SurfaceView`'s, declared beside that menu
+    /// (`SurfaceView_AppKit.swift`, `polterStackMenuItem`): the view is what
+    /// answers the right-click, and each action names the terminal it was
+    /// opened on as it goes (`perform(stack:at:)`), rather than letting the
+    /// row act on whichever pane happens to hold the keyboard.
+    static func paneSelector(for verb: PaneStackRules.Verb) -> Selector {
+        switch verb {
+        case .new: return #selector(Ghostty.SurfaceView.polterStackNew(_:))
+        case .next: return #selector(Ghostty.SurfaceView.polterStackNext(_:))
+        case .previous: return #selector(Ghostty.SurfaceView.polterStackPrevious(_:))
+        case .out: return #selector(Ghostty.SurfaceView.polterStackOut(_:))
+        case .ontoNext: return #selector(Ghostty.SurfaceView.polterStackOntoNext(_:))
+        case .ontoPrevious: return #selector(Ghostty.SurfaceView.polterStackOntoPrevious(_:))
+        }
+    }
+
+    /// The verb a menu item of the Stack submenu stands for; nil for any
+    /// other item. Read on both menus, and by the menu bar's validation.
+    static func stackVerb(of action: Selector?) -> PaneStackRules.Verb? {
+        guard let action else { return nil }
+        return stackMenuVerbs.first { menuBarSelector(for: $0.verb) == action
+            || paneSelector(for: $0.verb) == action }?.verb
     }
 
     @objc func paneStackNew(_ sender: Any?) { perform(stack: .new) }
