@@ -38,7 +38,19 @@ extension Ghostty.SurfaceView: Transferable {
 extension UTType {
     /// A format that encodes the bare UUID only for the surface. This can be used if you have
     /// a way to look up a surface by ID.
-    static let ghosttySurfaceId = UTType(exportedAs: "com.mitchellh.ghosttySurfaceId")
+    ///
+    /// **This identifier and `Ghostty-Info.plist`'s `UTTypeIdentifier` are one
+    /// fact in two files, and they must be the same string.** The name declared
+    /// here is what `NSItemProvider` registers, and the plist is the only thing
+    /// that puts that name in the system's type database; a `UTType` asked for a
+    /// name no bundle has declared comes back `nil`, so
+    /// `Transferable+Extension.swift`'s `compactMap { UTType($0) }` drops it and
+    /// `pasteboardItem()` returns nil. Nothing about that fails to compile, and
+    /// the grab handle still appears and still shows a hand -- the drag simply
+    /// never starts. That is how the fork's rename lost pane dragging:
+    /// `7de0cab17` changed the plist and left this line. The pair is held
+    /// together now by `tools/one-uti-for-a-surface.py`.
+    static let ghosttySurfaceId = UTType(exportedAs: "com.lugia.polterSurfaceId")
 }
 
 extension NSPasteboard.PasteboardType {

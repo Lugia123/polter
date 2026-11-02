@@ -216,6 +216,20 @@ KNOWN = {
         "refuses a test host whose bundle id is the installed app's",
     "src/build/PolterVersion.zig": "names the fork's own remote, Lugia123/polter",
     "macos/Ghostty-Info.plist": "pasteboard type derived from the bundle id",
+    # The Swift half of that same pasteboard type (task 2661): the identifier
+    # is written twice -- once in the plist above as the declaration, once here
+    # as `UTType(exportedAs:)` -- and they have to be the same string, which is
+    # why this one cannot be replaced with a placeholder either. It was the old
+    # bundle id in the Swift and the new one in the plist for a day, and what
+    # that cost was pane dragging (`tools/one-uti-for-a-surface.py` holds the
+    # two together now).
+    #
+    # The cost is the one this file's own documentation names: KNOWN allows by
+    # *path*, so every hit in this file is skipped from today, not just this
+    # one. It is a `Transferable` conformance and a `UTType` extension --
+    # strings and a UUID -- and nowhere for a path off this machine to be.
+    "macos/Sources/Ghostty/Surface View/SurfaceView+Transferable.swift":
+        "the exported UTType's identifier, which is the same string as the plist's",
     "macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift":
         "NSUserInterfaceItemIdentifier values namespaced by the bundle id",
     # The same thing one file over: the `Role` submenu's own item identifier,
