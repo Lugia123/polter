@@ -35,6 +35,7 @@ pub const files = @import("files/main.zig");
 pub const ChatLog = @import("ChatLog.zig");
 pub const MentionRetry = @import("MentionRetry.zig");
 pub const OwedTells = @import("OwedTells.zig");
+pub const StartupAnswers = @import("StartupAnswers.zig");
 pub const fresh_assign = @import("fresh_assign.zig");
 pub const process_info = @import("process_info.zig");
 pub const procscan = @import("procscan.zig");
@@ -145,6 +146,7 @@ test {
     _ = ChatLog;
     _ = MentionRetry;
     _ = OwedTells;
+    _ = StartupAnswers;
     _ = fresh_assign;
     _ = process_info;
     _ = procscan;

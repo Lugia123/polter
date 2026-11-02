@@ -5236,12 +5236,20 @@ test "1682: what agy shows before it connects: the trust box blocks, its input b
 }
 
 test "1746: the shipped Codex manifest knows the boxes codex 0.154 asks before it starts" {
+    // **A historical fixture, and it stays one** (task 2674): every screen
+    // below was read off codex-cli 0.154.0 on Windows 11, and 0.166 has
+    // since changed its wording. It is kept because what it pins is still
+    // true -- those words are declared, so an old Codex is still
+    // recognised -- and deleting it would take that claim with it. The
+    // wording the current Codex draws is `..._2698` below.
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, @embedFile("plugin_codex_json"), .{});
     const says = try startupSaysOf(a, "codex", parsed.object);
-    try testing.expectEqual(@as(usize, 3), says.blocks.len);
+    // Four: the three 0.154 asks plus the wording 0.166 replaced the first
+    // of them with. A count, not a list -- the order is the manifest's.
+    try testing.expectEqual(@as(usize, 4), says.blocks.len);
     // A question to wait on, never a box whose input box lets a line in.
     try testing.expect(!says.ready_without_agent);
     try testing.expect(!says.tools_from_second_turn);
@@ -5295,6 +5303,136 @@ test "1746: the shipped Codex manifest knows the boxes codex 0.154 asks before i
     try testing.expectEqual(StartupSays.Verdict.neither, says.verdict("› Ask Codex to do anything\n"));
 }
 
+/// The screens this task's tests are written against for the **current**
+/// Codex. ⚠️ **Synthetic, and said so**: every line below was assembled
+/// from the string table of the codex-cli 0.166.0 binary
+/// (`@openai/codex-darwin-arm64`, sha256 39acf979…db7c1) and **not** read
+/// off a running screen. A string table proves the words exist; it does not
+/// prove their order, which one is highlighted, or that this is the box a
+/// terminal shows. What it is good for is pinning that the manifest
+/// declares the wording the current CLI ships -- which is the half that
+/// rots silently when the binary changes. task 2674 hands the real read to
+/// the test worker; when that lands, these fixtures gain a second life as
+/// the measured version and this comment changes.
+const codex_166_trust_box =
+    \\  Welcome to Codex, OpenAI's command-line coding agent
+    \\
+    \\> You are in /w/t2674/work
+    \\
+    \\  Trust this folder? Codex can read, edit, and run files here, subject to
+    \\  your permission settings. Folder settings can run code automatically,
+    \\  even without a model request. Continue only if you trust these files.
+    \\  Your trust decision will be saved.
+    \\
+    \\› Trust and continue
+    \\  Open restricted
+    \\
+    \\  Folder access
+;
+const codex_166_sandbox_box =
+    \\  Set up the Codex agent sandbox to protect your files and control
+    \\  network access. Learn more
+    \\  <https://developers.openai.com/codex/windows>
+    \\
+    \\› 1. Set up default sandbox (requires Administrator permissions)
+    \\  2. Use non-admin sandbox (higher risk if prompt injected)
+    \\  3. Quit
+    \\
+    \\  Press Enter to continue.
+;
+const codex_166_update_box =
+    \\  ✨ Update available! 0.166.0 -> 0.170.0
+    \\  Release notes: https://github.com/openai/codex/releases/latest
+    \\
+    \\› 1. Update now (runs `npm install -g @openai/codex`)
+    \\  2. Skip
+    \\  3. Skip until next version
+    \\  Press Enter to continue.
+;
+const codex_166_idle =
+    \\  ████  Codex
+    \\
+    \\› Ask Codex to do anything
+;
+test "2674: the shipped Codex manifest answers the wording 0.166 draws, and only for the folder trust box" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, @embedFile("plugin_codex_json"), .{});
+    const manifest = Manifest{ .key = "codex", .exec = "p", .startup_says = try startupSaysOf(a, "codex", parsed.object) };
+    const all = [_]Manifest{manifest};
+
+    // **The words ARE the question `blocks` declares, and that is checked
+    // first.** `startupAskFor` asks `blockSaid` before `answerFor`, so a
+    // `blocks` entry that has drifted from the wording the CLI draws turns
+    // every `answers` entry into a rule that can never fire -- which is the
+    // trap the 0.166 rewording walked into, and the reason this pairing is
+    // asserted ahead of the switch: asserted after it, a `blocks` that
+    // drifted and an `answers` that drifted would both stop at the same
+    // `TestUnexpectedResult` below, and the line would not say which of the
+    // two halves moved.
+    try testing.expect(manifest.startup_says.blockSaid(codex_166_trust_box) != null);
+
+    // **The folder trust box is answered, and the key is the one the box's
+    // highlighted option takes.** The default named in `description` is
+    // deliberately *not* asserted: the string table shows `Trust and
+    // continue` exists, not that it is the highlighted one. That is
+    // task 2674's real-screen read.
+    //
+    // **A named error rather than a bare `TestUnexpectedResult`, and one
+    // assertion per line**, which is what a floor needs: a `switch` that
+    // falls to `else` says only "not this", and the failures this test
+    // exists to catch -- the answer gone, the key changed, the question
+    // answered being the wrong one -- would all report the same line.
+    const trust = switch (startupAskFor(&all, "codex", codex_166_trust_box)) {
+        .key => |k| k,
+        else => return error.NoAnswerForTheTrustBox,
+    };
+    try testing.expectEqualStrings("Trust this folder?", trust.contains);
+    try testing.expectEqualStrings("enter", trust.key);
+    try testing.expect(trust.description.len > 0);
+
+    // **The other two questions are recognised and NOT answered**, which is
+    // the boundary the user set: a sandbox setup and an upgrade prompt
+    // change the machine (the second runs `npm install -g`), so a return
+    // typed into either is not Polter's to press. `unanswerable` is the
+    // whole of that claim, and it is a different answer from `none`.
+    try testing.expectEqual(StartupAsk.unanswerable, startupAskFor(&all, "codex", codex_166_sandbox_box));
+    try testing.expectEqual(StartupAsk.unanswerable, startupAskFor(&all, "codex", codex_166_update_box));
+
+    // And an ordinary idle screen is no question at all: the caller carries
+    // on into the ordinary path, unchanged.
+    try testing.expectEqual(StartupAsk.none, startupAskFor(&all, "codex", codex_166_idle));
+    try testing.expectEqual(StartupAsk.none, startupAskFor(&all, "codex", "$ ls\nREADME.md\n$ "));
+
+    // **The 0.154 wording is still answered**, so an old Codex on a machine
+    // that has not updated is recognised too -- the compatibility the user
+    // asked for, read off the same shipped file.
+    const old = switch (startupAskFor(&all, "codex", trust_box_154)) {
+        .key => |k| k,
+        else => return error.NoAnswerForTheOldTrustBox,
+    };
+    try testing.expectEqualStrings("Do you trust the contents of this directory?", old.contains);
+    try testing.expectEqualStrings("enter", old.key);
+}
+
+/// The folder trust box codex-cli 0.154.0 drew, verbatim, as it stands in
+/// the historical fixture above (codex 0.154.0 on Windows 11, read with
+/// `terminal_read`, task 1686 r3). Named here so the new test reads the old
+/// wording off the same bytes rather than retyping them.
+const trust_box_154 =
+    \\  Welcome to Codex, OpenAI's command-line coding agent
+    \\
+    \\> You are in D:\polter\t1686\r3\work
+    \\
+    \\  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of
+    \\  prompt injection. Trusting the directory allows project-local config, hooks, and exec policies to load.
+    \\
+    \\› 1. Yes, continue
+    \\  2. No, quit
+    \\
+    \\  Press enter to continue and create a sandbox...
+;
 test "1746: a line meant for agy's second turn waits for its first to be over" {
     const says: StartupSays = .{ .blocks = &.{"Do you trust the contents of this project?"}, .ready_says = &.{"? for shortcuts"}, .ready_without_agent = true, .tools_from_second_turn = true, .answers = &.{} };
     const working = "> You are the supervisor...\n\n  Thinking...\n";

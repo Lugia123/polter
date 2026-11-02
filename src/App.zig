@@ -611,6 +611,12 @@ start_lines: poltergeistpkg.OwedTells = undefined,
 /// the trust box and the CLI's input box shows (`payFirstPrompts`).
 first_prompts: std.AutoHashMapUnmanaged(poltergeistpkg.Bus.Id, void) = .empty,
 
+/// Startup questions -- a CLI's folder trust box -- that Polter answers
+/// itself with the key the CLI's plugin declares, one per question, while
+/// the terminal it started is coming up (task 2674). See
+/// `answerStartupQuestion`.
+startup_answers: poltergeistpkg.StartupAnswers = undefined,
+
 /// The agents in a project's supervisor's pane that have been taken as the
 /// group's supervisor, or refused and said so (task 1795): once per agent,
 /// not at every request it makes -- and a new agent in that pane again
@@ -860,6 +866,7 @@ pub fn init(
         .mention_retries = .{ .alloc = alloc },
         .owed_tells = .{ .alloc = alloc },
         .start_lines = .{ .alloc = alloc },
+        .startup_answers = .{ .alloc = alloc },
         .poltergeist_feed = .init(alloc, global.io()),
         .file_tickets = .init(alloc, global.io()),
         .chat = .init(alloc, .{}),
@@ -1016,6 +1023,7 @@ pub fn deinit(self: *App) void {
     self.poltergeist_persona_waits.deinit();
     self.mention_retries.deinit();
     self.owed_tells.deinit();
+    self.startup_answers.deinit();
     self.start_lines.deinit();
     self.first_prompts.deinit(self.alloc);
     self.seat_judged.deinit(self.alloc);
@@ -1228,6 +1236,11 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
             // A question a starting CLI asks the person, come up or gone
             // (task 1746): looked at again while a launch waits.
             if (self.holdStartupQuestions(self.poltergeistElapsedMs())) self.controlRoomTouch();
+            // And a folder trust box one of those questions is, whose key
+            // this CLI's plugin declares: pressed here, once per question
+            // (task 2674) -- after the state above is worked out, so what
+            // this answers is a question the loop already knows is up.
+            self.answerStartupQuestions(self.poltergeistElapsedMs());
             // And the first prompt of a CLI that waited on the person.
             self.payFirstPrompts();
             // A fresh assignment whose clear was never confirmed.
@@ -9388,6 +9401,172 @@ pub fn startupQuestionUp(self: *App, id: poltergeistpkg.Bus.Id) bool {
     return self.startupQuestionText(id) != null;
 }
 
+/// Press the key a CLI's plugin declares for the startup question on the
+/// screen of a terminal **Polter is starting itself**, so that a folder
+/// trust box does not stop a supervisor nobody is minding (task 2674).
+///
+/// **The whole point is who calls it and whom it may act for.** The other
+/// door that presses one of these keys is `terminal_answer_prompt`, which a
+/// *supervisor on another terminal* calls; nothing writes into a terminal
+/// on its own behalf today. That is why the rules below are written here
+/// rather than reused from that path:
+///
+///   * **the person's answer for what may be answered, and nothing else.**
+///     `Bus.answer` is asked per terminal -- the one place `may_authorise`
+///     and the shield are combined (`Answer.off` / `.shielded` / `.allowed`)
+///     -- so a terminal the person switched off, or shielded, is left
+///     exactly as it was: the question stays, the control room says the
+///     person is being waited on, and nothing is pressed. There is no
+///     second copy of that judgement here for the two to disagree about.
+///   * **only a question the plugin declares an answer for.** A CLI whose
+///     trust box the plugin lists in `blocks` but does not answer
+///     (`StartupAsk.unanswerable`) is the person's, as it has been since
+///     task 2635: a sandbox-setup box and an upgrade prompt are exactly
+///     that, and `npm install -g` is not a return Polter types.
+///   * **one answer per question, kept across the many looks.** The state
+///     is `StartupAnswers`, per terminal: the record is written before the
+///     key is sent, a key that did not reach the program is retried at
+///     most `max_tries` times, and the question is not aged out on a clock
+///     -- see that file for why.
+///   * **somebody at the keyboard stops it.** The person may be answering
+///     it themselves; `presenceForMove` is the same judgement a key press
+///     and a move are held by, so a real key or an input method composing
+///     here means this waits for the next look. Injected keys do not count:
+///     `sendPoltergeistKey` and `typePoltergeistTextAs` put the clock back.
+///   * **a terminal whose process has exited is not typed into.** Its
+///     `child_exited` is checked first; a key sent to a dead pty is one
+///     nobody receives and the claim would say otherwise.
+fn answerStartupQuestions(self: *App, now_ms: u64) void {
+    for (self.surfaces.items) |v| {
+        const surface: *Surface = v.core();
+        const id = surface.id;
+        if (self.isChatSurface(id)) continue;
+
+        // **Looked at only where there is something to look for.** A screen
+        // read takes the renderer lock and copies the visible screen, and
+        // this runs on every notice tick: a terminal nothing is waiting on
+        // is read every two seconds forever for nothing. So the set walked
+        // is `holdStartupQuestions`' -- a start waiting for its agent, a
+        // standing held for one, a launch whose CLI has not connected --
+        // which is exactly "a terminal Polter is starting".
+        //
+        // **And a claim outliving that is cleaned up here**, which is the
+        // ending the user asked for by name (a start made, failed or
+        // cancelled). Three things can end one and all of them take the
+        // start's hold away: the agent connects (`startMade`, and
+        // `launching` is dropped), the launch is given up on
+        // (`LaunchFailure`, `failStart`), or the person's next try
+        // replaces it (`endStart`). None of them is a call this file can
+        // hook without a second place to keep in step, so the claim is let
+        // go on the tick that finds nothing waiting on that terminal any
+        // more -- the same tick that would otherwise keep reading its
+        // screen for a question nobody is starting.
+        const waiting = self.chat.startingIn(id, now_ms) != null or
+            self.personas.heldStanding(id, now_ms) != null or
+            self.poltergeist.launchExitIsFailure(id);
+        if (!waiting) {
+            if (self.startup_answers.claimOf(id) != null) {
+                self.startup_answers.forget(id);
+                log.info("poltergeist: the start of 0x{x} is over, so what Polter had answered for it is forgotten", .{id});
+            }
+            continue;
+        }
+        // **An agent that is connected is not a CLI that needs starting.**
+        // `holdStartupQuestions` says the same thing the same way (`said` is
+        // null once an agent is there), and it matters here for the one case
+        // the three conditions above cannot see: a CLI whose hooks arrive
+        // while its trust box is still drawn. A key pressed then is not an
+        // answer to a question -- it is text at an agent that is already
+        // working.
+        if (self.agentPresent(id)) continue;
+
+        // What is on the screen for this terminal, and what its plugin says
+        // answers it. `startupAsk` reads the screen exactly as the
+        // supervisor's path does -- the same CLI, the same restored-history
+        // boundary -- so the two cannot disagree about what is up.
+        const ask = self.startupAsk(id);
+        const question: ?[]const u8 = switch (ask) {
+            .key => |a| a.contains,
+            else => null,
+        };
+
+        // **The gate and the look are one call**, and that is the fix:
+        // the look is what spends an attempt, and reaching it before the
+        // person typing, the permission and the dead child were judged
+        // meant a tick that pressed nothing spent the budget anyway --
+        // three ticks of somebody typing gave the question up with no key
+        // ever sent, and no look after that would press however long they
+        // stopped typing. `StartupAnswers.consider` runs `gate` first and
+        // then `poll`, so the order cannot be got wrong by a caller.
+        //
+        // The facts are measured here: `Bus.answer` combines the person's
+        // per-terminal switch with the shield, `child_exited` is the
+        // surface's, and `presenceForMove` is the same clock a key press
+        // and a move are held by -- a real key within the quiet window, or
+        // an input method composing. Injected keys never count as somebody
+        // being here: `sendPoltergeistKey` and `typePoltergeistTextAs` put
+        // `last_key_time` back, which is what keeps this from reading its
+        // own key as a person.
+        const perm = self.poltergeist.answer(id);
+        const decided = self.startup_answers.consider(
+            id,
+            question,
+            now_ms,
+            perm,
+            surface.child_exited,
+            surface.personTyping(),
+        ) catch |err| {
+            // **Nothing is sent when the record could not be kept.** The
+            // other order -- send, then remember -- leaves a window in
+            // which a successful answer is followed by a look that does
+            // not know it already answered, and presses again at whatever
+            // the CLI put up next.
+            log.warn("poltergeist: could not record the startup question of 0x{x}, so nothing was pressed err={}", .{ id, err });
+            continue;
+        };
+        switch (decided.gate) {
+            .press => {},
+            .leave_it => log.info(
+                "poltergeist: the startup question on 0x{x} is not pressed: permission={s} child_exited={} -- left for the person",
+                .{ id, perm.word(), surface.child_exited },
+            ),
+            .wait => log.info("poltergeist: somebody is at 0x{x} just now, so its startup question was left alone this time", .{id}),
+        }
+        switch (decided.verdict) {
+            .wait => continue,
+            .gave_up => {
+                log.warn(
+                    "poltergeist: the startup question on 0x{x} took none of the {d} keys its CLI's plugin declares; nothing more will be pressed at it",
+                    .{ id, poltergeistpkg.StartupAnswers.max_tries },
+                );
+                continue;
+            },
+            .answer => {},
+        }
+
+        const a = switch (ask) {
+            .key => |a| a,
+            else => continue,
+        };
+        const outcome = surface.sendPoltergeistKey(a.key) catch |err| {
+            self.startup_answers.failed(id);
+            log.warn("poltergeist: could not press {s} at the startup question on 0x{x} err={}", .{ a.key, id, err });
+            continue;
+        };
+        // **A key that did not reach the program is not an answer.** The
+        // claim is kept -- so the same question is not answered twice over
+        // -- but it is not marked answered, and the next look tries again
+        // within the bound.
+        if (outcome != .written) {
+            self.startup_answers.failed(id);
+            log.warn("poltergeist: {s} did not reach the program at the startup question on 0x{x} outcome={s}", .{ a.key, id, @tagName(outcome) });
+            continue;
+        }
+        self.startup_answers.sent(id);
+        log.info("poltergeist: pressed {s} at the startup question on 0x{x}: {s}", .{ a.key, id, a.description });
+    }
+}
+
 /// The declared text of the question `startupQuestionUp` sees, or null.
 /// It lives as long as the plugins' declarations do.
 fn startupQuestionText(self: *App, id: poltergeistpkg.Bus.Id) ?[]const u8 {
@@ -17209,6 +17388,9 @@ pub fn deleteSurface(self: *App, rt_surface: *apprt.Surface) void {
             if (self.launch_groups.fetchRemove(poltergeistpkg.Bus.idOf(rt_surface.core()))) |kv| self.alloc.free(kv.value);
             _ = self.launching.remove(poltergeistpkg.Bus.idOf(rt_surface.core()));
             self.historyPaneGone(poltergeistpkg.Bus.idOf(rt_surface.core()));
+            // A terminal that is given this id later is another one, and
+            // another one's startup question is its own (task 2674).
+            self.startup_answers.forget(poltergeistpkg.Bus.idOf(rt_surface.core()));
             self.controlRoomTouch();
             continue;
         }
