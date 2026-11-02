@@ -1383,7 +1383,6 @@
 "runs %@" = "跑在 %@ 上";
 
 /* 小队模版（任务 2613）：设置窗口的栏目、模版页、成员页与核心写失败的说法 */
-"\"%@\" in %@ — built on the role %@" = "「%@」在 %@ 里——底子是角色 %@";
 "Squad Templates" = "小队模版";
 "Inherited from the role" = "继承自角色";
 "Squad override" = "小队覆盖";
@@ -1434,10 +1433,11 @@
 "A supervisor role can't join a squad, so none of them is listed here." = "总管角色不能加入小队，所以这里一个都不列。";
 "This seat is built on a role that is not in the role library." = "这个位子的角色不在角色库里。";
 "What says it is inherited follows the role. What you change here is this seat's and no other's." = "标了「继承自角色」的跟着角色走。你在这里改的是这一个位子的，不牵动别人。";
-"Back to the Templates" = "← 返回模版总览";
+"Back" = "返回";
 
 /* 小队模版：成员页的三个 tab 与复用角色编辑器后新增的文案（task 2647） */
 "Leaves this seat's page and shows the template's seats. Nothing here is changed." = "离开这个位子的页面，回到模版看它的席位。这里什么都不改。";
+"Built on the role %@" = "基于角色 %@";
 "Restore to the Role's Settings" = "还原到角色设定";
 "Takes away everything this seat says of its own: instructions, CLI, skills and MCP servers all follow the role again." = "把这个位子自己写的东西全部去掉：指令、CLI、skill 和 MCP 都重新跟着角色走。";
 "These come from the role this seat is built on and are changed on the roles page. This page is for what the seat does differently." = "这些来自这个位子所依据的角色，在角色库页面上改。这个页面管的是这个位子做得不一样的地方。";

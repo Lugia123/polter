@@ -689,8 +689,8 @@ struct SquadLibraryView: View {
     @ViewBuilder
     private func memberPage(_ squad: Squad, alias: String) -> some View {
         if let member = squad.member(alias), let role = roles.first(where: { $0.key == member.role }) {
-            seatNotice(squad, member, role)
-            memberTabs
+            seatNotice(member, role)
+            memberTabs(member, role: role)
             Divider()
             ScrollView {
                 Group {
@@ -721,11 +721,11 @@ struct SquadLibraryView: View {
     /// role editor** -- the two state pages draw `RoleCliItemsEditor` and the
     /// per-CLI settings draw `RoleCliStartEditor`, so a field added to the
     /// role editor turns up here without being written again.
-    private var memberTabs: some View {
+    private func memberTabs(_ member: SquadMember, role: Role) -> some View {
         Picker("", selection: $editor.memberTab) {
             Text(String(localized: "Basics", comment: "角色库：tab 名，角色基本信息")).tag(RoleEditorTab.basics)
-            Text(String(localized: "Skills", comment: "角色编辑器：分区名，技能")).tag(RoleEditorTab.skills)
-            Text(String(localized: "MCP", comment: "角色库：tab 名，MCP 服务器")).tag(RoleEditorTab.mcp)
+            tabLabel(.skill, member, role: role).tag(RoleEditorTab.skills)
+            tabLabel(.mcp, member, role: role).tag(RoleEditorTab.mcp)
         }
         .pickerStyle(.segmented)
         .labelsHidden()
@@ -735,47 +735,63 @@ struct SquadLibraryView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// What this page is, above it: which seat of which template, what it is
-    /// built on, and what the marks under the fields mean. The style is the
-    /// roles page's "the official version has changed" bar
-    /// (`RoleLibraryView.swift`), so the two read as the same kind of notice.
-    private func seatNotice(_ squad: Squad, _ member: SquadMember, _ role: Role) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+    /// "Skills 2/80" for a seat's tab, the roles page's own label with the
+    /// seat's count: the same two keys, so the two pages read as one control
+    /// (`RoleLibraryView.tabBar`).
+    private func tabLabel(
+        _ kind: AgentCliItem.Kind,
+        _ member: SquadMember,
+        role: Role
+    ) -> Text {
+        let counted = SquadMergedItems.count(kind, role: role, member: member, in: clis.clis)
+        switch kind {
+        case .skill:
+            return Text(counted.map { String(format: String(localized: "Skills %@", comment: "角色库：tab 名，%@ 是保留数/总数，如 3/40"), $0) }
+                        ?? String(localized: "Skills", comment: "角色编辑器：分区名，技能"))
+        case .mcp:
+            return Text(counted.map { String(format: String(localized: "MCP %@", comment: "角色库：tab 名，%@ 是保留数/总数"), $0) }
+                        ?? String(localized: "MCP", comment: "角色库：tab 名，MCP 服务器"))
+        }
+    }
+
+    /// What this page is, above it: the way back at the far left, then the
+    /// role this seat is built on and the one rule about the marks under the
+    /// fields. The style is the roles page's "the official version has
+    /// changed" bar (`RoleLibraryView.swift`), so the two read as the same
+    /// kind of notice.
+    ///
+    /// **Compressed to the window's band height, and said without the
+    /// breadcrumb's half** (task 2667). The alias and the template's name
+    /// are both in the breadcrumb above, so the old first line ("『开发』在
+    /// Polter核心开发小队 里") was the same two facts a second time, on a
+    /// bar that was 80pt tall. What is left is what the breadcrumb cannot
+    /// say: which role the seat follows.
+    private func seatNotice(_ member: SquadMember, _ role: Role) -> some View {
+        HStack(alignment: .center, spacing: SettingsLayout.pad) {
+            // One chevron and one word. This used to be a `Label` -- which
+            // draws `chevron.backward` itself -- whose value began with a
+            // second arrow ("← 返回模版总览"), so the button read "‹ ←".
+            Button {
+                editor.member = nil
+            } label: {
+                Label(String(localized: "Back", comment: "小队模版：从成员页回到模版总览页"), systemImage: "chevron.backward")
+            }
+            .help(String(localized: "Leaves this seat's page and shows the template's seats. Nothing here is changed.", comment: "小队模版：返回按钮的说明"))
             VStack(alignment: .leading, spacing: 4) {
                 Label(
-                    String(format: String(localized: "\"%@\" in %@ — built on the role %@", comment: "小队模版：成员页顶部提示条，%1$@ 是别名，%2$@ 是模版名，%3$@ 是角色名"),
-                           member.alias, squad.displayName, role.displayName),
+                    String(format: String(localized: "Built on the role %@", comment: "小队模版：成员页顶部提示条，%@ 是角色名"),
+                           role.displayName),
                     systemImage: "arrow.triangle.branch")
                 Text(String(localized: "What says it is inherited follows the role. What you change here is this seat's and no other's.", comment: "小队模版：成员页顶部提示条的第二行"))
                     .font(SettingsFont.minimum)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
-            // Everything this seat says of its own, in one move: the whole
-            // override goes, rather than each field being cleared one at a
-            // time -- a field-by-field version would leave anything added
-            // later behind, and `SquadOverride.none` is the one value that
-            // cannot drift from the type.
-            if !member.override.isNone {
-                Button(String(localized: "Restore to the Role's Settings", comment: "小队模版：成员页，一键清空这个席位的全部覆盖")) {
-                    editor.updateMember(member.alias) { $0.override = .none }
-                }
-                .help(String(localized: "Takes away everything this seat says of its own: instructions, CLI, skills and MCP servers all follow the role again.", comment: "小队模版：还原按钮的说明"))
-            }
-            // A way back, said as one: the old wording ("Back to the
-            // Template") read like "reset this seat to the template's
-            // defaults", which is the opposite of leaving the page.
-            Button {
-                editor.member = nil
-            } label: {
-                Label(String(localized: "Back to the Templates", comment: "小队模版：从成员页回到模版总览页"), systemImage: "chevron.backward")
-            }
-            .help(String(localized: "Leaves this seat's page and shows the template's seats. Nothing here is changed.", comment: "小队模版：返回按钮的说明"))
+            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, SettingsLayout.pad)
-        .padding(.vertical, SettingsLayout.rowGap + 4)
+        .frame(height: SettingsLayout.top)
         .background(Color.accentColor.opacity(0.08))
     }
 
@@ -964,9 +980,26 @@ struct SquadLibraryView: View {
     }
 
     /// The one bar in the bottom band: list buttons at the list's left edge,
-    /// then the status line, then Save, Discard Changes and the deletion.
+    /// then the status line, then Restore, Save, Discard Changes and the
+    /// deletion.
+    ///
+    /// **Restore is here rather than on the notice bar** (task 2667). It is
+    /// one of the things this draft can do, so it belongs with Save and
+    /// Discard Changes, in the same grey capsule they are drawn in -- the
+    /// bar's own control size and style, which is what makes it look like
+    /// them without a style of its own. It used to sit in the notice above,
+    /// which put a button that edits the template beside one that merely
+    /// leaves the page.
+    ///
+    /// **Greyed rather than hidden while the seat has nothing of its own**:
+    /// a button that vanishes when it cannot act gives no sign that it
+    /// exists, and the person looking for it is exactly the one who has not
+    /// overridden anything yet. It is drawn from the seat on screen, so a
+    /// seat that is not open (no `member`) greys it too -- there is nothing
+    /// for it to restore.
     private var bar: some View {
-        HStack(spacing: SettingsLayout.rowGap) {
+        let member = editor.member.flatMap { editor.draft?.member($0) }
+        return HStack(spacing: SettingsLayout.rowGap) {
             listButtons
                 .padding(.trailing, SettingsLayout.rowGap)
             Group {
@@ -988,6 +1021,17 @@ struct SquadLibraryView: View {
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Everything this seat says of its own, in one move: the whole
+            // override goes, rather than each field being cleared one at a
+            // time -- a field-by-field version would leave anything added
+            // later behind, and `SquadOverride.none` is the one value that
+            // cannot drift from the type.
+            Button(String(localized: "Restore to the Role's Settings", comment: "小队模版：成员页，一键清空这个席位的全部覆盖")) {
+                guard let member else { return }
+                editor.updateMember(member.alias) { $0.override = .none }
+            }
+            .help(String(localized: "Takes away everything this seat says of its own: instructions, CLI, skills and MCP servers all follow the role again.", comment: "小队模版：还原按钮的说明"))
+            .disabled(member?.override.isNone ?? true)
             Button(String(localized: "Save", comment: "角色库：保存按钮")) { editor.save() }
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(!editor.isDirty || editor.hasAliasProblem || editor.hasSummaryProblem || library.catalog.error != nil)

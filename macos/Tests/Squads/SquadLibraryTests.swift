@@ -487,6 +487,105 @@ struct SquadLibraryTests {
         #expect(SquadRules.memberCountText(two) != SquadRules.memberCountText(Squad.blank(key: "a", name: "a")))
     }
 
+    // MARK: A seat's tab counts (task 2667)
+
+    /// The five things a tab's count has to get right, each one a way the
+    /// same number can be wrong: which CLIs it reads, what the seat's delta
+    /// does to the role's ticks, which rows are locked, and the two cases
+    /// that are a word rather than a number.
+    ///
+    /// The reading is the roles page's (`RoleLibraryView.count`), so the two
+    /// pages' tabs say the same thing about the same items -- which is what
+    /// "the counting rule is copied" is supposed to mean. This is why the
+    /// rule lives in `SquadModels.swift`: that file is the half
+    /// `tools/mac-logic-tests` compiles, so the rule can be made to fail on
+    /// purpose, and the page that draws it (`SquadLibraryView.swift`) is not.
+    @Test func aSeatsTabCountsWhatItKeepsOfWhatItsClisList() throws {
+        let snapshot = try #require(AgentCliSnapshot(json: """
+        {"stale":false,"refreshing":false,"clis":[
+         {"key":"claude-code","label":"Claude Code","inventory":{"items":[
+           {"id":"skill:pdf","kind":"skill","name":"pdf"},
+           {"id":"skill:docx","kind":"skill","name":"docx"},
+           {"id":"skill:imagegen","kind":"skill","name":"imagegen"},
+           {"id":"mcp:polter","kind":"mcp","name":"polter","locked":true},
+           {"id":"mcp:other","kind":"mcp","name":"other"}]}}]}
+        """))
+
+        var role = Role(key: "polter-developer", name: "Developer")
+        role.clis = [RoleCliChoice(cli: "claude-code")]
+        // The role keeps everything installed later and drops `docx`.
+        role.skills = RoleSelection(keepByDefault: true, except: ["skill:docx"])
+        // And keeps none of the MCP servers, so the one count that is not
+        // the default's has to come from somewhere else.
+        role.mcp = RoleSelection(keepByDefault: false)
+
+        let seat = SquadMember(alias: "dev", role: "polter-developer")
+        // The role's own: three skills listed, two of them on (pdf, imagegen).
+        #expect(SquadMergedItems.count(.skill, role: role, member: seat, in: snapshot) == "2/3")
+        // `mcp:polter` is locked, so it counts whether or not the seat has it
+        // ticked -- the same `locked ||` the roles page filters on.
+        #expect(SquadMergedItems.count(.mcp, role: role, member: seat, in: snapshot) == "1/2")
+
+        // The seat's delta is what moves the number, and only it: turning
+        // `docx` back on is one more kept, over the same list.
+        var taking = seat
+        SquadMergedItems.apply({ $0.set("skill:docx", on: true) }, kind: .skill, role: role, into: &taking.override)
+        #expect(taking.override.cliSkills?.add == ["skill:docx"])
+        #expect(SquadMergedItems.count(.skill, role: role, member: taking, in: snapshot) == "3/3")
+
+        // A seat that has moved to another CLI reads **that** CLI's list, not
+        // the role's (`SquadMergedItems.clis`): codex is installed and has
+        // one skill, so the same seat counts against one item.
+        let withCodex = try #require(AgentCliSnapshot(json: """
+        {"stale":false,"refreshing":false,"clis":[
+         {"key":"claude-code","label":"Claude Code","inventory":{"items":[
+           {"id":"skill:pdf","kind":"skill","name":"pdf"},
+           {"id":"skill:docx","kind":"skill","name":"docx"},
+           {"id":"skill:imagegen","kind":"skill","name":"imagegen"}]}},
+         {"key":"codex","label":"Codex","inventory":{"items":[
+           {"id":"skill:pdf","kind":"skill","name":"pdf"}]}}]}
+        """))
+        var moved = seat
+        moved.override.cli = "codex"
+        #expect(SquadMergedItems.count(.skill, role: role, member: moved, in: withCodex) == "1/1")
+    }
+
+    @Test func aCountThatHasNothingToCountSaysAWordNotAZero() throws {
+        let snapshot = try #require(AgentCliSnapshot(json: """
+        {"stale":false,"refreshing":false,"clis":[
+         {"key":"claude-code","label":"Claude Code","inventory":{"items":[
+           {"id":"mcp:polter","kind":"mcp","name":"polter"}]}}]}
+        """))
+        var role = Role(key: "r", name: "R")
+        role.clis = [RoleCliChoice(cli: "claude-code")]
+        role.mcp = RoleSelection(keepByDefault: false)
+        let seat = SquadMember(alias: "dev", role: "r")
+
+        // The CLI is read and lists no skill at all: "0/0" would be a count
+        // of a list nobody could read, so the tab says "Skills" instead --
+        // the roles page's own two guards, over the same list.
+        #expect(SquadMergedItems.count(.skill, role: role, member: seat, in: snapshot) == nil)
+        // One of the other kind is listed and none of it is kept: a real
+        // zero over a real list, which is a number.
+        #expect(SquadMergedItems.count(.mcp, role: role, member: seat, in: snapshot) == "0/1")
+
+        // A seat whose role runs no CLI at all: nothing to ask, so no count.
+        // (A seat that names a CLI of its own is read from that one -- the
+        // guard is on the list the tabs would draw, not on the role's.)
+        let bare = Role(key: "bare", name: "Bare")
+        #expect(SquadMergedItems.count(.skill, role: bare, member: seat, in: snapshot) == nil)
+
+        // A CLI that is not in the snapshot at all is unread, so its items
+        // are not guessed at: an empty list again, and a word rather than
+        // "0/0".
+        let unknown = SquadMember(alias: "u", role: "r", override: {
+            var o = SquadOverride.none
+            o.cli = "nobody-has-this"
+            return o
+        }())
+        #expect(SquadMergedItems.count(.skill, role: role, member: unknown, in: snapshot) == nil)
+    }
+
     // MARK: Where a field stands
 
     @Test func aFieldSaysWhetherItIsTheRolesOrTheSquads() {

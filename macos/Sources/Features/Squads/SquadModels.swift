@@ -613,6 +613,29 @@ struct SquadMergedItems: Equatable {
             overridden: delta != nil)
     }
 
+    /// "2/80" for one of a seat's tab labels: kept of listed (task 2667).
+    ///
+    /// **The roles page's reading, one layer over** (`RoleLibraryView.count`):
+    /// the same list the tab draws, the same "kept or locked" rule, the same
+    /// two guards on either side of it. The guards are what make the word
+    /// rather than a number mean something -- `nil` when the seat runs no CLI
+    /// at all, and `nil` when the CLIs it reads listed nothing of this kind,
+    /// so the tab says "Skills" instead of claiming "0/0", which would be a
+    /// count of a list nobody could read.
+    static func count(
+        _ kind: AgentCliItem.Kind,
+        role: Role,
+        member: SquadMember,
+        in snapshot: AgentCliSnapshot
+    ) -> String? {
+        guard !clis(role: role, member: member, in: snapshot).isEmpty else { return nil }
+        let merged = of(kind, role: role, member: member, in: snapshot)
+        let all = merged.merged.rows.map(\.item)
+        guard !all.isEmpty else { return nil }
+        let sel = merged.selection
+        return "\(all.filter { $0.locked || sel.isOn($0.id) }.count)/\(all.count)"
+    }
+
     /// One change made to the **merged** set, written back as the seat's
     /// delta. `change` edits what is on screen; what is stored is only the
     /// difference from the role, so a switch moved back to where the role

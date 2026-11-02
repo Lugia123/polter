@@ -1308,7 +1308,6 @@
 "runs %@" = "runs %@";
 
 /* Squad templates (task 2613): the settings section, the page, and the core's write refusals */
-"\"%@\" in %@ — built on the role %@" = "\"%@\" in %@ — built on the role %@";
 "Squad Templates" = "Squad Templates";
 "Inherited from the role" = "Inherited from the role";
 "Squad override" = "Squad override";
@@ -1359,10 +1358,11 @@
 "A supervisor role can't join a squad, so none of them is listed here." = "A supervisor role can't join a squad, so none of them is listed here.";
 "This seat is built on a role that is not in the role library." = "This seat is built on a role that is not in the role library.";
 "What says it is inherited follows the role. What you change here is this seat's and no other's." = "What says it is inherited follows the role. What you change here is this seat's and no other's.";
-"Back to the Templates" = "Back to the Templates";
+"Back" = "Back";
 
 /* 小队模版：成员页的三个 tab 与复用角色编辑器后新增的文案（task 2647） */
 "Leaves this seat's page and shows the template's seats. Nothing here is changed." = "Leaves this seat's page and shows the template's seats. Nothing here is changed.";
+"Built on the role %@" = "Built on the role %@";
 "Restore to the Role's Settings" = "Restore to the Role's Settings";
 "Takes away everything this seat says of its own: instructions, CLI, skills and MCP servers all follow the role again." = "Takes away everything this seat says of its own: instructions, CLI, skills and MCP servers all follow the role again.";
 "These come from the role this seat is built on and are changed on the roles page. This page is for what the seat does differently." = "These come from the role this seat is built on and are changed on the roles page. This page is for what the seat does differently.";
