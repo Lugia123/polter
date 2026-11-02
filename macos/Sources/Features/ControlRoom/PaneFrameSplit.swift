@@ -243,10 +243,20 @@ struct PanePreviewPanel: View {
     }
 }
 
-/// The WKWebView bridge inside SwiftUI, holding a strong reference to the PreviewBridge
-/// so that weak delegates in WKWebView are preserved.
+/// Give each preview ticket its own web view and document handlers.
 @MainActor
-struct PreviewWebView: NSViewRepresentable {
+struct PreviewWebView: View {
+    let token: String
+
+    var body: some View {
+        PreviewDocumentView(token: token)
+            .id(token)
+    }
+}
+
+/// The coordinator retains the bridge for this document because WebKit delegates are weak.
+@MainActor
+private struct PreviewDocumentView: NSViewRepresentable {
     let token: String
 
     func makeCoordinator() -> Coordinator {
@@ -258,22 +268,16 @@ struct PreviewWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
-        if context.coordinator.token != token {
-            context.coordinator.update(token: token)
-        }
+        // A new ticket changes the view identity; ordinary redraws keep its document.
+
     }
 
     @MainActor
-    class Coordinator {
-        var token: String
-        var bridge: PreviewBridge
+    final class Coordinator {
+        let token: String
+        let bridge: PreviewBridge
 
         init(token: String) {
-            self.token = token
-            self.bridge = PreviewBridge(token: token)
-        }
-
-        func update(token: String) {
             self.token = token
             self.bridge = PreviewBridge(token: token)
         }
