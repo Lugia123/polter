@@ -373,7 +373,8 @@ struct ControlRoomWorkdirsPage: View {
                 // (blank) page. `dirs` is the guarded list; it is what the
                 // rows below are drawn from and what this counts.
                 count: ready ? countWords(dirs.count) : nil,
-                link: dirs.isEmpty ? nil : (Tile.collapseAll, { tree.collapseAll(ids) }))
+                link: dirs.isEmpty ? nil : (Tile.collapseAll, { tree.collapseAll(ids) }),
+                showsRefresh: true)
 
             if !dirs.isEmpty {
                 ScrollView {
@@ -402,7 +403,20 @@ struct ControlRoomWorkdirsPage: View {
 
     /// One section bar: 28pt, its title, an optional count, an optional link
     /// at the right (`files4.css`, `.sb-explorer .rsec`).
-    private func bar(_ title: String, count: String?, link: (String, () -> Void)?) -> some View {
+    ///
+    /// ⚠️ **`refresh` puts the design's refresh button at the right end of
+    /// this row, and not in a header of its own.** The design draws it in the
+    /// sidebar's header (`.sb-head`, 36pt, `build2665.py`: 刷新文件 over the
+    /// explorer and 刷新搜索 over the search panel) -- and this page has
+    /// never drawn that header. Drawing it now would add a row to both panels
+    /// and move everything under them, which is a relayout of the page and
+    /// not what this task is for. The section bar is the row this page
+    /// already has, at the end where its one button already sits, so the
+    /// button goes there.
+    private func bar(_ title: String,
+                     count: String?,
+                     link: (String, () -> Void)?,
+                     showsRefresh: Bool = false) -> some View {
         HStack(spacing: 0) {
             Text(title)
                 .font(.system(size: Tile.barSize, weight: .semibold))
@@ -426,9 +440,54 @@ struct ControlRoomWorkdirsPage: View {
                 }
                 .buttonStyle(.plain)
             }
+            if showsRefresh {
+                refreshButton(Tile.refreshFiles)
+            }
         }
         .padding(.horizontal, Tile.barPadX)
         .frame(height: Tile.barHeight)
+    }
+
+    /// The sidebar's refresh button: the design's `IC_REFRESH` in a 24pt box
+    /// at the end of the section bar (`files4.css`, `.sb-btn`: 24×24, a
+    /// 14-unit drawing inside it, `--t2` until it is hovered).
+    ///
+    /// ⚠️ **What it does is the whole of task 2699**, and the three parts are
+    /// in that order because each depends on the one before:
+    ///
+    /// 1. `levels.refresh()` forgets what every directory *holds* and
+    ///    nothing else -- the group's tickets and the open set stay
+    ///    (`Levels.refresh` says why each half is the half it is).
+    /// 2. The directories that are open are read again. They must be read
+    ///    again **by path and not from the rows**, because the rows come
+    ///    from those very levels: after step 1 there is nothing left for
+    ///    `readOpenDirectories` to skip, and a directory that has been
+    ///    deleted on disk comes back through the core's own refusal
+    ///    (`Tickets.list` -> `Access.Refuse.noSuchDir`), which is drawn as
+    ///    the sentence it is.
+    /// 3. `restartSearch()` throws the running walk away: `generation` is
+    ///    ticked, so a round scheduled before this press writes nothing when
+    ///    it runs, and the walk is started again from the refreshed levels.
+    ///    **Not `startSearch()`**, whose same-query branch would *carry the
+    ///    old walk on* -- hits and queue and all -- which is the opposite of
+    ///    what a refresh means.
+    private func refreshButton(_ tooltip: String) -> some View {
+        Button(action: refresh) {
+            icon(.refresh, ink: theme.textSecondary)
+                .frame(width: Tile.sbButton, height: Tile.sbButton)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(tooltip)
+    }
+
+    /// Ask the directories again: the levels, the open ones, and the walk.
+    private func refresh() {
+        guard ready else { return }
+        refusal = nil
+        levels.refresh()
+        readOpenDirectories()
+        restartSearch()
     }
 
     /// The one line a part of the design says while nothing sends it data:
@@ -668,6 +727,13 @@ struct ControlRoomWorkdirsPage: View {
                 ForEach(Search.Mode.allCases, id: \.self) { mode in
                     tab(mode)
                 }
+                // ⚠️ **The design's refresh button, over the search panel**
+                // (`.sb-head` 刷新搜索, `build2665.py`): its own row in the
+                // design, and this row here -- the search panel has no header
+                // and adding one would move everything under it, which is the
+                // relayout this task stays out of. The two tabs share what is
+                // left, as they already did.
+                refreshButton(Tile.refreshSearch)
             }
             .padding(.horizontal, Tile.searchPadX)
             .padding(.top, Tile.searchPadY)
@@ -814,29 +880,33 @@ struct ControlRoomWorkdirsPage: View {
             .frame(width: Tile.treeIcon, height: Tile.treeIcon)
     }
 
-    /// One of the activity bar's marks or one of the design's chevrons.
+    /// One of the activity bar's marks, one of the design's chevrons, or the
+    /// sidebar's refresh button.
     ///
     /// **Two artboards, two strokes** (`files4.css`): the activity bar's
-    /// three marks are `g20` with `stroke-width: 1.3` (`Tile.actStroke`) and
-    /// the chevrons are `g14` with `1.2` (`Tile.twistyStroke`). The box the
+    /// three marks are `g20` with `stroke-width: 1.3` (`Tile.actStroke`), and
+    /// the sidebar's own furniture -- the two chevrons and the refresh
+    /// button, all `g14` -- is `1.2` (`Tile.twistyStroke`). The box the
     /// mark itself is drawn in is the artboard's side -- `.act-item svg
-    /// { width: 20px; height: 20px }` inside a 40pt button -- so the frame
-    /// the call site adds around it is the *button*, not the icon.
+    /// { width: 20px; height: 20px }` inside a 40pt button, `.sb-btn svg
+    /// { width: 14px; height: 14px }` inside a 24pt one -- so the frame the
+    /// call site adds around it is the *button*, not the icon.
     ///
     /// ⚠️ **This takes `Mark` and not `Activity.Icon`.** The two enums look
     /// alike and are not the same one: `Activity.Icon` is the two things a
     /// press can be about (`explorer`, `search`) and has no
-    /// `collapseSidebar` in it, while `Mark` is the five drawings. The
-    /// activity bar's own press asks about the first and draws from the
+    /// `collapseSidebar` in it, while `Mark` is the drawings. The activity
+    /// bar's own press asks about the first and draws from the
     /// second, so the mark passed here is chosen and not carried over.
     private func icon(_ mark: ControlRoomWorkdirs.Mark, ink: ControlRoomLook.RGBA) -> some View {
         // Named one at a time rather than read off `artboard`: what makes a
-        // stroke 1.2 is that the design drew a chevron, and a mark that one
-        // day shares the 14-unit artboard without being a chevron would then
-        // silently get the wrong weight.
-        let chevron = mark == .chevronShut || mark == .chevronOpen
+        // stroke 1.2 is that the design drew it `g14` beside the tree -- and
+        // it is spelled as the three that are, so a mark that one day shares
+        // the 14-unit artboard without being one of them does not silently
+        // inherit the weight.
+        let fourteen = mark == .chevronShut || mark == .chevronOpen || mark == .refresh
         return MarkView(strings: mark.art, artboard: mark.artboard)
-            .stroke(ink.color, style: StrokeStyle(lineWidth: chevron ? Tile.twistyStroke : Tile.actStroke,
+            .stroke(ink.color, style: StrokeStyle(lineWidth: fourteen ? Tile.twistyStroke : Tile.actStroke,
                                                   lineCap: .round, lineJoin: .round))
             .frame(width: mark.artboard, height: mark.artboard)
     }
@@ -962,17 +1032,43 @@ struct ControlRoomWorkdirsPage: View {
     /// cannot spend a ticket on the wrong group's root by calling this from
     /// somewhere new.
     private func readOpenDirectories() {
-        guard ready else { return }
+        guard ready, let answer = model.workdirs else { return }
         for dir in dirs where tree.isOpen(dir.id) {
             guard !levels.hasAsked(dir.path) else { continue }
             read(dir.path, rel: "", workdirId: dir.id)
         }
-        for node in dirs.flatMap({ ControlRoomWorkdirs.nodes(under: $0, in: levels) })
-        where node.isDir && levels.isOpen(node.path) && !levels.hasAsked(node.path) {
-            let dir = dirs.first { ControlRoomWorkdirs.contains($0.path, node.path) }
-            guard let dir else { continue }
-            read(node.path, rel: node.rel, workdirId: dir.id)
+        // ⚠️ **From `Levels.openDirectories` and not from `nodes(under:in:)`**,
+        // and after a refresh that is the difference between working and not:
+        // a refresh empties the levels, so the rows that named an open
+        // directory under a root are gone and a walk over them could not find
+        // it to ask about it again. A root's own rows survive (`dirs` is the
+        // core's answer, not the levels), which is why the loop above still
+        // walks `dirs`. `openDirectories` says the rest.
+        //
+        // A directory whose `rel` cannot be worked out is dropped rather than
+        // asked about: a path no root holds is one no ticket of this group
+        // covers, and asking would be a request the core answers `no_workdir`
+        // for (`Levels`' `tickets` comment).
+        for path in levels.openDirectories where !levels.hasAsked(path) {
+            guard let dir = ControlRoomWorkdirs.directory(holding: path, in: answer) else { continue }
+            guard let rel = rel(of: path, under: dir) else { continue }
+            read(path, rel: rel, workdirId: dir.id)
         }
+    }
+
+    /// Where `path` sits under `dir`, which is what a `files_list` takes --
+    /// the same subtraction `rel(of hit:)` does for a search result, and the
+    /// empty string for the root itself.
+    ///
+    /// **Built from the core's own paths and nothing else**: the root's path
+    /// is the one the core sent and the rest is the names it sent joined on
+    /// (`Node`'s comment), so this takes the prefix off rather than making a
+    /// path up.
+    private func rel(of path: String, under dir: ControlRoomWorkdirs.Dir) -> String? {
+        if path == dir.path { return "" }
+        let prefix = dir.path.hasSuffix("/") ? dir.path : dir.path + "/"
+        guard path.hasPrefix(prefix) else { return nil }
+        return String(path.dropFirst(prefix.count))
     }
 
     /// One `files_list`: the root's ticket, the request, and the reading of
@@ -1409,6 +1505,11 @@ private enum Tile {
     static let treeIcon: CGFloat = 14
     static let treeGap: CGFloat = 6
 
+    // `files4.css`: `.sb-btn { width: 24px; height: 24px; border-radius:
+    // 4px }` with `.sb-btn svg { width: 14px; height: 14px }` -- the
+    // sidebar's refresh button (task 2699).
+    static let sbButton: CGFloat = 24
+
     // `files4.css`: `.search-controls { padding: 10px 14px 8px; gap: 8px }`,
     // `.search-mode-tab { height: 24px }`, `.search-input-wrap { height:
     // 30px; padding: 0 6px 0 10px }`, `.search-status { height: 28px;
@@ -1452,6 +1553,16 @@ private enum Tile {
     /// read the same if they share a sentence.
     static let rootsWaiting = String(localized: "Reading the working directories…", comment: "工作目录页：自己的那组工作目录还没回来时的那一行")
     static let collapseAll = String(localized: "Collapse all", comment: "工作目录页：把所有根收起来的那条链接")
+    /// The two refresh buttons' tooltips (task 2699), which are the design's
+    /// own two words: 刷新文件 over the explorer's tree and 刷新搜索 over the
+    /// search panel (`build2665.py`, `title="刷新文件"` / `title="刷新搜索"`).
+    ///
+    /// ⚠️ **Two strings and not one.** They press the same thing, but a
+    /// person looking at the search panel is looking for a refresh *of the
+    /// search* -- and the design wrote them apart, so collapsing them here
+    /// would be a second answer about what the button does.
+    static let refreshFiles = String(localized: "Refresh files", comment: "工作目录页：资源管理器一侧刷新的提示")
+    static let refreshSearch = String(localized: "Refresh search", comment: "工作目录页：搜索面板一侧刷新的提示")
     static let workbench = String(localized: "Workbench", comment: "工作目录页：右栏顶栏左侧，没有选中文件时的面包屑")
     static let workbenchKind = String(localized: "Text preview", comment: "工作目录页：右栏顶栏右侧，当前用哪种预览")
     static let pickFile = String(localized: "Pick a file to see its code and its changes", comment: "工作目录页：右栏代码区为空时的提示")

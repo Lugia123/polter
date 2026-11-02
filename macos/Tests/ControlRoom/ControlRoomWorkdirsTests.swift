@@ -499,11 +499,17 @@ struct ControlRoomWorkdirsActivityTests {
         #expect(Mark.collapseSidebar.art.count == 2, "the box and the divider")
         #expect(Mark.chevronShut.art.count == 1)
         #expect(Mark.chevronOpen.art.count == 1)
+        // The sidebar's refresh button is one path in the design
+        // (`build2665.py`'s `IC_REFRESH`, task 2699), and it is the mark the
+        // page had no way to press before this task: every level in `Levels`
+        // was kept for as long as the page stayed on the group.
+        #expect(Mark.refresh.art.count == 1, "the arc and the arrow are one path")
         #expect(Mark.chevronShut.segments != Mark.chevronOpen.segments, "shut and open are two drawings")
         // The two artboards are the design's: the bar's three are 20-unit,
-        // the chevrons 14.
+        // the chevrons and the sidebar's refresh button 14.
         #expect(Mark.explorer.artboard == 20)
         #expect(Mark.chevronOpen.artboard == 14)
+        #expect(Mark.refresh.artboard == 14, "`.sb-btn svg` is 14 beside the tree's own 14")
     }
 
     /// **The search mark's ring is a circle**, which is the one thing in
@@ -1167,12 +1173,83 @@ struct ControlRoomWorkdirsLevelsTests {
         #expect(levels.ticket("w2") == nil)
     }
 
+    // MARK: Asking again without leaving the group (task 2699)
+
+    /// **`refresh` forgets what a directory holds and nothing else.** It is
+    /// the person's own press (the sidebar's 刷新文件 / 刷新搜索), so the
+    /// group has not changed and the directories under it are the same ones
+    /// -- which is exactly what makes it not `forget`.
+    ///
+    /// What it drops is the two things a `files_list` answered: the level and
+    /// the refusal. A directory that was refused may be readable now, and one
+    /// that was read may hold something new; `hasAsked` goes back to false for
+    /// both, which is what makes the page ask again.
+    @Test func refreshDropsEveryLevelAndRefusal() {
+        var levels = Levels()
+        levels.keep(Level(entries: [.init(name: "a", is_dir: false)], more: 0), at: "/w")
+        levels.keepRefusal(.notJSON, at: "/w/sub")
+        #expect(levels.hasAsked("/w"))
+        #expect(levels.hasAsked("/w/sub"))
+
+        levels.refresh()
+        #expect(!levels.hasAsked("/w"), "the level is gone, so the directory is asked about again")
+        #expect(!levels.hasAsked("/w/sub"), "and a refusal may not hold the second time")
+        #expect(levels.level("/w") == nil)
+        #expect(levels.refusal("/w/sub") == nil)
+    }
+
+    /// ⚠️ **`refresh` keeps the tickets, and that is the half that must not
+    /// go.** Every ticket this page holds is a `.workdir` one on a root of
+    /// the group in front (`ControlRoomWorkdirsPage.ticket(for:path:)`), and
+    /// the group has not changed -- so dropping them would mint a fresh one
+    /// per root on every press and spend the core's ledger
+    /// (`Tickets.max_tickets`) on directories the person is looking at right
+    /// now, pushing other hosts' tickets out of it.
+    ///
+    /// This is the assertion that would have caught a `refresh` written as
+    /// `forget` under a second name, which is what it looks like it is for.
+    @Test func refreshKeepsTheTicketsTheGroupStillCovers() {
+        var levels = Levels()
+        levels.keepTicket("aaaa", for: "w1")
+        levels.refresh()
+        #expect(levels.ticket("w1") == "aaaa", "the same workdir of the same group is the same ticket")
+    }
+
+    /// ⚠️ **`refresh` keeps the open directories**, because they are the same
+    /// directories: `forget`'s reason for dropping them is that after a change
+    /// of group a directory "comes back" as one the group had before, and
+    /// nothing comes back here. A press that folded the person's tree as a
+    /// side effect of asking it a question would be the same defect a level
+    /// over.
+    @Test func refreshLeavesTheOpenDirectoriesOpen() {
+        var levels = Levels()
+        levels.toggle("/w")
+        levels.toggle("/w/src")
+        levels.refresh()
+        #expect(levels.isOpen("/w"))
+        #expect(levels.isOpen("/w/src"))
+    }
+
+    /// **The open directories are readable as paths, and they are still there
+    /// after a refresh** -- which is what makes the page able to ask about
+    /// them again at all: after the levels are dropped the tree's rows no
+    /// longer name them (`nodes(under:in:)` walks the levels), so a page that
+    /// looked for the open directories among the rows would find a root and
+    /// nothing under it.
+    @Test func theOpenDirectoriesAreKeptAsPathsAndSurviveARefresh() {
+        var levels = Levels()
+        levels.toggle("/w/src")
+        levels.toggle("/w/docs")
+        #expect(Set(levels.openDirectories) == ["/w/src", "/w/docs"])
+        levels.refresh()
+        #expect(Set(levels.openDirectories) == ["/w/src", "/w/docs"])
+    }
+
     /// **The first ticket for a workdir wins**, so a second ask does not
     /// replace the one the page has been listing with: the two are the same
     /// tree, and keeping the later one would be a token for a workdir whose
     /// earlier token is still in the core's ledger.
-    @Test func aSecondTicketForOneRootDoesNotReplaceTheFirst() {
-        var levels = Levels()
+    @Test func aSecondTicketForOneRootDoesNotReplaceTheFirst() {        var levels = Levels()
         levels.keepTicket("aaaa", for: "w1")
         levels.keepTicket("bbbb", for: "w1")
         #expect(levels.ticket("w1") == "aaaa")

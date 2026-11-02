@@ -1510,3 +1510,7 @@
 "Still looking" = "还在找";
 "No file by that name" = "没有这个名字的文件";
 "%@ matches" = "%@ 处匹配";
+
+/* 侧栏的刷新按钮（task 2699）—— 设计稿自己的两个词，所以是两个键 */
+"Refresh files" = "刷新文件";
+"Refresh search" = "刷新搜索";

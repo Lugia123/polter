@@ -409,20 +409,27 @@ extension ControlRoomWorkdirs {
     enum Mark: String, CaseIterable, Equatable {
         case explorer, search, collapseSidebar
         case chevronShut, chevronOpen
+        /// The sidebar header's refresh button (task 2699): the design draws
+        /// one in both panels (`build2665.py`'s `IC_REFRESH`, 刷新文件 over
+        /// the explorer and 刷新搜索 over the search panel), and until this
+        /// task neither host had one -- which is the whole of the defect the
+        /// task is about, since nothing else on the page expires a level.
+        case refresh
 
         /// The strings of the design's `<path>` elements, copied and not
         /// redrawn, so that the day the design's icon changes there is one
         /// line to compare rather than a hand-transcription of a curve.
         ///
-        /// ⚠️ **Two of the five are the design's shape written as a path, and
+        /// ⚠️ **Three of the six are the design's shape written as a path, and
         /// that is said rather than glossed.** The design draws the search
-        /// mark's ring as an SVG `<circle cx="8.5" cy="8.5" r="5">` and the
+        /// mark's ring as an SVG `<circle cx="8.5" cy="8.5" r="5">`, the
         /// collapse button as `<rect x="3" y="3" width="14" height="14"
-        /// rx="2">`; this parser reads path commands, so both are written out
-        /// as arcs whose numbers are the design's own (`r=5` is a half turn
-        /// each way from the circle's rightmost point; the rect's corners are
-        /// four `r=2` arcs). Everything else below is the design's `d`
-        /// string character for character.
+        /// rx="2">`, and the refresh button with an arc of its own; this
+        /// parser reads path commands, so all three are written out as arcs
+        /// whose numbers are the design's own (`r=5` is a half turn each way
+        /// from the circle's rightmost point; the rect's corners are four
+        /// `r=2` arcs). Everything else below is the design's `d` string
+        /// character for character.
         var art: [String] {
             switch self {
             case .explorer:
@@ -439,12 +446,30 @@ extension ControlRoomWorkdirs {
                 return ["M5.5 3.5L9 7 5.5 10.5"]
             case .chevronOpen:
                 return ["M3.5 5.5L7 9 10.5 5.5"]
+            case .refresh:
+                // `build2665.py`'s `IC_REFRESH`, character for character: the
+                // ring's gap and the two lines of the arrow.
+                return ["M2.5 7a4.5 4.5 0 1 1 1.2 3.1M2.5 10.5V7H6"]
             }
         }
 
         /// The side of the artboard the strings above are drawn on: the
-        /// activity bar's three are `g20`, the chevrons `g14`.
-        var artboard: CGFloat { self == .chevronShut || self == .chevronOpen ? 14 : 20 }
+        /// activity bar's three marks are `g20`, and the sidebar's own
+        /// furniture -- the two chevrons and the refresh button -- is `g14`
+        /// (`build2665.py`'s `IC_COLLAPSE` against `IC_REFRESH`, `TW_SHUT`
+        /// and `TW_OPEN`).
+        ///
+        /// ⚠️ **Written out one case at a time and not as a `Bool` over the
+        /// whole set.** A mark added later has to say which artboard it was
+        /// drawn for; a rule by exclusion would give it the activity bar's
+        /// 20 silently, and a `g14` drawing scaled into a 20-unit box is a
+        /// mark with the wrong weight and the wrong size on both axes.
+        var artboard: CGFloat {
+            switch self {
+            case .explorer, .search, .collapseSidebar: return 20
+            case .chevronShut, .chevronOpen, .refresh: return 14
+            }
+        }
 
         /// The drawing as segments a `Path` can be built from, read by the
         /// same parser `Glyph` uses. A mark this cannot read is **no
@@ -1164,10 +1189,17 @@ extension ControlRoomWorkdirs {
     /// page this belongs to redraws on every keystroke in the search field
     /// and on every notice from the core, and a `files_list` per redraw would
     /// be a directory read per redraw -- on the app thread, for the same
-    /// reason `files/README.md` gives about `realpath`. Nothing here expires:
-    /// what is in a directory changes, and the page says so by asking again
-    /// (`forget` then a redraw), which is a person's act rather than a
-    /// clock's.
+    /// reason `files/README.md` gives about `realpath`. Nothing here expires
+    /// on a clock: what is in a directory changes, and the page says so by
+    /// asking again (`refresh`), which is a person's act.
+    ///
+    /// ⚠️ **And the person's act has to be drawn, which is what task 2699
+    /// was.** This comment has said "asked again" since the page was written
+    /// and `forget` was the only thing that could do it -- reached only from
+    /// a change of group or of the core's answer, so a file added to a
+    /// directory while the page was open stayed invisible until the page was
+    /// left and come back to. `refresh` is the act, and the sidebar's own
+    /// button (the design's 刷新文件 / 刷新搜索) is where it is pressed.
     ///
     /// **Lazy, so a directory under a root starts shut.** The design's tree
     /// draws a folder's children only when it is opened (the supervisor's
@@ -1300,6 +1332,61 @@ extension ControlRoomWorkdirs {
             open.removeAll()
             tickets.removeAll()
         }
+
+        /// Ask every directory again, from the same tree (task 2699).
+        ///
+        /// **What a person's press on 刷新 means, and it is not `forget`.**
+        /// What changes on disk is what a directory *holds*; the group, its
+        /// workdirs and the directories the person has opened are the same
+        /// ones they were. So the levels and the refusals go -- a directory
+        /// that was refused may be readable now, and one that was read may
+        /// hold something new -- and **the tickets and the open set stay**.
+        ///
+        /// ⚠️ **The tickets are the half that must not go, and there are two
+        /// reasons.** A ticket is minted for one workdir and one scope
+        /// (`Tickets.open`), and this page's are all `.workdir` tickets on
+        /// roots the group still has, so a refresh that dropped them would
+        /// mint a fresh one per root on every press -- spending the core's
+        /// ledger (`Tickets.max_tickets`) on directories the person is
+        /// looking at right now, and pushing *other* hosts' tickets out of
+        /// it. And the group has not changed, which is the one thing
+        /// `forget`'s comment says a kept ticket is wrong for.
+        ///
+        /// ⚠️ **The open set stays because it is a decision about the same
+        /// directory.** `forget`'s reason for dropping it is that the
+        /// directory "comes back" -- after a change of group it is a
+        /// directory the group had before, and the untouched state is shut.
+        /// A refresh brings back the *same* directory in the *same* group,
+        /// so a folder the person opened must still be open, or the press
+        /// folds their tree as a side effect of asking it a question.
+        ///
+        /// Nothing is asked here: this says what is no longer known, and the
+        /// page re-reads the directories that are open (`readOpenDirectories`
+        /// has nothing left to skip).
+        mutating func refresh() {
+            levels.removeAll()
+            refused.removeAll()
+        }
+
+        /// The directories under the roots somebody has opened, as paths.
+        ///
+        /// **In no particular order, and that is deliberate on two counts.**
+        /// Nothing is drawn in this order -- the rows come from
+        /// `nodes(under:in:)`, which walks the levels in the core's order --
+        /// so this is only the list of directories to ask about, and each ask
+        /// is independent of the others. And a sort here would be a sort in a
+        /// host file, which `tools/control-room-hosts-do-not-decide.py`
+        /// refuses by name, on the ground that the order the core sent is the
+        /// order there is.
+        ///
+        /// ⚠️ **Needed because a refresh empties the levels**, which is what
+        /// the tree's own rows are built from: after one, the rows that named
+        /// an open directory under a root are gone, and a page that only
+        /// walked `nodes(under:in:)` could not find that directory to ask
+        /// about it again -- the folder would stay open in the set and be
+        /// drawn shut, or be drawn open with nothing in it. This is the list
+        /// the open set itself keeps, so it survives the levels going.
+        var openDirectories: [String] { Array(open) }
 
         func isOpen(_ path: String) -> Bool { open.contains(path) }
 

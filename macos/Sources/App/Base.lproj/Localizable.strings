@@ -1436,3 +1436,8 @@
 "Still looking" = "Still looking";
 "No file by that name" = "No file by that name";
 "%@ matches" = "%@ matches";
+
+/* The sidebar's refresh button (task 2699) -- the design's own two words,
+   which is why they are two keys and not one. */
+"Refresh files" = "Refresh files";
+"Refresh search" = "Refresh search";
