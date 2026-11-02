@@ -29,20 +29,51 @@ struct ControlRoomSidebarTests {
 
     /// A press of `key` with `modifiers`, on the chat page, with nothing
     /// typing: the shape every case below starts from and then spoils.
+    ///
+    /// **`keyCode` defaults to the `A` key and not to the backslash key**,
+    /// deliberately: these cases are about the character, and a helper that
+    /// quietly supplied 42 would make every one of them pass through the
+    /// physical-key branch instead -- so the character branch could be broken
+    /// without a single test going red. The cases that are about the key say
+    /// so themselves (`thePinyinLayoutsCommaIsTheBackslashKey`).
     private func wanted(
         _ key: String,
         _ modifiers: UInt,
+        keyCode: UInt16 = 0,
         onChatPage: Bool = true,
         textHasKeyboard: Bool = false
     ) -> Sidebar.Wanted {
-        Sidebar.wanted(characters: key, modifiers: modifiers, onChatPage: onChatPage,
-                       textHasKeyboard: textHasKeyboard)
+        Sidebar.wanted(characters: key, keyCode: keyCode, modifiers: modifiers,
+                       onChatPage: onChatPage, textHasKeyboard: textHasKeyboard)
     }
 
     // MARK: ⌘\
 
     @Test func commandBackslashAsksForTheToggle() {
         #expect(wanted(Sidebar.backslash, cmd) == .toggle)
+    }
+
+    /// **The defect of task 2662, as a case.** On the user's machine the input
+    /// source is `com.apple.keylayout.PinyinKeyboard`, whose unmodified glyph
+    /// for the ANSI backslash key is `、` (U+3001) -- so
+    /// `charactersIgnoringModifiers` reads `、` and the old rule, which
+    /// compared that field against `\`, matched nothing and the sidebar never
+    /// opened. The chord arrives on the *position* whatever the keycaps say,
+    /// and the position is 42.
+    @Test func thePinyinLayoutsCommaIsTheBackslashKey() {
+        #expect(wanted("\u{3001}", cmd, keyCode: Sidebar.backslashKey) == .toggle)
+    }
+
+    /// **The negative control for the case above**, and the line it draws:
+    /// the key position alone is not a licence for *any* character. A press of
+    /// another key carrying another character is not this chord.
+    @Test func theBackslashKeyIsNotEveryKey() {
+        // The character is nobody's, and the key is somebody else's.
+        #expect(wanted("\u{3001}", cmd) == .no)
+        // The character is ours, and the key is somebody else's: the other
+        // half of the same reading, and the half that says the two are
+        // checked separately rather than one standing in for the other.
+        #expect(wanted(Sidebar.backslash, cmd, keyCode: 0) == .toggle)
     }
 
     /// **The whole control room, not only the chat page**: the right-hand
@@ -68,12 +99,21 @@ struct ControlRoomSidebarTests {
         #expect(wanted(Sidebar.backslash, cmd | option) == .no)
     }
 
-    /// Shift turns the backslash into a `|`, so the character alone would
-    /// catch ⇧⌘\ -- and the flag alone would catch it too. Both are checked
-    /// because either one of them could be the only one that works.
+    /// **Shift's own reading is now the flag's alone** (task 2662), and this
+    /// is the case that says so: with the key's position counted, ⇧⌘\ matches
+    /// the keyCode like plain ⌘\ does -- the character is no longer what
+    /// stands between it and the toggle. Shift turns this key into `|` on the
+    /// ASCII layout and `｜` (U+FF5C) on the Pinyin one, and both arrive on
+    /// 42, so the one comparison that refuses it is the `.shift` guard.
     @Test func shiftChangesTheCharacterAsWellAsTheFlag() {
         #expect(wanted("|", cmd | shift) == .no)
         #expect(wanted("|", cmd) == .no)
+        // The key position, which the flag has to be the one to refuse.
+        #expect(wanted("|", cmd | shift, keyCode: Sidebar.backslashKey) == .no)
+        #expect(wanted("\u{FF5C}", cmd | shift, keyCode: Sidebar.backslashKey) == .no)
+        // And without Shift the same key is ours, so the case above is about
+        // the modifier and not about the key being wrong.
+        #expect(wanted("\u{FF5C}", cmd, keyCode: Sidebar.backslashKey) == .toggle)
     }
 
     @Test func theBackslashWithNoCommandIsNotOurs() {

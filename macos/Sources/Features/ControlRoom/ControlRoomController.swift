@@ -740,7 +740,14 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// the two things it cannot do.
     private func sidebarTakesKey(_ event: NSEvent) -> Bool {
         let wanted = ControlRoomSidebar.wanted(
-            characters: event.charactersIgnoringModifiers ?? "",
+            // **`characters` and not `charactersIgnoringModifiers`** (task
+            // 2662): AppKit fills the second from the layout's *unmodified*
+            // glyph, and on a non-ASCII layout that is not what ⌘\ is called.
+            // The key's position goes along as well --
+            // `ControlRoomSidebar.backslashKey` says which of the two is
+            // allowed to be the one that matches.
+            characters: event.characters ?? "",
+            keyCode: event.keyCode,
             modifiers: event.modifierFlags.intersection(ControlRoomSidebar.relevant).rawValue,
             onChatPage: model.pageInFront == .chat,
             // **A text box, not a terminal.** The group's chat is a

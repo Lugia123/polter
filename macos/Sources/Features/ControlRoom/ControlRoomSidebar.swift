@@ -66,10 +66,38 @@ enum ControlRoomSidebar {
         case no
     }
 
-    /// The character ⌘\ types. `charactersIgnoringModifiers` carries it
-    /// whatever the keycaps say, and carries `|` instead once Shift is held --
-    /// so this one comparison is also what refuses ⇧⌘\.
+    /// The character ⌘\ types, and the key it is on.
+    ///
+    /// ⚠️ **Two readings, because either one alone is wrong** -- and this was
+    /// a real defect rather than a precaution (task 2662, measured on the
+    /// user's own machine, whose input source is
+    /// `com.apple.keylayout.PinyinKeyboard`):
+    ///
+    ///  * **`characters` is the one that carries ⌘\.** AppKit asks the layout
+    ///    what the key prints *ignoring* the modifiers for
+    ///    `charactersIgnoringModifiers` and *applying* them for `characters`
+    ///    -- and the Pinyin layout defines that key's unmodified glyph as `、`
+    ///    (U+3001), so that field reads `、` while `characters` is still the
+    ///    base-layout `\` (U+005C) that this chord is named after. The old
+    ///    code compared the first field, matched nothing on that machine, and
+    ///    the sidebar silently never opened.
+    ///  * **`keyCode` is the physical key**: 42, the ANSI backslash key, the
+    ///    same number whatever the keycaps say. It is the fallback for a
+    ///    layout whose ⌘-modified `characters` is neither `\` nor anything
+    ///    else this file could name -- the field above is a *convention*
+    ///    about what a layout prints under ⌘, and a layout is not obliged to
+    ///    follow it.
+    ///
+    /// **Either one matching is enough.** ⇧ is still refused by the *flag* and
+    /// not by the character: Shift turns this key into `|` on the ASCII layout
+    /// and into `｜` (U+FF5C) on this one, and both of those come with keyCode
+    /// 42 -- so a rule that matched on the key alone would take ⇧⌘\, which is
+    /// somebody else's. The `shift` guard in `wanted` is what refuses it, and
+    /// that guard is load-bearing rather than belt-and-braces.
     static let backslash = "\\"
+    /// The ANSI backslash key's physical position. Named because "42" in a
+    /// comparison says nothing about what it is.
+    static let backslashKey: UInt16 = 42
 
     /// What the two arrows are. They are function keys, not characters:
     /// AppKit reports the left and right arrows as U+F702 and U+F703 in
@@ -156,11 +184,16 @@ enum ControlRoomSidebar {
     ///
     /// Anything with Ctrl or Shift on it is `no`: ⌃⌘\ and ⇧⌘\ are somebody
     /// else's, and a person holding an extra modifier is not asking for the
-    /// plain chord. ⇧⌘\ is refused by the character as well as the flag --
-    /// Shift turns the backslash into a `|` -- and by the flag as well as the
-    /// character, so neither reading has to be the one that catches it.
+    /// plain chord. **⇧⌘\ is refused by the flag and no longer by the
+    /// character**: since the key's *position* is now one of the two things
+    /// that match (`backslashKey` says why), the character is no longer what
+    /// is standing between ⇧⌘\ and the toggle -- Shift turns this key into `|`
+    /// on the ASCII layout and `｜` on this one, and both of those arrive on
+    /// keyCode 42. The `shift` guard above is what refuses it, and it is
+    /// load-bearing rather than the second of two readings.
     static func wanted(
         characters: String,
+        keyCode: UInt16,
         modifiers: UInt,
         onChatPage: Bool,
         textHasKeyboard: Bool
@@ -172,7 +205,7 @@ enum ControlRoomSidebar {
         else { return .no }
 
         if !flags.contains(.option) {
-            return characters == backslash ? .toggle : .no
+            return characters == backslash || keyCode == backslashKey ? .toggle : .no
         }
 
         guard onChatPage, !textHasKeyboard else { return .no }
