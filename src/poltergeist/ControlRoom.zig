@@ -2321,8 +2321,16 @@ fn stewardAmong(bus: *const Bus, chat: *const Chat, name: []const u8, members: [
 /// minds nothing meanwhile: the group shows no supervisor, so one can be
 /// started for it and its last session gone on with, which
 /// `start_supervisor` used to refuse as `HasSupervisor`.
+///
+/// **The same question as `Bus.supervising`, asked of the group's
+/// members.** Not a second answer to it: that function is where the
+/// standing is decided and this reads it, so what the group shows and what
+/// the gate lets that supervisor do cannot part. The case that made them
+/// part is task 2682 -- the person closed the tab a supervisor was in, the
+/// host kept the terminal for the undo, and the control room went on
+/// naming it the group's while it was in no window to be seen in.
 fn minds(bus: *const Bus, id: Id) bool {
-    return bus.isSupervisor(id) and !bus.agentHasLeft(id);
+    return bus.supervising(id);
 }
 
 /// A supervisor whose agent has left (task 1802): not minding the group,
@@ -5168,6 +5176,21 @@ fn lastIn(dir: []const u8, from: Chat.LastSupervisor.DirFrom) Chat.LastSuperviso
     return last;
 }
 
+/// The same, with the session its CLI said it was in (task 2682: what a
+/// close must not cost, and what a start goes on with).
+fn lastWith(dir: []const u8, from: Chat.LastSupervisor.DirFrom, session: []const u8) Chat.LastSupervisor {
+    const last = lastIn(dir, from);
+    return .{
+        .dir = last.dir,
+        .dir_from = last.dir_from,
+        .role = "",
+        .cli = "claude-code",
+        .launcher = "",
+        .session = session,
+        .heard_ms = 1_000,
+    };
+}
+
 fn noRuns(_: *anyopaque, _: Id, _: ?Bus.Program) bool {
     return false;
 }
@@ -6123,6 +6146,191 @@ test "ControlRoom start: closing the tab fails the start in the very next snapsh
     // Said once; a terminal nothing was starting in says nothing.
     try testing.expect(!w.chat.startTerminalClosed(0xa9));
     try testing.expect(!w.chat.startTerminalClosed(0xb0));
+}
+
+test "2682: a group whose supervisor lost its tab reads as one that can be started, and its session is kept" {
+    // The person closed the tab of an **established** supervisor. The host
+    // kept the terminal for the undo, so the core still has it and its
+    // agent is still connected -- and `startTerminalClosed`, which speaks
+    // only to a start under way, said nothing. The control room went on
+    // showing it as the group's supervisor while there was no window to
+    // show it in.
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    try w.worker(0xb1, "web-app worker", 0x21, 0xa1, "web-app");
+    // What the group last had, which the close must not cost.
+    _ = try w.chat.setLastSupervisor("web-app", lastWith("/work/api", .supervisor, "01a19b4f-983c-7652-ab6e-b18b40da63cf"));
+    try testing.expectEqualStrings("01a19b4f-983c-7652-ab6e-b18b40da63cf", w.chat.lastSupervisorOf("web-app").session);
+
+    var s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    const present = (try rowNamed(s, "web-app")).supervisor;
+    try testing.expectEqual(SupervisorOut.State.present, present.state);
+    try testing.expect(!present.can_start);
+
+    // The tab is closed and the host says so. The terminal is **still
+    // open**, exactly as it is on a host that keeps closed tabs.
+    try testing.expect(w.bus.noteUnhoused(0xa1, true));
+    s = (try room.compute(arena.allocator(), w.input(2_000))).snapshot;
+    const gone = (try rowNamed(s, "web-app")).supervisor;
+    try testing.expectEqual(SupervisorOut.State.absent, gone.state);
+    try testing.expect(gone.can_start);
+    // Offered where it last was: the close cost the group nothing it needs
+    // to go on.
+    try testing.expectEqualStrings("/work/api", gone.cwd);
+    try testing.expectEqual(SupervisorOut.CwdFrom.last_supervisor, gone.cwd_from);
+    // And the session it was in is still written down, which is what a
+    // start goes on with.
+    try testing.expectEqualStrings("01a19b4f-983c-7652-ab6e-b18b40da63cf", w.chat.lastSupervisorOf("web-app").session);
+    // And the terminal is not called gone: it is still open, and its agent
+    // is still in it.
+    try testing.expectEqual(@as(usize, 2), s.terminals.len);
+    try testing.expectEqual(@as(?Bus.Left, null), w.bus.entries.get(0xa1).?.left);
+
+    // The tab comes back -- the undo -- and it is the group's supervisor
+    // again, with nothing to redo.
+    try testing.expect(w.bus.noteUnhoused(0xa1, false));
+    s = (try room.compute(arena.allocator(), w.input(3_000))).snapshot;
+    const back = (try rowNamed(s, "web-app")).supervisor;
+    try testing.expectEqual(SupervisorOut.State.present, back.state);
+    try testing.expect(!back.can_start);
+}
+
+test "2682: a supervisor that is still in its tab is not unhoused by another terminal's close" {
+    // The bit is per terminal, so the close of one tab cannot make some
+    // other tab's supervisor stop being one.
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    // Another tab's terminal is closed and the host says so.
+    try w.terminal(0xb1, "elsewhere", 0x22);
+    try testing.expect(w.bus.noteUnhoused(0xb1, true));
+
+    const s = (try room.compute(arena.allocator(), w.input(1_000))).snapshot;
+    try testing.expectEqual(SupervisorOut.State.present, (try rowNamed(s, "web-app")).supervisor.state);
+}
+
+test "2682: a tab that went away is not a seat given up, so the group can take another supervisor" {
+    // **The half the whole bug turns on.** Being out of a window is not
+    // standing down: the role is the terminal's either way, so the group
+    // does not read as "one supervisor, elsewhere" -- it reads as one that
+    // can be started for, and a second supervisor may take it. Both of
+    // those are refused while the seat is held, and neither may be
+    // refused by a terminal nobody can see.
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+    const a = arena.allocator();
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    _ = try w.chat.setProject("web-app", .{ .bound = "web" });
+    try testing.expect(w.bus.noteUnhoused(0xa1, true));
+
+    // Another supervisor may come in, project and all: the seat is not
+    // held by a terminal in no window.
+    try w.terminal(0xb2, "later", 0x22);
+    try w.bus.addSupervisor(0xb2);
+    try testing.expectEqual(@as(?Id, null), projectSupervisorBesides(a, &w.bus, &w.chat, "web-app", 0xb2));
+    try w.chat.add("web-app", 0xb2, .all, .{});
+    try w.hook(0xb2, .turn_started, null, 500);
+
+    // And having taken it, it is the group's: the terminal that lost its
+    // tab is still a supervisor, and no longer this group's.
+    const s = (try room.compute(a, w.input(1_000))).snapshot;
+    try testing.expectEqual(SupervisorOut.State.present, (try rowNamed(s, "web-app")).supervisor.state);
+    try testing.expectEqual(@as(?Id, 0xb2), stewardAmong(&w.bus, &w.chat, "web-app", (try w.chat.membersOf(a, "web-app"))));
+    // The standing itself is untouched: it is the person's arrangement,
+    // and the terminal came back into a window later today.
+    try testing.expect(w.bus.isSupervisor(0xa1));
+    try testing.expectEqual(Bus.Role.supervisor, w.bus.roleOf(0xa1));
+}
+
+test "2682: a supervisor taken over from while it was out does not come back as the group's" {
+    // **The undo, and the reason it cannot simply re-grant the standing.**
+    // The tab comes back and the terminal is housed again -- and the group
+    // it was the supervisor of has somebody else minding it now. What it
+    // must not do is come back as a second supervisor of it: two would be
+    // counted, both posting as the group's. The rule for that already
+    // exists (`supersededIn`, task 1864, asked when a terminal is housed
+    // again); this is it, on a takeover that happened while the terminal
+    // was in no window.
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    try w.worker(0xc1, "web-app worker", 0x21, 0xa1, "web-app");
+    _ = try w.chat.setProject("web-app", .{ .bound = "web" });
+
+    // Its tab goes. It is a supervisor still, and in no window.
+    try testing.expect(w.bus.noteUnhoused(0xa1, true));
+
+    // Somebody else takes the group while it is away.
+    try w.terminal(0xb2, "later", 0x22);
+    try w.bus.addSupervisor(0xb2);
+    try w.chat.add("web-app", 0xb2, .all, .{});
+    try w.hook(0xb2, .turn_started, null, 500);
+
+    // Its tab comes back. It is housed, and somebody else has the group:
+    // it gives up its place in it, and the worker it was minding goes to
+    // the one that has it -- the same takeover a returning agent gets.
+    try testing.expect(w.bus.noteUnhoused(0xa1, false));
+    try testing.expectEqual(@as(?Id, 0xb2), supersededIn(&w.bus, &w.chat, "web-app", 0xa1));
+    const dropped = (try dropSuperseded(a, &w.bus, &w.chat, "web-app", 0xa1)) orelse return error.NotDropped;
+    try testing.expectEqual(@as(Id, 0xb2), dropped.by);
+    try testing.expectEqual(@as(usize, 1), dropped.passed.len);
+    try testing.expectEqual(@as(?Id, 0xb2), w.bus.entries.get(0xc1).?.watched_by);
+    try testing.expect(!w.chat.isMember("web-app", 0xa1));
+
+    // **Not a terminal stripped of what the person set up.** Its standing
+    // went only because it is in no other group now, and its role goes on
+    // being its own -- what it is not is this group's supervisor.
+    try testing.expect(!w.bus.isSupervisor(0xa1));
+    try testing.expectEqual(Bus.Role.none, w.bus.roleOf(0xa1));
+    try testing.expect(w.bus.supervising(0xa1) == false);
+}
+
+test "2682: a terminal whose tab came back with nobody having taken it is the group's supervisor again" {
+    // The other half of the undo: nothing happened while it was away, so
+    // there is nothing to give up. Load-bearing the other way round from
+    // the test above -- without it, "housed again" could be read as "give
+    // the seat up" and the undo would cost the group its supervisor.
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var room: ControlRoom = .init(testing.allocator);
+    defer room.deinit();
+    const a = arena.allocator();
+
+    try w.steward(0xa1, "web-app", 0x21, "web-app");
+    _ = try w.chat.setProject("web-app", .{ .bound = "web" });
+    try testing.expect(w.bus.noteUnhoused(0xa1, true));
+    // Out of sight, so the row offers a start; nothing is given up.
+    try testing.expect(!w.bus.supervising(0xa1));
+    try testing.expectEqual(@as(?Id, null), supersededIn(&w.bus, &w.chat, "web-app", 0xa1));
+
+    try testing.expect(w.bus.noteUnhoused(0xa1, false));
+    try testing.expect(w.bus.supervising(0xa1));
+    const s = (try room.compute(a, w.input(2_000))).snapshot;
+    const back = (try rowNamed(s, "web-app")).supervisor;
+    try testing.expectEqual(SupervisorOut.State.present, back.state);
+    try testing.expect(!back.can_start);
 }
 
 test "may-authorise off in the configuration: a worker's prompt is the person's at once, not after its supervisor's minute" {

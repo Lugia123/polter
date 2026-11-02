@@ -16049,6 +16049,59 @@ pub fn poltergeistTerminalGone(self: *App, id: poltergeistpkg.Bus.Id) void {
     if (self.terminal_meta) |*m| m.forget(id);
 }
 
+/// The host's answer to "is this terminal in a window?" (task 2682),
+/// recorded on the bus and nothing else.
+///
+/// **What it is not.** It is not a stand-down: the standing, the role and
+/// the session written down for the terminal are all its own either way,
+/// and `Bus.noteUnhoused` gives up none of them. What changes is only what
+/// the standing is *in force* for (`Bus.supervising`), which is the same
+/// question the control room asks when it names a group's supervisor --
+/// one answer, so that what the group shows and what the gate allows
+/// cannot part.
+///
+/// **A supervisor taken over from while it was away does not come back as
+/// one** (task 1864). Being out of a window is one of the ways it is away,
+/// so the same rule that decides this for an agent whose connection went
+/// decides it here: `dropIfSuperseded` is asked when the terminal is housed
+/// again, exactly as it is at the agent's first request. The terminal and
+/// what the person configured for it (its persona, its role) are untouched
+/// -- what it gives up is the group somebody else minds now.
+pub fn poltergeistHoused(self: *App, id: poltergeistpkg.Bus.Id, housed: bool) void {
+    if (!self.poltergeist.noteUnhoused(id, !housed)) return;
+    // Housed again, and somebody else has the group: the place it had is
+    // not its to take back.
+    if (housed) self.dropIfSuperseded(id);
+    self.refreshPoltergeistTabs();
+    self.controlRoomTouch();
+}
+
+test "2682: the housing answer is recorded, and a terminal housed again goes through the takeover rule" {
+    // **Read off the source**, like the squad test below: `poltergeistHoused`
+    // needs a running App. What it must be shown to do is the two halves of
+    // the restore path, because testing `dropSuperseded` on its own proves
+    // the rule and not the wiring (`codeOf`):
+    //
+    //   * the answer is recorded on the bus through `noteUnhoused` -- not
+    //     written into a field of its own here, which would be a second
+    //     opinion about whether the terminal is in a window;
+    //   * coming back into a window asks the takeover rule `dropIfSuperseded`
+    //     (task 1864) rather than handing the standing back by hand;
+    //   * and it does **not** stand anything down. `removeSupervisor` here
+    //     would make the undo cost the terminal its role, which is the
+    //     person's arrangement and not this function's to take.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const code = try codeOf(alloc, "\npub fn poltergeistHoused(");
+    defer alloc.free(code);
+
+    for ([_][]const u8{
+        "self.poltergeist.noteUnhoused(id, !housed)",
+        "if (housed) self.dropIfSuperseded(id)",
+    }) |call| try testing.expect(std.mem.indexOf(u8, code, call) != null);
+    try testing.expect(std.mem.indexOf(u8, code, "removeSupervisor") == null);
+}
+
 fn channelSeats(
     ctx: *anyopaque,
     alloc: Allocator,

@@ -2517,7 +2517,15 @@ pub fn authorize(bus: *const Bus, caller: Bus.Caller, req: Request) Error!void {
     // with the same sentence it is refused to an ordinary terminal. That is
     // the parity being claimed -- one rule, one answer -- and an earlier
     // "you are not a terminal" would hide it behind a second explanation.
-    const supervisor = if (caller.terminalId()) |id| bus.isSupervisor(id) else false;
+    // **`supervising`, not `isSupervisor`** (task 2682): the gate grants
+    // what the standing is *in force* for, which is the question the
+    // control room already answers when it names a group's supervisor.
+    // Asking the narrower one let a terminal the person had closed -- kept
+    // by the host for the undo, in no window, and no longer shown as
+    // anybody's supervisor -- go on calling `set_watch`, `group_add` and
+    // `notify_user`. Its role is untouched either way, so a terminal that
+    // gets its tab back is this again.
+    const supervisor = if (caller.terminalId()) |id| bus.supervising(id) else false;
     if (requiresSupervisor(method) and !supervisor and !userMay(caller, method)) {
         return error.NotPermitted;
     }
@@ -4240,6 +4248,74 @@ test "a watched terminal cannot stand down from a standing it never had" {
     const res = try dispatch(arena.allocator(), &b, fake.host(), term(worker), .stand_down);
     try testing.expectEqualStrings("NotPermitted", res.failed.code);
     try testing.expect(fake.stood_down == null);
+}
+
+test "2682: a supervisor whose tab was closed is refused the arrangement tools, and gets them back with its tab" {
+    // The person closed the tab the supervisor was in. The host kept the
+    // terminal for the undo, so its agent is still connected and its MCP
+    // session is still open -- and every one of these calls used to go
+    // through, because the gate asked `isSupervisor` and the role is the
+    // terminal's either way. What the gate grants is the standing *in
+    // force*, which is the question the control room already answers when
+    // it names a group's supervisor.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake: FakeHost = .{};
+
+    // While it has a window: all of them its own.
+    for ([_]Request{
+        .{ .set_watch = .{ .id = worker, .watch = true } },
+        .{ .group_create = .{ .group = "build" } },
+        .{ .group_post = .{ .group = "build", .text = "green" } },
+        .notices,
+    }) |req| {
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), req);
+        try testing.expect(res != .failed);
+    }
+
+    // The tab goes. It is still a supervisor, and its agent has not gone:
+    // the one thing that changed is that there is no window it is in.
+    try testing.expect(b.noteUnhoused(boss, true));
+    try testing.expect(b.isSupervisor(boss));
+    try testing.expect(!b.agentHasLeft(boss));
+
+    for ([_]Request{
+        .{ .set_watch = .{ .id = worker, .watch = false } },
+        .{ .group_create = .{ .group = "other" } },
+        .notices,
+        .{ .terminal_open = .{ .cwd = "/tmp" } },
+    }) |req| {
+        const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), req);
+        // **The refusal is named before what it says.** Reading `failed`
+        // off a response that is not one is a union panic, and a panic
+        // chooses which of the four requests to die on by iteration
+        // order: the run that proved this floor red said only "field
+        // 'failed' while field 'text' is active", which is the same
+        // sentence whichever request got through.
+        try testing.expect(res == .failed);
+        try testing.expectEqualStrings("NotPermitted", res.failed.code);
+    }
+    // Refused, not stood down: nothing was given up while it was away.
+    try testing.expect(b.isSupervisor(boss));
+    try testing.expectEqual(Bus.Role.supervisor, b.roleOf(boss));
+
+    // What every terminal may do is still open to it -- the gate narrowed
+    // the standing, not the terminal.
+    const listed = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .terminal_list);
+    try testing.expect(listed != .failed);
+    const posted = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .group_post = .{ .group = "build", .text = "still able to talk" },
+    });
+    try testing.expect(posted == .ok);
+
+    // The tab comes back, and so does everything that went with it.
+    try testing.expect(b.noteUnhoused(boss, false));
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .set_watch = .{ .id = worker, .watch = true },
+    });
+    try testing.expect(res != .failed);
 }
 
 test "a watched terminal can talk in a group but cannot arrange one" {

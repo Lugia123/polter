@@ -2046,6 +2046,11 @@ GHOSTTY_API uint64_t ghostty_surface_poltergeist_id(ghostty_surface_t);
 // (so that the close can be undone). A host that destroys the terminal with
 // its tab does not need this.
 GHOSTTY_API void ghostty_surface_poltergeist_tab_closed(ghostty_surface_t);
+// Whether this terminal is in a window or tab that can show it. A host that
+// keeps closed tabs for the undo says so when a tab or a pane inside one
+// goes (false) and when either comes back (true); one that destroys a
+// terminal with its tab says nothing and needs to say nothing.
+GHOSTTY_API void ghostty_surface_poltergeist_housed(ghostty_surface_t, bool);
 // Whether the read whose `state` this is -- the pointer read_clipboard_cb
 // was handed -- is the person pasting, rather than a program reading the
 // clipboard (OSC 52, Kitty) or listing it. Both arrive asking for

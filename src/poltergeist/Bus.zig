@@ -932,6 +932,33 @@ pub const Entry = struct {
     /// said why; see `noteLeft`. Null while nothing says it has.
     left: ?Left = null,
 
+    /// This terminal is in no window or tab that could show it, as the host
+    /// last said (`noteUnhoused`, task 2682). False for a terminal nobody
+    /// has said anything about -- and false is what a host that never
+    /// speaks of housing leaves it at, which is every host that destroys a
+    /// terminal with its tab.
+    ///
+    /// **Its own field, and not `left`.** The two are the two ways a
+    /// supervisor stops being one, and they take different facts to tell
+    /// apart. `left` is "no agent is connected from here any more"
+    /// (`agentHasLeft`), and the terminal this exists for is the exact
+    /// opposite of it: the person closed the tab, the host kept the
+    /// terminal so the close could be undone, and the agent in it is still
+    /// connected, still hooking, still calling tools. Filing that under
+    /// `left` would say the agent is gone -- which the notices and
+    /// `writeAgentWords` read, and which would be a lie about a terminal
+    /// whose process is running in front of nobody.
+    ///
+    /// **Asked of the host, not told by it** (task 2682). A window is the
+    /// host's to see, and *which* of the events it can see is not the core's
+    /// business -- a tab closed, a pane closed inside a tab, a tab restored
+    /// by the undo after either -- so the core asks the one question
+    /// ("is this terminal in a window?") as it makes each snapshot, and
+    /// every one of those events reaches it the same way. An answer that
+    /// comes and goes with a host's list of events is an answer that is
+    /// wrong wherever the list is short.
+    unhoused: bool = false,
+
     /// When this terminal's agent last called a Polter tool, or null if it
     /// never has; see `noteCall`.
     ///
@@ -1803,6 +1830,49 @@ pub fn agentHasLeft(self: *const Bus, id: Id) bool {
     const e = self.entries.get(id) orelse return false;
     if (e.left == null) return false;
     return e.agent_here != true;
+}
+
+/// Record that this terminal has, or has not, a window or tab to be seen
+/// in (`Entry.unhoused`, task 2682). Said by the host, and by nothing
+/// else: the core cannot see a window. True when it changed.
+///
+/// True is what the host says when a tab is closed and its terminal kept
+/// for the undo, and false is what it says if that tab comes back. The
+/// true direction takes nothing away that a person put there -- the
+/// standing and the role are still the terminal's, and so is the group it
+/// is in and the session written down for it -- because a close that can
+/// be undone must not cost anything that cannot.
+pub fn noteUnhoused(self: *Bus, id: Id, unhoused: bool) bool {
+    const e = self.entries.getPtr(id) orelse return false;
+    if (e.unhoused == unhoused) return false;
+    e.unhoused = unhoused;
+    self.left_changes +%= 1;
+    return true;
+}
+
+/// Whether a supervisor is still one *in force*: it has the standing
+/// (`isSupervisor`), its agent has not gone (`agentHasLeft`), and it still
+/// has a window or tab to be seen in (`Entry.unhoused`, task 2682).
+///
+/// **The one question the standing is granted on**, so that the two halves
+/// of it cannot come apart: what the control room counts as a group's
+/// supervisor and what `rpc.authorize` lets a supervisor do are the same
+/// answer asked twice. Asking `isSupervisor` at the gate instead is how a
+/// terminal whose tab the person closed went on arranging the work -- the
+/// control room showed no supervisor, so it offered to start one, while
+/// the old agent's `set_watch`, `group_add` and `notify_user` all still
+/// went through.
+///
+/// A supervisor that is unhoused is not *gone*: the standing, the role and
+/// the session written down for it are all kept, and a terminal that gets
+/// its tab back is this again. What it cannot do meanwhile is act as the
+/// group's, which is what the person asking for another one is counting
+/// on.
+pub fn supervising(self: *const Bus, id: Id) bool {
+    if (!self.isSupervisor(id)) return false;
+    if (self.agentHasLeft(id)) return false;
+    const e = self.entries.get(id) orelse return false;
+    return !e.unhoused;
 }
 
 pub fn isSupervisor(self: *const Bus, id: Id) bool {
@@ -7299,6 +7369,67 @@ test "1762: the workers of a supervisor whose agent left can be taken by another
     _ = b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveNo);
     try b.watch(worker, next);
     try testing.expectEqual(@as(?Id, next), b.entries.get(worker).?.watched_by);
+}
+
+test "2682: a supervisor in no window stops supervising, and keeps everything a close can undo" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(boss, hookEv(.turn_started), 1_000);
+    b.noteAgentHere(boss, true, .{ .pid = 91, .started = 500 }, 1_500);
+
+    try testing.expect(b.supervising(boss));
+    // And the two it is asked against, so that "supervising" is not just
+    // "isSupervisor" under another name.
+    try testing.expect(b.isSupervisor(boss));
+    try testing.expect(!b.agentHasLeft(boss));
+
+    // The person closed the tab; the host kept the terminal for the undo.
+    try testing.expect(b.noteUnhoused(boss, true));
+    try testing.expect(!b.supervising(boss));
+
+    // **Not a departure.** The agent is still connected and still there,
+    // so nothing that reads `left` -- the notices, `writeAgentWords` -- is
+    // told the agent is gone.
+    try testing.expect(!b.agentHasLeft(boss));
+    try testing.expectEqual(@as(?Left, null), b.entries.get(boss).?.left);
+
+    // **Not a standing given up.** The role, the place in the group and
+    // the session written down are the terminal's, so the tab coming back
+    // is the supervisor coming back.
+    try testing.expect(b.isSupervisor(boss));
+    try testing.expectEqual(Role.supervisor, b.roleOf(boss));
+    try testing.expectEqual(@as(?Id, boss), b.entries.get(worker).?.watched_by);
+
+    // The tab comes back.
+    try testing.expect(b.noteUnhoused(boss, false));
+    try testing.expect(b.supervising(boss));
+
+    // Said twice is said once: the second `true` changes nothing, so it is
+    // not news for the control room to redraw for.
+    try testing.expect(b.noteUnhoused(boss, true));
+    try testing.expect(!b.noteUnhoused(boss, true));
+}
+
+test "2682: an unhoused terminal is not a supervisor that left" {
+    // The two ways a supervisor stops being one are kept apart (task
+    // 2705's question, asked here): a terminal with no window is not a
+    // terminal whose agent went, and filing it under `left` would say the
+    // agent is gone about a terminal whose process is running.
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(boss, hookEv(.turn_started), 1_000);
+    b.noteAgentHere(boss, true, .{ .pid = 91, .started = 500 }, 1_500);
+    _ = b.noteUnhoused(boss, true);
+
+    // A terminal nobody has said anything about is housed, which is what
+    // makes a host that never speaks of housing harmless.
+    try testing.expect(!b.entries.get(worker).?.unhoused);
+    // And housing is not a standing: `worker` is not a supervisor, so it
+    // is not one with a window either.
+    try testing.expect(!b.supervising(worker));
+
+    try testing.expect(!b.supervising(boss));
+    try testing.expect(!b.agentHasLeft(boss));
 }
 
 fn aliveYes(_: *anyopaque, _: Id, _: ?Program) bool {

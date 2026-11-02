@@ -4783,11 +4783,36 @@ test "holding cmd to switch away is not somebody typing here" {
 }
 
 /// This terminal's tab was closed and the terminal kept (the host can
-/// still undo the close). A supervisor the control room was starting here
-/// is not going to be one: said now rather than when the terminal is
-/// finally destroyed (`Chat.startTerminalClosed`).
+/// still undo the close). Two things are said, and they are different
+/// sentences about the same moment (task 2682):
+///
+///   * a supervisor the control room was **starting** here is not going
+///     to be one, said now rather than when the terminal is finally
+///     destroyed (`Chat.startTerminalClosed`);
+///   * this terminal is **in no window or tab** from now on, so a
+///     supervisor already established here stops being the group's.
+///
+/// The second is `poltergeistHoused`'s sentence with its answer given, and
+/// the host says it here because closing a tab is one of the events that
+/// answer changes on. The two others are a pane closing inside a tab and a
+/// closed tab coming back, which the same host reports through the same
+/// door (`BaseTerminalController.surfaceTreeDidChange`).
 pub fn poltergeistTabClosed(self: *Surface) void {
-    if (self.app.chat.startTerminalClosed(self.id)) self.app.controlRoomTouch();
+    self.poltergeistHoused(false);
+    _ = self.app.chat.startTerminalClosed(self.id);
+}
+
+/// Tell the core whether this terminal is in a window or tab that can show
+/// it (task 2682). The host is the only side that can see a window, so the
+/// question is its to answer and this is the answer.
+///
+/// **The events that change it are three, and the host names them one at a
+/// time**: a tab closed (kept for the undo), a pane closed inside a tab
+/// (same), and either of those undone. Listing them here is on purpose --
+/// an answer that is only ever set, never cleared, would leave a restored
+/// terminal out of its own group for good.
+pub fn poltergeistHoused(self: *Surface, housed: bool) void {
+    self.app.poltergeistHoused(self.id, housed);
 }
 
 /// Whether Poltergeist may put characters into this terminal's input line

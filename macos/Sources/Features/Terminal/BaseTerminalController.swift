@@ -157,6 +157,14 @@ class BaseTerminalController: NSWindowController,
         guard let ghostty_app = ghostty.app else { preconditionFailure("app must be loaded") }
         self.surfaceTree = tree ?? .init(view: Ghostty.SurfaceView(ghostty_app, baseConfig: base))
         Self.updateSurfaceControllers(self, from: .init(), to: surfaceTree)
+        // **Restoring a closed tab is a terminal coming back into one**
+        // (task 2682): the undo builds a controller over the very same
+        // views, so this is where a terminal the person closed and then
+        // undid says it is housed again. A property observer would not do
+        // it -- an assignment inside an initializer does not fire one, and
+        // the line above is the manual half of the same body -- which is
+        // exactly the case that would otherwise be missed.
+        for view in surfaceTree.members() { Self.tellCoreHousing(view) }
 
         // Setup our bell state for the window
         setupBellNotificationPublisher()
@@ -372,6 +380,25 @@ class BaseTerminalController: NSWindowController,
         // place here.
         ControlRoomLender.shared.treesChanged()
         watchPaneDots()
+        // **Whatever came and went, the core's question is answered from
+        // one place** (task 2682): a terminal is housed when some tab's
+        // tree still holds it. That is not `view.window` -- one stacked
+        // behind another in its pane hangs in no window while its tab is
+        // open (task 1878), and one the control room has borrowed hangs in
+        // the control room's -- so the tree is what is asked, and the same
+        // tree every other question about where a terminal is asks.
+        for surfaceView in from.members() + to.members() {
+            Self.tellCoreHousing(surfaceView)
+        }
+    }
+
+    /// Tell the core whether `view` is in a window or tab that can show it
+    /// (task 2682). A pane closing inside a tab goes through here as a tab
+    /// closing does, and so does the undo of either: one question, asked
+    /// wherever the tree changed.
+    static func tellCoreHousing(_ view: Ghostty.SurfaceView) {
+        guard let surface = view.surface else { return }
+        ghostty_surface_poltergeist_housed(surface, Self.controller(owning: view) != nil)
     }
 
     /// Listen to every terminal of the tree for what the tab's dots say

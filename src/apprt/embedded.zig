@@ -3499,10 +3499,27 @@ pub const CAPI = struct {
     /// lasts. Whatever was waiting on this terminal and has no use for one
     /// in a closed tab is told now (`Surface.poltergeistTabClosed`). A host
     /// that destroys a terminal as it closes its tab has no need to call
-    /// this. If the tab comes back, nothing is un-told.
+    /// this.
     export fn ghostty_surface_poltergeist_tab_closed(surface: ?*Surface) void {
         const s = surface orelse return;
         s.core_surface.poltergeistTabClosed();
+    }
+
+    /// Whether this terminal is in a window or tab that could show it, as
+    /// the host now knows (task 2682). The host is the only side that can
+    /// see a window, so this is its answer to a question only it can
+    /// answer -- and the events that change the answer are its to name: a
+    /// tab closed and kept for the undo, a pane closed inside a tab (same),
+    /// and either of those undone.
+    ///
+    /// A host that destroys a terminal with its tab never calls this: the
+    /// terminal goes, and the core hears that by itself. One that never
+    /// calls it leaves every terminal housed, which is what it was before
+    /// this existed and is right for every host whose terminals can all be
+    /// seen.
+    export fn ghostty_surface_poltergeist_housed(surface: ?*Surface, housed: bool) void {
+        const s = surface orelse return;
+        s.core_surface.poltergeistHoused(housed);
     }
 
     /// To deny a request use ghostty_surface_deny_clipboard_request
